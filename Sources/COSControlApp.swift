@@ -68,17 +68,21 @@ struct COSControlApp: App {
                 activityWindow.show(model: model, section: section)
             }
         } label: {
-            Image(systemName: model.status.running ? "eyeglasses" : "eyeglasses.slash")
-                .fixedSize()
-                .overlay(alignment: .topTrailing) {
-                    if model.appUpdate.shouldSurface {
-                        Circle()
-                            .fill(.primary)
-                            .frame(width: 5, height: 5)
-                            .offset(x: 2, y: -1)
-                    }
+            // 2026-10-09 (Miles, like Vorssant): gold glasses with a dot while an update is ready. A menu bar ignores
+            // color in a template image, so ONLY the ready icon is an NSImage that is not one (MenuBarIcon), drawn as
+            // itself. Otherwise the tray is the system eyeglasses glyph, exactly as since 0.5.91 (0.5.90's composed
+            // icon squashed the lenses). It follows appUpdateFlow, so a failed check never tints it.
+            let variant = MenuBarIcon.variant(for: model.appUpdateFlow.phase)
+            Group {
+                if variant == .updateReady {
+                    Image(nsImage: MenuBarIcon.image(systemName: model.status.running ? "eyeglasses" : "eyeglasses.slash", variant: .updateReady))
+                        .renderingMode(.original)
+                } else {
+                    Image(systemName: model.status.running ? "eyeglasses" : "eyeglasses.slash")
                 }
-                .accessibilityLabel("COS Control")
+            }
+            .fixedSize()
+            .accessibilityLabel(MenuBarIcon.accessibilityLabel(variant))
         }
         .menuBarExtraStyle(.window)
         .commands {

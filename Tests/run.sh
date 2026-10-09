@@ -1040,7 +1040,14 @@ echo "    manual update check: button, method, and all three outcomes"
 /usr/bin/grep -q 'Views into the work' "$ROOT/Sources/ActivityWindow.swift"
 /usr/bin/grep -q 'Image(systemName: model.status.running ? "eyeglasses"' "$ROOT/Sources/COSControlApp.swift"
 /usr/bin/grep -q '\.fixedSize()' "$ROOT/Sources/COSControlApp.swift"
-! /usr/bin/grep -q 'Image(nsImage:' "$ROOT/Sources/COSControlApp.swift"
+# 2026-10-09: an NSImage only for the update-ready glasses (a template drops color); the plain tray stays the system glyph.
+/usr/bin/python3 -c '
+import sys
+src = open(sys.argv[1]).read()
+assert src.count("Image(nsImage:") == 1, "one NSImage label at most, the update-ready glasses"
+branch = src.split("if variant == .updateReady {", 1)[1].split("} else {", 1)[0]
+assert "Image(nsImage:" in branch, "the NSImage label belongs to the update-ready branch only"
+' "$ROOT/Sources/COSControlApp.swift"
 /usr/bin/grep -q 'eyeglasses.slash' "$ROOT/Sources/COSControlApp.swift"
 # 0.5.243: the send button routes a cross-platform Fork through forkToPlatform, and "Use this" goes through
 # WorkHandoffStore.applying (which clears a leftover provider on a Fork).
@@ -1457,11 +1464,15 @@ assert m is not None, "MenuBarExtra no longer opens ControlPanel"
 before = re.sub(r"//[^\n]*", "", m.group(1))
 assert before.strip() == "", "something sits above ControlPanel in the menu-bar window: " + before.strip()[:80]
 PY
-/usr/bin/grep -q 'model.appUpdate.shouldSurface' "$ROOT/Sources/COSControlApp.swift"
+/usr/bin/grep -q -F 'MenuBarIcon.variant(for: model.appUpdateFlow.phase)' "$ROOT/Sources/COSControlApp.swift"
 ! /usr/bin/grep -q 'hasNotice' "$ROOT/Sources/COSControlApp.swift"
 /usr/bin/grep -q 'AppUpdateInfo.merging(previous: appUpdate, incoming:' "$ROOT/Sources/ControllerModel.swift"
 /usr/bin/grep -q 'static func merging(previous: AppUpdateInfo, incoming: AppUpdateInfo)' "$ROOT/Sources/Models.swift"
 /usr/bin/grep -q 'enum MenuBarIcon' "$ROOT/Sources/Models.swift"
+# 2026-10-09 (Miles, like Vorssant): the update-ready badge. The version rule, the check schedule (launch, 6 h, 15 min on
+# panel open, never two at once), the banner's phases and the gold glasses, executed; then the model wiring with the app.
+"$ROOT/Tests/run-app-update-badge.sh"
+/usr/bin/python3 "$ROOT/Tests/app-update-badge-pins.py" "$ROOT"
 /usr/bin/grep -q 'case "openpets-catalog"' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'case "openpets-thumb"' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'static func isAllowedThumbURL' "$ROOT/HelperSources/main.swift"
@@ -2429,7 +2440,7 @@ fi
 /usr/bin/grep -q 'case "stage-app-update"' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'case "apply-app-update"' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'case "complete-app-update"' "$ROOT/HelperSources/main.swift"
-/usr/bin/grep -q 'Button("Install")' "$ROOT/Sources/Views.swift"
+/usr/bin/grep -q -F 'Button("Update", action: onUpdate)' "$ROOT/Sources/Views.swift"
 /usr/bin/grep -q 'func installAppUpdate' "$ROOT/Sources/ControllerModel.swift"
 /usr/bin/grep -q 'preferStable: true' "$ROOT/Sources/ControllerModel.swift"
 /usr/bin/grep -q 'completeAppUpdateIfNeeded' "$ROOT/Sources/ControllerModel.swift"

@@ -1356,6 +1356,9 @@ struct COSProgressLine: View {
 /// Busy: a gold arc on a hairline ring. It turns once every 0.9 s; under Reduce Motion it holds still.
 struct COSSpinner: View {
     var size: CGFloat = 16
+    /// The arc and its track. The defaults are the panel's; a spinner on the gold update banner draws in ink.
+    var ink: Color = COSPalette.accent
+    var track: Color = COSPalette.line
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
@@ -1369,9 +1372,9 @@ struct COSSpinner: View {
     private var arc: some View {
         let width = max(1.5, size / 8)
         return ZStack {
-            Circle().stroke(COSPalette.line, lineWidth: width)
+            Circle().stroke(track, lineWidth: width)
             Circle().trim(from: 0, to: 0.28)
-                .stroke(COSPalette.accent, style: StrokeStyle(lineWidth: width, lineCap: .round))
+                .stroke(ink, style: StrokeStyle(lineWidth: width, lineCap: .round))
         }
         .padding(width / 2)
     }

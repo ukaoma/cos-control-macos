@@ -113,6 +113,114 @@ private enum CharacterGallery {
     static let height: CGFloat = 220
 }
 
+/// The update banner at the top of the menu-bar panel (Miles, 2026-10-09 08:14, with screenshots of Vorssant: a full
+/// width banner, a circled down arrow, "Update available", the version under it, an Update button on the right). A card
+/// in the panel's own layout, never a sheet or a window. Gold with ink words while an update is ready or installing;
+/// the panel's card with a danger edge when the install failed, with the helper's own words and Try again.
+struct AppUpdateBanner: View {
+    let flow: AppUpdateFlow
+    var notes: String?
+    var disabled = false
+    let onUpdate: () -> Void
+
+    private var failed: String? {
+        if case .failed(let message) = flow.phase { return message }
+        return nil
+    }
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 11) {
+            icon.frame(width: 26, height: 26)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(COSType.body(13, weight: .bold))
+                Text(detail)
+                    .font(COSType.body(11))
+                    .opacity(failed == nil ? 0.78 : 1)
+                    .foregroundStyle(failed == nil ? AnyShapeStyle(COSPalette.ink) : AnyShapeStyle(.secondary))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .lineLimit(4)
+            }
+            Spacer(minLength: 8)
+            action.layoutPriority(1)
+        }
+        .foregroundStyle(failed == nil ? COSPalette.ink : Color.primary)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 12).padding(.vertical, 10)
+        .background(failed == nil ? COSPalette.gold : COSPalette.card, in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(failed == nil ? Color.clear : COSPalette.danger.opacity(0.55), lineWidth: 1))
+    }
+
+    private var title: String {
+        switch flow.phase {
+        case .none, .ready: return "Update available"
+        case .staging: return "Downloading update"
+        case .applying: return "Installing update"
+        case .failed: return "Update did not install"
+        }
+    }
+
+    private var detail: String {
+        switch flow.phase {
+        case .none, .ready:
+            return flow.versionLine
+        case .staging(let line):
+            return line ?? "\(flow.versionLine). Checking the download as it arrives."
+        case .applying:
+            return "\(flow.versionLine). Control quits and reopens by itself. The glasses server keeps running."
+        case .failed(let message):
+            return message
+        }
+    }
+
+    @ViewBuilder private var icon: some View {
+        switch flow.phase {
+        case .staging, .applying:
+            COSSpinner(size: 18, ink: COSPalette.ink, track: COSPalette.ink.opacity(0.18))
+        case .failed:
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 19, weight: .semibold))
+                .foregroundStyle(COSPalette.danger)
+        case .none, .ready:
+            Image(systemName: "arrow.down.circle.fill")
+                .font(.system(size: 22, weight: .semibold))
+                .symbolRenderingMode(.palette)
+                .foregroundStyle(COSPalette.gold, COSPalette.ink)
+        }
+    }
+
+    @ViewBuilder private var action: some View {
+        switch flow.phase {
+        case .none, .ready:
+            Button("Update", action: onUpdate)
+                .buttonStyle(AppUpdateBannerButtonStyle())
+                .disabled(disabled)
+                .help(notes ?? "Install this update. Control quits and reopens; the glasses server keeps running.")
+        case .failed:
+            Button("Try again", action: onUpdate)
+                .buttonStyle(COSPrimaryButtonStyle())
+                .disabled(disabled)
+        case .staging, .applying:
+            EmptyView()
+        }
+    }
+}
+
+/// The banner's Update: an ink pill on the gold, as the reference's white pill on its blue.
+private struct AppUpdateBannerButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(COSType.body(12, weight: .semibold))
+            .foregroundStyle(COSPalette.cream)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 5)
+            .background(COSPalette.ink.opacity(configuration.isPressed ? 0.8 : 1), in: Capsule())
+            .opacity(isEnabled ? 1 : 0.5)
+    }
+}
+
 struct ControlPanel: View {
     @ObservedObject var model: ControllerModel
     let openActivity: (ActivitySection?) -> Void
@@ -204,6 +312,8 @@ struct ControlPanel: View {
         .cosControlTheme()
         .onDisappear { if !hostedInWindow { model.panelVisible = false } }
         .onAppear { if !hostedInWindow { model.panelVisible = true } }
+        // The appcast again when the last check is older than 15 minutes (AppUpdateCheckSchedule).
+        .onAppear { model.panelOpenedForUpdates() }
         .onAppear {
             // Fences are rare and urgent, and the card only renders when there is
             // one — so something has to look. Opening the panel is the right
@@ -1335,6 +1445,9 @@ struct ControlPanel: View {
         ScrollViewReader { reader in
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
+                // 2026-10-09 (Miles, like Vorssant): an update that is ready is the first thing in the panel, above the
+                // header. Nothing renders here without one; the version card below stays where it was.
+                updateBanner
                 if hostedInActivity {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Settings").font(COSType.body(28, weight: .semibold))
@@ -2316,14 +2429,11 @@ struct ControlPanel: View {
     }
 
     /// Updates belong at the TOP of the panel, not buried under everything else
-    /// (Miles, 2026-08-31). The row answers "am I current?" on every open — an
-    /// offer when one is waiting, the standing version when not — and carries
-    /// the manual check in both states, so asking never means scrolling to the
-    /// bottom of the panel.
+    /// (Miles, 2026-08-31). The row answers "am I current?" on every open with the
+    /// standing version and the manual check. 2026-10-09: when an update is ready the
+    /// banner at the very top (updateBanner) answers instead, so this renders nothing.
     @ViewBuilder private var updateRow: some View {
-        if model.appUpdate.shouldSurface {
-            updateBanner
-        } else {
+        if !model.appUpdateFlow.showsBanner {
             HStack(spacing: 8) {
                 Image(systemName: "checkmark.circle")
                     .font(.system(size: 11, weight: .semibold))
@@ -2348,30 +2458,13 @@ struct ControlPanel: View {
         }
     }
 
+    /// Renders ONLY while appUpdateFlow has something to say: ready, staging, applying, failed. Update (and Try again)
+    /// open the same inline confirmation as before, then installAppUpdate, the existing stage then apply path.
     @ViewBuilder private var updateBanner: some View {
-        if model.appUpdate.shouldSurface {
-            HStack(alignment: .center, spacing: 10) {
-                Image(systemName: "arrow.down.circle.fill").foregroundStyle(COSPalette.amber)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Update available: \(model.appUpdate.latestVersion ?? "")")
-                        .font(.caption.weight(.semibold))
-                    if let notes = model.appUpdate.notes, !notes.isEmpty {
-                        Text(notes)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-                Spacer(minLength: 8)
-                Button("Install") { confirmInstallAppUpdate = true }
-                    .buttonStyle(COSPrimaryButtonStyle())
-                    .layoutPriority(1)
-                    .disabled(model.busy)
+        if model.appUpdateFlow.showsBanner {
+            AppUpdateBanner(flow: model.appUpdateFlow, notes: model.appUpdate.notes, disabled: model.busy) {
+                confirmInstallAppUpdate = true
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(11)
-            .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 12))
-            .overlay(RoundedRectangle(cornerRadius: 12).stroke(COSPalette.amber.opacity(0.45), lineWidth: 1))
         }
     }
 

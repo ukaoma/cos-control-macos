@@ -3879,14 +3879,241 @@ struct AppUpdateInfo: Sendable {
     }
 }
 
-/// Status-item glyph. Template image so it follows the menu bar tint.
-/// The eyeglasses / eyeglasses.slash literals stay at the call site so running
-/// state remains visible with the panel closed. The badge is a mask pip, not
-/// a colored overlay.
-enum MenuBarIcon {
-    static let pointSize: CGFloat = 16
+// MARK: - Update ready (Miles, 2026-10-09 08:14, with screenshots of Vorssant)
+//
+// "Color the Glasses when an update is ready and then we expose the update when a new appcast has been pushed."
+// Four pieces, all pure so Tests/AppUpdateBadgeChecks.swift executes them without a helper, a network or a window:
+//   AppUpdateVersion        is the appcast's stable offer newer than the running build (the helper's rule, again)
+//   AppUpdateFlow           none, ready, staging, applying, failed: what the banner and the icon show
+//   AppUpdateCheckSchedule  at launch, every 6 hours, on panel open after 15 minutes, never two at once
+//   MenuBarIcon             the template glasses, or the gold glasses with a dot when an update is ready
 
-    static func compose(systemName: String, updateAvailable: Bool) -> NSImage {
+/// The helper decides `updateAvailable` with `appUpdateIsNewer` (build authoritative; HelperSources/main.swift). The app
+/// asks the same question again before it colors anything, so an offer that is not a genuine upgrade of THIS build (a
+/// malformed version, an equal or older build, a sticky offer outliving the update it advertised) never tints the icon.
+enum AppUpdateVersion {
+    /// "0.5.273" -> [0, 5, 273]. Nil for anything that is not dot-separated ASCII digits ("", "0.5.", "v0.5", "0.5.x").
+    static func components(_ version: String) -> [Int]? {
+        let trimmed = version.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return nil }
+        var parts: [Int] = []
+        for piece in trimmed.split(separator: ".", omittingEmptySubsequences: false) {
+            // An empty piece ("0..5", "0.5.") fails Int("").
+            guard piece.count <= 9, piece.unicodeScalars.allSatisfy({ $0.value >= 48 && $0.value <= 57 }),
+                  let value = Int(piece) else { return nil }
+            parts.append(value)
+        }
+        return parts
+    }
+
+    /// Numeric, component by component, missing components read as 0 ("0.5" == "0.5.0"). Nil when either is malformed.
+    static func compare(_ lhs: String, _ rhs: String) -> ComparisonResult? {
+        guard let a = components(lhs), let b = components(rhs) else { return nil }
+        for index in 0..<max(a.count, b.count) {
+            let x = index < a.count ? a[index] : 0
+            let y = index < b.count ? b[index] : 0
+            if x != y { return x < y ? .orderedAscending : .orderedDescending }
+        }
+        return .orderedSame
+    }
+
+    /// Build is authoritative when the appcast names one (a republished or rolled-back appcast can never advertise a
+    /// downgrade, and a rebuild of the same version is an update). Without a build, the version decides. A malformed
+    /// offer version is never newer.
+    static func isNewer(latestVersion: String?, latestBuild: Int?, currentVersion: String, currentBuild: Int) -> Bool {
+        guard let latestVersion, components(latestVersion) != nil else { return false }
+        if let latestBuild { return latestBuild > currentBuild }
+        return compare(latestVersion, currentVersion) == .orderedDescending
+    }
+}
+
+/// What the update banner shows and the menu-bar icon follows.
+enum AppUpdatePhase: Equatable, Sendable {
+    /// No update: the version card (checkmark, COS Control X, Check for updates) as before.
+    case none
+    /// The appcast offers a newer build: the banner with Update, and the gold glasses.
+    case ready
+    /// stage-app-update is downloading and checking the SHA-256; the helper's latest progress line, when it sent one.
+    case staging(String?)
+    /// apply-app-update was started; Control quits and the detached helper reopens it.
+    case applying
+    /// Staging or applying failed. The helper's own words, and Try again.
+    case failed(String)
+}
+
+struct AppUpdateFlow: Equatable, Sendable {
+    private(set) var phase: AppUpdatePhase = .none
+    /// The offer the banner names. Kept while an install runs, even if a later check changes the appcast.
+    private(set) var version: String?
+    private(set) var build: Int?
+
+    /// Every new check result. While an install runs it owns the banner, so an offer change waits. A failure stays on
+    /// screen while the offer stands, and goes when the appcast no longer offers an update.
+    mutating func offer(_ info: AppUpdateInfo, currentVersion: String, currentBuild: Int) {
+        let available = info.shouldSurface && AppUpdateVersion.isNewer(
+            latestVersion: info.latestVersion, latestBuild: info.latestBuild,
+            currentVersion: currentVersion, currentBuild: currentBuild)
+        switch phase {
+        case .staging, .applying:
+            return
+        case .none, .ready:
+            phase = available ? .ready : .none
+        case .failed:
+            if !available { phase = .none }
+        }
+        if available {
+            version = info.latestVersion
+            build = info.latestBuild
+        } else if phase == .none {
+            version = nil
+            build = nil
+        }
+    }
+
+    /// Update (from ready) or Try again (from failed). False in any other phase, so a second press never starts a
+    /// second install.
+    mutating func beginInstall() -> Bool {
+        switch phase {
+        case .ready, .failed:
+            phase = .staging(nil)
+            return true
+        default:
+            return false
+        }
+    }
+
+    mutating func progress(_ line: String) {
+        guard case .staging = phase else { return }
+        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty { phase = .staging(trimmed) }
+    }
+
+    mutating func staged() {
+        guard case .staging = phase else { return }
+        phase = .applying
+    }
+
+    mutating func fail(_ message: String) {
+        switch phase {
+        case .staging, .applying:
+            let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines)
+            phase = .failed(trimmed.isEmpty ? "The update did not install." : trimmed)
+        default:
+            return
+        }
+    }
+
+    var showsBanner: Bool { phase != .none }
+    var installing: Bool {
+        switch phase {
+        case .staging, .applying: return true
+        default: return false
+        }
+    }
+
+    /// "Version 0.5.274 (build 330)"; the build only when the appcast names one.
+    var versionLine: String {
+        guard let version else { return "" }
+        return build.map { "Version \(version) (build \($0))" } ?? "Version \(version)"
+    }
+}
+
+/// When the appcast is read. The helper's own fetch is bounded (6 s request, 8 s wait); the app bounds the whole helper
+/// run as well, so a wedged helper never holds the in-flight slot. Only one check runs at a time: a trigger that
+/// arrives during a check is dropped (launch, periodic, panel open) or waits for it (Check for updates).
+struct AppUpdateCheckSchedule: Equatable, Sendable {
+    enum Trigger: String, Sendable {
+        case launch, periodic, panelOpen, manual
+    }
+
+    static let periodicInterval: TimeInterval = 6 * 60 * 60
+    static let panelOpenStaleAfter: TimeInterval = 15 * 60
+    static let helperTimeout: TimeInterval = 20
+    /// The periodic loop wakes at least this often, so a Mac that slept through the 6-hour mark checks soon after it
+    /// wakes rather than a full interval later.
+    static let maximumNap: TimeInterval = 15 * 60
+
+    private(set) var lastStarted: Date?
+    private(set) var inFlight = false
+
+    func shouldStart(_ trigger: Trigger, now: Date) -> Bool {
+        guard !inFlight else { return false }
+        guard let lastStarted else { return true }
+        let age = now.timeIntervalSince(lastStarted)
+        switch trigger {
+        case .launch, .manual: return true
+        case .periodic: return age >= Self.periodicInterval
+        case .panelOpen: return age >= Self.panelOpenStaleAfter
+        }
+    }
+
+    mutating func begin(_ trigger: Trigger, now: Date) -> Bool {
+        guard shouldStart(trigger, now: now) else { return false }
+        inFlight = true
+        lastStarted = now
+        return true
+    }
+
+    mutating func finish() { inFlight = false }
+
+    /// How long the periodic loop sleeps before it asks again: until 6 hours after the last check of any kind, at most
+    /// `maximumNap`, never less than a second.
+    func nextNap(now: Date) -> TimeInterval {
+        guard let lastStarted else { return 1 }
+        let due = Self.periodicInterval - now.timeIntervalSince(lastStarted)
+        return min(Self.maximumNap, max(1, due))
+    }
+}
+
+/// The status-item glyph. The eyeglasses / eyeglasses.slash name stays at the call site so running state shows with
+/// the panel closed.
+///
+/// `.normal` is a template image, so the menu bar tints it (black, white, or the highlight) exactly as before.
+/// `.updateReady` is NOT a template: a menu bar ignores color in a template image, so this one is drawn in COS gold
+/// with a dot above-right of the right lens, in a canvas `dotRoom` wider so the dot never touches the glyph (no knockout:
+/// 2026-10-09 QA, a ring cut the lens into a broken "C"). The gold is resolved
+/// when the menu bar draws the image, against the menu bar's own appearance: #89662d on a light bar, #c9a86e on a dark
+/// one (COSInk.accentNS; Tests/AppUpdateBadgeRender.swift compares the two). The light value alone is above 4:1 against
+/// white and black, so the icon stays legible even where the appearance is resolved differently. Drawn 1:1 at the
+/// symbol's own size: filling a square is what squashed the eyeglasses in 0.5.90.
+enum MenuBarIcon {
+    enum Variant: String, Sendable {
+        case normal, updateReady
+    }
+
+    static let pointSize: CGFloat = 16
+    static let dotDiameter: CGFloat = 4.5
+    /// Extra width on the right of the ready image, so the dot sits outside the glyph's ink. The glyph is still drawn
+    /// 1:1 at its own size (never stretched: the 0.5.90 squash).
+    static let dotRoom: CGFloat = 2
+
+    static let updateTint = NSColor(name: nil) { appearance in
+        appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            ? NSColor(red: 0.788, green: 0.659, blue: 0.431, alpha: 1)
+            : NSColor(red: 0.537, green: 0.400, blue: 0.176, alpha: 1)
+    }
+
+    /// Any phase but `.none` means an update is waiting (an install that failed still has its update waiting). A failed
+    /// CHECK never gets here: it leaves the phase at none, so it never tints the icon.
+    static func variant(for phase: AppUpdatePhase) -> Variant {
+        phase == .none ? .normal : .updateReady
+    }
+
+    static func accessibilityLabel(_ variant: Variant) -> String {
+        variant == .updateReady ? "COS Control, update available" : "COS Control"
+    }
+
+    /// The label re-renders on every status refresh; the four images (running or not, ready or not) are made once.
+    @MainActor private static var made: [String: NSImage] = [:]
+    @MainActor static func image(systemName: String, variant: Variant) -> NSImage {
+        let key = systemName + "|" + variant.rawValue
+        if let image = made[key] { return image }
+        let image = compose(systemName: systemName, variant: variant)
+        made[key] = image
+        return image
+    }
+
+    static func compose(systemName: String, variant: Variant) -> NSImage {
         let config = NSImage.SymbolConfiguration(pointSize: pointSize, weight: .regular)
         let base = (NSImage(systemSymbolName: systemName, accessibilityDescription: nil)?
             .withSymbolConfiguration(config)) ?? NSImage(size: NSSize(width: pointSize * 1.6, height: pointSize * 0.7))
@@ -3896,19 +4123,26 @@ enum MenuBarIcon {
             empty.isTemplate = true
             return empty
         }
-        // Draw 1:1 at the symbol's own size. Filling a square is what squashed
-        // eyeglasses in 0.5.90.
-        let pip: CGFloat = 5
-        let composed = NSImage(size: glyph, flipped: false) { rect in
+        let ready = variant == .updateReady
+        let canvas = ready ? NSSize(width: glyph.width + dotRoom, height: glyph.height) : glyph
+        let composed = NSImage(size: canvas, flipped: false) { rect in
             base.draw(in: NSRect(origin: .zero, size: glyph))
-            if updateAvailable {
-                let pipRect = NSRect(x: rect.maxX - pip, y: rect.maxY - pip, width: pip, height: pip)
-                NSColor.black.setFill()
-                NSBezierPath(ovalIn: pipRect).fill()
-            }
+            guard ready, let context = NSGraphicsContext.current else { return true }
+            context.saveGraphicsState()
+            // The glyph in gold: keep its alpha, replace its color.
+            context.compositingOperation = .sourceAtop
+            updateTint.setFill()
+            rect.fill()
+            // The dot in the canvas's top-right corner, clear of the lens (Tests/AppUpdateBadgeChecks.swift measures it).
+            let dot = NSRect(x: rect.maxX - dotDiameter, y: rect.maxY - dotDiameter, width: dotDiameter, height: dotDiameter)
+            context.compositingOperation = .sourceOver
+            updateTint.setFill()
+            NSBezierPath(ovalIn: dot).fill()
+            context.restoreGraphicsState()
             return true
         }
-        composed.isTemplate = true
+        composed.isTemplate = !ready
+        composed.accessibilityDescription = accessibilityLabel(variant)
         return composed
     }
 }
