@@ -107,11 +107,15 @@ import SwiftUI
         let running = ControllerModel.currentBuild, version = ControllerModel.currentVersion
         let check = dir.appendingPathComponent("check.json")
         write(#"{"ok":true,"message":"COS Control is up to date","details":{"updateAvailable":false,"reason":"upToDate","latestVersion":"\#(version)","latestBuild":\#(running),"whatsNew":{"summary":"This build's words.","sections":[{"title":"Added","items":["One"]}]}}}"#, check)
-        func model(seen: Int?) -> (ControllerModel, Counter) {
+        let record = dir.appendingPathComponent("success.json")
+        func model(seen: Int?, updated: Int? = nil) -> (ControllerModel, Counter) {
             let m = ControllerModel(startBackgroundWork: false, helper: HelperClient(executableOverride: helper))
             let c = Counter()
             m.showWhatsNew = { c.value += 1 }
             m.whatsNewSeen = WhatsNewSeenStore(defaults: nil, initial: seen)
+            try? FileManager.default.removeItem(at: record)
+            if let updated { write(#"{"version":"x","build":\#(updated),"appliedAt":"2026-10-09T20:00:00Z"}"#, record) }
+            m.updateSuccessRecord = record
             m.beginPostUpdateWhatsNew()
             return (m, c)
         }
@@ -149,6 +153,18 @@ import SwiftUI
         if first.whatsNewSeen.lastSeenBuild != running { fail("after update first run", "a first run remembers the build at launch") }
         await first.runScheduledAppUpdateCheck(.launch)
         if firstOpened.value != 0 { fail("after update first run", "a first run showed What's New") }
+        // Updated from 0.5.274 (nothing remembered) by the updater: the success record names this build, so it shows once.
+        let (fromOld, fromOldOpened) = model(seen: nil, updated: running)
+        if fromOld.whatsNewSeen.lastSeenBuild != nil { fail("after update updater", "an update from 0.5.274 is not a first run") }
+        await fromOld.runScheduledAppUpdateCheck(.launch)
+        if fromOldOpened.value != 1 || fromOld.whatsNewSeen.lastSeenBuild != running { fail("after update updater", "shown once and remembered (\(fromOldOpened.value))") }
+        await fromOld.runScheduledAppUpdateCheck(.launch)
+        if fromOldOpened.value != 1 { fail("after update twice", "an update from 0.5.274 showed twice") }
+        // A fresh install that finds an old record of another build: a first run.
+        let (fresh, freshOpened) = model(seen: nil, updated: running - 1)
+        await fresh.runScheduledAppUpdateCheck(.launch)
+        if freshOpened.value != 0 || fresh.whatsNewSeen.lastSeenBuild != running { fail("after update updater", "a record of another build is a first run") }
+        try? FileManager.default.removeItem(at: record)
         // A check that did not reach the feed: waits for one that does.
         write(#"{"ok":true,"message":"Update check unavailable","details":{"updateAvailable":false,"reason":"unreachable"}}"#, check)
         let (offline, offlineOpened) = model(seen: running - 1)
@@ -156,7 +172,7 @@ import SwiftUI
         offline.considerPostUpdateWhatsNew()
         if offlineOpened.value != 0 { fail("after update show", "shown before any check reached the feed") }
         try? FileManager.default.removeItem(at: check)
-        print("PASS: What's New after an update: waits for a meeting, shows once with this build's words and Done, never twice, never on a first run, never before the feed answers")
+        print("PASS: What's New after an update: waits for a meeting, shows once with this build's words and Done, never twice, never on a first run, never before the feed answers; an update from 0.5.274 shows it via the updater's record")
     }
 
     // MARK: check

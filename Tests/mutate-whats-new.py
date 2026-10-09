@@ -64,7 +64,13 @@ MUTANTS = [
     ("helper: detach skips the stage proof", H, "        _ = try requireStagedUpdate(expectedBuild: expectedBuild)\n", "", "[apply needs a stage]", "helper"),
     ("helper: expected build not compared", H, "        if let expectedBuild, build != expectedBuild {", "        if let expectedBuild, build != expectedBuild, false {", "[apply expected build]", "helper"),
     # QA item 2: the after-update window.
-    ("first run shows", M, "        guard let lastSeen else { return .firstRun }", "        guard let lastSeen else { return .updated }", "[after update launch]", "models"),
+    ("first run shows", M, "        guard let lastSeen else { return installedByUpdater == running ? .updated : .firstRun }", "        guard let lastSeen else { return .updated }", "[after update", "models"),
+    # QA round 2: an update from 0.5.274 (nothing remembered) is recognised by the updater's success record.
+    ("updater record ignored", M, "        guard let lastSeen else { return installedByUpdater == running ? .updated : .firstRun }", "        guard let lastSeen else { return .firstRun }", "[after update updater]", "models"),
+    ("any updater record counts", M, "        guard let lastSeen else { return installedByUpdater == running ? .updated : .firstRun }", "        guard let lastSeen else { return installedByUpdater != nil ? .updated : .firstRun }", "[after update updater]", "models"),
+    ("model never reads the record", C, "        let updater = WhatsNewAfterUpdate.updaterBuild(try? Data(contentsOf: updateSuccessRecord))\n", "        let updater: Int? = nil\n", "[after update updater]", "wiring"),
+    ("swap reopens before Control quits", H, "            ])\n            waitForLiveToQuit(live)\n            if ProcessInfo.processInfo.environment[\"COS_CONTROL_TEST_HOME\"] == nil {\n                _ = try? execute(\"/usr/bin/open\", [live.path], timeout: 10)\n            }\n            throw error",
+     "            ])\n            if ProcessInfo.processInfo.environment[\"COS_CONTROL_TEST_HOME\"] == nil {\n                _ = try? execute(\"/usr/bin/open\", [live.path], timeout: 10)\n            }\n            throw error", "[swap waits]", "pins"),
     ("rollback shows", M, "        return lastSeen < running ? .updated : .seen", "        return lastSeen != running ? .updated : .seen", "[after update launch]", "models"),
     ("meeting ignored", M, "        launch == .updated && checkReached && !meetingActive", "        launch == .updated && checkReached", "[after update meeting]", "models"),
     ("stale bundled copy shown", M, "              object[\"version\"]?.string == version else { return nil }", "              object[\"version\"]?.string != nil else { return nil }", "[after update content]", "models"),
