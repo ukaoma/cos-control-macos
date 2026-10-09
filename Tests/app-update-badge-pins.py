@@ -51,7 +51,8 @@ pin("timeout: AppUpdateCheckSchedule.helperTimeout" in manual, "check timeout", 
 background = code(model[model.index("    func checkForAppUpdate() async {"):model.index("func runScheduledAppUpdateCheck")])
 pin("timeout: AppUpdateCheckSchedule.helperTimeout" in background, "check timeout", "the background check is bounded")
 label = code(app[app.index("} label: {"):app.index(".menuBarExtraStyle")])
-pin("MenuBarIcon.variant(for: model.appUpdateFlow.phase)" in label and "MenuBarIcon.image(systemName:" in label
-    and ".original" in label, "icon follows state", "the menu-bar label draws the variant of the flow, as itself when ready")
+ready = label.split("if variant == .updateReady {", 1)[-1].split("} else {", 1)[0]
+pin("MenuBarIcon.variant(for: model.appUpdateFlow.phase)" in label and "MenuBarIcon.image(systemName:" in ready
+    and ".original" in ready, "icon follows state", "the menu-bar label draws the variant of the flow, as itself when ready")
 pin("appUpdate.shouldSurface" not in label, "icon follows state", "the label reads the flow, not the raw check result")
 print("PASS: update-ready badge pins")
