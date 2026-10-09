@@ -366,6 +366,9 @@ import Foundation
         let buildOnly = AppUpdateInfo(["latestVersion": s("0.5.274"), "latestBuild": .number(328), "notes": s("x")])
         check(WhatsNewAfterUpdate.content(appcast: buildOnly, bundled: nil, version: "0.5.275", build: 328).summary == "COS Control 0.5.275 is installed.",
               "after update content", "the appcast entry must match the version as well as the build")
+        let rebuild = AppUpdateInfo(["latestVersion": s("0.5.275"), "latestBuild": .number(327), "whatsNew": wn])
+        check(WhatsNewAfterUpdate.content(appcast: rebuild, bundled: nil, version: "0.5.275", build: 328).summary == "COS Control 0.5.275 is installed.",
+              "after update content", "the same version but another build (a rebuild): not this build's words")
 
         let store = WhatsNewSeenStore(defaults: nil)
         check(store.lastSeenBuild == nil, "after update store", "memory store starts empty")

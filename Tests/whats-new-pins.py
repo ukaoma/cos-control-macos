@@ -63,7 +63,7 @@ window_view = code(between(views, "struct WhatsNewView: View {", "private struct
 pin("Button(title, action: onInstall)" in window_view and ".disabled(!footer.primaryEnabled)" in window_view, "footer buttons",
     "the primary button installs and disables while it cannot")
 pin("Button(footer.cancelTitle, action: onCancel)" in window_view and ".disabled(!footer.cancelEnabled)" in window_view, "footer buttons",
-    "Cancel closes and disables while an install runs")
+    "Cancel and Close follow the footer's enabled state")
 pin("let footer = presentation.footer" in window_view, "footer buttons", "the footer is the presentation's")
 pin("WhatsNewFooter.reassurance" in window_view and "WhatsNewFooter.closeNote" in window_view and "if footer.showsReassurance {" in window_view,
     "footer copy", "the line under the buttons, and the close note while installing")
