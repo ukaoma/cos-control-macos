@@ -102,7 +102,7 @@ MUTANTS = [
     ("helper logs progress", H, '        let turns = chunks.keys.sorted().filter { $0 > since }.compactMap { chunks[$0] }\n',
      '        let turns = chunks.keys.sorted().filter { $0 > since }.compactMap { chunks[$0] }\n        progress("read \\(turns.count)")\n', "stderr progress", "pins"),
     ("pure layer logs", P, "    static func displaySpeaker(_ raw: String) -> String {\n", "    static func displaySpeaker(_ raw: String) -> String {\n        print(raw)\n", "never logs", "pins"),
-    ("views log", AM, "    var hours = false\n    var body: some View {\n", "    var hours = false\n    var body: some View {\n        let _ = print(turn.text)\n", "never log", "pins"),
+    ("views log", AM, "    var hours = false\n    var body: some View {\n", "    var hours = false\n    var body: some View {\n        let _ = print(turn.text)\n", "sends live transcript data", "pins"),
     ("report reads live files", H, "        let doctor = doctorDetails(redacted: true)\n", "        let doctor = doctorDetails(redacted: true)\n        let live = try? Self.liveTranscriptList(dataDir: glassesDataDir())\n", "Copy Report", "pins"),
     ("status drops the live count", H, '            "liveTranscriptionSessions": maintenance?["liveTranscriptionSessions"] ?? NSNull(),\n', "", "live count", "pins"),
     ("poll before the setting", C, "    func pollLiveTranscriptOnce() async {\n        guard liveTranscriptEnabled else { return }\n", "    func pollLiveTranscriptOnce() async {\n", "first line refuses", "pins"),

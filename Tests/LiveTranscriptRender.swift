@@ -261,9 +261,9 @@ import SwiftUI
                "\(String(describing: selection))")
         expect(selection?.returnWorkID == nil && selection?.returnToWork == false && selection?.returnSpeakerSessionID == nil
                && selection?.workLoaded == false, "the hand-off clears the way back to Work and Speakers")
-        expect(!on.liveTranscriptRouteActive && on.openLibraryRow?.recordId == "merged" && on.liveTranscriptFeeds[sid] == nil
-               && on.liveTranscriptHandoff == nil, "the saved meeting opens in place of the live one")
-        expect(on.acceptLiveTranscriptHandoff() == nil, "a hand-off is taken once")
+        expect(!on.liveTranscriptRouteActive && on.openLibraryRow?.recordId == "merged" && on.liveTranscriptFeeds[sid] == nil,
+               "the saved meeting opens in place of the live one")
+        expect(on.liveTranscriptHandoff == nil && on.acceptLiveTranscriptHandoff() == nil, "a hand-off is taken once")
 
         // ── Recording ended without saving, and the 3-minute deadline (clocks set back rather than waited out).
         stand.write("live-transcript-status.json", #"{"ok":true,"message":"x","details":{"sessionId":"meeting_other_live_one","state":"closed"}}"#)
@@ -356,7 +356,8 @@ import SwiftUI
         shown.liveTranscriptViewer("meetings", visible: true)
         await until("the live read") { shown.liveTranscriptFeeds[sid]?.turns.isEmpty == false }
         shown.setLiveTranscriptWindowOnScreen(false)
-        await until("the poll to stop off screen") { !shown.liveTranscriptPollRunning }
+        await sleep(2.0)
+        expect(!shown.liveTranscriptPollRunning, "the poll stops off screen (N4)")
         let offScreen = stand.calls("live-transcript")
         await sleep(2.0)
         expect(stand.calls("live-transcript") == offScreen, "a minimized or covered window spawns nothing (N4)")

@@ -116,7 +116,9 @@ need("feed.phase == .finalizing" in pending and "feed.seenLive && !feed.ended" i
 need("visible: !liveTranscriptViewers.isEmpty && liveTranscriptWindowOnScreen," in model_live, "the poll needs the Activity window on screen (N4)")
 need("window.isVisible && !window.isMiniaturized && window.occlusionState.contains(.visible)" in window
      and "NSWindow.didChangeOcclusionStateNotification, NSWindow.didMiniaturizeNotification, NSWindow.didDeminiaturizeNotification" in window
-     and "model?.setLiveTranscriptWindowOnScreen(Self.onScreen(window))" in window, "the presenter reports occlusion and miniaturize to the model (N4)")
+     and "model?.setLiveTranscriptWindowOnScreen(Self.onScreen(window))" in window
+     and "NotificationCenter.default.addObserver(self, selector: #selector(liveTranscriptVisibilityChanged(_:)), name: name, object: window)" in body(window, "func show(model: ControllerModel"),
+     "the presenter reports occlusion and miniaturize to the model (N4)")
 # QA W1: the view only copies the model's hand-off selection.
 handoff_view = window[window.index(".onChange(of: model.liveTranscriptHandoff?.id) { _, id in"):]
 handoff_view = handoff_view[:handoff_view.index("\n        }\n") + 10]
@@ -141,7 +143,7 @@ for rel in sorted([p.relative_to(root).as_posix() for p in (root / "Sources").gl
             sinks_checked += 1
             need_ok = not TAINT.search(line)
             if not need_ok:
-                need(False, "%s:%d sends live transcript data to a log, stderr or an error: %s" % (rel, number, line.strip()[:160]))
+                need(False, "%s:%d sends live transcript data to a log, stderr or the alert (%s)" % (rel, number, line.strip()[:160]))
 need(sinks_checked > 50, "the boundary scan saw the sinks (%d)" % sinks_checked)
 
 # ── The pure layer prints nothing.
