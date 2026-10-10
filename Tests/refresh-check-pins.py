@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """2026-10-09 (Miles, after the 0.5.276 gold banner): the version card is gone; the panel header's refresh button
-refreshes AND checks for updates, the subtitle line answers, and a small version stamp sits under the lockup. Each
+refreshes AND checks for updates, the subtitle line answers, and a small version stamp sits after the title. Each
 failure names its behaviour as "pin failed [<behaviour>]" for Tests/mutate-refresh-check.py.
 
     python3 Tests/refresh-check-pins.py <root>
@@ -71,7 +71,7 @@ settings = main_panel.split("if hostedInActivity {", 1)[1].split("} else { heade
 pin("refreshAndCheckButton" in settings and "updateStatusLine(idle:" in settings, "settings entry",
     "Settings in Activity keeps the refresh-and-check button and its status line")
 
-# The version stamp: under the lockup (variant A), live currentVersion, no literal, mono 9, labelled.
+# The version stamp: inline after the title, live currentVersion, no literal, mono 9, labelled.
 stamp = code(body(views, "    private var versionStamp: some View {", "\n    }\n"))
 pin('Text("v\\(ControllerModel.currentVersion)")' in stamp, "stamp live version", "the stamp reads ControllerModel.currentVersion")
 pin(re.search(r'\d+\.\d+\.\d+', stamp) is None, "stamp live version", "no hard-coded version literal in the stamp")
@@ -80,13 +80,13 @@ pin('.help("COS Control \\(ControllerModel.currentVersion)")' in stamp, "stamp l
 pin('.accessibilityLabel("COS Control version \\(ControllerModel.currentVersion)")' in stamp, "stamp label", "accessibility label")
 pin("background(" not in stamp and "overlay(" not in stamp and "Capsule" not in stamp and "stroke" not in stamp,
     "stamp type", "no chip, pill, border or background")
-lockup = header.split("VStack(alignment: .leading, spacing: 2) {", 1)[1]
-pin("COSLockupView(height: 17)" in lockup and "if !versionStampInline { versionStamp }" in lockup
-    and lockup.index("COSLockupView(height: 17)") < lockup.index("if !versionStampInline { versionStamp }"), "stamp placement",
-    "variant A: the stamp sits under the lockup")
-pin("var versionStampInline = false" in views, "stamp placement", "variant B is render-only and off by default")
-pin("versionStampInline: true" not in "".join(p.read_text(encoding="utf-8") for p in (root / "Sources").glob("*.swift")),
-    "stamp placement", "nothing in the app turns variant B on")
+# Miles 2026-10-09 22:55 ("Lets go with B"): inline after the title, on its baseline. One layout, no flag.
+title = re.search(r'HStack\(alignment: \.firstTextBaseline, spacing: 6\) \{\s*Text\("Control"\)\.font\(COSType\.display\(18, weight: \.semibold\)\)\s*versionStamp\s*\}', header)
+pin(title is not None, "stamp placement", "the stamp sits inline after the Control title, on its first-text baseline")
+pin(header.count("versionStamp") == 1, "stamp placement", "the header renders the stamp exactly once")
+pin("versionStampInline" not in views, "stamp placement", "no second layout and no flag")
+lockup_at = header.index("COSLockupView(height: 17)")
+pin("VStack" not in header[:lockup_at], "stamp placement", "the lockup stands alone, nothing stacked under it")
 
 # The footer still names the Control version.
 footer = code(body(views, "    private var footerLabel: String {", "\n    }\n"))

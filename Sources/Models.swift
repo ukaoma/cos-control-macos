@@ -4434,7 +4434,7 @@ enum ManualUpdateCheckOutcome: Equatable, Sendable {
 /// 2026-10-09 (Miles, after the 0.5.276 gold banner): the standing version card is gone. The panel header's refresh
 /// button also checks for updates and answers in the header's subtitle line, under "Control". An update found needs no
 /// words there: the gold banner and What's New answer it. A result holds for a few seconds, then the line goes back to
-/// what it always says. The version itself is the header's stamp under the lockup, so "Up to date" stands alone.
+/// what it always says. The version itself is the header's stamp after the title, so "Up to date" stands alone.
 enum HeaderUpdateStatus: Equatable, Sendable {
     case idle, checking, upToDate, failed
 

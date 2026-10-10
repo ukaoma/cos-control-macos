@@ -1,6 +1,6 @@
 #!/bin/zsh
 # 2026-10-09 (Miles, after the 0.5.276 gold banner): the version card is gone; the header's refresh button refreshes AND
-# checks for updates, the subtitle answers, and a version stamp sits under the lockup. Every compile goes through
+# checks for updates, the subtitle answers, and a version stamp sits after the title. Every compile goes through
 # Tests/compile-guard.sh, one at a time.
 #   run-refresh-check.sh                     the gate, in order: the pins (Python), the subtitle state machine against
 #                                            Models.swift alone (Tests/RefreshCheckChecks.swift), then the model with

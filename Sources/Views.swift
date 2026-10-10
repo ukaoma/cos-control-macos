@@ -506,9 +506,6 @@ struct ControlPanel: View {
     @State private var pendingOpenPetsRow: OpenPetsCatalogRow?
     @State private var pendingBundledCharacter: BundledPetCharacter?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    /// Render-only (Tests/RefreshCheckRender.swift): the version stamp inline after "Control" instead of under the
-    /// lockup, for a side-by-side comparison. Not a setting; the app never sets it.
-    var versionStampInline = false
 
     /// The menu-bar panel stays the server console. Browsing activity lives in a
     /// real, persistent AppKit window: unlike a sheet, that
@@ -1133,20 +1130,16 @@ struct ControlPanel: View {
 
     private var header: some View {
         HStack(spacing: 10) {
-            // 2026-10-09 (Miles): the version, small, under the lockup, so it is known without scrolling to the
-            // footer. Lockup and stamp together (about 29 pt) stay shorter than the two-line title block beside them,
-            // so the header does not grow.
+            COSLockupView(height: 17)
+                // Adaptive. This is the menu-bar panel header, not the brand tile, so the
+                // fixed dark rendered black on the dark panel.
+                .foregroundStyle(.primary)
             VStack(alignment: .leading, spacing: 2) {
-                COSLockupView(height: 17)
-                    // Adaptive. This is the menu-bar panel header, not the brand tile, so the
-                    // fixed dark rendered black on the dark panel.
-                    .foregroundStyle(.primary)
-                if !versionStampInline { versionStamp }
-            }
-            VStack(alignment: .leading, spacing: 2) {
+                // 2026-10-09 (Miles, 22:55, "Lets go with B"): the version, small, inline after the title on its
+                // baseline, so it is known without scrolling to the footer. The title line keeps its height.
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Text("Control").font(COSType.display(18, weight: .semibold))
-                    if versionStampInline { versionStamp }
+                    versionStamp
                 }
                 updateStatusLine(idle: "Your local glasses server").lineLimit(1)
             }

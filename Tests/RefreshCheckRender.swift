@@ -10,8 +10,8 @@ import SwiftUI
 ///                                 running never hangs the button, and the button runs both the status refresh and the
 ///                                 check.
 ///   render <dir> <fake helper>    PNGs, light and dark, of the real menu-bar panel (ControlPanel): idle, checking, up to
-///                                 date, failed, update available; variant A (the shipped stamp, under the lockup) and
-///                                 variant B (render-only: inline after "Control"); and the whole idle panel to its footer.
+///                                 date, failed, update available (the version stamp inline after "Control"), and the
+///                                 whole idle panel to its footer.
 ///
 /// The stand-in helper answers everything; nothing reaches the real helper, the appcast or the server. The binary runs
 /// with a scratch home. Windows are never ordered in, the process can never become active, and no event is sent.
@@ -197,8 +197,6 @@ import SwiftUI
         for appearance in [NSAppearance.Name.aqua, .darkAqua] {
             let idle = panelModel(helper)
             try panel(idle, appearance: appearance, name: "idle", out: out)
-            try panel(idle, appearance: appearance, name: "variant-A-idle", out: out)
-            try panel(idle, appearance: appearance, name: "variant-B-idle", out: out, inline: true)
             try panel(idle, appearance: appearance, name: "idle-full-panel", out: out, height: nil)
 
             let checking = panelModel(helper)
@@ -226,9 +224,8 @@ import SwiftUI
     }
 
     /// The panel's scroll document, top `height` pt (nil: all of it, to the footer), on the panel's own fill.
-    static func panel(_ model: ControllerModel, appearance: NSAppearance.Name, name: String, out: URL, inline: Bool = false,
-                      height: CGFloat? = 300) throws {
-        let host = NSHostingView(rootView: ControlPanel(model: model, openActivity: { _ in }, versionStampInline: inline))
+    static func panel(_ model: ControllerModel, appearance: NSAppearance.Name, name: String, out: URL, height: CGFloat? = 300) throws {
+        let host = NSHostingView(rootView: ControlPanel(model: model, openActivity: { _ in }))
         let window = NSWindow(contentRect: NSRect(x: -20000, y: -20000, width: 390, height: 640), styleMask: [.borderless], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.appearance = NSAppearance(named: appearance); host.appearance = NSAppearance(named: appearance)
