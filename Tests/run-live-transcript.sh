@@ -86,7 +86,7 @@ if [[ "$LANE" == "all" || "$LANE" == "models" ]]; then
   print -r -- "$OUT"
   # A floor on the count: a check that silently stops running must fail this.
   COUNT="${${OUT##*checks: }%% passed*}"
-  (( COUNT >= 75 )) || { print -u2 "live transcript checks ran only $COUNT (expected at least 75)"; exit 1; }
+  (( COUNT >= 76 )) || { print -u2 "live transcript checks ran only $COUNT (expected at least 76)"; exit 1; }
 fi
 
 if [[ "$LANE" == "all" || "$LANE" == "helper" ]]; then

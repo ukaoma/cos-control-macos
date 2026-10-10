@@ -448,8 +448,8 @@ import SwiftUI
         let thousand = make(long, last: now.addingTimeInterval(-3), settled: 1499)
         let quiet = make(short, last: now.addingTimeInterval(-4 * 60 - 10), settled: 5)
         let finalizing = make(short, last: now.addingTimeInterval(-20), settled: 5, ended: true)
-        // Ended five minutes ago: the duration reads 7 min, not 12 (QA W2).
-        finalizing.applyLiveTranscript(reply(endedAnswer), now: now.addingTimeInterval(-5 * 60))
+        // Ended two minutes ago (inside the 3-minute deadline): the duration reads 10 min, not 12 (QA W2).
+        finalizing.applyLiveTranscript(reply(endedAnswer), now: now.addingTimeInterval(-2 * 60))
 
         for appearance in [NSAppearance.Name.aqua, .darkAqua] {
             try render(LiveTranscriptPane(model: live), width: 900, height: 560, appearance: appearance, name: "pane-live-short", out: out)

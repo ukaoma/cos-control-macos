@@ -76,6 +76,13 @@ import Foundation
         split.apply(read([chunk(7, "Miles", "seven")]), now: now)
         check(split.turns.map(\.id) == [splitID, split.turns[1].id, secondHalf] && split.turns[2].text == "six seven",
               "the second half keeps its new id as it grows")
+        // An inherited id can take a later run's own first index: that run gets -(index + 1), so ids stay unique.
+        var taken = LiveTranscriptFeed(sessionId: "s1")
+        taken.apply(read([chunk(3, "Miles", "three"), chunk(4, "Miles", "four")]), now: now)
+        taken.apply(read([chunk(2, "Miles", "two")]), now: now)
+        taken.apply(read([chunk(3, "Jordan", "three")]), now: now)
+        check(taken.turns.map(\.id) == [3, -4, 4] && taken.turns.map(\.speaker) == ["Miles", "Jordan", "Miles"],
+              "a run whose first index is already an id takes -(index + 1)")
         var merged = LiveTranscriptFeed(sessionId: "s1")
         merged.apply(read([chunk(0, "Miles", "a"), chunk(1, "Jordan", "b"), chunk(2, "Miles", "c")]), now: now)
         merged.apply(read([chunk(1, "Miles", "b again")]), now: now)
