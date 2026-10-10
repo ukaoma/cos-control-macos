@@ -140,7 +140,44 @@ final class ControllerModel: ObservableObject {
     /// while npm latest moves on without a Control rebuild.
     static let managedServerInstallVersion = "latest"
 
-    @Published var status = ServerStatus()
+    @Published var status = ServerStatus() {
+        didSet { recordingStatusChanged?(recordingCount) }
+    }
+    /// Wired only by the app; headless models never touch the Dock.
+    var recordingStatusChanged: ((Int) -> Void)?
+    var recordingCount: Int { status.running ? max(0, status.liveTranscriptionSessions ?? status.activeTranscriptionSessions ?? 0) : 0 }
+    var recordingLabel: String { recordingCount == 1 ? "Meeting recording" : "\(recordingCount) meetings recording" }
+    var recordingDockBadge: String? { recordingCount > 0 ? (recordingCount == 1 ? "REC" : "REC \(recordingCount)") : nil }
+    var activityOpenRecording = false
+    private var recordingShortcutDeadline: Date?
+
+    /// A user gesture only. Open Meetings before asking its visible poll to select a fresh live session.
+    func showRecordingTranscript() {
+        guard recordingCount > 0, liveTranscriptEnabled else { return }
+        activityOpenRecording = true
+        openActivity?(.meetings)
+    }
+
+    func beginRecordingTranscriptShortcut() {
+        guard recordingCount > 0, liveTranscriptEnabled else { return }
+        closeLiveTranscript()
+        recordingShortcutDeadline = Date().addingTimeInterval(30)
+        liveTranscriptImmediate = true
+        liveTranscriptKick()
+    }
+
+    private func resolveRecordingTranscriptShortcut(now: Date) {
+        guard let deadline = recordingShortcutDeadline else { return }
+        guard now < deadline, recordingCount > 0, liveTranscriptEnabled else {
+            recordingShortcutDeadline = nil
+            return
+        }
+        let live = liveTranscriptRows.filter { $0.phase == .live }
+        guard !live.isEmpty else { return }
+        recordingShortcutDeadline = nil
+        // Multiple recordings stay in the chooser; never guess which conversation the user wants.
+        if live.count == 1, recordingCount == 1 { openLiveTranscript(live[0].sessionId) }
+    }
     @Published var doctorChecks: [DoctorCheck] = []
     @Published var busy = false
     @Published var operationProgress: String?
@@ -3128,6 +3165,7 @@ final class ControllerModel: ObservableObject {
         liveTranscriptTask = nil
         liveTranscriptLoopID = nil
         liveTranscriptDataDir = nil
+        recordingShortcutDeadline = nil
         liveTranscriptFeeds = [:]
         liveTranscriptFiles = []
         liveTranscriptOpenID = nil
@@ -3155,6 +3193,7 @@ final class ControllerModel: ObservableObject {
     }
 
     func closeLiveTranscript() {
+        recordingShortcutDeadline = nil
         liveTranscriptOpenID = nil
         liveTranscriptCopyNote = nil
     }
@@ -3240,6 +3279,7 @@ final class ControllerModel: ObservableObject {
         }
         if feeds != liveTranscriptFeeds { liveTranscriptFeeds = feeds }
         if reply.sessions != liveTranscriptFiles { liveTranscriptFiles = reply.sessions }
+        resolveRecordingTranscriptShortcut(now: now)
     }
 
     /// For each session whose file is gone and that still finalizes: ask the server (every few seconds), and when it

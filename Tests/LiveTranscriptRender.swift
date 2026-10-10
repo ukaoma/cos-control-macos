@@ -400,6 +400,60 @@ import SwiftUI
         await sleep(2.0)
         expect(!on.liveTranscriptPollRunning && on.liveTranscriptFeeds.isEmpty && on.liveTranscriptRows.isEmpty
                && stand.calls("live-transcript") <= atOff + 1, "turning the setting off stops the poll and forgets the text")
+        // Recording indicators use status even with the transcript preference off and every window hidden.
+        let (recording, recordingDefaults) = model(stand, enabled: false)
+        var badges: [String?] = []
+        recording.recordingStatusChanged = { [weak recording] _ in badges.append(recording?.recordingDockBadge) }
+        recording.status = liveStatus(1)
+        expect(recording.recordingCount == 1 && badges.last! == "REC", "recording status without transcript opt-in")
+        recording.status = liveStatus(2)
+        expect(recording.recordingDockBadge == "REC 2", "multiple recording badge")
+        recording.status = liveStatus(0, active: 3, stale: [sid])
+        expect(recording.recordingDockBadge == nil, "stale sessions are not recording")
+        recording.status = liveStatus(1)
+        recording.status.running = false
+        expect(recording.recordingCount == 0 && badges.last! == nil, "server failure clears recording badge")
+        recording.status = liveStatus(1)
+        var opened: ActivitySection?
+        recording.openActivity = { opened = $0 }
+        recording.showRecordingTranscript()
+        expect(opened == nil, "disabled transcript shortcut respects preference")
+        recordingDefaults.set(true, forKey: LiveTranscript.enabledKey)
+        let beforeShortcut = stand.calls("live-transcript")
+        recording.showRecordingTranscript()
+        expect(opened == .meetings && recording.activityOpenRecording, "shortcut routes to Meetings")
+        recording.beginRecordingTranscriptShortcut()
+        expect(stand.calls("live-transcript") == beforeShortcut && !recording.liveTranscriptPollRunning,
+               "shortcut waits for a visible Meetings viewer before reading text")
+        let fresh = reply(liveAnswer(chunks: firstChunks, settled: 5, stamp: "100.1.4096"))
+        recording.applyLiveTranscript(fresh, now: Date())
+        expect(recording.liveTranscriptOpenID == sid, "shortcut opens the freshly listed active transcript")
+        recording.closeLiveTranscript()
+        recording.beginRecordingTranscriptShortcut()
+        recording.closeLiveTranscript()
+        recording.applyLiveTranscript(fresh, now: Date())
+        expect(recording.liveTranscriptOpenID == nil, "navigation cancels pending shortcut")
+        recording.beginRecordingTranscriptShortcut()
+        recording.applyLiveTranscript(fresh, now: Date().addingTimeInterval(31))
+        expect(recording.liveTranscriptOpenID == nil, "pending shortcut expires")
+        recording.status = liveStatus(2)
+        recording.beginRecordingTranscriptShortcut()
+        recording.applyLiveTranscript(fresh, now: Date())
+        expect(recording.liveTranscriptOpenID == nil, "multiple recordings stay in the chooser")
+        recording.status = liveStatus(1)
+        COSAppDelegate.recordingAvailable = { true }
+        let delegate = COSAppDelegate()
+        let dockMenu = COSAppDelegate.makeDockMenu(target: delegate)
+        expect(dockMenu.items.first?.title == "View live transcript", "Dock menu has a direct recording action")
+        var fired = false
+        COSAppDelegate.onOpenRecording = { fired = true }
+        delegate.dockOpenRecording()
+        expect(fired, "Dock action invokes recording shortcut")
+        COSAppDelegate.recordingAvailable = { false }
+        expect(COSAppDelegate.makeDockMenu(target: delegate).items.map(\.title) == COSAppDelegate.dockMenuTitles,
+               "idle Dock menu retains its existing actions")
+        COSAppDelegate.recordingAvailable = nil
+        COSAppDelegate.onOpenRecording = nil
         print("live transcript wiring checks: \(passed) passed")
         print("PASS: live transcript wiring checks complete")
         exit(0)

@@ -40,8 +40,15 @@ struct COSControlApp: App {
         COSAppDelegate.onOpenActivity = { activityWindow.show(model: model, section: nil) }
         COSAppDelegate.onSetupGuide = { setupWindow.show(model: model) }
         COSAppDelegate.onSettings = { model.showSettings?() }
+        COSAppDelegate.recordingAvailable = { model.recordingCount > 0 && model.liveTranscriptEnabled }
+        COSAppDelegate.onOpenRecording = { model.showRecordingTranscript() }
+        model.recordingStatusChanged = { [weak model] _ in NSApp.dockTile.badgeLabel = model?.recordingDockBadge }
         // A Dock click opens Welcome while COS is not set up, else Activity.
         COSAppDelegate.onReopen = {
+            if model.recordingCount > 0, model.liveTranscriptEnabled {
+                model.showRecordingTranscript()
+                return
+            }
             switch DockPresence.reopenTarget(needsFirstRun: model.status.needsFirstRun, activityAvailable: model.openActivity != nil,
                                              statusRead: model.statusReadOnce) {
             case .setup: setupWindow.show(model: model)
@@ -72,14 +79,12 @@ struct COSControlApp: App {
                 activityWindow.show(model: model, section: section)
             }
         } label: {
-            // 2026-10-09 (Miles, like Vorssant): gold glasses with a dot while an update is ready. A menu bar ignores
-            // color in a template image, so ONLY the ready icon is an NSImage that is not one (MenuBarIcon), drawn as
-            // itself. Otherwise the tray is the system eyeglasses glyph, exactly as since 0.5.91 (0.5.90's composed
-            // icon squashed the lenses). It follows appUpdateFlow, so a failed check never tints it.
-            let variant = MenuBarIcon.variant(for: model.appUpdateFlow.phase)
+            // Recording gets a red dot; a pending update keeps its gold glasses underneath it.
+            // Colored variants must be original images or the menu bar discards the dot's color.
+            let variant = MenuBarIcon.variant(for: model.appUpdateFlow.phase, recording: model.recordingCount > 0)
             Group {
-                if variant == .updateReady {
-                    Image(nsImage: MenuBarIcon.image(systemName: model.status.running ? "eyeglasses" : "eyeglasses.slash", variant: .updateReady))
+                if variant != .normal {
+                    Image(nsImage: MenuBarIcon.image(systemName: model.status.running ? "eyeglasses" : "eyeglasses.slash", variant: variant))
                         .renderingMode(.original)
                 } else {
                     Image(systemName: model.status.running ? "eyeglasses" : "eyeglasses.slash")
@@ -93,6 +98,11 @@ struct COSControlApp: App {
             // In the Dock, COS Control has a menu bar of its own: the setup guide lives in the app menu and Help.
             CommandGroup(after: .appInfo) {
                 Button("Setup guide…") { setupWindow.show(model: model) }
+            }
+            CommandMenu("Meetings") {
+                Button("View live transcript") { model.showRecordingTranscript() }
+                    .keyboardShortcut("l", modifiers: [.command, .shift])
+                    .disabled(model.recordingCount == 0 || !model.liveTranscriptEnabled)
             }
             CommandGroup(replacing: .appSettings) {
                 Button("Settings…") { model.showSettings?() }.keyboardShortcut(",")

@@ -23,6 +23,9 @@ final class COSAppDelegate: NSObject, NSApplicationDelegate {
     static var onOpenActivity: (@MainActor () -> Void)?
     static var onSetupGuide: (@MainActor () -> Void)?
     static var onSettings: (@MainActor () -> Void)?
+    static var recordingAvailable: (@MainActor () -> Bool)?
+    static var onOpenRecording: (@MainActor () -> Void)?
+    @objc func dockOpenRecording() { Self.onOpenRecording?() }
 
     /// Right-click on the Dock icon: Open Activity, Setup guide…, Settings….
     func applicationDockMenu(_ sender: NSApplication) -> NSMenu? { Self.makeDockMenu(target: self) }
@@ -1066,6 +1069,12 @@ extension COSAppDelegate {
 
     static func makeDockMenu(target: AnyObject) -> NSMenu {
         let menu = NSMenu()
+        if recordingAvailable?() == true {
+            let live = NSMenuItem(title: "View live transcript", action: #selector(COSAppDelegate.dockOpenRecording), keyEquivalent: "")
+            live.target = target
+            menu.addItem(live)
+            menu.addItem(.separator())
+        }
         let actions: [Selector] = [#selector(COSAppDelegate.dockOpenActivity), #selector(COSAppDelegate.dockSetupGuide), #selector(COSAppDelegate.dockSettings)]
         for (title, action) in zip(dockMenuTitles, actions) {
             let item = NSMenuItem(title: title, action: action, keyEquivalent: "")

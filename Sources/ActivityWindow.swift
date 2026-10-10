@@ -243,6 +243,7 @@ final class ActivityWindowPresenter: NSObject, ObservableObject, NSWindowDelegat
             model.activityOpenSection = section
         }
         if let window = windowController?.window {
+            if window.isMiniaturized { window.deminiaturize(nil) }
             window.makeKeyAndOrderFront(nil)
             model.setLiveTranscriptWindowOnScreen(true)
             NSApp.activate(ignoringOtherApps: true)
@@ -936,7 +937,10 @@ struct ActivityWindow: View {
         model.activityOpenSection = nil
         model.activityOpenSessionID = nil
         let staged = sessionID.flatMap { model.petSession(id: $0) }
+        let openRecording = model.activityOpenRecording
+        model.activityOpenRecording = false
         if let next { select(next) }
+        if openRecording, section == .meetings { model.beginRecordingTranscriptShortcut() }
         if let staged {
             selectedSessionID = staged.id
             model.openClaudeSession(staged)
@@ -1258,6 +1262,7 @@ struct ActivityWindow: View {
     }
 
     private func clearDetail() {
+        model.closeLiveTranscript()
         // A send being handed over keeps its overlay; it shows the result when you come back to Work.
         if !workWorkspaceState.startSending { workWorkspaceState.startItemID = nil }; workWorkspaceState.focusOverride = false
         guard !isolatedWorkPreview else { return }

@@ -178,6 +178,15 @@ import Foundation
     // MARK: icon
 
     static func icon() {
+        check(MenuBarIcon.variant(for: .none, recording: true) == .recording, "recording indicator", "recording without update")
+        check(MenuBarIcon.variant(for: .ready, recording: true) == .recordingAndUpdate, "recording indicator", "recording and update coexist")
+        check(MenuBarIcon.accessibilityLabel(.recordingAndUpdate).contains("meeting recording"), "recording accessibility")
+        for variant in [MenuBarIcon.Variant.recording, .recordingAndUpdate] {
+            let image = MenuBarIcon.compose(systemName: "eyeglasses", variant: variant)
+            check(!image.isTemplate, "recording color preserved")
+            check(image.size == MenuBarIcon.compose(systemName: "eyeglasses", variant: .updateReady).size, "recording glyph is not stretched")
+        }
+
         check(MenuBarIcon.variant(for: .none) == .normal, "icon follows state", "none is the plain glasses")
         for phase in [AppUpdatePhase.ready, .staging(nil), .staging("x"), .applying, .failed("x")] {
             check(MenuBarIcon.variant(for: phase) == .updateReady, "icon follows state", "\(phase) is the gold glasses")

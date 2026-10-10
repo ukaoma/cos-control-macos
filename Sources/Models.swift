@@ -4565,7 +4565,7 @@ struct AppUpdateCheckSchedule: Equatable, Sendable {
 /// symbol's own size: filling a square is what squashed the eyeglasses in 0.5.90.
 enum MenuBarIcon {
     enum Variant: String, Sendable {
-        case normal, updateReady
+        case normal, updateReady, recording, recordingAndUpdate
     }
 
     static let pointSize: CGFloat = 16
@@ -4582,15 +4582,21 @@ enum MenuBarIcon {
 
     /// Any phase but `.none` means an update is waiting (an install that failed still has its update waiting). A failed
     /// CHECK never gets here: it leaves the phase at none, so it never tints the icon.
-    static func variant(for phase: AppUpdatePhase) -> Variant {
-        phase == .none ? .normal : .updateReady
+    static func variant(for phase: AppUpdatePhase, recording: Bool = false) -> Variant {
+        if recording { return phase == .none ? .recording : .recordingAndUpdate }
+        return phase == .none ? .normal : .updateReady
     }
 
     static func accessibilityLabel(_ variant: Variant) -> String {
-        variant == .updateReady ? "COS Control, update available" : "COS Control"
+        switch variant {
+        case .normal: "COS Control"
+        case .updateReady: "COS Control, update available"
+        case .recording: "COS Control, meeting recording"
+        case .recordingAndUpdate: "COS Control, meeting recording, update available"
+        }
     }
 
-    /// The label re-renders on every status refresh; the four images (running or not, ready or not) are made once.
+    /// The label re-renders on every status refresh; each image (server state, recording and update state) is made once.
     @MainActor private static var made: [String: NSImage] = [:]
     @MainActor static func image(systemName: String, variant: Variant) -> NSImage {
         let key = systemName + "|" + variant.rawValue
@@ -4610,20 +4616,21 @@ enum MenuBarIcon {
             empty.isTemplate = true
             return empty
         }
-        let ready = variant == .updateReady
+        let ready = variant != .normal
+        let recording = variant == .recording || variant == .recordingAndUpdate
         let canvas = ready ? NSSize(width: glyph.width + dotRoom, height: glyph.height) : glyph
         let composed = NSImage(size: canvas, flipped: false) { rect in
             base.draw(in: NSRect(origin: .zero, size: glyph))
             guard ready, let context = NSGraphicsContext.current else { return true }
             context.saveGraphicsState()
-            // The glyph in gold: keep its alpha, replace its color.
+            // Keep the glyph alpha: gold for an update, appearance-aware ink for recording alone.
             context.compositingOperation = .sourceAtop
-            updateTint.setFill()
+            (variant == .recording ? NSColor.labelColor : updateTint).setFill()
             rect.fill()
             // The dot in the canvas's top-right corner, clear of the lens (Tests/AppUpdateBadgeChecks.swift measures it).
             let dot = NSRect(x: rect.maxX - dotDiameter, y: rect.maxY - dotDiameter, width: dotDiameter, height: dotDiameter)
             context.compositingOperation = .sourceOver
-            updateTint.setFill()
+            (recording ? NSColor.systemRed : updateTint).setFill()
             NSBezierPath(ovalIn: dot).fill()
             context.restoreGraphicsState()
             return true

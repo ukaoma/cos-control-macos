@@ -1,3 +1,8 @@
+## Unreleased
+
+- See when a meeting is recording from the menu-bar icon and a REC badge in the Dock. Recording remains visible when the Meetings window is closed.
+- Open the live transcript from the menu-bar panel, the Dock menu, a Dock click, or Command-Shift-L while COS Control is active. Multiple recordings open the chooser.
+
 ## 0.5.278 (build 331)
 
 - **Live meeting transcript.** While a G2 meeting records, Meetings shows a pinned Live now row (red dot, duration, No audio for Xm when quiet). Opening it streams the transcript from the server's live session file a few seconds behind the conversation, follows the newest line until you scroll up (Jump to live), and offers Copy transcript (`[m:ss] Name: text`, a preliminary header). Saving hands off to the saved meeting by session id; a discard says it ended without saving. Live dots on the panel Meetings chip and the Activity Meetings tab. Settings: Show live meeting transcript (on by default; off spawns nothing).

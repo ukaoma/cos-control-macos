@@ -1737,6 +1737,23 @@ struct ControlPanel: View {
                         refreshAndCheckButton
                     }
                 } else { header }
+                if model.recordingCount > 0 {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Label(model.recordingLabel, systemImage: "record.circle.fill")
+                            .font(COSType.body(13, weight: .semibold))
+                            .foregroundStyle(Color.red)
+                        if model.liveTranscriptEnabled {
+                            Button("View live transcript") { model.showRecordingTranscript() }
+                                .buttonStyle(COSQuietButtonStyle())
+                        } else {
+                            Text("Enable live transcripts in Settings to view the recording.")
+                                .font(COSType.body(12)).foregroundStyle(.secondary)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(12)
+                    .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 10))
+                }
                 // Upgraders, once: COS Control is in the Dock now (Menu bar only / Keep).
                 DockNoticeLine(model: model)
                 // Early users: Finish setup at the top until every row is done or skipped, or Hide setup guide.
