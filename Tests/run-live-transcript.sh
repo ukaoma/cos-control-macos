@@ -40,8 +40,11 @@ D="$(cd "$(dirname "$0")" && pwd)"
 echo "$1" >> "$D/calls.log"
 echo "$*" >> "$D/args.log"
 if [ "$1" = live-transcript ]; then
-  if ! mkdir "$D/inflight" 2>/dev/null; then echo overlap >> "$D/overlap.log"; fi
   mode="$(cat "$D/live-mode" 2>/dev/null)"
+  # slowfree: a slow read that holds nothing (the loop-handle race check starts one, then cancels it).
+  if [ "$mode" = slowfree ]; then touch "$D/slow-started"; sleep 1; cat "$D/live-transcript.json"; exit 0; fi
+  if ! mkdir "$D/inflight" 2>/dev/null; then echo overlap >> "$D/overlap.log"; fi
+  trap 'rmdir "$D/inflight" 2>/dev/null; exit 143' TERM
   case "$mode" in
     hold) i=0; while [ ! -f "$D/release" ] && [ $i -lt 200 ]; do sleep 0.05; i=$((i+1)); done; rm -f "$D/release"
           cat "$D/live-transcript.json" ;;

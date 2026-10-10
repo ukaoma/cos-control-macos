@@ -121,6 +121,7 @@ MUTANTS = [
     ("merged meetings missed", C, "        meeting.sessionId == sessionId || meeting.g2SessionIds.contains(sessionId)", "        meeting.sessionId == sessionId", "no hang", "wiring"),
     ("failure keeps the text", C, "        case .invalidResponse: return \"invalid_response\"", "        case .invalidResponse(let text): return text", "an invalid answer is a code", "wiring"),
     ("a file that left is not ended", C, "            feeds[id]?.markEnded(now: now)\n", "", "a file that left the list ends", "wiring"),
+    ("cancelled loop clears the new handle", C, "            guard let self, self.liveTranscriptLoopID == loop else { return }", "            guard let self else { return }", "a cancelled loop never lets a second one start", "wiring"),
     ("setting off keeps the text", C, "        liveTranscriptFeeds = [:]\n        liveTranscriptFiles = []\n", "        liveTranscriptFiles = []\n", "forgets the text", "wiring"),
 ]
 

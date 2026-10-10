@@ -168,10 +168,13 @@ import SwiftUI
         expect(on.liveTranscriptDot, "the live dot")
         expect(on.liveTranscriptFeeds[sid]?.turns.map(\.speaker) == ["Miles", "Jordan", "Zoë Ångström", "Speaker", "Miles"],
                "turns merge by speaker; Unknown reads Speaker", "\(on.liveTranscriptFeeds[sid]?.turns.map(\.speaker) ?? [])")
-        let firstArgs = stand.lastArgs("live-transcript")
-        await until("a second read") { stand.calls("live-transcript") >= 2 }
+        // The first poll knows no file yet and only lists; the next one reads the listed session.
+        await until("a read that names the session") {
+            stand.lines("args.log").contains { $0.hasPrefix("live-transcript ") && $0.contains("--session \(sid)") }
+        }
+        await until("a second read") { stand.calls("live-transcript") >= 3 }
         let secondArgs = stand.lastArgs("live-transcript")
-        expect(firstArgs.contains("--session") && firstArgs.contains(sid), "the read names the session", "\(firstArgs)")
+        expect(secondArgs.contains("--session") && secondArgs.contains(sid), "the read names the session", "\(secondArgs)")
         expect(secondArgs.contains("--data-dir") && secondArgs.contains("/tmp/cos-live-fixture-data"), "the data directory is looked up once per loop",
                "\(secondArgs)")
         if let i = secondArgs.firstIndex(of: "--since") { expect(secondArgs[i + 1] == "5", "the cursor is passed back", "\(secondArgs)") }
@@ -296,6 +299,25 @@ import SwiftUI
         on.liveTranscriptViewer("meetings", visible: true)
         await sleep(1.0)
         expect(!on.liveTranscriptPollRunning && stand.calls("live-transcript") == quiet, "no live meeting: no poll")
+
+        // ── A loop cancelled by the setting never clears the handle of the loop that replaced it (else a kick starts a
+        // second loop beside it). Off and on in one turn, while the first loop's read is still running.
+        stand.remove("overlap.log"); stand.remove("slow-started")
+        on.status = liveStatus(1)
+        on.liveTranscriptViewer("meetings", visible: true)
+        stand.write("live-mode", "slowfree")
+        await until("a slow read") { stand.exists("slow-started") }
+        stand.write("live-mode", "hold")
+        onDefaults.set(false, forKey: LiveTranscript.enabledKey)
+        on.liveTranscriptSettingChanged()
+        onDefaults.set(true, forKey: LiveTranscript.enabledKey)
+        on.liveTranscriptSettingChanged()
+        await until("the replacing loop's held read") { stand.exists("inflight") }
+        for _ in 0..<10 { on.liveTranscriptKick(); await sleep(0.15) }
+        stand.write("live-mode", "normal")
+        stand.write("release", "")
+        await until("the held read to finish") { !stand.exists("inflight") }
+        expect(!stand.exists("overlap.log"), "a cancelled loop never lets a second one start", "overlap: \(stand.lines("overlap.log"))")
 
         // ── The setting turned off mid-meeting drops everything and stops.
         on.status = liveStatus(1)

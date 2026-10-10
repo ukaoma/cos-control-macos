@@ -3032,6 +3032,7 @@ final class ControllerModel: ObservableObject {
     private(set) var liveTranscriptPolls = 0
     private var liveTranscriptViewers: Set<String> = []
     private var liveTranscriptTask: Task<Void, Never>?
+    private var liveTranscriptLoopID: UUID?
     private var liveTranscriptImmediate = false
     /// Looked up by the first read of each poll loop (it spawns `launchctl print`), then passed back.
     private var liveTranscriptDataDir: String?
@@ -3075,6 +3076,9 @@ final class ControllerModel: ObservableObject {
     /// Starts the poll loop when it should run and is not running. Never a second loop.
     func liveTranscriptKick() {
         guard liveTranscriptTask == nil, liveTranscriptShouldPoll else { return }
+        // A loop cancelled by the setting must not clear the handle of the loop that replaced it.
+        let loop = UUID()
+        liveTranscriptLoopID = loop
         liveTranscriptTask = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self, self.liveTranscriptShouldPoll else { break }
@@ -3086,8 +3090,9 @@ final class ControllerModel: ObservableObject {
                 }
                 self.liveTranscriptImmediate = false
             }
-            self?.liveTranscriptTask = nil
-            self?.liveTranscriptDataDir = nil
+            guard let self, self.liveTranscriptLoopID == loop else { return }
+            self.liveTranscriptTask = nil
+            self.liveTranscriptDataDir = nil
         }
     }
 
@@ -3102,6 +3107,7 @@ final class ControllerModel: ObservableObject {
         if liveTranscriptEnabled { liveTranscriptImmediate = true; liveTranscriptKick(); return }
         liveTranscriptTask?.cancel()
         liveTranscriptTask = nil
+        liveTranscriptLoopID = nil
         liveTranscriptDataDir = nil
         liveTranscriptFeeds = [:]
         liveTranscriptFiles = []
@@ -3163,6 +3169,8 @@ final class ControllerModel: ObservableObject {
             if let dir = reply.dataDir, !dir.isEmpty { liveTranscriptDataDir = dir }
             applyLiveTranscript(reply, now: Date())
             if liveTranscriptReason != nil { liveTranscriptReason = nil }
+        } catch is CancellationError {
+            return
         } catch {
             guard liveTranscriptEnabled else { return }
             liveTranscriptReason = Self.liveTranscriptReasonCode(error)
