@@ -63,8 +63,8 @@ except ValueError:
 if not value.get("ok"):
     sys.exit("helper self-test FAILED: " + str(value.get("message") or value)[:2000])
 count = value.get("details", {}).get("tests", 0)
-if count < 784:
-    sys.exit(f"helper self-test ran only {count} checks; expected at least 784 (784 at 0.5.268: Codex inside the ChatGPT app; 774 at 0.5.250: the Work session name, transcript titles and named rows that are never warm-ups; 727 at 0.5.238)")
+if count < 815:
+    sys.exit(f"helper self-test ran only {count} checks; expected at least 815 (815 at 0.5.278: the live transcript path grammar, fixture parse, --since and stamp; 784 at 0.5.268: Codex inside the ChatGPT app; 774 at 0.5.250: the Work session name, transcript titles and named rows that are never warm-ups; 727 at 0.5.238)")
 ' "$SELF_TEST"
 # The Work contract self-test (the model catalog, admission, and from 0.5.249 the Cursor chat finder) is its own command,
 # and nothing ran it: a mutation of the tab folder rules survived because of it (2026-09-29).
@@ -147,6 +147,10 @@ zsh "$ROOT/Tests/run-meeting-task-link.sh"
 # the search mark on screen, parse once, links drawn, italic, streaming in the same cache slot, copy stays raw, the
 # session chat bubble hugs a short reply, and the real inline cache survives a stream. One compile, through the guard.
 zsh "$ROOT/Tests/run-markdown-ui.sh" "$TMP/markdown-ui"
+# 0.5.278: the live meeting transcript. The pins, the pure reducer and status fields, the compiled helper against a 6.67
+# fixture (path grammar, --since, the stamp, no text in a failure), then the model against a stand-in helper (the setting
+# off spawns nothing, one read at a time, Wake, the saved hand-off by session id). Serial, every compile through the guard.
+zsh "$ROOT/Tests/run-live-transcript.sh"
 # 0.5.233: the live feed reducer is pure Foundation and pinned by an EXECUTED contract
 # over recorded 6.48.2 stream frames (reseed, gap, prompt window, state line, elapsed).
 "$ROOT/Tests/compile-guard.sh" swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \
