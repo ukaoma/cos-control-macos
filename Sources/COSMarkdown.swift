@@ -129,13 +129,13 @@ enum COSMarkdownCache {
     private static var entries = COSMarkdownLRU<Entry>(capacity: capacity)
     private(set) static var parseCount = 0
 
-    static func blocks(_ text: String, id: String? = nil, dropLeadingTitle: Bool = false) -> [COSMarkdownBlock] {
-        let key = id.map { "id:\($0)|\(dropLeadingTitle)" } ?? "h:\(text.hashValue)|\(text.utf16.count)|\(dropLeadingTitle)"
+    static func blocks(_ text: String, id: String? = nil, dropLeadingTitle: Bool = false, meetingTranscript: Bool = false) -> [COSMarkdownBlock] {
+        let key = "meeting:\(meetingTranscript)|" + (id.map { "id:\($0)|\(dropLeadingTitle)" } ?? "h:\(text.hashValue)|\(text.utf16.count)|\(dropLeadingTitle)")
         if let hit = entries.value(for: key), hit.text == text {
             return hit.blocks
         }
         parseCount += 1
-        let blocks = COSMarkdownParser.parse(text, dropLeadingTitle: dropLeadingTitle)
+        let blocks = meetingTranscript ? COSMarkdownParser.meetingBlocks(text, dropLeadingTitle: dropLeadingTitle) : COSMarkdownParser.parse(text, dropLeadingTitle: dropLeadingTitle)
         entries.insert(Entry(text: text, blocks: blocks), for: key)
         return blocks
     }
@@ -147,10 +147,11 @@ struct COSMarkdownView: View {
     let text: String
     var cacheID: String? = nil
     var dropLeadingTitle = false
+    var meetingTranscript = false
     var bodySize: CGFloat = 12.5
 
     var body: some View {
-        COSMarkdownBlocks(blocks: COSMarkdownCache.blocks(text, id: cacheID, dropLeadingTitle: dropLeadingTitle), bodySize: bodySize)
+        COSMarkdownBlocks(blocks: COSMarkdownCache.blocks(text, id: cacheID, dropLeadingTitle: dropLeadingTitle, meetingTranscript: meetingTranscript), bodySize: bodySize)
     }
 }
 
@@ -421,17 +422,15 @@ private struct COSMarkdownSpeakerLines: View {
     }
 
     var body: some View {
-        Grid(alignment: .topLeading, horizontalSpacing: 12, verticalSpacing: 6) {
+        VStack(alignment: .leading, spacing: 22) {
             ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
-                GridRow {
-                    Text(line.speaker)
-                        .font(COSType.mono(10.5, weight: .semibold))
+                VStack(alignment: .leading, spacing: 7) {
+                    Text(verbatim: line.speaker)
+                        .font(COSType.body(11.5, weight: .semibold))
                         .foregroundStyle(isUnnamed(line.speaker) ? COSPalette.muted : COSPalette.accent)
-                        .frame(width: 96, alignment: .leading)
-                        .padding(.top, 2)
-                    COSMarkdownText(line.text, bodySize: bodySize)
-                        .font(COSType.body(bodySize))
-                        .lineSpacing(2.5)
+                    Text(verbatim: line.text)
+                        .font(COSType.body(max(14, bodySize)))
+                        .lineSpacing(4)
                         .textSelection(.enabled)
                         .fixedSize(horizontal: false, vertical: true)
                         .frame(maxWidth: .infinity, alignment: .leading)

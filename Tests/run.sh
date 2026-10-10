@@ -98,6 +98,7 @@ python3 "$ROOT/Tests/work-requests-helper-checks.py" "$TMP/cos-control-helper"
 python3 "$ROOT/Tests/provider-status-helper-checks.py" "$TMP/cos-control-helper"
 # Glasses pairing: tailscale-status (SHLVL in the child), whois and the pairing verbs through the compiled helper.
 python3 "$ROOT/Tests/pairing-helper-checks.py" "$TMP/cos-control-helper"
+python3 "$ROOT/Tests/live-cos-ask-helper-checks.py" "$TMP/cos-control-helper"
 python3 "$ROOT/Tests/HeldNamingGuardMutations.py"
 
 # THE APP ITSELF MUST COMPILE.

@@ -67,6 +67,102 @@ enum COSMarkdownParser {
         return parseBlocks(lines[...])
     }
 
+    /// Saved meeting presentation only. Stored Markdown and other document surfaces stay unchanged.
+    static func meetingBlocks(_ text: String, dropLeadingTitle: Bool = false) -> [COSMarkdownBlock] {
+        formatMeetingBlocks(parse(text, dropLeadingTitle: dropLeadingTitle), transcript: !looksLikeDocument(text))
+    }
+
+    private static func formatMeetingBlocks(_ blocks: [COSMarkdownBlock], transcript: Bool = false) -> [COSMarkdownBlock] {
+        var inTranscript = transcript
+        var result: [COSMarkdownBlock] = []
+        var pending: [COSMarkdownSpeakerLine] = []
+        func append(_ line: COSMarkdownSpeakerLine) {
+            // Bound a reading section; never invent a speaker, punctuation or timestamp.
+            if let last = pending.last, last.speaker == line.speaker,
+               last.text.count + line.text.count + 1 <= 600 {
+                pending[pending.count - 1].text += " " + line.text
+            } else { pending.append(line) }
+        }
+        func flush() {
+            guard !pending.isEmpty else { return }
+            result.append(.speakerLines(pending.map {
+                COSMarkdownSpeakerLine(speaker: $0.speaker, text: meetingParagraphs($0.text))
+            }))
+            pending.removeAll()
+        }
+        // Old scribe output sometimes put many `[Ext]:` markers on ONE line.
+        let marker = try! NSRegularExpression(pattern: #"(?:^|\s)\[([^\]\n]{1,64})\]:\s*"#)
+        for block in blocks {
+            switch block {
+            case .speakerLines(let rows):
+                for row in rows {
+                    // Reparse the body too: the ordinary parser only consumed the leading label.
+                    let raw = "[" + row.speaker + "]: " + row.text
+                    for row in splitMeetingSpeakers(raw, marker: marker) ?? [row] { append(row) }
+                }
+            case .paragraph(let raw):
+                if let rows = splitMeetingSpeakers(raw, marker: marker) {
+                    for row in rows { append(row) }
+                } else if inTranscript {
+                    flush()
+                    let ns = raw as NSString
+                    if let first = marker.firstMatch(in: raw, range: NSRange(location: 0, length: ns.length)), first.range.location > 0 {
+                        let prefix = ns.substring(to: first.range.location)
+                        result.append(.paragraph(meetingParagraphs(prefix)))
+                        let tail = ns.substring(from: first.range.location).trimmingCharacters(in: .whitespacesAndNewlines)
+                        for row in splitMeetingSpeakers(tail, marker: marker) ?? [] { append(row) }
+                    } else { result.append(.paragraph(meetingParagraphs(raw))) }
+                } else { flush(); result.append(block) }
+            case .heading(let level, let title):
+                flush()
+                if level <= 3 { inTranscript = title.lowercased().contains("transcript") }
+                result.append(block)
+            case .details(let summary, let inner):
+                flush(); result.append(.details(summary: summary, blocks: formatMeetingBlocks(inner, transcript: inTranscript || summary.lowercased().contains("transcript"))))
+            default: flush(); result.append(block)
+            }
+        }
+        flush()
+        return result
+    }
+
+    private static func splitMeetingSpeakers(_ text: String, marker: NSRegularExpression) -> [COSMarkdownSpeakerLine]? {
+        let ns = text as NSString
+        let matches = marker.matches(in: text, range: NSRange(location: 0, length: ns.length))
+        // An ordinary sentence mentioning a bracketed label is not a transcript.
+        guard let first = matches.first, first.range.location == 0 else { return nil }
+        return matches.enumerated().map { index, match in
+            let start = NSMaxRange(match.range)
+            let end = index + 1 < matches.count ? matches[index + 1].range.location : ns.length
+            return COSMarkdownSpeakerLine(speaker: ns.substring(with: match.range(at: 1)),
+                text: ns.substring(with: NSRange(location: start, length: end - start)).trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+    }
+
+    static func meetingParagraphs(_ text: String) -> String {
+        let chars = Array(text)
+        var start = 0
+        var paragraphs: [String] = []
+        while start < chars.count {
+            let end = min(start + 420, chars.count)
+            var cut = end
+            if end < chars.count {
+                var sentence: Int?
+                var space: Int?
+                for i in start..<end {
+                    if chars[i].isWhitespace { space = i }
+                    if i - start >= 160, ".!?。！？".contains(chars[i]), chars[i + 1].isWhitespace { sentence = i + 1 }
+                }
+                cut = sentence ?? space.flatMap { $0 > start ? $0 : nil } ?? end
+            }
+            let part = String(chars[start..<cut]).trimmingCharacters(in: .whitespacesAndNewlines)
+            if !part.isEmpty { paragraphs.append(part) }
+            start = cut
+            while start < chars.count, chars[start].isWhitespace { start += 1 }
+        }
+        return paragraphs.joined(separator: "\n\n")
+    }
+
     /// True when the text reads as a Markdown DOCUMENT rather than a sentence or two:
     /// a heading, a table row, a list, a fence or a details block. A pane uses this to
     /// decide whether the file IS the body (the meeting scribe's `.md`) or a field.

@@ -566,7 +566,7 @@ struct MeetingLibraryDetailPane: View {
                         }
                         if let workConnections { relatedWork(workConnections) }
                         if isDocument {
-                            COSMarkdownView(text: detail.transcript, dropLeadingTitle: true)
+                            COSMarkdownView(text: detail.transcript, dropLeadingTitle: true, meetingTranscript: true, bodySize: 14)
                         } else {
                             if !detail.attendees.isEmpty {
                                 labeled("Attendees", detail.attendees.joined(separator: ", "))
@@ -575,7 +575,10 @@ struct MeetingLibraryDetailPane: View {
                                 labeled("Summary", detail.summary)
                             }
                             if !detail.transcript.isEmpty {
-                                labeled("Transcript", detail.transcript)
+                                VStack(alignment: .leading, spacing: 10) {
+                                    Text("Transcript").font(COSType.body(12, weight: .semibold))
+                                    COSMarkdownView(text: detail.transcript, meetingTranscript: true, bodySize: 14)
+                                }
                             }
                         }
                         if detail.summary.isEmpty && detail.transcript.isEmpty {
@@ -585,9 +588,11 @@ struct MeetingLibraryDetailPane: View {
                     }
                     .font(COSType.body(12.5))
                     .padding(24)
-                    .frame(maxWidth: 760, alignment: .leading)
+                    .frame(maxWidth: 700, alignment: .leading)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
+                .frame(minHeight: 0, maxHeight: .infinity)
+                .clipped()
                 Divider()
                 if let onReviewFollowUp, let row = model.openLibraryRow {
                     HStack {
@@ -2025,10 +2030,28 @@ struct LiveTranscriptPane: View {
     @ObservedObject var model: ControllerModel
     @State private var follow = LiveTranscriptFollow()
     @State private var atBottom = true
+    @State private var showAsk = true
+    @State private var askJumpID: Int?
+    @StateObject private var askState = LiveAskState()
 
     var body: some View {
+        HStack(spacing: 0) {
+            meetingBody
+            if showAsk {
+                Divider()
+                LiveAskPanel(state: askState, model: model, feed: model.openLiveTranscriptFeed) { id in
+                    follow.selectionBegan(); askJumpID = id
+                }
+            }
+        }
+        .onAppear { askState.select(model.liveTranscriptOpenID) }
+        .onChange(of: model.liveTranscriptOpenID) { _, id in askState.select(id); askJumpID = nil }
+        .onDisappear { askState.cancel() }
+    }
+
+    private var meetingBody: some View {
         let feed = model.openLiveTranscriptFeed
-        VStack(alignment: .leading, spacing: 0) {
+        return VStack(alignment: .leading, spacing: 0) {
             TimelineView(.periodic(from: .now, by: 15)) { context in header(feed, now: context.date) }
             Divider()
             if let feed, !feed.turns.isEmpty {
@@ -2057,6 +2080,9 @@ struct LiveTranscriptPane: View {
                 LiveDot(live: feed?.ended != true, size: 10)
                 Text(feed?.ended == true ? "Meeting ended" : "Live meeting")
                     .font(COSType.display(22, weight: .medium))
+                Spacer()
+                Button(showAsk ? "Hide Ask" : "Live COS Ask") { showAsk.toggle() }
+                    .buttonStyle(COSQuietButtonStyle())
             }
             Text(LiveTranscript.header)
                 .font(COSType.body(12))
@@ -2133,6 +2159,7 @@ struct LiveTranscriptPane: View {
                 if follow.contentChanged(now: Date()) { proxy.scrollTo(LiveTranscriptPane.bottomID, anchor: .bottom) }
             }
             .onAppear { proxy.scrollTo(LiveTranscriptPane.bottomID, anchor: .bottom) }
+            .onChange(of: askJumpID) { _, id in if let id { proxy.scrollTo(id, anchor: .top); askJumpID = nil } }
             .onChange(of: follow.jumpRequests) { _, _ in proxy.scrollTo(LiveTranscriptPane.bottomID, anchor: .bottom) }
         }
     }
@@ -2183,5 +2210,155 @@ struct LiveTurnRow: View {
                 .fixedSize(horizontal: false, vertical: true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+// Live COS Ask: ephemeral, scoped to the selected meeting, and invoked only by a user action.
+struct LiveAskSource: Codable, Identifiable {
+    let id: String
+    let kind: String
+    let title: String
+    let text: String
+    let turnId: Int?
+    let elapsedMs: Int?
+}
+struct LiveAskAnswer: Codable {
+    let answer: String
+    let sources: [LiveAskSource]
+    let notices: [String]
+    let model: String
+    let throughMs: Int
+}
+struct LiveAskExchange: Identifiable {
+    let id = UUID()
+    let question: String
+    let result: LiveAskAnswer
+}
+@MainActor
+final class LiveAskState: ObservableObject {
+    @Published var exchanges: [LiveAskExchange] = []
+    @Published var busy = false
+    @Published var error: String?
+    private var task: Task<Void, Never>?
+    private var generation = UUID()
+    private var sessionId: String?
+
+    func cancel() { generation = UUID(); task?.cancel(); task = nil; busy = false }
+    func select(_ id: String?) {
+        guard id != sessionId else { return }
+        cancel(); sessionId = id; exchanges = []; error = nil
+    }
+    func ask(action: String, question: String, feed: LiveTranscriptFeed, model: ControllerModel) {
+        guard !busy, !feed.turns.isEmpty else { return }
+        select(feed.sessionId)
+        let now = feed.endedAt ?? Date()
+        let elapsed = max(feed.turns.map(\.elapsedMs).max() ?? 0, Int(max(0, now.timeIntervalSince(feed.startTime ?? now)) * 1000))
+        let turns: [[String: Any]] = feed.turns.map { ["id": $0.id, "elapsedMs": $0.elapsedMs, "speaker": $0.speaker, "text": $0.text] }
+        let history = exchanges.suffix(4).map { ["question": $0.question, "answer": String($0.result.answer.prefix(4000))] }
+        let payload: [String: Any] = ["sessionId": feed.sessionId, "action": action, "question": String(question.prefix(2000)), "turns": turns, "history": history, "elapsedMs": elapsed]
+        guard let data = try? JSONSerialization.data(withJSONObject: payload), data.count <= 1_000_000 else {
+            error = "This meeting is too large for Live COS Ask. Copy a passage to ask about it."; return
+        }
+        busy = true; error = nil
+        let ticket = UUID(); generation = ticket
+        task = Task { [weak self] in
+            do {
+                let response = try await model.runHelper(["live-cos-ask"], timeout: 160, stdinData: data)
+                guard let self, generation == ticket, !Task.isCancelled else { return }
+                if !response.ok { throw HelperClientError.commandFailed(response.message) }
+                let result = try JSONDecoder().decode(LiveAskAnswer.self, from: JSONEncoder().encode(response.details))
+                exchanges.append(LiveAskExchange(question: question, result: result))
+                if exchanges.count > 12 { exchanges.removeFirst(exchanges.count - 12) }
+                busy = false; task = nil
+            } catch {
+                guard let self, generation == ticket, !Task.isCancelled else { return }
+                // Helper returns controlled user-facing messages, never raw provider stderr or transcript.
+                if case HelperClientError.commandFailed(let message) = error { self.error = message }
+                else { self.error = "Live COS Ask could not finish. Check the server and Claude connection, then try again." }
+                busy = false; task = nil
+            }
+        }
+    }
+}
+
+struct LiveAskPanel: View {
+    @ObservedObject var state: LiveAskState
+    @ObservedObject var model: ControllerModel
+    let feed: LiveTranscriptFeed?
+    let jump: (Int) -> Void
+    @State private var question = ""
+    private let actions = [("catch_up", "Catch me up"), ("summary", "Summarize so far"), ("questions", "Suggest questions"), ("actions", "Action items")]
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Live COS Ask").font(COSType.display(19, weight: .medium))
+            Text("Ask when you need it. Uses this meeting first.")
+                .font(COSType.body(11.5)).foregroundStyle(.secondary)
+            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
+                ForEach(actions, id: \.0) { action, title in
+                    Button(title) { send(action, title == "Catch me up" ? "Catch me up on the last minute" : title) }
+                        .buttonStyle(COSQuietButtonStyle()).disabled(state.busy || feed?.turns.isEmpty != false)
+                }
+            }
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 18) {
+                        if state.exchanges.isEmpty {
+                            Text("Summaries, suggested questions and action items appear here when you ask. A question can also draw on relevant COS memories or earlier meetings.").font(COSType.body(12)).foregroundStyle(.secondary)
+                        }
+                        ForEach(state.exchanges) { exchange in
+                            VStack(alignment: .leading, spacing: 9) {
+                                Text(verbatim: exchange.question).font(COSType.body(12, weight: .semibold))
+                                COSMarkdownView(text: exchange.result.answer, cacheID: exchange.id.uuidString, bodySize: 13)
+                                ForEach(exchange.result.sources) { source in
+                                    if let turn = source.turnId {
+                                        Button("[\(source.id)] \(source.title)") { jump(turn) }
+                                            .buttonStyle(.plain).foregroundStyle(COSPalette.accent)
+                                            .help(source.text)
+                                    } else {
+                                        DisclosureGroup("[\(source.id)] \(source.kind == "memory" ? "COS memory" : "Earlier meeting"): \(source.title)") {
+                                            Text(verbatim: source.text).textSelection(.enabled)
+                                        }
+                                    }
+                                }
+                                .font(COSType.body(11))
+                                ForEach(exchange.result.notices, id: \.self) { Text($0).font(COSType.body(11)).foregroundStyle(COSPalette.amber) }
+                                HStack {
+                                    Text("Through \(LiveTranscript.stamp(exchange.result.throughMs, hours: false)) · Haiku").foregroundStyle(.secondary)
+                                    Spacer()
+                                    Button("Copy") { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(exchange.result.answer, forType: .string) }.buttonStyle(.plain)
+                                }.font(COSType.body(10.5))
+                            }.padding(12).background(COSPalette.raised, in: RoundedRectangle(cornerRadius: 9))
+                        }
+                        Color.clear.frame(height: 1).id("ask-bottom")
+                    }
+                }
+                .onChange(of: state.exchanges.count) { _, _ in proxy.scrollTo("ask-bottom", anchor: .bottom) }
+            }.frame(minHeight: 0, maxHeight: .infinity).clipped()
+            if state.busy {
+                HStack { ProgressView().controlSize(.small); Text("Checking the meeting…"); Spacer(); Button("Stop") { state.cancel() } }.font(COSType.body(11))
+            }
+            if let error = state.error { Text(error).font(COSType.body(11)).foregroundStyle(COSPalette.amber) }
+            HStack(alignment: .bottom) {
+                TextField("Ask about this meeting", text: $question, axis: .vertical)
+                    .lineLimit(1...4).textFieldStyle(.roundedBorder)
+                    .onChange(of: question) { _, value in if value.count > 2000 { question = String(value.prefix(2000)) } }
+                    .onSubmit { sendQuestion() }
+                Button("Ask") { sendQuestion() }.buttonStyle(COSPrimaryButtonStyle())
+                    .disabled(state.busy || question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || feed?.turns.isEmpty != false)
+            }
+        }
+        .padding(16)
+        .frame(width: 330, alignment: .topLeading)
+        .background(COSPalette.panel)
+        .onDisappear { state.cancel() }
+    }
+    private func send(_ action: String, _ question: String) {
+        guard let feed else { return }
+        state.ask(action: action, question: question, feed: feed, model: model)
+    }
+    private func sendQuestion() {
+        let text = question.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, !state.busy else { return }
+        send("ask", text); question = ""
     }
 }

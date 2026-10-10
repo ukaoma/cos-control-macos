@@ -1,0 +1,28 @@
+{
+  "status": "passed",
+  "milliseconds": 2276,
+  "transport": "compiled helper + pairing-authenticated fixture API + real Haiku",
+  "fixtureOnly": true,
+  "answer": "**Explicit commitments**\n- **Maya:** Will send the launch draft to Jordan by Friday. [T1] (Owner and deadline are stated; \"Friday\" is not tied to a calendar date in the evidence.)\n- **Jordan:** Will review the draft. [T2]\n\n**Unresolved**\n- **Review deadline for Jordan:** Not agreed. [T2]\n\n**Proposed next steps**\n- None were proposed in the supplied evidence.\n\n**Note:** Evidence covers only the current meeting excerpts; no earlier meeting history was supplied.",
+  "model": "claude-haiku-5-5",
+  "notices": [],
+  "sources": [
+    {
+      "elapsedMs": 10000,
+      "id": "T1",
+      "kind": "transcript",
+      "text": "I will send the launch draft to Jordan by Friday.",
+      "title": "Maya · 0:10",
+      "turnId": 0
+    },
+    {
+      "elapsedMs": 45000,
+      "id": "T2",
+      "kind": "transcript",
+      "text": "I will review the draft. We have not agreed on a review deadline.",
+      "title": "Jordan · 0:45",
+      "turnId": 1
+    }
+  ],
+  "throughMs": 90000
+}

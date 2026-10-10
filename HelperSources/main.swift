@@ -622,6 +622,7 @@ final class COSControlHelper {
         case "reset-message-era": try resetMessageEra()
         case "meeting-orphans": try emitMeetingOrphans()
         case "meeting-audio-watch": try emitMeetingAudioWatch()
+        case "live-cos-ask": try emitLiveCOSAsk()
         case "live-transcript": try emitLiveTranscript(args: args)
         case "live-transcript-status": try emitLiveTranscriptStatus(args: args)
         case "meeting-orphan-recover": try emitMeetingOrphanRecover(args: args)
@@ -14877,6 +14878,41 @@ final class COSControlHelper {
             data.append(contentsOf: buffer[0..<count])
         }
         return try liveTranscriptParse(data, sessionId: sessionId, since: since, stamp: stamp)
+    }
+
+    /// Bounded stdin only: transcript and questions never appear in process arguments or logs.
+    private func emitLiveCOSAsk() throws {
+        var input = Data()
+        while input.count <= 1_000_000 {
+            let chunk = try FileHandle.standardInput.read(upToCount: min(16_384, 1_000_001 - input.count)) ?? Data()
+            if chunk.isEmpty { break }
+            input.append(chunk)
+        }
+        guard input.count <= 1_000_000,
+              let payload = try? JSONSerialization.jsonObject(with: input) as? [String: Any],
+              let sessionId = payload["sessionId"] as? String, Self.liveTranscriptValidId(sessionId),
+              let body = String(data: input, encoding: .utf8) else {
+            emit(ok: false, message: "Live COS Ask could not read this meeting."); return
+        }
+        let token = try speakerReviewToken()
+        guard let response = request("/api/meetings/live-ask", method: "POST", token: token, body: body, timeout: 155) else {
+            emit(ok: false, message: "Live COS Ask timed out. Nothing will retry automatically."); return
+        }
+        if response.status == 200, let details = response.body, details["answer"] is String {
+            emit(ok: true, message: "Live COS Ask", details: details); return
+        }
+        let reason = response.body?["error"] as? String ?? ""
+        let message: String
+        switch (response.status, reason) {
+        case (404, _): message = "Update the COS server to use Live COS Ask."
+        case (401, _), (403, _): message = "Reconnect COS Control to the server to use Live COS Ask."
+        case (429, _): message = "Another answer is still running. Wait a moment, then ask again."
+        case (_, "no_recent_words"): message = "There are no recent words to catch up on yet."
+        case (_, "transcript_too_large"): message = "This meeting is too large for Live COS Ask."
+        case (_, "maintenance"): message = "The server is updating. Ask again when it is ready."
+        default: message = "Haiku could not answer. Check the Claude connection in Settings, then try again."
+        }
+        emit(ok: false, message: message)
     }
 
     /// `live-transcript [--data-dir <dir>] [--session <id> [--since <n>] [--stamp <s>]]`. Always the list of live

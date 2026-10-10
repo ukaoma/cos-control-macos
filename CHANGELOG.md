@@ -1,5 +1,8 @@
 ## Unreleased
 
+- Live COS Ask sits beside the live transcript with Catch me up, Summarize so far, Suggest questions, Action items and a question box. Haiku runs only when asked, starts with the current meeting, and can retrieve relevant COS history for a free-form question. Answers cite transcript passages and distinguish earlier sources. Requires the companion server update; older servers show an update message.
+- Saved recordings now group consecutive fragments by speaker, recognize speaker labels embedded in long paragraphs, and use readable paragraphs, spacing and text size. Source wording and files remain unchanged.
+
 - Live transcripts now use shorter timestamped sections, paragraph breaks for oversized chunks, larger text and more spacing. Copy preserves the readable layout without rewriting the transcript.
 - Keep transcript row IDs unique when a late speaker change splits a previously drawn section.
 

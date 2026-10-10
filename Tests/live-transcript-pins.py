@@ -153,7 +153,7 @@ for banned in ("print(", "NSLog", "Logger", "fputs", "os_log"):
 need("import Foundation" in pure and "import SwiftUI" not in pure and "import AppKit" not in pure, "Sources/LiveTranscript.swift is pure Foundation")
 
 # ── The views.
-live_views = strip_comments(meetings[meetings.index("// MARK: - Live meeting transcript (0.5.278)"):])
+live_views = strip_comments(meetings[meetings.index("// MARK: - Live meeting transcript (0.5.278)"):meetings.index("// Live COS Ask:")])
 for banned in ("print(", "NSLog", "Logger", "Markdown"):
     need(banned not in live_views, "the live views never log or parse Markdown (" + banned + ")")
 library = body(meetings, "struct MeetingLibraryBody: View {")

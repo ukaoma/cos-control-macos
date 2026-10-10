@@ -15,6 +15,7 @@ struct MarkdownContract {
     }
 
     static func main() {
+        savedRecordingReadability()
         scribeMeeting()
         listsAndTasks()
         tablesCodeQuotesRules()
@@ -34,6 +35,34 @@ struct MarkdownContract {
             for f in failures { FileHandle.standardError.write(("MarkdownContract: " + f + "\n").data(using: .utf8)!) }
             exit(1)
         }
+    }
+
+    static func savedRecordingReadability() {
+        let raw = "[Ext]: First thought. [Ext]: Second thought. [MU]: My question.\n[MU]: More context.\n[Ext]: An answer."
+        let blocks = COSMarkdownParser.meetingBlocks(raw)
+        guard case .speakerLines(let rows) = blocks.first else { expect(false, "saved transcript parses embedded labels"); return }
+        expect(rows.map(\.speaker) == ["Ext", "MU", "Ext"], "consecutive labels group without crossing voices")
+        expect(rows[0].text == "First thought. Second thought.", "inline speaker markup becomes a real section")
+        expect(rows[1].text == "My question. More context.", "short consecutive chunks join")
+        let long = String(repeating: "A long sentence with unchanged wording. ", count: 80)
+        let formatted = COSMarkdownParser.meetingParagraphs(long)
+        expect(formatted.contains("\n\n"), "oversized saved paragraphs break")
+        expect(formatted.filter { !$0.isWhitespace } == long.filter { !$0.isWhitespace }, "no speech lost or rewritten")
+        let dense = (0..<100).map { "[Ext]: Chunk \($0) " + String(repeating: "x", count: 40) }.joined(separator: "\n")
+        if case .speakerLines(let split) = COSMarkdownParser.meetingBlocks(dense).first {
+            expect(split.count > 5 && split.allSatisfy { $0.text.count <= 610 }, "same-speaker recording is bounded into reading sections")
+        } else { expect(false, "dense recording parsed") }
+        expect(COSMarkdownParser.meetingBlocks("## Summary\nA note about [Ext]: this label.") == COSMarkdownParser.parse("## Summary\nA note about [Ext]: this label."), "ordinary prose is not relabeled")
+        let missingLead = COSMarkdownParser.meetingBlocks("## Transcript\nOpening words. [Ext]: Next words. [Ext]: Last words.")
+        expect(missingLead.count == 3, "unlabeled leading passage remains separate from inline speaker turns")
+        if case .speakerLines(let after) = missingLead.last { expect(after[0].text == "Next words. Last words.", "inline labels parsed after unlabeled prefix") }
+        let code = "```\n[Ext]: Do not change code\n```"
+        expect(COSMarkdownParser.meetingBlocks(code) == COSMarkdownParser.parse(code), "fenced code preserved")
+        expect(COSMarkdownParser.meetingParagraphs(String(repeating: "界", count: 1000)).filter { !$0.isWhitespace }.count == 1000, "Unicode stays whole")
+        let doc = "## Summary\n\nNo changes.\n\n<details><summary>Transcript</summary>\n" + raw + "\n</details>"
+        if case .details(_, let inner) = COSMarkdownParser.meetingBlocks(doc).last { expect(inner == blocks, "nested transcript receives same formatting") }
+        else { expect(false, "nested transcript preserved") }
+        print("PASS saved recording readability: inline labels, grouping, bounded paragraphs, source fidelity, Unicode and document isolation")
     }
 
     /// The meeting file exactly as `sync_meetings.py` writes it (2026-09-15 15:37, G2).

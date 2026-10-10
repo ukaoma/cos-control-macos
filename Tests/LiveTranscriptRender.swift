@@ -454,6 +454,31 @@ import SwiftUI
                "idle Dock menu retains its existing actions")
         COSAppDelegate.recordingAvailable = nil
         COSAppDelegate.onOpenRecording = nil
+        // Live COS Ask: no passive calls, one explicit send, stdin only, cancellation and meeting isolation.
+        let askState = LiveAskState()
+        askState.select(sid)
+        expect(stand.calls("live-cos-ask") == 0, "opening Ask burns no tokens")
+        var askFeed = LiveTranscriptFeed(sessionId: sid)
+        askFeed.apply(reply(liveAnswer(chunks: firstChunks, settled: 5, stamp: "ask")).read!, now: Date())
+        stand.write("live-cos-ask.json", """
+        {"ok":true,"message":"Live COS Ask","details":{"answer":"The draft is due Friday. [T1]","sources":[{"id":"T1","kind":"transcript","title":"Miles · 0:00","text":"Fixture words","turnId":0,"elapsedMs":0}],"notices":[],"model":"haiku","throughMs":30000}}
+        """)
+        askState.ask(action: "summary", question: "Summarize so far", feed: askFeed, model: recording)
+        askState.ask(action: "summary", question: "Summarize so far", feed: askFeed, model: recording)
+        await until("Ask answer") { !askState.busy }
+        expect(askState.exchanges.count == 1 && askState.error == nil, "Ask renders answer and citations")
+        expect(stand.calls("live-cos-ask") == 1, "double clicking never sends twice")
+        expect(!stand.lines("args.log").contains { $0.contains("Summarize so far") }, "Ask text stays off argv")
+        expect(stand.exists("ask-input.json"), "Ask sends context through stdin")
+        askState.select("meeting_other")
+        expect(askState.exchanges.isEmpty, "new meeting clears prior Ask context")
+        stand.write("ask-hold", "1")
+        askState.ask(action: "ask", question: "What changed?", feed: askFeed, model: recording)
+        await sleep(0.15)
+        askState.select("meeting_other_again")
+        await sleep(2.3)
+        expect(!askState.busy && askState.exchanges.isEmpty && askState.error == nil, "late answer cannot leak across meetings")
+        stand.remove("ask-hold")
         print("live transcript wiring checks: \(passed) passed")
         print("PASS: live transcript wiring checks complete")
         exit(0)
@@ -512,7 +537,12 @@ import SwiftUI
         // Ended two minutes ago (inside the 3-minute deadline): the duration reads 10 min, not 12 (QA W2).
         finalizing.applyLiveTranscript(reply(endedAnswer), now: now.addingTimeInterval(-2 * 60))
 
+        let savedText = "## Transcript\n\n[Ext]: " + String(repeating: "The saved recording now has readable sections. [Ext]: We keep the exact words while grouping short fragments. ", count: 12) + "[MU]: Can we confirm the next step?\n[MU]: The draft is due Friday.\n[Jordan]: I will review it."
+        let previewAsk = LiveAskState()
+        previewAsk.exchanges = [LiveAskExchange(question: "What are the action items?", result: LiveAskAnswer(answer: "- **Jordan** will review the draft. [T1]\n- The draft is due **Friday**. The owner was not specified. [T2]", sources: [LiveAskSource(id: "T1", kind: "transcript", title: "Jordan · 0:12", text: "I will review it.", turnId: 1, elapsedMs: 12000)], notices: [], model: "haiku", throughMs: 60000))]
         for appearance in [NSAppearance.Name.aqua, .darkAqua] {
+            try render(ScrollView { COSMarkdownView(text: savedText, meetingTranscript: true, bodySize: 14).padding(24).frame(maxWidth: 700) }, width: 900, height: 700, appearance: appearance, name: "saved-recording-readable", out: out)
+            try render(LiveAskPanel(state: previewAsk, model: live, feed: live.openLiveTranscriptFeed, jump: { _ in }), width: 362, height: 700, appearance: appearance, name: "live-ask-answer", out: out)
             try render(LiveTranscriptPane(model: monologue), width: 900, height: 700, appearance: appearance, name: "pane-long-same-speaker", out: out)
             try render(LiveTranscriptPane(model: oversized), width: 900, height: 700, appearance: appearance, name: "pane-oversized-chunk", out: out)
             try render(LiveTranscriptPane(model: live), width: 900, height: 560, appearance: appearance, name: "pane-live-short", out: out)

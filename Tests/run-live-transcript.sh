@@ -39,6 +39,10 @@ fake_helper() {
 D="$(cd "$(dirname "$0")" && pwd)"
 echo "$1" >> "$D/calls.log"
 echo "$*" >> "$D/args.log"
+if [ "$1" = live-cos-ask ]; then
+  cat > "$D/ask-input.json"
+  if [ -f "$D/ask-hold" ]; then sleep 2; fi
+fi
 if [ "$1" = live-transcript ]; then
   mode="$(cat "$D/live-mode" 2>/dev/null)"
   # slowfree: a slow read that holds nothing (the loop-handle race check starts one, then cancels it).

@@ -1,0 +1,35 @@
+{
+  "status": "passed",
+  "milliseconds": 7024,
+  "searches": [
+    "Maya project review launch draft deadline"
+  ],
+  "answer": "**Short answer:** The current draft deadline is later than what Maya agreed last week, by one day.\n\n- **Today (current meeting):** Maya said she will send the launch draft to Jordan **by Friday** [T1]. Jordan said he will review the draft but that **no review deadline has been agreed** [T2].\n- **Last week (older project review, 2026-10-03):** Maya committed to send the launch draft **on Thursday**, and Jordan would review it **Friday** [H1].\n\n**Comparison:** Maya's send deadline moved from Thursday to Friday, based on the evidence supplied. The evidence doesn't show why it changed or whether the change was approved. Jordan's Friday review slot from last week isn't confirmed today, because he said no review deadline has been agreed [T2].\n\n**Limits:** [H1] is a summary of an earlier meeting, so I can't verify its wording. I found no other sources on this.",
+  "sources": [
+    {
+      "id": "T1",
+      "kind": "transcript",
+      "title": "Maya · 0:10",
+      "text": "I will send the launch draft to Jordan by Friday.",
+      "turnId": 0,
+      "elapsedMs": 10000
+    },
+    {
+      "id": "T2",
+      "kind": "transcript",
+      "title": "Jordan · 0:45",
+      "text": "I will review the draft. We have not agreed on a review deadline.",
+      "turnId": 1,
+      "elapsedMs": 45000
+    },
+    {
+      "id": "H1",
+      "kind": "meeting",
+      "title": "Project review · 2026-10-03",
+      "text": "Maya committed to send the launch draft on Thursday. Jordan would review it Friday."
+    }
+  ],
+  "notices": [],
+  "model": "claude-haiku-5-5",
+  "throughMs": 90000
+}
