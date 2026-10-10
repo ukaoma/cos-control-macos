@@ -21,9 +21,15 @@ struct MarkdownContract {
         detailsAndSpeakers()
         documentDetection()
         edges()
+        messageAnswer()
+        webLinksOnly()
+        streaming()
+        cacheEviction()
 
         if failures.isEmpty {
             print("COS Control: Markdown parser pinned on the scribe's meeting, lists, tasks, tables, code, quotes, details and speaker lines (0.5.232)")
+            print("PASS messages markdown: Message #356 blocks and inline runs, web-links-only policy, half-streamed Markdown stays text, row preview flattens")
+            print("PASS markdown caches: LRU at the app's own limits (\(COSMarkdownCacheLimits.inline) inline, \(COSMarkdownCacheLimits.documents) documents), oldest-unused goes first, a recent hit survives")
         } else {
             for f in failures { FileHandle.standardError.write(("MarkdownContract: " + f + "\n").data(using: .utf8)!) }
             exit(1)
@@ -157,5 +163,163 @@ struct MarkdownContract {
         expect(COSMarkdownParser.parse("####### seven") == [.paragraph("####### seven")], "seven hashes is not a heading")
         expect(COSMarkdownParser.parse("# Title ##") == [.heading(level: 1, text: "Title")], "closing hashes are trimmed")
         expect(COSMarkdownParser.parse("line one\r\nline two") == [.paragraph("line one line two")], "CRLF is fine")
+    }
+
+    /// Message #356 exactly as the glasses server stored it (2026-10-09 17:28, Opus): the
+    /// answer Miles screenshotted printing its Markdown raw in Activity > Messages.
+    static let message356 = """
+    **Take Varesa.** Neither Vesna nor Chiori is the best call. Vesna isn't actually in the free pool. She's the new 7.1 banner character, and your roster shows her at C2 already, so I'm assuming you meant Varesa. The free selector offers Varesa, Clorinde, Nilou, Baizhu, Chiori and Tartaglia, and you need to finish the 7.1 Archon Quest by November 3 to claim one.
+
+    1. **Varesa:** She fits your best units. Her strongest team runs her with Xilonen and Mavuika, and you have both, with Mavuika at C6. If Iansan is in your 3 characters off-screen, that's her ideal setup. She'd give you a second top-tier main DPS next to Mavuika.
+    2. **Clorinde:** She works with your C6 Fischl and Nahida, but she needs C2 to really pay off. Your Electro slot is already covered by Yae (C2) and Raiden.
+    3. **Chiori:** Skip her. She needs a full Geo team, and you only have Albedo and Xilonen. She'd end up as an off-field support you don't need.
+
+    The one reason to take Clorinde instead: if Iansan isn't in your account and you mainly play Fischl and Nahida teams.
+
+    Sources:
+    - [allthings.how: 7.1 selector best pick](https://allthings.how/genshin-impact-limited-5-star-selector-best-pick-in-version-7-1/)
+    - [timesaver.gg: all selector characters and deadlines](https://timesaver.gg/blog/genshin-free-5-star-selector-7-1)
+    - [ldshop.gg: 7.1 anniversary selector guide](https://www.ldshop.gg/blog/genshin-impact/7-1-anniversary-selector-guide.html)
+    """
+
+    static func strong(_ s: AttributedString) -> [String] {
+        s.runs.compactMap { run in
+            guard let i = run.inlinePresentationIntent, i.contains(.stronglyEmphasized) else { return nil }
+            return String(s[run.range].characters)
+        }
+    }
+    static func links(_ s: AttributedString) -> [URL] { s.runs.compactMap(\.link) }
+
+    static func messageAnswer() {
+        let blocks = COSMarkdownParser.parse(message356)
+        expect(blocks.count == 5, "[message 356] lead paragraph, numbered list, paragraph, Sources:, link list: \(blocks.count) blocks: \(blocks)")
+        guard blocks.count == 5 else { return }
+        guard case .paragraph(let lead) = blocks[0] else { return expect(false, "[message 356] the bold title line opens a paragraph: \(blocks[0])") }
+        let leadRuns = COSMarkdownParser.inline(lead)
+        expect(strong(leadRuns) == ["Take Varesa."], "[message 356] **Take Varesa.** is bold: \(strong(leadRuns))")
+        expect(String(leadRuns.characters).hasPrefix("Take Varesa. Neither Vesna"), "[message 356] the markers are gone from the text: \(String(leadRuns.characters).prefix(40))")
+        guard case .list(let ordered, let picks) = blocks[1] else { return expect(false, "[message 356] the picks are a list: \(blocks[1])") }
+        expect(ordered && picks.count == 3, "[message 356] 1. 2. 3. is one ordered list of three: ordered \(ordered), \(picks.count)")
+        expect(picks.map { strong(COSMarkdownParser.inline($0.text)) } == [["Varesa:"], ["Clorinde:"], ["Chiori:"]], "[message 356] each pick leads with its bold name")
+        expect(picks.allSatisfy { $0.checked == nil && $0.children.isEmpty }, "[message 356] the picks are plain items")
+        expect(String(COSMarkdownParser.inline(picks[0].text).characters).hasPrefix("Varesa: She fits your best units."), "[message 356] item text renders without markers")
+        expect(blocks[2] == .paragraph("The one reason to take Clorinde instead: if Iansan isn't in your account and you mainly play Fischl and Nahida teams."), "[message 356] the closing paragraph stands alone: \(blocks[2])")
+        expect(blocks[3] == .paragraph("Sources:"), "[message 356] Sources: is its own line: \(blocks[3])")
+        guard case .list(false, let sources) = blocks[4] else { return expect(false, "[message 356] the sources are a bulleted list: \(blocks[4])") }
+        let rendered = sources.map { COSMarkdownParser.inline($0.text) }
+        expect(rendered.map { String($0.characters) } == ["allthings.how: 7.1 selector best pick", "timesaver.gg: all selector characters and deadlines", "ldshop.gg: 7.1 anniversary selector guide"],
+               "[message 356] each source shows its label, not the bracket syntax: \(rendered.map { String($0.characters) })")
+        expect(rendered.map(links) == [
+            [URL(string: "https://allthings.how/genshin-impact-limited-5-star-selector-best-pick-in-version-7-1/")!],
+            [URL(string: "https://timesaver.gg/blog/genshin-free-5-star-selector-7-1")!],
+            [URL(string: "https://www.ldshop.gg/blog/genshin-impact/7-1-anniversary-selector-guide.html")!],
+        ], "[message 356] each label links to its https page: \(rendered.map(links))")
+        // The row preview: the words, none of the markers.
+        let preview = COSMarkdownParser.plainText(message356)
+        expect(preview.hasPrefix("Take Varesa. Neither Vesna nor Chiori"), "[row preview] starts with the words: \(preview.prefix(40))")
+        expect(!preview.contains("**") && !preview.contains("]("), "[row preview] no bold or link markers survive")
+        expect(COSMarkdownParser.plainText("## Heading\n> quoted **bold**") == "Heading\nquoted bold", "[row preview] heading and quote marks come off: \(COSMarkdownParser.plainText("## Heading\n> quoted **bold**"))")
+    }
+
+    static func webLinksOnly() {
+        for (source, label) in [
+            ("[open](file:///etc/passwd)", "open"),
+            ("[run](javascript:alert(1))", "run"),
+            ("[mail](mailto:miles@example.com)", "mail"),
+            ("[settings](x-apple.systempreferences:com.apple.preference.security)", "settings"),
+            ("[relative](docs/guide.md)", "relative"),
+            ("[nohost](https:///path)", "nohost"),
+        ] {
+            let runs = COSMarkdownParser.inline(source)
+            expect(links(runs).isEmpty, "[web links only] \(source) must not stay a link: \(links(runs))")
+            expect(String(runs.characters) == label, "[web links only] \(source) keeps its label as text: \(String(runs.characters))")
+        }
+        let autolink = COSMarkdownParser.inline("<mailto:miles@example.com> and <https://gotcos.com/control/>")
+        expect(links(autolink) == [URL(string: "https://gotcos.com/control/")!], "[web links only] of two autolinks only the https one links: \(links(autolink))")
+        expect(links(COSMarkdownParser.inline("[ok](HTTP://Example.com/a)")).count == 1, "[web links only] the scheme check ignores case")
+        expect(COSMarkdownParser.opensAsWebLink(URL(string: "http://example.com")!), "[web links only] http opens")
+        expect(!COSMarkdownParser.opensAsWebLink(URL(string: "ftp://example.com")!), "[web links only] ftp does not")
+        // A bare URL in a Sources line is text, kept whole (the pane wraps it).
+        let bare = COSMarkdownParser.inline("Sources: https://allthings.how/genshin-impact-limited-5-star-selector-best-pick-in-version-7-1/")
+        expect(String(bare.characters).hasSuffix("best-pick-in-version-7-1/"), "[bare url] a bare URL is kept verbatim")
+        expect(links(bare) == [URL(string: "https://allthings.how/genshin-impact-limited-5-star-selector-best-pick-in-version-7-1/")!], "[bare url] a bare https URL links to itself: \(links(bare))")
+        expect(links(COSMarkdownParser.inline("see www.example.com/x")).allSatisfy(COSMarkdownParser.opensAsWebLink), "[bare url] a www autolink is a web link or none")
+    }
+
+    /// The live badge: a turn redraws as its answer streams in, so every prefix of the
+    /// answer must parse, and a half-written `**` or `[` must read as text, not vanish.
+    static func streaming() {
+        let half = COSMarkdownParser.inline("**Take Var")
+        expect(String(half.characters) == "**Take Var" && strong(half).isEmpty, "[streaming] an unclosed ** is literal text: \(String(half.characters))")
+        let link = COSMarkdownParser.inline("[allthings.how: 7.1 selector](https://allthings.ho")
+        // Every character stays on screen. The half URL may autolink (Foundation links a bare
+        // http URL), and that link is still a web page.
+        expect(String(link.characters) == "[allthings.how: 7.1 selector](https://allthings.ho", "[streaming] an unclosed link is literal text: \(String(link.characters))")
+        expect(links(link).allSatisfy(COSMarkdownParser.opensAsWebLink), "[streaming] a half link never links off the web: \(links(link))")
+        let bracket = COSMarkdownParser.parse("Sources:\n- [allthings.how: 7.1 sel")
+        expect(bracket == [.paragraph("Sources:"), .list(ordered: false, items: [COSMarkdownListItem(text: "[allthings.how: 7.1 sel", checked: nil)])], "[streaming] a half link line is still a list item: \(bracket)")
+        expect(COSMarkdownParser.parse("Here:\n```swift\nlet x") == [.paragraph("Here:"), .code("let x")], "[streaming] an open fence holds the rest as code")
+        // Every prefix of the real answer parses, renders some text, and never links off the web.
+        var prefixes = 0
+        let chars = Array(message356)
+        var end = 1
+        while end <= chars.count {
+            let prefix = String(chars[0..<end])
+            let blocks = COSMarkdownParser.parse(prefix)
+            var texts: [String] = []
+            for block in blocks {
+                switch block {
+                case .paragraph(let t): texts.append(t)
+                case .list(_, let items): texts.append(contentsOf: items.map(\.text))
+                default: break
+                }
+            }
+            for t in texts {
+                let runs = COSMarkdownParser.inline(t)
+                if String(runs.characters).isEmpty && !t.trimmingCharacters(in: .whitespaces).isEmpty {
+                    expect(false, "[streaming] prefix \(end) rendered \(t) as nothing")
+                }
+                if !links(runs).allSatisfy(COSMarkdownParser.opensAsWebLink) { expect(false, "[streaming] prefix \(end) produced a non-web link") }
+            }
+            prefixes += 1
+            end += 5
+        }
+        expect(prefixes > 250, "[streaming] the walk covered the answer: \(prefixes) prefixes")
+    }
+
+    /// The renderer caches (2026-10-09): a full map drops the key used longest ago, never the
+    /// whole map, so a long streamed answer cannot wipe the runs of the panes on screen.
+    /// Run at the app's own limits (COSMarkdownCacheLimits), not a copy of them.
+    static func cacheEviction() {
+        expect(COSMarkdownCacheLimits.inline == 1024 && COSMarkdownCacheLimits.documents == 128,
+               "[lru] the limits the app runs with: \(COSMarkdownCacheLimits.inline) inline, \(COSMarkdownCacheLimits.documents) documents")
+        for capacity in [COSMarkdownCacheLimits.inline, COSMarkdownCacheLimits.documents] {
+            var lru = COSMarkdownLRU<Int>(capacity: capacity)
+            for i in 0..<capacity { lru.insert(i, for: "k\(i)") }
+            expect(lru.count == capacity, "[lru] fills to its capacity \(capacity): \(lru.count)")
+            expect(lru.value(for: "k0") == 0, "[lru] the first key is still held when the map is just full")
+            lru.insert(capacity, for: "new")
+            expect(lru.count == capacity, "[lru] one insert past \(capacity) keeps \(capacity), it never clears: \(lru.count)")
+            expect(lru.contains("k0"), "[lru] a recent hit survives the eviction (capacity \(capacity))")
+            expect(!lru.contains("k1"), "[lru] the oldest-unused key goes first (capacity \(capacity))")
+            expect(lru.contains("k2") && lru.contains("new"), "[lru] only one key goes (capacity \(capacity))")
+            // A stream: twice the capacity of new prefixes, the on-screen key touched each time.
+            for i in 0..<(2 * capacity) {
+                lru.insert(i, for: "stream \(i)")
+                _ = lru.value(for: "k0")
+            }
+            expect(lru.value(for: "k0") == 0, "[lru] a key touched on every redraw outlives a stream of \(2 * capacity) prefixes")
+            expect(lru.count == capacity, "[lru] the stream leaves the map at capacity: \(lru.count)")
+        }
+        // Order on a small map, and a re-insert of a held key evicts nothing. Recency after the
+        // hit on a: b, c, a. The replaced key is c, NOT the oldest, so an eviction would take b.
+        var small = COSMarkdownLRU<String>(capacity: 3)
+        small.insert("a", for: "a"); small.insert("b", for: "b"); small.insert("c", for: "c")
+        _ = small.value(for: "a")
+        small.insert("c2", for: "c")
+        expect(small.count == 3 && small.contains("a") && small.contains("b") && small.contains("c"), "[lru] replacing a held key evicts nothing")
+        small.insert("d", for: "d")
+        expect(!small.contains("b") && small.contains("a") && small.contains("c") && small.contains("d"), "[lru] eviction order is least recently used: b went, a and c stayed")
+        expect(small.value(for: "c") == "c2", "[lru] a replaced key holds the new value")
     }
 }

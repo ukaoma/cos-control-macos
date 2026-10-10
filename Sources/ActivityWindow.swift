@@ -4982,7 +4982,8 @@ struct ActivityWindow: View {
                     .font(.system(size: 12.5))
                     .lineLimit(2)
                     .multilineTextAlignment(.leading)
-                Text(turn.text)
+                // The answer is Markdown; a two-line preview shows its words, not its markers.
+                Text(COSMarkdownInlineCache.plain(turn.text))
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
@@ -5333,7 +5334,7 @@ struct ActivityWindow: View {
                                 messageBlock(label: "You", text: message.query,
                                              tint: ActivitySection.messages.tint, highlight: chatQuery)
                                 messageBlock(label: "COS", text: message.text,
-                                             tint: COSPalette.green, highlight: chatQuery)
+                                             tint: COSPalette.green, highlight: chatQuery, markdownID: "archive:\(date)/\(index)/\(message.id)")
                             }
                             .padding(hit ? 10 : 0)
                             .background(
@@ -5515,7 +5516,7 @@ struct ActivityWindow: View {
                              tint: ActivitySection.messages.tint, highlight: recentQuery)
                 attachmentStrip(attachments: turn.attachments.filter(\.isUserPhoto), fallback: "Your attachments")
                 messageBlock(label: "COS", text: turn.text,
-                             tint: COSPalette.green, highlight: recentQuery)
+                             tint: COSPalette.green, highlight: recentQuery, markdownID: "turn:" + turn.id)
                 attachmentStrip(attachments: turn.attachments.filter { !$0.isUserPhoto }, fallback: "From COS")
             }
             .padding(28)
@@ -5596,43 +5597,12 @@ struct ActivityWindow: View {
         }
     }
 
-    /// Marks every occurrence of the query inside the text. A tinted ROW says
-    /// "somewhere in here"; this says exactly where, which is the difference
-    /// between finding a passage and re-reading a chat (Miles, 2026-08-31).
-    /// Yellow on dark, amber on light — both carry dark ink, so the mark reads
-    /// at a glance in either scheme rather than blending into the card.
-    private func highlighted(_ text: String, query: String) -> AttributedString {
-        var attributed = AttributedString(text)
-        let fill = colorScheme == .dark
-            ? Color(red: 1.0, green: 0.85, blue: 0.30)
-            : Color(red: 1.0, green: 0.80, blue: 0.20)
-        for r in SearchMark.ranges(in: text, query: query) {
-            if let lo = AttributedString.Index(r.lowerBound, within: attributed),
-               let hi = AttributedString.Index(r.upperBound, within: attributed) {
-                attributed[lo..<hi].backgroundColor = fill
-                attributed[lo..<hi].foregroundColor = Color.black
-            }
-        }
-        return attributed
-    }
-
+    /// One side of a turn. `markdownID` renders the text as Markdown (what COS answered);
+    /// nil shows it as typed (what you said). See ActivityMessageCard.
     private func messageBlock(
-        label: String, text: String, tint: Color, highlight: String = ""
+        label: String, text: String, tint: Color, highlight: String = "", markdownID: String? = nil
     ) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(label.uppercased())
-                .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
-                .tracking(1.2)
-                .foregroundStyle(.primary)
-            Text(text.isEmpty ? AttributedString("(empty)") : highlighted(text, query: highlight))
-                .font(.system(size: 13))
-                .textSelection(.enabled)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(17)
-        .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 13))
-        .overlay(RoundedRectangle(cornerRadius: 13).stroke(tint.opacity(0.22), lineWidth: 1))
+        ActivityMessageCard(label: label, text: text, tint: tint, highlight: highlight, markdownID: markdownID)
     }
 
     /// Titles itself from what it holds, because a turn can now carry a video
@@ -5886,6 +5856,133 @@ struct ActivityWindow: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding(30)
+    }
+}
+
+/// One side of a Messages turn: the YOU card and the COS card, in Recent and in an
+/// archived chat. Before 2026-10-09 both were one plain Text, so a COS answer printed its
+/// Markdown as typed (Message #356: `**Take Varesa.**`, `1. **Varesa:**`, `- [allthings.how:
+/// …](https://…)`) while Meetings, Threads and Sessions rendered theirs. The COS side now
+/// goes through the same COSMarkdownView, parsed once per message id and text; the YOU side
+/// stays as typed, like a session's user turn. Copy turn and Copy + images read the stored
+/// turn (`turnClipboardText`, the media handoff), never this view, so they copy the raw text.
+struct ActivityMessageCard: View {
+    let label: String
+    let text: String
+    let tint: Color
+    var highlight: String = ""
+    /// nil shows the text as typed; an id renders it as Markdown under that cache slot.
+    var markdownID: String? = nil
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(label.uppercased())
+                .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
+                .tracking(1.2)
+                .foregroundStyle(.primary)
+            if text.isEmpty {
+                Text("(empty)")
+                    .font(.system(size: 13))
+                    .foregroundStyle(.secondary)
+            } else if let markdownID {
+                COSMarkdownView(text: text, cacheID: markdownID, bodySize: 13)
+                    .environment(\.cosMarkdownHighlight, highlight)
+            } else {
+                // Marks every occurrence of the query inside the text. A tinted ROW says
+                // "somewhere in here"; this says exactly where (Miles, 2026-08-31).
+                Text(highlighted(text, query: highlight))
+                    .font(.system(size: 13))
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(17)
+        .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 13))
+        .overlay(RoundedRectangle(cornerRadius: 13).stroke(tint.opacity(0.22), lineWidth: 1))
+        // The COS side copies its whole answer as stored; Copy turn above copies both sides.
+        .modifier(ActivityCopyMenu(label: "Copy answer", text: markdownID == nil ? nil : text))
+    }
+
+    /// Yellow on dark, amber on light; both carry dark ink, so the mark reads at a glance in
+    /// either scheme. The Markdown side marks the same term on its rendered words
+    /// (COSMarkdownInline.highlighting), so a term inside `**bold**` still lights up.
+    private func highlighted(_ text: String, query: String) -> AttributedString {
+        var attributed = AttributedString(text)
+        let fill = colorScheme == .dark
+            ? Color(red: 1.0, green: 0.85, blue: 0.30)
+            : Color(red: 1.0, green: 0.80, blue: 0.20)
+        for r in SearchMark.ranges(in: text, query: query) {
+            if let lo = AttributedString.Index(r.lowerBound, within: attributed),
+               let hi = AttributedString.Index(r.upperBound, within: attributed) {
+                attributed[lo..<hi].backgroundColor = fill
+                attributed[lo..<hi].foregroundColor = Color.black
+            }
+        }
+        return attributed
+    }
+}
+
+/// Copies a COS answer as stored: the Markdown, byte for byte, never the rendered words
+/// (the same rule as Copy turn). The context menus on the Messages COS card ("Copy answer")
+/// and the session chat reply ("Copy reply") both come through here. A reply renders as one
+/// Text per block, so selecting it cannot take the whole answer in one go; this can.
+@MainActor
+enum ActivityAnswerCopy {
+    static func copy(_ text: String, to pasteboard: NSPasteboard = .general) {
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
+    }
+}
+
+/// A context menu with one copy action, on a view that has something to copy; `text` nil
+/// adds no menu at all (the YOU card, an empty answer).
+struct ActivityCopyMenu: ViewModifier {
+    let label: String
+    let text: String?
+
+    func body(content: Content) -> some View {
+        if let text, !text.isEmpty {
+            content.contextMenu { Button(label) { ActivityAnswerCopy.copy(text) } }
+        } else {
+            content
+        }
+    }
+}
+
+/// One assistant reply in the session chat: Markdown, as in the session's stored turns above,
+/// in a bubble that hugs its words up to the row. COSMarkdownBlocks fills the width it is
+/// offered (right for Meetings, Threads and Messages), so before this a "Done." reply drew a
+/// full-width bubble where the plain Text it replaced had hugged its text.
+struct SessionChatReplyBubble: View {
+    let text: String
+    let id: String
+
+    var body: some View {
+        SessionChatHugWidth {
+            COSMarkdownView(text: text, cacheID: "chat:\(id)")
+        }
+        .padding(10)
+        .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 11))
+        .contextMenu { Button("Copy reply") { ActivityAnswerCopy.copy(text) } }
+    }
+}
+
+/// Sizes its one child to the child's own (ideal) width, capped at the width offered, then
+/// lays it out at that width. A short reply hugs its text; a long one takes the row, exactly
+/// as wide as before (the HStack's Spacer keeps its 60 pt).
+struct SessionChatHugWidth: Layout {
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        guard let child = subviews.first else { return .zero }
+        let ideal = child.sizeThatFits(.unspecified)
+        let width = min(ideal.width, proposal.width ?? ideal.width)
+        return CGSize(width: width, height: child.sizeThatFits(ProposedViewSize(width: width, height: nil)).height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        subviews.first?.place(at: bounds.origin, anchor: .topLeading,
+                              proposal: ProposedViewSize(width: bounds.width, height: bounds.height))
     }
 }
 
@@ -6174,11 +6271,7 @@ struct SessionChatComposer: View {
                     }
                 case .assistant:
                     HStack {
-                        Text(verbatim: message.text)
-                            .font(.system(size: 12.5))
-                            .textSelection(.enabled)
-                            .padding(10)
-                            .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 11))
+                        SessionChatReplyBubble(text: message.text, id: message.id.uuidString)
                         Spacer(minLength: 60)
                     }
                 case .status:

@@ -348,3 +348,107 @@ enum COSMarkdownParser {
     }
 }
 
+
+// MARK: - Inline runs (Messages, 2026-10-09)
+//
+// Message #356 printed `**Take Varesa.**` and `- [allthings.how: …](https://…)` as typed:
+// the Messages cards were a plain Text while every other model-output pane already went
+// through this renderer. The inline layer lives here, Foundation-only, so the contract can
+// execute the link policy and the half-streamed shapes instead of trusting a picture.
+
+extension COSMarkdownParser {
+    /// Bold, italic, code and links through Foundation's inline parser. Anything it cannot
+    /// close (a `**` or a `[` still streaming in) stays literal text, never dropped.
+    /// A link survives only when it would open a web page: http or https with a host. Any
+    /// other scheme (file, javascript, mailto, x-apple, a relative path) keeps its label as
+    /// plain text and loses the link, so a tap can never hand the system a local action.
+    static func inline(_ text: String) -> AttributedString {
+        var options = AttributedString.MarkdownParsingOptions()
+        options.interpretedSyntax = .inlineOnlyPreservingWhitespace
+        options.failurePolicy = .returnPartiallyParsedIfPossible
+        var string: AttributedString
+        do {
+            string = try AttributedString(markdown: text, options: options)
+        } catch {
+            string = AttributedString(text)
+        }
+        var refused: [Range<AttributedString.Index>] = []
+        for run in string.runs {
+            guard let url = run.link else { continue }
+            if !opensAsWebLink(url) { refused.append(run.range) }
+        }
+        for range in refused { string[range].link = nil }
+        return string
+    }
+
+    /// The one link policy: a web page, or nothing.
+    static func opensAsWebLink(_ url: URL) -> Bool {
+        guard let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" else { return false }
+        guard let host = url.host, !host.isEmpty else { return false }
+        return true
+    }
+
+    /// One line of text for a list row: inline markers gone, heading and quote marks off the
+    /// front of each line, links reduced to their labels. The stored text is never changed.
+    static func plainText(_ text: String) -> String {
+        let lines = text.replacingOccurrences(of: "\r\n", with: "\n").components(separatedBy: "\n").map { raw -> String in
+            var line = raw.trimmingCharacters(in: .whitespaces)
+            if let level = headingLevel(line) { line = String(line.dropFirst(level)).trimmingCharacters(in: .whitespaces) }
+            while line.hasPrefix(">") { line = String(line.dropFirst()).trimmingCharacters(in: .whitespaces) }
+            return line
+        }
+        return String(inline(lines.joined(separator: "\n")).characters)
+    }
+}
+
+// MARK: - Bounded caches (2026-10-09)
+
+/// How many entries each renderer cache keeps. Exported so the contract checks eviction
+/// against the numbers the app runs with, not a copy of them.
+enum COSMarkdownCacheLimits {
+    /// Parsed documents (COSMarkdownCache): one per message id, or per text when there is no id.
+    static let documents = 128
+    /// Inline runs (COSMarkdownInlineCache): one per distinct paragraph, list item or cell.
+    static let inline = 1024
+}
+
+/// A bounded least-recently-used map, the eviction both renderer caches share. A hit makes
+/// its key the newest; an insert into a full map drops the key used longest ago, never the
+/// whole map. Before 2026-10-09 the inline cache cleared all 1024 entries when it filled, so
+/// a long streamed answer (every token a new prefix, every prefix a new entry) wiped the runs
+/// of the panes on screen again and again and made them parse again. Recency is a counter per
+/// key, so a hit costs one dictionary write; only an insert into a full map scans for the
+/// oldest. Pure Foundation, so Tests/MarkdownContract.swift executes it.
+struct COSMarkdownLRU<Value> {
+    let capacity: Int
+    private var entries: [String: (value: Value, used: UInt64)] = [:]
+    private var clock: UInt64 = 0
+
+    init(capacity: Int) {
+        precondition(capacity > 0, "an LRU holds at least one entry")
+        self.capacity = capacity
+    }
+
+    var count: Int { entries.count }
+
+    /// Whether `key` is held, without counting as a use.
+    func contains(_ key: String) -> Bool { entries[key] != nil }
+
+    /// The value for `key`, which becomes the most recently used.
+    mutating func value(for key: String) -> Value? {
+        guard let hit = entries[key] else { return nil }
+        clock += 1
+        entries[key] = (hit.value, clock)
+        return hit.value
+    }
+
+    /// Stores `value` as the most recently used; a NEW key into a full map evicts the oldest.
+    mutating func insert(_ value: Value, for key: String) {
+        clock += 1
+        if entries[key] == nil, entries.count >= capacity,
+           let oldest = entries.min(by: { $0.value.used < $1.value.used })?.key {
+            entries.removeValue(forKey: oldest)
+        }
+        entries[key] = (value, clock)
+    }
+}
