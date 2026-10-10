@@ -107,6 +107,7 @@ enum COSPalette {
     static let danger = Color(nsColor: COSInk.dangerNS)          // adaptive: destructive ink
     static let muted = Color(nsColor: COSInk.mutedNS)            // adaptive: warm secondary text
     static let raised = Color(nsColor: COSInk.raisedNS)          // adaptive: inset strip on a card
+    static let live = Color(red: 0.86, green: 0.27, blue: 0.22)  // 0.5.278: the recording dot (live transcript)
 }
 
 private enum CharacterGallery {
@@ -464,6 +465,8 @@ private struct WhatsNewButtonStyle: ButtonStyle {
 
 struct ControlPanel: View {
     @ObservedObject var model: ControllerModel
+    /// 0.5.278: Settings, "Show live meeting transcript". Off: no Live now row, no live dots, no live-transcript helper.
+    @AppStorage(LiveTranscript.enabledKey) private var showLiveTranscript = true
     let openActivity: (ActivitySection?) -> Void
     /// Onboarding P1: the same panel hosted in the Settings window (SettingsWindowPresenter), which must not claim
     /// to be the menu-bar panel being open.
@@ -1858,6 +1861,10 @@ struct ControlPanel: View {
                 Text(item.title)
                     .lineLimit(1)
                     .fixedSize()
+                // 0.5.278: a meeting is recording now (the server's count), unless the live transcript is off.
+                if item == .meetings, showLiveTranscript, model.liveTranscriptDot {
+                    LiveDot(size: 5).accessibilityLabel("Meeting recording now")
+                }
                 if let number {
                     Text(number > 99 ? "99+" : "\(number)")
                         .font(.system(size: 8.5, weight: .bold, design: .rounded))
@@ -2643,6 +2650,11 @@ struct ControlPanel: View {
             Toggle("Open new sessions in the app", isOn: Binding(get: { model.workOpensTabs }, set: { model.workOpensTabs = $0 }))
                 .toggleStyle(COSSwitchStyle())
                 .help("Start Claude and Codex work in the background, then open it in their app when the first reply is done. Off: it stays in the background on this Mac. Cursor always opens its own window with the handoff filled in, for you to send")
+            // 0.5.278: the live meeting transcript in Meetings. Stored in AppStorage, read by the model before any poll.
+            Toggle("Show live meeting transcript", isOn: $showLiveTranscript)
+                .toggleStyle(COSSwitchStyle())
+                .help("While a glasses meeting records, show it at the top of Meetings with the text so far. The transcript opens only when you click it. Off: no live row, no live dots, and nothing is read")
+                .onChange(of: showLiveTranscript) { _, _ in model.liveTranscriptSettingChanged() }
             DisclosureGroup("Advanced") {
                 // 0.5.234: the Meetings clock. The server sends 24-hour times and
                 // the tab used to print them raw; twelve-hour is the default here

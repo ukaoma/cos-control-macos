@@ -10,11 +10,16 @@ struct MeetingLibraryBody: View {
     let onOpen: (LibraryMeeting) -> Void
     @State private var confirmRecoverAllOrphans = false
     @State private var confirmSaveAllStranded = false
+    @AppStorage(LiveTranscript.enabledKey) private var showLiveTranscript = true
 
     var body: some View {
         VStack(spacing: 0) {
             if !selectionOnly && (!model.recoverableOrphans.isEmpty || !model.strandedCaptures.isEmpty) {
                 unsavedCaptureBanner
+            }
+            // 0.5.278: a meeting recording now, pinned above the calendar and outside search. Never in the picker.
+            if !selectionOnly && showLiveTranscript {
+                LiveNowRows(model: model)
             }
             if !model.isLibraryQueryActive {
                 MeetingMonthCalendar(
@@ -34,6 +39,8 @@ struct MeetingLibraryBody: View {
             if model.isLibraryQueryActive { model.scheduleLibrarySearch() }
         }
         .task { if !selectionOnly { await model.loadOrphans(quiet: true) } }
+        .onAppear { if !selectionOnly { model.liveTranscriptViewer("meetings", visible: true) } }
+        .onDisappear { if !selectionOnly { model.liveTranscriptViewer("meetings", visible: false) } }
         // The suggestion count on the doorway comes from the engine, so it is
         // fetched when Meetings opens rather than only once the pane is entered.
         .task { if !selectionOnly { await model.loadMeetingEngineStatus() } }
@@ -1913,5 +1920,260 @@ struct MeetingTaskLinkSheet: View {
             do { try await model.linkWorkMeeting(selected, meeting: reference); saved = selected }
             catch { self.error = error.localizedDescription }
         }
+    }
+}
+
+// MARK: - Live meeting transcript (0.5.278)
+//
+// A glasses meeting that is recording shows as a pinned "Live now" row at the top of Meetings, above the calendar and
+// outside search, and opens the text so far in its own pane (its own route flag, `liveTranscriptRouteActive`, written
+// only by `openLiveTranscript` and `closeLiveTranscript`). The transcript opens only when clicked: a shared screen never
+// shows it unasked. Plain text, never Markdown; speaker names are muted guesses.
+
+/// The pinned rows, one per live session, most recent first.
+struct LiveNowRows: View {
+    @ObservedObject var model: ControllerModel
+
+    var body: some View {
+        let rows = model.liveTranscriptRows
+        if !rows.isEmpty {
+            TimelineView(.periodic(from: .now, by: 15)) { context in
+                VStack(spacing: 6) {
+                    ForEach(rows) { row in
+                        LiveNowRow(row: row, now: context.date, clock: model.clockStyle) { model.openLiveTranscript(row.sessionId) }
+                    }
+                }
+                .padding(.horizontal, 22)
+                .padding(.vertical, 10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .overlay(alignment: .bottom) { Divider() }
+            }
+        }
+    }
+}
+
+struct LiveNowRow: View {
+    let row: LiveTranscriptRow
+    let now: Date
+    let clock: ClockStyle
+    let onOpen: () -> Void
+
+    var body: some View {
+        Button(action: onOpen) {
+            HStack(alignment: .center, spacing: 12) {
+                LiveDot(live: row.phase == .live)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(row.phase == .live ? "Live now" : (LiveTranscript.phaseLabel(row.phase) ?? "Live now"))
+                        .font(COSType.body(13.5, weight: .semibold))
+                        .foregroundStyle(.primary)
+                    HStack(spacing: 0) {
+                        Text(LiveTranscriptText.subtitle(start: row.startTime, now: now, clock: clock))
+                            .foregroundStyle(.secondary)
+                        if row.phase == .live, let quiet = LiveTranscript.quietLabel(lastActivity: row.lastActivity, now: now) {
+                            Text(" · " + quiet).foregroundStyle(COSPalette.amber)
+                        }
+                    }
+                    .font(COSType.body(11))
+                    .lineLimit(1)
+                }
+                Spacer()
+                Text("Live transcript")
+                    .font(COSType.body(11))
+                    .foregroundStyle(.tertiary)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(.vertical, 2)
+            .contentShape(Rectangle())
+            .cosRowCard()
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(row.phase == .live ? "Live meeting. Open the live transcript" : (LiveTranscript.phaseLabel(row.phase) ?? "Live meeting"))
+    }
+}
+
+struct LiveDot: View {
+    var live = true
+    var size: CGFloat = 8
+    var body: some View {
+        Circle()
+            .fill(live ? COSPalette.live : COSPalette.muted.opacity(0.6))
+            .frame(width: size, height: size)
+            .accessibilityHidden(true)
+    }
+}
+
+enum LiveTranscriptText {
+    /// "Started 7:27 AM · 12 min", or "Starting" before the first read.
+    static func subtitle(start: Date?, now: Date, clock: ClockStyle) -> String {
+        guard let start else { return "Starting" }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = clock == .twentyFourHour ? "HH:mm" : "h:mm a"
+        let started = "Started " + formatter.string(from: start)
+        return LiveTranscript.durationLabel(start: start, now: now).map { started + " · " + $0 } ?? started
+    }
+
+    /// The pane's footer word for a failed poll: the reason code, never message text.
+    static func paused(_ reason: String) -> String { "Live transcript paused · " + reason.replacingOccurrences(of: "_", with: " ") }
+}
+
+/// The live transcript pane: the header, the turns, Jump to live and Copy transcript.
+struct LiveTranscriptPane: View {
+    @ObservedObject var model: ControllerModel
+    @State private var follow = LiveTranscriptFollow()
+    @State private var atBottom = true
+
+    var body: some View {
+        let feed = model.openLiveTranscriptFeed
+        VStack(alignment: .leading, spacing: 0) {
+            TimelineView(.periodic(from: .now, by: 15)) { context in header(feed, now: context.date) }
+            Divider()
+            if let feed, !feed.turns.isEmpty {
+                transcript(feed)
+            } else {
+                Text(feed?.ended == true ? "No words were transcribed before the recording ended." : "Waiting for the first words. Text appears a few seconds after it is spoken.")
+                    .font(COSType.body(12))
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 420)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .padding(30)
+            }
+            Divider()
+            footer(feed)
+        }
+        .frame(minWidth: 420, maxWidth: .infinity, minHeight: 300, maxHeight: .infinity, alignment: .top)
+        .background(COSPalette.panel)
+        .onAppear { model.liveTranscriptViewer("live-pane", visible: true) }
+        .onDisappear { model.liveTranscriptViewer("live-pane", visible: false) }
+    }
+
+    private func header(_ feed: LiveTranscriptFeed?, now: Date) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .center, spacing: 10) {
+                LiveDot(live: feed?.ended != true, size: 10)
+                Text(feed?.ended == true ? "Meeting ended" : "Live meeting")
+                    .font(COSType.display(22, weight: .medium))
+            }
+            Text(LiveTranscript.header)
+                .font(COSType.body(12))
+                .foregroundStyle(.secondary)
+            HStack(spacing: 0) {
+                Text(LiveTranscriptText.subtitle(start: feed?.startTime, now: now, clock: model.clockStyle))
+                    .foregroundStyle(.tertiary)
+                if feed?.ended != true, let quiet = LiveTranscript.quietLabel(lastActivity: feed?.lastActivityAt, now: now) {
+                    Text(" · " + quiet).foregroundStyle(COSPalette.amber)
+                }
+            }
+            .font(COSType.body(11.5))
+            if let feed, feed.ended { handoffLine(feed) }
+        }
+        .padding(.horizontal, 24)
+        .padding(.top, 18)
+        .padding(.bottom, 12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    @ViewBuilder
+    private func handoffLine(_ feed: LiveTranscriptFeed) -> some View {
+        switch feed.phase {
+        case .finalizing, .saved:
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text("Finalizing · the saved meeting opens here when it is ready")
+            }
+            .font(COSType.body(11.5))
+            .foregroundStyle(.secondary)
+        case .notFoundYet:
+            HStack(spacing: 10) {
+                Text("Saved meeting not found yet").foregroundStyle(COSPalette.amber)
+                Button("Refresh") { model.refreshLiveTranscriptHandoff(feed.sessionId) }
+                    .buttonStyle(COSQuietButtonStyle())
+                    .controlSize(.small)
+            }
+            .font(COSType.body(11.5))
+        case .endedUnsaved:
+            Text("Recording ended without saving")
+                .font(COSType.body(11.5, weight: .semibold))
+                .foregroundStyle(COSPalette.amber)
+        case .live:
+            EmptyView()
+        }
+    }
+
+    private func transcript(_ feed: LiveTranscriptFeed) -> some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 12) {
+                    ForEach(feed.turns) { turn in
+                        LiveTurnRow(turn: turn)
+                    }
+                    Color.clear
+                        .frame(height: 1)
+                        .id(LiveTranscriptPane.bottomID)
+                        .onAppear { atBottom = true; follow.bottomAppeared() }
+                        .onDisappear { atBottom = false; follow.bottomDisappeared(now: Date()) }
+                }
+                .textSelection(.enabled)
+                .padding(24)
+                .frame(maxWidth: 760, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            // A drag in the text is a selection: hold the view still until a click or Jump to live.
+            .simultaneousGesture(DragGesture(minimumDistance: 3).onChanged { _ in follow.selectionBegan() })
+            .simultaneousGesture(TapGesture().onEnded { follow.tapped(atBottom: atBottom) })
+            .onChange(of: LiveTranscriptFollow.signature(feed.turns)) { _, _ in
+                if follow.contentChanged(now: Date()) { proxy.scrollTo(LiveTranscriptPane.bottomID, anchor: .bottom) }
+            }
+            .onAppear { proxy.scrollTo(LiveTranscriptPane.bottomID, anchor: .bottom) }
+            .onChange(of: follow.jumpRequests) { _, _ in proxy.scrollTo(LiveTranscriptPane.bottomID, anchor: .bottom) }
+        }
+    }
+
+    static let bottomID = "live-transcript-bottom"
+
+    private func footer(_ feed: LiveTranscriptFeed?) -> some View {
+        HStack(spacing: 8) {
+            Button("Copy transcript") { model.copyLiveTranscript() }
+                .buttonStyle(COSPrimaryButtonStyle())
+                .disabled(feed?.turns.isEmpty ?? true)
+            if !follow.following, !(feed?.turns.isEmpty ?? true) {
+                Button("Jump to live") { follow.jumpToLive(now: Date()) }
+                    .buttonStyle(COSQuietButtonStyle())
+            }
+            Spacer()
+            if let note = model.liveTranscriptCopyNote {
+                Text(note).foregroundStyle(.secondary)
+            } else if let reason = model.liveTranscriptReason {
+                Text(LiveTranscriptText.paused(reason)).foregroundStyle(COSPalette.amber)
+            }
+        }
+        .font(COSType.body(11))
+        .controlSize(.small)
+        .padding(.horizontal, 24)
+        .padding(.vertical, 12)
+    }
+}
+
+struct LiveTurnRow: View {
+    let turn: LiveTranscriptTurn
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 8) {
+                Text(verbatim: turn.speaker)
+                    .font(COSType.body(11.5, weight: .semibold))
+                    .foregroundStyle(COSPalette.muted)
+                Text(verbatim: LiveTranscript.stamp(turn.elapsedMs))
+                    .font(COSType.mono(10))
+                    .foregroundStyle(.tertiary)
+            }
+            Text(verbatim: turn.text)
+                .font(COSType.body(13))
+                .foregroundStyle(.primary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }

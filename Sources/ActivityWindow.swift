@@ -266,6 +266,8 @@ final class ActivityWindowPresenter: NSObject, ObservableObject, NSWindowDelegat
         model?.stopGraphBuildPoll()
         model?.closeContextDetail()
         model?.closeLibraryDetail()
+        // 0.5.278: nobody is looking, so the live transcript stops polling.
+        model?.liveTranscriptWindowClosed()
         // Session chat holds a poll Task and a live binding reference; a
         // window close must not leave either running against a stale row.
         model?.closeClaudeSession()
@@ -477,6 +479,8 @@ struct ActivityWindow: View {
     @State private var chatQuery = ""
     @State private var chatMatchCursor = 0
     @State private var section: ActivitySection?
+    /// 0.5.278: Settings, "Show live meeting transcript" (the Meetings tab's live dot reads it).
+    @AppStorage(LiveTranscript.enabledKey) private var showLiveTranscript = true
     @State private var showingSettings = false
     @State private var workSubview: ActivityWorkSubview = .tasks
     @State private var selectedTurnID: String?
@@ -663,6 +667,7 @@ struct ActivityWindow: View {
         case .speakers: selectedVoiceName != nil || selectedSpeakerSessionID != nil
         case .meetings:
             selectedLibraryRecordID != nil || model.meetingImportRouteActive || model.meetingSuggestionsRouteActive
+                || model.liveTranscriptRouteActive
         case .memories: selectedContextID != nil || selectedLearningID != nil || selectedGraphEntityID != nil
         case .threads: selectedContextID != nil
         case .sessions: selectedSessionID != nil
@@ -755,6 +760,9 @@ struct ActivityWindow: View {
                 // opener writes. Placed after the detail so a meeting a person
                 // actually opened wins; the model openers close the detail first,
                 // so the two can never both be true.
+                // 0.5.278: the live transcript, on its own flag (written by openLiveTranscript and closeLiveTranscript).
+                } else if section == .meetings, model.liveTranscriptRouteActive {
+                    LiveTranscriptPane(model: model)
                 } else if section == .meetings, model.meetingImportRouteActive {
                     MeetingImportPane(model: model)
                 } else if section == .meetings, model.meetingSuggestionsRouteActive {
@@ -826,6 +834,17 @@ struct ActivityWindow: View {
             }
         }
         .task(id: speakerPeekKey) { await peekMeetingsIfNeeded() }
+        // 0.5.278: the live meeting the pane shows was saved: open the saved meeting in place, where the live one was.
+        .onChange(of: model.liveTranscriptHandoff?.id) { _, id in
+            guard id != nil, let meeting = model.liveTranscriptHandoff else { return }
+            model.liveTranscriptHandoffTaken()
+            meetingReturnWorkID = nil
+            meetingReturnToWork = false
+            meetingReturnSpeakerSessionID = nil
+            meetingWorkLoaded = false
+            selectedLibraryRecordID = meeting.id
+            model.openLibraryMeeting(meeting)
+        }
         .alert("COS Control", isPresented: Binding(
             get: { model.error != nil },
             set: { if !$0 { model.error = nil } }
@@ -1041,6 +1060,10 @@ struct ActivityWindow: View {
                                 .stroke(style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round))
                                 .frame(width: 13, height: 13)
                             Text(item.title)
+                            // 0.5.278: a meeting is recording (the server's count), unless the live transcript is off.
+                            if item == .meetings, showLiveTranscript, model.liveTranscriptDot {
+                                LiveDot(size: 6).accessibilityLabel("Meeting recording now")
+                            }
                         }
                         .font(COSType.body(11.5, weight: !showingSettings && section == item ? .semibold : .medium))
                         .foregroundStyle(!showingSettings && section == item ? .primary : .secondary)
@@ -1187,6 +1210,8 @@ struct ActivityWindow: View {
             model.closeLibraryDetail()
             if meetingReturnToWork { returnFromMeetingToWork() }
             else if let sessionId = meetingReturnSpeakerSessionID { returnFromMeetingToSpeakers(sessionId) }
+        } else if section == .meetings, model.liveTranscriptRouteActive {
+            model.closeLiveTranscript()
         } else if section == .meetings, model.meetingImportRouteActive {
             model.closeMeetingImport()
         } else if section == .meetings, model.meetingSuggestionsRouteActive {

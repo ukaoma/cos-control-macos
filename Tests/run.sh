@@ -63,8 +63,8 @@ except ValueError:
 if not value.get("ok"):
     sys.exit("helper self-test FAILED: " + str(value.get("message") or value)[:2000])
 count = value.get("details", {}).get("tests", 0)
-if count < 784:
-    sys.exit(f"helper self-test ran only {count} checks; expected at least 784 (784 at 0.5.268: Codex inside the ChatGPT app; 774 at 0.5.250: the Work session name, transcript titles and named rows that are never warm-ups; 727 at 0.5.238)")
+if count < 820:
+    sys.exit(f"helper self-test ran only {count} checks; expected at least 820 (820 at 0.5.278: the live transcript path grammar, fixture parse, --since and stamp; 784 at 0.5.268: Codex inside the ChatGPT app; 774 at 0.5.250: the Work session name, transcript titles and named rows that are never warm-ups; 727 at 0.5.238)")
 ' "$SELF_TEST"
 # The Work contract self-test (the model catalog, admission, and from 0.5.249 the Cursor chat finder) is its own command,
 # and nothing ran it: a mutation of the tab folder rules survived because of it (2026-09-29).
@@ -117,7 +117,7 @@ python3 "$ROOT/Tests/HeldNamingGuardMutations.py"
   "$ROOT/Sources/Control2Foundation.swift" "$ROOT/Sources/WorkHandoffStore.swift" "$ROOT/Sources/WorkProgress.swift" "$ROOT/Sources/WorkCardFiles.swift" "$ROOT/Sources/WorkProgressTracker.swift" "$ROOT/Sources/WorkTrackingViews.swift" "$ROOT/Sources/WorkHandoffView.swift" "$ROOT/Sources/WorkReviewStore.swift" "$ROOT/Sources/WorkWorkspaceView.swift" "$ROOT/Sources/PermissionGuideModel.swift" "$ROOT/Sources/PermissionGuideSystem.swift" "$ROOT/Sources/PermissionFlowVendored.swift" "$ROOT/Sources/PermissionDragFlow.swift" "$ROOT/Sources/PermissionGuideViews.swift" "$ROOT/Sources/ProviderConnectModel.swift" "$ROOT/Sources/ProviderConnectViews.swift" "$ROOT/Sources/ActivityWindow.swift" \
   "$ROOT/Sources/ActivityMeetings.swift" \
   "$ROOT/Sources/COSMarkdownParser.swift" "$ROOT/Sources/COSMarkdown.swift" \
-  "$ROOT/Sources/SessionLiveFeed.swift" \
+  "$ROOT/Sources/SessionLiveFeed.swift" "$ROOT/Sources/LiveTranscript.swift" \
   "$ROOT/Sources/SessionPet.swift" \
   "$ROOT/Sources/ControlSetup.swift" \
   "$ROOT/Sources/COSControlApp.swift" \
@@ -147,6 +147,10 @@ zsh "$ROOT/Tests/run-meeting-task-link.sh"
 # the search mark on screen, parse once, links drawn, italic, streaming in the same cache slot, copy stays raw, the
 # session chat bubble hugs a short reply, and the real inline cache survives a stream. One compile, through the guard.
 zsh "$ROOT/Tests/run-markdown-ui.sh" "$TMP/markdown-ui"
+# 0.5.278: the live meeting transcript. The pins, the pure reducer and status fields, the compiled helper against a 6.67
+# fixture (path grammar, --since, the stamp, no text in a failure), then the model against a stand-in helper (the setting
+# off spawns nothing, one read at a time, Wake, the saved hand-off by session id). Serial, every compile through the guard.
+zsh "$ROOT/Tests/run-live-transcript.sh"
 # 0.5.233: the live feed reducer is pure Foundation and pinned by an EXECUTED contract
 # over recorded 6.48.2 stream frames (reseed, gap, prompt window, state line, elapsed).
 "$ROOT/Tests/compile-guard.sh" swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \
@@ -166,7 +170,7 @@ zsh "$ROOT/Tests/run-markdown-ui.sh" "$TMP/markdown-ui"
   "$ROOT/Sources/COSBrand.swift" "$ROOT/Sources/COSMotion.swift" "$ROOT/Sources/COSConfirm.swift" \
   "$ROOT/Sources/Views.swift" "$ROOT/Sources/Control2Foundation.swift" "$ROOT/Sources/WorkHandoffStore.swift" "$ROOT/Sources/WorkProgress.swift" "$ROOT/Sources/WorkCardFiles.swift" "$ROOT/Sources/WorkProgressTracker.swift" "$ROOT/Sources/WorkTrackingViews.swift" "$ROOT/Sources/WorkHandoffView.swift" "$ROOT/Sources/WorkReviewStore.swift" "$ROOT/Sources/WorkWorkspaceView.swift" "$ROOT/Sources/PermissionGuideModel.swift" "$ROOT/Sources/PermissionGuideSystem.swift" "$ROOT/Sources/PermissionFlowVendored.swift" "$ROOT/Sources/PermissionDragFlow.swift" "$ROOT/Sources/PermissionGuideViews.swift" "$ROOT/Sources/ProviderConnectModel.swift" "$ROOT/Sources/ProviderConnectViews.swift" "$ROOT/Sources/ActivityWindow.swift" "$ROOT/Sources/ActivityMeetings.swift" \
   "$ROOT/Sources/COSMarkdownParser.swift" "$ROOT/Sources/COSMarkdown.swift" \
-  "$ROOT/Sources/SessionLiveFeed.swift" \
+  "$ROOT/Sources/SessionLiveFeed.swift" "$ROOT/Sources/LiveTranscript.swift" \
   "$ROOT/Sources/SessionPet.swift" \
   "$ROOT/Tests/JediIdleContract.swift" -framework AppKit -framework SwiftUI -o "$TMP/jedi-idle-contract"
 "$TMP/jedi-idle-contract" "$ROOT/Resources"
@@ -2599,7 +2603,7 @@ fi
   "$ROOT/Sources/Control2Foundation.swift" "$ROOT/Sources/WorkHandoffStore.swift" "$ROOT/Sources/WorkProgress.swift" "$ROOT/Sources/WorkCardFiles.swift" "$ROOT/Sources/WorkProgressTracker.swift" "$ROOT/Sources/WorkTrackingViews.swift" "$ROOT/Sources/WorkHandoffView.swift" "$ROOT/Sources/WorkReviewStore.swift" "$ROOT/Sources/WorkWorkspaceView.swift" "$ROOT/Sources/PermissionGuideModel.swift" "$ROOT/Sources/PermissionGuideSystem.swift" "$ROOT/Sources/PermissionFlowVendored.swift" "$ROOT/Sources/PermissionDragFlow.swift" "$ROOT/Sources/PermissionGuideViews.swift" "$ROOT/Sources/ProviderConnectModel.swift" "$ROOT/Sources/ProviderConnectViews.swift" "$ROOT/Sources/ActivityWindow.swift" \
   "$ROOT/Sources/ActivityMeetings.swift" \
   "$ROOT/Sources/COSMarkdownParser.swift" "$ROOT/Sources/COSMarkdown.swift" \
-  "$ROOT/Sources/SessionLiveFeed.swift" \
+  "$ROOT/Sources/SessionLiveFeed.swift" "$ROOT/Sources/LiveTranscript.swift" \
   "$ROOT/Sources/SessionPet.swift" \
   "$ROOT/Sources/ControlSetup.swift" \
   "$ROOT/Sources/COSControlApp.swift" \
@@ -5049,10 +5053,10 @@ for name, start, end in (("sessionRow", "    private func sessionRow(", "    pri
     need(row.count(".font(.system(size:") == row.count('Image(systemName: "chevron.right")'), f"{name} still sets prose in the system font")
 need("stats: meetingsStats" in activity and "stats: sessionsStats" in activity and "stats: tasksStats" in activity, "each pane must pass its stat strip")
 meetings_src = (root / "Sources/ActivityMeetings.swift").read_text()
-# 3 from 0.5.230: the library row, the search hit, and the suggestion row. The
+# 3 from 0.5.230: the library row, the search hit, and the suggestion row; 4 from 0.5.278 with the Live now row. The
 # rule is "cards in a shared scroll list, never a List"; the count is how it is
 # expressed, so a new row surface raises it rather than relaxing it.
-need(meetings_src.count(".cosRowCard()") == 3 and "List(" not in meetings_src, "the meeting rows must be cards in the shared scroll list, not a List")
+need(meetings_src.count(".cosRowCard()") == 4 and "List(" not in meetings_src, "the meeting rows must be cards in the shared scroll list, not a List")
 need("COSType.display(22, weight: .medium)" in meetings_src and "COSType.display(15, weight: .medium)" in meetings_src, "the meeting detail title and the calendar month must be Fraunces")
 need("Search topics, ideas" in meetings_src, "the meetings search placeholder changed")
 # 0.5.194: the Knowledge setup path. Six bounded ops plus one native folder

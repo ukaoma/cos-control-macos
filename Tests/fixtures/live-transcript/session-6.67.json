@@ -1,0 +1,999 @@
+{
+ "sessionId": "meeting_1791635349988_fx67ab",
+ "startTime": 1791635349988,
+ "lastActivityAt": 1791635401200,
+ "title": "G2 Recording 2026-10-10 07:29",
+ "chunks": [
+  {
+   "text": "Fixture line zero about the plan",
+   "speaker": "Miles",
+   "elapsed": 0,
+   "similarity": 0.82,
+   "words": [
+    {
+     "word": "Fixture",
+     "start": 0.0,
+     "end": 0.35,
+     "probability": 0.9
+    },
+    {
+     "word": "line",
+     "start": 0.4,
+     "end": 0.75,
+     "probability": 0.9
+    },
+    {
+     "word": "zero",
+     "start": 0.8,
+     "end": 1.15,
+     "probability": 0.9
+    },
+    {
+     "word": "about",
+     "start": 1.2,
+     "end": 1.55,
+     "probability": 0.9
+    },
+    {
+     "word": "the",
+     "start": 1.6,
+     "end": 1.95,
+     "probability": 0.9
+    },
+    {
+     "word": "plan",
+     "start": 2.0,
+     "end": 2.35,
+     "probability": 0.9
+    }
+   ],
+   "asrProvider": "server-whisper",
+   "backend": "whisper-server",
+   "model": "large-v3",
+   "mode": "stream",
+   "latencyMs": 1830,
+   "audioSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+   "canonical": true,
+   "segments": [
+    {
+     "speaker": "Miles",
+     "text": "Fixture line zero about the plan",
+     "startSec": 0,
+     "endSec": 5.8,
+     "similarity": 0.82
+    }
+   ],
+   "diarizer": {
+    "engine": "nemotron",
+    "tracks": 1,
+    "timing": "words",
+    "ms": 212
+   }
+  },
+  {
+   "text": "Fixture line one continues the thought",
+   "speaker": "Miles",
+   "elapsed": 6100,
+   "similarity": 0.82,
+   "words": [
+    {
+     "word": "Fixture",
+     "start": 0.0,
+     "end": 0.35,
+     "probability": 0.9
+    },
+    {
+     "word": "line",
+     "start": 0.4,
+     "end": 0.75,
+     "probability": 0.9
+    },
+    {
+     "word": "one",
+     "start": 0.8,
+     "end": 1.15,
+     "probability": 0.9
+    },
+    {
+     "word": "continues",
+     "start": 1.2,
+     "end": 1.55,
+     "probability": 0.9
+    },
+    {
+     "word": "the",
+     "start": 1.6,
+     "end": 1.95,
+     "probability": 0.9
+    },
+    {
+     "word": "thought",
+     "start": 2.0,
+     "end": 2.35,
+     "probability": 0.9
+    }
+   ],
+   "asrProvider": "server-whisper",
+   "backend": "whisper-server",
+   "model": "large-v3",
+   "mode": "stream",
+   "latencyMs": 1830,
+   "audioSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+   "canonical": true,
+   "segments": [
+    {
+     "speaker": "Miles",
+     "text": "Fixture line one continues the thought",
+     "startSec": 0,
+     "endSec": 5.8,
+     "similarity": 0.82
+    }
+   ],
+   "diarizer": {
+    "engine": "nemotron",
+    "tracks": 1,
+    "timing": "words",
+    "ms": 212
+   }
+  },
+  {
+   "text": "Fixture reply from the second voice",
+   "speaker": "Jordan",
+   "elapsed": 12050,
+   "similarity": 0.71,
+   "words": [
+    {
+     "word": "Fixture",
+     "start": 0.0,
+     "end": 0.35,
+     "probability": 0.9
+    },
+    {
+     "word": "reply",
+     "start": 0.4,
+     "end": 0.75,
+     "probability": 0.9
+    },
+    {
+     "word": "from",
+     "start": 0.8,
+     "end": 1.15,
+     "probability": 0.9
+    },
+    {
+     "word": "the",
+     "start": 1.2,
+     "end": 1.55,
+     "probability": 0.9
+    },
+    {
+     "word": "second",
+     "start": 1.6,
+     "end": 1.95,
+     "probability": 0.9
+    },
+    {
+     "word": "voice",
+     "start": 2.0,
+     "end": 2.35,
+     "probability": 0.9
+    }
+   ],
+   "asrProvider": "server-whisper",
+   "backend": "whisper-server",
+   "model": "large-v3",
+   "mode": "stream",
+   "latencyMs": 1830,
+   "audioSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+   "canonical": true,
+   "segments": [
+    {
+     "speaker": "Jordan",
+     "text": "Fixture reply from the second voice",
+     "startSec": 0,
+     "endSec": 5.8,
+     "similarity": 0.71
+    }
+   ],
+   "diarizer": {
+    "engine": "nemotron",
+    "tracks": 1,
+    "timing": "words",
+    "ms": 212
+   }
+  },
+  {
+   "text": "Fixture words from a named voice",
+   "speaker": "Zoë Ångström",
+   "elapsed": 18200,
+   "similarity": 0.66,
+   "words": [
+    {
+     "word": "Fixture",
+     "start": 0.0,
+     "end": 0.35,
+     "probability": 0.9
+    },
+    {
+     "word": "words",
+     "start": 0.4,
+     "end": 0.75,
+     "probability": 0.9
+    },
+    {
+     "word": "from",
+     "start": 0.8,
+     "end": 1.15,
+     "probability": 0.9
+    },
+    {
+     "word": "a",
+     "start": 1.2,
+     "end": 1.55,
+     "probability": 0.9
+    },
+    {
+     "word": "named",
+     "start": 1.6,
+     "end": 1.95,
+     "probability": 0.9
+    },
+    {
+     "word": "voice",
+     "start": 2.0,
+     "end": 2.35,
+     "probability": 0.9
+    }
+   ],
+   "asrProvider": "server-whisper",
+   "backend": "whisper-server",
+   "model": "large-v3",
+   "mode": "stream",
+   "latencyMs": 1830,
+   "audioSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+   "canonical": true,
+   "segments": [
+    {
+     "speaker": "Zoë Ångström",
+     "text": "Fixture words from a named voice",
+     "startSec": 0,
+     "endSec": 5.8,
+     "similarity": 0.66
+    }
+   ],
+   "diarizer": {
+    "engine": "nemotron",
+    "tracks": 1,
+    "timing": "words",
+    "ms": 212
+   }
+  },
+  {
+   "text": "Fixture café line with naïve résumé text",
+   "speaker": "Zoë Ångström",
+   "elapsed": 30400,
+   "similarity": 0.64,
+   "words": [
+    {
+     "word": "Fixture",
+     "start": 0.0,
+     "end": 0.35,
+     "probability": 0.9
+    },
+    {
+     "word": "café",
+     "start": 0.4,
+     "end": 0.75,
+     "probability": 0.9
+    },
+    {
+     "word": "line",
+     "start": 0.8,
+     "end": 1.15,
+     "probability": 0.9
+    },
+    {
+     "word": "with",
+     "start": 1.2,
+     "end": 1.55,
+     "probability": 0.9
+    },
+    {
+     "word": "naïve",
+     "start": 1.6,
+     "end": 1.95,
+     "probability": 0.9
+    },
+    {
+     "word": "résumé",
+     "start": 2.0,
+     "end": 2.35,
+     "probability": 0.9
+    },
+    {
+     "word": "text",
+     "start": 2.4,
+     "end": 2.75,
+     "probability": 0.9
+    }
+   ],
+   "asrProvider": "server-whisper",
+   "backend": "whisper-server",
+   "model": "large-v3",
+   "mode": "stream",
+   "latencyMs": 1830,
+   "audioSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+   "canonical": true,
+   "segments": [
+    {
+     "speaker": "Zoë Ångström",
+     "text": "Fixture café line with naïve résumé text",
+     "startSec": 0,
+     "endSec": 5.8,
+     "similarity": 0.64
+    }
+   ],
+   "diarizer": {
+    "engine": "nemotron",
+    "tracks": 1,
+    "timing": "words",
+    "ms": 212
+   }
+  },
+  {
+   "text": "Fixture line from nobody recognised",
+   "speaker": "Unknown",
+   "elapsed": 42800,
+   "similarity": 0.0,
+   "words": [
+    {
+     "word": "Fixture",
+     "start": 0.0,
+     "end": 0.35,
+     "probability": 0.9
+    },
+    {
+     "word": "line",
+     "start": 0.4,
+     "end": 0.75,
+     "probability": 0.9
+    },
+    {
+     "word": "from",
+     "start": 0.8,
+     "end": 1.15,
+     "probability": 0.9
+    },
+    {
+     "word": "nobody",
+     "start": 1.2,
+     "end": 1.55,
+     "probability": 0.9
+    },
+    {
+     "word": "recognised",
+     "start": 1.6,
+     "end": 1.95,
+     "probability": 0.9
+    }
+   ],
+   "asrProvider": "server-whisper",
+   "backend": "whisper-server",
+   "model": "large-v3",
+   "mode": "stream",
+   "latencyMs": 1830,
+   "audioSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+   "canonical": true,
+   "segments": [
+    {
+     "speaker": "Unknown",
+     "text": "Fixture line from nobody recognised",
+     "startSec": 0,
+     "endSec": 5.8,
+     "similarity": 0.0
+    }
+   ],
+   "diarizer": {
+    "engine": "nemotron",
+    "tracks": 1,
+    "timing": "words",
+    "ms": 212
+   }
+  },
+  {
+   "text": "Fixture line eight after the gap",
+   "speaker": "Miles",
+   "elapsed": 48900,
+   "similarity": 0.82,
+   "words": [
+    {
+     "word": "Fixture",
+     "start": 0.0,
+     "end": 0.35,
+     "probability": 0.9
+    },
+    {
+     "word": "line",
+     "start": 0.4,
+     "end": 0.75,
+     "probability": 0.9
+    },
+    {
+     "word": "eight",
+     "start": 0.8,
+     "end": 1.15,
+     "probability": 0.9
+    },
+    {
+     "word": "after",
+     "start": 1.2,
+     "end": 1.55,
+     "probability": 0.9
+    },
+    {
+     "word": "the",
+     "start": 1.6,
+     "end": 1.95,
+     "probability": 0.9
+    },
+    {
+     "word": "gap",
+     "start": 2.0,
+     "end": 2.35,
+     "probability": 0.9
+    }
+   ],
+   "asrProvider": "server-whisper",
+   "backend": "whisper-server",
+   "model": "large-v3",
+   "mode": "stream",
+   "latencyMs": 1830,
+   "audioSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+   "canonical": true,
+   "segments": [
+    {
+     "speaker": "Miles",
+     "text": "Fixture line eight after the gap",
+     "startSec": 0,
+     "endSec": 5.8,
+     "similarity": 0.82
+    }
+   ],
+   "diarizer": {
+    "engine": "nemotron",
+    "tracks": 1,
+    "timing": "words",
+    "ms": 212
+   }
+  }
+ ],
+ "chunksIndexed": [
+  {
+   "i": 0,
+   "c": {
+    "text": "Fixture line zero about the plan",
+    "speaker": "Miles",
+    "elapsed": 0,
+    "similarity": 0.82,
+    "words": [
+     {
+      "word": "Fixture",
+      "start": 0.0,
+      "end": 0.35,
+      "probability": 0.9
+     },
+     {
+      "word": "line",
+      "start": 0.4,
+      "end": 0.75,
+      "probability": 0.9
+     },
+     {
+      "word": "zero",
+      "start": 0.8,
+      "end": 1.15,
+      "probability": 0.9
+     },
+     {
+      "word": "about",
+      "start": 1.2,
+      "end": 1.55,
+      "probability": 0.9
+     },
+     {
+      "word": "the",
+      "start": 1.6,
+      "end": 1.95,
+      "probability": 0.9
+     },
+     {
+      "word": "plan",
+      "start": 2.0,
+      "end": 2.35,
+      "probability": 0.9
+     }
+    ],
+    "asrProvider": "server-whisper",
+    "backend": "whisper-server",
+    "model": "large-v3",
+    "mode": "stream",
+    "latencyMs": 1830,
+    "audioSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "canonical": true,
+    "segments": [
+     {
+      "speaker": "Miles",
+      "text": "Fixture line zero about the plan",
+      "startSec": 0,
+      "endSec": 5.8,
+      "similarity": 0.82
+     }
+    ],
+    "diarizer": {
+     "engine": "nemotron",
+     "tracks": 1,
+     "timing": "words",
+     "ms": 212
+    }
+   }
+  },
+  {
+   "i": 1,
+   "c": {
+    "text": "Fixture line one continues the thought",
+    "speaker": "Miles",
+    "elapsed": 6100,
+    "similarity": 0.82,
+    "words": [
+     {
+      "word": "Fixture",
+      "start": 0.0,
+      "end": 0.35,
+      "probability": 0.9
+     },
+     {
+      "word": "line",
+      "start": 0.4,
+      "end": 0.75,
+      "probability": 0.9
+     },
+     {
+      "word": "one",
+      "start": 0.8,
+      "end": 1.15,
+      "probability": 0.9
+     },
+     {
+      "word": "continues",
+      "start": 1.2,
+      "end": 1.55,
+      "probability": 0.9
+     },
+     {
+      "word": "the",
+      "start": 1.6,
+      "end": 1.95,
+      "probability": 0.9
+     },
+     {
+      "word": "thought",
+      "start": 2.0,
+      "end": 2.35,
+      "probability": 0.9
+     }
+    ],
+    "asrProvider": "server-whisper",
+    "backend": "whisper-server",
+    "model": "large-v3",
+    "mode": "stream",
+    "latencyMs": 1830,
+    "audioSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "canonical": true,
+    "segments": [
+     {
+      "speaker": "Miles",
+      "text": "Fixture line one continues the thought",
+      "startSec": 0,
+      "endSec": 5.8,
+      "similarity": 0.82
+     }
+    ],
+    "diarizer": {
+     "engine": "nemotron",
+     "tracks": 1,
+     "timing": "words",
+     "ms": 212
+    }
+   }
+  },
+  {
+   "i": 2,
+   "c": {
+    "text": "Fixture reply from the second voice",
+    "speaker": "Jordan",
+    "elapsed": 12050,
+    "similarity": 0.71,
+    "words": [
+     {
+      "word": "Fixture",
+      "start": 0.0,
+      "end": 0.35,
+      "probability": 0.9
+     },
+     {
+      "word": "reply",
+      "start": 0.4,
+      "end": 0.75,
+      "probability": 0.9
+     },
+     {
+      "word": "from",
+      "start": 0.8,
+      "end": 1.15,
+      "probability": 0.9
+     },
+     {
+      "word": "the",
+      "start": 1.2,
+      "end": 1.55,
+      "probability": 0.9
+     },
+     {
+      "word": "second",
+      "start": 1.6,
+      "end": 1.95,
+      "probability": 0.9
+     },
+     {
+      "word": "voice",
+      "start": 2.0,
+      "end": 2.35,
+      "probability": 0.9
+     }
+    ],
+    "asrProvider": "server-whisper",
+    "backend": "whisper-server",
+    "model": "large-v3",
+    "mode": "stream",
+    "latencyMs": 1830,
+    "audioSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "canonical": true,
+    "segments": [
+     {
+      "speaker": "Jordan",
+      "text": "Fixture reply from the second voice",
+      "startSec": 0,
+      "endSec": 5.8,
+      "similarity": 0.71
+     }
+    ],
+    "diarizer": {
+     "engine": "nemotron",
+     "tracks": 1,
+     "timing": "words",
+     "ms": 212
+    }
+   }
+  },
+  {
+   "i": 3,
+   "c": {
+    "text": "Fixture words from a named voice",
+    "speaker": "Zoë Ångström",
+    "elapsed": 18200,
+    "similarity": 0.66,
+    "words": [
+     {
+      "word": "Fixture",
+      "start": 0.0,
+      "end": 0.35,
+      "probability": 0.9
+     },
+     {
+      "word": "words",
+      "start": 0.4,
+      "end": 0.75,
+      "probability": 0.9
+     },
+     {
+      "word": "from",
+      "start": 0.8,
+      "end": 1.15,
+      "probability": 0.9
+     },
+     {
+      "word": "a",
+      "start": 1.2,
+      "end": 1.55,
+      "probability": 0.9
+     },
+     {
+      "word": "named",
+      "start": 1.6,
+      "end": 1.95,
+      "probability": 0.9
+     },
+     {
+      "word": "voice",
+      "start": 2.0,
+      "end": 2.35,
+      "probability": 0.9
+     }
+    ],
+    "asrProvider": "server-whisper",
+    "backend": "whisper-server",
+    "model": "large-v3",
+    "mode": "stream",
+    "latencyMs": 1830,
+    "audioSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "canonical": true,
+    "segments": [
+     {
+      "speaker": "Zoë Ångström",
+      "text": "Fixture words from a named voice",
+      "startSec": 0,
+      "endSec": 5.8,
+      "similarity": 0.66
+     }
+    ],
+    "diarizer": {
+     "engine": "nemotron",
+     "tracks": 1,
+     "timing": "words",
+     "ms": 212
+    }
+   }
+  },
+  {
+   "i": 5,
+   "c": {
+    "text": "Fixture café line with naïve résumé text",
+    "speaker": "Zoë Ångström",
+    "elapsed": 30400,
+    "similarity": 0.64,
+    "words": [
+     {
+      "word": "Fixture",
+      "start": 0.0,
+      "end": 0.35,
+      "probability": 0.9
+     },
+     {
+      "word": "café",
+      "start": 0.4,
+      "end": 0.75,
+      "probability": 0.9
+     },
+     {
+      "word": "line",
+      "start": 0.8,
+      "end": 1.15,
+      "probability": 0.9
+     },
+     {
+      "word": "with",
+      "start": 1.2,
+      "end": 1.55,
+      "probability": 0.9
+     },
+     {
+      "word": "naïve",
+      "start": 1.6,
+      "end": 1.95,
+      "probability": 0.9
+     },
+     {
+      "word": "résumé",
+      "start": 2.0,
+      "end": 2.35,
+      "probability": 0.9
+     },
+     {
+      "word": "text",
+      "start": 2.4,
+      "end": 2.75,
+      "probability": 0.9
+     }
+    ],
+    "asrProvider": "server-whisper",
+    "backend": "whisper-server",
+    "model": "large-v3",
+    "mode": "stream",
+    "latencyMs": 1830,
+    "audioSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "canonical": true,
+    "segments": [
+     {
+      "speaker": "Zoë Ångström",
+      "text": "Fixture café line with naïve résumé text",
+      "startSec": 0,
+      "endSec": 5.8,
+      "similarity": 0.64
+     }
+    ],
+    "diarizer": {
+     "engine": "nemotron",
+     "tracks": 1,
+     "timing": "words",
+     "ms": 212
+    }
+   }
+  },
+  {
+   "i": 7,
+   "c": {
+    "text": "Fixture line from nobody recognised",
+    "speaker": "Unknown",
+    "elapsed": 42800,
+    "similarity": 0.0,
+    "words": [
+     {
+      "word": "Fixture",
+      "start": 0.0,
+      "end": 0.35,
+      "probability": 0.9
+     },
+     {
+      "word": "line",
+      "start": 0.4,
+      "end": 0.75,
+      "probability": 0.9
+     },
+     {
+      "word": "from",
+      "start": 0.8,
+      "end": 1.15,
+      "probability": 0.9
+     },
+     {
+      "word": "nobody",
+      "start": 1.2,
+      "end": 1.55,
+      "probability": 0.9
+     },
+     {
+      "word": "recognised",
+      "start": 1.6,
+      "end": 1.95,
+      "probability": 0.9
+     }
+    ],
+    "asrProvider": "server-whisper",
+    "backend": "whisper-server",
+    "model": "large-v3",
+    "mode": "stream",
+    "latencyMs": 1830,
+    "audioSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "canonical": true,
+    "segments": [
+     {
+      "speaker": "Unknown",
+      "text": "Fixture line from nobody recognised",
+      "startSec": 0,
+      "endSec": 5.8,
+      "similarity": 0.0
+     }
+    ],
+    "diarizer": {
+     "engine": "nemotron",
+     "tracks": 1,
+     "timing": "words",
+     "ms": 212
+    }
+   }
+  },
+  {
+   "i": 8,
+   "c": {
+    "text": "Fixture line eight after the gap",
+    "speaker": "Miles",
+    "elapsed": 48900,
+    "similarity": 0.82,
+    "words": [
+     {
+      "word": "Fixture",
+      "start": 0.0,
+      "end": 0.35,
+      "probability": 0.9
+     },
+     {
+      "word": "line",
+      "start": 0.4,
+      "end": 0.75,
+      "probability": 0.9
+     },
+     {
+      "word": "eight",
+      "start": 0.8,
+      "end": 1.15,
+      "probability": 0.9
+     },
+     {
+      "word": "after",
+      "start": 1.2,
+      "end": 1.55,
+      "probability": 0.9
+     },
+     {
+      "word": "the",
+      "start": 1.6,
+      "end": 1.95,
+      "probability": 0.9
+     },
+     {
+      "word": "gap",
+      "start": 2.0,
+      "end": 2.35,
+      "probability": 0.9
+     }
+    ],
+    "asrProvider": "server-whisper",
+    "backend": "whisper-server",
+    "model": "large-v3",
+    "mode": "stream",
+    "latencyMs": 1830,
+    "audioSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "canonical": true,
+    "segments": [
+     {
+      "speaker": "Miles",
+      "text": "Fixture line eight after the gap",
+      "startSec": 0,
+      "endSec": 5.8,
+      "similarity": 0.82
+     }
+    ],
+    "diarizer": {
+     "engine": "nemotron",
+     "tracks": 1,
+     "timing": "words",
+     "ms": 212
+    }
+   }
+  }
+ ],
+ "receivedIndices": [
+  0,
+  1,
+  2,
+  3,
+  4,
+  5,
+  6,
+  7,
+  8
+ ],
+ "asrCompletedIndices": [
+  0,
+  1,
+  2,
+  3,
+  4,
+  5,
+  7,
+  8
+ ],
+ "emptyCompletions": {
+  "4": {
+   "text": "",
+   "speaker": "Miles",
+   "elapsed": 24300,
+   "backend": "whisper-server",
+   "asrProvider": "server-whisper",
+   "audioSha256": "1111111111111111111111111111111111111111111111111111111111111111",
+   "canonical": false
+  }
+ },
+ "maxChunkIndex": 8,
+ "providerCandidates": {
+  "6": {
+   "provider": "iphone-whisperkit-beta",
+   "chunkIndex": 6,
+   "elapsed": 36600,
+   "audioSha256": "2222222222222222222222222222222222222222222222222222222222222222",
+   "text": "PHONE-CANDIDATE-TEXT never shown",
+   "receivedAt": 1791635386600,
+   "accepted": false
+  }
+ }
+}
