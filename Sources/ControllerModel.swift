@@ -971,8 +971,9 @@ final class ControllerModel: ObservableObject {
     /// checkForAppUpdateManually itself (once, then it runs), so the button never hangs on it (0.5.275).
     func checkForUpdatesFromHeader() async {
         guard !updateCheckInFlight else { return }
-        headerUpdateStatusReset?.cancel()
-        headerUpdateStatusReset = nil
+        // A pending reset from the last result is left to run: while the check runs the line reads Checking from
+        // updateCheckInFlight whatever it does, and the result below cancels it (one cancel site, so its isCancelled
+        // guard is what stops a stale timer clearing the new result).
         headerUpdateStatus = .checking
         let outcome = await checkForAppUpdateManually(reportsInHeader: true)
         guard outcome != .skipped else { return }

@@ -122,6 +122,17 @@ import SwiftUI
         if stand.calls("check-app-update") != before + 1 { fail("no second check", "two clicks made \(stand.calls("check-app-update") - before) checks") }
         if model.headerUpdateStatus != .upToDate { fail("outcome up to date", "the held check ended up to date, got \(model.headerUpdateStatus)") }
 
+        // Two manual checks at once (any two callers): the second starts nothing and says so.
+        stand.unrelease()
+        let twoBefore = stand.calls("check-app-update")
+        let one = Task { await model.checkForAppUpdateManually() }
+        await until("the first manual check") { stand.calls("check-app-update") == twoBefore + 1 }
+        let two = await model.checkForAppUpdateManually()
+        if two != .skipped { fail("no second check", "a manual check during another must not start, got \(two)") }
+        if stand.calls("check-app-update") != twoBefore + 1 { fail("no second check", "two manual checks called the helper \(stand.calls("check-app-update") - twoBefore) times") }
+        stand.release()
+        _ = await one.value
+
         // A click while a check the header did not start is running leaves the line to that check: it never sticks at
         // Checking once that check ends.
         stand.unrelease()

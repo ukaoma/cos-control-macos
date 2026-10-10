@@ -81,7 +81,8 @@ pin('.accessibilityLabel("COS Control version \\(ControllerModel.currentVersion)
 pin("background(" not in stamp and "overlay(" not in stamp and "Capsule" not in stamp and "stroke" not in stamp,
     "stamp type", "no chip, pill, border or background")
 lockup = header.split("VStack(alignment: .leading, spacing: 2) {", 1)[1]
-pin(lockup.index("COSLockupView(height: 17)") < lockup.index("if !versionStampInline { versionStamp }"), "stamp placement",
+pin("COSLockupView(height: 17)" in lockup and "if !versionStampInline { versionStamp }" in lockup
+    and lockup.index("COSLockupView(height: 17)") < lockup.index("if !versionStampInline { versionStamp }"), "stamp placement",
     "variant A: the stamp sits under the lockup")
 pin("var versionStampInline = false" in views, "stamp placement", "variant B is render-only and off by default")
 pin("versionStampInline: true" not in "".join(p.read_text(encoding="utf-8") for p in (root / "Sources").glob("*.swift")),
