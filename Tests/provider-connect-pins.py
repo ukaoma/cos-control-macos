@@ -124,7 +124,7 @@ pin("facts.glasses = glassesPairing.facts(serverRunning: status.running, pairing
 
 # The setup guide (Miles 2026-10-08 10:52): prominent, skippable, reachable from everywhere.
 pet = read("Sources/SessionPet.swift"); activity = read("Sources/ActivityWindow.swift")
-pin(before(main_panel, "FinishSetupCard(", "updateRow"), "finish card", "Finish setup sits at the top of the panel")
+pin(before(main_panel, "FinishSetupCard(", "noticeBanner"), "finish card", "Finish setup sits at the top of the panel")
 pin("FinishSetupCard(" in body(activity, "    private var activityHome: some View {", "homeGrid("), "finish card", "and at the top of Activity home")
 pin('Button("Hide") { guide.hide() }' in connect_views and 'Button("Hide setup guide") { guide.hide() }' in connect_views, "finish card", "Hide setup guide from the card and the guide")
 pin('static let dockMenuTitles = ["Open Activity", "Setup guide…", "Settings…"]' in connect_views and "func applicationDockMenu(" in connect_views, "dock menu", "the Dock menu")

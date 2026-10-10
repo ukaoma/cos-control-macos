@@ -57,7 +57,7 @@ MUTANTS = [
     ("pale gold on light bars", M, "            : NSColor(red: 0.537, green: 0.400, blue: 0.176, alpha: 1)", "            : NSColor(red: 0.788, green: 0.659, blue: 0.431, alpha: 1)", "[icon", "checks"),
     # Wiring.
     ("banner below the header", V, "                updateBanner\n                if hostedInActivity {", "                if hostedInActivity {", "[banner first]", "pins"),
-    ("version card under the banner", V, "        if !model.appUpdateFlow.showsBanner {\n            HStack(spacing: 8) {", "        if true {\n            HStack(spacing: 8) {", "[version card]", "pins"),
+    ("version card back", V, "                noticeBanner\n", "                updateRow\n                noticeBanner\n", "[version card]", "pins"),
     ("no check on panel open", V, "        .onAppear { model.panelOpenedForUpdates() }\n", "", "[panel open check]", "pins"),
     ("periodic loop bypasses the schedule", C, "                await self?.runScheduledAppUpdateCheck(.periodic)", "                await self?.checkForAppUpdate()", "[background checks]", "pins"),
     ("install without phases", C, "        guard !busy, appUpdateFlow.beginInstall() else { return }", "        guard !busy else { return }", "[install phases]", "pins"),

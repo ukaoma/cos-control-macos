@@ -6,7 +6,8 @@ import Vision
 /// several places where that same top vertical alignment is happening." The shipped menu-bar panel (`ControlPanel`,
 /// the real Views.swift) rendered off screen, light and dark, whole (its scroll view's document, top to bottom), with
 /// the two buttons he pointed at, "Check for updates" in the updates card and "Create Folders" in the buttons grid, and
-/// one-line icon buttons beside them.
+/// one-line icon buttons beside them. 2026-10-09: the updates card is gone (the header's refresh button checks now), so
+/// Create Folders carries the two-line case alone.
 ///
 /// A button is read from the pixels alone. Vision finds its words (each line of them); the words' block is the union
 /// of those lines. In the 8 pt gap between the icon and the words, a column runs from the button's top hairline to its
@@ -32,14 +33,14 @@ import Vision
         }
     }
 
-    /// The two buttons Miles pointed at, and one-line icon buttons in the same panel.
-    static let targets = ["Check for updates", "Create Folders", "Work Folder", "Run Doctor"]
+    /// The button Miles pointed at that is still in the panel, and one-line icon buttons beside it.
+    static let targets = ["Create Folders", "Work Folder", "Run Doctor"]
 
     static func model() -> ControllerModel {
         let model = ControllerModel(startBackgroundWork: false)
         precondition(!model.backgroundWorkEnabled)
         // A managed, healthy server whose COS Data notes folder is chosen but has no memory/ or threads/ yet: the panel
-        // offers Create Folders beside the folder's path, and with no update waiting the card carries Check for updates.
+        // offers Create Folders beside the folder's path.
         model.status = ServerStatus([
             "installed": .bool(true), "serviceLoaded": .bool(true), "running": .bool(true), "managedContract": .bool(true),
             "runtimeState": .string("managedHealthy"), "ownershipVerified": .bool(true),
@@ -77,8 +78,8 @@ import Vision
         return (rep, document.bounds.size)
     }
 
-    /// Renders both appearances, measures every target, and writes PNGs (the updates card, the buttons grid, the whole
-    /// panel) to `output` when given, named `label`-....
+    /// Renders both appearances, measures every target, and writes PNGs (the buttons grid, the whole panel) to `output`
+    /// when given, named `label`-....
     static func run(output: URL?, label: String) -> [Measure] {
         if let output { try? FileManager.default.createDirectory(at: output, withIntermediateDirectories: true) }
         var out: [Measure] = []
@@ -95,9 +96,6 @@ import Vision
                 out.append(measure)
             }
             if let output {
-                let card = buttons["Check for updates"]!
-                write(rep, size: size, crop: CGRect(x: 0, y: max(0, card.minY - 20), width: size.width, height: card.height + 40),
-                      appearance: appearance, to: output.appendingPathComponent("\(label)-updates-card-\(word).png"))
                 let grid = buttons["Create Folders"]!.union(buttons["Work Folder"]!)
                 let top = max(0, grid.minY - 80), bottom = min(size.height, grid.maxY + 80)
                 write(rep, size: size, crop: CGRect(x: 0, y: top, width: size.width, height: bottom - top),

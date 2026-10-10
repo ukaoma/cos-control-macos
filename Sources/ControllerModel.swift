@@ -181,6 +181,10 @@ final class ControllerModel: ObservableObject {
     /// True only while a MANUAL check is in flight, so the button can show it is
     /// working. The 6-hourly background check deliberately shows nothing.
     @Published var updateCheckInFlight = false
+    /// The panel header's subtitle after a check from its refresh button (HeaderUpdateStatus). A result goes back to
+    /// idle on its own; the reset task is cancelled by the next click, so rapid clicks never stack timers.
+    @Published private(set) var headerUpdateStatus: HeaderUpdateStatus = .idle
+    private var headerUpdateStatusReset: Task<Void, Never>?
     /// Menu-bar chip → Activity tab. Consumed by the window, then cleared so the
     /// same chip can be pressed again. Nil means "just show the window."
     @Published var activityOpenSection: ActivitySection?
@@ -895,12 +899,17 @@ final class ControllerModel: ObservableObject {
     /// two builds behind and showed no banner, because every 6-hourly tick had
     /// landed before the release. There was no way to ask.
     ///
-    /// Every path here reports: an update, up-to-date, or the failure.
-    func checkForAppUpdateManually() async {
-        guard !updateCheckInFlight else { return }
+    /// Every path here reports: an update, up-to-date, or the failure. `reportsInHeader` (the header's refresh button)
+    /// reports through the returned outcome, which the header's subtitle shows, instead of the notice line and the
+    /// error alert. An update found opens What's New either way.
+    @discardableResult
+    func checkForAppUpdateManually(reportsInHeader: Bool = false) async -> ManualUpdateCheckOutcome {
+        guard !updateCheckInFlight else { return .skipped }
         updateCheckInFlight = true
-        notice = nil
-        error = nil
+        if !reportsInHeader {
+            notice = nil
+            error = nil
+        }
         defer { updateCheckInFlight = false }
         // Never two checks at once: a background check in flight finishes first (it frees the slot itself), then this
         // one asks for the slot again. Bounded: two attempts, then it runs anyway rather than leave the button waiting,
@@ -920,27 +929,67 @@ final class ControllerModel: ObservableObject {
             let incoming = AppUpdateInfo(response.details)
             if incoming.reason == "unreachable" || incoming.reason == "malformed" {
                 appUpdate = AppUpdateInfo.merging(previous: appUpdate, incoming: incoming)
-                self.error = "Could not reach the update feed: update check unavailable"
-                notice = nil
-                return
+                if !reportsInHeader {
+                    self.error = "Could not reach the update feed: update check unavailable"
+                    notice = nil
+                }
+                return .failed
             }
             appUpdate = incoming
             noteCheckReached(incoming)
             if appUpdate.shouldSurface {
                 // The banner is already rendering the offer; do not duplicate it
                 // in the notice line.
-                notice = nil
+                if !reportsInHeader { notice = nil }
                 // 2026-10-09: a check that was ASKED for and found an update opens What's New right away (the
                 // background checks never do; they only tint the glasses and raise the banner).
                 if appUpdateFlow.phase == .ready { presentWhatsNew() }
+                return .updateFound
             } else {
-                notice = "COS Control \(Self.currentVersion) is the latest version."
+                if !reportsInHeader { notice = "COS Control \(Self.currentVersion) is the latest version." }
+                return .upToDate
             }
         } catch let checkError {
             // A manual check REPORTS its failure. The background one does not.
             // Bound explicitly: a bare `catch` shadows `self.error` with the
             // caught Error and the assignment does not compile.
-            self.error = "Could not reach the update feed: \(checkError.localizedDescription)"
+            if !reportsInHeader { self.error = "Could not reach the update feed: \(checkError.localizedDescription)" }
+            return .failed
+        }
+    }
+
+    /// The panel header's refresh button (and Settings' in Activity), 2026-10-09: the server status AND a manual update
+    /// check, side by side. The status refresh never waits on the appcast.
+    func refreshAndCheckForUpdates() async {
+        let status = Task { await self.refresh() }
+        await checkForUpdatesFromHeader()
+        await status.value
+    }
+
+    /// The update half of the header's refresh button. Never a second check: while one runs (an earlier click) this
+    /// starts nothing, and the line already says Checking. A background check that is running is waited for by
+    /// checkForAppUpdateManually itself (once, then it runs), so the button never hangs on it (0.5.275).
+    func checkForUpdatesFromHeader() async {
+        guard !updateCheckInFlight else { return }
+        headerUpdateStatusReset?.cancel()
+        headerUpdateStatusReset = nil
+        headerUpdateStatus = .checking
+        let outcome = await checkForAppUpdateManually(reportsInHeader: true)
+        guard outcome != .skipped else { return }
+        showHeaderUpdateStatus(HeaderUpdateStatus.after(outcome))
+    }
+
+    /// One result on the line, then back to idle after its hold. The previous reset is cancelled first.
+    private func showHeaderUpdateStatus(_ next: HeaderUpdateStatus) {
+        headerUpdateStatusReset?.cancel()
+        headerUpdateStatusReset = nil
+        headerUpdateStatus = next
+        guard let hold = next.hold else { return }
+        headerUpdateStatusReset = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: hold)
+            guard !Task.isCancelled else { return }
+            self?.headerUpdateStatus = .idle
+            self?.headerUpdateStatusReset = nil
         }
     }
 

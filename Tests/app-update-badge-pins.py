@@ -25,9 +25,8 @@ panel = code(views[views.index("private var mainPanel"):views.index("private var
 opening = "VStack(alignment: .leading, spacing: 14) {"
 pin(opening in panel and panel.split(opening, 1)[1].lstrip().startswith("updateBanner"), "banner first",
     "the update banner must be the first thing in the panel, above the header")
-row = views.split("private var updateRow")[1].split("private var updateBanner")[0]
-pin("if !model.appUpdateFlow.showsBanner {" in row and 'Button("Check for updates"' in row, "version card",
-    "the version card (Check for updates) shows exactly when the banner does not")
+pin("updateRow" not in views and 'Button("Check for updates"' not in views, "version card",
+    "the standing version card is gone (2026-10-09); the header's refresh button checks instead")
 banner = views.split("private var updateBanner")[1].split("private var footer")[0]
 pin("if model.appUpdateFlow.showsBanner {" in banner and "model.presentWhatsNew()" in banner, "update path",
     "Update and Try again open the What's New window (2026-10-09; it replaced the install confirmation alert)")
@@ -44,7 +43,7 @@ for needle, behaviour in (("appUpdateFlow.beginInstall()", "install phases"), ("
                           ('"stage-app-update"', "update path"), ('"apply-app-update"', "update path")):
     pin(needle in install, behaviour, f"installAppUpdate must call {needle}")
 pin("didSet { appUpdateFlow.offer(appUpdate," in model, "model wiring", "every write of appUpdate moves the flow")
-manual = code(model[model.index("func checkForAppUpdateManually()"):model.index("func completeAppUpdateIfNeeded()")])
+manual = code(model[model.index("func checkForAppUpdateManually("):model.index("func completeAppUpdateIfNeeded()")])
 pin("appUpdateSchedule.begin(.manual" in manual and "if holdsSlot { appUpdateSchedule.finish() }" in manual
     and "while " not in manual.split("var holdsSlot", 1)[-1].split("do {", 1)[0], "no overlap",
     "Check for updates waits once for a running check, holds the slot while it runs, and never loops on it")

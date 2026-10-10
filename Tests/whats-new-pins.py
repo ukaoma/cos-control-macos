@@ -90,7 +90,7 @@ for literal in re.findall(r'"([^"\\]*(?:\\.[^"\\]*)*)"', window_view):
 pin("model.showWhatsNew = { whatsNewWindow.show(model: model) }" in code(app), "app wires window", "COSControlApp gives the model its window")
 present = code(between(model, "func presentWhatsNew() {", "func installAppUpdate()"))
 pin("showWhatsNew?()" in present, "banner opens", "presentWhatsNew opens the window")
-manual = code(between(model, "func checkForAppUpdateManually()", "func completeAppUpdateIfNeeded()"))
+manual = code(between(model, "func checkForAppUpdateManually(", "func completeAppUpdateIfNeeded()"))
 pin("if appUpdateFlow.phase == .ready { presentWhatsNew() }" in manual, "check for updates opens",
     "Check for updates that finds an update opens What's New")
 background = code(between(model, "    func checkForAppUpdate() async {", "private func noteCheckReached"))

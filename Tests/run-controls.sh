@@ -2,7 +2,7 @@
 # 0.5.251 GOTCOS controls, executed: the shipped components in a window ordered in far off screen, driven by clicks and
 # keys posted in-process; pure rules; rendered pixels. Fonts sit beside the binary, where COSType looks for them.
 # 0.5.253: labels (the icon in the middle of one and two lines) and the real menu-bar panel rendered off screen
-# (Tests/PanelLabelsRender.swift). The binary carries an Info.plist with this build's version, so the panel's updates card
+# (Tests/PanelLabelsRender.swift). The binary carries an Info.plist with this build's version, so the panel's version stamp
 # reads as it does in the app, and it runs with a scratch home, so the panel's own loads find no helper and never reach
 # the COS server. COS_PANEL_RENDER_OUT, when set, is where the panel's PNGs go.
 set -euo pipefail
