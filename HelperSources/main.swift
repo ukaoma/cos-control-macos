@@ -622,6 +622,8 @@ final class COSControlHelper {
         case "reset-message-era": try resetMessageEra()
         case "meeting-orphans": try emitMeetingOrphans()
         case "meeting-audio-watch": try emitMeetingAudioWatch()
+        case "live-transcript": try emitLiveTranscript(args: args)
+        case "live-transcript-status": try emitLiveTranscriptStatus(args: args)
         case "meeting-orphan-recover": try emitMeetingOrphanRecover(args: args)
         case "meeting-orphan-recover-all": try emitMeetingOrphanRecoverAll()
         case "meeting-sync-now": try emitMeetingSyncNow()
@@ -2820,6 +2822,10 @@ final class COSControlHelper {
             "safeToRestart": (managed || inPlaceActive()) ? (maintenance?["safeToRestart"] ?? false) : false,
             "activeJobs": maintenance?["activeJobs"] ?? NSNull(),
             "activeTranscriptionSessions": maintenance?["activeTranscriptionSessions"] ?? NSNull(),
+            // 0.5.278: the server's own live/stale split (a session quiet for 30 min, or empty for 2, is stale), so the live
+            // transcript row agrees with Recording in progress. Ids only: the detail's silence and chunk counts stay there.
+            "liveTranscriptionSessions": maintenance?["liveTranscriptionSessions"] ?? NSNull(),
+            "staleTranscriptionSessionIds": Self.staleTranscriptionSessionIds(maintenance?["staleTranscriptionSessionDetail"]),
             "backgroundJobsSupported": backgroundJobsSupported,
             "backgroundJobsEnabled": backgroundJobsEnabled ?? NSNull(),
             "meetingPreviewSupported": meetingPreviewSupported,
@@ -14683,6 +14689,265 @@ final class COSControlHelper {
         emit(ok: true, message: message, details: ["sessions": rows, "alerts": alerts])
     }
 
+    // MARK: - Live meeting transcript (0.5.278)
+    //
+    // While a glasses meeting records, the server keeps `active-sessions/<id>.json`, written atomically (temp file,
+    // fsync, rename) before each chunk is acknowledged, and deletes it at save. Control shows the text so far from that
+    // file. NO STREAM: the display stream replays private dictation to a new listener (validator 3, C0b), so this only
+    // reads the file, every 1.5 s while the Meetings pane is open and a meeting is live, and only when it changed.
+    //
+    // THE FILE'S SHAPE (server 6.67): `chunksIndexed[{i, c}]` keeps each chunk's own index; `c.text`, `c.speaker` and
+    // `c.elapsed` (ms since `startTime`) are all this reads. A missing index is silence (`emptyCompletions`), a dropped
+    // hallucination (`asrCompletedIndices`) or a chunk still in Whisper (`receivedIndices` only), never loss.
+    // `providerCandidates` (the phone's own text) is never read. The dense `chunks` array has no indexes and is ignored.
+    //
+    // SECRET BOUNDARY: the text leaves this process only in the JSON answer on stdout. Nothing here writes to stderr,
+    // the helper log or an error message; a failure is a reason code.
+
+    static let liveTranscriptMaxFileBytes = 64 * 1_048_576
+    /// A chunk this many indexes behind the newest one known no longer holds the `--since` cursor back, so a chunk
+    /// that never finishes cannot make every later read resend the whole meeting. About 5 minutes of 6 s chunks.
+    static let liveTranscriptSettleWindow = 50
+
+    struct LiveTranscriptFailure: Error { let reason: String }
+
+    /// The ids in maintenance status `staleTranscriptionSessionDetail`, each through the session-id grammar.
+    static func staleTranscriptionSessionIds(_ value: Any?) -> [String] {
+        ((value as? [Any]) ?? []).compactMap { ($0 as? [String: Any])?["sessionId"] as? String }.filter(liveTranscriptValidId)
+    }
+
+    /// The server's session-id grammar, `^[A-Za-z0-9:_-]{3,96}$`, checked by hand: a `$` in an ICU pattern also
+    /// matches before a final newline, which the server's JavaScript `$` does not.
+    static func liveTranscriptValidId(_ id: String) -> Bool {
+        let scalars = Array(id.unicodeScalars)
+        guard (3...96).contains(scalars.count) else { return false }
+        return scalars.allSatisfy { s in
+            (s >= "A" && s <= "Z") || (s >= "a" && s <= "z") || (s >= "0" && s <= "9") || s == ":" || s == "_" || s == "-"
+        }
+    }
+
+    /// The session file for an id, or nil. The id passes the grammar, and the resolved path sits directly inside
+    /// `<data>/active-sessions`.
+    static func liveTranscriptPath(dataDir: URL, sessionId: String) -> URL? {
+        guard liveTranscriptValidId(sessionId) else { return nil }
+        let dir = dataDir.appendingPathComponent("active-sessions", isDirectory: true).standardizedFileURL
+        let file = dir.appendingPathComponent(sessionId + ".json", isDirectory: false).standardizedFileURL
+        guard dir.lastPathComponent == "active-sessions",
+              file.deletingLastPathComponent().standardizedFileURL.path == dir.path,
+              file.lastPathComponent == sessionId + ".json" else { return nil }
+        return file
+    }
+
+    /// A `--data-dir` the app passes back from an earlier answer (the lookup spawns `launchctl print`, so the app does
+    /// it once per poll loop): absolute, already standard, with no `..`.
+    static func liveTranscriptDataDirHint(_ value: String) -> URL? {
+        guard value.hasPrefix("/"), !value.contains("\0"), value.count < 1024 else { return nil }
+        let url = URL(fileURLWithPath: value, isDirectory: true)
+        guard !url.pathComponents.contains(".."), !url.pathComponents.contains("."),
+              url.standardizedFileURL.path == (value.count > 1 && value.hasSuffix("/") ? String(value.dropLast()) : value) else { return nil }
+        return url
+    }
+
+    /// `<sec>.<nsec>.<size>`: what the file was at the last read. Kept as a string so nothing rounds it.
+    static func liveTranscriptStamp(_ info: stat) -> String {
+        "\(info.st_mtimespec.tv_sec).\(info.st_mtimespec.tv_nsec).\(info.st_size)"
+    }
+
+    /// The live session files, newest first, from a stat of each (no file is opened). Temp files (`.<name>.tmp`),
+    /// symlinks, anything that is not a regular file and any name outside the grammar are skipped.
+    static func liveTranscriptList(dataDir: URL) throws -> [[String: Any]] {
+        let dir = dataDir.appendingPathComponent("active-sessions", isDirectory: true)
+        var dirInfo = stat()
+        if lstat(dir.path, &dirInfo) != 0 {
+            if errno == ENOENT { return [] }
+            throw LiveTranscriptFailure(reason: "data_dir_unreadable")
+        }
+        guard (dirInfo.st_mode & S_IFMT) == S_IFDIR else { throw LiveTranscriptFailure(reason: "unsafe_directory") }
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: dir.path) else {
+            throw LiveTranscriptFailure(reason: "data_dir_unreadable")
+        }
+        var rows: [(mtime: Double, row: [String: Any])] = []
+        for name in names where name.hasSuffix(".json") && !name.hasPrefix(".") && !name.hasSuffix(".tmp") {
+            let id = String(name.dropLast(5))
+            guard liveTranscriptValidId(id), let file = liveTranscriptPath(dataDir: dataDir, sessionId: id) else { continue }
+            var info = stat()
+            guard lstat(file.path, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG else { continue }
+            let mtime = Double(info.st_mtimespec.tv_sec) * 1000 + Double(info.st_mtimespec.tv_nsec) / 1_000_000
+            rows.append((mtime, ["sessionId": id, "mtimeMs": mtime.rounded(.down), "size": Int(info.st_size),
+                                 "stamp": liveTranscriptStamp(info)]))
+        }
+        return rows.sorted { $0.mtime != $1.mtime ? $0.mtime > $1.mtime : (($0.row["sessionId"] as? String) ?? "") < (($1.row["sessionId"] as? String) ?? "") }
+            .map(\.row)
+    }
+
+    private static func liveTranscriptIndexes(_ value: Any?) -> [Int] {
+        ((value as? [Any]) ?? []).compactMap { item in
+            guard let number = item as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() else { return nil }
+            let double = number.doubleValue
+            guard double.isFinite, double >= 0, double < 10_000_000, double == double.rounded() else { return nil }
+            return Int(double)
+        }
+    }
+
+    /// One session parsed from the file's bytes: the chunks after `since`, and the cursor the next read sends.
+    static func liveTranscriptParse(_ data: Data, sessionId: String, since: Int, stamp: String) throws -> [String: Any] {
+        guard let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+            throw LiveTranscriptFailure(reason: "parse_failed")
+        }
+        if let named = object["sessionId"] as? String, named != sessionId { throw LiveTranscriptFailure(reason: "session_mismatch") }
+        var chunks: [Int: [String: Any]] = [:]
+        for entry in (object["chunksIndexed"] as? [Any]) ?? [] {
+            guard let row = entry as? [String: Any], let index = liveTranscriptIndexes([row["i"] as Any]).first,
+                  let chunk = row["c"] as? [String: Any], let text = chunk["text"] as? String,
+                  !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+            let elapsed = (chunk["elapsed"] as? NSNumber).map { $0.doubleValue.isFinite ? max(0, Int($0.doubleValue.rounded())) : 0 } ?? 0
+            chunks[index] = [
+                "i": index,
+                "elapsedMs": elapsed,
+                "speaker": (chunk["speaker"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+                "text": text,
+            ]
+        }
+        var settled = Set(chunks.keys)
+        settled.formUnion(liveTranscriptIndexes(object["asrCompletedIndices"]))
+        for key in ((object["emptyCompletions"] as? [String: Any]) ?? [:]).keys {
+            if let index = Int(key), index >= 0 { settled.insert(index) }
+        }
+        let received = liveTranscriptIndexes(object["receivedIndices"])
+        let declared = liveTranscriptIndexes([object["maxChunkIndex"] as Any]).first ?? -1
+        let newest = max(declared, received.max() ?? -1, settled.max() ?? -1)
+        // Through which index every chunk has its final answer (text, silence or a drop), or is too old to wait for.
+        var settledThrough = -1
+        if newest >= 0 {
+            for index in 0...newest {
+                guard settled.contains(index) || index < newest - liveTranscriptSettleWindow else { break }
+                settledThrough = index
+            }
+        }
+        let turns = chunks.keys.sorted().filter { $0 > since }.compactMap { chunks[$0] }
+        return [
+            "sessionId": sessionId,
+            "ended": false,
+            "unchanged": false,
+            "stamp": stamp,
+            "startTime": (object["startTime"] as? NSNumber)?.doubleValue ?? NSNull(),
+            "lastActivityAt": (object["lastActivityAt"] as? NSNumber)?.doubleValue ?? NSNull(),
+            "maxIndex": chunks.keys.max() ?? -1,
+            "settledThrough": settledThrough,
+            "chunkCount": chunks.count,
+            "turns": turns,
+        ]
+    }
+
+    /// Read one session: `ended` when the file is gone (the server deletes it at save or discard), `unchanged` when
+    /// it is the file `knownStamp` describes, else the chunks after `since`.
+    static func liveTranscriptRead(dataDir: URL, sessionId: String, since: Int, knownStamp: String?) throws -> [String: Any] {
+        guard let file = liveTranscriptPath(dataDir: dataDir, sessionId: sessionId) else {
+            throw LiveTranscriptFailure(reason: "invalid_session_id")
+        }
+        let ended: [String: Any] = ["sessionId": sessionId, "ended": true, "unchanged": false]
+        var info = stat()
+        if lstat(file.path, &info) != 0 {
+            if errno == ENOENT || errno == ENOTDIR { return ended }
+            throw LiveTranscriptFailure(reason: "unreadable")
+        }
+        guard (info.st_mode & S_IFMT) == S_IFREG else { throw LiveTranscriptFailure(reason: "unsafe_file") }
+        if let knownStamp, knownStamp == liveTranscriptStamp(info) {
+            return ["sessionId": sessionId, "ended": false, "unchanged": true, "stamp": knownStamp]
+        }
+        let descriptor = open(file.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+        if descriptor < 0 {
+            if errno == ENOENT { return ended }
+            throw LiveTranscriptFailure(reason: errno == ELOOP ? "unsafe_file" : "unreadable")
+        }
+        defer { close(descriptor) }
+        var opened = stat()
+        guard fstat(descriptor, &opened) == 0, (opened.st_mode & S_IFMT) == S_IFREG else { throw LiveTranscriptFailure(reason: "unsafe_file") }
+        guard opened.st_size <= liveTranscriptMaxFileBytes else { throw LiveTranscriptFailure(reason: "too_large") }
+        var data = Data()
+        var buffer = [UInt8](repeating: 0, count: 256 * 1024)
+        while true {
+            let count = buffer.withUnsafeMutableBytes { read(descriptor, $0.baseAddress, $0.count) }
+            if count < 0 {
+                if errno == EINTR { continue }
+                throw LiveTranscriptFailure(reason: "unreadable")
+            }
+            if count == 0 { break }
+            data.append(contentsOf: buffer[0..<count])
+            guard data.count <= liveTranscriptMaxFileBytes else { throw LiveTranscriptFailure(reason: "too_large") }
+        }
+        return try liveTranscriptParse(data, sessionId: sessionId, since: since, stamp: liveTranscriptStamp(opened))
+    }
+
+    /// `live-transcript [--data-dir <dir>] [--session <id> [--since <n>] [--stamp <s>]]`. Always the list of live
+    /// files (a stat each), and with `--session` that session's read. Refusals carry a reason code only.
+    private func emitLiveTranscript(args: [String]) throws {
+        func refuse(_ reason: String) {
+            emit(ok: false, message: "Live transcript unavailable (\(reason))", details: ["reason": reason])
+        }
+        let dataDir: URL
+        if let hint = option("--data-dir", in: args) {
+            guard let url = Self.liveTranscriptDataDirHint(hint) else { refuse("invalid_data_dir"); exit(1) }
+            dataDir = url
+        } else {
+            dataDir = glassesDataDir()
+        }
+        do {
+            var details: [String: Any] = ["dataDir": dataDir.path, "sessions": try Self.liveTranscriptList(dataDir: dataDir)]
+            if let sessionId = option("--session", in: args) {
+                let sinceText = option("--since", in: args) ?? "-1"
+                guard let since = Int(sinceText), since >= -1, since < 10_000_000 else { refuse("invalid_since"); exit(1) }
+                details["read"] = try Self.liveTranscriptRead(dataDir: dataDir, sessionId: sessionId, since: since,
+                                                              knownStamp: option("--stamp", in: args))
+            }
+            emit(ok: true, message: "Live transcript", details: details)
+        } catch let failure as LiveTranscriptFailure {
+            refuse(failure.reason)
+            exit(1)
+        } catch {
+            refuse("unreadable")
+            exit(1)
+        }
+    }
+
+    /// The server's word on one session, for the hand-off once its file is gone (server 6.67:
+    /// `GET /api/meeting/sessions/:id/status`): `saved` with the receipt's filename, `active`, `closed` or `missing`.
+    /// Only the state and the filename leave; a 404 is an older server (`route_absent`).
+    static func liveTranscriptStatusProjection(sessionId: String, status: Int, body: [String: Any]) -> (ok: Bool, details: [String: Any]) {
+        if status == 404 { return (true, ["sessionId": sessionId, "state": "unknown", "reason": "route_absent"]) }
+        if status == 401 || status == 403 { return (false, ["sessionId": sessionId, "reason": "unauthorized"]) }
+        guard status == 200 else { return (false, ["sessionId": sessionId, "reason": "http_\(status)"]) }
+        let state = body["state"] as? String ?? "unknown"
+        let known: Set<String> = ["saved", "active", "closed", "missing"]
+        var details: [String: Any] = ["sessionId": sessionId, "state": known.contains(state) ? state : "unknown"]
+        if state == "saved", let receipt = body["saveReceipt"] as? [String: Any], let filename = receipt["filename"] as? String {
+            details["savedFilename"] = filename
+        }
+        return (true, details)
+    }
+
+    private func emitLiveTranscriptStatus(args: [String]) throws {
+        guard let sessionId = option("--session", in: args), Self.liveTranscriptValidId(sessionId) else {
+            emit(ok: false, message: "Live transcript status unavailable (invalid_session_id)", details: ["reason": "invalid_session_id"])
+            exit(1)
+        }
+        let token: String
+        do { token = try speakerReviewToken() } catch {
+            let reason = String(describing: error) == "Unauthorized" ? "unauthorized" : "server_stopped"
+            emit(ok: false, message: "Live transcript status unavailable (\(reason))", details: ["reason": reason])
+            exit(1)
+        }
+        guard let response = request("/api/meeting/sessions/\(sessionId)/status", token: token, timeout: 8) else {
+            emit(ok: false, message: "Live transcript status unavailable (server_stopped)", details: ["reason": "server_stopped"])
+            exit(1)
+        }
+        let projected = Self.liveTranscriptStatusProjection(sessionId: sessionId, status: response.status, body: response.body ?? [:])
+        let reason = projected.details["reason"] as? String
+        emit(ok: projected.ok, message: projected.ok ? "Live transcript status" : "Live transcript status unavailable (\(reason ?? "unknown"))",
+             details: projected.details)
+        if !projected.ok { exit(1) }
+    }
+
     private func postOrphanRecover(sessionId: String) throws -> (status: Int, body: [String: Any]) {
         let token = try speakerReviewToken()
         let path = try orphanSessionPath(sessionId)
@@ -19487,6 +19752,95 @@ final class COSControlHelper {
                    "right after the diagnostics file rotates, heartbeats are read from the rotated file")
         try expect(Self.meetingAudioWatch(dataDir: audioDir.appendingPathComponent("missing"), now: audioNow).isEmpty,
                    "no data directory reads as no live meeting")
+        // 0.5.278: live-transcript. The path grammar, a fixture in the server 6.67 shape (fake text), --since and the stamp.
+        for bad in ["..", "a/b", "abc.tmp", "abc\n", "ab", String(repeating: "a", count: 97), "caf\u{e9}1", "a b", "../active-sessions/x", ""] {
+            try expect(!Self.liveTranscriptValidId(bad) && Self.liveTranscriptPath(dataDir: URL(fileURLWithPath: "/tmp/d"), sessionId: bad) == nil,
+                       "live-transcript refuses the session id \(bad.debugDescription)")
+        }
+        for good in ["g2:abc", "meeting_1791635349988_67d6pj", "abc", String(repeating: "a", count: 96), "A-b_c:9"] {
+            try expect(Self.liveTranscriptValidId(good)
+                       && Self.liveTranscriptPath(dataDir: URL(fileURLWithPath: "/tmp/d"), sessionId: good)?.path == "/tmp/d/active-sessions/\(good).json",
+                       "live-transcript accepts the session id \(good) inside active-sessions")
+        }
+        try expect(Self.liveTranscriptDataDirHint("/tmp/cos data")?.path == "/tmp/cos data"
+                   && Self.liveTranscriptDataDirHint("relative/dir") == nil && Self.liveTranscriptDataDirHint("/tmp/../etc") == nil
+                   && Self.liveTranscriptDataDirHint("/tmp/./x") == nil,
+                   "live-transcript takes back only an absolute, standard data directory")
+        try expect(Self.staleTranscriptionSessionIds([["sessionId": "old_one", "silentForMs": 1_900_000, "chunks": 3],
+                                                      ["sessionId": "../x"], "junk"]) == ["old_one"],
+                   "the stale session ids come from maintenance status, each through the grammar")
+        let liveDir = FileManager.default.temporaryDirectory.appendingPathComponent("cos-live-\(UUID().uuidString)", isDirectory: true)
+        let liveSessions = liveDir.appendingPathComponent("active-sessions", isDirectory: true)
+        try FileManager.default.createDirectory(at: liveSessions, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: liveDir) }
+        let liveId = "meeting_1791635349988_fixtur"
+        // Index 4 is silence (emptyCompletions), 6 is still in Whisper (received only), 3 has a non-ASCII speaker, 5 a
+        // non-ASCII character, 7 an unknown speaker; providerCandidates holds text that must never leave.
+        let liveFixture = #"""
+        {"sessionId":"meeting_1791635349988_fixtur","startTime":1791635349988,"lastActivityAt":1791635400000,"title":"G2 Recording",
+         "chunks":[{"text":"dense zero","speaker":"Miles","elapsed":0,"similarity":0.9}],
+         "chunksIndexed":[
+          {"i":0,"c":{"text":"alpha one","speaker":"Miles","elapsed":0,"similarity":0.9}},
+          {"i":1,"c":{"text":"alpha two","speaker":"Miles","elapsed":6000,"similarity":0.9}},
+          {"i":2,"c":{"text":"bravo","speaker":"Jordan","elapsed":12000,"similarity":0.8}},
+          {"i":3,"c":{"text":"charlie","speaker":"Zoë","elapsed":18000,"similarity":0.7}},
+          {"i":5,"c":{"text":"café delta","speaker":"Zoë","elapsed":30000,"similarity":0.7}},
+          {"i":7,"c":{"text":"echo","speaker":"Unknown","elapsed":42000,"similarity":0}},
+          {"i":8,"c":{"text":"   ","speaker":"Miles","elapsed":48000,"similarity":0}}],
+         "receivedIndices":[0,1,2,3,4,5,6,7,8],"asrCompletedIndices":[0,1,2,3,4,5,7,8],
+         "emptyCompletions":{"4":{"text":"","speaker":"Miles","elapsed":24000,"canonical":false}},
+         "maxChunkIndex":8,
+         "providerCandidates":{"6":{"provider":"iphone-whisperkit-beta","chunkIndex":6,"elapsed":36000,"audioSha256":"x","text":"PROVIDER-ONLY-TEXT","receivedAt":1}}}
+        """#
+        let liveFile = liveSessions.appendingPathComponent("\(liveId).json")
+        try Data(liveFixture.utf8).write(to: liveFile)
+        try Data("{}".utf8).write(to: liveSessions.appendingPathComponent(".\(liveId).json.123.abcdef.tmp"))
+        try FileManager.default.createSymbolicLink(at: liveSessions.appendingPathComponent("linked_session.json"), withDestinationURL: liveFile)
+        let liveList = try Self.liveTranscriptList(dataDir: liveDir)
+        try expect(liveList.count == 1 && liveList.first?["sessionId"] as? String == liveId && (liveList.first?["stamp"] as? String)?.isEmpty == false,
+                   "the list is one stat per live file, skipping temp files and symlinks")
+        let liveAll = try Self.liveTranscriptRead(dataDir: liveDir, sessionId: liveId, since: -1, knownStamp: nil)
+        let liveTurns = (liveAll["turns"] as? [[String: Any]]) ?? []
+        try expect(liveTurns.compactMap { $0["i"] as? Int } == [0, 1, 2, 3, 5, 7],
+                   "the read keys chunks by chunksIndexed i, in order, skipping silence, a chunk in flight and empty text")
+        try expect(liveAll["maxIndex"] as? Int == 7 && liveAll["settledThrough"] as? Int == 5 && liveAll["chunkCount"] as? Int == 6,
+                   "a chunk still in Whisper holds the --since cursor at the last settled index; silence does not")
+        try expect(liveTurns.first?["elapsedMs"] as? Int == 0 && liveTurns[1]["elapsedMs"] as? Int == 6000
+                   && liveTurns[3]["speaker"] as? String == "Zo\u{eb}" && liveTurns[4]["text"] as? String == "caf\u{e9} delta",
+                   "elapsed stays in ms and non-ASCII speakers and text come through intact")
+        try expect(liveAll["startTime"] as? Double == 1_791_635_349_988 && liveAll["ended"] as? Bool == false,
+                   "the read carries the session's start time")
+        let liveJSON = String(decoding: try JSONSerialization.data(withJSONObject: liveAll), as: UTF8.self)
+        try expect(!liveJSON.contains("PROVIDER-ONLY-TEXT") && !liveJSON.contains("dense zero") && !liveJSON.contains("providerCandidates"),
+                   "neither providerCandidates nor the dense chunks array ever leaves the helper")
+        let liveSince = try Self.liveTranscriptRead(dataDir: liveDir, sessionId: liveId, since: 3, knownStamp: nil)
+        try expect(((liveSince["turns"] as? [[String: Any]]) ?? []).compactMap { $0["i"] as? Int } == [5, 7],
+                   "--since returns only the chunks after the cursor")
+        let liveStamp = liveAll["stamp"] as? String
+        let liveSame = try Self.liveTranscriptRead(dataDir: liveDir, sessionId: liveId, since: 5, knownStamp: liveStamp)
+        try expect(liveSame["unchanged"] as? Bool == true && liveSame["turns"] == nil,
+                   "an unchanged file (same mtime and size) is not read again")
+        let liveOtherStamp = try Self.liveTranscriptRead(dataDir: liveDir, sessionId: liveId, since: 5, knownStamp: "1.2.3")
+        try expect(liveOtherStamp["unchanged"] as? Bool == false, "a different stamp reads the file")
+        var liveSymlinkRefused = false
+        do { _ = try Self.liveTranscriptRead(dataDir: liveDir, sessionId: "linked_session", since: -1, knownStamp: nil) }
+        catch let failure as LiveTranscriptFailure { liveSymlinkRefused = failure.reason == "unsafe_file" }
+        try expect(liveSymlinkRefused, "a session file that is a symlink is refused, never followed")
+        let liveGone = try Self.liveTranscriptRead(dataDir: liveDir, sessionId: "gone_session", since: -1, knownStamp: nil)
+        try expect(liveGone["ended"] as? Bool == true, "a missing file means the session ended")
+        try Data("{\"sessionId\":\"\(liveId)\",\"chunksIndexed\":[{\"i\":0,\"c\":{\"text\":\"SECRET-WORDS".utf8).write(to: liveFile)
+        var liveParseReason = ""
+        do { _ = try Self.liveTranscriptRead(dataDir: liveDir, sessionId: liveId, since: -1, knownStamp: nil) }
+        catch let failure as LiveTranscriptFailure { liveParseReason = failure.reason }
+        try expect(liveParseReason == "parse_failed", "an unreadable file is a reason code, and the code carries no text")
+        try expect(Self.liveTranscriptStatusProjection(sessionId: liveId, status: 200,
+                                                      body: ["state": "saved", "saveReceipt": ["filename": "2026-10-10_G2.md", "saved": true], "receivedCount": 9]).details
+                   .keys.sorted() == ["savedFilename", "sessionId", "state"],
+                   "the session status keeps only the state and the saved filename")
+        try expect(Self.liveTranscriptStatusProjection(sessionId: liveId, status: 404, body: [:]).details["reason"] as? String == "route_absent"
+                   && Self.liveTranscriptStatusProjection(sessionId: liveId, status: 401, body: [:]).ok == false
+                   && Self.liveTranscriptStatusProjection(sessionId: liveId, status: 200, body: ["state": "weird"]).details["state"] as? String == "unknown",
+                   "an older server, a refused token and an unknown state each have their own answer")
         try expect(Self.dateFromEpochMillis(NSNumber(value: 1_787_857_717_954)) != nil,
                    "sqlite JSON numbers arrive as NSNumber, not Int")
         try expect(Self.dateFromEpochMillis(NSNull()) == nil,
