@@ -1,4 +1,4 @@
-## Unreleased
+## 0.5.279 (build 332) — private test candidate
 
 - Live COS Ask sits beside the live transcript with Catch me up, Summarize so far, Suggest questions, Action items and a question box. Haiku runs only when asked, starts with the current meeting, and can retrieve relevant COS history for a free-form question. Answers cite transcript passages and distinguish earlier sources. Requires the companion server update; older servers show an update message.
 - Saved recordings now group consecutive fragments by speaker, recognize speaker labels embedded in long paragraphs, and use readable paragraphs, spacing and text size. Source wording and files remain unchanged.
