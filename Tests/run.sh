@@ -4387,6 +4387,9 @@ need("archiveDaySearchBar(date: date)" in _day_body
 # The TERM is marked, not merely the row: a tinted row says "somewhere in here".
 need("func highlighted(" in _aw and "SearchMark.ranges(in: text, query: query)" in _aw,
      "the highlighter must mark the ranges SearchMark finds")
+# 2026-10-09: the COS side is Markdown; the term is marked on its rendered words.
+need(".environment(\\.cosMarkdownHighlight, highlight)" in _aw,
+     "a Markdown answer must still mark the search term")
 need("SearchMark.matches(query: recentQuery" in _aw,
      "the recent filter must run through the executed matcher")
 need("colorScheme == .dark" in _aw,
@@ -6753,6 +6756,39 @@ if "static func needsAPerson" not in models or "session.state == \"waiting\" || 
 label = body(models, "var stateLabel: String")
 if 'case "error": failure.isEmpty ? "Failed"' not in label or "queued" not in label:
     fail("stateLabel must read Failed and count queued follow-ups")
+
+
+# 6. Messages (2026-10-09): a COS answer renders as Markdown, what you said stays as typed,
+# links open through SwiftUI's own action (web only), and the copies stay raw.
+card = body(activity, "struct ActivityMessageCard")
+if "COSMarkdownView(text: text, cacheID: markdownID" not in card:
+    fail("[messages] the COS card renders through COSMarkdownView under its message id")
+if "} else if let markdownID {" not in card or "Text(highlighted(text, query: highlight))" not in card:
+    fail("[messages] a card with no markdownID shows its text as typed (the YOU side)")
+detail = body(activity, "private func messageDetail(")
+if 'messageBlock(label: "COS", text: turn.text,\n                             tint: COSPalette.green, highlight: recentQuery, markdownID: "turn:" + turn.id)' not in detail:
+    fail("[messages] Recent's COS card passes its turn id")
+if 'messageBlock(label: "You", text: turn.query,\n                             tint: ActivitySection.messages.tint, highlight: recentQuery)\n' not in detail:
+    fail("[messages] Recent's YOU card stays as typed")
+chat = body(activity, "@ViewBuilder private func archiveChatDetail(")
+if 'markdownID: "archive:\\(date)/\\(index)/\\(message.id)")' not in chat:
+    fail("[messages] an archived chat's COS card renders as Markdown, keyed by day, chat and position")
+if 'Text(COSMarkdownInlineCache.plain(turn.text))' not in body(activity, "private func messageRow("):
+    fail("[messages] the row preview shows the answer's words, not its markers")
+if 'COSMarkdownView(text: message.text, cacheID: "chat:\\(message.id)")' not in body(activity, "struct SessionChatComposer"):
+    fail("[messages] a session chat reply renders as Markdown")
+if "openURL" in md or "NSWorkspace" in md or "openURL" in card:
+    fail("[messages] links open through SwiftUI's default action; the renderer adds no open path of its own")
+if "opensAsWebLink(url)" not in body(parser, "static func inline("):
+    fail("[messages] every inline link passes the web-only policy")
+cache = body(md, "enum COSMarkdownCache")
+if "hit.text == text" not in cache or "private static var entries: [String: Entry]" not in cache:
+    fail("[messages] the document cache is keyed (id or text hash) and verifies the text on a hit")
+controller = code("Sources/ControllerModel.swift")
+for name in ("func copyTurn(", "func copyTurnWithImages(", "func copyArchiveMessage("):
+    if "COSMarkdown" in body(controller, name): fail(f"{name} must copy the stored text, not the rendered text")
+if "turn.turnClipboardText" not in body(controller, "func copyTurn(") or "message.clipboardText" not in body(controller, "func copyArchiveMessage("):
+    fail("[messages] Copy turn copies the stored turn")
 
 print("COS Control: Markdown panes, action weights and server-derived session state pinned (0.5.232)")
 MARKDOWN

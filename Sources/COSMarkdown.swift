@@ -10,17 +10,17 @@ import SwiftUI
 // MARK: - Inline text
 
 enum COSMarkdownInline {
-    /// Bold, italic, code and links through Foundation's inline-only parser; what it
-    /// cannot parse renders verbatim, never dropped.
-    static func attributed(_ text: String) -> AttributedString {
-        var options = AttributedString.MarkdownParsingOptions()
-        options.interpretedSyntax = .inlineOnlyPreservingWhitespace
-        options.failurePolicy = .returnPartiallyParsedIfPossible
-        var string: AttributedString
-        do {
-            string = try AttributedString(markdown: text, options: options)
-        } catch {
-            string = AttributedString(text)
+    /// Bold, italic, code and links through the parser's inline layer (web links only);
+    /// what it cannot parse renders verbatim, never dropped.
+    /// `italicSize`: the DM Sans body size the run sits in. DM Sans ships no italic face, so
+    /// an `*emphasis*` run would draw upright; it takes the system italic at the same size.
+    static func attributed(_ text: String, italicSize: CGFloat? = nil) -> AttributedString {
+        var string = COSMarkdownParser.inline(text)
+        for run in string.runs {
+            guard let intent = run.inlinePresentationIntent else { continue }
+            if let italicSize, intent.contains(.emphasized), !intent.contains(.code) {
+                string[run.range].font = .system(size: italicSize, weight: intent.contains(.stronglyEmphasized) ? .bold : .regular).italic()
+            }
         }
         // Inline code in the COS files is a marker as often as code: `[REVIEW]`, `[BLOCKED]`.
         for run in string.runs {
@@ -33,30 +33,131 @@ enum COSMarkdownInline {
         }
         return string
     }
+
+    /// Marks every case-insensitive occurrence of `query` in the RENDERED characters, so a
+    /// search term inside `**bold**` still lights up. Yellow on dark, amber on light; both
+    /// carry dark ink (the Messages search mark, 2026-08-31).
+    static func highlighting(_ base: AttributedString, query: String, dark: Bool) -> AttributedString {
+        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard needle.count >= 2 else { return base }
+        var string = base
+        let plain = String(string.characters)
+        let fill = dark ? Color(red: 1.0, green: 0.85, blue: 0.30) : Color(red: 1.0, green: 0.80, blue: 0.20)
+        var from = plain.startIndex
+        while let r = plain.range(of: needle, options: .caseInsensitive, range: from..<plain.endIndex) {
+            let lo = string.characters.index(string.startIndex, offsetBy: plain.distance(from: plain.startIndex, to: r.lowerBound))
+            let hi = string.characters.index(lo, offsetBy: plain.distance(from: r.lowerBound, to: r.upperBound))
+            string[lo..<hi].backgroundColor = fill
+            string[lo..<hi].foregroundColor = Color.black
+            from = r.upperBound
+        }
+        return string
+    }
+}
+
+/// Inline runs, built once per distinct string. Before 2026-10-09 every redraw of every
+/// paragraph re-ran Foundation's Markdown parser; a long Messages answer redraws on every
+/// scroll and every streamed token.
+@MainActor
+enum COSMarkdownInlineCache {
+    private static var runs: [String: AttributedString] = [:]
+    private static var plains: [String: String] = [:]
+    static let capacity = 1024
+    private(set) static var parseCount = 0
+
+    static func attributed(_ text: String, italicSize: CGFloat? = nil) -> AttributedString {
+        let key = "\(italicSize ?? 0)|" + text
+        if let hit = runs[key] { return hit }
+        parseCount += 1
+        if runs.count >= capacity { runs.removeAll(keepingCapacity: true) }
+        let built = COSMarkdownInline.attributed(text, italicSize: italicSize)
+        runs[key] = built
+        return built
+    }
+
+    /// A list row's one-line preview of a Markdown answer.
+    static func plain(_ text: String) -> String {
+        if let hit = plains[text] { return hit }
+        if plains.count >= capacity { plains.removeAll(keepingCapacity: true) }
+        let built = COSMarkdownParser.plainText(text)
+        plains[text] = built
+        return built
+    }
+}
+
+private struct COSMarkdownHighlightKey: EnvironmentKey { static let defaultValue = "" }
+
+extension EnvironmentValues {
+    /// A search term the rendered document marks wherever it appears (Messages search).
+    var cosMarkdownHighlight: String {
+        get { self[COSMarkdownHighlightKey.self] }
+        set { self[COSMarkdownHighlightKey.self] = newValue }
+    }
+}
+
+/// One run of inline Markdown as a Text: cached runs, plus the search mark when one is set.
+/// Links keep SwiftUI's own open action (the default browser), the path every pane uses.
+struct COSMarkdownText: View {
+    let text: String
+    /// The DM Sans size this text is set in, for the italic fallback; nil for display and mono.
+    var bodySize: CGFloat? = nil
+    @Environment(\.cosMarkdownHighlight) private var highlight
+    @Environment(\.colorScheme) private var colorScheme
+
+    init(_ text: String, bodySize: CGFloat? = nil) { self.text = text; self.bodySize = bodySize }
+
+    var body: some View {
+        let runs = COSMarkdownInlineCache.attributed(text, italicSize: bodySize)
+        Text(highlight.isEmpty ? runs : COSMarkdownInline.highlighting(runs, query: highlight, dark: colorScheme == .dark))
+    }
 }
 
 // MARK: - View
 
-/// One parsed document for the life of this process. A resize must not parse the review again.
+/// Parsed documents, kept for the life of this process. A resize must not parse the review
+/// again, and neither must a redraw of a Messages answer (2026-10-09: the one-slot cache this
+/// replaced re-parsed every turn of a session pane on every redraw, because two documents on
+/// screen evicted each other). A caller with a stable id (a message) holds ONE slot per id,
+/// so a streaming answer replaces its own entry instead of filling the cache; the stored text
+/// is compared on every hit, so a hash collision can never hand back another document.
 @MainActor
 enum COSMarkdownCache {
-    private static var stored: (text: String, dropLeadingTitle: Bool, blocks: [COSMarkdownBlock])?
-    static func blocks(_ text: String, dropLeadingTitle: Bool = false) -> [COSMarkdownBlock] {
-        if stored?.text == text, stored?.dropLeadingTitle == dropLeadingTitle, let blocks = stored?.blocks { return blocks }
+    private struct Entry { let text: String; let dropLeadingTitle: Bool; let blocks: [COSMarkdownBlock] }
+    private static var entries: [String: Entry] = [:]
+    private static var order: [String] = []
+    static let capacity = 128
+    private(set) static var parseCount = 0
+
+    static func blocks(_ text: String, id: String? = nil, dropLeadingTitle: Bool = false) -> [COSMarkdownBlock] {
+        let key = id.map { "id:\($0)|\(dropLeadingTitle)" } ?? "h:\(text.hashValue)|\(text.utf16.count)|\(dropLeadingTitle)"
+        if let hit = entries[key], hit.dropLeadingTitle == dropLeadingTitle, hit.text == text {
+            touch(key)
+            return hit.blocks
+        }
+        parseCount += 1
         let blocks = COSMarkdownParser.parse(text, dropLeadingTitle: dropLeadingTitle)
-        stored = (text, dropLeadingTitle, blocks)
+        entries[key] = Entry(text: text, dropLeadingTitle: dropLeadingTitle, blocks: blocks)
+        touch(key)
+        while order.count > capacity { entries.removeValue(forKey: order.removeFirst()) }
         return blocks
+    }
+
+    private static func touch(_ key: String) {
+        if let i = order.firstIndex(of: key) { order.remove(at: i) }
+        order.append(key)
     }
 }
 
 /// The pane body. `dropLeadingTitle` when the pane header already shows the H1.
+/// `cacheID` (a message id) keeps one parsed slot per message; see COSMarkdownCache.
 struct COSMarkdownView: View {
     let text: String
+    var cacheID: String? = nil
     var dropLeadingTitle = false
     var bodySize: CGFloat = 12.5
 
     var body: some View {
-        COSMarkdownBlocks(blocks: COSMarkdownCache.blocks(text, dropLeadingTitle: dropLeadingTitle), bodySize: bodySize)
+        COSMarkdownBlocks(blocks: COSMarkdownCache.blocks(text, id: cacheID, dropLeadingTitle: dropLeadingTitle), bodySize: bodySize)
     }
 }
 
@@ -83,7 +184,7 @@ struct COSMarkdownBlockView: View {
         case .heading(let level, let text):
             heading(level: level, text: text)
         case .paragraph(let text):
-            Text(COSMarkdownInline.attributed(text))
+            COSMarkdownText(text, bodySize: bodySize)
                 .font(COSType.body(bodySize))
                 .lineSpacing(2.5)
                 .textSelection(.enabled)
@@ -122,7 +223,7 @@ struct COSMarkdownBlockView: View {
     private func heading(level: Int, text: String) -> some View {
         switch level {
         case 1:
-            Text(COSMarkdownInline.attributed(text))
+            COSMarkdownText(text)
                 .font(COSType.display(20, weight: .medium))
                 .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
@@ -130,7 +231,7 @@ struct COSMarkdownBlockView: View {
         case 2:
             // The section heading the files lean on: Fraunces with a hairline under it.
             VStack(alignment: .leading, spacing: 6) {
-                Text(COSMarkdownInline.attributed(text))
+                COSMarkdownText(text)
                     .font(COSType.display(17, weight: .medium))
                     .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
@@ -138,14 +239,14 @@ struct COSMarkdownBlockView: View {
             }
             .padding(.top, 10)
         case 3:
-            Text(COSMarkdownInline.attributed(text))
+            COSMarkdownText(text, bodySize: 13)
                 .font(COSType.body(13, weight: .semibold))
                 .foregroundStyle(.secondary)
                 .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.top, 4)
         default:
-            Text(COSMarkdownInline.attributed(text.uppercased()))
+            COSMarkdownText(text.uppercased())
                 .font(COSType.mono(10, weight: .semibold))
                 .tracking(0.8)
                 .foregroundStyle(.secondary)
@@ -167,7 +268,7 @@ private struct COSMarkdownList: View {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     marker(index: index, item: item)
                     VStack(alignment: .leading, spacing: 4) {
-                        Text(COSMarkdownInline.attributed(item.text))
+                        COSMarkdownText(item.text, bodySize: bodySize)
                             .font(COSType.body(bodySize))
                             .lineSpacing(2.5)
                             .textSelection(.enabled)
@@ -246,7 +347,7 @@ private struct COSMarkdownTable: View {
     }
 
     private func cell(_ text: String, header: Bool, key: Bool = false) -> some View {
-        Text(COSMarkdownInline.attributed(text))
+        COSMarkdownText(text, bodySize: bodySize - 0.5)
             .font(COSType.body(bodySize - 0.5, weight: header ? .semibold : .regular))
             .foregroundStyle(key ? Color.secondary : Color.primary)
             .textSelection(.enabled)
@@ -335,7 +436,7 @@ private struct COSMarkdownSpeakerLines: View {
                         .foregroundStyle(isUnnamed(line.speaker) ? COSPalette.muted : COSPalette.accent)
                         .frame(width: 96, alignment: .leading)
                         .padding(.top, 2)
-                    Text(COSMarkdownInline.attributed(line.text))
+                    COSMarkdownText(line.text, bodySize: bodySize)
                         .font(COSType.body(bodySize))
                         .lineSpacing(2.5)
                         .textSelection(.enabled)

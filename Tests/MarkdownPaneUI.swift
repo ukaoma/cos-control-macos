@@ -139,11 +139,216 @@ struct MarkdownPaneUIContract {
     </details>
     """
 
+
+    /// Message #356 exactly as the glasses server stored it (2026-10-09): the answer that
+    /// printed `**Take Varesa.**` and `- [allthings.how: …](https://…)` raw in Messages.
+    static let message356 = """
+    **Take Varesa.** Neither Vesna nor Chiori is the best call. Vesna isn't actually in the free pool. She's the new 7.1 banner character, and your roster shows her at C2 already, so I'm assuming you meant Varesa. The free selector offers Varesa, Clorinde, Nilou, Baizhu, Chiori and Tartaglia, and you need to finish the 7.1 Archon Quest by November 3 to claim one.
+
+    1. **Varesa:** She fits your best units. Her strongest team runs her with Xilonen and Mavuika, and you have both, with Mavuika at C6. If Iansan is in your 3 characters off-screen, that's her ideal setup. She'd give you a second top-tier main DPS next to Mavuika.
+    2. **Clorinde:** She works with your C6 Fischl and Nahida, but she needs C2 to really pay off. Your Electro slot is already covered by Yae (C2) and Raiden.
+    3. **Chiori:** Skip her. She needs a full Geo team, and you only have Albedo and Xilonen. She'd end up as an off-field support you don't need.
+
+    The one reason to take Clorinde instead: if Iansan isn't in your account and you mainly play Fischl and Nahida teams.
+
+    Sources:
+    - [allthings.how: 7.1 selector best pick](https://allthings.how/genshin-impact-limited-5-star-selector-best-pick-in-version-7-1/)
+    - [timesaver.gg: all selector characters and deadlines](https://timesaver.gg/blog/genshin-free-5-star-selector-7-1)
+    - [ldshop.gg: 7.1 anniversary selector guide](https://www.ldshop.gg/blog/genshin-impact/7-1-anniversary-selector-guide.html)
+    """
+    static let query356 = "[2 Attachments] Based on my roster which free latern pull is better for me? Chlorine or vesna or chiori"
+
+    /// The Messages detail as the pane lays it out: header, YOU card, COS card.
+    /// `markdown: false` is the pre-2026-10-09 COS card (one plain Text), for the before shot.
+    @ViewBuilder
+    static func messageDetail(text: String, markdown: Bool, highlight: String = "", id: String = "turn:9dcc19f0:356") -> some View {
+        ScrollView {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Message #356").font(.system(size: 19, weight: .semibold))
+                    Text("17:28 · Opus · live").font(.system(size: 10.5, design: .monospaced)).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Copy turn") {}
+                Button("Copy + images") {}
+            }
+            .controlSize(.small)
+            ActivityMessageCard(label: "You", text: query356, tint: ActivitySection.messages.tint, highlight: highlight)
+            ActivityMessageCard(label: "COS", text: text, tint: COSPalette.green, highlight: highlight, markdownID: markdown ? id : nil)
+        }
+        .padding(28)
+        .frame(maxWidth: 820, alignment: .leading)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        }
+        .background(COSPalette.panel)
+    }
+
+    /// Where on the host each selectable text view sits, for the no-overflow assertion.
+    static func textFrames(_ view: NSView, in host: NSView) -> [(String, NSRect)] {
+        var out: [(String, NSRect)] = []
+        if let field = view as? NSTextField { out.append((field.stringValue, field.convert(field.bounds, to: host))) }
+        if let text = view as? NSTextView { out.append((text.string, text.convert(text.bounds, to: host))) }
+        for sub in view.subviews { out.append(contentsOf: textFrames(sub, in: host)) }
+        return out
+    }
+
+    /// Every link attribute drawn under a view (selectable text is a field or a text view).
+    static func drawnLinks(_ view: NSView) -> [String] {
+        var out: [String] = []
+        func scan(_ a: NSAttributedString) {
+            a.enumerateAttribute(.link, in: NSRange(location: 0, length: a.length)) { value, _, _ in
+                if let url = value as? URL { out.append(url.absoluteString) } else if let s = value as? String { out.append(s) }
+            }
+        }
+        if let field = view as? NSTextField { scan(field.attributedStringValue) }
+        if let text = view as? NSTextView, let storage = text.textStorage { scan(storage) }
+        for sub in view.subviews { out.append(contentsOf: drawnLinks(sub)) }
+        return out
+    }
+
+    /// The drawn attributed string of the first text field or view whose text contains `needle`.
+    static func drawnText(_ view: NSView, containing needle: String) -> NSAttributedString? {
+        if let field = view as? NSTextField, field.stringValue.contains(needle) { return field.attributedStringValue }
+        if let text = view as? NSTextView, text.string.contains(needle), let storage = text.textStorage { return storage }
+        for sub in view.subviews { if let hit = drawnText(sub, containing: needle) { return hit } }
+        return nil
+    }
+
+    /// Every construct a COS answer uses, in one answer.
+    static let constructs = """
+    ## What changed
+
+    A *small* fix with `inline code` and **bold**, then ***both***.
+
+    > A quoted line from the brief.
+
+    1. **First:** a numbered item
+       - a nested bullet
+    2. Second item
+
+    ```
+    let answer = 42
+    ```
+
+    ### Links
+
+    - [web](https://gotcos.com/control/)
+    - [file](file:///etc/hosts)
+    - [script](javascript:alert(1))
+    - [mail](mailto:miles@example.com)
+    """
+
+    /// Messages (2026-10-09): Message #356 before and after, light and dark; the cache, the
+    /// copy text, a half-streamed answer and a bare URL at a narrow width.
+    static func messages(output: URL) throws {
+        let size = NSSize(width: 760, height: 1180)
+        for dark in [false, true] {
+            let (_, before) = try render(messageDetail(text: message356, markdown: false), size: size, name: "message-356-before", output: output, dark: dark)
+            let raw = strings(before).joined(separator: "\n")
+            precondition(raw.contains("**Take Varesa.**") && raw.contains("](https://allthings.how"), "[message 356] the before shot is the raw text (the check below can fail)")
+
+            let parsesBefore = COSMarkdownCache.parseCount
+            let (_, after) = try render(messageDetail(text: message356, markdown: true), size: size, name: "message-356-after", output: output, dark: dark)
+            let text = strings(after).joined(separator: "\n")
+            precondition(!text.contains("**"), "[message 356] no bold markers on screen")
+            precondition(!text.contains("]("), "[message 356] no link syntax on screen")
+            precondition(text.contains("Take Varesa. Neither Vesna"), "[message 356] the lead line renders its words")
+            precondition(text.contains("Varesa: She fits your best units."), "[message 356] the first pick renders without markers")
+            precondition(text.contains("allthings.how: 7.1 selector best pick"), "[message 356] a source shows its label")
+            precondition(text.contains("Sources:"), "[message 356] the Sources line renders")
+            precondition(!text.contains("1. Varesa"), "[message 356] the number is the list marker, not part of the item text")
+            precondition(text.contains("[2 Attachments] Based on my roster"), "[message 356] the YOU card shows the question as typed")
+            let links = drawnLinks(after)
+            precondition(Set(links) == ["https://allthings.how/genshin-impact-limited-5-star-selector-best-pick-in-version-7-1/", "https://timesaver.gg/blog/genshin-free-5-star-selector-7-1", "https://www.ldshop.gg/blog/genshin-impact/7-1-anniversary-selector-guide.html"], "[message 356] the three sources link to their pages: \(links)")
+            // Parse once per message id + text: a second render of the same turn parses nothing.
+            let parsedOnce = COSMarkdownCache.parseCount
+            precondition(parsedOnce - parsesBefore <= 1, "[parse once] one turn parses at most once per render pass: \(parsedOnce - parsesBefore)")
+            let inlineOnce = COSMarkdownInlineCache.parseCount
+            _ = try render(messageDetail(text: message356, markdown: true), size: size, name: "message-356-after-redraw", output: output, dark: dark)
+            precondition(COSMarkdownCache.parseCount == parsedOnce, "[parse once] a redraw of the same turn must not parse the document again")
+            precondition(COSMarkdownInlineCache.parseCount == inlineOnce, "[parse once] a redraw must not re-run the inline parser")
+            // The search mark lands on rendered words, including inside bold.
+            let (_, searched) = try render(messageDetail(text: message356, markdown: true, highlight: "varesa"), size: size, name: "message-356-search", output: output, dark: dark)
+            if let lead = drawnText(searched, containing: "Take Varesa. Neither") {
+                let at = (lead.string as NSString).range(of: "Varesa").location
+                precondition(lead.attribute(.backgroundColor, at: at, effectiveRange: nil) != nil, "[search mark] the term inside **bold** is marked on screen")
+                precondition(lead.attribute(.backgroundColor, at: 0, effectiveRange: nil) == nil, "[search mark] only the term is marked")
+            } else { preconditionFailure("[search mark] the lead paragraph renders") }
+            precondition(COSMarkdownCache.parseCount == parsedOnce, "[parse once] a search mark is not a reparse")
+        }
+
+        // Every construct, light and dark: headings, emphasis, code, quote, nested list, fence, links.
+        for dark in [false, true] {
+            let (_, host) = try render(messageDetail(text: constructs, markdown: true, id: "turn:constructs"), size: NSSize(width: 760, height: 900), name: "message-constructs", output: output, dark: dark)
+            let text = strings(host).joined(separator: "\n")
+            for raw in ["## ", "**", "`", "> A quoted", "```", "](", "1. **"] { precondition(!text.contains(raw), "[constructs] raw \(raw) on screen") }
+            for words in ["What changed", "A small fix with inline code and bold, then both.", "A quoted line from the brief.", "First: a numbered item", "a nested bullet", "let answer = 42", "web", "file", "script", "mail"] {
+                precondition(text.contains(words), "[constructs] \(words) renders")
+            }
+            // DM Sans has no italic face: *small* takes the system italic at the body size.
+            if let line = drawnText(host, containing: "A small fix") {
+                let at = (line.string as NSString).range(of: "small").location
+                let font = line.attribute(.font, at: at, effectiveRange: nil) as? NSFont
+                precondition(font.map { NSFontManager.shared.traits(of: $0).contains(.italicFontMask) } == true, "[italic] *small* draws italic: \(String(describing: font))")
+                let upright = line.attribute(.font, at: 0, effectiveRange: nil) as? NSFont
+                precondition(upright.map { !NSFontManager.shared.traits(of: $0).contains(.italicFontMask) } == true, "[italic] the rest of the line stays upright")
+            } else { preconditionFailure("[constructs] the emphasis line renders") }
+            let links = drawnLinks(host)
+            precondition(links == ["https://gotcos.com/control/"], "[web links only] only the https link is a link on screen: \(links)")
+        }
+
+        // Streaming: the live turn grows; each new text parses once into the SAME slot, and a
+        // half-written ** or [ stays on screen as text.
+        let cut = message356.range(of: "Clorinde:** She")!.lowerBound
+        let partial = String(message356[..<cut]) + "Clorin"
+        let midLink = String(message356[..<message356.range(of: "selector best pick")!.upperBound])
+        let p0 = COSMarkdownCache.parseCount
+        for (n, sample) in [partial, midLink].enumerated() {
+            for dark in [false, true] {
+                let (_, host) = try render(messageDetail(text: sample, markdown: true, id: "turn:stream"), size: size, name: "message-356-streaming-\(n + 1)", output: output, dark: dark)
+                let text = strings(host).joined(separator: "\n")
+                if n == 0 { precondition(text.contains("**Clorin"), "[streaming] an unclosed ** is drawn as text: \(text.suffix(80))") }
+                if n == 1 { precondition(text.contains("[allthings.how: 7.1 selector best pick"), "[streaming] an unclosed link is drawn as text") }
+                precondition(text.contains("Take Varesa. Neither"), "[streaming] the closed bold above it still renders")
+            }
+        }
+        precondition(COSMarkdownCache.parseCount - p0 == 2, "[parse once] two streamed texts, two parses, whatever the redraws: \(COSMarkdownCache.parseCount - p0)")
+
+        // A bare URL at a narrow width wraps inside the card instead of running past it.
+        let bare = "Sources:\n\nhttps://allthings.how/genshin-impact-limited-5-star-selector-best-pick-in-version-7-1/\n\nhttps://www.ldshop.gg/blog/genshin-impact/7-1-anniversary-selector-guide.html"
+        for dark in [false, true] {
+            let narrow = NSSize(width: 420, height: 520)
+            let (_, host) = try render(messageDetail(text: bare, markdown: true, id: "turn:bare"), size: narrow, name: "message-bare-urls", output: output, dark: dark)
+            let frames = textFrames(host, in: host).filter { $0.0.contains("https://") }
+            precondition(frames.count == 2, "[bare url] both URLs render as selectable text: \(frames.count)")
+            for (string, frame) in frames {
+                precondition(frame.maxX <= host.bounds.maxX - 28 + 0.5, "[bare url] \(string.prefix(30)) runs past the card: \(frame) in \(host.bounds)")
+                precondition(frame.height > 20, "[bare url] a long URL wraps onto more than one line: \(frame)")
+            }
+        }
+
+        // Copy turn and Copy + images read the stored turn, never the rendered one.
+        let turn = GlassesTurn(id: "9dcc19f0:356", no: 356, timestamp: 1_791_584_905, query: query356, text: message356, sessionId: "9dcc19f0", source: "live")
+        precondition(turn.turnClipboardText == "[Msg 356] User: \(query356)\n[Msg 356] COS: \(message356)", "[copy raw] Copy turn copies the stored Markdown byte for byte")
+        precondition(turn.turnClipboardText.contains("**Take Varesa.**") && turn.turnClipboardText.contains("- [allthings.how: 7.1 selector best pick](https://"), "[copy raw] the copy keeps the Markdown")
+        let archived = ArchiveMessage(.object(["no": .number(356), "query": .string(query356), "text": .string(message356), "timestamp": .number(1_791_584_905_443)]), ordinal: 0)
+        precondition(archived?.clipboardText == turn.turnClipboardText, "[copy raw] an archived chat's Copy turn is the same raw text")
+    }
+
     static func main() throws {
         let app = NSApplication.shared
         app.setActivationPolicy(.prohibited)
         let output = URL(fileURLWithPath: CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : "/tmp/cos-markdown-ui")
         try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+
+        // The app registers its bundled fonts from its own Resources; this binary has none, and
+        // without DM Sans every bold run fell back to an upright regular face in the renders.
+        let root = URL(fileURLWithPath: CommandLine.arguments.count > 2 ? CommandLine.arguments[2] : ".")
+        for name in ["Fraunces", "Fraunces-Italic", "DMSans", "JetBrainsMono"] {
+            CTFontManagerRegisterFontsForURL(root.appendingPathComponent("Resources/Fonts/\(name).ttf") as CFURL, .process, nil)
+        }
+        precondition(NSFont(name: "DM Sans", size: 12) != nil || NSFontManager.shared.availableMembers(ofFontFamily: "DM Sans") != nil, "DM Sans registers for the renders")
 
         let model = ControllerModel(startBackgroundWork: false)
         precondition(!model.backgroundWorkEnabled)
@@ -178,7 +383,7 @@ struct MarkdownPaneUIContract {
 
         for dark in [false, true] {
             let (_, host) = try render(
-                MeetingLibraryDetailPane(model: model, onReviewVoices: { _ in }),
+                MeetingLibraryDetailPane(model: model, onReviewVoices: { _, _ in }),
                 size: NSSize(width: 920, height: 1180), name: "meeting-pane", output: output, dark: dark)
             let text = strings(host).joined(separator: "\n")
             precondition(!text.contains("## "), "the meeting pane must not show raw headings; the 0.5.231 body did")
@@ -248,7 +453,7 @@ struct MarkdownPaneUIContract {
                 .padding(16)
                 .frame(width: 920, alignment: .topLeading)
                 .background(COSPalette.panel),
-                size: NSSize(width: 920, height: 900), name: "activity-feed", output: output, dark: dark, fills: false)
+                size: NSSize(width: 920, height: 1000), name: "activity-feed", output: output, dark: dark, fills: false)
             // Only selectable Text is backed by an NSTextView the harness can read; the
             // state word, tool lines and chips are plain Text (drawn, not enumerable), so
             // the prompt is the one string asserted here and the PNG is the review surface.
@@ -258,6 +463,8 @@ struct MarkdownPaneUIContract {
             precondition(host.bounds.height >= 700, "five feeds stack taller than one screen of chrome: \(host.bounds.height)")
         }
 
+        try messages(output: output)
+        print("PASS messages markdown UI: Message #356 renders as Markdown light and dark (before shot raw), parse once per id + text, streaming text stays text, bare URLs wrap, copy stays raw")
         print("PASS markdown UI: meeting pane and thread pane render as documents at 920 pt, light and dark;")
         print("PASS activity feed: recorded, waiting, reconnecting, older-server and connecting shapes render light and dark;")
         print("PASS action weights: primary, quiet and featured render side by side. Output: \(output.path)")
