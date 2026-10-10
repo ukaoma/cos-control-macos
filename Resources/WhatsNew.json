@@ -1,16 +1,23 @@
 {
-  "version": "0.5.277",
+  "version": "0.5.278",
   "whatsNew": {
-    "summary": "A tidier menu-bar panel. The version card is gone, so Activity sits right under the header. The refresh button at the top right now also checks for updates, and the version shows next to Control.",
+    "summary": "Watch a glasses meeting as it happens. While a meeting records on your G2, Meetings shows a Live now row with the transcript streaming in, and Copy transcript copies everything said so far.",
     "sections": [
       {
-        "title": "A tidier panel",
+        "title": "Live meeting transcript",
         "items": [
-          "The version card at the top of the panel is gone. Updates still arrive as the gold Update available banner.",
-          "The refresh button at the top right refreshes status and checks for updates in one click.",
-          "While it checks, the line under Control says Checking for updates, then Up to date, or Couldn't check for updates if it could not reach the update server.",
-          "The version shows next to Control, so you can see it without scrolling.",
-          "Settings in Activity has the same refresh and check button."
+          "While a meeting records on your glasses, a Live now row sits at the top of Meetings with a red dot.",
+          "Open it to watch the transcript arrive, a few seconds behind the conversation. It follows the newest line until you scroll up, and Jump to live brings you back.",
+          "Copy transcript copies everything so far, one line per speaker turn with its time.",
+          "The live text is preliminary. When you save the meeting, the saved version opens in its place, and its text can change as it is finalized.",
+          "Speaker names are voice matches, not certainties. A voice nobody has named shows as Speaker.",
+          "The transcript only opens when you click it. Turn it off in Settings with Show live meeting transcript."
+        ]
+      },
+      {
+        "title": "From 0.5.277",
+        "items": [
+          "The version card is gone. The refresh button at the top right also checks for updates, and the version shows next to Control."
         ]
       }
     ]

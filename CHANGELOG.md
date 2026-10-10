@@ -1,3 +1,8 @@
+## 0.5.278 (build 331)
+
+- **Live meeting transcript.** While a G2 meeting records, Meetings shows a pinned Live now row (red dot, duration, No audio for Xm when quiet). Opening it streams the transcript from the server's live session file a few seconds behind the conversation, follows the newest line until you scroll up (Jump to live), and offers Copy transcript (`[m:ss] Name: text`, a preliminary header). Saving hands off to the saved meeting by session id; a discard says it ended without saving. Live dots on the panel Meetings chip and the Activity Meetings tab. Settings: Show live meeting transcript (on by default; off spawns nothing).
+- The live text is preliminary and may change when the meeting is saved and finalized. Transcript text never goes to logs, errors or reports.
+
 ## 0.5.277 (build 330)
 
 - **A tidier menu-bar panel.** The standing version card (COS Control version and Check for updates) is removed; updates surface through the gold Update available banner. The header refresh button now refreshes status and checks for updates, and the line under Control shows Checking for updates, Up to date or Couldn't check for updates.
