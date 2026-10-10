@@ -24,10 +24,12 @@ struct MarkdownContract {
         messageAnswer()
         webLinksOnly()
         streaming()
+        cacheEviction()
 
         if failures.isEmpty {
             print("COS Control: Markdown parser pinned on the scribe's meeting, lists, tasks, tables, code, quotes, details and speaker lines (0.5.232)")
             print("PASS messages markdown: Message #356 blocks and inline runs, web-links-only policy, half-streamed Markdown stays text, row preview flattens")
+            print("PASS markdown caches: LRU at the app's own limits (\(COSMarkdownCacheLimits.inline) inline, \(COSMarkdownCacheLimits.documents) documents), oldest-unused goes first, a recent hit survives")
         } else {
             for f in failures { FileHandle.standardError.write(("MarkdownContract: " + f + "\n").data(using: .utf8)!) }
             exit(1)
@@ -283,5 +285,41 @@ struct MarkdownContract {
             end += 5
         }
         expect(prefixes > 250, "[streaming] the walk covered the answer: \(prefixes) prefixes")
+    }
+
+    /// The renderer caches (2026-10-09): a full map drops the key used longest ago, never the
+    /// whole map, so a long streamed answer cannot wipe the runs of the panes on screen.
+    /// Run at the app's own limits (COSMarkdownCacheLimits), not a copy of them.
+    static func cacheEviction() {
+        expect(COSMarkdownCacheLimits.inline == 1024 && COSMarkdownCacheLimits.documents == 128,
+               "[lru] the limits the app runs with: \(COSMarkdownCacheLimits.inline) inline, \(COSMarkdownCacheLimits.documents) documents")
+        for capacity in [COSMarkdownCacheLimits.inline, COSMarkdownCacheLimits.documents] {
+            var lru = COSMarkdownLRU<Int>(capacity: capacity)
+            for i in 0..<capacity { lru.insert(i, for: "k\(i)") }
+            expect(lru.count == capacity, "[lru] fills to its capacity \(capacity): \(lru.count)")
+            expect(lru.value(for: "k0") == 0, "[lru] the first key is still held when the map is just full")
+            lru.insert(capacity, for: "new")
+            expect(lru.count == capacity, "[lru] one insert past \(capacity) keeps \(capacity), it never clears: \(lru.count)")
+            expect(lru.contains("k0"), "[lru] a recent hit survives the eviction (capacity \(capacity))")
+            expect(!lru.contains("k1"), "[lru] the oldest-unused key goes first (capacity \(capacity))")
+            expect(lru.contains("k2") && lru.contains("new"), "[lru] only one key goes (capacity \(capacity))")
+            // A stream: twice the capacity of new prefixes, the on-screen key touched each time.
+            for i in 0..<(2 * capacity) {
+                lru.insert(i, for: "stream \(i)")
+                _ = lru.value(for: "k0")
+            }
+            expect(lru.value(for: "k0") == 0, "[lru] a key touched on every redraw outlives a stream of \(2 * capacity) prefixes")
+            expect(lru.count == capacity, "[lru] the stream leaves the map at capacity: \(lru.count)")
+        }
+        // Order on a small map, and a re-insert of a held key evicts nothing. Recency after the
+        // hit on a: b, c, a. The replaced key is c, NOT the oldest, so an eviction would take b.
+        var small = COSMarkdownLRU<String>(capacity: 3)
+        small.insert("a", for: "a"); small.insert("b", for: "b"); small.insert("c", for: "c")
+        _ = small.value(for: "a")
+        small.insert("c2", for: "c")
+        expect(small.count == 3 && small.contains("a") && small.contains("b") && small.contains("c"), "[lru] replacing a held key evicts nothing")
+        small.insert("d", for: "d")
+        expect(!small.contains("b") && small.contains("a") && small.contains("c") && small.contains("d"), "[lru] eviction order is least recently used: b went, a and c stayed")
+        expect(small.value(for: "c") == "c2", "[lru] a replaced key holds the new value")
     }
 }

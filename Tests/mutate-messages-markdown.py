@@ -27,11 +27,11 @@ MUTANTS = [
     ("web only: no host check", P, "guard let host = url.host, !host.isEmpty else { return false }\n", "", "[web links only]"),
     ("web only: the parser skips the policy", P, "        for range in refused { string[range].link = nil }\n", "", "[web links only]"),
     ("row preview: headings kept", P, "if let level = headingLevel(line) { line = String(line.dropFirst(level)).trimmingCharacters(in: .whitespaces) }", "", "[row preview]"),
-    ("parse once: a hit never checks the text", M, "hit.dropLeadingTitle == dropLeadingTitle, hit.text == text {", "hit.dropLeadingTitle == dropLeadingTitle {", "verifies the text on a hit"),
-    ("parse once (executed): a hit never checks the text", M, "hit.dropLeadingTitle == dropLeadingTitle, hit.text == text {",
-     "hit.dropLeadingTitle == dropLeadingTitle, (hit.text == text || true) {", "[streaming]"),  # the streamed turn draws its stale text
-    ("parse once: nothing is stored", M, "        entries[key] = Entry(text: text, dropLeadingTitle: dropLeadingTitle, blocks: blocks)\n", "", "[parse once]"),
-    ("parse once: the inline cache never hits", M, "        if let hit = runs[key] { return hit }\n", "", "[parse once]"),
+    ("parse once: a hit never checks the text", M, "if let hit = entries.value(for: key), hit.text == text {", "if let hit = entries.value(for: key) {", "verifies the text on a hit"),
+    ("parse once (executed): a hit never checks the text", M, "if let hit = entries.value(for: key), hit.text == text {",
+     "if let hit = entries.value(for: key), (hit.text == text || true) {", "[streaming]"),  # the streamed turn draws its stale text
+    ("parse once: nothing is stored", M, "        entries.insert(Entry(text: text, blocks: blocks), for: key)\n", "", "[parse once]"),
+    ("parse once: the inline cache never hits", M, "        if let hit = runs.value(for: key) { return hit }\n", "", "[parse once]"),
     ("italic: DM Sans emphasis left upright", M,
      "                string[run.range].font = .system(size: italicSize, weight: intent.contains(.stronglyEmphasized) ? .bold : .regular).italic()\n", "", "[italic]"),
     ("search mark: the Markdown side never marks", M, "        guard needle.count >= 2 else { return base }", "        return base", "[search mark]"),
@@ -40,9 +40,27 @@ MUTANTS = [
     ("messages: Recent passes no id", A, 'highlight: recentQuery, markdownID: "turn:" + turn.id)', "highlight: recentQuery)", "[messages]"),
     ("messages: the archive passes no id", A, 'highlight: chatQuery, markdownID: "archive:\\(date)/\\(index)/\\(message.id)")', "highlight: chatQuery)", "[messages]"),
     ("messages: the row preview shows markers", A, "Text(COSMarkdownInlineCache.plain(turn.text))", "Text(turn.text)", "[messages]"),
-    ("messages: a session chat reply as typed", A, 'COSMarkdownView(text: message.text, cacheID: "chat:\\(message.id)")', "Text(verbatim: message.text)", "[messages]"),
+    ("messages: a session chat reply as typed", A, 'COSMarkdownView(text: text, cacheID: "chat:\\(id)")', "Text(verbatim: text)", "[messages]"),
     ("copy raw: Copy turn copies the rendered words", C, "NSPasteboard.general.setString(turn.turnClipboardText, forType: .string)",
      "NSPasteboard.general.setString(COSMarkdownParser.plainText(turn.turnClipboardText), forType: .string)", "must copy the stored text"),
+    # 2026-10-09 QA: the caches are a real LRU at the exported limits, not a clear-all at 1024.
+    ("lru: a full map clears instead of evicting the oldest", P,
+     "            entries.removeValue(forKey: oldest)\n", "            _ = oldest; entries.removeAll()\n", "[lru]"),
+    ("lru: a hit does not count as a use", P, "        entries[key] = (hit.value, clock)\n", "", "[lru]"),
+    ("lru: the newest key goes first", P, "entries.min(by: { $0.value.used < $1.value.used })", "entries.max(by: { $0.value.used < $1.value.used })", "[lru]"),
+    ("lru: replacing a held key evicts", P, "        if entries[key] == nil, entries.count >= capacity,", "        if entries.count >= capacity,", "[lru]"),
+    ("lru (executed): the inline cache wipes itself when full", M, "        runs.insert(built, for: key)\n",
+     "        if runs.count >= capacity { runs = COSMarkdownLRU<AttributedString>(capacity: capacity) }\n        runs.insert(built, for: key)\n", "[lru]"),
+    # Copy answer / Copy reply copy the stored Markdown.
+    ("copy reply: the copier strips the markers", A, "        pasteboard.setString(text, forType: .string)\n",
+     "        pasteboard.setString(COSMarkdownParser.plainText(text), forType: .string)\n", "[copy reply]"),
+    ("copy reply (executed): the copier rewrites the text", A, "        pasteboard.setString(text, forType: .string)\n",
+     '        pasteboard.setString(text, forType: .string)\n        pasteboard.clearContents(); pasteboard.setString(text.replacingOccurrences(of: "**", with: ""), forType: .string)\n', "[copy reply]"),
+    ("copy reply: the chat menu copies the rendered words", A, '.contextMenu { Button("Copy reply") { ActivityAnswerCopy.copy(text) } }',
+     '.contextMenu { Button("Copy reply") { ActivityAnswerCopy.copy(COSMarkdownParser.plainText(text)) } }', "[copy reply]"),
+    ("copy reply: the COS card has no Copy answer", A, 'text: markdownID == nil ? nil : text))', "text: nil))", "[copy reply]"),
+    # The session chat bubble hugs a short reply.
+    ("hug: the bubble takes the whole row", A, "let width = min(ideal.width, proposal.width ?? ideal.width)", "let width = proposal.width ?? ideal.width", "[hug]"),
 ]
 
 

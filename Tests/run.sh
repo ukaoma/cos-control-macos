@@ -143,6 +143,10 @@ zsh "$ROOT/Tests/run-meeting-task-link.sh"
   "$ROOT/Sources/COSMarkdownParser.swift" "$ROOT/Tests/MarkdownContract.swift" \
   -o "$TMP/markdown-contract"
 "$TMP/markdown-contract"
+# 2026-10-09: the Markdown panes and the Messages answers rendered off screen (a window that is never ordered in):
+# the search mark on screen, parse once, links drawn, italic, streaming in the same cache slot, copy stays raw, the
+# session chat bubble hugs a short reply, and the real inline cache survives a stream. One compile, through the guard.
+zsh "$ROOT/Tests/run-markdown-ui.sh" "$TMP/markdown-ui"
 # 0.5.233: the live feed reducer is pure Foundation and pinned by an EXECUTED contract
 # over recorded 6.48.2 stream frames (reseed, gap, prompt window, state line, elapsed).
 "$ROOT/Tests/compile-guard.sh" swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \
@@ -6775,15 +6779,41 @@ if 'markdownID: "archive:\\(date)/\\(index)/\\(message.id)")' not in chat:
     fail("[messages] an archived chat's COS card renders as Markdown, keyed by day, chat and position")
 if 'Text(COSMarkdownInlineCache.plain(turn.text))' not in body(activity, "private func messageRow("):
     fail("[messages] the row preview shows the answer's words, not its markers")
-if 'COSMarkdownView(text: message.text, cacheID: "chat:\\(message.id)")' not in body(activity, "struct SessionChatComposer"):
-    fail("[messages] a session chat reply renders as Markdown")
 if "openURL" in md or "NSWorkspace" in md or "openURL" in card:
     fail("[messages] links open through SwiftUI's default action; the renderer adds no open path of its own")
 if "opensAsWebLink(url)" not in body(parser, "static func inline("):
     fail("[messages] every inline link passes the web-only policy")
 cache = body(md, "enum COSMarkdownCache")
-if "hit.text == text" not in cache or "private static var entries: [String: Entry]" not in cache:
-    fail("[messages] the document cache is keyed (id or text hash) and verifies the text on a hit")
+if "hit.text == text" not in cache or "private static var entries = COSMarkdownLRU<Entry>(capacity: capacity)" not in cache:
+    fail("[messages] the document cache is keyed (id or text hash), an LRU, and verifies the text on a hit")
+if "static let capacity = COSMarkdownCacheLimits.documents" not in cache:
+    fail("[lru] the document cache runs at the exported limit the contract checks")
+inline_cache = body(md, "enum COSMarkdownInlineCache")
+if "static let capacity = COSMarkdownCacheLimits.inline" not in inline_cache or "COSMarkdownLRU<AttributedString>(capacity: capacity)" not in inline_cache \
+        or "COSMarkdownLRU<String>(capacity: capacity)" not in inline_cache:
+    fail("[lru] the inline cache is an LRU at the exported limit the contract checks")
+if "removeAll" in inline_cache or "removeAll" in cache:
+    fail("[lru] a renderer cache must evict the oldest-unused entry, never clear itself")
+lru = body(parser, "struct COSMarkdownLRU")
+if "entries.min(by: { $0.value.used < $1.value.used })" not in lru:
+    fail("[lru] a full map evicts the key used longest ago")
+# Copy answer (Messages COS card) and Copy reply (session chat) copy the stored Markdown.
+copier = body(activity, "enum ActivityAnswerCopy")
+if "pasteboard.setString(text, forType: .string)" not in copier or "COSMarkdown" in copier:
+    fail("[copy reply] the answer copy must copy the stored text, not the rendered text")
+if 'Button(label) { ActivityAnswerCopy.copy(text) }' not in body(activity, "struct ActivityCopyMenu"):
+    fail("[copy reply] the copy menu copies the text it was given")
+if '.modifier(ActivityCopyMenu(label: "Copy answer", text: markdownID == nil ? nil : text))' not in card:
+    fail("[copy reply] the COS card (Recent and archived chats) offers Copy answer on its raw text")
+bubble = body(activity, "struct SessionChatReplyBubble")
+if '.contextMenu { Button("Copy reply") { ActivityAnswerCopy.copy(text) } }' not in bubble:
+    fail("[copy reply] a session chat reply offers Copy reply on its raw text")
+if 'COSMarkdownView(text: text, cacheID: "chat:\\(id)")' not in bubble or "SessionChatHugWidth {" not in bubble:
+    fail("[messages] a session chat reply renders as Markdown in a bubble that hugs its words")
+if "SessionChatReplyBubble(text: message.text, id: message.id.uuidString)" not in body(activity, "struct SessionChatComposer"):
+    fail("[messages] the session chat draws its replies through SessionChatReplyBubble")
+if "SessionChatHugWidth" in md:
+    fail("[hug] the hugging bubble is the session chat's alone; Meetings, Threads and Messages keep the full width")
 controller = code("Sources/ControllerModel.swift")
 for name in ("func copyTurn(", "func copyTurnWithImages(", "func copyArchiveMessage("):
     if "COSMarkdown" in body(controller, name): fail(f"{name} must copy the stored text, not the rendered text")

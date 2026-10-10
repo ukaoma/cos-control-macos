@@ -5901,6 +5901,8 @@ struct ActivityMessageCard: View {
         .padding(17)
         .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 13))
         .overlay(RoundedRectangle(cornerRadius: 13).stroke(tint.opacity(0.22), lineWidth: 1))
+        // The COS side copies its whole answer as stored; Copy turn above copies both sides.
+        .modifier(ActivityCopyMenu(label: "Copy answer", text: markdownID == nil ? nil : text))
     }
 
     /// Yellow on dark, amber on light; both carry dark ink, so the mark reads at a glance in
@@ -5919,6 +5921,68 @@ struct ActivityMessageCard: View {
             }
         }
         return attributed
+    }
+}
+
+/// Copies a COS answer as stored: the Markdown, byte for byte, never the rendered words
+/// (the same rule as Copy turn). The context menus on the Messages COS card ("Copy answer")
+/// and the session chat reply ("Copy reply") both come through here. A reply renders as one
+/// Text per block, so selecting it cannot take the whole answer in one go; this can.
+@MainActor
+enum ActivityAnswerCopy {
+    static func copy(_ text: String, to pasteboard: NSPasteboard = .general) {
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
+    }
+}
+
+/// A context menu with one copy action, on a view that has something to copy; `text` nil
+/// adds no menu at all (the YOU card, an empty answer).
+struct ActivityCopyMenu: ViewModifier {
+    let label: String
+    let text: String?
+
+    func body(content: Content) -> some View {
+        if let text, !text.isEmpty {
+            content.contextMenu { Button(label) { ActivityAnswerCopy.copy(text) } }
+        } else {
+            content
+        }
+    }
+}
+
+/// One assistant reply in the session chat: Markdown, as in the session's stored turns above,
+/// in a bubble that hugs its words up to the row. COSMarkdownBlocks fills the width it is
+/// offered (right for Meetings, Threads and Messages), so before this a "Done." reply drew a
+/// full-width bubble where the plain Text it replaced had hugged its text.
+struct SessionChatReplyBubble: View {
+    let text: String
+    let id: String
+
+    var body: some View {
+        SessionChatHugWidth {
+            COSMarkdownView(text: text, cacheID: "chat:\(id)")
+        }
+        .padding(10)
+        .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 11))
+        .contextMenu { Button("Copy reply") { ActivityAnswerCopy.copy(text) } }
+    }
+}
+
+/// Sizes its one child to the child's own (ideal) width, capped at the width offered, then
+/// lays it out at that width. A short reply hugs its text; a long one takes the row, exactly
+/// as wide as before (the HStack's Spacer keeps its 60 pt).
+struct SessionChatHugWidth: Layout {
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        guard let child = subviews.first else { return .zero }
+        let ideal = child.sizeThatFits(.unspecified)
+        let width = min(ideal.width, proposal.width ?? ideal.width)
+        return CGSize(width: width, height: child.sizeThatFits(ProposedViewSize(width: width, height: nil)).height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        subviews.first?.place(at: bounds.origin, anchor: .topLeading,
+                              proposal: ProposedViewSize(width: bounds.width, height: bounds.height))
     }
 }
 
@@ -6207,10 +6271,7 @@ struct SessionChatComposer: View {
                     }
                 case .assistant:
                     HStack {
-                        // A reply is Markdown, as in the session's stored turns above.
-                        COSMarkdownView(text: message.text, cacheID: "chat:\(message.id)")
-                            .padding(10)
-                            .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 11))
+                        SessionChatReplyBubble(text: message.text, id: message.id.uuidString)
                         Spacer(minLength: 60)
                     }
                 case .status:

@@ -56,31 +56,32 @@ enum COSMarkdownInline {
 }
 
 /// Inline runs, built once per distinct string. Before 2026-10-09 every redraw of every
-/// paragraph re-ran Foundation's Markdown parser; a long Messages answer redraws on every
-/// scroll and every streamed token.
+/// paragraph re-ran Foundation's Markdown parser, and a long Messages answer redraws on every
+/// scroll. A hit is a paragraph already drawn; a streamed token is NOT one (each token makes
+/// a new prefix of the live paragraph, so it parses once and is a miss by definition). What
+/// the LRU buys a stream is that those prefixes push out the runs used longest ago, never the
+/// runs of the panes on screen, which every redraw touches (COSMarkdownLRU).
 @MainActor
 enum COSMarkdownInlineCache {
-    private static var runs: [String: AttributedString] = [:]
-    private static var plains: [String: String] = [:]
-    static let capacity = 1024
+    static let capacity = COSMarkdownCacheLimits.inline
+    private static var runs = COSMarkdownLRU<AttributedString>(capacity: capacity)
+    private static var plains = COSMarkdownLRU<String>(capacity: capacity)
     private(set) static var parseCount = 0
 
     static func attributed(_ text: String, italicSize: CGFloat? = nil) -> AttributedString {
         let key = "\(italicSize ?? 0)|" + text
-        if let hit = runs[key] { return hit }
+        if let hit = runs.value(for: key) { return hit }
         parseCount += 1
-        if runs.count >= capacity { runs.removeAll(keepingCapacity: true) }
         let built = COSMarkdownInline.attributed(text, italicSize: italicSize)
-        runs[key] = built
+        runs.insert(built, for: key)
         return built
     }
 
     /// A list row's one-line preview of a Markdown answer.
     static func plain(_ text: String) -> String {
-        if let hit = plains[text] { return hit }
-        if plains.count >= capacity { plains.removeAll(keepingCapacity: true) }
+        if let hit = plains.value(for: text) { return hit }
         let built = COSMarkdownParser.plainText(text)
-        plains[text] = built
+        plains.insert(built, for: text)
         return built
     }
 }
@@ -114,37 +115,29 @@ struct COSMarkdownText: View {
 
 // MARK: - View
 
-/// Parsed documents, kept for the life of this process. A resize must not parse the review
-/// again, and neither must a redraw of a Messages answer (2026-10-09: the one-slot cache this
-/// replaced re-parsed every turn of a session pane on every redraw, because two documents on
-/// screen evicted each other). A caller with a stable id (a message) holds ONE slot per id,
-/// so a streaming answer replaces its own entry instead of filling the cache; the stored text
-/// is compared on every hit, so a hash collision can never hand back another document.
+/// Parsed documents: the 128-entry LRU (COSMarkdownCacheLimits.documents, COSMarkdownLRU).
+/// A resize must not parse the review again, and neither must a redraw of a Messages answer
+/// (2026-10-09: the one-slot cache this replaced re-parsed every turn of a session pane on
+/// every redraw, because two documents on screen evicted each other). A caller with a stable
+/// id (a message) holds ONE slot per id, so a streaming answer replaces its own entry instead
+/// of filling the cache; the key carries `dropLeadingTitle`, and the stored text is compared
+/// on every hit, so a hash collision can never hand back another document.
 @MainActor
 enum COSMarkdownCache {
-    private struct Entry { let text: String; let dropLeadingTitle: Bool; let blocks: [COSMarkdownBlock] }
-    private static var entries: [String: Entry] = [:]
-    private static var order: [String] = []
-    static let capacity = 128
+    private struct Entry { let text: String; let blocks: [COSMarkdownBlock] }
+    static let capacity = COSMarkdownCacheLimits.documents
+    private static var entries = COSMarkdownLRU<Entry>(capacity: capacity)
     private(set) static var parseCount = 0
 
     static func blocks(_ text: String, id: String? = nil, dropLeadingTitle: Bool = false) -> [COSMarkdownBlock] {
         let key = id.map { "id:\($0)|\(dropLeadingTitle)" } ?? "h:\(text.hashValue)|\(text.utf16.count)|\(dropLeadingTitle)"
-        if let hit = entries[key], hit.dropLeadingTitle == dropLeadingTitle, hit.text == text {
-            touch(key)
+        if let hit = entries.value(for: key), hit.text == text {
             return hit.blocks
         }
         parseCount += 1
         let blocks = COSMarkdownParser.parse(text, dropLeadingTitle: dropLeadingTitle)
-        entries[key] = Entry(text: text, dropLeadingTitle: dropLeadingTitle, blocks: blocks)
-        touch(key)
-        while order.count > capacity { entries.removeValue(forKey: order.removeFirst()) }
+        entries.insert(Entry(text: text, blocks: blocks), for: key)
         return blocks
-    }
-
-    private static func touch(_ key: String) {
-        if let i = order.firstIndex(of: key) { order.remove(at: i) }
-        order.append(key)
     }
 }
 

@@ -334,6 +334,45 @@ struct MarkdownPaneUIContract {
         precondition(turn.turnClipboardText.contains("**Take Varesa.**") && turn.turnClipboardText.contains("- [allthings.how: 7.1 selector best pick](https://"), "[copy raw] the copy keeps the Markdown")
         let archived = ArchiveMessage(.object(["no": .number(356), "query": .string(query356), "text": .string(message356), "timestamp": .number(1_791_584_905_443)]), ordinal: 0)
         precondition(archived?.clipboardText == turn.turnClipboardText, "[copy raw] an archived chat's Copy turn is the same raw text")
+
+        // Copy answer (Messages COS card) and Copy reply (session chat) copy the stored Markdown.
+        // A private named pasteboard, so the check never touches the clipboard of the person
+        // running it.
+        let board = NSPasteboard(name: NSPasteboard.Name("com.cos.control.tests.markdown-ui.\(ProcessInfo.processInfo.processIdentifier)"))
+        defer { board.releaseGlobally() }
+        ActivityAnswerCopy.copy(message356, to: board)
+        let copied = board.string(forType: .string)
+        precondition(copied == message356, "[copy reply] Copy reply and Copy answer copy the stored Markdown byte for byte: \(String(describing: copied?.prefix(40)))")
+        precondition(copied?.contains("**Take Varesa.**") == true && copied?.contains("](https://allthings.how") == true, "[copy reply] the copy keeps the Markdown markers")
+
+        // The session chat reply renders as Markdown, and its bubble hugs a short reply while a
+        // long one takes the row, as the plain Text it replaced did.
+        let short = "Done. Pushed **feat/messages-markdown**."
+        let offered = NSSize(width: 640, height: 4000)
+        for dark in [false, true] {
+            // The row as SessionChatComposer lays it out: the bubble, then a Spacer of at least 60 pt.
+            let row = HStack { SessionChatReplyBubble(text: short, id: "hug-short"); Spacer(minLength: 60) }
+                .padding(16).frame(width: 640, height: 80, alignment: .topLeading).background(COSPalette.panel)
+            let (_, host) = try render(row, size: NSSize(width: 640, height: 80), name: "session-chat-short", output: output, dark: dark)
+            let text = strings(host).joined(separator: "\n")
+            precondition(text.contains("Done. Pushed feat/messages-markdown.") && !text.contains("**"), "[session chat] a reply renders its Markdown: \(text)")
+        }
+        let shortWidth = NSHostingController(rootView: SessionChatReplyBubble(text: short, id: "hug-short")).sizeThatFits(in: offered).width
+        let longWidth = NSHostingController(rootView: SessionChatReplyBubble(text: message356, id: "hug-long")).sizeThatFits(in: offered).width
+        precondition(shortWidth < 360, "[hug] a short reply's bubble hugs its words, not the row: \(shortWidth) of \(offered.width)")
+        precondition(abs(longWidth - offered.width) < 0.5, "[hug] a long reply's bubble takes the whole row, as wide as before: \(longWidth) of \(offered.width)")
+
+        // The real inline cache under a stream: twice its capacity of new prefixes, with the
+        // paragraph on screen drawn after each one, must never parse that paragraph again.
+        let onScreen = "Take **Varesa**: the paragraph already on screen."
+        _ = COSMarkdownInlineCache.attributed(onScreen, italicSize: 13)
+        let before = COSMarkdownInlineCache.parseCount
+        let streamed = 2 * COSMarkdownInlineCache.capacity
+        for i in 0..<streamed {
+            _ = COSMarkdownInlineCache.attributed("The live answer, token \(i)", italicSize: 13)
+            _ = COSMarkdownInlineCache.attributed(onScreen, italicSize: 13)
+        }
+        precondition(COSMarkdownInlineCache.parseCount - before == streamed, "[lru] a stream of \(streamed) prefixes parses each prefix once and never the paragraph on screen: \(COSMarkdownInlineCache.parseCount - before) parses")
     }
 
     static func main() throws {
@@ -465,6 +504,7 @@ struct MarkdownPaneUIContract {
 
         try messages(output: output)
         print("PASS messages markdown UI: Message #356 renders as Markdown light and dark (before shot raw), parse once per id + text, streaming text stays text, bare URLs wrap, copy stays raw")
+        print("PASS messages copy + chat: Copy answer and Copy reply copy the stored Markdown, a short session chat reply hugs its words, a stream never evicts the paragraph on screen")
         print("PASS markdown UI: meeting pane and thread pane render as documents at 920 pt, light and dark;")
         print("PASS activity feed: recorded, waiting, reconnecting, older-server and connecting shapes render light and dark;")
         print("PASS action weights: primary, quiet and featured render side by side. Output: \(output.path)")
