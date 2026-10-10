@@ -799,7 +799,9 @@ echo "    add a voice: helper, model, view, and safety copy wired"
 # Measured 2026-08-24: a Control up since the previous afternoon was two builds
 # behind with no banner and no way to ask.
 /usr/bin/grep -q 'func checkForAppUpdateManually' "$ROOT/Sources/ControllerModel.swift"
-/usr/bin/grep -q 'Check for updates' "$ROOT/Sources/Views.swift"
+# 2026-10-09 (Miles, after 0.5.276): the version card is gone; the ask is the header's refresh button, which refreshes
+# AND checks, and answers in the subtitle line. Pins and an executed state machine: Tests/run-refresh-check.sh.
+"$ROOT/Tests/run-refresh-check.sh"
 
 # --- 0.5.71 publisher notice --------------------------------------------------
 # The property that matters is INDEPENDENCE FROM updateAvailable. The audience is
@@ -832,17 +834,14 @@ assert 'dismissedNoticeIds.contains(id)' in ctrl, 'dismissal must be keyed per n
 # 400-char probe broke the moment the row was renamed (0.5.167).
 _panel = views[views.index('private var mainPanel'):]
 _panel = _panel[:_panel.index('\n    }')]
-assert 'updateRow' in _panel and 'noticeBanner' in _panel, \
-    'the panel must render both the update row and the notice banner'
+assert 'noticeBanner' in _panel, 'the panel must render the notice banner'
 # Updates answer "am I current?" FIRST. Buried under the status card and the
 # utilities, the only way to ask was to scroll to the very bottom (Miles).
-assert _panel.index('updateRow') < _panel.index('statusCard'), \
-    'the update row must sit at the top of the panel, above the status card'
-# The CALL SITE, not the words: the footer's own comment quotes the old label
-# ("Check for updates Quit"), so a bare string check trips on documentation.
-_row = views.split('private var updateRow')[1].split('private var updateBanner')[0]
-assert 'Button("Check for updates"' in _row, \
-    'the manual check must live in the top update row'
+# 2026-10-09: the version card (updateRow) is gone; the ask is the header's
+# refresh button, at the very top, and the header sits above the status card.
+assert 'updateRow' not in views, 'the standing version card (updateRow) is gone'
+assert _panel.index('header') < _panel.index('statusCard'), \
+    'the header (with the refresh-and-check button) sits above the status card'
 # The whole footer body, bounded by the next declaration. A 1200-char window
 # stopped one line short of the Quit button — the third fixed-window pin to
 # break this way today, so this one slices to a real boundary.
@@ -1016,8 +1015,10 @@ PYEOF
 /usr/bin/grep -q 'Button("Quit", systemImage: "power")' "$ROOT/Sources/Views.swift"
 ! /usr/bin/grep -q 'buttonStyle(.link)' "$ROOT/Sources/Views.swift"
 echo '  Recover is single-CTA; footer actions are chips'
-# Opener must reach the method it claims to call.
-/usr/bin/grep -q 'await model.checkForAppUpdateManually()' "$ROOT/Sources/Views.swift"
+# Opener must reach the method it claims to call. 2026-10-09: the opener is the
+# header's refresh button, which refreshes AND runs the manual check
+# (refreshAndCheckForUpdates; Tests/run-refresh-check.sh executes it).
+/usr/bin/grep -q 'await model.refreshAndCheckForUpdates()' "$ROOT/Sources/Views.swift"
 # EVERY path must report. This is the whole point of the manual variant.
 /usr/bin/python3 - "$ROOT/Sources/ControllerModel.swift" <<'PYEOF'
 import io, re, sys
@@ -1026,7 +1027,8 @@ code = '\n'.join(l for l in src.split('\n')
                  if not l.strip().startswith('//') and not l.strip().startswith('///'))
 i = code.find('func checkForAppUpdateManually')
 assert i > 0, 'checkForAppUpdateManually missing'
-body = code[i:i + 1800]
+# To the next function, not a fixed window (the function grew its header outcome).
+body = code[i:code.index('func refreshAndCheckForUpdates', i)]
 assert 'is the latest version' in body, 'manual check must SAY when already up to date'
 assert 'Could not reach the update feed' in body, 'manual check must REPORT a failure'
 assert 'catch let' in body, 'must bind the caught error; a bare catch shadows self.error'
@@ -1627,14 +1629,15 @@ import sys
 views = open(sys.argv[1]).read()
 panel = views[views.index("private var mainPanel"): views.index("private var activityLauncher")]
 # Activity is the first destination in the menu bar, above Restart/Stop/Update.
-# updateRow replaced updateBanner in the panel (0.5.167): it renders the offer
-# when there is one and the standing version when there is not, and carries the
-# manual check either way.
-for name in ("header", "updateRow", "activityLauncher", "statusCard", "controls"):
+# 2026-10-09: the version card (updateRow) is gone. The banner shows an update,
+# the header carries the version stamp and the manual check (its refresh button).
+for name in ("updateBanner", "header", "activityLauncher", "statusCard", "controls"):
     if name not in panel:
         raise SystemExit(f"mainPanel lost {name}")
-if panel.index("updateRow") > panel.index("activityLauncher"):
-    raise SystemExit("the update row must be the first card in the panel")
+if "updateRow" in panel:
+    raise SystemExit("the version card (updateRow) is back in the panel")
+if panel.index("header") > panel.index("activityLauncher"):
+    raise SystemExit("the header must sit above Activity")
 if panel.index("activityLauncher") > panel.index("statusCard"):
     raise SystemExit("Activity is below status again")
 if panel.index("activityLauncher") > panel.index("controls"):

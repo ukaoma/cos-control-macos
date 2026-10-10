@@ -70,7 +70,7 @@ MUTANTS = [
     ("setup starts without whisper.cpp", M, "return voice.whisperCli && voice.whisperServer && voice.setupAvailable", "return voice.setupAvailable", "[voice gate]", "model"),
     ("Cancel reads as a failure", M, "            } catch is CancellationError {", "            } catch is URLError {", "[voice cancel]", "model"),
     ("skips forgotten", M, "skipped.insert(id); save() }", "skipped.insert(id) }", "[setup guide resume]", "model"),
-    ("finish card below the fold", V, "                DockNoticeLine(model: model)\n                // Early users: Finish setup at the top", "                updateRow\n                DockNoticeLine(model: model)\n                // Early users: Finish setup at the top", "[finish card]", "pins"),
+    ("finish card below the fold", V, "                DockNoticeLine(model: model)\n                // Early users: Finish setup at the top", "                noticeBanner\n                DockNoticeLine(model: model)\n                // Early users: Finish setup at the top", "[finish card]", "pins"),
     ("pet loses Settings", "Sources/SessionPet.swift", '        Button("Settings…") { model.showSettings?() }\n', "", "[pet menu]", "pins"),
     ("Dock menu loses the guide", W, '["Open Activity", "Setup guide…", "Settings…"]', '["Open Activity", "Settings…"]', "[dock menu]", "pins"),
     ("Guided Setup back to bare npx", C, "        let command = setupGuide.voice?.terminalCommand[normalized]\n            ?? ", "        let command = ", "[guided setup]", "pins"),

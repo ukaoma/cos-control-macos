@@ -505,6 +505,7 @@ struct ControlPanel: View {
     @State private var confirmBundledCharacter = false
     @State private var pendingOpenPetsRow: OpenPetsCatalogRow?
     @State private var pendingBundledCharacter: BundledPetCharacter?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     /// The menu-bar panel stays the server console. Browsing activity lives in a
     /// real, persistent AppKit window: unlike a sheet, that
@@ -1134,8 +1135,13 @@ struct ControlPanel: View {
                 // fixed dark rendered black on the dark panel.
                 .foregroundStyle(.primary)
             VStack(alignment: .leading, spacing: 2) {
-                Text("Control").font(COSType.display(18, weight: .semibold))
-                Text("Your local glasses server").font(COSType.body(11)).foregroundStyle(.secondary)
+                // 2026-10-09 (Miles, 22:55, "Lets go with B"): the version, small, inline after the title on its
+                // baseline, so it is known without scrolling to the footer. The title line keeps its height.
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text("Control").font(COSType.display(18, weight: .semibold))
+                    versionStamp
+                }
+                updateStatusLine(idle: "Your local glasses server").lineLimit(1)
             }
             Spacer()
             if model.busy { ProgressView().controlSize(.small) }
@@ -1143,9 +1149,40 @@ struct ControlPanel: View {
                 .buttonStyle(COSIconButtonStyle(size: 24))
                 .disabled(model.busy)
                 .help("Archive live messages and start numbering at #1")
-            Button { Task { await model.refresh() } } label: { Image(systemName: "arrow.clockwise") }
-                .buttonStyle(COSIconButtonStyle(size: 24)).help("Refresh status")
+            refreshAndCheckButton
         }
+    }
+
+    /// The running build, read live from ControllerModel.currentVersion (Info.plist), never a literal.
+    private var versionStamp: some View {
+        Text("v\(ControllerModel.currentVersion)")
+            .font(COSType.mono(9))
+            .foregroundStyle(.tertiary)
+            .lineLimit(1)
+            .help("COS Control \(ControllerModel.currentVersion)")
+            .accessibilityLabel("COS Control version \(ControllerModel.currentVersion)")
+    }
+
+    /// 2026-10-09 (Miles): the manual update check lives in the header's refresh button now (the version card is
+    /// gone). One click refreshes the server status and checks for updates; the subtitle line says how the check went.
+    private var refreshAndCheckButton: some View {
+        Button {
+            Task { await model.refreshAndCheckForUpdates() }
+        } label: { Image(systemName: "arrow.clockwise") }
+            .buttonStyle(COSIconButtonStyle(size: 24))
+            .help("Refresh status and check for updates")
+            .accessibilityLabel("Refresh status and check for updates")
+    }
+
+    /// The subtitle line: its own words, or the header check's (Checking for updates…, Up to date, Couldn't check for
+    /// updates) while one runs or for a few seconds after. No new row, and no motion under Reduce Motion.
+    private func updateStatusLine(idle: String, size: CGFloat = 11) -> some View {
+        let shown = HeaderUpdateStatus.shown(inFlight: model.updateCheckInFlight, status: model.headerUpdateStatus)
+        return Text(shown.text(idle: idle))
+            .font(COSType.body(size))
+            .foregroundStyle(shown == .upToDate ? AnyShapeStyle(COSPalette.green)
+                             : shown == .failed ? AnyShapeStyle(COSPalette.danger) : AnyShapeStyle(.secondary))
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: shown)
     }
 
     private var statusCard: some View {
@@ -1677,13 +1714,20 @@ struct ControlPanel: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 // 2026-10-09 (Miles, like Vorssant): an update that is ready is the first thing in the panel, above the
-                // header. Nothing renders here without one; the version card below stays where it was.
+                // header. Nothing renders here without one. The standing version card is gone (2026-10-09, after
+                // 0.5.276): the header's version stamp and its refresh button, which also checks, answer instead.
                 updateBanner
                 if hostedInActivity {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Settings").font(COSType.body(28, weight: .semibold))
-                        Text("Manage your Mac companion, voice, connected AI and preferences.")
-                            .font(COSType.body(13)).foregroundStyle(.secondary)
+                    // Settings in Activity has no panel header, and it carried the version card too: the same
+                    // refresh-and-check button and status line here keep its manual check (2026-10-09).
+                    HStack(alignment: .top, spacing: 10) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Settings").font(COSType.body(28, weight: .semibold))
+                            updateStatusLine(idle: "Manage your Mac companion, voice, connected AI and preferences.", size: 13)
+                        }
+                        Spacer(minLength: 8)
+                        if model.busy { ProgressView().controlSize(.small) }
+                        refreshAndCheckButton
                     }
                 } else { header }
                 // Upgraders, once: COS Control is in the Dock now (Menu bar only / Keep).
@@ -1693,7 +1737,6 @@ struct ControlPanel: View {
                     model.providerGuide.openInPanel()
                     withAnimation { reader.scrollTo("setup-guide", anchor: .top) }
                 }
-                updateRow
                 noticeBanner
                 if model.status.needsFirstRun {
                     Button("Get started with COS") { model.openSetup?() }
@@ -2659,36 +2702,6 @@ struct ControlPanel: View {
         }
     }
 
-    /// Updates belong at the TOP of the panel, not buried under everything else
-    /// (Miles, 2026-08-31). The row answers "am I current?" on every open with the
-    /// standing version and the manual check. 2026-10-09: when an update is ready the
-    /// banner at the very top (updateBanner) answers instead, so this renders nothing.
-    @ViewBuilder private var updateRow: some View {
-        if !model.appUpdateFlow.showsBanner {
-            HStack(spacing: 8) {
-                Image(systemName: "checkmark.circle")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(COSPalette.green)
-                Text("COS Control \(ControllerModel.currentVersion)")
-                    .font(COSType.mono(10, weight: .bold))
-                Spacer(minLength: 8)
-                if model.updateCheckInFlight {
-                    Text("Checking…").font(COSType.mono(10)).foregroundStyle(.secondary)
-                } else {
-                    Button("Check for updates", systemImage: "arrow.triangle.2.circlepath") {
-                        Task { await model.checkForAppUpdateManually() }
-                    }
-                    .buttonStyle(COSQuietButtonStyle())
-                    .disabled(model.busy)
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 11).padding(.vertical, 8)
-            .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 12))
-            .overlay(RoundedRectangle(cornerRadius: 12).stroke(COSPalette.line, lineWidth: 1))
-        }
-    }
-
     /// Renders ONLY while appUpdateFlow has something to say: ready, staging, applying, failed. Update (and Try again)
     /// open the What's New window (2026-10-09; it replaced the small "Install COS Control X?" alert). Its Download and
     /// install is the confirmation, and runs installAppUpdate, the existing stage then apply path.
@@ -2715,11 +2728,11 @@ struct ControlPanel: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             HStack(spacing: 10) {
                 Spacer()
-                // ASK FOR AN UPDATE lives in updateRow at the TOP of the panel
-                // now. The automatic check runs at launch and every 6 hours, so
-                // a long-running Control can sit two builds behind with no
-                // banner and no way to ask (2026-08-24) — the ask still exists,
-                // it just is not the last thing in the panel any more.
+                // ASK FOR AN UPDATE with the header's refresh button (2026-10-09;
+                // the version card is gone). The automatic check runs at launch
+                // and every 6 hours, so a long-running Control can sit two builds
+                // behind with no banner and no way to ask (2026-08-24): the ask
+                // still exists, at the top of the panel, not here.
                 Button("Quit", systemImage: "power") { NSApplication.shared.terminate(nil) }
                     .buttonStyle(COSQuietButtonStyle())
             }

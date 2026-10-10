@@ -3939,7 +3939,7 @@ enum AppUpdateVersion {
 
 /// What the update banner shows and the menu-bar icon follows.
 enum AppUpdatePhase: Equatable, Sendable {
-    /// No update: the version card (checkmark, COS Control X, Check for updates) as before.
+    /// No update: no banner. The header's version stamp and its refresh button (which also checks) answer instead.
     case none
     /// The appcast offers a newer build: the banner with Update, and the gold glasses.
     case ready
@@ -4423,6 +4423,58 @@ final class WhatsNewSeenStore: @unchecked Sendable {
             guard let defaults else { memory = newValue; return }
             defaults.set(newValue, forKey: WhatsNewAfterUpdate.defaultsKey)
         }
+    }
+}
+
+/// What a manual update check found. `skipped`: a manual check was already running, so this one never started.
+enum ManualUpdateCheckOutcome: Equatable, Sendable {
+    case updateFound, upToDate, failed, skipped
+}
+
+/// 2026-10-09 (Miles, after the 0.5.276 gold banner): the standing version card is gone. The panel header's refresh
+/// button also checks for updates and answers in the header's subtitle line, under "Control". An update found needs no
+/// words there: the gold banner and What's New answer it. A result holds for a few seconds, then the line goes back to
+/// what it always says. The version itself is the header's stamp after the title, so "Up to date" stands alone.
+enum HeaderUpdateStatus: Equatable, Sendable {
+    case idle, checking, upToDate, failed
+
+    static let checkingText = "Checking for updates…"
+    static let upToDateText = "Up to date"
+    static let failedText = "Couldn't check for updates"
+    static let upToDateHold: Duration = .seconds(4)
+    static let failedHold: Duration = .seconds(6)
+
+    /// The words for the subtitle line; `idle` is the line's own words (the panel's, or Settings').
+    func text(idle: String) -> String {
+        switch self {
+        case .idle: idle
+        case .checking: Self.checkingText
+        case .upToDate: Self.upToDateText
+        case .failed: Self.failedText
+        }
+    }
+
+    /// How long a result stays before the line goes back to idle. Nil: it stays until something changes it.
+    var hold: Duration? {
+        switch self {
+        case .upToDate: Self.upToDateHold
+        case .failed: Self.failedHold
+        case .idle, .checking: nil
+        }
+    }
+
+    /// The line after a check from the header ends.
+    static func after(_ outcome: ManualUpdateCheckOutcome) -> HeaderUpdateStatus {
+        switch outcome {
+        case .upToDate: .upToDate
+        case .failed: .failed
+        case .updateFound, .skipped: .idle
+        }
+    }
+
+    /// What the line shows: Checking while any manual check runs, else the last header result.
+    static func shown(inFlight: Bool, status: HeaderUpdateStatus) -> HeaderUpdateStatus {
+        inFlight ? .checking : status
     }
 }
 

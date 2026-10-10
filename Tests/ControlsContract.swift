@@ -113,7 +113,7 @@ private struct LabelBoard: View {
         panel()
         check(!activated && !app.isActive, "the contract never became the active app (a shared desktop is left alone)")
         check(NSApp.windows.allSatisfy { !$0.isVisible }, "no window was ever put on screen")
-        print("PASS: GOTCOS controls, no UI driven (dropdown rules: keys, highlight, choice, list width and placement, reopening; an open list follows changed options; view switch and stepper rules; root theme: button, progress, disclosure, tint; light-mode contrast; switch, checkbox and spinner pixels; the open list's card; labels: icon in the middle of one and two lines under every style, the system's gap and wrapping; the menu-bar panel's Check for updates and Create Folders, rendered)")
+        print("PASS: GOTCOS controls, no UI driven (dropdown rules: keys, highlight, choice, list width and placement, reopening; an open list follows changed options; view switch and stepper rules; root theme: button, progress, disclosure, tint; light-mode contrast; switch, checkbox and spinner pixels; the open list's card; labels: icon in the middle of one and two lines under every style, the system's gap and wrapping; the menu-bar panel's Create Folders, rendered)")
     }
 
     private static func check(_ condition: Bool, _ message: @autoclosure () -> String = "", line: UInt = #line) {
@@ -306,8 +306,8 @@ private struct LabelBoard: View {
         check(systemTwo.title.midY - systemTwo.icon.midY > 4, "the system style still tops the icon of two lines (the fault this pins): \(systemTwo.icon.midY) vs \(systemTwo.title.midY)")
     }
 
-    /// The real menu-bar panel, off screen, light and dark: Check for updates (the updates card) and Create Folders
-    /// (the buttons grid) wrap to two lines there, and each icon is within 1 pt of its text block's middle; so are the
+    /// The real menu-bar panel, off screen, light and dark: Create Folders (the buttons grid) wraps to two lines there
+    /// (Check for updates did too, until its card went, 2026-10-09), and each icon is within 1 pt of its text block's middle; so are the
     /// one-line Work Folder and Run Doctor. COS_PANEL_RENDER_OUT names a folder for its PNGs.
     @MainActor static func panel() {
         let output = ProcessInfo.processInfo.environment["COS_PANEL_RENDER_OUT"].map { URL(fileURLWithPath: $0) }
@@ -316,7 +316,7 @@ private struct LabelBoard: View {
             print("  panel: \(measure)")
             check(measure.offBy <= 1, "the panel's \(measure)")
         }
-        for name in ["Check for updates", "Create Folders"] {
+        for name in ["Create Folders"] {
             check(measures.contains { $0.name == name && $0.lines == 2 }, "\(name) wraps to two lines in the panel render, so it measures the case Miles saw")
         }
         check(measures.contains { $0.lines == 1 }, "the panel render measures a one-line label too")
