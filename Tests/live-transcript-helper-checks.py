@@ -73,10 +73,15 @@ try:
     (sessions / ("." + SID + ".json.4242.a1b2c3.tmp")).write_text("{}")
     (sessions / "not a session.json").write_text("{}")
     (sessions / "linked_one.json").symlink_to(sessions / (SID + ".json"))
+    (sessions / "noextension12").write_text("{}")
+    os.mkfifo(sessions / "fifo_session.json")
+    with open(sessions / "huge_session.json", "wb") as huge:
+        huge.truncate(65 * 1024 * 1024)
 
     code, listed, _, err = run("live-transcript", "--data-dir", str(data_dir))
     check(code == 0 and listed["ok"] and err == "", "the list answers ok with nothing on stderr")
-    check([row["sessionId"] for row in listed["details"]["sessions"]] == [SID], "the list skips temp files, bad names and symlinks")
+    check(sorted(row["sessionId"] for row in listed["details"]["sessions"]) == sorted([SID, "huge_session"]),
+          "the list skips temp files, bad names, names without .json, symlinks and FIFOs")
     check(listed["details"]["dataDir"] == str(data_dir) and "read" not in listed["details"], "the list names its data directory and reads no session")
 
     code, first, out, err = run("live-transcript", "--data-dir", str(data_dir), "--session", SID)
@@ -100,10 +105,12 @@ try:
     body = json.loads(FIXTURE.read_text())
     body["chunksIndexed"].insert(5, {"i": 6, "c": {"text": "Fixture late chunk six", "speaker": "Jordan", "elapsed": 36600, "similarity": 0.7}})
     body["asrCompletedIndices"] = [0, 1, 2, 3, 4, 5, 6, 7, 8]
+    # Chunk 8 was dropped (a hallucination): completed, no text. It settles its index all the same.
+    body["chunksIndexed"][-1]["c"]["text"] = "  "
     (sessions / (SID + ".json")).write_text(json.dumps(body, ensure_ascii=False))
     code, landed, _, _ = run("live-transcript", "--data-dir", str(data_dir), "--session", SID, "--since", "5", "--stamp", read["stamp"])
     r = landed["details"]["read"]
-    check(r["unchanged"] is False and [t["i"] for t in r["turns"]] == [6, 7, 8] and r["settledThrough"] == 8,
+    check(r["unchanged"] is False and [t["i"] for t in r["turns"]] == [6, 7] and r["settledThrough"] == 8,
           "a late chunk below maxIndex still arrives, because the cursor waited for it")
 
     for bad in ["..", "a/b", "abc.tmp", "ab", "x" * 97, "../active-sessions/" + SID]:
@@ -114,6 +121,14 @@ try:
     check(code != 0 and "invalid_data_dir" in refused["message"], "a relative data directory is refused")
     code, refused, _, _ = run("live-transcript", "--data-dir", str(data_dir), "--session", "linked_one")
     check(code != 0 and "unsafe_file" in refused["message"], "a symlinked session file is refused, never followed")
+    link = os.lstat(sessions / "linked_one.json")
+    link_stamp = "%d.%d.%d" % (link.st_mtime_ns // 10**9, link.st_mtime_ns % 10**9, link.st_size)
+    code, refused, _, _ = run("live-transcript", "--data-dir", str(data_dir), "--session", "linked_one", "--stamp", link_stamp)
+    check(code != 0 and "unsafe_file" in refused["message"], "a symlink is refused even when the stamp matches the link itself")
+    code, refused, _, err = run("live-transcript", "--data-dir", str(data_dir), "--session", "fifo_session")
+    check(code != 0 and "unsafe_file" in refused["message"], "a FIFO named like a session is refused, and never hangs")
+    code, refused, _, _ = run("live-transcript", "--data-dir", str(data_dir), "--session", "huge_session")
+    check(code != 0 and "too_large" in refused["message"], "a file over 64 MB is refused unread")
     code, gone, _, _ = run("live-transcript", "--data-dir", str(data_dir), "--session", "meeting_gone_session")
     check(code == 0 and gone["details"]["read"]["ended"] is True, "a missing file reads as ended")
 

@@ -14730,12 +14730,17 @@ final class COSControlHelper {
     /// `<data>/active-sessions`.
     static func liveTranscriptPath(dataDir: URL, sessionId: String) -> URL? {
         guard liveTranscriptValidId(sessionId) else { return nil }
-        let dir = dataDir.appendingPathComponent("active-sessions", isDirectory: true).standardizedFileURL
-        let file = dir.appendingPathComponent(sessionId + ".json", isDirectory: false).standardizedFileURL
-        guard dir.lastPathComponent == "active-sessions",
-              file.deletingLastPathComponent().standardizedFileURL.path == dir.path,
-              file.lastPathComponent == sessionId + ".json" else { return nil }
-        return file
+        let dir = dataDir.appendingPathComponent("active-sessions", isDirectory: true)
+        let file = dir.appendingPathComponent(sessionId + ".json", isDirectory: false)
+        return liveTranscriptContained(file, in: dir) ? file.standardizedFileURL : nil
+    }
+
+    /// Defence in depth under the grammar: the file, resolved, sits directly in a folder named `active-sessions`.
+    static func liveTranscriptContained(_ file: URL, in dir: URL) -> Bool {
+        let folder = dir.standardizedFileURL, resolved = file.standardizedFileURL
+        return folder.lastPathComponent == "active-sessions"
+            && resolved.deletingLastPathComponent().standardizedFileURL.path == folder.path
+            && resolved.pathExtension == "json"
     }
 
     /// A `--data-dir` the app passes back from an earlier answer (the lookup spawns `launchctl print`, so the app does
@@ -14767,7 +14772,8 @@ final class COSControlHelper {
             throw LiveTranscriptFailure(reason: "data_dir_unreadable")
         }
         var rows: [(mtime: Double, row: [String: Any])] = []
-        for name in names where name.hasSuffix(".json") && !name.hasPrefix(".") && !name.hasSuffix(".tmp") {
+        // The server's temp files (`.<id>.json.<pid>.<hex>.tmp`) fail both tests, as does anything not `<id>.json`.
+        for name in names where name.hasSuffix(".json") {
             let id = String(name.dropLast(5))
             guard liveTranscriptValidId(id), let file = liveTranscriptPath(dataDir: dataDir, sessionId: id) else { continue }
             var info = stat()
@@ -14840,43 +14846,40 @@ final class COSControlHelper {
     }
 
     /// Read one session: `ended` when the file is gone (the server deletes it at save or discard), `unchanged` when
-    /// it is the file `knownStamp` describes, else the chunks after `since`.
+    /// it is the file `knownStamp` describes (opened and fstat'd, never read), else the chunks after `since`.
+    /// O_NOFOLLOW is the one symlink guard and fstat the one file-type guard, both on the descriptor that is read, so
+    /// nothing can be swapped in between a check and the read. O_NONBLOCK: a FIFO named like a session never hangs.
     static func liveTranscriptRead(dataDir: URL, sessionId: String, since: Int, knownStamp: String?) throws -> [String: Any] {
         guard let file = liveTranscriptPath(dataDir: dataDir, sessionId: sessionId) else {
             throw LiveTranscriptFailure(reason: "invalid_session_id")
         }
-        let ended: [String: Any] = ["sessionId": sessionId, "ended": true, "unchanged": false]
-        var info = stat()
-        if lstat(file.path, &info) != 0 {
-            if errno == ENOENT || errno == ENOTDIR { return ended }
-            throw LiveTranscriptFailure(reason: "unreadable")
-        }
-        guard (info.st_mode & S_IFMT) == S_IFREG else { throw LiveTranscriptFailure(reason: "unsafe_file") }
-        if let knownStamp, knownStamp == liveTranscriptStamp(info) {
-            return ["sessionId": sessionId, "ended": false, "unchanged": true, "stamp": knownStamp]
-        }
-        let descriptor = open(file.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+        let descriptor = open(file.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
         if descriptor < 0 {
-            if errno == ENOENT { return ended }
+            if errno == ENOENT || errno == ENOTDIR { return ["sessionId": sessionId, "ended": true, "unchanged": false] }
             throw LiveTranscriptFailure(reason: errno == ELOOP ? "unsafe_file" : "unreadable")
         }
         defer { close(descriptor) }
         var opened = stat()
         guard fstat(descriptor, &opened) == 0, (opened.st_mode & S_IFMT) == S_IFREG else { throw LiveTranscriptFailure(reason: "unsafe_file") }
+        let stamp = liveTranscriptStamp(opened)
+        if let knownStamp, knownStamp == stamp {
+            return ["sessionId": sessionId, "ended": false, "unchanged": true, "stamp": knownStamp]
+        }
         guard opened.st_size <= liveTranscriptMaxFileBytes else { throw LiveTranscriptFailure(reason: "too_large") }
-        var data = Data()
+        // The server replaces the file by rename, so the opened inode never grows; read what fstat said, no more.
+        let size = Int(opened.st_size)
+        var data = Data(capacity: size)
         var buffer = [UInt8](repeating: 0, count: 256 * 1024)
-        while true {
-            let count = buffer.withUnsafeMutableBytes { read(descriptor, $0.baseAddress, $0.count) }
+        while data.count < size {
+            let count = buffer.withUnsafeMutableBytes { read(descriptor, $0.baseAddress, min($0.count, size - data.count)) }
             if count < 0 {
                 if errno == EINTR { continue }
                 throw LiveTranscriptFailure(reason: "unreadable")
             }
             if count == 0 { break }
             data.append(contentsOf: buffer[0..<count])
-            guard data.count <= liveTranscriptMaxFileBytes else { throw LiveTranscriptFailure(reason: "too_large") }
         }
-        return try liveTranscriptParse(data, sessionId: sessionId, since: since, stamp: liveTranscriptStamp(opened))
+        return try liveTranscriptParse(data, sessionId: sessionId, since: since, stamp: stamp)
     }
 
     /// `live-transcript [--data-dir <dir>] [--session <id> [--since <n>] [--stamp <s>]]`. Always the list of live
@@ -19770,6 +19773,26 @@ final class COSControlHelper {
         try expect(Self.staleTranscriptionSessionIds([["sessionId": "old_one", "silentForMs": 1_900_000, "chunks": 3],
                                                       ["sessionId": "../x"], "junk"]) == ["old_one"],
                    "the stale session ids come from maintenance status, each through the grammar")
+        let liveFolder = URL(fileURLWithPath: "/tmp/d/active-sessions", isDirectory: true)
+        try expect(Self.liveTranscriptContained(URL(fileURLWithPath: "/tmp/d/active-sessions/ok_id.json"), in: liveFolder)
+                   && !Self.liveTranscriptContained(URL(fileURLWithPath: "/tmp/d/active-sessions/../x.json"), in: liveFolder)
+                   && !Self.liveTranscriptContained(URL(fileURLWithPath: "/tmp/d/active-sessions/sub/x.json"), in: liveFolder)
+                   && !Self.liveTranscriptContained(URL(fileURLWithPath: "/tmp/d/active-sessions/x.tmp"), in: liveFolder)
+                   && !Self.liveTranscriptContained(URL(fileURLWithPath: "/tmp/d/other/x.json"), in: URL(fileURLWithPath: "/tmp/d/other")),
+                   "a session path must resolve to a .json directly inside active-sessions")
+        // A chunk that never finishes stops holding the cursor back once it is 50 chunks behind; silence and a dropped
+        // chunk (asrCompletedIndices, no text) settle it.
+        let holeChunks = (1...60).map { "{\"i\":\($0),\"c\":{\"text\":\"w\($0)\",\"speaker\":\"Miles\",\"elapsed\":\($0 * 6000)}}" }.joined(separator: ",")
+        let hole = try Self.liveTranscriptParse(Data("{\"chunksIndexed\":[\(holeChunks)],\"receivedIndices\":[0],\"maxChunkIndex\":60}".utf8),
+                                                sessionId: "hole_session", since: -1, stamp: "s")
+        try expect(hole["settledThrough"] as? Int == 60, "a chunk 50 behind the newest no longer holds the cursor")
+        let nearChunks = (1...30).map { "{\"i\":\($0),\"c\":{\"text\":\"w\($0)\",\"speaker\":\"Miles\",\"elapsed\":\($0 * 6000)}}" }.joined(separator: ",")
+        let near = try Self.liveTranscriptParse(Data("{\"chunksIndexed\":[\(nearChunks)],\"receivedIndices\":[0],\"maxChunkIndex\":30}".utf8),
+                                                sessionId: "hole_session", since: -1, stamp: "s")
+        try expect(near["settledThrough"] as? Int == -1, "a recent chunk still in Whisper holds the cursor before it")
+        let dropped = try Self.liveTranscriptParse(Data(#"{"chunksIndexed":[{"i":0,"c":{"text":"a","speaker":"M","elapsed":0}},{"i":2,"c":{"text":"c","speaker":"M","elapsed":12000}}],"asrCompletedIndices":[1],"maxChunkIndex":2}"#.utf8),
+                                                   sessionId: "drop_session", since: -1, stamp: "s")
+        try expect(dropped["settledThrough"] as? Int == 2, "a dropped chunk (completed, no text) settles its index")
         let liveDir = FileManager.default.temporaryDirectory.appendingPathComponent("cos-live-\(UUID().uuidString)", isDirectory: true)
         let liveSessions = liveDir.appendingPathComponent("active-sessions", isDirectory: true)
         try FileManager.default.createDirectory(at: liveSessions, withIntermediateDirectories: true)

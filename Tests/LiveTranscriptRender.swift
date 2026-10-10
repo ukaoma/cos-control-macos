@@ -145,10 +145,17 @@ import SwiftUI
         await off.pollLiveTranscriptOnce()
         await off.checkLiveTranscriptHandoffs(now: Date())
         off.refreshLiveTranscriptHandoff(sid)
+        // A session still finalizing from before the setting went off asks the server nothing either.
+        var leftover = LiveTranscriptFeed(sessionId: "meeting_left_over_one")
+        leftover.markEnded(now: Date())
+        off.liveTranscriptFeeds[leftover.sessionId] = leftover
+        await off.checkLiveTranscriptHandoffs(now: Date())
+        off.refreshLiveTranscriptHandoff(leftover.sessionId)
         await sleep(2.0)
         expect(stand.calls("live-transcript") == 0 && stand.calls("live-transcript-status") == 0, "setting off spawns nothing",
                "calls: \(stand.lines("calls.log"))")
-        expect(!off.liveTranscriptPollRunning && off.liveTranscriptRows.isEmpty && !off.liveTranscriptDot && off.liveTranscriptOpenID == nil,
+        expect(!off.liveTranscriptPollRunning && off.liveTranscriptRows.isEmpty && !off.liveTranscriptDot && off.liveTranscriptOpenID == nil
+               && off.liveTranscriptFeeds[leftover.sessionId]?.lastStatusCheck == nil,
                "setting off shows nothing", "rows \(off.liveTranscriptRows.count) dot \(off.liveTranscriptDot)")
         _ = offDefaults
 

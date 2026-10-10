@@ -66,10 +66,11 @@ for banned, why in (("progress(", "stderr progress"), ("print(", "print"), ("Fil
     need(banned not in helper_live, "the helper's live transcript code never writes to " + why + " (" + banned + ")")
 need("providerCandidates" not in helper_live, "the helper's live transcript code never reads providerCandidates")
 need('object["chunksIndexed"]' in helper_live and 'object["chunks"]' not in helper_live, "the helper reads chunksIndexed, never the dense chunks array")
-need("O_NOFOLLOW" in helper_live and "lstat(" in helper_live, "the session file is opened with O_NOFOLLOW after an lstat")
-need('dir.lastPathComponent == "active-sessions"' in helper_live and "file.deletingLastPathComponent().standardizedFileURL.path == dir.path" in helper_live,
-     "the resolved session path must sit directly in active-sessions")
-need('!name.hasSuffix(".tmp")' in helper_live and '!name.hasPrefix(".")' in helper_live, "the list skips the server's temp files")
+need("open(file.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)" in helper_live and "fstat(descriptor, &opened) == 0, (opened.st_mode & S_IFMT) == S_IFREG" in helper_live,
+     "the session file is opened with O_NOFOLLOW and checked with fstat on the descriptor it reads")
+need("return liveTranscriptContained(file, in: dir) ? file.standardizedFileURL : nil" in helper_live, "the resolved session path must sit directly in active-sessions")
+need('for name in names where name.hasSuffix(".json") {' in helper_live and "guard liveTranscriptValidId(id)" in helper_live,
+     "the list keeps only <id>.json names in the grammar (the server's temp files fail both)")
 need('"liveTranscriptionSessions": maintenance?["liveTranscriptionSessions"] ?? NSNull()' in helper, "status forwards the server's live count")
 need('"staleTranscriptionSessionIds": Self.staleTranscriptionSessionIds(maintenance?["staleTranscriptionSessionDetail"])' in helper,
      "status forwards the server's stale session ids")

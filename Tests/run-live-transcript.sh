@@ -90,10 +90,14 @@ if [[ "$LANE" == "all" || "$LANE" == "helper" ]]; then
   "$ROOT/Tests/compile-guard.sh" "${SWIFTC[@]}" \
     "$ROOT/HelperSources/main.swift" "$ROOT/HelperSources/ProviderStatusCore.swift" "$ROOT/HelperSources/PairingCore.swift" \
     -framework Security -framework AppKit -o "$DIR/cos-control-helper"
+  # The helper's own self-test carries the path grammar, the containment, the fixture parse and the cursor rules.
+  OUT="$(env COS_CONTROL_TEST_HOME="$DIR/home" "$DIR/cos-control-helper" self-test 2>&1)" || { print -r -- "$OUT"; exit 1; }
+  /usr/bin/python3 -c 'import json,sys; v=json.loads(sys.argv[1]); sys.exit(0 if v.get("ok") and v["details"]["tests"] >= 819 else "helper self-test: " + str(v)[:600])' "$OUT"
+  print -r -- "helper self-test: ${OUT[1,120]}"
   OUT="$(/usr/bin/python3 "$ROOT/Tests/live-transcript-helper-checks.py" "$DIR/cos-control-helper")" || { print -r -- "$OUT"; exit 1; }
   print -r -- "$OUT"
   COUNT="${${OUT##*checks: }%% passed*}"
-  (( COUNT >= 31 )) || { print -u2 "live transcript helper checks ran only $COUNT (expected at least 31)"; exit 1; }
+  (( COUNT >= 34 )) || { print -u2 "live transcript helper checks ran only $COUNT (expected at least 34)"; exit 1; }
 fi
 
 if [[ "$LANE" == "all" || "$LANE" == "wiring" ]]; then
