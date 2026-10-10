@@ -1122,7 +1122,7 @@ esc_aw = body(aw, "private func handleActivityEscape() -> Bool {", "private func
 assert esc_aw.index("workWorkspaceState.startItemID != nil") < esc_aw.index("taskDetail != nil"), "Activity Escape must close the Start work overlay first"
 assert "if !workWorkspaceState.startSending { workWorkspaceState.startItemID = nil }" in esc_aw, "Escape must not close the overlay mid-send"
 for fn in ["private func goHome() {", "private func goBack() {", "private func clearDetail() {", "private func openConnectedWork(_ id: String) {", "private func openHandoffWork(_ id: String) {"]:
-    assert "if !workWorkspaceState.startSending { workWorkspaceState.startItemID = nil }" in aw[aw.index(fn):aw.index(fn) + 320].split("\n")[2], fn + " must close the Start work overlay unless a send is being handed over"
+    assert "if !workWorkspaceState.startSending { workWorkspaceState.startItemID = nil }" in aw[aw.index(fn):aw.index("\n    }", aw.index(fn))], fn + " must close the Start work overlay unless a send is being handed over"
 assert ".sheet(" not in wwv and ".sheet(" not in whv, "Work overlays are inline, never sheets"
 board_card = body(wwv, "private func boardCard(", "private func canChangeStage(")
 assert "Button { select(item) }" not in board_card and ".onTapGesture { select(item) }" in board_card and ".draggable(WorkCardDrag(id: item.id))" in board_card, "a board card must be a tap gesture, not a Button: a Button swallows the drag (0.5.246)"
