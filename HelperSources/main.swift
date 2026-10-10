@@ -14947,6 +14947,7 @@ final class COSControlHelper {
              details: projected.details)
         if !projected.ok { exit(1) }
     }
+    // End of the live meeting transcript (0.5.278).
 
     private func postOrphanRecover(sessionId: String) throws -> (status: Int, body: [String: Any]) {
         let token = try speakerReviewToken()
