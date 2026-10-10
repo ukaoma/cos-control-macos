@@ -8,10 +8,13 @@ import Foundation
 // which sessions get a "Live now" row, the hand-off once the file is gone, and the copied text. Pure Foundation, so
 // Tests/LiveTranscriptChecks.swift executes it; the views only paint it.
 //
-// THE REDUCER. A chunk is keyed by its own index: a second copy of an index replaces the first (the file wins, and a
-// later read is the file), the turns are in index order whatever order chunks arrive in, and an index that is not
-// there is never drawn as loss (it is silence, a dropped hallucination, or a chunk still in Whisper). Consecutive
-// chunks with the same speaker are one turn, whose id is its first index, so a turn keeps its identity while it grows.
+// THE REDUCER. A chunk is keyed by its own index, and a second copy of an index in a later read replaces the first.
+// The helper re-sends only chunks after its settled cursor, so a chunk at or below the cursor is not read again: what
+// was settled stays as first read (the saved meeting is the final text). The turns are in index order whatever order
+// chunks arrive in, and an index that is not there is never drawn as loss (it is silence, a dropped hallucination, or
+// a chunk still in Whisper). Consecutive chunks with the same speaker are one turn. A turn's id is the first index it
+// was ever drawn with, and it keeps that id when it grows at either end (a late chunk with a lower index included),
+// so the list never re-identifies a row the reader is looking at; only a turn new to the list takes a new id.
 //
 // SECRET BOUNDARY. Nothing here logs or prints, and no error carries text: a failure is a reason code.
 
@@ -26,7 +29,6 @@ struct LiveTranscriptChunk: Codable, Equatable, Sendable {
 struct LiveTranscriptFileRow: Codable, Equatable, Sendable {
     let sessionId: String
     let mtimeMs: Double
-    let size: Int
     let stamp: String
 }
 
@@ -38,9 +40,7 @@ struct LiveTranscriptRead: Codable, Equatable, Sendable {
     var stamp: String? = nil
     var startTime: Double? = nil
     var lastActivityAt: Double? = nil
-    var maxIndex: Int? = nil
     var settledThrough: Int? = nil
-    var chunkCount: Int? = nil
     var turns: [LiveTranscriptChunk]? = nil
 }
 
@@ -52,12 +52,13 @@ struct LiveTranscriptReply: Codable, Sendable {
     static func decode(_ data: Data) -> LiveTranscriptReply? { try? JSONDecoder().decode(LiveTranscriptReply.self, from: data) }
 }
 
-/// Consecutive chunks from one speaker. `id` is the first chunk's index.
+/// Consecutive chunks from one speaker. `id` is stable (see THE REDUCER); `firstIndex` is its first chunk's index now.
 struct LiveTranscriptTurn: Identifiable, Equatable, Sendable {
     let id: Int
     let speaker: String
     let elapsedMs: Int
     var text: String
+    var firstIndex: Int
     var lastIndex: Int
 }
 
@@ -85,11 +86,15 @@ struct LiveTranscriptFeed: Equatable, Sendable {
     var cursor = -1
     private(set) var chunks: [Int: LiveTranscriptChunk] = [:]
     private(set) var turns: [LiveTranscriptTurn] = []
+    /// Which turn id each chunk was drawn in, so a rebuilt turn keeps its id.
+    private var turnOfChunk: [Int: Int] = [:]
     var phase: LiveTranscriptPhase = .live
     /// When the file was first seen gone.
     var endedAt: Date?
     var lastStatusCheck: Date?
     var serverState: String?
+    /// Shown as live while the server counted it (the poll follows it to its end, even if the count drops first).
+    var seenLive = false
 
     init(sessionId: String) { self.sessionId = sessionId }
 
@@ -118,10 +123,18 @@ struct LiveTranscriptFeed: Equatable, Sendable {
             chunksChanged = true
         }
         if chunksChanged {
-            turns = Self.turns(from: chunks)
+            (turns, turnOfChunk) = Self.build(chunks, previous: turnOfChunk)
             changed = true
         }
         return changed
+    }
+
+    /// The file's own clock: a session not read this poll still shows when its file last changed. Never moves back.
+    @discardableResult
+    mutating func noteFileActivity(_ at: Date) -> Bool {
+        guard lastActivityAt.map({ at > $0 }) ?? true else { return false }
+        lastActivityAt = at
+        return true
     }
 
     @discardableResult
@@ -133,22 +146,33 @@ struct LiveTranscriptFeed: Equatable, Sendable {
     }
 
     /// Index order, consecutive same-speaker chunks merged, a missing index skipped silently.
-    static func turns(from chunks: [Int: LiveTranscriptChunk]) -> [LiveTranscriptTurn] {
-        var out: [LiveTranscriptTurn] = []
+    static func turns(from chunks: [Int: LiveTranscriptChunk]) -> [LiveTranscriptTurn] { build(chunks, previous: [:]).turns }
+
+    /// The turns, and which turn id each chunk is in. A run whose chunks were drawn before takes the id of the first of
+    /// them (in index order) that is still free; a run with none, or whose old ids are taken (a turn split by a late
+    /// chunk from another voice), takes its first index, or -(first index + 1) if even that is an id already given.
+    static func build(_ chunks: [Int: LiveTranscriptChunk], previous: [Int: Int]) -> (turns: [LiveTranscriptTurn], map: [Int: Int]) {
+        var runs: [(speaker: String, members: [LiveTranscriptChunk])] = []
         for index in chunks.keys.sorted() {
-            guard let chunk = chunks[index] else { continue }
+            guard let chunk = chunks[index], !chunk.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
             let speaker = LiveTranscript.displaySpeaker(chunk.speaker)
-            let text = chunk.text.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !text.isEmpty else { continue }
-            if var last = out.last, last.speaker == speaker {
-                last.text += " " + text
-                last.lastIndex = index
-                out[out.count - 1] = last
-            } else {
-                out.append(LiveTranscriptTurn(id: index, speaker: speaker, elapsedMs: chunk.elapsedMs, text: text, lastIndex: index))
-            }
+            if let last = runs.last, last.speaker == speaker { runs[runs.count - 1].members.append(chunk) }
+            else { runs.append((speaker, [chunk])) }
         }
-        return out
+        var used = Set<Int>()
+        var out: [LiveTranscriptTurn] = []
+        var map: [Int: Int] = [:]
+        for run in runs {
+            let first = run.members[0]
+            let inherited = run.members.lazy.compactMap { previous[$0.i] }.first { !used.contains($0) }
+            let id = inherited ?? (used.contains(first.i) ? -(first.i + 1) : first.i)
+            used.insert(id)
+            let text = run.members.map { $0.text.trimmingCharacters(in: .whitespacesAndNewlines) }.joined(separator: " ")
+            out.append(LiveTranscriptTurn(id: id, speaker: run.speaker, elapsedMs: first.elapsedMs, text: text,
+                                          firstIndex: first.i, lastIndex: run.members[run.members.count - 1].i))
+            for member in run.members { map[member.i] = id }
+        }
+        return (out, map)
     }
 }
 
@@ -158,7 +182,8 @@ struct LiveTranscriptRow: Identifiable, Equatable, Sendable {
     let startTime: Date?
     let lastActivity: Date?
     let phase: LiveTranscriptPhase
-    let chunkCount: Int
+    /// When the file went: the duration stops here.
+    var endedAt: Date? = nil
     var id: String { LiveTranscript.rowID(sessionId) }
 }
 
@@ -207,16 +232,19 @@ enum LiveTranscript {
                 let feed = feeds[file.sessionId]
                 if feed?.ended == true { continue }
                 seen.insert(file.sessionId)
+                // The quiet clock is the later of the last read's activity and the file's own mtime (a session not
+                // read this poll still has a fresh file).
+                let mtime = Date(timeIntervalSince1970: file.mtimeMs / 1000)
                 out.append(LiveTranscriptRow(sessionId: file.sessionId, startTime: feed?.startTime,
-                                             lastActivity: feed?.lastActivityAt ?? Date(timeIntervalSince1970: file.mtimeMs / 1000),
-                                             phase: .live, chunkCount: feed?.chunkCount ?? 0))
+                                             lastActivity: max(feed?.lastActivityAt ?? mtime, mtime),
+                                             phase: .live))
             }
         }
         for feed in feeds.values where !seen.contains(feed.sessionId) && feed.ended && !fileIDs.contains(feed.sessionId) {
             guard feed.phase != .saved, !stranded.contains(feed.sessionId) else { continue }
             if feed.phase == .endedUnsaved, let ended = feed.endedAt, now.timeIntervalSince(ended) > endedRowLifetime { continue }
             out.append(LiveTranscriptRow(sessionId: feed.sessionId, startTime: feed.startTime, lastActivity: feed.lastActivityAt,
-                                         phase: feed.phase, chunkCount: feed.chunkCount))
+                                         phase: feed.phase, endedAt: feed.endedAt))
         }
         // The most recent first: a live one before an ended one, then by start.
         return out.sorted { a, b in
@@ -246,8 +274,9 @@ enum LiveTranscript {
         quietMinutes(lastActivity: lastActivity, now: now).map { "No audio for \($0)m" }
     }
 
-    static func durationLabel(start: Date?, now: Date) -> String? {
+    static func durationLabel(start: Date?, now: Date, endedAt: Date? = nil) -> String? {
         guard let start else { return nil }
+        let now = endedAt.map { min($0, now) } ?? now
         let minutes = max(0, Int(now.timeIntervalSince(start) / 60))
         if minutes < 1 { return "Just started" }
         if minutes < 60 { return "\(minutes) min" }
@@ -264,12 +293,15 @@ enum LiveTranscript {
         }
     }
 
-    /// `[m:ss]`, or `[h:mm:ss]` from an hour in.
-    static func stamp(_ elapsedMs: Int) -> String {
+    /// `[m:ss]`, or `[h:mm:ss]` when `hours` (one format for a whole transcript: see `usesHours`).
+    static func stamp(_ elapsedMs: Int, hours: Bool) -> String {
         let total = max(0, elapsedMs) / 1000
-        let hours = total / 3600, minutes = (total % 3600) / 60, seconds = total % 60
-        return hours > 0 ? String(format: "%d:%02d:%02d", hours, minutes, seconds) : String(format: "%d:%02d", minutes, seconds)
+        let h = total / 3600, minutes = (total % 3600) / 60, seconds = total % 60
+        return hours ? String(format: "%d:%02d:%02d", h, minutes, seconds) : String(format: "%d:%02d", minutes, seconds)
     }
+
+    /// The whole transcript switches to h:mm:ss once any turn starts an hour in.
+    static func usesHours(_ turns: [LiveTranscriptTurn]) -> Bool { turns.contains { $0.elapsedMs >= 3_600_000 } }
 
     /// What Copy transcript puts on the clipboard: a one-line header, then one line per turn.
     static func copyText(turns: [LiveTranscriptTurn], startTime: Date?, timeZone: TimeZone = .current, twentyFourHour: Bool = false) -> String {
@@ -281,7 +313,8 @@ enum LiveTranscript {
             formatter.dateFormat = twentyFourHour ? "yyyy-MM-dd HH:mm" : "yyyy-MM-dd h:mm a"
             header += " · " + formatter.string(from: startTime)
         }
-        return ([header] + turns.map { "[\(stamp($0.elapsedMs))] \($0.speaker): \($0.text)" }).joined(separator: "\n")
+        let hours = usesHours(turns)
+        return ([header] + turns.map { "[\(stamp($0.elapsedMs, hours: hours))] \($0.speaker): \($0.text)" }).joined(separator: "\n")
     }
 
     /// The reason code inside a helper refusal, "Live transcript unavailable (parse_failed)", else `unavailable`.

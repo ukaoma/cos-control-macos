@@ -91,7 +91,7 @@ try:
     read = first["details"]["read"]
     check(code == 0 and err == "", "a read answers ok with nothing on stderr")
     check([t["i"] for t in read["turns"]] == [0, 1, 2, 3, 5, 7, 8], "chunksIndexed by i, in order; silence and the chunk in flight are absent")
-    check(read["maxIndex"] == 8 and read["settledThrough"] == 5 and read["chunkCount"] == 7, "the cursor holds at the chunk still in Whisper")
+    check(read["maxIndex"] == 8 and read["settledThrough"] == 5 and "chunkCount" not in read, "the cursor holds at the chunk still in Whisper")
     check(read["turns"][3]["speaker"] == "Zoë Ångström" and "café" in read["turns"][4]["text"] and "résumé" in read["turns"][4]["text"],
           "non-ASCII speakers and text come through intact")
     check(read["turns"][1]["elapsedMs"] == 6100 and read["startTime"] == 1791635349988, "elapsed in ms, and the start time")
@@ -145,8 +145,8 @@ try:
     status_answer["body"] = {"sessionId": SID, "state": "saved", "receivedCount": 9, "canonicalRanges": [[0, 3], [5, 8]],
                              "saveReceipt": {"saved": True, "filename": "2026-10-10_G2_Recording_x.md", "filepath": "recordings/2026-10/x.md"}}
     code, saved, out, err = run("live-transcript-status", "--session", SID)
-    check(code == 0 and saved["details"] == {"sessionId": SID, "state": "saved", "savedFilename": "2026-10-10_G2_Recording_x.md"},
-          "the session status keeps the state and the saved filename only")
+    check(code == 0 and saved["details"] == {"sessionId": SID, "state": "saved"},
+          "the session status keeps the state only (the saved meeting is found by session id)")
     check(seen_paths[-1] == "/api/meeting/sessions/%s/status" % SID, "the status asks the server's own route")
     status_answer["body"] = {"sessionId": SID, "state": "closed"}
     code, closed, _, _ = run("live-transcript-status", "--session", SID)

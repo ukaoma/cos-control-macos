@@ -244,6 +244,7 @@ final class ActivityWindowPresenter: NSObject, ObservableObject, NSWindowDelegat
         }
         if let window = windowController?.window {
             window.makeKeyAndOrderFront(nil)
+            model.setLiveTranscriptWindowOnScreen(true)
             NSApp.activate(ignoringOtherApps: true)
             return
         }
@@ -256,8 +257,23 @@ final class ActivityWindowPresenter: NSObject, ObservableObject, NSWindowDelegat
         let controller = NSWindowController(window: window)
         self.model = model
         windowController = controller
+        // 0.5.278 (QA N4): the live transcript polls only while this window is on screen.
+        for name in [NSWindow.didChangeOcclusionStateNotification, NSWindow.didMiniaturizeNotification, NSWindow.didDeminiaturizeNotification] {
+            NotificationCenter.default.addObserver(self, selector: #selector(liveTranscriptVisibilityChanged(_:)), name: name, object: window)
+        }
         controller.showWindow(nil)
+        model.setLiveTranscriptWindowOnScreen(true)
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    /// On screen: visible, not miniaturized, and not fully covered (the same test the Settings window uses).
+    static func onScreen(_ window: NSWindow) -> Bool {
+        window.isVisible && !window.isMiniaturized && window.occlusionState.contains(.visible)
+    }
+
+    @objc private func liveTranscriptVisibilityChanged(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow else { return }
+        model?.setLiveTranscriptWindowOnScreen(Self.onScreen(window))
     }
 
     func windowWillClose(_ notification: Notification) {
@@ -268,6 +284,11 @@ final class ActivityWindowPresenter: NSObject, ObservableObject, NSWindowDelegat
         model?.closeLibraryDetail()
         // 0.5.278: nobody is looking, so the live transcript stops polling.
         model?.liveTranscriptWindowClosed()
+        if let window = notification.object as? NSWindow {
+            for name in [NSWindow.didChangeOcclusionStateNotification, NSWindow.didMiniaturizeNotification, NSWindow.didDeminiaturizeNotification] {
+                NotificationCenter.default.removeObserver(self, name: name, object: window)
+            }
+        }
         // Session chat holds a poll Task and a live binding reference; a
         // window close must not leave either running against a stale row.
         model?.closeClaudeSession()
@@ -836,14 +857,12 @@ struct ActivityWindow: View {
         .task(id: speakerPeekKey) { await peekMeetingsIfNeeded() }
         // 0.5.278: the live meeting the pane shows was saved: open the saved meeting in place, where the live one was.
         .onChange(of: model.liveTranscriptHandoff?.id) { _, id in
-            guard id != nil, let meeting = model.liveTranscriptHandoff else { return }
-            model.liveTranscriptHandoffTaken()
-            meetingReturnWorkID = nil
-            meetingReturnToWork = false
-            meetingReturnSpeakerSessionID = nil
-            meetingWorkLoaded = false
-            selectedLibraryRecordID = meeting.id
-            model.openLibraryMeeting(meeting)
+            guard id != nil, let selection = model.acceptLiveTranscriptHandoff() else { return }
+            meetingReturnWorkID = selection.returnWorkID
+            meetingReturnToWork = selection.returnToWork
+            meetingReturnSpeakerSessionID = selection.returnSpeakerSessionID
+            meetingWorkLoaded = selection.workLoaded
+            selectedLibraryRecordID = selection.recordID
         }
         .alert("COS Control", isPresented: Binding(
             get: { model.error != nil },
