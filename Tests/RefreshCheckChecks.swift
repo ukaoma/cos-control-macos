@@ -37,7 +37,7 @@ import Foundation
         check(HeaderUpdateStatus.checking.hold == nil, "checking hold", "Checking stays until the check ends")
         // What an outcome becomes.
         check(HeaderUpdateStatus.after(.upToDate) == .upToDate, "outcome up to date", "no update gives Up to date")
-        check(HeaderUpdateStatus.after(.failed) == .failed, "outcome failed", "a failure gives Couldn't check")
+        check(HeaderUpdateStatus.after(.failed("the feed timed out")) == .failed, "outcome failed", "a failure gives Couldn't check")
         check(HeaderUpdateStatus.after(.updateFound) == .idle, "outcome update found", "an update is the banner's, not the line's")
         check(HeaderUpdateStatus.after(.skipped) == .idle, "outcome skipped", "a check that never started says nothing")
         // Checking while any manual check runs; otherwise the last result.
@@ -45,6 +45,18 @@ import Foundation
             check(HeaderUpdateStatus.shown(inFlight: true, status: status) == .checking, "shown in flight", "\(status) while in flight")
             check(HeaderUpdateStatus.shown(inFlight: false, status: status) == status, "shown at rest", "\(status) at rest")
         }
-        print("PASS: refresh-check subtitle, \(passed) checks (words, holds, outcomes, Checking while in flight)")
+        // VoiceOver hears the results, never idle or Checking.
+        check(HeaderUpdateStatus.upToDate.announcement == "Up to date", "announcement", "Up to date is announced")
+        check(HeaderUpdateStatus.failed.announcement == "Couldn't check for updates", "announcement", "Couldn't check is announced")
+        check(HeaderUpdateStatus.idle.announcement == nil && HeaderUpdateStatus.checking.announcement == nil, "announcement", "idle and Checking are not")
+        // The refresh button checks only when nothing else owns the app: never while installing or busy.
+        check(HeaderUpdateStatus.checkAllowed(phase: .none, busy: false), "check gate", "idle checks")
+        check(HeaderUpdateStatus.checkAllowed(phase: .ready, busy: false), "check gate", "an offer waiting still checks")
+        check(HeaderUpdateStatus.checkAllowed(phase: .failed("x"), busy: false), "check gate", "a failed install still checks")
+        check(!HeaderUpdateStatus.checkAllowed(phase: .staging(nil), busy: false), "check gate staging", "never while staging")
+        check(!HeaderUpdateStatus.checkAllowed(phase: .staging("Checking SHA-256…"), busy: false), "check gate staging", "never while staging with progress")
+        check(!HeaderUpdateStatus.checkAllowed(phase: .applying, busy: false), "check gate applying", "never while applying")
+        check(!HeaderUpdateStatus.checkAllowed(phase: .none, busy: true), "check gate busy", "never while busy")
+        print("PASS: refresh-check subtitle, \(passed) checks (words, holds, outcomes, Checking while in flight, announcements, check gate)")
     }
 }

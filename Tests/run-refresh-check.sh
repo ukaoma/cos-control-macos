@@ -37,7 +37,7 @@ RUN_ENV=(CFFIXED_USER_HOME="$DIR/home" HOME="$DIR/home" COS_CONTROL_TEST_HOME="$
 SWIFTC=(swiftc -target arm64-apple-macosx14.0 -swift-version 6 -strict-concurrency=complete)
 
 # A stand-in helper. Every verb is logged. check-app-update answers by "mode": uptodate, fail (the helper's refusal),
-# unreachable (the feed), update (9.9.9), hold (waits up to 10 s for "release", then up to date). status answers a
+# unreachable (the feed), update (9.9.9), stale (offered but older than this build), hold (waits up to 10 s for "release", then up to date). status answers a
 # running server; anything else is refused.
 fake_helper() {
   mkdir -p "$DIR/fake"
@@ -55,6 +55,7 @@ case "$1" in
       fail) printf '{"ok":false,"message":"the stand-in refuses","details":{}}\n'; exit 1 ;;
       unreachable) printf '{"ok":true,"message":"unreachable","details":{"updateAvailable":false,"reason":"unreachable"}}\n' ;;
       update) printf '{"ok":true,"message":"Update available","details":{"updateAvailable":true,"reason":"newer","latestVersion":"9.9.9","latestBuild":999999}}\n' ;;
+      stale) printf '{"ok":true,"message":"Update available","details":{"updateAvailable":true,"reason":"newer","latestVersion":"0.0.1","latestBuild":1}}\n' ;;
       *) printf '{"ok":true,"message":"COS Control is up to date","details":{"updateAvailable":false,"reason":"upToDate"}}\n' ;;
     esac ;;
   *)
@@ -89,7 +90,7 @@ if [[ "$LANE" == "all" || "$LANE" == "models" ]]; then
   print -r -- "$OUT"
   # A floor on the count: a check that silently stops running must fail this.
   COUNT="${${OUT##*subtitle, }%% checks*}"
-  (( COUNT >= 25 )) || { print -u2 "refresh-check checks ran only $COUNT (expected at least 25)"; exit 1; }
+  (( COUNT >= 35 )) || { print -u2 "refresh-check checks ran only $COUNT (expected at least 35)"; exit 1; }
 fi
 
 if [[ "$LANE" == "all" || "$LANE" == "wiring" ]]; then

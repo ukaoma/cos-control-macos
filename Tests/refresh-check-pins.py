@@ -43,16 +43,29 @@ both = code(body(model, "    func refreshAndCheckForUpdates() async {", "\n    }
 pin("self.refresh()" in both and "checkForUpdatesFromHeader()" in both, "both actions",
     "refreshAndCheckForUpdates runs refresh() AND the header's update check")
 fromHeader = code(body(model, "    func checkForUpdatesFromHeader() async {", "\n    }\n"))
-pin("checkForAppUpdateManually(reportsInHeader: true)" in fromHeader, "both actions",
+pin("await checkForAppUpdateManually()" in fromHeader, "both actions",
     "the header's check is the manual check (its waiting logic for a running background check included)")
+pin(both.index("HeaderUpdateStatus.checkAllowed(phase: appUpdateFlow.phase, busy: busy)") < both.index("Task { await self.refresh() }")
+    and "if checks { await checkForUpdatesFromHeader() }" in both, "busy skips check",
+    "the update half is decided before the refresh starts, and skipped while installing or busy")
+pin('appUpdateLog.error("manual update check failed:' in fromHeader and "print(" not in fromHeader, "failure detail",
+    "a failure is logged through the app's Logger, not print")
+pin("headerUpdateFailureDetail = detail" in fromHeader, "failure detail", "the failure's words are kept for the tooltip")
 pin("guard !updateCheckInFlight else { return }" in fromHeader, "no second check",
     "a click while a check runs starts nothing and leaves the line alone")
 manual = code(body(model, "    func checkForAppUpdateManually(", "\n    /// Close the handshake"))
 pin("guard !updateCheckInFlight else { return .skipped }" in manual, "no second check", "never two manual checks at once")
+manual_only = manual.split("    func refreshAndCheckForUpdates()", 1)[0]
+pin("if appUpdateFlow.showsBanner {" in manual_only and "shouldSurface" not in manual_only, "update found",
+    "found means the banner shows (the flow's newer rule), never the raw shouldSurface")
+pin("reportsInHeader" not in model and "notice =" not in manual_only and "self.error =" not in manual_only, "reports in header",
+    "the manual check reports only through its outcome: no notice line, no alert")
 show = code(body(model, "    private func showHeaderUpdateStatus(", "\n    }\n"))
 pin(show.index("headerUpdateStatusReset?.cancel()") < show.index("headerUpdateStatus = next"), "no stacked timers",
     "a new result cancels the previous reset before it shows")
 pin("Task.isCancelled" in show and "Task.sleep(for: hold)" in show, "no stacked timers", "the reset is a cancellable task")
+pin("notification: .announcementRequested" in show and "next.announcement" in show, "announcement",
+    "VoiceOver hears Up to date and Couldn't check")
 
 # The subtitle shows the three transient strings, through the line both titles use.
 for words in ('static let checkingText = "Checking for updates…"', 'static let upToDateText = "Up to date"',
@@ -62,6 +75,8 @@ line = code(body(views, "    private func updateStatusLine(", "\n    }\n"))
 pin("HeaderUpdateStatus.shown(inFlight: model.updateCheckInFlight, status: model.headerUpdateStatus)" in line, "subtitle words",
     "the line reads Checking while any manual check runs, else the header's last result")
 pin("reduceMotion ? nil :" in line, "reduce motion", "no animation under Reduce Motion")
+pin('.help(shown == .failed ? (model.headerUpdateFailureDetail ?? "") : "")' in line, "failure detail",
+    "the failure's own words on hover while the line says Couldn't check")
 pin('updateStatusLine(idle: "Your local glasses server")' in header, "subtitle words", "the header's subtitle is the status line")
 pin('"Up to date · ' not in models and "COS Control \\(" not in body(models, "enum HeaderUpdateStatus", "\n}\n"), "subtitle words",
     "Up to date stands alone: the version is the stamp's")
@@ -81,8 +96,8 @@ pin('.accessibilityLabel("COS Control version \\(ControllerModel.currentVersion)
 pin("background(" not in stamp and "overlay(" not in stamp and "Capsule" not in stamp and "stroke" not in stamp,
     "stamp type", "no chip, pill, border or background")
 # Miles 2026-10-09 22:55 ("Lets go with B"): inline after the title, on its baseline. One layout, no flag.
-title = re.search(r'HStack\(alignment: \.firstTextBaseline, spacing: 6\) \{\s*Text\("Control"\)\.font\(COSType\.display\(18, weight: \.semibold\)\)\s*versionStamp\s*\}', header)
-pin(title is not None, "stamp placement", "the stamp sits inline after the Control title, on its first-text baseline")
+title = re.search(r'HStack\(alignment: \.firstTextBaseline, spacing: 6\) \{\s*Text\("Control"\)\.font\(COSType\.display\(18, weight: \.semibold\)\)\.fixedSize\(\)\s*versionStamp\.layoutPriority\(-1\)\s*\}', header)
+pin(title is not None, "stamp placement", "the stamp sits inline after the Control title, on its first-text baseline; the title never truncates, the stamp gives way first")
 pin(header.count("versionStamp") == 1, "stamp placement", "the header renders the stamp exactly once")
 pin("versionStampInline" not in views, "stamp placement", "no second layout and no flag")
 lockup_at = header.index("COSLockupView(height: 17)")
