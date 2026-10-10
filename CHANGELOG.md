@@ -1,3 +1,9 @@
+## 0.5.277 (build 330)
+
+- **A tidier menu-bar panel.** The standing version card (COS Control version and Check for updates) is removed; updates surface through the gold Update available banner. The header refresh button now refreshes status and checks for updates, and the line under Control shows Checking for updates, Up to date or Couldn't check for updates.
+- The version shows inline after the Control title (v0.5.277) in the panel and the Settings window.
+- Settings inside Activity gets the same refresh and check button.
+
 ## 0.5.276 (build 329)
 
 - **Messages answers are formatted.** COS answers in Messages (Recent, archived chats and session chat replies) render bold, lists, headings, quotes, code and links instead of raw Markdown, the same way Meetings does. Row previews show clean text. Search marks matches inside formatted text. Copy turn and Copy + images still copy the original text, and right-click adds Copy answer / Copy reply.
