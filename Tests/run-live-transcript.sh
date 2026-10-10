@@ -76,7 +76,7 @@ if [[ "$LANE" == "all" || "$LANE" == "pins" ]]; then
   OUT="$(/usr/bin/python3 "$ROOT/Tests/live-transcript-pins.py" "$ROOT")" || { print -r -- "$OUT"; exit 1; }
   print -r -- "$OUT"
   COUNT="${${OUT##*pins: }%% passed*}"
-  (( COUNT >= 96 )) || { print -u2 "live transcript pins ran only $COUNT (expected at least 96)"; exit 1; }
+  (( COUNT >= 102 )) || { print -u2 "live transcript pins ran only $COUNT (expected at least 102)"; exit 1; }
 fi
 
 if [[ "$LANE" == "all" || "$LANE" == "models" ]]; then
@@ -86,7 +86,7 @@ if [[ "$LANE" == "all" || "$LANE" == "models" ]]; then
   print -r -- "$OUT"
   # A floor on the count: a check that silently stops running must fail this.
   COUNT="${${OUT##*checks: }%% passed*}"
-  (( COUNT >= 64 )) || { print -u2 "live transcript checks ran only $COUNT (expected at least 64)"; exit 1; }
+  (( COUNT >= 76 )) || { print -u2 "live transcript checks ran only $COUNT (expected at least 76)"; exit 1; }
 fi
 
 if [[ "$LANE" == "all" || "$LANE" == "helper" ]]; then
@@ -95,7 +95,10 @@ if [[ "$LANE" == "all" || "$LANE" == "helper" ]]; then
     -framework Security -framework AppKit -o "$DIR/cos-control-helper"
   # The helper's own self-test carries the path grammar, the containment, the fixture parse and the cursor rules.
   OUT="$(env COS_CONTROL_TEST_HOME="$DIR/home" "$DIR/cos-control-helper" self-test 2>"$DIR/self-test.err")" || { print -r -- "$OUT"; cat "$DIR/self-test.err"; exit 1; }
-  /usr/bin/python3 -c 'import json,sys; v=json.loads(sys.argv[1]); sys.exit(0 if v.get("ok") and v["details"]["tests"] >= 820 else "helper self-test: " + str(v)[:600])' "$OUT"
+  # The floor is stated once, in Tests/run.sh, and read from there.
+  FLOOR="$(/usr/bin/sed -n 's/^if count < \([0-9][0-9]*\):$/\1/p' "$ROOT/Tests/run.sh" | /usr/bin/head -1)"
+  [[ -n "$FLOOR" ]] || { print -u2 "could not read the helper self-test floor from Tests/run.sh"; exit 1; }
+  /usr/bin/python3 -c 'import json,sys; v=json.loads(sys.argv[1]); f=int(sys.argv[2]); sys.exit(0 if v.get("ok") and v["details"]["tests"] >= f else "helper self-test below floor %d: " % f + str(v)[:600])' "$OUT" "$FLOOR"
   print -r -- "helper self-test: ${OUT[1,120]}"
   OUT="$(/usr/bin/python3 "$ROOT/Tests/live-transcript-helper-checks.py" "$DIR/cos-control-helper")" || { print -r -- "$OUT"; exit 1; }
   print -r -- "$OUT"
@@ -111,5 +114,5 @@ if [[ "$LANE" == "all" || "$LANE" == "wiring" ]]; then
   print -r -- "$OUT"
   [[ "$OUT" == *"PASS: live transcript wiring checks complete" ]] || { print -u2 "the live transcript wiring checks did not finish"; exit 1; }
   COUNT="${${OUT##*wiring checks: }%% passed*}"
-  (( COUNT >= 30 )) || { print -u2 "live transcript wiring checks ran only $COUNT (expected at least 30)"; exit 1; }
+  (( COUNT >= 44 )) || { print -u2 "live transcript wiring checks ran only $COUNT (expected at least 44)"; exit 1; }
 fi

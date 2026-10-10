@@ -3033,6 +3033,9 @@ final class ControllerModel: ObservableObject {
     private var liveTranscriptViewers: Set<String> = []
     private var liveTranscriptTask: Task<Void, Never>?
     private var liveTranscriptLoopID: UUID?
+    /// The Activity window is on screen: visible, not miniaturized, not fully covered (QA N4). The presenter writes it
+    /// from the window's occlusion and miniaturize notifications; a view mounted is not a view seen.
+    private(set) var liveTranscriptWindowOnScreen = true
     private var liveTranscriptImmediate = false
     /// Looked up by the first read of each poll loop (it spawns `launchctl print`), then passed back.
     private var liveTranscriptDataDir: String?
@@ -3057,12 +3060,21 @@ final class ControllerModel: ObservableObject {
 
     var openLiveTranscriptFeed: LiveTranscriptFeed? { liveTranscriptOpenID.flatMap { liveTranscriptFeeds[$0] } }
 
-    private var liveTranscriptPendingHandoff: Bool {
-        liveTranscriptFeeds.values.contains { $0.phase == .finalizing }
+    /// Something held still needs the poll even when the server's count says no meeting: a session that ended and
+    /// waits for its saved meeting, or one that was live and has not been seen to end. The server drops a saved
+    /// session from its count and deletes its file in one step, so a status tick can report 0 before any poll sees
+    /// the file gone (QA B1); stopping then would leave the pane on "Live meeting" with no hand-off. Not for a session
+    /// the server calls stale or the stranded banner holds, and not while the server is down.
+    var liveTranscriptPendingHandoff: Bool {
+        let stale = Set(status.staleTranscriptionSessionIds), stranded = Set(strandedCaptures.map(\.sessionId))
+        return liveTranscriptFeeds.values.contains { feed in
+            feed.phase == .finalizing
+                || (status.running && feed.seenLive && !feed.ended && !stale.contains(feed.sessionId) && !stranded.contains(feed.sessionId))
+        }
     }
 
     private var liveTranscriptShouldPoll: Bool {
-        LiveTranscript.shouldPoll(enabled: liveTranscriptEnabled, visible: !liveTranscriptViewers.isEmpty,
+        LiveTranscript.shouldPoll(enabled: liveTranscriptEnabled, visible: !liveTranscriptViewers.isEmpty && liveTranscriptWindowOnScreen,
                                   serverLive: liveTranscriptServerLive, pendingHandoff: liveTranscriptPendingHandoff)
     }
 
@@ -3094,6 +3106,13 @@ final class ControllerModel: ObservableObject {
             self.liveTranscriptTask = nil
             self.liveTranscriptDataDir = nil
         }
+    }
+
+    /// The Activity window came on screen or left it. Coming back reads at once.
+    func setLiveTranscriptWindowOnScreen(_ onScreen: Bool) {
+        guard onScreen != liveTranscriptWindowOnScreen else { return }
+        liveTranscriptWindowOnScreen = onScreen
+        if onScreen { liveTranscriptImmediate = true; liveTranscriptKick() }
     }
 
     /// NSWorkspace didWake: read again now rather than at the next tick.
@@ -3197,6 +3216,14 @@ final class ControllerModel: ObservableObject {
         var feeds = liveTranscriptFeeds
         let listed = Set(reply.sessions.map(\.sessionId))
         for id in listed where feeds[id] == nil { feeds[id] = LiveTranscriptFeed(sessionId: id) }
+        // Live by the server's count, not stale, not stranded: this session is one a row shows, so the poll follows
+        // it to its end (liveTranscriptPendingHandoff). The file's mtime keeps its quiet clock current.
+        let stale = Set(status.staleTranscriptionSessionIds), stranded = Set(strandedCaptures.map(\.sessionId))
+        let serverLive = (liveTranscriptServerLive ?? 0) > 0
+        for file in reply.sessions {
+            if serverLive, !stale.contains(file.sessionId), !stranded.contains(file.sessionId) { feeds[file.sessionId]?.seenLive = true }
+            feeds[file.sessionId]?.noteFileActivity(Date(timeIntervalSince1970: file.mtimeMs / 1000))
+        }
         if let read = reply.read {
             var feed = feeds[read.sessionId] ?? LiveTranscriptFeed(sessionId: read.sessionId)
             feed.apply(read, now: now)
@@ -3277,6 +3304,25 @@ final class ControllerModel: ObservableObject {
 
     nonisolated static func liveTranscriptMatches(_ meeting: LibraryMeeting, sessionId: String) -> Bool {
         meeting.sessionId == sessionId || meeting.g2SessionIds.contains(sessionId)
+    }
+
+    /// What Activity's Meetings selection becomes when the live pane hands off: the saved meeting selected in place,
+    /// and no way back to Work or Speakers (the live pane was not opened from either).
+    struct LiveTranscriptHandoffSelection: Equatable, Sendable {
+        let recordID: String
+        let returnWorkID: String? = nil
+        let returnToWork = false
+        let returnSpeakerSessionID: String? = nil
+        let workLoaded = false
+    }
+
+    /// The pane's saved meeting, taken: the live route closes, the saved meeting opens, and Activity applies the
+    /// returned selection. Nil when there is nothing to hand off.
+    func acceptLiveTranscriptHandoff() -> LiveTranscriptHandoffSelection? {
+        guard let meeting = liveTranscriptHandoff else { return nil }
+        liveTranscriptHandoffTaken()
+        openLibraryMeeting(meeting)
+        return LiveTranscriptHandoffSelection(recordID: meeting.id)
     }
 
     /// Activity opened the saved meeting in place.

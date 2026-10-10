@@ -14778,8 +14778,7 @@ final class COSControlHelper {
             var info = stat()
             guard lstat(file.path, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG else { continue }
             let mtime = Double(info.st_mtimespec.tv_sec) * 1000 + Double(info.st_mtimespec.tv_nsec) / 1_000_000
-            rows.append((mtime, ["sessionId": id, "mtimeMs": mtime.rounded(.down), "size": Int(info.st_size),
-                                 "stamp": liveTranscriptStamp(info)]))
+            rows.append((mtime, ["sessionId": id, "mtimeMs": mtime.rounded(.down), "stamp": liveTranscriptStamp(info)]))
         }
         return rows.sorted { $0.mtime != $1.mtime ? $0.mtime > $1.mtime : (($0.row["sessionId"] as? String) ?? "") < (($1.row["sessionId"] as? String) ?? "") }
             .map(\.row)
@@ -14839,7 +14838,6 @@ final class COSControlHelper {
             "lastActivityAt": (object["lastActivityAt"] as? NSNumber)?.doubleValue ?? NSNull(),
             "maxIndex": chunks.keys.max() ?? -1,
             "settledThrough": settledThrough,
-            "chunkCount": chunks.count,
             "turns": turns,
         ]
     }
@@ -14892,10 +14890,11 @@ final class COSControlHelper {
             guard let url = Self.liveTranscriptDataDirHint(hint) else { refuse("invalid_data_dir"); exit(1) }
             dataDir = url
         } else {
-            dataDir = glassesDataDir()
+            // Standardized, so a `..` in COS_DATA_DIR still comes back as a directory the hint accepts (QA N2).
+            dataDir = glassesDataDir().standardizedFileURL
         }
         do {
-            var details: [String: Any] = ["dataDir": dataDir.path, "sessions": try Self.liveTranscriptList(dataDir: dataDir)]
+            var details: [String: Any] = ["dataDir": dataDir.standardizedFileURL.path, "sessions": try Self.liveTranscriptList(dataDir: dataDir)]
             if let sessionId = option("--session", in: args) {
                 let sinceText = option("--since", in: args) ?? "-1"
                 guard let since = Int(sinceText), since >= -1, since < 10_000_000 else { refuse("invalid_since"); exit(1) }
@@ -14921,11 +14920,9 @@ final class COSControlHelper {
         guard status == 200 else { return (false, ["sessionId": sessionId, "reason": "http_\(status)"]) }
         let state = body["state"] as? String ?? "unknown"
         let known: Set<String> = ["saved", "active", "closed", "missing"]
-        var details: [String: Any] = ["sessionId": sessionId, "state": known.contains(state) ? state : "unknown"]
-        if state == "saved", let receipt = body["saveReceipt"] as? [String: Any], let filename = receipt["filename"] as? String {
-            details["savedFilename"] = filename
-        }
-        return (true, details)
+        // Only the state: the saved meeting is found by session id, never by the receipt's filename (a retitle
+        // renames the file; canary C3, 2026-10-10).
+        return (true, ["sessionId": sessionId, "state": known.contains(state) ? state : "unknown"])
     }
 
     private func emitLiveTranscriptStatus(args: [String]) throws {
@@ -19829,7 +19826,7 @@ final class COSControlHelper {
         let liveTurns = (liveAll["turns"] as? [[String: Any]]) ?? []
         try expect(liveTurns.compactMap { $0["i"] as? Int } == [0, 1, 2, 3, 5, 7],
                    "the read keys chunks by chunksIndexed i, in order, skipping silence, a chunk in flight and empty text")
-        try expect(liveAll["maxIndex"] as? Int == 7 && liveAll["settledThrough"] as? Int == 5 && liveAll["chunkCount"] as? Int == 6,
+        try expect(liveAll["maxIndex"] as? Int == 7 && liveAll["settledThrough"] as? Int == 5,
                    "a chunk still in Whisper holds the --since cursor at the last settled index; silence does not")
         try expect(liveTurns.first?["elapsedMs"] as? Int == 0 && liveTurns[1]["elapsedMs"] as? Int == 6000
                    && liveTurns[3]["speaker"] as? String == "Zo\u{eb}" && liveTurns[4]["text"] as? String == "caf\u{e9} delta",
@@ -19861,8 +19858,8 @@ final class COSControlHelper {
         try expect(liveParseReason == "parse_failed", "an unreadable file is a reason code, and the code carries no text")
         try expect(Self.liveTranscriptStatusProjection(sessionId: liveId, status: 200,
                                                       body: ["state": "saved", "saveReceipt": ["filename": "2026-10-10_G2.md", "saved": true], "receivedCount": 9]).details
-                   .keys.sorted() == ["savedFilename", "sessionId", "state"],
-                   "the session status keeps only the state and the saved filename")
+                   .keys.sorted() == ["sessionId", "state"],
+                   "the session status keeps only the state")
         try expect(Self.liveTranscriptStatusProjection(sessionId: liveId, status: 404, body: [:]).details["reason"] as? String == "route_absent"
                    && Self.liveTranscriptStatusProjection(sessionId: liveId, status: 401, body: [:]).ok == false
                    && Self.liveTranscriptStatusProjection(sessionId: liveId, status: 200, body: ["state": "weird"]).details["state"] as? String == "unknown",

@@ -109,6 +109,42 @@ need("Self.liveTranscriptMatches($0, sessionId: sessionId)" in model_live
      and "meeting.sessionId == sessionId || meeting.g2SessionIds.contains(sessionId)" in model_live
      and "filename" not in body(model, "nonisolated static func liveTranscriptMatches("), "the saved meeting is found by session id, never by filename")
 need("model?.liveTranscriptWindowClosed()" in window, "closing Activity stops the live poll")
+# QA B1: a held session that has not ended keeps the poll going after the server's count drops.
+pending = body(model, "var liveTranscriptPendingHandoff: Bool {")
+need("feed.phase == .finalizing" in pending and "feed.seenLive && !feed.ended" in pending, "a held live session that has not ended is still pending (B1)")
+# QA N4: only while the window is on screen, and the presenter reports it.
+need("visible: !liveTranscriptViewers.isEmpty && liveTranscriptWindowOnScreen," in model_live, "the poll needs the Activity window on screen (N4)")
+need("window.isVisible && !window.isMiniaturized && window.occlusionState.contains(.visible)" in window
+     and "NSWindow.didChangeOcclusionStateNotification, NSWindow.didMiniaturizeNotification, NSWindow.didDeminiaturizeNotification" in window
+     and "model?.setLiveTranscriptWindowOnScreen(Self.onScreen(window))" in window
+     and "NotificationCenter.default.addObserver(self, selector: #selector(liveTranscriptVisibilityChanged(_:)), name: name, object: window)" in body(window, "func show(model: ControllerModel"),
+     "the presenter reports occlusion and miniaturize to the model (N4)")
+# QA W1: the view only copies the model's hand-off selection.
+handoff_view = window[window.index(".onChange(of: model.liveTranscriptHandoff?.id) { _, id in"):]
+handoff_view = handoff_view[:handoff_view.index("\n        }\n") + 10]
+need("guard id != nil, let selection = model.acceptLiveTranscriptHandoff() else { return }" in handoff_view
+     and all(f in handoff_view for f in ("meetingReturnWorkID = selection.returnWorkID", "meetingReturnToWork = selection.returnToWork",
+                                         "meetingReturnSpeakerSessionID = selection.returnSpeakerSessionID", "meetingWorkLoaded = selection.workLoaded",
+                                         "selectedLibraryRecordID = selection.recordID"))
+     and "openLibraryMeeting" not in handoff_view and len(re.findall(r"^\s+\w+ = ", handoff_view, re.M)) == 5,
+     "Activity's hand-off only applies the selection the model returns (W1)")
+need('"dataDir": dataDir.standardizedFileURL.path' in helper and "dataDir = glassesDataDir().standardizedFileURL" in helper,
+     "the helper hands back a standardized data directory (N2)")
+
+# ── The secret boundary, everywhere the feature reaches (QA N7): in every Swift source and the helper, no line that
+# sends anything to a log, stderr, the alert or the notice may name live transcript data.
+SINKS = re.compile(r"NSLog\(|\bprint\(|debugPrint\(|os_log\(|fputs\(|FileHandle\.standardError|\bprogress\(|Log\.(info|notice|error|debug|warning|fault|log|trace)\("
+                   r"|[Ll]og\.(info|notice|error|debug|warning|fault|log|trace)\(|\bself\.error = |\berror = |\bnotice = |logEvent\(")
+TAINT = re.compile(r"liveTranscript|LiveTranscript|\.turns\b|turn\.text|chunksIndexed|copyText|LiveTurn|feed\.|liveFixture|liveAll|liveTurns")
+sinks_checked = 0
+for rel in sorted([p.relative_to(root).as_posix() for p in (root / "Sources").glob("*.swift")] + ["HelperSources/main.swift"]):
+    for number, line in enumerate(strip_comments(code(rel)).split("\n"), 1):
+        if SINKS.search(line):
+            sinks_checked += 1
+            need_ok = not TAINT.search(line)
+            if not need_ok:
+                need(False, "%s:%d sends live transcript data to a log, stderr or the alert (%s)" % (rel, number, line.strip()[:160]))
+need(sinks_checked > 50, "the boundary scan saw the sinks (%d)" % sinks_checked)
 
 # ── The pure layer prints nothing.
 pure_code = strip_comments(pure)

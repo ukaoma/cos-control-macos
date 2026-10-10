@@ -1967,7 +1967,7 @@ struct LiveNowRow: View {
                         .font(COSType.body(13.5, weight: .semibold))
                         .foregroundStyle(.primary)
                     HStack(spacing: 0) {
-                        Text(LiveTranscriptText.subtitle(start: row.startTime, now: now, clock: clock))
+                        Text(LiveTranscriptText.subtitle(start: row.startTime, now: now, clock: clock, endedAt: row.endedAt))
                             .foregroundStyle(.secondary)
                         if row.phase == .live, let quiet = LiveTranscript.quietLabel(lastActivity: row.lastActivity, now: now) {
                             Text(" · " + quiet).foregroundStyle(COSPalette.amber)
@@ -2006,13 +2006,14 @@ struct LiveDot: View {
 
 enum LiveTranscriptText {
     /// "Started 7:27 AM · 12 min", or "Starting" before the first read.
-    static func subtitle(start: Date?, now: Date, clock: ClockStyle) -> String {
+    /// The duration stops when the recording ended.
+    static func subtitle(start: Date?, now: Date, clock: ClockStyle, endedAt: Date? = nil) -> String {
         guard let start else { return "Starting" }
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = clock == .twentyFourHour ? "HH:mm" : "h:mm a"
         let started = "Started " + formatter.string(from: start)
-        return LiveTranscript.durationLabel(start: start, now: now).map { started + " · " + $0 } ?? started
+        return LiveTranscript.durationLabel(start: start, now: now, endedAt: endedAt).map { started + " · " + $0 } ?? started
     }
 
     /// The pane's footer word for a failed poll: the reason code, never message text.
@@ -2061,7 +2062,7 @@ struct LiveTranscriptPane: View {
                 .font(COSType.body(12))
                 .foregroundStyle(.secondary)
             HStack(spacing: 0) {
-                Text(LiveTranscriptText.subtitle(start: feed?.startTime, now: now, clock: model.clockStyle))
+                Text(LiveTranscriptText.subtitle(start: feed?.startTime, now: now, clock: model.clockStyle, endedAt: feed?.endedAt))
                     .foregroundStyle(.tertiary)
                 if feed?.ended != true, let quiet = LiveTranscript.quietLabel(lastActivity: feed?.lastActivityAt, now: now) {
                     Text(" · " + quiet).foregroundStyle(COSPalette.amber)
@@ -2107,8 +2108,9 @@ struct LiveTranscriptPane: View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 12) {
+                    let hours = LiveTranscript.usesHours(feed.turns)
                     ForEach(feed.turns) { turn in
-                        LiveTurnRow(turn: turn)
+                        LiveTurnRow(turn: turn, hours: hours)
                     }
                     Color.clear
                         .frame(height: 1)
@@ -2159,13 +2161,15 @@ struct LiveTranscriptPane: View {
 
 struct LiveTurnRow: View {
     let turn: LiveTranscriptTurn
+    /// One stamp format for the whole transcript, as Copy writes it.
+    var hours = false
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 8) {
                 Text(verbatim: turn.speaker)
                     .font(COSType.body(11.5, weight: .semibold))
                     .foregroundStyle(COSPalette.muted)
-                Text(verbatim: LiveTranscript.stamp(turn.elapsedMs))
+                Text(verbatim: LiveTranscript.stamp(turn.elapsedMs, hours: hours))
                     .font(COSType.mono(10))
                     .foregroundStyle(.tertiary)
             }

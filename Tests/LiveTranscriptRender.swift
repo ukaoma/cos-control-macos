@@ -255,11 +255,15 @@ import SwiftUI
                on.liveTranscriptHandoff?.recordId ?? "nil")
         expect(stand.lines("args.log").contains { $0.hasPrefix("meetings-library --day 2026-10-10") },
                "the saved row is read by day, whatever month Meetings shows")
-        let saved = on.liveTranscriptHandoff!
-        on.liveTranscriptHandoffTaken()
-        on.openLibraryMeeting(saved)
+        // What Activity's onChange applies (it only copies these fields into its selection; a pin holds that).
+        let selection = on.acceptLiveTranscriptHandoff()
+        expect(selection == ControllerModel.LiveTranscriptHandoffSelection(recordID: "merged"), "the hand-off selects the saved meeting in place",
+               "\(String(describing: selection))")
+        expect(selection?.returnWorkID == nil && selection?.returnToWork == false && selection?.returnSpeakerSessionID == nil
+               && selection?.workLoaded == false, "the hand-off clears the way back to Work and Speakers")
         expect(!on.liveTranscriptRouteActive && on.openLibraryRow?.recordId == "merged" && on.liveTranscriptFeeds[sid] == nil,
                "the saved meeting opens in place of the live one")
+        expect(on.liveTranscriptHandoff == nil && on.acceptLiveTranscriptHandoff() == nil, "a hand-off is taken once")
 
         // ── Recording ended without saving, and the 3-minute deadline (clocks set back rather than waited out).
         stand.write("live-transcript-status.json", #"{"ok":true,"message":"x","details":{"sessionId":"meeting_other_live_one","state":"closed"}}"#)
@@ -280,9 +284,10 @@ import SwiftUI
         expect(on.liveTranscriptFeeds[slow.sessionId]?.phase == .notFoundYet, "saved but no row after 3 minutes: Saved meeting not found yet")
         stand.write("meetings-library.json", "{\"ok\":true,\"message\":\"x\",\"details\":{\"meetings\":[" +
                     libraryRow(recordId: "slow", sessionId: "meeting_slow_save_one", filename: "slow.md", title: "Slow") + "]}}")
+        let statusBefore = stand.calls("live-transcript-status")
         on.refreshLiveTranscriptHandoff(slow.sessionId)
         await until("Refresh to find the row") { on.liveTranscriptFeeds[slow.sessionId] == nil }
-        expect(true, "Refresh asks again and a found row ends the hand-off")
+        expect(stand.calls("live-transcript-status") > statusBefore, "Refresh asks the server again, and the found row ends the hand-off")
 
         // ── Nobody looking: the poll stops and spawns nothing more.
         on.closeLiveTranscript()
@@ -299,6 +304,72 @@ import SwiftUI
         on.liveTranscriptViewer("meetings", visible: true)
         await sleep(1.0)
         expect(!on.liveTranscriptPollRunning && stand.calls("live-transcript") == quiet, "no live meeting: no poll")
+
+        // ── QA B1: the status tick reports 0 (the server dropped the saved session) before any poll sees the file gone.
+        // The poll must follow the live session to its end, not stop with the pane on "Live meeting".
+        func quiesce(_ m: ControllerModel) async {
+            m.closeLiveTranscript()
+            m.liveTranscriptViewer("meetings", visible: false)
+            m.liveTranscriptViewer("live-pane", visible: false)
+            await until("a quiet model") { !m.liveTranscriptPollRunning }
+        }
+        let savedRow = "{\"ok\":true,\"message\":\"x\",\"details\":{\"meetings\":[" +
+            libraryRow(recordId: "b1row", sessionId: sid, filename: "2026-10-10_Retitled.md", title: "Retitled") + "]}}"
+        stand.write("live-mode", "normal")
+        let (early, _) = model(stand, enabled: true)
+        early.liveTranscriptViewer("meetings", visible: true)
+        early.openLiveTranscript(sid)
+        await until("the live read") { early.liveTranscriptFeeds[sid]?.turns.isEmpty == false && early.liveTranscriptFeeds[sid]?.seenLive == true }
+        early.status = liveStatus(0)
+        early.liveTranscriptKick()
+        await sleep(2.0)
+        expect(early.liveTranscriptPollRunning && early.liveTranscriptPendingHandoff,
+               "the poll follows a live session after the server's count drops first (B1)")
+        stand.write("live-transcript-status.json", #"{"ok":true,"message":"x","details":{"sessionId":"meeting_1791635349988_fx67ab","state":"saved"}}"#)
+        stand.write("meetings-library.json", savedRow)
+        stand.write("live-mode", "ended")
+        await until("the hand-off after the count dropped") { early.liveTranscriptHandoff != nil }
+        expect(early.acceptLiveTranscriptHandoff()?.recordID == "b1row", "the pane hands off although the count dropped first (B1)")
+        await until("the poll to stop once nothing is held") { !early.liveTranscriptPollRunning }
+        await quiesce(early)
+
+        // B1, the other way: Meetings left mid-meeting, the meeting saved while nobody looked, then the pane reopened.
+        stand.write("live-mode", "normal")
+        let (left, _) = model(stand, enabled: true)
+        left.liveTranscriptViewer("meetings", visible: true)
+        await until("the live read") { left.liveTranscriptFeeds[sid]?.seenLive == true && left.liveTranscriptFeeds[sid]?.turns.isEmpty == false }
+        await quiesce(left)
+        stand.write("live-mode", "ended")
+        left.status = liveStatus(0)
+        let whileAway = stand.calls("live-transcript")
+        await sleep(1.6)
+        expect(stand.calls("live-transcript") == whileAway, "nobody looking spawns nothing, even with a session held")
+        left.openLiveTranscript(sid)
+        left.liveTranscriptViewer("meetings", visible: true)
+        await until("the hand-off on reopening") { left.liveTranscriptHandoff != nil }
+        expect(left.acceptLiveTranscriptHandoff()?.recordID == "b1row", "reopening after the save hands off to the saved meeting (B1)")
+        await quiesce(left)
+
+        // ── QA N4: polling only while the Activity window is on screen; back on screen reads at once.
+        stand.write("live-mode", "normal")
+        let (shown, _) = model(stand, enabled: true)
+        shown.liveTranscriptViewer("meetings", visible: true)
+        await until("the live read") { shown.liveTranscriptFeeds[sid]?.turns.isEmpty == false }
+        shown.setLiveTranscriptWindowOnScreen(false)
+        await sleep(2.0)
+        expect(!shown.liveTranscriptPollRunning, "the poll stops off screen (N4)")
+        let offScreen = stand.calls("live-transcript")
+        await sleep(2.0)
+        expect(stand.calls("live-transcript") == offScreen, "a minimized or covered window spawns nothing (N4)")
+        await sleep(0.3)
+        let back = Date()
+        shown.setLiveTranscriptWindowOnScreen(true)
+        await until("the read on coming back") { stand.calls("live-transcript") > offScreen }
+        expect(Date().timeIntervalSince(back) < 0.7, "back on screen reads at once (N4)", "\(Date().timeIntervalSince(back)) s")
+        let neverShown = NSWindow(contentRect: NSRect(x: -20000, y: -20000, width: 10, height: 10), styleMask: [.borderless], backing: .buffered, defer: true)
+        neverShown.isReleasedWhenClosed = false
+        expect(!ActivityWindowPresenter.onScreen(neverShown), "a window that is not shown is not on screen")
+        await quiesce(shown)
 
         // ── A loop cancelled by the setting never clears the handle of the loop that replaced it (else a kick starts a
         // second loop beside it). Off and on in one turn, while the first loop's read is still running.
@@ -378,7 +449,8 @@ import SwiftUI
         let thousand = make(long, last: now.addingTimeInterval(-3), settled: 1499)
         let quiet = make(short, last: now.addingTimeInterval(-4 * 60 - 10), settled: 5)
         let finalizing = make(short, last: now.addingTimeInterval(-20), settled: 5, ended: true)
-        finalizing.applyLiveTranscript(reply(endedAnswer), now: now)
+        // Ended two minutes ago (inside the 3-minute deadline): the duration reads 10 min, not 12 (QA W2).
+        finalizing.applyLiveTranscript(reply(endedAnswer), now: now.addingTimeInterval(-2 * 60))
 
         for appearance in [NSAppearance.Name.aqua, .darkAqua] {
             try render(LiveTranscriptPane(model: live), width: 900, height: 560, appearance: appearance, name: "pane-live-short", out: out)

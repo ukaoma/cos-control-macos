@@ -18,7 +18,7 @@ import Foundation
     static func read(_ chunks: [LiveTranscriptChunk], id: String = "s1", settled: Int? = nil, stamp: String = "1.0.10",
                      start: Double? = 1_791_635_349_988, last: Double? = nil) -> LiveTranscriptRead {
         LiveTranscriptRead(sessionId: id, ended: false, unchanged: false, stamp: stamp, startTime: start, lastActivityAt: last,
-                           maxIndex: chunks.map(\.i).max(), settledThrough: settled, chunkCount: chunks.count, turns: chunks)
+                           settledThrough: settled, turns: chunks)
     }
 
     static func main() {
@@ -56,6 +56,37 @@ import Foundation
               "a missing index (3, 4) is never drawn as loss: the same speaker on both sides is still one turn")
         check(!feed.turns.contains { $0.text.contains("[") || $0.text.lowercased().contains("missing") || $0.text.contains("…") },
               "no gap marker is ever written into the text")
+        // A turn keeps its id when a late chunk lands BEFORE its first one (QA W3), and a split turn keeps it on its
+        // first half while the second half and the late voice get new ids.
+        var stable = LiveTranscriptFeed(sessionId: "s1")
+        stable.apply(read([chunk(2, "Miles", "two"), chunk(3, "Miles", "three")]), now: now)
+        let firstID = stable.turns.first?.id
+        stable.apply(read([chunk(1, "Miles", "one")]), now: now)
+        check(stable.turns.map(\.id) == [firstID!] && stable.turns[0].text == "one two three" && stable.turns[0].firstIndex == 1,
+              "a late lower-index chunk joins the turn and the turn keeps its id")
+        stable.apply(read([chunk(0, "Jordan", "zero")]), now: now)
+        check(stable.turns.map(\.id) == [0, firstID!], "a new turn before it takes its own id; the old turn keeps its id")
+        var split = LiveTranscriptFeed(sessionId: "s1")
+        split.apply(read([chunk(4, "Miles", "four"), chunk(6, "Miles", "six")]), now: now)
+        let splitID = split.turns[0].id
+        split.apply(read([chunk(5, "Jordan", "five")]), now: now)
+        check(split.turns.map(\.speaker) == ["Miles", "Jordan", "Miles"] && split.turns[0].id == splitID
+              && Set(split.turns.map(\.id)).count == 3, "a turn split by a late voice keeps its id on the first half; ids stay unique")
+        let secondHalf = split.turns[2].id
+        split.apply(read([chunk(7, "Miles", "seven")]), now: now)
+        check(split.turns.map(\.id) == [splitID, split.turns[1].id, secondHalf] && split.turns[2].text == "six seven",
+              "the second half keeps its new id as it grows")
+        // An inherited id can take a later run's own first index: that run gets -(index + 1), so ids stay unique.
+        var taken = LiveTranscriptFeed(sessionId: "s1")
+        taken.apply(read([chunk(3, "Miles", "three"), chunk(4, "Miles", "four")]), now: now)
+        taken.apply(read([chunk(2, "Miles", "two")]), now: now)
+        taken.apply(read([chunk(3, "Jordan", "three")]), now: now)
+        check(taken.turns.map(\.id) == [3, -4, 4] && taken.turns.map(\.speaker) == ["Miles", "Jordan", "Miles"],
+              "a run whose first index is already an id takes -(index + 1)")
+        var merged = LiveTranscriptFeed(sessionId: "s1")
+        merged.apply(read([chunk(0, "Miles", "a"), chunk(1, "Jordan", "b"), chunk(2, "Miles", "c")]), now: now)
+        merged.apply(read([chunk(1, "Miles", "b again")]), now: now)
+        check(merged.turns.map(\.id) == [0] && merged.turns[0].text == "a b again c", "turns joined by a corrected speaker keep the first id")
         feed.apply(read([chunk(6, "", "six"), chunk(7, "Unknown", "seven"), chunk(8, "Zo\u{eb}", "eight")], settled: 4), now: now)
         check(feed.cursor == 5, "the --since cursor is never lowered by a later read")
         check(feed.turns.map(\.speaker) == ["Miles", "Jordan", "Speaker", "Zo\u{eb}"] && feed.turns[2].text == "six seven",
@@ -82,6 +113,12 @@ import Foundation
               "1,500 chunks fold into 300 turns, each keyed by its first index")
         check(Set(long.turns.map(\.id)).count == long.turns.count, "turn ids are unique")
 
+        // ── The quiet clock follows the file too (QA N1), and never moves back.
+        var quietFeed = LiveTranscriptFeed(sessionId: "q")
+        quietFeed.apply(read([chunk(0, "Miles", "x")], id: "q", last: 1_791_635_000_000), now: now)
+        check(quietFeed.noteFileActivity(Date(timeIntervalSince1970: 1_791_635_900)) && quietFeed.lastActivityAt == Date(timeIntervalSince1970: 1_791_635_900)
+              && !quietFeed.noteFileActivity(Date(timeIntervalSince1970: 1_791_635_100)), "a newer file mtime moves the quiet clock forward, an older one does not")
+
         // ── The copy format (golden).
         let goldenTurns = LiveTranscriptFeed.turns(from: [
             0: chunk(0, "Miles", "Kicking off.", ms: 0),
@@ -92,17 +129,23 @@ import Foundation
                                              timeZone: TimeZone(identifier: "America/Chicago")!)
         let expected = """
         COS preliminary transcript · 2026-10-10 7:29 AM
-        [0:00] Miles: Kicking off.
-        [1:05] Speaker: Who is this?
+        [0:00:00] Miles: Kicking off.
+        [0:01:05] Speaker: Who is this?
         [1:01:00] Zo\u{eb}: Past the hour.
         """
-        check(golden == expected, "the copy golden: header, [m:ss], an unknown Speaker, [h:mm:ss] past an hour\n\(golden)")
+        check(golden == expected, "the copy golden: header, an unknown Speaker, and one [h:mm:ss] format once past an hour\n\(golden)")
+        let shortGolden = LiveTranscript.copyText(turns: Array(goldenTurns.prefix(2)), startTime: Date(timeIntervalSince1970: 1_791_635_349.988),
+                                                  timeZone: TimeZone(identifier: "America/Chicago")!)
+        check(shortGolden == "COS preliminary transcript · 2026-10-10 7:29 AM\n[0:00] Miles: Kicking off.\n[1:05] Speaker: Who is this?",
+              "the copy golden under an hour: [m:ss] throughout\n\(shortGolden)")
         check(LiveTranscript.copyText(turns: goldenTurns, startTime: Date(timeIntervalSince1970: 1_791_635_349.988),
                                       timeZone: TimeZone(identifier: "America/Chicago")!, twentyFourHour: true).hasPrefix("COS preliminary transcript · 2026-10-10 07:29\n"),
               "a 24-hour clock writes the header in 24 hours")
         check(LiveTranscript.copyText(turns: [], startTime: nil) == "COS preliminary transcript", "no start time: the header alone")
-        check(LiveTranscript.stamp(59_999) == "0:59" && LiveTranscript.stamp(3_599_000) == "59:59" && LiveTranscript.stamp(3_600_000) == "1:00:00"
-              && LiveTranscript.stamp(-5) == "0:00", "stamps switch to h:mm:ss at the hour")
+        check(LiveTranscript.stamp(59_999, hours: false) == "0:59" && LiveTranscript.stamp(3_599_000, hours: false) == "59:59"
+              && LiveTranscript.stamp(3_600_000, hours: true) == "1:00:00" && LiveTranscript.stamp(65_000, hours: true) == "0:01:05"
+              && LiveTranscript.stamp(-5, hours: false) == "0:00", "the two stamp formats")
+        check(!LiveTranscript.usesHours(Array(goldenTurns.prefix(2))) && LiveTranscript.usesHours(goldenTurns), "the transcript switches at the hour")
         check(!golden.contains("\u{2014}") && !golden.contains("\u{2192}") && !LiveTranscript.header.contains("\u{2014}")
               && LiveTranscript.header == "Live transcript · preliminary · may change when saved",
               "no em dash or arrow in the copied text or the header")
@@ -120,10 +163,10 @@ import Foundation
         check(!LiveTranscript.enabled(defaults), "the setting off reads off")
 
         // ── Rows: liveness is the server's.
-        let files = [LiveTranscriptFileRow(sessionId: "a", mtimeMs: 1_791_635_990_000, size: 10, stamp: "a"),
-                     LiveTranscriptFileRow(sessionId: "stale1", mtimeMs: 1_791_634_000_000, size: 10, stamp: "b"),
-                     LiveTranscriptFileRow(sessionId: "strand", mtimeMs: 1_791_635_000_000, size: 10, stamp: "c"),
-                     LiveTranscriptFileRow(sessionId: "b", mtimeMs: 1_791_635_995_000, size: 10, stamp: "d")]
+        let files = [LiveTranscriptFileRow(sessionId: "a", mtimeMs: 1_791_635_990_000, stamp: "a"),
+                     LiveTranscriptFileRow(sessionId: "stale1", mtimeMs: 1_791_634_000_000, stamp: "b"),
+                     LiveTranscriptFileRow(sessionId: "strand", mtimeMs: 1_791_635_000_000, stamp: "c"),
+                     LiveTranscriptFileRow(sessionId: "b", mtimeMs: 1_791_635_995_000, stamp: "d")]
         var feeds: [String: LiveTranscriptFeed] = [:]
         var fa = LiveTranscriptFeed(sessionId: "a"); fa.apply(read([chunk(0, "Miles", "x")], id: "a", start: 1_791_635_000_000), now: now); feeds["a"] = fa
         var fb = LiveTranscriptFeed(sessionId: "b"); fb.apply(read([chunk(0, "Miles", "x")], id: "b", start: 1_791_635_900_000), now: now); feeds["b"] = fb
@@ -145,7 +188,7 @@ import Foundation
         feeds["c"]?.phase = .finalizing
         check(LiveTranscript.rows(files: [], feeds: feeds, serverLive: 0, stale: [], stranded: ["c"], now: now).isEmpty,
               "an ended session the stranded banner lists is not listed twice")
-        let fresh = LiveTranscript.rows(files: [LiveTranscriptFileRow(sessionId: "n", mtimeMs: 1_791_635_999_000, size: 1, stamp: "n")], feeds: [:],
+        let fresh = LiveTranscript.rows(files: [LiveTranscriptFileRow(sessionId: "n", mtimeMs: 1_791_635_999_000, stamp: "n")], feeds: [:],
                                         serverLive: 1, stale: [], stranded: [], now: now)
         check(fresh.count == 1 && fresh.first?.startTime == nil && fresh.first?.lastActivity == Date(timeIntervalSince1970: 1_791_635_999),
               "a file not read yet has a row, its quiet clock from the file's mtime")
@@ -180,6 +223,15 @@ import Foundation
               && LiveTranscript.durationLabel(start: now.addingTimeInterval(-12 * 60), now: now) == "12 min"
               && LiveTranscript.durationLabel(start: now.addingTimeInterval(-65 * 60), now: now) == "1 h 5 min"
               && LiveTranscript.durationLabel(start: now.addingTimeInterval(-120 * 60), now: now) == "2 h", "durations")
+        check(LiveTranscript.durationLabel(start: now.addingTimeInterval(-40 * 60), now: now, endedAt: now.addingTimeInterval(-30 * 60)) == "10 min"
+              && LiveTranscript.durationLabel(start: now.addingTimeInterval(-40 * 60), now: now, endedAt: nil) == "40 min",
+              "the duration stops when the recording ended (QA W2)")
+        check(LiveTranscript.rows(files: [], feeds: ["e": { var f = LiveTranscriptFeed(sessionId: "e"); f.markEnded(now: now); return f }()],
+                                  serverLive: 0, stale: [], stranded: [], now: now).first?.endedAt == now, "an ended row carries its end time")
+        let twoFiles = [LiveTranscriptFileRow(sessionId: "old", mtimeMs: 1_791_635_990_000, stamp: "o")]
+        var staleRead = LiveTranscriptFeed(sessionId: "old"); staleRead.apply(read([chunk(0, "Miles", "x")], id: "old", last: 1_791_635_000_000), now: now)
+        check(LiveTranscript.rows(files: twoFiles, feeds: ["old": staleRead], serverLive: 2, stale: [], stranded: [], now: now).first?.lastActivity
+              == Date(timeIntervalSince1970: 1_791_635_990), "a row's quiet clock is the later of its last read and its file (QA N1)")
 
         // ── Reason codes: only [a-z0-9_] survives.
         check(LiveTranscript.reasonCode(fromMessage: "Live transcript unavailable (parse_failed)") == "parse_failed", "a refusal's code")
