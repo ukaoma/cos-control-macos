@@ -19792,6 +19792,9 @@ final class COSControlHelper {
         let dropped = try Self.liveTranscriptParse(Data(#"{"chunksIndexed":[{"i":0,"c":{"text":"a","speaker":"M","elapsed":0}},{"i":2,"c":{"text":"c","speaker":"M","elapsed":12000}}],"asrCompletedIndices":[1],"maxChunkIndex":2}"#.utf8),
                                                    sessionId: "drop_session", since: -1, stamp: "s")
         try expect(dropped["settledThrough"] as? Int == 2, "a dropped chunk (completed, no text) settles its index")
+        let silent = try Self.liveTranscriptParse(Data(#"{"chunksIndexed":[{"i":0,"c":{"text":"a","speaker":"M","elapsed":0}},{"i":2,"c":{"text":"c","speaker":"M","elapsed":12000}}],"emptyCompletions":{"1":{"text":"","speaker":"M","elapsed":6000,"canonical":false}},"maxChunkIndex":2}"#.utf8),
+                                                  sessionId: "silent_session", since: -1, stamp: "s")
+        try expect(silent["settledThrough"] as? Int == 2, "silence (an emptyCompletions key) settles its index on its own")
         let liveDir = FileManager.default.temporaryDirectory.appendingPathComponent("cos-live-\(UUID().uuidString)", isDirectory: true)
         let liveSessions = liveDir.appendingPathComponent("active-sessions", isDirectory: true)
         try FileManager.default.createDirectory(at: liveSessions, withIntermediateDirectories: true)

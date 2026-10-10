@@ -74,13 +74,16 @@ try:
     (sessions / "not a session.json").write_text("{}")
     (sessions / "linked_one.json").symlink_to(sessions / (SID + ".json"))
     (sessions / "noextension12").write_text("{}")
+    # A name without .json whose first part names a real session file must not list that session twice.
+    shutil.copy(FIXTURE, sessions / "meeting_dupe.json")
+    (sessions / "meeting_dupeabcde").write_text("{}")
     os.mkfifo(sessions / "fifo_session.json")
     with open(sessions / "huge_session.json", "wb") as huge:
         huge.truncate(65 * 1024 * 1024)
 
     code, listed, _, err = run("live-transcript", "--data-dir", str(data_dir))
     check(code == 0 and listed["ok"] and err == "", "the list answers ok with nothing on stderr")
-    check(sorted(row["sessionId"] for row in listed["details"]["sessions"]) == sorted([SID, "huge_session"]),
+    check(sorted(row["sessionId"] for row in listed["details"]["sessions"]) == sorted([SID, "huge_session", "meeting_dupe"]),
           "the list skips temp files, bad names, names without .json, symlinks and FIFOs")
     check(listed["details"]["dataDir"] == str(data_dir) and "read" not in listed["details"], "the list names its data directory and reads no session")
 
