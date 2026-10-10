@@ -77,8 +77,8 @@ need('"staleTranscriptionSessionIds": Self.staleTranscriptionSessionIds(maintena
 need('liveTranscriptionSessions = details["liveTranscriptionSessions"]?.int' in models
      and 'staleTranscriptionSessionIds = (details["staleTranscriptionSessionIds"]?.array ?? []).compactMap(\\.string)' in models,
      "the status model reads both")
-report = body(helper, "func redactedReport(")
-need("active-sessions" not in report and "chunksIndexed" not in report and "liveTranscript" not in report,
+report = body(helper, "func redactedReport(") + body(helper, "func doctorDetails(")
+need("active-sessions" not in report and "chunksIndexed" not in report and "liveTranscriptRead" not in report and "liveTranscriptList" not in report,
      "Copy Report never reads the live session files")
 
 # ── The model: the setting gates every spawn, and no text reaches a log or an error.

@@ -14745,12 +14745,11 @@ final class COSControlHelper {
 
     /// A `--data-dir` the app passes back from an earlier answer (the lookup spawns `launchctl print`, so the app does
     /// it once per poll loop): absolute, already standard, with no `..`.
+    /// One test covers all three: a relative path resolves against the working folder, and `..` or `.` standardize
+    /// away, so each comes back different from what was passed.
     static func liveTranscriptDataDirHint(_ value: String) -> URL? {
-        guard value.hasPrefix("/"), !value.contains("\0"), value.count < 1024 else { return nil }
-        let url = URL(fileURLWithPath: value, isDirectory: true)
-        guard !url.pathComponents.contains(".."), !url.pathComponents.contains("."),
-              url.standardizedFileURL.path == (value.count > 1 && value.hasSuffix("/") ? String(value.dropLast()) : value) else { return nil }
-        return url
+        guard !value.contains("\0"), value.count < 1024 else { return nil }
+        return URL(fileURLWithPath: value, isDirectory: true).standardizedFileURL.path == value ? URL(fileURLWithPath: value, isDirectory: true) : nil
     }
 
     /// `<sec>.<nsec>.<size>`: what the file was at the last read. Kept as a string so nothing rounds it.

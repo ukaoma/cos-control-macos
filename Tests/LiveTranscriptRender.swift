@@ -179,6 +179,16 @@ import SwiftUI
         if let i = secondArgs.firstIndex(of: "--stamp") { expect(secondArgs[i + 1] == "100.1.4096", "the stamp is passed back", "\(secondArgs)") }
         else { fail("the stamp is passed back", "\(secondArgs)") }
 
+        // ── A session that leaves the list ends, even on a poll that read another one.
+        let (two, _) = model(stand, enabled: true)
+        func listed(_ ids: [String]) -> String {
+            ids.map { "{\"sessionId\":\"\($0)\",\"mtimeMs\":1,\"size\":1,\"stamp\":\"\($0)\"}" }.joined(separator: ",")
+        }
+        two.applyLiveTranscript(reply("{\"ok\":true,\"message\":\"x\",\"details\":{\"sessions\":[\(listed(["meeting_aaa", "meeting_bbb"]))],\"read\":{\"sessionId\":\"meeting_aaa\",\"ended\":false,\"unchanged\":true}}}"), now: Date())
+        two.applyLiveTranscript(reply("{\"ok\":true,\"message\":\"x\",\"details\":{\"sessions\":[\(listed(["meeting_aaa"]))],\"read\":{\"sessionId\":\"meeting_aaa\",\"ended\":false,\"unchanged\":true}}}"), now: Date())
+        expect(two.liveTranscriptFeeds["meeting_bbb"]?.ended == true && two.liveTranscriptFeeds["meeting_bbb"]?.phase == .finalizing
+               && two.liveTranscriptFeeds["meeting_aaa"]?.ended == false, "a file that left the list ends")
+
         // ── Never a second read while one is in flight, whatever asks.
         stand.remove("overlap.log")
         stand.write("live-mode", "hold")
