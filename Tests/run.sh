@@ -1487,7 +1487,7 @@ assert m is not None, "MenuBarExtra no longer opens ControlPanel"
 before = re.sub(r"//[^\n]*", "", m.group(1))
 assert before.strip() == "", "something sits above ControlPanel in the menu-bar window: " + before.strip()[:80]
 PY
-/usr/bin/grep -q -F 'MenuBarIcon.variant(for: model.appUpdateFlow.phase)' "$ROOT/Sources/COSControlApp.swift"
+/usr/bin/grep -q -F 'MenuBarIcon.variant(for: model.appUpdateFlow.phase, recording: model.recordingCount > 0)' "$ROOT/Sources/COSControlApp.swift"
 ! /usr/bin/grep -q 'hasNotice' "$ROOT/Sources/COSControlApp.swift"
 /usr/bin/grep -q 'AppUpdateInfo.merging(previous: appUpdate, incoming:' "$ROOT/Sources/ControllerModel.swift"
 /usr/bin/grep -q 'static func merging(previous: AppUpdateInfo, incoming: AppUpdateInfo)' "$ROOT/Sources/Models.swift"
