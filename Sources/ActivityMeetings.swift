@@ -2340,7 +2340,7 @@ struct LiveAskPanel: View {
             if let error = state.error { Text(error).font(COSType.body(11)).foregroundStyle(COSPalette.amber) }
             HStack(alignment: .bottom) {
                 TextField("Ask about this meeting", text: $question, axis: .vertical)
-                    .lineLimit(1...4).textFieldStyle(.roundedBorder)
+                    .lineLimit(1...4).textFieldStyle(.plain).cosField()
                     .onChange(of: question) { _, value in if value.count > 2000 { question = String(value.prefix(2000)) } }
                     .onSubmit { sendQuestion() }
                 Button("Ask") { sendQuestion() }.buttonStyle(COSPrimaryButtonStyle())
