@@ -1060,13 +1060,16 @@ echo "    manual update check: button, method, and all three outcomes"
 /usr/bin/grep -q 'Views into the work' "$ROOT/Sources/ActivityWindow.swift"
 /usr/bin/grep -q 'Image(systemName: model.status.running ? "eyeglasses"' "$ROOT/Sources/COSControlApp.swift"
 /usr/bin/grep -q '\.fixedSize()' "$ROOT/Sources/COSControlApp.swift"
-# 2026-10-09: an NSImage only for the update-ready glasses (a template drops color); the plain tray stays the system glyph.
+# Colored update/recording variants use one original NSImage; the plain tray keeps the system glyph.
 /usr/bin/python3 -c '
 import sys
 src = open(sys.argv[1]).read()
-assert src.count("Image(nsImage:") == 1, "one NSImage label at most, the update-ready glasses"
-branch = src.split("if variant == .updateReady {", 1)[1].split("} else {", 1)[0]
-assert "Image(nsImage:" in branch, "the NSImage label belongs to the update-ready branch only"
+assert src.count("Image(nsImage:") == 1, "one shared NSImage label for colored variants"
+assert "recording: model.recordingCount > 0" in src, "recording state must reach the menu-bar icon"
+assert "if variant != .normal {" in src, "colored variants must include recording and updates"
+branch, plain = src.split("if variant != .normal {", 1)[1].split("} else {", 1)
+assert "Image(nsImage:" in branch and ".renderingMode(.original)" in branch, "colored indicators must preserve their colors"
+assert "Image(systemName:" in plain.split(".fixedSize()", 1)[0], "the normal tray keeps the system glyph"
 ' "$ROOT/Sources/COSControlApp.swift"
 /usr/bin/grep -q 'eyeglasses.slash' "$ROOT/Sources/COSControlApp.swift"
 # 0.5.243: the send button routes a cross-platform Fork through forkToPlatform, and "Use this" goes through
