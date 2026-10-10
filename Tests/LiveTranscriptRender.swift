@@ -499,6 +499,12 @@ import SwiftUI
         let long = (0..<1500).map { i -> (Int, String, String, Int) in
             (i, speakers[(i / 4) % speakers.count], "Fixture sentence number \(i) in a long meeting, plain text only.", i * 2400)
         }
+        let monologueChunks = (0..<130).map { i in
+            (i, "Ext", "This is fixture sentence \(i) about the project. We reviewed the timing and agreed to revisit the next step after the meeting.", i * 6000)
+        }
+        let monologue = make(monologueChunks, last: now.addingTimeInterval(-3), settled: 129)
+        let oversized = make([(0, "Ext", String(repeating: "This is a long fixture transcription chunk. It needs paragraph breaks while keeping every original word. ", count: 45), 0)],
+                             last: now.addingTimeInterval(-3), settled: 0)
         let live = make(short, last: now.addingTimeInterval(-8), settled: 5)
         let thousand = make(long, last: now.addingTimeInterval(-3), settled: 1499)
         let quiet = make(short, last: now.addingTimeInterval(-4 * 60 - 10), settled: 5)
@@ -507,6 +513,8 @@ import SwiftUI
         finalizing.applyLiveTranscript(reply(endedAnswer), now: now.addingTimeInterval(-2 * 60))
 
         for appearance in [NSAppearance.Name.aqua, .darkAqua] {
+            try render(LiveTranscriptPane(model: monologue), width: 900, height: 700, appearance: appearance, name: "pane-long-same-speaker", out: out)
+            try render(LiveTranscriptPane(model: oversized), width: 900, height: 700, appearance: appearance, name: "pane-oversized-chunk", out: out)
             try render(LiveTranscriptPane(model: live), width: 900, height: 560, appearance: appearance, name: "pane-live-short", out: out)
             try render(LiveTranscriptPane(model: thousand), width: 900, height: 560, appearance: appearance, name: "pane-live-1500-chunks", out: out)
             try render(LiveTranscriptPane(model: quiet), width: 900, height: 560, appearance: appearance, name: "pane-no-audio-4m", out: out)

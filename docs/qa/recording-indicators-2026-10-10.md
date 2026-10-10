@@ -16,7 +16,7 @@ The existing 12-second status refresh supplies liveTranscriptionSessions (fallin
 
 Dock writes are wired by COSControlApp, not test models. Transcript text still reads only in the visible Meetings view. The route intent expires after 30 seconds and is cleared on navigation; a session is never guessed when several recordings are active. No transcript text appears in indicators.
 
-The published 0.5.278 archive is unchanged. W-a (five-minute failed-handoff polling cap) and W-b (duplicate fallback row ID) remain separate 0.5.279 follow-ups.
+The published 0.5.278 archive is unchanged. W-a (five-minute failed-handoff polling cap) remains a separate 0.5.279 follow-up. The subsequent transcript-formatting change fixes W-b (duplicate fallback row ID), with a regression check, because shorter sections exercise the same row identity allocator.
 
 ## Validation
 

@@ -2107,7 +2107,7 @@ struct LiveTranscriptPane: View {
     private func transcript(_ feed: LiveTranscriptFeed) -> some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 12) {
+                LazyVStack(alignment: .leading, spacing: 22) {
                     let hours = LiveTranscript.usesHours(feed.turns)
                     ForEach(feed.turns) { turn in
                         LiveTurnRow(turn: turn, hours: hours)
@@ -2120,9 +2120,12 @@ struct LiveTranscriptPane: View {
                 }
                 .textSelection(.enabled)
                 .padding(24)
-                .frame(maxWidth: 760, alignment: .leading)
+                .frame(maxWidth: 700, alignment: .leading)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
+            // An oversized source chunk must scroll inside the body, never draw over the fixed header/footer.
+            .frame(minHeight: 0, maxHeight: .infinity)
+            .clipped()
             // A drag in the text is a selection: hold the view still until a click or Jump to live.
             .simultaneousGesture(DragGesture(minimumDistance: 3).onChanged { _ in follow.selectionBegan() })
             .simultaneousGesture(TapGesture().onEnded { follow.tapped(atBottom: atBottom) })
@@ -2164,17 +2167,18 @@ struct LiveTurnRow: View {
     /// One stamp format for the whole transcript, as Copy writes it.
     var hours = false
     var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
+        VStack(alignment: .leading, spacing: 7) {
             HStack(spacing: 8) {
                 Text(verbatim: turn.speaker)
                     .font(COSType.body(11.5, weight: .semibold))
                     .foregroundStyle(COSPalette.muted)
                 Text(verbatim: LiveTranscript.stamp(turn.elapsedMs, hours: hours))
                     .font(COSType.mono(10))
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(.secondary)
             }
             Text(verbatim: turn.text)
-                .font(COSType.body(13))
+                .font(COSType.body(14))
+                .lineSpacing(4)
                 .foregroundStyle(.primary)
                 .fixedSize(horizontal: false, vertical: true)
         }

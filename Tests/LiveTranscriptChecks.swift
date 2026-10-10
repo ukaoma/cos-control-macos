@@ -113,6 +113,47 @@ import Foundation
               "1,500 chunks fold into 300 turns, each keyed by its first index")
         check(Set(long.turns.map(\.id)).count == long.turns.count, "turn ids are unique")
 
+        // Long single-speaker recordings must not collapse into a wall of text.
+        var monologue = LiveTranscriptFeed(sessionId: "s1")
+        let speech = (0..<150).map { chunk($0, "Ext", "Fixture sentence \($0) about plans and decisions.") }
+        monologue.apply(read(speech), now: now)
+        check(monologue.turns.count == 30, "15 minutes of one speaker is split into 30-second reading sections")
+        check(monologue.turns.allSatisfy { $0.lastIndex - $0.firstIndex < 5 && $0.text.count <= LiveTranscript.readingSectionCharacters },
+              "sections are bounded even when every chunk has the same label")
+        check(monologue.turns.map(\.elapsedMs) == stride(from: 0, to: 900_000, by: 30_000).map { $0 },
+              "each section timestamp comes from its first real chunk")
+        let oldIDs = monologue.turns.map(\.id)
+        monologue.apply(read([chunk(150, "Ext", "A later fixture sentence.")]), now: now)
+        check(Array(monologue.turns.map(\.id).prefix(oldIDs.count)) == oldIDs, "appending speech keeps earlier section identities")
+        let bulky = (0..<12).map { chunk($0, "Ext", String(repeating: "A clear fixture sentence. ", count: 8)) }
+        let bounded = LiveTranscriptFeed.turns(from: Dictionary(uniqueKeysWithValues: bulky.map { ($0.i, $0) }))
+        check(bounded.count > 3 && bounded.allSatisfy { $0.lastIndex - $0.firstIndex < 3 },
+              "dense speech also splits by size, before thirty seconds")
+        let oversize = String(repeating: "This is an invented sentence with café and 👨‍👩‍👧‍👦. ", count: 90)
+        var huge = LiveTranscriptFeed(sessionId: "s1")
+        huge.apply(read([chunk(0, "Ext", oversize)]), now: now)
+        let readable = huge.turns[0].text
+        check(readable.components(separatedBy: "\n\n").count > 5, "one oversized ASR chunk also gets paragraphs")
+        check(readable.components(separatedBy: "\n\n").allSatisfy { $0.count <= 420 }, "oversized chunk paragraphs stay bounded")
+        func content(_ text: String) -> String { String(text.filter { !$0.isWhitespace }) }
+        check(content(readable) == content(oversize) && huge.chunks[0]?.text == oversize,
+              "formatting keeps all original characters in order and leaves raw chunks untouched")
+        let noSpaces = String(repeating: "語👨‍👩‍👧‍👦", count: 600)
+        let broken = LiveTranscript.readableText(noSpaces)
+        check(content(broken) == noSpaces && broken.components(separatedBy: "\n\n").count == 3,
+              "text without spaces breaks at whole graphemes without losing content")
+        check(LiveTranscript.readableText("  \n\t ") == "", "whitespace-only input produces no paragraphs")
+        let copied = LiveTranscript.copyText(turns: monologue.turns, startTime: nil)
+        check(copied.contains("[0:30] Ext:") && copied.contains("[1:00] Ext:"), "Copy keeps the timestamped reading sections")
+        check(LiveTranscript.copyText(turns: huge.turns, startTime: nil).contains("\n\n"), "Copy keeps paragraphs for oversized chunks")
+        let collision = LiveTranscriptFeed.build([0: chunk(0, "Miles", "one"), 1: chunk(1, "Jordan", "two"), 2: chunk(2, "Miles", "three")],
+                                                 previous: [0: -3, 1: 2, 2: 2])
+        check(Set(collision.turns.map(\.id)).count == 3, "a split cannot reuse an occupied negative fallback row id (W-b)")
+        var lateSplit = LiveTranscriptFeed(sessionId: "s1")
+        lateSplit.apply(read(speech.filter { $0.i != 2 }), now: now)
+        lateSplit.apply(read([chunk(2, "Jordan", "An intervening speaker.")]), now: now)
+        check(Set(lateSplit.turns.map(\.id)).count == lateSplit.turns.count, "late speaker changes keep bounded section IDs unique")
+
         // ── The quiet clock follows the file too (QA N1), and never moves back.
         var quietFeed = LiveTranscriptFeed(sessionId: "q")
         quietFeed.apply(read([chunk(0, "Miles", "x")], id: "q", last: 1_791_635_000_000), now: now)

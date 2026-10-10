@@ -1,5 +1,8 @@
 ## Unreleased
 
+- Live transcripts now use shorter timestamped sections, paragraph breaks for oversized chunks, larger text and more spacing. Copy preserves the readable layout without rewriting the transcript.
+- Keep transcript row IDs unique when a late speaker change splits a previously drawn section.
+
 - See when a meeting is recording from the menu-bar icon and a REC badge in the Dock. Recording remains visible when the Meetings window is closed.
 - Open the live transcript from the menu-bar panel, the Dock menu, a Dock click, or Command-Shift-L while COS Control is active. Multiple recordings open the chooser.
 

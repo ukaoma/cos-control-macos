@@ -12,8 +12,8 @@ import Foundation
 // The helper re-sends only chunks after its settled cursor, so a chunk at or below the cursor is not read again: what
 // was settled stays as first read (the saved meeting is the final text). The turns are in index order whatever order
 // chunks arrive in, and an index that is not there is never drawn as loss (it is silence, a dropped hallucination, or
-// a chunk still in Whisper). Consecutive chunks with the same speaker are one turn. A turn's id is the first index it
-// was ever drawn with, and it keeps that id when it grows at either end (a late chunk with a lower index included),
+// a chunk still in Whisper). Consecutive chunks with the same speaker form bounded reading sections (30 seconds or
+// 600 characters). A turn's id is the first index it was ever drawn with, and it keeps that id when it grows at either end (a late chunk with a lower index included),
 // so the list never re-identifies a row the reader is looking at; only a turn new to the list takes a new id.
 //
 // SECRET BOUNDARY. Nothing here logs or prints, and no error carries text: a failure is a reason code.
@@ -145,19 +145,25 @@ struct LiveTranscriptFeed: Equatable, Sendable {
         return true
     }
 
-    /// Index order, consecutive same-speaker chunks merged, a missing index skipped silently.
+    /// Index order, nearby same-speaker chunks merged into readable sections; missing indices stay silent.
     static func turns(from chunks: [Int: LiveTranscriptChunk]) -> [LiveTranscriptTurn] { build(chunks, previous: [:]).turns }
 
     /// The turns, and which turn id each chunk is in. A run whose chunks were drawn before takes the id of the first of
     /// them (in index order) that is still free; a run with none, or whose old ids are taken (a turn split by a late
-    /// chunk from another voice), takes its first index, or -(first index + 1) if even that is an id already given.
+    /// chunk from another voice), takes its first index, or a free negative id if that index is already given.
     static func build(_ chunks: [Int: LiveTranscriptChunk], previous: [Int: Int]) -> (turns: [LiveTranscriptTurn], map: [Int: Int]) {
-        var runs: [(speaker: String, members: [LiveTranscriptChunk])] = []
+        var runs: [(speaker: String, members: [LiveTranscriptChunk], characters: Int)] = []
         for index in chunks.keys.sorted() {
             guard let chunk = chunks[index], !chunk.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
             let speaker = LiveTranscript.displaySpeaker(chunk.speaker)
-            if let last = runs.last, last.speaker == speaker { runs[runs.count - 1].members.append(chunk) }
-            else { runs.append((speaker, [chunk])) }
+            let size = chunk.text.trimmingCharacters(in: .whitespacesAndNewlines).count
+            if let last = runs.last, last.speaker == speaker,
+               chunk.elapsedMs >= last.members[0].elapsedMs,
+               chunk.elapsedMs - last.members[0].elapsedMs < LiveTranscript.readingSectionMilliseconds,
+               last.characters + 1 + size <= LiveTranscript.readingSectionCharacters {
+                runs[runs.count - 1].members.append(chunk)
+                runs[runs.count - 1].characters += 1 + size
+            } else { runs.append((speaker, [chunk], size)) }
         }
         var used = Set<Int>()
         var out: [LiveTranscriptTurn] = []
@@ -165,10 +171,14 @@ struct LiveTranscriptFeed: Equatable, Sendable {
         for run in runs {
             let first = run.members[0]
             let inherited = run.members.lazy.compactMap { previous[$0.i] }.first { !used.contains($0) }
-            let id = inherited ?? (used.contains(first.i) ? -(first.i + 1) : first.i)
+            var id = inherited ?? first.i
+            if used.contains(id) {
+                id = -(first.i + 1)
+                while used.contains(id) { id -= 1 }
+            }
             used.insert(id)
             let text = run.members.map { $0.text.trimmingCharacters(in: .whitespacesAndNewlines) }.joined(separator: " ")
-            out.append(LiveTranscriptTurn(id: id, speaker: run.speaker, elapsedMs: first.elapsedMs, text: text,
+            out.append(LiveTranscriptTurn(id: id, speaker: run.speaker, elapsedMs: first.elapsedMs, text: LiveTranscript.readableText(text),
                                           firstIndex: first.i, lastIndex: run.members[run.members.count - 1].i))
             for member in run.members { map[member.i] = id }
         }
@@ -188,6 +198,40 @@ struct LiveTranscriptRow: Identifiable, Equatable, Sendable {
 }
 
 enum LiveTranscript {
+    static let readingSectionMilliseconds = 30_000
+    static let readingSectionCharacters = 600
+
+    /// Layout only: keep every non-whitespace character in order, without rewriting speech or adding timestamps.
+    /// A single oversized ASR chunk gets paragraph breaks too. Prefer sentence ends, then whitespace, then a
+    /// grapheme boundary for text with no spaces. This runs only when chunks change, not on every view refresh.
+    static func readableText(_ text: String) -> String {
+        let characters = Array(text)
+        let limit = 420
+        var start = 0
+        var paragraphs: [String] = []
+        while start < characters.count {
+            let end = min(start + limit, characters.count)
+            var boundary = end
+            if end < characters.count {
+                var sentence: Int?
+                var whitespace: Int?
+                for index in start..<end {
+                    if characters[index].isWhitespace { whitespace = index }
+                    if index - start >= 160, ".!?。！？".contains(characters[index]),
+                       index + 1 == characters.count || characters[index + 1].isWhitespace {
+                        sentence = index + 1
+                    }
+                }
+                boundary = sentence ?? whitespace.flatMap { $0 > start ? $0 : nil } ?? end
+            }
+            let paragraph = String(characters[start..<boundary]).trimmingCharacters(in: .whitespacesAndNewlines)
+            if !paragraph.isEmpty { paragraphs.append(paragraph) }
+            start = boundary
+            while start < characters.count, characters[start].isWhitespace { start += 1 }
+        }
+        return paragraphs.joined(separator: "\n\n")
+    }
+
     /// AppStorage: Settings, "Show live meeting transcript". Absent means on.
     static let enabledKey = "cos.liveTranscriptEnabled"
     static let pollSeconds = 1.5
