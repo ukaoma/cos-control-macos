@@ -6717,7 +6717,7 @@ if "struct COSMarkdownView" not in md or "COSMarkdownParser.parse(" not in md:
 pane = body(meetings, "struct MeetingLibraryDetailPane")
 if "COSMarkdownParser.looksLikeDocument(detail.transcript)" not in pane:
     fail("the meeting pane must decide document-vs-fields with looksLikeDocument")
-if "COSMarkdownView(text: detail.transcript, dropLeadingTitle: true)" not in pane:
+if pane.count("COSMarkdownView(text: detail.transcript, dropLeadingTitle: true, meetingTranscript: true, bodySize: 14)") != 1:
     fail("a document meeting renders the file once, title dropped")
 if 'labeled("Attendees"' not in pane or 'labeled("Summary"' not in pane:
     fail("a non-document record keeps its labelled fields")

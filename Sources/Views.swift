@@ -1752,7 +1752,7 @@ struct ControlPanel: View {
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(12)
-                    .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 10))
+                    .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 12))
                 }
                 // Upgraders, once: COS Control is in the Dock now (Menu bar only / Keep).
                 DockNoticeLine(model: model)
