@@ -86,7 +86,17 @@ import Vision
         for appearance in [NSAppearance.Name.aqua, .darkAqua] {
             let word = appearance == .darkAqua ? "dark" : "light"
             let (rep, size) = render(appearance)
-            let lines = recognizedLines(rep, size: size)
+            // The whole panel FIRST, so a target that cannot be found still leaves the evidence (2026-10-10).
+            if let output {
+                write(rep, size: size, crop: CGRect(origin: .zero, size: size), appearance: appearance,
+                      to: output.appendingPathComponent("\(label)-panel-\(word).png"))
+            }
+            // Vision reads the panel as it is SEEN: the render over the panel's own fill. The scroll view's document
+            // draws no background, and read with that transparency Vision dropped letters from a correct render
+            // (2026-10-10: once the version card went and the grid moved up, Create Folders read as "reat" / "older";
+            // the same pixels over the panel fill read "Create" / "Folders"). The alignment below is still measured on
+            // this render's own pixels.
+            let lines = recognizedLines(flattened(rep, appearance: appearance), size: size)
             var buttons: [String: CGRect] = [:]
             for name in targets {
                 guard let measure = measure(name, lines: lines, rep: rep, size: size, appearance: word) else {
@@ -100,8 +110,6 @@ import Vision
                 let top = max(0, grid.minY - 80), bottom = min(size.height, grid.maxY + 80)
                 write(rep, size: size, crop: CGRect(x: 0, y: top, width: size.width, height: bottom - top),
                       appearance: appearance, to: output.appendingPathComponent("\(label)-buttons-grid-\(word).png"))
-                write(rep, size: size, crop: CGRect(origin: .zero, size: size), appearance: appearance,
-                      to: output.appendingPathComponent("\(label)-panel-\(word).png"))
             }
         }
         return out
@@ -120,8 +128,8 @@ import Vision
     struct Line { let text: String; let box: CGRect }
 
     /// Every line of words Vision reads in the render, with its box in points from the top left.
-    static func recognizedLines(_ rep: NSBitmapImageRep, size: CGSize) -> [Line] {
-        guard let image = rep.cgImage else { return [] }
+    static func recognizedLines(_ image: CGImage?, size: CGSize) -> [Line] {
+        guard let image else { return [] }
         let request = VNRecognizeTextRequest()
         request.recognitionLevel = .accurate
         request.usesLanguageCorrection = false
@@ -195,20 +203,27 @@ import Vision
                        blockMid: CGFloat(top + bottom + 1) / 2 / scale, button: button)
     }
 
-    /// Writes a crop of the render as a PNG, over the panel's own background (the scroll view's document draws none).
-    static func write(_ rep: NSBitmapImageRep, size: CGSize, crop: CGRect, appearance: NSAppearance.Name, to url: URL) {
-        let scale = CGFloat(rep.pixelsWide) / size.width
-        let pixels = CGRect(x: crop.minX * scale, y: crop.minY * scale, width: crop.width * scale, height: crop.height * scale).integral
-        guard let image = rep.cgImage?.cropping(to: pixels),
+    /// The render (or a crop of it) over the panel's own background, as the menu bar shows it: the scroll view's
+    /// document draws none.
+    static func flattened(_ rep: NSBitmapImageRep, appearance: NSAppearance.Name, pixels: CGRect? = nil) -> CGImage? {
+        guard let whole = rep.cgImage, let image = pixels.map({ whole.cropping(to: $0) }) ?? whole,
               let context = CGContext(data: nil, width: image.width, height: image.height, bitsPerComponent: 8, bytesPerRow: 0,
                                       space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
-        else { fatalError("no crop") }
+        else { return nil }
         var panel = NSColor.white
         NSAppearance(named: appearance)?.performAsCurrentDrawingAppearance { panel = NSColor(COSPalette.panel).usingColorSpace(.sRGB) ?? .white }
         context.setFillColor(panel.cgColor)
         context.fill(CGRect(x: 0, y: 0, width: image.width, height: image.height))
         context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
-        guard let flat = context.makeImage(), let png = NSBitmapImageRep(cgImage: flat).representation(using: .png, properties: [:]) else { fatalError("no PNG") }
+        return context.makeImage()
+    }
+
+    /// Writes a crop of the render as a PNG, over the panel's own background.
+    static func write(_ rep: NSBitmapImageRep, size: CGSize, crop: CGRect, appearance: NSAppearance.Name, to url: URL) {
+        let scale = CGFloat(rep.pixelsWide) / size.width
+        let pixels = CGRect(x: crop.minX * scale, y: crop.minY * scale, width: crop.width * scale, height: crop.height * scale).integral
+        guard let flat = flattened(rep, appearance: appearance, pixels: pixels),
+              let png = NSBitmapImageRep(cgImage: flat).representation(using: .png, properties: [:]) else { fatalError("no PNG") }
         do { try png.write(to: url) } catch { fatalError("could not write \(url.path): \(error)") }
     }
 }
