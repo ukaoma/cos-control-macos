@@ -101,10 +101,10 @@ import SwiftUI
         if !model.updateCheckInFlight { fail("no overlap", "Check for updates must show Checking while it waits") }
         FileManager.default.createFile(atPath: release.path, contents: Data())
         await background.value
-        await manual.value
+        let outcome = await manual.value
         if count() != 2 { fail("manual check spin", "expected exactly 2 helper calls (background, then manual), got \(count())") }
         if model.updateCheckInFlight { fail("manual check spin", "Check for updates finished but still shows Checking") }
-        if !(model.notice ?? "").contains("is the latest version") { fail("manual check spin", "the manual check must report its answer, got \(model.notice ?? "nil") / \(model.error ?? "nil")") }
+        if outcome != .upToDate { fail("manual check spin", "the manual check must report its answer, got \(outcome)") }
         await model.runScheduledAppUpdateCheck(.launch)
         if count() != 3 { fail("slot freed in task", "after both checks the slot must be free for the next one (\(count()) calls)") }
         print("PASS: Check for updates during a held background check: waits, runs once, reports, frees the slot (3 helper calls)")

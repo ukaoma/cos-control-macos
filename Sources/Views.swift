@@ -1138,8 +1138,9 @@ struct ControlPanel: View {
                 // 2026-10-09 (Miles, 22:55, "Lets go with B"): the version, small, inline after the title on its
                 // baseline, so it is known without scrolling to the footer. The title line keeps its height.
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    Text("Control").font(COSType.display(18, weight: .semibold))
-                    versionStamp
+                    // The title never truncates; a narrow header gives way in the stamp first.
+                    Text("Control").font(COSType.display(18, weight: .semibold)).fixedSize()
+                    versionStamp.layoutPriority(-1)
                 }
                 updateStatusLine(idle: "Your local glasses server").lineLimit(1)
             }
@@ -1182,6 +1183,8 @@ struct ControlPanel: View {
             .font(COSType.body(size))
             .foregroundStyle(shown == .upToDate ? AnyShapeStyle(COSPalette.green)
                              : shown == .failed ? AnyShapeStyle(COSPalette.danger) : AnyShapeStyle(.secondary))
+            // The failure in its own words, on hover, while the line says Couldn't check (QA 2026-10-09, W5).
+            .help(shown == .failed ? (model.headerUpdateFailureDetail ?? "") : "")
             .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: shown)
     }
 
@@ -1724,6 +1727,7 @@ struct ControlPanel: View {
                         VStack(alignment: .leading, spacing: 4) {
                             Text("Settings").font(COSType.body(28, weight: .semibold))
                             updateStatusLine(idle: "Manage your Mac companion, voice, connected AI and preferences.", size: 13)
+                                .lineLimit(1)
                         }
                         Spacer(minLength: 8)
                         if model.busy { ProgressView().controlSize(.small) }

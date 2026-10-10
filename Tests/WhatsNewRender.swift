@@ -225,7 +225,8 @@ import SwiftUI
         if WhatsNewContent(model.appUpdate).sections.count != 2 { fail("helper whatsNew reaches the window", "the window's content") }
 
         // Check for updates finds it: What's New opens, once.
-        await model.checkForAppUpdateManually()
+        let found = await model.checkForAppUpdateManually()
+        if found != .updateFound { fail("check for updates opens", "an offer the banner shows is found, got \(found)") }
         if opened.value != 1 { fail("check for updates opens", "Check for updates found an update: open once, got \(opened.value)") }
         if model.notice != nil || model.error != nil { fail("check for updates opens", "no notice line as well: \(model.notice ?? "") \(model.error ?? "")") }
         // The banner's Update (and Try again) path.
@@ -271,7 +272,8 @@ import SwiftUI
 
         // Up to date now: Check for updates says so and opens nothing.
         try? "uptodate".write(to: mode, atomically: true, encoding: .utf8)
-        await model.checkForAppUpdateManually()
+        let current = await model.checkForAppUpdateManually()
+        if current != .upToDate { fail("check for updates opens", "up to date is reported, got \(current)") }
         if opened.value != 2 { fail("check for updates opens", "an up-to-date answer opened What's New") }
         if model.appUpdateFlow.phase != .none { fail("check for updates opens", "up to date clears the offer, got \(model.appUpdateFlow.phase)") }
         print("PASS: What's New wiring (background check never opens, Check for updates and the banner open it, Download and install stages, close does not cancel, refusal and Try again)")

@@ -840,7 +840,9 @@ assert 'noticeBanner' in _panel, 'the panel must render the notice banner'
 # 2026-10-09: the version card (updateRow) is gone; the ask is the header's
 # refresh button, at the very top, and the header sits above the status card.
 assert 'updateRow' not in views, 'the standing version card (updateRow) is gone'
-assert _panel.index('header') < _panel.index('statusCard'), \
+# Anchored on the CALL SITE in code, not the word: comments above it say "header" first (QA 2026-10-09, W3).
+_code = '\n'.join(l for l in _panel.split('\n') if not l.strip().startswith('//'))
+assert '} else { header }' in _code and _code.index('} else { header }') < _code.index('statusCard'), \
     'the header (with the refresh-and-check button) sits above the status card'
 # The whole footer body, bounded by the next declaration. A 1200-char window
 # stopped one line short of the Quit button — the third fixed-window pin to
@@ -1029,9 +1031,12 @@ i = code.find('func checkForAppUpdateManually')
 assert i > 0, 'checkForAppUpdateManually missing'
 # To the next function, not a fixed window (the function grew its header outcome).
 body = code[i:code.index('func refreshAndCheckForUpdates', i)]
-assert 'is the latest version' in body, 'manual check must SAY when already up to date'
-assert 'Could not reach the update feed' in body, 'manual check must REPORT a failure'
-assert 'catch let' in body, 'must bind the caught error; a bare catch shadows self.error'
+# 2026-10-09: every path reports through the outcome the header's subtitle shows (QA W4).
+assert 'return .upToDate' in body, 'manual check must SAY when already up to date'
+assert 'return .updateFound' in body, 'manual check must say when it found an update'
+assert body.count('return .failed(') == 2, 'manual check must REPORT both failures (the feed, the helper), in their own words'
+assert 'catch let' in body, 'must bind the caught error to report it'
+assert 'reportsInHeader' not in code, 'one reporting path: the outcome'
 # It must not inherit the background check's swallow.
 assert 'Intentionally swallowed' not in body, 'manual check must not swallow its failure'
 print('    manual update check reports up-to-date, offer, and failure')
@@ -1636,7 +1641,9 @@ for name in ("updateBanner", "header", "activityLauncher", "statusCard", "contro
         raise SystemExit(f"mainPanel lost {name}")
 if "updateRow" in panel:
     raise SystemExit("the version card (updateRow) is back in the panel")
-if panel.index("header") > panel.index("activityLauncher"):
+# The call site in code, not the word (comments mention "header" first; QA 2026-10-09, W3).
+code_panel = "\n".join(l for l in panel.split("\n") if not l.strip().startswith("//"))
+if "} else { header }" not in code_panel or code_panel.index("} else { header }") > code_panel.index("activityLauncher"):
     raise SystemExit("the header must sit above Activity")
 if panel.index("activityLauncher") > panel.index("statusCard"):
     raise SystemExit("Activity is below status again")

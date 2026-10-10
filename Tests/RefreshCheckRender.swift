@@ -98,6 +98,9 @@ import SwiftUI
         await model.checkForUpdatesFromHeader()
         if model.headerUpdateStatus != .failed { fail("outcome failed", "a failed check must give Couldn't check, got \(model.headerUpdateStatus)") }
         if model.error != nil { fail("reports in header", "the header check must not raise the alert: \(model.error ?? "")") }
+        if !(model.headerUpdateFailureDetail ?? "").contains("the stand-in refuses") {
+            fail("failure detail", "the failure's own words are kept for the tooltip, got \(model.headerUpdateFailureDetail ?? "nil")")
+        }
         await sleep(4.6)
         if model.headerUpdateStatus != .failed { fail("failed hold", "Couldn't check went away before 6 s") }
         await sleep(2.0)
@@ -105,6 +108,7 @@ import SwiftUI
         stand.mode("unreachable")
         await model.checkForUpdatesFromHeader()
         if model.headerUpdateStatus != .failed { fail("outcome failed", "an unreachable feed must give Couldn't check, got \(model.headerUpdateStatus)") }
+        if !(model.headerUpdateFailureDetail ?? "").contains("unreachable") { fail("failure detail", "an unreachable feed says so, got \(model.headerUpdateFailureDetail ?? "nil")") }
 
         // A second click while a check runs starts no second check, and the line says Checking meanwhile.
         stand.unrelease(); stand.mode("hold")
@@ -121,6 +125,8 @@ import SwiftUI
         await first.value; await second.value
         if stand.calls("check-app-update") != before + 1 { fail("no second check", "two clicks made \(stand.calls("check-app-update") - before) checks") }
         if model.headerUpdateStatus != .upToDate { fail("outcome up to date", "the held check ended up to date, got \(model.headerUpdateStatus)") }
+        // That success followed a failure: its words must not linger as the tooltip.
+        if model.headerUpdateFailureDetail != nil { fail("failure detail", "a success after a failure clears the failure words, got \(model.headerUpdateFailureDetail ?? "")") }
 
         // Two manual checks at once (any two callers): the second starts nothing and says so.
         stand.unrelease()
@@ -160,6 +166,41 @@ import SwiftUI
         if stand.calls("check-app-update") != start + 2 { fail("background no hang", "expected the background check, then one manual check, got \(stand.calls("check-app-update") - start)") }
         if fresh.headerUpdateStatus != .upToDate { fail("background no hang", "the click must answer after the background check, got \(fresh.headerUpdateStatus)") }
 
+        // An update the banner shows: the line goes idle (the banner answers) and What's New is asked for, once.
+        let offered = ControllerModel(startBackgroundWork: false, helper: HelperClient(executableOverride: helper))
+        let opened = Counter()
+        offered.showWhatsNew = { opened.value += 1 }
+        stand.mode("update")
+        await offered.checkForUpdatesFromHeader()
+        if offered.appUpdateFlow.phase != .ready { fail("update found", "the stand-in offers 9.9.9 (build 999999): the banner shows, got \(offered.appUpdateFlow.phase)") }
+        if offered.headerUpdateStatus != .idle { fail("update found", "an update found leaves the line to the banner, got \(offered.headerUpdateStatus)") }
+        if opened.value != 1 { fail("update found", "an update found asks for What's New once, got \(opened.value)") }
+        if offered.headerUpdateFailureDetail != nil { fail("failure detail", "a success clears the failure words") }
+        // Offered but not newer than this build: no banner, so the click must say Up to date (QA W1, N1).
+        let stale = ControllerModel(startBackgroundWork: false, helper: HelperClient(executableOverride: helper))
+        let staleOpened = Counter()
+        stale.showWhatsNew = { staleOpened.value += 1 }
+        stand.mode("stale")
+        await stale.checkForUpdatesFromHeader()
+        if stale.appUpdateFlow.showsBanner { fail("stale offer", "an offer older than this build shows no banner") }
+        if stale.headerUpdateStatus != .upToDate { fail("stale offer", "an offer that is not newer is Up to date, got \(stale.headerUpdateStatus)") }
+        if staleOpened.value != 0 { fail("stale offer", "an offer that is not newer opens nothing") }
+
+        // Busy (an install, a restart, any operation): the button still refreshes, but never checks or says Checking.
+        stand.mode("uptodate")
+        let busy = ControllerModel(startBackgroundWork: false, helper: HelperClient(executableOverride: helper))
+        busy.busy = true
+        let busyStatus = stand.calls("status"), busyChecks = stand.calls("check-app-update")
+        let busyClick = Task { await busy.refreshAndCheckForUpdates() }
+        await sleep(0.05)
+        if busy.updateCheckInFlight || HeaderUpdateStatus.shown(inFlight: busy.updateCheckInFlight, status: busy.headerUpdateStatus) == .checking {
+            fail("busy skips check", "the line said Checking while the panel was busy")
+        }
+        await busyClick.value
+        if stand.calls("status") != busyStatus + 1 { fail("busy skips check", "the refresh still runs while busy (\(stand.calls("status") - busyStatus) status calls)") }
+        if stand.calls("check-app-update") != busyChecks { fail("busy skips check", "no update check while busy (\(stand.calls("check-app-update") - busyChecks) checks)") }
+        if busy.headerUpdateStatus != .idle { fail("busy skips check", "the line stays idle while busy, got \(busy.headerUpdateStatus)") }
+
         // The button's action does both: the status refresh and the update check.
         stand.mode("uptodate")
         let both = ControllerModel(startBackgroundWork: false, helper: HelperClient(executableOverride: helper))
@@ -168,8 +209,10 @@ import SwiftUI
         if stand.calls("status") != statusBefore + 1 { fail("both actions", "the refresh button must refresh the status (\(stand.calls("status") - statusBefore) status calls)") }
         if stand.calls("check-app-update") != checksBefore + 1 { fail("both actions", "the refresh button must check for updates (\(stand.calls("check-app-update") - checksBefore) checks)") }
         if both.headerUpdateStatus != .upToDate { fail("both actions", "the refresh button's check must answer on the line, got \(both.headerUpdateStatus)") }
-        print("PASS: refresh-check model (Up to date 4 s, Couldn't check 6 s, no second check, no stacked timers, no stuck Checking, background check never hangs it, refresh and check both run)")
+        print("PASS: refresh-check model (Up to date 4 s, Couldn't check 6 s, no second check, no stacked timers, no stuck Checking, background check never hangs it, an update opens What's New, a stale offer is Up to date, busy skips the check, refresh and check both run)")
     }
+
+    @MainActor final class Counter { var value = 0 }
 
     // MARK: render
 

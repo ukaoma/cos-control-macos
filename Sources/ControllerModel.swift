@@ -13,6 +13,8 @@ import os
 private let meetingAudioLog = Logger(subsystem: "com.gotcos.control", category: "meeting-audio")
 /// Onboarding P1: Sign in, Pass to, the poll limit, helper errors and voice setup, with the values that tell cases apart.
 let onboardingLog = Logger(subsystem: "com.gotcos.control", category: "onboarding")
+/// The header's manual update check (2026-10-09): a failure's own words, which the subtitle keeps as its tooltip.
+private let appUpdateLog = Logger(subsystem: "com.gotcos.control", category: "app-update")
 
 private actor MediaFetchGate {
     private var available = 2
@@ -159,7 +161,7 @@ final class ControllerModel: ObservableObject {
     /// 2026-10-09 (Miles, like Vorssant): none, ready, staging, applying or failed. The panel's top banner and the
     /// menu-bar glasses read this, never `appUpdate` directly.
     @Published private(set) var appUpdateFlow = AppUpdateFlow()
-    /// Launch, every 6 hours, panel open after 15 minutes, Check for updates: one check at a time.
+    /// Launch, every 6 hours, panel open after 15 minutes, the header's refresh button: one check at a time.
     private var appUpdateSchedule = AppUpdateCheckSchedule()
     private var appUpdateCheckRunning: Task<Void, Never>?
 
@@ -184,6 +186,8 @@ final class ControllerModel: ObservableObject {
     /// The panel header's subtitle after a check from its refresh button (HeaderUpdateStatus). A result goes back to
     /// idle on its own; the reset task is cancelled by the next click, so rapid clicks never stack timers.
     @Published private(set) var headerUpdateStatus: HeaderUpdateStatus = .idle
+    /// The last header check's failure in its own words, shown as the subtitle's tooltip while it says Couldn't check.
+    @Published private(set) var headerUpdateFailureDetail: String?
     private var headerUpdateStatusReset: Task<Void, Never>?
     /// Menu-bar chip → Activity tab. Consumed by the window, then cleared so the
     /// same chip can be pressed again. Nil means "just show the window."
@@ -196,7 +200,8 @@ final class ControllerModel: ObservableObject {
     /// 2026-10-09: the What's New window (WhatsNewWindowPresenter, wired in COSControlApp). Nil in a test or render
     /// model, so nothing there can open a window; a check sets its own to count the requests.
     var showWhatsNew: (() -> Void)?
-    /// Which What's New: an offer (Update, Check for updates) or the build just installed (once, after an update).
+    /// Which What's New: an offer (Update, or the refresh button finding one) or the build just installed (once, after
+    /// an update).
     @Published private(set) var whatsNewMode: WhatsNewMode = .offer
     /// The words on screen when Download and install was pressed, shown until the install ends, so a check that lands
     /// mid-install cannot swap them (QA 2026-10-09).
@@ -867,7 +872,7 @@ final class ControllerModel: ObservableObject {
     func runScheduledAppUpdateCheck(_ trigger: AppUpdateCheckSchedule.Trigger) async {
         guard appUpdateSchedule.begin(trigger, now: Date()) else { return }
         // The task frees its own slot before its value resolves (QA 2026-10-09). Freed after `await check.value`
-        // instead, a Check for updates waiting on that value could find the task done and the slot still held, and
+        // instead, a manual check waiting on that value could find the task done and the slot still held, and
         // spin on the main actor without ever letting this continuation run.
         let check = Task { @MainActor [weak self] () -> Void in
             await self?.checkForAppUpdate()
@@ -899,17 +904,13 @@ final class ControllerModel: ObservableObject {
     /// two builds behind and showed no banner, because every 6-hourly tick had
     /// landed before the release. There was no way to ask.
     ///
-    /// Every path here reports: an update, up-to-date, or the failure. `reportsInHeader` (the header's refresh button)
-    /// reports through the returned outcome, which the header's subtitle shows, instead of the notice line and the
-    /// error alert. An update found opens What's New either way.
+    /// Every path here reports, through the returned outcome: an update (the banner shows, What's New opens), up to
+    /// date, or the failure in its own words. The header's subtitle says which (2026-10-09; the notice line and the
+    /// alert it used to raise went with the version card).
     @discardableResult
-    func checkForAppUpdateManually(reportsInHeader: Bool = false) async -> ManualUpdateCheckOutcome {
+    func checkForAppUpdateManually() async -> ManualUpdateCheckOutcome {
         guard !updateCheckInFlight else { return .skipped }
         updateCheckInFlight = true
-        if !reportsInHeader {
-            notice = nil
-            error = nil
-        }
         defer { updateCheckInFlight = false }
         // Never two checks at once: a background check in flight finishes first (it frees the slot itself), then this
         // one asks for the slot again. Bounded: two attempts, then it runs anyway rather than leave the button waiting,
@@ -929,40 +930,34 @@ final class ControllerModel: ObservableObject {
             let incoming = AppUpdateInfo(response.details)
             if incoming.reason == "unreachable" || incoming.reason == "malformed" {
                 appUpdate = AppUpdateInfo.merging(previous: appUpdate, incoming: incoming)
-                if !reportsInHeader {
-                    self.error = "Could not reach the update feed: update check unavailable"
-                    notice = nil
-                }
-                return .failed
+                return .failed("Could not reach the update feed (\(incoming.reason ?? "unavailable")).")
             }
             appUpdate = incoming
             noteCheckReached(incoming)
-            if appUpdate.shouldSurface {
-                // The banner is already rendering the offer; do not duplicate it
-                // in the notice line.
-                if !reportsInHeader { notice = nil }
+            // Found means the BANNER shows: the flow decides newer by build and version, so an offer the helper calls
+            // available but that is not newer than this build is up to date (QA 2026-10-09, W1).
+            if appUpdateFlow.showsBanner {
                 // 2026-10-09: a check that was ASKED for and found an update opens What's New right away (the
                 // background checks never do; they only tint the glasses and raise the banner).
                 if appUpdateFlow.phase == .ready { presentWhatsNew() }
                 return .updateFound
             } else {
-                if !reportsInHeader { notice = "COS Control \(Self.currentVersion) is the latest version." }
                 return .upToDate
             }
         } catch let checkError {
             // A manual check REPORTS its failure. The background one does not.
-            // Bound explicitly: a bare `catch` shadows `self.error` with the
-            // caught Error and the assignment does not compile.
-            if !reportsInHeader { self.error = "Could not reach the update feed: \(checkError.localizedDescription)" }
-            return .failed
+            return .failed(checkError.localizedDescription)
         }
     }
 
     /// The panel header's refresh button (and Settings' in Activity), 2026-10-09: the server status AND a manual update
     /// check, side by side. The status refresh never waits on the appcast.
+    /// The update half is skipped while an install runs or the panel is busy (QA 2026-10-09, W2): the refresh still
+    /// runs, and the line never says Checking. Decided before the refresh starts, since the refresh sets busy itself.
     func refreshAndCheckForUpdates() async {
+        let checks = HeaderUpdateStatus.checkAllowed(phase: appUpdateFlow.phase, busy: busy)
         let status = Task { await self.refresh() }
-        await checkForUpdatesFromHeader()
+        if checks { await checkForUpdatesFromHeader() }
         await status.value
     }
 
@@ -975,8 +970,14 @@ final class ControllerModel: ObservableObject {
         // updateCheckInFlight whatever it does, and the result below cancels it (one cancel site, so its isCancelled
         // guard is what stops a stale timer clearing the new result).
         headerUpdateStatus = .checking
-        let outcome = await checkForAppUpdateManually(reportsInHeader: true)
+        let outcome = await checkForAppUpdateManually()
         guard outcome != .skipped else { return }
+        if case .failed(let detail) = outcome {
+            headerUpdateFailureDetail = detail
+            appUpdateLog.error("manual update check failed: \(detail, privacy: .public)")
+        } else {
+            headerUpdateFailureDetail = nil
+        }
         showHeaderUpdateStatus(HeaderUpdateStatus.after(outcome))
     }
 
@@ -985,6 +986,11 @@ final class ControllerModel: ObservableObject {
         headerUpdateStatusReset?.cancel()
         headerUpdateStatusReset = nil
         headerUpdateStatus = next
+        // VoiceOver hears the result, which otherwise changes silently in a subtitle (QA 2026-10-09, N3).
+        if let announcement = next.announcement {
+            NSAccessibility.post(element: NSApp as Any, notification: .announcementRequested,
+                                 userInfo: [.announcement: announcement, .priority: NSAccessibilityPriorityLevel.high.rawValue])
+        }
         guard let hold = next.hold else { return }
         headerUpdateStatusReset = Task { @MainActor [weak self] in
             try? await Task.sleep(for: hold)
@@ -1007,7 +1013,7 @@ final class ControllerModel: ObservableObject {
         }
     }
 
-    /// The banner's Update (and Try again), and Check for updates when it finds an update: the What's New window. Its
+    /// The banner's Update (and Try again), and the refresh button when it finds an update: the What's New window. Its
     /// Download and install is the confirmation, and runs installAppUpdate below.
     func presentWhatsNew() {
         whatsNewMode = .offer

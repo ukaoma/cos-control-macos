@@ -25,7 +25,7 @@ struct COSControlApp: App {
         HotKeyCenter.shared.register(model.activityHotKey)
         model.openActivity = { section in activityWindow.show(model: model, section: section) }
         model.openSetup = { setupWindow.show(model: model) }
-        // 2026-10-09: Update (the banner) and Check for updates (when it finds one) open What's New, one window at a
+        // 2026-10-09: Update (the banner) and the header's refresh button (when it finds one) open What's New, one window at a
         // time. The closure keeps the presenter alive for the life of the app.
         let whatsNewWindow = WhatsNewWindowPresenter()
         model.showWhatsNew = { whatsNewWindow.show(model: model) }

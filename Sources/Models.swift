@@ -4428,7 +4428,9 @@ final class WhatsNewSeenStore: @unchecked Sendable {
 
 /// What a manual update check found. `skipped`: a manual check was already running, so this one never started.
 enum ManualUpdateCheckOutcome: Equatable, Sendable {
-    case updateFound, upToDate, failed, skipped
+    case updateFound, upToDate, skipped
+    /// The check failed; its own words (the helper's error, or the feed being unreachable).
+    case failed(String)
 }
 
 /// 2026-10-09 (Miles, after the 0.5.276 gold banner): the standing version card is gone. The panel header's refresh
@@ -4476,11 +4478,30 @@ enum HeaderUpdateStatus: Equatable, Sendable {
     static func shown(inFlight: Bool, status: HeaderUpdateStatus) -> HeaderUpdateStatus {
         inFlight ? .checking : status
     }
+
+    /// What VoiceOver announces when a result lands: the results only, never idle or Checking.
+    var announcement: String? {
+        switch self {
+        case .upToDate: Self.upToDateText
+        case .failed: Self.failedText
+        case .idle, .checking: nil
+        }
+    }
+
+    /// The refresh button checks for updates only when nothing else owns the app: not while an install is staging or
+    /// applying, and not while the panel is busy (QA 2026-10-09, W2). The refresh itself always runs.
+    static func checkAllowed(phase: AppUpdatePhase, busy: Bool) -> Bool {
+        if busy { return false }
+        switch phase {
+        case .staging, .applying: return false
+        case .none, .ready, .failed: return true
+        }
+    }
 }
 
 /// When the appcast is read. The helper's own fetch is bounded (6 s request, 8 s wait); the app bounds the whole helper
 /// run as well, so a wedged helper never holds the in-flight slot. Only one check runs at a time: a trigger that
-/// arrives during a check is dropped (launch, periodic, panel open) or waits for it (Check for updates).
+/// arrives during a check is dropped (launch, periodic, panel open) or waits for it (the header's refresh button).
 struct AppUpdateCheckSchedule: Equatable, Sendable {
     enum Trigger: String, Sendable {
         case launch, periodic, panelOpen, manual
