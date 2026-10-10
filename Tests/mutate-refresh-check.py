@@ -36,7 +36,8 @@ MUTANTS = [
     ("checks while applying", M, "        case .staging, .applying: return false\n        case .none, .ready, .failed: return true", "        case .staging: return false\n        case .none, .ready, .failed, .applying: return true", "[check gate applying]", "models"),
     # The model, executed against a stand-in helper.
     ("button skips the check", C, "        if checks { await checkForUpdatesFromHeader() }", "", "[both actions]", "wiring"),
-    ("button skips the refresh", C, "        let status = Task { await self.refresh() }", "        let status = Task { }", "[both actions]", "wiring"),
+    # Killed first by the busy case, which runs before the both-actions case and also needs the refresh.
+    ("button skips the refresh", C, "        let status = Task { await self.refresh() }", "        let status = Task { }", "[busy skips check]", "wiring"),
     ("busy ignored", C, "        if checks { await checkForUpdatesFromHeader() }", "        await checkForUpdatesFromHeader()", "[busy skips check]", "wiring"),
     ("gate read after the refresh starts", C, "        let checks = HeaderUpdateStatus.checkAllowed(phase: appUpdateFlow.phase, busy: busy)\n        let status = Task { await self.refresh() }\n", "        let status = Task { await self.refresh() }\n        await Task.yield()\n        let checks = HeaderUpdateStatus.checkAllowed(phase: appUpdateFlow.phase, busy: busy)\n", "[both actions]", "wiring"),
     ("second manual check allowed", C, "        guard !updateCheckInFlight else { return .skipped }\n", "", "[no second check]", "wiring"),

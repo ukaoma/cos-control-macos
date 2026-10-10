@@ -125,6 +125,8 @@ import SwiftUI
         await first.value; await second.value
         if stand.calls("check-app-update") != before + 1 { fail("no second check", "two clicks made \(stand.calls("check-app-update") - before) checks") }
         if model.headerUpdateStatus != .upToDate { fail("outcome up to date", "the held check ended up to date, got \(model.headerUpdateStatus)") }
+        // That success followed a failure: its words must not linger as the tooltip.
+        if model.headerUpdateFailureDetail != nil { fail("failure detail", "a success after a failure clears the failure words, got \(model.headerUpdateFailureDetail ?? "")") }
 
         // Two manual checks at once (any two callers): the second starts nothing and says so.
         stand.unrelease()
