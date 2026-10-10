@@ -544,6 +544,12 @@ final class ControllerModel: ObservableObject {
         // not before a fresh install has even shown its welcome window.
         startWorkTracking()
         startPermissionWatch()
+        // 0.5.278: after sleep the live transcript reads again at once rather than at its next tick.
+        liveTranscriptWakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.liveTranscriptWoke() }
+        }
     }
 
     private func makeProviderGuide() -> ProviderGuide {
@@ -1123,6 +1129,8 @@ final class ControllerModel: ObservableObject {
             if !quiet { error = nil }
             await loadOrphans(quiet: true)
             await loadMeetingAudioWatch()
+            // 0.5.278: a meeting the server now reports live starts the live transcript poll, if anyone is looking.
+            liveTranscriptKick()
             await loadActivitySignals(force: !quiet)
             await loadYourMove()
         } catch {
@@ -2521,6 +2529,7 @@ final class ControllerModel: ObservableObject {
     }
 
     func openMeetingImport() {
+        closeLiveTranscript()
         meetingSuggestionsOpen = false
         closeLibraryDetail()
         meetingImportOpen = true
@@ -2535,6 +2544,7 @@ final class ControllerModel: ObservableObject {
     }
 
     func openMeetingSuggestions() {
+        closeLiveTranscript()
         meetingImportOpen = false
         closeLibraryDetail()
         meetingSuggestionsOpen = true
@@ -2994,6 +3004,291 @@ final class ControllerModel: ObservableObject {
                 strandedCaptures = []
             }
         }
+    }
+
+    // MARK: - Live meeting transcript (0.5.278)
+    //
+    // While a glasses meeting records, Meetings pins a "Live now" row and can open the transcript so far. The helper's
+    // `live-transcript` reads the server's live session file (no stream); this polls it every 1.5 s, ONE read at a
+    // time, only while the setting is on, a Meetings view is on screen and the server reports a live session (or one
+    // that just ended still waits for its saved meeting). The setting off spawns no helper at all.
+    //
+    // SECRET BOUNDARY: transcript text goes from the helper's answer into `liveTranscriptFeeds` and the pane, and to
+    // the clipboard on Copy. It never reaches a Logger, print, NSLog, `error`, `notice` or a report: a failure keeps
+    // only a reason code (`liveTranscriptReason`).
+
+    /// Every live session Control holds, by session id. The transcript stays after the file is gone, for Copy.
+    @Published var liveTranscriptFeeds: [String: LiveTranscriptFeed] = [:]
+    /// The live session files the last poll listed (a stat each).
+    @Published var liveTranscriptFiles: [LiveTranscriptFileRow] = []
+    /// The live transcript pane's route. Written by `openLiveTranscript` and `closeLiveTranscript` only.
+    @Published var liveTranscriptOpenID: String?
+    /// The last poll's failure, as a reason code. Never message text.
+    @Published var liveTranscriptReason: String?
+    /// The saved meeting the open live pane hands off to; Activity opens it in place and clears this.
+    @Published var liveTranscriptHandoff: LibraryMeeting?
+    @Published var liveTranscriptCopyNote: String?
+    /// Polls run since launch (the checks count helper spawns through this and the stand-in's log).
+    private(set) var liveTranscriptPolls = 0
+    private var liveTranscriptViewers: Set<String> = []
+    private var liveTranscriptTask: Task<Void, Never>?
+    private var liveTranscriptImmediate = false
+    /// Looked up by the first read of each poll loop (it spawns `launchctl print`), then passed back.
+    private var liveTranscriptDataDir: String?
+    private var liveTranscriptSavedRows: [String: LibraryMeeting] = [:]
+    private var liveTranscriptWakeObserver: NSObjectProtocol?
+    var liveTranscriptDefaults: UserDefaults = .standard
+
+    var liveTranscriptEnabled: Bool { LiveTranscript.enabled(liveTranscriptDefaults) }
+    var liveTranscriptRouteActive: Bool { liveTranscriptOpenID != nil }
+    /// The server's count of live recordings: its own split, or the older total.
+    var liveTranscriptServerLive: Int? { status.liveTranscriptionSessions ?? status.activeTranscriptionSessions }
+    /// The red dot on the Meetings chip and tab: the setting on and the server recording.
+    var liveTranscriptDot: Bool { liveTranscriptEnabled && (liveTranscriptServerLive ?? 0) > 0 }
+    var liveTranscriptPollRunning: Bool { liveTranscriptTask != nil }
+
+    var liveTranscriptRows: [LiveTranscriptRow] {
+        guard liveTranscriptEnabled else { return [] }
+        return LiveTranscript.rows(files: liveTranscriptFiles, feeds: liveTranscriptFeeds, serverLive: liveTranscriptServerLive,
+                                   stale: Set(status.staleTranscriptionSessionIds), stranded: Set(strandedCaptures.map(\.sessionId)),
+                                   now: Date())
+    }
+
+    var openLiveTranscriptFeed: LiveTranscriptFeed? { liveTranscriptOpenID.flatMap { liveTranscriptFeeds[$0] } }
+
+    private var liveTranscriptPendingHandoff: Bool {
+        liveTranscriptFeeds.values.contains { $0.phase == .finalizing }
+    }
+
+    private var liveTranscriptShouldPoll: Bool {
+        LiveTranscript.shouldPoll(enabled: liveTranscriptEnabled, visible: !liveTranscriptViewers.isEmpty,
+                                  serverLive: liveTranscriptServerLive, pendingHandoff: liveTranscriptPendingHandoff)
+    }
+
+    /// A Meetings view (the list or the live pane) came on screen or went away.
+    func liveTranscriptViewer(_ id: String, visible: Bool) {
+        if visible { liveTranscriptViewers.insert(id) } else { liveTranscriptViewers.remove(id) }
+        if visible { liveTranscriptImmediate = true }
+        liveTranscriptKick()
+    }
+
+    /// Starts the poll loop when it should run and is not running. Never a second loop.
+    func liveTranscriptKick() {
+        guard liveTranscriptTask == nil, liveTranscriptShouldPoll else { return }
+        liveTranscriptTask = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self, self.liveTranscriptShouldPoll else { break }
+                await self.pollLiveTranscriptOnce()
+                var waited = 0.0
+                while waited < LiveTranscript.pollSeconds, !Task.isCancelled, !self.liveTranscriptImmediate {
+                    try? await Task.sleep(for: .milliseconds(250))
+                    waited += 0.25
+                }
+                self.liveTranscriptImmediate = false
+            }
+            self?.liveTranscriptTask = nil
+            self?.liveTranscriptDataDir = nil
+        }
+    }
+
+    /// NSWorkspace didWake: read again now rather than at the next tick.
+    func liveTranscriptWoke() {
+        liveTranscriptImmediate = true
+        liveTranscriptKick()
+    }
+
+    /// Settings, "Show live meeting transcript". Off stops the loop and drops everything held.
+    func liveTranscriptSettingChanged() {
+        if liveTranscriptEnabled { liveTranscriptImmediate = true; liveTranscriptKick(); return }
+        liveTranscriptTask?.cancel()
+        liveTranscriptTask = nil
+        liveTranscriptDataDir = nil
+        liveTranscriptFeeds = [:]
+        liveTranscriptFiles = []
+        liveTranscriptOpenID = nil
+        liveTranscriptHandoff = nil
+        liveTranscriptCopyNote = nil
+        liveTranscriptReason = nil
+        liveTranscriptSavedRows = [:]
+    }
+
+    /// The Activity window closed: nobody is looking.
+    func liveTranscriptWindowClosed() {
+        liveTranscriptViewers.removeAll()
+        closeLiveTranscript()
+    }
+
+    func openLiveTranscript(_ sessionId: String) {
+        guard liveTranscriptEnabled else { return }
+        closeLibraryDetail()
+        closeMeetingImport()
+        closeMeetingSuggestions()
+        liveTranscriptCopyNote = nil
+        liveTranscriptOpenID = sessionId
+        liveTranscriptImmediate = true
+        liveTranscriptKick()
+    }
+
+    func closeLiveTranscript() {
+        liveTranscriptOpenID = nil
+        liveTranscriptCopyNote = nil
+    }
+
+    /// Which session this poll reads: the open one, else one with no start time yet, else the newest live one.
+    private func liveTranscriptReadTarget() -> String? {
+        if let open = liveTranscriptOpenID, liveTranscriptFeeds[open]?.ended != true { return open }
+        let live = liveTranscriptFiles.map(\.sessionId).filter { !Set(status.staleTranscriptionSessionIds).contains($0) }
+        if let unread = live.first(where: { liveTranscriptFeeds[$0]?.startTime == nil }) { return unread }
+        return live.first
+    }
+
+    /// One poll: one helper run, then the hand-off checks for sessions whose file is gone.
+    func pollLiveTranscriptOnce() async {
+        guard liveTranscriptEnabled else { return }
+        var args = ["live-transcript"]
+        if let dir = liveTranscriptDataDir { args += ["--data-dir", dir] }
+        if let target = liveTranscriptReadTarget() {
+            let feed = liveTranscriptFeeds[target]
+            args += ["--session", target, "--since", String(feed?.cursor ?? -1)]
+            if let stamp = feed?.stamp { args += ["--stamp", stamp] }
+        }
+        liveTranscriptPolls += 1
+        do {
+            let response = try await helper.run(args, timeout: 10)
+            guard liveTranscriptEnabled else { return }
+            guard let data = try? JSONEncoder().encode(response.details), let reply = LiveTranscriptReply.decode(data) else {
+                liveTranscriptReason = "invalid_reply"
+                return
+            }
+            if let dir = reply.dataDir, !dir.isEmpty { liveTranscriptDataDir = dir }
+            applyLiveTranscript(reply, now: Date())
+            if liveTranscriptReason != nil { liveTranscriptReason = nil }
+        } catch {
+            guard liveTranscriptEnabled else { return }
+            liveTranscriptReason = Self.liveTranscriptReasonCode(error)
+        }
+        await checkLiveTranscriptHandoffs(now: Date())
+    }
+
+    /// A reason code for a failed run. Never the error's description: an invalid response carries the helper's output.
+    static func liveTranscriptReasonCode(_ error: Error) -> String {
+        if error is CancellationError { return "cancelled" }
+        guard let helperError = error as? HelperClientError else { return "helper_failed" }
+        switch helperError {
+        case .commandFailed(let message): return LiveTranscript.reasonCode(fromMessage: message)
+        case .timedOut: return "timed_out"
+        case .invalidResponse: return "invalid_response"
+        case .helperMissing: return "helper_missing"
+        case .outputLimitExceeded, .progressLimitExceeded: return "too_large"
+        case .streamDidNotClose: return "helper_failed"
+        }
+    }
+
+    /// Applies one reply, publishing each store at most once.
+    func applyLiveTranscript(_ reply: LiveTranscriptReply, now: Date) {
+        var feeds = liveTranscriptFeeds
+        let listed = Set(reply.sessions.map(\.sessionId))
+        for id in listed where feeds[id] == nil { feeds[id] = LiveTranscriptFeed(sessionId: id) }
+        if let read = reply.read {
+            var feed = feeds[read.sessionId] ?? LiveTranscriptFeed(sessionId: read.sessionId)
+            feed.apply(read, now: now)
+            feeds[read.sessionId] = feed
+        }
+        // A file that left the list ended, whether or not this poll read it.
+        for id in Array(feeds.keys) where !listed.contains(id) && feeds[id]?.ended == false && reply.read?.sessionId != id {
+            feeds[id]?.markEnded(now: now)
+        }
+        // Forget what is done: a saved hand-off, an unsaved ending past its lifetime. The open one stays.
+        for (id, feed) in feeds where id != liveTranscriptOpenID {
+            if feed.phase == .saved { feeds[id] = nil }
+            if feed.phase == .endedUnsaved, let ended = feed.endedAt, now.timeIntervalSince(ended) > LiveTranscript.endedRowLifetime { feeds[id] = nil }
+        }
+        if feeds != liveTranscriptFeeds { liveTranscriptFeeds = feeds }
+        if reply.sessions != liveTranscriptFiles { liveTranscriptFiles = reply.sessions }
+    }
+
+    /// For each session whose file is gone and that still finalizes: ask the server (every few seconds), and when it
+    /// says saved, look for the saved row by session id (a merged meeting by g2SessionIds), never by filename.
+    func checkLiveTranscriptHandoffs(now: Date) async {
+        guard liveTranscriptEnabled else { return }
+        let due = liveTranscriptFeeds.values.filter { feed in
+            feed.phase == .finalizing && (feed.lastStatusCheck.map { now.timeIntervalSince($0) >= LiveTranscript.statusInterval } ?? true)
+        }
+        for snapshot in due {
+            let id = snapshot.sessionId
+            liveTranscriptFeeds[id]?.lastStatusCheck = now
+            var state: String?
+            if let response = try? await helper.run(["live-transcript-status", "--session", id], timeout: 12) {
+                state = response.details["state"]?.string
+            }
+            guard liveTranscriptEnabled, var feed = liveTranscriptFeeds[id], let endedAt = feed.endedAt else { continue }
+            feed.serverState = state ?? feed.serverState
+            var found = liveTranscriptSavedRows[id]
+            if found == nil, state == "saved" || state == "unknown" || state == nil {
+                found = await findSavedLiveMeeting(sessionId: id, start: feed.startTime, now: now)
+                if let found { liveTranscriptSavedRows[id] = found }
+            }
+            guard liveTranscriptEnabled, liveTranscriptFeeds[id] != nil else { continue }
+            feed.phase = LiveTranscript.handoff(serverState: feed.serverState, endedAt: endedAt, now: now, savedRowFound: found != nil)
+            liveTranscriptFeeds[id] = feed
+            if feed.phase == .saved, let found {
+                if liveTranscriptOpenID == id { liveTranscriptHandoff = found }
+                else { liveTranscriptFeeds[id] = nil }
+                if libraryMonth == found.month { await loadLibraryMeetings() }
+            }
+        }
+    }
+
+    /// Refresh on "Saved meeting not found yet": ask once more, past the deadline.
+    func refreshLiveTranscriptHandoff(_ sessionId: String) {
+        guard var feed = liveTranscriptFeeds[sessionId], feed.ended else { return }
+        feed.phase = .finalizing
+        feed.lastStatusCheck = nil
+        liveTranscriptFeeds[sessionId] = feed
+        Task { [weak self] in
+            guard let self else { return }
+            await self.checkLiveTranscriptHandoffs(now: Date())
+            // Still nothing: back to the deadline's word rather than Finalizing forever.
+            if var after = self.liveTranscriptFeeds[sessionId], after.phase == .finalizing, let ended = after.endedAt,
+               Date().timeIntervalSince(ended) >= LiveTranscript.finalizingDeadline {
+                after.phase = .notFoundYet
+                self.liveTranscriptFeeds[sessionId] = after
+            }
+            self.liveTranscriptKick()
+        }
+    }
+
+    /// The saved row for a live session, read by day without touching the Meetings list (any month).
+    private func findSavedLiveMeeting(sessionId: String, start: Date?, now: Date) async -> LibraryMeeting? {
+        for day in LiveTranscript.handoffDays(start: start, now: now) {
+            guard case .rows(let rows) = await libraryRows(day: day) else { continue }
+            if let row = rows.first(where: { Self.liveTranscriptMatches($0, sessionId: sessionId) }) { return row }
+        }
+        return nil
+    }
+
+    nonisolated static func liveTranscriptMatches(_ meeting: LibraryMeeting, sessionId: String) -> Bool {
+        meeting.sessionId == sessionId || meeting.g2SessionIds.contains(sessionId)
+    }
+
+    /// Activity opened the saved meeting in place.
+    func liveTranscriptHandoffTaken() {
+        if let id = liveTranscriptOpenID { liveTranscriptFeeds[id] = nil }
+        liveTranscriptHandoff = nil
+        closeLiveTranscript()
+    }
+
+    /// Copy transcript, from what Control holds (it works while the meeting finalizes, after the file is gone).
+    var liveTranscriptCopyText: String? {
+        guard let feed = openLiveTranscriptFeed, !feed.turns.isEmpty else { return nil }
+        return LiveTranscript.copyText(turns: feed.turns, startTime: feed.startTime, twentyFourHour: clockStyle == .twentyFourHour)
+    }
+
+    func copyLiveTranscript() {
+        guard let text = liveTranscriptCopyText else { liveTranscriptCopyNote = "Nothing to copy yet"; return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+        liveTranscriptCopyNote = "Copied preliminary transcript"
     }
 
     /// 0.5.227. Is live meeting audio still reaching this Mac? Runs after each successful status
@@ -7147,6 +7442,7 @@ final class ControllerModel: ObservableObject {
     }
 
     func openLibraryMeeting(_ meeting: LibraryMeeting) {
+        closeLiveTranscript()
         libraryDetailTask?.cancel()
         openLibraryRow = meeting
         libraryDetail = nil

@@ -185,6 +185,10 @@ struct ServerStatus: Sendable {
     var safeToRestart = false
     var activeJobs: Int?
     var activeTranscriptionSessions: Int?
+    /// 0.5.278: the server's own split of activeTranscriptionSessions (maintenance status): live sessions, and the ids it
+    /// calls stale (quiet 30 min, or empty for 2). The live transcript row follows this, never the files' clocks.
+    var liveTranscriptionSessions: Int?
+    var staleTranscriptionSessionIds: [String] = []
     var backgroundJobsSupported = false
     var backgroundJobsEnabled: Bool?
     var meetingPreviewSupported = false
@@ -399,6 +403,8 @@ struct ServerStatus: Sendable {
         safeToRestart = details["safeToRestart"]?.bool ?? false
         activeJobs = details["activeJobs"]?.int
         activeTranscriptionSessions = details["activeTranscriptionSessions"]?.int
+        liveTranscriptionSessions = details["liveTranscriptionSessions"]?.int
+        staleTranscriptionSessionIds = (details["staleTranscriptionSessionIds"]?.array ?? []).compactMap(\.string)
         backgroundJobsSupported = details["backgroundJobsSupported"]?.bool ?? false
         backgroundJobsEnabled = details["backgroundJobsEnabled"]?.bool
         meetingPreviewSupported = details["meetingPreviewSupported"]?.bool ?? false
