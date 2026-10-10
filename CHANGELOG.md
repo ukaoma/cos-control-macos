@@ -1,3 +1,10 @@
+## 0.5.276 (build 329)
+
+- **Messages answers are formatted.** COS answers in Messages (Recent, archived chats and session chat replies) render bold, lists, headings, quotes, code and links instead of raw Markdown, the same way Meetings does. Row previews show clean text. Search marks matches inside formatted text. Copy turn and Copy + images still copy the original text, and right-click adds Copy answer / Copy reply.
+- Only web (http and https) links are clickable, in Messages and in every pane that renders Markdown (Meetings, Threads, Work). Mailto, file and relative links show as plain text.
+- Italic text now draws as italic. The bundled DM Sans has no italic face, so emphasis used to draw upright.
+- Faster Markdown panes: parsed documents and inline text are cached per message with least-recently-used eviction.
+
 ## 0.5.275 (build 328)
 
 - **What's New before you update.** Update in the menu-bar panel, or Check for updates when one is waiting, now opens a What's New window with the release, a summary and what changed. Download and install is the confirmation, and the window shows Downloading, Checking and Installing as they happen. COS Control quits and reopens by itself; the glasses server keeps running.
