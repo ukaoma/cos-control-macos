@@ -1,3 +1,22 @@
+## 0.5.280 (build 333) — private test candidate
+
+- Live COS Ask keeps its history. Questions, answers and sources are saved with the meeting, so they stay when you switch meetings, leave the screen, save the meeting or restart COS Control. Answers are no longer capped at 12. Opening, resizing and navigating never run a model.
+- Unsent questions are saved per meeting, including when COS Control quits. A preset or a retry never replaces what you are typing. A typed question clears only after the server accepts it.
+- Stop a running answer. Retry one that failed, was stopped or was interrupted. Nothing reruns on its own. If COS cannot confirm a question arrived, Check pending question looks it up and Retry same question resends it unchanged under the same request ID.
+- Saved meetings show a Meeting Ask history panel. On a split piece it says the history covers the whole original recording.
+- Each answer shows the model that answered and how far into the meeting it read. Sources open where they came from: Show in transcript, Open earlier meeting, Open COS memory, Reveal file, or the web page with its retrieval time. A source that cannot be opened still shows its saved excerpt.
+- Settings has a Meeting assistant section in the menu-bar panel, Activity and the Settings window. Pick the model there. It defaults to Haiku, and other chats keep their own models. Unavailable models show why, and Settings says whether public web lookup is available.
+
+- Add files during a live meeting under Files shared in this meeting, by drop, paste or Add files. Their text, up to 100 KB per file, is shared with Ask. Files that look like they hold credentials, are still processing or cannot be read are labeled and not used. A removed file stays out of later questions.
+- Copy as context is now Copy full context (Command-C on a saved meeting), and the live transcript has it beside Copy transcript. It copies the transcript, every question and answer with citations numbered per answer, their sources, and each file's text or why it is missing. Files an earlier answer used keep the version it saw. It stops at 4 MB and copies nothing if the COS connection changes mid-copy. It no longer includes the date and domain header or local file paths.
+- Copy transcript on a saved meeting now copies only the transcript section of a meeting document. With no transcript section, the button reads Copy meeting document. Stored meeting files are not changed.
+- Drag the divider to resize the Ask panel. COS remembers the width and keeps room for the transcript. The preset buttons line up on the left and wrap as the panel narrows.
+- Requires server 6.69.0. On an older server, Ask and Settings say Update the COS server to use saved meeting assistance, and the live transcript keeps working. Until COS Control has reached the new server once, Copy full context on a recorded meeting says Refresh meeting assistance before copying its full context and copies nothing.
+
+- Ask keeps working while the Mac is locked during a meeting. Its local record now uses file protection that stays open after the first unlock. Before, about five minutes after the screen locked, saves and reads failed, showed a misleading Check free disk space message and blocked Ask.
+- After a recording ends, a live transcript that keeps failing to load stops retrying after five minutes. Opening a transcript tries again. A recording in progress is not affected.
+- For developers: Ask uses a new `meeting-ask` helper command with fixed routes, payloads on stdin and no provider text in errors. Native builds pick a memory-bounded compile profile when free memory is below the compile guard's floor.
+
 ## 0.5.279 (build 332) — private test candidate
 
 - Live COS Ask sits beside the live transcript with Catch me up, Summarize so far, Suggest questions, Action items and a question box. Haiku runs only when asked, starts with the current meeting, and can retrieve relevant COS history for a free-form question. Answers cite transcript passages and distinguish earlier sources. Requires the companion server update; older servers show an update message.
