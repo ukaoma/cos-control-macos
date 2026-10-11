@@ -919,6 +919,21 @@ import Vision
         expect(faceReads(words, "haiku"), "Settings shows the same model", words)
         expect(MeetingAskModelPicker.rows(m.meetingAsk.config!).map(\.id) == models.map { "\($0["engine"]!):\($0["model"]!)" }
                && MeetingAskModelPicker.rows(m.meetingAsk.config!).filter(\.enabled).count == 3, "the control lists every model the server lists, three choosable")
+        // The open list, drawn as the dropdown draws it (COSDropdownList with the control's own options). The dropdown
+        // opens it in a panel window, which a check never orders in, so it is drawn here in an offscreen host instead.
+        let listOptions = MeetingAskModelControl.options(m.meetingAsk.config!)
+        expect(listOptions.map(\.enabled) == [true, true, true, false, false] && listOptions.filter { !$0.enabled }.allSatisfy { $0.muted && $0.note != nil },
+               "the open list mutes and disables each unavailable model, with its reason")
+        for appearance in [NSAppearance.Name.aqua, .darkAqua] {
+            let list = Offscreen(COSDropdownList(options: listOptions, selection: MeetingAskModelPicker.selectedID(m.meetingAsk.config!), highlight: .constant(nil), framed: true) { _ in },
+                                 width: 360, height: 260)
+            list.window.appearance = NSAppearance(named: appearance)
+            _ = list.render(to: out.appendingPathComponent("ask-model-list-\(appearance == .darkAqua ? "dark" : "light").png")); shots += 1
+            let listed = ocr(list.host, list.host.bounds).lowercased()
+            list.close()
+            expect(["sonnet", "haiku", "opus", "codex", "not connected", "cursor", "not qualified"].allSatisfy { listed.contains($0) },
+                   "the open list shows every model and each unavailable one's reason (\(appearance == .darkAqua ? "dark" : "light"))", listed)
+        }
 
         // A pick, through the binding the control's dropdown writes (COSDropdown sets its selection; both surfaces bind
         // MeetingAskStore.modelSelection). The server is held for a moment so the lock can be seen.

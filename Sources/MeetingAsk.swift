@@ -507,11 +507,14 @@ struct MeetingAskModelControl: View {
         }
     }
     private func dropdown(_ config: MeetingAskConfig, showsLabel: Bool, locked: Bool) -> some View {
-        COSDropdown("Model", selection: store.modelSelection(model: model),
-                    options: MeetingAskModelPicker.rows(config).map { row in
-                        COSDropdownOption(row.id, row.title, note: row.note, muted: !row.enabled, enabled: row.enabled)
-                    }, showsLabel: showsLabel)
+        COSDropdown("Model", selection: store.modelSelection(model: model), options: Self.options(config), showsLabel: showsLabel)
             .disabled(locked)
+    }
+    /// The list both surfaces open: the picker's rows, an unavailable model muted, unchoosable, its reason beside it.
+    static func options(_ config: MeetingAskConfig) -> [COSDropdownOption<String>] {
+        MeetingAskModelPicker.rows(config).map { row in
+            COSDropdownOption(row.id, row.title, note: row.note, muted: !row.enabled, enabled: row.enabled)
+        }
     }
 }
 

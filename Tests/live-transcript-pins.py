@@ -208,7 +208,7 @@ need(all_code.count("MeetingAskModelControl(store: store, model: model)") == 1
      "Settings shows the same model control once")
 need(all_code.count("MeetingAskModelControl(") == 2, "the model control is drawn only in Settings and the Ask panel")
 control = body(ask, "struct MeetingAskModelControl: View {")
-need('COSDropdown("Model", selection: store.modelSelection(model: model),' in control and ask.count("COSDropdown(") == 1,
+need('COSDropdown("Model", selection: store.modelSelection(model: model), options: Self.options(config),' in control and ask.count("COSDropdown(") == 1,
      "the model control is a COSDropdown bound to the store's one selection, the only dropdown meeting assistance draws")
 need(".disabled(locked)" in control and "locked: lock != nil" in control and "let lock = store.modelLock" in control and "if let lock { Text(lock)" in control,
      "the model control is disabled, with its reason shown, whenever the store says it is locked")
