@@ -463,6 +463,7 @@ struct MeetingAskActionsLayout: Layout {
 struct MeetingAskSettings: View {
     @ObservedObject var store: MeetingAskStore
     @ObservedObject var model: ControllerModel
+    @State private var showUnavailableModels = false
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Meeting assistant").font(COSType.body(13, weight: .semibold))
@@ -474,12 +475,34 @@ struct MeetingAskSettings: View {
                     Text(web.available ? "Public web lookup uses \(web.engine?.capitalized ?? "the connected search provider") when a question needs it." : "Public web lookup unavailable: " + (web.reason ?? "No qualified search provider"))
                         .font(COSType.body(11)).foregroundStyle(.secondary)
                 }
-                ForEach(config.models.filter { !$0.available }) { option in Text(option.choice.label + ": " + MeetingAskModelPicker.reason(option.reason)).font(COSType.body(10.5)).foregroundStyle(.secondary) }
+                MeetingAskModelDetails(options: config.models.filter { !$0.available }, expanded: $showUnavailableModels)
             }
             if let notice = store.notice { Text(notice).font(COSType.body(11)).foregroundStyle(.secondary) }
             Button("Refresh connected models") { Task { await store.refreshConfig(model: model) } }.buttonStyle(COSQuietButtonStyle())
         }.padding(12).background(COSPalette.card, in: RoundedRectangle(cornerRadius: 12))
         .task { await store.refreshConfig(model: model) }
+    }
+}
+
+/// Keep qualification details available without stretching the toolbar's settings panel.
+struct MeetingAskModelDetails: View {
+    let options: [MeetingAskModelOption]
+    @Binding var expanded: Bool
+    var body: some View {
+        if !options.isEmpty {
+            DisclosureGroup("Unavailable models (\(options.count))", isExpanded: $expanded) {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 8) {
+                        ForEach(options) { option in
+                            Text(option.choice.label + ": " + MeetingAskModelPicker.reason(option.reason))
+                                .font(COSType.body(10.5)).foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }.frame(maxWidth: .infinity, alignment: .leading)
+                }.frame(maxHeight: 180)
+            }.disclosureGroupStyle(COSDisclosureStyle())
+        }
     }
 }
 

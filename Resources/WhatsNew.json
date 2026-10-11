@@ -1,8 +1,15 @@
 {
-  "version": "0.5.283",
+  "version": "0.5.284",
   "whatsNew": {
-    "summary": "Ask answers now read as labeled rows, So what first, and Catch me up covers the meeting so far. What's New has the COS look in light and dark. Labeled answers need server 6.71.0. Private test candidate.",
+    "summary": "Meeting assistant settings now keep unavailable model details collapsed. Expand the list when you need qualification details. Includes the labeled Ask answers and meeting history improvements from 0.5.283. Private test candidate.",
     "sections": [
+      {
+        "title": "Compact Meeting assistant settings",
+        "items": [
+          "Unavailable model details start collapsed beneath the model selector. Expand them to see each model and its reason.",
+          "The expanded list scrolls inside the card, keeping other settings within reach."
+        ]
+      },
       {
         "title": "Answers you can skim",
         "items": [

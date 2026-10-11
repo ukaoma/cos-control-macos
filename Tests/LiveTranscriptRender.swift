@@ -917,6 +917,8 @@ import Vision
         expect(faceReads(words, "haiku"), "the Ask panel's model control renders the current model (Claude · haiku)", words)
         words = try settingsFace("settings-model-before-light")
         expect(faceReads(words, "haiku"), "Settings shows the same model", words)
+        expect(settingsWords.lowercased().contains("unavailable models") && !settingsWords.lowercased().contains("not qualified"),
+               "Settings keeps qualification details collapsed initially", settingsWords)
         expect(MeetingAskModelPicker.rows(m.meetingAsk.config!).map(\.id) == models.map { "\($0["engine"]!):\($0["model"]!)" }
                && MeetingAskModelPicker.rows(m.meetingAsk.config!).filter(\.enabled).count == 3, "the control lists every model the server lists, three choosable")
         // The open list, drawn as the dropdown draws it (COSDropdownList with the control's own options). The dropdown
@@ -1023,6 +1025,22 @@ import Vision
             expect(faceReads(words, "haiku"), "\(theme): Settings reads Claude · haiku", words)
         }
         expect(submits == 0, "switching models requests no inference")
+        // Exercise the disclosure with a catalog large enough to previously overflow the toolbar panel.
+        let unavailable = (0..<30).map { MeetingAskModelOption(engine: "cursor", model: "fixture-\($0)", available: false, reason: "meeting_adapter_not_qualified") }
+        for appearance in [NSAppearance.Name.aqua, .darkAqua] {
+            let theme = appearance == .darkAqua ? "dark" : "light"
+            for expanded in [false, true] {
+                let details = Offscreen(MeetingAskModelDetails(options: unavailable, expanded: .constant(expanded)), width: 350, height: 240)
+                details.window.appearance = NSAppearance(named: appearance)
+                _ = details.render(to: out.appendingPathComponent("model-details-\(expanded ? "expanded" : "collapsed")-\(theme).png")); shots += 1
+                let text = ocr(details.host, details.host.bounds).lowercased()
+                expect(text.contains("unavailable models") && text.contains("30"), "\(theme): details show the unavailable count", text)
+                expect(expanded == text.contains("not qualified"), "\(theme): qualification reasons follow disclosure visibility", text)
+                expect(expanded == text.contains("fixture"), "\(theme): model names follow disclosure visibility", text)
+                details.close()
+            }
+        }
+        expect(submits == 0 && m.meetingAsk.config?.selected == haikuModel, "rendering model details preserves model choice and requests no inference")
         let report: [String: Any] = ["passedChecks": passed, "historyReads": reads, "inferenceRequests": submits, "configureCalls": configures,
             "screenshots": shots, "productionShell": true, "pointerDragTested": false, "composerDropViaFixtureDraggingInfo": true,
             "modelPickThroughControlBinding": true, "modelFaceReadByVision": true,

@@ -1,3 +1,8 @@
+## 0.5.284 (build 337) — private test candidate
+
+- Meeting assistant settings start with unavailable model details collapsed. Expand the counted list to see qualification reasons; the list scrolls within the card. Model selection and the shared live Ask control retain the 0.5.283 behavior.
+- Includes all changes from 0.5.283; server 6.71.2 contains the paired server updates with transcription canaries disabled.
+
 ## 0.5.283 (build 336) — private test candidate
 
 - Live COS Ask answers read as labeled rows, So what first: the label in bold, then its words, with citations and the sources list where they were. Catch me up shows So what, Decided, Open, You owe and Next; Summarize, Action items and questions use their own labels. Server 6.71.0 sends the sections; an older server's labeled answer is read the same way, and an answer with no labels still reads as before.
