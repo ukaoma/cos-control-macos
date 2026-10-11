@@ -430,8 +430,8 @@ private struct WhatsNewSection<Content: View>: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 18)
         .padding(.vertical, 16)
-        .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 14))
-        .overlay(RoundedRectangle(cornerRadius: 14).stroke(COSPalette.line, lineWidth: 1))
+        .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(COSPalette.line, lineWidth: 1))
     }
 }
 
@@ -480,11 +480,11 @@ private struct WhatsNewButtonStyle: ButtonStyle {
                 .padding(.horizontal, 18)
                 .frame(minHeight: 36)
                 .background(prominent ? COSPalette.accent.opacity(configuration.isPressed ? 0.85 : 1) : Color.clear,
-                            in: RoundedRectangle(cornerRadius: 10))
-                .overlay(RoundedRectangle(cornerRadius: 10)
+                            in: RoundedRectangle(cornerRadius: 8))
+                .overlay(RoundedRectangle(cornerRadius: 8)
                     .stroke(prominent ? Color.clear : (hot ? COSPalette.accent : COSPalette.border), lineWidth: 1))
                 .opacity(isEnabled ? 1 : 0.5)
-                .contentShape(RoundedRectangle(cornerRadius: 10))
+                .contentShape(RoundedRectangle(cornerRadius: 8))
                 .onHover { hovered = $0 }
         }
     }

@@ -112,7 +112,7 @@ MUTANTS = [
     ("gate not run", R, "\"$ROOT/Tests/run-whats-new.sh\"\n", "", "[gate]", "pins"),
     # 0.5.283: COS styling, light and dark (adaptive palette tokens, brand type, the accent button, 4.5:1 text).
     ("white slab window", V, "        window.backgroundColor = COSInk.panelNS\n        window.setContentSize(", "        window.backgroundColor = COSInk.cardNS\n        window.setContentSize(", "[palette tokens]", "pins"),
-    ("white card", V, "        .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 14))\n", "        .background(Color.white, in: RoundedRectangle(cornerRadius: 14))\n", "[palette tokens]", "pins"),
+    ("white card", V, "        .padding(.vertical, 16)\n        .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 12))\n", "        .padding(.vertical, 16)\n        .background(Color.white, in: RoundedRectangle(cornerRadius: 12))\n", "[palette tokens]", "pins"),
     ("forced light", V, "        .frame(width: Self.width, height: Self.height)\n        .background(COSPalette.panel)\n", "        .frame(width: Self.width, height: Self.height)\n        .background(COSPalette.panel)\n        .preferredColorScheme(.light)\n", "[palette tokens]", "pins"),
     ("byline not mono", V, "                        .font(COSType.mono(12.5))\n", "                        .font(COSType.body(12.5))\n", "[brand type]", "pins"),
     ("ink words on light accent", V, "    static let onAccentNS = adaptiveNSColor(\n        light: NSColor(red: 1.00, green: 1.00, blue: 1.00, alpha: 1),", "    static let onAccentNS = adaptiveNSColor(\n        light: NSColor(red: 0.12, green: 0.09, blue: 0.07, alpha: 1),", "[contrast]", "pins"),

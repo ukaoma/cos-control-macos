@@ -160,7 +160,7 @@ pin("window.backgroundColor = COSInk.panelNS" in presenter and "COSInk.cardNS" n
     "palette tokens", "the window backing is the adaptive cream panel, and it never forces an appearance")
 pin(".background(COSPalette.panel)" in window_view.split("private func footerBar", 1)[0], "palette tokens", "the window body is the panel")
 section_view = code(between(views, "private struct WhatsNewSection", "private struct WhatsNewBullet"))
-pin(".background(COSPalette.card, in: RoundedRectangle(cornerRadius: 14))" in section_view, "palette tokens",
+pin(".background(COSPalette.card, in: RoundedRectangle(cornerRadius: 12))" in section_view, "palette tokens",
     "each section sits on a card (white light, raised espresso dark)")
 pin("COSType.display(" in section_view and "COSType.display(" in window_view.split("ScrollView", 1)[0], "brand type",
     "headings and the title are Fraunces")
