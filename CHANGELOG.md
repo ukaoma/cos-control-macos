@@ -1,3 +1,10 @@
+## 0.5.282 (build 335) — private test candidate
+
+- Switch the meeting assistant model right under the Ask box in Live COS Ask. It is the same setting as Settings, so a change in either shows in both, and an answer already running keeps its model. Models COS cannot use are listed with the reason, in plain words. While a switch is with COS, or COS is out of reach or older, the control is locked and says why.
+- Settings shows the same model control, with the same plain reasons and lock line.
+- A file change now sends only the meetings whose file list changed. 0.5.281 re-sent every meeting's list each time one file changed. The list sent before a question is unchanged.
+- Public web search for ordinary public questions (who is, what is, look up) needs server 6.70.0.
+
 ## 0.5.281 (build 334) — private test candidate
 
 - Drop a screenshot or file on the Ask box, or paste an image into it, and COS attaches it to the live meeting under Files shared in this meeting. The question you are typing is not changed, and a line above the box names the file that was attached. Before, a dropped screenshot became its file path as the question, with no file attached.
