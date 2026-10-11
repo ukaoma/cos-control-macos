@@ -99,6 +99,7 @@ python3 "$ROOT/Tests/provider-status-helper-checks.py" "$TMP/cos-control-helper"
 # Glasses pairing: tailscale-status (SHLVL in the child), whois and the pairing verbs through the compiled helper.
 python3 "$ROOT/Tests/pairing-helper-checks.py" "$TMP/cos-control-helper"
 python3 "$ROOT/Tests/live-cos-ask-helper-checks.py" "$TMP/cos-control-helper"
+python3 "$ROOT/Tests/meeting-ask-helper-checks.py" "$TMP/cos-control-helper"
 python3 "$ROOT/Tests/HeldNamingGuardMutations.py"
 
 # THE APP ITSELF MUST COMPILE.
@@ -107,6 +108,7 @@ python3 "$ROOT/Tests/HeldNamingGuardMutations.py"
 # Views.swift and ControllerModel.swift -- so every UI and model change shipped
 # without ever being type-checked here, and "builds passed" meant something much
 # narrower than it read. Same source list as scripts/build-release.sh.
+python3 "$ROOT/Tests/reuse-compile.py" --root "$ROOT" --receipt "$TMP/app-compile.json" --output "$TMP/COS Control" -- \
 "$ROOT/Tests/compile-guard.sh" swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \
   "$ROOT/Sources/Models.swift" \
   "$ROOT/Sources/HelperClient.swift" \
@@ -116,7 +118,7 @@ python3 "$ROOT/Tests/HeldNamingGuardMutations.py"
   "$ROOT/Sources/COSConfirm.swift" \
   "$ROOT/Sources/Views.swift" \
   "$ROOT/Sources/Control2Foundation.swift" "$ROOT/Sources/WorkHandoffStore.swift" "$ROOT/Sources/WorkProgress.swift" "$ROOT/Sources/WorkCardFiles.swift" "$ROOT/Sources/WorkProgressTracker.swift" "$ROOT/Sources/WorkTrackingViews.swift" "$ROOT/Sources/WorkHandoffView.swift" "$ROOT/Sources/WorkReviewStore.swift" "$ROOT/Sources/WorkWorkspaceView.swift" "$ROOT/Sources/PermissionGuideModel.swift" "$ROOT/Sources/PermissionGuideSystem.swift" "$ROOT/Sources/PermissionFlowVendored.swift" "$ROOT/Sources/PermissionDragFlow.swift" "$ROOT/Sources/PermissionGuideViews.swift" "$ROOT/Sources/ProviderConnectModel.swift" "$ROOT/Sources/ProviderConnectViews.swift" "$ROOT/Sources/ActivityWindow.swift" \
-  "$ROOT/Sources/ActivityMeetings.swift" \
+  "$ROOT/Sources/ActivityMeetings.swift" "$ROOT/Sources/MeetingAskCore.swift" "$ROOT/Sources/MeetingAsk.swift" \
   "$ROOT/Sources/COSMarkdownParser.swift" "$ROOT/Sources/COSMarkdown.swift" \
   "$ROOT/Sources/SessionLiveFeed.swift" "$ROOT/Sources/LiveTranscript.swift" \
   "$ROOT/Sources/SessionPet.swift" \
@@ -152,6 +154,7 @@ zsh "$ROOT/Tests/run-markdown-ui.sh" "$TMP/markdown-ui"
 # fixture (path grammar, --since, the stamp, no text in a failure), then the model against a stand-in helper (the setting
 # off spawns nothing, one read at a time, Wake, the saved hand-off by session id). Serial, every compile through the guard.
 zsh "$ROOT/Tests/run-live-transcript.sh"
+zsh "$ROOT/Tests/run-meeting-ask.sh"
 # 0.5.233: the live feed reducer is pure Foundation and pinned by an EXECUTED contract
 # over recorded 6.48.2 stream frames (reseed, gap, prompt window, state line, elapsed).
 "$ROOT/Tests/compile-guard.sh" swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \
@@ -169,7 +172,7 @@ zsh "$ROOT/Tests/run-live-transcript.sh"
 "$ROOT/Tests/compile-guard.sh" swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \
   "$ROOT/Sources/Models.swift" "$ROOT/Sources/HelperClient.swift" "$ROOT/Sources/ControllerModel.swift" \
   "$ROOT/Sources/COSBrand.swift" "$ROOT/Sources/COSMotion.swift" "$ROOT/Sources/COSConfirm.swift" \
-  "$ROOT/Sources/Views.swift" "$ROOT/Sources/Control2Foundation.swift" "$ROOT/Sources/WorkHandoffStore.swift" "$ROOT/Sources/WorkProgress.swift" "$ROOT/Sources/WorkCardFiles.swift" "$ROOT/Sources/WorkProgressTracker.swift" "$ROOT/Sources/WorkTrackingViews.swift" "$ROOT/Sources/WorkHandoffView.swift" "$ROOT/Sources/WorkReviewStore.swift" "$ROOT/Sources/WorkWorkspaceView.swift" "$ROOT/Sources/PermissionGuideModel.swift" "$ROOT/Sources/PermissionGuideSystem.swift" "$ROOT/Sources/PermissionFlowVendored.swift" "$ROOT/Sources/PermissionDragFlow.swift" "$ROOT/Sources/PermissionGuideViews.swift" "$ROOT/Sources/ProviderConnectModel.swift" "$ROOT/Sources/ProviderConnectViews.swift" "$ROOT/Sources/ActivityWindow.swift" "$ROOT/Sources/ActivityMeetings.swift" \
+  "$ROOT/Sources/Views.swift" "$ROOT/Sources/Control2Foundation.swift" "$ROOT/Sources/WorkHandoffStore.swift" "$ROOT/Sources/WorkProgress.swift" "$ROOT/Sources/WorkCardFiles.swift" "$ROOT/Sources/WorkProgressTracker.swift" "$ROOT/Sources/WorkTrackingViews.swift" "$ROOT/Sources/WorkHandoffView.swift" "$ROOT/Sources/WorkReviewStore.swift" "$ROOT/Sources/WorkWorkspaceView.swift" "$ROOT/Sources/PermissionGuideModel.swift" "$ROOT/Sources/PermissionGuideSystem.swift" "$ROOT/Sources/PermissionFlowVendored.swift" "$ROOT/Sources/PermissionDragFlow.swift" "$ROOT/Sources/PermissionGuideViews.swift" "$ROOT/Sources/ProviderConnectModel.swift" "$ROOT/Sources/ProviderConnectViews.swift" "$ROOT/Sources/ActivityWindow.swift" "$ROOT/Sources/ActivityMeetings.swift" "$ROOT/Sources/MeetingAskCore.swift" "$ROOT/Sources/MeetingAsk.swift" \
   "$ROOT/Sources/COSMarkdownParser.swift" "$ROOT/Sources/COSMarkdown.swift" \
   "$ROOT/Sources/SessionLiveFeed.swift" "$ROOT/Sources/LiveTranscript.swift" \
   "$ROOT/Sources/SessionPet.swift" \
@@ -2596,6 +2599,7 @@ if /usr/bin/grep -RE 'details\["token"\]|"token"[[:space:]]*:[[:space:]]*try rea
   exit 1
 fi
 
+python3 "$ROOT/Tests/reuse-compile.py" --root "$ROOT" --receipt "$TMP/app-compile.json" --output "$TMP/COS Control" -- \
 "$ROOT/Tests/compile-guard.sh" swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \
   "$ROOT/Sources/Models.swift" \
   "$ROOT/Sources/HelperClient.swift" \
@@ -2605,7 +2609,7 @@ fi
   "$ROOT/Sources/COSConfirm.swift" \
   "$ROOT/Sources/Views.swift" \
   "$ROOT/Sources/Control2Foundation.swift" "$ROOT/Sources/WorkHandoffStore.swift" "$ROOT/Sources/WorkProgress.swift" "$ROOT/Sources/WorkCardFiles.swift" "$ROOT/Sources/WorkProgressTracker.swift" "$ROOT/Sources/WorkTrackingViews.swift" "$ROOT/Sources/WorkHandoffView.swift" "$ROOT/Sources/WorkReviewStore.swift" "$ROOT/Sources/WorkWorkspaceView.swift" "$ROOT/Sources/PermissionGuideModel.swift" "$ROOT/Sources/PermissionGuideSystem.swift" "$ROOT/Sources/PermissionFlowVendored.swift" "$ROOT/Sources/PermissionDragFlow.swift" "$ROOT/Sources/PermissionGuideViews.swift" "$ROOT/Sources/ProviderConnectModel.swift" "$ROOT/Sources/ProviderConnectViews.swift" "$ROOT/Sources/ActivityWindow.swift" \
-  "$ROOT/Sources/ActivityMeetings.swift" \
+  "$ROOT/Sources/ActivityMeetings.swift" "$ROOT/Sources/MeetingAskCore.swift" "$ROOT/Sources/MeetingAsk.swift" \
   "$ROOT/Sources/COSMarkdownParser.swift" "$ROOT/Sources/COSMarkdown.swift" \
   "$ROOT/Sources/SessionLiveFeed.swift" "$ROOT/Sources/LiveTranscript.swift" \
   "$ROOT/Sources/SessionPet.swift" \
@@ -6743,10 +6747,10 @@ if "case standard, destructive, featured" not in brand: fail("COSQuietButtonStyl
 if "struct COSNewPill" not in brand: fail("the NEW pill is missing")
 actions = pane[pane.index("Actions by weight"):]
 first_button = re.search(r'Button\("([^"]+)"', actions).group(1)
-if first_button != "Copy as context": fail(f"the meeting pane's first action must be Copy as context, got {first_button}")
+if first_button != "Copy full context": fail(f"the meeting pane's first action must be Copy full context, got {first_button}")
 if ".buttonStyle(COSPrimaryButtonStyle())" not in actions.split('Button("Copy summary")')[0]:
-    fail("Copy as context must be the primary button")
-if '.keyboardShortcut("c", modifiers: .command)' not in actions: fail("Copy as context takes ⌘C")
+    fail("Copy full context must be the primary button")
+if '.keyboardShortcut("c", modifiers: .command)' not in actions: fail("Copy full context takes ⌘C")
 if "COSQuietButtonStyle(tone: isNew ? .featured : .standard)" not in actions or "if isNew { COSNewPill() }" not in actions:
     fail("Review voices is featured with its NEW pill inside the label while the meeting is new")
 if "MeetingStatusPills(\n                            isNew: false," not in actions:

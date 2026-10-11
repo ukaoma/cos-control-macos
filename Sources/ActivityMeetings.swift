@@ -564,6 +564,14 @@ struct MeetingLibraryDetailPane: View {
                                                 reason: detail.contextReason.isEmpty ? row.contextReason : detail.contextReason,
                                                 info: WorkMeetingInfo(recordId: row.recordId, title: row.title, date: row.date))
                         }
+                        if let row = model.openLibraryRow {
+                            let keys = detail.contextKeys.isEmpty ? row.contextKeys : detail.contextKeys
+                            if row.sourceSessionId != nil { Text("Ask history covers the whole original capture, including its other split pieces.").font(COSType.body(12)).foregroundStyle(.secondary) }
+                            ForEach(row.meetingAskSessions(keys: keys), id: \.self) { session in
+                                LiveAskPanel(state: model.meetingAsk, model: model, session: session)
+                                    .frame(minHeight: 300, idealHeight: 500, maxHeight: 600)
+                            }
+                        }
                         if let workConnections { relatedWork(workConnections) }
                         if isDocument {
                             COSMarkdownView(text: detail.transcript, dropLeadingTitle: true, meetingTranscript: true, bodySize: 14)
@@ -605,12 +613,12 @@ struct MeetingLibraryDetailPane: View {
                 // Reveal are quiet; Review voices is featured while it is new to this
                 // record, with the pill inside the button rather than beside it.
                 HStack(spacing: 8) {
-                    Button("Copy as context") { model.copyLibraryMeeting(kind: .context) }
+                    Button("Copy full context") { model.copyLibraryMeeting(kind: .context) }
                         .buttonStyle(COSPrimaryButtonStyle())
                         .keyboardShortcut("c", modifiers: .command)
                     Button("Copy summary") { model.copyLibraryMeeting(kind: .summary) }
                         .disabled(detail.summary.isEmpty)
-                    Button("Copy transcript") { model.copyLibraryMeeting(kind: .transcript) }
+                    Button(MeetingAskText.transcript(detail.transcript).document ? "Copy meeting document" : "Copy transcript") { model.copyLibraryMeeting(kind: .transcript) }
                         .disabled(detail.transcript.isEmpty)
                     if model.canRevealLibraryMeeting {
                         Button("Reveal in Finder") { model.revealLibraryMeeting() }
@@ -2032,21 +2040,32 @@ struct LiveTranscriptPane: View {
     @State private var atBottom = true
     @State private var showAsk = true
     @State private var askJumpID: Int?
-    @StateObject private var askState = LiveAskState()
+    @AppStorage("meetingAskPanelWidth") private var askWidth = 360.0
+    @State private var resizeStart: Double?
 
     var body: some View {
-        HStack(spacing: 0) {
-            meetingBody
-            if showAsk {
-                Divider()
-                LiveAskPanel(state: askState, model: model, feed: model.openLiveTranscriptFeed) { id in
-                    follow.selectionBegan(); askJumpID = id
+        GeometryReader { geometry in
+            let width = min(max(280, askWidth), max(280, geometry.size.width - 440))
+            HStack(spacing: 0) {
+                meetingBody
+                if showAsk, let session = model.liveTranscriptOpenID {
+                    Rectangle().fill(COSPalette.line).frame(width: 6)
+                        .contentShape(Rectangle())
+                        .gesture(DragGesture(minimumDistance: 1).onChanged { value in
+                            if resizeStart == nil { resizeStart = askWidth }
+                            askWidth = min(max(280, (resizeStart ?? askWidth) - value.translation.width), max(280, geometry.size.width - 440))
+                        }.onEnded { _ in resizeStart = nil })
+                        .accessibilityLabel("Resize meeting assistant")
+                        .accessibilityAdjustableAction { direction in
+                            askWidth = min(max(280, askWidth + (direction == .increment ? 40 : -40)), max(280, geometry.size.width - 440))
+                        }
+                    LiveAskPanel(state: model.meetingAsk, model: model, session: session, feed: model.openLiveTranscriptFeed) { id in
+                        follow.selectionBegan(); askJumpID = id
+                    }.frame(width: width)
                 }
             }
         }
-        .onAppear { askState.select(model.liveTranscriptOpenID) }
-        .onChange(of: model.liveTranscriptOpenID) { _, id in askState.select(id); askJumpID = nil }
-        .onDisappear { askState.cancel() }
+        .onChange(of: model.liveTranscriptOpenID) { _, _ in askJumpID = nil }
     }
 
     private var meetingBody: some View {
@@ -2096,6 +2115,12 @@ struct LiveTranscriptPane: View {
             }
             .font(COSType.body(11.5))
             if let feed, feed.ended { handoffLine(feed) }
+            if let session = model.liveTranscriptOpenID, let files = model.workHandoffStore?.meetingFiles {
+                DisclosureGroup("Files shared in this meeting") {
+                    MeetingFilesSection(files: files, keys: ["g2:" + session], supported: true, ambiguous: false, reason: "",
+                        info: WorkMeetingInfo(recordId: "", title: "Live meeting", date: ""))
+                }.font(COSType.body(11.5))
+            }
         }
         .padding(.horizontal, 24)
         .padding(.top, 18)
@@ -2171,6 +2196,14 @@ struct LiveTranscriptPane: View {
             Button("Copy transcript") { model.copyLiveTranscript() }
                 .buttonStyle(COSPrimaryButtonStyle())
                 .disabled(feed?.turns.isEmpty ?? true)
+            Button("Copy full context") {
+                guard let session = model.liveTranscriptOpenID,
+                      let snapshot = model.meetingAsk.captureCopy(title: "Live meeting", transcript: model.liveTranscriptCopyText ?? "", sessions: [session], localFiles: model.meetingAskFiles(session: session)) else { return }
+                Task {
+                    if let text = await model.meetingAsk.prepareCopy(snapshot, model: model) { model.meetingAsk.copyPrepared(text) }
+                    model.liveTranscriptCopyNote = model.meetingAsk.notice
+                }
+            }.buttonStyle(COSQuietButtonStyle())
             if !follow.following, !(feed?.turns.isEmpty ?? true) {
                 Button("Jump to live") { follow.jumpToLive(now: Date()) }
                     .buttonStyle(COSQuietButtonStyle())
@@ -2213,152 +2246,4 @@ struct LiveTurnRow: View {
     }
 }
 
-// Live COS Ask: ephemeral, scoped to the selected meeting, and invoked only by a user action.
-struct LiveAskSource: Codable, Identifiable {
-    let id: String
-    let kind: String
-    let title: String
-    let text: String
-    let turnId: Int?
-    let elapsedMs: Int?
-}
-struct LiveAskAnswer: Codable {
-    let answer: String
-    let sources: [LiveAskSource]
-    let notices: [String]
-    let model: String
-    let throughMs: Int
-}
-struct LiveAskExchange: Identifiable {
-    let id = UUID()
-    let question: String
-    let result: LiveAskAnswer
-}
-@MainActor
-final class LiveAskState: ObservableObject {
-    @Published var exchanges: [LiveAskExchange] = []
-    @Published var busy = false
-    @Published var error: String?
-    private var task: Task<Void, Never>?
-    private var generation = UUID()
-    private var sessionId: String?
-
-    func cancel() { generation = UUID(); task?.cancel(); task = nil; busy = false }
-    func select(_ id: String?) {
-        guard id != sessionId else { return }
-        cancel(); sessionId = id; exchanges = []; error = nil
-    }
-    func ask(action: String, question: String, feed: LiveTranscriptFeed, model: ControllerModel) {
-        guard !busy, !feed.turns.isEmpty else { return }
-        select(feed.sessionId)
-        let now = feed.endedAt ?? Date()
-        let elapsed = max(feed.turns.map(\.elapsedMs).max() ?? 0, Int(max(0, now.timeIntervalSince(feed.startTime ?? now)) * 1000))
-        let turns: [[String: Any]] = feed.turns.map { ["id": $0.id, "elapsedMs": $0.elapsedMs, "speaker": $0.speaker, "text": $0.text] }
-        let history = exchanges.suffix(4).map { ["question": $0.question, "answer": String($0.result.answer.prefix(4000))] }
-        let payload: [String: Any] = ["sessionId": feed.sessionId, "action": action, "question": String(question.prefix(2000)), "turns": turns, "history": history, "elapsedMs": elapsed]
-        guard let data = try? JSONSerialization.data(withJSONObject: payload), data.count <= 1_000_000 else {
-            error = "This meeting is too large for Live COS Ask. Copy a passage to ask about it."; return
-        }
-        busy = true; error = nil
-        let ticket = UUID(); generation = ticket
-        task = Task { [weak self] in
-            do {
-                let response = try await model.runHelper(["live-cos-ask"], timeout: 160, stdinData: data)
-                guard let self, generation == ticket, !Task.isCancelled else { return }
-                if !response.ok { throw HelperClientError.commandFailed(response.message) }
-                let result = try JSONDecoder().decode(LiveAskAnswer.self, from: JSONEncoder().encode(response.details))
-                exchanges.append(LiveAskExchange(question: question, result: result))
-                if exchanges.count > 12 { exchanges.removeFirst(exchanges.count - 12) }
-                busy = false; task = nil
-            } catch {
-                guard let self, generation == ticket, !Task.isCancelled else { return }
-                // Helper returns controlled user-facing messages, never raw provider stderr or transcript.
-                if case HelperClientError.commandFailed(let message) = error { self.error = message }
-                else { self.error = "Live COS Ask could not finish. Check the server and Claude connection, then try again." }
-                busy = false; task = nil
-            }
-        }
-    }
-}
-
-struct LiveAskPanel: View {
-    @ObservedObject var state: LiveAskState
-    @ObservedObject var model: ControllerModel
-    let feed: LiveTranscriptFeed?
-    let jump: (Int) -> Void
-    @State private var question = ""
-    private let actions = [("catch_up", "Catch me up"), ("summary", "Summarize so far"), ("questions", "Suggest questions"), ("actions", "Action items")]
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Live COS Ask").font(COSType.display(19, weight: .medium))
-            Text("Ask when you need it. Uses this meeting first.")
-                .font(COSType.body(11.5)).foregroundStyle(.secondary)
-            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
-                ForEach(actions, id: \.0) { action, title in
-                    Button(title) { send(action, title == "Catch me up" ? "Catch me up on the last minute" : title) }
-                        .buttonStyle(COSQuietButtonStyle()).disabled(state.busy || feed?.turns.isEmpty != false)
-                }
-            }
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 18) {
-                        if state.exchanges.isEmpty {
-                            Text("Summaries, suggested questions and action items appear here when you ask. A question can also draw on relevant COS memories or earlier meetings.").font(COSType.body(12)).foregroundStyle(.secondary)
-                        }
-                        ForEach(state.exchanges) { exchange in
-                            VStack(alignment: .leading, spacing: 9) {
-                                Text(verbatim: exchange.question).font(COSType.body(12, weight: .semibold))
-                                COSMarkdownView(text: exchange.result.answer, cacheID: exchange.id.uuidString, bodySize: 13)
-                                ForEach(exchange.result.sources) { source in
-                                    if let turn = source.turnId {
-                                        Button("[\(source.id)] \(source.title)") { jump(turn) }
-                                            .buttonStyle(.plain).foregroundStyle(COSPalette.accent)
-                                            .help(source.text)
-                                    } else {
-                                        DisclosureGroup("[\(source.id)] \(source.kind == "memory" ? "COS memory" : "Earlier meeting"): \(source.title)") {
-                                            Text(verbatim: source.text).textSelection(.enabled)
-                                        }
-                                    }
-                                }
-                                .font(COSType.body(11))
-                                ForEach(exchange.result.notices, id: \.self) { Text($0).font(COSType.body(11)).foregroundStyle(COSPalette.amber) }
-                                HStack {
-                                    Text("Through \(LiveTranscript.stamp(exchange.result.throughMs, hours: false)) · Haiku").foregroundStyle(.secondary)
-                                    Spacer()
-                                    Button("Copy") { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(exchange.result.answer, forType: .string) }.buttonStyle(.plain)
-                                }.font(COSType.body(10.5))
-                            }.padding(12).background(COSPalette.raised, in: RoundedRectangle(cornerRadius: 9))
-                        }
-                        Color.clear.frame(height: 1).id("ask-bottom")
-                    }
-                }
-                .onChange(of: state.exchanges.count) { _, _ in proxy.scrollTo("ask-bottom", anchor: .bottom) }
-            }.frame(minHeight: 0, maxHeight: .infinity).clipped()
-            if state.busy {
-                HStack { ProgressView().controlSize(.small); Text("Checking the meeting…"); Spacer(); Button("Stop") { state.cancel() } }.font(COSType.body(11))
-            }
-            if let error = state.error { Text(error).font(COSType.body(11)).foregroundStyle(COSPalette.amber) }
-            HStack(alignment: .bottom) {
-                TextField("Ask about this meeting", text: $question, axis: .vertical)
-                    .lineLimit(1...4).textFieldStyle(.plain).cosField()
-                    .onChange(of: question) { _, value in if value.count > 2000 { question = String(value.prefix(2000)) } }
-                    .onSubmit { sendQuestion() }
-                Button("Ask") { sendQuestion() }.buttonStyle(COSPrimaryButtonStyle())
-                    .disabled(state.busy || question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || feed?.turns.isEmpty != false)
-            }
-        }
-        .padding(16)
-        .frame(width: 330, alignment: .topLeading)
-        .background(COSPalette.panel)
-        .onDisappear { state.cancel() }
-    }
-    private func send(_ action: String, _ question: String) {
-        guard let feed else { return }
-        state.ask(action: action, question: question, feed: feed, model: model)
-    }
-    private func sendQuestion() {
-        let text = question.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, !state.busy else { return }
-        send("ask", text); question = ""
-    }
-}
+// Live COS Ask: durable state and presentation live in MeetingAsk.swift.

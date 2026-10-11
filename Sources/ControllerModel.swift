@@ -479,6 +479,9 @@ final class ControllerModel: ObservableObject {
         Int(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "") ?? 0
     }
 
+    let meetingAsk = MeetingAskStore()
+    @Published var meetingAskOpenRecordID: String?
+    @Published var meetingAskOpenMemory: ContextRecord?
     private let helper: HelperClient
 
     /// The Memories web host runs the same helper commands the native panes do,
@@ -814,6 +817,7 @@ final class ControllerModel: ObservableObject {
         }
         store.cardFiles.follow(store.meetingFiles)
         store.meetingFiles.start()
+        meetingAsk.observeFiles(store.meetingFiles, model: self)
         // 0.5.252: the glasses request inbox is asked about again whenever the server's version changes.
         tracker.requests.serverVersion = { [weak self] in
             guard let status = self?.status else { return nil }
@@ -3074,6 +3078,7 @@ final class ControllerModel: ObservableObject {
     /// from the window's occlusion and miniaturize notifications; a view mounted is not a view seen.
     private(set) var liveTranscriptWindowOnScreen = true
     private var liveTranscriptImmediate = false
+    private var liveTranscriptErrorSince: Date?
     /// Looked up by the first read of each poll loop (it spawns `launchctl print`), then passed back.
     private var liveTranscriptDataDir: String?
     private var liveTranscriptSavedRows: [String: LibraryMeeting] = [:]
@@ -3111,6 +3116,7 @@ final class ControllerModel: ObservableObject {
     }
 
     private var liveTranscriptShouldPoll: Bool {
+        LiveTranscript.errorPollingAllowed(serverLive: liveTranscriptServerLive, errorSince: liveTranscriptErrorSince, now: Date()) &&
         LiveTranscript.shouldPoll(enabled: liveTranscriptEnabled, visible: !liveTranscriptViewers.isEmpty && liveTranscriptWindowOnScreen,
                                   serverLive: liveTranscriptServerLive, pendingHandoff: liveTranscriptPendingHandoff)
     }
@@ -3188,6 +3194,7 @@ final class ControllerModel: ObservableObject {
         closeMeetingSuggestions()
         liveTranscriptCopyNote = nil
         liveTranscriptOpenID = sessionId
+        liveTranscriptErrorSince = nil
         liveTranscriptImmediate = true
         liveTranscriptKick()
     }
@@ -3222,9 +3229,11 @@ final class ControllerModel: ObservableObject {
             guard liveTranscriptEnabled else { return }
             guard let data = try? JSONEncoder().encode(response.details), let reply = LiveTranscriptReply.decode(data) else {
                 liveTranscriptReason = "invalid_reply"
+                if (liveTranscriptServerLive ?? 0) == 0, liveTranscriptErrorSince == nil { liveTranscriptErrorSince = Date() }
                 return
             }
             if let dir = reply.dataDir, !dir.isEmpty { liveTranscriptDataDir = dir }
+            liveTranscriptErrorSince = nil
             applyLiveTranscript(reply, now: Date())
             if liveTranscriptReason != nil { liveTranscriptReason = nil }
         } catch is CancellationError {
@@ -3232,6 +3241,7 @@ final class ControllerModel: ObservableObject {
         } catch {
             guard liveTranscriptEnabled else { return }
             liveTranscriptReason = Self.liveTranscriptReasonCode(error)
+            if (liveTranscriptServerLive ?? 0) == 0, liveTranscriptErrorSince == nil { liveTranscriptErrorSince = Date() }
         }
         await checkLiveTranscriptHandoffs(now: Date())
     }
@@ -7602,19 +7612,17 @@ final class ControllerModel: ObservableObject {
         case .summary:
             body = detail?.summary ?? ""
         case .transcript:
-            body = detail?.transcript ?? ""
+            body = MeetingAskText.transcript(detail?.transcript ?? "").text
         case .context:
-            let source = detail?.sourceContent.isEmpty == false ? detail!.sourceContent
-                : (detail?.transcript.isEmpty == false ? detail!.transcript : detail?.summary ?? row.title)
-            // 0.5.258: the meeting's files go with it, as the paths a card's send would carry.
-            let filesBlock = meetingFilesBlock(row: row, detail: detail)
-            body = """
-            Meeting \(row.title)\(row.date.isEmpty ? "" : " (\(row.date)\(row.domain.isEmpty ? "" : ", \(row.domain)"))")
-
-            \"\"\"
-            \(source)
-            \"\"\"
-            """ + (filesBlock.isEmpty ? "" : "\n\n" + filesBlock)
+            let keys = detail?.contextKeys.isEmpty == false ? detail!.contextKeys : row.contextKeys
+            let sessions = row.meetingAskSessions(keys: keys)
+            let source = MeetingAskText.transcript(detail?.transcript ?? "")
+            guard let snapshot = meetingAsk.captureCopy(title: row.title + (source.document ? " · meeting document" : "") + (row.derivedKind == "split" ? " · Ask history covers the whole original capture" : ""), transcript: source.text, sessions: sessions, localFiles: meetingAskFileSnapshots(keys: keys)) else { copyNote = meetingAsk.notice; return }
+            Task {
+                if let text = await meetingAsk.prepareCopy(snapshot, model: self) { meetingAsk.copyPrepared(text) }
+                copyNote = meetingAsk.notice
+            }
+            return
         }
         let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { copyNote = "Nothing to copy"; return }

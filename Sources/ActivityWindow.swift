@@ -865,6 +865,19 @@ struct ActivityWindow: View {
             meetingWorkLoaded = selection.workLoaded
             selectedLibraryRecordID = selection.recordID
         }
+        .onChange(of: model.meetingAskOpenMemory) { _, record in
+            guard let record else { return }
+            model.meetingAskOpenMemory = nil
+            section = .memories
+            openMemoryFromGraph(record)
+        }
+        .onChange(of: model.meetingAskOpenRecordID) { _, id in
+            guard let id, let row = model.libraryMeetings.first(where: { $0.recordId == id }) else { return }
+            model.meetingAskOpenRecordID = nil
+            selectedLibraryRecordID = row.id
+            section = .meetings
+            model.openLibraryMeeting(row)
+        }
         .alert("COS Control", isPresented: Binding(
             get: { model.error != nil },
             set: { if !$0 { model.error = nil } }

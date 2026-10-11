@@ -24,6 +24,11 @@ import SwiftUI
         case "check":
             guard args.count > 1 else { fatalError("usage: check <fake helper>") }
             await checkModel(Stand(URL(fileURLWithPath: args[1])))
+        case "ask-canary":
+            guard args.count > 2 else { fatalError("usage: ask-canary <dir> <fake helper>") }
+            let out = URL(fileURLWithPath: args[1], isDirectory: true)
+            try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+            try await askShellCanary(out, stand: Stand(URL(fileURLWithPath: args[2])))
         case "render":
             guard args.count > 2 else { fatalError("usage: render <dir> <fake helper>") }
             let out = URL(fileURLWithPath: args[1], isDirectory: true)
@@ -454,31 +459,119 @@ import SwiftUI
                "idle Dock menu retains its existing actions")
         COSAppDelegate.recordingAvailable = nil
         COSAppDelegate.onOpenRecording = nil
-        // Live COS Ask: no passive calls, one explicit send, stdin only, cancellation and meeting isolation.
-        let askState = LiveAskState()
-        askState.select(sid)
-        expect(stand.calls("live-cos-ask") == 0, "opening Ask burns no tokens")
+        // V2: navigation/relaunch restores persisted history, and only submit spends model tokens.
+        let askRoot = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("ask-store-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: askRoot) }
+        let askState = MeetingAskStore(root: askRoot)
+        var submits = 0
+        var historyDelay = 0
+        var historyReads = 0
+        var fixtureServer = "fixture-server"
+        var submittedCutoff = -1
+        var loseNextReceipt = false
+        var missingStatus = false
+        var submittedPayloads: [Data] = []
+        var retained: [[String: Any]] = []
+        let config: [String: Any] = ["protocolVersion": 2, "serverInstanceId": "fixture-server", "pairingContext": "fixture-pairing",
+            "selected": ["engine": "claude", "model": "haiku"], "models": [["engine": "claude", "model": "haiku", "available": true]]]
+        let transport: (String, Data) async throws -> Data = { operation, data in
+            let envelope = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+            let payload = envelope["payload"] as? [String: Any] ?? [:]
+            var body: [String: Any]
+            switch operation {
+            case "identity": body = ["pairingContext": "fixture-pairing"]
+            case "config": body = config; body["serverInstanceId"] = fixtureServer
+            case "history":
+                historyReads += 1
+                if historyDelay > 0 { try? await Task.sleep(for: .milliseconds(historyDelay)) }
+                body = ["exchanges": retained.filter { ($0["sessionId"] as? String) == (payload["sessionId"] as? String) }, "files": []]
+            case "files":
+                try? await Task.sleep(for: .milliseconds(1200))
+                body = ["files": []]
+            case "status":
+                if missingStatus { throw MeetingAskTransportFailure(status: 404, message: "Not admitted yet") }
+                guard let row = retained.first(where: { $0["requestId"] as? String == payload["requestId"] as? String }) else { throw MeetingAskTransportFailure(status: 404, message: "Unknown") }
+                body = ["exchange": row]
+            case "submit":
+                submits += 1
+                submittedPayloads.append(try JSONSerialization.data(withJSONObject: payload, options: .sortedKeys))
+                if loseNextReceipt { loseNextReceipt = false; throw MeetingAskTransportFailure(status: 0, message: "Timed out before admission") }
+                submittedCutoff = payload["elapsedMs"] as? Int ?? -1
+                try? await Task.sleep(for: .milliseconds(100))
+                let row: [String: Any] = ["requestId": payload["requestId"]!, "sessionId": payload["sessionId"]!, "serverInstanceId": "fixture-server", "action": payload["action"]!, "question": payload["question"]!, "status": "completed", "createdAt": "2026-10-10", "updatedAt": "2026-10-10", "selectedModel": ["engine": "claude", "model": "haiku"], "answer": "The draft is due Friday. [T1]", "sources": [["id": "T1", "kind": "transcript", "title": "Miles", "text": "Fixture words"]], "notices": [], "throughMs": 30000, "files": []]
+                retained.append(row); body = ["exchange": row]
+            default: throw HelperClientError.commandFailed("Unexpected fixture operation")
+            }
+            return try JSONSerialization.data(withJSONObject: body)
+        }
+        askState.injectedTransport = transport
+        await askState.open(sid, model: recording)
+        expect(submits == 0, "opening durable Ask burns no tokens")
+        askState.setDraft("Keep draft", session: sid)
+        expect(askState.flush(sid), "draft flush succeeds")
         var askFeed = LiveTranscriptFeed(sessionId: sid)
         askFeed.apply(reply(liveAnswer(chunks: firstChunks, settled: 5, stamp: "ask")).read!, now: Date())
-        stand.write("live-cos-ask.json", """
-        {"ok":true,"message":"Live COS Ask","details":{"answer":"The draft is due Friday. [T1]","sources":[{"id":"T1","kind":"transcript","title":"Miles · 0:00","text":"Fixture words","turnId":0,"elapsedMs":0}],"notices":[],"model":"haiku","throughMs":30000}}
-        """)
+        askFeed.startTime = Date().addingTimeInterval(-120)
         askState.ask(action: "summary", question: "Summarize so far", feed: askFeed, model: recording)
+        expect(askState.draft(sid) == "Keep draft", "preset does not replace an independent composer draft")
         askState.ask(action: "summary", question: "Summarize so far", feed: askFeed, model: recording)
-        await until("Ask answer") { !askState.busy }
-        expect(askState.exchanges.count == 1 && askState.error == nil, "Ask renders answer and citations")
-        expect(stand.calls("live-cos-ask") == 1, "double clicking never sends twice")
-        expect(!stand.lines("args.log").contains { $0.contains("Summarize so far") }, "Ask text stays off argv")
-        expect(stand.exists("ask-input.json"), "Ask sends context through stdin")
-        askState.select("meeting_other")
-        expect(askState.exchanges.isEmpty, "new meeting clears prior Ask context")
-        stand.write("ask-hold", "1")
-        askState.ask(action: "ask", question: "What changed?", feed: askFeed, model: recording)
-        await sleep(0.15)
-        askState.select("meeting_other_again")
-        await sleep(2.3)
-        expect(!askState.busy && askState.exchanges.isEmpty && askState.error == nil, "late answer cannot leak across meetings")
-        stand.remove("ask-hold")
+        askState.setDraft("Next question while waiting", session: sid)
+        await askState.open("meeting_other", model: recording)
+        await until("durable Ask answer") { !askState.running.contains(sid) }
+        expect(submits == 1, "double clicking never submits twice")
+        expect((120000...120400).contains(submittedCutoff), "question cutoff is pinned before delayed file registration")
+        expect(askState.records[sid]?.exchanges.count == 1, "answer retained while another meeting opens")
+        expect(askState.records["meeting_other"]?.exchanges.isEmpty == true, "no cross-meeting leakage")
+        await askState.open(sid, model: recording)
+        expect(askState.records[sid]?.exchanges.count == 1, "returning to meeting retains answer")
+        expect(askState.records[sid]?.outbox == nil && askState.draft(sid) == "Next question while waiting", "admission clears only its submitted draft, preserving a newer follow-up")
+        askState.setDraft("A follow-up", session: sid); _ = askState.flush(sid)
+        let restarted = MeetingAskStore(root: askRoot); restarted.injectedTransport = transport
+        await restarted.open(sid, model: recording)
+        expect(restarted.draft(sid) == "A follow-up", "draft survives restart")
+        expect(restarted.records[sid]?.exchanges.count == 1, "accepted answer survives restart")
+        expect(submits == 1, "restart and navigation perform no inference")
+        loseNextReceipt = true; missingStatus = true
+        askState.ask(action: "ask", question: "Original uncertain request", feed: askFeed, model: recording)
+        await until("uncertain admission") { !askState.running.contains(sid) }
+        let original = askState.records[sid]?.outbox?.requestId
+        expect(original != nil, "uncertain admission keeps frozen outbox")
+        await askState.reconcile(sid, model: recording)
+        expect(askState.records[sid]?.outbox?.requestId == original && submits == 2, "404 status never clears uncertain admission or replays automatically")
+        askState.setDraft("Keep another draft", session: sid)
+        askState.retryOutbox(sid, model: recording)
+        await until("explicit same-question retry") { !askState.running.contains(sid) }
+        expect(submits == 3 && submittedPayloads[1] == submittedPayloads[2], "explicit retry preserves request ID and exact frozen payload")
+        expect(askState.records[sid]?.outbox == nil && askState.draft(sid) == "Keep another draft", "confirmed idempotent retry retains newer unsent draft")
+
+        askState.ask(action: "summary", question: "Summarize so far", feed: askFeed, model: recording)
+        await until("preset preserves composer") { !askState.running.contains(sid) }
+        expect(askState.draft(sid) == "Keep another draft", "preset acceptance preserves the untouched composer draft")
+        askState.ask(action: "ask", question: "Retry old answer", feed: askFeed, model: recording, retryOf: "old-attempt")
+        await until("retry preserves composer") { !askState.running.contains(sid) }
+        expect(askState.draft(sid) == "Keep another draft", "retrying an older answer preserves the independent composer draft")
+
+        let importedStore = MeetingAskStore(root: askRoot.appendingPathComponent("imported"))
+        let importedCopy = importedStore.captureCopy(title: "Imported meeting", transcript: "Imported words", sessions: [])!
+        let importedText = await importedStore.prepareCopy(importedCopy, model: recording)
+        expect(importedText?.contains("Imported words") == true, "imported meetings without capture keys copy local context without server capability")
+        let copySnapshot = askState.captureCopy(title: "Meeting A", transcript: "Original meeting A transcript", sessions: [sid])!
+        historyDelay = 200
+        let initialHistoryReads = historyReads
+        let copyTask = Task { await askState.prepareCopy(copySnapshot, model: recording) }
+        await until("copy history read") { historyReads > initialHistoryReads }
+        recording.openLiveTranscript("meeting_other")
+        await askState.open("meeting_other", model: recording)
+        let copied = await copyTask.value
+        expect(copied?.contains("Original meeting A transcript") == true && copied?.contains("Original uncertain request") == true, "navigation while history loads keeps captured transcript and Ask from the same meeting")
+        let identityReads = historyReads
+        let identityTask = Task { await askState.prepareCopy(copySnapshot, model: recording) }
+        await until("copy identity read") { historyReads > identityReads }
+        fixtureServer = "replacement-server"
+        await askState.refreshConfig(model: recording)
+        let refusedCopy = await identityTask.value
+        expect(refusedCopy == nil, "server change during full-context copy refuses mixed-context output")
+        await quiesce(recording)
         print("live transcript wiring checks: \(passed) passed")
         print("PASS: live transcript wiring checks complete")
         exit(0)
@@ -538,11 +631,25 @@ import SwiftUI
         finalizing.applyLiveTranscript(reply(endedAnswer), now: now.addingTimeInterval(-2 * 60))
 
         let savedText = "## Transcript\n\n[Ext]: " + String(repeating: "The saved recording now has readable sections. [Ext]: We keep the exact words while grouping short fragments. ", count: 12) + "[MU]: Can we confirm the next step?\n[MU]: The draft is due Friday.\n[Jordan]: I will review it."
-        let previewAsk = LiveAskState()
-        previewAsk.exchanges = [LiveAskExchange(question: "What are the action items?", result: LiveAskAnswer(answer: "- **Jordan** will review the draft. [T1]\n- The draft is due **Friday**. The owner was not specified. [T2]", sources: [LiveAskSource(id: "T1", kind: "transcript", title: "Jordan · 0:12", text: "I will review it.", turnId: 1, elapsedMs: 12000)], notices: [], model: "haiku", throughMs: 60000))]
+        let previewAsk = MeetingAskStore(root: out.appendingPathComponent("ask-preview"))
+        previewAsk.injectedTransport = { operation, _ in
+            let body: [String: Any]
+            switch operation {
+            case "identity": body = ["pairingContext": "preview"]
+            case "config": body = ["protocolVersion": 2, "serverInstanceId": "preview", "pairingContext": "preview", "selected": ["engine": "claude", "model": "haiku"], "models": [["engine": "claude", "model": "haiku", "available": true]]]
+            case "history": body = ["exchanges": [["requestId": "preview-answer", "sessionId": "meeting_fixture", "serverInstanceId": "preview", "action": "summary", "question": "Summarize so far", "status": "completed", "createdAt": "2026-10-10", "updatedAt": "2026-10-10", "selectedModel": ["engine": "claude", "model": "haiku"], "answer": "The team agreed to review the draft on Friday. [T1]\n\n- Miles will prepare the draft.\n- Jordan will review it.", "sources": [["id": "T1", "kind": "transcript", "title": "Miles · 0:30", "text": "The draft is due Friday."]], "notices": [], "throughMs": 30000, "files": []]], "files": []]
+            default: body = ["files": []]
+            }
+            return try JSONSerialization.data(withJSONObject: body)
+        }
+        await previewAsk.open("meeting_fixture", model: live)
+
         for appearance in [NSAppearance.Name.aqua, .darkAqua] {
             try render(ScrollView { COSMarkdownView(text: savedText, meetingTranscript: true, bodySize: 14).padding(24).frame(maxWidth: 700) }, width: 900, height: 700, appearance: appearance, name: "saved-recording-readable", out: out)
-            try render(LiveAskPanel(state: previewAsk, model: live, feed: live.openLiveTranscriptFeed, jump: { _ in }), width: 362, height: 700, appearance: appearance, name: "live-ask-answer", out: out)
+            try render(LiveAskPanel(state: previewAsk, model: live, session: "meeting_fixture", feed: live.openLiveTranscriptFeed, jump: { _ in }), width: 362, height: 700, appearance: appearance, name: "live-ask-answer", out: out)
+            for width in [280.0, 520.0] {
+                try render(LiveAskPanel(state: previewAsk, model: live, session: "meeting_fixture", feed: live.openLiveTranscriptFeed), width: width, height: 700, appearance: appearance, name: "live-ask-width-\(Int(width))", out: out)
+            }
             try render(LiveTranscriptPane(model: monologue), width: 900, height: 700, appearance: appearance, name: "pane-long-same-speaker", out: out)
             try render(LiveTranscriptPane(model: oversized), width: 900, height: 700, appearance: appearance, name: "pane-oversized-chunk", out: out)
             try render(LiveTranscriptPane(model: live), width: 900, height: 560, appearance: appearance, name: "pane-live-short", out: out)
@@ -567,6 +674,100 @@ import SwiftUI
             try panel(live, appearance: appearance, name: "panel-meetings-chip-dot", out: out)
         }
         print("wrote PNGs to \(out.path)")
+    }
+
+    /// The shipping Activity shell, never ordered in. Fixtures drive the same
+    /// model routing that its menu/tab actions use; width changes use the same
+    /// stored preference as the divider. This does NOT synthesize mouse drags.
+    static func askShellCanary(_ out: URL, stand: Stand) async throws {
+        guard NSHomeDirectory().contains("cos-live-transcript"),
+              FileManager.default.homeDirectoryForCurrentUser.path.contains("cos-live-transcript") else {
+            fatalError("ask-canary requires the runner's private home")
+        }
+        let (m, _) = model(stand, enabled: true)
+        m.setLiveTranscriptWindowOnScreen(false)
+        var submits = 0
+        var reads = 0
+        let config: [String: Any] = ["protocolVersion": 2, "serverInstanceId": "shell-fixture", "pairingContext": "shell-fixture",
+            "selected": ["engine": "claude", "model": "haiku"], "models": [["engine": "claude", "model": "haiku", "available": true]]]
+        let exchange: [String: Any] = ["requestId": "shell-answer", "sessionId": sid, "serverInstanceId": "shell-fixture",
+            "action": "summary", "question": "What did we decide about the draft?", "status": "completed",
+            "createdAt": "2026-10-10", "updatedAt": "2026-10-10", "selectedModel": ["engine": "claude", "model": "haiku"],
+            "answer": "The draft is due Friday. [T1]\n\n- Miles will prepare the draft.\n- Jordan will review it before the meeting.",
+            "sources": [["id": "T1", "kind": "transcript", "title": "Miles · 0:30", "text": "The draft is due Friday."]],
+            "notices": [], "throughMs": 30000, "files": []]
+        m.meetingAsk.injectedTransport = { operation, data in
+            let envelope = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+            let payload = envelope["payload"] as? [String: Any] ?? [:]
+            let result: [String: Any]
+            switch operation {
+            case "identity": result = ["pairingContext": "shell-fixture"]
+            case "config": result = config
+            case "history":
+                reads += 1
+                result = ["exchanges": payload["sessionId"] as? String == sid ? [exchange] : [], "files": []]
+            case "files": result = ["files": []]
+            case "submit": submits += 1; throw HelperClientError.commandFailed("Canary must never request inference")
+            default: throw HelperClientError.commandFailed("Unexpected shell fixture operation")
+            }
+            return try JSONSerialization.data(withJSONObject: result)
+        }
+        let chunks = lines.enumerated().map { ($0.offset, $0.element.0, $0.element.1, $0.offset * 6000) }
+        m.applyLiveTranscript(reply(liveAnswer(chunks: chunks, settled: 5, stamp: "shell")), now: Date())
+        m.activityOpenSection = .meetings
+        let window = ActivityWindowPresenter.makeWindow(model: m)
+        window.setFrameOrigin(NSPoint(x: -20000, y: -20000))
+        defer { window.close() }
+        guard let host = window.contentView else { fatalError("Activity shell has no content view") }
+        host.layoutSubtreeIfNeeded()
+        await until("initial shell Meetings route") { m.activityOpenSection == nil }
+        m.openLiveTranscript(sid)
+        await m.meetingAsk.open(sid, model: m)
+        let draft = "Keep this unsent follow-up when I change tabs."
+        m.meetingAsk.setDraft(draft, session: sid)
+        expect(m.meetingAsk.flush(sid), "shell draft is durable before navigation")
+        let oldWidth = UserDefaults.standard.object(forKey: "meetingAskPanelWidth")
+        defer {
+            if let oldWidth { UserDefaults.standard.set(oldWidth, forKey: "meetingAskPanelWidth") }
+            else { UserDefaults.standard.removeObject(forKey: "meetingAskPanelWidth") }
+        }
+        func capture(_ name: String) async throws {
+            await sleep(0.45)
+            host.layoutSubtreeIfNeeded(); host.displayIfNeeded()
+            expect(!window.isVisible && NSApp.activationPolicy() == .prohibited, "canary never activates or displays a window")
+            guard let bitmap = host.bitmapImageRepForCachingDisplay(in: host.bounds) else { fatalError("shell bitmap unavailable") }
+            host.cacheDisplay(in: host.bounds, to: bitmap)
+            // Encode only after cacheDisplay populates the bitmap.
+            guard let rendered = bitmap.representation(using: .png, properties: [:]) else { fatalError("shell PNG unavailable") }
+            try rendered.write(to: out.appendingPathComponent(name + ".png"))
+        }
+        for appearance in [NSAppearance.Name.aqua, .darkAqua] {
+            window.appearance = NSAppearance(named: appearance)
+            let theme = appearance == .darkAqua ? "dark" : "light"
+            for (width, panel) in [(900.0, 280.0), (1180.0, 360.0), (1440.0, 520.0)] {
+                UserDefaults.standard.set(panel, forKey: "meetingAskPanelWidth")
+                window.setContentSize(NSSize(width: width, height: 800))
+                try await capture("ask-shell-\(Int(width))-panel-\(Int(panel))-\(theme)")
+            }
+        }
+        let savedCount = m.meetingAsk.records[sid]?.exchanges.count
+        m.activityOpenSection = .messages
+        await until("shell Messages route") { m.activityOpenSection == nil && m.liveTranscriptOpenID == nil }
+        try await capture("ask-shell-navigated-away")
+        m.activityOpenSection = .meetings
+        await until("shell Meetings route") { m.activityOpenSection == nil }
+        m.openLiveTranscript(sid)
+        await m.meetingAsk.open(sid, model: m)
+        expect(m.meetingAsk.records[sid]?.exchanges.count == savedCount && savedCount == 1,
+               "production shell navigation retains accepted answer")
+        expect(m.meetingAsk.draft(sid) == draft, "production shell navigation retains unsent draft")
+        expect(submits == 0 && reads > 0, "shell resize and navigation read history without inference")
+        try await capture("ask-shell-returned-with-history")
+        let report: [String: Any] = ["passedChecks": passed, "historyReads": reads, "inferenceRequests": submits,
+            "screenshots": 8, "productionShell": true, "pointerDragTested": false,
+            "limitations": "Offscreen production shell and model routing; persisted panel widths, not synthesized mouse gestures. Inspect PNGs for CTA alignment and clipping."]
+        try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]).write(to: out.appendingPathComponent("ask-shell-canary.json"))
+        print("PASS: Meeting Ask production-shell canary; \(passed) checks; 8 screenshots; zero inference")
     }
 
     static func settle(_ host: NSView, seconds: TimeInterval) {

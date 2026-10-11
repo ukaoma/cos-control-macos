@@ -198,6 +198,12 @@ struct LiveTranscriptRow: Identifiable, Equatable, Sendable {
 }
 
 enum LiveTranscript {
+    /// W-a: a failed post-recording helper cannot keep polling forever. Live recording is unaffected.
+    static func errorPollingAllowed(serverLive: Int?, errorSince: Date?, now: Date) -> Bool {
+        guard (serverLive ?? 0) == 0, let errorSince else { return true }
+        return now.timeIntervalSince(errorSince) < 300
+    }
+
     static let readingSectionMilliseconds = 30_000
     static let readingSectionCharacters = 600
 

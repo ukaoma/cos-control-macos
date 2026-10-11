@@ -1789,8 +1789,9 @@ struct ControlPanel: View {
                 if model.status.tasksGate != nil { domainsCard }
                 if !model.fenceRecords.isEmpty { fencesCard }
                 if !model.doctorChecks.isEmpty { doctorCard }
-                utilities
+                MeetingAskSettings(store: model.meetingAsk, model: model)
                     .id("settings")
+                utilities
                 footer
             }
             .padding(16)

@@ -67,11 +67,11 @@ FAKE
   chmod +x "$DIR/fake/helper"
 }
 
-if [[ "$MODE" == "render" ]]; then
+if [[ "$MODE" == "render" || "$MODE" == "ask-canary" ]]; then
   OUT="${2:?usage: run-live-transcript.sh render <folder for the PNGs>}"
   app_binary
   fake_helper
-  env "${RUN_ENV[@]}" "$DIR/live-transcript-render" render "${OUT:A}" "$DIR/fake/helper" 2>"$DIR/stderr.log" || { cat "$DIR/stderr.log" >&2; exit 1; }
+  env "${RUN_ENV[@]}" "$DIR/live-transcript-render" "$MODE" "${OUT:A}" "$DIR/fake/helper" 2>"$DIR/stderr.log" || { cat "$DIR/stderr.log" >&2; exit 1; }
   exit 0
 fi
 [[ "$MODE" == "check" ]] || { print -u2 "usage: run-live-transcript.sh [check | render <dir>]"; exit 64; }

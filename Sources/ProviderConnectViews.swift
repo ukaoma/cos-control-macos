@@ -19,6 +19,8 @@ extension DockPresence {
 /// launch. COSControlApp wires `onReopen`.
 @MainActor
 final class COSAppDelegate: NSObject, NSApplicationDelegate {
+    static var onTerminate: (@MainActor () -> Void)?
+    func applicationWillTerminate(_ notification: Notification) { Self.onTerminate?() }
     static var onReopen: (@MainActor () -> Void)?
     static var onOpenActivity: (@MainActor () -> Void)?
     static var onSetupGuide: (@MainActor () -> Void)?

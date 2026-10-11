@@ -8,7 +8,7 @@
 #   2. It starts only when at least COS_COMPILE_MIN_FREE_GB of memory is free or reclaimable.
 #   3. A watchdog kills any swift-frontend above COS_COMPILE_MAX_FRONTEND_GB and the whole run if all
 #      swift-frontends together pass COS_COMPILE_MAX_TOTAL_GB.
-# Defaults scale with the Mac (0.5.267, the repo is public): free floor min(40 GB, 60% of RAM), one frontend
+# Large-profile defaults scale with the Mac (0.5.267, the repo is public): free floor min(40 GB, 60% of RAM), one frontend
 # min(48 GB, 75% of RAM), all frontends min(60 GB, 85% of RAM). A 96 GB Mac gets 40 / 48 / 60; a 16 GB Mac gets
 # 9 / 12 / 13, so the serial test compiles (about 3 GB each since the tracker checks were split) still run there.
 # Exit code: the command's own, or 137 when the watchdog stopped it (the reason is printed on stderr).
@@ -21,17 +21,41 @@ MAX_FRONTEND_GB="${COS_COMPILE_MAX_FRONTEND_GB:-$(scaled 48 75)}"
 MAX_TOTAL_GB="${COS_COMPILE_MAX_TOTAL_GB:-$(scaled 60 85)}"
 (( $# > 0 )) || { echo "usage: compile-guard.sh <command...>" >&2; exit 2; }
 
-if [[ -z "${COS_COMPILE_GUARD_HELD:-}" ]]; then
-  # Re-enter under the lock (lockf holds it for the life of the child).
-  exec /usr/bin/lockf -t 1800 "$LOCK" /usr/bin/env COS_COMPILE_GUARD_HELD=1 "$0" "$@"
-fi
-
 free_gb() {
   local page=$(sysctl -n hw.pagesize)
   local f=$(sysctl -n vm.page_free_count) s=$(sysctl -n vm.page_speculative_count)
   local i=$(vm_stat | awk '/Pages inactive/ {gsub("\\.","",$3); print $3}')
   echo $(( (f + s + i) * page / 1073741824 ))
 }
+
+# Choose direct Swift jobs from available memory. The bounded profile passed
+# watchdog fault tests and helper/full-app compiles on 2026-10-10; it normalizes
+# single-frontend work and measures the complete owned descendant tree.
+# Both profiles own the same BSD file lock; bounded never sets GUARD_HELD.
+# Script wrappers retain the large path; invoke this guard on each swiftc job.
+PROFILE="${COS_COMPILE_PROFILE:-auto}"
+case "$PROFILE" in
+  large|bounded|auto) ;;
+  *) echo "compile-guard: unknown compile profile" >&2; exit 2 ;;
+esac
+if [[ "$PROFILE" == bounded && -n "${COS_COMPILE_GUARD_HELD:-}" ]]; then
+  echo "compile-guard: bounded profile refuses inherited guard-held state" >&2
+  exit 2
+fi
+if [[ -z "${COS_COMPILE_GUARD_HELD:-}" ]] && \
+   { [[ "$PROFILE" == bounded ]] || { [[ "$PROFILE" == auto && "${1:t}" == swiftc ]] && (( $(free_gb) < MIN_FREE_GB )); }; }; then
+  RECEIPTS="${COS_COMPILE_RECEIPT_DIR:-/tmp/cos-control-compile-receipts-$UID}"
+  mkdir -p "$RECEIPTS" || exit 2
+  RECEIPT="$(mktemp "$RECEIPTS/compile.XXXXXX")" || exit 2
+  exec /usr/bin/python3 "${0:A:h}/compile-bounded.py" --receipt "$RECEIPT" -- "$@"
+fi
+
+if [[ -z "${COS_COMPILE_GUARD_HELD:-}" ]]; then
+  # Re-enter under the lock (lockf holds it for the life of the child).
+  exec /usr/bin/lockf -k -t 1800 "$LOCK" /usr/bin/env COS_COMPILE_GUARD_HELD=1 "$0" "$@"
+fi
+
+
 waited=0
 while (( $(free_gb) < MIN_FREE_GB )); do
   (( waited >= 600 )) && { echo "compile-guard: only $(free_gb) GB free after 10 min (need $MIN_FREE_GB); not starting" >&2; exit 75; }

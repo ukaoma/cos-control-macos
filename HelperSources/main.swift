@@ -623,6 +623,7 @@ final class COSControlHelper {
         case "meeting-orphans": try emitMeetingOrphans()
         case "meeting-audio-watch": try emitMeetingAudioWatch()
         case "live-cos-ask": try emitLiveCOSAsk()
+        case "meeting-ask": try emitMeetingAsk()
         case "live-transcript": try emitLiveTranscript(args: args)
         case "live-transcript-status": try emitLiveTranscriptStatus(args: args)
         case "meeting-orphan-recover": try emitMeetingOrphanRecover(args: args)
@@ -14878,6 +14879,74 @@ final class COSControlHelper {
             data.append(contentsOf: buffer[0..<count])
         }
         return try liveTranscriptParse(data, sessionId: sessionId, since: since, stamp: stamp)
+    }
+
+    /// V2 companion operations. Paths and methods are allowlisted; payloads remain on stdin.
+    private func emitMeetingAsk() throws {
+        var input = Data()
+        while input.count <= 1_000_000 {
+            let chunk = try FileHandle.standardInput.read(upToCount: min(16_384, 1_000_001 - input.count)) ?? Data()
+            if chunk.isEmpty { break }; input.append(chunk)
+        }
+        guard input.count <= 1_000_000,
+              let envelope = try? JSONSerialization.jsonObject(with: input) as? [String: Any],
+              let operation = envelope["operation"] as? String else {
+            emit(ok: false, message: "Meeting assistant request is invalid."); return
+        }
+        let payload = envelope["payload"] as? [String: Any] ?? [:]
+        if operation == "identity" {
+            // Local identity must remain available while the server is offline so
+            // cached meeting history stays scoped to the existing pairing.
+            let token = try readToken()
+            let hash = SHA256.hash(data: Data(token.utf8)).map { String(format: "%02x", $0) }.joined()
+            emit(ok: true, message: "Local pairing identity", details: ["pairingContext": hash]); return
+        }
+        var path = "/api/meeting-ask/", method = "GET", body: String?
+        let session = payload["sessionId"] as? String ?? ""
+        let instance = payload["serverInstanceId"] as? String ?? ""
+        let id = payload["requestId"] as? String ?? ""
+        func encoded(_ text: String) -> String { text.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? "" }
+        switch operation {
+        case "config": path += "config"
+        case "configure": path += "config"; method = "PUT"
+        case "submit": path += "requests"; method = "POST"
+        case "status", "cancel":
+            guard UUID(uuidString: id) != nil else { emit(ok: false, message: "Request identity is invalid."); return }
+            path += "requests/" + id
+            if operation == "cancel" { path += "/cancel"; method = "POST" }
+        case "history", "export":
+            guard Self.liveTranscriptValidId(session), !instance.isEmpty, instance.count <= 128 else {
+                emit(ok: false, message: "Meeting identity is invalid."); return
+            }
+            let offset = max(0, min(100_000, payload["offset"] as? Int ?? 0))
+            path += operation + "?sessionId=" + encoded(session) + "&serverInstanceId=" + encoded(instance) + "&offset=\(offset)&limit=50"
+        case "files": path += "files"; method = "PUT"
+        default: emit(ok: false, message: "Meeting assistant operation is unsupported."); return
+        }
+        if method != "GET" { body = String(data: try JSONSerialization.data(withJSONObject: payload), encoding: .utf8) }
+        let token = try speakerReviewToken()
+        guard let response = request(path, method: method, token: token, body: body, timeout: 25) else {
+            emit(ok: false, message: "Meeting assistant is offline. Your question is retained; nothing retries automatically."); return
+        }
+        var details = response.body ?? [:]
+        details["httpStatus"] = response.status
+        if (200..<300).contains(response.status) {
+            if operation == "config" {
+                details["pairingContext"] = SHA256.hash(data: Data(token.utf8)).map { String(format: "%02x", $0) }.joined()
+            }
+            emit(ok: true, message: "Meeting assistant", details: details)
+        } else {
+            let message: String
+            switch response.status {
+            case 404: message = operation == "config" ? "Update the COS server to use saved meeting assistance." : "This request or meeting is unavailable."
+            case 401, 403: message = "Reconnect COS Control to the server."
+            case 409: message = "Meeting assistant could not accept this request. Refresh its history before retrying."
+            case 429: message = "Meeting assistant is busy or has reached its usage limit. Your question is retained."
+            default: message = "Meeting assistant could not finish. Check the selected model and server, then retry."
+            }
+            // No raw provider messages or transcript-bearing errors cross this boundary.
+            emit(ok: false, message: message, details: ["httpStatus": response.status])
+        }
     }
 
     /// Bounded stdin only: transcript and questions never appear in process arguments or logs.
