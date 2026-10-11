@@ -222,6 +222,14 @@ need(body(ask, "func modelSelection(model: ControllerModel) -> Binding<String> {
 need(select.index("MeetingAskModelPicker.change(") < select.index("pendingModel = choice") < select.index("Task {"),
      "selectModel takes the lock before the server is asked, so a second pick is refused")
 
+# ── 0.5.282: the background file observer sends only changed lists; a new server identity starts empty.
+need(body(ask, "func observeFiles(_ files: WorkCardFileStore, model: ControllerModel) {").count("registerFiles(session, model: model, onlyIfChanged: true)") == 1,
+     "the file observer re-sends only meetings whose file list changed")
+need("MeetingAskFileSync.needsRegistration(published: publishedFiles[session], current: files)" in body(ask, "@discardableResult func registerFiles(_ session: String, model: ControllerModel, onlyIfChanged: Bool = false) async -> Bool {"),
+     "registerFiles compares against what this server was last sent")
+need(re.search(r"if scope != identity \{.*?publishedFiles = \[:\]; identity = scope", ask, re.S) is not None,
+     "a different server identity clears the sent file lists so the new server receives them")
+
 # ── Every whole-app compile list carries the new file.
 for rel in ("Tests/run.sh", "scripts/build-release.sh", "Tests/run-held-ui.sh", "Tests/run-merge-ui.sh", "Tests/run-markdown-ui.sh",
             "Tests/run-pet-composer-ui.sh", "Tests/run-control2-foundation-contract.sh", "scripts/build-foundation-lab.sh"):

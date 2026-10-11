@@ -14,6 +14,12 @@ import Foundation
         var record = MeetingAskLocalRecord(scope: a)
         record.draft = "Keep this before admission"
         try disk.write(record)
+        let sentFile = MeetingAskFile(id: "f1", revision: "r1", name: "notes.txt", status: "ready", text: "Friday", notice: nil)
+        check(MeetingAskFileSync.needsRegistration(published: nil, current: []), "a meeting never sent to this server is sent")
+        check(!MeetingAskFileSync.needsRegistration(published: [sentFile], current: [sentFile]), "an unchanged file list is not re-sent")
+        var revised = sentFile; revised.revision = "r2"
+        check(MeetingAskFileSync.needsRegistration(published: [sentFile], current: [revised]), "a changed file revision is sent")
+        check(MeetingAskFileSync.needsRegistration(published: [sentFile], current: []), "a removed file is sent")
         let protection = try root.appendingPathComponent(a + ".json").resourceValues(forKeys: [.fileProtectionKey]).fileProtection
         check(protection == .completeUntilFirstUserAuthentication, "record stays writable while the Mac is locked (class C, not class B)")
         let loaded = try disk.read(a)

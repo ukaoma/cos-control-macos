@@ -180,6 +180,15 @@ struct MeetingAskLocalRecord: Codable {
     var files: [MeetingAskFile] = []
 }
 
+/// 0.5.282: the file observer fires for every meeting on any file change, so 0.5.281 re-sent every meeting's list
+/// each time one file changed. A list is sent when it was never sent to this server or differs from what was sent.
+enum MeetingAskFileSync {
+    static func needsRegistration(published: [MeetingAskFile]?, current: [MeetingAskFile]) -> Bool {
+        guard let published else { return true }
+        return published != current
+    }
+}
+
 /// No automatic inference replay. An outbox can only be reconciled using its original request ID.
 struct MeetingAskDisk {
     let root: URL

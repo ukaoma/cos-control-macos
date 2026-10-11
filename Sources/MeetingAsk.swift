@@ -72,7 +72,8 @@ final class MeetingAskStore: ObservableObject {
             if scope != identity {
                 flushAll()
                 for task in jobs.values { task.cancel() }; jobs = [:]
-                records = [:]; loaded = []; errors = [:]; running = []; identity = scope
+                // A different server has none of this Mac's file lists yet.
+                records = [:]; loaded = []; errors = [:]; running = []; publishedFiles = [:]; identity = scope
             }
             config = next; reach = .online; notice = nil
             try disk.writeConfig(next)
@@ -286,10 +287,13 @@ final class MeetingAskStore: ObservableObject {
                 let prefix = "meetingctx:g2:"
                 return key.hasPrefix(prefix) ? String(key.dropFirst(prefix.count)) : nil
             }
-            Task { for session in sessions { _ = await self.registerFiles(session, model: model) } }
+            // Any file change republishes the manifests of every meeting; send only the lists that changed.
+            Task { for session in sessions { _ = await self.registerFiles(session, model: model, onlyIfChanged: true) } }
         }
     }
-    @discardableResult func registerFiles(_ session: String, model: ControllerModel) async -> Bool {
+    /// `onlyIfChanged` is for the background observer only. The send before a question stays unconditional, so the
+    /// server can never lack a file that question references.
+    @discardableResult func registerFiles(_ session: String, model: ControllerModel, onlyIfChanged: Bool = false) async -> Bool {
         while fileSyncing.contains(session), !Task.isCancelled { try? await Task.sleep(for: .milliseconds(50)) }
         guard !Task.isCancelled else { return false }
         fileSyncing.insert(session)
@@ -299,6 +303,7 @@ final class MeetingAskStore: ObservableObject {
         guard let config, online else { return false }
         let ticket = identity
         let files = model.meetingAskFiles(session: session)
+        if onlyIfChanged, !MeetingAskFileSync.needsRegistration(published: publishedFiles[session], current: files) { return true }
         do {
             let registered: MeetingAskFileReply = try await transport("files", payload: ["sessionId": session, "serverInstanceId": config.serverInstanceId, "files": try object(files)], model: model, as: MeetingAskFileReply.self)
             guard ticket == identity else { return false }
