@@ -1,3 +1,11 @@
+## 0.5.281 (build 334) — private test candidate
+
+- Drop a screenshot or file on the Ask box, or paste an image into it, and COS attaches it to the live meeting under Files shared in this meeting. The question you are typing is not changed, and a line above the box names the file that was attached. Before, a dropped screenshot became its file path as the question, with no file attached.
+- A question that is only the path of a file on this Mac is not sent. COS attaches the file instead and says why. A question that mentions a path among other words is sent as usual.
+- Files shared in this meeting starts open while a meeting records, so the drop zone, Paste screenshot and Add files are in view. You can still close it.
+- The Ask box is now a native text view. Return asks; Shift-Return or Option-Return starts a new line.
+- A screenshot's words are read on this Mac and shared with Ask as text. The model does not see the image itself.
+
 ## 0.5.280 (build 333) — private test candidate
 
 - Live COS Ask keeps its history. Questions, answers and sources are saved with the meeting, so they stay when you switch meetings, leave the screen, save the meeting or restart COS Control. Answers are no longer capped at 12. Opening, resizing and navigating never run a model.

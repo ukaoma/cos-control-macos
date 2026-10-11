@@ -1,7 +1,7 @@
 {
-  "version": "0.5.280",
+  "version": "0.5.281",
   "whatsNew": {
-    "summary": "Live COS Ask now keeps every question and answer with the meeting, uses your meeting files, and lets you pick its model. Requires server 6.69.0. Private test candidate.",
+    "summary": "Drop or paste a screenshot on the Ask box to attach it to the meeting. Live COS Ask keeps every question and answer, uses your meeting files, and lets you pick its model. Requires server 6.69.0. Private test candidate.",
     "sections": [
       {
         "title": "Ask keeps its history",
@@ -23,6 +23,7 @@
       {
         "title": "Fixes",
         "items": [
+          "Dropping or pasting a screenshot on the Ask box attaches it to the meeting. It no longer sends the file path as your question.",
           "Ask keeps saving while the Mac is locked during a meeting. It no longer shows a false Check free disk space error.",
           "A live transcript that keeps failing after a recording ends stops retrying after five minutes.",
           "An older server shows an update message for Ask. The live transcript keeps working."
