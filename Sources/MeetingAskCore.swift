@@ -141,6 +141,8 @@ struct MeetingAskExchange: Codable, Identifiable, Sendable {
     var selectedModel: MeetingAskModel
     var model: String?
     var answer: String?
+    /// 0.5.283: the answer in labeled sections (server 6.71.0). Older servers omit it; `answer` then carries the labels.
+    var sections: MeetingAskSectionList?
     var sources: [LiveAskSource]
     var notices: [String]
     var throughMs: Int
@@ -150,6 +152,111 @@ struct MeetingAskExchange: Codable, Identifiable, Sendable {
     var id: String { requestId }
     var terminal: Bool { !["pending", "running"].contains(status) }
 }
+/// One labeled part of an answer (server 6.71.0): "So what", "Decided", "You owe" and so on, with the ids it cites.
+/// Lenient: a missing or wrong-typed field reads as empty, so one bad section can never drop the exchange it sits in.
+struct MeetingAskSection: Codable, Equatable, Sendable {
+    var label: String
+    var text: String
+    var sources: [String]
+    init(label: String, text: String, sources: [String] = []) { self.label = label; self.text = text; self.sources = sources }
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        label = (try? values.decode(String.self, forKey: .label)) ?? ""
+        text = (try? values.decode(String.self, forKey: .text)) ?? ""
+        sources = (try? values.decode([String].self, forKey: .sources)) ?? []
+    }
+}
+/// `sections` as the server sends it. Anything that is not an array of sections reads as no sections, and an entry
+/// that is not a section is skipped, so a malformed field falls back to `answer` instead of failing the whole history.
+struct MeetingAskSectionList: Codable, Equatable, Sendable {
+    var items: [MeetingAskSection]
+    init(_ items: [MeetingAskSection]) { self.items = items }
+    private struct Skip: Decodable { init(from decoder: Decoder) throws {} }
+    init(from decoder: Decoder) throws {
+        items = []
+        guard var list = try? decoder.unkeyedContainer() else { return }
+        while !list.isAtEnd {
+            if let section = try? list.decode(MeetingAskSection.self) { items.append(section) } else { _ = try list.decode(Skip.self) }
+        }
+    }
+    func encode(to encoder: Encoder) throws {
+        var value = encoder.singleValueContainer()
+        try value.encode(items)
+    }
+}
+
+/// 0.5.283 (Miles, 2026-10-11, the Meeting Ask polish round): an answer is drawn as bold-label rows, So what first. The
+/// rows come from the server's `sections` (6.71.0), else from the `**Label:** text` lines 6.71.0 also writes into
+/// `answer`, else there are none and the answer is drawn as plain Markdown, as 0.5.282 drew it. Pure:
+/// Tests/MeetingAskChecks.swift.
+enum MeetingAskAnswerRows {
+    struct Row: Equatable, Sendable {
+        let label: String
+        let text: String
+    }
+
+    /// Every label the server's contract allows (catch_up, summary, actions, questions, ask). Only these start a row
+    /// when `answer` is read, so a bolded word in an older server's free Markdown is never taken for a label.
+    static let known = ["So what", "Decided", "Open", "You owe", "Next", "Covered", "Others owe", "Unowned", "Proposed", "Ask", "Details"]
+
+    static func rows(sections: [MeetingAskSection]?, answer: String?) -> [Row]? {
+        let given = (sections ?? []).compactMap { section -> Row? in
+            let label = section.label.trimmingCharacters(in: .whitespacesAndNewlines)
+            let text = section.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            return label.isEmpty || text.isEmpty ? nil : Row(label: label, text: text)
+        }
+        if !given.isEmpty { return soWhatFirst(given) }
+        return answer.flatMap(parse)
+    }
+
+    /// `**Label:** text` lines, one row each; an unlabeled line joins the row above it. Nil, so the answer stays plain
+    /// Markdown, unless the first line with words is a known label.
+    static func parse(_ answer: String) -> [Row]? {
+        var rows: [(label: String, lines: [String])] = []
+        for raw in answer.components(separatedBy: .newlines) {
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            if line.isEmpty { continue }
+            if let (label, rest) = labelLine(line) {
+                rows.append((label, rest.isEmpty ? [] : [rest]))
+            } else {
+                guard !rows.isEmpty else { return nil }
+                rows[rows.count - 1].lines.append(line)
+            }
+        }
+        let built = rows.compactMap { row -> Row? in
+            let text = row.lines.joined(separator: "\n")
+            return text.isEmpty ? nil : Row(label: row.label, text: text)
+        }
+        return built.isEmpty ? nil : soWhatFirst(built)
+    }
+
+    /// `**So what:** words` (or `**So what**: words`) with a known label, as (that label, words); nil for any other line.
+    static func labelLine(_ line: String) -> (String, String)? {
+        guard line.hasPrefix("**") else { return nil }
+        let body = line.dropFirst(2)
+        for close in [":**", "**:"] {
+            guard let end = body.range(of: close) else { continue }
+            let name = body[..<end.lowerBound].trimmingCharacters(in: .whitespaces)
+            guard let label = known.first(where: { $0.caseInsensitiveCompare(name) == .orderedSame }) else { continue }
+            return (label, String(body[end.upperBound...]).trimmingCharacters(in: .whitespaces))
+        }
+        return nil
+    }
+
+    /// So what leads; every other row keeps its place.
+    static func soWhatFirst(_ rows: [Row]) -> [Row] {
+        rows.filter { $0.label == "So what" } + rows.filter { $0.label != "So what" }
+    }
+
+    /// A row's words as drawn: a Markdown list marker at the start of a line becomes a bullet.
+    static func display(_ text: String) -> String {
+        text.components(separatedBy: "\n").map { line -> String in
+            for marker in ["- ", "* "] where line.hasPrefix(marker) { return "\u{2022} " + line.dropFirst(marker.count) }
+            return line
+        }.joined(separator: "\n")
+    }
+}
+
 struct MeetingAskHistory: Codable, Sendable {
     var exchanges: [MeetingAskExchange]
     var nextOffset: Int?

@@ -104,12 +104,21 @@ MUTANTS = [
     ("banner installs without the window", V, "                model.presentWhatsNew()\n", "                model.installAppUpdate()\n", "[banner opens]", "pins"),
     ("Download and install does nothing", V, "onInstall: { model.installAppUpdate() }", "onInstall: {}", "[install path]", "pins"),
     ("app never wires the window", A, "        model.showWhatsNew = { whatsNewWindow.show(model: model) }\n", "", "[app wires window]", "pins"),
-    ("eyebrow heading", V, "                .font(COSType.body(16, weight: .semibold))\n", "                .font(COSType.body(16, weight: .semibold)).textCase(.uppercase).tracking(1.2)\n", "[no eyebrow kickers]", "pins"),
+    ("eyebrow heading", V, "                .font(COSType.display(18, weight: .semibold))\n", "                .font(COSType.display(18, weight: .semibold)).textCase(.uppercase).tracking(1.2)\n", "[no eyebrow kickers]", "pins"),
     ("Cancel never disabled", V, "                    .disabled(!footer.cancelEnabled)\n", "", "[footer buttons]", "pins"),
     ("Return installs", V, "                        .disabled(!footer.primaryEnabled)\n", "                        .disabled(!footer.primaryEnabled)\n                        .keyboardShortcut(.defaultAction)\n", "[return never installs]", "pins"),
     ("summary as Markdown", V, "Text(verbatim: content.summaryText)", "Text(LocalizedStringKey(content.summaryText))", "[verbatim text]", "pins"),
     ("no recenter", V, "        if !window.isVisible { window.center() }\n", "", "[recenter]", "pins"),
     ("gate not run", R, "\"$ROOT/Tests/run-whats-new.sh\"\n", "", "[gate]", "pins"),
+    # 0.5.283: COS styling, light and dark (adaptive palette tokens, brand type, the accent button, 4.5:1 text).
+    ("white slab window", V, "        window.backgroundColor = COSInk.panelNS\n        window.setContentSize(", "        window.backgroundColor = COSInk.cardNS\n        window.setContentSize(", "[palette tokens]", "pins"),
+    ("white card", V, "        .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 14))\n", "        .background(Color.white, in: RoundedRectangle(cornerRadius: 14))\n", "[palette tokens]", "pins"),
+    ("forced light", V, "        .frame(width: Self.width, height: Self.height)\n        .background(COSPalette.panel)\n", "        .frame(width: Self.width, height: Self.height)\n        .background(COSPalette.panel)\n        .preferredColorScheme(.light)\n", "[palette tokens]", "pins"),
+    ("byline not mono", V, "                        .font(COSType.mono(12.5))\n", "                        .font(COSType.body(12.5))\n", "[brand type]", "pins"),
+    ("ink words on light accent", V, "    static let onAccentNS = adaptiveNSColor(\n        light: NSColor(red: 1.00, green: 1.00, blue: 1.00, alpha: 1),", "    static let onAccentNS = adaptiveNSColor(\n        light: NSColor(red: 0.12, green: 0.09, blue: 0.07, alpha: 1),", "[contrast]", "pins"),
+    ("muted grey on cream", V, "        light: NSColor(red: 0.400, green: 0.388, blue: 0.369, alpha: 1),  // #66635e", "        light: NSColor(red: 0.455, green: 0.447, blue: 0.427, alpha: 1),  // #74726d", "[contrast]", "pins"),
+    ("primary words not onAccent", V, ".foregroundStyle(prominent ? COSPalette.onAccent :", ".foregroundStyle(prominent ? COSPalette.ink :", "[accent button]", "pins"),
+    ("secondary unbordered", V, "(hot ? COSPalette.accent : COSPalette.border)", "(hot ? COSPalette.accent : Color.clear)", "[accent button]", "pins"),
 ]
 
 def run(lane, copy):

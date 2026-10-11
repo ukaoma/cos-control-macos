@@ -161,6 +161,63 @@ import Foundation
         cfg.selected = sonnet
         check(Pick.selectedID(cfg) == "claude:sonnet" && Pick.change(to: "claude:sonnet", config: cfg, reach: .online, pending: nil) == nil
               && Pick.change(to: "claude:haiku", config: cfg, reach: .online, pending: nil) == haiku, "model pick: after a switch, the old model is a pick again")
+
+        // 0.5.283: labeled answers. Server 6.71.0 sends `sections`; 6.70.0 omits it; `answer` carries `**Label:** text`.
+        typealias Rows = MeetingAskAnswerRows
+        typealias Row = MeetingAskAnswerRows.Row
+        func decode(_ json: String) throws -> MeetingAskExchange { try JSONDecoder().decode(MeetingAskExchange.self, from: Data(json.utf8)) }
+        func wire(answer: String, sections: String?) -> String {
+            let answerJSON = String(data: try! JSONEncoder().encode(answer), encoding: .utf8)!
+            return #"{"requestId":"r1","sessionId":"s","serverInstanceId":"i","action":"catch_up","question":"Catch me up","status":"completed","createdAt":"t","updatedAt":"t","selectedModel":{"engine":"claude","model":"haiku"},"answer":"#
+                + answerJSON + (sections.map { #","sections":"# + $0 } ?? "")
+                + #","sources":[{"id":"T1","kind":"transcript","title":"MU","text":"Starter holds"}],"notices":[],"throughMs":1000,"files":[]}"#
+        }
+        let labeled = "**So what:** Price change is agreed [T1].\n**Decided:** Starter holds at $59.\n**You owe:** The churn read."
+        // An old 6.70.0 payload: no sections key at all. It decodes, and the rows come from `answer`.
+        let old = try decode(wire(answer: labeled, sections: nil))
+        check(old.sections == nil && old.answer == labeled && old.sources.count == 1, "sections: an older server's exchange decodes without sections")
+        check(Rows.rows(sections: old.sections?.items, answer: old.answer)
+              == [Row(label: "So what", text: "Price change is agreed [T1]."), Row(label: "Decided", text: "Starter holds at $59."), Row(label: "You owe", text: "The churn read.")],
+              "sections: without sections, **Label:** lines in answer become rows, citations kept")
+        // A 6.71.0 payload: sections win over answer.
+        let fresh = try decode(wire(answer: "ignored when sections are present", sections: #"[{"label":"So what","text":"From sections [T1]","sources":["T1"]},{"label":"Open","text":"Nov 1 or Nov 15","sources":[]}]"#))
+        check(fresh.sections?.items == [MeetingAskSection(label: "So what", text: "From sections [T1]", sources: ["T1"]), MeetingAskSection(label: "Open", text: "Nov 1 or Nov 15")],
+              "sections: decoded with labels, text and cited ids")
+        check(Rows.rows(sections: fresh.sections?.items, answer: fresh.answer) == [Row(label: "So what", text: "From sections [T1]"), Row(label: "Open", text: "Nov 1 or Nov 15")],
+              "sections: the server's sections are the rows when present")
+        let both = try decode(wire(answer: "**So what:** From answer", sections: #"[{"label":"So what","text":"From sections"}]"#))
+        check(Rows.rows(sections: both.sections?.items, answer: both.answer) == [Row(label: "So what", text: "From sections")],
+              "sections: the server's sections win over a labeled answer")
+        // Malformed sections never lose the exchange: wrong type reads as none, a bad entry is skipped, empty ones dropped.
+        let wrongType = try decode(wire(answer: labeled, sections: #"{"label":"So what"}"#))
+        check(wrongType.sections?.items == [] && Rows.rows(sections: wrongType.sections?.items, answer: wrongType.answer)?.first?.label == "So what",
+              "sections: a non-array sections field falls back to answer")
+        let mixed = try decode(wire(answer: "plain", sections: #"[7,{"label":"So what","text":"Kept"},{"label":"Decided","text":"  "},{"label":"Open"}]"#))
+        check(Rows.rows(sections: mixed.sections?.items, answer: mixed.answer) == [Row(label: "So what", text: "Kept")],
+              "sections: a non-object entry is skipped and an empty section is dropped")
+        let nullSections = try decode(wire(answer: "Answer [T1]", sections: "null"))
+        check(nullSections.sections == nil && Rows.rows(sections: nil, answer: nullSections.answer) == nil, "sections: null is absent")
+        // A record saved with sections reads back the same (disk keeps the server's shape).
+        let roundTrip = try JSONDecoder().decode(MeetingAskExchange.self, from: JSONEncoder().encode(fresh))
+        check(roundTrip.sections == fresh.sections, "sections: a saved record keeps its sections")
+        // The parser guard: rows only when the first line with words is a known label. Otherwise the answer stays plain.
+        check(Rows.parse("Answer [T1]") == nil, "parser guard: a plain answer has no rows")
+        check(Rows.parse("Here is where things stand.\n**Decided:** Starter holds.") == nil, "parser guard: words before the first label keep the answer plain")
+        check(Rows.parse("**Important:** read this first.\n**Decided:** Starter holds.") == nil, "parser guard: an unknown bold label is not a row")
+        check(Rows.parse("**So what**") == nil, "parser guard: a bold phrase with no colon is not a label")
+        check(Rows.parse("") == nil && Rows.parse("\n  \n") == nil, "parser guard: an empty answer has no rows")
+        // Shapes 6.71.0 writes, and ones a model may drift into.
+        check(Rows.parse("**Decided:** A.\n**So what:** B.") == [Row(label: "So what", text: "B."), Row(label: "Decided", text: "A.")], "parse: So what leads")
+        check(Rows.parse("**so what**: lower case\n\n**Next:** Ship it") == [Row(label: "So what", text: "lower case"), Row(label: "Next", text: "Ship it")],
+              "parse: **Label**: and any case read as the canonical label; blank lines between rows are fine")
+        check(Rows.parse("**So what:** Two things.\n- Price holds\n- Date moves\n**Ask:** Who signs?") == [Row(label: "So what", text: "Two things.\n- Price holds\n- Date moves"), Row(label: "Ask", text: "Who signs?")],
+              "parse: unlabeled lines join the row above them")
+        check(Rows.parse("**Ask:** One?\n**Ask:** Two?\n**Ask:** Three?")?.count == 3, "parse: questions repeat the Ask label")
+        check(Rows.parse("**So what:** Fine.\n**Open:**") == [Row(label: "So what", text: "Fine.")], "parse: an empty section is dropped, never padded")
+        check(Rows.parse("**So what:** Uses **bold** inside.\n**Important:** stays text") == [Row(label: "So what", text: "Uses **bold** inside.\n**Important:** stays text")],
+              "parse: inline bold and an unknown label inside a row stay as its words")
+        check(Rows.display("Two things.\n- Price holds\n* Date moves") == "Two things.\n\u{2022} Price holds\n\u{2022} Date moves", "display: list markers become bullets")
+        for label in Rows.known { check(Rows.labelLine("**\(label):** x")?.0 == label, "every contract label is known: \(label)") }
         print("PASS Meeting Ask: \(count) checks")
     }
 }

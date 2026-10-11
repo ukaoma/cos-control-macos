@@ -151,6 +151,45 @@ pin('if let whatsNew = Self.sanitizedWhatsNew(stable["whatsNew"]) { details["wha
 pin('stable["whatsNew"]' not in check_verb.replace('Self.sanitizedWhatsNew(stable["whatsNew"])', ""), "helper whatsNew",
     "whatsNew never reaches details uncleaned")
 
+# 0.5.283 (the polish round's Mac What's New board): COS styling, light and dark, never a white slab. Every color in the
+# window is an adaptive palette token, so it follows the system appearance live.
+styled = code(between(views, "struct WhatsNewView: View {", "struct ControlPanel: View {"))
+for banned in (".white", "NSColor.white", "Color(red:", "Color(nsColor:", "Color(hex", ".preferredColorScheme(", ".colorScheme(", "NSAppearance"):
+    pin(banned not in styled, "palette tokens", f"the What's New window must not use {banned}; colors come from COSPalette")
+pin("window.backgroundColor = COSInk.panelNS" in presenter and "COSInk.cardNS" not in presenter and "appearance" not in presenter,
+    "palette tokens", "the window backing is the adaptive cream panel, and it never forces an appearance")
+pin(".background(COSPalette.panel)" in window_view.split("private func footerBar", 1)[0], "palette tokens", "the window body is the panel")
+section_view = code(between(views, "private struct WhatsNewSection", "private struct WhatsNewBullet"))
+pin(".background(COSPalette.card, in: RoundedRectangle(cornerRadius: 14))" in section_view, "palette tokens",
+    "each section sits on a card (white light, raised espresso dark)")
+pin("COSType.display(" in section_view and "COSType.display(" in window_view.split("ScrollView", 1)[0], "brand type",
+    "headings and the title are Fraunces")
+pin("COSType.mono(" in window_view.split("ScrollView", 1)[0] and "if let byline = presentation.byline" in window_view, "brand type",
+    "the version line is JetBrains Mono")
+button_view = code(between(views, "private struct WhatsNewButtonStyle", "struct ControlPanel: View {"))
+pin("prominent ? COSPalette.onAccent" in button_view and "prominent ? COSPalette.accent" in button_view, "accent button",
+    "the primary button is the accent gold with onAccent words")
+pin("COSPalette.border" in button_view and "Color.clear" in button_view, "accent button", "the secondary button is bordered, no fill")
+# Text contrast >= 4.5:1, computed from the token values themselves (WCAG 2 relative luminance), light and dark.
+ink_block = between(views, "private enum COSInk {", "\n}\n")
+def token(name):
+    m = re.search(name + r"NS = adaptiveNSColor\(\s*light:\s*NSColor\(red: ([\d.]+), green: ([\d.]+), blue: ([\d.]+), alpha: 1\),[^\n]*\n\s*dark:\s*NSColor\(red: ([\d.]+), green: ([\d.]+), blue: ([\d.]+), alpha: 1\)", ink_block)
+    pin(m is not None, "contrast", f"cannot read the {name} token")
+    v = [float(x) for x in m.groups()]
+    return {"light": v[:3], "dark": v[3:]}
+def luminance(rgb):
+    lin = [c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4 for c in rgb]
+    return 0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2]
+def ratio(a, b):
+    la, lb = sorted((luminance(a), luminance(b)), reverse=True)
+    return (la + 0.05) / (lb + 0.05)
+panel, card, subtle, accent, on_accent, raised = (token(n) for n in ("panel", "card", "subtle", "accent", "onAccent", "raised"))
+for mode in ("light", "dark"):
+    for words, ground, what in ((subtle, panel, "the build line and footer note on the panel"), (on_accent, accent, "the primary button's words"),
+                                (accent, card, "the bullet dots and hover words on a card"), (subtle, raised, "secondary words on a raised strip")):
+        r = ratio(words[mode], ground[mode])
+        pin(r >= 4.5, "contrast", f"{what} in {mode} is {r:.2f}:1, under 4.5:1")
+
 # The gate runs it.
 pin('"$ROOT/Tests/run-whats-new.sh"' in run_sh, "gate", "Tests/run.sh runs the What's New gate")
 print("PASS: What's New pins")

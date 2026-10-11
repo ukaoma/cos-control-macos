@@ -1,3 +1,9 @@
+## 0.5.283 (build 336) — private test candidate
+
+- Live COS Ask answers read as labeled rows, So what first: the label in bold, then its words, with citations and the sources list where they were. Catch me up shows So what, Decided, Open, You owe and Next; Summarize, Action items and questions use their own labels. Server 6.71.0 sends the sections; an older server's labeled answer is read the same way, and an answer with no labels still reads as before.
+- Catch me up asks about the meeting so far, not only the last minute (the whole meeting needs server 6.71.0).
+- What's New is in COS styling, light and dark: the cream panel, a card for the summary and each section, Fraunces headings, the build line in mono, and a gold Download and install. It follows the Mac's appearance as it changes.
+
 ## 0.5.282 (build 335) — private test candidate
 
 - Switch the meeting assistant model right under the Ask box in Live COS Ask. It is the same setting as Settings, so a change in either shows in both, and an answer already running keeps its model. Models COS cannot use are listed with the reason, in plain words. While a switch is with COS, or COS is out of reach or older, the control is locked and says why.

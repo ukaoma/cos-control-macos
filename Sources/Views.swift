@@ -72,6 +72,19 @@ private enum COSInk {
     static let raisedNS = adaptiveNSColor(
         light: NSColor(red: 0.933, green: 0.910, blue: 0.867, alpha: 1),  // #eee8dd
         dark:  NSColor(red: 0.188, green: 0.153, blue: 0.122, alpha: 1))  // #30271f
+    // 0.5.283 (What's New in COS styling). Muted (#74726d) is 4.2:1 on the cream panel, under 4.5, so secondary words
+    // set on the panel itself use this darker warm grey (5.3:1 on cream, 4.9:1 on raised); dark keeps muted's value.
+    static let subtleNS = adaptiveNSColor(
+        light: NSColor(red: 0.400, green: 0.388, blue: 0.369, alpha: 1),  // #66635e
+        dark:  NSColor(red: 0.733, green: 0.682, blue: 0.604, alpha: 1))  // #bbae9a
+    // A secondary button's hairline, visible on the panel in both appearances.
+    static let borderNS = adaptiveNSColor(
+        light: NSColor(red: 0.847, green: 0.800, blue: 0.714, alpha: 1),  // #d8ccb6
+        dark:  NSColor(red: 0.290, green: 0.231, blue: 0.169, alpha: 1))  // #4a3b2b
+    // Words on an accent fill: white on #89662d (5.3:1), ink on #c9a86e (7.8:1).
+    static let onAccentNS = adaptiveNSColor(
+        light: NSColor(red: 1.00, green: 1.00, blue: 1.00, alpha: 1),
+        dark:  NSColor(red: 0.12, green: 0.09, blue: 0.07, alpha: 1))
 }
 
 /// MenuBarExtra(.window) is a translucent vibrancy window by default, so the
@@ -108,6 +121,9 @@ enum COSPalette {
     static let muted = Color(nsColor: COSInk.mutedNS)            // adaptive: warm secondary text
     static let raised = Color(nsColor: COSInk.raisedNS)          // adaptive: inset strip on a card
     static let live = Color(red: 0.86, green: 0.27, blue: 0.22)  // 0.5.278: the recording dot (live transcript)
+    static let subtle = Color(nsColor: COSInk.subtleNS)          // 0.5.283 adaptive: secondary words on the panel
+    static let border = Color(nsColor: COSInk.borderNS)          // 0.5.283 adaptive: a secondary button's hairline
+    static let onAccent = Color(nsColor: COSInk.onAccentNS)      // 0.5.283 adaptive: words on an accent fill
 }
 
 private enum CharacterGallery {
@@ -242,7 +258,7 @@ final class WhatsNewWindowPresenter {
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.isMovableByWindowBackground = true
-        window.backgroundColor = COSInk.cardNS
+        window.backgroundColor = COSInk.panelNS
         window.setContentSize(NSSize(width: WhatsNewView.width, height: WhatsNewView.height))
         window.isReleasedWhenClosed = false
         window.center()
@@ -279,10 +295,14 @@ struct WhatsNewWindowRoot: View {
     }
 }
 
-/// The What's New layout, as the reference: a large title naming the release, a rule, the build as a small byline, a
-/// scrolling body (the summary, then each section as a sentence-case heading with dotted rows), and a footer pinned to
-/// the bottom with Cancel on the left and Download and install on the right (Done alone after an update). Card and
-/// raised tokens, so it follows light and dark. Every string is drawn verbatim (no Markdown, no links).
+/// The What's New layout, as the reference: a large title naming the release, the build as a small byline, a scrolling
+/// body (the summary, then each section as a sentence-case heading with dotted rows), and a footer pinned to the bottom
+/// with Cancel on the left and Download and install on the right (Done alone after an update). 0.5.283 (Miles,
+/// 2026-10-11, the polish round's Mac What's New board): COS styling instead of a white slab. The window is the cream
+/// panel, the summary and each section sit on their own card (white, or raised espresso in dark), headings are
+/// Fraunces, words DM Sans, the build line JetBrains Mono, and the primary button is the accent gold. Every color is an
+/// adaptive palette token, so the window follows light and dark live. Every string is drawn verbatim (no Markdown, no
+/// links).
 struct WhatsNewView: View {
     static let width: CGFloat = 620
     static let height: CGFloat = 620
@@ -295,25 +315,25 @@ struct WhatsNewView: View {
         let footer = presentation.footer
         let content = presentation.content
         VStack(spacing: 0) {
-            Text(verbatim: presentation.title)
-                .font(COSType.display(30, weight: .bold))
-                .foregroundStyle(Color.primary)
-                .lineLimit(1)
-                .minimumScaleFactor(0.7)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 32)
-                .padding(.top, 38)
-                .padding(.bottom, 16)
-                .accessibilityAddTraits(.isHeader)
-            Rectangle().fill(COSPalette.line).frame(height: 1)
+            VStack(alignment: .leading, spacing: 5) {
+                Text(verbatim: presentation.title)
+                    .font(COSType.display(28, weight: .semibold))
+                    .foregroundStyle(Color.primary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+                    .accessibilityAddTraits(.isHeader)
+                if let byline = presentation.byline {
+                    Text(verbatim: byline)
+                        .font(COSType.mono(12.5))
+                        .foregroundStyle(COSPalette.subtle)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 32)
+            .padding(.top, 38)
+            .padding(.bottom, 14)
             ScrollView {
-                VStack(alignment: .leading, spacing: 24) {
-                    if let byline = presentation.byline {
-                        Text(verbatim: byline)
-                            .font(COSType.body(12))
-                            .foregroundStyle(COSPalette.muted)
-                            .padding(.bottom, -10)
-                    }
+                VStack(alignment: .leading, spacing: 14) {
                     WhatsNewSection(title: "Summary") {
                         Text(verbatim: content.summaryText)
                             .font(COSType.body(13.5))
@@ -334,13 +354,14 @@ struct WhatsNewView: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 32)
-                .padding(.vertical, 24)
+                .padding(.top, 4)
+                .padding(.bottom, 18)
             }
             Rectangle().fill(COSPalette.line).frame(height: 1)
             footerBar(footer)
         }
         .frame(width: Self.width, height: Self.height)
-        .background(COSPalette.card)
+        .background(COSPalette.panel)
         .cosControlTheme()
     }
 
@@ -381,31 +402,36 @@ struct WhatsNewView: View {
             if footer.showsReassurance {
                 Text(verbatim: footer.working ? "\(WhatsNewFooter.reassurance) \(WhatsNewFooter.closeNote)" : WhatsNewFooter.reassurance)
                     .font(COSType.body(11.5))
-                    .foregroundStyle(COSPalette.muted)
+                    .foregroundStyle(COSPalette.subtle)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 24)
-        .padding(.vertical, 16)
-        .background(COSPalette.raised)
+        .padding(.horizontal, 32)
+        .padding(.top, 14)
+        .padding(.bottom, 20)
+        .background(COSPalette.panel)
     }
 }
 
-/// A sentence-case heading (semibold, never tracked caps: no eyebrow kickers) over its content.
+/// A card on the panel: a sentence-case Fraunces heading (never tracked caps: no eyebrow kickers) over its content.
 private struct WhatsNewSection<Content: View>: View {
     let title: String
     @ViewBuilder let content: Content
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 8) {
             Text(verbatim: title)
-                .font(COSType.body(16, weight: .semibold))
+                .font(COSType.display(18, weight: .semibold))
                 .foregroundStyle(Color.primary)
                 .accessibilityAddTraits(.isHeader)
             content
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 18)
+        .padding(.vertical, 16)
+        .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 14))
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(COSPalette.line, lineWidth: 1))
     }
 }
 
@@ -430,8 +456,9 @@ private struct WhatsNewBullet: View {
     }
 }
 
-/// The footer's two buttons, a size up from the panel's chips for a 620 pt window: Download and install in gold with
-/// ink words, Cancel on the card with a hairline.
+/// The footer's two buttons, a size up from the panel's chips for a 620 pt window. Primary: the accent gold with
+/// onAccent words (white on #89662d light, ink on #c9a86e dark). Secondary: no fill, a border hairline, primary words
+/// that turn accent on hover.
 private struct WhatsNewButtonStyle: ButtonStyle {
     let prominent: Bool
 
@@ -448,16 +475,16 @@ private struct WhatsNewButtonStyle: ButtonStyle {
         var body: some View {
             let hot = (hovered || configuration.isPressed) && isEnabled
             configuration.label
-                .font(COSType.body(13, weight: .semibold))
-                .foregroundStyle(prominent ? COSPalette.ink : (hot ? COSPalette.accent : Color.primary))
+                .font(COSType.body(13.5, weight: .semibold))
+                .foregroundStyle(prominent ? COSPalette.onAccent : (hot ? COSPalette.accent : Color.primary))
                 .padding(.horizontal, 18)
-                .padding(.vertical, 8)
-                .background(prominent ? COSPalette.gold.opacity(configuration.isPressed ? 0.8 : 1) : COSPalette.card,
-                            in: RoundedRectangle(cornerRadius: 8))
-                .overlay(RoundedRectangle(cornerRadius: 8)
-                    .stroke(prominent ? Color.clear : (hot ? COSPalette.accent : COSPalette.line), lineWidth: 1))
+                .frame(minHeight: 36)
+                .background(prominent ? COSPalette.accent.opacity(configuration.isPressed ? 0.85 : 1) : Color.clear,
+                            in: RoundedRectangle(cornerRadius: 10))
+                .overlay(RoundedRectangle(cornerRadius: 10)
+                    .stroke(prominent ? Color.clear : (hot ? COSPalette.accent : COSPalette.border), lineWidth: 1))
                 .opacity(isEnabled ? 1 : 0.5)
-                .contentShape(RoundedRectangle(cornerRadius: 8))
+                .contentShape(RoundedRectangle(cornerRadius: 10))
                 .onHover { hovered = $0 }
         }
     }

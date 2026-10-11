@@ -548,7 +548,7 @@ struct LiveAskPanel: View {
             if let feed {
                 MeetingAskActionsLayout {
                     ForEach(actions, id: \.0) { action, title in
-                        Button(title) { state.ask(action: action, question: title == "Catch me up" ? "Catch me up on the last minute" : title, feed: feed, model: model) }
+                        Button(title) { state.ask(action: action, question: title == "Catch me up" ? "Catch me up on the meeting so far" : title, feed: feed, model: model) }
                             .buttonStyle(COSQuietButtonStyle()).disabled(!state.online || state.running.contains(session) || record?.outbox != nil || feed.turns.isEmpty)
                     }
                 }
@@ -605,7 +605,9 @@ struct LiveAskPanel: View {
     private func answer(_ exchange: MeetingAskExchange) -> some View {
         VStack(alignment: .leading, spacing: 9) {
             Text(verbatim: exchange.question).font(COSType.body(12, weight: .semibold))
-            if let answer = exchange.answer { COSMarkdownView(text: answer, cacheID: exchange.id + exchange.updatedAt, bodySize: 13) }
+            // 0.5.283: bold-label rows, So what first, when the answer has labels; an older answer stays plain Markdown.
+            if let rows = MeetingAskAnswerRows.rows(sections: exchange.sections?.items, answer: exchange.answer) { MeetingAskAnswerRowsView(rows: rows, bodySize: 13) }
+            else if let answer = exchange.answer { COSMarkdownView(text: answer, cacheID: exchange.id + exchange.updatedAt, bodySize: 13) }
             else { Text(exchange.terminal ? "No answer · " + exchange.status : "Checking the meeting…").font(COSType.body(12)).foregroundStyle(.secondary) }
             if let reason = exchange.error { Text(MeetingAskText.failure(reason)).font(COSType.body(11)).foregroundStyle(COSPalette.amber) }
             ForEach(exchange.sources) { source in sourceRow(source) }.font(COSType.body(11))
@@ -645,6 +647,29 @@ struct LiveAskPanel: View {
                 }
             }
         }
+    }
+}
+
+/// 0.5.283: an answer's labeled rows (MeetingAskAnswerRows), each one paragraph: the label in semibold, then its words
+/// with their inline Markdown and [T1] citations kept. Selectable, like the Markdown answer it replaces.
+struct MeetingAskAnswerRowsView: View {
+    let rows: [MeetingAskAnswerRows.Row]
+    var bodySize: CGFloat = 13
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+                (Text(verbatim: row.label + ":").font(COSType.body(bodySize, weight: .semibold))
+                    + Text(verbatim: " ")
+                    + Text(COSMarkdownInlineCache.attributed(MeetingAskAnswerRows.display(row.text), italicSize: bodySize)))
+                    .font(COSType.body(bodySize))
+                    .lineSpacing(2.5)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 

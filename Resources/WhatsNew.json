@@ -1,8 +1,16 @@
 {
-  "version": "0.5.282",
+  "version": "0.5.283",
   "whatsNew": {
-    "summary": "Switch the meeting assistant model right under the Ask box. Drop or paste a screenshot to attach it to the meeting. Live COS Ask keeps every question and answer. Requires server 6.70.0. Private test candidate.",
+    "summary": "Ask answers now read as labeled rows, So what first, and Catch me up covers the meeting so far. What's New has the COS look in light and dark. Labeled answers need server 6.71.0. Private test candidate.",
     "sections": [
+      {
+        "title": "Answers you can skim",
+        "items": [
+          "Every answer leads with So what, then labeled rows like Decided, Open, You owe and Next. Sources stay listed under the answer.",
+          "Catch me up asks about the meeting so far, not only the last minute.",
+          "An answer from an older server still reads as before."
+        ]
+      },
       {
         "title": "Ask keeps its history",
         "items": [
@@ -28,6 +36,12 @@
           "A live transcript that keeps failing after a recording ends stops retrying after five minutes.",
           "An older server shows an update message for Ask. The live transcript keeps working.",
           "Ordinary public questions like who is or look up can search the web, with server 6.70.0. Your meeting details never go into a search."
+        ]
+      },
+      {
+        "title": "Look",
+        "items": [
+          "What's New uses the COS colors and type, and follows light and dark as the Mac changes."
         ]
       }
     ]
