@@ -194,6 +194,34 @@ for literal in ("Live transcript · preliminary · may change when saved", "COS 
                 "Saved meeting not found yet", "Finalizing", "Jump to live", "Copy transcript", "Live now"):
     need(literal in pure + meetings, "the copy says " + literal)
 
+# ── 0.5.282: the Live COS Ask model control. One setting, one control, one way to change it.
+ask = strip_comments(code("Sources/MeetingAsk.swift"))
+all_code = "".join(strip_comments(p.read_text()) for p in sorted((root / "Sources").glob("*.swift")))
+panel_body = body(body(ask, "struct LiveAskPanel: View {"), "var body: some View {")
+feed_block = body(panel_body, "            if let feed {\n                if let note")
+need(all_code.count("MeetingAskModelControl(store: state, model: model, compact: true)") == 1
+     and "MeetingAskModelControl(store: state, model: model, compact: true)" in feed_block
+     and feed_block.index('Button("Ask") { send(feed) }') < feed_block.index("MeetingAskModelControl("),
+     "the Ask panel shows the model control once, under the composer, only while the meeting is live")
+need(all_code.count("MeetingAskModelControl(store: store, model: model)") == 1
+     and "MeetingAskModelControl(store: store, model: model)" in body(ask, "struct MeetingAskSettings: View {"),
+     "Settings shows the same model control once")
+need(all_code.count("MeetingAskModelControl(") == 2, "the model control is drawn only in Settings and the Ask panel")
+control = body(ask, "struct MeetingAskModelControl: View {")
+need('COSDropdown("Model", selection: store.modelSelection(model: model),' in control and ask.count("COSDropdown(") == 1,
+     "the model control is a COSDropdown bound to the store's one selection, the only dropdown meeting assistance draws")
+need(".disabled(locked)" in control and "locked: lock != nil" in control and "let lock = store.modelLock" in control and "if let lock { Text(lock)" in control,
+     "the model control is disabled, with its reason shown, whenever the store says it is locked")
+need("MeetingAskModelPicker.rows(config)" in control and "enabled: row.enabled" in control and "note: row.note" in control,
+     "the model control lists the server's models with unavailable ones disabled and their reason")
+select = body(ask, "@discardableResult func selectModel(")
+need(len(re.findall(r"\.configure\(", all_code)) == 1 and "await self?.configure(choice, model: model)" in select,
+     "configure is called only from MeetingAskStore.selectModel (no second path, no per-question override)")
+need(body(ask, "func modelSelection(model: ControllerModel) -> Binding<String> {").count("selectModel(") == 1,
+     "the controls' binding writes only through selectModel")
+need(select.index("MeetingAskModelPicker.change(") < select.index("pendingModel = choice") < select.index("Task {"),
+     "selectModel takes the lock before the server is asked, so a second pick is refused")
+
 # ── Every whole-app compile list carries the new file.
 for rel in ("Tests/run.sh", "scripts/build-release.sh", "Tests/run-held-ui.sh", "Tests/run-merge-ui.sh", "Tests/run-markdown-ui.sh",
             "Tests/run-pet-composer-ui.sh", "Tests/run-control2-foundation-contract.sh", "scripts/build-foundation-lab.sh"):

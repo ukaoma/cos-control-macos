@@ -24,6 +24,83 @@ struct MeetingAskConfig: Codable, Sendable {
     var pairingContext: String?
     var web: MeetingAskWeb?
 }
+/// Where meeting assistance stands with the server, as the last config read found it (0.5.282).
+enum MeetingAskReach: Equatable, Sendable {
+    /// No config read has finished yet.
+    case checking
+    case online
+    /// The server or the helper could not be reached.
+    case offline
+    /// The server answered but does not speak this app's protocol (an older server, or this app is older).
+    case outdated
+}
+
+/// 0.5.282 (Miles, 2026-10-10, live test): "There should be a way to switch the model from within this chat dialog with
+/// the live meeting." The Meeting assistant model is ONE server setting (PUT /api/meeting-ask/config, the helper's
+/// `configure` operation). Settings and the Live COS Ask panel draw the same control (`MeetingAskModelControl`) and both
+/// change the model through `MeetingAskStore.selectModel`, which runs that one `configure` and then re-reads the config.
+/// Neither keeps a copy of the choice, so they cannot disagree. A question already sent keeps the model it was asked
+/// with: its request carries that model and the server pins it. Pure: Tests/MeetingAskChecks.swift.
+enum MeetingAskModelPicker {
+    /// One row of the model list. `id` is `engine:model`, the value both controls bind to.
+    struct Row: Equatable, Sendable {
+        let id: String
+        let title: String
+        /// Why a row cannot be chosen; nil when it can.
+        let note: String?
+        let enabled: Bool
+    }
+
+    static func id(_ model: MeetingAskModel) -> String { model.engine + ":" + model.model }
+    static func selectedID(_ config: MeetingAskConfig) -> String { id(config.selected) }
+
+    /// Every model the server lists, in its order, titled as Settings has always titled them ("Claude · haiku"). An
+    /// unavailable model is listed and cannot be chosen; its note says why. A selection the server no longer lists still
+    /// leads the list, so the control always shows the model in use.
+    static func rows(_ config: MeetingAskConfig) -> [Row] {
+        var rows = config.models.map { option in
+            Row(id: option.id, title: option.choice.label, note: option.available ? nil : reason(option.reason), enabled: option.available)
+        }
+        if !rows.contains(where: { $0.id == selectedID(config) }) {
+            rows.insert(Row(id: selectedID(config), title: config.selected.label, note: "No longer offered", enabled: false), at: 0)
+        }
+        return rows
+    }
+
+    /// A server reason in words. The server sends codes ("provider_unavailable") or a provider's own detail.
+    static func reason(_ raw: String?) -> String {
+        let value = (raw ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        switch value {
+        case "", "meeting_adapter_not_qualified": return "Not qualified for meeting assistance"
+        case "provider_unavailable": return "Not connected"
+        case "binary not_found": return "Not found on this Mac"
+        default:
+            if value.hasPrefix("binary ") { return "Not usable on this Mac" }
+            let words = String(value.replacingOccurrences(of: "_", with: " ").prefix(80))
+            return words.prefix(1).uppercased() + words.dropFirst()
+        }
+    }
+
+    /// Why neither control can change the model right now, or nil when it can. While a change is with the server, both
+    /// lock until it answers, so a second pick can never race the first.
+    static func lock(config: MeetingAskConfig?, reach: MeetingAskReach, pending: MeetingAskModel?) -> String? {
+        if let pending { return "Switching to \(pending.label)…" }
+        switch reach {
+        case .checking: return "Checking connected models…"
+        case .offline: return "Reconnect COS to switch models."
+        case .outdated: return "Update COS to switch models."
+        case .online: return config == nil ? "Checking connected models…" : nil
+        }
+    }
+
+    /// The model a pick of `id` switches to, or nil when the pick changes nothing: the controls are locked, the id is
+    /// the model already in use, or it names a model the server does not offer as available.
+    static func change(to id: String, config: MeetingAskConfig?, reach: MeetingAskReach, pending: MeetingAskModel?) -> MeetingAskModel? {
+        guard lock(config: config, reach: reach, pending: pending) == nil, let config, id != selectedID(config),
+              let option = config.models.first(where: { $0.id == id && $0.available }) else { return nil }
+        return option.choice
+    }
+}
 struct LiveAskSource: Codable, Identifiable, Sendable {
     let id: String
     let kind: String

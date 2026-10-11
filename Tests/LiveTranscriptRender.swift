@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import Vision
 
 /// 0.5.278: the live meeting transcript with the whole app compiled, against a stand-in helper (Tests/run-live-transcript.sh).
 ///
@@ -501,15 +502,22 @@ import SwiftUI
         var missingStatus = false
         var submittedPayloads: [Data] = []
         var retained: [[String: Any]] = []
+        // 0.5.282: the fixture server offers two models and switches on `configure`, as PUT /api/meeting-ask/config does.
+        var fixtureSelected: [String: Any] = ["engine": "claude", "model": "haiku"]
+        var configures = 0
         let config: [String: Any] = ["protocolVersion": 2, "serverInstanceId": "fixture-server", "pairingContext": "fixture-pairing",
-            "selected": ["engine": "claude", "model": "haiku"], "models": [["engine": "claude", "model": "haiku", "available": true]]]
+            "selected": ["engine": "claude", "model": "haiku"], "models": [["engine": "claude", "model": "haiku", "available": true], ["engine": "claude", "model": "sonnet", "available": true]]]
         let transport: (String, Data) async throws -> Data = { operation, data in
             let envelope = try JSONSerialization.jsonObject(with: data) as! [String: Any]
             let payload = envelope["payload"] as? [String: Any] ?? [:]
             var body: [String: Any]
             switch operation {
             case "identity": body = ["pairingContext": "fixture-pairing"]
-            case "config": body = config; body["serverInstanceId"] = fixtureServer
+            case "config": body = config; body["serverInstanceId"] = fixtureServer; body["selected"] = fixtureSelected
+            case "configure":
+                configures += 1
+                fixtureSelected = ["engine": payload["engine"] as? String ?? "", "model": payload["model"] as? String ?? ""]
+                body = config; body["serverInstanceId"] = fixtureServer; body["selected"] = fixtureSelected; body["pairingContext"] = nil
             case "history":
                 historyReads += 1
                 if historyDelay > 0 { try? await Task.sleep(for: .milliseconds(historyDelay)) }
@@ -579,6 +587,36 @@ import SwiftUI
         askState.ask(action: "ask", question: "Retry old answer", feed: askFeed, model: recording, retryOf: "old-attempt")
         await until("retry preserves composer") { !askState.running.contains(sid) }
         expect(askState.draft(sid) == "Keep another draft", "retrying an older answer preserves the independent composer draft")
+
+        // 0.5.282: switching the model while a question is on its way. The question keeps the model it was asked with
+        // (its request carries it; the server pins it), the pick runs configure once, and the next question carries the
+        // new model.
+        func submittedModel(_ index: Int) -> String {
+            guard submittedPayloads.indices.contains(index), let row = try? JSONSerialization.jsonObject(with: submittedPayloads[index]) as? [String: Any],
+                  let pick = row["model"] as? [String: Any] else { return "none" }
+            return "\(pick["engine"] ?? ""):\(pick["model"] ?? "")"
+        }
+        let haikuModel = MeetingAskModel(engine: "claude", model: "haiku"), sonnetModel = MeetingAskModel(engine: "claude", model: "sonnet")
+        expect(askState.modelLock == nil && askState.config?.selected == haikuModel, "the model control starts unlocked on the server's model",
+               "lock \(askState.modelLock ?? "nil")")
+        let beforeSwitch = submittedPayloads.count
+        askState.ask(action: "summary", question: "Summarize so far", feed: askFeed, model: recording)
+        expect(askState.running.contains(sid), "a question is on its way while the model changes")
+        expect(askState.selectModel("claude:sonnet", model: recording), "a pick while a question is on its way starts one change")
+        expect(askState.pendingModel == sonnetModel && askState.modelLock == "Switching to Claude · sonnet…",
+               "the controls lock at once, naming the model", askState.modelLock ?? "nil")
+        expect(!askState.selectModel("claude:haiku", model: recording), "a second pick while the first is with the server is refused")
+        await until("model change answered") { askState.pendingModel == nil }
+        await until("question asked before the switch") { !askState.running.contains(sid) }
+        expect(configures == 1, "one pick runs configure exactly once", "configure ran \(configures) times")
+        expect(askState.config?.selected == sonnetModel && askState.modelLock == nil && askState.modelError == nil,
+               "after the switch both controls read the new model, unlocked", "\(String(describing: askState.config?.selected))")
+        expect(submittedPayloads.count == beforeSwitch + 1 && submittedModel(beforeSwitch) == "claude:haiku",
+               "the question asked before the switch keeps the model it was asked with", submittedModel(beforeSwitch))
+        askState.ask(action: "summary", question: "Summarize so far", feed: askFeed, model: recording)
+        await until("question after the switch") { !askState.running.contains(sid) }
+        expect(submittedModel(beforeSwitch + 1) == "claude:sonnet", "the next question carries the new model", submittedModel(beforeSwitch + 1))
+        expect(!askState.selectModel("claude:sonnet", model: recording) && configures == 1, "picking the model in use asks the server nothing")
 
         let importedStore = MeetingAskStore(root: askRoot.appendingPathComponent("imported"))
         let importedCopy = importedStore.captureCopy(title: "Imported meeting", transcript: "Imported words", sessions: [])!
@@ -717,8 +755,19 @@ import SwiftUI
         m.setLiveTranscriptWindowOnScreen(false)
         var submits = 0
         var reads = 0
-        let config: [String: Any] = ["protocolVersion": 2, "serverInstanceId": "shell-fixture", "pairingContext": "shell-fixture",
-            "selected": ["engine": "claude", "model": "haiku"], "models": [["engine": "claude", "model": "haiku", "available": true]]]
+        // 0.5.282: the models a real server lists (Claude's three, Codex not connected, Cursor not qualified), switched by
+        // `configure` as PUT /api/meeting-ask/config does. `reachMode` makes the config read fail as offline or older.
+        var selected: [String: Any] = ["engine": "claude", "model": "haiku"]
+        var configures = 0
+        var configureDelayMs = 0
+        var reachMode = "online"
+        var offlineAfterConfigure = false
+        let models: [[String: Any]] = [["engine": "claude", "model": "sonnet", "available": true], ["engine": "claude", "model": "haiku", "available": true],
+            ["engine": "claude", "model": "opus", "available": true], ["engine": "codex", "model": "gpt-5.5", "available": false, "reason": "provider_unavailable"],
+            ["engine": "cursor", "model": "auto", "available": false, "reason": "meeting_adapter_not_qualified"]]
+        func config() -> [String: Any] {
+            ["protocolVersion": 2, "serverInstanceId": "shell-fixture", "pairingContext": "shell-fixture", "selected": selected, "models": models]
+        }
         let exchange: [String: Any] = ["requestId": "shell-answer", "sessionId": sid, "serverInstanceId": "shell-fixture",
             "action": "summary", "question": "What did we decide about the draft?", "status": "completed",
             "createdAt": "2026-10-10", "updatedAt": "2026-10-10", "selectedModel": ["engine": "claude", "model": "haiku"],
@@ -731,7 +780,17 @@ import SwiftUI
             let result: [String: Any]
             switch operation {
             case "identity": result = ["pairingContext": "shell-fixture"]
-            case "config": result = config
+            case "config":
+                if reachMode == "offline" { throw MeetingAskTransportFailure(status: 0, message: "Meeting assistant is offline. Your question is retained; nothing retries automatically.") }
+                if reachMode == "outdated" { throw MeetingAskTransportFailure(status: 404, message: "Update the COS server to use saved meeting assistance.") }
+                result = config()
+            case "configure":
+                configures += 1
+                if configureDelayMs > 0 { try? await Task.sleep(for: .milliseconds(configureDelayMs)) }
+                selected = ["engine": payload["engine"] as? String ?? "", "model": payload["model"] as? String ?? ""]
+                if offlineAfterConfigure { reachMode = "offline" }
+                var reply = config(); reply["pairingContext"] = nil
+                result = reply
             case "history":
                 reads += 1
                 result = ["exchanges": payload["sessionId"] as? String == sid ? [exchange] : [], "files": []]
@@ -816,11 +875,197 @@ import SwiftUI
                m.meetingAsk.attachNotes[sid] ?? "nil")
         expect(submits == 0, "a composer drop requests no inference")
         try await capture("ask-shell-composer-drop-no-store")
-        let report: [String: Any] = ["passedChecks": passed, "historyReads": reads, "inferenceRequests": submits,
-            "screenshots": 9, "productionShell": true, "pointerDragTested": false, "composerDropViaFixtureDraggingInfo": true,
-            "limitations": "Offscreen production shell and model routing; persisted panel widths, not synthesized mouse gestures. Inspect PNGs for CTA alignment and clipping."]
+
+        // ── 0.5.282: the model control, in the production shell and in Settings (the menu-bar panel's Meeting assistant
+        // card), against the one store. What each face says is read from the pixels (Vision), cropped to that face.
+        let settings = Offscreen(MeetingAskSettings(store: m.meetingAsk, model: m), width: 390, height: 360)
+        defer { settings.close() }
+        await until("Settings reads the config") { m.meetingAsk.config != nil && m.meetingAsk.reach == .online }
+        let haikuModel = MeetingAskModel(engine: "claude", model: "haiku"), sonnetModel = MeetingAskModel(engine: "claude", model: "sonnet")
+        var shots = 9
+        var panelBelow = "", settingsWords = ""
+        /// The words on the Ask panel's model face (the dropdown under the composer) in the shell's current render.
+        func panelFace(_ name: String) async throws -> String {
+            try await capture(name); shots += 1
+            guard let composer = composerView(in: host)?.enclosingScrollView else { fail("model control renders", "no composer in the shell") }
+            let field = composer.convert(composer.bounds, to: host)
+            let below = dropdownFaces(in: host).filter { host.isFlipped ? $0.minY >= field.maxY - 1 : $0.maxY <= field.minY + 1 }
+            guard below.count == 1, let face = below.first else { fail("model control renders", "\(below.count) dropdown faces under the composer") }
+            let panelLeft = host.bounds.width - CGFloat(UserDefaults.standard.double(forKey: "meetingAskPanelWidth"))
+            expect(face.minX >= panelLeft + 16 && face.maxX <= host.bounds.width - 16 + 0.5 && face.width >= 120,
+                   "the model face fits inside the Ask panel's padding", "face \(face) panel from \(panelLeft) to \(host.bounds.width)")
+            // The lines under the face, across the panel: where the control says why it is locked.
+            let strip = CGRect(x: panelLeft + 16, y: host.isFlipped ? face.maxY : face.minY - 36, width: host.bounds.width - panelLeft - 32, height: 36)
+            panelBelow = ocr(host, strip)
+            return ocr(host, face)
+        }
+        func settingsFace(_ name: String) throws -> String {
+            let faces = settings.render(to: out.appendingPathComponent(name + ".png")); shots += 1
+            guard faces.count == 1, let face = faces.first else { fail("Settings model control renders", "\(faces.count) dropdown faces in Settings") }
+            settingsWords = ocr(settings.host, settings.host.bounds)
+            return ocr(settings.host, face)
+        }
+        func faceReads(_ words: String, _ model: String) -> Bool {
+            let w = words.lowercased()
+            return w.contains("claude") && w.contains(model) && !["haiku", "sonnet", "opus"].filter { $0 != model }.contains { w.contains($0) }
+        }
+        // The sequence below is drawn light (the loop above left the shell dark); the last loop draws both themes.
+        window.appearance = NSAppearance(named: .aqua)
+        UserDefaults.standard.set(280.0, forKey: "meetingAskPanelWidth")
+        window.setContentSize(NSSize(width: 900, height: 800))
+        var words = try await panelFace("ask-model-280-before-light")
+        expect(faceReads(words, "haiku"), "the Ask panel's model control renders the current model (Claude · haiku)", words)
+        words = try settingsFace("settings-model-before-light")
+        expect(faceReads(words, "haiku"), "Settings shows the same model", words)
+        expect(MeetingAskModelPicker.rows(m.meetingAsk.config!).map(\.id) == models.map { "\($0["engine"]!):\($0["model"]!)" }
+               && MeetingAskModelPicker.rows(m.meetingAsk.config!).filter(\.enabled).count == 3, "the control lists every model the server lists, three choosable")
+
+        // A pick, through the binding the control's dropdown writes (COSDropdown sets its selection; both surfaces bind
+        // MeetingAskStore.modelSelection). The server is held for a moment so the lock can be seen.
+        configureDelayMs = 900
+        let panelBinding = m.meetingAsk.modelSelection(model: m)
+        expect(panelBinding.wrappedValue == "claude:haiku", "the control's selection is the server's model", panelBinding.wrappedValue)
+        panelBinding.wrappedValue = "claude:sonnet"
+        expect(m.meetingAsk.pendingModel == sonnetModel && m.meetingAsk.modelLock == "Switching to Claude · sonnet…", "the pick locks both controls, naming the model",
+               m.meetingAsk.modelLock ?? "nil")
+        _ = try await panelFace("ask-model-280-switching-light")
+        _ = try settingsFace("settings-model-switching-light")
+        expect(panelBelow.lowercased().contains("switching to") && settingsWords.lowercased().contains("switching to"),
+               "the pick locks both controls and both say so under the face", "panel: \(panelBelow) | settings: \(settingsWords)")
+        panelBinding.wrappedValue = "claude:opus"
+        await until("the model change") { m.meetingAsk.pendingModel == nil }
+        expect(configures == 1, "one pick through the control runs configure exactly once (a second pick while locked is refused)", "configure ran \(configures) times")
+        expect(m.meetingAsk.config?.selected == sonnetModel && panelBinding.wrappedValue == "claude:sonnet" && m.meetingAsk.modelLock == nil,
+               "after the switch the control's selection is the new model, unlocked", panelBinding.wrappedValue)
+        let cached = (try? m.meetingAsk.disk.readConfig(pairing: "shell-fixture")) ?? nil
+        expect(cached?.selected == sonnetModel, "after a switch the cached config (used offline at launch) carries the new model",
+               String(describing: cached?.selected))
+        words = try await panelFace("ask-model-280-after-light")
+        expect(faceReads(words, "sonnet"), "the Ask panel shows the new model", words)
+        expect(!panelBelow.lowercased().contains("switching"), "unlocked, nothing is said under the face", panelBelow)
+        words = try settingsFace("settings-model-after-light")
+        expect(faceReads(words, "sonnet"), "Settings shows the model picked in the Ask panel", words)
+
+        // The other way: a pick in Settings shows in the Ask panel.
+        configureDelayMs = 0
+        let settingsBinding = m.meetingAsk.modelSelection(model: m)
+        settingsBinding.wrappedValue = "claude:haiku"
+        await until("the second model change") { m.meetingAsk.pendingModel == nil }
+        expect(configures == 2 && m.meetingAsk.config?.selected == haikuModel, "a pick in Settings runs configure once more", "configure ran \(configures) times")
+        words = try await panelFace("ask-model-280-back-light")
+        expect(faceReads(words, "haiku"), "the Ask panel shows the model picked in Settings", words)
+        words = try settingsFace("settings-model-back-light")
+        expect(faceReads(words, "haiku"), "Settings shows its own pick", words)
+        settingsBinding.wrappedValue = "codex:gpt-5.5"
+        settingsBinding.wrappedValue = "claude:haiku"
+        expect(m.meetingAsk.pendingModel == nil && configures == 2, "an unavailable model, or the model in use, asks the server nothing")
+
+        // The server takes the switch but the re-read after it fails: its answer to configure still shows in both.
+        let opusModel = MeetingAskModel(engine: "claude", model: "opus")
+        offlineAfterConfigure = true
+        m.meetingAsk.modelSelection(model: m).wrappedValue = "claude:opus"
+        await until("the switch whose re-read fails") { m.meetingAsk.pendingModel == nil }
+        offlineAfterConfigure = false
+        expect(configures == 3 && m.meetingAsk.config?.selected == opusModel && m.meetingAsk.reach == .offline && m.meetingAsk.modelError == nil,
+               "a switch whose re-read fails still shows the new model", "\(String(describing: m.meetingAsk.config?.selected)) \(m.meetingAsk.reach)")
+        words = try await panelFace("ask-model-280-reread-failed-light")
+        expect(faceReads(words, "opus"), "a switch whose re-read fails shows the new model on the face", words)
+        reachMode = "online"
+        await m.meetingAsk.refreshConfig(model: m)
+        m.meetingAsk.modelSelection(model: m).wrappedValue = "claude:haiku"
+        await until("back to haiku") { m.meetingAsk.pendingModel == nil }
+        expect(configures == 4 && m.meetingAsk.config?.selected == haikuModel, "back to haiku through the same binding")
+        let switches = configures
+
+        // Offline, then a server on another protocol: both controls lock with a short reason and a pick asks nothing.
+        for (mode, reason) in [("offline", "Reconnect COS to switch models."), ("outdated", "Update COS to switch models.")] {
+            reachMode = mode
+            await m.meetingAsk.refreshConfig(model: m)
+            expect(m.meetingAsk.modelLock == reason, "\(mode): both model controls lock with a short reason", m.meetingAsk.modelLock ?? "nil")
+            m.meetingAsk.modelSelection(model: m).wrappedValue = "claude:opus"
+            expect(m.meetingAsk.pendingModel == nil && configures == switches, "\(mode): a pick while locked asks the server nothing")
+            _ = try await panelFace("ask-model-280-\(mode)-light")
+            _ = try settingsFace("settings-model-\(mode)-light")
+            let said = reason.lowercased().prefix(12)
+            expect(panelBelow.lowercased().contains(said) && settingsWords.lowercased().contains(said),
+                   "\(mode): both controls show the reason under the face", "panel: \(panelBelow) | settings: \(settingsWords)")
+        }
+        reachMode = "online"
+        await m.meetingAsk.refreshConfig(model: m)
+        expect(m.meetingAsk.modelLock == nil, "back online, the controls unlock")
+
+        // Every width and both themes, with the control in place.
+        for appearance in [NSAppearance.Name.aqua, .darkAqua] {
+            window.appearance = NSAppearance(named: appearance); settings.window.appearance = NSAppearance(named: appearance)
+            let theme = appearance == .darkAqua ? "dark" : "light"
+            for (width, panel) in [(900.0, 280.0), (1440.0, 520.0)] {
+                UserDefaults.standard.set(panel, forKey: "meetingAskPanelWidth")
+                window.setContentSize(NSSize(width: width, height: 800))
+                words = try await panelFace("ask-model-\(Int(panel))-\(theme)")
+                expect(faceReads(words, "haiku"), "\(theme) at \(Int(panel)) pt: the model control reads Claude · haiku", words)
+            }
+            words = try settingsFace("settings-model-\(theme)")
+            expect(faceReads(words, "haiku"), "\(theme): Settings reads Claude · haiku", words)
+        }
+        expect(submits == 0, "switching models requests no inference")
+        let report: [String: Any] = ["passedChecks": passed, "historyReads": reads, "inferenceRequests": submits, "configureCalls": configures,
+            "screenshots": shots, "productionShell": true, "pointerDragTested": false, "composerDropViaFixtureDraggingInfo": true,
+            "modelPickThroughControlBinding": true, "modelFaceReadByVision": true,
+            "limitations": "Offscreen production shell and model routing; persisted panel widths, not synthesized mouse gestures. The model pick writes the binding the dropdown writes; the dropdown's own list is never opened (it is a window). Inspect PNGs for CTA alignment and clipping."]
         try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]).write(to: out.appendingPathComponent("ask-shell-canary.json"))
-        print("PASS: Meeting Ask production-shell canary; \(passed) checks; 9 screenshots; zero inference")
+        print("PASS: Meeting Ask production-shell canary; \(passed) checks; \(shots) screenshots; \(configures) configure calls; zero inference")
+    }
+
+    /// 0.5.282: a view in a borderless window that is never ordered in, kept alive so it follows the store, rendered on
+    /// demand. The process cannot become active (.prohibited).
+    @MainActor final class Offscreen {
+        let host: NSView
+        let window: NSWindow
+        init<V: View>(_ view: V, width: CGFloat, height: CGFloat) {
+            let hosting = NSHostingView(rootView: view.padding(16).frame(width: width, height: height, alignment: .top).background(COSPalette.panel))
+            window = NSWindow(contentRect: NSRect(x: -20000, y: -20000, width: width, height: height), styleMask: [.borderless], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            window.appearance = NSAppearance(named: .aqua)
+            window.contentView = hosting
+            hosting.frame = NSRect(x: 0, y: 0, width: width, height: height)
+            host = hosting
+        }
+        /// Writes a PNG and returns the dropdown faces in it (host coordinates).
+        func render(to url: URL) -> [CGRect] {
+            LiveTranscriptRender.settle(host, seconds: 0.6)
+            host.displayIfNeeded()
+            let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds)!
+            host.cacheDisplay(in: host.bounds, to: rep)
+            try? rep.representation(using: .png, properties: [:])!.write(to: url)
+            return LiveTranscriptRender.dropdownFaces(in: host)
+        }
+        func close() { window.close() }
+    }
+
+    /// Every COSDropdown face in a rendered tree, in `host` coordinates: each face carries an invisible anchor view
+    /// (COSDropdownAnchor's `Anchor`) exactly its size.
+    static func dropdownFaces(in host: NSView) -> [CGRect] {
+        var faces: [CGRect] = [], queue: [NSView] = [host]
+        while let view = queue.popLast() {
+            if String(describing: type(of: view)) == "Anchor" { faces.append(view.convert(view.bounds, to: host)) }
+            queue += view.subviews
+        }
+        return faces.filter { $0.width > 1 && $0.height > 1 }
+    }
+
+    /// The words Vision reads in `rect` (host coordinates) of the host's current drawing, joined by spaces.
+    static func ocr(_ host: NSView, _ rect: CGRect) -> String {
+        guard let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds) else { return "" }
+        host.cacheDisplay(in: host.bounds, to: rep)
+        let scale = CGFloat(rep.pixelsWide) / host.bounds.width
+        let top = host.isFlipped ? rect.minY : host.bounds.height - rect.maxY
+        let crop = CGRect(x: rect.minX * scale, y: top * scale, width: rect.width * scale, height: rect.height * scale).integral
+        guard let image = rep.cgImage?.cropping(to: crop) else { return "" }
+        let request = VNRecognizeTextRequest()
+        request.recognitionLevel = .accurate
+        request.usesLanguageCorrection = false
+        try? VNImageRequestHandler(cgImage: image, options: [:]).perform([request])
+        return (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ")
     }
 
     /// The Ask composer's text view in a rendered view tree.

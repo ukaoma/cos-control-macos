@@ -12,7 +12,13 @@ final class MeetingAskStore: ObservableObject {
     @Published private(set) var errors: [String: String] = [:]
     @Published private(set) var running: Set<String> = []
     @Published var notice: String?
-    @Published private(set) var online = false
+    /// 0.5.282: what the last config read found (checking, online, offline, or a server on another protocol).
+    @Published private(set) var reach = MeetingAskReach.checking
+    var online: Bool { reach == .online }
+    /// 0.5.282: the model a change is switching to while the server has it. Both model controls lock until it answers.
+    @Published private(set) var pendingModel: MeetingAskModel?
+    /// 0.5.282: why the last model change did not take; cleared by the next change.
+    @Published private(set) var modelError: String?
     /// 0.5.281: the line the Ask panel shows after files were dropped or pasted on it, by session.
     @Published private(set) var attachNotes: [String: String] = [:]
     private var attaching: Set<String> = []
@@ -50,6 +56,7 @@ final class MeetingAskStore: ObservableObject {
         }
         refreshing = true
         defer { refreshing = false }
+        var mismatch = false
         do {
             let local = try await transport("identity", model: model, as: MeetingAskPairing.self)
             if config?.pairingContext != local.pairingContext {
@@ -60,22 +67,47 @@ final class MeetingAskStore: ObservableObject {
                 }
             }
             let next = try await transport("config", model: model, as: MeetingAskConfig.self)
-            guard next.protocolVersion == 2, let pairing = next.pairingContext, !pairing.isEmpty else { throw HelperClientError.commandFailed("Update COS Control and the server together to use meeting assistance.") }
+            guard next.protocolVersion == 2, let pairing = next.pairingContext, !pairing.isEmpty else { mismatch = true; throw HelperClientError.commandFailed("Update COS Control and the server together to use meeting assistance.") }
             let scope = next.serverInstanceId + ":" + pairing
             if scope != identity {
                 flushAll()
                 for task in jobs.values { task.cancel() }; jobs = [:]
                 records = [:]; loaded = []; errors = [:]; running = []; identity = scope
             }
-            config = next; online = true; notice = nil
+            config = next; reach = .online; notice = nil
             try disk.writeConfig(next)
-        } catch { online = false; notice = message(error) }
+        } catch {
+            // A 404 on config is a server from before meeting assistance; its helper says so in the notice.
+            reach = mismatch || (error as? MeetingAskTransportFailure)?.status == 404 ? .outdated : .offline
+            notice = message(error)
+        }
+    }
+    /// 0.5.282: the one way either model control (Settings, the Live COS Ask panel) changes the Meeting assistant model.
+    /// False when the pick changes nothing (`MeetingAskModelPicker.change`): locked, the model in use, or unavailable.
+    /// The lock is taken before this returns, so a second pick while the first is with the server is refused.
+    @discardableResult func selectModel(_ id: String, model: ControllerModel) -> Bool {
+        guard let choice = MeetingAskModelPicker.change(to: id, config: config, reach: reach, pending: pendingModel) else { return false }
+        pendingModel = choice; modelError = nil
+        Task { [weak self] in await self?.configure(choice, model: model) }
+        return true
+    }
+    /// What both model controls bind to: the server's selection, written through `selectModel`.
+    func modelSelection(model: ControllerModel) -> Binding<String> {
+        Binding(get: { [weak self] in self?.config.map(MeetingAskModelPicker.selectedID) ?? "" },
+                set: { [weak self] id in self?.selectModel(id, model: model) })
     }
     func configure(_ selection: MeetingAskModel, model: ControllerModel) async {
+        pendingModel = selection
+        defer { pendingModel = nil }
         do {
-            let _: MeetingAskConfig = try await transport("configure", payload: ["engine": selection.engine, "model": selection.model], model: model, as: MeetingAskConfig.self)
+            let reply: MeetingAskConfig = try await transport("configure", payload: ["engine": selection.engine, "model": selection.model], model: model, as: MeetingAskConfig.self)
+            // The server's answer is its new config: both controls show it now, even if the re-read below fails.
+            if var current = config, current.serverInstanceId == reply.serverInstanceId {
+                current.selected = reply.selected; current.models = reply.models; config = current
+            }
             await refreshConfig(model: model)
-        } catch { notice = message(error) }
+            if config?.selected != selection { modelError = "The server kept \(config?.selected.label ?? "its model"). Refresh connected models to check." }
+        } catch { notice = message(error); modelError = message(error) }
     }
     func ensure(_ session: String) {
         guard !loaded.contains(session), let config, let pairing = config.pairingContext else { return }
@@ -430,24 +462,62 @@ struct MeetingAskSettings: View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Meeting assistant").font(COSType.body(13, weight: .semibold))
             Text("Used only when you ask during a meeting. Defaults to Haiku; other chats keep their own models.").font(COSType.body(11)).foregroundStyle(.secondary)
+            // 0.5.282: the same control the Live COS Ask panel shows, so a change in either shows in both.
+            MeetingAskModelControl(store: store, model: model)
             if let config = store.config {
-                COSDropdown("Model", selection: Binding(get: { config.selected.engine + ":" + config.selected.model }, set: { id in
-                    if let option = config.models.first(where: { $0.id == id && $0.available }) { Task { await store.configure(option.choice, model: model) } }
-                }), options: config.models.map { option in
-                    COSDropdownOption(option.id, option.choice.label, note: option.available ? nil : "unavailable",
-                                      muted: !option.available, enabled: option.available)
-                })
                 if let web = config.web {
                     Text(web.available ? "Public web lookup uses \(web.engine?.capitalized ?? "the connected search provider") when a question needs it." : "Public web lookup unavailable: " + (web.reason ?? "No qualified search provider"))
                         .font(COSType.body(11)).foregroundStyle(.secondary)
                 }
-                ForEach(config.models.filter { !$0.available }) { option in Text(option.choice.label + ": " + (option.reason ?? "Not qualified for meeting assistance")).font(COSType.body(10.5)).foregroundStyle(.secondary) }
+                ForEach(config.models.filter { !$0.available }) { option in Text(option.choice.label + ": " + MeetingAskModelPicker.reason(option.reason)).font(COSType.body(10.5)).foregroundStyle(.secondary) }
             }
             if let notice = store.notice { Text(notice).font(COSType.body(11)).foregroundStyle(.secondary) }
             Button("Refresh connected models") { Task { await store.refreshConfig(model: model) } }.buttonStyle(COSQuietButtonStyle())
         }.padding(12).background(COSPalette.card, in: RoundedRectangle(cornerRadius: 12))
         .task { await store.refreshConfig(model: model) }
     }
+}
+
+/// 0.5.282: the Meeting assistant model control (`MeetingAskModelPicker` has the rules). Settings draws it full width
+/// with its "Model" label; the Live COS Ask panel draws it `compact`, one line under the composer. Both bind to
+/// `MeetingAskStore.modelSelection`, so a pick in either runs the same `configure` and shows in both. Locked (dimmed,
+/// with the reason under it) while a change is with the server, or while the server is offline or on another protocol.
+struct MeetingAskModelControl: View {
+    @ObservedObject var store: MeetingAskStore
+    @ObservedObject var model: ControllerModel
+    var compact = false
+    var body: some View {
+        let lock = store.modelLock
+        VStack(alignment: .leading, spacing: 4) {
+            if let config = store.config {
+                if compact {
+                    HStack(spacing: 8) {
+                        Text("Model").font(COSType.body(11.5)).foregroundStyle(.secondary).accessibilityHidden(true)
+                        dropdown(config, showsLabel: false, locked: lock != nil).frame(maxWidth: 240)
+                    }.frame(maxWidth: .infinity, alignment: .leading)
+                } else {
+                    dropdown(config, showsLabel: true, locked: lock != nil)
+                }
+            }
+            if let lock { Text(lock).font(COSType.body(compact ? 10.5 : 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
+            // Settings shows the same failure in its notice line; the panel shows no notice while online.
+            if compact, let error = store.modelError {
+                Text(error).font(COSType.body(10.5)).foregroundStyle(COSPalette.amber).fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+    private func dropdown(_ config: MeetingAskConfig, showsLabel: Bool, locked: Bool) -> some View {
+        COSDropdown("Model", selection: store.modelSelection(model: model),
+                    options: MeetingAskModelPicker.rows(config).map { row in
+                        COSDropdownOption(row.id, row.title, note: row.note, muted: !row.enabled, enabled: row.enabled)
+                    }, showsLabel: showsLabel)
+            .disabled(locked)
+    }
+}
+
+extension MeetingAskStore {
+    /// Why the model controls are locked right now, or nil.
+    var modelLock: String? { MeetingAskModelPicker.lock(config: config, reach: reach, pending: pendingModel) }
 }
 
 struct LiveAskPanel: View {
@@ -508,6 +578,10 @@ struct LiveAskPanel: View {
                     Button("Ask") { send(feed) }.buttonStyle(COSPrimaryButtonStyle())
                         .disabled(!state.online || state.running.contains(session) || record?.outbox != nil || state.draft(session).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || feed.turns.isEmpty)
                 }
+                // 0.5.282: the model the next question goes to, switchable here (the same control and setting as
+                // Settings). An answer already running keeps its model, shown in its footer. Live only: a saved
+                // meeting's history asks nothing, so it has no model to choose.
+                MeetingAskModelControl(store: state, model: model, compact: true)
             }
         }.padding(16).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading).background(COSPalette.panel)
         // The Files box's own drop (files only, on the panel itself, never in an overlay); the stroke only draws.

@@ -26,7 +26,7 @@ SWIFTC=(swiftc -target arm64-apple-macosx14.0 -swift-version 6 -strict-concurren
 
 app_binary() {
   "$ROOT/Tests/compile-guard.sh" "${SWIFTC[@]}" -parse-as-library "${SOURCES[@]}" "$ROOT/Tests/LiveTranscriptRender.swift" \
-    -framework SwiftUI -framework AppKit -framework ServiceManagement -o "$DIR/live-transcript-render"
+    -framework SwiftUI -framework AppKit -framework ServiceManagement -framework Vision -o "$DIR/live-transcript-render"
 }
 
 # A stand-in helper. Every verb is logged (calls.log) with its arguments (args.log). live-transcript answers by

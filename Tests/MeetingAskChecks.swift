@@ -105,6 +105,56 @@ import Foundation
         for line in [MeetingAskText.attached(["a"]), MeetingAskText.attached(["a", "b"], pathOnly: true), MeetingAskText.attached([]), MeetingAskText.attachUnavailable] {
             check(!line.contains("\u{2014}") && !line.contains("->") && !line.contains("\u{2192}"), "attach copy has no em dash or arrow")
         }
+        // 0.5.282: the model control Settings and the Live COS Ask panel share (MeetingAskModelPicker).
+        typealias Pick = MeetingAskModelPicker
+        func option(_ engine: String, _ model: String, _ available: Bool, _ reason: String? = nil) -> MeetingAskModelOption {
+            MeetingAskModelOption(engine: engine, model: model, available: available, reason: reason)
+        }
+        let haiku = MeetingAskModel(engine: "claude", model: "haiku"), sonnet = MeetingAskModel(engine: "claude", model: "sonnet")
+        var cfg = MeetingAskConfig(protocolVersion: 2, serverInstanceId: "s", selected: haiku,
+            models: [option("claude", "sonnet", true), option("claude", "haiku", true), option("codex", "gpt-5.5", false, "provider_unavailable"),
+                     option("cursor", "auto", false, "meeting_adapter_not_qualified"), option("ollama", "llama3", false, "not running")], pairingContext: "p")
+        let rows = Pick.rows(cfg)
+        check(rows.map(\.id) == ["claude:sonnet", "claude:haiku", "codex:gpt-5.5", "cursor:auto", "ollama:llama3"], "model rows: every listed model, in the server's order")
+        check(rows.map(\.title) == cfg.models.map(\.choice.label) && rows[1].title == "Claude · haiku", "model rows: titled as Settings titles them (Claude · haiku)")
+        check(rows.filter(\.enabled).map(\.id) == ["claude:sonnet", "claude:haiku"] && rows.filter(\.enabled).allSatisfy { $0.note == nil },
+              "model rows: available models can be chosen and carry no note")
+        check(rows[2] == .init(id: "codex:gpt-5.5", title: "Codex · gpt-5.5", note: "Not connected", enabled: false), "model rows: an unavailable model is disabled with its reason")
+        check(rows[3].note == "Not qualified for meeting assistance" && rows[4].note == "Not running", "model rows: every unavailable reason is in words")
+        check(Pick.selectedID(cfg) == "claude:haiku" && rows.contains { $0.id == Pick.selectedID(cfg) }, "model rows: the selection is one of the rows (the control shows it)")
+        var dropped = cfg; dropped.selected = MeetingAskModel(engine: "claude", model: "retired")
+        check(Pick.rows(dropped).first == .init(id: "claude:retired", title: "Claude · retired", note: "No longer offered", enabled: false),
+              "model rows: a selection the server stopped listing still shows, and cannot be re-picked")
+        check(Pick.reason(nil) == "Not qualified for meeting assistance" && Pick.reason("binary not_found") == "Not found on this Mac"
+              && Pick.reason("binary env_override_unusable") == "Not usable on this Mac" && Pick.reason("quota_exceeded") == "Quota exceeded",
+              "model reasons: codes read as words, never raw")
+        // The lock: online with a config and nothing pending is the only unlocked state.
+        check(Pick.lock(config: cfg, reach: .online, pending: nil) == nil, "model lock: online, loaded, idle is unlocked")
+        let locks = [Pick.lock(config: cfg, reach: .online, pending: sonnet), Pick.lock(config: cfg, reach: .checking, pending: nil),
+                     Pick.lock(config: cfg, reach: .offline, pending: nil), Pick.lock(config: cfg, reach: .outdated, pending: nil),
+                     Pick.lock(config: nil, reach: .online, pending: nil)]
+        check(locks.allSatisfy { $0 != nil }, "model lock: a change in flight, checking, offline, outdated or no config all lock")
+        check(locks[0] == "Switching to Claude · sonnet…", "model lock: a change in flight names the model it is switching to")
+        check(locks[2] == "Reconnect COS to switch models." && locks[3] == "Update COS to switch models.",
+              "model lock: offline and an older server say what to do")
+        check(Pick.lock(config: cfg, reach: .offline, pending: sonnet) == locks[0], "model lock: a change in flight is named even if the server drops")
+        for line in locks.compactMap({ $0 }) + rows.compactMap(\.note) {
+            check(!line.contains("\u{2014}") && !line.contains("->") && !line.contains("\u{2192}") && line.count <= 60, "model copy is short, no em dash or arrow")
+        }
+        // A pick: only an available, different model while unlocked changes anything (configure runs only then).
+        check(Pick.change(to: "claude:sonnet", config: cfg, reach: .online, pending: nil) == sonnet, "model pick: another available model switches")
+        check(Pick.change(to: "claude:haiku", config: cfg, reach: .online, pending: nil) == nil, "model pick: the model in use changes nothing")
+        check(Pick.change(to: "codex:gpt-5.5", config: cfg, reach: .online, pending: nil) == nil, "model pick: an unavailable model changes nothing")
+        check(Pick.change(to: "claude:opus", config: cfg, reach: .online, pending: nil) == nil, "model pick: a model the server does not list changes nothing")
+        check(Pick.change(to: "claude:sonnet", config: cfg, reach: .online, pending: sonnet) == nil, "model pick: a second pick while one is in flight changes nothing")
+        check([MeetingAskReach.checking, .offline, .outdated].allSatisfy { Pick.change(to: "claude:sonnet", config: cfg, reach: $0, pending: nil) == nil },
+              "model pick: nothing changes while checking, offline, or outdated")
+        check(Pick.change(to: "claude:sonnet", config: nil, reach: .online, pending: nil) == nil, "model pick: nothing changes without a config")
+        // Sync: both controls read the one config. After the server switches, the pick it made is the selection and the
+        // same pick again changes nothing.
+        cfg.selected = sonnet
+        check(Pick.selectedID(cfg) == "claude:sonnet" && Pick.change(to: "claude:sonnet", config: cfg, reach: .online, pending: nil) == nil
+              && Pick.change(to: "claude:haiku", config: cfg, reach: .online, pending: nil) == haiku, "model pick: after a switch, the old model is a pick again")
         print("PASS Meeting Ask: \(count) checks")
     }
 }
