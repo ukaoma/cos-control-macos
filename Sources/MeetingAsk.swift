@@ -13,6 +13,9 @@ final class MeetingAskStore: ObservableObject {
     @Published private(set) var running: Set<String> = []
     @Published var notice: String?
     @Published private(set) var online = false
+    /// 0.5.281: the line the Ask panel shows after files were dropped or pasted on it, by session.
+    @Published private(set) var attachNotes: [String: String] = [:]
+    private var attaching: Set<String> = []
     private var fileObserver: AnyCancellable?
     private var publishedFiles: [String: [MeetingAskFile]] = [:]
     private var fileSyncing: Set<String> = []
@@ -173,9 +176,24 @@ final class MeetingAskStore: ObservableObject {
     func ask(action: String, question: String, feed: LiveTranscriptFeed, model: ControllerModel, retryOf: String? = nil) {
         let session = feed.sessionId
         ensure(session)
-        guard let config, online, !running.contains(session), records[session]?.outbox == nil, records[session] != nil, !feed.turns.isEmpty else { return }
         let question = String(question.trimmingCharacters(in: .whitespacesAndNewlines).prefix(2000))
+        // Rule C (0.5.281, MeetingAskComposerIntake.localFiles says exactly what qualifies): a question that is nothing but
+        // the path of a file on this Mac is that file, dropped or pasted somewhere the composer could not catch it. It is
+        // attached to this meeting and never sent. Its path text leaves the composer only once the file is in.
+        if action == "ask", let urls = MeetingAskComposerIntake.localFiles(in: question, isFile: MeetingAskComposerIntake.regularFileExists) {
+            // A second Return while the first copy runs is the same file again, not a second attach.
+            guard attaching.insert(session).inserted else { return }
+            Task { [weak self] in
+                guard let self else { return }
+                defer { attaching.remove(session) }
+                let added = await attach(.files(urls), session: session, model: model, pathOnly: true)
+                if !added.isEmpty, draft(session).trimmingCharacters(in: .whitespacesAndNewlines) == question { setDraft("", session: session); _ = flush(session) }
+            }
+            return
+        }
+        guard let config, online, !running.contains(session), records[session]?.outbox == nil, records[session] != nil, !feed.turns.isEmpty else { return }
         guard !question.isEmpty else { return }
+        attachNotes[session] = nil
         // Freeze the evidence cutoff at the user's tap, before any file registration or transport wait.
         let now = feed.endedAt ?? Date()
         let elapsed = max(feed.turns.map(\.elapsedMs).max() ?? 0, Int(max(0, now.timeIntervalSince(feed.startTime ?? now)) * 1000))
@@ -209,6 +227,25 @@ final class MeetingAskStore: ObservableObject {
                 }
             }
         }
+    }
+    /// 0.5.281: files dropped on or pasted into the Ask panel go to this meeting's Files through the Files box's own intake
+    /// (`intakeMeeting` for files and drops, `pasteMeeting` for image data), never into the question. Returns the names
+    /// that landed; a refusal is the intake's own line, shown in the panel and in Files shared in this meeting.
+    @discardableResult func attach(_ attachment: MeetingAskAttachment, session: String, model: ControllerModel, pathOnly: Bool = false) async -> [String] {
+        let key = "g2:" + session
+        guard let files = model.workHandoffStore?.meetingFiles, files.enabled, WorkCardFiles.meetingID(forKey: key) != nil else {
+            attachNotes[session] = MeetingAskText.attachUnavailable; return []
+        }
+        let info = WorkMeetingInfo(recordId: "", title: "Live meeting", date: "")
+        let before = Set(files.meetingFiles(keys: [key]).map(\.file.id))
+        switch attachment {
+        case .files(let urls): await files.intakeMeeting(urls: urls, key: key, info: info)
+        case .image(let data): await files.pasteMeeting(MeetingPastePayload(urls: [], image: data), key: key, info: info)
+        case .providers(let providers): await files.intakeMeeting(providers: providers, key: key, info: info)
+        }
+        let added = files.meetingFiles(keys: [key]).filter { !before.contains($0.file.id) }.map(\.file.display)
+        attachNotes[session] = MeetingAskText.attached(added, pathOnly: pathOnly)
+        return added
     }
     func observeFiles(_ files: WorkCardFileStore, model: ControllerModel) {
         fileObserver = files.$manifests.debounce(for: .milliseconds(600), scheduler: RunLoop.main).sink { [weak self, weak model] manifests in
@@ -306,6 +343,12 @@ struct MeetingAskCopySnapshot: Sendable {
     let pairingContext: String
 }
 struct MeetingAskTransportFailure: Error { var status: Int; var message: String }
+/// What the Ask panel was handed to attach: local files, image data (a copied screenshot), or a drop's providers.
+enum MeetingAskAttachment {
+    case files([URL])
+    case image(Data)
+    case providers([NSItemProvider])
+}
 struct MeetingAskPairing: Codable { var pairingContext: String }
 struct MeetingAskFileReply: Codable { var files: [MeetingAskFile] }
 
@@ -415,6 +458,11 @@ struct LiveAskPanel: View {
     var jump: (Int) -> Void = { _ in }
     private let actions = [("catch_up", "Catch me up"), ("summary", "Summarize so far"), ("questions", "Suggest questions"), ("actions", "Action items")]
     private var record: MeetingAskLocalRecord? { state.records[session] }
+    @State private var dropTargeted = false
+    /// 0.5.281: the live panel takes files anywhere on it, through the Files box's own drop, when this meeting can hold them.
+    private var takesFiles: Bool {
+        feed != nil && model.workHandoffStore?.meetingFiles.enabled == true && WorkCardFiles.meetingID(forKey: "g2:" + session) != nil
+    }
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack { Text(feed == nil ? "Meeting Ask history" : "Live COS Ask").font(COSType.display(19, weight: .medium)); Spacer(); Button { Task { await state.open(session, model: model) } } label: { Image(systemName: "arrow.clockwise") }.buttonStyle(COSTextButtonStyle()).help("Refresh saved answers") }
@@ -444,15 +492,29 @@ struct LiveAskPanel: View {
                 }
             }
             if let feed {
+                if let note = state.attachNotes[session] {
+                    Text(note).font(COSType.body(11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
+                if let files = model.workHandoffStore?.meetingFiles, let id = WorkCardFiles.meetingID(forKey: "g2:" + session) {
+                    WorkCardFlashView(files: files, workID: id)
+                }
                 HStack(alignment: .bottom) {
-                    TextField("Ask about this meeting", text: Binding(get: { state.draft(session) }, set: { state.setDraft($0, session: session) }), axis: .vertical)
-                        .lineLimit(1...6).textFieldStyle(.plain).cosField().disabled(state.config == nil)
-                        .onSubmit { send(feed) }
+                    // 0.5.281: a drop or a paste of files here attaches them to this meeting and leaves the question as it was.
+                    MeetingAskComposer(text: Binding(get: { state.draft(session) }, set: { state.setDraft($0, session: session) }),
+                                       placeholder: "Ask about this meeting", enabled: state.config != nil,
+                                       onSubmit: { send(feed) },
+                                       onAttach: { attachment in Task { await state.attach(attachment, session: session, model: model) } })
+                        .cosField()
                     Button("Ask") { send(feed) }.buttonStyle(COSPrimaryButtonStyle())
                         .disabled(!state.online || state.running.contains(session) || record?.outbox != nil || state.draft(session).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || feed.turns.isEmpty)
                 }
             }
         }.padding(16).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading).background(COSPalette.panel)
+        // The Files box's own drop (files only, on the panel itself, never in an overlay); the stroke only draws.
+        .modifier(MeetingFilesDrop(enabled: takesFiles, targeted: $dropTargeted) { providers in
+            Task { await state.attach(.providers(providers), session: session, model: model) }
+        })
+        .overlay { if dropTargeted { RoundedRectangle(cornerRadius: 9).stroke(COSPalette.gold, lineWidth: 1.5).allowsHitTesting(false) } }
         .task(id: session) { await state.open(session, model: model) }
         .onChange(of: session) { previous, _ in _ = state.flush(previous) }
         .onDisappear { _ = state.flush(session) }
@@ -501,5 +563,212 @@ struct LiveAskPanel: View {
                 }
             }
         }
+    }
+}
+
+// MARK: - The Ask composer (0.5.281)
+
+/// The Live COS Ask question box: plain text, 1 to 6 lines, Return asks, Shift-Return or Option-Return starts a new line.
+///
+/// WHY AN APPKIT TEXT VIEW (Miles, 2026-10-10, on 0.5.280): the box was a SwiftUI `TextField`. A drop on it lands on the
+/// AppKit text view under it (the field editor, the deepest view registered for the drag's types), which takes a file
+/// as its path in plain text, so a screenshot thumbnail dropped on it became `/var/folders/.../Screenshot ... .png` as
+/// typed text and that path was asked as the question with no file. A SwiftUI `.onDrop` on or around the field never
+/// sees that drop, and a pasted image did nothing at all. Owning the text view is the one place both can be caught:
+/// `MeetingAskComposerTextView` reads a drop or a paste, and when `MeetingAskComposerIntake.route` says it is files it
+/// hands them to `onAttach` (this meeting's Files intake) and inserts nothing. Text still types and pastes as text.
+struct MeetingAskComposer: NSViewRepresentable {
+    @Binding var text: String
+    let placeholder: String
+    var enabled = true
+    var onSubmit: () -> Void
+    var onAttach: (MeetingAskAttachment) -> Void
+    static let maxLines = 6
+    /// The `.cosField()` face's font (DM Sans 12.5), as AppKit needs it.
+    static var font: NSFont {
+        _ = COSType.body(12.5)
+        return NSFontManager.shared.font(withFamily: "DM Sans", traits: [], weight: 5, size: 12.5) ?? .systemFont(ofSize: 12.5)
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let scroll = MeetingAskComposerScroll()
+        scroll.drawsBackground = false
+        scroll.borderType = .noBorder
+        scroll.hasVerticalScroller = true
+        scroll.hasHorizontalScroller = false
+        scroll.autohidesScrollers = true
+        let view = MeetingAskComposerTextView.make(font: Self.font)
+        view.delegate = context.coordinator
+        scroll.documentView = view
+        apply(to: view)
+        return scroll
+    }
+
+    func updateNSView(_ scroll: NSScrollView, context: Context) {
+        context.coordinator.parent = self
+        guard let view = scroll.documentView as? MeetingAskComposerTextView else { return }
+        apply(to: view)
+    }
+
+    private func apply(to view: MeetingAskComposerTextView) {
+        if !view.hasMarkedText(), view.string != text { view.string = text; view.needsDisplay = true }
+        if view.placeholder != placeholder { view.placeholder = placeholder }
+        if view.isEditable != enabled { view.isEditable = enabled; view.isSelectable = enabled }
+        view.onAttach = onAttach
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView scroll: NSScrollView, context: Context) -> CGSize? {
+        guard let view = scroll.documentView as? MeetingAskComposerTextView else { return nil }
+        let width = max(40, proposal.width ?? 240)
+        return CGSize(width: width, height: view.fittingHeight(width: width, maxLines: Self.maxLines))
+    }
+
+    @MainActor final class Coordinator: NSObject, NSTextViewDelegate {
+        var parent: MeetingAskComposer
+        init(_ parent: MeetingAskComposer) { self.parent = parent }
+        func textDidChange(_ notification: Notification) {
+            guard let view = notification.object as? NSTextView else { return }
+            parent.text = view.string
+        }
+        func textView(_ textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+            guard selector == #selector(NSResponder.insertNewline(_:)) else { return false }
+            let flags = NSApp.currentEvent?.modifierFlags ?? []
+            if flags.contains(.shift) || flags.contains(.option) { textView.insertNewlineIgnoringFieldEditor(nil); return true }
+            parent.onSubmit()
+            return true
+        }
+    }
+}
+
+/// The composer's scroll view keeps its text view exactly as wide as what it shows, so a long question wraps instead of
+/// running off to the right (the first offscreen render clipped it to its tail: a 240 pt starting width plus the
+/// autoresizing delta). The text view also starts 0 pt wide, so either one alone holds the width; the production-shell
+/// canary's "wraps at the field's width" check fails only when both are gone (mutants M16, M17, M18, 2026-10-10).
+final class MeetingAskComposerScroll: NSScrollView {
+    override func tile() {
+        super.tile()
+        guard let text = documentView as? NSTextView else { return }
+        let size = contentSize
+        if text.minSize.height != size.height { text.minSize = NSSize(width: 0, height: size.height) }
+        if abs(text.frame.width - size.width) > 0.5 {
+            text.setFrameSize(NSSize(width: size.width, height: max(text.frame.height, size.height)))
+            text.sizeToFit()
+        }
+    }
+}
+
+/// The composer's text view. A drop or a paste that `MeetingAskComposerIntake.route` calls files goes to `onAttach`
+/// and changes nothing in the text; anything else is the stock plain-text behavior.
+final class MeetingAskComposerTextView: NSTextView {
+    var onAttach: ((MeetingAskAttachment) -> Void)?
+    var placeholder = "" {
+        didSet { setAccessibilityPlaceholderValue(placeholder); setAccessibilityLabel(placeholder); needsDisplay = true }
+    }
+    /// Where Command-V reads: the general pasteboard. A check hands its own, so no test touches the clipboard.
+    var pasteSource: NSPasteboard = .general
+
+    static func make(font: NSFont) -> MeetingAskComposerTextView {
+        let storage = NSTextStorage()
+        let layout = NSLayoutManager()
+        storage.addLayoutManager(layout)
+        let container = NSTextContainer(containerSize: NSSize(width: 240, height: CGFloat.greatestFiniteMagnitude))
+        container.widthTracksTextView = true
+        container.lineFragmentPadding = 0
+        layout.addTextContainer(container)
+        let view = MeetingAskComposerTextView(frame: NSRect(x: 0, y: 0, width: 0, height: 17), textContainer: container)
+        view.isRichText = false
+        view.importsGraphics = false
+        view.allowsUndo = true
+        view.drawsBackground = false
+        view.font = font
+        view.textColor = .labelColor
+        view.typingAttributes = [.font: font, .foregroundColor: NSColor.labelColor]
+        view.textContainerInset = .zero
+        view.isVerticallyResizable = true
+        view.isHorizontallyResizable = false
+        view.autoresizingMask = [.width]
+        view.minSize = .zero
+        view.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        // The question is the user's words: no curly quotes or em dashes typed in on their behalf.
+        view.isAutomaticQuoteSubstitutionEnabled = false
+        view.isAutomaticDashSubstitutionEnabled = false
+        view.updateDragTypeRegistration()
+        return view
+    }
+
+    /// Image data and files are readable here (Paste is enabled for a copied screenshot), and `receive` takes them.
+    override var readablePasteboardTypes: [NSPasteboard.PasteboardType] {
+        var types = super.readablePasteboardTypes
+        for extra in [NSPasteboard.PasteboardType.fileURL, .png, .tiff] where !types.contains(extra) { types.append(extra) }
+        return types
+    }
+    /// What a drag must carry for this view to take it: words, a link, files, or PNG or TIFF data. Nothing else, so a
+    /// file promise (Photos, Mail) or a movie is never this view's: it falls through to the Ask panel, whose drop is the
+    /// Files box's own and keeps promises (an NSTextView takes those by default and would type their names).
+    static let dragTypes: [NSPasteboard.PasteboardType] = [.string, .rtf, .html, .URL, .fileURL, .png, .tiff,
+        .init("NSStringPboardType"), .init("NeXT Rich Text Format v1.0 pasteboard type"), .init("Apple HTML pasteboard type"),
+        .init("Apple URL pasteboard type"), .init("WebURLsWithTitlesPboardType"), .init("NSFilenamesPboardType"),
+        .init("Apple PNG pasteboard type"), .init("NeXT TIFF v4.0 pasteboard type")]
+    override var acceptableDragTypes: [NSPasteboard.PasteboardType] { Self.dragTypes }
+    /// AppKit registers a text view's drag types only once it is in a window (observed 2026-10-10: none until this runs there).
+    override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); updateDragTypeRegistration() }
+
+    /// What a pasteboard is for this question. Asked on every drag move, so it reads types, file URLs and the text, never
+    /// image bytes (those are read once, by `receive`).
+    func route(_ pasteboard: NSPasteboard) -> MeetingAskComposerIntake.Route {
+        let urls = (pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL]) ?? []
+        return MeetingAskComposerIntake.route(types: (pasteboard.types ?? []).map(\.rawValue), fileURLs: urls,
+                                              text: pasteboard.string(forType: .string), draft: string,
+                                              isFile: MeetingAskComposerIntake.regularFileExists)
+    }
+
+    /// A drop or a paste that is files goes to `onAttach`, and the text is untouched. True when it was taken. The image
+    /// bytes are read here, inside the drop or the paste, with the Files box's own reader.
+    @discardableResult func receive(_ pasteboard: NSPasteboard) -> Bool {
+        switch route(pasteboard) {
+        case .attachFiles(let urls): onAttach?(.files(urls)); return true
+        case .attachImage:
+            guard let image = WorkCardFileStore.meetingPastePayload(pasteboard).image else { return false }
+            onAttach?(.image(image)); return true
+        case .text: return false
+        }
+    }
+
+    // Text goes to the stock paste, which reads the general pasteboard, so it runs only when that is the source: a check
+    // that hands its own pasteboard never reads the person's clipboard, even when something is routed wrong.
+    private var stockPasteAllowed: Bool { pasteSource == NSPasteboard.general }
+    override func paste(_ sender: Any?) { if !receive(pasteSource), stockPasteAllowed { super.paste(sender) } }
+    override func pasteAsPlainText(_ sender: Any?) { if !receive(pasteSource), stockPasteAllowed { super.pasteAsPlainText(sender) } }
+    override func pasteAsRichText(_ sender: Any?) { if !receive(pasteSource), stockPasteAllowed { super.pasteAsRichText(sender) } }
+
+    private func takes(_ info: NSDraggingInfo) -> Bool {
+        if case .text = route(info.draggingPasteboard) { return false }
+        return true
+    }
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation { takes(sender) ? .copy : super.draggingEntered(sender) }
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation { takes(sender) ? .copy : super.draggingUpdated(sender) }
+    override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool { takes(sender) || super.prepareForDragOperation(sender) }
+    /// The drop itself: files never reach `super`, which would insert their paths.
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool { receive(sender.draggingPasteboard) || super.performDragOperation(sender) }
+
+    override func didChangeText() { super.didChangeText(); needsDisplay = true }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        guard string.isEmpty, !placeholder.isEmpty else { return }
+        let attributes: [NSAttributedString.Key: Any] = [.font: font ?? NSFont.systemFont(ofSize: 12.5), .foregroundColor: NSColor.placeholderTextColor]
+        (placeholder as NSString).draw(at: NSPoint(x: textContainerInset.width + (textContainer?.lineFragmentPadding ?? 0), y: textContainerInset.height), withAttributes: attributes)
+    }
+
+    /// One line at least, `maxLines` at most (then it scrolls), at this width.
+    func fittingHeight(width: CGFloat, maxLines: Int) -> CGFloat {
+        guard let layout = layoutManager, let container = textContainer else { return 17 }
+        let line = ceil(layout.defaultLineHeight(for: font ?? NSFont.systemFont(ofSize: 12.5)))
+        if abs(container.containerSize.width - width) > 0.5 { container.containerSize = NSSize(width: width, height: CGFloat.greatestFiniteMagnitude) }
+        layout.ensureLayout(for: container)
+        let used = ceil(layout.usedRect(for: container).height)
+        return min(max(line, used), line * CGFloat(maxLines))
     }
 }

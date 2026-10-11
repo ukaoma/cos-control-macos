@@ -1125,6 +1125,12 @@ struct WorkMeetingInfo: Sendable, Equatable {
     var date: String
 }
 
+/// A paste's files or image, read from its pasteboard at once (`WorkCardFileStore.meetingPastePayload`).
+struct MeetingPastePayload: Sendable, Equatable {
+    var urls: [URL]
+    var image: Data?
+}
+
 /// One meeting's files as a card's send sees them.
 struct WorkMeetingFiles: Equatable, Sendable {
     var title: String
@@ -2676,11 +2682,21 @@ extension WorkCardFileStore {
     /// Paste: files copied in Finder go as files; a copied screenshot or image goes as a PNG named for when it was pasted.
     /// Reads the pasteboard it is given (the app passes the general one; checks pass their own).
     func pasteMeeting(from pasteboard: NSPasteboard, key: String, info: WorkMeetingInfo, now: Date = Date()) async {
-        guard let root, policy == .meeting, let id = WorkCardFiles.meetingID(forKey: key) else { return }
+        await pasteMeeting(Self.meetingPastePayload(pasteboard), key: key, info: info, now: now)
+    }
+
+    /// What a paste carries, read at once: Finder files, else PNG or TIFF image data. 0.5.281: the Live COS Ask composer
+    /// reads a drop's pasteboard with this inside the drop and hands the payload to the paste below, so a drop or a
+    /// Command-V on the composer goes through the same intake as the Files box's Paste screenshot.
+    nonisolated static func meetingPastePayload(_ pasteboard: NSPasteboard) -> MeetingPastePayload {
         let urls = (pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL]) ?? []
-        if !urls.isEmpty { await intakeMeeting(urls: urls, key: key, info: info); return }
-        let data = pasteboard.data(forType: .png) ?? pasteboard.data(forType: .tiff)
-        guard let data, let png = Self.pngData(data) else { flash([.nothingToPaste], on: id); return }
+        return MeetingPastePayload(urls: urls, image: urls.isEmpty ? (pasteboard.data(forType: .png) ?? pasteboard.data(forType: .tiff)) : nil)
+    }
+
+    func pasteMeeting(_ payload: MeetingPastePayload, key: String, info: WorkMeetingInfo, now: Date = Date()) async {
+        guard let root, policy == .meeting, let id = WorkCardFiles.meetingID(forKey: key) else { return }
+        if !payload.urls.isEmpty { await intakeMeeting(urls: payload.urls, key: key, info: info); return }
+        guard let data = payload.image, let png = Self.pngData(data) else { flash([.nothingToPaste], on: id); return }
         let format = DateFormatter()
         format.locale = Locale(identifier: "en_US_POSIX"); format.dateFormat = "yyyy-MM-dd 'at' HH.mm.ss"
         let display = "Pasted screenshot " + format.string(from: now) + ".png"

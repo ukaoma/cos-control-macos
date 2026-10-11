@@ -14,6 +14,35 @@ import SwiftUI
 /// The stand-in answers from files the check writes beside it; nothing reaches the real helper, the server or the
 /// active-sessions folder. All text is invented. No window is ordered in, no event is sent, nothing becomes active,
 /// and nothing is copied to the clipboard (the copy text is read from the model).
+/// 0.5.281: a drop's information with only a pasteboard, so a check can hand the composer's own drop methods a payload
+/// without a pointer, an event, a window ordered in, or the clipboard. Its pasteboard is a private named one.
+@MainActor final class FixtureDrag: NSObject, NSDraggingInfo {
+    static func board() -> NSPasteboard {
+        let board = NSPasteboard(name: NSPasteboard.Name("cos-fixture-drag-" + UUID().uuidString))
+        board.clearContents()
+        return board
+    }
+    let board: NSPasteboard
+    init(_ board: NSPasteboard) { self.board = board }
+    var draggingDestinationWindow: NSWindow? { nil }
+    var draggingSourceOperationMask: NSDragOperation { .copy }
+    var draggingLocation: NSPoint { .zero }
+    var draggedImageLocation: NSPoint { .zero }
+    nonisolated var draggedImage: NSImage? { nil }
+    var draggingPasteboard: NSPasteboard { board }
+    var draggingSource: Any? { nil }
+    var draggingSequenceNumber: Int { 1 }
+    func slideDraggedImage(to screenPoint: NSPoint) {}
+    var draggingFormation: NSDraggingFormation { get { .default } set {} }
+    var animatesToDestination: Bool { get { false } set {} }
+    var numberOfValidItemsForDrop: Int { get { 1 } set {} }
+    func enumerateDraggingItems(options enumOpts: NSDraggingItemEnumerationOptions = [], for view: NSView?, classes classArray: [AnyClass],
+                                searchOptions: [NSPasteboard.ReadingOptionKey: Any] = [:],
+                                using block: (NSDraggingItem, Int, UnsafeMutablePointer<ObjCBool>) -> Void) {}
+    var springLoadingHighlight: NSSpringLoadingHighlight { .none }
+    func resetSpringLoading() {}
+}
+
 @main @MainActor struct LiveTranscriptRender {
     static let sid = "meeting_1791635349988_fx67ab"
 
@@ -763,11 +792,42 @@ import SwiftUI
         expect(m.meetingAsk.draft(sid) == draft, "production shell navigation retains unsent draft")
         expect(submits == 0 && reads > 0, "shell resize and navigation read history without inference")
         try await capture("ask-shell-returned-with-history")
+        // 0.5.281: the composer in the production shell is the AppKit text view, holds the durable draft, and a file
+        // dropped on it never becomes its path. This shell has no meeting file store, so the drop must say so honestly.
+        guard let composer = composerView(in: host) else { fail("production shell composer", "no MeetingAskComposerTextView in the Ask panel") }
+        expect(composer.string == draft, "production shell composer shows the durable draft", composer.string)
+        expect(composer.readablePasteboardTypes.contains(.png) && composer.registeredDraggedTypes.contains(.fileURL)
+               && !composer.registeredDraggedTypes.contains(.init("com.apple.NSFilePromiseItemMetaData")),
+               "production shell composer takes an image paste and a file drop", composer.registeredDraggedTypes.map(\.rawValue).joined(separator: ","))
+        let field = composer.enclosingScrollView?.contentSize.width ?? -1
+        expect(field > 0 && abs(composer.frame.width - field) < 1 && abs((composer.textContainer?.containerSize.width ?? -1) - field) < 1,
+               "production shell composer wraps at the field's width", "text \(composer.frame.size) field \(field)")
+        let shot = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Screenshot 2026-10-10 at 7.23.21 PM.png")
+        try Data([0x89, 0x50, 0x4E, 0x47]).write(to: shot)
+        let board = FixtureDrag.board()
+        defer { board.releaseGlobally() }
+        board.writeObjects([shot as NSURL])
+        expect(composer.draggingEntered(FixtureDrag(board)) == .copy, "production shell composer offers to copy a dragged file")
+        expect(composer.performDragOperation(FixtureDrag(board)), "production shell composer takes the dropped file")
+        await until("composer drop answers") { m.meetingAsk.attachNotes[sid] != nil }
+        expect(m.meetingAsk.draft(sid) == draft && composer.string == draft, "a file dropped on the composer never types its path",
+               composer.string)
+        expect(m.meetingAsk.attachNotes[sid] == MeetingAskText.attachUnavailable, "without a file store the drop says nothing was attached",
+               m.meetingAsk.attachNotes[sid] ?? "nil")
+        expect(submits == 0, "a composer drop requests no inference")
+        try await capture("ask-shell-composer-drop-no-store")
         let report: [String: Any] = ["passedChecks": passed, "historyReads": reads, "inferenceRequests": submits,
-            "screenshots": 8, "productionShell": true, "pointerDragTested": false,
+            "screenshots": 9, "productionShell": true, "pointerDragTested": false, "composerDropViaFixtureDraggingInfo": true,
             "limitations": "Offscreen production shell and model routing; persisted panel widths, not synthesized mouse gestures. Inspect PNGs for CTA alignment and clipping."]
         try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]).write(to: out.appendingPathComponent("ask-shell-canary.json"))
-        print("PASS: Meeting Ask production-shell canary; \(passed) checks; 8 screenshots; zero inference")
+        print("PASS: Meeting Ask production-shell canary; \(passed) checks; 9 screenshots; zero inference")
+    }
+
+    /// The Ask composer's text view in a rendered view tree.
+    static func composerView(in view: NSView) -> MeetingAskComposerTextView? {
+        if let found = view as? MeetingAskComposerTextView { return found }
+        for child in view.subviews { if let found = composerView(in: child) { return found } }
+        return nil
     }
 
     static func settle(_ host: NSView, seconds: TimeInterval) {

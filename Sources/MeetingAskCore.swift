@@ -232,3 +232,92 @@ enum MeetingAskText {
         return url
     }
 }
+
+/// 0.5.281 (Miles, 2026-10-10, on 0.5.280): a screenshot thumbnail dragged onto "Ask about this meeting" became its
+/// `/var/folders/.../Screenshot ... .png` path as typed text, and that path went to the model as the question with no file.
+/// The composer is now an attachment target. This decides, from what a drop or a paste carries, whether it is a file for
+/// this meeting's Files (the same intake the Files box uses) or text for the question. Pure: Tests/MeetingAskChecks.swift.
+enum MeetingAskComposerIntake {
+    enum Route: Equatable {
+        /// Local files: Finder files, the screenshot thumbnail, or rule C's path-only text.
+        case attachFiles([URL])
+        /// PNG or TIFF data with no text beside it (a copied screenshot).
+        case attachImage
+        /// Text for the question, inserted as typed.
+        case text
+    }
+    /// Image data the meeting paste intake reads (`WorkCardFileStore.meetingPastePayload` takes PNG, else TIFF).
+    static let imageTypes: Set<String> = ["public.png", "public.tiff", "NeXT TIFF v4.0 pasteboard type", "Apple PNG pasteboard type"]
+    /// Anything that is words. Copying from Keynote, Pages or a browser puts a picture of the selection beside its text;
+    /// that paste is text, so an image counts as an attachment only when nothing here comes with it.
+    static let textTypes: Set<String> = ["public.utf8-plain-text", "public.utf16-plain-text", "public.utf16-external-plain-text",
+        "public.plain-text", "NSStringPboardType", "public.rtf", "NeXT Rich Text Format v1.0 pasteboard type", "com.apple.flat-rtfd",
+        "NeXT RTFD pasteboard type", "public.html", "Apple HTML pasteboard type", "public.url", "Apple URL pasteboard type"]
+
+    /// - types: the pasteboard's type identifiers. fileURLs: the file URLs it holds (read with file URLs only).
+    /// - text: the plain text it would insert. draft: the composer's text before the insert.
+    static func route(types: [String], fileURLs: [URL], text: String?, draft: String, isFile: (String) -> Bool) -> Route {
+        let local = fileURLs.filter(\.isFileURL)
+        if !local.isEmpty { return .attachFiles(local) }
+        let offered = Set(types)
+        if !offered.isDisjoint(with: imageTypes), offered.isDisjoint(with: textTypes) { return .attachImage }
+        // Rule C at the insert: only into an empty composer, so a path dropped or pasted after words stays text.
+        if draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, let text, let urls = localFiles(in: text, isFile: isFile) {
+            return .attachFiles(urls)
+        }
+        return .text
+    }
+
+    /// Rule C, defense in depth (0.5.281). Text is treated as files, never sent as a question, only when ALL of it is
+    /// one to 20 lines and EVERY line, alone, is an absolute path ("/...", "~/...", optionally quoted, or with Terminal's
+    /// backslash-escaped spaces) or a file:// URL, naming a regular file that exists on this Mac right now. That is
+    /// exactly the shape a file drop or a "Copy as Pathname" leaves behind. Why so narrow: a question that MENTIONS a path
+    /// ("What does /etc/hosts do?") has other words on its line, so it is a question; "/" alone, a folder, and a path that
+    /// does not exist (a typo, a slash command, a path on another machine) are never files here, so they still go as
+    /// questions. Nil means: this is a question.
+    static func localFiles(in text: String, isFile: (String) -> Bool, home: String = NSHomeDirectory()) -> [URL]? {
+        let lines = text.split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        guard !lines.isEmpty, lines.count <= 20 else { return nil }
+        var urls: [URL] = []
+        for line in lines {
+            guard let path = candidates(line, home: home).first(where: { $0 != "/" && isFile($0) }) else { return nil }
+            urls.append(URL(fileURLWithPath: path))
+        }
+        return urls
+    }
+
+    /// The paths one line could mean: as written, and with Terminal's `\ ` escapes undone.
+    static func candidates(_ line: String, home: String) -> [String] {
+        var value = line
+        if value.count >= 2, let first = value.first, first == "'" || first == "\"", value.last == first { value = String(value.dropFirst().dropLast()) }
+        if value.lowercased().hasPrefix("file://") {
+            var rest = String(value.dropFirst(7))
+            if rest.lowercased().hasPrefix("localhost/") { rest = String(rest.dropFirst(9)) }
+            guard rest.hasPrefix("/"), let decoded = rest.removingPercentEncoding else { return [] }
+            return [decoded]
+        }
+        if value.hasPrefix("~/") { value = home + String(value.dropFirst(1)) }
+        guard value.hasPrefix("/") else { return [] }
+        let unescaped = value.replacingOccurrences(of: "\\ ", with: " ")
+        return unescaped == value ? [value] : [value, unescaped]
+    }
+
+    /// The live check: a regular file (or a link to one), never a folder.
+    static func regularFileExists(_ path: String) -> Bool {
+        var directory: ObjCBool = false
+        return FileManager.default.fileExists(atPath: path, isDirectory: &directory) && !directory.boolValue
+    }
+}
+
+extension MeetingAskText {
+    /// The line the Ask panel shows after a drop or a paste on it. names: the files that landed in this meeting's Files.
+    static func attached(_ names: [String], pathOnly: Bool = false) -> String {
+        let lead = pathOnly ? "That question was only a file path, so it was not sent. " : ""
+        switch names.count {
+        case 0: return lead + "Nothing new was attached to this meeting."
+        case 1: return lead + "Attached \(names[0]) to this meeting. Ask about it when it shows Ready."
+        default: return lead + "Attached \(names.count) files to this meeting. Ask about them when they show Ready."
+        }
+    }
+    static let attachUnavailable = "Files can't be added to this meeting from here right now, so nothing was attached."
+}

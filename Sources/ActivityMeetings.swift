@@ -2039,6 +2039,9 @@ struct LiveTranscriptPane: View {
     @State private var follow = LiveTranscriptFollow()
     @State private var atBottom = true
     @State private var showAsk = true
+    /// 0.5.281 (Miles, 2026-10-10): open while the meeting is live. Collapsed, the drop zone, Paste screenshot and Add
+    /// files were out of sight, so a screenshot went to the Ask box as its path instead. It can still be closed.
+    @State private var filesExpanded = true
     @State private var askJumpID: Int?
     @AppStorage("meetingAskPanelWidth") private var askWidth = 360.0
     @State private var resizeStart: Double?
@@ -2116,7 +2119,7 @@ struct LiveTranscriptPane: View {
             .font(COSType.body(11.5))
             if let feed, feed.ended { handoffLine(feed) }
             if let session = model.liveTranscriptOpenID, let files = model.workHandoffStore?.meetingFiles {
-                DisclosureGroup("Files shared in this meeting") {
+                DisclosureGroup("Files shared in this meeting", isExpanded: $filesExpanded) {
                     MeetingFilesSection(files: files, keys: ["g2:" + session], supported: true, ambiguous: false, reason: "",
                         info: WorkMeetingInfo(recordId: "", title: "Live meeting", date: ""))
                 }.font(COSType.body(11.5))
