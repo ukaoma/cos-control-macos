@@ -1,3 +1,9 @@
+## 0.5.285 (build 338) — private test candidate
+
+- Optional Jev keys do not keep Finish setup open. The key action remains in the guide; skip/hide preferences are retained.
+- Confidence rows from server 6.71.3 render as labeled evidence notes, including Markdown-only compatibility.
+- Includes 0.5.284 model-details disclosure and all 0.5.283 saved Ask, files, search and Activity behavior.
+
 ## 0.5.284 (build 337) — private test candidate
 
 - Meeting assistant settings start with unavailable model details collapsed. Expand the counted list to see qualification reasons; the list scrolls within the card. Model selection and the shared live Ask control retain the 0.5.283 behavior.

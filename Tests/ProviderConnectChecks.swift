@@ -382,8 +382,8 @@ struct ProviderConnectChecks {
     static func setupGuide() {
         // Early user before Get started: server rows wait and are not counted.
         let early = SetupGuideRules.rows(facts(allMissing, running: false), skipped: [])
-        check(early.filter { $0.afterSetup && $0.counted }.map(\.id) == [.voice, .sessions, .jev], "setup guide early", "\(early.filter(\.afterSetup).map(\.id))")
-        check(early.filter { $0.afterSetup && !$0.counted }.map(\.id) == [.glassesPair], "setup guide early", "the glasses code waits for the server too, uncounted")
+        check(early.filter { $0.afterSetup && $0.counted }.map(\.id) == [.voice, .sessions], "setup guide early", "\(early.filter(\.afterSetup).map(\.id))")
+        check(early.filter { $0.afterSetup && !$0.counted }.map(\.id) == [.jev, .glassesPair], "setup guide early", "the glasses code waits for the server too, uncounted")
         check(SetupGuideRules.progress(early) == (0, 5), "setup guide early", "counts claude, codex, cursor, ollama, permissions: \(SetupGuideRules.progress(early))")
         check(SetupGuideRules.showFinishCard(early, hidden: false) && SetupGuideRules.finishTitle(early) == "Finish setup · 0 of 5", "finish card early", SetupGuideRules.finishTitle(early))
         check(!SetupGuideRules.showFinishCard(early, hidden: true), "finish card hide", "Hide setup guide removes the card")
@@ -391,15 +391,24 @@ struct ProviderConnectChecks {
         var midFacts = facts(mixed, voice: voiceReady()); midFacts.providerSkipped = [.cursor]
         let mid = SetupGuideRules.rows(midFacts, skipped: [])
         let p = SetupGuideRules.progress(mid)
-        check(p.total == 9 && p.handled == 4, "finish card mid", "codex, cursor (skipped), voice, continue: \(p)")
+        check(p.total == 8 && p.handled == 4, "finish card mid", "codex, cursor (skipped), voice, continue: \(p)")
         // 2026-10-09: the three Glasses rows come last and are never counted (the totals above are unchanged).
         check(mid.map(\.id) == [.claude, .codex, .cursor, .ollama, .voice, .sessions, .continueThreads, .jev, .permissions, .tailscaleMac, .tailscalePhone, .glassesPair], "setup guide rows", "\(mid.map(\.id))")
-        check(SetupRowID.allCases.count == 12 && mid.filter { !$0.counted }.map(\.id) == [.tailscaleMac, .tailscalePhone, .glassesPair], "glasses uncounted", "\(mid.filter { !$0.counted }.map(\.id))")
+        check(SetupRowID.allCases.count == 12 && mid.filter { !$0.counted }.map(\.id) == [.jev, .tailscaleMac, .tailscalePhone, .glassesPair], "glasses uncounted", "\(mid.filter { !$0.counted }.map(\.id))")
         // Done: everything done or skipped.
         var allDone = facts(allIn, voice: voiceReady())
         allDone.claudeSessionsEnabled = true; allDone.jevConfigured = true; allDone.permissionsNeedCount = 0
         let done = SetupGuideRules.rows(allDone, skipped: [])
-        check(SetupGuideRules.progress(done) == (9, 9) && !SetupGuideRules.showFinishCard(done, hidden: false), "finish card done", "\(SetupGuideRules.progress(done))")
+        check(SetupGuideRules.progress(done) == (8, 8) && !SetupGuideRules.showFinishCard(done, hidden: false), "finish card done", "\(SetupGuideRules.progress(done))")
+        // Jev is optional. An unset or still-checking key never keeps Finish setup alive.
+        for configured: Bool? in [false, nil] {
+            allDone.jevConfigured = configured
+            let optional = SetupGuideRules.rows(allDone, skipped: [])
+            check(SetupGuideRules.progress(optional) == (8, 8) && !SetupGuideRules.showFinishCard(optional, hidden: false) && SetupGuideRules.next(optional) == nil,
+                  "optional Jev", "No reminder when only the optional key is missing")
+            check(optional.first { $0.id == .jev }?.action == .addJevKey && optional.first { $0.id == .jev }?.handled == false,
+                  "optional Jev", "Key remains available in the guide, without claiming it is configured")
+        }
         var allSkipped = facts(mixed, voice: voiceReady()); allSkipped.providerSkipped = Set(AIProvider.agents)
         let skippedAll = SetupGuideRules.rows(allSkipped, skipped: Set(SetupRowID.allCases))
         check(!SetupGuideRules.showFinishCard(skippedAll, hidden: false), "finish card skipped", "skipping every row also ends the card")
@@ -787,7 +796,7 @@ extension ProviderConnectChecks {
         allDone.claudeSessionsEnabled = true; allDone.jevConfigured = true; allDone.permissionsNeedCount = 0
         allDone.glasses = gfacts(tailscale: tailscaleDetails(installed: false, running: false, backend: nil))
         let done = SetupGuideRules.rows(allDone, skipped: [])
-        check(SetupGuideRules.progress(done) == (9, 9) && !SetupGuideRules.showFinishCard(done, hidden: false) && SetupGuideRules.next(done) == nil,
+        check(SetupGuideRules.progress(done) == (8, 8) && !SetupGuideRules.showFinishCard(done, hidden: false) && SetupGuideRules.next(done) == nil,
               "glasses uncounted", "Finish setup ends without the glasses: \(SetupGuideRules.progress(done))")
     }
 

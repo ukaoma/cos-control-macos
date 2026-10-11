@@ -197,7 +197,7 @@ enum MeetingAskAnswerRows {
 
     /// Every label the server's contract allows (catch_up, summary, actions, questions, ask). Only these start a row
     /// when `answer` is read, so a bolded word in an older server's free Markdown is never taken for a label.
-    static let known = ["So what", "Decided", "Open", "You owe", "Next", "Covered", "Others owe", "Unowned", "Proposed", "Ask", "Details"]
+    static let known = ["So what", "Decided", "Open", "You owe", "Next", "Covered", "Others owe", "Unowned", "Proposed", "Ask", "Details", "Confidence"]
 
     static func rows(sections: [MeetingAskSection]?, answer: String?) -> [Row]? {
         let given = (sections ?? []).compactMap { section -> Row? in

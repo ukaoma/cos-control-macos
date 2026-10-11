@@ -1,8 +1,15 @@
 {
-  "version": "0.5.284",
+  "version": "0.5.285",
   "whatsNew": {
-    "summary": "Meeting assistant settings now keep unavailable model details collapsed. Expand the list when you need qualification details. Includes the labeled Ask answers and meeting history improvements from 0.5.283. Private test candidate.",
+    "summary": "Optional Jev setup no longer keeps the Finish setup reminder open. Paired server improvements add G2-aware answers and evidence-confidence notes. Includes the compact model details and saved Ask history from 0.5.284. Private test candidate.",
     "sections": [
+      {
+        "title": "Setup reminder clears",
+        "items": [
+          "An optional Jev key remains available in the guide but no longer counts as unfinished setup.",
+          "Your existing setup choices and completed steps are retained."
+        ]
+      },
       {
         "title": "Compact Meeting assistant settings",
         "items": [

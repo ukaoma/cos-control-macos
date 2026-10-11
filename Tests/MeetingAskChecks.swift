@@ -213,6 +213,7 @@ import Foundation
         check(Rows.parse("**So what:** Two things.\n- Price holds\n- Date moves\n**Ask:** Who signs?") == [Row(label: "So what", text: "Two things.\n- Price holds\n- Date moves"), Row(label: "Ask", text: "Who signs?")],
               "parse: unlabeled lines join the row above them")
         check(Rows.parse("**Ask:** One?\n**Ask:** Two?\n**Ask:** Three?")?.count == 3, "parse: questions repeat the Ask label")
+        check(Rows.parse("**So what:** Twelve replaces ten.\n\n**Confidence:** Limited — the owner name is uncertain.") == [Row(label: "So what", text: "Twelve replaces ten."), Row(label: "Confidence", text: "Limited — the owner name is uncertain.")], "confidence is visible in Markdown-only answers")
         check(Rows.parse("**So what:** Fine.\n**Open:**") == [Row(label: "So what", text: "Fine.")], "parse: an empty section is dropped, never padded")
         check(Rows.parse("**So what:** Uses **bold** inside.\n**Important:** stays text") == [Row(label: "So what", text: "Uses **bold** inside.\n**Important:** stays text")],
               "parse: inline bold and an unknown label inside a row stay as its words")

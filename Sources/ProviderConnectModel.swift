@@ -891,9 +891,11 @@ enum SetupGuideRules {
             rows.append(SetupRow(id: .jev, title: "Jev (TypeSafe)", status: facts.jevConfigured == nil ? "Checking…" : set ? "Key saved" : "No key yet",
                                  unlocks: "Work's suggestions: Continue, Fork or New for a task, and sorting meetings into Intake.",
                                  detail: set ? nil : "Optional. Keys come from typesafe.ai; paste one in Settings, under Jev (TypeSafe).",
-                                 done: set, skipped: skipped.contains(.jev), action: set ? .none : .addJevKey, actionTitle: set ? nil : "Add a key"))
+                                 done: set, skipped: skipped.contains(.jev), action: set ? .none : .addJevKey, actionTitle: set ? nil : "Add a key", counted: false))
         } else {
-            rows.append(after(.jev, "Jev (TypeSafe)", "Work's suggestions and meeting sorting.", skipped))
+            var jev = after(.jev, "Jev (TypeSafe)", "Work's suggestions and meeting sorting.", skipped)
+            jev.counted = false
+            rows.append(jev)
         }
         if let need = facts.permissionsNeedCount {
             rows.append(SetupRow(id: .permissions, title: "Permissions", status: need == 0 ? "All set" : need == 1 ? "1 needs you" : "\(need) need you",
