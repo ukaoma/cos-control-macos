@@ -218,6 +218,22 @@ import Foundation
               "parse: inline bold and an unknown label inside a row stay as its words")
         check(Rows.display("Two things.\n- Price holds\n* Date moves") == "Two things.\n\u{2022} Price holds\n\u{2022} Date moves", "display: list markers become bullets")
         for label in Rows.known { check(Rows.labelLine("**\(label):** x")?.0 == label, "every contract label is known: \(label)") }
+        // 6.71.0 composes `answer` with a blank line between rows, and may put a whole free-form reply in one So what.
+        check(Rows.parse("**So what:** a\n\n**Decided:** b\n\n**Next:** c") == [Row(label: "So what", text: "a"), Row(label: "Decided", text: "b"), Row(label: "Next", text: "c")],
+              "parse: rows separated by blank lines are separate rows with no blank text")
+        let freeForm = "**So what:** First paragraph [T1].\n\nSecond paragraph.\n\n\n- one\n  - nested\n- two\n\n## Heading\nMore words\n\n"
+        check(Rows.parse(freeForm) == [Row(label: "So what", text: "First paragraph [T1].\n\nSecond paragraph.\n\n- one\n  - nested\n- two\n\n## Heading\nMore words")],
+              "parse: a multi-paragraph row keeps one paragraph break per gap and its nested indent")
+        check(Rows.parse("**So what:**\n\nWhole reply.\n\nMore.") == [Row(label: "So what", text: "Whole reply.\n\nMore.")],
+              "parse: a label alone on its line takes the paragraphs under it, with no leading break")
+        let parts = Rows.split("First paragraph [T1].\n\nSecond paragraph.\n\n- one")
+        check(parts.lead == "First paragraph [T1]." && parts.rest == "Second paragraph.\n\n- one", "split: the first paragraph leads, the rest is blocks")
+        check(Rows.split("One paragraph.\n- a\n- b") == ("One paragraph.\n- a\n- b", nil), "split: one paragraph has no rest")
+        check(Rows.split("- a\n- b\n\nAfter") == ("", "- a\n- b\n\nAfter") && Rows.split("## Heading\nWords").lead.isEmpty
+              && Rows.split("1. First\n2. Second").lead.isEmpty, "split: a row that opens with a block has no lead")
+        let sectioned = Rows.rows(sections: [MeetingAskSection(label: "So what", text: "  Free reply.\n\nSecond.  \n")], answer: nil)
+        check(sectioned == [Row(label: "So what", text: "Free reply.\n\nSecond.")] && Rows.split(sectioned![0].text) == ("Free reply.", "Second."),
+              "split: a single So what section holding a whole reply draws as lead plus blocks")
         print("PASS Meeting Ask: \(count) checks")
     }
 }

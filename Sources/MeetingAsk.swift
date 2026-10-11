@@ -650,8 +650,9 @@ struct LiveAskPanel: View {
     }
 }
 
-/// 0.5.283: an answer's labeled rows (MeetingAskAnswerRows), each one paragraph: the label in semibold, then its words
-/// with their inline Markdown and [T1] citations kept. Selectable, like the Markdown answer it replaces.
+/// 0.5.283: an answer's labeled rows (MeetingAskAnswerRows): the label in semibold, then its words with their inline
+/// Markdown and [T1] citations kept, and any further paragraphs as Markdown blocks under it. Selectable, like the
+/// Markdown answer it replaces.
 struct MeetingAskAnswerRowsView: View {
     let rows: [MeetingAskAnswerRows.Row]
     var bodySize: CGFloat = 13
@@ -659,14 +660,20 @@ struct MeetingAskAnswerRowsView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
-                (Text(verbatim: row.label + ":").font(COSType.body(bodySize, weight: .semibold))
-                    + Text(verbatim: " ")
-                    + Text(COSMarkdownInlineCache.attributed(MeetingAskAnswerRows.display(row.text), italicSize: bodySize)))
-                    .font(COSType.body(bodySize))
-                    .lineSpacing(2.5)
-                    .textSelection(.enabled)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                // More than one paragraph (a whole free-form reply under So what): the first paragraph sits beside the
+                // label and the rest is drawn under it as Markdown blocks (MeetingAskAnswerRows.split).
+                let parts = MeetingAskAnswerRows.split(row.text)
+                VStack(alignment: .leading, spacing: 8) {
+                    (Text(verbatim: row.label + ":").font(COSType.body(bodySize, weight: .semibold))
+                        + Text(verbatim: parts.lead.isEmpty ? "" : " ")
+                        + Text(COSMarkdownInlineCache.attributed(MeetingAskAnswerRows.display(parts.lead), italicSize: bodySize)))
+                        .font(COSType.body(bodySize))
+                        .lineSpacing(2.5)
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    if let rest = parts.rest { COSMarkdownView(text: rest, bodySize: bodySize) }
+                }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)

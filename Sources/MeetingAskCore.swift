@@ -210,24 +210,45 @@ enum MeetingAskAnswerRows {
     }
 
     /// `**Label:** text` lines, one row each; an unlabeled line joins the row above it. Nil, so the answer stays plain
-    /// Markdown, unless the first line with words is a known label.
+    /// Markdown, unless the first line with words is a known label. Server 6.71.0 puts a blank line between rows, and a
+    /// row can hold a whole free-form reply: blank lines between rows are dropped, blank lines inside a row stay as one
+    /// paragraph break, and a continuation line keeps its indent (nested lists).
     static func parse(_ answer: String) -> [Row]? {
         var rows: [(label: String, lines: [String])] = []
+        var gap = false
         for raw in answer.components(separatedBy: .newlines) {
             let line = raw.trimmingCharacters(in: .whitespaces)
-            if line.isEmpty { continue }
+            if line.isEmpty { gap = true; continue }
             if let (label, rest) = labelLine(line) {
                 rows.append((label, rest.isEmpty ? [] : [rest]))
             } else {
                 guard !rows.isEmpty else { return nil }
-                rows[rows.count - 1].lines.append(line)
+                if gap, !rows[rows.count - 1].lines.isEmpty { rows[rows.count - 1].lines.append("") }
+                var kept = raw
+                while kept.last?.isWhitespace == true { kept.removeLast() }
+                rows[rows.count - 1].lines.append(kept)
             }
+            gap = false
         }
         let built = rows.compactMap { row -> Row? in
             let text = row.lines.joined(separator: "\n")
             return text.isEmpty ? nil : Row(label: row.label, text: text)
         }
         return built.isEmpty ? nil : soWhatFirst(built)
+    }
+
+    /// A row's words split for drawing. `lead` follows the label on its line; `rest`, the paragraphs after the first
+    /// blank line, is drawn under it as Markdown blocks (lists, headings, more paragraphs). A row that opens with a block
+    /// (a list, a heading, a quote, a fence) has no lead, so that block is never flattened into the label's line.
+    static func split(_ text: String) -> (lead: String, rest: String?) {
+        let body = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let first = body.drop(while: { $0 == " " })
+        let block = ["- ", "* ", "+ ", "#", "> ", "```", "~~~", "|"].contains { first.hasPrefix($0) }
+            || first.range(of: #"^\d{1,3}[.)] "#, options: .regularExpression) != nil
+        if block { return ("", body.isEmpty ? nil : body) }
+        guard let gap = body.range(of: #"\n[ \t]*\n"#, options: .regularExpression) else { return (body, nil) }
+        let rest = body[gap.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines)
+        return (String(body[..<gap.lowerBound]), rest.isEmpty ? nil : rest)
     }
 
     /// `**So what:** words` (or `**So what**: words`) with a known label, as (that label, words); nil for any other line.
