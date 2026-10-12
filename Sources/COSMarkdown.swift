@@ -86,9 +86,16 @@ enum COSMarkdownInlineCache {
     }
 }
 
+private struct COSMarkdownCitationKey: EnvironmentKey { static let defaultValue: Set<String> = [] }
+
 private struct COSMarkdownHighlightKey: EnvironmentKey { static let defaultValue = "" }
 
 extension EnvironmentValues {
+    /// Enabled only by the owning Meeting Ask exchange; other panes retain web-only links.
+    var cosMarkdownCitationIDs: Set<String> {
+        get { self[COSMarkdownCitationKey.self] }
+        set { self[COSMarkdownCitationKey.self] = newValue }
+    }
     /// A search term the rendered document marks wherever it appears (Messages search).
     var cosMarkdownHighlight: String {
         get { self[COSMarkdownHighlightKey.self] }
@@ -102,13 +109,14 @@ struct COSMarkdownText: View {
     let text: String
     /// The DM Sans size this text is set in, for the italic fallback; nil for display and mono.
     var bodySize: CGFloat? = nil
+    @Environment(\.cosMarkdownCitationIDs) private var citationIDs
     @Environment(\.cosMarkdownHighlight) private var highlight
     @Environment(\.colorScheme) private var colorScheme
 
     init(_ text: String, bodySize: CGFloat? = nil) { self.text = text; self.bodySize = bodySize }
 
     var body: some View {
-        let runs = COSMarkdownInlineCache.attributed(text, italicSize: bodySize)
+        let runs = citationIDs.isEmpty ? COSMarkdownInlineCache.attributed(text, italicSize: bodySize) : MeetingAskCitationText.attributed(text, ids: citationIDs)
         Text(highlight.isEmpty ? runs : COSMarkdownInline.highlighting(runs, query: highlight, dark: colorScheme == .dark))
     }
 }

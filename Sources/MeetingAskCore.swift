@@ -535,3 +535,36 @@ extension MeetingAskText {
     }
     static let attachUnavailable = "Files can't be added to this meeting from here right now, so nothing was attached."
 }
+
+/// Request-local citation URLs are presentation only; source resolution stays in the owning exchange.
+enum MeetingAskCitationText {
+    static func markdown(_ text: String, ids: Set<String>) -> String {
+        let regex = try! NSRegularExpression(pattern: #"\[([THFW]\d+)\]"#)
+        var result = text
+        for match in regex.matches(in: text, range: NSRange(text.startIndex..., in: text)).reversed() {
+            guard let range = Range(match.range, in: result), let idRange = Range(match.range(at: 1), in: text) else { continue }
+            let id = String(text[idRange])
+            if ids.contains(id) { result.replaceSubrange(range, with: "[" + id + "](cos-ask-citation:" + id + ")") }
+        }
+        return result
+    }
+    static func attributed(_ text: String, ids: Set<String>) -> AttributedString {
+        var options = AttributedString.MarkdownParsingOptions()
+        options.interpretedSyntax = .inlineOnlyPreservingWhitespace
+        options.failurePolicy = .returnPartiallyParsedIfPossible
+        var value = (try? AttributedString(markdown: markdown(text, ids: ids), options: options)) ?? AttributedString(text)
+        var refused: [Range<AttributedString.Index>] = []
+        for run in value.runs {
+            guard let url = run.link else { continue }
+            let web = ["https", "http"].contains(url.scheme?.lowercased() ?? "") && url.host?.isEmpty == false
+            if id(url, ids: ids) == nil && !web { refused.append(run.range) }
+        }
+        for range in refused { value[range].link = nil }
+        return value
+    }
+    static func id(_ url: URL, ids: Set<String>) -> String? {
+        guard url.scheme == "cos-ask-citation" else { return nil }
+        let id = url.absoluteString.dropFirst("cos-ask-citation:".count)
+        return ids.contains(String(id)) ? String(id) : nil
+    }
+}

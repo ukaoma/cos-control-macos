@@ -560,6 +560,7 @@ struct LiveAskPanel: View {
     private let actions = [("catch_up", "Catch me up"), ("summary", "Summarize so far"), ("questions", "Suggest questions"), ("actions", "Action items")]
     private var record: MeetingAskLocalRecord? { state.records[session] }
     @State private var dropTargeted = false
+    @State private var expandedSources: Set<String> = []
     /// 0.5.281: the live panel takes files anywhere on it, through the Files box's own drop, when this meeting can hold them.
     private var takesFiles: Bool {
         feed != nil && model.workHandoffStore?.meetingFiles.enabled == true && WorkCardFiles.meetingID(forKey: "g2:" + session) != nil
@@ -580,7 +581,7 @@ struct LiveAskPanel: View {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 18) {
                         if record?.exchanges.isEmpty != false { Text("Your questions and answers stay with this meeting, including after you leave this screen.").font(COSType.body(12)).foregroundStyle(.secondary) }
-                        ForEach(record?.exchanges ?? []) { exchange in answer(exchange) }
+                        ForEach(record?.exchanges ?? []) { exchange in answer(exchange, proxy: proxy) }
                         Color.clear.frame(height: 1).id("ask-bottom")
                     }
                 }.onChange(of: record?.exchanges.count) { _, _ in proxy.scrollTo("ask-bottom", anchor: .bottom) }
@@ -625,15 +626,15 @@ struct LiveAskPanel: View {
         .onDisappear { _ = state.flush(session) }
     }
     private func send(_ feed: LiveTranscriptFeed) { state.ask(action: "ask", question: state.draft(session), feed: feed, model: model) }
-    private func answer(_ exchange: MeetingAskExchange) -> some View {
+    private func answer(_ exchange: MeetingAskExchange, proxy: ScrollViewProxy) -> some View {
         VStack(alignment: .leading, spacing: 9) {
             Text(verbatim: exchange.question).font(COSType.body(12, weight: .semibold))
             // 0.5.283: bold-label rows, So what first, when the answer has labels; an older answer stays plain Markdown.
-            if let rows = MeetingAskAnswerRows.rows(sections: exchange.sections?.items, answer: exchange.answer) { MeetingAskAnswerRowsView(rows: rows, bodySize: 13) }
+            if let rows = MeetingAskAnswerRows.rows(sections: exchange.sections?.items, answer: exchange.answer) { MeetingAskAnswerRowsView(rows: rows, bodySize: 13, citationIDs: Set(exchange.sources.map(\.id))) }
             else if let answer = exchange.answer { COSMarkdownView(text: answer, cacheID: exchange.id + exchange.updatedAt, bodySize: 13) }
             else { Text(exchange.terminal ? "No answer · " + exchange.status : "Checking the meeting…").font(COSType.body(12)).foregroundStyle(.secondary) }
             if let reason = exchange.error { Text(MeetingAskText.failure(reason)).font(COSType.body(11)).foregroundStyle(COSPalette.amber) }
-            ForEach(exchange.sources) { source in sourceRow(source) }.font(COSType.body(11))
+            ForEach(exchange.sources) { source in sourceRow(source, exchangeID: exchange.id) }.font(COSType.body(11))
             ForEach(exchange.notices, id: \.self) { Text($0).font(COSType.body(11)).foregroundStyle(COSPalette.amber) }
             HStack {
                 Text("Through \(LiveTranscript.stamp(exchange.throughMs, hours: false)) · \(exchange.model ?? exchange.selectedModel.label)").foregroundStyle(.secondary)
@@ -646,9 +647,19 @@ struct LiveAskPanel: View {
                 Button("Copy") { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(exchange.answer ?? exchange.question, forType: .string) }.buttonStyle(COSTextButtonStyle())
             }.font(COSType.body(10.5))
         }.padding(12).background(COSPalette.raised, in: RoundedRectangle(cornerRadius: 9))
+        .environment(\.cosMarkdownCitationIDs, Set(exchange.sources.map(\.id)))
+        .environment(\.openURL, OpenURLAction { url in
+            guard url.scheme == "cos-ask-citation" else { return .systemAction }
+            guard let id = MeetingAskCitationText.id(url, ids: Set(exchange.sources.map(\.id))) else { return .discarded }
+            let key = exchange.id + ":" + id
+            expandedSources.insert(key)
+            Task { @MainActor in await Task.yield(); proxy.scrollTo(key, anchor: .center) }
+            return .handled
+        })
     }
-    private func sourceRow(_ source: LiveAskSource) -> some View {
-        DisclosureGroup("[\(source.id)] \(source.kind.capitalized) · \(source.title)") {
+    private func sourceRow(_ source: LiveAskSource, exchangeID: String) -> some View {
+        let key = exchangeID + ":" + source.id
+        return DisclosureGroup("[\(source.id)] \(source.kind.capitalized) · \(source.title)", isExpanded: Binding(get: { expandedSources.contains(key) }, set: { if $0 { expandedSources.insert(key) } else { expandedSources.remove(key) } })) {
             VStack(alignment: .leading, spacing: 6) {
                 Text(verbatim: source.text).textSelection(.enabled)
                 if source.kind == "transcript", let turn = source.turnId, feed?.turns.contains(where: { $0.id == turn }) == true { Button("Show in transcript") { jump(turn) }.buttonStyle(COSTextButtonStyle()) }
@@ -669,7 +680,7 @@ struct LiveAskPanel: View {
                     Button("Reveal file") { NSWorkspace.shared.activateFileViewerSelecting([file.folder.appendingPathComponent(file.file.stored)]) }.buttonStyle(COSTextButtonStyle())
                 }
             }
-        }
+        }.id(key)
     }
 }
 
@@ -679,6 +690,7 @@ struct LiveAskPanel: View {
 struct MeetingAskAnswerRowsView: View {
     let rows: [MeetingAskAnswerRows.Row]
     var bodySize: CGFloat = 13
+    var citationIDs: Set<String> = []
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -689,7 +701,7 @@ struct MeetingAskAnswerRowsView: View {
                 VStack(alignment: .leading, spacing: 8) {
                     (Text(verbatim: row.label + ":").font(COSType.body(bodySize, weight: .semibold))
                         + Text(verbatim: parts.lead.isEmpty ? "" : " ")
-                        + Text(COSMarkdownInlineCache.attributed(MeetingAskAnswerRows.display(parts.lead), italicSize: bodySize)))
+                        + Text(MeetingAskCitationText.attributed(MeetingAskAnswerRows.display(parts.lead), ids: citationIDs)))
                         .font(COSType.body(bodySize))
                         .lineSpacing(2.5)
                         .textSelection(.enabled)

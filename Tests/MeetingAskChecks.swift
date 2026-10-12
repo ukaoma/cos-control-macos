@@ -2,6 +2,12 @@ import Foundation
 @main struct MeetingAskChecks {
     static func main() throws {
         var count = 0
+        let renderedCitation = MeetingAskCitationText.attributed("Fact [T1][T2]. [Unsafe](file:///tmp/action)", ids: ["T1"])
+        precondition(renderedCitation.runs.compactMap(\.link) == [URL(string: "cos-ask-citation:T1")!])
+        precondition(MeetingAskCitationText.markdown("Fact [T1][T2].", ids: ["T1"]) == "Fact [T1](cos-ask-citation:T1)[T2].")
+        precondition(MeetingAskCitationText.id(URL(string: "cos-ask-citation:T1")!, ids: ["T2"]) == nil)
+        precondition(MeetingAskCitationText.id(URL(string: "https://example.com/T1")!, ids: ["T1"]) == nil)
+        precondition(MeetingAskCitationText.id(URL(string: "cos-ask-citation:T1")!, ids: ["T1"]) == "T1")
         func check(_ value: @autoclosure () -> Bool, _ name: String) { precondition(value(), name); count += 1 }
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("cos-meeting-ask-check-" + UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
