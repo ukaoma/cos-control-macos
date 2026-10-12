@@ -14920,6 +14920,15 @@ final class COSControlHelper {
             }
             let offset = max(0, min(100_000, payload["offset"] as? Int ?? 0))
             path += operation + "?sessionId=" + encoded(session) + "&serverInstanceId=" + encoded(instance) + "&offset=\(offset)&limit=50"
+        case "transcript", "context":
+            guard Self.liveTranscriptValidId(session), !instance.isEmpty, instance.count <= 128 else {
+                emit(ok: false, message: "Meeting identity is invalid."); return
+            }
+            path += operation + "?sessionId=" + encoded(session) + "&serverInstanceId=" + encoded(instance)
+        case "context-status": path = "/api/context/status"
+        case "follow-up":
+            guard UUID(uuidString: id) != nil, !instance.isEmpty, instance.count <= 128, payload["meeting"] is [String: Any], let text = payload["text"] as? String, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, text.count <= 600 else { emit(ok: false, message: "Follow-up identity or text is invalid."); return }
+            path = "/api/work-intake/meeting-ask"; method = "POST"
         case "files": path += "files"; method = "PUT"
         default: emit(ok: false, message: "Meeting assistant operation is unsupported."); return
         }

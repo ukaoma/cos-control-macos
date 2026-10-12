@@ -2072,6 +2072,7 @@ struct WorkIntakeItem: Identifiable, Hashable, Sendable {
     let pullConfidence: Double?
     /// Why an item landed in Review (server 6.57.0): `outside_window`, `unclear_task` or `owner_uncertain`.
     let reason: String?
+    let askEvidenceText: String?
 
     var isReview: Bool { status == "review" }
     /// A short reason shown on a Review row; an unknown reason from a newer server shows nothing.
@@ -2112,6 +2113,20 @@ struct WorkIntakeItem: Identifiable, Hashable, Sendable {
         pullTitle = pull?["title"]?.string
         pullConfidence = pull?["p"]?.double
         reason = row["reason"]?.string
+        if let evidence = row["askEvidence"]?.object {
+            var lines: [String] = []
+            if let question = evidence["question"]?.string { lines.append("You asked: " + question) }
+            if let answer = evidence["answer"]?.string { lines.append("Original answer: " + answer + (evidence["answerTruncated"]?.bool == true ? "\nRetained answer excerpt; open the meeting for the full answer." : "")) }
+            for value in evidence["sources"]?.array ?? [] {
+                guard let source = value.object else { continue }
+                let id = source["id"]?.string ?? ""
+                let title = source["title"]?.string ?? ""
+                let quote = source["text"]?.string ?? ""
+                let suffix = source["truncated"]?.bool == true ? "\nRetained source excerpt." : ""
+                lines.append("[\(id)] \(title)\n\(quote)\(suffix)")
+            }
+            askEvidenceText = lines.joined(separator: "\n\n")
+        } else { askEvidenceText = nil }
     }
 }
 

@@ -12,6 +12,9 @@ final class MeetingAskStore: ObservableObject {
     @Published private(set) var errors: [String: String] = [:]
     @Published private(set) var running: Set<String> = []
     @Published private(set) var loadingHistory: Set<String> = []
+    @Published private(set) var savedSnapshots: [String: MeetingAskSnapshot] = [:]
+    @Published private(set) var sourceHealth: [String: String] = [:]
+    @Published private(set) var loadingSnapshots: Set<String> = []
     @Published var notice: String?
     /// 0.5.282: what the last config read found (checking, online, offline, or a server on another protocol).
     @Published private(set) var reach = MeetingAskReach.checking
@@ -62,7 +65,7 @@ final class MeetingAskStore: ObservableObject {
             let local = try await transport("identity", model: model, as: MeetingAskPairing.self)
             if config?.pairingContext != local.pairingContext {
                 flushAll(); for task in jobs.values { task.cancel() }; jobs = [:]
-                records = [:]; loaded = []; errors = [:]; running = []; publishedFiles = [:]; config = nil; identity = ""
+                records = [:]; loaded = []; errors = [:]; running = []; publishedFiles = [:]; savedSnapshots = [:]; sourceHealth = [:]; config = nil; identity = ""
                 if let cached = try disk.readConfig(pairing: local.pairingContext) {
                     config = cached; identity = cached.serverInstanceId + ":" + local.pairingContext
                 }
@@ -74,7 +77,7 @@ final class MeetingAskStore: ObservableObject {
                 flushAll()
                 for task in jobs.values { task.cancel() }; jobs = [:]
                 // A different server has none of this Mac's file lists yet.
-                records = [:]; loaded = []; errors = [:]; running = []; publishedFiles = [:]; identity = scope
+                records = [:]; loaded = []; errors = [:]; running = []; publishedFiles = [:]; savedSnapshots = [:]; sourceHealth = [:]; identity = scope
             }
             config = next; reach = .online; notice = nil
             try disk.writeConfig(next)
@@ -214,8 +217,51 @@ final class MeetingAskStore: ObservableObject {
         } else { rows.append(exchange) }
         records[session]?.exchanges = rows; _ = flush(session); return true
     }
+    func loadSavedSnapshot(_ session: String, model: ControllerModel) async {
+        guard let config, online, !loadingSnapshots.contains(session) else { return }
+        let ticket = identity
+        loadingSnapshots.insert(session)
+        defer { loadingSnapshots.remove(session) }
+        do {
+            let snapshot: MeetingAskSnapshot = try await transport("transcript", payload: ["sessionId": session, "serverInstanceId": config.serverInstanceId], model: model, as: MeetingAskSnapshot.self)
+            guard ticket == identity else { return }
+            guard snapshot.validSaved else { throw HelperClientError.commandFailed("This recording is not ready for saved-meeting questions. Open its live transcript or refresh after saving.") }
+            savedSnapshots[session] = snapshot; errors[session] = nil
+        } catch { if ticket == identity { savedSnapshots[session] = nil; errors[session] = message(error) } }
+    }
+    func checkSources(_ session: String, model: ControllerModel) async {
+        guard let config, online else { return }
+        let ticket = identity
+        do {
+            let health: MeetingAskSourceHealth = try await transport("context-status", model: model, as: MeetingAskSourceHealth.self)
+            let context: MeetingAskOrientationReply = try await transport("context", payload: ["sessionId": session, "serverInstanceId": config.serverInstanceId], model: model, as: MeetingAskOrientationReply.self)
+            guard ticket == identity else { return }
+            let time = Date().formatted(date: .omitted, time: .shortened)
+            sourceHealth[session] = "Memory: \(health.memory.available ? String(health.memory.total) + " available" : "unavailable"). Threads: \(health.threads.available ? String(health.threads.total) + " available" : "unavailable"). Domain: \(context.orientation.domain ?? "not confirmed"). Checked \(time). Last sync is not reported by this source."
+        } catch { if ticket == identity { sourceHealth[session] = "Source status could not be checked. Refresh to retry." } }
+    }
+    func saveFollowUp(_ exchange: MeetingAskExchange, text: String, meeting: LibraryMeeting, model: ControllerModel) async -> Bool {
+        guard let config, online, config.capabilities?.followUpReview == true, exchange.status == "completed", exchange.serverInstanceId == config.serverInstanceId else { return false }
+        let ticket = identity
+        do {
+            let reply: MeetingAskFollowUpReply = try await transport("follow-up", payload: ["serverInstanceId": config.serverInstanceId, "requestId": exchange.requestId, "text": text, "meeting": ["domain": meeting.domain, "month": meeting.month, "filename": meeting.filename, "recordId": meeting.recordId]], model: model, as: MeetingAskFollowUpReply.self)
+            guard ticket == identity, reply.ok, !reply.item.id.isEmpty else { return false }
+            errors[exchange.sessionId] = nil
+            notice = reply.item.status == "review" ? "Saved in Work Review. Review it before adding it to your work." : "This follow-up was already reviewed."
+            return true
+        } catch { if ticket == identity { errors[exchange.sessionId] = "Save was not confirmed. Your follow-up draft is retained; retry the same words after checking COS." }; return false }
+    }
     func ask(action: String, question: String, feed: LiveTranscriptFeed, model: ControllerModel, retryOf: String? = nil) {
-        let session = feed.sessionId
+        let now = feed.endedAt ?? Date()
+        let elapsed = max(feed.turns.map(\.elapsedMs).max() ?? 0, Int(max(0, now.timeIntervalSince(feed.startTime ?? now)) * 1000))
+        let turns = feed.turns.map { MeetingAskTurn(id: $0.id, elapsedMs: $0.elapsedMs, speaker: $0.speaker, text: $0.text) }
+        ask(action: action, question: question, session: feed.sessionId, turns: turns, elapsed: elapsed, model: model, retryOf: retryOf)
+    }
+    func askSaved(action: String, question: String, session: String, model: ControllerModel, retryOf: String? = nil) {
+        guard let snapshot = savedSnapshots[session], snapshot.validSaved else { return }
+        ask(action: action, question: question, session: session, turns: snapshot.turns, elapsed: snapshot.elapsedMs, model: model, retryOf: retryOf)
+    }
+    private func ask(action: String, question: String, session: String, turns: [MeetingAskTurn], elapsed: Int, model: ControllerModel, retryOf: String? = nil) {
         ensure(session)
         let question = String(question.trimmingCharacters(in: .whitespacesAndNewlines).prefix(2000))
         // Rule C (0.5.281, MeetingAskComposerIntake.localFiles says exactly what qualifies): a question that is nothing but
@@ -232,13 +278,10 @@ final class MeetingAskStore: ObservableObject {
             }
             return
         }
-        guard let config, online, !running.contains(session), records[session]?.outbox == nil, records[session] != nil, !feed.turns.isEmpty else { return }
+        guard let config, online, !running.contains(session), records[session]?.outbox == nil, records[session] != nil, !turns.isEmpty else { return }
         guard !question.isEmpty else { return }
         attachNotes[session] = nil
-        // Freeze the evidence cutoff at the user's tap, before any file registration or transport wait.
-        let now = feed.endedAt ?? Date()
-        let elapsed = max(feed.turns.map(\.elapsedMs).max() ?? 0, Int(max(0, now.timeIntervalSince(feed.startTime ?? now)) * 1000))
-        let turns = feed.turns.map { MeetingAskTurn(id: $0.id, elapsedMs: $0.elapsedMs, speaker: $0.speaker, text: $0.text) }
+        // The caller freezes original turn IDs and cutoff before file registration or transport.
         if action == "ask", retryOf == nil { records[session]?.draft = question }
         guard flush(session) else { return }
         running.insert(session); errors[session] = nil
@@ -556,24 +599,33 @@ struct LiveAskPanel: View {
     @ObservedObject var model: ControllerModel
     let session: String
     var feed: LiveTranscriptFeed?
+    var saved = false
+    var captureLabel: String?
+    var meeting: LibraryMeeting?
+    private var askEnabled: Bool { feed?.turns.isEmpty == false || state.savedSnapshots[session]?.validSaved == true }
     var jump: (Int) -> Void = { _ in }
-    private let actions = [("catch_up", "Catch me up"), ("summary", "Summarize so far"), ("questions", "Suggest questions"), ("actions", "Action items")]
+    private let actions = [("catch_up", "Catch me up"), ("summary", "Summarize so far"), ("questions", "What to ask"), ("actions", "Action items")]
     private var record: MeetingAskLocalRecord? { state.records[session] }
     @State private var dropTargeted = false
+    @State private var followUpExchange: MeetingAskExchange?
+    @State private var followUpText = ""
+    @State private var savingFollowUp = false
     @State private var expandedSources: Set<String> = []
     /// 0.5.281: the live panel takes files anywhere on it, through the Files box's own drop, when this meeting can hold them.
     private var takesFiles: Bool {
-        feed != nil && model.workHandoffStore?.meetingFiles.enabled == true && WorkCardFiles.meetingID(forKey: "g2:" + session) != nil
+        (feed != nil || saved) && model.workHandoffStore?.meetingFiles.enabled == true && WorkCardFiles.meetingID(forKey: "g2:" + session) != nil
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack { Text(feed == nil ? "Meeting Ask history" : "Live COS Ask").font(COSType.display(19, weight: .medium)); Spacer(); Button { Task { await state.open(session, model: model) } } label: { Image(systemName: "arrow.clockwise") }.buttonStyle(COSTextButtonStyle()).help("Refresh saved answers") }
+            HStack { Text(saved ? "Meeting Ask" : feed == nil ? "Meeting Ask history" : "Live COS Ask").font(COSType.display(19, weight: .medium)); Spacer(); Button { Task { await state.open(session, model: model); if saved { await state.loadSavedSnapshot(session, model: model) }; await state.checkSources(session, model: model) } } label: { Image(systemName: "arrow.clockwise") }.buttonStyle(COSTextButtonStyle()).help("Refresh saved answers") }
             Text("Ask when you need it. Uses this meeting first.").font(COSType.body(11.5)).foregroundStyle(.secondary)
-            if let feed {
+            DisclosureGroup("Sources and context") { Text(state.sourceHealth[session] ?? "Source status has not been checked.").font(COSType.body(11)).foregroundStyle(.secondary) }
+            if let captureLabel { Text(captureLabel).font(COSType.body(11)).foregroundStyle(.secondary) }
+            if feed != nil || saved {
                 MeetingAskActionsLayout {
                     ForEach(actions, id: \.0) { action, title in
-                        Button(title) { state.ask(action: action, question: title == "Catch me up" ? "Catch me up on the meeting so far" : title, feed: feed, model: model) }
-                            .buttonStyle(COSQuietButtonStyle()).disabled(!state.online || state.running.contains(session) || record?.outbox != nil || feed.turns.isEmpty)
+                        Button(title) { submit(action: action, question: title == "Catch me up" ? "Catch me up on this recording" : title) }
+                            .buttonStyle(COSQuietButtonStyle()).disabled(!state.online || state.running.contains(session) || record?.outbox != nil || !askEnabled)
                     }
                 }
             }
@@ -596,7 +648,7 @@ struct LiveAskPanel: View {
                     Button("Retry same question") { state.retryOutbox(session, model: model) }.buttonStyle(COSQuietButtonStyle()).disabled(!state.online || state.running.contains(session))
                 }
             }
-            if let feed {
+            if feed != nil || saved {
                 if let note = state.attachNotes[session] {
                     Text(note).font(COSType.body(11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
@@ -607,15 +659,18 @@ struct LiveAskPanel: View {
                     // 0.5.281: a drop or a paste of files here attaches them to this meeting and leaves the question as it was.
                     MeetingAskComposer(text: Binding(get: { state.draft(session) }, set: { state.setDraft($0, session: session) }),
                                        placeholder: "Ask about this meeting", enabled: state.config != nil,
-                                       onSubmit: { send(feed) },
+                                       onSubmit: { submit(action: "ask", question: state.draft(session)) },
                                        onAttach: { attachment in Task { await state.attach(attachment, session: session, model: model) } })
                         .cosField()
-                    Button("Ask") { send(feed) }.buttonStyle(COSPrimaryButtonStyle())
-                        .disabled(!state.online || state.running.contains(session) || record?.outbox != nil || state.draft(session).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || feed.turns.isEmpty)
+                    Button("Ask") { submit(action: "ask", question: state.draft(session)) }.buttonStyle(COSPrimaryButtonStyle())
+                        .disabled(!state.online || state.running.contains(session) || record?.outbox != nil || state.draft(session).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !askEnabled)
                 }
+                HStack {
+                    Button("Challenge an assumption") { submit(action: "ask", question: "For my own thinking, challenge one assumption supported by this recording. Give one short reason. If no assumption is clear, say so.") }
+                    Button("Find my next decision") { submit(action: "ask", question: "For my own thinking, identify one unresolved decision from this recording and one useful question to move it forward. Do not invent a decision.") }
+                }.buttonStyle(COSTextButtonStyle()).font(COSType.body(11)).disabled(!state.online || !askEnabled || state.running.contains(session) || record?.outbox != nil)
                 // 0.5.282: the model the next question goes to, switchable here (the same control and setting as
-                // Settings). An answer already running keeps its model, shown in its footer. Live only: a saved
-                // meeting's history asks nothing, so it has no model to choose.
+                // Settings). An answer already running keeps its model, shown in its footer.
                 MeetingAskModelControl(store: state, model: model, compact: true)
             }
         }.padding(16).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading).background(COSPalette.panel)
@@ -624,11 +679,30 @@ struct LiveAskPanel: View {
             Task { await state.attach(.providers(providers), session: session, model: model) }
         })
         .overlay { if dropTargeted { RoundedRectangle(cornerRadius: 9).stroke(COSPalette.gold, lineWidth: 1.5).allowsHitTesting(false) } }
-        .task(id: session) { await state.open(session, model: model) }
-        .onChange(of: session) { previous, _ in _ = state.flush(previous) }
+        .task(id: session) { await state.open(session, model: model); if saved { await state.loadSavedSnapshot(session, model: model) }; await state.checkSources(session, model: model) }
+        .sheet(item: $followUpExchange) { exchange in
+            VStack(alignment: .leading, spacing: 14) {
+                Text("Save as follow-up").font(COSType.display(20))
+                Text("Review these words. This creates a Work Review item with the original answer and sources; it does not commit a task.").font(COSType.body(12))
+                TextEditor(text: $followUpText).frame(width: 480, height: 120).disabled(savingFollowUp)
+                if let error = state.errors[session] { Text(error).font(COSType.body(11)).foregroundStyle(COSPalette.amber) }
+                HStack {
+                    Button("Cancel") { followUpExchange = nil }.disabled(savingFollowUp)
+                    Spacer()
+                    Button(savingFollowUp ? "Saving…" : "Save in Work Review") {
+                        guard let meeting else { return }; savingFollowUp = true
+                        Task { let saved = await state.saveFollowUp(exchange, text: followUpText.trimmingCharacters(in: .whitespacesAndNewlines), meeting: meeting, model: model); savingFollowUp = false; if saved { followUpExchange = nil } }
+                    }.disabled(savingFollowUp || followUpText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || followUpText.count > 600 || !state.online)
+                }
+            }.padding(24).interactiveDismissDisabled(savingFollowUp)
+        }
+        .onChange(of: session) { previous, _ in _ = state.flush(previous); followUpExchange = nil }
         .onDisappear { _ = state.flush(session) }
     }
-    private func send(_ feed: LiveTranscriptFeed) { state.ask(action: "ask", question: state.draft(session), feed: feed, model: model) }
+    private func submit(action: String, question: String, retryOf: String? = nil) {
+        if let feed { state.ask(action: action, question: question, feed: feed, model: model, retryOf: retryOf) }
+        else if saved { state.askSaved(action: action, question: question, session: session, model: model, retryOf: retryOf) }
+    }
     private func answer(_ exchange: MeetingAskExchange, proxy: ScrollViewProxy) -> some View {
         VStack(alignment: .leading, spacing: 9) {
             Text(verbatim: exchange.question).font(COSType.body(12, weight: .semibold))
@@ -642,11 +716,17 @@ struct LiveAskPanel: View {
             HStack {
                 Text("Through \(LiveTranscript.stamp(exchange.throughMs, hours: false)) · \(exchange.model ?? exchange.selectedModel.label)").foregroundStyle(.secondary)
                 Spacer()
-                if exchange.terminal, ["failed", "cancelled", "interrupted"].contains(exchange.status), let feed {
-                    Button("Retry") { state.ask(action: exchange.action, question: exchange.question, feed: feed, model: model, retryOf: exchange.id) }
+                if exchange.terminal, ["failed", "cancelled", "interrupted"].contains(exchange.status), askEnabled {
+                    Button("Retry") { submit(action: exchange.action, question: exchange.question, retryOf: exchange.id) }
                         .buttonStyle(COSTextButtonStyle()).disabled(state.running.contains(session) || record?.outbox != nil || !state.online)
                 }
                 if !exchange.terminal { Button("Stop") { Task { await state.cancel(exchange, model: model) } }.buttonStyle(COSTextButtonStyle()) }
+                if exchange.status == "completed", state.config?.capabilities?.followUpReview == true {
+                    Button("Save as follow-up") {
+                        followUpText = String((exchange.sections?.items.first(where: { $0.label == "So what" })?.text ?? exchange.answer ?? "").replacingOccurrences(of: "\\[[A-Za-z][0-9]+\\]", with: "", options: .regularExpression).prefix(600))
+                        followUpExchange = exchange
+                    }.buttonStyle(COSTextButtonStyle()).disabled(!saved || meeting == nil || !state.online).help(saved ? "Review this answer in Work" : "Save this meeting before adding a follow-up")
+                }
                 Button("Copy") { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(exchange.answer ?? exchange.question, forType: .string) }.buttonStyle(COSTextButtonStyle())
             }.font(COSType.body(10.5))
         }.padding(12).background(COSPalette.raised, in: RoundedRectangle(cornerRadius: 9))

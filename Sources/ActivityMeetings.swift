@@ -567,8 +567,8 @@ struct MeetingLibraryDetailPane: View {
                         if let row = model.openLibraryRow {
                             let keys = detail.contextKeys.isEmpty ? row.contextKeys : detail.contextKeys
                             if row.sourceSessionId != nil { Text("Ask history covers the whole original capture, including its other split pieces.").font(COSType.body(12)).foregroundStyle(.secondary) }
-                            ForEach(row.meetingAskSessions(keys: keys), id: \.self) { session in
-                                LiveAskPanel(state: model.meetingAsk, model: model, session: session)
+                            ForEach(Array(row.meetingAskSessions(keys: keys).enumerated()), id: \.element) { captureIndex, session in
+                                LiveAskPanel(state: model.meetingAsk, model: model, session: session, saved: true, captureLabel: "Original recording \(captureIndex + 1). Questions use its saved cutoff; each recording keeps its own history.", meeting: row)
                                     .frame(minHeight: 300, idealHeight: 500, maxHeight: 600)
                             }
                         }

@@ -31,6 +31,7 @@ struct MeetingAskConfig: Codable, Sendable {
     var models: [MeetingAskModelOption]
     var pairingContext: String?
     var web: MeetingAskWeb?
+    var capabilities: MeetingAskFeatureCapabilities?
 }
 /// Where meeting assistance stands with the server, as the last config read found it (0.5.282).
 enum MeetingAskReach: Equatable, Sendable {
@@ -575,4 +576,34 @@ enum MeetingAskCitationText {
         let id = url.absoluteString.dropFirst("cos-ask-citation:".count)
         return ids.contains(String(id)) ? String(id) : nil
     }
+}
+
+/// Canonical server evidence for an ended capture, never a fabricated live feed.
+struct MeetingAskSnapshot: Codable, Sendable {
+    var turns: [MeetingAskTurn]
+    var elapsedMs: Int
+    var notices: [String]
+    var ended: Bool?
+    var source: String?
+    var validSaved: Bool {
+        ended == true && elapsedMs >= 0 && !turns.isEmpty
+            && Set(turns.map(\.id)).count == turns.count
+            && turns.allSatisfy { $0.id >= 0 && $0.elapsedMs >= 0 && $0.elapsedMs <= elapsedMs && !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    }
+}
+
+struct MeetingAskFeatureCapabilities: Codable, Sendable { var followUpReview: Bool? }
+struct MeetingAskSourceHealth: Decodable, Sendable {
+    struct Availability: Decodable, Sendable { var available: Bool; var total: Int }
+    var memory: Availability
+    var threads: Availability
+}
+struct MeetingAskOrientationReply: Decodable, Sendable {
+    struct Orientation: Decodable, Sendable { var domain: String? }
+    var orientation: Orientation
+}
+struct MeetingAskFollowUpReply: Decodable, Sendable {
+    struct Item: Decodable, Sendable { var id: String; var status: String }
+    var ok: Bool
+    var item: Item
 }

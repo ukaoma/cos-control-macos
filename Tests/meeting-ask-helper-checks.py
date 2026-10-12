@@ -39,6 +39,11 @@ with tempfile.TemporaryDirectory(prefix='cos-ask-v2-', dir='/tmp') as tmp:
         run('cancel',{'requestId':rid,'serverInstanceId':'fixture'}); assert requests[-1][0]=='POST'
         run('history',{'sessionId':'meeting_fixture','serverInstanceId':'fixture'}); assert 'sessionId=meeting%5Ffixture' in requests[-1][1]
         run('files',{'sessionId':'meeting_fixture','files':[]}); assert requests[-1][:2]==('PUT','/api/meeting-ask/files')
+        run('transcript',{'sessionId':'meeting_fixture','serverInstanceId':'fixture'}); assert requests[-1][:2]==('GET','/api/meeting-ask/transcript?sessionId=meeting%5Ffixture&serverInstanceId=fixture')
+        run('context-status'); assert requests[-1][:2]==('GET','/api/context/status')
+        follow={'requestId':rid,'serverInstanceId':'fixture','text':'Confirm order','meeting':{'domain':'quilt','month':'2026-10','filename':'review.md','recordId':'fixture'}}
+        run('follow-up',follow); assert requests[-1]==('POST','/api/work-intake/meeting-ask',follow)
+        before=len(requests); assert not run('follow-up',dict(follow,text='x'*601))['ok']; assert len(requests)==before
         prior=len(requests); assert not run('status',{'requestId':'../../etc/passwd'})['ok']; assert not run('delete')['ok']; assert len(requests)==prior
         status=503; body={'error':'SECRET stderr and transcript'}
         failure=run('config'); assert not failure['ok'] and 'SECRET' not in json.dumps(failure)
