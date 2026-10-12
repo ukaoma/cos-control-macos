@@ -155,6 +155,7 @@ zsh "$ROOT/Tests/run-markdown-ui.sh" "$TMP/markdown-ui"
 # off spawns nothing, one read at a time, Wake, the saved hand-off by session id). Serial, every compile through the guard.
 zsh "$ROOT/Tests/run-live-transcript.sh"
 zsh "$ROOT/Tests/run-meeting-ask.sh"
+zsh "$ROOT/Tests/run-meeting-value-store.sh"
 # 0.5.233: the live feed reducer is pure Foundation and pinned by an EXECUTED contract
 # over recorded 6.48.2 stream frames (reseed, gap, prompt window, state line, elapsed).
 "$ROOT/Tests/compile-guard.sh" swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \

@@ -254,6 +254,14 @@ import Foundation
         let sectioned = Rows.rows(sections: [MeetingAskSection(label: "So what", text: "  Free reply.\n\nSecond.  \n")], answer: nil)
         check(sectioned == [Row(label: "So what", text: "Free reply.\n\nSecond.")] && Rows.split(sectioned![0].text) == ("Free reply.", "Second."),
               "split: a single So what section holding a whole reply draws as lead plus blocks")
+        let snapshot = MeetingAskSnapshot(turns: [MeetingAskTurn(id: 1, elapsedMs: 1000, speaker: "Maya", text: "Twelve replaces ten.")], elapsedMs: 2000, notices: [], ended: true, source: "saved")
+        check(snapshot.validSaved, "saved snapshot keeps original turn identity and cutoff")
+        var liveSnapshot = snapshot; liveSnapshot.ended = false
+        check(!liveSnapshot.validSaved, "live snapshot cannot masquerade as a saved meeting")
+        var futureSnapshot = snapshot; futureSnapshot.elapsedMs = 500
+        check(!futureSnapshot.validSaved, "future turns refuse instead of growing the saved clock")
+        var duplicateSnapshot = snapshot; duplicateSnapshot.turns.append(snapshot.turns[0])
+        check(!duplicateSnapshot.validSaved, "duplicate original turn identities refuse")
         print("PASS Meeting Ask: \(count) checks")
     }
 }

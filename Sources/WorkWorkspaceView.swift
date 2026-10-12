@@ -3086,6 +3086,9 @@ struct WorkIntakeView: View {
     private func review(_ item: WorkIntakeItem, _ snapshot: WorkIntakeSnapshot) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(intakeInlineText(item.text)).font(COSType.body(12.5, weight: .medium)).fixedSize(horizontal: false, vertical: true)
+            if let evidence = item.askEvidenceText {
+                DisclosureGroup("Original answer and sources") { Text(verbatim: evidence).font(COSType.body(11)).textSelection(.enabled).fixedSize(horizontal: false, vertical: true) }
+            }
             footer(item, detail: item.reasonLabel ?? (item.ownerIsMiles ? "probably yours" : item.owner),
                    actions: actions(item, snapshot, accept: "Keep as card", enabled: snapshot.cardCreation, dismiss: "Drop"))
         }

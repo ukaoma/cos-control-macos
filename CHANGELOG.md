@@ -1,3 +1,10 @@
+## 0.5.286 (build 339) — private test candidate
+
+- Ask follow-ups on saved recordings using their original turns and cutoff; retains per-capture history and citations.
+- Review an editable answer as a Work follow-up with original answer and source excerpts; cancel writes nothing and retries are idempotent.
+- Requested one-question and solo presets, with compact source availability and confirmed domain.
+- Requires server 6.71.11 for saving follow-ups. Experimental transcription and autonomous cue flags remain unchanged.
+
 ## 0.5.285 (build 338) — private test candidate
 
 - Optional Jev keys do not keep Finish setup open. The key action remains in the guide; skip/hide preferences are retained.

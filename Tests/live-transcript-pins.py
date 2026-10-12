@@ -198,11 +198,11 @@ for literal in ("Live transcript · preliminary · may change when saved", "COS 
 ask = strip_comments(code("Sources/MeetingAsk.swift"))
 all_code = "".join(strip_comments(p.read_text()) for p in sorted((root / "Sources").glob("*.swift")))
 panel_body = body(body(ask, "struct LiveAskPanel: View {"), "var body: some View {")
-feed_block = body(panel_body, "            if let feed {\n                if let note")
+feed_block = body(panel_body, "            if feed != nil || saved {\n                if let note")
 need(all_code.count("MeetingAskModelControl(store: state, model: model, compact: true)") == 1
      and "MeetingAskModelControl(store: state, model: model, compact: true)" in feed_block
-     and feed_block.index('Button("Ask") { send(feed) }') < feed_block.index("MeetingAskModelControl("),
-     "the Ask panel shows the model control once, under the composer, only while the meeting is live")
+     and feed_block.index('Button("Ask") { submit(action: "ask", question: state.draft(session)) }') < feed_block.index("MeetingAskModelControl("),
+     "the Ask panel shows the model control once, under the composer, for live and explicitly loaded saved recordings")
 need(all_code.count("MeetingAskModelControl(store: store, model: model)") == 1
      and "MeetingAskModelControl(store: store, model: model)" in body(ask, "struct MeetingAskSettings: View {"),
      "Settings shows the same model control once")
@@ -227,7 +227,8 @@ need(body(ask, "func observeFiles(_ files: WorkCardFileStore, model: ControllerM
      "the file observer re-sends only meetings whose file list changed")
 need("MeetingAskFileSync.needsRegistration(published: publishedFiles[session], current: files)" in body(ask, "@discardableResult func registerFiles(_ session: String, model: ControllerModel, onlyIfChanged: Bool = false) async -> Bool {"),
      "registerFiles compares against what this server was last sent")
-need(re.search(r"if scope != identity \{.*?publishedFiles = \[:\]; identity = scope", ask, re.S) is not None,
+identity_reset = body(ask, "if scope != identity {")
+need(all(statement in identity_reset for statement in ("publishedFiles = [:]", "savedSnapshots = [:]", "sourceHealth = [:]", "identity = scope")),
      "a different server identity clears the sent file lists so the new server receives them")
 
 # ── Every whole-app compile list carries the new file.
