@@ -9,6 +9,19 @@ import Foundation
         precondition(MeetingAskCitationText.id(URL(string: "https://example.com/T1")!, ids: ["T1"]) == nil)
         precondition(MeetingAskCitationText.id(URL(string: "cos-ask-citation:T1")!, ids: ["T1"]) == "T1")
         func check(_ value: @autoclosure () -> Bool, _ name: String) { precondition(value(), name); count += 1 }
+        func meeting(_ extra: [String: JSONValue]) -> LibraryMeeting {
+            var row: [String: JSONValue] = ["filename": .string("Saved.md"), "month": .string("2026-10")]
+            row.merge(extra) { _, new in new }
+            return LibraryMeeting(.object(row))!
+        }
+        check(meeting(["sessionId": .string("meeting_original")]).meetingAskSessions(keys: []) == ["meeting_original"], "legacy saved row uses its recording ID")
+        check(meeting(["sessionId": .string("meeting_original"), "g2SessionIds": .array([.string("meeting_original"), .string("meeting_second")])]).meetingAskSessions(keys: ["ff:public_id", "g2:meeting_original"]) == ["meeting_original", "meeting_second"], "merged captures retain exact IDs once")
+        check(meeting(["sessionId": .string("piece_1"), "sourceSessionId": .string("meeting_original")]).meetingAskSessions(keys: []) == ["meeting_original"], "split reads original capture history")
+        check(meeting(["sessionId": .string("imported:fireflies:example")]).meetingAskSessions(keys: []) == [], "import identity is never a recording")
+        check(meeting(["sessionId": .string("../meeting_wrong")]).meetingAskSessions(keys: ["g2:meeting_../wrong"]) == [], "malformed history IDs rejected")
+        check(MeetingAskHistoryState.emptyText(loading: true, failed: false, live: false) == "Loading saved questions…", "loading is distinct from empty")
+        check(MeetingAskHistoryState.emptyText(loading: false, failed: true, live: false).contains("could not be checked"), "failed history never claims empty")
+        check(MeetingAskHistoryState.emptyText(loading: false, failed: false, live: false) == "No saved questions found for this recording.", "empty saved history is explicit")
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("cos-meeting-ask-check-" + UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
         let disk = MeetingAskDisk(root: root)

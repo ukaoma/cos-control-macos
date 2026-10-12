@@ -1,6 +1,14 @@
 import Foundation
 import CryptoKit
 
+enum MeetingAskHistoryState {
+    static func emptyText(loading: Bool, failed: Bool, live: Bool) -> String {
+        if loading { return "Loading saved questions…" }
+        if failed { return "Saved questions could not be checked. Refresh to retry." }
+        return live ? "No questions yet. Answers are saved with this recording." : "No saved questions found for this recording."
+    }
+}
+
 // Server-owned accepted history; this file holds wire types and private, per-client recovery state.
 struct MeetingAskModel: Codable, Equatable, Sendable {
     var engine: String

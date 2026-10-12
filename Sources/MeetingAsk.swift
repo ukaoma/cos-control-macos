@@ -11,6 +11,7 @@ final class MeetingAskStore: ObservableObject {
     @Published private(set) var records: [String: MeetingAskLocalRecord] = [:]
     @Published private(set) var errors: [String: String] = [:]
     @Published private(set) var running: Set<String> = []
+    @Published private(set) var loadingHistory: Set<String> = []
     @Published var notice: String?
     /// 0.5.282: what the last config read found (checking, online, offline, or a server on another protocol).
     @Published private(set) var reach = MeetingAskReach.checking
@@ -134,6 +135,13 @@ final class MeetingAskStore: ObservableObject {
     }
     func flushAll() { for session in records.keys { _ = flush(session) } }
     func open(_ session: String, model: ControllerModel) async {
+        if loadingHistory.contains(session) {
+            // Copy full context also awaits open: let it finish loading before it captures the answers.
+            while loadingHistory.contains(session), !Task.isCancelled { try? await Task.sleep(for: .milliseconds(50)) }
+            return
+        }
+        loadingHistory.insert(session)
+        defer { loadingHistory.remove(session) }
         await refreshConfig(model: model); ensure(session)
         guard let config, records[session] != nil else { return }
         let ticket = identity
@@ -389,14 +397,6 @@ enum MeetingAskAttachment {
 struct MeetingAskPairing: Codable { var pairingContext: String }
 struct MeetingAskFileReply: Codable { var files: [MeetingAskFile] }
 
-extension LibraryMeeting {
-    func meetingAskSessions(keys: [String]) -> [String] {
-        var seen = Set<String>()
-        let candidates = keys.filter { $0.hasPrefix("g2:") }.map { String($0.dropFirst(3)) } + g2SessionIds + (sourceSessionId.map { [$0] } ?? [])
-        return candidates.filter { !$0.isEmpty && seen.insert($0).inserted }
-    }
-}
-
 extension ControllerModel {
     func meetingAskFiles(session: String) -> [MeetingAskFile] {
         meetingAskFileSnapshots(keys: ["g2:" + session], previous: meetingAsk.records[session]?.files ?? [])
@@ -580,7 +580,10 @@ struct LiveAskPanel: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 18) {
-                        if record?.exchanges.isEmpty != false { Text("Your questions and answers stay with this meeting, including after you leave this screen.").font(COSType.body(12)).foregroundStyle(.secondary) }
+                        if record?.exchanges.isEmpty != false {
+                            Text(MeetingAskHistoryState.emptyText(loading: state.loadingHistory.contains(session), failed: state.errors[session] != nil || !state.online, live: feed != nil))
+                                .font(COSType.body(12)).foregroundStyle(.secondary)
+                        }
                         ForEach(record?.exchanges ?? []) { exchange in answer(exchange, proxy: proxy) }
                         Color.clear.frame(height: 1).id("ask-bottom")
                     }

@@ -4985,6 +4985,15 @@ struct LibraryMeeting: Identifiable, Sendable, Hashable {
     let g2SessionIds: [String]
     /// The long recording a split piece came out of.
     let sourceSessionId: String?
+    /// Original recording identities survive renames and Fireflies merges. Older/direct rows may carry only sessionId.
+    func meetingAskSessions(keys: [String]) -> [String] {
+        var seen = Set<String>()
+        let candidates = keys.filter { $0.hasPrefix("g2:") }.map { String($0.dropFirst(3)) }
+            + g2SessionIds + (sourceSessionId.map { [$0] } ?? [sessionId])
+        return candidates.filter {
+            $0.range(of: "^meeting_[A-Za-z0-9_-]{1,89}$", options: .regularExpression) != nil && seen.insert($0).inserted
+        }
+    }
     /// Which piece of that recording this is. Nil on anything but a split.
     let pieceIndex: Int?
     /// Where an imported or derived meeting actually came from.

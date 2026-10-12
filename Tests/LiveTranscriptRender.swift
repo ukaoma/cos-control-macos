@@ -568,6 +568,27 @@ import Vision
         expect(restarted.draft(sid) == "A follow-up", "draft survives restart")
         expect(restarted.records[sid]?.exchanges.count == 1, "accepted answer survives restart")
         expect(submits == 1, "restart and navigation perform no inference")
+        let mergedHistoryRow = LibraryMeeting(.object([
+            "filename": .string("Merged_Fireflies.md"), "month": .string("2026-10"),
+            "sessionId": .string(sid), "derivedKind": .string("merge"),
+            "g2SessionIds": .array([.string(sid), .string("meeting_other")])
+        ]))!
+        let sessionsAfterSync = mergedHistoryRow.meetingAskSessions(keys: ["ff:fixture_ff", "g2:" + sid])
+        let syncedStore = MeetingAskStore(root: askRoot.appendingPathComponent("after-sync")); syncedStore.injectedTransport = transport
+        for session in sessionsAfterSync { await syncedStore.open(session, model: recording) }
+        expect(syncedStore.records[sid]?.exchanges.first?.answer == restarted.records[sid]?.exchanges.first?.answer, "merged saved view restores original answer on a clean Mac cache")
+        expect(syncedStore.records[sid]?.exchanges.first?.sources.first?.text == "Fixture words", "merge preserves frozen citation evidence")
+        expect(syncedStore.records["meeting_other"]?.exchanges.isEmpty == true, "merged sources do not borrow unrelated history")
+        expect(submits == 1, "merged history retrieval never reruns the question")
+        historyDelay = 200
+        let beforeConcurrent = historyReads
+        let firstLoad = Task { await syncedStore.open(sid, model: recording) }
+        await until("loading history status") { syncedStore.loadingHistory.contains(sid) && historyReads > beforeConcurrent }
+        await syncedStore.open(sid, model: recording)
+        expect(!syncedStore.loadingHistory.contains(sid), "a second history caller awaits completion before reading answers")
+        await firstLoad.value
+        expect(historyReads == beforeConcurrent + 1 && syncedStore.loadingHistory.isEmpty, "duplicate refresh joins the current history read without racing snapshots")
+        historyDelay = 0
         loseNextReceipt = true; missingStatus = true
         askState.ask(action: "ask", question: "Original uncertain request", feed: askFeed, model: recording)
         await until("uncertain admission") { !askState.running.contains(sid) }
