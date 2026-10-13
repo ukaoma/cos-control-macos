@@ -510,7 +510,7 @@ struct MeetingAskSettings: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Meeting assistant").font(COSType.body(13, weight: .semibold))
-            Text("Used only when you ask during a meeting. Defaults to Haiku; other chats keep their own models.").font(COSType.body(11)).foregroundStyle(.secondary)
+            Text("Used only when you ask during a meeting. Defaults to Sonnet; other chats keep their own models.").font(COSType.body(11)).foregroundStyle(.secondary)
             // 0.5.282: the same control the Live COS Ask panel shows, so a change in either shows in both.
             MeetingAskModelControl(store: store, model: model)
             if let config = store.config {
