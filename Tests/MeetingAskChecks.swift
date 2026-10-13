@@ -2,6 +2,10 @@ import Foundation
 @main struct MeetingAskChecks {
     static func main() throws {
         var count = 0
+        let oldCaps = try JSONDecoder().decode(MeetingAskFeatureCapabilities.self, from: Data("{}".utf8))
+        precondition(oldCaps.factCheck == nil)
+        let newCaps = try JSONDecoder().decode(MeetingAskFeatureCapabilities.self, from: Data("{\"factCheck\":true}".utf8))
+        precondition(newCaps.factCheck == true)
         let renderedCitation = MeetingAskCitationText.attributed("Fact [T1][T2]. [Unsafe](file:///tmp/action)", ids: ["T1"])
         precondition(renderedCitation.runs.compactMap(\.link) == [URL(string: "cos-ask-citation:T1")!])
         precondition(MeetingAskCitationText.markdown("Fact [T1][T2].", ids: ["T1"]) == "Fact [T1](cos-ask-citation:T1)[T2].")

@@ -627,6 +627,10 @@ struct LiveAskPanel: View {
                         Button(title) { submit(action: action, question: title == "Catch me up" ? "Catch me up on this recording" : title) }
                             .buttonStyle(COSQuietButtonStyle()).disabled(!state.online || state.running.contains(session) || record?.outbox != nil || !askEnabled)
                     }
+                    if state.config?.capabilities?.factCheck == true {
+                        Button("Fact check") { submit(action: "ask", question: "Fact check the latest public factual claim in this meeting. Find a readable source and say whether it supports the claim.") }
+                            .buttonStyle(COSQuietButtonStyle()).disabled(!state.online || state.running.contains(session) || record?.outbox != nil || !askEnabled)
+                    }
                 }
             }
             ScrollViewReader { proxy in

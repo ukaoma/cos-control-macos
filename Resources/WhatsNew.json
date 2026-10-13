@@ -1,7 +1,7 @@
 {
-  "version": "0.5.286",
+  "version": "0.5.287",
   "whatsNew": {
-    "summary": "Ask follow-up questions after a meeting ends, then review an answer as a follow-up in Work. Requires server 6.71.11. Private test candidate.",
+    "summary": "Ask follow-up questions after a meeting ends, then review an answer as a follow-up in Work. Fact check public claims with supporting sources when requested. Requires server 6.71.12. Private test candidate.",
     "sections": [
       {"title": "Continue a saved meeting", "items": ["Ask uses the original recording and its saved cutoff. Each capture keeps its own question history.", "Short answers and inline citation taps from the previous candidate are included."]},
       {"title": "Review a follow-up", "items": ["Edit an answer into a follow-up and save it in Work Review. The original answer and source excerpts stay attached.", "Cancel saves nothing. A retry does not create another copy or reopen a reviewed item."]},

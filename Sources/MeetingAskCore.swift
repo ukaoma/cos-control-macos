@@ -592,7 +592,7 @@ struct MeetingAskSnapshot: Codable, Sendable {
     }
 }
 
-struct MeetingAskFeatureCapabilities: Codable, Sendable { var followUpReview: Bool? }
+struct MeetingAskFeatureCapabilities: Codable, Sendable { var followUpReview: Bool?; var factCheck: Bool? }
 struct MeetingAskSourceHealth: Decodable, Sendable {
     struct Availability: Decodable, Sendable { var available: Bool; var total: Int }
     var memory: Availability
