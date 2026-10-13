@@ -15092,7 +15092,9 @@ final class COSControlHelper {
         if status == 401 || status == 403 { return (false, ["sessionId": sessionId, "reason": "unauthorized"]) }
         guard status == 200 else { return (false, ["sessionId": sessionId, "reason": "http_\(status)"]) }
         let state = body["state"] as? String ?? "unknown"
-        let known: Set<String> = ["saved", "active", "closed", "missing"]
+        // 0.5.288: server 6.71.14 adds terminal states: receipted (finished with no meeting, e.g. no speech), recovered
+        // (saved by recovery) and quarantined (held while it recovers). Anything else is still "unknown".
+        let known: Set<String> = ["saved", "active", "closed", "missing", "receipted", "recovered", "quarantined"]
         // Only the state: the saved meeting is found by session id, never by the receipt's filename (a retitle
         // renames the file; canary C3, 2026-10-10).
         return (true, ["sessionId": sessionId, "state": known.contains(state) ? state : "unknown"])
@@ -20037,6 +20039,10 @@ final class COSControlHelper {
                    && Self.liveTranscriptStatusProjection(sessionId: liveId, status: 401, body: [:]).ok == false
                    && Self.liveTranscriptStatusProjection(sessionId: liveId, status: 200, body: ["state": "weird"]).details["state"] as? String == "unknown",
                    "an older server, a refused token and an unknown state each have their own answer")
+        try expect(["receipted", "recovered", "quarantined"].allSatisfy {
+                       Self.liveTranscriptStatusProjection(sessionId: liveId, status: 200, body: ["state": $0, "disposition": ["reason": "no_speech"]])
+                           .details as NSDictionary == ["sessionId": liveId, "state": $0] as NSDictionary },
+                   "server 6.71.14's terminal states pass through, and only the state")
         try expect(Self.dateFromEpochMillis(NSNumber(value: 1_787_857_717_954)) != nil,
                    "sqlite JSON numbers arrive as NSNumber, not Int")
         try expect(Self.dateFromEpochMillis(NSNull()) == nil,

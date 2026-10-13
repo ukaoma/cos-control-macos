@@ -5,6 +5,7 @@
     "sections": [
       {"title": "Home city for fact checks", "items": ["Settings, in the Meeting assistant card, has a Home city field. Fact checks use it only when a question needs a starting point, like flying from here to Kansas City.", "Enter a city and state, no street address. Leave it blank and Save to go back to your phone's area."]},
       {"title": "See where fact checks start", "items": ["After a save, the card shows the starting point COS uses. A city COS will not accept shows the reason under the field.", "On a server older than 6.71.13 the field is not shown."]},
+      {"title": "Live now", "items": ["A meeting the server already finished no longer shows as Live now with hours of No audio."]},
       {"title": "Included from 0.5.287", "items": ["Continue a saved meeting, review an answer as a follow-up in Work, and fact check public claims with supporting sources.", "New Meeting Ask settings default to Sonnet. A model you already chose stays chosen."]},
       {"title": "Stable transcription", "items": ["This update does not enable experimental transcription or autonomous live cues."]}
     ]

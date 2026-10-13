@@ -3,6 +3,8 @@
 - Settings, in the Meeting assistant card, has a Home city field (placeholder Austin, TX) with Save. Meeting Ask fact checks use it only when a question needs a starting point, like "flying from here to Kansas City". City and state, no street address; leave it blank and Save to go back to the phone's area.
 - After a save the card says where fact checks start: "Fact checks start from Austin, TX", or "Fact checks use your phone's area: Tulsa" when no city is set. A city the server will not accept shows the server's reason under the field.
 - Needs server 6.71.13 (GET and PUT /api/home-area). On an older server the field is not shown.
+- A meeting the server already finished no longer shows as Live now with hours of No audio. A quiet session file still on disk now asks the server whether it holds the session: active keeps the row, saved opens the saved meeting, and missing, closed or a state this build does not know removes the row without claiming the recording was lost. Server 6.71.14's receipted, recovered and quarantined states are understood: receipted and quarantined remove the row, recovered opens the saved meeting. No answer keeps the row as before. A file quiet past the server's 4 h idle retention is never Live now.
+- Recording ended without saving no longer shows for a session whose last audio was 4 h or more before it ended; by then the server has saved or closed it. A recent recording that ends without saving still says so.
 - Includes everything in 0.5.287 (build 340): saved-meeting follow-ups, reviewed Work follow-ups, Fact check with supporting sources and the Sonnet default for new Meeting Ask settings. Experimental transcription and cue flags stay disabled.
 
 ## 0.5.287 (build 340) — public release

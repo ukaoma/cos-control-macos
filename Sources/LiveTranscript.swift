@@ -73,6 +73,10 @@ enum LiveTranscriptPhase: String, Equatable, Sendable {
     case endedUnsaved
     /// Saved, or not answered, for longer than the deadline: Refresh asks again.
     case notFoundYet
+    /// 0.5.288: the server finished the session and Control cannot honestly say how (a leftover file it calls
+    /// missing, closed or a state this build does not know, or a session quiet past the server's idle retention, by
+    /// when the server auto-saves or closes it). No row; the open pane says only that the recording ended.
+    case ended
 }
 
 /// Everything Control holds for one live session. The transcript stays here after the file is gone, so Copy works
@@ -95,6 +99,10 @@ struct LiveTranscriptFeed: Equatable, Sendable {
     var serverState: String?
     /// Shown as live while the server counted it (the poll follows it to its end, even if the count drops first).
     var seenLive = false
+    /// 0.5.288: the file is still on disk, but asked while it was quiet the server said it no longer holds the session
+    /// (`missing`, `closed`, or a terminal state this build does not know, `unknown`) or saved it. The file is a leftover (a late chunk can rewrite a finished session's file and
+    /// nothing deletes it), so the feed is ended as if the file were gone and takes the normal hand-off.
+    var leftover = false
 
     init(sessionId: String) { self.sessionId = sessionId }
 
@@ -106,6 +114,8 @@ struct LiveTranscriptFeed: Equatable, Sendable {
     mutating func apply(_ read: LiveTranscriptRead, now: Date) -> Bool {
         guard read.sessionId == sessionId else { return false }
         if read.ended { return markEnded(now: now) }
+        // A leftover's file is still there: a read of it is not the file coming back (see `fileWrittenAfterVerdict`).
+        if leftover { return false }
         var changed = false
         if endedAt != nil {
             // The file is back (the server restored the session after a restart).
@@ -135,6 +145,24 @@ struct LiveTranscriptFeed: Equatable, Sendable {
         guard lastActivityAt.map({ at > $0 }) ?? true else { return false }
         lastActivityAt = at
         return true
+    }
+
+    /// A leftover whose file was written after the server's answer goes back to live, and is asked again once quiet.
+    @discardableResult
+    mutating func fileWrittenAfterVerdict(_ mtime: Date) -> Bool {
+        guard leftover, let endedAt, mtime > endedAt else { return false }
+        leftover = false; self.endedAt = nil; phase = .live; serverState = nil; lastStatusCheck = nil
+        return true
+    }
+
+    /// The server's answer for a present file that has been quiet: `missing`, `closed`, `saved` or `unknown` make it a
+    /// leftover, ended now with that answer kept for the hand-off. `active` and no answer change nothing.
+    @discardableResult
+    mutating func applyQuietFileStatus(_ state: String?, now: Date) -> Bool {
+        guard !ended, LiveTranscript.quietFileIsLeftover(serverState: state) else { return false }
+        leftover = true
+        serverState = state
+        return markEnded(now: now)
     }
 
     @discardableResult
@@ -241,19 +269,57 @@ enum LiveTranscript {
     /// AppStorage: Settings, "Show live meeting transcript". Absent means on.
     static let enabledKey = "cos.liveTranscriptEnabled"
     static let pollSeconds = 1.5
-    /// A session quiet for this long says "No audio for Xm" and keeps its row (the server keeps it live for 30 min).
+    /// A session quiet for this long says "No audio for Xm", and while its file is still there Control asks the server
+    /// (every `statusInterval`) whether it still holds the session. The server keeps a quiet session for up to
+    /// `serverIdleRetention`, not 30 minutes.
     static let quietAfterSeconds: TimeInterval = 120
+    /// The server's idle retention, LOCAL_FIRST_MEETING_IDLE_RETENTION_MS (4 h) in the server's
+    /// server/lib/local-first-meetings-contract.ts. By then the server has auto-saved or closed a quiet session, so a
+    /// file quiet this long is a leftover and never shows as Live now, whatever the server answers or if it cannot.
+    static let serverIdleRetention: TimeInterval = 4 * 60 * 60
     /// Finalizing waits this long for the saved meeting, then says "Saved meeting not found yet".
     static let finalizingDeadline: TimeInterval = 180
     /// A session the server calls closed or missing this long after its file went is a recording ended without saving.
     static let unsavedGrace: TimeInterval = 20
-    /// How often an ended session asks the server what happened.
+    /// How often an ended session, or a quiet one whose file is still there, asks the server what happened.
     static let statusInterval: TimeInterval = 3
     /// How long a "Recording ended without saving" row stays.
     static let endedRowLifetime: TimeInterval = 600
     static let header = "Live transcript · preliminary · may change when saved"
 
     static func rowID(_ sessionId: String) -> String { "live:" + sessionId }
+
+    /// How long a listed file has been quiet: from the later of the last read's activity and the file's own mtime.
+    static func quietFor(_ file: LiveTranscriptFileRow, feed: LiveTranscriptFeed?, now: Date) -> TimeInterval {
+        let mtime = Date(timeIntervalSince1970: file.mtimeMs / 1000)
+        return now.timeIntervalSince(max(feed?.lastActivityAt ?? mtime, mtime))
+    }
+
+    /// Past the server's idle retention: never Live now, and nothing asked.
+    static func pastServerRetention(quiet: TimeInterval) -> Bool { quiet >= serverIdleRetention }
+
+    /// A present file quiet past the "No audio" mark, and still inside the retention, asks the server about itself.
+    static func asksQuietFileStatus(quiet: TimeInterval) -> Bool { quiet >= quietAfterSeconds && !pastServerRetention(quiet: quiet) }
+
+    /// What the server's answer makes a quiet file still on disk. `active` keeps it live and no answer makes no new
+    /// claim. Every other state is the server saying it is done with the session: `saved`, `missing`, `closed`, server
+    /// 6.71.14's `receipted`, `recovered` and `quarantined`, and `unknown`, a state this build does not know (an older
+    /// server without the route answers nil, see ControllerModel.liveTranscriptServerState). Not live, and never
+    /// "ended without saving".
+    static func quietFileIsLeftover(serverState: String?) -> Bool {
+        guard let serverState else { return false }
+        return serverState != "active"
+    }
+
+    /// States that end in a saved meeting: the hand-off looks for its row and opens it.
+    static func savesMeeting(_ serverState: String?) -> Bool { serverState == "saved" || serverState == "recovered" }
+
+    /// The last sign of audio was this long before the end, at or past the server's idle retention: the server has
+    /// auto-saved or closed the session by then, so Control cannot know it went unsaved.
+    static func endedPastRetention(lastActivity: Date?, endedAt: Date) -> Bool {
+        guard let lastActivity else { return false }
+        return pastServerRetention(quiet: endedAt.timeIntervalSince(lastActivity))
+    }
 
     static func enabled(_ defaults: UserDefaults) -> Bool { defaults.object(forKey: enabledKey) as? Bool ?? true }
 
@@ -271,16 +337,19 @@ enum LiveTranscript {
     }
 
     /// Which sessions get a row. Liveness is the server's: none while it reports no live session, never one it calls
-    /// stale, never one already in the stranded captures banner. An ended session keeps its row while it hands off.
+    /// stale, never one already in the stranded captures banner, never a file quiet past the server's idle retention.
+    /// An ended session (a leftover file included) keeps its row while it hands off.
     static func rows(files: [LiveTranscriptFileRow], feeds: [String: LiveTranscriptFeed], serverLive: Int?,
                      stale: Set<String>, stranded: Set<String>, now: Date) -> [LiveTranscriptRow] {
         var out: [LiveTranscriptRow] = []
         var seen = Set<String>()
-        let fileIDs = Set(files.map(\.sessionId))
+        // A leftover's file is still listed; its feed is ended and takes the hand-off rows below.
+        let fileIDs = Set(files.filter { feeds[$0.sessionId]?.leftover != true }.map(\.sessionId))
         if (serverLive ?? 0) > 0 {
             for file in files where !stale.contains(file.sessionId) && !stranded.contains(file.sessionId) {
                 let feed = feeds[file.sessionId]
                 if feed?.ended == true { continue }
+                if pastServerRetention(quiet: quietFor(file, feed: feed, now: now)) { continue }
                 seen.insert(file.sessionId)
                 // The quiet clock is the later of the last read's activity and the file's own mtime (a session not
                 // read this poll still has a fresh file).
@@ -291,7 +360,12 @@ enum LiveTranscript {
             }
         }
         for feed in feeds.values where !seen.contains(feed.sessionId) && feed.ended && !fileIDs.contains(feed.sessionId) {
-            guard feed.phase != .saved, !stranded.contains(feed.sessionId) else { continue }
+            guard feed.phase != .saved, feed.phase != .ended, !stranded.contains(feed.sessionId) else { continue }
+            // 0.5.288: a leftover file shows a row only on its way to a saved meeting, and "Recording ended without
+            // saving" never shows for a session quiet past the server's retention.
+            if feed.leftover && !savesMeeting(feed.serverState) { continue }
+            if feed.phase == .endedUnsaved, let ended = feed.endedAt,
+               endedPastRetention(lastActivity: feed.lastActivityAt, endedAt: ended) { continue }
             if feed.phase == .endedUnsaved, let ended = feed.endedAt, now.timeIntervalSince(ended) > endedRowLifetime { continue }
             out.append(LiveTranscriptRow(sessionId: feed.sessionId, startTime: feed.startTime, lastActivity: feed.lastActivityAt,
                                          phase: feed.phase, endedAt: feed.endedAt))
@@ -306,10 +380,20 @@ enum LiveTranscript {
 
     /// The hand-off once the file is gone. The saved row found wins. The server's `saved` waits for the row until the
     /// deadline; `closed` or `missing` after a short grace is a recording ended without saving; no answer waits too.
-    static func handoff(serverState: String?, endedAt: Date, now: Date, savedRowFound: Bool) -> LiveTranscriptPhase {
+    /// 0.5.288: never "ended without saving" for a leftover file (the server finished it earlier, perhaps receipted
+    /// with no speech) or for a session whose last audio was past the server's retention: those are `.ended`, no row.
+    /// A leftover the server answers with a state this build does not know is `.ended` too.
+    static func handoff(serverState: String?, endedAt: Date, now: Date, savedRowFound: Bool,
+                        lastActivity: Date? = nil, leftover: Bool = false) -> LiveTranscriptPhase {
         if savedRowFound { return .saved }
         let waited = now.timeIntervalSince(endedAt)
-        if serverState == "closed" || serverState == "missing" { return waited >= unsavedGrace ? .endedUnsaved : .finalizing }
+        if serverState == "closed" || serverState == "missing" {
+            if leftover || endedPastRetention(lastActivity: lastActivity, endedAt: endedAt) { return .ended }
+            return waited >= unsavedGrace ? .endedUnsaved : .finalizing
+        }
+        // Server 6.71.14: receipted is finished with no meeting (no speech, say), so there is nothing to wait for.
+        if serverState == "receipted" { return .ended }
+        if leftover, let serverState, serverState != "active", !savesMeeting(serverState) { return .ended }
         return waited >= finalizingDeadline ? .notFoundYet : .finalizing
     }
 
@@ -340,6 +424,7 @@ enum LiveTranscript {
         case .saved: "Saved"
         case .endedUnsaved: "Recording ended without saving"
         case .notFoundYet: "Saved meeting not found yet"
+        case .ended: "Recording ended"
         }
     }
 

@@ -2153,6 +2153,10 @@ struct LiveTranscriptPane: View {
             Text("Recording ended without saving")
                 .font(COSType.body(11.5, weight: .semibold))
                 .foregroundStyle(COSPalette.amber)
+        case .ended:
+            Text("Recording ended")
+                .font(COSType.body(11.5))
+                .foregroundStyle(.secondary)
         case .live:
             EmptyView()
         }

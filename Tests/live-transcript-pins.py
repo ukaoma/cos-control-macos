@@ -96,6 +96,16 @@ kick = body(model, "func liveTranscriptKick() {")
 need("guard liveTranscriptTask == nil, liveTranscriptShouldPoll else { return }" in kick, "one loop at a time, and only when it should poll")
 need("LiveTranscript.shouldPoll(enabled: liveTranscriptEnabled," in model_live, "should-poll includes the setting")
 need(model_live.count("helper.run(") == 2, "the live transcript spawns the helper in exactly two places (the poll and the status)")
+# 0.5.288: a quiet file still on disk asks the server through the same status call, and only while the setting is on and
+# the server counts a live session; the ceiling is the server's 4 h idle retention, named.
+quiet_check = body(model, "func checkQuietLiveTranscriptFiles(now: Date) async {")
+need(quiet_check.split("\n")[1].strip() == "guard liveTranscriptEnabled, (liveTranscriptServerLive ?? 0) > 0 else { return }",
+     "the quiet-file check refuses when the setting is off or nothing is live")
+need("await liveTranscriptServerState(id)" in quiet_check and "helper.run(" not in quiet_check, "the quiet-file check reuses the status call")
+need("await checkQuietLiveTranscriptFiles(now: now)" in body(model, "func checkLiveTranscriptHandoffs(now: Date) async {"),
+     "the hand-off check also asks about quiet files")
+need("LOCAL_FIRST_MEETING_IDLE_RETENTION_MS" in pure and "static let serverIdleRetention: TimeInterval = 4 * 60 * 60" in pure
+     and "keeps it live for 30 min" not in pure, "the ceiling names the server's 4 h retention; the 30 min rationale is gone")
 need("guard liveTranscriptEnabled else { return [] }" in body(model, "var liveTranscriptRows: [LiveTranscriptRow] {"), "the setting off shows no row")
 need("liveTranscriptEnabled && (liveTranscriptServerLive ?? 0) > 0" in model_live, "the dot needs the setting and the server's live count")
 need("Self.liveTranscriptReasonCode(error)" in poll and "LiveTranscript.reasonCode(fromMessage: message)" in model_live,

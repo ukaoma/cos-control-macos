@@ -3205,10 +3205,15 @@ final class ControllerModel: ObservableObject {
         liveTranscriptCopyNote = nil
     }
 
-    /// Which session this poll reads: the open one, else one with no start time yet, else the newest live one.
+    /// Which session this poll reads: the open one, else one with no start time yet, else the newest live one. Never a
+    /// leftover file (0.5.288) or one quiet past the server's idle retention.
     private func liveTranscriptReadTarget() -> String? {
         if let open = liveTranscriptOpenID, liveTranscriptFeeds[open]?.ended != true { return open }
-        let live = liveTranscriptFiles.map(\.sessionId).filter { !Set(status.staleTranscriptionSessionIds).contains($0) }
+        let now = Date()
+        let live = liveTranscriptFiles.filter { file in
+            liveTranscriptFeeds[file.sessionId]?.leftover != true
+                && !LiveTranscript.pastServerRetention(quiet: LiveTranscript.quietFor(file, feed: liveTranscriptFeeds[file.sessionId], now: now))
+        }.map(\.sessionId).filter { !Set(status.staleTranscriptionSessionIds).contains($0) }
         if let unread = live.first(where: { liveTranscriptFeeds[$0]?.startTime == nil }) { return unread }
         return live.first
     }
@@ -3270,8 +3275,16 @@ final class ControllerModel: ObservableObject {
         let stale = Set(status.staleTranscriptionSessionIds), stranded = Set(strandedCaptures.map(\.sessionId))
         let serverLive = (liveTranscriptServerLive ?? 0) > 0
         for file in reply.sessions {
-            if serverLive, !stale.contains(file.sessionId), !stranded.contains(file.sessionId) { feeds[file.sessionId]?.seenLive = true }
-            feeds[file.sessionId]?.noteFileActivity(Date(timeIntervalSince1970: file.mtimeMs / 1000))
+            let mtime = Date(timeIntervalSince1970: file.mtimeMs / 1000)
+            // 0.5.288: a leftover written after the server's answer is asked again once quiet.
+            feeds[file.sessionId]?.fileWrittenAfterVerdict(mtime)
+            feeds[file.sessionId]?.noteFileActivity(mtime)
+            // A file quiet past the server's idle retention is never followed: it would hold the poll open forever.
+            if LiveTranscript.pastServerRetention(quiet: LiveTranscript.quietFor(file, feed: feeds[file.sessionId], now: now)) {
+                feeds[file.sessionId]?.seenLive = false
+            } else if serverLive, !stale.contains(file.sessionId), !stranded.contains(file.sessionId) {
+                feeds[file.sessionId]?.seenLive = true
+            }
         }
         if let read = reply.read {
             var feed = feeds[read.sessionId] ?? LiveTranscriptFeed(sessionId: read.sessionId)
@@ -3282,9 +3295,10 @@ final class ControllerModel: ObservableObject {
         for id in Array(feeds.keys) where !listed.contains(id) && feeds[id]?.ended == false && reply.read?.sessionId != id {
             feeds[id]?.markEnded(now: now)
         }
-        // Forget what is done: a saved hand-off, an unsaved ending past its lifetime. The open one stays.
-        for (id, feed) in feeds where id != liveTranscriptOpenID {
-            if feed.phase == .saved { feeds[id] = nil }
+        // Forget what is done: a saved hand-off, an unsaved ending past its lifetime. The open one stays, and so does a
+        // leftover whose file is still listed (forgotten, it would be asked about and shown again).
+        for (id, feed) in feeds where id != liveTranscriptOpenID && !(feed.leftover && listed.contains(id)) {
+            if feed.phase == .saved || feed.phase == .ended { feeds[id] = nil }
             if feed.phase == .endedUnsaved, let ended = feed.endedAt, now.timeIntervalSince(ended) > LiveTranscript.endedRowLifetime { feeds[id] = nil }
         }
         if feeds != liveTranscriptFeeds { liveTranscriptFeeds = feeds }
@@ -3302,25 +3316,59 @@ final class ControllerModel: ObservableObject {
         for snapshot in due {
             let id = snapshot.sessionId
             liveTranscriptFeeds[id]?.lastStatusCheck = now
-            var state: String?
-            if let response = try? await helper.run(["live-transcript-status", "--session", id], timeout: 12) {
-                state = response.details["state"]?.string
-            }
+            let state = await liveTranscriptServerState(id)
             guard liveTranscriptEnabled, var feed = liveTranscriptFeeds[id], let endedAt = feed.endedAt else { continue }
             feed.serverState = state ?? feed.serverState
             var found = liveTranscriptSavedRows[id]
-            if found == nil, state == "saved" || state == "unknown" || state == nil {
+            // A leftover file may be a session the server saved and forgot: look for its saved row before any
+            // "ended without saving".
+            if found == nil, LiveTranscript.savesMeeting(state) || state == "unknown" || state == "quarantined" || state == nil || feed.leftover {
                 found = await findSavedLiveMeeting(sessionId: id, start: feed.startTime, now: now)
                 if let found { liveTranscriptSavedRows[id] = found }
             }
             guard liveTranscriptEnabled, liveTranscriptFeeds[id] != nil else { continue }
-            feed.phase = LiveTranscript.handoff(serverState: feed.serverState, endedAt: endedAt, now: now, savedRowFound: found != nil)
+            feed.phase = LiveTranscript.handoff(serverState: feed.serverState, endedAt: endedAt, now: now, savedRowFound: found != nil,
+                                                lastActivity: feed.lastActivityAt, leftover: feed.leftover)
             liveTranscriptFeeds[id] = feed
             if feed.phase == .saved, let found {
                 if liveTranscriptOpenID == id { liveTranscriptHandoff = found }
-                else { liveTranscriptFeeds[id] = nil }
+                else if !(feed.leftover && liveTranscriptFiles.contains { $0.sessionId == id }) { liveTranscriptFeeds[id] = nil }
                 if libraryMonth == found.month { await loadLibraryMeetings() }
             }
+        }
+        await checkQuietLiveTranscriptFiles(now: now)
+    }
+
+    /// The server's word on one session (`live-transcript-status`, the helper's token route): `active`, `saved`,
+    /// `closed`, `missing` or `unknown` (a state this build does not know, such as a later server's terminal one); nil
+    /// when the call fails or the server has no status route (`route_absent`), which is no answer, not a state. One
+    /// spawn site for the hand-off and the quiet check.
+    private func liveTranscriptServerState(_ sessionId: String) async -> String? {
+        guard let response = try? await helper.run(["live-transcript-status", "--session", sessionId], timeout: 12) else { return nil }
+        if response.details["reason"]?.string == "route_absent" { return nil }
+        return response.details["state"]?.string
+    }
+
+    /// 0.5.288 (Miles, 2026-10-13: a second Live now row, 17 h 34 min, No audio for 1054m, for a capture the server had
+    /// already receipted; a late chunk had rewritten its file). A file still there but quiet past the No audio mark asks
+    /// the server, on the hand-off cadence, whether it still holds the session. `active` keeps the row; `missing`,
+    /// `closed` or `saved` make the file a leftover that takes the hand-off; no answer keeps today's row. Only while the
+    /// row could show (the server counts a live session), and never past the server's idle retention.
+    func checkQuietLiveTranscriptFiles(now: Date) async {
+        guard liveTranscriptEnabled, (liveTranscriptServerLive ?? 0) > 0 else { return }
+        let stale = Set(status.staleTranscriptionSessionIds), stranded = Set(strandedCaptures.map(\.sessionId))
+        let due = liveTranscriptFiles.compactMap { file -> String? in
+            guard let feed = liveTranscriptFeeds[file.sessionId], !feed.ended,
+                  !stale.contains(file.sessionId), !stranded.contains(file.sessionId),
+                  LiveTranscript.asksQuietFileStatus(quiet: LiveTranscript.quietFor(file, feed: feed, now: now)),
+                  feed.lastStatusCheck.map({ now.timeIntervalSince($0) >= LiveTranscript.statusInterval }) ?? true else { return nil }
+            return file.sessionId
+        }
+        for id in due {
+            liveTranscriptFeeds[id]?.lastStatusCheck = now
+            let state = await liveTranscriptServerState(id)
+            guard liveTranscriptEnabled, var feed = liveTranscriptFeeds[id], !feed.ended else { continue }
+            if feed.applyQuietFileStatus(state, now: now) { liveTranscriptFeeds[id] = feed }
         }
     }
 

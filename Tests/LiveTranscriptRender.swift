@@ -660,9 +660,125 @@ import Vision
         let refusedCopy = await identityTask.value
         expect(refusedCopy == nil, "server change during full-context copy refuses mixed-context output")
         await quiesce(recording)
+        await checkQuietLeftovers(stand)
         print("live transcript wiring checks: \(passed) passed")
         print("PASS: live transcript wiring checks complete")
         exit(0)
+    }
+
+    /// 0.5.288 (Miles, 2026-10-13: a second Live now row, "17 h 34 min · No audio for 1054m", for a capture the server had
+    /// already receipted; a late chunk had rewritten its file and nothing deletes it). The model with the whole app, driven
+    /// directly (no poll loop): a quiet file still on disk asks the server, and its answer decides the row.
+    static func checkQuietLeftovers(_ stand: Stand) async {
+        func statusAsks(_ id: String) -> Int { stand.lines("args.log").filter { $0 == "live-transcript-status --session \(id)" }.count }
+        func listing(_ id: String, quiet: TimeInterval, now: Date) -> LiveTranscriptReply {
+            let mtime = String(format: "%.0f", (now.timeIntervalSince1970 - quiet) * 1000)
+            return reply("{\"ok\":true,\"message\":\"x\",\"details\":{\"sessions\":[{\"sessionId\":\"\(id)\",\"mtimeMs\":\(mtime),\"size\":1,\"stamp\":\"\(id)\"}],\"read\":{\"sessionId\":\"\(id)\",\"ended\":false,\"unchanged\":true}}}")
+        }
+        func status(_ id: String, _ state: String) {
+            stand.write("live-transcript-status.json", "{\"ok\":true,\"message\":\"x\",\"details\":{\"sessionId\":\"\(id)\",\"state\":\"\(state)\"}}")
+        }
+        stand.write("meetings-library.json", #"{"ok":true,"message":"x","details":{"meetings":[]}}"#)
+        let now = Date()
+
+        // Quiet ten minutes, the server says active: Live now with No audio, asked on the 3 s cadence.
+        let active = "meeting_quiet_active_one"
+        let (a, _) = model(stand, enabled: true)
+        a.applyLiveTranscript(listing(active, quiet: 630, now: now), now: now)
+        status(active, "active")
+        await a.checkLiveTranscriptHandoffs(now: now)
+        expect(statusAsks(active) == 1, "a quiet file still on disk asks the server about itself", "\(statusAsks(active))")
+        expect(a.liveTranscriptRows.map(\.phase) == [.live]
+               && LiveTranscript.quietLabel(lastActivity: a.liveTranscriptRows.first?.lastActivity, now: now) == "No audio for 10m",
+               "quiet file + server active: Live now with No audio", "\(a.liveTranscriptRows)")
+        await a.checkLiveTranscriptHandoffs(now: now.addingTimeInterval(1))
+        expect(statusAsks(active) == 1, "asked again only after the status interval")
+
+        // The server says missing (it already finished the session): the file is a leftover, never Live now.
+        status(active, "missing")
+        await a.checkLiveTranscriptHandoffs(now: now.addingTimeInterval(LiveTranscript.statusInterval))
+        expect(statusAsks(active) == 2 && a.liveTranscriptFeeds[active]?.leftover == true,
+               "quiet file + server missing: a leftover", "asks \(statusAsks(active)) \(String(describing: a.liveTranscriptFeeds[active]))")
+        expect(a.liveTranscriptRows.isEmpty, "quiet file + server missing: no row, not Live now", "\(a.liveTranscriptRows)")
+        a.applyLiveTranscript(listing(active, quiet: 610, now: now.addingTimeInterval(10)), now: now.addingTimeInterval(10))
+        expect(a.liveTranscriptFeeds[active]?.leftover == true && a.liveTranscriptRows.isEmpty,
+               "the next poll listing the same file keeps it a leftover, with no row")
+        await a.checkLiveTranscriptHandoffs(now: now.addingTimeInterval(30))
+        expect(a.liveTranscriptFeeds[active]?.phase == .ended && a.liveTranscriptRows.isEmpty,
+               "no saved row: ended with no claim, never Recording ended without saving", "\(String(describing: a.liveTranscriptFeeds[active]?.phase))")
+        let late = now.addingTimeInterval(700)
+        a.applyLiveTranscript(listing(active, quiet: 1300, now: late), now: late)
+        expect(a.liveTranscriptFeeds[active] != nil
+               && LiveTranscript.rows(files: a.liveTranscriptFiles, feeds: a.liveTranscriptFeeds, serverLive: 1, stale: [], stranded: [], now: late).isEmpty,
+               "past its ten minutes the leftover is kept (not asked about and shown again) and has no row")
+
+        // The status call fails (server unreachable): today's row, no new claim.
+        let unreachable = "meeting_quiet_unreachable"
+        let (u, _) = model(stand, enabled: true)
+        u.applyLiveTranscript(listing(unreachable, quiet: 600, now: now), now: now)
+        stand.remove("live-transcript-status.json")
+        await u.checkLiveTranscriptHandoffs(now: now)
+        expect(statusAsks(unreachable) == 1 && u.liveTranscriptFeeds[unreachable]?.leftover == false && u.liveTranscriptRows.map(\.phase) == [.live],
+               "unreachable status keeps today's Live now row", "\(u.liveTranscriptRows)")
+
+        // A server without the status route (404, route_absent) is no answer: today's row.
+        let oldServer = "meeting_quiet_route_absent"
+        let (r, _) = model(stand, enabled: true)
+        r.applyLiveTranscript(listing(oldServer, quiet: 600, now: now), now: now)
+        stand.write("live-transcript-status.json", "{\"ok\":true,\"message\":\"x\",\"details\":{\"sessionId\":\"\(oldServer)\",\"state\":\"unknown\",\"reason\":\"route_absent\"}}")
+        await r.checkLiveTranscriptHandoffs(now: now)
+        expect(statusAsks(oldServer) == 1 && r.liveTranscriptFeeds[oldServer]?.leftover == false && r.liveTranscriptRows.map(\.phase) == [.live],
+               "no status route on the server keeps today's Live now row", "\(r.liveTranscriptRows)")
+
+        // A state this build does not know (a later server's terminal one, through the helper as unknown): not live,
+        // no row, never unsaved.
+        let unknownState = "meeting_quiet_unknown_state"
+        let (k, _) = model(stand, enabled: true)
+        k.applyLiveTranscript(listing(unknownState, quiet: 600, now: now), now: now)
+        status(unknownState, "unknown")
+        await k.checkLiveTranscriptHandoffs(now: now)
+        expect(k.liveTranscriptFeeds[unknownState]?.leftover == true && k.liveTranscriptRows.isEmpty, "quiet file + unknown state: not live, no row")
+        await k.checkLiveTranscriptHandoffs(now: now.addingTimeInterval(30))
+        expect(k.liveTranscriptFeeds[unknownState]?.phase == .ended && k.liveTranscriptRows.isEmpty, "an unknown state is never Recording ended without saving",
+               "\(String(describing: k.liveTranscriptFeeds[unknownState]?.phase))")
+
+        // The second screenshot: the file goes away 17 h after its last audio and the server says missing. No row.
+        let movedAside = "meeting_moved_aside_one"
+        let (g, _) = model(stand, enabled: true)
+        g.status = liveStatus(1)
+        g.applyLiveTranscript(listing(movedAside, quiet: 1056 * 60, now: now), now: now)
+        g.applyLiveTranscript(reply(#"{"ok":true,"message":"x","details":{"sessions":[]}}"#), now: now)
+        status(movedAside, "missing")
+        await g.checkLiveTranscriptHandoffs(now: now.addingTimeInterval(30))
+        expect(g.liveTranscriptFeeds[movedAside]?.phase == .ended && g.liveTranscriptRows.isEmpty,
+               "a gone file whose last audio was past the 4 h retention is never Recording ended without saving",
+               "\(String(describing: g.liveTranscriptFeeds[movedAside]?.phase)) \(g.liveTranscriptRows)")
+
+        // Quiet past the server's 4 h retention: never Live now, nothing asked, and it never holds the poll open.
+        let old = "meeting_1791831725740_e5c1fv"
+        let (o, _) = model(stand, enabled: true)
+        status(old, "active")
+        o.applyLiveTranscript(listing(old, quiet: 1054 * 60, now: now), now: now)
+        await o.checkLiveTranscriptHandoffs(now: now)
+        expect(o.liveTranscriptRows.isEmpty && statusAsks(old) == 0, "quiet past 4 h is never Live now and asks nothing", "\(o.liveTranscriptRows)")
+        expect(!o.liveTranscriptPendingHandoff, "a file past the retention never holds the poll open")
+
+        // The server says saved: the saved meeting is found by session id, and the file is not asked about again.
+        let saved = "meeting_quiet_saved_one"
+        let (v, _) = model(stand, enabled: true)
+        v.applyLiveTranscript(listing(saved, quiet: 600, now: now), now: now)
+        status(saved, "saved")
+        stand.write("meetings-library.json", "{\"ok\":true,\"message\":\"x\",\"details\":{\"meetings\":[" +
+                    libraryRow(recordId: "quiet-saved", sessionId: saved, filename: "quiet.md", title: "Quiet saved") + "]}}")
+        await v.checkLiveTranscriptHandoffs(now: now)
+        await v.checkLiveTranscriptHandoffs(now: now.addingTimeInterval(LiveTranscript.statusInterval))
+        expect(v.liveTranscriptFeeds[saved]?.phase == .saved && v.liveTranscriptRows.isEmpty,
+               "quiet file + server saved: routed to the saved meeting, no row", "\(String(describing: v.liveTranscriptFeeds[saved]?.phase))")
+        let asked = statusAsks(saved)
+        v.applyLiveTranscript(listing(saved, quiet: 700, now: now.addingTimeInterval(100)), now: now.addingTimeInterval(100))
+        await v.checkLiveTranscriptHandoffs(now: now.addingTimeInterval(200))
+        expect(statusAsks(saved) == asked && v.liveTranscriptRows.isEmpty, "a saved leftover is not asked about again")
+        stand.write("meetings-library.json", #"{"ok":true,"message":"x","details":{"meetings":[]}}"#)
     }
 
     // MARK: render

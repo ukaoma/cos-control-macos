@@ -274,6 +274,107 @@ import Foundation
         check(LiveTranscript.rows(files: twoFiles, feeds: ["old": staleRead], serverLive: 2, stale: [], stranded: [], now: now).first?.lastActivity
               == Date(timeIntervalSince1970: 1_791_635_990), "a row's quiet clock is the later of its last read and its file (QA N1)")
 
+        // ── 0.5.288: a quiet file still on disk asks the server; a file past the server's idle retention is never live.
+        // (Miles 2026-10-13: "Started 2:02 PM · 17 h 34 min · No audio for 1054m" for a capture the server had receipted.)
+        check(LiveTranscript.serverIdleRetention == 4 * 60 * 60, "the ceiling is the server's LOCAL_FIRST_MEETING_IDLE_RETENTION_MS, 4 h")
+        check(!LiveTranscript.asksQuietFileStatus(quiet: 119) && LiveTranscript.asksQuietFileStatus(quiet: 120)
+              && LiveTranscript.asksQuietFileStatus(quiet: 4 * 3600 - 1) && !LiveTranscript.asksQuietFileStatus(quiet: 4 * 3600),
+              "a present file asks the server once quiet past the No audio mark, and not past the retention")
+        func idleFile(_ id: String, quiet: TimeInterval) -> LiveTranscriptFileRow {
+            LiveTranscriptFileRow(sessionId: id, mtimeMs: (now.timeIntervalSince1970 - quiet) * 1000, stamp: id)
+        }
+        func idleFeed(_ id: String, quiet: TimeInterval) -> LiveTranscriptFeed {
+            var f = LiveTranscriptFeed(sessionId: id)
+            f.apply(read([chunk(0, "Miles", "x")], id: id, start: (now.timeIntervalSince1970 - quiet - 60) * 1000,
+                         last: (now.timeIntervalSince1970 - quiet) * 1000), now: now)
+            return f
+        }
+        let retained = LiveTranscript.rows(files: [idleFile("q", quiet: 4 * 3600 - 60)], feeds: ["q": idleFeed("q", quiet: 4 * 3600 - 60)],
+                                           serverLive: 1, stale: [], stranded: [], now: now)
+        check(retained.first?.phase == .live && LiveTranscript.quietLabel(lastActivity: retained.first?.lastActivity, now: now) == "No audio for 239m",
+              "inside the retention with no answer: today's Live now row and its No audio")
+        check(LiveTranscript.rows(files: [idleFile("q", quiet: 4 * 3600)], feeds: ["q": idleFeed("q", quiet: 4 * 3600)],
+                                  serverLive: 1, stale: [], stranded: [], now: now).isEmpty
+              && LiveTranscript.rows(files: [idleFile("q", quiet: 1054 * 60)], feeds: [:], serverLive: 2, stale: [], stranded: [], now: now).isEmpty,
+              "quiet past the server's 4 h retention is never Live now, read or not, whatever else is live")
+        var missingFeed = idleFeed("m", quiet: 600)
+        check(missingFeed.applyQuietFileStatus("missing", now: now) && missingFeed.leftover && missingFeed.ended
+              && missingFeed.phase == .finalizing && missingFeed.serverState == "missing",
+              "a quiet file the server calls missing is a leftover, ended with the server's answer")
+        check(LiveTranscript.rows(files: [idleFile("m", quiet: 600)], feeds: ["m": missingFeed], serverLive: 1, stale: [], stranded: [], now: now).isEmpty,
+              "quiet file + server missing: no row at all, never Live now")
+        missingFeed.phase = LiveTranscript.handoff(serverState: missingFeed.serverState, endedAt: missingFeed.endedAt!, now: now.addingTimeInterval(20),
+                                                   savedRowFound: false, leftover: true)
+        check(missingFeed.phase == .ended
+              && LiveTranscript.rows(files: [idleFile("m", quiet: 600)], feeds: ["m": missingFeed], serverLive: 1, stale: [], stranded: [], now: now).isEmpty,
+              "a leftover the server calls missing or closed ends with no row, never Recording ended without saving")
+        check(LiveTranscript.handoff(serverState: "closed", endedAt: now, now: now, savedRowFound: false, leftover: true) == .ended
+              && LiveTranscript.handoff(serverState: "missing", endedAt: now, now: now, savedRowFound: true, leftover: true) == .saved,
+              "a leftover's saved row still wins")
+        // Miles 2026-10-13, second screenshot: the file moved aside, 0.5.287 said "Recording ended without saving · 17 h 36 min".
+        let longAgo = now.addingTimeInterval(-(17 * 3600 + 34 * 60))
+        check(LiveTranscript.handoff(serverState: "missing", endedAt: now, now: now.addingTimeInterval(30), savedRowFound: false, lastActivity: longAgo) == .ended
+              && LiveTranscript.handoff(serverState: "closed", endedAt: now, now: now.addingTimeInterval(30), savedRowFound: false,
+                                        lastActivity: now.addingTimeInterval(-4 * 3600)) == .ended
+              && LiveTranscript.handoff(serverState: "missing", endedAt: now, now: now.addingTimeInterval(30), savedRowFound: false,
+                                        lastActivity: now.addingTimeInterval(-4 * 3600 + 60)) == .endedUnsaved,
+              "last audio at or past the server's 4 h retention is never ended without saving; a recent one still is")
+        var oldUnsaved = LiveTranscriptFeed(sessionId: "o")
+        oldUnsaved.apply(read([chunk(0, "Miles", "x")], id: "o", start: longAgo.timeIntervalSince1970 * 1000 - 60_000,
+                              last: longAgo.timeIntervalSince1970 * 1000), now: now)
+        oldUnsaved.markEnded(now: now); oldUnsaved.phase = .endedUnsaved
+        check(LiveTranscript.rows(files: [], feeds: ["o": oldUnsaved], serverLive: 0, stale: [], stranded: [], now: now).isEmpty,
+              "no Recording ended without saving row for a session whose last audio was past the retention")
+        check(LiveTranscript.rows(files: [], feeds: ["e": { var f = LiveTranscriptFeed(sessionId: "e"); f.markEnded(now: now); f.phase = .ended; return f }()],
+                                  serverLive: 0, stale: [], stranded: [], now: now).isEmpty && LiveTranscript.phaseLabel(.ended) == "Recording ended",
+              "an ended-without-a-claim session has no row and plain words")
+        // A later server's terminal state (6.71.14 adds one) reaches Control as unknown: not live, never unsaved.
+        var unknownFeed = idleFeed("u", quiet: 600)
+        check(unknownFeed.applyQuietFileStatus("unknown", now: now) && unknownFeed.leftover
+              && LiveTranscript.rows(files: [idleFile("u", quiet: 600)], feeds: ["u": unknownFeed], serverLive: 1, stale: [], stranded: [], now: now).isEmpty
+              && LiveTranscript.handoff(serverState: "unknown", endedAt: now, now: now.addingTimeInterval(600), savedRowFound: false, leftover: true) == .ended,
+              "quiet file + an unknown state: not live, no row, never ended without saving")
+        check(LiveTranscript.handoff(serverState: "unknown", endedAt: now, now: now.addingTimeInterval(30), savedRowFound: false) == .finalizing
+              && LiveTranscript.handoff(serverState: "unknown", endedAt: now, now: now.addingTimeInterval(600), savedRowFound: false) == .notFoundYet,
+              "a gone file with an unknown state waits for its saved meeting and is never called unsaved")
+        check(missingFeed.apply(read([chunk(1, "Miles", "late")], id: "m"), now: now) == false && missingFeed.leftover,
+              "a read of a leftover's file is not the file coming back")
+        for state in ["closed", "saved", "unknown"] {
+            var f = idleFeed("s", quiet: 600)
+            check(f.applyQuietFileStatus(state, now: now) && f.leftover && f.serverState == state, "a quiet file the server calls \(state) is a leftover")
+        }
+        for state in ["active", nil] as [String?] {
+            var f = idleFeed("a", quiet: 600)
+            check(!f.applyQuietFileStatus(state, now: now) && !f.leftover && !f.ended
+                  && LiveTranscript.rows(files: [idleFile("a", quiet: 600)], feeds: ["a": f], serverLive: 1, stale: [], stranded: [], now: now)
+                    .first?.phase == .live,
+                  "\(state ?? "no answer (unreachable)") keeps the Live now row and its No audio")
+        }
+        // Server 6.71.14's terminal states: receipted and quarantined hide the row, recovered goes to its saved meeting.
+        for state in ["receipted", "quarantined"] {
+            var f = idleFeed("t", quiet: 600)
+            check(f.applyQuietFileStatus(state, now: now) && f.leftover
+                  && LiveTranscript.rows(files: [idleFile("t", quiet: 600)], feeds: ["t": f], serverLive: 1, stale: [], stranded: [], now: now).isEmpty
+                  && LiveTranscript.handoff(serverState: state, endedAt: now, now: now.addingTimeInterval(600), savedRowFound: false, leftover: true) == .ended,
+                  "quiet file + \(state): not live, no row, never ended without saving")
+        }
+        var recovered = idleFeed("r", quiet: 600)
+        check(recovered.applyQuietFileStatus("recovered", now: now)
+              && LiveTranscript.rows(files: [idleFile("r", quiet: 600)], feeds: ["r": recovered], serverLive: 1, stale: [], stranded: [], now: now)
+                .map(\.phase) == [.finalizing]
+              && LiveTranscript.handoff(serverState: "recovered", endedAt: now, now: now.addingTimeInterval(5), savedRowFound: true, leftover: true) == .saved
+              && LiveTranscript.handoff(serverState: "recovered", endedAt: now, now: now.addingTimeInterval(180), savedRowFound: false, leftover: true) == .notFoundYet,
+              "quiet file + recovered: on its way to the saved meeting, like saved")
+        check(LiveTranscript.handoff(serverState: "receipted", endedAt: now, now: now, savedRowFound: false) == .ended
+              && LiveTranscript.handoff(serverState: "quarantined", endedAt: now, now: now.addingTimeInterval(30), savedRowFound: false) == .finalizing
+              && LiveTranscript.handoff(serverState: "quarantined", endedAt: now, now: now.addingTimeInterval(600), savedRowFound: false) == .notFoundYet,
+              "a gone file the server receipted ends with no row; quarantined waits and is never called unsaved")
+        var rewritten = idleFeed("w", quiet: 600)
+        rewritten.applyQuietFileStatus("missing", now: now)
+        check(!rewritten.fileWrittenAfterVerdict(now) && rewritten.leftover, "the file unchanged since the answer stays a leftover")
+        check(rewritten.fileWrittenAfterVerdict(now.addingTimeInterval(1)) && !rewritten.leftover && !rewritten.ended && rewritten.phase == .live,
+              "a leftover written after the server's answer goes back to live, to be asked again once quiet")
+
         // ── Reason codes: only [a-z0-9_] survives.
         check(LiveTranscript.reasonCode(fromMessage: "Live transcript unavailable (parse_failed)") == "parse_failed", "a refusal's code")
         check(LiveTranscript.reasonCode(fromMessage: "boom (the meeting said secret things)") == "unavailable"
