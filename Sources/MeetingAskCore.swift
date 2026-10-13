@@ -1,4 +1,5 @@
 import Foundation
+import Combine
 import CryptoKit
 
 enum MeetingAskHistoryState {
@@ -606,4 +607,94 @@ struct MeetingAskFollowUpReply: Decodable, Sendable {
     struct Item: Decodable, Sendable { var id: String; var status: String }
     var ok: Bool
     var item: Item
+}
+
+// MARK: Home city (server 6.71.13)
+//
+// Where a Meeting Ask fact check starts when the question leaves it implicit ("flying from here to Kansas City").
+// The server owns the value and its validation (GET/PUT /api/home-area through the helper's `home-area` and
+// `set-home-area`); this store only shows what the server answered. A 404 is a server from before the route, so
+// the setting is hidden rather than shown as an error. A 400 is the server refusing the label, and its sentence
+// shows under the field. A blank field sends "" so the server clears the city and uses the phone's area again.
+struct HomeAreaEffective: Equatable, Sendable { var text: String; var source: String }
+
+enum HomeArea {
+    static let placeholder = "Austin, TX"
+    static let caption = "Used only when a fact check needs a starting point. City and state, no street address. Leave blank to use your phone's area."
+    /// What the helper forwards as the PUT body. Blank (or spaces only) is "", the server's clear.
+    static func payload(_ draft: String) -> [String: String] {
+        ["homeCity": normalized(draft)]
+    }
+    static func normalized(_ text: String) -> String {
+        text.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
+    }
+    /// The line under the field once the server has answered.
+    static func effectiveLine(_ effective: HomeAreaEffective?) -> String {
+        guard let effective, !effective.text.isEmpty else { return "No starting point is set yet." }
+        return effective.source == "profile"
+            ? "Fact checks start from \(effective.text)"
+            : "Fact checks use your phone's area: \(effective.text)"
+    }
+}
+
+@MainActor
+final class HomeAreaStore: ObservableObject {
+    enum Availability: Equatable, Sendable { case unknown, supported, unsupported }
+    /// The helper call: (arguments, stdin) to its JSON answer. ControllerModel.runHelper in the app, a fake in checks.
+    typealias Run = @MainActor ([String], Data?) async throws -> HelperResponse
+    @Published private(set) var availability = Availability.unknown
+    /// The city the server holds, nil when none is set.
+    @Published private(set) var saved: String?
+    @Published private(set) var effective: HomeAreaEffective?
+    /// The server's 400 sentence, or why the call did not reach it. Cleared by the next edit.
+    @Published private(set) var error: String?
+    @Published private(set) var saving = false
+    @Published var draft = "" { didSet { if draft != oldValue { error = nil } } }
+    /// False before the first answer, on an older server (404), and while the server cannot be reached.
+    var visible: Bool { availability == .supported }
+    /// Save does nothing when the field already says what the server holds.
+    var changed: Bool { HomeArea.normalized(draft) != (saved ?? "") }
+    var effectiveLine: String { HomeArea.effectiveLine(effective) }
+
+    func load(_ run: Run) async {
+        do { apply(try await run(["home-area"], nil), refill: draft == (saved ?? "")) }
+        catch { if availability == .supported { self.error = error.localizedDescription } }
+    }
+
+    func save(_ run: Run) async {
+        guard availability == .supported, !saving else { return }
+        saving = true
+        defer { saving = false }
+        do {
+            let data = try JSONSerialization.data(withJSONObject: HomeArea.payload(draft), options: [.sortedKeys])
+            apply(try await run(["set-home-area"], data), refill: true)
+        } catch {
+            self.error = error.localizedDescription
+        }
+    }
+
+    private func apply(_ response: HelperResponse, refill: Bool) {
+        switch response.details["httpStatus"]?.int {
+        case 404:
+            availability = .unsupported
+            error = nil
+        case 400:
+            availability = .supported
+            error = response.details["error"]?.string ?? response.message
+        case 200:
+            availability = .supported
+            let city = response.details["homeCity"]?.string
+            saved = (city?.isEmpty ?? true) ? nil : city
+            let object = response.details["effective"]?.object
+            if let text = object?["text"]?.string, !text.isEmpty {
+                effective = HomeAreaEffective(text: text, source: object?["source"]?.string ?? "")
+            } else {
+                effective = nil
+            }
+            if refill { draft = saved ?? "" }
+            error = nil
+        default:
+            error = response.message
+        }
+    }
 }

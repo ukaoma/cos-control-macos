@@ -520,6 +520,8 @@ final class COSControlHelper {
         case "morning-brief": try emitMorningBrief()
         case "set-morning-brief": try setMorningBrief()
         case "run-morning-brief": try runMorningBrief()
+        case "home-area": try emitHomeArea(set: false)
+        case "set-home-area": try emitHomeArea(set: true)
         case "tasks": try emitTasks(args: args)
         case "work-tasks": try emitWorkTasks()
         case "work-your-move": try emitWorkYourMove()
@@ -4596,6 +4598,63 @@ final class COSControlHelper {
         let run = body["run"] as? [String: Any]
         let number = (run?["globalMsgNum"] as? Int).map { " as #\($0)" } ?? ""
         emit(ok: true, message: "Brief running\(number). It lands in the inbox when it finishes.", details: body)
+    }
+
+    // ── Home city (server 6.71.13) ──
+    //
+    // Two thin pass-throughs to /api/home-area. The SERVER validates the label (city level, no digits, so a street
+    // address can never be stored) and owns the effective starting point (the profile city, else the phone's last
+    // reported area). A 200, a 400 refusal and a 404 (a server from before the route) are all ANSWERS, so they emit
+    // ok with `httpStatus`: the app hides the setting on 404 and shows the server's 400 sentence under the field.
+    // Only an unreachable server, an auth refusal or an unexpected status is ok:false. The city arrives on stdin,
+    // never in argv, and only the `homeCity` key crosses to the server.
+    private func emitHomeArea(set: Bool) throws {
+        var body: String?
+        if set {
+            var input = Data()
+            while input.count <= 4_096 {
+                let chunk = try FileHandle.standardInput.read(upToCount: 4_097 - input.count) ?? Data()
+                if chunk.isEmpty { break }
+                input.append(chunk)
+            }
+            guard input.count <= 4_096,
+                  let object = (try? JSONSerialization.jsonObject(with: input)) as? [String: Any],
+                  let raw = object["homeCity"] else {
+                emit(ok: false, message: "The home city change was not readable."); return
+            }
+            if raw is NSNull {
+                body = try jsonObject(["homeCity": NSNull()])
+            } else if let text = raw as? String, text.count <= 200 {
+                body = try jsonObject(["homeCity": text])
+            } else {
+                emit(ok: false, message: "Use a city and state, like Austin, TX."); return
+            }
+        }
+        let token = try readToken()
+        guard let response = request("/api/home-area", method: set ? "PUT" : "GET", token: token, body: body, timeout: 15) else {
+            emit(ok: false, message: "Could not reach the glasses server. Check that it is running, then try again."); return
+        }
+        switch response.status {
+        case 200:
+            var details: [String: Any] = ["httpStatus": 200, "homeCity": NSNull(), "effective": NSNull()]
+            if let city = response.body?["homeCity"] as? String, !city.isEmpty { details["homeCity"] = city }
+            if let effective = response.body?["effective"] as? [String: Any],
+               let text = effective["text"] as? String, !text.isEmpty, let source = effective["source"] as? String {
+                details["effective"] = ["text": text, "source": source]
+            }
+            emit(ok: true, message: set ? "Home city saved" : "Home city", details: details)
+        case 400:
+            // The server's own sentence ("Use a city and state, like Austin, TX. ..."), bounded; never a stack.
+            let said = (response.body?["error"] as? String).map { String($0.prefix(200)) }
+            let message = said.flatMap { $0.isEmpty ? nil : $0 } ?? "The server did not accept that home city."
+            emit(ok: true, message: message, details: ["httpStatus": 400, "error": message])
+        case 404:
+            emit(ok: true, message: "Needs server 6.71.13", details: ["httpStatus": 404])
+        case 401, 403:
+            emit(ok: false, message: "Reconnect COS Control to the server.")
+        default:
+            emit(ok: false, message: "The server could not \(set ? "save" : "read") the home city (HTTP \(response.status)).")
+        }
     }
 
     private func taskRequest(

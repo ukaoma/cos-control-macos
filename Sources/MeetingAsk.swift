@@ -25,6 +25,8 @@ final class MeetingAskStore: ObservableObject {
     @Published private(set) var modelError: String?
     /// 0.5.281: the line the Ask panel shows after files were dropped or pasted on it, by session.
     @Published private(set) var attachNotes: [String: String] = [:]
+    /// Home city for fact checks (server 6.71.13). Its own store: the server owns it, not the meeting config.
+    let homeArea = HomeAreaStore()
     private var attaching: Set<String> = []
     private var fileObserver: AnyCancellable?
     private var publishedFiles: [String: [MeetingAskFile]] = [:]
@@ -521,9 +523,54 @@ struct MeetingAskSettings: View {
                 MeetingAskModelDetails(options: config.models.filter { !$0.available }, expanded: $showUnavailableModels)
             }
             if let notice = store.notice { Text(notice).font(COSType.body(11)).foregroundStyle(.secondary) }
-            Button("Refresh connected models") { Task { await store.refreshConfig(model: model) } }.buttonStyle(COSQuietButtonStyle())
+            Button("Refresh connected models") {
+                Task { await store.refreshConfig(model: model); await store.homeArea.load(HomeCitySettings.run(model)) }
+            }.buttonStyle(COSQuietButtonStyle())
+            HomeCitySettings(store: store.homeArea, model: model)
         }.padding(12).background(COSPalette.card, in: RoundedRectangle(cornerRadius: 12))
-        .task { await store.refreshConfig(model: model) }
+        .task { await store.refreshConfig(model: model); await store.homeArea.load(HomeCitySettings.run(model)) }
+    }
+}
+
+/// Home city (server 6.71.13), inside the Meeting assistant card: where a fact check starts when a question leaves
+/// it implicit. Not drawn on a server without the route (404) or before the server has answered. The server
+/// checks the label; its refusal shows under the field in its own words. Blank plus Save clears it.
+struct HomeCitySettings: View {
+    @ObservedObject var store: HomeAreaStore
+    @ObservedObject var model: ControllerModel
+    static func run(_ model: ControllerModel) -> HomeAreaStore.Run {
+        { arguments, input in try await model.runHelper(arguments, timeout: 20, stdinData: input) }
+    }
+    var body: some View {
+        if store.visible {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Home city").font(COSType.body(12, weight: .semibold))
+                HStack(spacing: 8) {
+                    TextField(HomeArea.placeholder, text: $store.draft)
+                        .textFieldStyle(.plain)
+                        .cosField()
+                        .accessibilityLabel("Home city")
+                        .onSubmit(save)
+                    Button("Save", action: save)
+                        .buttonStyle(COSQuietButtonStyle())
+                        .disabled(store.saving || !store.changed)
+                }
+                Text(HomeArea.caption).font(COSType.body(11)).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                if let error = store.error {
+                    Text(error).font(COSType.body(11)).foregroundStyle(COSPalette.amber)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    Text(store.effectiveLine).font(COSType.body(11)).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .padding(.top, 4)
+        }
+    }
+    private func save() {
+        guard store.changed, !store.saving else { return }
+        Task { await store.save(Self.run(model)) }
     }
 }
 

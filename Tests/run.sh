@@ -100,6 +100,8 @@ python3 "$ROOT/Tests/provider-status-helper-checks.py" "$TMP/cos-control-helper"
 python3 "$ROOT/Tests/pairing-helper-checks.py" "$TMP/cos-control-helper"
 python3 "$ROOT/Tests/live-cos-ask-helper-checks.py" "$TMP/cos-control-helper"
 python3 "$ROOT/Tests/meeting-ask-helper-checks.py" "$TMP/cos-control-helper"
+# Home city (server 6.71.13): home-area and set-home-area through the compiled helper against a loopback fixture.
+python3 "$ROOT/Tests/home-area-helper-checks.py" "$TMP/cos-control-helper"
 python3 "$ROOT/Tests/HeldNamingGuardMutations.py"
 
 # THE APP ITSELF MUST COMPILE.
@@ -156,6 +158,9 @@ zsh "$ROOT/Tests/run-markdown-ui.sh" "$TMP/markdown-ui"
 zsh "$ROOT/Tests/run-live-transcript.sh"
 zsh "$ROOT/Tests/run-meeting-ask.sh"
 zsh "$ROOT/Tests/run-meeting-value-store.sh"
+
+# Home city: the store against a stand-in helper (404 hides, 400 shows the server sentence, PUT with homeCity, blank clears).
+zsh "$ROOT/Tests/run-home-area.sh"
 # 0.5.233: the live feed reducer is pure Foundation and pinned by an EXECUTED contract
 # over recorded 6.48.2 stream frames (reseed, gap, prompt window, state line, elapsed).
 "$ROOT/Tests/compile-guard.sh" swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \

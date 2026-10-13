@@ -1,3 +1,9 @@
+## Unreleased: Home city setting
+
+- Settings, in the Meeting assistant card, has a Home city field (placeholder Austin, TX) with Save. Meeting Ask fact checks use it only when a question needs a starting point, like "flying from here to Kansas City". City and state, no street address; leave it blank and Save to go back to the phone's area.
+- After a save the card says where fact checks start: "Fact checks start from Austin, TX", or "Fact checks use your phone's area: Tulsa" when no city is set. A city the server will not accept shows the server's reason under the field.
+- Needs server 6.71.13 (GET and PUT /api/home-area). On an older server the field is not shown.
+
 ## 0.5.287 (build 340) — public release
 
 - New Meeting Ask settings default to Sonnet; existing explicit model choices survive upgrade. Includes Fact check for a recent public claim under the existing public-topic opt-in, concise grounded summaries and corrected quantity attribution.
