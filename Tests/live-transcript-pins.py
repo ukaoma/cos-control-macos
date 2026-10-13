@@ -218,8 +218,14 @@ need(all_code.count("MeetingAskModelControl(store: store, model: model)") == 1
      "Settings shows the same model control once")
 need(all_code.count("MeetingAskModelControl(") == 2, "the model control is drawn only in Settings and the Ask panel")
 control = body(ask, "struct MeetingAskModelControl: View {")
-need('COSDropdown("Model", selection: store.modelSelection(model: model), options: Self.options(config),' in control and ask.count("COSDropdown(") == 1,
+# 0.5.289: the Transcription card (server 6.72.0) lives in this file with its own pickers, a separate setting; it is set
+# aside here so the Ask model control is still the only dropdown meeting assistance draws.
+stt_card = body(ask, "struct TranscriptionSettingsCard: View {")
+need('COSDropdown("Model", selection: store.modelSelection(model: model), options: Self.options(config),' in control
+     and ask.replace(stt_card, "").count("COSDropdown(") == 1,
      "the model control is a COSDropdown bound to the store's one selection, the only dropdown meeting assistance draws")
+need("modelSelection" not in stt_card and "MeetingAskModelControl" not in stt_card,
+     "the Transcription card never draws or binds the Ask model control")
 need(".disabled(locked)" in control and "locked: lock != nil" in control and "let lock = store.modelLock" in control and "if let lock { Text(lock)" in control,
      "the model control is disabled, with its reason shown, whenever the store says it is locked")
 need("MeetingAskModelPicker.rows(config)" in control and "enabled: row.enabled" in control and "note: row.note" in control,
