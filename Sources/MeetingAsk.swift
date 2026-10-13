@@ -599,8 +599,11 @@ struct TranscriptionSettingsCard: View {
         return VStack(alignment: .leading, spacing: 8) {
             Text("Transcription").font(COSType.body(13, weight: .semibold))
             picker("Preview model", .preview, settings.preview)
+            quiet(Transcription.previewLine(settings))
             picker("HQ model", .hq, settings.hq)
+            quiet(Transcription.effectiveLine(settings.hq))
             picker("Second opinion", .secondOpinion, settings.secondOpinion)
+            quiet(Transcription.effectiveLine(settings.secondOpinion))
             Text(Transcription.appliesLine(settings)).font(COSType.body(11)).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             // The server's refusal (or why it was not reached), next to the choices it is about.
@@ -614,6 +617,8 @@ struct TranscriptionSettingsCard: View {
                 .toggleStyle(COSSwitchStyle())
                 .font(COSType.body(12))
                 .disabled(store.pending != nil)
+            // On but not refining (6.72.0 resolver.effective false): the switch stays usable, this says why.
+            quiet(Transcription.resolverInactiveLine(settings))
             parakeetRow(settings.parakeet, recording: recording)
             DisclosureGroup("Advanced", isExpanded: $showAdvanced) {
                 VStack(alignment: .leading, spacing: 8) {
@@ -648,17 +653,31 @@ struct TranscriptionSettingsCard: View {
         case .quietGate: settings.quietGate.selected
         }
     }
+    /// A quiet caption under a control, or nothing.
+    @ViewBuilder
+    private func quiet(_ line: String?) -> some View {
+        if let line {
+            Text(line).font(COSType.body(11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        }
+    }
     @ViewBuilder
     private func parakeetRow(_ parakeet: SttParakeet, recording: Bool) -> some View {
-        if store.installing {
+        if store.showsProgress {
             HStack(spacing: 8) {
                 ProgressView().controlSize(.small)
-                Text(Transcription.installingLine(bytes: parakeet.bytes)).font(COSType.body(11)).foregroundStyle(.secondary)
+                Text(Transcription.progressLine(parakeet)).font(COSType.body(11)).foregroundStyle(.secondary)
             }
         } else if let installed = Transcription.installedLine(parakeet) {
             Text(installed).font(COSType.body(11)).foregroundStyle(.secondary)
-        } else if parakeet.installable {
-            if recording {
+        } else {
+            // A failed install shows the server's plain reason whether or not it can be retried.
+            if let failure = Transcription.failureLine(parakeet) {
+                Text(failure).font(COSType.body(11)).foregroundStyle(COSPalette.amber)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if !parakeet.installable {
+                EmptyView()
+            } else if recording {
                 Text(Transcription.recordingHold).font(COSType.body(11)).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             } else if store.offersInstall(recording: recording) {

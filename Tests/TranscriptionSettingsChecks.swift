@@ -5,6 +5,10 @@ import Foundation
 // the card, a 400 shows the server's own sentence, every change is ONE partial PUT through `set-stt-settings` with the
 // contract's key, an unavailable option cannot be chosen and shows its note, and Install Parakeet POSTs, polls GET until
 // installed, and is never offered while a recording is live. No server, helper binary or account.
+extension SttSettings {
+    func with(effective: Bool) -> SttSettings { var copy = self; copy.resolverEffective = effective; return copy }
+}
+
 @main struct TranscriptionSettingsChecks {
     @MainActor static func main() async throws {
         var count = 0
@@ -97,19 +101,102 @@ import Foundation
         // 6. The install route refusing shows its sentence and stops; an install that never finishes times out once.
         let fresh = TranscriptionSettingsStore(); let freshCalls = Calls()
         await fresh.load(fake(freshCalls, [reply(200, settings: settings())]))
-        await fresh.install(fake(freshCalls, [reply(409, error: "A recording is live. Install Parakeet after it ends.")]), recording: false)
-        check(fresh.error == "A recording is live. Install Parakeet after it ends." && freshCalls.log.count == 2, "a refused install shows the server sentence and does not poll")
+        await fresh.install(fake(freshCalls, [reply(409, error: "A recording is live. Install Parakeet after it is saved.")]), recording: false)
+        check(fresh.error == "A recording is live. Install Parakeet after it is saved." && freshCalls.log.count == 2, "a refused install shows the server sentence and does not poll")
         let stuck = Array(repeating: reply(200, settings: parakeet(false, 1_000)), count: Transcription.installPollLimit)
         await fresh.install(fake(freshCalls, [reply(202)] + stuck), recording: false, pause: { _ in })
         check(fresh.error == Transcription.installTimedOut && !fresh.installing, "the poll is bounded")
+
+        // 8. 6.72.0 additions: effective engines, warm state and note, resolver.effective, install progress and states.
+        func choice(_ key: String, selected: String, effective: String) -> (inout [String: JSONValue]) -> Void {
+            { object in
+                var row = object[key]!.object!; row["selected"] = .string(selected); row["effective"] = .string(effective); object[key] = .object(row)
+            }
+        }
+        func progressed(_ state: String, done: Double = 0, total: Double = 0, error: String? = nil, installed: Bool = false) -> JSONValue {
+            settings { $0["parakeet"] = .object(["installed": .bool(installed), "installable": .bool(true), "version": .string("0.6.3"), "bytes": .number(done),
+                "progress": .object(["state": .string(state), "bytesDone": .number(done), "bytesTotal": .number(total), "error": error.map(JSONValue.string) ?? .null])]) }
+        }
+        let base = SttSettings(settings())!
+        check(Transcription.effectiveLine(base.preview) == nil && Transcription.effectiveLine(base.hq) == nil && Transcription.effectiveLine(base.secondOpinion) == nil,
+              "no effective line when effective matches")
+        check(base.parakeet.note != nil && Transcription.previewLine(base) == nil, "the Parakeet note only shows while Parakeet is the preview")
+        var warming = SttSettings(settings(choice("preview", selected: "parakeet", effective: "turbo")))!
+        warming.parakeet.warmPreview = "warming"; warming.parakeet.note = "Parakeet is warming up for previews."
+        check(Transcription.previewLine(warming) == "Using Whisper Turbo until Parakeet is ready. Parakeet is warming up for previews.", "warming: effective line and the server note")
+        warming.parakeet.note = nil
+        check(Transcription.previewLine(warming) == "Using Whisper Turbo until Parakeet is ready. Parakeet is warming up.", "warming without a note: the warm state")
+        var waiting = SttSettings(settings(choice("secondOpinion", selected: "parakeet-ultra", effective: "off")))!
+        check(Transcription.effectiveLine(waiting.secondOpinion) == "No second opinion until Parakeet is ready.", "second opinion effectively off")
+        waiting.resolverEnabled = true; waiting.resolverEffective = false
+        check(Transcription.resolverInactiveLine(waiting) == "Not refining until Parakeet is ready.", "resolver inactive reason: waiting for the second opinion")
+        var noSecond = base; noSecond.resolverEnabled = true; noSecond.resolverEffective = false
+        check(Transcription.resolverInactiveLine(noSecond) == "Not refining: Second opinion is off.", "resolver inactive reason: second opinion off")
+        noSecond.resolverEffective = true
+        check(Transcription.resolverInactiveLine(noSecond) == nil && Transcription.resolverInactiveLine(base) == nil, "no resolver line when it is refining or off")
+        check(Transcription.progressLine(SttSettings(progressed("downloading", done: 184_000_000, total: 612_000_000))!.parakeet) == "Installing Parakeet. 184 of 612 MB.", "progress line X of Y")
+        check(Transcription.progressLine(SttSettings(progressed("verifying", done: 612_000_000, total: 612_000_000))!.parakeet) == "Verifying the Parakeet download.", "verifying line")
+        check(Transcription.progressLine(SttParakeet(installed: false, installable: true, version: nil, bytes: 41_000_000)) == "Installing Parakeet. 41 MB so far.", "bytes fallback without progress")
+
+        // A failed install stops polling at once and shows the server's plain reason; the button comes back.
+        let missing = "Parakeet needs the FluidAudio command line tool 0.17.4 in ~/.cos-glasses/bin. Install it, then try again."
+        let failedStore = TranscriptionSettingsStore(); let failCalls = Calls()
+        await failedStore.load(fake(failCalls, [reply(200, settings: settings())]))
+        await failedStore.install(fake(failCalls, [reply(202, settings: progressed("downloading", total: 612_000_000)), reply(200, settings: progressed("failed", error: missing))]),
+                              recording: false, pause: { _ in })
+        check(failCalls.log.count == 3 && !failedStore.installing, "a failed install stops polling")
+        check(Transcription.failureLine(failedStore.settings!.parakeet) == missing && failedStore.error == nil, "a failed install shows the server's reason")
+        check(failedStore.offersInstall(recording: false), "after a failure the install is offered again")
+        // 200 {started:false}: already installed, nothing to follow.
+        await failedStore.install(fake(failCalls, [HelperResponse(ok: true, message: "", details: ["httpStatus": .number(200), "started": .bool(false), "settings": progressed("installed", installed: true)])]),
+                              recording: false, pause: { _ in })
+        check(failCalls.log.count == 4 && failedStore.settings?.parakeet.installed == true, "already installed: no polling")
+        // started:false is never followed, even when the settings in it do not say installed.
+        let idle = TranscriptionSettingsStore(); let idleCalls = Calls()
+        await idle.load(fake(idleCalls, [reply(200, settings: settings())]))
+        await idle.install(fake(idleCalls, [HelperResponse(ok: true, message: "", details: ["httpStatus": .number(200), "started": .bool(false), "settings": settings()])]),
+                           recording: false, pause: { _ in })
+        check(idleCalls.log.count == 2 && !idle.installing, "started false: no polling")
+        // A panel opened while the server installs follows that install, and offers no second one meanwhile.
+        let follower = TranscriptionSettingsStore(); let followCalls = Calls()
+        var seen: [Bool] = []
+        await follower.load(fake(followCalls, [reply(200, settings: progressed("downloading", done: 10_000_000, total: 612_000_000)),
+                                               reply(200, settings: progressed("verifying", done: 612_000_000, total: 612_000_000)),
+                                               reply(200, settings: progressed("installed", done: 612_000_000, total: 612_000_000, installed: true))]),
+                            pause: { _ in seen.append(follower.showsProgress && !follower.offersInstall(recording: false)) })
+        check(followCalls.log.count == 3 && seen == [true, true], "a load during a server install polls until installed")
+        check(follower.settings?.parakeet.installed == true && !follower.showsProgress, "followed to installed")
+        // The server is still installing but this store stopped following (its read failed): progress still shows and
+        // no second install is offered.
+        let stalled = TranscriptionSettingsStore()
+        var stalledAnswers = [reply(200, settings: progressed("downloading", done: 10_000_000, total: 612_000_000))]
+        await stalled.load({ _, _ in
+            if stalledAnswers.isEmpty { throw NSError(domain: "x", code: 1, userInfo: [NSLocalizedDescriptionKey: "Could not reach the glasses server."]) }
+            return stalledAnswers.removeFirst()
+        }, pause: { _ in })
+        check(!stalled.installing && stalled.showsProgress && !stalled.offersInstall(recording: false), "no second install while the server installs")
+
+        // 5. of the additions: PUT hq parakeet-ultra may move the second opinion; the card shows the server's reply.
+        let moved = settings { o in
+            choice("hq", selected: "parakeet-ultra", effective: "parakeet-ultra")(&o)
+            choice("secondOpinion", selected: "large-v3", effective: "large-v3")(&o)
+        }
+        let mover = TranscriptionSettingsStore(); let moverCalls = Calls()
+        await mover.load(fake(moverCalls, [reply(200, settings: settings(choice("secondOpinion", selected: "parakeet-ultra", effective: "parakeet-ultra")))]))
+        await mover.set("hq", .string("parakeet-ultra"), run: fake(moverCalls, [reply(200, settings: moved)]))
+        check(moverCalls.log.last?.body == #"{"hq":"parakeet-ultra"}"# && mover.settings?.hq.selected == "parakeet-ultra" && mover.settings?.secondOpinion.selected == "large-v3",
+              "the moved second opinion shows after the PUT")
 
         // 7. A helper failure (server unreachable) is shown once the card is visible.
         let failing: TranscriptionSettingsStore.Run = { _, _ in throw NSError(domain: "x", code: 1, userInfo: [NSLocalizedDescriptionKey: "Could not reach the glasses server."]) }
         await store.set("preview", .string("large-v3"), run: failing)
         check(store.error == "Could not reach the glasses server." && store.visible && store.pending == nil, "unreachable is a sentence in the card")
-        for line in [Transcription.installCaption, Transcription.recordingHold, Transcription.installTimedOut, Transcription.appliesLine(store.settings!)] {
+        for line in [Transcription.installCaption, Transcription.recordingHold, Transcription.installTimedOut, Transcription.appliesLine(store.settings!),
+                     Transcription.progressLine(SttSettings(progressed("verifying"))!.parakeet), Transcription.resolverInactiveLine(noSecond.with(effective: false)) ?? "",
+                     Transcription.effectiveLine(waiting.secondOpinion) ?? "", Transcription.previewLine(warming) ?? ""] {
             check(!line.contains("\u{2014}") && !line.contains("\u{2192}"), "copy has no em dash or arrow: \(line)")
         }
+        check(!Transcription.failureLine(SttSettings(progressed("failed"))!.parakeet)!.contains("\u{2014}"), "fallback failure line has no em dash")
         print("PASS Transcription settings: \(count) checks")
     }
 }

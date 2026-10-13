@@ -3,7 +3,10 @@
 - Settings has a Transcription card: Preview model (live chunks), HQ model (saved meetings), Second opinion (with Off), and a Refine with second opinion switch. The server lists the choices; one it cannot run yet is shown muted with its reason and cannot be picked.
 - One line under the pickers says when a change takes effect: "Preview changes apply to the next live chunk. HQ changes apply to the next saved meeting." Nothing switches in the middle of a meeting that is being processed.
 - Advanced (collapsed) holds Front end (Highpass only or Full chain) and Quiet detection (Speech detector or Volume threshold).
-- When Parakeet is not installed and the server can install it, Install Parakeet starts the download and the card shows how far it has got until it is installed. The button is not offered while a recording is live; the card says to install after the recording ends.
+- When the engine running is not the one chosen, one quiet line says so, for example "Using Whisper Turbo until Parakeet is ready." While Parakeet is the Preview model, the server's note about it (such as warming up) shows under that picker.
+- Refine with second opinion stays usable when it has nothing to refine with; a line under it says why, for example "Not refining until Parakeet is ready."
+- When Parakeet is not installed and the server can install it, Install Parakeet starts the install and the card shows "Installing Parakeet. X of Y MB." then "Verifying the Parakeet download." until it is installed. If the install fails, the card shows the server's reason (for example a missing FluidAudio command line tool) and offers the button again. Opening Settings while the server is already installing follows that install. The button is not offered while a recording is live; the card says to install after the recording ends.
+- After every change the card shows the server's answer, so a second opinion the server moved (choosing Parakeet for HQ while it was the second opinion) shows at once.
 - A choice the server will not accept shows the server's reason in the card. Needs server 6.72.0 (GET and PUT /api/stt-settings, POST /api/stt-settings/parakeet/install). On an older server the card is not shown.
 
 ## 0.5.288 (build 341), public release

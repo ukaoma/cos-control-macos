@@ -719,10 +719,13 @@ struct SttOption: Equatable, Sendable {
 struct SttChoice: Equatable, Sendable {
     var selected: String
     var options: [SttOption]
-    init(selected: String, options: [SttOption]) { self.selected = selected; self.options = options }
+    /// 6.72.0: the engine actually running (Whisper Turbo while a selected Parakeet warms up). nil when not reported.
+    var effective: String?
+    init(selected: String, options: [SttOption], effective: String? = nil) { self.selected = selected; self.options = options; self.effective = effective }
     init?(_ value: JSONValue?) {
         guard let object = value?.object, let selected = object["selected"]?.string, let rows = object["options"]?.array else { return nil }
         self.selected = selected
+        effective = object["effective"]?.string
         options = rows.compactMap { row in
             guard let row = row.object, let id = row["id"]?.string, !id.isEmpty else { return nil }
             return SttOption(id: id, label: row["label"]?.string, available: row["available"]?.bool ?? true,
@@ -731,11 +734,29 @@ struct SttChoice: Equatable, Sendable {
     }
 }
 
+struct SttInstallProgress: Equatable, Sendable {
+    /// idle, downloading, verifying, installed or failed.
+    var state: String
+    var bytesDone: Int
+    var bytesTotal: Int
+    var error: String?
+}
+
 struct SttParakeet: Equatable, Sendable {
     var installed: Bool
     var installable: Bool
     var version: String?
+    /// Before 6.72.0's `progress`, the only progress signal. Kept as the fallback.
     var bytes: Int
+    var progress: SttInstallProgress? = nil
+    /// cold, warming, warm or failed: whether Parakeet is ready to run previews.
+    var warmPreview: String? = nil
+    /// The server's plain sentence about Parakeet, shown under the Preview picker while Parakeet is selected there.
+    var note: String? = nil
+    /// The server is downloading or verifying right now.
+    var serverInstalling: Bool { progress?.state == "downloading" || progress?.state == "verifying" }
+    var failed: Bool { !installed && progress?.state == "failed" }
+    var done: Bool { installed || progress?.state == "installed" }
 }
 
 struct SttSettings: Equatable, Sendable {
@@ -745,6 +766,8 @@ struct SttSettings: Equatable, Sendable {
     var frontEnd: SttChoice
     var quietGate: SttChoice
     var resolverEnabled: Bool
+    /// 6.72.0: false when the resolver is on but has nothing to refine with (the second opinion is effectively off).
+    var resolverEffective: Bool?
     var parakeet: SttParakeet
     var appliesPreview: String?
     var appliesHQ: String?
@@ -757,9 +780,17 @@ struct SttSettings: Equatable, Sendable {
               let quiet = SttChoice(object["quietGate"]), let resolver = object["resolver"]?.object?["enabled"]?.bool else { return nil }
         self.preview = preview; self.hq = hq; secondOpinion = second; self.frontEnd = frontEnd; quietGate = quiet
         resolverEnabled = resolver
+        resolverEffective = object["resolver"]?.object?["effective"]?.bool
         let parakeet = object["parakeet"]?.object ?? [:]
+        var progress: SttInstallProgress?
+        if let row = parakeet["progress"]?.object, let state = row["state"]?.string {
+            progress = SttInstallProgress(state: state, bytesDone: max(0, row["bytesDone"]?.int ?? 0), bytesTotal: max(0, row["bytesTotal"]?.int ?? 0),
+                                          error: row["error"]?.string.flatMap { $0.isEmpty ? nil : $0 })
+        }
         self.parakeet = SttParakeet(installed: parakeet["installed"]?.bool ?? false, installable: parakeet["installable"]?.bool ?? false,
-                                    version: parakeet["version"]?.string, bytes: max(0, parakeet["bytes"]?.int ?? 0))
+                                    version: parakeet["version"]?.string, bytes: max(0, parakeet["bytes"]?.int ?? 0), progress: progress,
+                                    warmPreview: parakeet["warm"]?.object?["preview"]?.string,
+                                    note: parakeet["note"]?.string.flatMap { $0.isEmpty ? nil : $0 })
         let applies = object["appliesTo"]?.object ?? [:]
         appliesPreview = applies["preview"]?.string
         appliesHQ = applies["hq"]?.string
@@ -797,13 +828,60 @@ enum Transcription {
         let hq = settings.appliesHQ.flatMap { $0.isEmpty ? nil : $0 } ?? "next saved meeting"
         return "Preview changes apply to the \(preview). HQ changes apply to the \(hq)."
     }
+    static func title(_ choice: SttChoice, _ id: String) -> String {
+        rows(choice).first { $0.id == id }?.title ?? fallbackLabels[id] ?? id
+    }
+    /// One quiet line when the engine running is not the one chosen, e.g. while Parakeet warms up. nil when they match.
+    static func effectiveLine(_ choice: SttChoice) -> String? {
+        guard let effective = choice.effective, !effective.isEmpty, effective != choice.selected else { return nil }
+        let chosen = title(choice, choice.selected)
+        return effective == "off" ? "No second opinion until \(chosen) is ready." : "Using \(title(choice, effective)) until \(chosen) is ready."
+    }
+    /// What the card shows under the Preview picker: the effective line, then the server's Parakeet note (or its warm
+    /// state when there is no note) while Parakeet is the selected preview. One line, nothing said twice.
+    static func previewLine(_ settings: SttSettings) -> String? {
+        var parts: [String] = []
+        if let line = effectiveLine(settings.preview) { parts.append(line) }
+        if settings.preview.selected == "parakeet" {
+            let warm: String? = switch settings.parakeet.warmPreview {
+            case "warming": "Parakeet is warming up."
+            case "failed": "Parakeet could not start for previews."
+            default: nil
+            }
+            if let said = settings.parakeet.note ?? warm, !parts.contains(said) { parts.append(said) }
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " ")
+    }
+    /// The resolver switch stays usable (it is the setting); this says why it is not refining right now.
+    static func resolverInactiveLine(_ settings: SttSettings) -> String? {
+        guard settings.resolverEnabled, settings.resolverEffective == false else { return nil }
+        let second = settings.secondOpinion
+        if second.selected == "off" { return "Not refining: Second opinion is off." }
+        if let effective = second.effective, effective != second.selected { return "Not refining until \(title(second, second.selected)) is ready." }
+        return "Not refining right now."
+    }
+    static func megabytes(_ bytes: Int) -> String {
+        let value = Double(bytes) / 1_000_000
+        return value < 10 ? String(format: "%.1f", value) : String(Int(value.rounded()))
+    }
+    /// The progress line while the server installs: X of Y MB, Verifying, or the older bytes-so-far fallback.
+    static func progressLine(_ parakeet: SttParakeet) -> String {
+        if let progress = parakeet.progress {
+            if progress.state == "verifying" { return "Verifying the Parakeet download." }
+            if progress.bytesTotal > 0 { return "Installing Parakeet. \(megabytes(progress.bytesDone)) of \(megabytes(progress.bytesTotal)) MB." }
+            if progress.bytesDone > 0 { return installingLine(bytes: progress.bytesDone) }
+        }
+        return installingLine(bytes: parakeet.bytes)
+    }
+    /// The server's plain reason when the install failed (for example the FluidAudio command line tool is missing).
+    static func failureLine(_ parakeet: SttParakeet) -> String? {
+        guard parakeet.failed else { return nil }
+        return parakeet.progress?.error ?? "The Parakeet install did not finish. Try again."
+    }
     static let installCaption = "Parakeet runs on this Mac as the second opinion. The download is checked before it is installed."
     static let recordingHold = "Install Parakeet after the recording ends."
     static func installingLine(bytes: Int) -> String {
-        guard bytes > 0 else { return "Installing Parakeet." }
-        let megabytes = Double(bytes) / 1_000_000
-        return megabytes < 10 ? String(format: "Installing Parakeet. %.1f MB so far.", megabytes)
-                              : "Installing Parakeet. \(Int(megabytes.rounded())) MB so far."
+        bytes > 0 ? "Installing Parakeet. \(megabytes(bytes)) MB so far." : "Installing Parakeet."
     }
     static func installedLine(_ parakeet: SttParakeet) -> String? {
         guard parakeet.installed else { return nil }
@@ -811,7 +889,7 @@ enum Transcription {
         return "Parakeet \(version) is installed."
     }
     static let installTimedOut = "The Parakeet install is taking longer than expected. Check again in a few minutes."
-    /// 15 minutes at one check every 2 seconds.
+    /// 15 minutes at one check every 2 seconds: a backstop only, the server's installed or failed state ends the poll.
     static let installPollLimit = 450
     static let installPollNanoseconds: UInt64 = 2_000_000_000
 }
@@ -832,16 +910,24 @@ final class TranscriptionSettingsStore: ObservableObject {
     /// False before the first answer, on an older server (404), and while no settings have been read.
     var visible: Bool { availability == .supported && settings != nil }
 
-    /// The Install Parakeet button: only when it is missing, the server can install it, nothing is in flight, and
-    /// no recording is live.
+    /// The Install Parakeet button: only when it is missing, the server can install it, nothing is in flight (here or
+    /// on the server), and no recording is live. After a failed install it is offered again.
     func offersInstall(recording: Bool) -> Bool {
         guard visible, !installing, !recording, let parakeet = settings?.parakeet else { return false }
-        return !parakeet.installed && parakeet.installable
+        return !parakeet.installed && parakeet.installable && !parakeet.serverInstalling
     }
+    /// The card shows progress while this store polls or while the server says it is downloading or verifying.
+    var showsProgress: Bool { installing || settings?.parakeet.serverInstalling == true }
 
-    func load(_ run: Run) async {
+    /// A read. When the server is already installing (started from another open of the panel), it follows that
+    /// install the same way the button does, until installed or failed.
+    func load(_ run: Run, pause: Pause = { try? await Task.sleep(nanoseconds: $0) }) async {
         do { apply(try await run(["stt-settings"], nil)) }
-        catch { if availability == .supported { self.error = error.localizedDescription } }
+        catch { if availability == .supported { self.error = error.localizedDescription }; return }
+        guard visible, !installing, settings?.parakeet.serverInstalling == true else { return }
+        installing = true
+        defer { installing = false }
+        do { try await follow(run, pause: pause) } catch { self.error = error.localizedDescription }
     }
 
     /// One partial PUT: an option id for a picker, a bool for the resolver.
@@ -873,21 +959,30 @@ final class TranscriptionSettingsStore: ObservableObject {
             switch started.details["httpStatus"]?.int {
             case 200, 202:
                 if let settings = SttSettings(started.details["settings"]) { self.settings = settings }
+                // 200 {started:false}: already installed, nothing to follow.
+                if started.details["started"]?.bool == false { return }
             case 404:
                 error = "This server cannot install Parakeet."; return
             default:
                 error = started.details["error"]?.string ?? started.message; return
             }
-            for _ in 0..<Transcription.installPollLimit {
-                if settings?.parakeet.installed == true { return }
-                await pause(Transcription.installPollNanoseconds)
-                apply(try await run(["stt-settings"], nil))
-                if availability != .supported || error != nil { return }
-            }
-            if settings?.parakeet.installed != true { error = Transcription.installTimedOut }
+            try await follow(run, pause: pause)
         } catch {
             self.error = error.localizedDescription
         }
+    }
+
+    /// GET every 2 s until the server says installed or failed. The 15 minute limit is only a backstop.
+    private func follow(_ run: Run, pause: Pause) async throws {
+        for _ in 0..<Transcription.installPollLimit {
+            if let parakeet = settings?.parakeet, parakeet.done || parakeet.failed { return }
+            await pause(Transcription.installPollNanoseconds)
+            // The panel closed (its .task was cancelled): stop; the next open reads the state again.
+            if Task.isCancelled { return }
+            apply(try await run(["stt-settings"], nil))
+            if availability != .supported || error != nil { return }
+        }
+        if let parakeet = settings?.parakeet, !parakeet.done, !parakeet.failed { error = Transcription.installTimedOut }
     }
 
     private func apply(_ response: HelperResponse) {

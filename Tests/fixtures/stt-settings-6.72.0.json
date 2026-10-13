@@ -1,20 +1,136 @@
 {
-  "preview": {"selected": "turbo", "options": [
-    {"id": "turbo", "label": "Whisper Turbo", "available": true, "experimental": false, "note": "Fast live preview"},
-    {"id": "large-v3", "label": "Whisper large-v3", "available": true, "experimental": false, "note": "Slower, more accurate"},
-    {"id": "nemotron-560", "label": "Nemotron 560", "available": false, "experimental": true, "note": "Not wired on this server yet"},
-    {"id": "parakeet", "label": "Parakeet", "available": false, "experimental": true, "note": "Install Parakeet first"}]},
-  "hq": {"selected": "large-v3", "options": [
-    {"id": "large-v3", "label": "Whisper large-v3", "available": true, "experimental": false, "note": "With timestamps"},
-    {"id": "large-v3-legacy", "label": "Whisper large-v3 (legacy)", "available": true, "experimental": false, "note": "No timestamps, for rollback"},
-    {"id": "parakeet-ultra", "label": "Parakeet", "available": false, "experimental": true, "note": "Install Parakeet first"}]},
-  "secondOpinion": {"selected": "off", "options": [
-    {"id": "off", "label": "Off", "available": true, "experimental": false, "note": ""},
-    {"id": "parakeet-ultra", "label": "Parakeet", "available": false, "experimental": false, "note": "Install Parakeet first"},
-    {"id": "large-v3", "label": "Whisper large-v3", "available": true, "experimental": false, "note": ""}]},
-  "resolver": {"enabled": false},
-  "frontEnd": {"selected": "highpass", "options": [{"id": "highpass"}, {"id": "full"}]},
-  "quietGate": {"selected": "silero", "options": [{"id": "silero"}, {"id": "rms"}]},
-  "parakeet": {"installed": false, "installable": true, "version": "0.6.3", "bytes": 0},
-  "appliesTo": {"preview": "next live chunk", "hq": "next saved meeting"}
+  "preview": {
+    "selected": "turbo",
+    "options": [
+      {
+        "id": "turbo",
+        "label": "Whisper Turbo",
+        "available": true,
+        "experimental": false,
+        "note": "Fast live preview"
+      },
+      {
+        "id": "large-v3",
+        "label": "Whisper large-v3",
+        "available": true,
+        "experimental": false,
+        "note": "Slower, more accurate"
+      },
+      {
+        "id": "nemotron-560",
+        "label": "Nemotron 560",
+        "available": false,
+        "experimental": true,
+        "note": "Not wired on this server yet"
+      },
+      {
+        "id": "parakeet",
+        "label": "Parakeet",
+        "available": false,
+        "experimental": true,
+        "note": "Install Parakeet first"
+      }
+    ],
+    "effective": "turbo"
+  },
+  "hq": {
+    "selected": "large-v3",
+    "options": [
+      {
+        "id": "large-v3",
+        "label": "Whisper large-v3",
+        "available": true,
+        "experimental": false,
+        "note": "With timestamps"
+      },
+      {
+        "id": "large-v3-legacy",
+        "label": "Whisper large-v3 (legacy)",
+        "available": true,
+        "experimental": false,
+        "note": "No timestamps, for rollback"
+      },
+      {
+        "id": "parakeet-ultra",
+        "label": "Parakeet",
+        "available": false,
+        "experimental": true,
+        "note": "Install Parakeet first"
+      }
+    ],
+    "effective": "large-v3"
+  },
+  "secondOpinion": {
+    "selected": "off",
+    "options": [
+      {
+        "id": "off",
+        "label": "Off",
+        "available": true,
+        "experimental": false,
+        "note": ""
+      },
+      {
+        "id": "parakeet-ultra",
+        "label": "Parakeet",
+        "available": false,
+        "experimental": false,
+        "note": "Install Parakeet first"
+      },
+      {
+        "id": "large-v3",
+        "label": "Whisper large-v3",
+        "available": true,
+        "experimental": false,
+        "note": ""
+      }
+    ],
+    "effective": "off"
+  },
+  "resolver": {
+    "enabled": false,
+    "effective": false
+  },
+  "frontEnd": {
+    "selected": "highpass",
+    "options": [
+      {
+        "id": "highpass"
+      },
+      {
+        "id": "full"
+      }
+    ]
+  },
+  "quietGate": {
+    "selected": "silero",
+    "options": [
+      {
+        "id": "silero"
+      },
+      {
+        "id": "rms"
+      }
+    ]
+  },
+  "parakeet": {
+    "installed": false,
+    "installable": true,
+    "version": "0.6.3",
+    "bytes": 0,
+    "progress": {
+      "state": "idle",
+      "bytesDone": 0,
+      "bytesTotal": 0,
+      "error": null
+    },
+    "warm": {
+      "preview": "cold"
+    },
+    "note": "Parakeet is not installed on this Mac."
+  },
+  "appliesTo": {
+    "preview": "next live chunk",
+    "hq": "next saved meeting"
+  }
 }

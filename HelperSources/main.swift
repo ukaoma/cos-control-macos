@@ -4699,14 +4699,26 @@ final class COSControlHelper {
                 return ["id": id, "label": bounded(option["label"], 60), "available": flag(option["available"]) ?? true,
                         "experimental": flag(option["experimental"]) ?? false, "note": bounded(option["note"], 160)]
             }
-            out[key] = ["selected": selected, "options": rows]
+            // `effective` (6.72.0): the engine actually running, e.g. turbo while a selected Parakeet warms up.
+            out[key] = ["selected": selected, "options": rows, "effective": sttOptionID(choice["effective"]) ?? NSNull()]
         }
         guard let resolver = body["resolver"] as? [String: Any], let enabled = flag(resolver["enabled"]) else { return nil }
-        out["resolver"] = ["enabled": enabled]
+        out["resolver"] = ["enabled": enabled, "effective": flag(resolver["effective"]).map { $0 as Any } ?? NSNull()]
+        func count(_ value: Any?) -> Int64 { (value as? NSNumber).map { max(0, $0.int64Value) } ?? 0 }
+        func oneOf(_ value: Any?, _ allowed: Set<String>) -> Any { (value as? String).flatMap { allowed.contains($0) ? $0 : nil } ?? NSNull() }
         let parakeet = body["parakeet"] as? [String: Any] ?? [:]
-        let bytes = (parakeet["bytes"] as? NSNumber).map { max(0, $0.int64Value) } ?? 0
-        out["parakeet"] = ["installed": flag(parakeet["installed"]) ?? false, "installable": flag(parakeet["installable"]) ?? false,
-                           "version": bounded(parakeet["version"], 40), "bytes": bytes]
+        var parakeetOut: [String: Any] = ["installed": flag(parakeet["installed"]) ?? false, "installable": flag(parakeet["installable"]) ?? false,
+                                          "version": bounded(parakeet["version"], 40), "bytes": count(parakeet["bytes"]),
+                                          "note": bounded(parakeet["note"], 200), "progress": NSNull(), "warm": NSNull()]
+        if let progress = parakeet["progress"] as? [String: Any] {
+            parakeetOut["progress"] = ["state": oneOf(progress["state"], ["idle", "downloading", "verifying", "installed", "failed"]),
+                                       "bytesDone": count(progress["bytesDone"]), "bytesTotal": count(progress["bytesTotal"]),
+                                       "error": bounded(progress["error"], 200)]
+        }
+        if let warm = parakeet["warm"] as? [String: Any] {
+            parakeetOut["warm"] = ["preview": oneOf(warm["preview"], ["cold", "warming", "warm", "failed"])]
+        }
+        out["parakeet"] = parakeetOut
         let applies = body["appliesTo"] as? [String: Any] ?? [:]
         out["appliesTo"] = ["preview": bounded(applies["preview"], 80), "hq": bounded(applies["hq"], 80)]
         return out
@@ -4747,6 +4759,8 @@ final class COSControlHelper {
         switch response.status {
         case 200, 202:
             var details: [String: Any] = ["httpStatus": response.status]
+            // The install answers 202 {started:true, ...GET} or 200 {started:false, ...GET} when Parakeet is already in.
+            if call == .installParakeet, let started = response.body?["started"] as? Bool { details["started"] = started }
             if let settings = Self.sttSettingsDetails(response.body) {
                 details["settings"] = settings
             } else if call != .installParakeet {

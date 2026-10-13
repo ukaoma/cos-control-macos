@@ -46,7 +46,18 @@ with tempfile.TemporaryDirectory(prefix='cos-stt-settings-', dir='/tmp') as tmp:
         check(s['preview']['selected'] == 'turbo' and [o['id'] for o in s['preview']['options']] == ['turbo', 'large-v3', 'nemotron-560', 'parakeet'], 'preview passes through')
         check(s['preview']['options'][2] == {'id': 'nemotron-560', 'label': 'Nemotron 560', 'available': False, 'experimental': True, 'note': 'Not wired on this server yet'}, 'option fields pass through')
         check(s['frontEnd']['options'][0] == {'id': 'highpass', 'label': None, 'available': True, 'experimental': False, 'note': None}, 'a bare option gets defaults, not invented labels')
-        check(s['resolver'] == {'enabled': False} and s['parakeet'] == {'installed': False, 'installable': True, 'version': '0.6.3', 'bytes': 0}, 'resolver and parakeet')
+        check(s['resolver'] == {'enabled': False, 'effective': False}, 'resolver with effective')
+        check(s['parakeet'] == {'installed': False, 'installable': True, 'version': '0.6.3', 'bytes': 0, 'note': 'Parakeet is not installed on this Mac.',
+                                'progress': {'state': 'idle', 'bytesDone': 0, 'bytesTotal': 0, 'error': None}, 'warm': {'preview': 'cold'}}, 'parakeet with progress, warm and note')
+        check(s['preview']['effective'] == 'turbo' and s['secondOpinion']['effective'] == 'off' and s['frontEnd']['effective'] is None, 'effective passes through, null when absent')
+        state['body'] = copy.deepcopy(FIXTURE)
+        state['body']['parakeet']['progress'] = {'state': 'exploded', 'bytesDone': -5, 'bytesTotal': 'x', 'error': 'E' * 400}
+        state['body']['parakeet']['warm'] = {'preview': 'hot'}
+        state['body']['preview']['effective'] = 'bad id; rm'
+        s = run('stt-settings')['details']['settings']
+        check(s['parakeet']['progress'] == {'state': None, 'bytesDone': 0, 'bytesTotal': 0, 'error': 'E' * 200} and s['parakeet']['warm'] == {'preview': None}
+              and s['preview']['effective'] is None, 'unknown progress and warm states, bad effective ids and long errors are bounded')
+        state['body'] = copy.deepcopy(FIXTURE)
         check(s['appliesTo'] == {'preview': 'next live chunk', 'hq': 'next saved meeting'}, 'appliesTo')
         state['body']['extra'] = 'dropped'; state['body']['hq']['secret'] = 'x'
         got = run('set-stt-settings', {'hq': 'parakeet-ultra', 'sneak': 'x'})
@@ -61,9 +72,13 @@ with tempfile.TemporaryDirectory(prefix='cos-stt-settings-', dir='/tmp') as tmp:
               and not run('set-stt-settings', {'hq': 'bad id; rm'})['ok'] and not run('set-stt-settings', {'resolver': 'yes'})['ok']
               and not run('set-stt-settings', {'resolver': 1})['ok'] and not run('set-stt-settings', {'preview': 'a' * 49})['ok']
               and len(requests) == prior, 'malformed changes never reach the server')
+        state['status'] = 202; state['body'] = dict(copy.deepcopy(FIXTURE), started=True)
         got = run('install-parakeet')
-        check(requests[-1] == ('POST', '/api/stt-settings/parakeet/install', {}), 'install is a POST to the install route')
-        check(got['ok'] and got['details']['httpStatus'] == 200, 'install started')
+        check(requests[-1] == ('POST', '/api/stt-settings/parakeet/install', {}), 'install is a POST to the install route, no localSource')
+        check(got['ok'] and got['details']['httpStatus'] == 202 and got['details']['started'] is True and 'settings' in got['details'], '202 started with the GET shape')
+        state['status'] = 200; state['body'] = dict(copy.deepcopy(FIXTURE), started=False)
+        got = run('install-parakeet')
+        check(got['ok'] and got['details']['httpStatus'] == 200 and got['details']['started'] is False, '200 started:false (already installed) passes through')
         state['status'] = 202; state['body'] = {'ok': True}
         got = run('install-parakeet')
         check(got['ok'] and got['details']['httpStatus'] == 202 and 'settings' not in got['details'], 'a 202 receipt is an answer without settings')
@@ -73,7 +88,7 @@ with tempfile.TemporaryDirectory(prefix='cos-stt-settings-', dir='/tmp') as tmp:
         state['status'] = 400; state['body'] = {'error': 'That model is not available on this Mac.'}
         got = run('set-stt-settings', {'hq': 'parakeet-ultra'})
         check(got['ok'] and got['details']['httpStatus'] == 400 and got['details']['error'] == 'That model is not available on this Mac.', '400 is an answer with the server sentence')
-        state['status'] = 409; state['body'] = {'error': 'A recording is live. Install Parakeet after it ends.'}
+        state['status'] = 409; state['body'] = {'error': 'A recording is live. Install Parakeet after it is saved.'}
         got = run('install-parakeet')
         check(got['ok'] and got['details']['httpStatus'] == 409 and got['details']['error'].startswith('A recording is live'), '409 is an answer with the server sentence')
         state['status'] = 404; state['body'] = {'error': 'Not found'}
