@@ -1,11 +1,11 @@
 {
-  "version": "0.5.287",
+  "version": "0.5.288",
   "whatsNew": {
-    "summary": "Ask follow-up questions after a meeting ends, then review an answer as a follow-up in Work. Fact check public claims with supporting sources when requested. Requires server 6.71.12. Private test candidate.",
+    "summary": "Set a Home city in Settings so Meeting Ask fact checks start from the right place. Includes everything in 0.5.287. Requires server 6.71.13.",
     "sections": [
-      {"title": "Continue a saved meeting", "items": ["Ask uses the original recording and its saved cutoff. Each capture keeps its own question history.", "Short answers and inline citation taps from the previous candidate are included."]},
-      {"title": "Review a follow-up", "items": ["Edit an answer into a follow-up and save it in Work Review. The original answer and source excerpts stay attached.", "Cancel saves nothing. A retry does not create another copy or reopen a reviewed item."]},
-      {"title": "Useful requested assistance", "items": ["What to ask suggests at most one grounded question. Solo prompts run only when requested.", "Sources and context shows availability and your confirmed domain. A checked time is not presented as a sync time."]},
+      {"title": "Home city for fact checks", "items": ["Settings, in the Meeting assistant card, has a Home city field. Fact checks use it only when a question needs a starting point, like flying from here to Kansas City.", "Enter a city and state, no street address. Leave it blank and Save to go back to your phone's area."]},
+      {"title": "See where fact checks start", "items": ["After a save, the card shows the starting point COS uses. A city COS will not accept shows the reason under the field.", "On a server older than 6.71.13 the field is not shown."]},
+      {"title": "Included from 0.5.287", "items": ["Continue a saved meeting, review an answer as a follow-up in Work, and fact check public claims with supporting sources.", "New Meeting Ask settings default to Sonnet. A model you already chose stays chosen."]},
       {"title": "Stable transcription", "items": ["This update does not enable experimental transcription or autonomous live cues."]}
     ]
   }
