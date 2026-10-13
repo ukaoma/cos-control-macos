@@ -8,7 +8,7 @@
 - When Parakeet is not installed and the server can install it, Install Parakeet starts the install and the card shows "Installing Parakeet. X of Y MB." then "Verifying the Parakeet download." until it is installed. If the install fails, the card shows the server's reason (for example a missing FluidAudio command line tool) and offers the button again. Opening Settings while the server is already installing follows that install. The button is not offered while a recording is live; the card says to install after the recording ends.
 - After every change the card shows the server's answer, so a second opinion the server moved (choosing Parakeet for HQ while it was the second opinion) shows at once.
 - A choice the server will not accept shows the server's reason in the card. Needs server 6.72.0 (GET and PUT /api/stt-settings, POST /api/stt-settings/parakeet/install). On an older server the card is not shown.
-- The card draws the server's own list and labels. With server 6.72.0 the Preview choices are Whisper Turbo, Parakeet Ultra and Parakeet v2.
+- The card draws the server's own list and labels. With server 6.72.0 the Preview choices are Whisper Turbo and Parakeet Ultra.
 - Includes everything in 0.5.288 (build 341): the Home city field for Meeting Ask fact checks, and a meeting the server already finished no longer shows as Live now with hours of No audio. Also includes everything in 0.5.287 (build 340).
 
 ## 0.5.288 (build 341), public release
