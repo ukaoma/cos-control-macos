@@ -1,3 +1,11 @@
+## 0.5.287 (build 340) — public release
+
+- New Meeting Ask settings default to Sonnet; existing explicit model choices survive upgrade. Includes Fact check for a recent public claim under the existing public-topic opt-in, concise grounded summaries and corrected quantity attribution.
+- Retains saved-meeting follow-ups, reviewed Work follow-ups, clickable citations and phone image/file context paired with server 6.71.12 and complete companion 6.10.635.
+- Release archive is Developer ID signed, notarized, stapled and Gatekeeper accepted. Hosted ZIP and checksum agree; isolated packaged-runtime/registry/provider-proof canary passed. Native updater, TCC and physical phone/Android acceptance remain separate pending gates.
+- All experimental transcription and cue flags stay disabled. Broad replay 25/26 reviewed useful, 26/26 within 30 seconds; roof-cost comparison usefulness remains limited. Stable transcription is unchanged.
+- Public release: https://github.com/ukaoma/cos-starter/releases/tag/control-v0.5.287 . No Mac install/restart performed by publication.
+
 ## 0.5.286 (build 339) — private test candidate
 
 - Ask follow-ups on saved recordings using their original turns and cutoff; retains per-capture history and citations.
