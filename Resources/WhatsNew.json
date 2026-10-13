@@ -1,13 +1,11 @@
 {
-  "version": "0.5.288",
+  "version": "0.5.289",
   "whatsNew": {
-    "summary": "Set a Home city in Settings so Meeting Ask fact checks start from the right place. Includes everything in 0.5.287. Requires server 6.71.13.",
+    "summary": "Choose the live preview and HQ transcription models, and install Parakeet, from Settings. Includes everything in 0.5.288. Requires server 6.72.0.",
     "sections": [
-      {"title": "Home city for fact checks", "items": ["Settings, in the Meeting assistant card, has a Home city field. Fact checks use it only when a question needs a starting point, like flying from here to Kansas City.", "Enter a city and state, no street address. Leave it blank and Save to go back to your phone's area."]},
-      {"title": "See where fact checks start", "items": ["After a save, the card shows the starting point COS uses. A city COS will not accept shows the reason under the field.", "On a server older than 6.71.13 the field is not shown."]},
-      {"title": "Live now", "items": ["A meeting the server already finished no longer shows as Live now with hours of No audio."]},
-      {"title": "Included from 0.5.287", "items": ["Continue a saved meeting, review an answer as a follow-up in Work, and fact check public claims with supporting sources.", "New Meeting Ask settings default to Sonnet. A model you already chose stays chosen."]},
-      {"title": "Stable transcription", "items": ["This update does not enable experimental transcription or autonomous live cues."]}
+      {"title": "Transcription models", "items": ["Settings has a Transcription card. Pick the Preview model for live chunks and the HQ model for saved meetings. The choices come from your server.", "Preview changes apply to the next live chunk and HQ changes to the next saved meeting. Nothing switches in the middle of a meeting.", "On a server older than 6.72.0 the card is not shown."]},
+      {"title": "Parakeet install", "items": ["When Parakeet is not installed, Install Parakeet downloads it and the card shows its progress until it is installed.", "Install is not offered while a recording is live. If the install fails, the card shows the reason and offers the button again."]},
+      {"title": "Included from 0.5.288", "items": ["Set a Home city in the Meeting assistant card so fact checks start from the right place.", "A meeting the server already finished no longer shows as Live now with hours of No audio."]}
     ]
   }
 }
