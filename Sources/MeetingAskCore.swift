@@ -698,3 +698,216 @@ final class HomeAreaStore: ObservableObject {
         }
     }
 }
+
+// MARK: Transcription switcher (server 6.72.0)
+//
+// Which speech-to-text engines the glasses server runs: the Preview model for live chunks, the HQ model for a saved
+// meeting, an optional second opinion with the resolver that refines HQ from it, and two Advanced front-end choices.
+// The server owns every choice, its availability and its refusal sentences (GET/PUT /api/stt-settings through the
+// helper's `stt-settings` and `set-stt-settings`); this store only shows what the server answered. A 404 is a server
+// from before the route, so the card is hidden rather than shown as an error. A 400 is the server refusing a choice,
+// and its sentence shows inline. "Install Parakeet" POSTs the install route (`install-parakeet`) and then polls GET,
+// whose `parakeet` object is the progress. Control never starts it while a recording is live.
+struct SttOption: Equatable, Sendable {
+    var id: String
+    var label: String?
+    var available: Bool
+    var experimental: Bool
+    var note: String?
+}
+
+struct SttChoice: Equatable, Sendable {
+    var selected: String
+    var options: [SttOption]
+    init(selected: String, options: [SttOption]) { self.selected = selected; self.options = options }
+    init?(_ value: JSONValue?) {
+        guard let object = value?.object, let selected = object["selected"]?.string, let rows = object["options"]?.array else { return nil }
+        self.selected = selected
+        options = rows.compactMap { row in
+            guard let row = row.object, let id = row["id"]?.string, !id.isEmpty else { return nil }
+            return SttOption(id: id, label: row["label"]?.string, available: row["available"]?.bool ?? true,
+                             experimental: row["experimental"]?.bool ?? false, note: row["note"]?.string)
+        }
+    }
+}
+
+struct SttParakeet: Equatable, Sendable {
+    var installed: Bool
+    var installable: Bool
+    var version: String?
+    var bytes: Int
+}
+
+struct SttSettings: Equatable, Sendable {
+    var preview: SttChoice
+    var hq: SttChoice
+    var secondOpinion: SttChoice
+    var frontEnd: SttChoice
+    var quietGate: SttChoice
+    var resolverEnabled: Bool
+    var parakeet: SttParakeet
+    var appliesPreview: String?
+    var appliesHQ: String?
+
+    /// The helper's `details.settings`, which is already the contract's GET shape with its keys whitelisted.
+    init?(_ value: JSONValue?) {
+        guard let object = value?.object,
+              let preview = SttChoice(object["preview"]), let hq = SttChoice(object["hq"]),
+              let second = SttChoice(object["secondOpinion"]), let frontEnd = SttChoice(object["frontEnd"]),
+              let quiet = SttChoice(object["quietGate"]), let resolver = object["resolver"]?.object?["enabled"]?.bool else { return nil }
+        self.preview = preview; self.hq = hq; secondOpinion = second; self.frontEnd = frontEnd; quietGate = quiet
+        resolverEnabled = resolver
+        let parakeet = object["parakeet"]?.object ?? [:]
+        self.parakeet = SttParakeet(installed: parakeet["installed"]?.bool ?? false, installable: parakeet["installable"]?.bool ?? false,
+                                    version: parakeet["version"]?.string, bytes: max(0, parakeet["bytes"]?.int ?? 0))
+        let applies = object["appliesTo"]?.object ?? [:]
+        appliesPreview = applies["preview"]?.string
+        appliesHQ = applies["hq"]?.string
+    }
+}
+
+/// One row the card's pickers draw.
+struct SttPickerRow: Equatable, Sendable { var id: String; var title: String; var note: String?; var enabled: Bool }
+
+enum Transcription {
+    /// Option keys the card sends, the same names the server's PUT takes.
+    enum Key: String, CaseIterable, Sendable { case preview, hq, secondOpinion, frontEnd, quietGate }
+    /// Control's own words for the ids the plan fixes, used only when the server sends no label.
+    static let fallbackLabels: [String: String] = [
+        "off": "Off", "highpass": "Highpass only", "full": "Full chain", "silero": "Speech detector", "rms": "Volume threshold",
+    ]
+    static func rows(_ choice: SttChoice) -> [SttPickerRow] {
+        var rows = choice.options.map { option in
+            let label = option.label.flatMap { $0.isEmpty ? nil : $0 } ?? fallbackLabels[option.id] ?? option.id
+            let said = option.note.flatMap { $0.isEmpty ? nil : $0 }
+            // Only an option that cannot be chosen carries its note: the dropdown face shows the selection's note
+            // too, and a note there truncated the model name in the 390 pt panel (render, 2026-10-13).
+            let note = option.available ? (option.experimental ? "Experimental" : nil) : (said ?? "Not available")
+            return SttPickerRow(id: option.id, title: label, note: note, enabled: option.available)
+        }
+        // The selection always has a row, even when the server forgot to list it.
+        if !rows.contains(where: { $0.id == choice.selected }) {
+            rows.insert(SttPickerRow(id: choice.selected, title: fallbackLabels[choice.selected] ?? choice.selected, note: nil, enabled: true), at: 0)
+        }
+        return rows
+    }
+    /// The one plain line under the pickers, from appliesTo.
+    static func appliesLine(_ settings: SttSettings) -> String {
+        let preview = settings.appliesPreview.flatMap { $0.isEmpty ? nil : $0 } ?? "next live chunk"
+        let hq = settings.appliesHQ.flatMap { $0.isEmpty ? nil : $0 } ?? "next saved meeting"
+        return "Preview changes apply to the \(preview). HQ changes apply to the \(hq)."
+    }
+    static let installCaption = "Parakeet runs on this Mac as the second opinion. The download is checked before it is installed."
+    static let recordingHold = "Install Parakeet after the recording ends."
+    static func installingLine(bytes: Int) -> String {
+        guard bytes > 0 else { return "Installing Parakeet." }
+        let megabytes = Double(bytes) / 1_000_000
+        return megabytes < 10 ? String(format: "Installing Parakeet. %.1f MB so far.", megabytes)
+                              : "Installing Parakeet. \(Int(megabytes.rounded())) MB so far."
+    }
+    static func installedLine(_ parakeet: SttParakeet) -> String? {
+        guard parakeet.installed else { return nil }
+        guard let version = parakeet.version, !version.isEmpty else { return "Parakeet is installed." }
+        return "Parakeet \(version) is installed."
+    }
+    static let installTimedOut = "The Parakeet install is taking longer than expected. Check again in a few minutes."
+    /// 15 minutes at one check every 2 seconds.
+    static let installPollLimit = 450
+    static let installPollNanoseconds: UInt64 = 2_000_000_000
+}
+
+@MainActor
+final class TranscriptionSettingsStore: ObservableObject {
+    enum Availability: Equatable, Sendable { case unknown, supported, unsupported }
+    /// The helper call: (arguments, stdin) to its JSON answer. ControllerModel.runHelper in the app, a fake in checks.
+    typealias Run = @MainActor ([String], Data?) async throws -> HelperResponse
+    typealias Pause = @MainActor (UInt64) async -> Void
+    @Published private(set) var availability = Availability.unknown
+    @Published private(set) var settings: SttSettings?
+    /// The server's 400 sentence, or why the call did not reach it. Cleared by the next successful answer.
+    @Published private(set) var error: String?
+    /// The change on its way to the server, so its control can wait for the answer.
+    @Published private(set) var pending: String?
+    @Published private(set) var installing = false
+    /// False before the first answer, on an older server (404), and while no settings have been read.
+    var visible: Bool { availability == .supported && settings != nil }
+
+    /// The Install Parakeet button: only when it is missing, the server can install it, nothing is in flight, and
+    /// no recording is live.
+    func offersInstall(recording: Bool) -> Bool {
+        guard visible, !installing, !recording, let parakeet = settings?.parakeet else { return false }
+        return !parakeet.installed && parakeet.installable
+    }
+
+    func load(_ run: Run) async {
+        do { apply(try await run(["stt-settings"], nil)) }
+        catch { if availability == .supported { self.error = error.localizedDescription } }
+    }
+
+    /// One partial PUT: an option id for a picker, a bool for the resolver.
+    func set(_ key: String, _ value: JSONValue, run: Run) async {
+        guard visible, pending == nil else { return }
+        let payload: Any
+        switch value {
+        case .string(let id): payload = id
+        case .bool(let on): payload = on
+        default: return
+        }
+        pending = key
+        defer { pending = nil }
+        do {
+            let data = try JSONSerialization.data(withJSONObject: [key: payload], options: [.sortedKeys])
+            apply(try await run(["set-stt-settings"], data))
+        } catch {
+            self.error = error.localizedDescription
+        }
+    }
+
+    func install(_ run: Run, recording: Bool, pause: Pause = { try? await Task.sleep(nanoseconds: $0) }) async {
+        guard offersInstall(recording: recording) else { return }
+        installing = true
+        defer { installing = false }
+        error = nil
+        do {
+            let started = try await run(["install-parakeet"], nil)
+            switch started.details["httpStatus"]?.int {
+            case 200, 202:
+                if let settings = SttSettings(started.details["settings"]) { self.settings = settings }
+            case 404:
+                error = "This server cannot install Parakeet."; return
+            default:
+                error = started.details["error"]?.string ?? started.message; return
+            }
+            for _ in 0..<Transcription.installPollLimit {
+                if settings?.parakeet.installed == true { return }
+                await pause(Transcription.installPollNanoseconds)
+                apply(try await run(["stt-settings"], nil))
+                if availability != .supported || error != nil { return }
+            }
+            if settings?.parakeet.installed != true { error = Transcription.installTimedOut }
+        } catch {
+            self.error = error.localizedDescription
+        }
+    }
+
+    private func apply(_ response: HelperResponse) {
+        switch response.details["httpStatus"]?.int {
+        case 404:
+            availability = .unsupported
+            settings = nil
+            error = nil
+        case 400, 409:
+            availability = .supported
+            error = response.details["error"]?.string ?? response.message
+        case 200, 202:
+            guard let settings = SttSettings(response.details["settings"]) else {
+                error = "The server's transcription settings were not readable."; return
+            }
+            availability = .supported
+            self.settings = settings
+            error = nil
+        default:
+            error = response.message
+        }
+    }
+}

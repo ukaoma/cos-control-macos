@@ -574,6 +574,106 @@ struct HomeCitySettings: View {
     }
 }
 
+/// Transcription (server 6.72.0): its own Settings card. Preview model, HQ model, Second opinion, the resolver switch,
+/// one line saying when a change takes effect, an Advanced disclosure for the front end and the quiet gate, and Install
+/// Parakeet when the server can install it. Not drawn on a server without the route (404) or before the server has
+/// answered. Every change is one PUT and the card then shows what the server answered; a refusal shows in its words.
+/// The install button is never offered while a recording is live (ControllerModel.recordingCount).
+struct TranscriptionSettingsCard: View {
+    @ObservedObject var store: TranscriptionSettingsStore
+    @ObservedObject var model: ControllerModel
+    @State private var showAdvanced: Bool
+    init(store: TranscriptionSettingsStore, model: ControllerModel, advancedOpen: Bool = false) {
+        self.store = store; self.model = model; _showAdvanced = State(initialValue: advancedOpen)
+    }
+    static func run(_ model: ControllerModel) -> TranscriptionSettingsStore.Run {
+        { arguments, input in try await model.runHelper(arguments, timeout: 20, stdinData: input) }
+    }
+    var body: some View {
+        if store.visible, let settings = store.settings {
+            card(settings)
+        }
+    }
+    private func card(_ settings: SttSettings) -> some View {
+        let recording = model.recordingCount > 0
+        return VStack(alignment: .leading, spacing: 8) {
+            Text("Transcription").font(COSType.body(13, weight: .semibold))
+            picker("Preview model", .preview, settings.preview)
+            picker("HQ model", .hq, settings.hq)
+            picker("Second opinion", .secondOpinion, settings.secondOpinion)
+            Text(Transcription.appliesLine(settings)).font(COSType.body(11)).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            // The server's refusal (or why it was not reached), next to the choices it is about.
+            if let error = store.error {
+                Text(error).font(COSType.body(11)).foregroundStyle(COSPalette.amber)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Toggle("Refine with second opinion", isOn: Binding(
+                get: { store.settings?.resolverEnabled ?? false },
+                set: { on in Task { await store.set("resolver", .bool(on), run: Self.run(model)) } }))
+                .toggleStyle(COSSwitchStyle())
+                .font(COSType.body(12))
+                .disabled(store.pending != nil)
+            parakeetRow(settings.parakeet, recording: recording)
+            DisclosureGroup("Advanced", isExpanded: $showAdvanced) {
+                VStack(alignment: .leading, spacing: 8) {
+                    picker("Front end", .frontEnd, settings.frontEnd)
+                    picker("Quiet detection", .quietGate, settings.quietGate)
+                }.padding(.top, 6)
+            }
+            .font(COSType.body(12))
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 12))
+    }
+    private func picker(_ label: String, _ key: Transcription.Key, _ choice: SttChoice) -> some View {
+        COSDropdown(label, selection: Binding(
+            get: { store.settings.map { Self.selected($0, key) } ?? choice.selected },
+            set: { id in
+                guard id != choice.selected else { return }
+                Task { await store.set(key.rawValue, .string(id), run: Self.run(model)) }
+            }), options: Transcription.rows(choice).map { row in
+                COSDropdownOption(row.id, row.title, note: row.note, muted: !row.enabled, enabled: row.enabled)
+            }, labelWidth: 112)
+            .font(COSType.body(12))
+            .disabled(store.pending != nil)
+    }
+    static func selected(_ settings: SttSettings, _ key: Transcription.Key) -> String {
+        switch key {
+        case .preview: settings.preview.selected
+        case .hq: settings.hq.selected
+        case .secondOpinion: settings.secondOpinion.selected
+        case .frontEnd: settings.frontEnd.selected
+        case .quietGate: settings.quietGate.selected
+        }
+    }
+    @ViewBuilder
+    private func parakeetRow(_ parakeet: SttParakeet, recording: Bool) -> some View {
+        if store.installing {
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text(Transcription.installingLine(bytes: parakeet.bytes)).font(COSType.body(11)).foregroundStyle(.secondary)
+            }
+        } else if let installed = Transcription.installedLine(parakeet) {
+            Text(installed).font(COSType.body(11)).foregroundStyle(.secondary)
+        } else if parakeet.installable {
+            if recording {
+                Text(Transcription.recordingHold).font(COSType.body(11)).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if store.offersInstall(recording: recording) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Button("Install Parakeet") {
+                        Task { await store.install(Self.run(model), recording: model.recordingCount > 0) }
+                    }.buttonStyle(COSQuietButtonStyle())
+                    Text(Transcription.installCaption).font(COSType.body(11)).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+    }
+}
+
 /// Keep qualification details available without stretching the toolbar's settings panel.
 struct MeetingAskModelDetails: View {
     let options: [MeetingAskModelOption]

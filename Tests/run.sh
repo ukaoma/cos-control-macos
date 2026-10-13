@@ -102,6 +102,8 @@ python3 "$ROOT/Tests/live-cos-ask-helper-checks.py" "$TMP/cos-control-helper"
 python3 "$ROOT/Tests/meeting-ask-helper-checks.py" "$TMP/cos-control-helper"
 # Home city (server 6.71.13): home-area and set-home-area through the compiled helper against a loopback fixture.
 python3 "$ROOT/Tests/home-area-helper-checks.py" "$TMP/cos-control-helper"
+# Transcription switcher (server 6.72.0): stt-settings, set-stt-settings, install-parakeet against the contract fixture.
+python3 "$ROOT/Tests/transcription-settings-helper-checks.py" "$TMP/cos-control-helper" "$ROOT/Tests/fixtures/stt-settings-6.72.0.json"
 python3 "$ROOT/Tests/HeldNamingGuardMutations.py"
 
 # THE APP ITSELF MUST COMPILE.
@@ -161,6 +163,8 @@ zsh "$ROOT/Tests/run-meeting-value-store.sh"
 
 # Home city: the store against a stand-in helper (404 hides, 400 shows the server sentence, PUT with homeCity, blank clears).
 zsh "$ROOT/Tests/run-home-area.sh"
+# Transcription switcher: the store against a stand-in helper (404 hides, 400 shows, one partial PUT, install polls).
+zsh "$ROOT/Tests/run-transcription-settings.sh"
 # 0.5.233: the live feed reducer is pure Foundation and pinned by an EXECUTED contract
 # over recorded 6.48.2 stream frames (reseed, gap, prompt window, state line, elapsed).
 "$ROOT/Tests/compile-guard.sh" swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \

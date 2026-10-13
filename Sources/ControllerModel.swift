@@ -480,6 +480,8 @@ final class ControllerModel: ObservableObject {
     }
 
     let meetingAsk = MeetingAskStore()
+    /// Transcription switcher (server 6.72.0): the Settings card's store. The server owns the choices.
+    let transcriptionSettings = TranscriptionSettingsStore()
     @Published var meetingAskOpenRecordID: String?
     @Published var meetingAskOpenMemory: ContextRecord?
     private let helper: HelperClient

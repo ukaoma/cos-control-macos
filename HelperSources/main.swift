@@ -522,6 +522,9 @@ final class COSControlHelper {
         case "run-morning-brief": try runMorningBrief()
         case "home-area": try emitHomeArea(set: false)
         case "set-home-area": try emitHomeArea(set: true)
+        case "stt-settings": try emitSttSettings(.read)
+        case "set-stt-settings": try emitSttSettings(.change)
+        case "install-parakeet": try emitSttSettings(.installParakeet)
         case "tasks": try emitTasks(args: args)
         case "work-tasks": try emitWorkTasks()
         case "work-your-move": try emitWorkYourMove()
@@ -4654,6 +4657,117 @@ final class COSControlHelper {
             emit(ok: false, message: "Reconnect COS Control to the server.")
         default:
             emit(ok: false, message: "The server could not \(set ? "save" : "read") the home city (HTTP \(response.status)).")
+        }
+    }
+
+    // ── Transcription switcher (server 6.72.0) ──
+    //
+    // Three thin pass-throughs: GET and PUT /api/stt-settings, and POST /api/stt-settings/parakeet/install. The SERVER
+    // owns the choices, their availability and the refusal sentences; the helper only whitelists what crosses. A 200
+    // (or the install's 202), a 400 refusal and a 404 (a server from before the route) are all ANSWERS and emit ok with
+    // `httpStatus`: the app hides the card on 404 and shows the server's 400 sentence inline. Only an unreachable
+    // server, an auth refusal, an unreadable answer or an unexpected status is ok:false. A change arrives on stdin,
+    // never in argv, and only the contract's keys cross: preview, hq, secondOpinion, frontEnd and quietGate as short
+    // option ids, resolver as a bool.
+    enum SttCall { case read, change, installParakeet }
+    static let sttChoiceKeys = ["preview", "hq", "secondOpinion", "frontEnd", "quietGate"]
+
+    static func sttOptionID(_ value: Any?) -> String? {
+        guard let text = value as? String, (1...48).contains(text.count),
+              text.allSatisfy({ ($0.isASCII && ($0.isLetter || $0.isNumber)) || $0 == "-" || $0 == "." || $0 == "_" }) else { return nil }
+        return text
+    }
+
+    /// The GET shape, keys and sizes bounded. nil when the answer is not the contract's shape.
+    static func sttSettingsDetails(_ body: [String: Any]?) -> [String: Any]? {
+        guard let body else { return nil }
+        func bounded(_ value: Any?, _ limit: Int) -> Any {
+            guard let text = value as? String, !text.isEmpty else { return NSNull() }
+            return String(text.prefix(limit))
+        }
+        func flag(_ value: Any?) -> Bool? {
+            if let value = value as? Bool { return value }
+            if let value = value as? NSNumber, CFGetTypeID(value) == CFBooleanGetTypeID() { return value.boolValue }
+            return nil
+        }
+        var out: [String: Any] = [:]
+        for key in sttChoiceKeys {
+            guard let choice = body[key] as? [String: Any], let selected = sttOptionID(choice["selected"]),
+                  let options = choice["options"] as? [[String: Any]] else { return nil }
+            let rows: [[String: Any]] = options.prefix(16).compactMap { option in
+                guard let id = sttOptionID(option["id"]) else { return nil }
+                return ["id": id, "label": bounded(option["label"], 60), "available": flag(option["available"]) ?? true,
+                        "experimental": flag(option["experimental"]) ?? false, "note": bounded(option["note"], 160)]
+            }
+            out[key] = ["selected": selected, "options": rows]
+        }
+        guard let resolver = body["resolver"] as? [String: Any], let enabled = flag(resolver["enabled"]) else { return nil }
+        out["resolver"] = ["enabled": enabled]
+        let parakeet = body["parakeet"] as? [String: Any] ?? [:]
+        let bytes = (parakeet["bytes"] as? NSNumber).map { max(0, $0.int64Value) } ?? 0
+        out["parakeet"] = ["installed": flag(parakeet["installed"]) ?? false, "installable": flag(parakeet["installable"]) ?? false,
+                           "version": bounded(parakeet["version"], 40), "bytes": bytes]
+        let applies = body["appliesTo"] as? [String: Any] ?? [:]
+        out["appliesTo"] = ["preview": bounded(applies["preview"], 80), "hq": bounded(applies["hq"], 80)]
+        return out
+    }
+
+    private func emitSttSettings(_ call: SttCall) throws {
+        var body: String?
+        if call == .change {
+            var input = Data()
+            while input.count <= 4_096 {
+                let chunk = try FileHandle.standardInput.read(upToCount: 4_097 - input.count) ?? Data()
+                if chunk.isEmpty { break }
+                input.append(chunk)
+            }
+            guard input.count <= 4_096, let object = (try? JSONSerialization.jsonObject(with: input)) as? [String: Any] else {
+                emit(ok: false, message: "The transcription change was not readable."); return
+            }
+            var change: [String: Any] = [:]
+            for key in Self.sttChoiceKeys where object[key] != nil {
+                guard let id = Self.sttOptionID(object[key]) else { emit(ok: false, message: "That transcription choice is not one the server offers."); return }
+                change[key] = id
+            }
+            if let raw = object["resolver"] {
+                guard let value = raw as? NSNumber, CFGetTypeID(value) == CFBooleanGetTypeID() else {
+                    emit(ok: false, message: "The transcription change was not readable."); return
+                }
+                change["resolver"] = value.boolValue
+            }
+            guard !change.isEmpty else { emit(ok: false, message: "The transcription change was not readable."); return }
+            body = try jsonObject(change)
+        }
+        let token = try readToken()
+        let path = call == .installParakeet ? "/api/stt-settings/parakeet/install" : "/api/stt-settings"
+        let method = call == .read ? "GET" : call == .change ? "PUT" : "POST"
+        guard let response = request(path, method: method, token: token, body: call == .installParakeet ? "{}" : body, timeout: 15) else {
+            emit(ok: false, message: "Could not reach the glasses server. Check that it is running, then try again."); return
+        }
+        switch response.status {
+        case 200, 202:
+            var details: [String: Any] = ["httpStatus": response.status]
+            if let settings = Self.sttSettingsDetails(response.body) {
+                details["settings"] = settings
+            } else if call != .installParakeet {
+                // The install may answer with a short receipt; a read or a change must answer with the settings.
+                emit(ok: false, message: "The server's transcription settings were not readable."); return
+            }
+            let message = call == .read ? "Transcription" : call == .change ? "Transcription saved" : "Parakeet install started"
+            emit(ok: true, message: message, details: details)
+        case 400, 409:
+            // The server's own sentence, bounded; never a stack.
+            let said = (response.body?["error"] as? String).map { String($0.prefix(200)) }
+            let message = said.flatMap { $0.isEmpty ? nil : $0 } ?? (call == .installParakeet ? "The server did not start the Parakeet install." : "The server did not accept that transcription choice.")
+            emit(ok: true, message: message, details: ["httpStatus": response.status, "error": message])
+        case 404:
+            emit(ok: true, message: "Needs server 6.72.0", details: ["httpStatus": 404])
+        case 401, 403:
+            emit(ok: false, message: "Reconnect COS Control to the server.")
+        default:
+            emit(ok: false, message: call == .installParakeet
+                 ? "The server could not start the Parakeet install (HTTP \(response.status))."
+                 : "The server could not \(call == .read ? "read" : "save") the transcription settings (HTTP \(response.status)).")
         }
     }
 

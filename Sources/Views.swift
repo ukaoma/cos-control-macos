@@ -1818,6 +1818,10 @@ struct ControlPanel: View {
                 if !model.doctorChecks.isEmpty { doctorCard }
                 MeetingAskSettings(store: model.meetingAsk, model: model)
                     .id("settings")
+                    .task { await model.transcriptionSettings.load(TranscriptionSettingsCard.run(model)) }
+                // Transcription (server 6.72.0): hidden on an older server (404) and until the server has answered,
+                // so it is loaded from here, a view that is always drawn.
+                TranscriptionSettingsCard(store: model.transcriptionSettings, model: model)
                 utilities
                 footer
             }
