@@ -103,7 +103,7 @@ enum WorkChatPolicy {
         let rows: [[String: Any]] = sessions.map { ["id":$0.id, "title":String($0.title.prefix(300)), "summary":String($0.summary.prefix(2000)),
             "status":$0.status, "automatic":handoff.automaticChatTarget($0.id)] }
         let history = (record?.rounds ?? []).filter { !$0.answer.isEmpty }.suffix(6).map { ["question":$0.question,"answer":String(($0.summary.isEmpty ? $0.answer : $0.summary).prefix(6000))] }
-        let updates: [[String: String]] = (roundIndex.map { record!.rounds[$0].assignments } ?? record?.rounds.last?.assignments ?? []).filter { assignment in rows.contains(where: { $0["id"] as? String == assignment.sessionID }) }.map { ["sessionID":$0.sessionID,"status":$0.state,"detail":String($0.detail.prefix(2000)),"result":String($0.result.prefix(6000))] }
+        let updates: [[String: String]] = (roundIndex.map { record!.rounds[$0].assignments } ?? record?.rounds.last(where: { !$0.assignments.isEmpty })?.assignments ?? []).filter { assignment in rows.contains(where: { $0["id"] as? String == assignment.sessionID }) }.map { ["sessionID":$0.sessionID,"status":$0.state,"detail":String($0.detail.prefix(2000)),"result":String($0.result.prefix(6000))] }
         return try JSONSerialization.data(withJSONObject: ["workID":source.id,"revision":revision,"question":question,"context":String(context.prefix(16000)),
             "sessions":rows,"history":history,"updates":updates,"mode":mode])
     }
