@@ -254,7 +254,7 @@ struct WorkHandoffView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack {
-                if !embedded { Text("Agent workspace").font(COSType.display(20, weight: .medium)) }
+                if !embedded { Text(store.contributorIDs(workID: source.id).count > 1 ? "Latest handoff" : "Agent workspace").font(COSType.display(20, weight: .medium)) }
                 Spacer()
                 Button { Task { await store.refresh() } } label: { Image(systemName: "arrow.clockwise") }
                     .buttonStyle(COSQuietButtonStyle()).disabled(store.busy || validating).help("Refresh sessions and models")

@@ -57,9 +57,9 @@ enum WorkActivityProjection {
 /// 0.5.244: Work opens as a Board (sessions working now over the Kanban) or in Focus (the list, with the Agent
 /// workspace pinned beside the selected item). The choice is remembered.
 enum WorkLayout: String, CaseIterable, Identifiable {
-    case board, focus
+    case review, board, focus
     var id: String { rawValue }
-    var title: String { self == .board ? "Board" : "Focus" }
+    var title: String { switch self { case .review: "Your move"; case .board: "Board"; case .focus: "Focus" } }
 }
 
 /// One Work handoff on the board's session row: a session working on, or waiting on you for, one Work item.
@@ -69,7 +69,13 @@ struct WorkBoardSessionCard: Identifiable {
     /// The handoff was made on an earlier version of this card (it was edited or linked since).
     var earlierRevision = false
     var id: String { activity.receipt.id }
-    var state: WorkHandoffState { WorkHandoffState(activity) }
+    var state: WorkHandoffState {
+        if !activity.receipt.handledByYou {
+            if activity.receipt.progress?.reported == .needsInput { return .waiting }
+            if activity.receipt.progress?.reported == .blocked { return .attention }
+        }
+        return WorkHandoffState(activity)
+    }
     nonisolated static let cardWidth: CGFloat = 320
     nonisolated static let cardGap: CGFloat = 12
     nonisolated static let targetWidth: CGFloat = 240
@@ -107,7 +113,8 @@ struct WorkBoardSessionCard: Identifiable {
     /// "idle · 1 h", "running · 4 min" for session rows.
     nonisolated static func ageLabel(status: String, updated: Date?, now: Date = Date()) -> String {
         let state = ["running", "working"].contains(status) ? "running" : status == "waiting" ? "waiting"
-            : ["error", "failed"].contains(status) ? "error" : "idle"
+            : ["error", "failed"].contains(status) ? "error"
+            : ["idle", "recent", "completed"].contains(status) ? "idle" : "status unavailable"
         guard let updated else { return state }
         return state + " · " + shortAge(now.timeIntervalSince(updated))
     }
@@ -128,16 +135,22 @@ enum WorkBoardSessionsProjection {
     static func cards(_ items: [WorkWorkspaceItem], receipts: [WorkHandoffReceipt] = [], sessions: [WorkSession] = [],
                       domain: String?) -> [WorkBoardSessionCard] {
         let receiptsByWork = Dictionary(grouping: receipts, by: \.workID)
-        return items.compactMap { item -> WorkBoardSessionCard? in
-            guard domain == nil || item.domain == domain else { return nil }
-            var activity = item.activity, earlier = false
-            if activity == nil, let receipt = receiptsByWork[item.sourceID]?.max(by: { $0.createdAt < $1.createdAt }) {
-                activity = WorkActivity(receipt: receipt, session: WorkHandoffStore.listedSession(for: receipt, in: sessions))
-                earlier = true
+        return items.flatMap { item -> [WorkBoardSessionCard] in
+            guard domain == nil || item.domain == domain else { return [] }
+            let mine = receiptsByWork[item.sourceID] ?? []
+            var latest: [String: WorkHandoffReceipt] = [:]
+            for receipt in mine {
+                let key = WorkProgress.workingSession(receipt)?.lowercased() ?? ("unresolved:" + receipt.id)
+                if (latest[key]?.createdAt ?? -.infinity) < receipt.createdAt { latest[key] = receipt }
             }
-            guard let activity, activity.inProgress || activity.needsAttention else { return nil }
-            if item.completed && !activity.inProgress { return nil }
-            return WorkBoardSessionCard(item: item, activity: activity, earlierRevision: earlier)
+            if latest.isEmpty, let receipt = item.activity?.receipt { latest[receipt.id] = receipt }
+            return latest.values.compactMap { receipt in
+                let activity = WorkActivity(receipt: receipt, session: WorkHandoffStore.listedSession(for: receipt, in: sessions))
+                guard activity.inProgress || activity.needsAttention else { return nil }
+                if item.completed && !activity.inProgress { return nil }
+                return WorkBoardSessionCard(item: item, activity: activity,
+                    earlierRevision: receipt.sourceRevision != item.activity?.receipt.sourceRevision)
+            }
         }.sorted { left, right in
             left.state.rank == right.state.rank ? left.activity.receipt.createdAt > right.activity.receipt.createdAt
                                                 : left.state.rank < right.state.rank
@@ -233,7 +246,7 @@ enum WorkWorkspaceScope: String, CaseIterable, Identifiable {
     /// A card dropped on Complete waits here for one confirm.
     @Published var pendingComplete: TaskRow?
     /// Layout for the isolated preview, which never writes the real preference.
-    @Published var previewLayout: WorkLayout = .board
+    @Published var previewLayout: WorkLayout = .review
     /// Meeting reviews whose full text is open, and whose notes are open, by review id.
     @Published var expandedReviews: Set<String> = []
     @Published var expandedNotes: Set<String> = []
@@ -308,6 +321,7 @@ enum WorkWorkspaceScope: String, CaseIterable, Identifiable {
                                    isolated: handoffStore.isolated, tasks: model.workTasksEpoch, previewTasks: handoffStore.previewTasksEpoch,
                                    previewStages: previewStagesEpoch, reviews: reviewStore.reviewsEpoch, receipts: handoffStore.receiptsEpoch,
                                    sessions: handoffStore.isolated ? handoffStore.sessionsEpoch : handoffStore.activitySessionsEpoch,
+                                   links: handoffStore.sessionCardsEpoch,
                                    fresh: handoffStore.isolated || handoffStore.activityFresh(now: now))
         return boardMemo.refreshed(key) {
             WorkWorkspaceProjection.items(tasks: handoffStore.isolated ? WorkWorkspaceProjection.previewRows(handoffStore.previewTasks, stages: previewStages) : model.workTasks,
@@ -367,6 +381,7 @@ struct WorkBoardDataKey: Equatable {
     var stores: [ObjectIdentifier] = []
     var isolated = false
     var tasks = 0, previewTasks = 0, previewStages = 0, reviews = 0, receipts = 0, sessions = 0
+    var links = 0
     /// observedSessions() drops the live sessions once the last check is 45 seconds old.
     var fresh = false
 }
@@ -466,6 +481,7 @@ enum WorkWorkspaceProjection {
             "id": .string(row.id), "domain": .string(row.domain), "title": .string(row.title), "text": .string(row.title),
             "checked": .bool(row.completed), "source": .string(row.source), "doneWhen": .string(row.finishLine),
             "stage": .string(row.stage.lowercased()),
+            "workIdentity": .string(row.id == "sample-task-website" && ProcessInfo.processInfo.environment["COS_WORK_SESSION_HUB_PREVIEW"] == "1" ? "abcdef123456" : row.id),
             "workStage": .string(row.completed ? "complete" : stages[row.id] ?? ["planning": "planned", "review": "qa", "active": "draft"][row.stage.lowercased()] ?? row.stage.lowercased()),
             "meetingRefs": .array([.object(["recordId": .string("sample-meeting"), "domain": .string("Website"),
                 "month": .string("2026-09"), "filename": .string("2026-09-27_Website_Review.md"), "title": .string("Website launch review · sample")])])
@@ -1271,8 +1287,14 @@ struct WorkWorkspaceView: View {
     private var selected: WorkWorkspaceItem? { board.item(id: state.selectedID) }
     private var domains: [String] { Array(Set(model.domainOptions.map(\.name) + items.map(\.domain))).filter { !$0.isEmpty }.sorted() }
     private var hasDetail: Bool { state.selectedID != nil || state.meetingPicker || reviewStore.selectedMeeting != nil }
-    @AppStorage("cos.workLayout") private var layoutRaw = WorkLayout.board.rawValue
+    @AppStorage("cos.workLayout") private var layoutRaw = WorkLayout.review.rawValue
     @AppStorage("cos.workSessionsRowCollapsed") private var sessionsCollapsed = false
+    @State private var noticeHistory = false
+    @State private var showAllDecisions = false
+    @State private var linkingSessions = false
+    @State private var sessionLinkQuery = ""
+    @State private var unlinkID: String?
+    @State private var unlinkExpected: String?
     @State private var startDropTargeted = false
     /// 0.5.254: a file is over the session row: Start work says where files go.
     @State private var startFileHover = false
@@ -1298,14 +1320,14 @@ struct WorkWorkspaceView: View {
     @FocusState private var reviewTitleFocused: Bool
     /// The remembered layout (Board by default; an unknown stored value reads as Board). The isolated preview keeps
     /// its own, so trying Focus there never changes the real preference.
-    private var storedLayout: WorkLayout { handoffStore.isolated ? state.previewLayout : (WorkLayout(rawValue: layoutRaw) ?? .board) }
+    private var storedLayout: WorkLayout { handoffStore.isolated ? state.previewLayout : (WorkLayout(rawValue: layoutRaw) ?? .review) }
     private var layout: WorkLayout { state.focusOverride ? .focus : storedLayout }
     private var layoutBinding: Binding<WorkLayout> {
         Binding(get: { layout }, set: { value in
             state.focusOverride = false; state.pendingComplete = nil
             if handoffStore.isolated { state.previewLayout = value } else { layoutRaw = value.rawValue }
             // Board opens on the board itself, not on an item left open in Focus.
-            if value == .board { returnToList() }
+            if value != .focus { returnToList() }
         })
     }
 
@@ -1313,7 +1335,7 @@ struct WorkWorkspaceView: View {
         let _ = WorkBoardMetrics.countBody()
         VStack(spacing: 0) {
             header
-            activitySummary
+            if layout == .focus { activitySummary } else { workControls }
             if let copiedWorkNote {
                 HStack {
                     Text(copiedWorkNote).font(COSType.body(12)).foregroundStyle(COSPalette.muted)
@@ -1321,7 +1343,7 @@ struct WorkWorkspaceView: View {
                     Button("Dismiss") { self.copiedWorkNote = nil }.buttonStyle(COSQuietButtonStyle())
                 }.padding(.horizontal, 18).padding(.bottom, 8).accessibilityIdentifier("work-copy-note")
             }
-            yourMoveCard
+            if layout == .focus { yourMoveCard }
             if state.captureOpen { captureForm }
             if let error = state.mutationError {
                 HStack { Text(error).font(COSType.body(12)).foregroundStyle(COSPalette.danger); Spacer()
@@ -1336,31 +1358,32 @@ struct WorkWorkspaceView: View {
                     Spacer()
                 }.padding(.horizontal, 18).padding(.vertical, 8)
                 detailPane
-            } else if hasDetail && layout == .board {
+            } else if hasDetail && layout != .focus {
                 // The open review stays in this branch across the 900 pt break. Moving it between the wide and
                 // compact trees rebuilt the writeup and the context field on the way in and the way back out.
                 HStack(spacing: 0) {
-                    if wideLayout {
+                    if wideLayout && layout == .focus {
                         sidebar.frame(width: 148)
                         Divider()
                     }
                     VStack(spacing: 0) {
-                        if !wideLayout {
+                        if !wideLayout && layout == .focus {
                             compactNavigation
                             Divider()
                         }
-                        backBar(state.domain == nil ? "Back to the board" : "Back to " + boardName + " board")
+                        backBar(layout == .review ? (noticeHistory ? "Back to history" : "Back to your move") : "Back to the board")
                         detailPane
                     }
                 }
             } else if wideLayout {
                 HStack(spacing: 0) {
-                    sidebar.frame(width: 148)
-                    Divider()
+                    if layout == .focus { sidebar.frame(width: 148); Divider() }
                     if state.waitingOpen {
                         WorkWaitingView(model: model)
                     } else if state.intakeOpen {
                         WorkIntakeView(model: model, domain: state.domain, onOpenMeeting: onOpenMeeting)
+                    } else if layout == .review {
+                        reviewSurface
                     } else if layout == .board {
                         boardSurface
                     } else {
@@ -1368,10 +1391,10 @@ struct WorkWorkspaceView: View {
                     }
                 }
             } else {
-                compactNavigation
-                Divider()
+                if layout == .focus { compactNavigation; Divider() }
                 if state.waitingOpen { WorkWaitingView(model: model) }
                 else if state.intakeOpen { WorkIntakeView(model: model, domain: state.domain, onOpenMeeting: onOpenMeeting) }
+                else if layout == .review { reviewSurface }
                 else if layout == .board { boardSurface }
                 else if hasDetail {
                     HStack {
@@ -1408,7 +1431,7 @@ struct WorkWorkspaceView: View {
         .task(id: scenePhase) {
             guard !handoffStore.isolated, scenePhase == .active else { return }
             while !Task.isCancelled {
-                if !handoffStore.receipts.isEmpty {
+                if !handoffStore.receipts.isEmpty || !handoffStore.confirmedSessionCards.isEmpty {
                     await handoffStore.refreshActivity()
                     guard !Task.isCancelled else { return }
                     if handoffStore.receipts.contains(where: { $0.blocksNewHandoff && $0.status != "delivered" }) {
@@ -1447,13 +1470,10 @@ struct WorkWorkspaceView: View {
         HStack(alignment: .center, spacing: 14) {
             VStack(alignment: .leading, spacing: 3) {
                 Text("Work").font(COSType.display(26, weight: .medium))
-                Text(handoffStore.isolated ? "Local sample data. No task writes or agent calls." : model.workTasksComplete ? "Tasks, meeting follow-up, and the sessions doing the work." : "Showing available work. Task inventory is not confirmed complete.")
+                Text(handoffStore.isolated ? "Local sample data. No task writes or agent calls." : model.workTasksComplete ? "Your decisions, connected to the work." : "Showing available work. Task inventory is not confirmed complete.")
                     .font(COSType.body(11.5)).foregroundStyle(COSPalette.muted)
             }
             Spacer(minLength: 8)
-            COSViewSwitch("Layout", selection: layoutBinding, options: WorkLayout.allCases.map { COSViewOption($0, $0.title) })
-                .fixedSize()
-                .help("Board: the sessions working now over the Kanban. Focus: the list; an open item shows its Agent workspace beside it, or under its title in a narrow window.")
             Button("Add task") {
                 state.captureOpen.toggle()
                 if state.captureDomain.isEmpty { state.captureDomain = state.domain ?? model.domainOptions.first?.name ?? "" }
@@ -1469,6 +1489,56 @@ struct WorkWorkspaceView: View {
             Button { Task { await model.loadWorkTasks(); await reviewStore.refresh(); await handoffStore.refreshActivity(); await handoffStore.refreshReceipts(asked: true) } } label: { Image(systemName: "arrow.clockwise") }
                 .buttonStyle(COSQuietButtonStyle()).disabled(handoffStore.isolated || model.workTasksLoading || reviewStore.busy).help("Refresh work")
         }.padding(18)
+    }
+
+    private var workControls: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 18) { workTabs; Spacer(minLength: 12); workFilters }
+            VStack(alignment: .leading, spacing: 12) { workTabs; workFilters }
+        }.padding(.horizontal, 22).padding(.bottom, 18)
+    }
+    private var workTabs: some View {
+        HStack(spacing: 18) {
+            workTab("Your move", selected: layout == .review && !noticeHistory) {
+                layoutBinding.wrappedValue = .review; noticeHistory = false
+            }
+            workTab("Board", selected: layout == .board) {
+                layoutBinding.wrappedValue = .board; noticeHistory = false
+            }
+            workTab("History", selected: layout == .review && noticeHistory) {
+                layoutBinding.wrappedValue = .review; noticeHistory = true
+            }
+            Menu("More") {
+                Button("Focus view") { layoutBinding.wrappedValue = .focus }
+                if !handoffStore.isolated && model.workIntakeVisible {
+                    Button(intakeTitle) { state.intakeOpen = true; state.waitingOpen = false; returnToList() }
+                }
+                if model.workBatchAvailable {
+                    Button("Waiting on") { state.waitingOpen = true; state.intakeOpen = false; returnToList() }
+                }
+            }.menuStyle(.borderlessButton).fixedSize()
+        }
+    }
+    private func workTab(_ title: String, selected: Bool, action: @escaping () -> Void) -> some View {
+        Button { state.intakeOpen = false; state.waitingOpen = false; action() } label: {
+            Text(title).font(COSType.body(13, weight: selected ? .semibold : .regular))
+                .padding(.bottom, 8).overlay(alignment: .bottom) {
+                    Rectangle().fill(selected ? COSPalette.gold : .clear).frame(height: 2)
+                }
+        }.buttonStyle(.plain).foregroundStyle(selected ? Color.primary : COSPalette.muted)
+            .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+    private var workFilters: some View {
+        HStack(spacing: 12) {
+            WorkBoardSearchField(prompt: "Search work", query: $state.query, focusRequest: state.searchFocusRequest,
+                onKey: { boardSearchKey($0) }).frame(maxWidth: 300)
+            COSDropdown("Domain", selection: Binding(get: { state.domain ?? "" }, set: {
+                state.domain = $0.isEmpty ? nil : $0; returnToList()
+            }), options: [COSDropdownOption("", "All domains")] + domains.map { COSDropdownOption($0, domainLabel($0)) }).fixedSize()
+            COSDropdown("Scope", selection: Binding(get: { state.scope }, set: {
+                state.scope = $0; returnToList()
+            }), options: WorkWorkspaceScope.allCases.map { COSDropdownOption($0, $0.title) }).fixedSize()
+        }
     }
 
     private var activitySummary: some View {
@@ -1738,9 +1808,6 @@ struct WorkWorkspaceView: View {
                 }
                 Spacer(minLength: 8)
                 VStack(alignment: .trailing, spacing: 8) {
-                    WorkBoardSearchField(prompt: state.domain == nil && state.scope == .all ? "Search work" : "Search this board", query: $state.query,
-                                         focusRequest: state.searchFocusRequest, onKey: { boardSearchKey($0) })
-                        .frame(maxWidth: 360)
                     orderMenu(order)
                 }
             }.padding(18)
@@ -1772,7 +1839,8 @@ struct WorkWorkspaceView: View {
                     Button("Cancel") { state.pendingComplete = nil }.buttonStyle(COSTextButtonStyle())
                 }.padding(.horizontal, 18).padding(.bottom, 10)
             }
-            sessionsRow
+            Button("Open decisions and results") { layoutBinding.wrappedValue = .review; noticeHistory = false }
+                .buttonStyle(COSTextButtonStyle()).padding(.horizontal, 18).padding(.bottom, 10)
             // 0.5.254: a file dropped on a column or the session row says where files go, then fades.
             WorkCardFlashView(files: cardFiles, workID: nil).clipShape(RoundedRectangle(cornerRadius: 7))
                 .padding(.horizontal, 18).padding(.bottom, 10)
@@ -1787,10 +1855,18 @@ struct WorkWorkspaceView: View {
                     Spacer()
                 }.padding(.horizontal, 18).padding(.bottom, 10)
             }
+            HStack {
+                ForEach([WorkBoardStage.mentioned, .complete]) { stage in
+                    Menu {
+                        ForEach(WorkSearch.kept(board.column(stage), pass.search)) { item in Button(item.title) { select(item) } }
+                    } label: { COSMenuLabel(title: stage.title + " · \(WorkSearch.kept(board.column(stage), pass.search).count)") }.cosMenu()
+                }
+                Spacer()
+            }.padding(.horizontal, 18).padding(.bottom, 10)
             latestMoveStrip
             ScrollView(.horizontal) {
                 HStack(alignment: .top, spacing: 12) {
-                    ForEach(WorkBoardStage.allCases) { stage in boardColumn(stage, pass: pass) }
+                    ForEach([WorkBoardStage.planned, .draft, .built, .qa]) { stage in boardColumn(stage, pass: pass) }
                 }.padding(.horizontal, 18).padding(.bottom, 18)
             }.frame(minHeight: 220)
             Text(handoffStore.isolated ? "Sample stages reset when this preview closes." : "Stages reflect your decisions. Moving a card does not run an agent or publish changes. Start work asks before anything is sent.")
@@ -1897,11 +1973,59 @@ struct WorkWorkspaceView: View {
         .help(order.help)
     }
 
+    private var reviewSurface: some View {
+        ScrollView {
+            decisionQueue.padding(.top, 22).padding(.bottom, 20)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }.background(COSPalette.panel)
+    }
+
+    private var decisionQueue: some View {
+        let unfiltered = board.sessionCards(domain: state.domain) {
+            WorkBoardSessionsProjection.cards($0, receipts: handoffStore.receipts, sessions: handoffStore.observedSessions(), domain: state.domain)
+        }
+        let allowed = Set(visible.map(\.sourceID))
+        let history = handoffStore.receipts.compactMap { receipt -> WorkBoardSessionCard? in
+            guard handoffStore.noticeHidden(receipt), let item = board.item(sourceID: receipt.workID) else { return nil }
+            return WorkBoardSessionCard(item: item, activity: WorkActivity(receipt: receipt, session: WorkHandoffStore.listedSession(for: receipt, in: handoffStore.observedSessions())))
+        }
+        let cards = (noticeHistory ? history : unfiltered).filter { allowed.contains($0.item.sourceID) && handoffStore.noticeHidden($0.activity.receipt) == noticeHistory }
+        let shown = showAllDecisions ? cards : Array(cards.prefix(5))
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text(noticeHistory ? "Hidden notices" : "Your move").font(COSType.display(22, weight: .medium))
+                Text(WorkBoardSessionsProjection.summary(cards)).font(COSType.body(11)).foregroundStyle(COSPalette.muted)
+                Spacer()
+                if cards.count > 5 { Button(showAllDecisions ? "Show fewer" : "Show all \(cards.count)") { showAllDecisions.toggle() }.buttonStyle(COSTextButtonStyle()) }
+            }
+            ForEach(shown) { card in
+                let receipt = card.activity.receipt
+                HStack(alignment: .top, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(card.state.label + " · " + receipt.provider.capitalized + " · " + card.ageText())
+                            .font(COSType.body(11, weight: .medium)).foregroundStyle(card.state.tint)
+                        Button(card.item.title) { select(card.item) }.buttonStyle(COSTextButtonStyle()).lineLimit(1)
+                        Text(card.activity.session?.title ?? receipt.sessionTitle).font(COSType.body(11)).foregroundStyle(COSPalette.muted)
+                        Text(String((receipt.result ?? receipt.detail).prefix(200))).font(COSType.body(11)).foregroundStyle(COSPalette.muted).lineLimit(2)
+                    }
+                    Spacer()
+                    Button(card.state == .attention || receipt.status == "unknown" ? "Check delivery" : card.state == .waiting ? "Answer question" : card.state.showsReply ? "Review result" : "Open session") {
+                        select(card.item)
+                    }.buttonStyle(COSQuietButtonStyle())
+                    Button(noticeHistory ? "Restore" : "Hide notice") { handoffStore.setNoticeHidden(receipt, hidden: !noticeHistory) }.buttonStyle(COSTextButtonStyle())
+                }.padding(.vertical, 16).overlay(alignment: .bottom) { Rectangle().fill(COSPalette.line).frame(height: 1) }
+            }
+            if cards.isEmpty { Text(noticeHistory ? "No hidden notices in this view." : "Nothing needs review in this view.").font(COSType.body(12)).foregroundStyle(COSPalette.muted) }
+            Text("Hiding a notice leaves its delivery warning and task stage unchanged. A new result brings it back.")
+                .font(COSType.body(10)).foregroundStyle(COSPalette.muted)
+        }.padding(.horizontal, 22).padding(.bottom, 12)
+    }
+
     private var sessionsRow: some View {
         let allCards = board.sessionCards(domain: state.domain) {
             WorkBoardSessionsProjection.cards($0, receipts: handoffStore.receipts, sessions: handoffStore.observedSessions(), domain: state.domain)
         }
-        let cards = WorkBoardSessionsProjection.onePerSession(allCards)
+        let cards = WorkBoardSessionsProjection.onePerSession(allCards.filter { !handoffStore.noticeHidden($0.activity.receipt) })
         return VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline, spacing: 10) {
                 Text(state.domain == nil ? "Sessions working now" : "Sessions on this board").font(COSType.body(13, weight: .semibold))
@@ -2640,15 +2764,26 @@ struct WorkWorkspaceView: View {
     }
     @ViewBuilder private func itemWorkspace(_ item: WorkWorkspaceItem) -> some View {
         if let task = item.task {
+            VStack(alignment: .leading, spacing: 18) {
+                Text("Connections").font(COSType.display(22, weight: .medium))
+                contributorHub(task)
+                sourceMeetings(task)
+                DisclosureGroup("Handoff details and actions") {
+                    taskHandoff(task)
+                }.font(COSType.body(12))
+            }
+        } else if let review = item.review {
+            reviewWorkspace(review)
+        }
+    }
+
+    private func taskHandoff(_ task: TaskRow) -> some View {
             WorkHandoffView(store: handoffStore, source: .taskSnapshot(task), isPreview: handoffStore.isolated, onOpenSession: onOpenSession,
                             currentStage: WorkBoardStage.stage(for: task).rawValue,
                             onUndoMove: model.workTracker == nil ? nil : { receiptID, eventID in undoMove(receiptID, eventID) },
                             onMarkComplete: task.checked || !canChangeStage(task) ? nil : { move(task, to: .complete) },
                             onSentBack: { if [.built, .qa].contains(WorkBoardStage.stage(for: task)) { move(task, to: .draft) } })
                 .id(task.workSourceID)
-        } else if let review = item.review {
-            reviewWorkspace(review)
-        }
     }
 
     private func taskHeader(_ task: TaskRow) -> some View {
@@ -2684,17 +2819,108 @@ struct WorkWorkspaceView: View {
             Text([task.createdAt.isEmpty ? "Created date unknown" : "Created " + task.createdAt,
                   "Owner: " + (task.owner.isEmpty ? "Unknown" : task.owner), task.dueDate.isEmpty ? "" : "Due " + task.dueDate].filter { !$0.isEmpty }.joined(separator: " · "))
                 .font(COSType.body(11)).foregroundStyle(COSPalette.muted)
-            ForEach(handoffStore.confirmedSessionCards.keys.filter { handoffStore.confirmedSessionCards[$0]?.workID == task.workSourceID }.sorted(), id: \.self) { sessionID in
-                let session = handoffStore.sessions.first { $0.id == sessionID }
-                let parts = sessionID.split(separator: ":", maxSplits: 1)
-                let provider = session?.provider ?? parts.first.map(String.init) ?? "session"
-                let title = session?.title.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                let identity = parts.count == 2 ? String(parts[1].prefix(8)) : sessionID
-                Button("Open " + provider.capitalized + " · " + (title.isEmpty ? identity : title)) { onOpenSession(sessionID) }
-                    .buttonStyle(COSTextButtonStyle()).lineLimit(1).help("Open linked session " + sessionID)
-            }
             if let error = task.workMetadataError { Text(error).font(COSType.body(12)).foregroundStyle(COSPalette.danger) }
         }
+    }
+
+    private func contributorHub(_ task: TaskRow) -> some View {
+        let contributors = handoffStore.contributors(workID: task.workSourceID)
+        return VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("Sessions").font(COSType.body(14, weight: .semibold))
+                Text("\(contributors.count) sessions").font(COSType.body(11)).foregroundStyle(COSPalette.muted)
+                Spacer()
+                Button(linkingSessions ? "Close linking" : "Link existing session") { linkingSessions.toggle() }
+                    .buttonStyle(COSQuietButtonStyle())
+            }
+            Text("Each session keeps its own progress. You control the shared task's stage.")
+                .font(COSType.body(11)).foregroundStyle(COSPalette.muted)
+            if contributors.isEmpty { Text("Copy context into Claude, Codex or Cursor, then link its exact session ID.")
+                .font(COSType.body(12)).foregroundStyle(COSPalette.muted) }
+            ForEach(contributors) { contributor in
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(alignment: .top) {
+                        Text(contributor.provider.capitalized).font(COSType.body(11)).foregroundStyle(COSPalette.muted)
+                        Text(contributor.title).font(COSType.body(13, weight: .semibold)).lineLimit(2)
+                        Spacer()
+                        Text(contributor.session.map { WorkBoardSessionCard.ageLabel(status: $0.status, updated: $0.updatedDate) } ?? "Live status unavailable")
+                            .font(COSType.mono(10)).foregroundStyle(COSPalette.muted)
+                    }
+                    if let tracking = WorkTracking.latest(workID: task.workSourceID, receipts: handoffStore.receipts, sessionID: contributor.id) {
+                        Text((tracking.byJev ? "Jev assessment: " : "Session reported: ") + tracking.label)
+                            .font(COSType.body(11, weight: .semibold)).foregroundStyle(tracking.tint)
+                        if let evidence = tracking.evidence { Text(String(evidence.prefix(240))).font(COSType.body(11)).textSelection(.enabled) }
+                    } else if let receipt = contributor.receipt {
+                        Text(WorkActivity(receipt: receipt, session: contributor.session).title).font(COSType.body(11)).foregroundStyle(COSPalette.muted)
+                    }
+                    if let receipt = contributor.receipt, ["failed", "refused", "canceled"].contains(receipt.status) || receipt.clearedUnconfirmed {
+                        Text("Latest handoff: " + (receipt.clearedUnconfirmed ? "unconfirmed delivery cleared" : receipt.status))
+                            .font(COSType.body(11, weight: .semibold)).foregroundStyle(COSPalette.muted)
+                        if !receipt.detail.isEmpty { Text(String(receipt.detail.prefix(240))).font(COSType.body(11)).lineLimit(3) }
+                    }
+                    if let result = contributor.receipt?.result, !result.isEmpty, result != WorkTracking.latest(workID: task.workSourceID, receipts: handoffStore.receipts, sessionID: contributor.id)?.evidence {
+                        Text(String(result.prefix(300))).font(COSType.body(11)).lineLimit(4).textSelection(.enabled)
+                    } else if contributor.receipt == nil, let summary = contributor.session?.summary, !summary.isEmpty {
+                        Text("Observed session summary").font(COSType.body(10)).foregroundStyle(COSPalette.muted)
+                        Text(String(summary.prefix(300))).font(COSType.body(11)).lineLimit(4).textSelection(.enabled)
+                    }
+                    if let result = contributor.historicalResult {
+                        Text("Earlier output · history").font(COSType.body(10)).foregroundStyle(COSPalette.muted)
+                        Text(String(result.prefix(300))).font(COSType.body(11)).lineLimit(4).textSelection(.enabled)
+                    }
+                    if contributor.historical {
+                        Text("Historical contribution · currently linked to another task").font(COSType.body(10)).foregroundStyle(COSPalette.muted)
+                    }
+                    HStack {
+                        Button(contributor.provider == "cursor" ? "Open Cursor Agents" : "Open " + contributor.provider.capitalized) { onOpenSession(contributor.id) }
+                            .buttonStyle(COSTextButtonStyle())
+                        Button("Copy session ID") {
+                            NSPasteboard.general.clearContents(); NSPasteboard.general.setString(contributor.id, forType: .string)
+                        }.buttonStyle(COSTextButtonStyle())
+                        if let link = contributor.link {
+                            Button("Unlink") {
+                                unlinkID = contributor.id; unlinkExpected = try? WorkSessionLinks.revision(link)
+                            }.buttonStyle(COSTextButtonStyle())
+                        } else { Text("Receipt history").font(COSType.body(10)).foregroundStyle(COSPalette.muted) }
+                    }
+                    if unlinkID == contributor.id, let expected = unlinkExpected {
+                        HStack {
+                            Text("Remove this explicit link? Session and history stay.").font(COSType.body(11))
+                            Button("Unlink") {
+                                if handoffStore.removeSessionCard(sessionID: contributor.id, workID: task.workSourceID, expected: expected) { unlinkID = nil; unlinkExpected = nil }
+                            }.buttonStyle(COSQuietButtonStyle()).keyboardShortcut(.defaultAction)
+                            Button("Cancel") { unlinkID = nil; unlinkExpected = nil }.buttonStyle(COSTextButtonStyle())
+                        }
+                    }
+                }.padding(12).background(COSPalette.raised, in: RoundedRectangle(cornerRadius: 8))
+            }
+            if linkingSessions {
+                TextField("Find a session by title, provider or ID", text: $sessionLinkQuery).textFieldStyle(.roundedBorder)
+                let unique = Dictionary((handoffStore.sessions + handoffStore.observedSessions()).map { ($0.id.lowercased(), $0) }, uniquingKeysWith: { _, fresh in fresh })
+                let choices = unique.values.filter { WorkSessionLinks.validSessionID($0.id, includeCursor: true)
+                    && (sessionLinkQuery.isEmpty || ($0.title + " " + $0.id).localizedCaseInsensitiveContains(sessionLinkQuery)) }.sorted { $0.title < $1.title }
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 8) {
+                        ForEach(choices) { session in
+                            let linked = handoffStore.confirmedSessionCards[session.id.lowercased()]
+                            HStack {
+                                VStack(alignment: .leading) {
+                                    Text(session.title).font(COSType.body(12)).lineLimit(1)
+                                    Text(session.provider.capitalized + " · " + String(session.nativeID.prefix(8))
+                                        + (linked == nil ? "" : linked?.workID == task.workSourceID ? " · Linked" : " · Linked to another task"))
+                                        .font(COSType.body(10)).foregroundStyle(COSPalette.muted)
+                                }
+                                Spacer()
+                                Button("Link") { _ = handoffStore.confirmSessionCard(sessionID: session.id, source: .taskSnapshot(task)) }
+                                    .buttonStyle(COSQuietButtonStyle()).disabled(linked != nil || handoffStore.busy)
+                            }
+                        }
+                    }
+                }.frame(maxHeight: 190)
+                Text("Linking sends no prompt. Copy context for an exact ID missing from this catalog. Cursor opens Agents; confirm the intended chat there.")
+                    .font(COSType.body(10)).foregroundStyle(COSPalette.muted)
+            }
+        }.padding(.vertical, 10)
     }
 
     /// Copying is a clipboard-only action, with no hidden stage, provider, or association write.
@@ -2706,8 +2932,7 @@ struct WorkWorkspaceView: View {
 
     private func taskBody(_ task: TaskRow) -> some View {
         VStack(alignment: .leading, spacing: 20) {
-            sourceMeetings(task)
-            fact("Done when", task.doneWhen.isEmpty ? "No finish line recorded. Use Edit task to define one." : task.doneWhen)
+            fact("Finish line", task.doneWhen.isEmpty ? "No finish line recorded. Use Edit task to define one." : task.doneWhen)
             if !task.source.isEmpty { fact("Source", task.source) }
             if !task.runAt.isEmpty { fact("Scheduled", task.runAt) }
             Text("Task editing, scheduling, and completion stay attached to the original task. Agent output does not change its completion state.")

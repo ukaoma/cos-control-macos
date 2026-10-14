@@ -159,7 +159,9 @@ struct WorkBoardReads: Equatable, Sendable {
     }
 
     private func isNewest(_ row: WorkHandoffReceipt) -> Bool {
-        !store.receipts.contains { $0.workID == row.workID && $0.id != row.id && $0.createdAt > row.createdAt }
+        !store.receipts.contains { $0.workID == row.workID && $0.id != row.id && $0.createdAt > row.createdAt
+            && WorkProgress.workingSession(row) != nil
+            && WorkProgress.workingSession($0)?.lowercased() == WorkProgress.workingSession(row)?.lowercased() }
     }
 
     /// One pass. Safe to call at any time; overlapping calls are dropped.
@@ -440,6 +442,18 @@ struct WorkBoardReads: Equatable, Sendable {
         }
         guard board.writable(), task.workMetadataError == nil else {
             moveFailed(id, target, task.workMetadataError ?? "the board is read-only right now"); return
+        }
+        // Re-read after awaited board work. An older queued move must not move a task now shared by contributors.
+        do { try store.reloadSessionCards() }
+        catch { moveFailed(id, target, "session associations could not be checked"); return }
+        if store.contributorIDs(workID: row.workID).count > 1 {
+            write(id) { row in
+                guard var next = row.progress, next.pendingStage != nil else { return false }
+                next.pendingStage = nil
+                next.record(.note, "Multiple sessions contribute to this task. You control its stage; this session's progress stays separate.", at: self.now().timeIntervalSince1970)
+                row.progress = next; return true
+            }
+            return
         }
         let eventID = UUID().uuidString.lowercased()
         let reason = Self.moveReason(progress)

@@ -4,7 +4,7 @@ ROOT="${0:A:h:h}"
 OUT="${COS_FOUNDATION_DIST_DIR:-$ROOT/dist/control2-foundation}"
 LAB_VERSION="${COS_FOUNDATION_VERSION:-0.1.9}"; LAB_BUILD="${COS_FOUNDATION_BUILD:-10}"
 LAB_NAME="${COS_FOUNDATION_NAME:-COS Control Work Preview $LAB_VERSION}"; LAB_ID="${COS_FOUNDATION_BUNDLE_ID:-com.gotcos.COSControl.WorkPreview019}"
-APP="${COS_FOUNDATION_APP_DIR:-$HOME/Library/Caches/COS Control Work Preview 0.1.9}/COS Control Foundation Lab.app"
+APP="${COS_FOUNDATION_APP_PATH:-${COS_FOUNDATION_APP_DIR:-$HOME/Library/Caches/COS Control Work Preview 0.1.9}/COS Control Foundation Lab.app}"
 mkdir -p "$OUT" "$APP/Contents/MacOS" "$APP/Contents/Resources"
 "$ROOT/Tests/compile-guard.sh" swiftc -target arm64-apple-macosx14.0 -swift-version 6 -strict-concurrency=complete \
   "$ROOT/HelperSources/main.swift" "$ROOT/HelperSources/ProviderStatusCore.swift" "$ROOT/HelperSources/PairingCore.swift" "$ROOT/Sources/WorkSessionLinks.swift" -framework Security -framework AppKit \
@@ -38,6 +38,17 @@ PLIST
 /usr/bin/codesign --force --deep --sign - "$APP"
 /usr/bin/codesign --verify --deep --strict "$APP"
 /usr/bin/ditto -c -k --norsrc --keepParent "$APP" "$OUT/COS-Control-Foundation-Lab.zip"
+if [[ "${COS_WORK_SESSION_HUB_BUILD:-0}" == 1 ]]; then
+  # The preview launcher starts only the isolated sample shell. No connected launcher ships with this candidate.
+  cat > "$OUT/start-work-session-hub.command" <<SH
+#!/bin/zsh
+set -euo pipefail
+HUB_HOME=\$(mktemp -d /tmp/cos-work-session-hub-preview.XXXXXX)
+COS_CONTROL_TEST_HOME="\$HUB_HOME" COS_WORK_SESSION_HUB_PREVIEW=1 "$APP/Contents/MacOS/COS Control Foundation Lab"
+SH
+  chmod +x "$OUT/start-work-session-hub.command"
+  (cd "$OUT" && /usr/bin/zip -q -u COS-Control-Foundation-Lab.zip start-work-session-hub.command)
+else
 cp "$ROOT/scripts/start-foundation-lab.command" "$OUT/start-foundation-lab.command"
 cp "$ROOT/scripts/start-work-connected.command" "$OUT/start-work-connected.command"
 chmod +x "$OUT/start-foundation-lab.command" "$OUT/start-work-connected.command"
@@ -46,4 +57,5 @@ cp "$ROOT/scripts/start-work-preview.command" "$OUT/start-work-preview.command"
 cp "$ROOT/scripts/start-work-redesign.command" "$OUT/start-work-redesign.command"
 chmod +x "$OUT/start-work-preview.command" "$OUT/start-work-redesign.command"
 (cd "$OUT" && /usr/bin/zip -q -u COS-Control-Foundation-Lab.zip start-work-preview.command start-work-redesign.command)
+fi
 echo "$APP"

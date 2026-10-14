@@ -134,6 +134,18 @@ try:
     assert stat.S_IMODE(links.stat().st_mode) == 0o600 and stat.S_IMODE(links.with_suffix('.lock').stat().st_mode) == 0o600
     assert not (links.parent / 'handoffs.json').exists()
     # Corruption, symlinks and special files are refused without replacing the user's association map.
+    cursor = 'cursor:abcdefab-0000-4000-8000-000000000044'
+    cursor_link = link(session=cursor); assert cursor_link['ok']
+    digest = cursor_link['details']['linkRevision']
+    assert context(session=cursor.upper().replace('CURSOR:', 'cursor:'))['details']['sessionLinkRevision'] == digest
+    before = len(calls)
+    assert not run(['work-unlink-session', '--work-id', other_key, '--session-id', cursor, '--expected-link', digest])['ok']
+    assert not run(['work-unlink-session', '--work-id', key, '--session-id', cursor, '--expected-link', '0' * 64])['ok']
+    assert run(['work-unlink-session', '--work-id', key, '--session-id', cursor, '--expected-link', digest])['ok']
+    assert context(session=cursor)['details']['sessionLinkRevision'] == 'none'
+    assert all(method == 'GET' for method, _, _ in calls[before:]), 'Link/unlink cannot send or stage work'
+    assert not (links.parent / 'handoffs.json').exists()
+    print('PASS: Cursor exact context/link/unlink CAS, wrong-task refusal, no native job/receipt/stage mutation')
     good = links.read_bytes(); links.write_text('{broken'); assert not context()['ok'] and not link(session='codex:00000000-0000-4000-8000-000000000030')['ok']; assert links.read_text() == '{broken'
     links.write_bytes(good); links.unlink(); target = root / 'target.json'; target.write_bytes(good); links.symlink_to(target)
     assert not context()['ok'] and target.read_bytes() == good; links.unlink(); os.mkfifo(links)

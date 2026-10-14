@@ -1,0 +1,16 @@
+# Plan validation: conditional GO resolved in implementation scope
+
+Three validators: correctness, completeness, edge cases. Parent installed-helper canary passed; native app opens UNRUN. Main required deltas: preserve older contributor tracking; refresh link/notice epochs; resolve exact map-only native IDs; enforce shared-stage hold at every move boundary; use stable semantic notice fingerprint; preserve unknown-delivery fence and receipt history. Cursor opens Agents today, not a proven exact native chat. Candidate extends existing isolated Foundation Lab shell, not the installed app.
+
+Worktree is /Users/ukaoma/cos-worktrees/ctl-work-session-hub, base9434695, branchcodex/work-session-hub. Source changes proceed under Miles’s explicit build instruction. This report is plan qualification only, not release readiness.
+
+## Implemented canaries and UI review
+The isolated Swift hub checks passed: three-provider exact identities; independent input/done/running state; terminal canceled/refused/failed/cleared receipt precedence; explicit older-result history; observed external summaries; fork child only; CAS unlink and preserved other links; restart; unchanged link epochs; notice hide/restore/new-result truth; queued shared-stage hold after awaited reload. Neighboring Work activity, board cache and 22 clipboard/context assertions passed. Native light/dark offscreen views at 820/1280/1440 widths were inspected. These source checks ran before the final startup-selection and redundant-search visual corrections; those are rechecked in the final native bundle.
+
+The bundled helper's authenticated disposable fixture passed three providers including Cursor, fresh task/association CAS, wrong-task/stale unlink refusal, 12 concurrent process merges, competing same-session writers, restart, corrupt/symlink/FIFO refusal and no model/job/phantom receipt mutations.
+
+Live isolated GUI inspection confirmed the Activity shell and Your move / Board / History hierarchy; Hide/Restore updates matching queue counts; Connections lists three providers with separate progress; Return confirms explicit unlink; receipt history remains and the other two links stay; re-linking Cursor adds no prompt; task remains Draft while Codex reports done; four active lanes with folded Mentioned/Complete. This first GUI pass exposed a stale sample selection on launch and a duplicate Board search field, both corrected before final packaging.
+
+The final rebuilt bundle was relaunched in a fresh scratch home: it starts at Your move, Board has one search field, and the IT Retail task opens with all three contributors in Connections. The actual bundled helper fixture passed again. Deep strict signature verification passed. Candidate version is 0.2.0 build 11, bundle identity com.gotcos.COSControl.WorkHubPreview020. The final archive is dist/work-session-hub/COS-Control-Work-Hub-Preview-0.2.0.zip; its SHA-256 is 8eaaefba2491995ee9bf19757c9f41e505ad50a5e99bd1fcf2c1f3e46d47c2ce. Launch with dist/work-session-hub/start-work-session-hub.command for isolated sample data.
+
+Native provider opening and connected task writes remain UNRUN. Cursor opens Agents rather than certifying an exact chat reveal. Public promotion and installed-app replacement are outside this candidate. Transcription/cue flags and stable app/server settings were not changed.

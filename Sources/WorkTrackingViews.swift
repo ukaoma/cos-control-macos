@@ -16,13 +16,13 @@ struct WorkTracking {
 
     /// The newest handoff for this work, when it asked for a status line and did not fail. A failed, refused or
     /// canceled newest handoff shows nothing here: the existing handoff state already explains it.
-    static func latest(workID: String, receipts: [WorkHandoffReceipt]) -> WorkTracking? {
-        let mine = receipts.filter { $0.workID == workID }
+    static func latest(workID: String, receipts: [WorkHandoffReceipt], sessionID: String? = nil) -> WorkTracking? {
+        let mine = receipts.filter { $0.workID == workID && (sessionID == nil || WorkProgress.workingSession($0)?.lowercased() == sessionID?.lowercased()) }
         if let question = mine.filter({ row in
             guard !row.handledByYou, !["failed", "refused", "canceled"].contains(row.status),
                   row.progress?.reported == .needsInput || row.progress?.reported == .blocked else { return false }
             let at = row.progress?.receivedAt ?? row.createdAt
-            return !mine.contains { next in next.id != row.id && next.createdAt > at && (["delivered", "running", "completed"].contains(next.status) || (next.status == "reviewed" && next.progress?.receivedAt != nil)) }
+            return !mine.contains { next in next.id != row.id && WorkProgress.workingSession(next)?.lowercased() == WorkProgress.workingSession(row)?.lowercased() && next.createdAt > at && (["delivered", "running", "completed"].contains(next.status) || (next.status == "reviewed" && next.progress?.receivedAt != nil)) }
         }).max(by: { $0.createdAt < $1.createdAt }), let progress = question.progress {
             return WorkTracking(receipt: question, progress: progress, phase: phase(question, progress))
         }
@@ -46,10 +46,10 @@ struct WorkTracking {
     /// done more than a day ago. The card shows the first `cardRows`.
     static func forSession(_ sessionID: String, receipts: [WorkHandoffReceipt], now: Double = Date().timeIntervalSince1970) -> [WorkTracking] {
         var newest: [String: WorkHandoffReceipt] = [:]
-        for receipt in receipts where WorkProgress.workingSession(receipt) == sessionID && receipt.progress != nil
+        for receipt in receipts where WorkProgress.workingSession(receipt)?.lowercased() == sessionID.lowercased() && receipt.progress != nil
             && (newest[receipt.workID]?.createdAt ?? -1) < receipt.createdAt { newest[receipt.workID] = receipt }
-        return newest.values.sorted { $0.createdAt < $1.createdAt }.compactMap { latest(workID: $0.workID, receipts: receipts) }
-            .filter { WorkProgress.workingSession($0.receipt) == sessionID }
+        return newest.values.sorted { $0.createdAt < $1.createdAt }.compactMap { latest(workID: $0.workID, receipts: receipts, sessionID: sessionID) }
+            .filter { WorkProgress.workingSession($0.receipt)?.lowercased() == sessionID.lowercased() }
             .filter { $0.phase != .done || now - ($0.progress.events.last?.at ?? $0.receipt.createdAt) < 86_400 }
     }
     nonisolated static let cardRows = 4

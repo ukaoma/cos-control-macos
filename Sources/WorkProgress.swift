@@ -234,7 +234,7 @@ struct WorkProgress: Codable, Equatable, Sendable {
     /// The session doing this handoff's work, once there is one. A Fork names its parent until the fork exists, and
     /// the parent is not where the work happens.
     nonisolated static func workingSession(_ receipt: WorkHandoffReceipt) -> String? {
-        guard let id = receipt.sessionID, !(receipt.mode == .fork && id == receipt.sourceSessionID) else { return nil }
+        guard let id = receipt.sessionID, !(receipt.mode == .fork && id.lowercased() == receipt.sourceSessionID?.lowercased()) else { return nil }
         return id
     }
 

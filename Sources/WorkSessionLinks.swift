@@ -11,6 +11,10 @@ struct WorkSessionCardLink: Codable, Equatable, Sendable {
 
 /// Both Control and the headless helper use the same locked read/merge/write path.
 /// This remains the existing session-to-card map; it creates no job or delivery receipt.
+struct WorkNoticeDismissal: Codable, Equatable, Sendable {
+    let signature: String
+    let at: Double
+}
 enum WorkSessionLinks {
     enum Failure: LocalizedError, CustomStringConvertible {
         case unsafeFile, corrupt, busy, conflict
@@ -48,6 +52,7 @@ enum WorkSessionLinks {
               !link.title.isEmpty, link.title.utf8.count <= 32_000, !link.sourceRevision.isEmpty,
               link.sourceRevision.utf8.count <= 256, link.at.isFinite,
               expected == "none" || expected.range(of: "^[a-f0-9]{64}$", options: .regularExpression) != nil else { throw Failure.corrupt }
+        let sessionID = sessionID.lowercased()
         return try withLock(url) {
             var links = try read(url)
             // Retrying an already-established association preserves its original timestamp and digest.
@@ -62,6 +67,45 @@ enum WorkSessionLinks {
             try write(data, to: url)
             return links
         }
+    }
+    @discardableResult
+    static func remove(_ url: URL, sessionID: String, workID: String, expected: String) throws -> [String: WorkSessionCardLink] {
+        guard validSessionID(sessionID, includeCursor: true), expected.range(of: "^[a-f0-9]{64}$", options: .regularExpression) != nil else { throw Failure.corrupt }
+        let sessionID = sessionID.lowercased()
+        return try withLock(url) {
+            var links = try read(url)
+            guard let current = links[sessionID], current.workID == workID, try revision(current) == expected else { throw Failure.conflict }
+            links.removeValue(forKey: sessionID)
+            let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+            try write(encoder.encode(links), to: url)
+            return links
+        }
+    }
+    static func loadNotices(_ url: URL) throws -> [String: WorkNoticeDismissal] {
+        try withLock(url) { try readNotices(url) }
+    }
+    static func setNotice(_ url: URL, receiptID: String, signature: String?) throws -> [String: WorkNoticeDismissal] {
+        guard !receiptID.isEmpty, receiptID.utf8.count <= 256 else { throw Failure.corrupt }
+        return try withLock(url) {
+            var notices = try readNotices(url)
+            if let signature {
+                guard signature.count == 64 else { throw Failure.corrupt }
+                notices[receiptID] = WorkNoticeDismissal(signature: signature, at: Date().timeIntervalSince1970)
+            } else { notices.removeValue(forKey: receiptID) }
+            guard notices.count <= 10_000 else { throw Failure.corrupt }
+            let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+            let data = try encoder.encode(notices)
+            guard data.count < limit else { throw Failure.corrupt }
+            try write(data, to: url)
+            return notices
+        }
+    }
+    private static func readNotices(_ url: URL) throws -> [String: WorkNoticeDismissal] {
+        guard let data = try readData(url) else { return [:] }
+        guard let result = try? JSONDecoder().decode([String: WorkNoticeDismissal].self, from: data),
+              result.count <= 10_000, result.allSatisfy({ !$0.key.isEmpty && $0.key.utf8.count <= 256
+                  && $0.value.signature.range(of: "^[a-f0-9]{64}$", options: .regularExpression) != nil && $0.value.at.isFinite }) else { throw Failure.corrupt }
+        return result
     }
     private static func withLock<T>(_ url: URL, body: () throws -> T) throws -> T {
         let parent = url.deletingLastPathComponent()
@@ -85,8 +129,21 @@ enum WorkSessionLinks {
         return try body()
     }
     private static func read(_ url: URL) throws -> [String: WorkSessionCardLink] {
+        guard let data = try readData(url) else { return [:] }
+        guard let links = try? JSONDecoder().decode([String: WorkSessionCardLink].self, from: data), links.count <= 10_000,
+              links.allSatisfy({ validSessionID($0.key, includeCursor: true) && !$0.value.workID.isEmpty && $0.value.workID.utf8.count <= 256
+                && !$0.value.title.isEmpty && $0.value.title.utf8.count <= 32_000 && !$0.value.sourceRevision.isEmpty
+                && $0.value.sourceRevision.utf8.count <= 256 && $0.value.at.isFinite }) else { throw Failure.corrupt }
+        var normalized: [String: WorkSessionCardLink] = [:]
+        for (key, value) in links {
+            guard normalized[key.lowercased()] == nil else { throw Failure.corrupt }
+            normalized[key.lowercased()] = value
+        }
+        return normalized
+    }
+    private static func readData(_ url: URL) throws -> Data? {
         let fd = open(url.path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
-        guard fd >= 0 else { if errno == ENOENT { return [:] }; throw Failure.unsafeFile }
+        guard fd >= 0 else { if errno == ENOENT { return nil }; throw Failure.unsafeFile }
         defer { close(fd) }
         var info = stat()
         guard fstat(fd, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG, info.st_uid == getuid(),
@@ -99,11 +156,7 @@ enum WorkSessionLinks {
             data.append(contentsOf: buffer.prefix(count))
             guard data.count < limit else { throw Failure.corrupt }
         }
-        guard let links = try? JSONDecoder().decode([String: WorkSessionCardLink].self, from: data), links.count <= 10_000,
-              links.allSatisfy({ validSessionID($0.key, includeCursor: true) && !$0.value.workID.isEmpty && $0.value.workID.utf8.count <= 256
-                && !$0.value.title.isEmpty && $0.value.title.utf8.count <= 32_000 && !$0.value.sourceRevision.isEmpty
-                && $0.value.sourceRevision.utf8.count <= 256 && $0.value.at.isFinite }) else { throw Failure.corrupt }
-        return links
+        return data
     }
     private static func write(_ data: Data, to url: URL) throws {
         let temp = url.deletingLastPathComponent().appendingPathComponent(".session-cards-\(UUID().uuidString).tmp")

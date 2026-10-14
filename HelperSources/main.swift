@@ -430,7 +430,7 @@ final class COSControlHelper {
                   let port = ProcessInfo.processInfo.environment["COS_CONTROL_TEST_API_PORT"], let number = Int(port), number > 1024, number != 3141 else {
                 throw HelperError.message("Fixture mode requires a disposable /tmp home and a non-production loopback port.")
             }
-            let allowed: Set<String> = ["work-your-move", "work-intake", "work-intake-resolve", "work-loop", "work-tasks", "work-context", "work-link-session", "tasks", "domains", "work-set-stage", "work-edit-task", "work-link-meeting", "work-reviews", "work-models", "meeting-speakers", "meeting-content"]
+            let allowed: Set<String> = ["work-your-move", "work-intake", "work-intake-resolve", "work-loop", "work-tasks", "work-context", "work-link-session", "work-unlink-session", "tasks", "domains", "work-set-stage", "work-edit-task", "work-link-meeting", "work-reviews", "work-models", "meeting-speakers", "meeting-content"]
             guard allowed.contains(command) else { throw HelperError.message("This candidate uses disposable tasks. Provider dispatch and other commands are disabled.") }
         }
         switch command {
@@ -532,6 +532,7 @@ final class COSControlHelper {
             if args.count > 1 { try emitWorkStage(args: args) } else { try emitWorkUpdate(action: "stage") }
         case "work-context": try emitWorkContext(args: args)
         case "work-link-session": try emitWorkLinkSession(args: args)
+        case "work-unlink-session": try emitWorkUnlinkSession(args: args)
         case "work-link-meeting": try emitWorkUpdate(action: "meeting")
         case "work-loop": try emitWorkLoop(args: args)
         case "work-intake": try emitWorkIntake()
@@ -5019,7 +5020,7 @@ final class COSControlHelper {
             if required { throw HelperError.message("Provide an exact native --session-id, CODEX_THREAD_ID or CLAUDE_SESSION_ID. No session is guessed.") }
             return nil
         }
-        guard WorkSessionLinks.validSessionID(value) else { throw HelperError.message("Session ID must be codex:<UUID> or claude:<UUID>.") }
+        guard WorkSessionLinks.validSessionID(value, includeCursor: true) else { throw HelperError.message("Session ID must be codex:<UUID>, claude:<UUID> or cursor:<UUID>.") }
         return value.lowercased()
     }
     private func roundtripTask(_ value: String?) throws -> (key: String, row: [String: Any], writable: Bool) {
@@ -5105,6 +5106,18 @@ final class COSControlHelper {
         let links = try WorkSessionLinks.associate(WorkSessionLinks.defaultURL(), sessionID: sessionID, link: link, expected: expected)
         emit(ok: true, message: "Session associated with Work", details: ["workID": task.key, "sessionID": sessionID,
             "sessionLink": try roundtripLinkDetails(sessionID, link: links[sessionID]!), "linkRevision": try WorkSessionLinks.revision(links[sessionID]!)])
+    }
+
+    private func emitWorkUnlinkSession(args: [String]) throws {
+        let options = try roundtripOptions(args, allowed: ["--work-id", "--session-id", "--expected-link"])
+        guard let expected = options["--expected-link"], expected.range(of: "^[a-f0-9]{64}$", options: .regularExpression) != nil else {
+            throw HelperError.message("Read fresh context and provide the exact session association digest.")
+        }
+        let sessionID = try roundtripSessionID(options["--session-id"], required: true)!
+        let task = try roundtripTask(options["--work-id"])
+        let links = try WorkSessionLinks.remove(WorkSessionLinks.defaultURL(), sessionID: sessionID, workID: task.key, expected: expected)
+        emit(ok: true, message: "Explicit session association removed; native session and receipts retained",
+             details: ["workID": task.key, "sessionID": sessionID, "linkedSessionCount": links.values.filter { $0.workID == task.key }.count])
     }
 
     static func validateWorkUpdate(_ body: [String: Any], action: String) throws {

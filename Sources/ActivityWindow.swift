@@ -600,7 +600,7 @@ struct ActivityWindow: View {
         var view = ActivityWindow(model: model, isolatedWorkPreview: true)
         view._section = State(initialValue: .work)
         let store = WorkHandoffStore(isolated: true)
-        store.selectedWorkID = "task:Website:sample-task-website"
+        store.selectedWorkID = ProcessInfo.processInfo.environment["COS_WORK_SESSION_HUB_PREVIEW"] == "1" ? nil : "task:Website:sample-task-website"
         view._handoffStore = StateObject(wrappedValue: store)
         view._reviewStore = StateObject(wrappedValue: WorkWorkspaceProjection.previewReviewStore())
         return view
@@ -2001,7 +2001,14 @@ struct ActivityWindow: View {
                 guard receipt.sessionID == id else { return nil }
                 return WorkHandoffStore.rememberedSession(for: receipt)
             }.first
-        guard let session else {
+        let explicit = handoffStore.confirmedSessionCards[id.lowercased()]
+        let exactFallback: WorkSession? = explicit.flatMap { link in
+            guard WorkSessionLinks.validSessionID(id, includeCursor: true) else { return nil }
+            let parts = id.lowercased().split(separator: ":").map(String.init)
+            return WorkSession(id: id.lowercased(), nativeID: parts[1], provider: parts[0], title: link.title,
+                               summary: "", project: "", status: "unknown")
+        }
+        guard let session = session ?? exactFallback else {
             showingLinkedSession = true
             section = .sessions
             return

@@ -60,7 +60,7 @@ enum WorkTaskContext {
         \(quoted)
         ```
 
-        Resume in Codex or Claude:
+        Resume in Codex, Claude or Cursor:
         1. Read the current task and its association before making changes:
            \(command) work-context --work-id \(key)
            Use the returned workRevision for changes; the copied writerRevisionAtCopy may be stale. displaySnapshotHash is not a writer revision. Linked meeting references identify sources; their transcripts and attachments are not included in this copy.
@@ -69,6 +69,10 @@ enum WorkTaskContext {
            Then explicitly link it using the returned sessionLinkRevision:
            \(command) work-link-session --work-id \(key) --session-id '<provider>:<native-session-id>' --expected-link '<current-link-digest-or-none>'
            Use sessionLinkRevision (the current digest, or "none") for --expected-link. Use CODEX_THREAD_ID for the current Codex session or CLAUDE_SESSION_ID for the current Claude session when available. Otherwise obtain the exact ID; never choose the most recent session. If sessionLink names another task, ask before replacing it and re-read its current digest. A copied task does not link, create, or start a session by itself.
+           Claude, Codex and Cursor can contribute independently to this same task. Cursor requires its exact chat UUID; no current-session environment is assumed. Linking grants no new credentials or app permissions. One contributor finishing does not finish the shared task.
+           To remove only this explicit association, re-read its digest and use:
+           \(command) work-unlink-session --work-id \(key) --session-id '<provider>:<native-session-id>' --expected-link '<fresh-sessionLinkRevision>'
+           The native session and historical receipts remain.
         3. When the user requests a board change, re-read work-context, then use the current workRevision:
            \(command) work-set-stage --work-id \(key) --stage '<requested-stage>' --expected-revision '<fresh-workRevision>'
            Stages: mentioned, planned, draft, built, qa, complete. On a revision conflict, re-read and report the change; do not overwrite it with an automatic retry. Move to Complete only when the user asks to mark this task complete.

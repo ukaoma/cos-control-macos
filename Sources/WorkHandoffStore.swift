@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import CryptoKit
 import SwiftUI
 import Darwin
 import os
@@ -53,6 +54,51 @@ struct WorkSession: Identifiable, Codable, Equatable, Sendable {
         let f = ISO8601DateFormatter(); f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]; return f
     }()
     private nonisolated(unsafe) static let plainStamp = ISO8601DateFormatter()
+}
+struct WorkContributor: Identifiable {
+    let id: String
+    let link: WorkSessionCardLink?
+    let receipt: WorkHandoffReceipt?
+    /// An older successful output is history, never the latest handoff's outcome.
+    let historicalResult: String?
+    /// Only supplied by the fresh observation list. Saved receipts never imply live activity.
+    let session: WorkSession?
+    var historical: Bool
+    var provider: String { String(id.split(separator: ":")[0]) }
+    var title: String { session?.title ?? receipt?.sessionTitle ?? String(id.split(separator: ":").last?.prefix(8) ?? "") }
+}
+enum WorkContributorProjection {
+    static func rows(workID: String, links: [String: WorkSessionCardLink], receipts: [WorkHandoffReceipt], observed: [WorkSession]) -> [WorkContributor] {
+        let mine = receipts.filter { $0.workID == workID }
+        var newest: [String: WorkHandoffReceipt] = [:]
+        for row in mine {
+            guard let id = WorkProgress.workingSession(row)?.lowercased(), WorkSessionLinks.validSessionID(id, includeCursor: true) else { continue }
+            if (newest[id]?.createdAt ?? -.infinity) < row.createdAt { newest[id] = row }
+        }
+        let ids = Set(links.filter { $0.value.workID == workID }.keys.map { $0.lowercased() }).union(newest.keys)
+        return ids.sorted().map { id in
+            let link = links[id]
+            let latest = newest[id]
+            let terminalFailure = latest.map { ["failed", "refused", "canceled"].contains($0.status) || $0.clearedUnconfirmed } ?? false
+            let earlier = terminalFailure ? mine.filter {
+                WorkProgress.workingSession($0)?.lowercased() == id && $0.id != latest?.id
+                    && $0.createdAt < (latest?.createdAt ?? 0) && ["completed", "reviewed"].contains($0.status)
+                    && !$0.clearedUnconfirmed && !($0.result ?? "").isEmpty
+            }.max(by: { $0.createdAt < $1.createdAt })?.result : nil
+            return WorkContributor(id: id, link: link?.workID == workID ? link : nil, receipt: newest[id],
+                historicalResult: earlier,
+                session: observed.first { $0.id.lowercased() == id },
+                historical: link != nil && link?.workID != workID)
+        }
+    }
+    static func noticeSignature(_ receipt: WorkHandoffReceipt) -> String {
+        // Poll timestamps and diagnostic copy are deliberately excluded. New results/state/evidence resurface.
+        let fields = [receipt.status, receipt.result ?? "", receipt.progress?.reported?.rawValue ?? "",
+                      receipt.progress?.evidence ?? "", receipt.progress?.reportedBy ?? "",
+                      receipt.status == "failed" || receipt.status == "refused" ? receipt.detail : ""]
+        let data = try! JSONEncoder().encode(fields)
+        return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
 }
 struct WorkModelChoice: Identifiable, Codable, Equatable, Sendable {
     let id: String
@@ -278,7 +324,14 @@ struct WorkGlassesRequest: Equatable, Sendable {
     let cardFiles: WorkCardFileStore
     /// 0.5.258: the files on each meeting (`~/cos-data/meeting-context`). A card's send carries its linked meetings'.
     let meetingFiles: WorkCardFileStore
-    @Published private(set) var confirmedSessionCards: [String: WorkSessionCardLink] = [:]
+    @Published private(set) var confirmedSessionCards: [String: WorkSessionCardLink] = [:] {
+        didSet { if confirmedSessionCards != oldValue { sessionCardsEpoch &+= 1 } }
+    }
+    private(set) var sessionCardsEpoch = 0
+    @Published private(set) var hiddenNotices: [String: WorkNoticeDismissal] = [:] {
+        didSet { if hiddenNotices != oldValue { noticesEpoch &+= 1 } }
+    }
+    private(set) var noticesEpoch = 0
     @Published private(set) var sessionCardsError: String?
     private let storageURL: URL
     private let transport: Transport
@@ -320,20 +373,51 @@ struct WorkGlassesRequest: Equatable, Sendable {
             base = ProcessInfo.processInfo.environment["COS_CONTROL_TEST_HOME"].map { URL(fileURLWithPath: $0).appendingPathComponent("work-handoffs") } ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/COS Control/work-handoffs")
         }
         self.storageURL = storageURL ?? base.appendingPathComponent(isolated ? "preview-handoffs.json" : "handoffs.json")
-        do { try reloadSessionCards() }
+        do { try reloadSessionCards(); hiddenNotices = try WorkSessionLinks.loadNotices(noticesURL) }
         catch { self.error = "Session associations could not be read: \(error.localizedDescription)" }
         do { try loadJournal() } catch { storageReady = false; self.error = "Handoff history could not be read. Sending is disabled: \(error.localizedDescription)" }
         if isolated {
             selectedWorkID = "sample-task-website"
             if sessions.isEmpty { sessions = Self.sampleSessions }
             models = Self.sampleModels
+            if ProcessInfo.processInfo.environment["COS_WORK_SESSION_HUB_PREVIEW"] == "1" {
+                seedSessionHubPreview()
+            }
         }
+    }
+
+    private func seedSessionHubPreview() {
+        previewTasks[0] = Control2PreviewTask(id: "sample-task-website", title: "IT Retail website launch", domain: "Website",
+            owner: "You", schedule: "Unscheduled", source: "Website launch · sample",
+            finishLine: "Review copy, implementation and mobile layout before approving launch.", stage: "Draft")
+        guard let task = WorkWorkspaceProjection.previewRows(previewTasks).first else { return }
+        let source = WorkSource.taskSnapshot(task)
+        selectedWorkID = nil
+        let ids = ["claude:abcdefab-0000-4000-8000-000000000001", "codex:abcdefab-0000-4000-8000-000000000002", "cursor:abcdefab-0000-4000-8000-000000000003"]
+        let titles = ["IT Retail · Copy review", "IT Retail · Implementation", "IT Retail · Mobile layout"]
+        let states = ["waiting", "idle", "working"]
+        let reports: [WorkProgressEvent.Kind] = [.needsInput, .done, .working]
+        let results = ["Which headline should we use? Two options are ready for review.", "Implementation checks passed. Waiting for your launch review.", "Checking navigation at phone widths."]
+        let now = Date().timeIntervalSince1970
+        sessions = ids.indices.map { n in WorkSession(id: ids[n], nativeID: String(ids[n].split(separator: ":")[1]),
+            provider: String(ids[n].split(separator: ":")[0]), title: titles[n], summary: results[n], project: "Website",
+            status: states[n], updatedAt: ISO8601DateFormatter().string(from: Date())) }
+        receipts = ids.indices.map { n in
+            var row = WorkHandoffReceipt(id: "hub-sample-\(n)", workID: source.id, workTitle: source.title, sourceRevision: source.revision,
+                mode: .continueSession, provider: sessions[n].provider, modelID: "sample", sessionID: ids[n], sessionTitle: titles[n],
+                status: n == 2 ? "running" : "completed", detail: "Sample only", prompt: "", createdAt: now - Double(90 - n))
+            var progress = WorkProgress(tag: "sample"); progress.reported = reports[n]; progress.reportedBy = "session"
+            progress.receivedAt = now - 90; progress.evidence = results[n]; row.progress = progress; row.result = results[n]
+            return row
+        }
+        for session in sessions { _ = confirmSessionCard(sessionID: session.id, source: source) }
     }
 
     /// Explicit association only. No prompt, delivery receipt, completion or model call is invented.
     func confirmSessionCard(sessionID: String, source: WorkSource) -> Bool {
         guard !busy, storageReady, let native = Self.nativeID(sessionID), Self.appSessionID(native) != nil,
               ["claude", "codex", "cursor"].contains(String(sessionID.split(separator: ":")[0])) else { return false }
+        let sessionID = sessionID.lowercased()
         do {
             // CAS must represent the association the user saw, before reading another process's changes.
             let expected = try confirmedSessionCards[sessionID].map(WorkSessionLinks.revision) ?? "none"
@@ -345,11 +429,36 @@ struct WorkGlassesRequest: Equatable, Sendable {
         } catch { self.error = "The session link could not be saved: \(error.localizedDescription)"; return false }
     }
 
+    func contributors(workID: String) -> [WorkContributor] {
+        WorkContributorProjection.rows(workID: workID, links: confirmedSessionCards, receipts: receipts, observed: observedSessions())
+    }
+    /// Historical contributors also retain manual stage ownership after an unlink/remap.
+    func contributorIDs(workID: String) -> Set<String> {
+        Set(contributors(workID: workID).map(\.id))
+    }
+    func removeSessionCard(sessionID: String, workID: String, expected: String) -> Bool {
+        guard !busy, storageReady else { return false }
+        do {
+            confirmedSessionCards = try WorkSessionLinks.remove(sessionCardsURL, sessionID: sessionID, workID: workID, expected: expected)
+            return true
+        } catch { self.error = "The session link could not be removed: \(error.localizedDescription)"; return false }
+    }
+    func noticeHidden(_ receipt: WorkHandoffReceipt) -> Bool {
+        hiddenNotices[receipt.id]?.signature == WorkContributorProjection.noticeSignature(receipt)
+    }
+    func setNoticeHidden(_ receipt: WorkHandoffReceipt, hidden: Bool) {
+        do {
+            hiddenNotices = try WorkSessionLinks.setNotice(noticesURL, receiptID: receipt.id,
+                signature: hidden ? WorkContributorProjection.noticeSignature(receipt) : nil)
+        } catch { self.error = "The notice could not be changed: \(error.localizedDescription)" }
+    }
+    private var noticesURL: URL { storageURL.deletingPathExtension().appendingPathExtension("hidden-notices.json") }
     private var sessionCardsURL: URL { storageURL.deletingPathExtension().appendingPathExtension("session-cards.json") }
     func reloadSessionCards() throws {
         do {
             confirmedSessionCards = try WorkSessionLinks.load(sessionCardsURL)
             sessionCardsError = nil
+            hiddenNotices = try WorkSessionLinks.loadNotices(noticesURL)
         } catch {
             confirmedSessionCards = [:]
             sessionCardsError = "Session associations are unavailable: \(error.localizedDescription)"
