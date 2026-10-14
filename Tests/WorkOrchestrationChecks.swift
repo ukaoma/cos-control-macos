@@ -37,6 +37,12 @@ private actor WorkChatFixture {
     let task = TaskRow(.object(["id": .string("aaaaaaaaaaaa"), "workIdentity": .string("aaaaaaaaaaaa"), "domain": .string("quilt"), "title": .string("Launch fixture"), "text": .string("Launch fixture"), "source": .string("Fixture evidence")]))!
     let source = WorkSource.taskSnapshot(task)
     let sessions = ids.map { WorkSession(id: $0, nativeID: String($0.split(separator: ":")[1]), provider: String($0.split(separator: ":")[0]), title: "Exact " + $0, summary: "", project: "/tmp/fixture", status: "recent") }
+    var delivered = WorkHandoffReceipt(id: UUID().uuidString.lowercased(), workID: source.id, workTitle: source.title, sourceRevision: source.revision, mode: .continueSession, provider: "claude", modelID: "existing", sessionID: ids[0], sessionTitle: "Exact", status: "delivered", detail: "Delivered", prompt: "A distinctive original assignment to inspect this exact canary", createdAt: 100)
+    delivered.channel = "turn"
+    let nativeRead = WorkProgressTracker.SessionRead(replies: [.init(text: "Old seed", at: 99), .init(text: "Own native result", at: 102), .init(text: "Later turn result", at: 110)], prompts: [.init(text: delivered.prompt, at: 101), .init(text: "Different later request", at: 109)], runningActive: false, agentState: "ended", lastActivityAt: 110, hasHistory: true)
+    precondition(WorkChatPolicy.nativeReplies(receipt: delivered, read: nativeRead).map(\.text) == ["Own native result"], "Native result must exclude seed and later turns")
+    delivered.prompt = "Unmatched prompt must not claim any result"
+    precondition(WorkChatPolicy.nativeReplies(receipt: delivered, read: nativeRead).isEmpty)
     let valid = WorkChatPlannerAnswer(protocolVersion: 1, answer: "Describe bounded checks.", assignments: [WorkChatAssignment(sessionID: ids[0], prompt: "Review copy.")])
     precondition(WorkChatPolicy.valid(valid, targets: Set(ids.prefix(2))))
     precondition(!WorkChatPolicy.valid(valid, targets: [ids[1]]))

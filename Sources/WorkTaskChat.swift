@@ -45,6 +45,16 @@ enum WorkChatPolicy {
         let e = JSONEncoder(); e.outputFormatting = [.sortedKeys]
         return SHA256.hash(data: try e.encode(links.filter { $0.value.workID == workID })).map { String(format: "%02x", $0) }.joined()
     }
+    /// Correlate replies to this exact recorded prompt. Earlier and later turns are not this assignment.
+    static func nativeReplies(receipt: WorkHandoffReceipt, read: WorkProgressTracker.SessionRead) -> [WorkProgress.Reply] {
+        guard receipt.channel == "turn", receipt.status == "delivered",
+              let arrival = WorkProgress.promptArrival(prompt: receipt.prompt, messages: read.prompts, since: receipt.createdAt) else { return [] }
+        let next = read.prompts.compactMap(\.at).filter { $0 > arrival }.min()
+        return read.replies.filter { reply in
+            guard let at = reply.at else { return false }
+            return at >= arrival && (next == nil || at < next!)
+        }
+    }
     static func valid(_ answer: WorkChatPlannerAnswer, targets: Set<String>, summary: Bool = false) -> Bool {
         answer.protocolVersion == 1 && !answer.answer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         && answer.answer.count <= 6000 && answer.assignments.count <= 3 && (!summary || answer.assignments.isEmpty)
@@ -191,12 +201,25 @@ enum WorkChatPolicy {
                 if let r = handoff.receipts.first(where: { $0.id == updated.assignments[n].receiptID }) {
                     updated.assignments[n].state = r.status
                     updated.assignments[n].detail = r.detail
-                    updated.assignments[n].result = String((r.result ?? r.progress?.evidence ?? "").prefix(6000))
+                    if let result = r.result ?? r.progress?.evidence, !result.isEmpty { updated.assignments[n].result = String(result.prefix(6000)) }
+                    if r.channel == "turn", r.status == "delivered", let sessionID = r.sessionID {
+                        do {
+                            let read = try await handoff.sessionRead(sessionID: sessionID, turns: 6)
+                            let replies = WorkChatPolicy.nativeReplies(receipt: r, read: read)
+                            if !replies.isEmpty {
+                                updated.assignments[n].result = String(replies.map(\.text).joined(separator: "\n\n").prefix(6000))
+                                if let report = WorkProgress.latestReport(tag: r.progress?.tag ?? WorkProgress.tag(forWorkID: r.workID), replies: replies) {
+                                    updated.assignments[n].state = report.report.kind == .done ? "Session reported done" : report.report.kind == .blocked ? "Session reported blocked" : "Needs your input"
+                                    ready = true
+                                } else if !read.runningActive { updated.assignments[n].state = "Reply available for review"; ready = true }
+                            }
+                        } catch { self.error = "A session's replies could not be refreshed. Recorded updates are preserved." }
+                    }
                     if r.status == "completed" || r.progress?.reported == .done || r.progress?.reported == .needsInput { ready = true }
                 }
             }
             if ["Planning","Executing"].contains(updated.state) { updated.state = "Needs attention" }
-            if !updated.assignments.isEmpty && updated.assignments.allSatisfy({ ["completed","failed","refused","canceled","reviewed"].contains($0.state) }) {
+            if !updated.assignments.isEmpty && updated.assignments.allSatisfy({ ["completed","failed","refused","canceled","reviewed","Session reported done","Reply available for review"].contains($0.state) }) {
                 updated.state = "Results available for review"
             }
             record?.rounds[index] = updated
@@ -268,7 +291,8 @@ struct WorkTaskChatView: View {
                     .accessibilityIdentifier("work-chat-send")
             }
         }.task(id:source.id) {
-            chat.enabled = ProcessInfo.processInfo.environment["COS_WORK_ORCHESTRATION_CANDIDATE"] == "1"
+            chat.enabled = Bundle.main.object(forInfoDictionaryKey: "COSWorkChatEnabled") as? Bool == true
+                || ProcessInfo.processInfo.environment["COS_WORK_ORCHESTRATION_CANDIDATE"] == "1"
             await handoff.refresh()
             while !Task.isCancelled {
                 chat.open(source:source,handoff:handoff)

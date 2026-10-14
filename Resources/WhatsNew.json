@@ -1,22 +1,15 @@
 {
-  "version": "0.5.291",
+  "version": "0.5.292",
   "whatsNew": {
-    "summary": "Work connects multiple agent sessions to one task, with Connections and Agent workspace together. Matched with server 6.73.3.",
+    "summary": "Work chat coordinates independent assignments across linked Claude and Codex sessions. Matched with server 6.73.4.",
     "sections": [
       {
-        "title": "Shared work",
+        "title": "Work chat",
         "items": [
-          "Link existing Claude, Codex and Cursor sessions to a shared task. Each session keeps its own progress.",
-          "View each contributor in Agent workspace while retaining Continue, Fork and Start a new session.",
-          "Open exact Claude and Codex chats, copy session IDs, and remove individual links without deleting chats. Cursor opens its Agents view."
-        ]
-      },
-      {
-        "title": "A quieter board",
-        "items": [
-          "Use Your move for decisions, Board for active stages, and History for hidden notices.",
-          "Hide stale notices and restore them from History. Delivery warnings and task stages stay intact.",
-          "Copy task IDs and context for work across sessions. Shared task completion remains your decision."
+          "Describe an outcome and see the plan and affected sessions before their assignments are sent.",
+          "Read each session\u2019s delivery status and results together in the task conversation.",
+          "Connections and Agent workspace stay available. Shared task completion remains your decision.",
+          "Cursor and sessions already handed to a desktop app retain manual continuation."
         ]
       }
     ]
