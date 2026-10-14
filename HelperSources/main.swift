@@ -612,6 +612,7 @@ final class COSControlHelper {
         case "session-chat-queue": try emitSessionChatQueue(args: args)
         case "session-chat-queued": try emitSessionChatQueued(args: args)
         case "session-chat-queue-cancel": try emitSessionChatQueueCancel(args: args)
+        case "work-chat": try emitWorkChat()
         case "work-models": try emitWorkModels()
         case "work-new": try emitWorkNew()
         case "work-job": try emitWorkJob(args: args)
@@ -16658,6 +16659,27 @@ final class COSControlHelper {
         case let value as String: return workSessionName(value)
         default: throw HelperError.message("sessionName must be text")
         }
+    }
+
+    private func emitWorkChat() throws {
+        try requireLiveWorkTransport()
+        let data = try FileHandle.standardInput.read(upToCount: 100_001) ?? Data()
+        guard data.count <= 100_000, let body = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let workID = body["workID"] as? String else { throw HelperError.message("Invalid task chat") }
+        let task = try roundtripTask(workID)
+        guard task.row["workRevision"] as? String == body["revision"] as? String else { throw HelperError.message("The task changed. Read fresh context before planning.") }
+        let links = try WorkSessionLinks.load(WorkSessionLinks.defaultURL())
+        guard let sessions = body["sessions"] as? [[String: Any]], sessions.count <= 12,
+              sessions.allSatisfy({ row in
+                guard let id = row["id"] as? String else { return false }
+                return links[id]?.workID == workID
+              }) else { throw HelperError.message("Task connections changed. Nothing was dispatched.") }
+        guard let response = request("/api/work/chat", method: "POST", token: try readToken(),
+                                    body: String(decoding: data, as: UTF8.self), timeout: 55), response.status == 200,
+              let answer = response.body, answer["protocolVersion"] as? Int == 1 else {
+            throw HelperError.message("Task chat planning is unavailable on this server. No assignment was sent.")
+        }
+        emit(ok: true, message: "Task chat", details: answer)
     }
 
     private func emitWorkNew() throws {

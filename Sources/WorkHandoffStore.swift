@@ -63,12 +63,13 @@ struct WorkContributor: Identifiable {
     let historicalResult: String?
     /// Only supplied by the fresh observation list. Saved receipts never imply live activity.
     let session: WorkSession?
+    var rememberedTitle: String? = nil
     var historical: Bool
     var provider: String { String(id.split(separator: ":")[0]) }
-    var title: String { session?.title ?? receipt?.sessionTitle ?? String(id.split(separator: ":").last?.prefix(8) ?? "") }
+    var title: String { session?.title ?? rememberedTitle ?? receipt?.sessionTitle ?? String(id.split(separator: ":").last?.prefix(8) ?? "") }
 }
 enum WorkContributorProjection {
-    static func rows(workID: String, links: [String: WorkSessionCardLink], receipts: [WorkHandoffReceipt], observed: [WorkSession]) -> [WorkContributor] {
+    static func rows(workID: String, links: [String: WorkSessionCardLink], receipts: [WorkHandoffReceipt], observed: [WorkSession], remembered: [WorkSession] = [], titles: [String: String] = [:]) -> [WorkContributor] {
         let mine = receipts.filter { $0.workID == workID }
         var newest: [String: WorkHandoffReceipt] = [:]
         for row in mine {
@@ -88,6 +89,7 @@ enum WorkContributorProjection {
             return WorkContributor(id: id, link: link?.workID == workID ? link : nil, receipt: newest[id],
                 historicalResult: earlier,
                 session: observed.first { $0.id.lowercased() == id },
+                rememberedTitle: titles[id] ?? remembered.first { $0.id.lowercased() == id }?.title,
                 historical: link != nil && link?.workID != workID)
         }
     }
@@ -170,6 +172,7 @@ struct WorkHandoffReceipt: Identifiable, Codable, Sendable {
     /// 0.5.252: "glasses" when Control sent this for a request left on the server by the glasses (Start work, Reply by
     /// voice, Not done yet), and that request's id (its clientRequestId). Optional, never a new status: the server
     /// projects both, and an older journal reads them as absent.
+    var orchestrationRunID: String? = nil
     var requestedFrom: String?
     var requestId: String?
     /// 0.5.254: the card's files this handoff carried (WorkCardFiles.swift), so a Continue or Fork sends only what is new
@@ -336,7 +339,11 @@ struct WorkGlassesRequest: Equatable, Sendable {
     private let storageURL: URL
     private let transport: Transport
     private var storageReady = true
+    @Published private(set) var identityCacheError: String?
+    private var rememberedTitles: [String: String] = [:]
+    private var identityURL: URL { storageURL.deletingPathExtension().appendingPathExtension("identity.json") }
     private var serverInstanceID: String?
+    var taskChatServerID: String? { serverInstanceID }
     /// 0.5.252: a send for the glasses is in progress. It does not take `busy`, so the Agent workspace stays usable
     /// (nothing is disabled mid-typing, an open dropdown stays open); a send from the Mac waits its turn with a line.
     private(set) var quietSend = false
@@ -362,7 +369,7 @@ struct WorkGlassesRequest: Equatable, Sendable {
         self.cardFiles = cardFiles ?? (isolated ? .preview() : storageURL == nil ? WorkCardFileStore(root: ProcessInfo.processInfo.environment["COS_CONTROL_TEST_HOME"].map { URL(fileURLWithPath: $0).appendingPathComponent("work-context") } ?? WorkCardFiles.defaultRoot()) : WorkCardFileStore(root: nil))
         let helper = HelperClient()
         self.transport = transport ?? { args, data in
-            try await helper.run(args, timeout: args.first == "session-chat-fork" ? 310 : (args.first == "work-new" ? 85 : 45), stdinData: data)
+            try await helper.run(args, timeout: args.first == "session-chat-fork" ? 310 : (args.first == "work-new" ? 85 : (args.first == "work-chat" ? 65 : 45)), stdinData: data)
         }
         let base: URL
         if isolated {
@@ -376,6 +383,7 @@ struct WorkGlassesRequest: Equatable, Sendable {
         do { try reloadSessionCards(); hiddenNotices = try WorkSessionLinks.loadNotices(noticesURL) }
         catch { self.error = "Session associations could not be read: \(error.localizedDescription)" }
         do { try loadJournal() } catch { storageReady = false; self.error = "Handoff history could not be read. Sending is disabled: \(error.localizedDescription)" }
+        if let data = try? WorkSessionLinks.chatRead(identityURL), let names = try? JSONDecoder().decode([String: String].self, from: data), names.count <= 10000 { rememberedTitles = names }
         if isolated {
             selectedWorkID = "sample-task-website"
             if sessions.isEmpty { sessions = Self.sampleSessions }
@@ -431,8 +439,13 @@ struct WorkGlassesRequest: Equatable, Sendable {
         } catch { self.error = "The session link could not be saved: \(error.localizedDescription)"; return false }
     }
 
+    func taskChatCall(_ args: [String], data: Data? = nil) async throws -> [String: JSONValue] { try await call(args, data) }
+    func automaticChatTarget(_ id: String) -> Bool {
+        ["claude", "codex"].contains(String(id.split(separator: ":")[0])) && Self.appOwner(of: id, in: receipts) == nil
+    }
+
     func contributors(workID: String) -> [WorkContributor] {
-        WorkContributorProjection.rows(workID: workID, links: confirmedSessionCards, receipts: receipts, observed: observedSessions())
+        WorkContributorProjection.rows(workID: workID, links: confirmedSessionCards, receipts: receipts, observed: observedSessions(), remembered: sessions + activitySessions, titles: rememberedTitles)
     }
     /// Historical contributors also retain manual stage ownership after an unlink/remap.
     func contributorIDs(workID: String) -> Set<String> {
@@ -978,7 +991,7 @@ struct WorkGlassesRequest: Equatable, Sendable {
             if let activityError { throw failure(activityError) }
             // Preserve exact receipt-bound targets even if discovery has aged them out. 0.5.250: a listed session the live
             // list gives by a short id takes the full id its receipt names, so the picker lists it once.
-            let linked = Set(receipts.compactMap(\.sessionID))
+            let linked = Set(receipts.compactMap(\.sessionID)).union(confirmedSessionCards.keys)
             let fresh = Self.canonicalSessions(activitySessions, linked: linked)
             sessions = fresh + sessions.filter { previous in
                 linked.contains(previous.id) && !fresh.contains(where: { ClaudeSession.sameSession($0.id, previous.id) })
@@ -999,6 +1012,20 @@ struct WorkGlassesRequest: Equatable, Sendable {
                 let fresh = rows.compactMap(WorkSession.parse)
                 guard fresh.count == rows.count else { throw self.failure("Some session activity could not be read.") }
                 self.activitySessions = fresh; self.activityCheckedAt = Date(); self.activityError = nil
+                // Identity cache is separate from delivery history. Discovery cannot rewrite receipts or drafts.
+                let linked = Set(self.receipts.compactMap(\.sessionID)).union(self.confirmedSessionCards.keys)
+                for row in fresh where linked.contains(row.id) && !row.title.isEmpty { self.rememberedTitles[row.id] = String(row.title.prefix(300)) }
+                do {
+                    let old = try WorkSessionLinks.chatRead(self.identityURL)
+                    var names = try old.map { try JSONDecoder().decode([String: String].self, from: $0) } ?? [:]
+                    guard names.count <= 10000 else { throw WorkSessionLinks.Failure.corrupt }
+                    for (id,title) in self.rememberedTitles { names[id] = title }
+                    guard names.count <= 10000 else { throw WorkSessionLinks.Failure.corrupt }
+                    let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+                    let next = try encoder.encode(names)
+                    if next != old { try WorkSessionLinks.chatWrite(self.identityURL, data: next, expected: old) }
+                    self.rememberedTitles = names; self.identityCacheError = nil
+                } catch { self.identityCacheError = "Chat names are available for this visit, but their cache could not be saved. The existing file was preserved." }
             } catch {
                 self.activityError = "Session activity unavailable. Showing saved handoff history."
                 self.activitySessions = []; self.activityCheckedAt = nil
@@ -1025,7 +1052,7 @@ struct WorkGlassesRequest: Equatable, Sendable {
     /// it is marked reviewed only once the new handoff is on its way (never when the send was refused or failed).
     /// `resendAllFiles` (0.5.254, "Send all N again"): a Continue or Fork carries every file on the card, not only new ones.
     func submit(source: WorkSource, mode: WorkHandoffMode, session: WorkSession?, model: WorkModelChoice?, prompt: String,
-                journalPrompt: String? = nil, origin: WorkRequestOrigin? = nil, replacing: String? = nil, resendAllFiles: Bool = false) async {
+                journalPrompt: String? = nil, origin: WorkRequestOrigin? = nil, replacing: String? = nil, resendAllFiles: Bool = false, orchestrationRunID: String? = nil, intentID suppliedID: String? = nil) async {
         guard !busy else { return }
         // 0.5.252: one send at a time. A send for the glasses does not take `busy` (the Agent workspace stays usable).
         guard !quietSend else { if origin == nil { _ = refusedForGlassesSend() }; return }
@@ -1045,7 +1072,7 @@ struct WorkGlassesRequest: Equatable, Sendable {
             guard storageReady else { throw failure("History is unavailable; sending is disabled.") }
             let lock = try lockJournal(); defer { flock(lock, LOCK_UN); close(lock) }
             try loadJournal()
-            guard !receipts(for: source.id).contains(where: { $0.blocksNewHandoff && !($0.id == replacing && $0.status == "delivered") }) else { throw failure("This work already has an active or unresolved handoff. Inspect its receipt before starting another.") }
+            guard !receipts(for: source.id).contains(where: { $0.blocksNewHandoff && !($0.id == replacing && $0.status == "delivered") && !(orchestrationRunID != nil && $0.orchestrationRunID == orchestrationRunID && $0.sessionID != session?.id && ["running", "queued", "delivered"].contains($0.status)) }) else { throw failure("This work already has an active or unresolved handoff. Inspect its receipt before starting another.") }
             let text = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty, text.utf16.count <= Self.draftLimit, !source.id.isEmpty, !source.revision.isEmpty else { throw failure("Provide a bounded instruction and source revision.") }
             // 0.5.247: the status line the session reports back with, added here so no draft can leave it out.
@@ -1089,7 +1116,8 @@ struct WorkGlassesRequest: Equatable, Sendable {
             if origin != nil, prefill { throw failure(WorkRequestOrigin.cursorNeedsMac) }
             // 0.5.254: a Cursor link keeps every path; a file list too long for it is refused before anything is recorded.
             if prefill, !Self.cursorPrefillFits(sent, tag: tag, instruction: instruction) { throw failure(Self.cursorFilesTooLong) }
-            let id = UUID().uuidString.lowercased()
+            let id = suppliedID ?? UUID().uuidString.lowercased()
+            guard UUID(uuidString: id) != nil, !receipts.contains(where: { $0.id == id }) else { throw failure("This assignment already has a receipt. Check its status; it was not resent.") }
             var row = WorkHandoffReceipt(id: id, workID: source.id, workTitle: source.title, sourceRevision: source.revision,
                 mode: mode, provider: mode == .newSession ? model!.provider : session!.provider,
                 modelID: mode == .newSession ? model!.id : "existing-session", sessionID: mode == .newSession ? nil : session?.id,
@@ -1097,6 +1125,7 @@ struct WorkGlassesRequest: Equatable, Sendable {
                 prompt: mode == .newSession ? WorkCardFiles.compose(text: journalPrompt ?? text, block: files.block, instruction: instruction) : sent,
                 createdAt: Date().timeIntervalSince1970,
                 sourceSessionID: session?.id, serverInstanceID: serverInstanceID)
+            row.orchestrationRunID = orchestrationRunID
             if let origin { row.requestedFrom = "glasses"; row.requestId = origin.requestID }
             var progress = WorkProgress(tag: tag)
             progress.record(.sent, Self.sentText(mode: mode, session: session, model: model, prefill: prefill), at: row.createdAt)
@@ -2205,7 +2234,7 @@ struct WorkGlassesRequest: Equatable, Sendable {
             serverInstanceID = instance
             models = fresh
             activitySessions = listed; activityCheckedAt = Date(); activityError = nil
-            let linked = Set(receipts.compactMap(\.sessionID))
+            let linked = Set(receipts.compactMap(\.sessionID)).union(confirmedSessionCards.keys)
             let canonical = Self.canonicalSessions(listed, linked: linked)
             sessions = canonical + sessions.filter { previous in
                 linked.contains(previous.id) && !canonical.contains(where: { ClaudeSession.sameSession($0.id, previous.id) })

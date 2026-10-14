@@ -100,6 +100,15 @@ enum WorkSessionLinks {
             return notices
         }
     }
+    /// Private, per-task chat state shares the same no-follow locking and fsync writer.
+    static func chatRead(_ url: URL) throws -> Data? { try withLock(url) { try readData(url) } }
+    static func chatWrite(_ url: URL, data: Data, expected: Data?) throws {
+        guard data.count < limit else { throw Failure.corrupt }
+        try withLock(url) {
+            guard try readData(url) == expected else { throw Failure.conflict }
+            try write(data, to: url)
+        }
+    }
     private static func readNotices(_ url: URL) throws -> [String: WorkNoticeDismissal] {
         guard let data = try readData(url) else { return [:] }
         guard let result = try? JSONDecoder().decode([String: WorkNoticeDismissal].self, from: data),

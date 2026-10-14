@@ -94,6 +94,7 @@ import CoreText
         }, move: { _, _ in moves += 1 }, readFresh: { true }), notify: { _ in }, now: { Date(timeIntervalSince1970: 20) })
         await tracker.tick()
         precondition(moves == 0 && store.receipts.first?.progress?.pendingStage == nil, "A queued single-session move cannot move a shared task")
+        try await runWorkOrchestrationChecks()
         try await runWorkActivityChecks()
         try await runWorkBoardCacheChecks()
         try WorkTaskContextChecks.main()

@@ -1262,6 +1262,7 @@ struct WorkBoardSearchField: View {
 }
 
 struct WorkWorkspaceView: View {
+    @StateObject private var taskChat = WorkTaskChatStore()
     @State private var copiedWorkNote: String?
     @State private var yourMoveAnswerID: String?
     @State private var yourMoveAnswer = ""
@@ -2756,7 +2757,10 @@ struct WorkWorkspaceView: View {
                     COSMarkdownBlockView(block: block)
                 }
                 if let review = item.review { reviewTail(review) }
-                if let task = item.task { taskBody(task) }
+                if let task = item.task {
+                    taskBody(task)
+                    WorkTaskChatView(chat:taskChat,handoff:handoffStore,source:.taskSnapshot(task),onOpenSession:onOpenSession)
+                }
             }.frame(maxWidth: .infinity, alignment: .leading).padding(22)
           }
         }
