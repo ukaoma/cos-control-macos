@@ -2685,7 +2685,13 @@ struct WorkWorkspaceView: View {
                   "Owner: " + (task.owner.isEmpty ? "Unknown" : task.owner), task.dueDate.isEmpty ? "" : "Due " + task.dueDate].filter { !$0.isEmpty }.joined(separator: " · "))
                 .font(COSType.body(11)).foregroundStyle(COSPalette.muted)
             ForEach(handoffStore.confirmedSessionCards.keys.filter { handoffStore.confirmedSessionCards[$0]?.workID == task.workSourceID }.sorted(), id: \.self) { sessionID in
-                Button("Open linked session") { onOpenSession(sessionID) }.buttonStyle(COSTextButtonStyle())
+                let session = handoffStore.sessions.first { $0.id == sessionID }
+                let parts = sessionID.split(separator: ":", maxSplits: 1)
+                let provider = session?.provider ?? parts.first.map(String.init) ?? "session"
+                let title = session?.title.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                let identity = parts.count == 2 ? String(parts[1].prefix(8)) : sessionID
+                Button("Open " + provider.capitalized + " · " + (title.isEmpty ? identity : title)) { onOpenSession(sessionID) }
+                    .buttonStyle(COSTextButtonStyle()).lineLimit(1).help("Open linked session " + sessionID)
             }
             if let error = task.workMetadataError { Text(error).font(COSType.body(12)).foregroundStyle(COSPalette.danger) }
         }

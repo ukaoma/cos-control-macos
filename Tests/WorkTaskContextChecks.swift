@@ -11,6 +11,18 @@ import Foundation
             "meetingRefs": .array([.object(["recordId": .string("ops:quilt:2026-10:call.md"), "domain": .string("quilt"),
                 "month": .string("2026-10"), "filename": .string("call.md"), "title": .string("Linked meeting")])])
         ]))!
+        let resources = FileManager.default.temporaryDirectory.appendingPathComponent("cos-context-helper-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: resources, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: resources) }
+        let candidateHelper = resources.appendingPathComponent("cos-control-helper")
+        try Data("fixture only".utf8).write(to: candidateHelper)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: candidateHelper.path)
+        let bundled = try WorkTaskContext.resolveHelperPath(resourceURL: resources, isApp: true)
+        precondition(bundled == candidateHelper.path, "Candidate copy uses its bundled helper, not the old installed app")
+        let fallback = try WorkTaskContext.resolveHelperPath(resourceURL: nil, isApp: false)
+        precondition(fallback == WorkTaskContext.installedHelperPath, "Non-app fixture has the supported installed path")
+        do { _ = try WorkTaskContext.resolveHelperPath(resourceURL: nil, isApp: true); preconditionFailure("Broken app silently used another helper") }
+        catch { precondition(error.localizedDescription.contains("missing its Work helper"), "Broken app gives an actionable failure") }
         let text = try WorkTaskContext.text(row)
         precondition(text.contains("Work ID: task:quilt:420a0114f1a9"), "Uses canonical Work ID, not mutable row ID")
         precondition(text.contains("--work-id 'task:quilt:420a0114f1a9'"), "Every command resolves canonical identity")
@@ -40,6 +52,6 @@ import Foundation
         do { _ = try WorkTaskClipboard.copy(malformed, context: false, to: pasteboard); preconditionFailure("Bad ID copied") }
         catch { precondition(pasteboard.string(forType: .string) == text, "Refusal preserves clipboard") }
         precondition(row.workStage == "qa" && row.workRevision == String(repeating: "a", count: 64), "Copy performs no task mutation")
-        print("PASS: Work task context (19 assertions): canonical ID, JSON source grounding, current-CAS instructions, shell arguments and private clipboard")
+        print("PASS: Work task context (22 assertions): canonical ID, JSON source grounding, current-CAS instructions, shell arguments and private clipboard")
     }
 }

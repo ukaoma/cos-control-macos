@@ -4,7 +4,16 @@ import Foundation
 /// Clipboard handoff data. The canonical writer revision and the display snapshot hash have different jobs;
 /// only a freshly resolved workRevision may be used for a task change. Exporting never writes or registers a session.
 enum WorkTaskContext {
-    static let helperPath = "/Applications/COS Control.app/Contents/Resources/cos-control-helper"
+    static let installedHelperPath = "/Applications/COS Control.app/Contents/Resources/cos-control-helper"
+
+    /// Copied commands must use this app's helper, including isolated candidates or renamed installations.
+    /// Non-app command-line fixtures retain the supported installed path; a broken app fails explicitly.
+    static func resolveHelperPath(resourceURL: URL?, isApp: Bool) throws -> String {
+        if let candidate = resourceURL?.appendingPathComponent("cos-control-helper"),
+           FileManager.default.isExecutableFile(atPath: candidate.path) { return candidate.path }
+        guard !isApp else { throw ContextError.invalidTask("This COS Control app is missing its Work helper. Reinstall the complete app before copying context.") }
+        return installedHelperPath
+    }
 
     static func canExport(_ task: TaskRow) -> Bool {
         let domain = task.domain
@@ -40,7 +49,7 @@ enum WorkTaskContext {
         guard let json = String(data: raw, encoding: .utf8) else { throw ContextError.invalidTask("Could not encode task context.") }
         // A meeting title or task body containing a Markdown fence cannot escape this evidence block.
         let quoted = json.replacingOccurrences(of: "`", with: "\\u0060")
-        let command = shellArgument(helperPath)
+        let command = shellArgument(try resolveHelperPath(resourceURL: Bundle.main.resourceURL, isApp: Bundle.main.bundleURL.pathExtension == "app"))
         let key = shellArgument(task.workSourceID)
         return """
         Use this existing COS Work task as the context for this session.
