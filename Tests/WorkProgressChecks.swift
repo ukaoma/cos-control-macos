@@ -731,7 +731,7 @@ private func stamp(_ seconds: Double) -> String { WorkProgress.stamp(seconds) }
         tabbed.appOpen = nil
         precondition(WorkHandoffStore.appOwner(of: "claude:" + id, in: [tabbed])?.id == "r")
         // The card's button.
-        precondition(WorkHandoffStore.appOpenButton(r) == nil && WorkHandoffStore.appOpenButton(opened) == "Open again")
+        precondition(WorkHandoffStore.appOpenButton(r) == "Open in Claude" && WorkHandoffStore.appOpenButton(opened) == "Open again")
         precondition(WorkHandoffStore.appOpenButton(skipped) == "Open in Claude")
         var running = opened; running.status = "running"
         precondition(WorkHandoffStore.appOpenButton(running) == nil, "never while running")
@@ -792,6 +792,7 @@ private func stamp(_ seconds: Double) -> String { WorkProgress.stamp(seconds) }
         try await suite.t10()
         try await suite.t11()
         try await suite.t12()
+        try await suite.t13DeliveryAfterDone()
     }
 }
 
@@ -1380,7 +1381,7 @@ extension TrackerSuite {
             await store.followToApp(try row(store, idA).id)
             let r = try row(store, idA)
             check(opened.urls.map(\.absoluteString) == ["codex://threads/" + codexID] && r.appOpen?.openedAt != nil, "\(opened.urls)")
-            check(WorkHandoffView.whereItRunsNote(r) == "Opened in Codex. Continue there.")
+            check(WorkHandoffView.whereItRunsNote(r) == WorkHandoffStore.openedText("codex"))
 
             let (failed, failedTransport, _, _, _, _, failedOpened) = appSetUp("app-failed")
             failed.models = [frontier]
@@ -1557,7 +1558,7 @@ extension TrackerSuite {
             let encoded = try require(codexNote.prompt.addingPercentEncoding(withAllowedCharacters: WorkHandoffStore.linkQueryAllowed))
             check(codexOpened.urls.last?.absoluteString == "codex://threads/\(codexID)?prompt=" + encoded && codexOpened.clipboard.isEmpty)
             let codexTurns = await codexTransport.count("session-chat-send")
-            check(codexNote.detail == "Opened in Codex with your note filled in. Press Send there." && codexTurns == 0)
+            check(codexNote.detail == "Asked Codex to open this session with your note filled in. Press Send there once it appears." && codexTurns == 0)
 
             // Cursor (0.5.253): a Continue runs no turn. A new Cursor chat opens with the note filled in (Cursor's link cannot
             // open an existing chat); once it is sent there, the tracker finds that chat and follows it.
@@ -2848,4 +2849,52 @@ extension TrackerSuite {
         check(written28.receipts.first { $0.id == id28 }?.appOpen?.openedAt != nil, "the next tracker pass writes it")
     }
 
+}
+
+
+extension TrackerSuite {
+    /// Regression: the October13 Work fork emitted its done line while the CLI was still
+    /// flushing. Progress then stopped being tracked and the app never read the completed job.
+    func t13DeliveryAfterDone() async throws {
+        let (store, transport, _, clock, tracker, _, opened) = appSetUp("done-before-cli-close", passes: 0)
+        store.models = [frontier]
+        await transport.setJob(provider: "codex", session: codexID)
+        await store.submit(source: source(idA), mode: .newSession, session: one, model: frontier, prompt: "Review the growth plan")
+        await store.newSessionLink?.value
+        let started = try row(store, idA)
+        await transport.setRead(replies: [("COS-WORK \(idA): done: Review brief checked.", stamp(started.createdAt + 1))],
+                                prompts: [(head(started.prompt), stamp(started.createdAt))])
+        clock.offset += 3
+        await tracker.tick()
+        let reported = try row(store, idA)
+        check(reported.progress?.reported == .done && reported.status == "running", "done is not process completion")
+        check(tracker.candidates(now: clock.now().timeIntervalSince1970).isEmpty, "semantic tracking has ended")
+        check(tracker.deliveryCandidates(now: clock.now().timeIntervalSince1970).contains { $0.id == started.id }, "delivery still needs reconciliation")
+        check(opened.urls.isEmpty && WorkHandoffStore.serverHolds(reported), "never expose a second writer before job completion")
+        check(WorkHandoffView.whereItRunsNote(reported)?.contains("checking that its background process has finished") == true, "done versus process exit is explained")
+        await transport.setJobResult("Final review brief")
+        await tracker.tick()
+        let completed = try row(store, idA)
+        check(completed.status == "completed" && !completed.blocksNewHandoff, "authoritative completion removes running fence")
+        check(completed.result == "Final review brief" && completed.appOpen?.openedAt != nil, "final result remains accessible")
+        check(opened.urls.map(\.absoluteString) == ["codex://threads/" + codexID], "exact child link, no duplicate session or prompt")
+        await tracker.tick()
+        check(opened.urls.count == 1, "automatic dispatch is exactly once")
+        await store.reopenInApp(receiptID: completed.id)
+        check(opened.urls.count == 2, "explicit retry opens the same completed child")
+        let starts = await transport.count("work-new"), sends = await transport.count("session-chat-send")
+        check(starts == 1 && sends == 0, "recovery never sends another model turn")
+
+        let (failed, failedTransport, _, _, failedTracker, _, _) = appSetUp("dispatch-failure-after-done", passes: 0)
+        failed.models = [frontier]
+        await failedTransport.setJob(provider: "codex", session: codexID)
+        await failedTransport.setJobResult("Review result remains available")
+        failed.openURL = { _ in false }
+        await failed.submit(source: source(idA), mode: .newSession, session: nil, model: frontier, prompt: "Review")
+        await failed.newSessionLink?.value
+        await failedTracker.tick()
+        let refusal = try row(failed, idA)
+        check(refusal.status == "completed" && refusal.appOpen?.openedAt == nil && refusal.appOpen?.skipped == "open_failed", "open rejection does not turn completed work into running or claim app ownership")
+        check(refusal.result == "Review result remains available" && WorkHandoffStore.appOpenButton(refusal) == "Open in Codex", "result and explicit retry survive dispatch failure")
+    }
 }

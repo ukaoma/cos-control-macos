@@ -80,7 +80,8 @@ struct WorkAppOpen: Codable, Equatable, Sendable {
     /// When the server's run finished (its completedAt, or when Control first saw it finished). The session opens a
     /// few seconds after this, never while the run is still going.
     var runEndedAt: Double? = nil
-    /// When Control opened the session in its app.
+    /// When Control dispatched the app link successfully. This protects against a second writer;
+    /// LaunchServices accepting a Codex link does not prove its tab is visible.
     var openedAt: Double? = nil
     /// Why it was not opened by itself (WorkHandoffStore.appSkipText). Nil while it may still open.
     var skipped: String? = nil
@@ -1101,7 +1102,11 @@ struct WorkGlassesRequest: Equatable, Sendable {
     }
     /// Where a provider's session opens, as the card says it: its app (0.5.253: Cursor's too, never Terminal).
     nonisolated static func openPlace(_ provider: String) -> String { appName(provider) }
-    nonisolated static func openedText(_ provider: String) -> String { "Opened in \(openPlace(provider)). Continue there." }
+    nonisolated static func openedText(_ provider: String) -> String {
+        provider == "codex"
+            ? "Asked Codex to open this session. If it did not appear, use Open again or inspect it in Control."
+            : "Opened in \(openPlace(provider)). Continue there."
+    }
     /// Unreserved URL characters only (RFC 3986), in ASCII: everything else is percent-encoded, including non-ASCII
     /// letters, which `.alphanumerics` would let through.
     nonisolated static let linkQueryAllowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
@@ -1212,7 +1217,8 @@ struct WorkGlassesRequest: Equatable, Sendable {
         receipts.first { row in serverHolds(row) && (row.sessionID.map { ClaudeSession.sameSession($0, id) } ?? false) }
     }
     /// The card's button: Open again once it opened (or for a note you have not sent yet, or a Cursor chat filled in and
-    /// not sent), "Open in <app>" when it did not open by itself. Nil while it still may, when it has no session, and
+    /// not sent), "Open in <app>" when it did not open by itself. A completed job can always be retried,
+    /// even before the auto-open pass. Nil when it has no session, and
     /// while its run is still going. 0.5.253: a Cursor run from 0.5.249 to 0.5.252 has none (Terminal is not offered).
     nonisolated static func appOpenButton(_ r: WorkHandoffReceipt) -> String? {
         if r.channel == "app" { return r.status == "queued" && r.sessionID != nil ? "Open again" : nil }
@@ -1220,7 +1226,6 @@ struct WorkGlassesRequest: Equatable, Sendable {
         guard appProviders.contains(r.provider) else { return nil }
         guard r.mode == .newSession, r.channel == "job", let open = r.appOpen, r.status == "completed", r.sessionID != nil else { return nil }
         if open.openedAt != nil { return "Open again" }
-        guard open.skipped != nil else { return nil }
         return "Open in \(appName(r.provider))"
     }
     /// Why a session did not open by itself, for the card. Nil when the card already says why (a run that failed).
@@ -1468,7 +1473,9 @@ struct WorkGlassesRequest: Equatable, Sendable {
             error = nil
             return
         }
-        guard let sessionID = row.sessionID, let native = Self.nativeID(sessionID) else { return }
+        guard !appOpening.contains(row.id), let sessionID = row.sessionID, let native = Self.nativeID(sessionID) else { return }
+        appOpening.insert(row.id)
+        defer { appOpening.remove(row.id) }
         let note = row.channel == "app" ? row.prompt : nil
         let place = Self.openPlace(row.provider)
         switch await appTarget(provider: row.provider, native: native, note: row.provider == "codex" ? note : nil) {
@@ -1534,7 +1541,7 @@ struct WorkGlassesRequest: Equatable, Sendable {
                 row.status = "refused"; row.detail = "\(place) could not be opened. Nothing was sent."; return
             }
             row.status = "queued"
-            row.detail = session.provider == "codex" ? "Opened in Codex with your note filled in. Press Send there."
+            row.detail = session.provider == "codex" ? "Asked Codex to open this session with your note filled in. Press Send there once it appears."
                                                      : "Opened in \(place). Your note is on the clipboard. Paste it there."
             row.detail += contextWarning
         }

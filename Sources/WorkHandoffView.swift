@@ -153,7 +153,12 @@ struct WorkHandoffView: View {
             let place = WorkHandoffStore.openPlace(receipt.provider)
             if open.openedAt != nil { return WorkHandoffStore.openedText(receipt.provider) }
             if let skipped = open.skipped { return WorkHandoffStore.appSkipText(skipped, provider: receipt.provider) }
-            if receipt.blocksNewHandoff { return "Running in the background. It opens in \(place) when the first reply is done." }
+            if receipt.blocksNewHandoff {
+                if receipt.progress?.reported == .done {
+                    return "The session reported done. COS is checking that its background process has finished before opening it in \(place)."
+                }
+                return "Running in the background. It opens in \(place) when the first reply is done."
+            }
             return receipt.status == "completed" ? "The first reply is done. Opening it in \(place)." : nil
         }
         guard ["claude", "codex"].contains(receipt.provider) else { return nil }

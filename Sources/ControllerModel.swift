@@ -5095,6 +5095,7 @@ final class ControllerModel: ObservableObject {
            url.scheme?.lowercased() == "codex",
            codexThreadID(from: url) != nil,
            NSWorkspace.shared.open(url) {
+            petNotice = "Asked Codex to open this session. If its tab did not appear, the conversation is available here in Control."
             return
         }
         if let appURL {

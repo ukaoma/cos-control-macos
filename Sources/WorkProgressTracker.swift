@@ -124,7 +124,7 @@ struct WorkBoardReads: Equatable, Sendable {
             while !Task.isCancelled {
                 guard let self else { return }
                 await self.tick()
-                let busy = !self.candidates(now: self.now().timeIntervalSince1970).isEmpty || !self.deferred.isEmpty
+                let busy = !self.candidates(now: self.now().timeIntervalSince1970).isEmpty || !self.deliveryCandidates(now: self.now().timeIntervalSince1970).isEmpty || !self.deferred.isEmpty
                 let seconds = busy ? Self.activeInterval : Self.idleInterval
                 let nap = Task<Void, Never> { try? await Task.sleep(for: .seconds(seconds)) }
                 self.sleeper = nap
@@ -145,6 +145,17 @@ struct WorkBoardReads: Equatable, Sendable {
             WorkProgress.tracked(row, now: now) && !complete.contains(row.workID) && isNewest(row)
         }
     }
+    /// A status line is a semantic progress signal, not proof that the CLI process ended.
+    /// Reconcile the transport independently after a reported done/blocked line, after a newer
+    /// handoff, and after the task moved to QA. Only the authoritative receipt releases its writer.
+    func deliveryCandidates(now: Double) -> [WorkHandoffReceipt] {
+        store.receipts.filter { row in
+            row.blocksNewHandoff && row.status != "delivered"
+                && ["job", "turn", "fork", "queue"].contains(row.channel ?? "")
+                && now - row.createdAt < WorkProgress.trackedDays * 86_400
+        }
+    }
+
     private func isNewest(_ row: WorkHandoffReceipt) -> Bool {
         !store.receipts.contains { $0.workID == row.workID && $0.id != row.id && $0.createdAt > row.createdAt }
     }
@@ -162,6 +173,7 @@ struct WorkBoardReads: Equatable, Sendable {
             await attemptMove(row.id)
         }
         postFailures()
+        await store.reconcileForTracking(ids: Set(deliveryCandidates(now: start).map(\.id)), now: start)
         let open = candidates(now: start)
         if !open.isEmpty { await trackPass(open, start: start) }
         // 0.5.249: a New session whose first reply is done opens in its app, tracked or not (a done first reply ends
@@ -175,8 +187,6 @@ struct WorkBoardReads: Equatable, Sendable {
 
     /// One pass over the handoffs being followed.
     private func trackPass(_ open: [WorkHandoffReceipt], start: Double) async {
-        await store.reconcileForTracking(ids: Set(open.map(\.id)), now: start)
-
         // One read per session, backing off while a session stays quiet.
         var reads: [String: SessionRead] = [:]
         let sessions = Set(open.compactMap(WorkProgress.workingSession))
