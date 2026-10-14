@@ -1,3 +1,10 @@
+## 0.5.296 (build 349), distribution candidate
+
+- Acquire a process-held UI lease before ControllerModel starts. A second current copy exits after activating the existing app; crashes release the lease automatically.
+- The canonical installed app asks a legacy signed rollback copy to quit normally. A launch observer catches legacy copies started after it. Only copies matching Control's designated signing requirement qualify; no force kill or server lifecycle operations.
+- The updater unregisters its rollback copy and registers the installed bundle. Canonical startup also repairs LaunchServices registration without changing the user's login preference.
+- Native cross-process lease, release, symlink refusal and legacy-copy policy checks are mandatory in the release builder. Includes 0.5.295 Work improvements; publication remains separate from this source candidate.
+
 ## 0.5.289 (build 342), public release
 
 - Settings has a Transcription card: Preview model (live chunks), HQ model (saved meetings), Second opinion (with Off), and a Refine with second opinion switch. The server lists the choices; one it cannot run yet is shown muted with its reason and cannot be picked.

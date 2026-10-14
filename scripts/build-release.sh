@@ -24,6 +24,7 @@ trap 'rm -rf "$BUILD_DIR"' EXIT
 # 0.5.254: a build whose Work board rebuilds itself on a resize is not released (Tests/run-work-board-perf.sh; counts,
 # never milliseconds).
 "$ROOT/Tests/run-work-board-perf.sh" --gate
+"$ROOT/Tests/run-control-instance.sh"
 
 rm -rf "$ZIP" "$ZIP.sha256"
 mkdir -p "$BUILD_DIR" "$APP/Contents/MacOS" "$APP/Contents/Resources" "$DIST_DIR"
@@ -48,7 +49,7 @@ mkdir -p "$BUILD_DIR" "$APP/Contents/MacOS" "$APP/Contents/Resources" "$DIST_DIR
   "$ROOT/Sources/SessionPet.swift" \
   "$ROOT/Sources/Control2Foundation.swift" "$ROOT/Sources/WorkHandoffStore.swift" "$ROOT/Sources/WorkSessionLinks.swift" "$ROOT/Sources/WorkProgress.swift" "$ROOT/Sources/WorkCardFiles.swift" "$ROOT/Sources/WorkProgressTracker.swift" "$ROOT/Sources/WorkTrackingViews.swift" "$ROOT/Sources/WorkHandoffView.swift" "$ROOT/Sources/WorkReviewStore.swift" "$ROOT/Sources/WorkWorkspaceView.swift" "$ROOT/Sources/WorkTaskChat.swift" "$ROOT/Sources/WorkTaskContext.swift" "$ROOT/Sources/PermissionGuideModel.swift" "$ROOT/Sources/PermissionGuideSystem.swift" "$ROOT/Sources/PermissionFlowVendored.swift" "$ROOT/Sources/PermissionDragFlow.swift" "$ROOT/Sources/PermissionGuideViews.swift" "$ROOT/Sources/ProviderConnectModel.swift" "$ROOT/Sources/ProviderConnectViews.swift" \
   "$ROOT/Sources/ControlSetup.swift" \
-  "$ROOT/Sources/COSControlApp.swift" \
+  "$ROOT/Sources/ControlInstance.swift" "$ROOT/Sources/COSControlApp.swift" \
   -framework SwiftUI -framework AppKit -framework ServiceManagement \
   -o "$APP/Contents/MacOS/COS Control"
 

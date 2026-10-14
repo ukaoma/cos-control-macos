@@ -129,7 +129,7 @@ python3 "$ROOT/Tests/reuse-compile.py" --root "$ROOT" --receipt "$TMP/app-compil
   "$ROOT/Sources/SessionLiveFeed.swift" "$ROOT/Sources/LiveTranscript.swift" \
   "$ROOT/Sources/SessionPet.swift" \
   "$ROOT/Sources/ControlSetup.swift" \
-  "$ROOT/Sources/COSControlApp.swift" \
+  "$ROOT/Sources/ControlInstance.swift" "$ROOT/Sources/COSControlApp.swift" \
   -framework SwiftUI -framework AppKit -framework ServiceManagement \
   -o "$TMP/COS Control"
 
@@ -1073,8 +1073,8 @@ echo "    manual update check: button, method, and all three outcomes"
 /usr/bin/grep -q 'struct LibrarySearchHit' "$ROOT/Sources/Models.swift"
 /usr/bin/grep -q 'Search topics, ideas' "$ROOT/Sources/ActivityMeetings.swift"
 /usr/bin/grep -q 'Views into the work' "$ROOT/Sources/ActivityWindow.swift"
-/usr/bin/grep -q 'Image(systemName: model.status.running ? "eyeglasses"' "$ROOT/Sources/COSControlApp.swift"
-/usr/bin/grep -q '\.fixedSize()' "$ROOT/Sources/COSControlApp.swift"
+/usr/bin/grep -q 'Image(systemName: model.status.running ? "eyeglasses"' "$ROOT/Sources/ControlInstance.swift" "$ROOT/Sources/COSControlApp.swift"
+/usr/bin/grep -q '\.fixedSize()' "$ROOT/Sources/ControlInstance.swift" "$ROOT/Sources/COSControlApp.swift"
 # Colored update/recording variants use one original NSImage; the plain tray keeps the system glyph.
 /usr/bin/python3 -c '
 import sys
@@ -1085,8 +1085,8 @@ assert "if variant != .normal {" in src, "colored variants must include recordin
 branch, plain = src.split("if variant != .normal {", 1)[1].split("} else {", 1)
 assert "Image(nsImage:" in branch and ".renderingMode(.original)" in branch, "colored indicators must preserve their colors"
 assert "Image(systemName:" in plain.split(".fixedSize()", 1)[0], "the normal tray keeps the system glyph"
-' "$ROOT/Sources/COSControlApp.swift"
-/usr/bin/grep -q 'eyeglasses.slash' "$ROOT/Sources/COSControlApp.swift"
+' "$ROOT/Sources/ControlInstance.swift" "$ROOT/Sources/COSControlApp.swift"
+/usr/bin/grep -q 'eyeglasses.slash' "$ROOT/Sources/ControlInstance.swift" "$ROOT/Sources/COSControlApp.swift"
 # 0.5.243: the send button routes a cross-platform Fork through forkToPlatform, and "Use this" goes through
 # WorkHandoffStore.applying (which clears a leftover provider on a Fork).
 python3 - "$ROOT/Sources/WorkHandoffView.swift" <<'PY'
@@ -1494,7 +1494,7 @@ PY
 "$ROOT/Tests/run-controls.sh"
 # 0.5.242: the menu-bar window opens straight into ControlPanel. 0.5.240 stacked an unstyled "Open Work"
 # button above it; Work is reached from the panel's Activity chips, which come from ActivitySection.allCases.
-python3 - "$ROOT/Sources/COSControlApp.swift" <<'PY'
+python3 - "$ROOT/Sources/ControlInstance.swift" "$ROOT/Sources/COSControlApp.swift" <<'PY'
 import re, sys
 src = open(sys.argv[1]).read()
 m = re.search(r"MenuBarExtra\s*\{(.*?)ControlPanel\(model: model\)", src, re.S)
@@ -1502,8 +1502,8 @@ assert m is not None, "MenuBarExtra no longer opens ControlPanel"
 before = re.sub(r"//[^\n]*", "", m.group(1))
 assert before.strip() == "", "something sits above ControlPanel in the menu-bar window: " + before.strip()[:80]
 PY
-/usr/bin/grep -q -F 'MenuBarIcon.variant(for: model.appUpdateFlow.phase, recording: model.recordingCount > 0)' "$ROOT/Sources/COSControlApp.swift"
-! /usr/bin/grep -q 'hasNotice' "$ROOT/Sources/COSControlApp.swift"
+/usr/bin/grep -q -F 'MenuBarIcon.variant(for: model.appUpdateFlow.phase, recording: model.recordingCount > 0)' "$ROOT/Sources/ControlInstance.swift" "$ROOT/Sources/COSControlApp.swift"
+! /usr/bin/grep -q 'hasNotice' "$ROOT/Sources/ControlInstance.swift" "$ROOT/Sources/COSControlApp.swift"
 /usr/bin/grep -q 'AppUpdateInfo.merging(previous: appUpdate, incoming:' "$ROOT/Sources/ControllerModel.swift"
 /usr/bin/grep -q 'static func merging(previous: AppUpdateInfo, incoming: AppUpdateInfo)' "$ROOT/Sources/Models.swift"
 /usr/bin/grep -q 'enum MenuBarIcon' "$ROOT/Sources/Models.swift"
@@ -1833,9 +1833,9 @@ print("Task detail and Domains settings are wired")
 print("Tasks pane keeps every open row; domain picker is server-resolved")
 print("Task rows carry Schedule, Run now, and Done; overlay has no drop shadow")
 PY
-/usr/bin/grep -q 'ActivityWindowPresenter' "$ROOT/Sources/COSControlApp.swift"
-/usr/bin/grep -q 'activityWindow.show(model: model, section: section)' "$ROOT/Sources/COSControlApp.swift"
-/usr/bin/grep -q 'SessionPetPresenter' "$ROOT/Sources/COSControlApp.swift"
+/usr/bin/grep -q 'ActivityWindowPresenter' "$ROOT/Sources/ControlInstance.swift" "$ROOT/Sources/COSControlApp.swift"
+/usr/bin/grep -q 'activityWindow.show(model: model, section: section)' "$ROOT/Sources/ControlInstance.swift" "$ROOT/Sources/COSControlApp.swift"
+/usr/bin/grep -q 'SessionPetPresenter' "$ROOT/Sources/ControlInstance.swift" "$ROOT/Sources/COSControlApp.swift"
 /usr/bin/grep -q 'Session pet' "$ROOT/Sources/Views.swift"
 /usr/bin/grep -q 'Choose sprite' "$ROOT/Sources/Views.swift"
 /usr/bin/grep -q 'Open in platform' "$ROOT/Sources/ActivityWindow.swift"
@@ -2626,7 +2626,7 @@ python3 "$ROOT/Tests/reuse-compile.py" --root "$ROOT" --receipt "$TMP/app-compil
   "$ROOT/Sources/SessionLiveFeed.swift" "$ROOT/Sources/LiveTranscript.swift" \
   "$ROOT/Sources/SessionPet.swift" \
   "$ROOT/Sources/ControlSetup.swift" \
-  "$ROOT/Sources/COSControlApp.swift" \
+  "$ROOT/Sources/ControlInstance.swift" "$ROOT/Sources/COSControlApp.swift" \
   -framework SwiftUI -framework AppKit -framework ServiceManagement \
   -o "$TMP/COS Control"
 

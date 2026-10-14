@@ -9182,8 +9182,12 @@ final class COSControlHelper {
             // must not replace the genuine rollback copy with the build being installed.
             let liveBuild = Int(bundleVersionStrings(live)?.build ?? "") ?? -1
             if liveBuild != build {
-                if fm.fileExists(atPath: previousApp.path) { try fm.removeItem(at: previousApp) }
+                if fm.fileExists(atPath: previousApp.path) {
+                    unregisterRollbackApp(previousApp)
+                    try fm.removeItem(at: previousApp)
+                }
                 try fm.copyItem(at: live, to: previousApp)
+                unregisterRollbackApp(previousApp)
                 try? writeAppUpdateJSON(updatesPrevious.appendingPathComponent("version.json"), [
                     "version": bundleVersionStrings(live)?.version ?? "", "build": liveBuild,
                     "backedUpAt": ISO8601DateFormatter().string(from: Date()),
@@ -9194,6 +9198,11 @@ final class COSControlHelper {
             try fm.copyItem(at: staged, to: live)
         }
         _ = try execute("/usr/bin/xattr", ["-cr", live.path], timeout: 20)
+        // LaunchServices/login items must keep pointing to the installed app,
+        // never the rollback copy. Registration does not change the user's login preference.
+        if ProcessInfo.processInfo.environment["COS_CONTROL_TEST_HOME"] == nil {
+            _ = try? execute(Self.launchServicesRegister, ["-f", live.path], timeout: 20)
+        }
         try writeAppUpdateJSON(updatesSuccessURL, [
             "version": version,
             "build": build,
@@ -9207,6 +9216,13 @@ final class COSControlHelper {
             "build": build,
             "liveBundle": live.path,
         ])
+    }
+
+    private static let launchServicesRegister = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+
+    private func unregisterRollbackApp(_ app: URL) {
+        guard ProcessInfo.processInfo.environment["COS_CONTROL_TEST_HOME"] == nil else { return }
+        _ = try? execute(Self.launchServicesRegister, ["-u", app.path], timeout: 20)
     }
 
     private func emitCompleteAppUpdate(args: [String]) throws {

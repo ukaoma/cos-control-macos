@@ -21,9 +21,9 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.5.295</string>
+	<string>0.5.296</string>
 	<key>CFBundleVersion</key>
-	<string>348</string>
+	<string>349</string>
 	<key>COSWorkChatEnabled</key>
 	<true/>
 	<key>LSMinimumSystemVersion</key>

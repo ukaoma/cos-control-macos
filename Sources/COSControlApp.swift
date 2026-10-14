@@ -11,6 +11,7 @@ struct COSControlApp: App {
     @StateObject private var settingsWindow: SettingsWindowPresenter
 
     init() {
+        ControlInstance.shared.claimOrExit()
         let model = ControllerModel()
         let activityWindow = ActivityWindowPresenter()
         let sessionPet = SessionPetPresenter()

@@ -1,8 +1,15 @@
 {
-  "version": "0.5.295",
+  "version": "0.5.296",
   "whatsNew": {
-    "summary": "Create tasks directly from saved meetings and edit Work context without rebuilding the board. Matched with server 6.73.5.",
+    "summary": "Keeps a single COS Control running and preserves the installed app as the update and login target. Includes the matched Work improvements from 0.5.295.",
     "sections": [
+      {
+        "title": "One Control at a time",
+        "items": [
+          "Opening another signed copy brings the running Control forward. The installed app can close an old rollback copy with a normal quit.",
+          "Updates keep rollback copies outside Applications and register the installed app for future launches. Server state and model choices stay unchanged."
+        ]
+      },
       {
         "title": "Responsive typing",
         "items": [
