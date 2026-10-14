@@ -148,9 +148,11 @@ struct WorkBoardReads: Equatable, Sendable {
     /// A status line is a semantic progress signal, not proof that the CLI process ended.
     /// Reconcile the transport independently after a reported done/blocked line, after a newer
     /// handoff, and after the task moved to QA. Only the authoritative receipt releases its writer.
+    /// Legacy receipts that never opted into progress or app opening retain their manual status-read behavior.
     func deliveryCandidates(now: Double) -> [WorkHandoffReceipt] {
         store.receipts.filter { row in
             row.blocksNewHandoff && row.status != "delivered"
+                && (row.progress != nil || row.appOpen != nil)
                 && ["job", "turn", "fork", "queue"].contains(row.channel ?? "")
                 && now - row.createdAt < WorkProgress.trackedDays * 86_400
         }
