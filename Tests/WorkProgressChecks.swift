@@ -2887,7 +2887,7 @@ extension TrackerSuite {
 
         let (failed, failedTransport, _, _, failedTracker, _, _) = appSetUp("dispatch-failure-after-done", passes: 0)
         failed.models = [frontier]
-        await failedTransport.setJob(provider: "codex", session: codexID)
+        await failedTransport.setJob(provider: "codex", session: codexID, afterReads: 0)
         await failedTransport.setJobResult("Review result remains available")
         failed.openURL = { _ in false }
         await failed.submit(source: source(idA), mode: .newSession, session: nil, model: frontier, prompt: "Review")
