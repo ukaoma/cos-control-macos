@@ -430,7 +430,7 @@ final class COSControlHelper {
                   let port = ProcessInfo.processInfo.environment["COS_CONTROL_TEST_API_PORT"], let number = Int(port), number > 1024, number != 3141 else {
                 throw HelperError.message("Fixture mode requires a disposable /tmp home and a non-production loopback port.")
             }
-            let allowed: Set<String> = ["work-your-move", "work-intake", "work-intake-resolve", "work-loop", "work-tasks", "tasks", "domains", "work-set-stage", "work-edit-task", "work-link-meeting", "work-reviews", "work-models", "meeting-speakers", "meeting-content"]
+            let allowed: Set<String> = ["work-your-move", "work-intake", "work-intake-resolve", "work-loop", "work-tasks", "work-context", "work-link-session", "tasks", "domains", "work-set-stage", "work-edit-task", "work-link-meeting", "work-reviews", "work-models", "meeting-speakers", "meeting-content"]
             guard allowed.contains(command) else { throw HelperError.message("This candidate uses disposable tasks. Provider dispatch and other commands are disabled.") }
         }
         switch command {
@@ -528,7 +528,10 @@ final class COSControlHelper {
         case "tasks": try emitTasks(args: args)
         case "work-tasks": try emitWorkTasks()
         case "work-your-move": try emitWorkYourMove()
-        case "work-set-stage": try emitWorkUpdate(action: "stage")
+        case "work-set-stage":
+            if args.count > 1 { try emitWorkStage(args: args) } else { try emitWorkUpdate(action: "stage") }
+        case "work-context": try emitWorkContext(args: args)
+        case "work-link-session": try emitWorkLinkSession(args: args)
         case "work-link-meeting": try emitWorkUpdate(action: "meeting")
         case "work-loop": try emitWorkLoop(args: args)
         case "work-intake": try emitWorkIntake()
@@ -4981,6 +4984,129 @@ final class COSControlHelper {
             "gate": body["gate"] ?? NSNull()])
     }
 
+    /// Resume by stable identity. Resolve a fresh canonical row; never infer a card from its title or a session's recency.
+    private func roundtripOptions(_ args: [String], allowed: Set<String>) throws -> [String: String] {
+        let values = Array(args.dropFirst())
+        guard values.count % 2 == 0 else { throw HelperError.message("Use named Work options with exact values.") }
+        var result: [String: String] = [:]
+        for index in stride(from: 0, to: values.count, by: 2) {
+            let key = values[index]
+            guard allowed.contains(key), result[key] == nil, !values[index + 1].isEmpty else { throw HelperError.message("Unknown, repeated or empty Work option.") }
+            result[key] = values[index + 1]
+        }
+        return result
+    }
+    private func roundtripWorkID(_ value: String?) throws -> (key: String, domain: String, identity: String) {
+        guard let value else { throw HelperError.message("Provide --work-id task:<domain>:<stable identity>.") }
+        let parts = value.split(separator: ":", omittingEmptySubsequences: false).map(String.init)
+        guard parts.count == 3, parts[0] == "task", !parts[1].isEmpty, parts[1].utf16.count <= 64,
+              parts[1] == parts[1].trimmingCharacters(in: .whitespacesAndNewlines), !parts[1].hasPrefix("."),
+              !parts[1].unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) || $0 == "/" || $0 == "\\" }),
+              parts[2].range(of: "^[a-f0-9]{12}$", options: .regularExpression) != nil else {
+            throw HelperError.message("Use the exact canonical Work ID copied from Control.")
+        }
+        return (value, parts[1], parts[2])
+    }
+    private func roundtripSessionID(_ explicit: String?, required: Bool = false) throws -> String? {
+        var value = explicit
+        if value == nil {
+            let env = ProcessInfo.processInfo.environment
+            let choices = [("codex", env["CODEX_THREAD_ID"]), ("claude", env["CLAUDE_SESSION_ID"])].compactMap { provider, id in id.map { "\(provider):\($0)" } }
+            guard choices.count <= 1 else { throw HelperError.message("Both session identities are set. Provide the exact --session-id explicitly.") }
+            value = choices.first
+        }
+        guard let value else {
+            if required { throw HelperError.message("Provide an exact native --session-id, CODEX_THREAD_ID or CLAUDE_SESSION_ID. No session is guessed.") }
+            return nil
+        }
+        guard WorkSessionLinks.validSessionID(value) else { throw HelperError.message("Session ID must be codex:<UUID> or claude:<UUID>.") }
+        return value.lowercased()
+    }
+    private func roundtripTask(_ value: String?) throws -> (key: String, row: [String: Any], writable: Bool) {
+        let id = try roundtripWorkID(value)
+        let candidate = try reviewCandidateTransport()
+        let token = try candidate?.token ?? readToken()
+        guard let response = request("/api/work-board", token: token, timeout: 30, reviewCandidatePort: candidate?.port),
+              response.status == 200, let board = response.body, let raw = board["tasks"] as? [[String: Any]], raw.count <= 10_000 else {
+            throw HelperError.message("Fresh canonical Work context is unavailable. No legacy or cached row was substituted.")
+        }
+        let rows = Self.workTaskProjection(raw)
+        guard rows.count == raw.count else { throw HelperError.message("The canonical Work board is incomplete. Refresh before using it.") }
+        let matches = rows.filter { $0["domain"] as? String == id.domain && $0["workIdentity"] as? String == id.identity }
+        guard matches.count == 1, let row = matches.first,
+              (row["workMetadataError"] as? String ?? "").isEmpty,
+              let rowID = row["id"] as? String, rowID.range(of: "^[a-f0-9]{12}$", options: .regularExpression) != nil,
+              let text = row["text"] as? String, !text.isEmpty, text.utf16.count <= 8000,
+              let revision = row["workRevision"] as? String, revision.range(of: "^[a-f0-9]{64}$", options: .regularExpression) != nil else {
+            throw HelperError.message("That exact canonical Work ID is missing, ambiguous or has unreadable metadata. No matching task was guessed.")
+        }
+        return (id.key, row, (board["capabilities"] as? [String: Any])?["writable"] as? Bool == true)
+    }
+    private func roundtripLinkDetails(_ sessionID: String, link: WorkSessionCardLink) throws -> [String: Any] {
+        ["sessionID": sessionID, "workID": link.workID, "title": link.title, "sourceRevision": link.sourceRevision,
+         "at": link.at, "linkRevision": try WorkSessionLinks.revision(link)]
+    }
+    private func emitWorkContext(args: [String]) throws {
+        let options = try roundtripOptions(args, allowed: ["--work-id", "--session-id"])
+        let task = try roundtripTask(options["--work-id"])
+        let sessionID = try roundtripSessionID(options["--session-id"])
+        let links = try WorkSessionLinks.load(WorkSessionLinks.defaultURL())
+        let row = task.row, text = row["text"] as? String ?? ""
+        var context = "Canonical Work ID: \(task.key)\nTask: \(text)\nDomain: \(row["domain"] as? String ?? "")\nStage: \(row["workStage"] as? String ?? "")\nDone when: \(row["doneWhen"] as? String ?? "")\nSource: \(row["source"] as? String ?? "")"
+        let meetings = row["meetingRefs"] as? [[String: Any]] ?? []
+        context += "\nConfirmed source meetings (references; transcript evidence is not included):"
+        for meeting in meetings {
+            context += "\n- \(meeting["title"] as? String ?? "Saved meeting") | canonical ID: \(meeting["recordId"] as? String ?? "") | domain: \(meeting["domain"] as? String ?? "") | month: \(meeting["month"] as? String ?? "") | file: \(meeting["filename"] as? String ?? "")"
+        }
+        let linked = try links.keys.sorted().filter { links[$0]?.workID == task.key }.map { try roundtripLinkDetails($0, link: links[$0]!) }
+        var details: [String: Any] = ["schemaVersion": 1, "workID": task.key, "rowID": row["id"] ?? "", "fullText": text,
+            "workRevision": row["workRevision"] ?? "", "contextText": context, "task": row, "writable": task.writable, "linkedSessions": linked,
+            "currentSessionID": sessionID as Any? ?? NSNull(), "sessionLink": NSNull(), "sessionLinkRevision": "none"]
+        if let sessionID, let link = links[sessionID] {
+            details["sessionLink"] = try roundtripLinkDetails(sessionID, link: link)
+            details["sessionLinkRevision"] = try WorkSessionLinks.revision(link)
+        }
+        emit(ok: true, message: "Fresh Work context", details: details)
+    }
+    private func emitWorkStage(args: [String]) throws {
+        let options = try roundtripOptions(args, allowed: ["--work-id", "--stage", "--expected-revision"])
+        guard let stage = options["--stage"], ["mentioned", "planned", "draft", "built", "qa", "complete"].contains(stage),
+              let expected = options["--expected-revision"], expected.range(of: "^[a-f0-9]{64}$", options: .regularExpression) != nil else {
+            throw HelperError.message("Choose a valid Work stage and provide its fresh whole-file --expected-revision.")
+        }
+        let task = try roundtripTask(options["--work-id"])
+        guard task.writable else { throw HelperError.message("The canonical task bridge is read-only. Work was not changed.") }
+        guard task.row["workRevision"] as? String == expected else { throw HelperError.message("The canonical task file changed. Read fresh Work context before changing its stage.") }
+        let body: [String: Any] = ["domain": task.row["domain"] ?? "", "id": task.row["id"] ?? "", "expectedText": task.row["text"] ?? "",
+                                  "expectedRevision": expected, "workStage": stage]
+        try sendWorkUpdate(body, action: "stage")
+    }
+    private func verifyRoundtripSession(_ sessionID: String) throws {
+        let parts = sessionID.split(separator: ":").map(String.init)
+        let candidate = try reviewCandidateTransport()
+        let token = try candidate?.token ?? readToken()
+        guard let response = request("/api/agent-sessions/\(parts[0])/\(parts[1])", token: token, timeout: 15, reviewCandidatePort: candidate?.port),
+              response.status == 200, let body = response.body,
+              (body["provider"] as? String)?.lowercased() == parts[0],
+              (body["session_id"] as? String)?.lowercased() == parts[1] else {
+            throw HelperError.message("That exact native session could not be verified. No association was saved.")
+        }
+    }
+    private func emitWorkLinkSession(args: [String]) throws {
+        let options = try roundtripOptions(args, allowed: ["--work-id", "--session-id", "--expected-link"])
+        guard let expected = options["--expected-link"], expected == "none" || expected.range(of: "^[a-f0-9]{64}$", options: .regularExpression) != nil else {
+            throw HelperError.message("Read fresh context and provide --expected-link none or its session association digest.")
+        }
+        let sessionID = try roundtripSessionID(options["--session-id"], required: true)!
+        let task = try roundtripTask(options["--work-id"])
+        try verifyRoundtripSession(sessionID)
+        let link = WorkSessionCardLink(workID: task.key, title: task.row["text"] as? String ?? "",
+                                      sourceRevision: task.row["workRevision"] as? String ?? "", at: Date().timeIntervalSince1970)
+        let links = try WorkSessionLinks.associate(WorkSessionLinks.defaultURL(), sessionID: sessionID, link: link, expected: expected)
+        emit(ok: true, message: "Session associated with Work", details: ["workID": task.key, "sessionID": sessionID,
+            "sessionLink": try roundtripLinkDetails(sessionID, link: links[sessionID]!), "linkRevision": try WorkSessionLinks.revision(links[sessionID]!)])
+    }
+
     static func validateWorkUpdate(_ body: [String: Any], action: String) throws {
         let allowed = Set(["domain", "id", "expectedText", "expectedRevision"] + (action == "edit" ? ["text", "doneWhen"] : [action == "stage" ? "workStage" : "meeting"]))
         guard Set(body.keys).isSubset(of: allowed),
@@ -5018,7 +5144,13 @@ final class COSControlHelper {
         guard data.count <= 16_384, let body = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw HelperError.message("Work update must be a bounded JSON object.")
         }
+        try sendWorkUpdate(body, action: action)
+    }
+
+    private func sendWorkUpdate(_ body: [String: Any], action: String) throws {
         try Self.validateWorkUpdate(body, action: action)
+        let data = try JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])
+        guard data.count <= 16_384 else { throw HelperError.message("Work update must be bounded.") }
         let candidate = try reviewCandidateTransport()
         let token = try candidate?.token ?? readToken()
         guard let response = request("/api/work-board/\(action)", method: "POST", token: token,

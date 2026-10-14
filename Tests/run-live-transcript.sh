@@ -95,7 +95,7 @@ fi
 
 if [[ "$LANE" == "all" || "$LANE" == "helper" ]]; then
   "$ROOT/Tests/compile-guard.sh" "${SWIFTC[@]}" \
-    "$ROOT/HelperSources/main.swift" "$ROOT/HelperSources/ProviderStatusCore.swift" "$ROOT/HelperSources/PairingCore.swift" \
+    "$ROOT/HelperSources/main.swift" "$ROOT/HelperSources/ProviderStatusCore.swift" "$ROOT/HelperSources/PairingCore.swift" "$ROOT/Sources/WorkSessionLinks.swift" \
     -framework Security -framework AppKit -o "$DIR/cos-control-helper"
   # The helper's own self-test carries the path grammar, the containment, the fixture parse and the cursor rules.
   OUT="$(env COS_CONTROL_TEST_HOME="$DIR/home" "$DIR/cos-control-helper" self-test 2>"$DIR/self-test.err")" || { print -r -- "$OUT"; cat "$DIR/self-test.err"; exit 1; }

@@ -65,7 +65,7 @@ fi
 
 if [[ "$LANE" == "all" || "$LANE" == "helper" ]]; then
   "$ROOT/Tests/compile-guard.sh" "${SWIFTC[@]}" \
-    "$ROOT/HelperSources/main.swift" "$ROOT/HelperSources/ProviderStatusCore.swift" "$ROOT/HelperSources/PairingCore.swift" \
+    "$ROOT/HelperSources/main.swift" "$ROOT/HelperSources/ProviderStatusCore.swift" "$ROOT/HelperSources/PairingCore.swift" "$ROOT/Sources/WorkSessionLinks.swift" \
     -framework Security -framework AppKit -o "$DIR/cos-control-helper"
   OUT="$(/usr/bin/python3 "$ROOT/Tests/whats-new-helper-checks.py" "$DIR/cos-control-helper")" || { print -r -- "$OUT"; exit 1; }
   print -r -- "$OUT"

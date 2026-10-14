@@ -279,6 +279,7 @@ struct WorkGlassesRequest: Equatable, Sendable {
     /// 0.5.258: the files on each meeting (`~/cos-data/meeting-context`). A card's send carries its linked meetings'.
     let meetingFiles: WorkCardFileStore
     @Published private(set) var confirmedSessionCards: [String: WorkSessionCardLink] = [:]
+    @Published private(set) var sessionCardsError: String?
     private let storageURL: URL
     private let transport: Transport
     private var storageReady = true
@@ -319,9 +320,8 @@ struct WorkGlassesRequest: Equatable, Sendable {
             base = ProcessInfo.processInfo.environment["COS_CONTROL_TEST_HOME"].map { URL(fileURLWithPath: $0).appendingPathComponent("work-handoffs") } ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/COS Control/work-handoffs")
         }
         self.storageURL = storageURL ?? base.appendingPathComponent(isolated ? "preview-handoffs.json" : "handoffs.json")
-        let linksURL = self.storageURL.deletingPathExtension().appendingPathExtension("session-cards.json")
-        if let data = try? Data(contentsOf: linksURL), data.count < 2_000_000,
-           let links = try? JSONDecoder().decode([String: WorkSessionCardLink].self, from: data) { confirmedSessionCards = links }
+        do { try reloadSessionCards() }
+        catch { self.error = "Session associations could not be read: \(error.localizedDescription)" }
         do { try loadJournal() } catch { storageReady = false; self.error = "Handoff history could not be read. Sending is disabled: \(error.localizedDescription)" }
         if isolated {
             selectedWorkID = "sample-task-website"
@@ -334,16 +334,27 @@ struct WorkGlassesRequest: Equatable, Sendable {
     func confirmSessionCard(sessionID: String, source: WorkSource) -> Bool {
         guard !busy, storageReady, let native = Self.nativeID(sessionID), Self.appSessionID(native) != nil,
               ["claude", "codex", "cursor"].contains(String(sessionID.split(separator: ":")[0])) else { return false }
-        var next = confirmedSessionCards
-        next[sessionID] = WorkSessionCardLink(workID: source.id, title: source.title, sourceRevision: source.revision, at: Date().timeIntervalSince1970)
         do {
-            let url = storageURL.deletingPathExtension().appendingPathExtension("session-cards.json")
-            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try JSONEncoder().encode(next).write(to: url, options: .atomic)
-            confirmedSessionCards = next
+            // CAS must represent the association the user saw, before reading another process's changes.
+            let expected = try confirmedSessionCards[sessionID].map(WorkSessionLinks.revision) ?? "none"
+            try reloadSessionCards()
+            let link = WorkSessionCardLink(workID: source.id, title: source.title, sourceRevision: source.revision, at: Date().timeIntervalSince1970)
+            confirmedSessionCards = try WorkSessionLinks.associate(sessionCardsURL, sessionID: sessionID, link: link, expected: expected)
             WorkLoopMetrics.record("sessionLinked", values: ["sessionID": sessionID, "workID": source.id], root: storageURL.deletingLastPathComponent())
             return true
         } catch { self.error = "The session link could not be saved: \(error.localizedDescription)"; return false }
+    }
+
+    private var sessionCardsURL: URL { storageURL.deletingPathExtension().appendingPathExtension("session-cards.json") }
+    func reloadSessionCards() throws {
+        do {
+            confirmedSessionCards = try WorkSessionLinks.load(sessionCardsURL)
+            sessionCardsError = nil
+        } catch {
+            confirmedSessionCards = [:]
+            sessionCardsError = "Session associations are unavailable: \(error.localizedDescription)"
+            throw error
+        }
     }
 
     private func loadJournal() throws {
@@ -842,7 +853,8 @@ struct WorkGlassesRequest: Equatable, Sendable {
         guard !busy else { return }
         if isolated { return }
         retryJournalIfUnavailable()
-        busy = true; error = nil
+        do { try reloadSessionCards() } catch { self.error = sessionCardsError }
+        busy = true; error = sessionCardsError
         defer { busy = false }
         do {
             let catalog = try await call(["work-models"])
@@ -864,6 +876,7 @@ struct WorkGlassesRequest: Equatable, Sendable {
     }
     func refreshActivity() async {
         guard !isolated else { return }
+        do { try reloadSessionCards() } catch { self.error = sessionCardsError }
         if let activityRefreshTask { await activityRefreshTask.value; return }
         activityRefreshing = true
         let request = Task { @MainActor [weak self] in
@@ -2657,13 +2670,6 @@ struct WorkRequestLedgerEntry: Codable, Equatable {
         store.error = restored
         return .refused(reason: reason, receiptID: nil)
     }
-}
-
-struct WorkSessionCardLink: Codable, Sendable {
-    let workID: String
-    let title: String
-    let sourceRevision: String
-    let at: Double
 }
 
 /// Deterministic candidate only: the user confirms the exact card. Generic/shared project words alone do not qualify.
