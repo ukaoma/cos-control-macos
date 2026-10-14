@@ -70,18 +70,44 @@ enum WorkChatPolicy {
     }
 }
 
+/// Editing invalidates only the small composer, never the transcript or file list.
+@MainActor final class WorkChatDraftState: ObservableObject {
+    struct Value: Equatable { var text = ""; var rtf: Data? }
+    @Published private(set) var value = Value()
+    func replace(_ text: String, rtf: Data?) {
+        let next = Value(text: text, rtf: rtf)
+        if next != value { value = next }
+    }
+}
+
 @MainActor final class WorkTaskChatStore: ObservableObject {
-    @Published var record: WorkChatRecord?
+    @Published private var savedRecord: WorkChatRecord?
+    let draft = WorkChatDraftState()
+    var record: WorkChatRecord? {
+        get {
+            guard var value = savedRecord else { return nil }
+            value.draft = draft.value.text; value.draftRTF = draft.value.rtf
+            return value
+        }
+        set {
+            savedRecord = newValue
+            draft.replace(newValue?.draft ?? "", rtf: newValue?.draftRTF)
+        }
+    }
     @Published var error: String?
     @Published var busy = false
+    @Published private(set) var refreshing = false
     @Published var phase = ""
     private var url: URL?
     private var bytes: Data?
+    private var draftWriter: Task<Void, Never>?
+    private var draftDirty = false
     var enabled = false // Candidate must be explicitly enabled; stable build never gains dispatch by accident.
     func open(source: WorkSource, handoff: WorkHandoffStore) {
         let server = handoff.isolated ? "sample" : handoff.taskChatServerID ?? "unverified"
         guard record?.workID != source.id || record?.serverID != server else { return }
-        guard !busy else { return } // A navigation change cannot redirect an in-flight turn.
+        guard !busy, !refreshing else { return } // A navigation change cannot redirect an in-flight turn.
+        guard record == nil || flushDraft() else { return }
         record = nil; error = nil
         let key = SHA256.hash(data: Data((server + "\n" + source.id).utf8)).map { String(format:"%02x",$0) }.joined()
         let base = WorkSessionLinks.defaultURL().deletingLastPathComponent().appendingPathComponent("task-chat")
@@ -99,18 +125,32 @@ enum WorkChatPolicy {
         } catch { self.error = "Task chat history could not be read. Its file was preserved. Sending is disabled." }
     }
     @discardableResult private func persist() -> Bool {
+        draftWriter?.cancel(); draftWriter = nil
         guard let url, let record else { return false }
         do {
             let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
             let data = try encoder.encode(record)
-            if data != bytes { try WorkSessionLinks.chatWrite(url, data: data, expected: bytes); bytes = data }; return true
+            if data != bytes { try WorkSessionLinks.chatWrite(url, data: data, expected: bytes); bytes = data }
+            draftDirty = false; return true
         } catch { self.error = "Task chat changed or could not be saved. Reopen it before sending; nothing was resent."; return false }
     }
-    func setDraft(_ text: String) { guard !busy, record != nil else { return }; record?.draft = String(text.prefix(2000)); _ = persist() }
+    /// Send/navigation/close flush immediately. Ordinary typing coalesces the same private CAS/fsync write.
+    @discardableResult func flushDraft() -> Bool { !draftDirty || persist() }
+    private func scheduleDraftSave() {
+        draftDirty = true; draftWriter?.cancel()
+        draftWriter = Task { [weak self] in
+            do { try await Task.sleep(for: .milliseconds(350)) } catch { return }
+            guard !Task.isCancelled else { return }; _ = self?.flushDraft()
+        }
+    }
+    func setDraft(_ text: String) { setRichDraft(String(text.prefix(2000)), rtf: nil) }
     func setRichDraft(_ text: String, rtf: Data?) {
         guard !busy, record != nil else { return }
         guard text.count <= 2000, (rtf?.count ?? 0) <= 128_000 else { error = "Keep your request under 2,000 characters. Put longer context in an attached file."; return }
-        record?.draft = text; record?.draftRTF = rtf; error = nil; _ = persist()
+        guard draft.value != .init(text: text, rtf: rtf) else { return }
+        draft.replace(text, rtf: rtf)
+        if error != nil { error = nil }
+        scheduleDraftSave()
     }
     private func object<T: Encodable>(_ value: T) throws -> Any { try JSONSerialization.jsonObject(with: JSONEncoder().encode(value)) }
     private func targets(_ handoff: WorkHandoffStore, source: WorkSource) -> [WorkSession] {
@@ -139,7 +179,8 @@ enum WorkChatPolicy {
         return (files.map(\.display), digest, plan.block)
     }
     func send(source: WorkSource, handoff: WorkHandoffStore) async {
-        guard !busy, var record, record.workID == source.id, record.serverID != "unverified", enabled || handoff.isolated else { return }
+        guard !busy, !refreshing, var record, record.workID == source.id, record.serverID != "unverified", enabled || handoff.isolated else { return }
+        guard flushDraft() else { return }
         let question = record.draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !question.isEmpty, record.rounds.count < 100,
               !record.rounds.contains(where: { ["Planning","Executing"].contains($0.state) }) else { return }
@@ -218,8 +259,8 @@ enum WorkChatPolicy {
         }
     }
     func refresh(source: WorkSource, handoff: WorkHandoffStore, automatic: Bool = false) async {
-        guard !busy, record?.workID == source.id, record?.rounds.isEmpty == false else { return }
-        busy = true; phase = "Reading assignment receipts…"; defer { busy = false; phase = "" }
+        guard !busy, !refreshing, record?.workID == source.id, record?.rounds.isEmpty == false else { return }
+        refreshing = true; defer { refreshing = false }
         if !automatic { error = nil }
         await handoff.refreshActivity(); await handoff.refreshReceipts(asked: !automatic)
         guard record?.workID == source.id else { return }
@@ -304,7 +345,7 @@ struct WorkTaskChatView: View {
     var body: some View {
         VStack(alignment:.leading,spacing:14) {
             HStack { Text("Work chat").font(COSType.display(24,weight:.medium)); Spacer()
-                Button("Refresh updates") { Task { await chat.refresh(source:source,handoff:handoff) } }.buttonStyle(COSQuietButtonStyle()).disabled(chat.busy || chat.record?.rounds.isEmpty != false)
+                Button(chat.refreshing ? "Refreshing updates…" : "Refresh updates") { Task { await chat.refresh(source:source,handoff:handoff) } }.buttonStyle(COSQuietButtonStyle()).disabled(chat.busy || chat.refreshing || chat.record?.rounds.isEmpty != false)
             }
             Text(handoff.isolated ? "Sample orchestration. Assignments are simulated." : "Describe the outcome. COS explains its plan, routes independent assignments to linked sessions, and brings their updates back here.")
                 .font(COSType.body(12)).foregroundStyle(COSPalette.muted)
@@ -313,12 +354,7 @@ struct WorkTaskChatView: View {
             if let error = chat.error { Text(error).font(COSType.body(12)).foregroundStyle(COSPalette.danger).textSelection(.enabled) }
             if chat.busy { HStack { ProgressView().controlSize(.small); Text(chat.phase).font(COSType.body(12)) } }
             WorkChatContextComposer(chat:chat,handoff:handoff,files:handoff.cardFiles,source:source)
-            HStack { Text("⌘ Return to send · Return adds a line").font(COSType.body(10)).foregroundStyle(COSPalette.muted); Spacer()
-                Button(handoff.isolated ? "Run sample plan" : "Send") { Task { await chat.send(source:source,handoff:handoff) } }
-                    .buttonStyle(COSPrimaryButtonStyle()).keyboardShortcut(.return,modifiers:.command)
-                    .disabled(chat.busy || !(chat.enabled || handoff.isolated) || scopedRecord?.draft.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty != false)
-                    .accessibilityIdentifier("work-chat-send")
-            }
+            WorkChatSendControls(chat: chat, draft: chat.draft, handoff: handoff, source: source)
         }.task(id:source.id) {
             chat.enabled = Bundle.main.object(forInfoDictionaryKey: "COSWorkChatEnabled") as? Bool == true
                 || ProcessInfo.processInfo.environment["COS_WORK_ORCHESTRATION_CANDIDATE"] == "1"
@@ -329,6 +365,24 @@ struct WorkTaskChatView: View {
                 guard !Task.isCancelled else { return }
                 await chat.refresh(source:source,handoff:handoff,automatic:true)
             }
+        }.onDisappear { _ = chat.flushDraft() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in _ = chat.flushDraft() }
+    }
+}
+
+private struct WorkChatSendControls: View {
+    @ObservedObject var chat: WorkTaskChatStore
+    @ObservedObject var draft: WorkChatDraftState
+    @ObservedObject var handoff: WorkHandoffStore
+    let source: WorkSource
+    var body: some View {
+        HStack {
+            Text("⌘ Return to send · Return adds a line").font(COSType.body(10)).foregroundStyle(COSPalette.muted)
+            Spacer()
+            Button(handoff.isolated ? "Run sample plan" : "Send") { Task { await chat.send(source:source,handoff:handoff) } }
+                .buttonStyle(COSPrimaryButtonStyle()).keyboardShortcut(.return,modifiers:.command)
+                .disabled(chat.busy || chat.refreshing || !(chat.enabled || handoff.isolated) || chat.record?.workID != source.id || draft.value.text.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty)
+                .accessibilityIdentifier("work-chat-send")
         }
     }
 }
@@ -477,12 +531,28 @@ struct WorkTaskChatView: View {
     @ObservedObject var handoff: WorkHandoffStore
     @ObservedObject var files: WorkCardFileStore
     let source: WorkSource
-    @State private var command = ""
-    @State private var commandID = UUID()
     @State private var resendAll = false
-    @State private var targeted = false
     private var scoped: WorkChatRecord? { chat.record?.workID == source.id ? chat.record : nil }
     private var disabled: Bool { chat.busy || scoped == nil }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            WorkChatDraftEditor(chat: chat, draft: chat.draft, files: files, source: source)
+            WorkCardFilesSection(files: files, store: handoff, source: source, mode: .newSession, sessionID: nil, sessionTitle: nil, provider: "claude", resendAll: $resendAll, disabled: disabled)
+            Text("Drop or paste images, video and files here. Attachments stay with this task; each assignment sends what its session needs.")
+                .font(COSType.body(10)).foregroundStyle(COSPalette.muted)
+        }
+    }
+}
+
+@MainActor private struct WorkChatDraftEditor: View {
+    @ObservedObject var chat: WorkTaskChatStore
+    @ObservedObject var draft: WorkChatDraftState
+    let files: WorkCardFileStore
+    let source: WorkSource
+    @State private var command = ""
+    @State private var commandID = UUID()
+    @State private var targeted = false
+    private var disabled: Bool { chat.busy || chat.record?.workID != source.id }
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 12) {
@@ -491,9 +561,9 @@ struct WorkTaskChatView: View {
                 formatButton("Heading", "heading", "textformat.size")
                 formatButton("List", "list", "list.bullet")
                 Spacer()
-                Text("\(scoped?.draft.count ?? 0)/2,000").font(COSType.mono(10)).foregroundStyle(COSPalette.muted)
+                Text("\(draft.value.text.count)/2,000").font(COSType.mono(10)).foregroundStyle(COSPalette.muted)
             }
-            WorkRichEditor(markdown: scoped?.draft ?? "", richText: scoped?.draftRTF, disabled: disabled, command: command, commandID: commandID,
+            WorkRichEditor(markdown: draft.value.text, richText: draft.value.rtf, disabled: disabled, command: command, commandID: commandID,
                 onChange: { chat.setRichDraft($0, rtf: $1) }, onMedia: { providers in
                     guard !disabled else { return }; Task { await files.intake(providers: providers, source: source) }
                 })
@@ -502,9 +572,6 @@ struct WorkTaskChatView: View {
                 .onDrop(of: WorkCardFiles.fileDropTypes, delegate: WorkCardFileDropDelegate(target: .filesBox, targeted: $targeted) { providers in
                     guard !disabled else { return }; Task { await files.intake(providers: providers, source: source) }
                 })
-            WorkCardFilesSection(files: files, store: handoff, source: source, mode: .newSession, sessionID: nil, sessionTitle: nil, provider: "claude", resendAll: $resendAll, disabled: disabled)
-            Text("Drop or paste images, video and files here. Attachments stay with this task; each assignment sends what its session needs.")
-                .font(COSType.body(10)).foregroundStyle(COSPalette.muted)
         }
     }
     private func formatButton(_ title: String, _ action: String, _ icon: String) -> some View {

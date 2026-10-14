@@ -1,8 +1,16 @@
 {
-  "version": "0.5.293",
+  "version": "0.5.294",
   "whatsNew": {
-    "summary": "Work chat coordinates independent assignments across linked Claude and Codex sessions. Matched with server 6.73.4.",
+    "summary": "Faster Work chat editing while connected sessions report their progress. Compatible with server 6.73.4.",
     "sections": [
+      {
+        "title": "Responsive typing",
+        "items": [
+          "Typing updates only the composer. Chat history and file lists stay separate.",
+          "Drafts save after a short pause and immediately when you send or leave the view.",
+          "Background receipt refreshes keep the editor available."
+        ]
+      },
       {
         "title": "Work chat",
         "items": [

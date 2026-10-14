@@ -1,5 +1,7 @@
 import Foundation
 import AppKit
+import Combine
+import CryptoKit
 
 private actor WorkChatFixture {
     let ids: [String]
@@ -74,6 +76,7 @@ private actor WorkChatFixture {
     for id in ids { precondition(handoff.confirmSessionCard(sessionID: id, source: source)) }
     let chat = WorkTaskChatStore(); chat.open(source: source, handoff: handoff); chat.setDraft("Review copy and code independently")
     chat.setRichDraft("Review the **header**", rtf: rich)
+    precondition(chat.flushDraft())
     let richRelaunch = WorkTaskChatStore(); richRelaunch.open(source:source,handoff:handoff)
     precondition(richRelaunch.record?.draftRTF == rich && richRelaunch.record?.draft == "Review the **header**")
     chat.setRichDraft(String(repeating:"x",count:2001),rtf:nil)
@@ -126,5 +129,73 @@ private actor WorkChatFixture {
     await first.value
     let calls = await fixture.seen()
     precondition(calls.filter { $0 == "work-chat" }.count == 1 && real.receipts.isEmpty && candidate.record?.rounds.first?.state == "Needs attention", "Changed task stops all dispatch; double Send produces one plan")
+    try await runWorkChatTypingChecks(source: source, handoff: handoff, root: root)
     print("PASS Work orchestration: exact target policy, private CAS/symlinks, shared distinct-target run, duplicate/foreign-run fences, durable history, all-round provenance, navigation/double-send/task-revision drift; zero provider sends")
+}
+
+@MainActor private func runWorkChatTypingChecks(source: WorkSource, handoff: WorkHandoffStore, root: URL) async throws {
+    let chat = WorkTaskChatStore(); chat.open(source: source, handoff: handoff)
+    // A long transcript makes accidental full-history saves/rebuilds visible.
+    chat.record?.rounds = (0..<50).map { _ in
+        var round = WorkChatRound(question: String(repeating: "question ", count: 100))
+        round.answer = String(repeating: "answer ", count: 700); round.state = "Answered"
+        return round
+    }
+    chat.setDraft("before typing"); precondition(chat.flushDraft())
+    let key = SHA256.hash(data: Data(("sample\n" + source.id).utf8)).map { String(format: "%02x", $0) }.joined()
+    let file = WorkSessionLinks.defaultURL().deletingLastPathComponent().appendingPathComponent("task-chat/" + key + ".json")
+    let before = try WorkSessionLinks.chatRead(file)
+    var historyInvalidations = 0
+    let observation = chat.objectWillChange.sink { historyInvalidations += 1 }
+    defer { observation.cancel() }
+    let editor = WorkRichEditor(markdown: "", richText: nil, disabled: false, command: "", commandID: UUID(),
+        onChange: { chat.setRichDraft($0, rtf: $1) }, onMedia: { _ in preconditionFailure("Typing cannot attach files") })
+    let view = WorkContextTextView(frame: .zero)
+    view.textStorage?.setAttributedString(NSAttributedString(string: "", attributes: [.font: NSFont.systemFont(ofSize: 13)]))
+    let coordinator = editor.makeCoordinator(); coordinator.view = view
+    var milliseconds: [Double] = []
+    for _ in 0..<1200 {
+        let start = CFAbsoluteTimeGetCurrent()
+        view.textStorage?.append(NSAttributedString(string: "x", attributes: [.font: NSFont.systemFont(ofSize: 13)]))
+        coordinator.changed()
+        milliseconds.append((CFAbsoluteTimeGetCurrent() - start) * 1000)
+    }
+    precondition(historyInvalidations == 0, "Typing cannot publish the transcript or attachment list")
+    let duringBurst = try WorkSessionLinks.chatRead(file)
+    precondition(duringBurst == before, "Typing burst cannot write/fsync the whole history")
+    precondition(chat.record?.draft == String(repeating: "x", count: 1200), "Send sees the latest draft before debounce")
+    try await Task.sleep(for: .milliseconds(500))
+    let saved = try JSONDecoder().decode(WorkChatRecord.self, from: WorkSessionLinks.chatRead(file)!)
+    precondition(saved.draft == chat.record?.draft && saved.draftRTF != nil, "Idle autosave retains the final rich draft")
+    precondition(historyInvalidations == 0, "Autosave cannot invalidate the transcript")
+    var editedDuringRefresh = false
+    let refreshObservation = chat.$refreshing.sink { active in
+        if active {
+            precondition(!chat.busy, "Receipt refresh cannot disable the editor")
+            chat.setDraft("draft typed during refresh"); editedDuringRefresh = true
+        }
+    }
+    await chat.refresh(source: source, handoff: handoff, automatic: true)
+    refreshObservation.cancel()
+    precondition(editedDuringRefresh && chat.record?.draft == "draft typed during refresh", "Refresh cannot lose simultaneous draft edits")
+    // Navigating during the debounce flushes the old task; it cannot leak into the next one.
+    chat.setDraft("last edit before navigation")
+    let next = WorkSource(id: "task:quilt:cccccccccccc", title: "Next task", revision: source.revision, project: "quilt", context: "")
+    chat.open(source: next, handoff: handoff)
+    precondition(chat.record?.draft == "")
+    chat.open(source: source, handoff: handoff)
+    precondition(chat.record?.draft == "last edit before navigation")
+    // CAS is still enforced after a deferred save; another app's history is never overwritten.
+    chat.setDraft("unsaved conflicted edit")
+    let disk = try WorkSessionLinks.chatRead(file)!
+    var foreign = try JSONDecoder().decode(WorkChatRecord.self, from: disk); foreign.draft = "another writer"
+    let foreignBytes = try JSONEncoder().encode(foreign)
+    try WorkSessionLinks.chatWrite(file, data: foreignBytes, expected: disk)
+    precondition(!chat.flushDraft())
+    let afterConflict = try WorkSessionLinks.chatRead(file)
+    precondition(afterConflict == foreignBytes)
+    milliseconds.sort()
+    let p95 = milliseconds[Int(Double(milliseconds.count - 1) * 0.95)]
+    precondition(p95 < 16, "Native rich-text edit callback must stay below a 16ms frame at p95")
+    print(String(format: "PASS typing: 1200 native edits, p95 %.3fms, 0 history invalidations, 0 burst disk writes; idle save, navigation flush and CAS conflict preserved", p95))
 }
