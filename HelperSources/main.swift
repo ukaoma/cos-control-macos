@@ -676,6 +676,7 @@ final class COSControlHelper {
         case "meeting-library-detail": try emitMeetingLibraryDetail(args: args)
         case "meeting-context-keys": try emitMeetingContextKeys(args: args)
         case "meeting-speakers": try emitMeetingSpeakers(args: args)
+        case "meeting-speaker-policy": try emitMeetingSpeakerPolicy(args: args)
         case "meeting-content": try emitMeetingContent(args: args)
         case "fences": try emitFences()
         case "fence-release": try emitFenceRelease(args: args)
@@ -17868,6 +17869,26 @@ final class COSControlHelper {
     ///
     /// Retraction of the meeting's training samples defaults ON server-side; pass
     /// --keep-training to correct the transcript without touching the profile.
+    private func emitMeetingSpeakerPolicy(args: [String]) throws {
+        guard let session = option("--session", in: args), validSessionID(session) else {
+            throw HelperError.message("--session is required")
+        }
+        let path = "/api/meeting/\(escapedSessionID(session))/speaker-policy"
+        var payload: [String: Any] = [:]
+        if let mode = option("--mode", in: args) {
+            guard ["standard", "high-confidence", "anonymous"].contains(mode),
+                  let revision = option("--policy-revision", in: args) else {
+                throw HelperError.message("A valid mode and policy revision are required")
+            }
+            payload = ["mode": mode, "expectedPolicyRevision": revision]
+            if let record = option("--record-id", in: args) { payload["recordId"] = record }
+            if let revision = option("--expected-revision", in: args) { payload["expectedRevision"] = revision }
+        }
+        let body = try speakerReviewBody(path, method: payload.isEmpty ? "GET" : "POST",
+            body: payload.isEmpty ? nil : String(decoding: JSONSerialization.data(withJSONObject: payload), as: UTF8.self))
+        emit(ok: true, message: "Speaker matching mode", details: body)
+    }
+
     private func emitMeetingDeattribute(args: [String]) throws {
         guard let session = option("--session", in: args), validSessionID(session),
               let from = option("--from", in: args), !from.isEmpty else {

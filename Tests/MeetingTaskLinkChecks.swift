@@ -27,7 +27,13 @@ import SwiftUI
         let before = WorkSource.taskSnapshot(chosen)
         let after = WorkSource.taskSnapshot(task("chosen", refs: [reference.jsonValue]))
         precondition(before.id == after.id && before.revision != after.revision && after.context.contains("split:chosen"))
-        print("PASS: search, completed filter, duplicate/stale guards and task context revision")
+        let secondLink = task("second-linked", refs: [reference.jsonValue])
+        let multi = MeetingWorkConnections.tasks(recordIds: [reference.recordId], from: [linked, secondLink, completed, unrelated])
+        precondition(Set(multi.map(\.id)) == ["linked", "second-linked"], "A meeting can link to more than one task")
+        precondition(MeetingWorkConnections.tasks(recordIds: ["other-record"], from: [linked]).isEmpty, "Titles or search matches never establish a link")
+        precondition(MeetingWorkConnections.tasks(recordIds: ["raw-source", reference.recordId, reference.recordId], from: [linked]).count == 1, "Merged and raw identities must not duplicate a task")
+        precondition(WorkSource.taskSnapshot(linked).context.contains(reference.recordId), "The agent handoff must carry the same canonical relationship shown in Speakers")
+        print("PASS: search, multiple canonical links, duplicate/stale guards and agent context")
 
         // The real model writes the exact task snapshot and canonical meeting; it never creates a task.
         let payload = "{\"ok\":true,\"message\":\"saved\",\"details\":{\"tasks\":[],\"complete\":true,\"capabilities\":{\"version\":1,\"writable\":true}}}"
@@ -50,7 +56,7 @@ import SwiftUI
         try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
         // Render through a private, never-shown window; the fixture does not contact a server.
         try script.write(to: helper, atomically: true, encoding: .utf8)
-        let host = NSHostingView(rootView: MeetingTaskLinkSheet(model: model, meeting: meeting))
+        let host = NSHostingView(rootView: MeetingTaskLinkSheet(model: model, meeting: meeting, onOpenWork: { _ in }))
         let window = NSWindow(contentRect: NSRect(x: -20000, y: -20000, width: 668, height: 650), styleMask: [.borderless], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.contentView = host

@@ -413,11 +413,12 @@ struct WorkHandoffView: View {
                                 store.clearUnresolved(receiptID: receipt.id)
                                 var next = draft; next.mode = .continueSession; next.sessionID = target
                                 store.updateDraft(next, for: source)
-                            }.buttonStyle(COSPrimaryButtonStyle()).disabled(store.busy || validating)
+                            }.buttonStyle(COSPrimaryButtonStyle()).disabled(store.busy || validating).keyboardShortcut(.defaultAction)
                         }
                         Button(canContinue ? "Clear without sending" : "Clear this handoff") { confirmClear = false; store.clearUnresolved(receiptID: receipt.id) }
                             .buttonStyle(COSQuietButtonStyle(tone: .destructive)).disabled(store.busy || validating)
-                        Button("Cancel") { confirmClear = false }.buttonStyle(COSTextButtonStyle())
+                            .keyboardShortcut(canContinue ? nil : .defaultAction)
+                        Button("Cancel") { confirmClear = false }.buttonStyle(COSTextButtonStyle()).keyboardShortcut(.cancelAction)
                     }
                 } else {
                     Button(canContinue ? "Continue in this session\u{2026}" : "I checked the session. Clear this\u{2026}") { confirmClear = true }

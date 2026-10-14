@@ -744,8 +744,12 @@ struct ActivityWindow: View {
                             onNextUnnamed: openNextUnnamedReview,
                             nextUnnamedAvailable: nextUnnamedReview != nil,
                             onOpenMeeting: openMeetingFromSpeakers,
-                            onLinkTask: workConnectionsEnabled && !isolatedWorkPreview ? { openMeetingFromSpeakers(linkTask: true) } : nil
+                            onLinkTask: workConnectionsEnabled && !isolatedWorkPreview ? { openMeetingFromSpeakers(linkTask: true) } : nil,
+                            onOpenWork: meetingWorkOpenAction
                         )
+                        .task(id: model.openReview?.recordId) {
+                            if workConnectionsEnabled && !isolatedWorkPreview { await model.loadWorkTasks(force: true) }
+                        }
                     } else {
                         centeredProgress("Loading meeting…")
                     }
@@ -3616,7 +3620,8 @@ struct ActivityWindow: View {
                     }
                     .buttonStyle(COSQuietButtonStyle(tone: .destructive))
                     .disabled(model.addVoiceBusy)
-                    Button("Keep") { confirmingHeldDiscard = nil }.buttonStyle(COSTextButtonStyle())
+                    .keyboardShortcut(.defaultAction)
+                    Button("Keep") { confirmingHeldDiscard = nil }.buttonStyle(COSTextButtonStyle()).keyboardShortcut(.cancelAction)
                 } else {
                     Button("Discard all loose") { confirmingHeldDiscard = "loose-all" }
                         .buttonStyle(COSTextButtonStyle(tone: .destructive))
@@ -3662,8 +3667,9 @@ struct ActivityWindow: View {
                 }
                 .buttonStyle(COSQuietButtonStyle(tone: .destructive))
                 .disabled(model.addVoiceBusy)
+                .keyboardShortcut(.defaultAction)
                 Button("Keep") { confirmingHeldDiscard = nil }
-                    .buttonStyle(COSTextButtonStyle())
+                    .buttonStyle(COSTextButtonStyle()).keyboardShortcut(.cancelAction)
             }
         } else {
             HStack(spacing: 8) {
@@ -7105,6 +7111,7 @@ struct HeldNamingReviewSheet: View {
                         Button("Apply") { Task { await model.applyHeldNaming() } }
                             .buttonStyle(COSPrimaryButtonStyle())
                             .disabled(!model.heldNamingCanApply)
+                            .keyboardShortcut(.defaultAction)
                             .accessibilityIdentifier("held-preview-apply")
                     }
                 }

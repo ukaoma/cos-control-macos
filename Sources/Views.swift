@@ -3398,6 +3398,7 @@ struct SpeakerReviewPane: View {
     /// 0.5.259: the meeting this review belongs to, in Meetings.
     var onOpenMeeting: (() -> Void)? = nil
     var onLinkTask: (() -> Void)? = nil
+    var onOpenWork: ((String) -> Void)? = nil
     /// Which span the pointer is over. Held here so the bar and the legend
     /// highlight the same thing.
     @State private var hoveredSpan: SpeakerTimelineSpan?
@@ -3514,11 +3515,43 @@ struct SpeakerReviewPane: View {
                 }
             }
             .padding(16)
+            if let review = model.openReview, review.mutable {
+                MeetingSpeakerPolicyView(model: model, sessionId: review.sessionId,
+                    recordId: review.recordId, sourceRevision: review.sourceRevision)
+                    .id(review.sessionId).padding(.horizontal, 16).padding(.bottom, 10)
+            }
             if let onLinkTask, model.openReview?.recordId.isEmpty == false {
                 HStack {
                     Button("Link to existing task", action: onLinkTask).buttonStyle(COSQuietButtonStyle())
                     Spacer()
                 }.padding(.horizontal, 16).padding(.bottom, 12)
+                if let review = model.openReview {
+                    VStack(alignment: .leading, spacing: 8) {
+                        if model.workTasksLoading { ProgressView("Loading linked tasks…").controlSize(.small) }
+                        if let error = model.workTasksError { Text(error).foregroundStyle(COSPalette.danger) }
+                        if !model.workTasksLoading && !model.workTasksComplete {
+                            Text("The task inventory is incomplete. Refresh to check all links.").foregroundStyle(COSPalette.muted)
+                        }
+                        let tasks = MeetingWorkConnections.tasks(recordIds: [review.recordId, review.blendedRecordId ?? ""], from: model.workTasks)
+                        ScrollView {
+                        ForEach(tasks, id: \.workSourceID) { task in
+                            HStack(alignment: .top) {
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(task.text.isEmpty ? task.title : task.text).font(COSType.body(12, weight: .medium)).lineLimit(2)
+                                    Text("Linked · " + task.domain + " · " + (task.checked ? "Complete" : task.workStage.capitalized))
+                                        .font(COSType.body(10.5)).foregroundStyle(COSPalette.muted)
+                                }
+                                Spacer()
+                                if let onOpenWork { Button("Open task") { onOpenWork(task.workSourceID) }.buttonStyle(COSQuietButtonStyle()) }
+                            }
+                        }
+                        }.frame(maxHeight: tasks.isEmpty ? 0 : 110)
+                        if !model.workTasksLoading && model.workTasksComplete && model.workTasksError == nil && tasks.isEmpty {
+                            Text("No linked tasks yet.").foregroundStyle(COSPalette.muted)
+                        }
+                        Button("Refresh links") { Task { await model.loadWorkTasks(force: true) } }.disabled(model.workTasksLoading)
+                    }.font(COSType.body(11)).padding(.horizontal, 16).padding(.bottom, 10)
+                }
             }
 
             Divider()
@@ -3712,6 +3745,7 @@ struct SpeakerReviewPane: View {
                     HStack(spacing: 8) {
                         if !correction.refused {
                             Button("Save") { model.confirmCorrection(correction) }
+                                .keyboardShortcut(.defaultAction)
                                 .buttonStyle(COSPrimaryButtonStyle())
                                 .disabled(model.mergeInFlight)
                         } else if correction.forceable {
@@ -3720,6 +3754,7 @@ struct SpeakerReviewPane: View {
                             // end whose own message told them to re-open the
                             // meeting, which changes nothing on the server.
                             Button("Apply anyway") { model.forceCorrection(correction) }
+                                .keyboardShortcut(.defaultAction)
                                 .buttonStyle(COSPrimaryButtonStyle())
                                 .disabled(model.mergeInFlight)
                         }

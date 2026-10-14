@@ -3847,16 +3847,20 @@ final class ControllerModel: ObservableObject {
     @Published var workMeetingPeople: [String: WorkMeetingPeople] = [:]
     @Published var workMeetingPeopleFailed: Set<String> = []
     private var workMeetingPeopleLoading: Set<String> = []
+    private var workMeetingPeopleGeneration: [String: UUID] = [:]
 
-    func loadWorkMeetingPeople(_ reference: WorkMeetingReference) async {
+    func loadWorkMeetingPeople(_ reference: WorkMeetingReference, force: Bool = false) async {
         let key = reference.recordId
-        guard workMeetingPeople[key] == nil, !workMeetingPeopleLoading.contains(key) else { return }
-        workMeetingPeopleLoading.insert(key); defer { workMeetingPeopleLoading.remove(key) }
+        guard force || (workMeetingPeople[key] == nil && !workMeetingPeopleLoading.contains(key)) else { return }
+        let generation = UUID(); workMeetingPeopleGeneration[key] = generation
+        workMeetingPeopleLoading.insert(key)
+        if force { workMeetingPeople.removeValue(forKey: key); workMeetingPeopleFailed.remove(key) }
+        defer { if workMeetingPeopleGeneration[key] == generation { workMeetingPeopleLoading.remove(key) } }
         do {
             let response = try await helper.run(["meeting-library-detail", "--domain", reference.domain, "--month", reference.month,
                                                  "--filename", reference.filename], timeout: 30)
             // Only the exact saved record: a renamed or merged meeting must not lend its people to this task.
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, workMeetingPeopleGeneration[key] == generation else { return }
             guard response.ok, let detail = LibraryMeetingDetail(.object(response.details)), detail.recordId == reference.recordId else {
                 workMeetingPeopleFailed.insert(key); return
             }
@@ -3864,7 +3868,7 @@ final class ControllerModel: ObservableObject {
             workMeetingPeopleFailed.remove(key)
         } catch {
             // Scrolling the row away cancels the read; that is not a failure, and the row asks again when shown.
-            guard !(error is CancellationError), !Task.isCancelled else { return }
+            guard !(error is CancellationError), !Task.isCancelled, workMeetingPeopleGeneration[key] == generation else { return }
             workMeetingPeopleFailed.insert(key)
         }
     }
@@ -3872,7 +3876,7 @@ final class ControllerModel: ObservableObject {
     /// "Try again" on a meeting whose people could not be read.
     func retryWorkMeetingPeople(_ reference: WorkMeetingReference) async {
         workMeetingPeopleFailed.remove(reference.recordId)
-        await loadWorkMeetingPeople(reference)
+        await loadWorkMeetingPeople(reference, force: true)
     }
 
     /// Dismiss several items (Review → "Skip all from older meetings"), then refresh once. Stops at the first refusal.
@@ -9496,6 +9500,12 @@ final class ControllerModel: ObservableObject {
                     notice = "\(correction.from) is now \(correction.to ?? "") in this meeting\(reason)"
                 } else {
                     notice = "Saved — \(correction.from) is now \(correction.to ?? "") everywhere"
+                }
+                for key in [review.recordId, review.blendedRecordId ?? ""].filter({ !$0.isEmpty }) {
+                    workMeetingPeople.removeValue(forKey: key)
+                    workMeetingPeopleFailed.remove(key)
+                    workMeetingPeopleGeneration[key] = UUID()
+                    workMeetingPeopleLoading.remove(key)
                 }
                 pendingCorrection = nil
                 correctionScope = .thisMeeting

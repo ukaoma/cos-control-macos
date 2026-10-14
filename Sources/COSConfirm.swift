@@ -55,8 +55,13 @@ private struct COSConfirmModifier: ViewModifier {
     let message: String
     let actions: [COSConfirmAction]
 
+    private var defaultActionID: UUID? {
+        actions.first(where: { $0.kind == .normal })?.id
+            ?? actions.first(where: { $0.kind == .destructive })?.id
+    }
+
     func body(content: Content) -> some View {
-        content.overlay {
+        content.disabled(isPresented).overlay {
             if isPresented {
                 ZStack {
                     // Swallows clicks on the panel behind, so the confirmation is
@@ -92,7 +97,7 @@ private struct COSConfirmModifier: ViewModifier {
                                     action.run()
                                 }
                                 .buttonStyle(COSQuietButtonStyle(tone: action.kind == .destructive ? .destructive : .standard))
-                                .keyboardShortcut(action.kind == .cancel ? .cancelAction : nil)
+                                .keyboardShortcut(action.kind == .cancel ? .cancelAction : action.id == defaultActionID ? .defaultAction : nil)
                             }
                         }
                         .padding(.top, 2)

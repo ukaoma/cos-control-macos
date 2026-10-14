@@ -49,7 +49,7 @@ struct MeetingLibraryBody: View {
             isPresented: $confirmRecoverAllOrphans,
             titleVisibility: .visible
         ) {
-            Button("Recover all") { model.recoverAllOrphans() }
+            Button("Recover all") { model.recoverAllOrphans() }.keyboardShortcut(.defaultAction)
             Button("Cancel", role: .cancel) { }
         } message: {
             Text("Turns each unsaved capture into a meeting, one at a time. Session files are not deleted.")
@@ -59,7 +59,7 @@ struct MeetingLibraryBody: View {
             isPresented: $confirmSaveAllStranded,
             titleVisibility: .visible
         ) {
-            Button("Save all") { model.saveAllStranded() }
+            Button("Save all") { model.saveAllStranded() }.keyboardShortcut(.defaultAction)
             Button("Cancel", role: .cancel) { }
         } message: {
             Text("Finalizes each still-live G2 capture. Session files become meetings; they are not deleted.")
@@ -476,6 +476,11 @@ struct MeetingWorkConnections {
         guard receipts.contains(where: { $0.id == receipt.id }), let id = receipt.sessionID,
               sessions.contains(where: { $0.id == id && $0.provider == receipt.provider }) else { return nil }
         return (id, receipt.workID)
+    }
+
+    static func tasks(recordIds: [String], from tasks: [TaskRow]) -> [TaskRow] {
+        let ids = Set(recordIds.filter { !$0.isEmpty })
+        return tasks.filter { task in task.meetingRefs.contains { ids.contains($0.recordId) } }
     }
 
     static func project(meeting: LibraryMeeting, tasks: [TaskRow], reviews: [WorkReviewRecord], receipts: [WorkHandoffReceipt], sessions: [WorkSession], loading: Bool, complete: Bool, errors: [String]) -> Self {
@@ -1343,6 +1348,7 @@ struct MeetingEngineStatusRow: View {
                             .buttonStyle(COSQuietButtonStyle())
                             .controlSize(.small)
                             .disabled(model.mergeRevertBusy)
+                            .keyboardShortcut(.defaultAction)
                         Button("Cancel") { model.cancelMergeRevert() }
                             .buttonStyle(COSTextButtonStyle())
                             .controlSize(.small)
@@ -1758,6 +1764,7 @@ struct MergedRecordActions: View {
                 .buttonStyle(COSQuietButtonStyle())
                 .controlSize(.small)
                 .disabled(model.mergeRevertBusy)
+                .keyboardShortcut(.defaultAction)
                 Button("Cancel") { model.cancelMergeRevert() }
                     .buttonStyle(COSTextButtonStyle())
                     .controlSize(.small)
@@ -1870,6 +1877,8 @@ struct MeetingTaskLinkSheet: View {
                 if let onOpenWork {
                     Button("Open task") { dismiss(); onOpenWork(saved.workSourceID) }.buttonStyle(COSPrimaryButtonStyle())
                 }
+                Button("Link another task") { self.saved = nil; selected = nil; error = nil }
+                    .buttonStyle(COSQuietButtonStyle())
             } else {
                 TextField("Search tasks across all domains", text: $query).textFieldStyle(.plain).cosField()
                     .onChange(of: query) { _, _ in selected = nil; error = nil }
@@ -1888,6 +1897,7 @@ struct MeetingTaskLinkSheet: View {
                     LazyVStack(alignment: .leading, spacing: 8) {
                         ForEach(candidates, id: \.workSourceID) { task in
                             let reason = reference.flatMap { MeetingTaskLinkOptions.refusal(task, meeting: $0) }
+                            HStack(spacing: 8) {
                             Button { selected = task; error = nil } label: {
                                 HStack(alignment: .center, spacing: 10) {
                                     Image(systemName: selected?.workSourceID == task.workSourceID ? "largecircle.fill.circle" : "circle")
@@ -1900,6 +1910,11 @@ struct MeetingTaskLinkSheet: View {
                                     Spacer()
                                 }.frame(maxWidth: .infinity, alignment: .leading).padding(10).contentShape(Rectangle())
                             }.buttonStyle(.plain).disabled(reason != nil || saving || !model.workBoardWritable)
+                            if let onOpenWork {
+                                Button("Open task") { dismiss(); onOpenWork(task.workSourceID) }
+                                    .buttonStyle(COSQuietButtonStyle()).disabled(saving)
+                            }
+                            }
                         }
                         if candidates.isEmpty && !model.workTasksLoading {
                             Text(query.isEmpty ? "No tasks available." : "No matching tasks. Try another name or domain.")
@@ -1916,6 +1931,7 @@ struct MeetingTaskLinkSheet: View {
                     Button(saving ? "Linking…" : "Link selected task") { link() }
                         .buttonStyle(COSPrimaryButtonStyle())
                         .disabled(saving || model.workTasksLoading || !model.workBoardWritable || reference == nil || selected == nil)
+                        .keyboardShortcut(.defaultAction)
                 }
             }
         }.font(COSType.body(12)).padding(24).frame(width: 620)
@@ -2075,6 +2091,9 @@ struct LiveTranscriptPane: View {
         let feed = model.openLiveTranscriptFeed
         return VStack(alignment: .leading, spacing: 0) {
             TimelineView(.periodic(from: .now, by: 15)) { context in header(feed, now: context.date) }
+            if let session = model.liveTranscriptOpenID, feed?.ended != true {
+                MeetingSpeakerPolicyView(model: model, sessionId: session).id(session).padding(.horizontal, 22).padding(.bottom, 10)
+            }
             Divider()
             if let feed, !feed.turns.isEmpty {
                 transcript(feed)

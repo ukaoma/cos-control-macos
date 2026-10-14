@@ -2380,6 +2380,12 @@ struct WorkWorkspaceView: View {
     /// this meeting and where each stands, their other asks in Intake, and open tasks that mention them.
     @ViewBuilder private func meetingPeople(_ meeting: WorkMeetingReference) -> some View {
         if let people = model.workMeetingPeople[meeting.recordId] {
+            HStack(spacing: 8) {
+                Button("Refresh people") { state.personFocus = nil; Task { await model.retryWorkMeetingPeople(meeting) } }
+                    .buttonStyle(COSQuietButtonStyle()).controlSize(.small)
+                Button("Correct people in source meeting") { onOpenMeeting(meeting) }
+                    .buttonStyle(COSQuietButtonStyle()).controlSize(.small)
+            }
             if !people.people.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 6) {
@@ -2391,7 +2397,7 @@ struct WorkWorkspaceView: View {
                                     .padding(.horizontal, 8).padding(.vertical, 4)
                                     .overlay(RoundedRectangle(cornerRadius: 5).stroke(open ? COSPalette.gold : COSPalette.line))
                                     .contentShape(Rectangle())
-                            }.buttonStyle(.plain).help(count > 0 ? "\(count) item\(count == 1 ? "" : "s") from this meeting" : "Attended")
+                            }.buttonStyle(.plain).help(count > 0 ? "\(count) item\(count == 1 ? "" : "s") from this meeting" : "Listed in the source meeting")
                         }
                     }.padding(.vertical, 2)
                 }
@@ -2419,6 +2425,10 @@ struct WorkWorkspaceView: View {
                 Spacer()
                 Button { state.personFocus = nil } label: { Image(systemName: "xmark") }.buttonStyle(COSIconButtonStyle()).help("Close")
             }
+            Button("Correct this person in the source meeting") { onOpenMeeting(meeting) }
+                .buttonStyle(COSQuietButtonStyle()).controlSize(.small)
+            Text("People come from this meeting’s attendee list and action-item owners. Correct the source so future refreshes and agent reads use the same evidence.")
+                .font(COSType.body(10.5)).foregroundStyle(COSPalette.muted)
             if person.meetingItems.isEmpty {
                 Text("No action items for \(first) in this meeting.").font(COSType.body(11)).foregroundStyle(COSPalette.muted)
             } else {
