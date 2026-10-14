@@ -25,7 +25,7 @@ The existing Codex child `01a1384c-a7a3-7281-98e2-a4715c46cfd9` was recovered an
 - Server: 180 tests across 13 files, typecheck; focused independent review cleared the asynchronous policy race fix.
 - Compiled Control helper: 821 deterministic self-tests and 62 Work model/admission checks.
 - Compiled helper against isolated authenticated loopback: policy GET/guarded POST, corrupt-store response, stale/older server, auth refusal; selected record/revision recovery; recent replies and completion reads.
-- Native confirmation canary: actual Return, disabled guard, Escape, background shortcut isolation and multiline newline. WhatsNew pins passed.
+- WhatsNew shortcut pins passed. The initial native keyboard fixture passed behavior checks but constructed synthetic events, which the repo forbids. It was removed from the release gate; its historical receipt is not release qualification. Enter/Escape and multiline routing require manual candidate acceptance.
 - Full Control Work progress suite: terminal-after-semantic-done, opening exact child, retry without another prompt, failure preserves result and legacy tracking compatibility.
 
 ## Acceptance gates after candidate build

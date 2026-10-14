@@ -145,7 +145,6 @@ python3 "$ROOT/Tests/reuse-compile.py" --root "$ROOT" --receipt "$TMP/app-compil
 zsh "$ROOT/Tests/run-simple-pet.sh" "$TMP/simple-pet-proof"
 zsh "$ROOT/Tests/run-session-open-recovery.sh"
 zsh "$ROOT/Tests/run-meeting-task-link.sh"
-zsh "$ROOT/Tests/run-confirm-keyboard.sh"
 # 0.5.232: the Markdown parser is pure Foundation and pinned by an EXECUTED contract
 # (the scribe's meeting, lists, tasks, tables, code, quotes, details, speaker lines).
 "$ROOT/Tests/compile-guard.sh" swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \
