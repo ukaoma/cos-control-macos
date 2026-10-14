@@ -1,11 +1,30 @@
 {
-  "version": "0.5.289",
+  "version": "0.5.290",
   "whatsNew": {
-    "summary": "Choose the live preview and HQ transcription models, and install Parakeet, from Settings. Includes everything in 0.5.288. Requires server 6.72.0.",
+    "summary": "Candidate: clearer speaker identities, connected tasks, and Work handoffs. Matched with server 6.73.2.",
     "sections": [
-      {"title": "Transcription models", "items": ["Settings has a Transcription card. Pick the Preview model for live chunks and the HQ model for saved meetings. The choices come from your server.", "Preview changes apply to the next live chunk and HQ changes to the next saved meeting. Nothing switches in the middle of a meeting.", "On a server older than 6.72.0 the card is not shown."]},
-      {"title": "Parakeet install", "items": ["When Parakeet is not installed, Install Parakeet downloads it and the card shows its progress until it is installed.", "Install is not offered while a recording is live. If the install fails, the card shows the reason and offers the button again."]},
-      {"title": "Included from 0.5.288", "items": ["Set a Home city in the Meeting assistant card so fact checks start from the right place.", "A meeting the server already finished no longer shows as Live now with hours of No audio."]}
+      {
+        "title": "Speaker review",
+        "items": [
+          "Choose Standard, High-confidence, or Anonymous/video for each recording. Global voice profiles are preserved.",
+          "Speakers shows connected tasks with Open task and Link another task."
+        ]
+      },
+      {
+        "title": "Work connections",
+        "items": [
+          "Copy the canonical task ID or context from task details or a board card.",
+          "Existing Claude and Codex chats can link to Work and update stages through the guarded helper.",
+          "Codex handoffs open the exact completed child and retry without starting another run.",
+          "Refresh task people after correcting the source recording."
+        ]
+      },
+      {
+        "title": "Confirmation shortcuts",
+        "items": [
+          "Return saves enabled confirmations; Escape cancels. Multiline editors retain newlines."
+        ]
+      }
     ]
   }
 }
