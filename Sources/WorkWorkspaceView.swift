@@ -1195,6 +1195,7 @@ struct WorkBoardSearchField: View {
     @Binding var query: String
     var focusRequest: Int
     var onKey: (WorkSearch.Key) -> Bool
+    var isEnabled = true
     @State private var text = ""
     @State private var primed = false
     @State private var wait: Task<Void, Never>?
@@ -1207,6 +1208,7 @@ struct WorkBoardSearchField: View {
             TextField(prompt, text: $text)
                 .textFieldStyle(.plain)
                 .focused($focused)
+                .disabled(!isEnabled)
                 .onKeyPress(keys: [.downArrow, .upArrow, .return, .escape]) { press in
                     handle(press.key == .downArrow ? .down : press.key == .upArrow ? .up : press.key == .return ? .open : .clear) ? .handled : .ignored
                 }
@@ -1229,6 +1231,7 @@ struct WorkBoardSearchField: View {
         }
         .onChange(of: query) { _, value in if text != value { text = value } }
         .onChange(of: focusRequest) { _, _ in focused = true }
+        .onChange(of: isEnabled) { _, enabled in if !enabled { focused = false } }
     }
 
     /// A key acts on what is typed: the board's matches catch up first, then the board decides (WorkSearch.key).
@@ -1454,6 +1457,8 @@ struct WorkWorkspaceView: View {
             if state.startItemID != nil { state.startItemID = nil }
             else if state.meetingPicker || hasDetail { closePickerOrDetail() }
         }
+        .onChange(of: state.selectedID) { _, _ in unlinkID = nil; unlinkExpected = nil }
+        .onChange(of: layout) { _, _ in unlinkID = nil; unlinkExpected = nil }
         .onChange(of: reviewStore.selectedReviewID) { _, id in
             if let id, let review = reviewStore.reviews.first(where: { $0.id == id }) {
                 state.selectedID = "meeting-review:" + review.id; handoffStore.selectedWorkID = review.source.id
@@ -1532,7 +1537,7 @@ struct WorkWorkspaceView: View {
     private var workFilters: some View {
         HStack(spacing: 12) {
             WorkBoardSearchField(prompt: "Search work", query: $state.query, focusRequest: state.searchFocusRequest,
-                onKey: { boardSearchKey($0) }).frame(maxWidth: 300)
+                onKey: { boardSearchKey($0) }, isEnabled: unlinkID == nil).frame(maxWidth: 300)
             COSDropdown("Domain", selection: Binding(get: { state.domain ?? "" }, set: {
                 state.domain = $0.isEmpty ? nil : $0; returnToList()
             }), options: [COSDropdownOption("", "All domains")] + domains.map { COSDropdownOption($0, domainLabel($0)) }).fixedSize()
@@ -2910,6 +2915,7 @@ struct WorkWorkspaceView: View {
                             Button("Unlink") {
                                 unlinkID = contributor.id; unlinkExpected = try? WorkSessionLinks.revision(link)
                             }.buttonStyle(COSTextButtonStyle())
+                                .accessibilityIdentifier("work-unlink-" + contributor.id)
                         } else { Text("Receipt history").font(COSType.body(10)).foregroundStyle(COSPalette.muted) }
                     }
                     if unlinkID == contributor.id, let expected = unlinkExpected {
@@ -2918,7 +2924,8 @@ struct WorkWorkspaceView: View {
                             Button("Unlink") {
                                 if handoffStore.removeSessionCard(sessionID: contributor.id, workID: task.workSourceID, expected: expected) { unlinkID = nil; unlinkExpected = nil }
                             }.buttonStyle(COSQuietButtonStyle()).keyboardShortcut(.defaultAction)
-                            Button("Cancel") { unlinkID = nil; unlinkExpected = nil }.buttonStyle(COSTextButtonStyle())
+                                .accessibilityIdentifier("work-confirm-unlink-" + contributor.id)
+                            Button("Cancel") { unlinkID = nil; unlinkExpected = nil }.buttonStyle(COSTextButtonStyle()).keyboardShortcut(.cancelAction)
                         }
                     }
                 }.padding(12).background(COSPalette.raised, in: RoundedRectangle(cornerRadius: 8))

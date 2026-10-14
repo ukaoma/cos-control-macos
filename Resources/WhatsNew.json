@@ -1,28 +1,22 @@
 {
-  "version": "0.5.290",
+  "version": "0.5.291",
   "whatsNew": {
-    "summary": "Candidate: clearer speaker identities, connected tasks, and Work handoffs. Matched with server 6.73.2.",
+    "summary": "Work connects multiple agent sessions to one task, with Connections and Agent workspace together. Matched with server 6.73.3.",
     "sections": [
       {
-        "title": "Speaker review",
+        "title": "Shared work",
         "items": [
-          "Choose Standard, High-confidence, or Anonymous/video for each recording. Global voice profiles are preserved.",
-          "Speakers shows connected tasks with Open task and Link another task."
+          "Link existing Claude, Codex and Cursor sessions to a shared task. Each session keeps its own progress.",
+          "View each contributor in Agent workspace while retaining Continue, Fork and Start a new session.",
+          "Open exact Claude and Codex chats, copy session IDs, and remove individual links without deleting chats. Cursor opens its Agents view."
         ]
       },
       {
-        "title": "Work connections",
+        "title": "A quieter board",
         "items": [
-          "Copy the canonical task ID or context from task details or a board card.",
-          "Existing Claude and Codex chats can link to Work and update stages through the guarded helper.",
-          "Codex handoffs open the exact completed child and retry without starting another run.",
-          "Refresh task people after correcting the source recording."
-        ]
-      },
-      {
-        "title": "Confirmation shortcuts",
-        "items": [
-          "Return saves enabled confirmations; Escape cancels. Multiline editors retain newlines."
+          "Use Your move for decisions, Board for active stages, and History for hidden notices.",
+          "Hide stale notices and restore them from History. Delivery warnings and task stages stay intact.",
+          "Copy task IDs and context for work across sessions. Shared task completion remains your decision."
         ]
       }
     ]
