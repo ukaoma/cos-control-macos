@@ -1,14 +1,22 @@
 {
-  "version": "0.5.294",
+  "version": "0.5.295",
   "whatsNew": {
-    "summary": "Faster Work chat editing while connected sessions report their progress. Compatible with server 6.73.4.",
+    "summary": "Create tasks directly from saved meetings and edit Work context without rebuilding the board. Matched with server 6.73.5.",
     "sections": [
       {
         "title": "Responsive typing",
         "items": [
           "Typing updates only the composer. Chat history and file lists stay separate.",
           "Drafts save after a short pause and immediately when you send or leave the view.",
-          "Background receipt refreshes keep the editor available."
+          "Background receipt refreshes keep the editor available.",
+          "Context to send, Add task, replies and review titles keep typing local to their editors."
+        ]
+      },
+      {
+        "title": "Tasks from meetings",
+        "items": [
+          "Create a task from a saved meeting, choose its domain, then open it in Work.",
+          "The task keeps its source meeting and saved meeting files. Existing task linking remains available."
         ]
       },
       {

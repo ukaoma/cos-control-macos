@@ -41,6 +41,7 @@ import SwiftUI
         try script.write(to: helper, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: helper.path)
         let model = ControllerModel(startBackgroundWork: false, helper: HelperClient(executableOverride: helper))
+        model.domainOptions = [DomainOption(.object(["name": .string("quilt")]))!]
         model.workBoardWritable = true
         try await model.linkWorkMeeting(chosen, meeting: reference)
         let sent = try JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: helper.path + ".request"))) as! [String: Any]
@@ -52,6 +53,27 @@ import SwiftUI
         do { try await model.linkWorkMeeting(chosen, meeting: reference); preconditionFailure("A refused write must not report success") }
         catch { precondition(error.localizedDescription.contains("Task changed")) }
         print("PASS: canonical link payload and stale-write refusal propagation")
+
+        let createScript = """
+        #!/bin/sh
+        if [ "$1" = work-create-meeting-task ]; then
+          /bin/cat > "$0.create-request"
+          /usr/bin/printf '%s\\n' '{"ok":true,"message":"saved","details":{"linked":true,"id":"aaaaaaaaaaaa","workID":"task:quilt:aaaaaaaaaaaa"}}'
+        else
+          /usr/bin/printf '%s\\n' '\(payload)'
+        fi
+
+        """
+        try createScript.write(to: helper, atomically: true, encoding: .utf8)
+        let created = try await model.createMeetingTask(domain: "quilt", text: "Prepare bookings data", meeting: reference)
+        precondition(created == "task:quilt:aaaaaaaaaaaa")
+        let createSent = try JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: helper.path + ".create-request"))) as! [String: Any]
+        precondition(Set(createSent.keys) == ["domain", "text", "meeting"])
+        precondition(createSent["text"] as? String == "Prepare bookings data" && (createSent["meeting"] as? [String: String]) == reference.json)
+        try refusal.write(to: helper, atomically: true, encoding: .utf8)
+        do { _ = try await model.createMeetingTask(domain: "quilt", text: "Keep this draft", meeting: reference); preconditionFailure("Refused creation cannot report success") }
+        catch { precondition(error.localizedDescription.contains("Task changed")) }
+        print("PASS: one-write meeting creation payload, exact saved identity and refusal propagation")
 
         // Exercise the real cache loader with corrected evidence and out-of-order reads.
         let peopleInput = URL(fileURLWithPath: helper.path + ".people-input")
@@ -103,7 +125,17 @@ import SwiftUI
         }
         // SwiftUI's accessibility tree is not exposed by a never-shown hosting window.
         // Full Open task activation and return navigation remain candidate app acceptance gates.
+        let createHost = NSHostingView(rootView: MeetingTaskLinkSheet(model: model, meeting: meeting, initiallyCreating: true))
+        window.contentView = createHost
+        for appearance in [NSAppearance.Name.aqua, .darkAqua] {
+            window.appearance = NSAppearance(named: appearance)
+            for _ in 0..<20 { try await Task.sleep(for: .milliseconds(20)); createHost.layoutSubtreeIfNeeded() }
+            let rep = createHost.bitmapImageRepForCachingDisplay(in: createHost.bounds)!
+            createHost.cacheDisplay(in: createHost.bounds, to: rep)
+            try rep.representation(using: .png, properties: [:])!.write(to: output.appendingPathComponent(appearance == .aqua ? "meeting-task-create-light.png" : "meeting-task-create-dark.png"))
+        }
         window.close()
+        try await runWorkInputChecks(root: output)
         print("PASS: isolated light/dark picker render with already-linked Open task controls")
     }
 }

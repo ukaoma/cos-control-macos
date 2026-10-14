@@ -124,6 +124,70 @@ enum WorkHandoffState: Equatable {
     var showsReply: Bool { [.replyReady, .sent].contains(self) }
 }
 
+@MainActor final class WorkReplyDraft: ObservableObject {
+    @Published var text = ""
+}
+
+/// Reply input and button eligibility update together without repainting the work card.
+struct WorkReplyComposer: View {
+    @ObservedObject var draft: WorkReplyDraft
+    var prompt: String
+    var sendTitle = "Send"
+    var busy = false
+    var multiline = false
+    let send: () -> Void
+    let cancel: () -> Void
+    var body: some View {
+        let layout = multiline ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8)) : AnyLayout(HStackLayout(spacing: 8))
+        layout {
+            if multiline {
+                TextField(prompt, text: $draft.text, axis: .vertical).lineLimit(2...5)
+                    .textFieldStyle(.plain).font(COSType.body(12)).cosField().disabled(busy)
+                    .accessibilityLabel("What is missing")
+            } else { TextField(prompt, text: $draft.text).textFieldStyle(.plain).disabled(busy) }
+            HStack(spacing: 8) {
+                if multiline {
+                    Button(sendTitle) { send() }.buttonStyle(COSPrimaryButtonStyle())
+                        .disabled(busy || draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                } else {
+                    Button(sendTitle) { send() }.buttonStyle(COSQuietButtonStyle())
+                        .disabled(busy || draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+                Button("Cancel") { cancel() }.buttonStyle(COSQuietButtonStyle()).disabled(busy)
+            }
+        }
+    }
+}
+
+/// Draft keystrokes invalidate only the native editor. The surrounding session
+/// lists, receipt timeline and file manifests refresh after the idle save.
+@MainActor final class WorkHandoffPromptState: ObservableObject {
+    @Published var text = ""
+    var bound = false
+    var snapshot: WorkHandoffDraft?
+    var source: WorkSource?
+    var save: Task<Void, Never>?
+}
+
+private struct WorkHandoffPromptField: View {
+    @ObservedObject var draft: WorkHandoffPromptState
+    let fallback: String
+    var disabled: Bool
+    let edited: () -> Void
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            TextEditor(text: Binding(get: { draft.bound ? draft.text : fallback }, set: { value in
+                draft.text = value; edited()
+            })).font(COSType.body(12)).frame(minHeight: 120, maxHeight: 220)
+                .cosEditor().accessibilityLabel("Context to send").disabled(disabled)
+            if draft.text.utf16.count > WorkHandoffStore.draftLimit {
+                Text("Context exceeds \(WorkHandoffStore.draftLimit.formatted()) characters. Shorten it before sending; nothing has been removed.")
+                    .font(COSType.body(11)).foregroundStyle(COSPalette.danger)
+            }
+        }
+    }
+}
+
 struct WorkHandoffView: View {
     /// 0.5.247: where a New session runs. Miles looked for a background run in Claude's sidebar, found nothing and read
     /// the handoff as lost (2026-09-29). 0.5.249: it runs in the background, then opens in its app once the first reply
@@ -199,19 +263,15 @@ struct WorkHandoffView: View {
     @State private var historyOpen = false
     @State private var confirmClear = false
     @State private var sendBackOpen = false
-    @State private var sendBackText = ""
+    @State private var sendBackDraft = WorkReplyDraft()
     @State private var sendingBack = false
     /// 0.5.254: "Send all N again" for this send (a Continue or Fork otherwise carries only files the session lacks).
     @State private var resendAllFiles = false
     /// The context box. Keystrokes stay here. The journal is written after a short pause, and again before a send
     /// or when this workspace goes away. Writing it on every character locked the journal and redrew Work.
-    @State private var livePrompt = ""
-    @State private var promptBound = false
-    @State private var promptSnapshot: WorkHandoffDraft?
-    @State private var promptSource: WorkSource?
-    @State private var promptSave: Task<Void, Never>?
+    @State private var promptState = WorkHandoffPromptState()
     private var draft: WorkHandoffDraft { store.draft(for: source) }
-    private var editingPrompt: String { promptBound ? livePrompt : prompt }
+    private var editingPrompt: String { promptState.bound ? promptState.text : prompt }
     private var mode: WorkHandoffMode { draft.mode }
     private var sessionID: String { draft.sessionID }
     private var modelID: String { draft.modelID }
@@ -256,6 +316,7 @@ struct WorkHandoffView: View {
     }
 
     var body: some View {
+        let _ = { WorkBoardMetrics.handoffBodies += 1 }()
         VStack(alignment: .leading, spacing: 14) {
             HStack {
                 if !embedded { Text("Agent workspace").font(COSType.display(20, weight: .medium)) }
@@ -453,7 +514,6 @@ struct WorkHandoffView: View {
 
     /// "Not done yet": what is missing, sent back to the same session. It becomes a new, tracked handoff.
     private func sendBackControls(_ receipt: WorkHandoffReceipt, session: WorkSession) -> some View {
-        let empty = sendBackText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         let title = WorkSendPlan.clip(session.title)
         // 0.5.249: a session its app owns gets the note in the app, for you to send there.
         let how: String = WorkHandoffStore.appOwner(of: session.id, in: store.receipts) != nil
@@ -461,28 +521,19 @@ struct WorkHandoffView: View {
             : "Continues \u{201C}\(title)\u{201D} with this note"
         let then: String = currentStage == nil ? "." : " and moves the card back to Draft."
         return VStack(alignment: .leading, spacing: 6) {
-            TextField("What\u{2019}s missing?", text: $sendBackText, axis: .vertical).lineLimit(2...5)
-                .textFieldStyle(.plain).font(COSType.body(12)).padding(8)
-                .background(COSPalette.panel, in: RoundedRectangle(cornerRadius: 6))
-                .overlay(RoundedRectangle(cornerRadius: 6).stroke(COSPalette.line))
-                .accessibilityLabel("What is missing")
-                .disabled(sendingBack)
-            HStack(spacing: 8) {
-                Button(sendingBack ? "Sending\u{2026}" : "Send back") { sendBack(receipt) }.buttonStyle(COSPrimaryButtonStyle())
-                    .disabled(sendingBack || store.busy || empty)
-                Button("Cancel") { sendBackOpen = false }.buttonStyle(COSTextButtonStyle()).disabled(sendingBack)
-            }
+            WorkReplyComposer(draft: sendBackDraft, prompt: "What’s missing?", sendTitle: sendingBack ? "Sending…" : "Send back",
+                busy: sendingBack || store.busy, multiline: true, send: { sendBack(receipt) }, cancel: { sendBackOpen = false })
             Text(how + then)
                 .font(COSType.body(10.5)).foregroundStyle(COSPalette.muted)
         }
     }
     private func sendBack(_ receipt: WorkHandoffReceipt) {
-        let text = sendBackText
+        let text = sendBackDraft.text
         sendingBack = true; onSendingChange?(true)
         Task {
             let sent = await store.sendBack(receiptID: receipt.id, source: source, missing: text)
             sendingBack = false; onSendingChange?(false)
-            if sent { sendBackOpen = false; sendBackText = ""; onSentBack?() }
+            if sent { sendBackOpen = false; sendBackDraft.text = ""; onSentBack?() }
         }
     }
 
@@ -533,33 +584,24 @@ struct WorkHandoffView: View {
                     Button("Reload saved draft") { bindPrompt() }.buttonStyle(COSTextButtonStyle())
                     if editingPrompt != source.suggestedPrompt {
                         Button("Reset") {
-                            livePrompt = source.suggestedPrompt
-                            promptBound = true
+                            promptState.text = source.suggestedPrompt
+                            promptState.bound = true
                             flushPrompt()
                         }.buttonStyle(COSTextButtonStyle()).disabled(store.busy || validating).help("Go back to the suggested context")
                     }
                 }
-                TextEditor(text: Binding(get: { editingPrompt }, set: { value in
-                    livePrompt = value
-                    promptBound = true
+                WorkHandoffPromptField(draft: promptState, fallback: prompt, disabled: store.busy || validating) {
                     schedulePromptSave()
-                })).font(COSType.body(12)).frame(minHeight: 120, maxHeight: 220)
-                    .cosEditor()
-                    .accessibilityLabel("Context to send")
-                    .disabled(store.busy || validating)
-                    .onAppear { if !promptBound { bindPrompt() } }
+                }
+                    .onAppear { if !promptState.bound { bindPrompt() } }
                     .onChange(of: source) { _, _ in
                         if flushBoundPrompt() { bindPrompt() }
                     }
                     .onDisappear { flushPrompt() }
-                if editingPrompt.utf16.count > WorkHandoffStore.draftLimit {
-                    Text("Context exceeds \(WorkHandoffStore.draftLimit.formatted()) characters, the most a handoff carries with its tracking line. Shorten it before sending; nothing has been removed.")
-                        .font(COSType.body(11)).foregroundStyle(COSPalette.danger)
-                }
                 if store.earlierDraftCount(for: source) > 0 {
                     Button("Use previous draft") {
                         guard let prior = store.drafts.last(where: { $0.sourceID == source.id && $0.sourceRevision != source.revision }) else { return }
-                        bindPrompt(); livePrompt = prior.prompt; _ = flushPrompt()
+                        bindPrompt(); promptState.text = prior.prompt; _ = flushPrompt()
                     }.buttonStyle(COSTextButtonStyle())
                     Text("Earlier revision drafts are retained. This revision has its own context and destination.")
                         .font(COSType.body(10.5)).foregroundStyle(COSPalette.muted)
@@ -592,16 +634,22 @@ struct WorkHandoffView: View {
         }
     }
 
+    static func typingFixture(store: WorkHandoffStore, source: WorkSource, draft: WorkHandoffPromptState) -> Self {
+        var view = Self(store: store, source: source, isPreview: true, onOpenSession: { _ in })
+        view._promptState = State(initialValue: draft)
+        return view
+    }
+
     private func bindPrompt() {
         let saved = store.draft(for: source)
-        promptSnapshot = saved; promptSource = source
-        livePrompt = saved.prompt; promptBound = true
+        promptState.snapshot = saved; promptState.source = source
+        promptState.text = saved.prompt; promptState.bound = true
     }
 
     private func schedulePromptSave() {
-        promptSave?.cancel()
-        let text = livePrompt, bound = promptSource, snapshot = promptSnapshot
-        promptSave = Task { @MainActor in
+        promptState.save?.cancel()
+        let text = promptState.text, bound = promptState.source, snapshot = promptState.snapshot
+        promptState.save = Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(350))
             guard !Task.isCancelled, let bound, let snapshot else { return }
             _ = commitPrompt(text, source: bound, snapshot: snapshot)
@@ -609,14 +657,14 @@ struct WorkHandoffView: View {
     }
 
     @discardableResult private func flushBoundPrompt() -> Bool {
-        promptSave?.cancel()
-        guard promptBound, let bound = promptSource, let snapshot = promptSnapshot else { return true }
-        return commitPrompt(livePrompt, source: bound, snapshot: snapshot)
+        promptState.save?.cancel()
+        guard promptState.bound, let bound = promptState.source, let snapshot = promptState.snapshot else { return true }
+        return commitPrompt(promptState.text, source: bound, snapshot: snapshot)
     }
 
     @discardableResult private func flushPrompt() -> Bool {
         guard flushBoundPrompt() else { return false }
-        guard !promptBound || (promptSource?.id == source.id && promptSource?.revision == source.revision) else {
+        guard !promptState.bound || (promptState.source?.id == source.id && promptState.source?.revision == source.revision) else {
             store.error = "This task changed while you were editing. Your previous draft is retained; reload the saved draft before sending."
             return false
         }
@@ -626,7 +674,7 @@ struct WorkHandoffView: View {
     private func commitPrompt(_ text: String, source: WorkSource, snapshot: WorkHandoffDraft) -> Bool {
         let current = store.draft(for: source)
         if current.prompt == text, !store.quietSend {
-            promptSnapshot = current
+            promptState.snapshot = current
             return true
         }
         var next = snapshot; next.prompt = text
@@ -634,7 +682,7 @@ struct WorkHandoffView: View {
             if store.quietSend { store.error = "The draft is waiting for the current send to finish saving. Try again afterward." }
             return false
         }
-        promptSnapshot = store.draft(for: source)
+        promptState.snapshot = store.draft(for: source)
         return true
     }
 

@@ -97,6 +97,7 @@ import CoreText
         try await runWorkOrchestrationChecks()
         try await runWorkActivityChecks()
         try await runWorkBoardCacheChecks()
+        try await runWorkInputChecks(root: root)
         try WorkTaskContextChecks.main()
         if CommandLine.arguments.contains("--render") { try renderPreview(root: root) }
         print("PASS hub canaries: three providers, exact identity, independent states, latest terminal outcomes, external observations, fork child, history, CAS unlink, restart, notice truth, unchanged epochs, queued shared-stage guard")

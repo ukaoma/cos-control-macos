@@ -543,6 +543,7 @@ struct ActivityWindow: View {
     /// 0.5.259: the speaker review a meeting was opened from, so Back returns to it.
     @State private var meetingReturnSpeakerSessionID: String?
     @State private var meetingTaskLink: LibraryMeeting?
+    @State private var meetingTaskCreate = false
     @State private var meetingWorkLoaded = false
     @State private var selectedSessionID: String?
     @State private var taskCapture = ""
@@ -849,7 +850,7 @@ struct ActivityWindow: View {
         // 0.5.251: GOTCOS progress, disclosure and tint for every control in the window.
         .cosControlTheme()
         .sheet(item: $meetingTaskLink) { meeting in
-            MeetingTaskLinkSheet(model: model, meeting: meeting, onOpenWork: openConnectedWork)
+            MeetingTaskLinkSheet(model: model, meeting: meeting, onOpenWork: openConnectedWork, initiallyCreating: meetingTaskCreate)
         }
         .task {
             if connectedWorkTest {
@@ -1856,7 +1857,8 @@ struct ActivityWindow: View {
     private var connectedMeetingDetailSurface: some View {
         MeetingLibraryDetailPane(model: model, onReviewVoices: openVoiceReviewFromLibrary,
             onOpenSource: openLibrarySource, onReviewFollowUp: meetingWorkReviewAction,
-            onLinkTask: workConnectionsEnabled && !isolatedWorkPreview ? { meetingTaskLink = $0 } : nil,
+            onLinkTask: workConnectionsEnabled && !isolatedWorkPreview ? { meetingTaskCreate = false; meetingTaskLink = $0 } : nil,
+            onCreateTask: workConnectionsEnabled && !isolatedWorkPreview ? { meetingTaskCreate = true; meetingTaskLink = $0 } : nil,
             workConnections: meetingConnections, onOpenWork: meetingWorkOpenAction,
             onOpenSession: meetingSessionOpenAction)
             .task(id: selectedLibraryRecordID) { await loadMeetingConnections() }
@@ -2828,7 +2830,7 @@ struct ActivityWindow: View {
                 model.openMeetingNote = SpeakersMeetingLink.missNote(lookups)
                 return
             }
-            if linkTask { meetingTaskLink = row; return }
+            if linkTask { meetingTaskCreate = false; meetingTaskLink = row; return }
             meetingReturnWorkID = nil
             meetingReturnToWork = false
             meetingWorkLoaded = false

@@ -223,10 +223,7 @@ enum WorkWorkspaceScope: String, CaseIterable, Identifiable {
     @Published var meetingPicker = false
     @Published var reviewModelID = ""
     @Published var captureOpen = false
-    @Published var captureText = ""
-    @Published var captureDomain = ""
-    @Published var captureBusy = false
-    @Published var captureError: String?
+    let captureDraft = WorkTaskCaptureDraft()
     @Published var mutationError: String?
     @Published var mutationBusy = false
     @Published var linkTarget: TaskRow?
@@ -369,6 +366,7 @@ enum WorkBoardMetrics {
     /// 0.5.259: how often the board's card dates were worked out (once per data change, never per redraw).
     nonisolated(unsafe) static var dates = 0
     nonisolated(unsafe) static var activityBodies = 0
+    nonisolated(unsafe) static var handoffBodies = 0
     static func countActivityBody() { activityBodies += 1 }
     static func countBody() { bodies += 1 }
     static func countBoard() { boards += 1 }
@@ -1265,7 +1263,7 @@ struct WorkWorkspaceView: View {
     @StateObject private var taskChat = WorkTaskChatStore()
     @State private var copiedWorkNote: String?
     @State private var yourMoveAnswerID: String?
-    @State private var yourMoveAnswer = ""
+    @State private var yourMoveDraft = WorkReplyDraft()
 
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.colorScheme) private var colorScheme
@@ -1321,7 +1319,7 @@ struct WorkWorkspaceView: View {
     @State private var detailSpanSeen = false
     @State private var detailSpanCommit = WorkLayoutCommit<DetailSpan>()
     @State private var editingReviewID: String?
-    @State private var reviewTitleDraft = ""
+    @State private var reviewTitleDraft = WorkReplyDraft()
     @FocusState private var reviewTitleFocused: Bool
     /// The remembered layout (Board by default; an unknown stored value reads as Board). The isolated preview keeps
     /// its own, so trying Focus there never changes the real preference.
@@ -1483,7 +1481,7 @@ struct WorkWorkspaceView: View {
             Spacer(minLength: 8)
             Button("Add task") {
                 state.captureOpen.toggle()
-                if state.captureDomain.isEmpty { state.captureDomain = state.domain ?? model.domainOptions.first?.name ?? "" }
+                if state.captureDraft.domain.isEmpty { state.captureDraft.domain = state.domain ?? model.domainOptions.first?.name ?? "" }
             }.buttonStyle(COSQuietButtonStyle()).disabled(handoffStore.isolated)
             Button(handoffStore.isolated ? "Sample meeting review" : "Review a meeting") {
                 if handoffStore.isolated {
@@ -1590,34 +1588,9 @@ struct WorkWorkspaceView: View {
     }
 
     private var captureForm: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                TextField("What needs to be done?", text: $state.captureText).textFieldStyle(.plain).cosField().disabled(state.captureBusy)
-                if !handoffStore.isolated && model.workBatchAvailable {
-                Button("Waiting on / Dropped") { state.waitingOpen = true; state.intakeOpen = false; returnToList() }.buttonStyle(COSTextButtonStyle())
-            }
-            COSDropdown("Domain", selection: $state.captureDomain,
-                            options: [COSDropdownOption("", "Choose domain", placeholder: true)]
-                                + model.domainOptions.map { COSDropdownOption($0.name, $0.label) })
-                    .frame(maxWidth: 200).disabled(state.captureBusy)
-                Button(state.captureBusy ? "Adding…" : "Capture") {
-                    guard !handoffStore.isolated else { return }
-                    let text = state.captureText.trimmingCharacters(in: .whitespacesAndNewlines)
-                    let domain = state.captureDomain
-                    state.captureBusy = true; state.captureError = nil
-                    Task {
-                        defer { state.captureBusy = false }
-                        do {
-                            try await model.captureTask(domain: domain, text: text)
-                            state.captureText = ""; state.captureOpen = false
-                            await model.loadWorkTasks()
-                        } catch { state.captureError = error.localizedDescription }
-                    }
-                }.buttonStyle(COSPrimaryButtonStyle())
-                    .disabled(state.captureBusy || state.captureText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !model.domainOptions.contains { $0.name == state.captureDomain })
-            }
-            if let error = state.captureError { Text(error).font(COSType.body(11)).foregroundStyle(COSPalette.danger) }
-        }.padding(.horizontal, 18).padding(.bottom, 12)
+        WorkTaskCaptureForm(model: model, draft: state.captureDraft, isolated: handoffStore.isolated,
+            close: { state.captureOpen = false },
+            openWaiting: { state.waitingOpen = true; state.intakeOpen = false; returnToList() })
     }
 
     private var sidebar: some View {
@@ -1703,7 +1676,7 @@ struct WorkWorkspaceView: View {
     }
 
     private func openYourMove(_ row: WorkYourMove) {
-        if row.action == "answer" { yourMoveAnswerID = row.id; yourMoveAnswer = ""; return }
+        if row.action == "answer" { yourMoveAnswerID = row.id; yourMoveDraft.text = ""; return }
         if row.action == "checkSession", let session = row.sessionID { onOpenSession(session); return }
         guard let item = board.item(sourceID: row.workID) else { return }
         if row.action == "startFresh", let source = yourMoveSource(row) {
@@ -1739,19 +1712,14 @@ struct WorkWorkspaceView: View {
     }
 
     private func yourMoveComposer(_ row: WorkYourMove) -> some View {
-        HStack {
-            TextField("Your answer", text: $yourMoveAnswer)
-                .textFieldStyle(.plain)
-            Button("Send") {
-                guard let source = yourMoveSource(row) else { return }
-                let answer = yourMoveAnswer
-                Task {
-                    if await handoffStore.reply(receiptID: row.id, source: source, answer: answer) { yourMoveAnswerID = nil; yourMoveAnswer = "" }
-                    await model.loadYourMove()
-                }
-            }.buttonStyle(COSQuietButtonStyle()).disabled(handoffStore.busy || yourMoveAnswer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            Button("Cancel") { yourMoveAnswerID = nil }.buttonStyle(COSQuietButtonStyle())
-        }
+        WorkReplyComposer(draft: yourMoveDraft, prompt: "Your answer", busy: handoffStore.busy, send: {
+            guard let source = yourMoveSource(row) else { return }
+            let answer = yourMoveDraft.text
+            Task {
+                if await handoffStore.reply(receiptID: row.id, source: source, answer: answer) { yourMoveAnswerID = nil; yourMoveDraft.text = "" }
+                await model.loadYourMove()
+            }
+        }, cancel: { yourMoveAnswerID = nil })
     }
 
     private var boardName: String { state.domain.map { domainLabel($0) } ?? state.scope.title }
@@ -2935,7 +2903,7 @@ struct WorkWorkspaceView: View {
                 }.padding(12).background(COSPalette.raised, in: RoundedRectangle(cornerRadius: 8))
             }
             if linkingSessions {
-                TextField("Find a session by title, provider or ID", text: $sessionLinkQuery).textFieldStyle(.roundedBorder)
+                WorkBoardSearchField(prompt: "Find a session by title, provider or ID", query: $sessionLinkQuery, focusRequest: 0, onKey: { _ in false })
                 let unique = Dictionary((handoffStore.sessions + handoffStore.observedSessions()).map { ($0.id.lowercased(), $0) }, uniquingKeysWith: { _, fresh in fresh })
                 let choices = unique.values.filter { WorkSessionLinks.validSessionID($0.id, includeCursor: true)
                     && (sessionLinkQuery.isEmpty || ($0.title + " " + $0.id).localizedCaseInsensitiveContains(sessionLinkQuery)) }.sorted { $0.title < $1.title }
@@ -3018,18 +2986,13 @@ struct WorkWorkspaceView: View {
         let title = reviewStore.displayTitle(for: review)
         return VStack(alignment: .leading, spacing: 10) {
             if editingReviewID == review.id {
-                TextField("Review title", text: $reviewTitleDraft)
-                    .font(COSType.display(25, weight: .medium))
-                    .textFieldStyle(.plain)
-                    .focused($reviewTitleFocused)
-                    .onSubmit { commitReviewTitle(review) }
-                    .onExitCommand { editingReviewID = nil; reviewTitleFocused = false }
-                    .onChange(of: reviewTitleFocused) { _, focused in
-                        if !focused, editingReviewID == review.id { commitReviewTitle(review) }
-                    }
+                WorkReviewTitleField(draft: reviewTitleDraft, focused: $reviewTitleFocused,
+                    commit: { commitReviewTitle(review) },
+                    cancel: { editingReviewID = nil; reviewTitleFocused = false },
+                    lostFocus: { if editingReviewID == review.id { commitReviewTitle(review) } })
             } else {
                 Button {
-                    reviewTitleDraft = title
+                    reviewTitleDraft.text = title
                     editingReviewID = review.id
                     reviewTitleFocused = true
                 } label: {
@@ -3131,7 +3094,7 @@ struct WorkWorkspaceView: View {
 
     private func commitReviewTitle(_ review: WorkReviewRecord) {
         let previous = reviewStore.displayTitle(for: review)
-        let next = reviewTitleDraft.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        let next = reviewTitleDraft.text.split(whereSeparator: \.isWhitespace).joined(separator: " ")
         editingReviewID = nil
         reviewTitleFocused = false
         guard !next.isEmpty, next != previous else { return }
@@ -3494,5 +3457,67 @@ struct WorkWaitingRow: Identifiable {
         self.task = task
         checkIn = raw.object?["checkIn"]?.string ?? ""
         needsCheckIn = raw.object?["needsCheckIn"]?.bool == true
+    }
+}
+
+/// Capture input is independent of the board's navigation and projection state.
+@MainActor final class WorkTaskCaptureDraft: ObservableObject {
+    @Published var text = ""
+    @Published var domain = ""
+    @Published var busy = false
+    @Published var error: String?
+}
+
+struct WorkTaskCaptureForm: View {
+    @ObservedObject var model: ControllerModel
+    @ObservedObject var draft: WorkTaskCaptureDraft
+    var isolated: Bool
+    let close: () -> Void
+    let openWaiting: () -> Void
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                TextField("What needs to be done?", text: $draft.text).textFieldStyle(.plain).cosField().disabled(draft.busy)
+                if !isolated && model.workBatchAvailable {
+                Button("Waiting on / Dropped") { openWaiting() }.buttonStyle(COSTextButtonStyle())
+            }
+            COSDropdown("Domain", selection: $draft.domain,
+                            options: [COSDropdownOption("", "Choose domain", placeholder: true)]
+                                + model.domainOptions.map { COSDropdownOption($0.name, $0.label) })
+                    .frame(maxWidth: 200).disabled(draft.busy)
+                Button(draft.busy ? "Adding…" : "Capture") {
+                    guard !isolated else { return }
+                    let text = draft.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let domain = draft.domain
+                    draft.busy = true; draft.error = nil
+                    Task {
+                        defer { draft.busy = false }
+                        do {
+                            try await model.captureTask(domain: domain, text: text)
+                            draft.text = ""; close()
+                            await model.loadWorkTasks()
+                        } catch { draft.error = error.localizedDescription }
+                    }
+                }.buttonStyle(COSPrimaryButtonStyle())
+                    .disabled(draft.busy || draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !model.domainOptions.contains { $0.name == draft.domain })
+            }
+            if let error = draft.error { Text(error).font(COSType.body(11)).foregroundStyle(COSPalette.danger) }
+        }.padding(.horizontal, 18).padding(.bottom, 12)
+    }
+
+}
+
+/// Rename input stays independent of board and connection projections.
+private struct WorkReviewTitleField: View {
+    @ObservedObject var draft: WorkReplyDraft
+    var focused: FocusState<Bool>.Binding
+    let commit: () -> Void
+    let cancel: () -> Void
+    let lostFocus: () -> Void
+    var body: some View {
+        TextField("Review title", text: $draft.text)
+            .font(COSType.display(25, weight: .medium)).textFieldStyle(.plain)
+            .focused(focused).onSubmit(commit).onExitCommand(perform: cancel)
+            .onChange(of: focused.wrappedValue) { _, value in if !value { lostFocus() } }
     }
 }

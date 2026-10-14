@@ -502,6 +502,7 @@ struct MeetingLibraryDetailPane: View {
     var onOpenSource: (LibraryMeetingSource) -> Void = { _ in }
     var onReviewFollowUp: ((LibraryMeeting) -> Void)? = nil
     var onLinkTask: ((LibraryMeeting) -> Void)? = nil
+    var onCreateTask: ((LibraryMeeting) -> Void)? = nil
     var workConnections: MeetingWorkConnections? = nil
     var onOpenWork: ((String) -> Void)? = nil
     var onOpenSession: ((String, String) -> Void)? = nil
@@ -517,8 +518,11 @@ struct MeetingLibraryDetailPane: View {
                         .font(COSType.body(12))
                         .foregroundStyle(.secondary)
                     HStack(spacing: 8) {
+                        if let onCreateTask {
+                            Button("Create task") { onCreateTask(row) }.buttonStyle(COSPrimaryButtonStyle())
+                        }
                         if let onLinkTask {
-                            Button("Link to existing task") { onLinkTask(row) }.buttonStyle(COSPrimaryButtonStyle())
+                            Button("Link to existing task") { onLinkTask(row) }.buttonStyle(COSQuietButtonStyle())
                         }
                         if let onReviewFollowUp {
                             Button("Review follow-up in Work") { onReviewFollowUp(row) }.buttonStyle(COSQuietButtonStyle())
@@ -1847,7 +1851,13 @@ struct MeetingTaskLinkSheet: View {
     @ObservedObject var model: ControllerModel
     let meeting: LibraryMeeting
     var onOpenWork: ((String) -> Void)? = nil
+    var initiallyCreating = false
     @Environment(\.dismiss) private var dismiss
+    @State private var confirmingDiscard = false
+    @State private var creating = false
+    @State private var taskName = ""
+    @State private var taskDomain = ""
+    @State private var createdWorkID: String?
     // Keystrokes stay local to the picker; they do not republish the Activity model.
     @State private var query = ""
     @State private var includeCompleted = false
@@ -1862,11 +1872,12 @@ struct MeetingTaskLinkSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack {
-                Text("Link to existing task").font(COSType.display(23, weight: .medium))
+                Text(creating ? "Create task from meeting" : "Link to existing task").font(COSType.display(23, weight: .medium))
                 Spacer()
-                Button("Close") { dismiss() }.disabled(saving)
+                Button("Close") { requestClose() }.disabled(saving)
             }
             Text(meeting.title).font(COSType.body(13, weight: .semibold)).lineLimit(3)
+            if creating { createForm } else {
             Text("Keep this meeting with an existing workstream. Its source reference and attached files become available from that task; its name, status and other meeting links stay intact.")
                 .font(COSType.body(12)).foregroundStyle(COSPalette.muted)
             if let saved {
@@ -1880,6 +1891,7 @@ struct MeetingTaskLinkSheet: View {
                 Button("Link another task") { self.saved = nil; selected = nil; error = nil }
                     .buttonStyle(COSQuietButtonStyle())
             } else {
+                Button("Create a new task instead") { creating = true; error = nil }.disabled(saving)
                 TextField("Search tasks across all domains", text: $query).textFieldStyle(.plain).cosField()
                     .onChange(of: query) { _, _ in selected = nil; error = nil }
                 Toggle("Include completed tasks", isOn: $includeCompleted).font(COSType.body(12))
@@ -1934,10 +1946,65 @@ struct MeetingTaskLinkSheet: View {
                         .keyboardShortcut(.defaultAction)
                 }
             }
+            }
         }.font(COSType.body(12)).padding(24).frame(width: 620)
             .background(COSPalette.panel).buttonStyle(COSQuietButtonStyle()).cosControlTheme()
-            .interactiveDismissDisabled(saving)
-            .task { await model.loadWorkTasks(force: true) }
+            .interactiveDismissDisabled(saving || (creating && createdWorkID == nil))
+            .cosConfirm("Discard new task?", isPresented: $confirmingDiscard,
+                message: "Your new task has not been saved.",
+                actions: [.destructive("Discard") { dismiss() }, .cancel("Keep editing")])
+            .task {
+                creating = initiallyCreating
+                if taskName.isEmpty { taskName = meeting.title }
+                taskDomain = model.domainOptions.contains { $0.name == meeting.domain } ? meeting.domain : ""
+                await model.loadWorkTasks(force: true)
+            }
+    }
+
+    private func requestClose() {
+        guard !saving else { return }
+        if creating && createdWorkID == nil && taskName != meeting.title { confirmingDiscard = true }
+        else { dismiss() }
+    }
+
+    private var createForm: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            if let createdWorkID {
+                Label("Task saved and linked to this meeting.", systemImage: "checkmark.circle")
+                Text("Source meetings and saved meeting files are available from the task.").foregroundStyle(COSPalette.muted)
+                if let issue = model.workTasksError { Text("Task saved; refreshing Work failed: " + issue).foregroundStyle(COSPalette.danger) }
+                if let onOpenWork {
+                    Button("Open task in Work") { dismiss(); onOpenWork(createdWorkID) }.buttonStyle(COSPrimaryButtonStyle())
+                }
+                Button("Create another task") { self.createdWorkID = nil; taskName = ""; error = nil }
+            } else {
+                Text("Name the follow-up. COS saves it in Mentioned with this meeting and its files as context.").foregroundStyle(COSPalette.muted)
+                TextField("Task name", text: $taskName).textFieldStyle(.plain).cosField().accessibilityLabel("New task name").disabled(saving)
+                COSDropdown("Domain", selection: $taskDomain,
+                    options: [COSDropdownOption("", "Choose domain", placeholder: true)] + model.domainOptions.map { COSDropdownOption($0.name, $0.label) }).disabled(saving)
+                if reference == nil { Text("Save this meeting with a complete reference before creating a task.").foregroundStyle(COSPalette.danger) }
+                if let error { Text(error).foregroundStyle(COSPalette.danger).textSelection(.enabled) }
+                HStack {
+                    Button("Link to existing task instead") { creating = false; error = nil }.disabled(saving)
+                    Spacer()
+                    Button(saving ? "Creating…" : "Create task") { create() }
+                        .buttonStyle(COSPrimaryButtonStyle()).keyboardShortcut(.defaultAction)
+                        .disabled(saving || reference == nil || taskName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || taskName.utf16.count > 2000 || !model.domainOptions.contains { $0.name == taskDomain })
+                }
+            }
+        }
+    }
+
+    private func create() {
+        guard !saving, let reference else { return }
+        let text = taskName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, text.utf16.count <= 2000, model.domainOptions.contains(where: { $0.name == taskDomain }) else { return }
+        saving = true; error = nil
+        Task {
+            defer { saving = false }
+            do { createdWorkID = try await model.createMeetingTask(domain: taskDomain, text: text, meeting: reference) }
+            catch { self.error = error.localizedDescription }
+        }
     }
 
     private func link() {

@@ -3931,6 +3931,22 @@ final class ControllerModel: ObservableObject {
         if stage == "complete" { workHandoffStore?.settleCompleted(workID: task.workSourceID) }
     }
 
+    func createMeetingTask(domain: String, text: String, meeting: WorkMeetingReference) async throws -> String {
+        let payload: [String: Any] = ["domain": domain, "text": text, "meeting": meeting.json]
+        let response = try await helper.run(["work-create-meeting-task"], timeout: 35,
+            stdinData: try JSONSerialization.data(withJSONObject: payload))
+        guard response.ok, response.details["linked"]?.bool == true,
+              let id = response.details["id"]?.string, id.range(of: "^[a-f0-9]{12}$", options: .regularExpression) != nil,
+              let identity = response.details["workIdentity"]?.string ?? response.details["id"]?.string,
+              identity.range(of: "^[a-f0-9]{12}$", options: .regularExpression) != nil,
+              response.details["workID"]?.string == "task:\(domain):\(identity)" else {
+            throw HelperClientError.invalidResponse("Task creation could not be verified. Keep the same name and meeting when retrying.")
+        }
+        // Save acknowledgement survives a failed list refresh; never create a second task to repair a read.
+        await loadWorkTasks(force: true)
+        return "task:\(domain):\(identity)"
+    }
+
     func linkWorkMeeting(_ task: TaskRow, meeting: WorkMeetingReference) async throws {
         try await mutateWorkTask(task, command: "work-link-meeting", extra: ["meeting": meeting.json])
     }

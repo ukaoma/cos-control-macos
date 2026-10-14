@@ -430,7 +430,7 @@ final class COSControlHelper {
                   let port = ProcessInfo.processInfo.environment["COS_CONTROL_TEST_API_PORT"], let number = Int(port), number > 1024, number != 3141 else {
                 throw HelperError.message("Fixture mode requires a disposable /tmp home and a non-production loopback port.")
             }
-            let allowed: Set<String> = ["work-your-move", "work-intake", "work-intake-resolve", "work-loop", "work-tasks", "work-context", "work-link-session", "work-unlink-session", "tasks", "domains", "work-set-stage", "work-edit-task", "work-link-meeting", "work-reviews", "work-models", "meeting-speakers", "meeting-content"]
+            let allowed: Set<String> = ["work-your-move", "work-intake", "work-intake-resolve", "work-loop", "work-tasks", "work-context", "work-link-session", "work-unlink-session", "tasks", "domains", "work-set-stage", "work-edit-task", "work-link-meeting", "work-create-meeting-task", "work-reviews", "work-models", "meeting-speakers", "meeting-content"]
             guard allowed.contains(command) else { throw HelperError.message("This candidate uses disposable tasks. Provider dispatch and other commands are disabled.") }
         }
         switch command {
@@ -534,6 +534,7 @@ final class COSControlHelper {
         case "work-link-session": try emitWorkLinkSession(args: args)
         case "work-unlink-session": try emitWorkUnlinkSession(args: args)
         case "work-link-meeting": try emitWorkUpdate(action: "meeting")
+        case "work-create-meeting-task": try emitMeetingTaskCreate()
         case "work-loop": try emitWorkLoop(args: args)
         case "work-intake": try emitWorkIntake()
         case "work-intake-resolve": try emitWorkIntakeResolve()
@@ -5147,6 +5148,30 @@ final class COSControlHelper {
                 throw HelperError.message("Select an exact saved meeting.")
             }
         }
+    }
+
+    private func emitMeetingTaskCreate() throws {
+        let data = try readBoundedStdin(16_384)
+        guard let body = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              Set(body.keys) == ["domain", "text", "meeting"],
+              let domain = body["domain"] as? String, !domain.isEmpty,
+              let text = body["text"] as? String, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, text.utf16.count <= 2000,
+              body["meeting"] is [String: String] else { throw HelperError.message("Enter a task name and select a saved meeting.") }
+        let candidate = try reviewCandidateTransport()
+        let token = try candidate?.token ?? readToken()
+        guard let response = request("/api/work-board/create-from-meeting", method: "POST", token: token,
+            body: String(decoding: data, as: UTF8.self), timeout: 30, reviewCandidatePort: candidate?.port) else {
+            throw HelperError.message("Creation was not confirmed. Retry with the same name and meeting; COS will reuse a matching task.")
+        }
+        guard response.status == 200, let saved = response.body, saved["ok"] as? Bool == true,
+              saved["linked"] as? Bool == true, let id = saved["id"] as? String,
+              id.range(of: "^[a-f0-9]{12}$", options: .regularExpression) != nil,
+              let identity = saved["workIdentity"] as? String ?? saved["id"] as? String,
+              identity.range(of: "^[a-f0-9]{12}$", options: .regularExpression) != nil,
+              saved["workID"] as? String == "task:\(domain):\(identity)" else {
+            throw HelperError.message(response.status == 404 ? "Update the server to support creating tasks from meetings. Your draft is still here." : taskErrorMessage(response, fallback: "Task creation could not be verified. Retry with the same name and meeting."))
+        }
+        emit(ok: true, message: "Meeting task saved", details: saved)
     }
 
     private func emitWorkUpdate(action: String) throws {
