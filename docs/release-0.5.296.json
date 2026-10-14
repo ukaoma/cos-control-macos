@@ -1,0 +1,36 @@
+{
+  "version": "0.5.296",
+  "build": 349,
+  "sourceCommit": "636a9c5",
+  "sha256": "13358287e4b10f3d0c3b9e053c3e6aaf79d115a2ec6c2f6e45a5f983bf2baaa0",
+  "bytes": 119500058,
+  "notarySubmission": "5a67df6c-dce4-4471-927f-eae5ea877a55",
+  "notaryStatus": "Accepted",
+  "stapled": true,
+  "extractedGatekeeper": "accepted",
+  "publicAppcast": "not promoted",
+  "installed": "not installed",
+  "verifiedAt": "2026-10-14T23:38:14.970939+00:00",
+  "validation": {
+    "legacyPublicVersion": "0.5.289",
+    "newVersion": "0.5.296",
+    "newBuild": 349,
+    "sha256": "13358287e4b10f3d0c3b9e053c3e6aaf79d115a2ec6c2f6e45a5f983bf2baaa0",
+    "publicDownloadSignedNotarizedGatekeeper": "passed",
+    "legacyPackagedUpdaterToCandidate": "passed",
+    "newPackagedUpdaterRepeatedSwap": "passed",
+    "rollbackGenerationRetained": "342",
+    "wrongChecksumRefused": true,
+    "testHomeServerStateUntouched": true,
+    "physicalUiAcceptance": "pending",
+    "publicAppcastPromotion": "not performed",
+    "whatsNewHelperChecksPassed": 68,
+    "nativeCrossProcessLease": "passed",
+    "workResizeGate": "passed: zero board rebuilds across 71 steps"
+  },
+  "matchedServer": {
+    "version": "6.73.5",
+    "npmTag": "next",
+    "stableLatest": "6.73.1"
+  }
+}
