@@ -17865,10 +17865,7 @@ final class COSControlHelper {
         )
     }
 
-    /// POST /api/meeting/:id/deattribute — this voice was NOT that person.
-    ///
-    /// Retraction of the meeting's training samples defaults ON server-side; pass
-    /// --keep-training to correct the transcript without touching the profile.
+    /// Read or revision-guard a per-capture matching policy on the authenticated server.
     private func emitMeetingSpeakerPolicy(args: [String]) throws {
         guard let session = option("--session", in: args), validSessionID(session) else {
             throw HelperError.message("--session is required")
@@ -17889,6 +17886,8 @@ final class COSControlHelper {
         emit(ok: true, message: "Speaker matching mode", details: body)
     }
 
+    /// POST /api/meeting/:id/deattribute — this voice was NOT that person.
+    /// Retraction defaults on; --keep-training leaves global profile samples intact.
     private func emitMeetingDeattribute(args: [String]) throws {
         guard let session = option("--session", in: args), validSessionID(session),
               let from = option("--from", in: args), !from.isEmpty else {

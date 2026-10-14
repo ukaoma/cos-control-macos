@@ -5102,7 +5102,7 @@ final class ControllerModel: ObservableObject {
             let configuration = NSWorkspace.OpenConfiguration()
             configuration.activates = true
             _ = try? await NSWorkspace.shared.openApplication(at: appURL, configuration: configuration)
-            petNotice = "Opened Codex. Could not open that thread."
+            petNotice = "Could not open that thread in Codex. Its conversation is available here in Control."
             return
         }
         petNotice = "Could not open that Codex thread."

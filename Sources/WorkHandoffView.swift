@@ -1002,7 +1002,7 @@ struct WorkStartSheet: View {
                     Button("Change where it goes") { phase = .chooser }.buttonStyle(COSQuietButtonStyle()).disabled(sending || store.busy)
                     Button("Cancel") { onClose() }.buttonStyle(COSQuietButtonStyle()).disabled(sending)
                     Button { startNow(plan) } label: { Text(calls.isEmpty ? plan.verb : "Send anyway").lineLimit(1) }
-                    .buttonStyle(COSPrimaryButtonStyle()).disabled(sending || store.busy)
+                    .buttonStyle(COSPrimaryButtonStyle()).disabled(sending || store.busy).keyboardShortcut(.defaultAction)
                 }
             }
         }

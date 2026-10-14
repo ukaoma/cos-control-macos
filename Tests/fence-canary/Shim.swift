@@ -13,4 +13,8 @@ enum COSPalette {
     static let cream = Color(red: 0.96, green: 0.94, blue: 0.90)
     static let panel = Color(nsColor: .windowBackgroundColor)
     static let green = Color(red: 0.20, green: 0.58, blue: 0.34)
+    static let accent = Color.accentColor
+    static let danger = Color.red
+    static let muted = Color.secondary
+    static let raised = Color(nsColor: .controlBackgroundColor)
 }

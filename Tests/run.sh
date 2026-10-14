@@ -86,6 +86,7 @@ python3 "$ROOT/Tests/HeldNamingTransport.py" "$TMP/cos-control-helper"
 # Work helper transports against loopback fixtures (never the live service): reviews and Intake.
 python3 "$ROOT/Tests/work-review-helper-checks.py" "$TMP/cos-control-helper"
 python3 "$ROOT/Tests/hardening-helper-checks.py" "$TMP/cos-control-helper"
+python3 "$ROOT/Tests/speaker-policy-helper-checks.py" "$TMP/cos-control-helper"
 python3 "$ROOT/Tests/work-intake-helper-checks.py" "$TMP/cos-control-helper"
 python3 "$ROOT/Tests/work-jev-helper-checks.py" "$TMP/cos-control-helper"
 python3 "$ROOT/Tests/work-progress-helper-checks.py" "$TMP/cos-control-helper"
@@ -144,6 +145,7 @@ python3 "$ROOT/Tests/reuse-compile.py" --root "$ROOT" --receipt "$TMP/app-compil
 zsh "$ROOT/Tests/run-simple-pet.sh" "$TMP/simple-pet-proof"
 zsh "$ROOT/Tests/run-session-open-recovery.sh"
 zsh "$ROOT/Tests/run-meeting-task-link.sh"
+zsh "$ROOT/Tests/run-confirm-keyboard.sh"
 # 0.5.232: the Markdown parser is pure Foundation and pinned by an EXECUTED contract
 # (the scribe's meeting, lists, tasks, tables, code, quotes, details, speaker lines).
 "$ROOT/Tests/compile-guard.sh" swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \

@@ -3027,8 +3027,9 @@ struct WorkIntakeView: View {
                 if confirmSkipOlder {
                     Text("Drop \(older.count) from older meetings? Undo is available for 7 days.").font(COSType.body(11)).foregroundStyle(COSPalette.muted)
                     Button("Skip \(older.count)") { confirmSkipOlder = false; Task { await model.dismissWorkIntake(older) } }
-                        .buttonStyle(COSQuietButtonStyle())
-                    Button("Cancel") { confirmSkipOlder = false }.buttonStyle(COSTextButtonStyle())
+                        .buttonStyle(COSQuietButtonStyle()).keyboardShortcut(.defaultAction)
+                        .disabled(!model.workIntakeBusyIDs.isEmpty)
+                    Button("Cancel") { confirmSkipOlder = false }.buttonStyle(COSTextButtonStyle()).keyboardShortcut(.cancelAction)
                 } else {
                     Button("Skip all \(older.count) from older meetings") { confirmSkipOlder = true }
                         .buttonStyle(COSTextButtonStyle()).disabled(!model.workIntakeBusyIDs.isEmpty)

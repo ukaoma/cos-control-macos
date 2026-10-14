@@ -7,13 +7,14 @@ import AppKit
     var saves = 0
     var cancels = 0
     var background = 0
+    @Published var text = "Text"
 }
 struct ConfirmationProbeView: View {
     @ObservedObject var probe: ConfirmationProbe
     var body: some View {
         VStack {
             Button("Background") { probe.background += 1 }.keyboardShortcut(.defaultAction)
-            TextEditor(text: .constant("Text"))
+            TextEditor(text: $probe.text)
         }.frame(width: 390, height: 260)
         .cosConfirm("Save?", isPresented: $probe.shown, message: "Keyboard canary", actions: [
             .normal("Save") { probe.saves += 1 },
@@ -44,7 +45,19 @@ struct ConfirmationProbeView: View {
         precondition(key("\u{1b}", code: 53), "Confirmation must handle Escape")
         try await settle()
         precondition(probe.cancels == 1 && probe.saves == 1 && !probe.shown, "Escape cancels without saving")
+        func editor(in view: NSView) -> NSTextView? {
+            if let text = view as? NSTextView { return text }
+            for child in view.subviews { if let text = editor(in: child) { return text } }
+            return nil
+        }
+        guard let text = editor(in: host) else { preconditionFailure("Real SwiftUI TextEditor must have a native text view") }
+        precondition(window.makeFirstResponder(text))
+        text.setSelectedRange(NSRange(location: text.string.utf16.count, length: 0))
+        let newline = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil, characters: "\r", charactersIgnoringModifiers: "\r", isARepeat: false, keyCode: 36)!
+        window.sendEvent(newline)
+        try await settle()
+        precondition(text.string.contains("\n") && probe.saves == 1 && probe.background == 0, "Return in the actual TextEditor must insert a newline, not invoke a button")
         window.close()
-        print("PASS: actual COSConfirm Return, disabled guard, Escape and background action isolation")
+        print("PASS: actual COSConfirm Return, disabled guard, Escape, background isolation and multiline newline")
     }
 }

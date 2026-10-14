@@ -53,10 +53,41 @@ import SwiftUI
         catch { precondition(error.localizedDescription.contains("Task changed")) }
         print("PASS: canonical link payload and stale-write refusal propagation")
 
+        // Exercise the real cache loader with corrected evidence and out-of-order reads.
+        let peopleInput = URL(fileURLWithPath: helper.path + ".people-input")
+        let peopleStarted = URL(fileURLWithPath: helper.path + ".people-started")
+        let peopleHelper = "#!/usr/bin/python3\nimport json,time,pathlib\np=pathlib.Path(__file__)\nv=json.loads(pathlib.Path(str(p)+'.people-input').read_text())\npathlib.Path(str(p)+'.people-started').write_text('started')\ntime.sleep(v.pop('delay',0))\nprint(json.dumps(v))\n"
+        try peopleHelper.write(to: helper, atomically: true, encoding: .utf8)
+        func peopleResponse(_ names: [String], delay: Double = 0, record: String? = nil) throws {
+            let body: [String: Any] = ["ok": true, "message": "fixture", "delay": delay,
+                "details": ["recordId": record ?? reference.recordId, "attendees": names, "actionItems": []]]
+            try JSONSerialization.data(withJSONObject: body).write(to: peopleInput)
+        }
+        try peopleResponse(["False Match"])
+        await model.loadWorkMeetingPeople(reference)
+        precondition(model.workMeetingPeople[reference.recordId]?.people == ["False Match"])
+        try peopleResponse(["Verified Person"])
+        await model.retryWorkMeetingPeople(reference)
+        precondition(model.workMeetingPeople[reference.recordId]?.people == ["Verified Person"], "Refresh replaces successful cached people")
+        try? FileManager.default.removeItem(at: peopleStarted)
+        try peopleResponse(["Stale Person"], delay: 0.6)
+        let oldRead = Task { await model.loadWorkMeetingPeople(reference, force: true) }
+        for _ in 0..<100 where !FileManager.default.fileExists(atPath: peopleStarted.path) { try await Task.sleep(for: .milliseconds(10)) }
+        precondition(FileManager.default.fileExists(atPath: peopleStarted.path))
+        try peopleResponse(["Latest Person"])
+        await model.retryWorkMeetingPeople(reference)
+        await oldRead.value
+        precondition(model.workMeetingPeople[reference.recordId]?.people == ["Latest Person"], "Older in-flight read must not restore false names")
+        try peopleResponse(["Wrong Meeting Person"], record: "other-record")
+        await model.retryWorkMeetingPeople(reference)
+        precondition(model.workMeetingPeople[reference.recordId] == nil && model.workMeetingPeopleFailed.contains(reference.recordId), "Wrong meeting cannot provide task people")
+        print("PASS: task people refresh, older read fencing and canonical-record refusal")
+
         try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
         // Render through a private, never-shown window; the fixture does not contact a server.
         try script.write(to: helper, atomically: true, encoding: .utf8)
-        let host = NSHostingView(rootView: MeetingTaskLinkSheet(model: model, meeting: meeting, onOpenWork: { _ in }))
+        var openedTask: String?
+        let host = NSHostingView(rootView: MeetingTaskLinkSheet(model: model, meeting: meeting, onOpenWork: { openedTask = $0 }))
         let window = NSWindow(contentRect: NSRect(x: -20000, y: -20000, width: 668, height: 650), styleMask: [.borderless], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.contentView = host
@@ -70,7 +101,9 @@ import SwiftUI
             host.cacheDisplay(in: host.bounds, to: rep)
             try rep.representation(using: .png, properties: [:])!.write(to: output.appendingPathComponent(appearance == .aqua ? "meeting-task-link-light.png" : "meeting-task-link-dark.png"))
         }
+        // SwiftUI's accessibility tree is not exposed by a never-shown hosting window.
+        // Full Open task activation and return navigation remain candidate app acceptance gates.
         window.close()
-        print("PASS: isolated light/dark picker render")
+        print("PASS: isolated light/dark picker render with already-linked Open task controls")
     }
 }
