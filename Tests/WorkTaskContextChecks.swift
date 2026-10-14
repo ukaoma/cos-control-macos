@@ -40,6 +40,6 @@ import Foundation
         do { _ = try WorkTaskClipboard.copy(malformed, context: false, to: pasteboard); preconditionFailure("Bad ID copied") }
         catch { precondition(pasteboard.string(forType: .string) == text, "Refusal preserves clipboard") }
         precondition(row.workStage == "qa" && row.workRevision == String(repeating: "a", count: 64), "Copy performs no task mutation")
-        print("PASS: Work task context (20 assertions): canonical ID, JSON source grounding, current-CAS instructions, shell arguments and private clipboard")
+        print("PASS: Work task context (19 assertions): canonical ID, JSON source grounding, current-CAS instructions, shell arguments and private clipboard")
     }
 }
