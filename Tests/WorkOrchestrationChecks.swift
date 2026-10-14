@@ -1,4 +1,5 @@
 import Foundation
+import AppKit
 
 private actor WorkChatFixture {
     let ids: [String]
@@ -43,6 +44,16 @@ private actor WorkChatFixture {
     precondition(WorkChatPolicy.nativeReplies(receipt: delivered, read: nativeRead).map(\.text) == ["Own native result"], "Native result must exclude seed and later turns")
     delivered.prompt = "Unmatched prompt must not claim any result"
     precondition(WorkChatPolicy.nativeReplies(receipt: delivered, read: nativeRead).isEmpty)
+    let styled = NSMutableAttributedString(string: "Review the header", attributes: [.font: NSFont.systemFont(ofSize: 13)])
+    styled.addAttribute(.font, value: NSFont.boldSystemFont(ofSize: 13), range: NSRange(location: 11, length: 6))
+    let rich = WorkRichText.rtf(styled)
+    precondition(WorkRichText.markdown(styled) == "Review the **header**")
+    precondition(WorkRichText.markdown(WorkRichText.restored(rich, fallback: "lost")) == "Review the **header**", "Formatting survives RTF storage")
+    let pasteboard = NSPasteboard(name: NSPasteboard.Name("cos-rich-check-" + UUID().uuidString))
+    let png = Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aK1cAAAAASUVORK5CYII=")!
+    pasteboard.setData(png, forType: .png)
+    precondition(!WorkRichText.media(pasteboard).isEmpty, "Pasted image is routed to media intake, not into text")
+    pasteboard.releaseGlobally()
     let valid = WorkChatPlannerAnswer(protocolVersion: 1, answer: "Describe bounded checks.", assignments: [WorkChatAssignment(sessionID: ids[0], prompt: "Review copy.")])
     precondition(WorkChatPolicy.valid(valid, targets: Set(ids.prefix(2))))
     precondition(!WorkChatPolicy.valid(valid, targets: [ids[1]]))
@@ -62,8 +73,14 @@ private actor WorkChatFixture {
     handoff.sessions = sessions
     for id in ids { precondition(handoff.confirmSessionCard(sessionID: id, source: source)) }
     let chat = WorkTaskChatStore(); chat.open(source: source, handoff: handoff); chat.setDraft("Review copy and code independently")
+    chat.setRichDraft("Review the **header**", rtf: rich)
+    let richRelaunch = WorkTaskChatStore(); richRelaunch.open(source:source,handoff:handoff)
+    precondition(richRelaunch.record?.draftRTF == rich && richRelaunch.record?.draft == "Review the **header**")
+    chat.setRichDraft(String(repeating:"x",count:2001),rtf:nil)
+    precondition(chat.record?.draft == "Review the **header**", "Over-limit rich edit is not silently truncated")
     await chat.send(source: source, handoff: handoff)
     precondition(chat.record?.rounds.count == 1 && chat.record?.rounds[0].state == "Dispatched")
+    precondition(chat.record?.draftRTF == nil, "A sent draft clears its local rich text")
     precondition(handoff.receipts.count == 2 && Set(handoff.receipts.compactMap(\.sessionID)) == Set(ids.prefix(2)))
     precondition(Set(handoff.receipts.compactMap(\.orchestrationRunID)).count == 1)
     let id = handoff.receipts[0].id
@@ -77,6 +94,20 @@ private actor WorkChatFixture {
     for n in handoff.receipts.indices { handoff.receipts[n].status = "completed"; handoff.receipts[n].result = "Result for " + handoff.receipts[n].provider }
     await chat.refresh(source: source, handoff: handoff)
     precondition(chat.record?.rounds[0].assignments.allSatisfy { !$0.result.isEmpty } == true, "Earlier rounds still receive independent updates")
+    let fileStore = WorkCardFileStore(root:root.appendingPathComponent("rich-files"),isolated:true)
+    let withFiles = WorkHandoffStore(isolated:true,storageURL:root.appendingPathComponent("with-files.json"),transport: { _,_ in preconditionFailure("No provider calls in attachment check") },cardFiles:fileStore)
+    withFiles.sessions = sessions
+    let attachmentSource = WorkSource.taskSnapshot(TaskRow(.object(["id":.string("bbbbbbbbbbbb"),"workIdentity":.string("bbbbbbbbbbbb"),"domain":.string("quilt"),"title":.string("Rich file fixture"),"text":.string("Rich file fixture"),"source":.string("Private evidence")]))!)
+    for id in ids { precondition(withFiles.confirmSessionCard(sessionID:id,source:attachmentSource)) }
+    let attachmentURL = root.appendingPathComponent("review-context.txt")
+    try Data("Private context for the header review.".utf8).write(to:attachmentURL)
+    await fileStore.intake(urls:[attachmentURL],source:attachmentSource)
+    let filesChat = WorkTaskChatStore(); filesChat.open(source:attachmentSource,handoff:withFiles)
+    filesChat.setDraft("Check the attached context independently")
+    await filesChat.send(source:attachmentSource,handoff:withFiles)
+    precondition(withFiles.receipts.count == 2, "Both independent assignments receive attachments")
+    precondition(withFiles.receipts.allSatisfy { $0.prompt.contains("review-context.txt") && $0.context != nil }, "Actual handoff prompts and receipts retain saved file references")
+    precondition(filesChat.record?.rounds[0].attachmentNames == ["review-context.txt"], "Question records its observed attachment names")
     let saved = WorkContributorProjection.rows(workID: source.id, links: handoff.confirmedSessionCards, receipts: [], observed: [], remembered: sessions)
     precondition(saved.allSatisfy { $0.session == nil && $0.title.hasPrefix("Exact ") }, "Remembered identity cannot imply live status")
 

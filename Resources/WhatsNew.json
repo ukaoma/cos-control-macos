@@ -1,5 +1,5 @@
 {
-  "version": "0.5.292",
+  "version": "0.5.293",
   "whatsNew": {
     "summary": "Work chat coordinates independent assignments across linked Claude and Codex sessions. Matched with server 6.73.4.",
     "sections": [
@@ -10,6 +10,13 @@
           "Read each session\u2019s delivery status and results together in the task conversation.",
           "Connections and Agent workspace stay available. Shared task completion remains your decision.",
           "Cursor and sessions already handed to a desktop app retain manual continuation."
+        ]
+      },
+      {
+        "title": "Rich task context",
+        "items": [
+          "Format Work chat with bold, italic, headings and lists. Drafts keep their formatting when you return.",
+          "Drop or paste images and media into task attachments. Native assignments carry the saved files and readable companions."
         ]
       }
     ]
