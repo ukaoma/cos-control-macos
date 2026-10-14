@@ -29,6 +29,11 @@ import CoreText
         let rows = [receipt(0, report: .needsInput), receipt(1, report: .done), receipt(2, report: .working, status: "running")]
         precondition(WorkTracking.forSession(ids[0], receipts: rows, now: 20).first?.phase == .needsInput, "B finishing must not suppress A's question")
         precondition(WorkTracking.forSession(ids[1], receipts: rows, now: 20).first?.phase == .done)
+        precondition(WorkTracking.latest(workID: work, receipts: rows, sessionID: ids[0])?.phase == .needsInput)
+        precondition(WorkTracking.latest(workID: work, receipts: rows, sessionID: ids[1])?.phase == .done,
+            "Inspecting Codex must not show Claude's question as Codex's result")
+        precondition(rows.first(where: { $0.blocksNewHandoff })?.sessionID == ids[2],
+            "Inspecting done output cannot discard another contributor's in-flight delivery")
         let contributors = WorkContributorProjection.rows(workID: work, links: try WorkSessionLinks.load(map), receipts: rows, observed: [])
         precondition(contributors.count == 3 && contributors.allSatisfy { $0.session == nil }, "Saved progress must not masquerade as fresh activity")
         for outcome in ["canceled", "refused", "failed", "reviewed"] {
@@ -132,6 +137,34 @@ import CoreText
                 window.close()
             }
         }
+        let source = WorkSource.taskSnapshot(WorkWorkspaceProjection.previewRows(store.previewTasks)[0])
+        let original = store.receipts
+        for blocked in [false, true] {
+            store.receipts = original
+            if blocked, let index = store.receipts.firstIndex(where: { $0.provider == "cursor" }) {
+                store.receipts[index].status = "unknown"
+                store.receipts[index].detail = "This Cursor handoff never confirmed. Inspecting Codex must preserve this warning."
+            }
+            for appearance in [NSAppearance.Name.aqua, .darkAqua] {
+                let panel = WorkHandoffView(store: store, source: source, isPreview: true, onOpenSession: { _ in },
+                    currentStage: "draft", contributorSessionID: "codex:abcdefab-0000-4000-8000-000000000002")
+                let host = NSHostingView(rootView: ScrollView { panel.padding(18).frame(maxWidth: .infinity, alignment: .leading) }
+                    .frame(width: 520, height: 1600).background(COSPalette.card))
+                let window = NSWindow(contentRect: NSRect(x: -20000, y: -20000, width: 520, height: 1600),
+                    styleMask: [.borderless], backing: .buffered, defer: false)
+                window.isReleasedWhenClosed = false
+                host.appearance = NSAppearance(named: appearance); window.appearance = host.appearance; window.contentView = host
+                let until = Date().addingTimeInterval(0.8)
+                while Date() < until { RunLoop.main.run(until: Date().addingTimeInterval(0.05)); host.layoutSubtreeIfNeeded() }
+                guard let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds) else { throw CocoaError(.fileWriteUnknown) }
+                host.cacheDisplay(in: host.bounds, to: rep)
+                let name = blocked ? "workspace-blocked" : "workspace-codex"
+                let theme = appearance == .aqua ? "light" : "dark"
+                try rep.representation(using: .png, properties: [:])!.write(to: out.appendingPathComponent(name + "-" + theme + ".png"))
+                window.close()
+            }
+        }
+        store.receipts = original
         print("PASS offscreen native render · no window ordered or provider contacted")
     }
 

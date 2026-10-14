@@ -405,7 +405,9 @@ struct WorkGlassesRequest: Equatable, Sendable {
         receipts = ids.indices.map { n in
             var row = WorkHandoffReceipt(id: "hub-sample-\(n)", workID: source.id, workTitle: source.title, sourceRevision: source.revision,
                 mode: .continueSession, provider: sessions[n].provider, modelID: "sample", sessionID: ids[n], sessionTitle: titles[n],
-                status: n == 2 ? "running" : "completed", detail: "Sample only", prompt: "", createdAt: now - Double(90 - n))
+                // The initial notes have landed. Cursor's observed session can keep working independently;
+                // this fixture has no active COS delivery job, so the shared composer remains demonstrable.
+                status: "completed", detail: "Sample only", prompt: "", createdAt: now - Double(90 - n))
             var progress = WorkProgress(tag: "sample"); progress.reported = reports[n]; progress.reportedBy = "session"
             progress.receivedAt = now - 90; progress.evidence = results[n]; row.progress = progress; row.result = results[n]
             return row

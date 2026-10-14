@@ -193,6 +193,8 @@ struct WorkHandoffView: View {
     var onMarkComplete: (() -> Void)? = nil
     /// After "Not done yet" sent the work back: the board moves the card back to Draft.
     var onSentBack: (() -> Void)? = nil
+    /// Inspection only: sending retains the task-wide in-flight fence and the explicitly chosen destination.
+    var contributorSessionID: String? = nil
     @State private var validating = false
     @State private var historyOpen = false
     @State private var confirmClear = false
@@ -242,11 +244,13 @@ struct WorkHandoffView: View {
     private var forkToPlatform: Bool { mode == .fork && WorkHandoffStore.crossPlatformTargets.contains(provider) && provider != selectedSession?.provider }
 
     /// 0.5.247: the newest tracked handoff for this work (sent with a status-line instruction).
-    private var tracking: WorkTracking? { WorkTracking.latest(workID: source.id, receipts: store.receipts) }
+    private var tracking: WorkTracking? { WorkTracking.latest(workID: source.id, receipts: store.receipts, sessionID: contributorSessionID) }
 
-    /// The newest handoff for this work, any revision: it is what blocks or explains the next send.
+    /// The inspected contributor's newest handoff. Delivery blocking stays task-wide above.
     private var latest: WorkActivity? {
-        guard let receipt = store.receipts(for: source.id).first else { return nil }
+        guard let receipt = store.receipts(for: source.id).first(where: {
+            contributorSessionID == nil || WorkProgress.workingSession($0)?.lowercased() == contributorSessionID?.lowercased()
+        }) else { return nil }
         let session = WorkHandoffStore.listedSession(for: receipt, in: store.observedSessions())
         return WorkActivity(receipt: receipt, session: session)
     }
@@ -254,7 +258,7 @@ struct WorkHandoffView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack {
-                if !embedded { Text(store.contributorIDs(workID: source.id).count > 1 ? "Latest handoff" : "Agent workspace").font(COSType.display(20, weight: .medium)) }
+                if !embedded { Text("Agent workspace").font(COSType.display(20, weight: .medium)) }
                 Spacer()
                 Button { Task { await store.refresh() } } label: { Image(systemName: "arrow.clockwise") }
                     .buttonStyle(COSQuietButtonStyle()).disabled(store.busy || validating).help("Refresh sessions and models")
@@ -262,6 +266,11 @@ struct WorkHandoffView: View {
             if isPreview { Text("Local demonstration. No agent is contacted.").font(COSType.body(11.5)).foregroundStyle(COSPalette.muted) }
             if let latest, WorkHandoffState(latest) != .settled || blocking != nil || tracking?.reported == true { statusBox(latest) }
             if let tracking { WorkProgressTimeline(tracking: tracking, currentStage: currentStage, onUndo: onUndoMove) }
+            // Inspecting a completed contributor must not hide a different session's unresolved delivery
+            // or its explicit recovery controls. The status box stays tied to the actual blocking receipt.
+            if let blocking, blocking.id != latest?.receipt.id {
+                statusBox(WorkActivity(receipt: blocking, session: WorkHandoffStore.listedSession(for: blocking, in: store.observedSessions())))
+            }
             if let error = store.error {
                 Label(error, systemImage: "exclamationmark.triangle").font(COSType.body(12)).foregroundStyle(COSPalette.danger)
                     .fixedSize(horizontal: false, vertical: true)

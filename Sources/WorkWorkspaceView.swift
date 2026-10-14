@@ -1295,6 +1295,7 @@ struct WorkWorkspaceView: View {
     @State private var sessionLinkQuery = ""
     @State private var unlinkID: String?
     @State private var unlinkExpected: String?
+    @State private var workspaceSessions: [String: String] = [:]
     @State private var startDropTargeted = false
     /// 0.5.254: a file is over the session row: Start work says where files go.
     @State private var startFileHover = false
@@ -2704,7 +2705,9 @@ struct WorkWorkspaceView: View {
                     HStack(alignment: .top, spacing: 0) {
                         detailScroll(item, workspace: false).frame(maxWidth: .infinity)
                         Divider().overlay(COSPalette.line)
-                        ScrollView { itemWorkspace(item).padding(18) }
+                        ScrollViewReader { scroll in
+                            ScrollView { itemWorkspace(item, showWorkspace: { scroll.scrollTo("agent-workspace", anchor: .top) }).padding(18) }
+                        }
                             .frame(width: detailSpan.roomy ? 452 : 400).frame(maxHeight: .infinity).background(COSPalette.card.opacity(0.55))
                     }
                 } else {
@@ -2734,11 +2737,12 @@ struct WorkWorkspaceView: View {
 
     private func detailScroll(_ item: WorkWorkspaceItem, workspace: Bool) -> some View {
         let blocks = item.review.map(reviewBlocks) ?? []
-        return ScrollView {
+        return ScrollViewReader { scroll in
+          ScrollView {
             LazyVStack(alignment: .leading, spacing: 16) {
                 itemHeader(item)
                 if workspace {
-                    itemWorkspace(item).padding(16)
+                    itemWorkspace(item, showWorkspace: { scroll.scrollTo("agent-workspace", anchor: .top) }).padding(16)
                         .background(COSPalette.card.opacity(0.55), in: RoundedRectangle(cornerRadius: 10))
                         .overlay(RoundedRectangle(cornerRadius: 10).stroke(COSPalette.line))
                 }
@@ -2749,6 +2753,7 @@ struct WorkWorkspaceView: View {
                 if let review = item.review { reviewTail(review) }
                 if let task = item.task { taskBody(task) }
             }.frame(maxWidth: .infinity, alignment: .leading).padding(22)
+          }
         }
     }
 
@@ -2762,15 +2767,19 @@ struct WorkWorkspaceView: View {
     @ViewBuilder private func itemHeader(_ item: WorkWorkspaceItem) -> some View {
         if let task = item.task { taskHeader(task) } else if let review = item.review { reviewHeader(review) }
     }
-    @ViewBuilder private func itemWorkspace(_ item: WorkWorkspaceItem) -> some View {
+    @ViewBuilder private func itemWorkspace(_ item: WorkWorkspaceItem, showWorkspace: (() -> Void)? = nil) -> some View {
         if let task = item.task {
             VStack(alignment: .leading, spacing: 18) {
-                Text("Connections").font(COSType.display(22, weight: .medium))
-                contributorHub(task)
+                HStack {
+                    Text("Connections").font(COSType.display(22, weight: .medium))
+                    Spacer()
+                    Button("Agent workspace") { showWorkspace?() }.buttonStyle(COSQuietButtonStyle())
+                        .accessibilityIdentifier("work-show-agent-workspace")
+                }
+                contributorHub(task, showWorkspace: showWorkspace)
                 sourceMeetings(task)
-                DisclosureGroup("Handoff details and actions") {
-                    taskHandoff(task)
-                }.font(COSType.body(12))
+                Divider().overlay(COSPalette.line)
+                taskHandoff(task).id("agent-workspace")
             }
         } else if let review = item.review {
             reviewWorkspace(review)
@@ -2778,12 +2787,27 @@ struct WorkWorkspaceView: View {
     }
 
     private func taskHandoff(_ task: TaskRow) -> some View {
+        let sessionID = workspaceSessions[task.workSourceID]
+            ?? handoffStore.receipts(for: task.workSourceID).first.flatMap(WorkProgress.workingSession)
+        return VStack(alignment: .leading, spacing: 10) {
+            if let sessionID {
+                HStack {
+                    Text("Inspecting " + (handoffStore.contributors(workID: task.workSourceID).first { $0.id == sessionID }?.title ?? sessionID))
+                        .font(COSType.body(11)).foregroundStyle(COSPalette.muted).textSelection(.enabled)
+                    Spacer()
+                    if workspaceSessions[task.workSourceID] != nil {
+                        Button("Latest handoff") { workspaceSessions.removeValue(forKey: task.workSourceID) }.buttonStyle(COSTextButtonStyle())
+                    }
+                }
+            }
             WorkHandoffView(store: handoffStore, source: .taskSnapshot(task), isPreview: handoffStore.isolated, onOpenSession: onOpenSession,
                             currentStage: WorkBoardStage.stage(for: task).rawValue,
                             onUndoMove: model.workTracker == nil ? nil : { receiptID, eventID in undoMove(receiptID, eventID) },
                             onMarkComplete: task.checked || !canChangeStage(task) ? nil : { move(task, to: .complete) },
-                            onSentBack: { if [.built, .qa].contains(WorkBoardStage.stage(for: task)) { move(task, to: .draft) } })
+                            onSentBack: { if [.built, .qa].contains(WorkBoardStage.stage(for: task)) { move(task, to: .draft) } },
+                            contributorSessionID: sessionID)
                 .id(task.workSourceID)
+        }
     }
 
     private func taskHeader(_ task: TaskRow) -> some View {
@@ -2823,7 +2847,7 @@ struct WorkWorkspaceView: View {
         }
     }
 
-    private func contributorHub(_ task: TaskRow) -> some View {
+    private func contributorHub(_ task: TaskRow, showWorkspace: (() -> Void)? = nil) -> some View {
         let contributors = handoffStore.contributors(workID: task.workSourceID)
         return VStack(alignment: .leading, spacing: 12) {
             HStack {
@@ -2872,6 +2896,11 @@ struct WorkWorkspaceView: View {
                         Text("Historical contribution · currently linked to another task").font(COSType.body(10)).foregroundStyle(COSPalette.muted)
                     }
                     HStack {
+                        Button("View progress") {
+                            workspaceSessions[task.workSourceID] = contributor.id
+                            showWorkspace?()
+                        }.buttonStyle(COSTextButtonStyle())
+                            .accessibilityIdentifier("work-contributor-progress-" + contributor.provider)
                         Button(contributor.provider == "cursor" ? "Open Cursor Agents" : "Open " + contributor.provider.capitalized) { onOpenSession(contributor.id) }
                             .buttonStyle(COSTextButtonStyle())
                         Button("Copy session ID") {
