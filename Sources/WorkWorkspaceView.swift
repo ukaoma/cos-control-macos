@@ -1243,6 +1243,7 @@ struct WorkBoardSearchField: View {
 }
 
 struct WorkWorkspaceView: View {
+    @State private var copiedWorkNote: String?
     @State private var yourMoveAnswerID: String?
     @State private var yourMoveAnswer = ""
 
@@ -1313,6 +1314,13 @@ struct WorkWorkspaceView: View {
         VStack(spacing: 0) {
             header
             activitySummary
+            if let copiedWorkNote {
+                HStack {
+                    Text(copiedWorkNote).font(COSType.body(12)).foregroundStyle(COSPalette.muted)
+                    Spacer()
+                    Button("Dismiss") { self.copiedWorkNote = nil }.buttonStyle(COSQuietButtonStyle())
+                }.padding(.horizontal, 18).padding(.bottom, 8).accessibilityIdentifier("work-copy-note")
+            }
             yourMoveCard
             if state.captureOpen { captureForm }
             if let error = state.mutationError {
@@ -2239,6 +2247,9 @@ struct WorkWorkspaceView: View {
                 if !item.completed { Button("Start work…") { openStart(item) } }
                 if let task = item.task {
                     Divider()
+                    Button("Copy task ID") { copyWorkTask(task, context: false) }.disabled(!WorkTaskContext.canExport(task))
+                    Button("Copy context") { copyWorkTask(task, context: true) }.disabled(!WorkTaskContext.canExport(task))
+                    Divider()
                     ForEach(WorkBoardStage.allCases) { stage in
                         Button(stage == .complete ? "Mark complete" : "Move to " + stage.title) { move(task, to: stage) }
                             .disabled(WorkBoardStage.stage(for: task) == stage || !canChangeStage(task))
@@ -2660,6 +2671,12 @@ struct WorkWorkspaceView: View {
                 .font(COSType.body(12)).foregroundStyle(COSPalette.muted)
             HStack {
                 stageMenu(task)
+                Button("Copy task ID") { copyWorkTask(task, context: false) }.buttonStyle(COSQuietButtonStyle())
+                    .disabled(!WorkTaskContext.canExport(task)).accessibilityIdentifier("work-copy-id")
+                    .help("Copy this task's canonical Work ID for another session.")
+                Button("Copy context") { copyWorkTask(task, context: true) }.buttonStyle(COSQuietButtonStyle())
+                    .disabled(!WorkTaskContext.canExport(task)).accessibilityIdentifier("work-copy-context")
+                    .help("Copy the task, source references and instructions for linking a session and updating its stage.")
                 if state.mutationBusy { ProgressView().controlSize(.small) }
                 Spacer()
             }
@@ -2672,6 +2689,13 @@ struct WorkWorkspaceView: View {
             }
             if let error = task.workMetadataError { Text(error).font(COSType.body(12)).foregroundStyle(COSPalette.danger) }
         }
+    }
+
+    /// Copying is a clipboard-only action, with no hidden stage, provider, or association write.
+    private func copyWorkTask(_ task: TaskRow, context: Bool) {
+        do {
+            copiedWorkNote = try WorkTaskClipboard.copy(task, context: context)
+        } catch { state.mutationError = error.localizedDescription }
     }
 
     private func taskBody(_ task: TaskRow) -> some View {
