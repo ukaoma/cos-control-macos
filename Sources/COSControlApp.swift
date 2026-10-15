@@ -24,6 +24,16 @@ struct COSControlApp: App {
         // routed to the same presenter the chips use.
         HotKeyCenter.shared.onFire = { activityWindow.show(model: model, section: nil) }
         HotKeyCenter.shared.register(model.activityHotKey)
+        model.dictation.bridge = { [weak model] audio in
+            guard let model else { throw HelperClientError.commandFailed("COS Control is closing.") }
+            return try await model.runHelper(["mac-dictation"], timeout: 40, stdinData: audio)
+        }
+        model.dictation.petFrame = { [weak sessionPet] in sessionPet?.visibleFrame }
+        model.dictation.registerHotKeys()
+        model.macRecording.openLiveMeeting = { [weak model] id in
+            model?.openActivity?(.meetings)
+            model?.openLiveTranscript(id)
+        }
         model.openActivity = { section in activityWindow.show(model: model, section: section) }
         model.openSetup = { setupWindow.show(model: model) }
         // 2026-10-09: Update (the banner) and the header's refresh button (when it finds one) open What's New, one window at a
@@ -43,7 +53,7 @@ struct COSControlApp: App {
         COSAppDelegate.onSettings = { model.showSettings?() }
         COSAppDelegate.recordingAvailable = { model.recordingCount > 0 && model.liveTranscriptEnabled }
         COSAppDelegate.onOpenRecording = { model.showRecordingTranscript() }
-        COSAppDelegate.onTerminate = { model.meetingAsk.flushAll() }
+        COSAppDelegate.onTerminate = { model.dictation.cancel(); model.meetingAsk.flushAll() }
         MacRecordingTermination.prepare = { await model.macRecording.prepareToQuit() }
         model.recordingStatusChanged = { [weak model] _ in NSApp.dockTile.badgeLabel = model?.recordingDockBadge }
         // A Dock click opens Welcome while COS is not set up, else Activity.
@@ -83,6 +93,7 @@ struct COSControlApp: App {
                     HStack {
                         Label("Mac recording", systemImage: "record.circle.fill").foregroundStyle(COSPalette.danger)
                         Spacer()
+                        Button("View live transcript") { model.showRecordingTranscript() }.buttonStyle(COSQuietButtonStyle())
                         Button("Stop and save") { Task { await model.macRecording.stop() } }.buttonStyle(COSQuietButtonStyle())
                     }.font(COSType.body(12)).padding(12)
                 }
@@ -118,6 +129,11 @@ struct COSControlApp: App {
                 Button("View live transcript") { model.showRecordingTranscript() }
                     .keyboardShortcut("l", modifiers: [.command, .shift])
                     .disabled(model.recordingCount == 0 || !model.liveTranscriptEnabled)
+            }
+            CommandMenu("Dictation") {
+                Button("Stop dictation") { model.dictation.stop() }
+                Button("Cancel dictation") { model.dictation.cancel() }
+                Button("Microphone and shortcuts…") { model.showSettings?() }
             }
             CommandGroup(replacing: .appSettings) {
                 Button("Settings…") { model.showSettings?() }.keyboardShortcut(",")

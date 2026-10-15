@@ -3,43 +3,6 @@ import AVFoundation
 import CoreAudio
 import Foundation
 
-/// Bounded callback storage. IO never waits for disk, network, conversion, or a busy consumer.
-private final class MacAudioRing: @unchecked Sendable {
-    private let lock = NSLock()
-    private let capacity = 32
-    private let bytesPerSlot = 65_536
-    private let memory: UnsafeMutableRawPointer
-    private var sizes = [Int](repeating: 0, count: 32)
-    private var head = 0
-    private var tail = 0
-    private var count = 0
-    private var lost: Int32 = 0
-    init() { memory = .allocate(byteCount: 32 * 65_536, alignment: 16) }
-    deinit { memory.deallocate() }
-    func push(_ input: UnsafePointer<AudioBufferList>) {
-        let buffers = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: input))
-        if buffers.isEmpty || (buffers.count == 1 && buffers[0].mDataByteSize == 0) { return }
-        guard buffers.count == 1, let data = buffers[0].mData,
-              buffers[0].mDataByteSize <= bytesPerSlot else {
-            OSAtomicIncrement32Barrier(&lost); return
-        }
-        guard lock.try() else { OSAtomicIncrement32Barrier(&lost); return }
-        defer { lock.unlock() }
-        guard count < capacity else { OSAtomicIncrement32Barrier(&lost); return }
-        let size = Int(buffers[0].mDataByteSize)
-        memory.advanced(by: tail * bytesPerSlot).copyMemory(from: data, byteCount: size)
-        sizes[tail] = size; tail = (tail + 1) % capacity; count += 1
-    }
-    func pop() -> Data? {
-        lock.lock(); defer { lock.unlock() }
-        guard count > 0 else { return nil }
-        let data = Data(bytes: memory.advanced(by: head * bytesPerSlot), count: sizes[head])
-        head = (head + 1) % capacity; count -= 1
-        return data
-    }
-    var overflowed: Bool { OSAtomicAdd32Barrier(0, &lost) != 0 }
-}
-
 /// Owns only a private, unmuted process tap. This object is never instantiated at app launch.
 /// Native resources and converter state are confined to one utility queue; IO only copies to ring.
 @available(macOS 14.2, *)
@@ -121,7 +84,7 @@ final class MacAudioCapture: @unchecked Sendable {
         try Self.value(tap, kAudioTapPropertyFormat, into: &asbd)
         guard asbd.mFormatID == kAudioFormatLinearPCM, asbd.mFormatFlags & kAudioFormatFlagIsFloat != 0,
               asbd.mBitsPerChannel == 32, asbd.mChannelsPerFrame == 1,
-              asbd.mSampleRate >= 16_000, asbd.mSampleRate <= 192_000,
+              asbd.mSampleRate >= 16_000, asbd.mSampleRate <= Double(MacAudioRing.maximumSampleRate),
               let format = AVAudioFormat(streamDescription: &asbd),
               let output = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: 16_000, channels: 1, interleaved: true),
               let converter = AVAudioConverter(from: format, to: output) else {
@@ -137,7 +100,12 @@ final class MacAudioCapture: @unchecked Sendable {
         ]
         try Self.checked(AudioHardwareCreateAggregateDevice(device as CFDictionary, &aggregate), "Create private audio capture")
         let ring = ring
-        try Self.checked(AudioDeviceCreateIOProcIDWithBlock(&ioProc, aggregate, ioQueue) { _, input, _, _, _ in ring.push(input) }, "Attach audio capture")
+        try Self.checked(AudioDeviceCreateIOProcIDWithBlock(&ioProc, aggregate, ioQueue) { _, input, _, _, _ in
+            let buffers = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: input))
+            if buffers.isEmpty || (buffers.count == 1 && buffers[0].mDataByteSize == 0) { return }
+            guard buffers.count == 1, let data = buffers[0].mData else { ring.rejectFormat(); return }
+            ring.push(bytes: data, count: Int(buffers[0].mDataByteSize))
+        }, "Attach audio capture")
         try Self.checked(AudioDeviceStart(aggregate, ioProc), "Begin audio capture")
         started = Date(); lastInput = started
         let timer = DispatchSource.makeTimerSource(queue: queue)
@@ -148,7 +116,7 @@ final class MacAudioCapture: @unchecked Sendable {
     private func drainOrFail() {
         guard !stopped else { return }
         do {
-            guard !ring.overflowed else { throw MacRecordingError.unavailable("Recording stopped because audio could not be stored fast enough. Earlier chunks are retained.") }
+            if let reason = ring.interruption { throw MacRecordingError.unavailable(reason) }
             try drain()
             guard Date().timeIntervalSince(lastInput) < 15 else {
                 throw MacRecordingError.unavailable("Recording stopped: no audio buffers arrived for 15 seconds. Check the selected app and system audio permission.")
@@ -217,7 +185,7 @@ final class MacAudioCapture: @unchecked Sendable {
             queue.async { [self] in
                 if !stopped {
                     stopped = true; tearDown()
-                    if ring.overflowed { interruption = "Local audio storage fell behind. This recording is incomplete; earlier chunks are retained." }
+                    if let reason = ring.interruption { interruption = reason }
                     do { try drain() } catch { interruption = interruption ?? error.localizedDescription }
                     emitPartial()
                 }

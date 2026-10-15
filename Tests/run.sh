@@ -23,6 +23,7 @@ mkdir -p "$TMP/home"
 "$ROOT/Tests/run-pairing.sh"
 # Manual Mac spool/flush checks use fixture bytes only; never open audio or permissions.
 zsh "$ROOT/Tests/run-mac-recording.sh"
+zsh "$ROOT/Tests/run-mac-dictation.sh"
 
 # 0.5.254 (Miles, 2026-10-01 08:44: resizing Work with 268 tasks lagged; the board was rebuilt 27 times on each step).
 # A hard gate on counts, never milliseconds: over a 1200 to 1900 pt sweep of a 268-task board the rows are rebuilt 0
@@ -91,6 +92,7 @@ python3 "$ROOT/Tests/work-roundtrip-helper-checks.py" "$TMP/cos-control-helper"
 python3 "$ROOT/Tests/hardening-helper-checks.py" "$TMP/cos-control-helper"
 python3 "$ROOT/Tests/speaker-policy-helper-checks.py" "$TMP/cos-control-helper"
 python3 "$ROOT/Tests/mac-recording-helper-checks.py" "$TMP/cos-control-helper"
+python3 "$ROOT/Tests/mac-dictation-helper-checks.py" "$TMP/cos-control-helper"
 python3 "$ROOT/Tests/work-intake-helper-checks.py" "$TMP/cos-control-helper"
 python3 "$ROOT/Tests/work-jev-helper-checks.py" "$TMP/cos-control-helper"
 python3 "$ROOT/Tests/decision-provider-helper-checks.py" "$TMP/cos-control-helper"
@@ -123,7 +125,7 @@ python3 "$ROOT/Tests/reuse-compile.py" --root "$ROOT" --receipt "$TMP/app-compil
   "$ROOT/Sources/Models.swift" \
   "$ROOT/Sources/HelperClient.swift" \
   "$ROOT/Sources/ControllerModel.swift" \
-  "$ROOT/Sources/MacRecordingCore.swift" "$ROOT/Sources/MacAudioCapture.swift" "$ROOT/Sources/MacRecording.swift" \
+  "$ROOT/Sources/MacRecordingCore.swift" "$ROOT/Sources/MacAudioCapture.swift" "$ROOT/Sources/MacRecording.swift" "$ROOT/Sources/MacDictationCore.swift" "$ROOT/Sources/MacDictation.swift" \
   "$ROOT/Sources/COSBrand.swift" \
   "$ROOT/Sources/COSMotion.swift" \
   "$ROOT/Sources/COSConfirm.swift" \
@@ -188,7 +190,7 @@ zsh "$ROOT/Tests/run-transcription-settings.sh"
 "$TMP/jedi-gallery-contract" "$ROOT/Resources"
 "$ROOT/Tests/compile-guard.sh" swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \
   "$ROOT/Sources/Models.swift" "$ROOT/Sources/HelperClient.swift" "$ROOT/Sources/ControllerModel.swift" \
-  "$ROOT/Sources/MacRecordingCore.swift" "$ROOT/Sources/MacAudioCapture.swift" "$ROOT/Sources/MacRecording.swift" \
+  "$ROOT/Sources/MacRecordingCore.swift" "$ROOT/Sources/MacAudioCapture.swift" "$ROOT/Sources/MacRecording.swift" "$ROOT/Sources/MacDictationCore.swift" "$ROOT/Sources/MacDictation.swift" \
   "$ROOT/Sources/COSBrand.swift" "$ROOT/Sources/COSMotion.swift" "$ROOT/Sources/COSConfirm.swift" \
   "$ROOT/Sources/Views.swift" "$ROOT/Sources/Control2Foundation.swift" "$ROOT/Sources/WorkHandoffStore.swift" "$ROOT/Sources/WorkSessionLinks.swift" "$ROOT/Sources/WorkProgress.swift" "$ROOT/Sources/WorkCardFiles.swift" "$ROOT/Sources/WorkProgressTracker.swift" "$ROOT/Sources/WorkTrackingViews.swift" "$ROOT/Sources/WorkHandoffView.swift" "$ROOT/Sources/WorkReviewStore.swift" "$ROOT/Sources/WorkWorkspaceView.swift" "$ROOT/Sources/WorkTaskChat.swift" "$ROOT/Sources/WorkTaskContext.swift" "$ROOT/Sources/PermissionGuideModel.swift" "$ROOT/Sources/PermissionGuideSystem.swift" "$ROOT/Sources/PermissionFlowVendored.swift" "$ROOT/Sources/PermissionDragFlow.swift" "$ROOT/Sources/PermissionGuideViews.swift" "$ROOT/Sources/ProviderConnectModel.swift" "$ROOT/Sources/ProviderConnectViews.swift" "$ROOT/Sources/ActivityWindow.swift" "$ROOT/Sources/ActivityMeetings.swift" "$ROOT/Sources/MeetingSpeakerPolicy.swift" "$ROOT/Sources/MeetingAskCore.swift" "$ROOT/Sources/MeetingAsk.swift" \
   "$ROOT/Sources/COSMarkdownParser.swift" "$ROOT/Sources/COSMarkdown.swift" \
@@ -2634,7 +2636,7 @@ python3 "$ROOT/Tests/reuse-compile.py" --root "$ROOT" --receipt "$TMP/app-compil
   "$ROOT/Sources/Models.swift" \
   "$ROOT/Sources/HelperClient.swift" \
   "$ROOT/Sources/ControllerModel.swift" \
-  "$ROOT/Sources/MacRecordingCore.swift" "$ROOT/Sources/MacAudioCapture.swift" "$ROOT/Sources/MacRecording.swift" \
+  "$ROOT/Sources/MacRecordingCore.swift" "$ROOT/Sources/MacAudioCapture.swift" "$ROOT/Sources/MacRecording.swift" "$ROOT/Sources/MacDictationCore.swift" "$ROOT/Sources/MacDictation.swift" \
   "$ROOT/Sources/COSBrand.swift" \
   "$ROOT/Sources/COSMotion.swift" \
   "$ROOT/Sources/COSConfirm.swift" \

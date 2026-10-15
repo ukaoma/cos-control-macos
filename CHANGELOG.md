@@ -1,3 +1,12 @@
+## 0.5.303 (build 356), Mac dictation and live recording candidate
+
+- Add microphone selection and configurable hold/toggle dictation shortcuts for Mac apps. Show microphone level, provisional text and final copyable text beside the pet using the existing COS theme.
+- Use local Parakeet Ultra with the COS dictionary. Require the matched server capability before sending microphone audio; preserve a bounded clip in memory for retry when the engine is unavailable.
+- Guard insertion by the original app, field and caret. Changed focus, secure fields or missing Accessibility access retain text for copy. No automatic Send.
+- Open Mac recordings in the shared live transcript, COS Ask and meeting-file workspace. Preserve Mac file identities into saved meetings and show recording controls in the menu bar and Dock.
+- Replace the audio callback's contended lock with a bounded single-producer/single-consumer buffer. Distinguish genuine capacity exhaustion from unsupported audio formats and retain prior audio on interruption.
+- Includes the existing onboarding, silent-audio recovery and optional SubQ switcher. Pair with server 6.73.7. Transcription-candidate and cue flags stay disabled. Local signed acceptance and installation remain pending; no public availability is implied.
+
 ## 0.5.302 (build 355), silent recording recovery
 
 - A known silent recording reports no speech rather than an outdated server.

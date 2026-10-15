@@ -10,6 +10,7 @@ import UniformTypeIdentifiers
 @MainActor
 final class SessionPetPresenter: NSObject, ObservableObject, NSWindowDelegate {
     private var panel: NSPanel?
+    var visibleFrame: NSRect? { panel?.isVisible == true ? panel?.frame : nil }
     private weak var model: ControllerModel?
     private var showActivity: ((ActivitySection?) -> Void)?
     private var pollTask: Task<Void, Never>?

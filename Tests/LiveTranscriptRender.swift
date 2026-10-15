@@ -448,6 +448,10 @@ import Vision
         recording.status = liveStatus(1)
         recording.status.running = false
         expect(recording.recordingCount == 0 && badges.last! == nil, "server failure clears recording badge")
+        recording.macRecording.activeChanged?(true)
+        expect(recording.recordingCount == 1 && badges.last! == "REC", "native Mac capture shows a recording indicator before server status catches up")
+        recording.macRecording.activeChanged?(false)
+        expect(recording.recordingCount == 0 && badges.last! == nil, "finishing native Mac capture clears its local indicator")
         recording.status = liveStatus(1)
         var opened: ActivitySection?
         recording.openActivity = { opened = $0 }

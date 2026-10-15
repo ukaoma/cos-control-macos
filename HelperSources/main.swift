@@ -641,6 +641,7 @@ final class COSControlHelper {
         case "live-cos-ask": try emitLiveCOSAsk()
         case "meeting-ask": try emitMeetingAsk()
         case "mac-recording": try emitMacRecording()
+        case "mac-dictation": try emitMacDictation()
         case "live-transcript": try emitLiveTranscript(args: args)
         case "live-transcript-status": try emitLiveTranscriptStatus(args: args)
         case "meeting-orphan-recover": try emitMeetingOrphanRecover(args: args)
@@ -15373,6 +15374,37 @@ final class COSControlHelper {
             data.append(contentsOf: buffer[0..<count])
         }
         return try liveTranscriptParse(data, sessionId: sessionId, since: since, stamp: stamp)
+    }
+
+    /// Microphone audio arrives only on stdin, never argv, a caller path, or a log.
+    private func emitMacDictation() throws {
+        let limit = 3_840_044
+        var audio = Data()
+        while audio.count <= limit {
+            let chunk = try FileHandle.standardInput.read(upToCount: min(65_536, limit + 1 - audio.count)) ?? Data()
+            if chunk.isEmpty { break }; audio.append(chunk)
+        }
+        guard audio.count >= 3_244, audio.count <= limit,
+              String(data: audio.prefix(4), encoding: .ascii) == "RIFF",
+              String(data: audio.dropFirst(8).prefix(4), encoding: .ascii) == "WAVE" else {
+            emit(ok: false, message: "Dictation audio is invalid or exceeds two minutes."); return
+        }
+        let token = try speakerReviewToken()
+        guard let capabilities = request("/api/transcribe/capabilities", token: token, timeout: 5), capabilities.status == 200,
+              capabilities.body?["desktopDictationVersion"] as? Int == 1,
+              capabilities.body?["localOnly"] as? Bool == true else {
+            emit(ok: false, message: "Update to the matched COS server before using Mac dictation. No audio was sent."); return
+        }
+        guard let response = request("/api/transcribe?mode=fast&requiredEngine=parakeet-ultra", method: "POST", token: token, rawBody: audio, timeout: 35) else {
+            emit(ok: false, message: "The local transcription server is unavailable. Try again when it is ready."); return
+        }
+        if response.status == 204 { emit(ok: false, message: "No speech detected. Check your selected microphone and try again."); return }
+        guard response.status == 200, let details = response.body, details["engine"] as? String == "parakeet-ultra",
+              let text = details["text"] as? String, !text.isEmpty, text.utf8.count <= 64_000 else {
+            let message = response.status == 503 ? "Parakeet is not ready. Check Transcription settings and retry." : "Dictation needs the matched server with Parakeet support. No text was inserted."
+            emit(ok: false, message: message, details: ["httpStatus": response.status]); return
+        }
+        emit(ok: true, message: "Dictation ready", details: ["text": text, "engine": "parakeet-ultra"])
     }
 
     /// Manual Mac capture: bounded stdin and allowlisted routes. Never creates a tap or prompts for permission.

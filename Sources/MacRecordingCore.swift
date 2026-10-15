@@ -12,6 +12,75 @@ import Foundation
 }
 import Darwin
 
+/// Single producer (the serial audio IO queue), single consumer (the conversion queue).
+/// Publish cursors only after copying. The callback never takes a consumer-held lock,
+/// allocates, or waits. Four seconds at the largest supported sample rate fit in memory.
+final class MacAudioRing: @unchecked Sendable {
+    static let maximumSampleRate = 192_000
+    static let bytesPerFrame = 4
+    static let bufferedSeconds = 4
+    static let requiredBytes = maximumSampleRate * bytesPerFrame * bufferedSeconds
+    static let defaultCapacity = 1 << (Int.bitWidth - (requiredBytes - 1).leadingZeroBitCount)
+    private let capacity: Int
+    private let memory: UnsafeMutableRawPointer
+    private let readCursor = UnsafeMutablePointer<Int32>.allocate(capacity: 1)
+    private let writeCursor = UnsafeMutablePointer<Int32>.allocate(capacity: 1)
+    private let failureCode = UnsafeMutablePointer<Int32>.allocate(capacity: 1)
+
+    init(capacity: Int = MacAudioRing.defaultCapacity, initialCursor: UInt32 = 0) {
+        precondition(capacity >= 4 && capacity.nonzeroBitCount == 1 && capacity <= Int(Int32.max))
+        precondition(initialCursor % UInt32(Self.bytesPerFrame) == 0)
+        self.capacity = capacity
+        memory = .allocate(byteCount: capacity, alignment: 16)
+        readCursor.initialize(to: Int32(bitPattern: initialCursor)); writeCursor.initialize(to: Int32(bitPattern: initialCursor)); failureCode.initialize(to: 0)
+    }
+    deinit {
+        memory.deallocate()
+        readCursor.deinitialize(count: 1); readCursor.deallocate()
+        writeCursor.deinitialize(count: 1); writeCursor.deallocate()
+        failureCode.deinitialize(count: 1); failureCode.deallocate()
+    }
+    private func load(_ pointer: UnsafeMutablePointer<Int32>) -> UInt32 {
+        UInt32(bitPattern: OSAtomicAdd32Barrier(0, pointer))
+    }
+    func rejectFormat() { _ = OSAtomicCompareAndSwap32Barrier(0, 2, failureCode) }
+    @discardableResult func push(bytes: UnsafeRawPointer, count: Int) -> Bool {
+        guard count > 0 else { return true }
+        guard count % Self.bytesPerFrame == 0, count <= capacity else { rejectFormat(); return false }
+        let written = load(writeCursor), read = load(readCursor)
+        let used = Int(written &- read)
+        guard used <= capacity, count <= capacity - used else {
+            _ = OSAtomicCompareAndSwap32Barrier(0, 1, failureCode); return false
+        }
+        let offset = Int(written) & (capacity - 1)
+        let first = min(count, capacity - offset)
+        memory.advanced(by: offset).copyMemory(from: bytes, byteCount: first)
+        if first < count { memory.copyMemory(from: bytes.advanced(by: first), byteCount: count - first) }
+        _ = OSAtomicAdd32Barrier(Int32(count), writeCursor)
+        return true
+    }
+    func pop(maximumBytes: Int = 65_536) -> Data? {
+        let read = load(readCursor), written = load(writeCursor)
+        let available = Int(written &- read)
+        guard available > 0 else { return nil }
+        precondition(available <= capacity)
+        let count = min(available, max(Self.bytesPerFrame, maximumBytes / Self.bytesPerFrame * Self.bytesPerFrame))
+        let offset = Int(read) & (capacity - 1)
+        let first = min(count, capacity - offset)
+        var result = Data(bytes: memory.advanced(by: offset), count: first)
+        if first < count { result.append(memory.assumingMemoryBound(to: UInt8.self), count: count - first) }
+        _ = OSAtomicAdd32Barrier(Int32(count), readCursor)
+        return result
+    }
+    var interruption: String? {
+        switch load(failureCode) {
+        case 0: return nil
+        case 1: return "Recording stopped because the audio buffer filled. Earlier audio is retained; this recording is incomplete."
+        default: return "Recording stopped because the audio app changed its buffer format. Earlier audio is retained."
+        }
+    }
+}
+
 enum MacRecordingError: LocalizedError {
     case unavailable(String)
     var errorDescription: String? { if case .unavailable(let reason) = self { return reason }; return nil }

@@ -10,6 +10,43 @@ import Darwin
         defer { try? fm.removeItem(at: scratch) }
         var checks = 0
         func check(_ value: Bool, _ name: String) { precondition(value, name); checks += 1 }
+        check(MacAudioRing.defaultCapacity >= MacAudioRing.maximumSampleRate * MacAudioRing.bytesPerFrame * MacAudioRing.bufferedSeconds, "buffer covers the highest supported input rate")
+        let pattern = Data((0..<64).map { UInt8($0) })
+        for start in [UInt32(0), UInt32(Int32.max) - 3, UInt32.max - 15] {
+            let ring = MacAudioRing(capacity: 64, initialCursor: start)
+            for _ in 0..<1000 {
+                check(pattern.withUnsafeBytes { ring.push(bytes: $0.baseAddress!, count: 48) }, "producer publishes bounded bytes")
+                check(ring.pop(maximumBytes: 28) == pattern.prefix(28), "consumer reads the published prefix across cursor wrap")
+                check(ring.pop() == pattern.subdata(in: 28..<48), "wrapped tail preserves exact byte order")
+                check(ring.pop() == nil && ring.interruption == nil, "drained ring remains healthy")
+            }
+        }
+        let full = MacAudioRing(capacity: 64)
+        check(pattern.withUnsafeBytes { full.push(bytes: $0.baseAddress!, count: 64) }, "exact capacity is accepted")
+        check(!pattern.withUnsafeBytes { full.push(bytes: $0.baseAddress!, count: 4) }, "actual overflow is refused")
+        check(full.interruption != nil && full.pop() == pattern, "overflow retains previously accepted bytes")
+        let malformedRing = MacAudioRing(capacity: 64)
+        check(!pattern.withUnsafeBytes { malformedRing.push(bytes: $0.baseAddress!, count: 3) }, "partial float frame is refused")
+        check(malformedRing.interruption?.contains("format") == true, "format failures are distinct from buffer capacity")
+        // Concurrent copy/publication with no possibility of genuine capacity exhaustion:
+        // all fixture bytes fit even if the consumer is descheduled until the producer ends.
+        let concurrent = MacAudioRing(capacity: 1 << 20)
+        let payload = Data(repeating: 0x6d, count: 512)
+        let producer = Task.detached {
+            for _ in 0..<1024 { precondition(payload.withUnsafeBytes { concurrent.push(bytes: $0.baseAddress!, count: $0.count) }) }
+        }
+        let consumer = Task.detached { () -> Int in
+            var received = 0
+            while received < 512 * 1024 {
+                if let data = concurrent.pop(maximumBytes: 252) {
+                    precondition(data.allSatisfy { $0 == 0x6d }); received += data.count
+                } else { await Task.yield() }
+            }
+            return received
+        }
+        await producer.value
+        let received = await consumer.value
+        check(received == 512 * 1024 && concurrent.interruption == nil && concurrent.pop() == nil, "concurrent producer and consumer neither lose bytes nor report false overflow")
         for noSpeech in [false, true] {
             for pending in [false, true] {
                 for stopped in [false, true] {

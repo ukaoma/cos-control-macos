@@ -46,6 +46,7 @@ final class MacRecordingStore: ObservableObject {
     private let stopGate = MacRecordingStopGate()
     private var observers: [NSObjectProtocol] = []
     var activeChanged: ((Bool) -> Void)?
+    var openLiveMeeting: ((String) -> Void)?
     init(spool: MacRecordingSpool = MacRecordingSpool()) { self.spool = spool }
 
     func prepare(bridge: @escaping Bridge) async {
@@ -252,6 +253,9 @@ struct MacRecordingPanel: View {
                 Label(store.isRecording ? "Recording on this Mac" : "Record on Mac · pilot", systemImage: store.isRecording ? "record.circle.fill" : "waveform")
                     .font(COSType.body(12, weight: .semibold)).foregroundStyle(store.isRecording ? COSPalette.danger : COSPalette.ink)
                 Spacer()
+                if store.isRecording, let id = store.manifest?.captureId {
+                    Button("Open live meeting") { store.openLiveMeeting?(id) }.buttonStyle(COSQuietButtonStyle())
+                }
                 if store.isRecording || store.phase == "starting" { Button("Stop and save") { Task { await store.stop() } }.buttonStyle(COSQuietButtonStyle()) }
                 else { Button(expanded ? "Hide" : "Set up recording") { expanded.toggle() }.buttonStyle(COSQuietButtonStyle()) }
             }

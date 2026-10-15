@@ -4,8 +4,8 @@
 0.5.267: the notarized 0.5.266 shipped with hardened runtime and ZERO entitlements, so every Apple Event the app sent
 (the jump-to-session reopen through NSAppleScript, Guided Setup's Terminal script through an osascript child) was
 refused without a prompt. A signed build passes only when:
-  - the bundle and its main executable carry exactly com.apple.security.automation.apple-events = true;
-  - Info.plist names why (NSAppleEventsUsageDescription, non-empty);
+  - the bundle and its main executable carry exactly Apple Events and microphone audio-input entitlements;
+  - Info.plist names why (Apple Events and Microphone usage descriptions, non-empty);
   - the helper carries no entitlements at all;
   - bundled node, when present, carries exactly allow-jit and disable-library-validation. 0.5.266's node had only
     allow-jit, so library validation refused every npm native addon (sherpa-onnx.node, fsevents.node: ad-hoc signed,
@@ -20,7 +20,7 @@ import sys
 from pathlib import Path
 
 APPLE_EVENTS = "com.apple.security.automation.apple-events"
-APP_WANT = {APPLE_EVENTS: True}
+APP_WANT = {APPLE_EVENTS: True, "com.apple.security.device.audio-input": True}
 NODE_WANT = {"com.apple.security.cs.allow-jit": True, "com.apple.security.cs.disable-library-validation": True}
 
 
@@ -55,6 +55,8 @@ def problems(app: Path) -> list:
     info = plistlib.loads((app / "Contents/Info.plist").read_bytes())
     if not str(info.get("NSAppleEventsUsageDescription", "")).strip():
         found.append("Info.plist has no NSAppleEventsUsageDescription")
+    if not str(info.get("NSMicrophoneUsageDescription", "")).strip():
+        found.append("Info.plist has no NSMicrophoneUsageDescription")
     return found
 
 
@@ -76,13 +78,15 @@ def selftest(scratch: Path, binary: Path) -> int:
     dlv = scratch / "app-with-dlv.entitlements"
     dlv.write_bytes(plistlib.dumps({APPLE_EVENTS: True, "com.apple.security.cs.disable-library-validation": True}))
 
-    def make(name, app_ents=True, exe_ents=True, helper_ents=False, usage=True, app_dlv=False) -> Path:
+    def make(name, app_ents=True, exe_ents=True, helper_ents=False, usage=True, app_dlv=False, microphone_usage=True, microphone_entitlement=True) -> Path:
         app = scratch / name / "COS Control.app"
         (app / "Contents/MacOS").mkdir(parents=True)
         (app / "Contents/Resources").mkdir(parents=True)
         info = dict(source_info)
         if not usage:
             info.pop("NSAppleEventsUsageDescription", None)
+        if not microphone_usage:
+            info.pop("NSMicrophoneUsageDescription", None)
         (app / "Contents/Info.plist").write_bytes(plistlib.dumps(info))
         main = app / "Contents/MacOS/COS Control"
         helper = app / "Contents/Resources/cos-control-helper"
@@ -100,6 +104,10 @@ def selftest(scratch: Path, binary: Path) -> int:
         if app_dlv:
             subprocess.run(["/usr/bin/codesign", "--force", "--sign", "-", "--entitlements", str(dlv), str(app)],
                            check=True, capture_output=True)
+        elif not microphone_entitlement:
+            mic_missing = scratch / (name + ".entitlements")
+            mic_missing.write_bytes(plistlib.dumps({APPLE_EVENTS: True}))
+            subprocess.run(["/usr/bin/codesign", "--force", "--sign", "-", "--entitlements", str(mic_missing), str(app)], check=True, capture_output=True)
         else:
             sign(app, app_ents)
         return app
@@ -112,6 +120,8 @@ def selftest(scratch: Path, binary: Path) -> int:
         ("exe-only", {"app_ents": False, "exe_ents": True}, 1),
         ("helper-has-some", {"helper_ents": True}, 1),
         ("no-usage-string", {"usage": False}, 1),
+        ("no-microphone-usage", {"microphone_usage": False}, 1),
+        ("no-microphone-entitlement", {"microphone_entitlement": False}, 1),
         ("app-disables-library-validation", {"app_dlv": True}, 1),
     ]
     bad = []
@@ -120,7 +130,7 @@ def selftest(scratch: Path, binary: Path) -> int:
         if got != want:
             bad.append(f"{name}: expected {'a failure' if want else 'a pass'}")
     if not ents.exists() or plistlib.loads(ents.read_bytes()) != APP_WANT:
-        bad.append("Resources/COSControl.entitlements is not exactly the Apple Events entitlement")
+        bad.append("Resources/COSControl.entitlements is not exactly Apple Events + audio input")
     if plistlib.loads((repo / "Resources/Node.entitlements").read_bytes()) != NODE_WANT:
         bad.append("Resources/Node.entitlements is not exactly allow-jit + disable-library-validation")
     for line in bad:

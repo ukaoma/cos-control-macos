@@ -145,7 +145,12 @@ final class ControllerModel: ObservableObject {
     }
     /// Wired only by the app; headless models never touch the Dock.
     var recordingStatusChanged: ((Int) -> Void)?
-    var recordingCount: Int { status.running ? max(0, status.liveTranscriptionSessions ?? status.activeTranscriptionSessions ?? 0) : 0 }
+    var recordingCount: Int {
+        let serverCount = status.running ? max(0, status.liveTranscriptionSessions ?? status.activeTranscriptionSessions ?? 0) : 0
+        // The server already counts Mac captures once received. A local recording must
+        // show immediately, including before the first chunk, without counting it twice.
+        return max(serverCount, macRecordingActive ? 1 : 0)
+    }
     var recordingLabel: String { recordingCount == 1 ? "Meeting recording" : "\(recordingCount) meetings recording" }
     var recordingDockBadge: String? { recordingCount > 0 ? (recordingCount == 1 ? "REC" : "REC \(recordingCount)") : nil }
     var activityOpenRecording = false
@@ -154,6 +159,11 @@ final class ControllerModel: ObservableObject {
     /// A user gesture only. Open Meetings before asking its visible poll to select a fresh live session.
     func showRecordingTranscript() {
         guard recordingCount > 0, liveTranscriptEnabled else { return }
+        if macRecordingActive, recordingCount == 1, let id = macRecording.manifest?.captureId {
+            openActivity?(.meetings)
+            openLiveTranscript(id)
+            return
+        }
         activityOpenRecording = true
         openActivity?(.meetings)
     }
@@ -481,6 +491,7 @@ final class ControllerModel: ObservableObject {
 
     let meetingAsk = MeetingAskStore()
     let macRecording = MacRecordingStore()
+    let dictation = MacDictationStore.shared
     @Published private(set) var macRecordingActive = false
     /// Transcription switcher (server 6.72.0): the Settings card's store. The server owns the choices.
     let transcriptionSettings = TranscriptionSettingsStore()
@@ -554,7 +565,11 @@ final class ControllerModel: ObservableObject {
         backgroundWorkEnabled = startBackgroundWork
         activityLoadsEnabled = startBackgroundWork || allowActivityLoads
         workActivity = WorkActivityJournal(url: WorkActivityJournal.defaultURL(background: startBackgroundWork))
-        macRecording.activeChanged = { [weak self] active in self?.macRecordingActive = active }
+        macRecording.activeChanged = { [weak self] active in
+            guard let self else { return }
+            self.macRecordingActive = active
+            self.recordingStatusChanged?(self.recordingCount)
+        }
         guard startBackgroundWork else { return }
         whatsNewSeen = WhatsNewSeenStore(defaults: .standard)
         beginPostUpdateWhatsNew()
@@ -1925,6 +1940,9 @@ final class ControllerModel: ObservableObject {
 
     /// Persist and re-register in one step, so the setting and the live chord never disagree.
     func setActivityHotKey(_ combo: HotKeyCombo?) {
+        guard combo == nil || (combo != dictation.holdCombo && combo != dictation.toggleCombo) else {
+            error = "That shortcut is used for dictation. Choose a different Activity shortcut."; return
+        }
         activityHotKey = combo
         HotKeyCombo.save(combo)
         HotKeyCenter.shared.register(combo)

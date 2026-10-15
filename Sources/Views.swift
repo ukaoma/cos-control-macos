@@ -2773,6 +2773,8 @@ struct ControlPanel: View {
                 .toggleStyle(COSSwitchStyle())
                 .help("Hide COS Control from the Dock. The menu-bar icon stays, and opening COS Control from Finder opens Activity")
             HotKeyRecorderRow(model: model)
+            MacDictationSettings(store: model.dictation, activityShortcut: model.activityHotKey)
+            Divider()
             sessionPetSettings
             jevSettings
             workExpirySettings

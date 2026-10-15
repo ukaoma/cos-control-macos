@@ -2164,7 +2164,7 @@ struct LiveTranscriptPane: View {
         let feed = model.openLiveTranscriptFeed
         return VStack(alignment: .leading, spacing: 0) {
             TimelineView(.periodic(from: .now, by: 15)) { context in header(feed, now: context.date) }
-            if let session = model.liveTranscriptOpenID, feed?.ended != true {
+            if let session = model.liveTranscriptOpenID, !session.hasPrefix("mac_"), feed?.ended != true {
                 MeetingSpeakerPolicyView(model: model, sessionId: session).id(session).padding(.horizontal, 22).padding(.bottom, 10)
             }
             Divider()
@@ -2195,12 +2195,18 @@ struct LiveTranscriptPane: View {
                 Text(feed?.ended == true ? "Meeting ended" : "Live meeting")
                     .font(COSType.display(22, weight: .medium))
                 Spacer()
+                if model.macRecording.isRecording, model.macRecording.manifest?.captureId == model.liveTranscriptOpenID {
+                    Button("Stop and save") { Task { await model.macRecording.stop() } }.buttonStyle(COSQuietButtonStyle())
+                }
                 Button(showAsk ? "Hide Ask" : "Live COS Ask") { showAsk.toggle() }
                     .buttonStyle(COSQuietButtonStyle())
             }
             Text(LiveTranscript.header)
                 .font(COSType.body(12))
                 .foregroundStyle(.secondary)
+            if model.liveTranscriptOpenID?.hasPrefix("mac_") == true {
+                Text("Mac app playback · microphone off · speaker names only at high confidence").font(COSType.body(11)).foregroundStyle(.secondary)
+            }
             HStack(spacing: 0) {
                 Text(LiveTranscriptText.subtitle(start: feed?.startTime, now: now, clock: model.clockStyle, endedAt: feed?.endedAt))
                     .foregroundStyle(.tertiary)
@@ -2212,7 +2218,7 @@ struct LiveTranscriptPane: View {
             if let feed, feed.ended { handoffLine(feed) }
             if let session = model.liveTranscriptOpenID, let files = model.workHandoffStore?.meetingFiles {
                 DisclosureGroup("Files shared in this meeting", isExpanded: $filesExpanded) {
-                    MeetingFilesSection(files: files, keys: ["g2:" + session], supported: true, ambiguous: false, reason: "",
+                    MeetingFilesSection(files: files, keys: [LibraryMeeting.captureContextKey(session)], supported: true, ambiguous: false, reason: "",
                         info: WorkMeetingInfo(recordId: "", title: "Live meeting", date: ""))
                 }.font(COSType.body(11.5))
             }
