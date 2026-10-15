@@ -1,9 +1,11 @@
-## 0.5.301 (build 354), manual Mac recording candidate
+## 0.5.301 (build 354), recording, onboarding and decision-provider candidate
 
 - Add manual recording of a selected Mac app's playback with explicit confirmation, a recording indicator, local retained WAV chunks and receipted saving. Glasses are optional; microphone capture and automatic meeting detection are outside this pilot.
 - Fix rejected recording starts caused by fractional timestamps. Normalize safe millisecond values before registration, and distinguish a start rejection with no captured audio from a retained recording that needs recovery.
 - Show selected and effective Parakeet engines in Voice setup and the menu panel. Preserve modern engine settings and readiness rather than offering the legacy Whisper tier installer.
 - Offer reviewed recovery to another linked session, a fork or a new session when a Work handoff is unresolved. Keep ambiguous same-session delivery fenced and require confirmation before sending to a new destination.
+- Refine onboarding within the existing COS design: Mac-only by default, optional glasses, resumable setup and real provider/runtime readiness gates. Existing installations retain their setup choices.
+- Add optional SubQ Snap Preview decision routing alongside Jev, with secure key setup and separate session recommendation, completion and search choices. Keep Jev as the default; preserve provider attribution and do not silently fall back.
 - Pair with server 6.73.6; keep existing transcription-candidate and cue flags disabled. Signed audio canary and local installation are separate gates; no public promotion is implied.
 
 ## 0.5.297 (build 350), Work follow-up recovery candidate
