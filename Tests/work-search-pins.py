@@ -29,6 +29,8 @@ helper = code("HelperSources/main.swift")
 logic = body(board, "// MARK: - Work search and order (0.5.259", "/// Task page width, kept only at the two breaks")
 
 # 1. The board narrows its columns with the search and orders them, from one pass per draw.
+filters = body(board, "    private var workFilters: some View {", "    private var activitySummary: some View {")
+header = body(board, "    private var header: some View {", "    private var workTabs: some View {")
 dash = body(board, "    private var dashboard: some View {", "    // MARK: Work search and order (0.5.259)")
 need("let cards = boardCards" in dash and "let search = boardSearch()" in dash and "let order = boardOrder" in dash,
      "the board works out its cards, its search and its order once per draw")
@@ -85,7 +87,7 @@ need("meaning: state.meaning(for: state.currentSearchKey)" in board, "the board 
 
 # 3. Keys: ⌘F focuses, the arrows and Return reach the band, Escape clears first.
 need('.keyboardShortcut("f", modifiers: .command)' in dash and "state.searchFocusRequest &+= 1" in dash, "⌘F asks the search box for the focus")
-need("focusRequest: state.searchFocusRequest" in dash and ".onChange(of: focusRequest) { _, _ in focused = true }" in field and ".focused($focused)" in field,
+need("workFilters" in header and "focusRequest: state.searchFocusRequest" in filters and ".onChange(of: focusRequest) { _, _ in focused = true }" in field and ".focused($focused)" in field,
      "the search box takes the focus when ⌘F asks")
 need(".onKeyPress(keys: [.downArrow, .upArrow, .return, .escape])" in field and
      "handle(press.key == .downArrow ? .down : press.key == .upArrow ? .up : press.key == .return ? .open : .clear)" in field,
@@ -95,7 +97,7 @@ need("switch WorkSearch.key(key, query: state.query, highlighted: state.bandInde
      "the board applies WorkSearch.key's decision")
 need("case .highlight(let index): state.bandIndex = index; return true" in keys and "if let item = board.item(id: search.band[index]) { select(item) }" in keys
      and 'case .clear: state.query = ""' in keys and "case .pass: return false" in keys, "each key's action is applied")
-need("onKey: { boardSearchKey($0) }" in dash, "the search box's keys go to the board")
+need("onKey: { boardSearchKey($0) }" in filters, "the search box's keys go to the board")
 esc = body(window, "    private func handleActivityEscape() -> Bool {", "    private func goBack()")
 need("if section == .work, workWorkspaceState.escapeClearsSearch() { return true }" in esc, "Escape on Work clears an active search")
 need(esc.index("workWorkspaceState.startItemID != nil") < esc.index("escapeClearsSearch()") < esc.index("section == .sessions, showingLinkedSession"),
@@ -110,7 +112,9 @@ need("bestMatchRow(item, hit: hit, highlighted: index == min(state.bandIndex, se
 need("if let note = search.note { Text(note)" in res, "one muted line when meaning search could not run")
 row = body(board, "    private func bestMatchRow(", "    /// Order: the house dropdown")
 need("WorkSearch.why(hit)" in row and ".onTapGesture { select(item) }" in row and "WorkSearch.underlined(" in row, "a Best match says why, underlines, and opens on a tap")
-need('state.domain == nil && state.scope == .all ? "Search work" : "Search this board"' in dash, "the placeholder names the board")
+need('WorkBoardSearchField(prompt: "Search work", query: $state.query' in filters
+     and 'COSDropdown("Domain", selection:' in filters and 'COSDropdown("Scope", selection:' in filters,
+     "the shared header labels search and exposes its current domain and scope beside it")
 
 # 5. Order: the house dropdown (no pills, no segmented control), remembered per board.
 menu = body(board, "    private func orderMenu(", "\n    }\n")
@@ -183,7 +187,7 @@ need(re.search(r"\b(?:ISO8601DateFormatter|DateFormatter)\s*\(", strip(date_labe
      "[dates cost] card date labels do not allocate a formatter per redraw")
 
 # 8. Copy: no em dash and no eyebrow kicker in what this adds.
-added = logic + dash + res + row + menu + field
+added = logic + dash + res + row + menu + field + filters
 for literal in re.findall(r'"((?:[^"\\]|\\.)*)"', strip(added)):
     need("—" not in literal, f"an em dash in UI copy: {literal!r}")
 need(".textCase(.uppercase)" not in added and "tracking(" not in added, "no mono-caps kicker over the search")
