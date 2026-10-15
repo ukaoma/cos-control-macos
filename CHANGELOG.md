@@ -1,3 +1,9 @@
+## 0.5.306 (build 359), dictation crash fix
+
+- Fix a crash on the first microphone buffer (0.5.305, 2026-10-15 13:58). DictationMicrophoneCapture is @MainActor, so its AVAudioEngine tap closure inherited main-actor isolation; Swift 6 checks that on entry and trapped when AVAudioEngine called it from RealtimeMessenger.mServiceQueue. The tap and engine-change observer closures are @Sendable; run-mac-dictation.sh pins both.
+- The listening panel draws a scrolling waveform of recent microphone levels (static under Reduce Motion).
+- Pair with server 6.73.8, which lets live COS Ask open Mac recordings.
+
 ## 0.5.305 (build 358), any-key dictation shortcut
 
 - Dictation shortcuts accept any key (Miles 2026-10-15, so Fn can move from Wispr Flow to COS): a modifier plus a key and a bare function key register as Carbon hot keys; one modifier key by itself (Fn 🌐, Left/Right ⌘ ⌥ ⌃ ⇧) is read from key events through the Accessibility access insertion already uses.

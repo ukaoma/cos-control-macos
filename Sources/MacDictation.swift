@@ -60,9 +60,11 @@ enum DictationAudioDevices {
               let converter = AVAudioConverter(from: format, to: target) else { throw error("The microphone format is unavailable.") }
         let accumulator = pcm
         let converterBox = DictationConverter(converter: converter, target: target, pcm: accumulator)
-        input.installTap(onBus: 0, bufferSize: 2048, format: format) { buffer, _ in converterBox.consume(buffer) }
+        // @Sendable on both: a closure formed inside this @MainActor class otherwise inherits main-actor isolation,
+        // Swift 6 checks it on entry, and AVAudioEngine calls from its own queue. 0.5.305 trapped on the first buffer.
+        input.installTap(onBus: 0, bufferSize: 2048, format: format) { @Sendable buffer, _ in converterBox.consume(buffer) }
         tapped = true
-        observer = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine, queue: nil) { _ in
+        observer = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine, queue: nil) { @Sendable _ in
             accumulator.fail("The microphone changed or disconnected. Stop and select it again.")
         }
         do { engine.prepare(); try engine.start() }
@@ -174,6 +176,8 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
     @Published private(set) var transcript = ""
     @Published private(set) var provisional = ""
     @Published private(set) var audioLevel: Double = 0
+    /// Newest last; the listening panel scrolls these like a waveform.
+    @Published private(set) var levelHistory = [Double](repeating: 0, count: 28)
     var bridge: (@MainActor (Data) async throws -> HelperResponse)?
     var petFrame: (() -> NSRect?)?
     private var capture: DictationMicrophoneCapture?
@@ -308,7 +312,7 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
         guard MacDictationPolicy.mayStart(enabled: enabled, busy: busy) else { return }
         generation = UUID(); let attempt = generation
         target = DictationInsertionTarget.capture()
-        pendingAudio = nil; transcript = ""; provisional = ""; audioLevel = 0; message = nil; phase = "Starting"; showHUD()
+        pendingAudio = nil; transcript = ""; provisional = ""; audioLevel = 0; levelHistory = [Double](repeating: 0, count: 28); message = nil; phase = "Starting"; showHUD()
         task = Task {
             let permission: Bool
             switch AVCaptureDevice.authorizationStatus(for: .audio) {
@@ -328,6 +332,7 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
                     while !Task.isCancelled, phase == "Listening", generation == attempt {
                         if next.failure != nil { stop(); break }
                         audioLevel = min(1, next.level * 4)
+                        levelHistory.removeFirst(); levelHistory.append(audioLevel)
                         try? await Task.sleep(for: .milliseconds(100))
                     }
                 }
@@ -424,15 +429,16 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
 
 private struct DictationHUD: View {
     @ObservedObject var store: MacDictationStore
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Label(store.phase, systemImage: store.phase == "Listening" ? "mic.fill" : "waveform").font(.headline)
             if store.phase == "Listening" {
-                HStack(spacing: 3) {
-                    ForEach(0..<18, id: \.self) { i in
-                        Capsule().fill(COSPalette.accent).frame(width: 4, height: 4 + store.audioLevel * (i % 3 == 0 ? 24 : 16))
+                HStack(alignment: .center, spacing: 3) {
+                    ForEach(Array(store.levelHistory.enumerated()), id: \.offset) { _, level in
+                        Capsule().fill(COSPalette.accent).frame(width: 4, height: 3 + level * 25)
                     }
-                }.frame(height: 28).accessibilityLabel("Microphone level")
+                }.frame(height: 28).animation(reduceMotion ? nil : .linear(duration: 0.1), value: store.levelHistory).accessibilityLabel("Microphone level")
                 if !store.provisional.isEmpty {
                     Text("Live preview · may change").font(.caption2).foregroundStyle(.secondary)
                     Text(store.provisional).font(.caption).lineLimit(3)

@@ -1,5 +1,5 @@
 {
-  "version": "0.5.305",
+  "version": "0.5.306",
   "whatsNew": {
     "summary": "Dictate into any Mac app with any shortcut, including Fn, and record everything your Mac plays with a live transcript.",
     "sections": [
@@ -9,7 +9,8 @@
           "Turn on Dictate into Mac apps in Settings, choose a microphone, and set Push to talk and Start / stop shortcuts. Speech runs through Parakeet Ultra on this Mac with your COS dictionary.",
           "Any key can be the shortcut: a modifier plus a key, a function key, or one modifier key by itself such as Fn 🌐 or Right ⌘. Fn+arrow and other chords never start dictation.",
           "To use Fn, set System Settings → Keyboard → Press 🌐 key to Do Nothing, and move Wispr Flow off Fn. Fn and single-key shortcuts use Accessibility, which insertion already needs.",
-          "A listening panel beside your pet shows your microphone level and words as you speak. Text goes into the same field and caret you started in; COS never presses Send."
+          "A listening panel beside your pet shows a scrolling waveform of your microphone and your words as you speak. Text goes into the same field and caret you started in; COS never presses Send.",
+          "Fixed: starting dictation no longer quits COS Control."
         ]
       },
       {
@@ -17,6 +18,7 @@
         "items": [
           "Choose Record on Mac in Meetings and confirm Start recording. All Mac audio is the default: it records whatever app plays the call, without picking one. Your microphone is not recorded; glasses are optional.",
           "Open live meeting shows the transcript as it arrives, with COS Ask and meeting files, the same view as a glasses recording.",
+          "Live COS Ask works on Mac recordings, with server 6.73.8.",
           "The panel checks every chunk for sound. If nothing reaches COS for 12 seconds it says so, instead of only counting chunks received.",
           "A red menu bar indicator and Stop control stay available while recording. Local audio is retained for explicit recovery if delivery is interrupted; a silent capture can be kept while you record again.",
           "Work requests blocked before sending can be reviewed and sent to another connected session, or a new or forked session, after confirmation."
