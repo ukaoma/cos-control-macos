@@ -1,3 +1,9 @@
+## 0.5.302 (build 355), silent recording recovery
+
+- A known silent recording reports no speech rather than an outdated server.
+- Choose an audio app explicitly; no first-app default.
+- Keep silent audio and choose another app without deleting or changing its journal.
+
 ## 0.5.301 (build 354), recording, onboarding and decision-provider candidate
 
 - Add manual recording of a selected Mac app's playback with explicit confirmation, a recording indicator, local retained WAV chunks and receipted saving. Glasses are optional; microphone capture and automatic meeting detection are outside this pilot.

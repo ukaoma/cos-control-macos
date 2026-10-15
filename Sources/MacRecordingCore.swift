@@ -274,3 +274,10 @@ actor MacRecordingSpool {
         return result.sorted { $0.startTime < $1.startTime }
     }
 }
+
+/// A confirmed no-speech result may release the composer, never an uncertain or live delivery.
+enum MacRecordingRecoveryPolicy {
+    static func canKeepForLater(noSpeech: Bool, pending: Bool, stopped: Bool, delivering: Bool) -> Bool {
+        noSpeech && pending && stopped && !delivering
+    }
+}

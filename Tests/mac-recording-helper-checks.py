@@ -111,6 +111,10 @@ try:
     check(not result['ok'] and 'No audio was captured' in result['message'] and result['details']['reason']=='invalid_mac_capture','start rejection does not falsely claim retained audio')
     answer.update(status=200,body={'serverInstanceId':'fixture-server','available':True,'sourceType':'mac_system_audio'})
 
+    answer.update(status=404,body={'reason':'nothing_to_save'})
+    result=run('save',dict(base,expectedChunkCount=1))
+    check(not result['ok'] and 'No speech was detected' in result['message'] and 'Update the COS server' not in result['message'],'known silent recording is not mislabeled as an old server')
+
     before=len(seen)
     result=run('capabilities',raw='x'*16385)
     check(not result['ok'] and len(seen)==before,'oversized stdin refused before network')

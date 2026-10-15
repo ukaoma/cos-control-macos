@@ -15463,6 +15463,7 @@ final class COSControlHelper {
             switch response.status {
             case 400 where operation == "start": message = "The server rejected the recording start. No audio was captured. Refresh apps and try again."
             case 401, 403: message = operation == "start" ? "Reconnect COS Control to the server. No audio was captured." : "Reconnect COS Control to the server. The recording is retained."
+            case 404 where response.body?["reason"] as? String == "nothing_to_save": message = "No speech was detected in the selected app. Audio is retained on this Mac. Choose the app actually playing the meeting audio."
             case 404: message = "Update the COS server or check this recording's status. The local recording is retained."
             case 409: message = "Mac recording could not continue. Check its receipt before retrying."
             case 413: message = "The audio chunk exceeds the recording limit. The recording is retained."

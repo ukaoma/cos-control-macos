@@ -29,6 +29,7 @@ final class MacRecordingStore: ObservableObject {
     @Published private(set) var manifest: MacRecordingManifest?
     @Published private(set) var recoverable: [MacRecordingManifest] = []
     @Published private(set) var available = false
+    @Published private(set) var noSpeech = false
     var isRecording: Bool { phase == "recording" }
     var occupied: Bool { !["idle", "saved", "pending"].contains(phase) }
     var canStart: Bool { !occupied && deliveryTask == nil && (manifest == nil || manifest!.saved || manifest!.chunks.isEmpty) }
@@ -61,21 +62,24 @@ final class MacRecordingStore: ObservableObject {
                 }
                 instance = id; available = true
                 sources = try await Task.detached(priority: .utility) { try MacAudioCapture.sources() }.value
-                if !sources.contains(where: { $0.id == selectedID }) { selectedID = sources.first?.id ?? 0 }
+                if !sources.contains(where: { $0.id == selectedID }) { selectedID = 0 }
             } else { throw MacRecordingError.unavailable("Manual system audio recording requires macOS 14.2 or later.") }
         } catch { available = false; self.error = error.localizedDescription }
     }
     private func invoke(_ operation: String, _ payload: [String: JSONValue]) async throws -> [String: JSONValue] {
         guard let bridge else { throw MacRecordingError.unavailable("Recording transport is not connected.") }
         let response = try await bridge(operation, payload)
-        guard response.ok else { throw MacRecordingError.unavailable(response.message) }
+        guard response.ok else {
+            if operation == "save", response.details["reason"]?.string == "nothing_to_save" { noSpeech = true }
+            throw MacRecordingError.unavailable(response.message)
+        }
         return response.details
     }
     /// Only the explicit Start button calls this; no initialization, detection, or permission probe records audio.
     func start() async {
         guard canStart, available, let instance, let source = sources.first(where: { $0.id == selectedID }) else { return }
         guard #available(macOS 14.2, *) else { return }
-        phase = "starting"; error = nil; captureInterruption = nil
+        phase = "starting"; error = nil; noSpeech = false; captureInterruption = nil
         let attempt = UUID(); startAttempt = attempt
         installStopObservers()
         var localCapture: MacAudioCapture?
@@ -171,8 +175,18 @@ final class MacRecordingStore: ObservableObject {
         do {
             // A restart never resumes the tap. Pinning refuses replay into a different server instance.
             if !value.stopped { _ = try await spool.interrupt(value.captureId, reason: "The app ended during recording. Unflushed audio may be missing; retained chunks can be recovered.") }
-            manifest = try await spool.markStopped(value.captureId); phase = "pending"; error = nil
+            manifest = try await spool.markStopped(value.captureId); phase = "pending"; error = nil; noSpeech = false
             deliverPending()
+        } catch { self.error = error.localizedDescription }
+    }
+    /// Leaves the immutable journal and WAVs untouched; only releases the current editor.
+    /// Offered only after the server positively reported that no speech was saved.
+    func keepSilentAudioForLater() async {
+        guard MacRecordingRecoveryPolicy.canKeepForLater(noSpeech: noSpeech, pending: phase == "pending", stopped: manifest?.stopped == true, delivering: deliveryTask != nil) else { return }
+        do {
+            let retained = try await spool.recoverable()
+            recoverable = retained; manifest = nil; selectedID = 0; noSpeech = false; error = nil; phase = "idle"
+            message = "Previous audio is kept on this Mac. Select the app actually playing the meeting audio before recording again."
         } catch { self.error = error.localizedDescription }
     }
     func deliverPending() {
@@ -258,7 +272,10 @@ struct MacRecordingPanel: View {
                     Text("\(value.acknowledged)/\(value.chunks.count) audio chunks received · \(store.phase)").font(COSType.body(11)).foregroundStyle(.secondary)
                     if let interruption = value.interruption { Text("Incomplete recording: \(interruption)").font(COSType.body(11)).foregroundStyle(COSPalette.danger) }
                     if store.phase == "pending", !value.chunks.isEmpty {
-                        Text("Save this retained recording before starting another.").font(COSType.body(11)).foregroundStyle(.secondary)
+                        Text(store.noSpeech ? "The selected app supplied no speech. Its audio remains available below." : "Save this retained recording before starting another.").font(COSType.body(11)).foregroundStyle(.secondary)
+                        if store.noSpeech {
+                            Button("Keep audio and choose another app") { Task { await store.keepSilentAudioForLater() } }
+                        }
                         Button("Retry saving retained audio") { store.deliverPending() }
                     }
                 }
