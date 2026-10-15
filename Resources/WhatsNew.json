@@ -1,15 +1,32 @@
 {
-  "version": "0.5.307",
+  "version": "0.5.309",
   "whatsNew": {
-    "summary": "Dictate into any Mac app with any shortcut, including Fn, and record everything your Mac plays with a live transcript.",
+    "summary": "Dictation, Wispr-style: hold your shortcut, watch the pet listen, and the text drops in where your cursor is. Fix a word once and the COS dictionary remembers it everywhere.",
     "sections": [
+      {
+        "title": "Dictation, Wispr-style",
+        "items": [
+          "Hold your shortcut and the bar under your pet becomes a listening pill with a live waveform that moves for quiet speech too. No window opens, and nothing takes focus from the app you are typing in. With the pet hidden, the same pill sits above the Dock.",
+          "Release and COS transcribes, copies the text, and drops it into whatever text box has your cursor when it finishes, so you can click somewhere else while it works. The pill flashes Inserted with the app's name. The text stays on the clipboard, so ⌘V works again anywhere.",
+          "No text box selected? A card pops over the pet with the text and a Copy button. It folds away after 20 seconds; hover to keep it.",
+          "A Dictated pill on the pet opens Recent dictations: your last 50, kept on this Mac, each with where it went and a Copy button.",
+          "Still refused: password fields and secure input. COS never presses Send or Return."
+        ]
+      },
+      {
+        "title": "Dictionary",
+        "items": [
+          "Open a dictation and choose Fix a word: tap what COS got wrong, type the right spelling, Save. It joins the one COS dictionary your G2 meetings, Mac recordings and dictation already use, from the next sentence on.",
+          "Recent corrections show what COS learned, from where and when, and each one can be undone.",
+          "Meetings → Dictionary in COS Activity shows the whole dictionary: recent corrections, vocabulary and every correction, searchable, with add and remove. Needs server 6.73.11."
+        ]
+      },
       {
         "title": "Dictate into any Mac app",
         "items": [
           "Turn on Dictate into Mac apps in Settings, choose a microphone, and set Push to talk and Start / stop shortcuts. Speech runs through Parakeet Ultra on this Mac with your COS dictionary.",
           "Any key can be the shortcut: a modifier plus a key, a function key, or one modifier key by itself such as Fn 🌐 or Right ⌘. Fn+arrow and other chords never start dictation.",
           "To use Fn, set System Settings → Keyboard → Press 🌐 key to Do Nothing, and move Wispr Flow off Fn. Fn and single-key shortcuts use Accessibility, which insertion already needs.",
-          "A listening panel beside your pet shows a scrolling waveform of your microphone and your words as you speak. Text goes into the same field and caret you started in; COS never presses Send.",
           "A click while your shortcut modifier is held (⌥-click, ⌘-click) counts as a chord and never starts dictation."
         ]
       },
