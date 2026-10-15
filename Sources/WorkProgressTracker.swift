@@ -74,6 +74,8 @@ struct WorkBoardReads: Equatable, Sendable {
         /// A run with no session of its own (a Cursor or Ollama answer): its one reply is the job's result, written
         /// after the handoff by definition.
         var fromJobResult = false
+        /// Explicit server activity evidence; a missing boolean is never proof that delivery may resume.
+        var runningActiveVerified = false
     }
 
     let store: WorkHandoffStore

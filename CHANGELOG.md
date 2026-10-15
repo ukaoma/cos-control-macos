@@ -1,3 +1,10 @@
+## 0.5.297 (build 350), Work follow-up recovery candidate
+
+- Allow a Work chat follow-up when the exact preceding native turn has a reply and a fresh explicit idle read. Revalidate the unchanged receipt under the journal lock, then link it to the accepted follow-up. Preserve user review and task stage.
+- Unknown, active, app-owned, degraded and stale/mismatched-history deliveries retain their fences. Repeated follow-ups do not depend on older prompts remaining in the recent-history window.
+- Label pre-intent refusals Not sent. Restore a failed request to the composer without dispatching; older missing receipts require checking the exact connected session. Explain temporary refresh blocking beside Send.
+- Harden native activity provenance across helper/UI and add repeated-turn, restart, double-send, journal-race and recovery canaries. Includes 0.5.296 single-instance prevention; no public appcast promotion.
+
 ## 0.5.296 (build 349), distribution candidate
 
 - Acquire a process-held UI lease before ControllerModel starts. A second current copy exits after activating the existing app; crashes release the lease automatically.

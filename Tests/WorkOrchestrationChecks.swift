@@ -44,8 +44,22 @@ private actor WorkChatFixture {
     delivered.channel = "turn"
     let nativeRead = WorkProgressTracker.SessionRead(replies: [.init(text: "Old seed", at: 99), .init(text: "Own native result", at: 102), .init(text: "Later turn result", at: 110)], prompts: [.init(text: delivered.prompt, at: 101), .init(text: "Different later request", at: 109)], runningActive: false, agentState: "ended", lastActivityAt: 110, hasHistory: true)
     precondition(WorkChatPolicy.nativeReplies(receipt: delivered, read: nativeRead).map(\.text) == ["Own native result"], "Native result must exclude seed and later turns")
+    var idleRead = nativeRead; idleRead.runningActiveVerified = true
+    precondition(WorkChatPolicy.canContinue(receipt: delivered, read: idleRead), "Exact completed native turn permits a follow-up without changing review status")
+    var activeRead = idleRead; activeRead.runningActive = true
+    precondition(!WorkChatPolicy.canContinue(receipt: delivered, read: activeRead), "A historical done report cannot override a current writer")
+    var oldServerRead = idleRead; oldServerRead.runningActiveVerified = false
+    precondition(!WorkChatPolicy.canContinue(receipt: delivered, read: oldServerRead), "Missing activity evidence must fail closed")
+    var noHistory = idleRead; noHistory.hasHistory = false
+    precondition(!WorkChatPolicy.canContinue(receipt: delivered, read: noHistory))
+    var uncertain = delivered; uncertain.status = "unknown"
+    precondition(!WorkChatPolicy.canContinue(receipt: uncertain, read: idleRead))
+    let deliveredKey = try WorkChatPolicy.continuationKey(delivered)
+    let uncertainKey = try WorkChatPolicy.continuationKey(uncertain)
+    precondition(deliveredKey != uncertainKey, "A changed journal invalidates idle evidence")
     delivered.prompt = "Unmatched prompt must not claim any result"
     precondition(WorkChatPolicy.nativeReplies(receipt: delivered, read: nativeRead).isEmpty)
+    precondition(!WorkChatPolicy.canContinue(receipt: delivered, read: idleRead), "Unrelated replies never release a receipt")
     let styled = NSMutableAttributedString(string: "Review the header", attributes: [.font: NSFont.systemFont(ofSize: 13)])
     styled.addAttribute(.font, value: NSFont.boldSystemFont(ofSize: 13), range: NSRange(location: 11, length: 6))
     let rich = WorkRichText.rtf(styled)
@@ -94,6 +108,17 @@ private actor WorkChatFixture {
     chat.setDraft("Do more")
     await chat.send(source: source, handoff: handoff)
     precondition(handoff.receipts.count == 2 && chat.record?.rounds.last?.state == "Needs attention", "Foreign active run blocks more sends")
+    precondition(chat.record?.rounds.last?.assignments.allSatisfy { $0.state != "Sending" } == true, "A local refusal cannot remain Sending")
+    let refusedRound = chat.record!.rounds.last!
+    await chat.refresh(source: source, handoff: handoff, automatic: true)
+    precondition(chat.record?.rounds.last?.assignments.allSatisfy { $0.state == "Not sent" } == true, "A known local refusal stays Not sent after polling")
+    precondition(chat.record?.draft == "", "The saved failed question remains in durable history")
+    chat.restoreUnsentRequest(roundID: refusedRound.id)
+    precondition(chat.record?.draft == "Do more" && handoff.receipts.count == 2, "Restore only fills the composer, never dispatches")
+    chat.setDraft("Keep this newer draft")
+    chat.restoreUnsentRequest(roundID: refusedRound.id)
+    precondition(chat.record?.draft == "Keep this newer draft", "Recovery cannot overwrite a newer user draft")
+    chat.setDraft("")
     for n in handoff.receipts.indices { handoff.receipts[n].status = "completed"; handoff.receipts[n].result = "Result for " + handoff.receipts[n].provider }
     await chat.refresh(source: source, handoff: handoff)
     precondition(chat.record?.rounds[0].assignments.allSatisfy { !$0.result.isEmpty } == true, "Earlier rounds still receive independent updates")
@@ -129,6 +154,19 @@ private actor WorkChatFixture {
     await first.value
     let calls = await fixture.seen()
     precondition(calls.filter { $0 == "work-chat" }.count == 1 && real.receipts.isEmpty && candidate.record?.rounds.first?.state == "Needs attention", "Changed task stops all dispatch; double Send produces one plan")
+    let legacySource = WorkSource(id: "task:quilt:dddddddddddd", title: "Interrupted fixture", revision: source.revision, project: "quilt", context: "")
+    let legacyChat = WorkTaskChatStore(); legacyChat.open(source: legacySource, handoff: handoff)
+    var interrupted = WorkChatRound(question: "Review the 404 sheet")
+    interrupted.state = "Needs attention"
+    var unsaved = WorkChatAssignment(sessionID: ids[0], prompt: "Review the sheet only"); unsaved.state = "Sending"
+    interrupted.assignments = [unsaved]; legacyChat.record?.rounds = [interrupted]
+    await legacyChat.refresh(source: legacySource, handoff: handoff)
+    precondition(legacyChat.record?.rounds[0].assignments[0].state == "No delivery receipt", "Old Sending badge cannot survive a failed pre-intent send")
+    legacyChat.restoreUnsentRequest(roundID: interrupted.id)
+    precondition(legacyChat.record?.draft == "", "A missing historical receipt needs a manual session check")
+    legacyChat.restoreUnsentRequest(roundID: interrupted.id, checkedUnconfirmed: true)
+    precondition(legacyChat.record?.draft == interrupted.question, "After checking, recovery fills the composer only")
+    try await runWorkContinuationChecks(source: source, session: sessions[0], root: root)
     try await runWorkChatTypingChecks(source: source, handoff: handoff, root: root)
     print("PASS Work orchestration: exact target policy, private CAS/symlinks, shared distinct-target run, duplicate/foreign-run fences, durable history, all-round provenance, navigation/double-send/task-revision drift; zero provider sends")
 }
@@ -198,4 +236,77 @@ private actor WorkChatFixture {
     let p95 = milliseconds[Int(Double(milliseconds.count - 1) * 0.95)]
     precondition(p95 < 16, "Native rich-text edit callback must stay below a 16ms frame at p95")
     print(String(format: "PASS typing: 1200 native edits, p95 %.3fms, 0 history invalidations, 0 burst disk writes; idle save, navigation flush and CAS conflict preserved", p95))
+}
+
+// Exercise the actual submit/attach/send boundary using an isolated transport and on-disk journal.
+// No provider or live task is touched.
+private actor WorkContinuationFixture {
+    let previous: WorkHandoffReceipt
+    let active: Bool
+    let verified: Bool
+    let matching: Bool
+    var latestPrompt: String
+    var latestAt: Double
+    var sends = 0
+    init(_ previous: WorkHandoffReceipt, active: Bool = false, verified: Bool = true, matching: Bool = true) {
+        self.previous = previous; self.active = active; self.verified = verified; self.matching = matching
+        latestPrompt = previous.prompt; latestAt = previous.createdAt + 1
+    }
+    func count() -> Int { sends }
+    func run(_ args: [String], _ data: Data?) async throws -> HelperResponse {
+        let details: [String: JSONValue]
+        switch args.first {
+        case "session-recent-replies":
+            precondition(args.contains("40"), "Continuation reads the full bounded history: a long native turn may have more than twelve assistant messages")
+            details = ["state": .string("turns"), "runningActive": .bool(active), "runningActiveVerified": .bool(verified), "agentState": .string(active ? "working" : "ended"),
+                "prompts": .array([.object(["text": .string(matching ? latestPrompt : "An unrelated earlier prompt"), "at": .string(ISO8601DateFormatter().string(from: Date(timeIntervalSince1970: latestAt)))])]),
+                "replies": .array([.object(["text": .string("Draft work is done, nothing published."), "at": .string(ISO8601DateFormatter().string(from: Date(timeIntervalSince1970: latestAt + 1)))])])]
+        case "session-chat-attachability": details = ["attachable": .bool(true)]
+        case "session-chat-attach": details = ["state": .string("attached"), "bindingId": .string("continuation-fixture"), "epoch": .number(1), "boundTo": .string("fixture-target")]
+        case "session-chat-send":
+            sends += 1; latestPrompt = String(data: data!, encoding: .utf8)!; latestAt = ceil(Date().timeIntervalSince1970) + 1
+            details = ["state": .string("completed")]
+        default: preconditionFailure("Unexpected continuation fixture call: \(args)")
+        }
+        return HelperResponse(ok: true, message: "Fixture", details: details)
+    }
+}
+@MainActor private func runWorkContinuationChecks(source: WorkSource, session: WorkSession, root: URL) async throws {
+    struct Journal: Encodable { var version = 2; var receipts: [WorkHandoffReceipt]; var sessions: [WorkSession] }
+    for scenario in ["idle", "active", "unknown", "plain", "changed", "unverified", "unrelated", "app"] {
+        var previous = WorkHandoffReceipt(id: UUID().uuidString.lowercased(), workID: source.id, workTitle: source.title, sourceRevision: source.revision, mode: .continueSession, provider: session.provider, modelID: "existing", sessionID: session.id, sessionTitle: session.title, status: scenario == "unknown" ? "unknown" : "delivered", detail: "Prior delivered task", prompt: "A distinctive prior task whose exact native reply must be checked", createdAt: WorkProgress.parseStamp("2026-10-14T15:00:00Z")!)
+        previous.channel = scenario == "app" ? "app" : "turn"
+        let frozenPrevious = previous
+        let file = root.appendingPathComponent("continue-" + scenario + ".json")
+        try JSONEncoder().encode(Journal(receipts: [previous], sessions: [session])).write(to: file)
+        let fixture = WorkContinuationFixture(previous, active: scenario == "active", verified: scenario != "unverified", matching: scenario != "unrelated")
+        let store = WorkHandoffStore(storageURL: file, transport: { args, data in
+            let response = try await fixture.run(args, data)
+            if scenario == "changed", args.first == "session-recent-replies" {
+                var changed = frozenPrevious; changed.status = "unknown"
+                try JSONEncoder().encode(Journal(receipts: [changed], sessions: [session])).write(to: file)
+            }
+            return response
+        })
+        let newID = UUID().uuidString.lowercased()
+        await store.submit(source: source, mode: .continueSession, session: session, model: nil, prompt: "Review this attached report read-only", orchestrationRunID: scenario == "plain" ? nil : UUID().uuidString, intentID: newID)
+        let sends = await fixture.count()
+        precondition(sends == (scenario == "idle" ? 1 : 0), "Continuation gate: \(scenario) sent \(sends)")
+        if scenario == "idle" {
+            precondition(store.receipts.first(where: { $0.id == newID })?.status == "delivered")
+            precondition(store.receipts.first(where: { $0.id == previous.id })?.status == "delivered", "Follow-up never pretends the user reviewed the earlier answer")
+            precondition(store.receipts.first(where: { $0.id == previous.id })?.continuedBy == newID, "Old exact turn is durably linked to its accepted follow-up")
+            precondition(store.receipts.first(where: { $0.id == previous.id })?.blocksNewHandoff == false, "Old turns beyond the recent-history window cannot wedge later requests")
+            await store.submit(source: source, mode: .continueSession, session: session, model: nil, prompt: "Duplicate intent", orchestrationRunID: UUID().uuidString, intentID: newID)
+            let count = await fixture.count(); precondition(count == 1, "Exact intent must not be sent twice")
+            let relaunched = WorkHandoffStore(storageURL: file, transport: { _,_ in preconditionFailure("Restart must not send") })
+            precondition(relaunched.receipts.count == 2, "Both turns survive restart")
+            for turn in 0..<3 {
+                await store.submit(source: source, mode: .continueSession, session: session, model: nil, prompt: "Follow-up request \(turn)", orchestrationRunID: UUID().uuidString, intentID: UUID().uuidString.lowercased())
+            }
+            let repeatedCount = await fixture.count()
+            precondition(repeatedCount == 4, "Repeated follow-ups work when older prompts fall out of the recent-turn window")
+        } else { precondition(!store.receipts.contains { $0.id == newID }, "Refused handoff cannot create a delivery receipt") }
+    }
+    print("PASS follow-up delivery: idle exact native reply, active/unknown/refreshed-row fences, duplicate intent, unchanged review status, durable two-turn history")
 }

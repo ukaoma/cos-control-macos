@@ -1,8 +1,17 @@
 {
-  "version": "0.5.296",
+  "version": "0.5.297",
   "whatsNew": {
-    "summary": "Keeps a single COS Control running and preserves the installed app as the update and login target. Includes the matched Work improvements from 0.5.295.",
+    "summary": "Continue connected work after a session answers, recover an unsent request, and see why Send is temporarily waiting. Includes single-instance protection and prior Work improvements.",
     "sections": [
+      {
+        "title": "Continue the conversation",
+        "items": [
+          "A completed native turn can accept a follow-up after an exact reply and fresh idle evidence are checked. User review and shared task completion remain separate.",
+          "Uncertain deliveries and active sessions keep their protection against duplicate sends.",
+          "A request refused before sending is labeled Not sent. Use this request again restores its text without dispatching it. Historical missing receipts require a session check.",
+          "Send explains when receipt refresh is in progress."
+        ]
+      },
       {
         "title": "One Control at a time",
         "items": [

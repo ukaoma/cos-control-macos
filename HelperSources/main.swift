@@ -16770,7 +16770,18 @@ final class COSControlHelper {
         try emitWorkJobResponse(response)
     }
 
+    private static func recentActivityVerified(_ body: [String: Any]) -> Bool {
+        body["running_active"] is Bool && body["running_stamped"] as? Bool == true && body["runningDegraded"] as? Bool == false
+    }
     private func selfTestWork() throws {
+        guard Self.recentActivityVerified(["running_active": false, "running_stamped": true, "runningDegraded": false]),
+              Self.recentActivityVerified(["running_active": true, "running_stamped": true, "runningDegraded": false]),
+              !Self.recentActivityVerified([:]),
+              !Self.recentActivityVerified(["running_active": false, "running_stamped": true]),
+              !Self.recentActivityVerified(["running_active": false, "running_stamped": true, "runningDegraded": true]),
+              !Self.recentActivityVerified(["running_active": false, "runningDegraded": false]) else {
+            throw HelperError.message("Work native activity evidence self-test failed")
+        }
         let health: [String: Any] = ["features": ["durableQueryJobs": true, "durableQueryJobsProtocol": 1,
             "claude": true, "codex": true, "cursor": true, "ollama": true]]
         let options: [[String: Any]] = [["preference": "codex-frontier", "id": "configured-model"],
@@ -16853,7 +16864,7 @@ final class COSControlHelper {
               Self.workRequestFailure(status: 502, code: "<b>") == "http_502" else {
             throw HelperError.message("Work glasses request self-test failed")
         }
-        emit(ok: true, message: "Work model/admission contract passed", details: ["checks": 62])
+        emit(ok: true, message: "Work model/admission contract passed", details: ["checks": 68])
     }
 
     private func emitSessionChatTurn(args: [String]) throws {
@@ -17106,6 +17117,7 @@ final class COSControlHelper {
             "replies": replies,
             "prompts": prompts,
             "runningActive": body["running_active"] as? Bool ?? false,
+            "runningActiveVerified": Self.recentActivityVerified(body),
             "agentState": body["agent_state"] as? String ?? "",
             "lastActivityAt": body["last_activity_at"] as? String ?? "",
         ])

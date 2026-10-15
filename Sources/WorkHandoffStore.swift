@@ -173,6 +173,9 @@ struct WorkHandoffReceipt: Identifiable, Codable, Sendable {
     /// voice, Not done yet), and that request's id (its clientRequestId). Optional, never a new status: the server
     /// projects both, and an older journal reads them as absent.
     var orchestrationRunID: String? = nil
+    /// The next accepted chat turn after this exact native turn was observed idle with a reply.
+    /// Keeps delivery readiness separate from user review and preserves the old result.
+    var continuedBy: String? = nil
     var requestedFrom: String?
     var requestId: String?
     /// 0.5.254: the card's files this handoff carried (WorkCardFiles.swift), so a Continue or Fork sends only what is new
@@ -181,7 +184,7 @@ struct WorkHandoffReceipt: Identifiable, Codable, Sendable {
     /// Server-terminal states never block another handoff: completed, failed, refused, canceled (server job states:
     /// completed | failed | canceled | interrupted; interrupted is recorded as failed).
     nonisolated static let terminalStatuses: Set<String> = ["completed", "failed", "refused", "canceled", "reviewed"]
-    var blocksNewHandoff: Bool { !Self.terminalStatuses.contains(status) }
+    var blocksNewHandoff: Bool { !Self.terminalStatuses.contains(status) && !(status == "delivered" && continuedBy != nil) }
     /// An unknown delivery cleared after a manual check: terminal, but never evidence that the session got the work.
     var clearedUnconfirmed: Bool { status == "reviewed" && acknowledgedAt != nil }
     /// A server job state as a receipt status. The server's terminal states are completed, failed, canceled and
@@ -1070,9 +1073,21 @@ struct WorkGlassesRequest: Equatable, Sendable {
         if let prepare = cardFiles.prepareMeetingGroups { await prepare(source.id) }
         do {
             guard storageReady else { throw failure("History is unavailable; sending is disabled.") }
+            // Chat follow-ups do not require marking an earlier answer reviewed. Read the exact native
+            // turn before locking, then bind that idle proof to the unchanged journal row under the lock.
+            // Unknown, queued, running and app-owned deliveries retain the existing fence.
+            var continuations: [String: Data] = [:]
+            if orchestrationRunID != nil, !isolated {
+                for row in receipts(for: source.id) where row.blocksNewHandoff && row.status == "delivered" && row.channel == "turn" {
+                    guard let sessionID = row.sessionID,
+                          let read = try? await sessionRead(sessionID: sessionID, turns: 40),
+                          WorkChatPolicy.canContinue(receipt: row, read: read) else { continue }
+                    continuations[row.id] = try WorkChatPolicy.continuationKey(row)
+                }
+            }
             let lock = try lockJournal(); defer { flock(lock, LOCK_UN); close(lock) }
             try loadJournal()
-            guard !receipts(for: source.id).contains(where: { $0.blocksNewHandoff && !($0.id == replacing && $0.status == "delivered") && !(orchestrationRunID != nil && $0.orchestrationRunID == orchestrationRunID && $0.sessionID != session?.id && ["running", "queued", "delivered"].contains($0.status)) }) else { throw failure("This work already has an active or unresolved handoff. Inspect its receipt before starting another.") }
+            guard !receipts(for: source.id).contains(where: { $0.blocksNewHandoff && !(continuations[$0.id] != nil && continuations[$0.id] == (try? WorkChatPolicy.continuationKey($0))) && !($0.id == replacing && $0.status == "delivered") && !(orchestrationRunID != nil && $0.orchestrationRunID == orchestrationRunID && $0.sessionID != session?.id && ["running", "queued", "delivered"].contains($0.status)) }) else { throw failure("This work already has an active or unresolved handoff. Inspect its receipt before starting another.") }
             let text = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty, text.utf16.count <= Self.draftLimit, !source.id.isEmpty, !source.revision.isEmpty else { throw failure("Provide a bounded instruction and source revision.") }
             // 0.5.247: the status line the session reports back with, added here so no draft can leave it out.
@@ -1199,6 +1214,14 @@ struct WorkGlassesRequest: Equatable, Sendable {
                let index = receipts.firstIndex(where: { $0.id == replacing }), receipts[index].status == "delivered" {
                 receipts[index].status = "reviewed"
                 receipts[index].detail = "You confirmed that you inspected this session. The task remains unchanged."
+            }
+            if ["running", "queued", "delivered", "completed"].contains(row.status) {
+                for index in receipts.indices where continuations[receipts[index].id] != nil {
+                    // The new receipt is durable in the same journal save; old review status stays intact.
+                    if continuations[receipts[index].id] == (try? WorkChatPolicy.continuationKey(receipts[index])) {
+                        receipts[index].continuedBy = row.id
+                    }
+                }
             }
             try save(row)
             onHandoffRecorded?()
@@ -2076,7 +2099,7 @@ struct WorkGlassesRequest: Equatable, Sendable {
         return .init(replies: rows("replies"), prompts: rows("prompts"), runningActive: details["runningActive"]?.bool == true,
                      agentState: details["agentState"]?.string ?? "",
                      lastActivityAt: details["lastActivityAt"]?.string.flatMap(WorkProgress.parseStamp),
-                     hasHistory: details["state"]?.string == "turns")
+                     hasHistory: details["state"]?.string == "turns", runningActiveVerified: details["runningActiveVerified"]?.bool == true && details["runningActive"]?.bool != nil)
     }
 
     /// Jev's reading of a session's replies since `after` against a board task (server 6.58.0). Nil with a reason
