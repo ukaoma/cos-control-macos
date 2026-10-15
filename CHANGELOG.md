@@ -1,3 +1,10 @@
+## 0.5.305 (build 358), any-key dictation shortcut
+
+- Dictation shortcuts accept any key (Miles 2026-10-15, so Fn can move from Wispr Flow to COS): a modifier plus a key and a bare function key register as Carbon hot keys; one modifier key by itself (Fn 🌐, Left/Right ⌘ ⌥ ⌃ ⇧) is read from key events through the Accessibility access insertion already uses.
+- A lone press counts only with no other modifier held, including the other side of the same modifier, and no key pressed before release. Fn+arrow and ⌘C never dictate; a chord during push-to-talk cancels quietly. A lone-modifier Start / stop acts on a clean tap.
+- Stored shortcuts gain a kind; pre-0.5.305 combos load unchanged. What's New gains a dictation section.
+- Pair with server 6.73.7 (unchanged).
+
 ## 0.5.304 (build 357), All Mac audio recording candidate
 
 - Record on Mac defaults to All Mac audio: one global tap of everything this Mac plays, excluding COS itself. Single-app capture remains. The 0.5.303 Vorssaint test stored 128s of exact zeros because a per-app tap on a listener app (Vorssaint, the Fireflies helper) receives nothing; the same build tapping Teams saved a transcript.

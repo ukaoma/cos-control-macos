@@ -1,8 +1,17 @@
 {
-  "version": "0.5.304",
+  "version": "0.5.305",
   "whatsNew": {
-    "summary": "Mac recording captures everything your Mac plays, with a live transcript, plus a focused welcome and an optional SubQ decision provider.",
+    "summary": "Dictate into any Mac app with any shortcut, including Fn, and record everything your Mac plays with a live transcript.",
     "sections": [
+      {
+        "title": "Dictate into any Mac app",
+        "items": [
+          "Turn on Dictate into Mac apps in Settings, choose a microphone, and set Push to talk and Start / stop shortcuts. Speech runs through Parakeet Ultra on this Mac with your COS dictionary.",
+          "Any key can be the shortcut: a modifier plus a key, a function key, or one modifier key by itself such as Fn 🌐 or Right ⌘. Fn+arrow and other chords never start dictation.",
+          "To use Fn, set System Settings → Keyboard → Press 🌐 key to Do Nothing, and move Wispr Flow off Fn. Fn and single-key shortcuts use Accessibility, which insertion already needs.",
+          "A listening panel beside your pet shows your microphone level and words as you speak. Text goes into the same field and caret you started in; COS never presses Send."
+        ]
+      },
       {
         "title": "Manual Mac recording",
         "items": [

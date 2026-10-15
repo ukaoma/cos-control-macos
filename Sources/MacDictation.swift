@@ -167,8 +167,8 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
     @Published var enabled: Bool { didSet { UserDefaults.standard.set(enabled, forKey: "dictation.enabled"); if !enabled { cancel() }; registerHotKeys() } }
     @Published var microphoneUID: String { didSet { UserDefaults.standard.set(microphoneUID, forKey: "dictation.microphoneUID") } }
     @Published private(set) var microphones: [DictationMicrophone] = []
-    @Published private(set) var holdCombo: HotKeyCombo?
-    @Published private(set) var toggleCombo: HotKeyCombo?
+    @Published private(set) var holdTrigger: DictationTrigger?
+    @Published private(set) var toggleTrigger: DictationTrigger?
     @Published private(set) var phase = "Off"
     @Published private(set) var message: String?
     @Published private(set) var transcript = ""
@@ -188,6 +188,10 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
     private var sessionObservers: [NSObjectProtocol] = []
     private var handler: EventHandlerRef?
     private var registrations: [EventHotKeyRef] = []
+    /// Lone-modifier triggers (Fn, Right ⌘…) read key events; Carbon cannot register a modifier by itself.
+    private var keyMonitors: [Any] = []
+    private var holdTracker: LoneModifierTracker?
+    private var toggleTracker: LoneModifierTracker?
     private var held = false
     private var toggleHeld = false
     private var holdPending = false
@@ -198,11 +202,11 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
         let d = UserDefaults.standard
         enabled = d.bool(forKey: "dictation.enabled")
         microphoneUID = d.string(forKey: "dictation.microphoneUID") ?? ""
-        func load(_ prefix: String) -> HotKeyCombo? {
+        func load(_ prefix: String) -> DictationTrigger? {
             guard d.bool(forKey: prefix + ".enabled") else { return nil }
-            return HotKeyCombo(keyCode: UInt32(clamping: d.integer(forKey: prefix + ".key")), modifiers: UInt32(clamping: d.integer(forKey: prefix + ".modifiers")))
+            return DictationTrigger.load(kind: d.string(forKey: prefix + ".kind"), key: d.integer(forKey: prefix + ".key"), modifiers: d.integer(forKey: prefix + ".modifiers"))
         }
-        holdCombo = load("dictation.hold"); toggleCombo = load("dictation.toggle")
+        holdTrigger = load("dictation.hold"); toggleTrigger = load("dictation.toggle")
         phase = enabled ? "Ready" : "Off"
         for name in [NSWorkspace.willSleepNotification, NSWorkspace.sessionDidResignActiveNotification] {
             sessionObservers.append(NSWorkspace.shared.notificationCenter.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
@@ -214,33 +218,82 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
     func requestInsertionPermission() {
         _ = AXIsProcessTrustedWithOptions(["AXTrustedCheckOptionPrompt": true] as CFDictionary)
     }
-    func setShortcut(_ combo: HotKeyCombo?, hold: Bool, activity: HotKeyCombo?) {
+    /// True when the Activity shortcut would collide with either dictation shortcut.
+    func uses(_ combo: HotKeyCombo) -> Bool {
+        let trigger = DictationTrigger.keys(keyCode: combo.keyCode, modifiers: combo.modifiers)
+        return trigger == holdTrigger || trigger == toggleTrigger
+    }
+    func setShortcut(_ trigger: DictationTrigger?, hold: Bool, activity: HotKeyCombo?) {
         guard !busy else { message = "Finish dictating before changing a shortcut."; return }
-        guard combo == nil || (combo != activity && combo != (hold ? toggleCombo : holdCombo)) else {
-            message = "That shortcut is already used by COS. Choose a different combination."; return
+        let activityTrigger = activity.map { DictationTrigger.keys(keyCode: $0.keyCode, modifiers: $0.modifiers) }
+        guard trigger == nil || (trigger != activityTrigger && trigger != (hold ? toggleTrigger : holdTrigger)) else {
+            message = "That shortcut is already used by COS. Choose a different one."; return
         }
         let prefix = hold ? "dictation.hold" : "dictation.toggle"
         let d = UserDefaults.standard
-        d.set(combo != nil, forKey: prefix + ".enabled")
-        if let combo { d.set(Int(combo.keyCode), forKey: prefix + ".key"); d.set(Int(combo.modifiers), forKey: prefix + ".modifiers") }
-        if hold { holdCombo = combo } else { toggleCombo = combo }
+        d.set(trigger != nil, forKey: prefix + ".enabled")
+        if let stored = trigger?.stored {
+            d.set(stored.kind, forKey: prefix + ".kind"); d.set(stored.key, forKey: prefix + ".key"); d.set(stored.modifiers, forKey: prefix + ".modifiers")
+        }
+        if hold { holdTrigger = trigger } else { toggleTrigger = trigger }
         message = nil; registerHotKeys()
+        if trigger?.isFn == true, message == nil {
+            message = "Fn is set. In System Settings → Keyboard, set “Press 🌐 key to” Do Nothing, and move Wispr Flow off Fn."
+        }
     }
     func registerHotKeys() {
         registrations.forEach { UnregisterEventHotKey($0) }; registrations.removeAll()
+        keyMonitors.forEach { NSEvent.removeMonitor($0) }; keyMonitors.removeAll()
+        holdTracker = nil; toggleTracker = nil
         guard enabled else { phase = "Off"; return }
         if handler == nil {
             var events = [EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed)), EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyReleased))]
             InstallEventHandler(GetApplicationEventTarget(), dictationHotKeyHandler, 2, &events, nil, &handler)
         }
-        for (number, combo) in [(UInt32(1), holdCombo), (UInt32(2), toggleCombo)] {
-            guard let combo else { continue }
-            if combo == HotKeyCombo.load() { message = "Dictation shortcut conflicts with Open Activity. Choose another shortcut."; continue }
-            var ref: EventHotKeyRef?
-            if RegisterEventHotKey(combo.keyCode, combo.modifiers, EventHotKeyID(signature: dictationHotKeySignature, id: number), GetApplicationEventTarget(), 0, &ref) == noErr, let ref { registrations.append(ref) }
-            else { message = "Shortcut is unavailable. Another app may already use it. Choose another combination." }
+        let activity = HotKeyCombo.load()
+        for (number, trigger) in [(UInt32(1), holdTrigger), (UInt32(2), toggleTrigger)] {
+            switch trigger {
+            case nil: continue
+            case .modifier(let key)?:
+                if number == 1 { holdTracker = LoneModifierTracker(keyCode: key) } else { toggleTracker = LoneModifierTracker(keyCode: key) }
+            case .keys(let key, let modifiers)?:
+                if let activity, activity.keyCode == key, activity.modifiers == modifiers {
+                    message = "Dictation shortcut conflicts with Open Activity. Choose another shortcut."; continue
+                }
+                var ref: EventHotKeyRef?
+                if RegisterEventHotKey(key, modifiers, EventHotKeyID(signature: dictationHotKeySignature, id: number), GetApplicationEventTarget(), 0, &ref) == noErr, let ref { registrations.append(ref) }
+                else { message = "Shortcut is unavailable. Another app may already use it. Choose another one." }
+            }
+        }
+        if holdTracker != nil || toggleTracker != nil {
+            // Monitors run on the main thread in event order; never hop through a Task, which could reorder down/up.
+            let handle: (NSEvent) -> Void = { [weak self] event in
+                let flags = event.type == .flagsChanged, key = event.keyCode, raw = UInt64(event.modifierFlags.rawValue)
+                MainActor.assumeIsolated { self?.keyEvent(flags: flags, keyCode: key, raw: raw) }
+            }
+            if let global = NSEvent.addGlobalMonitorForEvents(matching: [.flagsChanged, .keyDown], handler: handle) { keyMonitors.append(global) }
+            if let local = NSEvent.addLocalMonitorForEvents(matching: [.flagsChanged, .keyDown], handler: { handle($0); return $0 }) { keyMonitors.append(local) }
+            if !AXIsProcessTrusted() {
+                message = "Fn and single-key shortcuts need Accessibility. Click Allow insertion into other apps…, then turn dictation off and on."
+            }
         }
         if !busy { phase = "Ready" }
+    }
+    private func keyEvent(flags: Bool, keyCode: UInt16, raw: UInt64) {
+        func feed(_ tracker: inout LoneModifierTracker?) -> LoneModifierTracker.Output? {
+            guard var current = tracker else { return nil }
+            let output = flags ? current.flagsChanged(keyCode: keyCode, flags: raw) : current.keyDown()
+            tracker = current; return output
+        }
+        switch feed(&holdTracker) {
+        case .pressed?: hotKey(1, down: true)
+        case .released?: hotKey(1, down: false)
+        // Fn+arrow, ⌘C: the press was a chord, so drop it quietly; nothing was inserted.
+        case .chord?: if held { cancel(); message = nil }
+        case nil: break
+        }
+        // A lone-modifier toggle acts on a clean tap, so holding Fn for a chord never toggles.
+        if feed(&toggleTracker) == .released { hotKey(2, down: true); hotKey(2, down: false) }
     }
     func hotKey(_ id: UInt32, down: Bool) {
         if id == 1 {
@@ -348,6 +401,7 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
         generation = UUID(); pendingAudio = nil; task?.cancel(); task = nil; previewRequest?.cancel(); previewRequest = nil; timer?.cancel(); timer = nil
         previewTask?.cancel(); previewTask = nil; meterTask?.cancel(); meterTask = nil
         _ = try? capture?.stop(); capture = nil; target = nil; held = false; toggleHeld = false; holdPending = false
+        holdTracker?.reset(); toggleTracker?.reset()
         phase = enabled ? "Ready" : "Off"; message = "Dictation canceled. No text was inserted."
         hud?.orderOut(nil)
     }
@@ -420,7 +474,7 @@ struct MacDictationSettings: View {
                 DictationShortcutRow(store: store, hold: true, activityShortcut: activityShortcut)
                 DictationShortcutRow(store: store, hold: false, activityShortcut: activityShortcut)
                 Button("Allow insertion into other apps…") { store.requestInsertionPermission() }.controlSize(.small)
-                Text("Choose a key combination unused by Wispr Flow and other apps. A modifier plus a key is supported. Text is inserted only while the same field and caret remain selected; COS never presses Send.")
+                Text("Any shortcut: a modifier plus a key, a function key, or one modifier key by itself such as Fn 🌐 or Right ⌘. Fn and single-key shortcuts use Accessibility. Text is inserted only while the same field and caret remain selected; COS never presses Send.")
                     .font(.caption2).foregroundStyle(.secondary)
                 if let message = store.message { Text(message).font(.caption2).foregroundStyle(COSPalette.amber) }
             }
@@ -434,26 +488,57 @@ private struct DictationShortcutRow: View {
     let activityShortcut: HotKeyCombo?
     @State private var monitor: Any?
     @State private var note: String?
+    @State private var pendingModifier: UInt16?
     var body: some View {
         HStack {
             Text(hold ? "Push to talk" : "Start / stop").font(.caption)
-            Text(monitor != nil ? "Press shortcut…" : ((hold ? store.holdCombo : store.toggleCombo)?.display ?? "Off")).font(.caption.monospaced())
+            Text(monitor != nil ? "Press shortcut…" : ((hold ? store.holdTrigger : store.toggleTrigger)?.display ?? "Off")).font(.caption.monospaced())
             Button(monitor == nil ? "Change" : "Cancel") { monitor == nil ? record() : stop() }
             Button("Off") { store.setShortcut(nil, hold: hold, activity: activityShortcut); stop() }
             if let note { Text(note).font(.caption2) }
         }.controlSize(.mini).disabled(store.busy).onDisappear { stop() }
     }
     private func record() {
-        note = nil
-        monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-            let key = event.keyCode; let modifiers = HotKeyCombo.carbonModifiers(from: event.modifierFlags)
-            Task { @MainActor in
-                if key == 53 { stop() }
-                else if let combo = HotKeyCombo(keyCode: UInt32(key), modifiers: modifiers) { store.setShortcut(combo, hold: hold, activity: activityShortcut); stop() }
-                else { note = "Add Command, Control or Option." }
-            }
+        note = nil; pendingModifier = nil
+        monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .flagsChanged]) { event in
+            let keyDown = event.type == .keyDown, key = event.keyCode, raw = UInt64(event.modifierFlags.rawValue)
+            let modifiers = HotKeyCombo.carbonModifiers(from: event.modifierFlags)
+            MainActor.assumeIsolated { recorded(keyDown: keyDown, key: key, raw: raw, modifiers: modifiers) }
             return nil
         }
     }
+    /// A key with modifiers or a function key is a Carbon shortcut. A modifier pressed and released with
+    /// nothing else (Fn, Right ⌘) becomes a lone-modifier shortcut.
+    private func recorded(keyDown: Bool, key: UInt16, raw: UInt64, modifiers: UInt32) {
+        if keyDown {
+            pendingModifier = nil
+            if key == 53 { stop() }
+            else if let trigger = DictationTrigger.keys(UInt32(key), modifiers: modifiers) { store.setShortcut(trigger, hold: hold, activity: activityShortcut); stop() }
+            else { note = "Add Command, Control or Option, use a function key, or press one modifier key such as Fn by itself." }
+            return
+        }
+        guard let info = DictationTrigger.modifierKeys[key] else { return }
+        if raw & info.device != 0 {
+            pendingModifier = DictationTrigger.alone(key, flags: raw) ? key : nil
+        } else if pendingModifier == key, let trigger = DictationTrigger.modifier(key) {
+            store.setShortcut(trigger, hold: hold, activity: activityShortcut); stop()
+        } else { pendingModifier = nil }
+    }
     private func stop() { if let monitor { NSEvent.removeMonitor(monitor) }; monitor = nil }
+}
+
+extension DictationTrigger {
+    /// Menu-style: ⌃⌥⇧⌘ then the key, or the lone modifier's name.
+    var display: String {
+        switch self {
+        case .modifier(let key): return Self.modifierKeys[key]?.name ?? "Key \(key)"
+        case .keys(let key, let modifiers):
+            var text = ""
+            if modifiers & Self.control != 0 { text += "⌃" }
+            if modifiers & Self.option != 0 { text += "⌥" }
+            if modifiers & Self.shift != 0 { text += "⇧" }
+            if modifiers & Self.command != 0 { text += "⌘" }
+            return text + (Self.functionKeys[key] ?? HotKeyCombo.keyName(key))
+        }
+    }
 }

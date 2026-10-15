@@ -1940,7 +1940,7 @@ final class ControllerModel: ObservableObject {
 
     /// Persist and re-register in one step, so the setting and the live chord never disagree.
     func setActivityHotKey(_ combo: HotKeyCombo?) {
-        guard combo == nil || (combo != dictation.holdCombo && combo != dictation.toggleCombo) else {
+        guard combo.map({ !dictation.uses($0) }) ?? true else {
             error = "That shortcut is used for dictation. Choose a different Activity shortcut."; return
         }
         activityHotKey = combo
