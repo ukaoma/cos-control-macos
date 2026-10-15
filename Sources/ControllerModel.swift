@@ -657,6 +657,11 @@ final class ControllerModel: ObservableObject {
             guard response.ok else { throw HelperClientError.commandFailed(response.message) }
             return try JSONEncoder().encode(response.details)
         }
+        guide.readTranscription = {
+            let response = try await helper.run(["stt-settings"], timeout: 20)
+            guard response.ok, let settings = response.details["settings"] else { return nil }
+            return try JSONEncoder().encode(settings)
+        }
         guide.runVoiceSetup = { tier, progress in
             // Hours at worst on a slow network (the server allows 1 h per model); Cancel ends it at any time.
             let response = try await helper.run(["voice-setup", tier], timeout: 4 * 60 * 60, progress: progress)

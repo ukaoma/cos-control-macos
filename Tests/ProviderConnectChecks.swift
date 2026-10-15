@@ -439,6 +439,27 @@ struct ProviderConnectChecks {
             return SetupGuideRules.voice(f, skipped: false)
         }
         let ready = row(voiceReady())
+        var parakeet = VoiceFacts()
+        parakeet.runtimeDownloadAvailable = true; parakeet.setupAvailable = true
+        let modern = Data(#"{"preview":{"selected":"parakeet","effective":"parakeet"},"hq":{"selected":"parakeet-ultra","effective":"parakeet-ultra"},"parakeet":{"installed":true}}"#.utf8)
+        parakeet.adoptTranscription(modern)
+        let local = row(parakeet)
+        check(local.done && local.status == "Ready · Parakeet Ultra" && local.title == "Voice (local transcription)", "Parakeet voice", "does not require Whisper tools or benchmark")
+        check(local.detail?.contains("Parakeet Ultra live · Parakeet Ultra saved meetings") == true && local.detail?.contains("Large-v3") != true && local.action == .none, "Parakeet voice", "selected engines replace legacy tier description")
+        check(!VoiceSetupGate.canStart(parakeet, tier: "auto"), "Parakeet voice", "legacy download cannot replace modern choice")
+        var warming = parakeet; warming.effectivePreview = "turbo"; warming.previewReason = "Parakeet is warming up."
+        check(!row(warming).done && row(warming).detail?.contains("Whisper Turbo live") == true && row(warming).detail?.contains("warming up") == true, "Parakeet warming", "selected and effective stay distinct")
+        check(warming.activePreviewTitle == "Whisper Turbo", "active preview", "menu names effective engine while selected Parakeet warms")
+        var nemotron = parakeet; nemotron.selectedPreview = "nemotron-560"; nemotron.effectivePreview = "nemotron-560"
+        check(row(nemotron).done && !nemotron.whisperReady, "mixed Nemotron", "resolved Nemotron does not require Whisper")
+        nemotron.effectivePreview = nil
+        check(!row(nemotron).done, "mixed Nemotron unavailable", "selection alone is not runtime readiness")
+        var absent = parakeet; absent.parakeetInstalled = false
+        check(!row(absent).done && row(absent).action == .none, "Parakeet missing", "cannot falsely report readiness or offer legacy download")
+        var mixed = parakeet; mixed.selectedHQ = "large-v3"; mixed.effectiveHQ = "large-v3"
+        check(!row(mixed).done, "mixed voice", "Whisper lane still needs its own readiness")
+        mixed.whisperReady = true
+        check(row(mixed).done && row(mixed).detail?.contains("Whisper Large-v3 saved meetings") == true, "mixed voice", "accurate independent lane names")
         check(ready.done && ready.status == "Ready · Balanced" && ready.detail == "Small.en live · Turbo commit · Large-v3 polish", "voice ready", "matches the panel's rows: \(ready.status) \(ready.detail ?? "")")
         var noWhisper = voiceReady(); noWhisper.whisperReady = false; noWhisper.whisperCli = false; noWhisper.whisperServer = false
         let needs = row(noWhisper)
@@ -480,6 +501,12 @@ struct ProviderConnectChecks {
         fresh.voiceTier = "balanced"
         await fresh.refreshVoice()
         check(fresh.voiceTier == "balanced", "saved voice", "an explicit row choice wins after refresh")
+        fresh.readTranscription = { Data(#"{"preview":{"selected":"parakeet","effective":"parakeet"},"hq":{"selected":"parakeet-ultra","effective":"parakeet-ultra"},"parakeet":{"installed":true}}"#.utf8) }
+        await fresh.refreshVoice()
+        check(fresh.voice?.usesParakeet == true && fresh.voice?.parakeetInstalled == true, "modern voice refresh", "reads server-selected engines separately from legacy tier")
+        fresh.readTranscription = { throw ProviderGuideError.unreadable }
+        await fresh.refreshVoice()
+        check(fresh.voice?.usesParakeet == true && fresh.voice?.effectivePreview == nil && fresh.voice?.previewReason?.contains("Could not refresh") == true, "modern voice stale", "never displays an old ready snapshot or quietly reverts to Whisper")
         var missing = voiceReady(); missing.whisperReady = false; missing.missingBytes = ["balanced": 5_000_000_000]
         let g = SetupGuideState(defaults: freshDefaults())
         g.voice = missing

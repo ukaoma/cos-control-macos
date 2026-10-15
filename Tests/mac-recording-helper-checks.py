@@ -68,10 +68,16 @@ try:
     request = seen[-1]
     check(request[2].get('x-cos-server-instance') == 'fixture-server', 'start pins server')
     check(json.loads(request[3]) == {'captureId':capture,'startTime':1792026000000,'sourceType':'mac_system_audio'}, 'source type immutable')
+    check(run('start', dict(base,startTime=1792026000000.875))['ok'], 'native fractional clock admitted by bridge')
+    check(json.loads(seen[-1][3])['startTime'] == 1792026000000, 'bridge canonicalizes native fractional clock to integer milliseconds')
+    refused(dict(base,startTime=0.5), 'sub-millisecond start refused','start')
+    refused(dict(base,startTime=1e20), 'unsafe integer clock refused','start')
+
     check(run('chunk', chunk)['ok'], 'read confined canonical WAV')
     request = seen[-1]
     check(request[1].startswith('/api/mac-recording/'+capture+'/chunks?chunkIndex=0&elapsed=1'), 'chunk route and sequence')
     check(request[3] == wav and request[2].get('content-type') == 'audio/wav', 'raw canonical WAV not JSON or base64')
+    check(run('chunk', dict(chunk,path=str(path.resolve())))['ok'], 'signed host canonical spool path shares the isolated helper home')
     check(run('save', dict(base,title='Fixture Mac recording',expectedChunkCount=1))['ok'], 'save uses canonical route')
     check(seen[-1][1] == '/api/meeting/save' and json.loads(seen[-1][3])['sessionId'] == capture, 'save exact capture identity')
     check(json.loads(seen[-1][3])['expectedChunkCount']==1,'save binds expected chunk count')
@@ -100,6 +106,11 @@ try:
     refused(dict(base,expectedChunkCount=True),'bool count refused','save')
     refused(dict(base,expectedChunkCount=1202),'oversized count refused','save')
     refused(dict(base,startTime=True), 'bool start refused','start')
+    answer.update(status=400,body={'reason':'invalid_mac_capture'})
+    result=run('start',dict(base,startTime=1792026000000))
+    check(not result['ok'] and 'No audio was captured' in result['message'] and result['details']['reason']=='invalid_mac_capture','start rejection does not falsely claim retained audio')
+    answer.update(status=200,body={'serverInstanceId':'fixture-server','available':True,'sourceType':'mac_system_audio'})
+
     before=len(seen)
     result=run('capabilities',raw='x'*16385)
     check(not result['ok'] and len(seen)==before,'oversized stdin refused before network')

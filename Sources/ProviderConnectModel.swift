@@ -752,6 +752,55 @@ struct VoiceFacts: Sendable, Equatable {
     var previewModel: String?
     var commitModel: String?
     var polishModel: String?
+    // Modern STT selection is independent of the legacy Whisper performance tier.
+    var selectedPreview: String?
+    var effectivePreview: String?
+    var selectedHQ: String?
+    var effectiveHQ: String?
+    var previewReason: String?
+    var hqReason: String?
+    var parakeetInstalled = false
+    var usesParakeet: Bool { selectedPreview == "parakeet" || selectedHQ == "parakeet-ultra" }
+    var parakeetReady: Bool {
+        func ready(_ selected: String?, _ effective: String?) -> Bool {
+            guard let selected, selected == effective else { return false }
+            switch selected {
+            case "parakeet", "parakeet-ultra": return parakeetInstalled
+            case "nemotron-560": return true // Effective means the server resolved its own runtime.
+            case "turbo", "large-v3-turbo", "large-v3", "large-v3-legacy": return whisperReady
+            default: return false
+            }
+        }
+        return usesParakeet && ready(selectedPreview, effectivePreview) && ready(selectedHQ, effectiveHQ)
+    }
+    var activePreviewTitle: String { Self.engineTitle(effectivePreview) }
+
+
+
+    mutating func adoptTranscription(_ data: Data) {
+        guard let settings = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let preview = settings["preview"] as? [String: Any],
+              let hq = settings["hq"] as? [String: Any],
+              let selectedPreview = preview["selected"] as? String,
+              let selectedHQ = hq["selected"] as? String else { return }
+        self.selectedPreview = selectedPreview
+        self.selectedHQ = selectedHQ
+        effectivePreview = preview["effective"] as? String
+        effectiveHQ = hq["effective"] as? String
+        previewReason = preview["reason"] as? String
+        hqReason = hq["reason"] as? String
+        parakeetInstalled = (settings["parakeet"] as? [String: Any])?["installed"] as? Bool ?? false
+    }
+
+    static func engineTitle(_ engine: String?) -> String {
+        switch engine {
+        case "parakeet", "parakeet-ultra": "Parakeet Ultra"
+        case "turbo", "large-v3-turbo": "Whisper Turbo"
+        case "large-v3", "large-v3-legacy": "Whisper Large-v3"
+        case "nemotron-560": "Nemotron"
+        default: "Not reported"
+        }
+    }
 
     /// `voice-status` details, as JSON.
     static func decode(_ data: Data) -> VoiceFacts? {
@@ -934,8 +983,8 @@ enum SetupGuideRules {
 
     static func voice(_ facts: SetupFacts, skipped: Bool) -> SetupRow {
         let tier = facts.voiceTier == "auto" ? (facts.voice?.preparedTier ?? facts.voice?.explicitTier ?? "balanced") : facts.voiceTier
-        var row = SetupRow(id: .voice, title: "Voice (local Whisper)", status: "Checking…",
-                           unlocks: "Meetings and dictation transcribed on this Mac, with named speakers.",
+        var row = SetupRow(id: .voice, title: "Voice (local transcription)", status: "Checking…",
+                           unlocks: "Meetings and dictation transcribed on this Mac. Speaker names require high confidence.",
                            detail: nil, done: false, skipped: skipped)
         guard facts.serverRunning else { row.status = "After Get started"; row.afterSetup = true; return row }
         guard let voice = facts.voice else {
@@ -947,6 +996,17 @@ enum SetupGuideRules {
             } else {
                 row.status = "Could not check"
                 row.detail = "COS could not read the voice setup. Check again from here later."
+            }
+            return row
+        }
+        if voice.usesParakeet {
+            row.done = voice.parakeetReady
+            row.status = row.done ? "Ready · Parakeet Ultra" : "Parakeet needs attention"
+            row.detail = "Selected: \(VoiceFacts.engineTitle(voice.selectedPreview)) live · \(VoiceFacts.engineTitle(voice.selectedHQ)) saved meetings."
+            if !row.done {
+                row.detail! += " Reported available: \(VoiceFacts.engineTitle(voice.effectivePreview)) live · \(VoiceFacts.engineTitle(voice.effectiveHQ)) saved meetings. Check Transcription settings; your selections are kept."
+                let reasons = [voice.previewReason, voice.hqReason].compactMap { $0 }.filter { !$0.isEmpty }
+                if !reasons.isEmpty { row.detail! += " " + reasons.joined(separator: " ") }
             }
             return row
         }
@@ -1044,6 +1104,8 @@ final class SetupGuideState: ObservableObject {
 
     /// `cos-control-helper voice-status`, the details as JSON.
     var readVoice: @MainActor () async throws -> Data = { throw ProviderGuideError.unreadable }
+    /// Read-only modern engine settings; absent on older servers.
+    var readTranscription: @MainActor () async throws -> Data? = { nil }
     /// `cos-control-helper voice-setup <tier>`, with each progress line; returns the final message.
     var runVoiceSetup: @MainActor (String, @escaping @Sendable (String) -> Void) async throws -> String = { _, _ in throw ProviderGuideError.unreadable }
     var applyTier: @MainActor (String) -> Void = { _ in }
@@ -1075,15 +1137,33 @@ final class SetupGuideState: ObservableObject {
 
     func refreshVoice() async {
         guard !voiceRunning else { return }
+        var loaded: VoiceFacts?
+        var readModern = false
         do {
             guard let facts = VoiceFacts.decode(try await readVoice()) else { throw ProviderGuideError.unreadable }
-            voice = facts
-            adoptServerTier(facts.explicitTier)
+            loaded = facts
             voiceReadFailed = false
         } catch {
             voiceReadFailed = true
             log("voice-status failed error=\(error.localizedDescription)")
         }
+        do {
+            if let settings = try await readTranscription() {
+                var facts = loaded ?? VoiceFacts()
+                facts.adoptTranscription(settings)
+                if facts.selectedHQ != nil { loaded = facts; voiceReadFailed = false; readModern = true }
+            }
+        } catch { log("transcription settings could not be checked") }
+        if !readModern, let previous = voice, previous.usesParakeet {
+            var facts = loaded ?? VoiceFacts()
+            facts.selectedPreview = previous.selectedPreview
+            facts.selectedHQ = previous.selectedHQ
+            facts.previewReason = "Could not refresh the selected transcription engines. Check again."
+            loaded = facts
+        }
+        // Never retain a previous ready Parakeet snapshot after a failed refresh.
+        voice = loaded
+        adoptServerTier(loaded?.explicitTier)
     }
 
     /// Prepares and measures voice. Only Automatic may apply a recommendation; saved choices win.
@@ -1130,7 +1210,7 @@ final class SetupGuideState: ObservableObject {
 enum VoiceSetupGate {
     /// The in-app download runs only with whisper.cpp present, an installed server to run it, and enough disk.
     static func canStart(_ voice: VoiceFacts?, tier: String) -> Bool {
-        guard let voice, tier == "auto" || VoiceTier.all.contains(tier) else { return false }
+        guard let voice, !voice.usesParakeet, tier == "auto" || VoiceTier.all.contains(tier) else { return false }
         return (voice.runtimeDownloadAvailable || (voice.whisperCli && voice.whisperServer)) && voice.setupAvailable && voice.enoughDisk[tier == "auto" ? (voice.explicitTier ?? "balanced") : tier] != false
     }
 }

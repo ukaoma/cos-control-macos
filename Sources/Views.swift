@@ -492,6 +492,16 @@ private struct WhatsNewButtonStyle: ButtonStyle {
 
 struct ControlPanel: View {
     @ObservedObject var model: ControllerModel
+    @ObservedObject private var voiceGuide: SetupGuideState
+
+    init(model: ControllerModel, openActivity: @escaping (ActivitySection?) -> Void,
+         hostedInWindow: Bool = false, hostedInActivity: Bool = false) {
+        self.model = model
+        self.voiceGuide = model.setupGuide
+        self.openActivity = openActivity
+        self.hostedInWindow = hostedInWindow
+        self.hostedInActivity = hostedInActivity
+    }
     /// 0.5.278: Settings, "Show live meeting transcript". Off: no Live now row, no live dots, no live-transcript helper.
     @AppStorage(LiveTranscript.enabledKey) private var showLiveTranscript = true
     let openActivity: (ActivitySection?) -> Void
@@ -585,6 +595,7 @@ struct ControlPanel: View {
         .onAppear { if !hostedInWindow { model.panelVisible = true } }
         // The appcast again when the last check is older than 15 minutes (AppUpdateCheckSchedule).
         .onAppear { model.panelOpenedForUpdates() }
+        .task { if model.backgroundWorkEnabled { await voiceGuide.refreshVoice() } }
         .onAppear {
             // Fences are rare and urgent, and the card only renders when there is
             // one — so something has to look. Opening the panel is the right
@@ -1223,7 +1234,17 @@ struct ControlPanel: View {
             statusRow("Server", value: runtimeLabel, good: model.status.runtimeState == "managedHealthy")
             statusRow("Ownership", value: ownershipLabel, good: model.status.ownershipVerified)
             statusRow("Recovery", value: model.status.recoveryLoaded ? "Scheduled" : "Needs repair", good: model.status.recoveryInstalled && model.status.recoveryLoaded)
-            statusRow("Local Whisper", value: whisperLabel, good: model.status.whisperReady)
+            if let voice = voiceGuide.voice, voice.usesParakeet {
+                statusRow("Local transcription", value: voice.parakeetReady ? "Ready · Parakeet Ultra" : "Parakeet needs attention", good: voice.parakeetReady)
+                statusRow("Selected live preview", value: selectedEngineLabel(voice.selectedPreview, effective: voice.effectivePreview), good: voice.selectedPreview == voice.effectivePreview)
+                statusRow("Selected saved meetings", value: selectedEngineLabel(voice.selectedHQ, effective: voice.effectiveHQ), good: voice.selectedHQ == voice.effectiveHQ)
+                if !voice.parakeetReady {
+                    Text("Your selected engines are kept. Check Transcription settings before recording.")
+                        .font(.caption2).foregroundStyle(COSPalette.amber)
+                }
+            } else {
+                statusRow("Local Whisper", value: whisperLabel, good: model.status.whisperReady)
+            }
             if model.status.contextBrowserSupported {
                 let memoryReady = model.status.memoryAvailable == true
                 let threadsReady = model.status.threadsAvailable == true
@@ -1244,7 +1265,7 @@ struct ControlPanel: View {
                 statusRow("Background jobs", value: enabled ? "Allowed" : "Off", good: enabled)
             }
             if model.status.meetingPreviewSupported, let enabled = model.status.meetingPreviewEnabled {
-                statusRow("Meeting preview", value: enabled ? "Turbo · On" : "Off", good: enabled)
+                statusRow("Meeting preview", value: enabled ? "\(voiceGuide.voice?.activePreviewTitle ?? "Status unavailable") · On" : "Off", good: enabled)
             }
             if model.status.threadAttachSupported, let enabled = model.status.threadAttachEnabled {
                 let providers = model.status.threadAttachProviders
@@ -1282,7 +1303,7 @@ struct ControlPanel: View {
                 // Raw replay is the safe default/rollback, not a degraded state.
                 statusRow("Audio cleanup", value: enabled ? "Adaptive replay" : "Raw replay", good: true)
             }
-            if !model.status.whisperReady, let error = model.status.whisperError, !error.isEmpty {
+            if voiceGuide.voice?.usesParakeet != true, !model.status.whisperReady, let error = model.status.whisperError, !error.isEmpty {
                 Text(error)
                     .font(.caption2)
                     .foregroundStyle(COSPalette.amber)
@@ -1290,7 +1311,7 @@ struct ControlPanel: View {
                     .frame(maxWidth: .infinity, alignment: .trailing)
                     .textSelection(.enabled)
             }
-            if model.status.livePreviewModel != nil || model.status.liveCommitModel != nil || model.status.hqPolishModel != nil {
+            if voiceGuide.voice?.usesParakeet != true, model.status.livePreviewModel != nil || model.status.liveCommitModel != nil || model.status.hqPolishModel != nil {
                 if let tier = model.status.transcriptionEffectiveTier {
                     statusRow(
                         "Transcription tier",
@@ -2844,6 +2865,11 @@ struct ControlPanel: View {
         case "notInstalled": "Not installed"
         default: "Unavailable"
         }
+    }
+
+    private func selectedEngineLabel(_ selected: String?, effective: String?) -> String {
+        let title = VoiceFacts.engineTitle(selected)
+        return selected != nil && selected == effective ? title : "\(title) · unavailable"
     }
 
     private var whisperLabel: String {

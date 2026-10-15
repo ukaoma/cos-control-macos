@@ -77,7 +77,19 @@ actor MacRecordingSpool {
     private var warnings: [String] = []
     // Foundation standardization can fold /private/var into the /var symlink; retain
     // the supplied path and validate every component with descriptor-relative opens.
-    init(root: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("cos-data/mac-recordings")) { self.root = root }
+    static func defaultRoot(environment: [String: String] = ProcessInfo.processInfo.environment) -> URL {
+        if let home = environment["COS_CONTROL_TEST_HOME"], home.hasPrefix("/tmp/") {
+            let resolved = URL(fileURLWithPath: home, isDirectory: true).standardizedFileURL.resolvingSymlinksInPath()
+            if resolved.path.hasPrefix("/private/tmp/") || resolved.path.hasPrefix("/tmp/") {
+                // Foundation may present the resolved temporary home through /tmp again.
+                // The spool's descriptor traversal requires the physical ancestor.
+                let physical = resolved.path.hasPrefix("/tmp/") ? "/private" + resolved.path : resolved.path
+                return URL(fileURLWithPath: physical + "/cos-data/mac-recordings", isDirectory: true)
+            }
+        }
+        return FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("cos-data/mac-recordings")
+    }
+    init(root: URL = MacRecordingSpool.defaultRoot()) { self.root = root }
     private func invalid() -> MacRecordingError { .unavailable("The recording journal or private storage is invalid. Existing audio is retained.") }
     private func validID(_ id: String) -> Bool {
         guard id.hasPrefix("mac_"), let uuid = UUID(uuidString: String(id.dropFirst(4))) else { return false }

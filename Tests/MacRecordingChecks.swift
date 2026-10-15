@@ -10,6 +10,12 @@ import Darwin
         defer { try? fm.removeItem(at: scratch) }
         var checks = 0
         func check(_ value: Bool, _ name: String) { precondition(value, name); checks += 1 }
+        let normalRoot = fm.homeDirectoryForCurrentUser.appendingPathComponent("cos-data/mac-recordings")
+        check(MacRecordingSpool.defaultRoot(environment: [:]) == normalRoot, "production keeps the user's recording directory")
+        check(MacRecordingSpool.defaultRoot(environment: ["COS_CONTROL_TEST_HOME": "/Users/other"]) == normalRoot, "non-temporary override is ignored")
+        check(MacRecordingSpool.defaultRoot(environment: ["COS_CONTROL_TEST_HOME": "/tmp/../../Users/other"]) == normalRoot, "escaping temporary override is ignored")
+        let canaryRoot = MacRecordingSpool.defaultRoot(environment: ["COS_CONTROL_TEST_HOME": "/tmp/cos-signed-mac-canary/home"])
+        check(canaryRoot.path == "/private/tmp/cos-signed-mac-canary/home/cos-data/mac-recordings", "signed canary spool shares the isolated helper home")
         let gate = MacRecordingStopGate()
         var releaseFlush: CheckedContinuation<Void, Never>?
         var starts = 0, firstFinished = false, quitFinished = false

@@ -4713,7 +4713,7 @@ final class COSControlHelper {
                         "experimental": flag(option["experimental"]) ?? false, "note": bounded(option["note"], 160)]
             }
             // `effective` (6.72.0): the engine actually running, e.g. turbo while a selected Parakeet warms up.
-            out[key] = ["selected": selected, "options": rows, "effective": sttOptionID(choice["effective"]) ?? NSNull()]
+            out[key] = ["selected": selected, "options": rows, "effective": sttOptionID(choice["effective"]) ?? NSNull(), "reason": bounded(choice["reason"], 200)]
         }
         guard let resolver = body["resolver"] as? [String: Any], let enabled = flag(resolver["enabled"]) else { return nil }
         out["resolver"] = ["enabled": enabled, "effective": flag(resolver["effective"]).map { $0 as Any } ?? NSNull()]
@@ -15296,12 +15296,12 @@ final class COSControlHelper {
         switch operation {
         case "capabilities": break
         case "start":
-            guard let start = payload["startTime"] as? NSNumber, CFGetTypeID(start) != CFBooleanGetTypeID(), start.doubleValue.isFinite, start.doubleValue > 0,
+            guard let start = payload["startTime"] as? NSNumber, CFGetTypeID(start) != CFBooleanGetTypeID(), start.doubleValue.isFinite, start.doubleValue >= 1, start.doubleValue <= 9_007_199_254_740_991,
                   payload["sourceType"] == nil || payload["sourceType"] as? String == "mac_system_audio" else {
                 emit(ok: false, message: "Mac recording start is invalid."); return
             }
             path = "/api/mac-recording/start"; method = "POST"
-            body = String(data: try JSONSerialization.data(withJSONObject: ["captureId": capture, "startTime": start, "sourceType": "mac_system_audio"]), encoding: .utf8)
+            body = String(data: try JSONSerialization.data(withJSONObject: ["captureId": capture, "startTime": NSNumber(value: start.int64Value), "sourceType": "mac_system_audio"]), encoding: .utf8)
         case "chunk":
             guard let index = payload["chunkIndex"] as? NSNumber, CFGetTypeID(index) != CFBooleanGetTypeID(), index.doubleValue.isFinite,
                   index.doubleValue == Double(index.intValue), (0...100_000).contains(index.intValue),
@@ -15349,7 +15349,8 @@ final class COSControlHelper {
         guard (200..<300).contains(response.status), var details = response.body else {
             let message: String
             switch response.status {
-            case 401, 403: message = "Reconnect COS Control to the server. The recording is retained."
+            case 400 where operation == "start": message = "The server rejected the recording start. No audio was captured. Refresh apps and try again."
+            case 401, 403: message = operation == "start" ? "Reconnect COS Control to the server. No audio was captured." : "Reconnect COS Control to the server. The recording is retained."
             case 404: message = "Update the COS server or check this recording's status. The local recording is retained."
             case 409: message = "Mac recording could not continue. Check its receipt before retrying."
             case 413: message = "The audio chunk exceeds the recording limit. The recording is retained."
@@ -15367,11 +15368,19 @@ final class COSControlHelper {
     static func macRecordingAudio(home: URL, capture: String, path: String) throws -> Data {
         func denied() -> HelperError { .message("Unsafe Mac recording audio") }
         guard capture.hasPrefix("mac_"), capture.count == 40, UUID(uuidString: String(capture.dropFirst(4))) != nil else { throw denied() }
-        let directory = home.appendingPathComponent("cos-data/mac-recordings", isDirectory: true).appendingPathComponent(capture, isDirectory: true)
-        let url = URL(fileURLWithPath: path)
-        guard path == url.standardizedFileURL.path, url.deletingLastPathComponent().path == directory.path,
-              url.lastPathComponent.hasSuffix(".wav"), url.lastPathComponent.utf8.count <= 128 else { throw denied() }
-        let homeFD = open(home.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW)
+        let resolvedHome = home.resolvingSymlinksInPath().path
+        let recordingHome = URL(fileURLWithPath: resolvedHome.hasPrefix("/tmp/") ? "/private" + resolvedHome : resolvedHome, isDirectory: true)
+        let directory = recordingHome.appendingPathComponent("cos-data/mac-recordings", isDirectory: true).appendingPathComponent(capture, isDirectory: true)
+        let homeAliasDirectory = home.appendingPathComponent("cos-data/mac-recordings", isDirectory: true).appendingPathComponent(capture, isDirectory: true)
+        // Foundation standardization can collapse the physical /private/tmp prefix
+        // back through /tmp. Validate spelling lexically, then walk trusted FDs.
+        let components = path.split(separator: "/", omittingEmptySubsequences: false)
+        guard path.hasPrefix("/"), !components.dropFirst().contains(where: { $0.isEmpty || $0 == "." || $0 == ".." }),
+              let slash = path.lastIndex(of: "/") else { throw denied() }
+        let parentPath = String(path[..<slash]), filename = String(path[path.index(after: slash)...])
+        guard [directory.path, homeAliasDirectory.path].contains(parentPath),
+              filename.hasSuffix(".wav"), filename.utf8.count <= 128 else { throw denied() }
+        let homeFD = open(recordingHome.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW)
         guard homeFD >= 0 else { throw denied() }; defer { close(homeFD) }
         var parent = homeFD, descriptors: [Int32] = []
         defer { for descriptor in descriptors.reversed() { close(descriptor) } }
@@ -15382,7 +15391,7 @@ final class COSControlHelper {
             guard fstat(descriptor, &metadata) == 0, metadata.st_uid == getuid() else { close(descriptor); throw denied() }
             descriptors.append(descriptor); parent = descriptor
         }
-        let fd = openat(parent, url.lastPathComponent, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
+        let fd = openat(parent, filename, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
         guard fd >= 0 else { throw denied() }; defer { close(fd) }
         var metadata = stat()
         guard fstat(fd, &metadata) == 0, (metadata.st_mode & S_IFMT) == S_IFREG, metadata.st_uid == getuid(),

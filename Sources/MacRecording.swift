@@ -81,7 +81,7 @@ final class MacRecordingStore: ObservableObject {
         var localCapture: MacAudioCapture?
         var localContinuation: AsyncStream<MacRecordingChunk>.Continuation?
         let id = "mac_" + UUID().uuidString.lowercased()
-        let startTime = Date().timeIntervalSince1970 * 1_000
+        let startTime = (Date().timeIntervalSince1970 * 1_000).rounded(.down)
         do {
             let response = try await invoke("start", ["captureId": .string(id), "serverInstanceId": .string(instance), "startTime": .number(startTime)])
             guard startAttempt == attempt, phase == "starting" else { throw CancellationError() }

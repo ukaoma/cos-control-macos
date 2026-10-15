@@ -778,20 +778,23 @@ struct SetupRowView: View {
 
     /// Balanced or Max in plain words, the exact whisper.cpp command, live progress, and the Terminal fallback.
     @ViewBuilder private var voiceControls: some View {
+        if guide.voice?.usesParakeet == true {
+            Button("Transcription settings") { model.showSettings?() }.buttonStyle(COSTextButtonStyle())
+        }
         if let progress = guide.voiceProgress, guide.voiceRunning {
             Text(progress).font(COSType.mono(10.5)).foregroundStyle(COSPalette.accent)
         }
         if let message = guide.voiceMessage {
             Text(message).font(COSType.body(10.5)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }
-        if let recommendation = guide.voice?.recommendedTier {
+        if guide.voice?.usesParakeet != true, let recommendation = guide.voice?.recommendedTier {
             Text("Initial recommendation: \(VoiceTier.title(recommendation)). Based on speech processing speed; calibration on smaller Macs is still in progress.")
                 .font(COSType.body(10.5)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }
-        if row.done && !guide.voiceRunning {
+        if row.done && !guide.voiceRunning && guide.voice?.usesParakeet != true {
             Button("Test this Mac again") { guide.startVoiceSetup() }.buttonStyle(COSTextButtonStyle())
         }
-        if !row.done && !row.afterSetup, !guide.voiceRunning {
+        if !row.done && !row.afterSetup, !guide.voiceRunning && guide.voice?.usesParakeet != true {
             VStack(alignment: .leading, spacing: 6) {
                 COSViewSwitch("Voice", selection: $guide.voiceTier,
                               options: [COSViewOption("auto", "Automatic"), COSViewOption("balanced", "Balanced"), COSViewOption("max", "Max")], showsLabel: false)

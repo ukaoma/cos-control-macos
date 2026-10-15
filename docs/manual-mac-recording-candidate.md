@@ -6,7 +6,7 @@ Implementation branches:
 - Control: `codex/manual-mac-recording-20261014`, based on `df2ad0d`.
 - Server: `codex/mac-capture-contract-20261014`, based on `b8d37d5` (6.73.5).
 
-This is an isolated, uninstalled candidate. Preserve the current COS theme and navigation. No onboarding changes, automatic detection, microphone recording, publishing, or existing transcription/cue feature-flag changes are part of this slice. Glasses pairing is not required.
+This is an isolated, uninstalled candidate. Preserve the current COS theme and navigation. Targeted Voice status corrections now display the selected/effective Parakeet engines instead of the old Whisper tier installer. Other onboarding work is untouched. Automatic detection, microphone recording, publishing, and existing transcription/cue feature-flag changes are outside this slice. Glasses pairing is not required.
 
 ## Validation decision
 
@@ -60,3 +60,14 @@ The new core and helper checks are included in the standard test runner, which w
 Final read-only live-health comparison: stable server remains 6.73.5, same server instance, `features.iphoneAsrCandidates=false`, `features.liveCues=false`, and cue capability is unavailable because the master flag is off. Only the existing `/Applications/COS Control.app` host was running. No candidate was installed or launched.
 
 Known pilot limits: system playback only; no microphone/AEC or automatic detection; raw audio retained without automatic cleanup; all-silence save keeps the server's existing `nothing_to_save` response. A changed server-instance ID deliberately holds pending audio rather than rebinding automatically; recovery after a server restart needs an explicit reconciliation design before general release. Actual speech-to-text latency, including the prior 30-second target, is unmeasured for this source.
+
+
+## October 14 signed-canary follow-up (supersedes earlier candidate status)
+
+- Server `d3a38e2` keeps Mac canonical transcription on the stored HQ selection (Parakeet Ultra here), with typed retryable errors and retained chunks instead of a silent Whisper/cloud substitution. Full regression completed: 452 files, 6,935 tests passed, two skipped; TypeScript typecheck passed.
+- Isolated real-ASR HTTP qualification passed three generated-speech chunks through Parakeet Ultra, with `server-parakeet` / `fluidaudio-coreml` receipts and one Mac-source save. This is transport/ASR evidence, not native process-tap evidence.
+- Signed Control 0.5.300 passed notarization/Gatekeeper and showed the corrected Voice setup row, but native recording failed before capture. Both user-selected sources returned HTTP 400 `invalid_mac_capture`: the native timestamp contained fractional milliseconds while the server required a safe integer. The earlier generic retained-recording message was therefore wrong for a rejected start. No tap or spool was created.
+- Control 0.5.301/build 354 rounds the native timestamp down and normalizes older clients' valid timestamps in the helper. Nonfinite/Boolean/out-of-range timestamps remain rejected. Rejected registration now explicitly reports that no audio was captured. Regression tests cover fractional timestamps, bounds, and the no-audio error.
+- Modern Voice status now observes refreshes in the menu panel, distinguishes selected from effective preview, keeps Nemotron readiness independent of Whisper, and preserves bounded per-lane failure reasons from the helper. Independent read-only review found no further blocker in these fixes.
+- Final Control full suite is running on frozen source. 0.5.301 has not yet been packaged or installed. Actual signed process-tap capture, permission behavior, and matched installation remain gates. Do not install superseded 0.5.299/0.5.300 artifacts.
+- Private canary uses disposable data on loopback port 13141. The stable 6.73.5 server has not been replaced. Both `COS_IOS_ASR_CANDIDATES` and `COS_LIVE_CUES` stay disabled. No public publication or pet recording notification is included.

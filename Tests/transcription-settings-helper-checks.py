@@ -54,9 +54,12 @@ with tempfile.TemporaryDirectory(prefix='cos-stt-settings-', dir='/tmp') as tmp:
         state['body']['parakeet']['progress'] = {'state': 'exploded', 'bytesDone': -5, 'bytesTotal': 'x', 'error': 'E' * 400}
         state['body']['parakeet']['warm'] = {'preview': 'hot'}
         state['body']['preview']['effective'] = 'bad id; rm'
+        state['body']['preview']['reason'] = 'R' * 400
+        state['body']['hq']['reason'] = 'Selected engine is unavailable.'
         s = run('stt-settings')['details']['settings']
         check(s['parakeet']['progress'] == {'state': None, 'bytesDone': 0, 'bytesTotal': 0, 'error': 'E' * 200} and s['parakeet']['warm'] == {'preview': None}
               and s['preview']['effective'] is None, 'unknown progress and warm states, bad effective ids and long errors are bounded')
+        check(s['preview']['reason'] == 'R' * 200 and s['hq']['reason'] == 'Selected engine is unavailable.', 'lane reasons preserved and bounded')
         state['body'] = copy.deepcopy(FIXTURE)
         check(s['appliesTo'] == {'preview': 'next live chunk', 'hq': 'next saved meeting'}, 'appliesTo')
         state['body']['extra'] = 'dropped'; state['body']['hq']['secret'] = 'x'

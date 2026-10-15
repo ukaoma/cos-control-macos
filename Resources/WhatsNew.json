@@ -1,8 +1,23 @@
 {
-  "version": "0.5.297",
+  "version": "0.5.301",
   "whatsNew": {
-    "summary": "Continue connected work after a session answers, recover an unsent request, and see why Send is temporarily waiting. Includes single-instance protection and prior Work improvements.",
+    "summary": "Record selected Mac app playback manually, with high-confidence speaker identity and explicit recovery for blocked Work requests.",
     "sections": [
+      {
+        "title": "Manual Mac recording",
+        "items": [
+          "Choose Record on Mac in Meetings, select an app playing audio, and confirm Start recording. Microphone capture is not included; glasses are optional.",
+          "A red menu bar indicator and Stop control stay available while recording. Local audio is retained for explicit recovery if delivery is interrupted.",
+          "Work requests blocked before sending can be reviewed and sent to another connected session, or a new or forked session, after confirmation."
+        ]
+      },
+      {
+        "title": "Selected local transcription",
+        "items": [
+          "Voice setup shows your selected and available transcription engines. A selected Parakeet configuration keeps its choices and does not offer the legacy Whisper tier installer.",
+          "Manual Mac recordings use the selected saved-meeting engine for canonical text. When Parakeet is selected and unavailable, captured audio stays available for retry."
+        ]
+      },
       {
         "title": "Continue the conversation",
         "items": [
