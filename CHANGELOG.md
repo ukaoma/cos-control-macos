@@ -1,3 +1,10 @@
+## 0.5.304 (build 357), All Mac audio recording candidate
+
+- Record on Mac defaults to All Mac audio: one global tap of everything this Mac plays, excluding COS itself. Single-app capture remains. The 0.5.303 Vorssaint test stored 128s of exact zeros because a per-app tap on a listener app (Vorssaint, the Fireflies helper) receives nothing; the same build tapping Teams saved a transcript.
+- Check every stored chunk for sound. After two silent 6-second chunks, the recording panel and the live meeting pane say no sound is reaching COS, rather than only counting chunks received.
+- Recovery after a silent capture selects All Mac audio. The system-audio usage description and bundled What's New now match 0.5.304.
+- Pair with server 6.73.7 (unchanged). Notarized (submission f0527711-c1ac-4f99-ac4c-280c45557dee); native recording acceptance and installation remain pending.
+
 ## 0.5.303 (build 356), Mac dictation and live recording candidate
 
 - Add microphone selection and configurable hold/toggle dictation shortcuts for Mac apps. Show microphone level, provisional text and final copyable text beside the pet using the existing COS theme.
