@@ -61,8 +61,10 @@ pin(connect_views.count(".providerPolling(") == 2 and ".providerPolling(guide)" 
 pin("await guide.poll" not in row.split("ProviderConnectCard(guide: guide, model: model)")[1], "polling", "the collapsed row never polls")
 
 # Welcome: Connect your AI before Get started, which still runs setup behind the 0.5.267 gate.
-first_run = body(setup, "} else if firstRun {", "} else {")
+first_run = body(setup, "case .connect:", "case .preparing:")
 pin("ConnectYourAIStep(guide: model.providerGuide," in first_run and 'getStarted: { model.perform("setup") }' in first_run, "welcome", "the step owns Get started")
+resume = body(model, "if SetupJourneyStage.shouldPresent(", "            if !quiet { error = nil }")
+pin(all(part in resume for part in ["needsFirstRun: status.needsFirstRun", "started: setupGuide.journeyStarted", "finished: setupGuide.journeyFinished", "presentedThisLaunch: firstRunPresented", "firstRunPresented = true", "openSetup()"]), "onboarding resume", "refresh uses the tested durable journey rule and the one-presentation-per-launch latch")
 step = body(connect_views, "struct ConnectYourAIStep: View {", "\n/// The card the menu-bar panel")
 pin(step.count("ProviderGate.getStartedEnabled(setupProviderInstalled: setupProviderInstalled, busy: busy)") == 2
     and ".disabled(" in step and "signInStepDone)" not in step.replace("guide.signInStepDone {", ""), "gate unchanged", "only installed and busy disable Get started")

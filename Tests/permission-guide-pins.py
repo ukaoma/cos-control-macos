@@ -58,7 +58,7 @@ pin('guide.resetOwnAccessibility = { [weak self] in self?.resetAccessibilityAndA
 main_panel = body(views, "    private var mainPanel: some View {", "    private var activityLauncher")
 pin("PanelPermissionsRow(guide: model.permissionGuide)" in main_panel, "panel row", "the panel has a Permissions row")
 pin("if guide.panelRouteActive {" in guide_views and "PermissionGuideCard(guide: guide)" in guide_views, "panel route", "the card mounts on its own flag")
-pin("ready && !model.permissionGuide.onboardingDone" in setup and "OnboardingPermissionsStep(guide: model.permissionGuide)" in setup, "onboarding step", "Welcome shows Permissions after setup")
+pin("permissionsDone: permissions.onboardingDone" in setup and "OnboardingPermissionsStep(guide: model.permissionGuide)" in body(setup, "case .permissions:", "case .glasses:"), "onboarding step", "The journey reads real permission completion and mounts the existing permission step")
 step = body(guide_views, "struct OnboardingPermissionsStep: View {", "\n}\n")
 pin('Button("Not now")' in step and step.count("guide.onboardingDone = true") == 2, "onboarding step", "skippable, and both buttons finish it")
 for name, src in (("PermissionGuideViews.swift", guide_views), ("PermissionDragFlow.swift", flow), ("ControlSetup.swift", setup)):

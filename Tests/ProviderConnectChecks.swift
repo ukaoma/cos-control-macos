@@ -115,6 +115,7 @@ struct ProviderConnectChecks {
         petIntro()
         agentCliLine()
         setupGuide()
+        onboardingJourney()
         voiceRows()
         await voiceFlow()
         await qaFixes()
@@ -128,6 +129,71 @@ struct ProviderConnectChecks {
             exit(1)
         }
         print("Connect your AI checks: \(passes) passed")
+    }
+
+    static func onboardingJourney() {
+        let d = freshDefaults()
+        let g = SetupGuideState(defaults: d)
+        func stage(_ state: SetupGuideState, first: Bool = false, ready: Bool = true, permissions: Bool = true) -> SetupJourneyStage {
+            SetupJourneyStage.resolve(needsFirstRun: first, ready: ready, started: state.journeyStarted,
+                                      finished: state.journeyFinished, permissionsDone: permissions,
+                                      path: state.devicePath, glassesHandled: state.glassesHandled)
+        }
+        check(SetupJourneyStage.shouldPresent(needsFirstRun: true, started: false, finished: false, presentedThisLaunch: false), "fresh onboarding opens")
+        check(!SetupJourneyStage.shouldPresent(needsFirstRun: false, started: false, finished: false, presentedThisLaunch: false), "upgrader is not interrupted")
+        check(SetupJourneyStage.shouldPresent(needsFirstRun: false, started: true, finished: false, presentedThisLaunch: false), "unfinished installed onboarding resumes on relaunch")
+        check(!SetupJourneyStage.shouldPresent(needsFirstRun: false, started: true, finished: false, presentedThisLaunch: true), "closing setup does not reopen every refresh")
+        check(!SetupJourneyStage.shouldPresent(needsFirstRun: false, started: true, finished: true, presentedThisLaunch: false), "completed onboarding stays closed")
+        check(g.devicePath == .mac, "onboarding defaults to Mac")
+        check(stage(g, first: true) == .welcome, "fresh install gets welcome")
+        check(stage(g) == .guide, "upgrade does not enter new onboarding")
+        g.chooseDevicePath(.glasses)
+        g.beginJourney()
+        var resumed = SetupGuideState(defaults: d)
+        check(resumed.devicePath == .glasses && resumed.journeyStarted, "device and start survive recreation")
+        check(stage(resumed, first: true) == .connect, "restart during setup resumes AI")
+        check(stage(resumed, ready: false, permissions: false) == .preparing, "unhealthy setup cannot advance to permissions")
+        check(stage(resumed, permissions: false) == .permissions, "healthy setup advances to permissions")
+        check(stage(resumed) == .glasses, "glasses choice includes pairing")
+        resumed.finishGlassesStep()
+        resumed = SetupGuideState(defaults: d)
+        check(stage(resumed) == .ready, "skipping glasses survives relaunch")
+        check(stage(resumed, ready: false) == .preparing, "completed pairing step cannot bypass runtime health")
+        resumed.finishJourney()
+        check(stage(SetupGuideState(defaults: d)) == .guide, "finish is durable")
+        resumed.backToWelcome()
+        check(stage(SetupGuideState(defaults: d), first: true) == .welcome, "back returns to welcome without forgetting device")
+        check(resumed.devicePath == .glasses, "back preserves device choice")
+        resumed.chooseDevicePath(.mac)
+        resumed.beginJourney()
+        check(stage(resumed) == .ready, "Mac path never waits for glasses")
+        check(stage(resumed, permissions: false) == .permissions, "Mac path preserves permission choice")
+        d.set("future-unknown-device", forKey: SetupGuideState.devicePathKey)
+        check(SetupGuideState(defaults: d).devicePath == .mac, "unknown saved device safely defaults to Mac")
+        for path in SetupDevicePath.allCases {
+            for started in [false, true] {
+                for finished in [false, true] {
+                    for first in [false, true] {
+                        for ready in [false, true] {
+                            for permission in [false, true] {
+                                let result = SetupJourneyStage.resolve(needsFirstRun: first, ready: ready,
+                                    started: started, finished: finished, permissionsDone: permission,
+                                    path: path, glassesHandled: false)
+                                if result == .ready || result == .glasses {
+                                    check(ready && !first && permission && started && !finished, "journey never bypasses readiness")
+                                }
+                                if path == .mac { check(result != .glasses, "Mac route excludes glasses across states") }
+                                if let progress = result.progress(path: path) {
+                                    check(progress.step >= 1 && progress.step <= progress.total, "progress stays within bounds")
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        check(SetupJourneyStage.ready.progress(path: .mac)?.step == 4, "Mac final step")
+        check(SetupJourneyStage.ready.progress(path: .glasses)?.step == 5, "glasses final step")
     }
 
     static func rows() {

@@ -1173,7 +1173,9 @@ final class ControllerModel: ObservableObject {
             statusReadOnce = true
             // A What's New held back by a recording meeting shows once the meeting ends (cheap when nothing waits).
             considerPostUpdateWhatsNew()
-            if status.needsFirstRun && !firstRunPresented, let openSetup {
+            if SetupJourneyStage.shouldPresent(needsFirstRun: status.needsFirstRun,
+                                               started: setupGuide.journeyStarted, finished: setupGuide.journeyFinished,
+                                               presentedThisLaunch: firstRunPresented), let openSetup {
                 firstRunPresented = true
                 openSetup()
             }

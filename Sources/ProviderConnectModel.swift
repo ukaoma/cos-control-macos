@@ -1084,8 +1084,53 @@ enum SetupGuideRules {
     static func next(_ rows: [SetupRow]) -> SetupRow? { rows.first { !$0.handled && !$0.afterSetup && $0.counted } }
 }
 
+enum SetupDevicePath: String, CaseIterable, Sendable {
+    case mac, glasses
+    var title: String { self == .mac ? "Just my Mac" : "My Mac and glasses" }
+    var detail: String {
+        self == .mac ? "Start with your AI, work and saved meetings on this Mac."
+            : "Set up this Mac, then connect COS on your Even G2 glasses."
+    }
+}
+
+/// Progress follows real setup facts; a saved step number must never bypass installation or permissions.
+enum SetupJourneyStage: Equatable {
+    case welcome, connect, preparing, permissions, glasses, ready, guide
+
+    static func shouldPresent(needsFirstRun: Bool, started: Bool, finished: Bool, presentedThisLaunch: Bool) -> Bool {
+        !presentedThisLaunch && (needsFirstRun || (started && !finished))
+    }
+
+    static func resolve(needsFirstRun: Bool, ready: Bool, started: Bool, finished: Bool,
+                        permissionsDone: Bool, path: SetupDevicePath, glassesHandled: Bool) -> Self {
+        if needsFirstRun { return started ? .connect : .welcome }
+        // Existing installations keep their guide. The new welcome is not an upgrade gate.
+        if !started || finished { return .guide }
+        if !ready { return .preparing }
+        if !permissionsDone { return .permissions }
+        if path == .glasses && !glassesHandled { return .glasses }
+        return .ready
+    }
+
+    func progress(path: SetupDevicePath) -> (step: Int, total: Int, title: String)? {
+        let total = path == .glasses ? 5 : 4
+        switch self {
+        case .welcome: return (1, total, "Welcome")
+        case .connect, .preparing: return (2, total, "Connect your AI")
+        case .permissions: return (3, total, "Choose access")
+        case .glasses: return (4, total, "Connect glasses")
+        case .ready: return (total, total, "Make yourself at home")
+        case .guide: return nil
+        }
+    }
+}
+
 @MainActor
 final class SetupGuideState: ObservableObject {
+    @Published private(set) var devicePath: SetupDevicePath
+    @Published private(set) var journeyStarted: Bool
+    @Published private(set) var journeyFinished: Bool
+    @Published private(set) var glassesHandled: Bool
     @Published private(set) var skipped: Set<SetupRowID> = []
     @Published private(set) var hidden = false
     @Published var voice: VoiceFacts?
@@ -1101,6 +1146,10 @@ final class SetupGuideState: ObservableObject {
     private let defaults: UserDefaults
     static let skippedKey = "cos.setupGuide.skipped"
     static let hiddenKey = "cos.setupGuide.hidden"
+    static let devicePathKey = "cos.setupGuide.devicePath"
+    static let journeyStartedKey = "cos.setupGuide.journeyStarted"
+    static let journeyFinishedKey = "cos.setupGuide.journeyFinished"
+    static let glassesHandledKey = "cos.setupGuide.glassesHandled"
 
     /// `cos-control-helper voice-status`, the details as JSON.
     var readVoice: @MainActor () async throws -> Data = { throw ProviderGuideError.unreadable }
@@ -1115,8 +1164,34 @@ final class SetupGuideState: ObservableObject {
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
+        devicePath = defaults.string(forKey: Self.devicePathKey).flatMap(SetupDevicePath.init(rawValue:)) ?? .mac
+        journeyStarted = defaults.bool(forKey: Self.journeyStartedKey)
+        journeyFinished = defaults.bool(forKey: Self.journeyFinishedKey)
+        glassesHandled = defaults.bool(forKey: Self.glassesHandledKey)
         skipped = Set((defaults.stringArray(forKey: Self.skippedKey) ?? []).compactMap(SetupRowID.init(rawValue:)))
         hidden = defaults.bool(forKey: Self.hiddenKey)
+    }
+
+    func chooseDevicePath(_ path: SetupDevicePath) {
+        devicePath = path
+        defaults.set(path.rawValue, forKey: Self.devicePathKey)
+    }
+    func beginJourney() {
+        journeyStarted = true; journeyFinished = false
+        defaults.set(true, forKey: Self.journeyStartedKey)
+        defaults.set(false, forKey: Self.journeyFinishedKey)
+    }
+    func backToWelcome() {
+        journeyStarted = false
+        defaults.set(false, forKey: Self.journeyStartedKey)
+    }
+    func finishGlassesStep() {
+        glassesHandled = true
+        defaults.set(true, forKey: Self.glassesHandledKey)
+    }
+    func finishJourney() {
+        journeyFinished = true
+        defaults.set(true, forKey: Self.journeyFinishedKey)
     }
 
     /// Provider rows (claude, codex, cursor) are skipped in ProviderGuide, the one provider skip store.

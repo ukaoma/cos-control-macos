@@ -856,6 +856,8 @@ struct SetupGuideView: View {
     var body: some View {
         let rows = SetupGuideRules.rows(model.setupFacts(provider: provider, guide: guide), skipped: guide.skipped)
         VStack(alignment: .leading, spacing: 10) {
+            Text("Your devices").font(COSType.body(18, weight: .semibold))
+            SetupDeviceChoice(guide: guide)
             section("Your AI") {
                 ForEach(Array(AIProvider.agents.enumerated()), id: \.element.id) { index, p in
                     if index > 0 { Divider() }
@@ -885,12 +887,14 @@ struct SetupGuideView: View {
             if let notice = provider.notice {
                 Text(notice).font(COSType.body(11)).foregroundStyle(COSPalette.accent).fixedSize(horizontal: false, vertical: true)
             }
-            section("Glasses") {
-                GlassesSetupRows(model: model, pairing: pairing, openURL: { _ = provider.openURL($0) }, polls: pollsGlasses)
+            if guide.devicePath == .glasses {
+                section("Glasses") {
+                    GlassesSetupRows(model: model, pairing: pairing, openURL: { _ = provider.openURL($0) }, polls: pollsGlasses)
+                }
+                Button("The COS app for your glasses") { _ = provider.openURL(GuideExtras.glassesWizardURL) }
+                    .buttonStyle(COSTextButtonStyle())
+                    .help("Install COS on your phone from the Even app, then scan the code above")
             }
-            Button("The COS app for your glasses") { _ = provider.openURL(GuideExtras.glassesWizardURL) }
-                .buttonStyle(COSTextButtonStyle())
-                .help("Install COS on your phone from the Even app, then scan the code above")
             HStack(spacing: 14) {
                 if guide.hidden {
                     Button("Show Finish setup at the top again") { guide.show() }.buttonStyle(COSTextButtonStyle())
@@ -1087,5 +1091,35 @@ extension COSAppDelegate {
             menu.addItem(item)
         }
         return menu
+    }
+}
+
+/// Device choice changes the guide, not the server or any existing pairing.
+struct SetupDeviceChoice: View {
+    @ObservedObject var guide: SetupGuideState
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            ForEach(SetupDevicePath.allCases, id: \.rawValue) { path in
+                Button { guide.chooseDevicePath(path) } label: {
+                    HStack(alignment: .top, spacing: 12) {
+                        Image(systemName: guide.devicePath == path ? "checkmark.circle.fill" : "circle")
+                            .foregroundStyle(guide.devicePath == path ? COSPalette.accent : COSPalette.muted)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(path.title).font(COSType.body(15, weight: .semibold))
+                            Text(path.detail).font(COSType.body(13)).foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    .padding(14).frame(maxWidth: .infinity, alignment: .leading)
+                    .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 10))
+                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(guide.devicePath == path ? COSPalette.accent : COSPalette.line, lineWidth: 1))
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(path.title + ". " + path.detail)
+                .accessibilityAddTraits(guide.devicePath == path ? .isSelected : [])
+            }
+        }
     }
 }
