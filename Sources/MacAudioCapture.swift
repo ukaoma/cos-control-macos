@@ -71,11 +71,25 @@ final class MacAudioCapture: @unchecked Sendable {
             }
         }
     }
+    /// COS's own audio object, excluded from the global tap so its sounds never enter a meeting. Absent until COS has
+    /// played audio, which is fine: nothing to exclude yet.
+    private static func ownProcessObject() -> [AudioObjectID] {
+        var address = address(kAudioHardwarePropertyTranslatePIDToProcessObject)
+        var pid = ProcessInfo.processInfo.processIdentifier
+        var object = AudioObjectID(kAudioObjectUnknown); var size = UInt32(MemoryLayout<AudioObjectID>.size)
+        let status = AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, UInt32(MemoryLayout<pid_t>.size), &pid, &size, &object)
+        return status == noErr && object != kAudioObjectUnknown ? [object] : []
+    }
     private func configure(_ source: MacAudioSource) throws {
-        guard try Self.sources().contains(source) else {
-            throw MacRecordingError.unavailable("That audio app has changed or stopped. Refresh and select it again.")
+        let description: CATapDescription
+        if source.isAllMacAudio {
+            description = CATapDescription(monoGlobalTapButExcludeProcesses: Self.ownProcessObject())
+        } else {
+            guard try Self.sources().contains(source) else {
+                throw MacRecordingError.unavailable("That audio app has changed or stopped. Refresh and select it again.")
+            }
+            description = CATapDescription(monoMixdownOfProcesses: [source.id])
         }
-        let description = CATapDescription(monoMixdownOfProcesses: [source.id])
         description.name = "COS manual system audio"
         description.isPrivate = true
         description.muteBehavior = .unmuted

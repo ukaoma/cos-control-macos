@@ -57,6 +57,18 @@ import Darwin
                 }
             }
         }
+        // 2026-10-15: a Vorssaint tap stored 22 chunks of exact zeros and the panel still read "22/22 received".
+        func pcm16(_ samples: [Int16]) -> Data { samples.withUnsafeBufferPointer { Data(buffer: $0) } }
+        let zeros = Data(repeating: 0, count: MacRecordingWAV.framesPerChunk * 2)
+        check(MacRecordingSignal.isSilent(zeros) && MacRecordingSignal.peak(zeros) == 0, "digital silence is silent")
+        check(MacRecordingSignal.isSilent(pcm16([Int16](repeating: 63, count: 1000))), "below the floor is silent")
+        check(!MacRecordingSignal.isSilent(pcm16([Int16](repeating: 0, count: 999) + [64])), "one sample at the floor is sound")
+        check(MacRecordingSignal.peak(pcm16([0, Int16.min, 5])) == 32_768, "full-scale negative peak does not overflow")
+        check(MacRecordingSignal.peak(pcm16([0, -20_000, 19_987])) == 20_000, "peak is absolute")
+        check(MacRecordingSignal.warning(silentChunks: MacRecordingSignal.warnAfterSilentChunks - 1, source: "Vorssaint") == nil, "a single quiet chunk is a pause, not a warning")
+        check(MacRecordingSignal.warning(silentChunks: MacRecordingSignal.warnAfterSilentChunks, source: "Vorssaint")?.contains("Vorssaint for 12s") == true, "warning names the source and the silent span")
+        check(MacAudioSource.allMacAudio.isAllMacAudio && MacAudioSource.allMacAudio.id == UInt32.max, "All Mac audio is a fixed sentinel")
+        check(!MacAudioSource(id: 7, pid: 1, bundleID: "x", name: "App").isAllMacAudio, "an app source is never the system mix")
         let normalRoot = fm.homeDirectoryForCurrentUser.appendingPathComponent("cos-data/mac-recordings")
         check(MacRecordingSpool.defaultRoot(environment: [:]) == normalRoot, "production keeps the user's recording directory")
         check(MacRecordingSpool.defaultRoot(environment: ["COS_CONTROL_TEST_HOME": "/Users/other"]) == normalRoot, "non-temporary override is ignored")

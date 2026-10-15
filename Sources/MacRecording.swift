@@ -19,17 +19,21 @@ import SwiftUI
 final class MacRecordingStore: ObservableObject {
     typealias Bridge = @MainActor @Sendable (String, [String: JSONValue]) async throws -> HelperResponse
     @Published var sources: [MacAudioSource] = []
-    @Published var selectedID: UInt32 = 0
+    @Published var selectedID: UInt32 = MacAudioSource.allMacAudioID
     @Published var title = "Mac recording"
     @Published private(set) var phase = "idle" {
         didSet { if ["starting", "recording", "stopping"].contains(oldValue) != ["starting", "recording", "stopping"].contains(phase) { activeChanged?(["starting", "recording", "stopping"].contains(phase)) } }
     }
-    @Published private(set) var message = "Record audio played by a selected app. Your microphone is not recorded. Glasses are optional."
+    @Published private(set) var message = "Record what this Mac plays: every app, or one you pick. Your microphone is not recorded. Glasses are optional."
     @Published private(set) var error: String?
     @Published private(set) var manifest: MacRecordingManifest?
     @Published private(set) var recoverable: [MacRecordingManifest] = []
     @Published private(set) var available = false
     @Published private(set) var noSpeech = false
+    /// Consecutive stored chunks below the silence floor; resets on the first chunk with sound.
+    @Published private(set) var silentChunks = 0
+    @Published private(set) var heardSound = false
+    var signalWarning: String? { MacRecordingSignal.warning(silentChunks: silentChunks, source: manifest?.sourceName ?? "the selected source") }
     var isRecording: Bool { phase == "recording" }
     var occupied: Bool { !["idle", "saved", "pending"].contains(phase) }
     var canStart: Bool { !occupied && deliveryTask == nil && (manifest == nil || manifest!.saved || manifest!.chunks.isEmpty) }
@@ -62,8 +66,8 @@ final class MacRecordingStore: ObservableObject {
                     throw MacRecordingError.unavailable("Manual Mac recording needs the matched server candidate. Your current recording settings have not changed.")
                 }
                 instance = id; available = true
-                sources = try await Task.detached(priority: .utility) { try MacAudioCapture.sources() }.value
-                if !sources.contains(where: { $0.id == selectedID }) { selectedID = 0 }
+                sources = [.allMacAudio] + (try await Task.detached(priority: .utility) { try MacAudioCapture.sources() }.value)
+                if !sources.contains(where: { $0.id == selectedID }) { selectedID = MacAudioSource.allMacAudioID }
             } else { throw MacRecordingError.unavailable("Manual system audio recording requires macOS 14.2 or later.") }
         } catch { available = false; self.error = error.localizedDescription }
     }
@@ -80,7 +84,7 @@ final class MacRecordingStore: ObservableObject {
     func start() async {
         guard canStart, available, let instance, let source = sources.first(where: { $0.id == selectedID }) else { return }
         guard #available(macOS 14.2, *) else { return }
-        phase = "starting"; error = nil; noSpeech = false; captureInterruption = nil
+        phase = "starting"; error = nil; noSpeech = false; captureInterruption = nil; silentChunks = 0; heardSound = false
         let attempt = UUID(); startAttempt = attempt
         installStopObservers()
         var localCapture: MacAudioCapture?
@@ -107,7 +111,12 @@ final class MacRecordingStore: ObservableObject {
             chunksTask = Task { [weak self] in
                 for await chunk in stream {
                     guard let self else { break }
-                    do { self.manifest = try await self.spool.append(chunk, captureId: id); self.deliverPending() }
+                    let silent = MacRecordingSignal.isSilent(chunk.pcm)
+                    do {
+                        self.manifest = try await self.spool.append(chunk, captureId: id)
+                        if silent { self.silentChunks += 1 } else { self.silentChunks = 0; self.heardSound = true }
+                        self.deliverPending()
+                    }
                     catch { self.captureInterruption = error.localizedDescription; self.error = error.localizedDescription; Task { await self.stop() }; break }
                 }
             }
@@ -121,7 +130,7 @@ final class MacRecordingStore: ObservableObject {
             try await engine.start(source: source)
             guard startAttempt == attempt, phase == "starting" else { _ = await engine.stop(); throw CancellationError() }
             phase = "recording"
-            message = "Recording \(source.name) playback only. Microphone off · high-confidence voice identity."
+            message = source.isAllMacAudio ? "Recording everything this Mac plays. Microphone off." : "Recording \(source.name) playback only. Microphone off."
         } catch {
             let interruption = await localCapture?.stop(); localContinuation?.finish()
             guard startAttempt == attempt else { return }
@@ -186,8 +195,8 @@ final class MacRecordingStore: ObservableObject {
         guard MacRecordingRecoveryPolicy.canKeepForLater(noSpeech: noSpeech, pending: phase == "pending", stopped: manifest?.stopped == true, delivering: deliveryTask != nil) else { return }
         do {
             let retained = try await spool.recoverable()
-            recoverable = retained; manifest = nil; selectedID = 0; noSpeech = false; error = nil; phase = "idle"
-            message = "Previous audio is kept on this Mac. Select the app actually playing the meeting audio before recording again."
+            recoverable = retained; manifest = nil; selectedID = MacAudioSource.allMacAudioID; noSpeech = false; silentChunks = 0; error = nil; phase = "idle"
+            message = "Previous audio is kept on this Mac. All Mac audio is selected: it records whatever app plays the call."
         } catch { self.error = error.localizedDescription }
     }
     func deliverPending() {
@@ -264,21 +273,26 @@ struct MacRecordingPanel: View {
                 if !store.occupied {
                     HStack {
                         TextField("Recording title", text: $store.title).textFieldStyle(.plain).cosField().frame(maxWidth: 260)
-                        COSDropdown("Audio app", selection: $store.selectedID,
-                            options: [COSDropdownOption(UInt32(0), "Select app playing audio")] + store.sources.map {
-                                COSDropdownOption($0.id, "\($0.name) (\($0.pid))")
+                        COSDropdown("Audio source", selection: $store.selectedID,
+                            options: store.sources.map {
+                                COSDropdownOption($0.id, $0.isAllMacAudio ? "All Mac audio (recommended)" : "\($0.name) only (\($0.pid))")
                             }).frame(maxWidth: 320)
                         Button("Refresh apps") { Task { await store.prepare(bridge: bridge) } }
-                        Button("Start recording") { confirmStart = true }.disabled(!store.canStart || !store.available || store.selectedID == 0)
+                        Button("Start recording") { confirmStart = true }.disabled(!store.canStart || !store.available || !store.sources.contains { $0.id == store.selectedID })
                     }
                 }
                 if let value = store.manifest {
                     Text("\(value.acknowledged)/\(value.chunks.count) audio chunks received · \(store.phase)").font(COSType.body(11)).foregroundStyle(.secondary)
+                    if let warning = store.signalWarning {
+                        Text(warning).font(COSType.body(11, weight: .semibold)).foregroundStyle(COSPalette.danger)
+                    } else if store.isRecording {
+                        Text(store.heardSound ? "Sound detected" : "Listening for sound…").font(COSType.body(11)).foregroundStyle(store.heardSound ? COSPalette.ink : COSPalette.muted)
+                    }
                     if let interruption = value.interruption { Text("Incomplete recording: \(interruption)").font(COSType.body(11)).foregroundStyle(COSPalette.danger) }
                     if store.phase == "pending", !value.chunks.isEmpty {
-                        Text(store.noSpeech ? "The selected app supplied no speech. Its audio remains available below." : "Save this retained recording before starting another.").font(COSType.body(11)).foregroundStyle(.secondary)
+                        Text(store.noSpeech ? "No speech was found in this audio. It stays on this Mac." : "Save this retained recording before starting another.").font(COSType.body(11)).foregroundStyle(.secondary)
                         if store.noSpeech {
-                            Button("Keep audio and choose another app") { Task { await store.keepSilentAudioForLater() } }
+                            Button("Keep audio and record again") { Task { await store.keepSilentAudioForLater() } }
                         }
                         Button("Retry saving retained audio") { store.deliverPending() }
                     }
@@ -292,11 +306,11 @@ struct MacRecordingPanel: View {
         .padding(.horizontal, 24).padding(.vertical, 12).background(COSPalette.amber.opacity(0.06))
         .overlay(alignment: .bottom) { Divider() }
         .task { await store.prepare(bridge: bridge) }
-        .confirmationDialog("Record selected app’s audio?", isPresented: $confirmStart, titleVisibility: .visible) {
+        .confirmationDialog("Record this Mac’s audio?", isPresented: $confirmStart, titleVisibility: .visible) {
             Button("Start recording") { Task { await store.start() } }.keyboardShortcut(.defaultAction)
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("Confirm participants know you are recording. This pilot captures selected-app playback only, including audio unrelated to the meeting in that app. Your microphone is off. Audio is retained locally; transcription follows your meeting settings. macOS may ask for system audio permission.")
+            Text("Confirm participants know you are recording. All Mac audio captures every sound this Mac plays, including notifications and media. A single app captures only that app. Your microphone is off. Audio is retained locally; transcription follows your meeting settings. macOS may ask for system audio permission.")
         }
     }
 }

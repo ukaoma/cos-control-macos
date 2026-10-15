@@ -91,6 +91,32 @@ struct MacAudioSource: Identifiable, Equatable, Sendable {
     let pid: Int32
     let bundleID: String
     let name: String
+    /// 2026-10-15: the default source. Every app's playback except COS itself, one global tap. A per-app tap on a
+    /// listener (Vorssaint, the Fireflies helper) returned 128s of exact zeros: those processes tap others and play nothing.
+    static let allMacAudioID = UInt32.max
+    static let allMacAudio = MacAudioSource(id: allMacAudioID, pid: 0, bundleID: "", name: "All Mac audio")
+    var isAllMacAudio: Bool { id == Self.allMacAudioID }
+}
+
+/// Signal check per stored chunk, so "N/N chunks received" can no longer stand in for usable audio.
+enum MacRecordingSignal {
+    /// About -54 dBFS. A tap that reaches nothing delivers exact zeros; quiet room tone sits well above this.
+    static let silentPeak = 64
+    /// Two 6-second chunks: long enough to ride out a pause, short enough to catch a wrong source in the first minute.
+    static let warnAfterSilentChunks = 2
+    static func peak(_ pcm: Data) -> Int {
+        pcm.withUnsafeBytes { raw in
+            var peak = 0
+            for sample in raw.bindMemory(to: Int16.self) { peak = max(peak, abs(Int(Int16(littleEndian: sample)))) }
+            return peak
+        }
+    }
+    static func isSilent(_ pcm: Data) -> Bool { peak(pcm) < silentPeak }
+    static func warning(silentChunks: Int, source: String) -> String? {
+        guard silentChunks >= warnAfterSilentChunks else { return nil }
+        let seconds = silentChunks * MacRecordingWAV.framesPerChunk / MacRecordingWAV.sampleRate
+        return "No sound reaching COS from \(source) for \(seconds)s. If the call is playing, stop and record All Mac audio."
+    }
 }
 
 struct MacRecordingChunk: Sendable {

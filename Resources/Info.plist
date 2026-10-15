@@ -21,9 +21,9 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.5.303</string>
+	<string>0.5.304</string>
 	<key>CFBundleVersion</key>
-	<string>356</string>
+	<string>357</string>
 	<key>COSWorkChatEnabled</key>
 	<true/>
 	<key>LSMinimumSystemVersion</key>
@@ -35,7 +35,7 @@
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>NSAudioCaptureUsageDescription</key>
-	<string>When you click Start recording, COS records audio played by the app you selected so it can transcribe that meeting on this Mac. This pilot does not record your microphone.</string>
+	<string>When you click Start recording, COS records the audio this Mac plays (every app, or one app you choose) so it can transcribe that meeting on this Mac. It does not record your microphone.</string>
 	<key>UTExportedTypeDeclarations</key>
 	<array>
 		<dict>
