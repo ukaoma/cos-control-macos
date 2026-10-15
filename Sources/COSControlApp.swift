@@ -44,6 +44,7 @@ struct COSControlApp: App {
         COSAppDelegate.recordingAvailable = { model.recordingCount > 0 && model.liveTranscriptEnabled }
         COSAppDelegate.onOpenRecording = { model.showRecordingTranscript() }
         COSAppDelegate.onTerminate = { model.meetingAsk.flushAll() }
+        MacRecordingTermination.prepare = { await model.macRecording.prepareToQuit() }
         model.recordingStatusChanged = { [weak model] _ in NSApp.dockTile.badgeLabel = model?.recordingDockBadge }
         // A Dock click opens Welcome while COS is not set up, else Activity.
         COSAppDelegate.onReopen = {
@@ -77,13 +78,22 @@ struct COSControlApp: App {
         MenuBarExtra {
             // Work opens from the panel's Activity chips like every other view (they come from
             // ActivitySection.allCases). No separate, unstyled button above the panel (Miles, 2026-09-28).
-            ControlPanel(model: model) { section in
-                activityWindow.show(model: model, section: section)
+            VStack(spacing: 0) {
+                if model.macRecordingActive {
+                    HStack {
+                        Label("Mac recording", systemImage: "record.circle.fill").foregroundStyle(COSPalette.danger)
+                        Spacer()
+                        Button("Stop and save") { Task { await model.macRecording.stop() } }.buttonStyle(COSQuietButtonStyle())
+                    }.font(COSType.body(12)).padding(12)
+                }
+                ControlPanel(model: model) { section in
+                    activityWindow.show(model: model, section: section)
+                }
             }
         } label: {
             // Recording gets a red dot; a pending update keeps its gold glasses underneath it.
             // Colored variants must be original images or the menu bar discards the dot's color.
-            let variant = MenuBarIcon.variant(for: model.appUpdateFlow.phase, recording: model.recordingCount > 0)
+            let variant = MenuBarIcon.variant(for: model.appUpdateFlow.phase, recording: model.recordingCount > 0 || model.macRecordingActive)
             Group {
                 if variant != .normal {
                     Image(nsImage: MenuBarIcon.image(systemName: model.status.running ? "eyeglasses" : "eyeglasses.slash", variant: variant))
@@ -102,6 +112,9 @@ struct COSControlApp: App {
                 Button("Setup guide…") { setupWindow.show(model: model) }
             }
             CommandMenu("Meetings") {
+                Button("Record on Mac…") { activityWindow.show(model: model, section: .meetings) }
+                Button("Stop Mac recording and save") { Task { await model.macRecording.stop() } }
+                    .disabled(!model.macRecordingActive)
                 Button("View live transcript") { model.showRecordingTranscript() }
                     .keyboardShortcut("l", modifiers: [.command, .shift])
                     .disabled(model.recordingCount == 0 || !model.liveTranscriptEnabled)

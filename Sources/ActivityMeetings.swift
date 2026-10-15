@@ -14,6 +14,12 @@ struct MeetingLibraryBody: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            if !selectionOnly {
+                MacRecordingPanel(store: model.macRecording) { operation, payload in
+                    let data = try JSONEncoder().encode(JSONValue.object(["operation": .string(operation), "payload": .object(payload)]))
+                    return try await model.runHelper(["mac-recording"], timeout: 90, stdinData: data)
+                }
+            }
             if !selectionOnly && (!model.recoverableOrphans.isEmpty || !model.strandedCaptures.isEmpty) {
                 unsavedCaptureBanner
             }

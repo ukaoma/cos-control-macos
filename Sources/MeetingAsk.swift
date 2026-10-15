@@ -318,7 +318,7 @@ final class MeetingAskStore: ObservableObject {
     /// (`intakeMeeting` for files and drops, `pasteMeeting` for image data), never into the question. Returns the names
     /// that landed; a refusal is the intake's own line, shown in the panel and in Files shared in this meeting.
     @discardableResult func attach(_ attachment: MeetingAskAttachment, session: String, model: ControllerModel, pathOnly: Bool = false) async -> [String] {
-        let key = "g2:" + session
+        let key = LibraryMeeting.captureContextKey(session)
         guard let files = model.workHandoffStore?.meetingFiles, files.enabled, WorkCardFiles.meetingID(forKey: key) != nil else {
             attachNotes[session] = MeetingAskText.attachUnavailable; return []
         }
@@ -337,8 +337,10 @@ final class MeetingAskStore: ObservableObject {
         fileObserver = files.$manifests.debounce(for: .milliseconds(600), scheduler: RunLoop.main).sink { [weak self, weak model] manifests in
             guard let self, let model else { return }
             let sessions = manifests.keys.compactMap { key -> String? in
-                let prefix = "meetingctx:g2:"
-                return key.hasPrefix(prefix) ? String(key.dropFirst(prefix.count)) : nil
+                for prefix in ["meetingctx:g2:", "meetingctx:mac:"] where key.hasPrefix(prefix) {
+                    return String(key.dropFirst(prefix.count))
+                }
+                return nil
             }
             // Any file change republishes the manifests of every meeting; send only the lists that changed.
             Task { for session in sessions { _ = await self.registerFiles(session, model: model, onlyIfChanged: true) } }
@@ -444,7 +446,7 @@ struct MeetingAskFileReply: Codable { var files: [MeetingAskFile] }
 
 extension ControllerModel {
     func meetingAskFiles(session: String) -> [MeetingAskFile] {
-        meetingAskFileSnapshots(keys: ["g2:" + session], previous: meetingAsk.records[session]?.files ?? [])
+        meetingAskFileSnapshots(keys: [LibraryMeeting.captureContextKey(session)], previous: meetingAsk.records[session]?.files ?? [])
     }
     func meetingAskFileSnapshots(keys: [String], previous: [MeetingAskFile] = []) -> [MeetingAskFile] {
         guard let store = workHandoffStore?.meetingFiles, let root = store.root else { return [] }
@@ -779,7 +781,7 @@ struct LiveAskPanel: View {
     @State private var expandedSources: Set<String> = []
     /// 0.5.281: the live panel takes files anywhere on it, through the Files box's own drop, when this meeting can hold them.
     private var takesFiles: Bool {
-        (feed != nil || saved) && model.workHandoffStore?.meetingFiles.enabled == true && WorkCardFiles.meetingID(forKey: "g2:" + session) != nil
+        (feed != nil || saved) && model.workHandoffStore?.meetingFiles.enabled == true && WorkCardFiles.meetingID(forKey: LibraryMeeting.captureContextKey(session)) != nil
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -822,7 +824,7 @@ struct LiveAskPanel: View {
                 if let note = state.attachNotes[session] {
                     Text(note).font(COSType.body(11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
-                if let files = model.workHandoffStore?.meetingFiles, let id = WorkCardFiles.meetingID(forKey: "g2:" + session) {
+                if let files = model.workHandoffStore?.meetingFiles, let id = WorkCardFiles.meetingID(forKey: LibraryMeeting.captureContextKey(session)) {
                     WorkCardFlashView(files: files, workID: id)
                 }
                 HStack(alignment: .bottom) {
@@ -929,7 +931,7 @@ struct LiveAskPanel: View {
                         model.meetingAskOpenMemory = model.memoryRecords.first(where: { $0.id == id }) ?? ContextRecord(id: id, title: source.title, subtitle: "Retained source excerpt", body: source.text, createdAt: "", filePath: nil)
                     }.buttonStyle(COSTextButtonStyle())
                 }
-                if source.kind == "file", let id = source.fileId, let file = model.workHandoffStore?.meetingFiles.meetingFiles(keys: ["g2:" + session]).first(where: { $0.file.id == id }), !file.file.isLink {
+                if source.kind == "file", let id = source.fileId, let file = model.workHandoffStore?.meetingFiles.meetingFiles(keys: [LibraryMeeting.captureContextKey(session)]).first(where: { $0.file.id == id }), !file.file.isLink {
                     Button("Reveal file") { NSWorkspace.shared.activateFileViewerSelecting([file.folder.appendingPathComponent(file.file.stored)]) }.buttonStyle(COSTextButtonStyle())
                 }
             }

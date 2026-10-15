@@ -2681,6 +2681,9 @@ struct WorkWorkspaceView: View {
                         Divider().overlay(COSPalette.line)
                         ScrollViewReader { scroll in
                             ScrollView { itemWorkspace(item, showWorkspace: { scroll.scrollTo("agent-workspace", anchor: .top) }).padding(18) }
+                                .onChange(of: handoffStore.independentRecovery?.id) { _, _ in
+                                    if handoffStore.independentRecovery?.workID == item.id { scroll.scrollTo("agent-workspace", anchor: .top) }
+                                }
                         }
                             .frame(width: detailSpan.roomy ? 452 : 400).frame(maxHeight: .infinity).background(COSPalette.card.opacity(0.55))
                     }
@@ -2730,6 +2733,9 @@ struct WorkWorkspaceView: View {
                     WorkTaskChatView(chat:taskChat,handoff:handoffStore,source:.taskSnapshot(task),onOpenSession:onOpenSession)
                 }
             }.frame(maxWidth: .infinity, alignment: .leading).padding(22)
+          }
+          .onChange(of: handoffStore.independentRecovery?.id) { _, _ in
+              if workspace, handoffStore.independentRecovery?.workID == item.id { scroll.scrollTo("agent-workspace", anchor: .top) }
           }
         }
     }

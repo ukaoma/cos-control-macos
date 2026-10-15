@@ -635,6 +635,7 @@ final class COSControlHelper {
         case "meeting-audio-watch": try emitMeetingAudioWatch()
         case "live-cos-ask": try emitLiveCOSAsk()
         case "meeting-ask": try emitMeetingAsk()
+        case "mac-recording": try emitMacRecording()
         case "live-transcript": try emitLiveTranscript(args: args)
         case "live-transcript-status": try emitLiveTranscriptStatus(args: args)
         case "meeting-orphan-recover": try emitMeetingOrphanRecover(args: args)
@@ -2157,6 +2158,7 @@ final class COSControlHelper {
         maintenanceOperation: String? = nil,
         maintenanceNonce: String? = nil,
         body: String? = nil,
+        rawBody: Data? = nil,
         headers: [String: String] = [:],
         timeout: Int = 5,
         deadlineUptime: TimeInterval? = nil,
@@ -2180,6 +2182,10 @@ final class COSControlHelper {
         if let body {
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             request.httpBody = Data(body.utf8)
+        }
+        if let rawBody {
+            request.setValue("audio/wav", forHTTPHeaderField: "Content-Type")
+            request.httpBody = rawBody
         }
         let box = HTTPResultBox()
         let completion = DispatchSemaphore(value: 0)
@@ -13966,6 +13972,7 @@ final class COSControlHelper {
         if let actionId = row["actionId"] as? String, !actionId.isEmpty {
             fields["actionId"] = actionId
         }
+        if let sourceType = row["sourceType"] as? String { fields["sourceType"] = sourceType }
         if let sessionIds = row["g2SessionIds"] as? [String], !sessionIds.isEmpty {
             fields["g2SessionIds"] = sessionIds
         }
@@ -15254,6 +15261,149 @@ final class COSControlHelper {
             data.append(contentsOf: buffer[0..<count])
         }
         return try liveTranscriptParse(data, sessionId: sessionId, since: since, stamp: stamp)
+    }
+
+    /// Manual Mac capture: bounded stdin and allowlisted routes. Never creates a tap or prompts for permission.
+    private func emitMacRecording() throws {
+        var input = Data()
+        while input.count <= 16_384 {
+            let chunk = try FileHandle.standardInput.read(upToCount: min(4096, 16_385 - input.count)) ?? Data()
+            if chunk.isEmpty { break }; input.append(chunk)
+        }
+        guard input.count <= 16_384,
+              let envelope = try? JSONSerialization.jsonObject(with: input) as? [String: Any],
+              Set(envelope.keys).isSubset(of: ["operation", "payload"]),
+              let operation = envelope["operation"] as? String,
+              let payload = envelope["payload"] as? [String: Any] else {
+            emit(ok: false, message: "Mac recording request is invalid."); return
+        }
+        let allowed = Set(["serverInstanceId", "captureId", "sessionId", "startTime", "sourceType", "path", "chunkIndex", "elapsed", "title", "domain", "expectedChunkCount"])
+        guard Set(payload.keys).isSubset(of: allowed) else {
+            emit(ok: false, message: "Mac recording request is invalid."); return
+        }
+        let capture = payload["captureId"] as? String ?? payload["sessionId"] as? String ?? ""
+        let instance = payload["serverInstanceId"] as? String ?? ""
+        let validInstance = !instance.isEmpty && instance.utf8.count <= 128 && instance.unicodeScalars.allSatisfy { $0.value >= 33 && $0.value <= 126 }
+        let validCapture = capture.hasPrefix("mac_") && capture.count == 40 && UUID(uuidString: String(capture.dropFirst(4))) != nil
+        guard operation == "capabilities" || (validInstance && validCapture) else {
+            emit(ok: false, message: "Mac recording identity is invalid."); return
+        }
+        if let session = payload["sessionId"] as? String, session != capture {
+            emit(ok: false, message: "Mac recording identity is invalid."); return
+        }
+        var path = "/api/mac-recording/capabilities", method = "GET"
+        var body: String?, audio: Data?
+        switch operation {
+        case "capabilities": break
+        case "start":
+            guard let start = payload["startTime"] as? NSNumber, CFGetTypeID(start) != CFBooleanGetTypeID(), start.doubleValue.isFinite, start.doubleValue > 0,
+                  payload["sourceType"] == nil || payload["sourceType"] as? String == "mac_system_audio" else {
+                emit(ok: false, message: "Mac recording start is invalid."); return
+            }
+            path = "/api/mac-recording/start"; method = "POST"
+            body = String(data: try JSONSerialization.data(withJSONObject: ["captureId": capture, "startTime": start, "sourceType": "mac_system_audio"]), encoding: .utf8)
+        case "chunk":
+            guard let index = payload["chunkIndex"] as? NSNumber, CFGetTypeID(index) != CFBooleanGetTypeID(), index.doubleValue.isFinite,
+                  index.doubleValue == Double(index.intValue), (0...100_000).contains(index.intValue),
+                  let elapsed = payload["elapsed"] as? NSNumber, CFGetTypeID(elapsed) != CFBooleanGetTypeID(), elapsed.doubleValue.isFinite,
+                  elapsed.doubleValue >= 0, elapsed.doubleValue <= 7 * 24 * 60 * 60 * 1000,
+                  let localPath = payload["path"] as? String else {
+                emit(ok: false, message: "Mac recording chunk is invalid."); return
+            }
+            do { audio = try Self.macRecordingAudio(home: home, capture: capture, path: localPath) }
+            catch { emit(ok: false, message: "Mac recording audio could not be read safely. The local recording is retained."); return }
+            path = "/api/mac-recording/" + capture + "/chunks?chunkIndex=\(index.intValue)&elapsed=\(elapsed.int64Value)"; method = "POST"
+        case "save":
+            var object: [String: Any] = ["sessionId": capture, "serverInstanceId": instance]
+            if let count = payload["expectedChunkCount"] {
+                guard let count = count as? NSNumber, CFGetTypeID(count) != CFBooleanGetTypeID(), count.doubleValue.isFinite,
+                      count.doubleValue == Double(count.intValue), (0...1_201).contains(count.intValue) else {
+                    emit(ok: false, message: "Mac recording chunk count is invalid."); return
+                }
+                object["expectedChunkCount"] = count
+            }
+            if let title = payload["title"] {
+                guard let title = title as? String, title.count <= 160, !title.unicodeScalars.contains(where: { $0.value < 32 }) else {
+                    emit(ok: false, message: "Mac recording title is invalid."); return
+                }
+                object["title"] = title
+            }
+            if let domain = payload["domain"] {
+                guard let domain = domain as? String, domain.range(of: "\\A[a-z][a-z0-9_]{0,31}\\z", options: .regularExpression) != nil else {
+                    emit(ok: false, message: "Mac recording domain is invalid."); return
+                }
+                object["domain"] = domain
+            }
+            path = "/api/meeting/save"; method = "POST"
+            body = String(data: try JSONSerialization.data(withJSONObject: object), encoding: .utf8)
+        case "status":
+            let pin = instance.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? ""
+            path = "/api/meeting/sessions/" + capture + "/status?serverInstanceId=" + pin
+        default: emit(ok: false, message: "Mac recording operation is unsupported."); return
+        }
+        let token = try speakerReviewToken()
+        let headers = validInstance ? ["X-COS-Server-Instance": instance] : [:]
+        guard let response = request(path, method: method, token: token, body: body, rawBody: audio, headers: headers, timeout: operation == "chunk" ? 90 : 25) else {
+            emit(ok: false, message: "The Mac recording server is unavailable. The local recording is retained.", details: ["reason": "server_unavailable"]); return
+        }
+        guard (200..<300).contains(response.status), var details = response.body else {
+            let message: String
+            switch response.status {
+            case 401, 403: message = "Reconnect COS Control to the server. The recording is retained."
+            case 404: message = "Update the COS server or check this recording's status. The local recording is retained."
+            case 409: message = "Mac recording could not continue. Check its receipt before retrying."
+            case 413: message = "The audio chunk exceeds the recording limit. The recording is retained."
+            default: message = "Mac recording could not finish. The local recording is retained."
+            }
+            var failure: [String: Any] = ["httpStatus": response.status]
+            if let reason = response.body?["reason"] as? String, reason.range(of: "\\A[a-z][a-z0-9_]{0,79}\\z", options: .regularExpression) != nil { failure["reason"] = reason }
+            emit(ok: false, message: message, details: failure); return
+        }
+        details["httpStatus"] = response.status
+        emit(ok: true, message: "Mac recording", details: details)
+    }
+
+    /// Descriptor-relative traversal refuses symlinked directories, swapped files and hardlinks outside the spool.
+    static func macRecordingAudio(home: URL, capture: String, path: String) throws -> Data {
+        func denied() -> HelperError { .message("Unsafe Mac recording audio") }
+        guard capture.hasPrefix("mac_"), capture.count == 40, UUID(uuidString: String(capture.dropFirst(4))) != nil else { throw denied() }
+        let directory = home.appendingPathComponent("cos-data/mac-recordings", isDirectory: true).appendingPathComponent(capture, isDirectory: true)
+        let url = URL(fileURLWithPath: path)
+        guard path == url.standardizedFileURL.path, url.deletingLastPathComponent().path == directory.path,
+              url.lastPathComponent.hasSuffix(".wav"), url.lastPathComponent.utf8.count <= 128 else { throw denied() }
+        let homeFD = open(home.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW)
+        guard homeFD >= 0 else { throw denied() }; defer { close(homeFD) }
+        var parent = homeFD, descriptors: [Int32] = []
+        defer { for descriptor in descriptors.reversed() { close(descriptor) } }
+        for component in ["cos-data", "mac-recordings", capture] {
+            let descriptor = openat(parent, component, O_RDONLY | O_DIRECTORY | O_NOFOLLOW)
+            guard descriptor >= 0 else { throw denied() }
+            var metadata = stat()
+            guard fstat(descriptor, &metadata) == 0, metadata.st_uid == getuid() else { close(descriptor); throw denied() }
+            descriptors.append(descriptor); parent = descriptor
+        }
+        let fd = openat(parent, url.lastPathComponent, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
+        guard fd >= 0 else { throw denied() }; defer { close(fd) }
+        var metadata = stat()
+        guard fstat(fd, &metadata) == 0, (metadata.st_mode & S_IFMT) == S_IFREG, metadata.st_uid == getuid(),
+              metadata.st_nlink == 1, metadata.st_size > 44, metadata.st_size <= 960_044 else { throw denied() }
+        var audio = Data(), buffer = [UInt8](repeating: 0, count: 65_536)
+        while audio.count < Int(metadata.st_size) {
+            let count = buffer.withUnsafeMutableBytes { Darwin.read(fd, $0.baseAddress, min($0.count, Int(metadata.st_size) - audio.count)) }
+            if count < 0 && errno == EINTR { continue }
+            guard count > 0 else { throw denied() }; audio.append(contentsOf: buffer[0..<count])
+        }
+        var after = stat()
+        guard fstat(fd, &after) == 0, after.st_size == metadata.st_size, after.st_mtimespec.tv_sec == metadata.st_mtimespec.tv_sec,
+              after.st_mtimespec.tv_nsec == metadata.st_mtimespec.tv_nsec else { throw denied() }
+        func word(_ offset: Int) -> UInt32 { (0..<4).reduce(0) { $0 | UInt32(audio[offset + $1]) << (8 * $1) } }
+        func short(_ offset: Int) -> UInt16 { UInt16(audio[offset]) | UInt16(audio[offset + 1]) << 8 }
+        guard audio.prefix(4) == Data("RIFF".utf8), audio.subdata(in: 8..<12) == Data("WAVE".utf8),
+              audio.subdata(in: 12..<16) == Data("fmt ".utf8), word(16) == 16, short(20) == 1, short(22) == 1,
+              word(24) == 16_000, word(28) == 32_000, short(32) == 2, short(34) == 16,
+              audio.subdata(in: 36..<40) == Data("data".utf8), word(4) == UInt32(audio.count - 8),
+              word(40) == UInt32(audio.count - 44), (audio.count - 44) % 2 == 0 else { throw denied() }
+        return audio
     }
 
     /// V2 companion operations. Paths and methods are allowlisted; payloads remain on stdin.

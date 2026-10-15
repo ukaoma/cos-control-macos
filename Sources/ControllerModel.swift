@@ -480,6 +480,8 @@ final class ControllerModel: ObservableObject {
     }
 
     let meetingAsk = MeetingAskStore()
+    let macRecording = MacRecordingStore()
+    @Published private(set) var macRecordingActive = false
     /// Transcription switcher (server 6.72.0): the Settings card's store. The server owns the choices.
     let transcriptionSettings = TranscriptionSettingsStore()
     @Published var meetingAskOpenRecordID: String?
@@ -552,6 +554,7 @@ final class ControllerModel: ObservableObject {
         backgroundWorkEnabled = startBackgroundWork
         activityLoadsEnabled = startBackgroundWork || allowActivityLoads
         workActivity = WorkActivityJournal(url: WorkActivityJournal.defaultURL(background: startBackgroundWork))
+        macRecording.activeChanged = { [weak self] active in self?.macRecordingActive = active }
         guard startBackgroundWork else { return }
         whatsNewSeen = WhatsNewSeenStore(defaults: .standard)
         beginPostUpdateWhatsNew()

@@ -4972,7 +4972,7 @@ struct LibraryMeeting: Identifiable, Sendable, Hashable {
     /// `WorkCardFiles.validMeetingKey`, kept here because some compile lists build the models without the card files
     /// (Tests/work-card-files-pins.py pins the two patterns equal).
     nonisolated static func validContextKey(_ key: String) -> Bool {
-        key.range(of: "^(g2|ff):[A-Za-z0-9:_-]{3,96}$", options: .regularExpression) != nil
+        key.range(of: "^(g2|ff|mac):[A-Za-z0-9:_-]{3,96}$", options: .regularExpression) != nil
     }
     let recordId: String
     let sessionId: String
@@ -4986,6 +4986,7 @@ struct LibraryMeeting: Identifiable, Sendable, Hashable {
     let month: String
     let filename: String
     let source: String
+    let sourceType: String?
     /// One of five values from 6.47.0 on: `cos_operations`, `direct_library`,
     /// `standalone_recordings`, `imported`, `blended`. Empty on an older server.
     let librarySource: String
@@ -5003,11 +5004,14 @@ struct LibraryMeeting: Identifiable, Sendable, Hashable {
     /// Original recording identities survive renames and Fireflies merges. Older/direct rows may carry only sessionId.
     func meetingAskSessions(keys: [String]) -> [String] {
         var seen = Set<String>()
-        let candidates = keys.filter { $0.hasPrefix("g2:") }.map { String($0.dropFirst(3)) }
+        let candidates = keys.filter { $0.hasPrefix("g2:") || $0.hasPrefix("mac:") }.map { String($0.dropFirst($0.hasPrefix("mac:") ? 4 : 3)) }
             + g2SessionIds + (sourceSessionId.map { [$0] } ?? [sessionId])
         return candidates.filter {
-            $0.range(of: "^meeting_[A-Za-z0-9_-]{1,89}$", options: .regularExpression) != nil && seen.insert($0).inserted
+            $0.range(of: "^(meeting_[A-Za-z0-9_-]{1,89}|mac_[A-Fa-f0-9]{8}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{12})$", options: .regularExpression) != nil && seen.insert($0).inserted
         }
+    }
+    nonisolated static func captureContextKey(_ session: String) -> String {
+        (session.hasPrefix("mac_") ? "mac:" : "g2:") + session
     }
     /// Which piece of that recording this is. Nil on anything but a split.
     let pieceIndex: Int?
@@ -5087,6 +5091,7 @@ struct LibraryMeeting: Identifiable, Sendable, Hashable {
         self.month = month
         self.filename = filename
         source = o["source"]?.string ?? ""
+        sourceType = o["sourceType"]?.string
         librarySource = o["librarySource"]?.string ?? ""
         topicCount = o["topicCount"]?.int ?? Int(o["topicCount"]?.string ?? "") ?? 0
         decisionCount = o["decisionCount"]?.int ?? Int(o["decisionCount"]?.string ?? "") ?? 0
@@ -5368,6 +5373,7 @@ struct LibraryMeetingSource: Identifiable, Sendable, Hashable {
     var label: String {
         switch kind {
         case "g2": "G2 recording"
+        case "mac": "Mac recording"
         case "fireflies": "Fireflies meeting"
         default: kind.localizedCapitalized
         }

@@ -10,6 +10,29 @@ enum WorkHandoffMode: String, Codable, CaseIterable, Identifiable {
     var id: String { rawValue }
     var title: String { switch self { case .continueSession: "Continue"; case .fork: "Fork"; case .newSession: "New session" } }
 }
+/// A reviewed escape from a task-wide hold; never clears the original outcome.
+struct WorkIndependentRecovery {
+    let id = UUID().uuidString.lowercased()
+    let workID: String
+    let revision: String
+    let receipts: [String: Data]
+    let assignmentID: String?
+
+    static func permits(_ proof: Self, source: WorkSource, mode: WorkHandoffMode, sessionID: String?, rows: [WorkHandoffReceipt]) -> Bool {
+        guard proof.workID == source.id, proof.revision == source.revision, !proof.receipts.isEmpty else { return false }
+        let blocking = rows.filter { $0.workID == source.id && $0.blocksNewHandoff }
+        guard Set(blocking.map(\.id)) == Set(proof.receipts.keys), blocking.allSatisfy({
+            proof.receipts[$0.id] == (try? WorkChatPolicy.continuationKey($0))
+        }) else { return false }
+        // Fork/New create a distinct child. Continue must not write into any held native target.
+        if mode == .continueSession {
+            guard let sessionID else { return false }
+            guard !rows.contains(where: { $0.blocksNewHandoff && $0.sessionID.map { ClaudeSession.sameSession($0, sessionID) } == true }) else { return false }
+            guard blocking.allSatisfy({ $0.sessionID != nil }) else { return false }
+        }
+        return true
+    }
+}
 struct WorkSource: Equatable, Sendable {
     let id: String
     let title: String
@@ -176,6 +199,9 @@ struct WorkHandoffReceipt: Identifiable, Codable, Sendable {
     /// The next accepted chat turn after this exact native turn was observed idle with a reply.
     /// Keeps delivery readiness separate from user review and preserves the old result.
     var continuedBy: String? = nil
+    /// Lineage only. Earlier delivery/review outcomes are never rewritten by independent recovery.
+    var recoveryOf: [String]? = nil
+    var recoveryAssignmentID: String? = nil
     var requestedFrom: String?
     var requestId: String?
     /// 0.5.254: the card's files this handoff carried (WorkCardFiles.swift), so a Continue or Fork sends only what is new
@@ -312,6 +338,7 @@ struct WorkGlassesRequest: Equatable, Sendable {
     @Published private(set) var drafts: [WorkHandoffDraft] = []
     @Published var error: String?
     @Published var busy = false
+    @Published private(set) var independentRecovery: WorkIndependentRecovery?
     /// Read-only session observation is separate from the delivery journal and
     /// editor lock. A session becoming idle never completes a Work receipt.
     /// Bumps only when the list changes: the 15-second check usually finds the same sessions, and an unchanged list
@@ -443,6 +470,25 @@ struct WorkGlassesRequest: Equatable, Sendable {
     }
 
     func taskChatCall(_ args: [String], data: Data? = nil) async throws -> [String: JSONValue] { try await call(args, data) }
+    /// Opens the existing destination editor only. A second, final confirmation is required to dispatch.
+    @discardableResult func prepareIndependentRecovery(source: WorkSource, prompt: String, assignmentID: String? = nil) -> Bool {
+        guard !busy, !quietSend, storageReady, !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              prompt.utf16.count <= Self.draftLimit else { return false }
+        do {
+            let lock = try lockJournal(); defer { flock(lock, LOCK_UN); close(lock) }
+            try loadJournal()
+            let blocking = receipts(for: source.id).filter(\.blocksNewHandoff)
+            guard !blocking.isEmpty else { error = "The hold changed. Refresh and review the destination again."; return false }
+            let snapshots = try Dictionary(uniqueKeysWithValues: blocking.map { ($0.id, try WorkChatPolicy.continuationKey($0)) })
+            // updateDraft uses its own persistence; release this journal lock before calling it below.
+            independentRecovery = WorkIndependentRecovery(workID: source.id, revision: source.revision, receipts: snapshots, assignmentID: assignmentID)
+        } catch { self.error = "Recovery could not read the original receipts: \(error.localizedDescription)"; return false }
+        var next = draft(for: source)
+        next.mode = .newSession; next.sessionID = ""; next.provider = ""; next.modelID = ""; next.prompt = prompt
+        guard updateDraft(next, for: source) else { independentRecovery = nil; return false }
+        return true
+    }
+    func cancelIndependentRecovery() { independentRecovery = nil }
     func automaticChatTarget(_ id: String) -> Bool {
         ["claude", "codex"].contains(String(id.split(separator: ":")[0])) && Self.appOwner(of: id, in: receipts) == nil
     }
@@ -896,7 +942,7 @@ struct WorkGlassesRequest: Equatable, Sendable {
 
     /// Fork `session` to another platform: `model` names the target provider and model.
     func forkToPlatform(source: WorkSource, session: WorkSession, model: WorkModelChoice, prompt: String,
-                        origin: WorkRequestOrigin? = nil) async {
+                        origin: WorkRequestOrigin? = nil, recovery: WorkIndependentRecovery? = nil) async {
         guard !busy else { return }
         guard Self.exportableProviders.contains(session.provider) else {
             error = "This session has no readable transcript to carry over."; return
@@ -934,7 +980,7 @@ struct WorkGlassesRequest: Equatable, Sendable {
         await submit(source: source, mode: .newSession, session: session, model: model, prompt: text,
                      journalPrompt: Self.crossPlatformJournal(context: prompt, sessionTitle: session.title, provider: session.provider,
                                                               exportLength: export.count, trimmed: text.contains(Self.crossPlatformMarker)),
-                     origin: origin)
+                     origin: origin, recovery: recovery)
     }
 
     private static let genericRecommendationWords: Set<String> = [
@@ -1055,7 +1101,7 @@ struct WorkGlassesRequest: Equatable, Sendable {
     /// it is marked reviewed only once the new handoff is on its way (never when the send was refused or failed).
     /// `resendAllFiles` (0.5.254, "Send all N again"): a Continue or Fork carries every file on the card, not only new ones.
     func submit(source: WorkSource, mode: WorkHandoffMode, session: WorkSession?, model: WorkModelChoice?, prompt: String,
-                journalPrompt: String? = nil, origin: WorkRequestOrigin? = nil, replacing: String? = nil, resendAllFiles: Bool = false, orchestrationRunID: String? = nil, intentID suppliedID: String? = nil) async {
+                journalPrompt: String? = nil, origin: WorkRequestOrigin? = nil, replacing: String? = nil, resendAllFiles: Bool = false, orchestrationRunID: String? = nil, intentID suppliedID: String? = nil, recovery: WorkIndependentRecovery? = nil) async {
         guard !busy else { return }
         // 0.5.252: one send at a time. A send for the glasses does not take `busy` (the Agent workspace stays usable).
         guard !quietSend else { if origin == nil { _ = refusedForGlassesSend() }; return }
@@ -1087,7 +1133,13 @@ struct WorkGlassesRequest: Equatable, Sendable {
             }
             let lock = try lockJournal(); defer { flock(lock, LOCK_UN); close(lock) }
             try loadJournal()
-            guard !receipts(for: source.id).contains(where: { $0.blocksNewHandoff && !(continuations[$0.id] != nil && continuations[$0.id] == (try? WorkChatPolicy.continuationKey($0))) && !($0.id == replacing && $0.status == "delivered") && !(orchestrationRunID != nil && $0.orchestrationRunID == orchestrationRunID && $0.sessionID != session?.id && ["running", "queued", "delivered"].contains($0.status)) }) else { throw failure("This work already has an active or unresolved handoff. Inspect its receipt before starting another.") }
+            if let recovery {
+                guard origin == nil, independentRecovery?.id == recovery.id,
+                      WorkIndependentRecovery.permits(recovery, source: source, mode: mode, sessionID: session?.id, rows: receipts) else {
+                    throw failure("Recovery evidence or destination changed. Review the original receipt and confirm an independent destination again.")
+                }
+            }
+            guard recovery != nil || !receipts(for: source.id).contains(where: { $0.blocksNewHandoff && !(continuations[$0.id] != nil && continuations[$0.id] == (try? WorkChatPolicy.continuationKey($0))) && !($0.id == replacing && $0.status == "delivered") && !(orchestrationRunID != nil && $0.orchestrationRunID == orchestrationRunID && $0.sessionID != session?.id && ["running", "queued", "delivered"].contains($0.status)) }) else { throw failure("This work already has an active or unresolved handoff. Inspect its receipt before starting another.") }
             let text = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty, text.utf16.count <= Self.draftLimit, !source.id.isEmpty, !source.revision.isEmpty else { throw failure("Provide a bounded instruction and source revision.") }
             // 0.5.247: the status line the session reports back with, added here so no draft can leave it out.
@@ -1141,9 +1193,12 @@ struct WorkGlassesRequest: Equatable, Sendable {
                 createdAt: Date().timeIntervalSince1970,
                 sourceSessionID: session?.id, serverInstanceID: serverInstanceID)
             row.orchestrationRunID = orchestrationRunID
+            row.recoveryOf = recovery.map { $0.receipts.keys.sorted() }
+            row.recoveryAssignmentID = recovery?.assignmentID
             if let origin { row.requestedFrom = "glasses"; row.requestId = origin.requestID }
             var progress = WorkProgress(tag: tag)
             progress.record(.sent, Self.sentText(mode: mode, session: session, model: model, prefill: prefill), at: row.createdAt)
+            if let recovery { progress.record(.note, "You confirmed independent work while earlier delivery remains unresolved. Earlier receipts: " + recovery.receipts.keys.sorted().joined(separator: ", ") + ". The earlier outcomes were preserved.", at: row.createdAt) }
             if !files.sending.isEmpty { row.context = files.refs }
             if files.sending.isEmpty && !files.meetingSending.isEmpty { row.context = files.refs }
             if !files.meetingOmitted.isEmpty { progress.record(.note, "Meeting files left out: " + files.meetingOmitted.joined(separator: " "), at: row.createdAt) }
@@ -1154,6 +1209,7 @@ struct WorkGlassesRequest: Equatable, Sendable {
             receipts.insert(row, at: 0)
             do { try persist() } catch { receipts.removeAll { $0.id == id }; throw error }
             intentID = id
+            if recovery != nil { independentRecovery = nil }
             if isolated {
                 if mode != .continueSession {
                     let nativeID = UUID().uuidString.lowercased()

@@ -1377,10 +1377,10 @@ extension WorkCardFilesChecks {
     // MARK: Pure rules
 
     static func meetingKeyChecks() {
-        for good in [meetingKey, "ff:01M1F90QA71Y628BYC7AFE4GG7", "g2:meeting_1788527707103"] {
+        for good in [meetingKey, "ff:01M1F90QA71Y628BYC7AFE4GG7", "g2:meeting_1788527707103", "mac:mac_12345678-1234-1234-1234-123456789abc"] {
             check(WorkCardFiles.validMeetingKey(good) && WorkCardFiles.meetingKey(of: WorkCardFiles.meetingID(forKey: good)!) == good, "meeting key", good)
         }
-        for bad in ["", "g2:", "g2:ab", "x2:meeting_1", "g2:../../etc", "g2:a b c", "ff:" + String(repeating: "a", count: 97), "meeting:ops:quilt:2026-09:x.md"] {
+        for bad in ["", "g2:", "g2:ab", "x2:meeting_1", "mac:../../outside", "mac:ab", "g2:../../etc", "g2:a b c", "ff:" + String(repeating: "a", count: 97), "meeting:ops:quilt:2026-09:x.md"] {
             check(!WorkCardFiles.validMeetingKey(bad) && WorkCardFiles.meetingID(forKey: bad) == nil, "meeting key", "accepted \(bad)")
         }
         // Each store takes only its own ids. `meeting:` (reviews and receipts) and `meeting-review:` go to neither.

@@ -167,8 +167,97 @@ private actor WorkChatFixture {
     legacyChat.restoreUnsentRequest(roundID: interrupted.id, checkedUnconfirmed: true)
     precondition(legacyChat.record?.draft == interrupted.question, "After checking, recovery fills the composer only")
     try await runWorkContinuationChecks(source: source, session: sessions[0], root: root)
+    try await runWorkIndependentRecoveryChecks(source: source, sessions: sessions, root: root)
     try await runWorkChatTypingChecks(source: source, handoff: handoff, root: root)
     print("PASS Work orchestration: exact target policy, private CAS/symlinks, shared distinct-target run, duplicate/foreign-run fences, durable history, all-round provenance, navigation/double-send/task-revision drift; zero provider sends")
+}
+
+private actor WorkRecoveryFixture {
+    let available: Bool
+    private var calls: [String] = []
+    init(available: Bool = true) { self.available = available }
+    func seen() -> [String] { calls }
+    func run(_ args: [String], _ data: Data?) async throws -> HelperResponse {
+        calls.append(args.first ?? "")
+        let out: [String: JSONValue]
+        switch args.first {
+        case "session-chat-attachability": out = ["attachable": .bool(available), "reason": .string("probe_failed"), "reasonCopy": .string("Native transport unavailable; original history retained.")]
+        case "session-chat-attach": out = ["state": .string("attached"), "bindingId": .string("recovery-fixture"), "epoch": .number(1), "boundTo": .string("exact-target")]
+        case "session-chat-send":
+            precondition(String(data: data!, encoding: .utf8)!.contains("Independent read-only diagnosis"))
+            out = ["state": .string("completed")]
+        default: preconditionFailure("Recovery must use only the exact native Continue path: \(args)")
+        }
+        return HelperResponse(ok: true, message: "Fixture", details: out)
+    }
+}
+
+@MainActor private func runWorkIndependentRecoveryChecks(source: WorkSource, sessions: [WorkSession], root: URL) async throws {
+    struct Journal: Encodable { var version = 2; var receipts: [WorkHandoffReceipt]; var sessions: [WorkSession] }
+    let encoder = JSONEncoder()
+    var held = WorkHandoffReceipt(id: UUID().uuidString.lowercased(), workID: source.id, workTitle: source.title, sourceRevision: source.revision, mode: .continueSession, provider: sessions[1].provider, modelID: "existing", sessionID: sessions[1].id, sessionTitle: sessions[1].title, status: "running", detail: "Accepted; delivery not confirmed", prompt: "Earlier work, do not duplicate", createdAt: 100)
+    held.channel = "turn"
+    let frozen = try WorkChatPolicy.continuationKey(held)
+    let proof = WorkIndependentRecovery(workID: source.id, revision: source.revision, receipts: [held.id: frozen], assignmentID: "blocked-assignment")
+    precondition(WorkIndependentRecovery.permits(proof, source: source, mode: .continueSession, sessionID: sessions[0].id, rows: [held]))
+    precondition(!WorkIndependentRecovery.permits(proof, source: source, mode: .continueSession, sessionID: held.sessionID, rows: [held]), "Approval cannot create a second writer on the original target")
+    precondition(WorkIndependentRecovery.permits(proof, source: source, mode: .fork, sessionID: held.sessionID, rows: [held]), "An explicitly confirmed fork creates a separate child")
+    precondition(WorkIndependentRecovery.permits(proof, source: source, mode: .newSession, sessionID: nil, rows: [held]))
+    var changed = held; changed.status = "unknown"
+    precondition(!WorkIndependentRecovery.permits(proof, source: source, mode: .newSession, sessionID: nil, rows: [changed]), "Receipt changes expire confirmation")
+    var extra = held; extra.id = UUID().uuidString.lowercased(); extra.sessionID = sessions[0].id
+    precondition(!WorkIndependentRecovery.permits(proof, source: source, mode: .continueSession, sessionID: sessions[0].id, rows: [held, extra]))
+    var unbound = held; unbound.sessionID = nil
+    let unboundProof = WorkIndependentRecovery(workID: source.id, revision: source.revision, receipts: [unbound.id: try WorkChatPolicy.continuationKey(unbound)], assignmentID: nil)
+    precondition(!WorkIndependentRecovery.permits(unboundProof, source: source, mode: .continueSession, sessionID: sessions[0].id, rows: [unbound]))
+
+    for scenario in ["approved", "ordinary", "same", "changed", "unavailable"] {
+        let file = root.appendingPathComponent("recovery-" + scenario + ".json")
+        try encoder.encode(Journal(receipts: [held], sessions: sessions)).write(to: file)
+        let fixture = WorkRecoveryFixture(available: scenario != "unavailable")
+        let store = WorkHandoffStore(storageURL: file, transport: { args, data in try await fixture.run(args, data) })
+        precondition(store.prepareIndependentRecovery(source: source, prompt: "Independent read-only diagnosis", assignmentID: "blocked-assignment"))
+        let prepared = store.independentRecovery!
+        let beforeReceipt = try WorkChatPolicy.continuationKey(store.receipts[0])
+        precondition(beforeReceipt == frozen, "Preparing never clears an earlier receipt")
+        let before = await fixture.seen(); precondition(before.isEmpty, "Destination preparation sends no provider message")
+        if scenario == "changed" { try encoder.encode(Journal(receipts: [changed], sessions: sessions)).write(to: file) }
+        let target = scenario == "same" ? sessions[1] : sessions[0]
+        let id = UUID().uuidString.lowercased()
+        await store.submit(source: source, mode: .continueSession, session: target, model: nil, prompt: "Independent read-only diagnosis", intentID: id, recovery: scenario == "ordinary" ? nil : prepared)
+        let calls = await fixture.seen()
+        precondition(calls.filter { $0 == "session-chat-send" }.count == (scenario == "approved" ? 1 : 0), "Independent recovery admission: \(scenario)")
+        if scenario == "approved" || scenario == "unavailable" {
+            let recovered = store.receipts.first { $0.id == id }!
+            precondition(recovered.recoveryOf == [held.id] && recovered.recoveryAssignmentID == "blocked-assignment")
+            precondition(recovered.status == (scenario == "approved" ? "delivered" : "refused"))
+            let originalAfter = try WorkChatPolicy.continuationKey(store.receipts.first { $0.id == held.id }!)
+            precondition(originalAfter == frozen)
+            let relaunched = WorkHandoffStore(storageURL: file, transport: { _,_ in preconditionFailure("Restart cannot send") })
+            precondition(relaunched.independentRecovery == nil, "Confirmation is local and never survives relaunch")
+            precondition(relaunched.receipts.first { $0.id == id }?.recoveryOf == [held.id], "Recovery lineage survives restart")
+            await store.submit(source: source, mode: .continueSession, session: target, model: nil, prompt: "Independent read-only diagnosis", intentID: id, recovery: prepared)
+            let again = await fixture.seen(); precondition(again.filter { $0 == "session-chat-send" }.count == (scenario == "approved" ? 1 : 0), "A confirmed intent is never dispatched twice")
+        } else { precondition(!store.receipts.contains { $0.id == id }) }
+    }
+
+    for mode in [WorkHandoffMode.fork, .newSession] {
+        let file = root.appendingPathComponent("recovery-child-" + mode.rawValue + ".json")
+        try encoder.encode(Journal(receipts: [held], sessions: sessions)).write(to: file)
+        let store = WorkHandoffStore(isolated: true, storageURL: file, transport: { _,_ in preconditionFailure("Child fixture has no provider") })
+        precondition(store.prepareIndependentRecovery(source: source, prompt: "Independent read-only diagnosis"))
+        store.cancelIndependentRecovery()
+        precondition(store.receipts.count == 1 && store.independentRecovery == nil, "Cancel creates no chat or receipt")
+        precondition(store.prepareIndependentRecovery(source: source, prompt: "Independent read-only diagnosis"))
+        let prepared = store.independentRecovery!
+        let id = UUID().uuidString.lowercased()
+        await store.submit(source: source, mode: mode, session: mode == .fork ? sessions[1] : nil, model: mode == .newSession ? store.models.first(where: { $0.available }) : nil, prompt: "Independent read-only diagnosis", intentID: id, recovery: prepared)
+        let child = store.receipts.first { $0.id == id }!
+        precondition(child.sessionID != held.sessionID && child.recoveryOf == [held.id], "Fork/New retains a distinct exact child and lineage")
+        let childOriginal = try WorkChatPolicy.continuationKey(store.receipts.first { $0.id == held.id }!)
+        precondition(childOriginal == frozen)
+    }
+    print("PASS independent recovery: explicit proof, unchanged pending outcome, distinct native target/child, unavailable transport, stale journal, duplicate intent, cancellation and durable lineage; zero live messages")
 }
 
 @MainActor private func runWorkChatTypingChecks(source: WorkSource, handoff: WorkHandoffStore, root: URL) async throws {

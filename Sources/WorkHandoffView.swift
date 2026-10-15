@@ -34,14 +34,14 @@ extension WorkSource {
 
 /// Sends a resolved plan exactly as the Agent workspace does. Shared with the board's Start work overlay (0.5.244).
 /// `resendAllFiles` (0.5.254): a Continue or Fork carries every file on the card again ("Send all N again").
-@MainActor func sendWorkHandoff(store: WorkHandoffStore, source sendingSource: WorkSource, plan: WorkSendPlan, resendAllFiles: Bool = false) async {
+@MainActor func sendWorkHandoff(store: WorkHandoffStore, source sendingSource: WorkSource, plan: WorkSendPlan, resendAllFiles: Bool = false, recovery: WorkIndependentRecovery? = nil) async {
     let sendingSession = plan.session, sendingModel = plan.model, sendingPrompt = plan.prompt
     if plan.crossPlatform, let sendingSession, let sendingModel {
-        await store.forkToPlatform(source: sendingSource, session: sendingSession, model: sendingModel, prompt: sendingPrompt)
+        await store.forkToPlatform(source: sendingSource, session: sendingSession, model: sendingModel, prompt: sendingPrompt, recovery: recovery)
     } else {
         // A plain New session has no source session (a stale selection must not read as a fork).
         await store.submit(source: sendingSource, mode: plan.mode, session: plan.mode == .newSession ? nil : sendingSession,
-                           model: sendingModel, prompt: sendingPrompt, resendAllFiles: resendAllFiles)
+                           model: sendingModel, prompt: sendingPrompt, resendAllFiles: resendAllFiles, recovery: recovery)
     }
 }
 
@@ -262,6 +262,8 @@ struct WorkHandoffView: View {
     @State private var validating = false
     @State private var historyOpen = false
     @State private var confirmClear = false
+    @State private var recoveryConfirmation: WorkSendPlan?
+    @State private var recoveryConfirmationProof: WorkIndependentRecovery?
     @State private var sendBackOpen = false
     @State private var sendBackDraft = WorkReplyDraft()
     @State private var sendingBack = false
@@ -297,7 +299,12 @@ struct WorkHandoffView: View {
     private var heldTarget: Bool {
         mode == .continueSession && selectedSession.map { WorkHandoffStore.serverHold(onSession: $0.id, in: store.receipts) != nil } == true
     }
-    private var canSend: Bool { !validating && !store.busy && blocking == nil && plan != nil && !heldTarget }
+    private var recovery: WorkIndependentRecovery? { store.independentRecovery.flatMap { $0.workID == source.id && $0.revision == source.revision ? $0 : nil } }
+    private var canSend: Bool {
+        !validating && !store.busy && plan != nil && !heldTarget && (blocking == nil || recovery.map {
+            WorkIndependentRecovery.permits($0, source: source, mode: mode, sessionID: sessionID.isEmpty ? nil : sessionID, rows: store.receipts)
+        } == true)
+    }
 
     /// 0.5.243: a Fork with a target provider picked is a fork to another platform (a New session seeded with the
     /// conversation export). No provider means the native, same-platform fork.
@@ -337,15 +344,43 @@ struct WorkHandoffView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             if let blocking {
-                Text(blocking.status == "unknown" ? "This send never confirmed. Start a new session, or continue the one named above after you have looked at it. Nothing is resent automatically."
-                     : blocking.status == "delivered" ? "Once the session has replied and you mark it reviewed, you can send this work somewhere else."
-                     : "This work has a handoff in flight. You can send it elsewhere once that finishes.")
+                Text(blocking.status == "unknown" ? "This delivery remains unconfirmed. Inspect its receipt, or explicitly review independent work for another destination. Nothing is resent automatically."
+                     : blocking.status == "delivered" ? "This reply awaits review. Independent work can be sent elsewhere after you review and confirm its destination."
+                     : "This work has a handoff in flight. You can inspect it or explicitly review independent work for another destination.")
                     .font(COSType.body(11.5)).foregroundStyle(COSPalette.muted)
-            } else {
+                if recovery == nil {
+                    Button("Choose an independent destination…") {
+                        guard flushPrompt() else { return }
+                        if store.prepareIndependentRecovery(source: source, prompt: editingPrompt.isEmpty ? source.suggestedPrompt : editingPrompt) { bindPrompt() }
+                    }.buttonStyle(COSQuietButtonStyle()).disabled(store.busy || validating)
+                }
+            }
+            if recovery != nil {
+                Text("Independent recovery: the earlier receipt stays unresolved. Choose another session, a fork, or a new session; review the scope to avoid duplicate work. You will confirm before anything is sent.")
+                    .font(COSType.body(11.5)).foregroundStyle(COSPalette.muted)
+                Button("Cancel recovery") { recoveryConfirmation = nil; store.cancelIndependentRecovery() }.buttonStyle(COSTextButtonStyle())
+                if plan != nil, !canSend, !store.busy, !validating {
+                    Text("This destination is held, or the receipt evidence changed. Choose a different destination, or cancel and reopen recovery after refreshing.")
+                        .font(COSType.body(11.5)).foregroundStyle(COSPalette.danger)
+                }
+                composer
+            } else if blocking == nil {
                 composer
             }
             historySection
         }
+        .confirmationDialog("Send independent work?", isPresented: Binding(get: { recoveryConfirmation != nil }, set: { if !$0 { recoveryConfirmation = nil } }), presenting: recoveryConfirmation) { sendingPlan in
+            Button("Confirm and send") {
+                guard let proof = recoveryConfirmationProof else { recoveryConfirmation = nil; return }
+                recoveryConfirmation = nil
+                recoveryConfirmationProof = nil
+                dispatch(sendingPlan, recovery: proof)
+            }
+            Button("Cancel", role: .cancel) { recoveryConfirmation = nil }
+        } message: { sendingPlan in
+            Text("\(sendingPlan.label). Destination: \(sendingPlan.crossPlatform || sendingPlan.mode == .newSession ? WorkHandoffStore.providerName(sendingPlan.model?.provider ?? "") + " · " + (sendingPlan.model?.id ?? "") : sendingPlan.session?.title ?? "Unknown"). A fork or new session creates a separate chat. The original delivery may still execute; keep this assignment independent. Earlier receipts and the task stage remain unchanged.")
+        }
+        .onChange(of: store.independentRecovery?.id) { _, _ in if recovery != nil { bindPrompt() } }
         .task(id: source) {
             guard !embedded else { return }
             await store.refresh()
@@ -470,11 +505,8 @@ struct WorkHandoffView: View {
                 let canContinue = receipt.sessionID != nil && WorkHandoffStore.continueProviders.contains(receipt.provider)
                 Button("Start a new session") {
                     confirmClear = false
-                    guard flushPrompt(), store.clearUnresolved(receiptID: receipt.id, startedFresh: true) else { return }
-                    var next = draft
-                    next.mode = .newSession
-                    next.sessionID = ""
-                    if store.updateDraft(next, for: source) { bindPrompt() }
+                    guard flushPrompt() else { return }
+                    if store.prepareIndependentRecovery(source: source, prompt: receipt.prompt) { bindPrompt() }
                 }.buttonStyle(COSPrimaryButtonStyle()).disabled(store.busy || validating)
                 if confirmClear {
                     Text(canContinue
@@ -617,20 +649,25 @@ struct WorkHandoffView: View {
             Button {
                 guard flushPrompt() else { return }
                 guard let sendingPlan = plan else { return }
-                let sendingSource = source, resendAll = resendAllFiles
-                validating = true; onSendingChange?(true)
-                Task {
-                    defer { validating = false; onSendingChange?(false) }
-                    if let validateBeforeSend, !(await validateBeforeSend()) { return }
-                    await sendWorkHandoff(store: store, source: sendingSource, plan: sendingPlan, resendAllFiles: resendAll)
-                    resendAllFiles = false
-                }
+                if let recovery { recoveryConfirmationProof = recovery; recoveryConfirmation = sendingPlan }
+                else { dispatch(sendingPlan) }
             } label: {
                 Text(plan?.label ?? "Choose where it goes").lineLimit(1).frame(maxWidth: .infinity)
             }.buttonStyle(COSPrimaryButtonStyle()).disabled(!canSend)
             Text("Sending does not complete or publish this work.").font(COSType.body(10.5)).foregroundStyle(COSPalette.muted)
                 .frame(maxWidth: .infinity, alignment: .center)
             if store.busy || validating { ProgressView("Checking destination…").controlSize(.small) }
+        }
+    }
+
+    private func dispatch(_ sendingPlan: WorkSendPlan, recovery: WorkIndependentRecovery? = nil) {
+        let sendingSource = source, resendAll = resendAllFiles
+        validating = true; onSendingChange?(true)
+        Task {
+            defer { validating = false; onSendingChange?(false) }
+            if let validateBeforeSend, !(await validateBeforeSend()) { return }
+            await sendWorkHandoff(store: store, source: sendingSource, plan: sendingPlan, resendAllFiles: resendAll, recovery: recovery)
+            resendAllFiles = false
         }
     }
 

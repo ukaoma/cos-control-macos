@@ -96,8 +96,13 @@ need("let files = cardFiles.handoff(for: source.id, mode: mode, sessionID: mode 
 need("let sent = WorkCardFiles.compose(text: text, block: files.block, instruction: instruction)" in submit, "the block goes between the text and the instruction")
 need(submit.index("cardFiles.reload(source.id)") < submit.index("let files = cardFiles.handoff("), "the send reads the card's manifest from disk first")
 need("if !files.sending.isEmpty { row.context = files.refs }" in submit, "the receipt records what went")
-need("if prefill, !Self.cursorPrefillFits(sent, tag: tag, instruction: instruction) { throw failure(Self.cursorFilesTooLong) }" in submit
-     and submit.index("cursorPrefillFits(") < submit.index("let id = UUID().uuidString.lowercased()"), "a file list too long for Cursor is refused before anything is recorded")
+cursor_limit = "if prefill, !Self.cursorPrefillFits(sent, tag: tag, instruction: instruction) { throw failure(Self.cursorFilesTooLong) }"
+intent_id = "let id = suppliedID ?? UUID().uuidString.lowercased()"
+intent_admission = 'guard UUID(uuidString: id) != nil, !receipts.contains(where: { $0.id == id }) else'
+need(cursor_limit in submit and intent_id in submit and intent_admission in submit
+     and submit.index(cursor_limit) < submit.index(intent_id) < submit.index(intent_admission)
+     < submit.index("receipts.insert(row, at: 0)") < submit.index("try persist()"),
+     "a file list too long for Cursor is refused before durable intent admission or receipt persistence")
 need("WorkCardFiles.splitBlock(" in body(store, "    nonisolated static func cursorPrefill(", "    /// Cursor's prompt link"), "Cursor's cut keeps the block")
 handoff = body(files, "    func handoff(for workID: String, mode: WorkHandoffMode", "    // MARK: Adding")
 need("WorkCardFiles.handoff(files: files(for: workID)" in handoff, "the store's composer is the pure one the checks run")
@@ -107,7 +112,8 @@ need("let plan = files.handoff(for: source.id, mode: mode, sessionID: target, re
 need("WorkCardFilesSection(files: store.cardFiles, store: store, source: source, mode: forkToPlatform ? .newSession : mode," in view,
      "the Files section sits in the composer, under Context to send")
 need(view.index("WorkCardFilesSection(") > view.index('Text("Context to send")'), "Files to send comes after Context to send")
-need("await sendWorkHandoff(store: store, source: sendingSource, plan: sendingPlan, resendAllFiles: resendAll)" in view, "Send all again reaches the send")
+need(re.search(r"await sendWorkHandoff\(store: store, source: sendingSource, plan: sendingPlan, resendAllFiles: resendAll(?:, recovery: recovery)?\)", view) is not None,
+     "Send all again reaches the send, including an explicitly reviewed recovery")
 # 0.5.258: one composer still. The card-only block delegates to the one that also heads a card's meeting files.
 need(files.count("func compose(") == 1 and files.count("static func block(") == 2
      and "        block(card: entries, meetings: [])\n" in body(files, "    nonisolated static func block(_ entries:", "    nonisolated static func block(card:"), "one composer")
@@ -183,10 +189,16 @@ for rel in ("Tests/run.sh", "scripts/build-release.sh", "scripts/build-foundatio
                 and '"$ROOT/Sources/WorkProgress.swift" "$ROOT/Sources/WorkProgressTracker.swift"' in line)
     need(lists == 0, f"{rel} compiles WorkProgress.swift without WorkCardFiles.swift")
     need('"$ROOT/Sources/WorkCardFiles.swift"' in text, f"{rel} must compile WorkCardFiles.swift")
-need("WorkProgress WorkCardFiles WorkProgressTracker" in code("Tests/run-work.sh"), "run-work.sh compiles WorkCardFiles")
+work_runner = code("Tests/run-work.sh")
+need("WorkProgress WorkCardFiles WorkProgressTracker" in work_runner
+     or ('SOURCES=("$ROOT"/Sources/*.swift)' in work_runner
+         and 'for source in $SOURCES; do FILES+=("$source"); done' in work_runner
+         and '$FILES "$ROOT/Tests/Control2FoundationContract.swift"' in work_runner
+         and "#*/WorkCardFiles.swift" not in work_runner),
+     "run-work.sh compiles WorkCardFiles explicitly or through the unexcluded source inventory")
 
 # 0.5.258: the context-key rule lives twice (Models compiles without WorkCardFiles in some lists); the two must agree.
-key_rule = '"^(g2|ff):[A-Za-z0-9:_-]{3,96}$"'
+key_rule = '"^(g2|ff|mac):[A-Za-z0-9:_-]{3,96}$"'
 need(key_rule in body(files, "    nonisolated static func validMeetingKey(", "    nonisolated static func meetingID(")
      and key_rule in body(code("Sources/Models.swift"), "    nonisolated static func validContextKey(", "    let recordId: String"), "the two context-key rules are the same")
 

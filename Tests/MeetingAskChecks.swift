@@ -23,6 +23,13 @@ import Foundation
         check(meeting(["sessionId": .string("piece_1"), "sourceSessionId": .string("meeting_original")]).meetingAskSessions(keys: []) == ["meeting_original"], "split reads original capture history")
         check(meeting(["sessionId": .string("imported:fireflies:example")]).meetingAskSessions(keys: []) == [], "import identity is never a recording")
         check(meeting(["sessionId": .string("../meeting_wrong")]).meetingAskSessions(keys: ["g2:meeting_../wrong"]) == [], "malformed history IDs rejected")
+        let macID = "mac_12345678-1234-1234-1234-123456789abc"
+        check(meeting(["sessionId": .string(macID), "sourceType": .string("mac_system_audio")]).meetingAskSessions(keys: ["mac:" + macID]) == [macID], "Mac history uses exact capture once")
+        check(meeting(["sessionId": .string(macID), "sourceType": .string("mac_system_audio")]).sourceType == "mac_system_audio", "Mac source provenance retained")
+        check(meeting(["sessionId": .string("meeting_original")]).sourceType == nil, "legacy missing provenance preserved")
+        check(LibraryMeeting.captureContextKey(macID) == "mac:" + macID, "Mac files use Mac source key")
+        check(LibraryMeeting.captureContextKey("meeting_legacy") == "g2:meeting_legacy", "legacy file keys unchanged")
+        check(meeting(["sessionId": .string("mac_../../other")]).meetingAskSessions(keys: []) == [], "unsafe Mac history refused")
         check(MeetingAskHistoryState.emptyText(loading: true, failed: false, live: false) == "Loading saved questions…", "loading is distinct from empty")
         check(MeetingAskHistoryState.emptyText(loading: false, failed: true, live: false).contains("could not be checked"), "failed history never claims empty")
         check(MeetingAskHistoryState.emptyText(loading: false, failed: false, live: false) == "No saved questions found for this recording.", "empty saved history is explicit")
