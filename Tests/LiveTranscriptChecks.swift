@@ -249,6 +249,17 @@ import Foundation
               && LiveTranscript.handoff(serverState: nil, endedAt: ended, now: now.addingTimeInterval(200), savedRowFound: false) == .notFoundYet
               && LiveTranscript.handoff(serverState: "active", endedAt: ended, now: now.addingTimeInterval(60), savedRowFound: false) == .finalizing,
               "no answer, or still active, waits until the deadline")
+        // 0.5.307: the close control on a Live now row (Miles 2026-10-15, "No audio for 22m" with no way to close it).
+        let q = LiveTranscript.quietAfterSeconds
+        let quietRow = LiveTranscriptRow(sessionId: "meeting_1_x", startTime: now.addingTimeInterval(-3_600), lastActivity: now.addingTimeInterval(-q), phase: .live)
+        let busyRow = LiveTranscriptRow(sessionId: "meeting_1_x", startTime: now.addingTimeInterval(-3_600), lastActivity: now.addingTimeInterval(-(q - 1)), phase: .live)
+        var macRow = LiveTranscriptRow(sessionId: "mac_43879e59-3039-4f2c-9cd2-4fcc59486d71", startTime: nil, lastActivity: now, phase: .live)
+        macRow.deliveryLabel = "Capture stopped · saving 51/1200"
+        check(LiveTranscript.endActionTitle(row: quietRow, now: now) == "End and save", "a live row quiet for the No audio mark can be ended and saved")
+        check(LiveTranscript.endActionTitle(row: busyRow, now: now) == nil, "a row still receiving audio offers no close")
+        check(LiveTranscript.endActionTitle(row: macRow, now: now) == "Finish saving", "a stopped Mac capture finishes delivering, never a partial save")
+        check(LiveTranscript.endActionTitle(row: LiveTranscriptRow(sessionId: "meeting_1_x", startTime: nil, lastActivity: nil, phase: .live), now: now) == nil, "no activity known, no close")
+        check(LiveTranscript.endActionTitle(row: LiveTranscriptRow(sessionId: "meeting_1_x", startTime: nil, lastActivity: now.addingTimeInterval(-9_000), phase: .finalizing), now: now) == nil, "a row already ending offers no close")
         check(LiveTranscript.phaseLabel(.finalizing) == "Finalizing" && LiveTranscript.phaseLabel(.endedUnsaved) == "Recording ended without saving"
               && LiveTranscript.phaseLabel(.notFoundYet) == "Saved meeting not found yet" && LiveTranscript.phaseLabel(.live) == nil, "the phase words")
         check(LiveTranscript.handoffDays(start: Date(timeIntervalSince1970: 1_791_694_000), now: Date(timeIntervalSince1970: 1_791_700_000),

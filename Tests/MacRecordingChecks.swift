@@ -66,7 +66,17 @@ import Darwin
         check(MacRecordingSignal.peak(pcm16([0, Int16.min, 5])) == 32_768, "full-scale negative peak does not overflow")
         check(MacRecordingSignal.peak(pcm16([0, -20_000, 19_987])) == 20_000, "peak is absolute")
         check(MacRecordingSignal.warning(silentChunks: MacRecordingSignal.warnAfterSilentChunks - 1, source: "Vorssaint") == nil, "a single quiet chunk is a pause, not a warning")
-        check(MacRecordingSignal.warning(silentChunks: MacRecordingSignal.warnAfterSilentChunks, source: "Vorssaint")?.contains("Vorssaint for 12s") == true, "warning names the source and the silent span")
+        let warnSeconds = MacRecordingSignal.warnAfterSilentChunks * MacRecordingWAV.framesPerChunk / MacRecordingWAV.sampleRate
+        let appWarning = MacRecordingSignal.warning(silentChunks: MacRecordingSignal.warnAfterSilentChunks, source: "Vorssaint")
+        check(appWarning?.contains("Vorssaint for \(warnSeconds)s") == true, "warning names the source and the silent span")
+        check(appWarning?.contains("record All Mac audio") == true, "an app source is pointed at All Mac audio")
+        let allWarning = MacRecordingSignal.warning(silentChunks: MacRecordingSignal.warnAfterSilentChunks, source: MacAudioSource.allMacAudio.name)
+        check(allWarning != nil && allWarning?.contains("record All Mac audio") == false, "All Mac audio is never told to switch to itself")
+        check(allWarning?.contains("not muted") == true, "All Mac audio points at the call's own output")
+        // 2026-10-15: a stopped capture with 51/1,200 delivered still read "Live now".
+        check(MacRecordingLiveRow.label(stopped: true, saved: false, acknowledged: 51, chunks: 1_200) == "Capture stopped · saving 51/1200", "a stopped, unsaved capture says it is saving, with progress")
+        check(MacRecordingLiveRow.label(stopped: false, saved: false, acknowledged: 51, chunks: 60) == nil, "a running capture stays Live now")
+        check(MacRecordingLiveRow.label(stopped: true, saved: true, acknowledged: 60, chunks: 60) == nil, "a saved capture leaves the row to the saved hand-off")
         check(MacAudioSource.allMacAudio.isAllMacAudio && MacAudioSource.allMacAudio.id == UInt32.max, "All Mac audio is a fixed sentinel")
         check(!MacAudioSource(id: 7, pid: 1, bundleID: "x", name: "App").isAllMacAudio, "an app source is never the system mix")
         let normalRoot = fm.homeDirectoryForCurrentUser.appendingPathComponent("cos-data/mac-recordings")

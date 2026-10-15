@@ -1883,6 +1883,13 @@ final class ControllerModel: ObservableObject {
 
     func saveStranded(_ sessionId: String) {
         guard !sessionId.isEmpty, !busy, !orphanBusy else { return }
+        // A Mac capture saves only once every chunk on this Mac has reached the server; a server-side save of what
+        // arrived so far would be partial (2026-10-15: 52 of 1,200). Finish delivering it instead.
+        if sessionId.hasPrefix("mac_") {
+            if macRecording.manifest?.captureId == sessionId { macRecording.deliverPending(); notice = "Delivering this Mac recording’s retained audio. It saves when every chunk has arrived." }
+            else { notice = "Save this Mac recording from Record on Mac: open Set up recording, then Recover." }
+            return
+        }
         orphanBusy = true
         Task {
             defer { orphanBusy = false }
@@ -3125,9 +3132,16 @@ final class ControllerModel: ObservableObject {
 
     var liveTranscriptRows: [LiveTranscriptRow] {
         guard liveTranscriptEnabled else { return [] }
-        return LiveTranscript.rows(files: liveTranscriptFiles, feeds: liveTranscriptFeeds, serverLive: liveTranscriptServerLive,
-                                   stale: Set(status.staleTranscriptionSessionIds), stranded: Set(strandedCaptures.map(\.sessionId)),
-                                   now: Date())
+        let rows = LiveTranscript.rows(files: liveTranscriptFiles, feeds: liveTranscriptFeeds, serverLive: liveTranscriptServerLive,
+                                       stale: Set(status.staleTranscriptionSessionIds), stranded: Set(strandedCaptures.map(\.sessionId)),
+                                       now: Date())
+        guard let mac = macRecording.manifest,
+              let label = MacRecordingLiveRow.label(stopped: mac.stopped, saved: mac.saved, acknowledged: mac.acknowledged, chunks: mac.chunks.count)
+        else { return rows }
+        return rows.map { row in
+            guard row.sessionId == mac.captureId else { return row }
+            var stopped = row; stopped.deliveryLabel = label; return stopped
+        }
     }
 
     var openLiveTranscriptFeed: LiveTranscriptFeed? { liveTranscriptOpenID.flatMap { liveTranscriptFeeds[$0] } }

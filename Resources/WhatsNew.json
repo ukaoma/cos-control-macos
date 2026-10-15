@@ -1,5 +1,5 @@
 {
-  "version": "0.5.306",
+  "version": "0.5.307",
   "whatsNew": {
     "summary": "Dictate into any Mac app with any shortcut, including Fn, and record everything your Mac plays with a live transcript.",
     "sections": [
@@ -10,7 +10,7 @@
           "Any key can be the shortcut: a modifier plus a key, a function key, or one modifier key by itself such as Fn 🌐 or Right ⌘. Fn+arrow and other chords never start dictation.",
           "To use Fn, set System Settings → Keyboard → Press 🌐 key to Do Nothing, and move Wispr Flow off Fn. Fn and single-key shortcuts use Accessibility, which insertion already needs.",
           "A listening panel beside your pet shows a scrolling waveform of your microphone and your words as you speak. Text goes into the same field and caret you started in; COS never presses Send.",
-          "Fixed: starting dictation no longer quits COS Control."
+          "A click while your shortcut modifier is held (⌥-click, ⌘-click) counts as a chord and never starts dictation."
         ]
       },
       {
@@ -18,10 +18,11 @@
         "items": [
           "Choose Record on Mac in Meetings and confirm Start recording. All Mac audio is the default: it records whatever app plays the call, without picking one. Your microphone is not recorded; glasses are optional.",
           "Open live meeting shows the transcript as it arrives, with COS Ask and meeting files, the same view as a glasses recording.",
-          "Live COS Ask works on Mac recordings, with server 6.73.8.",
+          "Live COS Ask opens Mac recordings, with server 6.73.9.",
           "The panel checks every chunk for sound. If nothing reaches COS for 12 seconds it says so, instead of only counting chunks received.",
           "A red menu bar indicator and Stop control stay available while recording. Local audio is retained for explicit recovery if delivery is interrupted; a silent capture can be kept while you record again.",
-          "Work requests blocked before sending can be reviewed and sent to another connected session, or a new or forked session, after confirmation."
+          "Work requests blocked before sending can be reviewed and sent to another connected session, or a new or forked session, after confirmation.",
+          "A Mac recording that stopped while its audio still uploads reads \"Capture stopped · saving N/M\" on Meetings, with Finish saving, instead of Live now."
         ]
       },
       {
@@ -92,6 +93,20 @@
         "items": [
           "Format Work chat with bold, italic, headings and lists. Drafts keep their formatting when you return.",
           "Drop or paste images and media into task attachments. Native assignments carry the saved files and readable companions."
+        ]
+      },
+      {
+        "title": "Close a live recording",
+        "items": [
+          "A Live now row that has had no audio for two minutes offers End and save. It saves everything the server received; audio the glasses or phone still hold is not added after that."
+        ]
+      },
+      {
+        "title": "Known limitations (field test)",
+        "items": [
+          "Mac recording stops at two hours in this pilot.",
+          "The meeting-to-Work intake job still uses Jev on its schedule; the SubQ choice covers Work search, session suggestions and completion checks.",
+          "The dictation crash fix and Ask on Mac recordings are confirmed in the field test, not yet in this build."
         ]
       }
     ]

@@ -222,6 +222,8 @@ struct LiveTranscriptRow: Identifiable, Equatable, Sendable {
     let phase: LiveTranscriptPhase
     /// When the file went: the duration stops here.
     var endedAt: Date? = nil
+    /// This Mac's own capture, stopped while its audio still delivers (MacRecordingLiveRow): shown instead of "Live now".
+    var deliveryLabel: String? = nil
     var id: String { LiveTranscript.rowID(sessionId) }
 }
 
@@ -415,6 +417,15 @@ enum LiveTranscript {
         if minutes < 1 { return "Just started" }
         if minutes < 60 { return "\(minutes) min" }
         return minutes % 60 == 0 ? "\(minutes / 60) h" : "\(minutes / 60) h \(minutes % 60) min"
+    }
+
+    /// The close control on a Live now row: a stopped Mac capture finishes delivering; a glasses recording with no audio
+    /// for `quietAfterSeconds` can be ended and saved. A row still receiving audio, or no longer live, offers nothing.
+    static func endActionTitle(row: LiveTranscriptRow, now: Date) -> String? {
+        guard row.phase == .live else { return nil }
+        if row.deliveryLabel != nil { return "Finish saving" }
+        guard let last = row.lastActivity, now.timeIntervalSince(last) >= quietAfterSeconds else { return nil }
+        return "End and save"
     }
 
     static func phaseLabel(_ phase: LiveTranscriptPhase) -> String? {

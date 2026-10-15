@@ -1,3 +1,13 @@
+## 0.5.307 (build 360), close a live recording and QA fixes
+
+- Close a live recording (Miles 2026-10-15: a glasses recording sat as "Live now · No audio for 22m" with no way to end it). A Live now row quiet for two minutes offers End and save, confirmed first, through the same save as Unsaved captures. A Mac capture never takes a server-side save of partial audio: its Save and Finish saving deliver the chunks still on this Mac.
+- A stopped Mac capture whose audio is still uploading reads "Capture stopped · saving N/M" on Meetings instead of Live now (the 2:00 PM capture showed Live now at 51/1,200 after the pilot limit stopped it).
+- Dictation shortcut monitors also take clicks, so ⌥-click or ⌘-click with a modifier shortcut is a chord, as the tracker already claimed. keyCode is read only from key events (NSEvent raises on a mouse event's keyCode); run-mac-dictation.sh pins it, reads code without comments, and counts every off-main or event-monitor callback site.
+- A failed hot key handler install says so instead of leaving shortcuts silently dead. Dictation failures, shortcut registration failures, silent-capture warnings and paused Mac delivery are logged (subsystem com.gotcos.control).
+- The silence warning on All Mac audio no longer tells you to switch to All Mac audio.
+- Known limitations: the two-hour Mac recording pilot cap; work_intake.py stays on Jev; dictation and Mac Ask fixes await field confirmation.
+- Pair with server 6.73.9.
+
 ## 0.5.306 (build 359), dictation crash fix
 
 - Fix a crash on the first microphone buffer (0.5.305, 2026-10-15 13:58). DictationMicrophoneCapture is @MainActor, so its AVAudioEngine tap closure inherited main-actor isolation; Swift 6 checks that on entry and trapped when AVAudioEngine called it from RealtimeMessenger.mServiceQueue. The tap and engine-change observer closures are @Sendable; run-mac-dictation.sh pins both.

@@ -115,7 +115,20 @@ enum MacRecordingSignal {
     static func warning(silentChunks: Int, source: String) -> String? {
         guard silentChunks >= warnAfterSilentChunks else { return nil }
         let seconds = silentChunks * MacRecordingWAV.framesPerChunk / MacRecordingWAV.sampleRate
+        // All Mac audio is already the whole output, so switching to it is no advice there: point at the call's own output.
+        if source == MacAudioSource.allMacAudio.name {
+            return "No sound reaching COS from All Mac audio for \(seconds)s. Check the call is playing through this Mac and is not muted."
+        }
         return "No sound reaching COS from \(source) for \(seconds)s. If the call is playing, stop and record All Mac audio."
+    }
+}
+
+/// 2026-10-15: a capture that stopped at the pilot limit, with 51 of 1,200 chunks delivered, still showed as "Live now"
+/// on Meetings for as long as the server held its session. Control knows its own capture stopped, so it says so.
+enum MacRecordingLiveRow {
+    static func label(stopped: Bool, saved: Bool, acknowledged: Int, chunks: Int) -> String? {
+        guard stopped, !saved else { return nil }
+        return "Capture stopped · saving \(acknowledged)/\(chunks)"
     }
 }
 

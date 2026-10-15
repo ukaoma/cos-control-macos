@@ -1,4 +1,7 @@
 import SwiftUI
+import os
+
+private let recordingLog = Logger(subsystem: "com.gotcos.control", category: "mac-recording")
 
 @MainActor enum MacRecordingTermination {
     static var prepare: (@MainActor () async -> Void)?
@@ -115,6 +118,10 @@ final class MacRecordingStore: ObservableObject {
                     do {
                         self.manifest = try await self.spool.append(chunk, captureId: id)
                         if silent { self.silentChunks += 1 } else { self.silentChunks = 0; self.heardSound = true }
+                        if self.silentChunks == MacRecordingSignal.warnAfterSilentChunks {
+                            let count = self.silentChunks, source = self.manifest?.sourceName ?? "?"
+                            recordingLog.warning("silent capture: \(count) chunks below the peak floor from \(source, privacy: .public)")
+                        }
                         self.deliverPending()
                     }
                     catch { self.captureInterruption = error.localizedDescription; self.error = error.localizedDescription; Task { await self.stop() }; break }
@@ -240,7 +247,7 @@ final class MacRecordingStore: ObservableObject {
                     }
                     break
                 }
-            } catch { failed = true; self.error = "Delivery paused: \(error.localizedDescription) Audio is retained. Retry does not restart recording." }
+            } catch { failed = true; let reason = error.localizedDescription; recordingLog.error("delivery paused: \(reason, privacy: .public)"); self.error = "Delivery paused: \(error.localizedDescription) Audio is retained. Retry does not restart recording." }
         }
     }
 }

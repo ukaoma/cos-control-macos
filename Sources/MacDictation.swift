@@ -4,6 +4,9 @@ import AudioToolbox
 import CoreAudio
 import ApplicationServices
 import Carbon.HIToolbox
+import os
+
+private let dictationLog = Logger(subsystem: "com.gotcos.control", category: "dictation")
 
 struct DictationMicrophone: Identifiable, Equatable {
     let id: String // stable UID, never an ephemeral AudioDeviceID
@@ -252,7 +255,12 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
         guard enabled else { phase = "Off"; return }
         if handler == nil {
             var events = [EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed)), EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyReleased))]
-            InstallEventHandler(GetApplicationEventTarget(), dictationHotKeyHandler, 2, &events, nil, &handler)
+            let status = InstallEventHandler(GetApplicationEventTarget(), dictationHotKeyHandler, 2, &events, nil, &handler)
+            if status != noErr {
+                handler = nil
+                dictationLog.error("hot key handler install failed: \(status)")
+                message = "Dictation shortcuts could not be set up (error \(status)). Turn dictation off and on to retry."
+            }
         }
         let activity = HotKeyCombo.load()
         for (number, trigger) in [(UInt32(1), holdTrigger), (UInt32(2), toggleTrigger)] {
@@ -266,17 +274,21 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
                 }
                 var ref: EventHotKeyRef?
                 if RegisterEventHotKey(key, modifiers, EventHotKeyID(signature: dictationHotKeySignature, id: number), GetApplicationEventTarget(), 0, &ref) == noErr, let ref { registrations.append(ref) }
-                else { message = "Shortcut is unavailable. Another app may already use it. Choose another one." }
+                else { dictationLog.error("shortcut \(number) unavailable"); message = "Shortcut is unavailable. Another app may already use it. Choose another one." }
             }
         }
         if holdTracker != nil || toggleTracker != nil {
             // Monitors run on the main thread in event order; never hop through a Task, which could reorder down/up.
+            // A click while the modifier is down (⌥-click, ⌘-click) is a chord like a key, so the monitors take clicks too and
+            // feed them as a key down. keyCode is read only from key events: NSEvent raises on a mouse event's keyCode.
             let handle: (NSEvent) -> Void = { [weak self] event in
-                let flags = event.type == .flagsChanged, key = event.keyCode, raw = UInt64(event.modifierFlags.rawValue)
+                let flags = event.type == .flagsChanged, isKey = flags || event.type == .keyDown
+                let key = isKey ? event.keyCode : 0, raw = UInt64(event.modifierFlags.rawValue)
                 MainActor.assumeIsolated { self?.keyEvent(flags: flags, keyCode: key, raw: raw) }
             }
-            if let global = NSEvent.addGlobalMonitorForEvents(matching: [.flagsChanged, .keyDown], handler: handle) { keyMonitors.append(global) }
-            if let local = NSEvent.addLocalMonitorForEvents(matching: [.flagsChanged, .keyDown], handler: { handle($0); return $0 }) { keyMonitors.append(local) }
+            let mask: NSEvent.EventTypeMask = [.flagsChanged, .keyDown, .leftMouseDown, .rightMouseDown, .otherMouseDown]
+            if let global = NSEvent.addGlobalMonitorForEvents(matching: mask, handler: handle) { keyMonitors.append(global) }
+            if let local = NSEvent.addLocalMonitorForEvents(matching: mask, handler: { handle($0); return $0 }) { keyMonitors.append(local) }
             if !AXIsProcessTrusted() {
                 message = "Fn and single-key shortcuts need Accessibility. Click Allow insertion into other apps…, then turn dictation off and on."
             }
@@ -353,7 +365,7 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
                     }
                 }
                 timer = Task { try? await Task.sleep(for: .seconds(MacDictationPolicy.maximumSeconds)); if !Task.isCancelled { stop() } }
-            } catch { phase = "Ready"; message = error.localizedDescription }
+            } catch { phase = "Ready"; let reason = error.localizedDescription; dictationLog.error("start failed: \(reason, privacy: .public)"); message = reason }
         }
     }
     func stop() {
@@ -370,7 +382,7 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
             let wav = try MacDictationPolicy.wav(pcm)
             pendingAudio = wav
             transcribe(wav, attempt: attempt, pendingPreview: pendingPreview)
-        } catch { phase = "Ready"; message = error.localizedDescription }
+        } catch { phase = "Ready"; let reason = error.localizedDescription; dictationLog.error("stop failed: \(reason, privacy: .public)"); message = reason }
     }
     func retryTranscription() {
         guard canRetry, let audio = pendingAudio else { return }
@@ -399,7 +411,7 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
                 case .retained: message = "Text ready to copy. Keep the same field and caret selected for automatic insertion; Accessibility access is required."
                 }
                 target = nil
-            } catch { guard generation == attempt else { return }; phase = "Ready"; message = error.localizedDescription }
+            } catch { guard generation == attempt else { return }; phase = "Ready"; let reason = error.localizedDescription; dictationLog.error("transcribe failed: \(reason, privacy: .public)"); message = reason }
         }
     }
     func cancel() {

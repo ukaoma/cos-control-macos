@@ -2035,6 +2035,7 @@ struct MeetingTaskLinkSheet: View {
 /// The pinned rows, one per live session, most recent first.
 struct LiveNowRows: View {
     @ObservedObject var model: ControllerModel
+    @State private var confirmEnd: LiveTranscriptRow?
 
     var body: some View {
         let rows = model.liveTranscriptRows
@@ -2042,8 +2043,25 @@ struct LiveNowRows: View {
             TimelineView(.periodic(from: .now, by: 15)) { context in
                 VStack(spacing: 6) {
                     ForEach(rows) { row in
-                        LiveNowRow(row: row, now: context.date, clock: model.clockStyle) { model.openLiveTranscript(row.sessionId) }
+                        HStack(spacing: 8) {
+                            LiveNowRow(row: row, now: context.date, clock: model.clockStyle) { model.openLiveTranscript(row.sessionId) }
+                            // 2026-10-15 (Miles): a recording whose glasses dropped sat as "Live now · No audio for 22m"
+                            // with no way to close it. Offered only once audio has stopped, never on a row still receiving.
+                            if let title = LiveTranscript.endActionTitle(row: row, now: context.date) {
+                                Button(title) {
+                                    if row.sessionId.hasPrefix("mac_") { model.saveStranded(row.sessionId) } else { confirmEnd = row }
+                                }
+                                .controlSize(.small)
+                                .disabled(model.busy || model.orphanBusy)
+                            }
+                        }
                     }
+                }
+                .confirmationDialog("End this recording and save it?", isPresented: Binding(get: { confirmEnd != nil }, set: { if !$0 { confirmEnd = nil } }), presenting: confirmEnd) { row in
+                    Button("End and save") { model.saveStranded(row.sessionId); confirmEnd = nil }
+                    Button("Keep it open", role: .cancel) { confirmEnd = nil }
+                } message: { _ in
+                    Text("Saves everything the server received as a meeting. Audio the glasses or phone still hold is not added after this.")
                 }
                 .padding(.horizontal, 22)
                 .padding(.vertical, 10)
@@ -2063,15 +2081,15 @@ struct LiveNowRow: View {
     var body: some View {
         Button(action: onOpen) {
             HStack(alignment: .center, spacing: 12) {
-                LiveDot(live: row.phase == .live)
+                LiveDot(live: row.phase == .live && row.deliveryLabel == nil)
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(row.phase == .live ? "Live now" : (LiveTranscript.phaseLabel(row.phase) ?? "Live now"))
+                    Text(row.deliveryLabel ?? (row.phase == .live ? "Live now" : (LiveTranscript.phaseLabel(row.phase) ?? "Live now")))
                         .font(COSType.body(13.5, weight: .semibold))
                         .foregroundStyle(.primary)
                     HStack(spacing: 0) {
                         Text(LiveTranscriptText.subtitle(start: row.startTime, now: now, clock: clock, endedAt: row.endedAt))
                             .foregroundStyle(.secondary)
-                        if row.phase == .live, let quiet = LiveTranscript.quietLabel(lastActivity: row.lastActivity, now: now) {
+                        if row.phase == .live, row.deliveryLabel == nil, let quiet = LiveTranscript.quietLabel(lastActivity: row.lastActivity, now: now) {
                             Text(" · " + quiet).foregroundStyle(COSPalette.amber)
                         }
                     }
