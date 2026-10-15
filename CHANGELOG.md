@@ -1,3 +1,11 @@
+## 0.5.301 (build 354), manual Mac recording candidate
+
+- Add manual recording of a selected Mac app's playback with explicit confirmation, a recording indicator, local retained WAV chunks and receipted saving. Glasses are optional; microphone capture and automatic meeting detection are outside this pilot.
+- Fix rejected recording starts caused by fractional timestamps. Normalize safe millisecond values before registration, and distinguish a start rejection with no captured audio from a retained recording that needs recovery.
+- Show selected and effective Parakeet engines in Voice setup and the menu panel. Preserve modern engine settings and readiness rather than offering the legacy Whisper tier installer.
+- Offer reviewed recovery to another linked session, a fork or a new session when a Work handoff is unresolved. Keep ambiguous same-session delivery fenced and require confirmation before sending to a new destination.
+- Pair with server 6.73.6; keep existing transcription-candidate and cue flags disabled. Signed audio canary and local installation are separate gates; no public promotion is implied.
+
 ## 0.5.297 (build 350), Work follow-up recovery candidate
 
 - Allow a Work chat follow-up when the exact preceding native turn has a reply and a fresh explicit idle read. Revalidate the unchanged receipt under the journal lock, then link it to the accepted follow-up. Preserve user review and task stage.
