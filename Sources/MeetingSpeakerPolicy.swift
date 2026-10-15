@@ -18,11 +18,11 @@ struct MeetingSpeakerPolicyView: View {
         VStack(alignment: .leading, spacing: 5) {
             HStack {
                 Text("Voice identity").font(COSType.body(11, weight: .medium))
-                Picker("Voice identity", selection: $mode) {
-                    Text("Standard").tag("standard")
-                    Text("High-confidence only").tag("high-confidence")
-                    Text("Anonymous / video").tag("anonymous")
-                }.labelsHidden().frame(maxWidth: 220).disabled(busy || revision == nil)
+                COSDropdown("Voice identity", selection: $mode, options: [
+                    COSDropdownOption("standard", "Standard"),
+                    COSDropdownOption("high-confidence", "High-confidence only"),
+                    COSDropdownOption("anonymous", "Anonymous / video")
+                ], showsLabel: false).frame(maxWidth: 220).disabled(busy || revision == nil)
                 Button(revision == "unreadable" ? "Repair settings" : "Apply") { Task { await save() } }.disabled(busy || revision == nil || (mode == savedMode && revision != "unreadable"))
                 if busy { ProgressView().controlSize(.mini) }
             }

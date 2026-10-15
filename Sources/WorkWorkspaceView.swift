@@ -1521,7 +1521,7 @@ struct WorkWorkspaceView: View {
                 if model.workBatchAvailable {
                     Button("Waiting on") { state.waitingOpen = true; state.intakeOpen = false; returnToList() }
                 }
-            }.menuStyle(.borderlessButton).fixedSize()
+            }.cosMenu().fixedSize()
         }
     }
     private func workTab(_ title: String, selected: Bool, action: @escaping () -> Void) -> some View {

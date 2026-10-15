@@ -245,11 +245,11 @@ struct MacRecordingPanel: View {
                 Text(store.message).font(COSType.body(11)).foregroundStyle(.secondary)
                 if !store.occupied {
                     HStack {
-                        TextField("Recording title", text: $store.title).textFieldStyle(.roundedBorder).frame(maxWidth: 260)
-                        Picker("Audio app", selection: $store.selectedID) {
-                            Text("Select app playing audio").tag(UInt32(0))
-                            ForEach(store.sources) { source in Text("\(source.name) (\(source.pid))").tag(source.id) }
-                        }.frame(maxWidth: 320)
+                        TextField("Recording title", text: $store.title).textFieldStyle(.plain).cosField().frame(maxWidth: 260)
+                        COSDropdown("Audio app", selection: $store.selectedID,
+                            options: [COSDropdownOption(UInt32(0), "Select app playing audio")] + store.sources.map {
+                                COSDropdownOption($0.id, "\($0.name) (\($0.pid))")
+                            }).frame(maxWidth: 320)
                         Button("Refresh apps") { Task { await store.prepare(bridge: bridge) } }
                         Button("Start recording") { confirmStart = true }.disabled(!store.canStart || !store.available || store.selectedID == 0)
                     }
