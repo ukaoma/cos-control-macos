@@ -1,7 +1,7 @@
 {
-  "version": "0.5.307",
+  "version": "0.5.308",
   "whatsNew": {
-    "summary": "Dictate into any Mac app with any shortcut, including Fn, and record everything your Mac plays with a live transcript.",
+    "summary": "Dictate into any Mac app with any shortcut, including Fn, record everything your Mac plays with a live transcript, and review every Work chat assignment before it is sent.",
     "sections": [
       {
         "title": "Dictate into any Mac app",
@@ -82,10 +82,11 @@
       {
         "title": "Work chat",
         "items": [
-          "Describe an outcome and see the plan and affected sessions before their assignments are sent.",
-          "Read each session’s delivery status and results together in the task conversation.",
-          "Connections and Agent workspace stay available. Shared task completion remains your decision.",
-          "Cursor and sessions already handed to a desktop app retain manual continuation."
+          "Describe an outcome and COS drafts assignments for linked sessions. Nothing is sent until you review it: send each one, edit its prompt, skip it, or Send all. Not now keeps them as drafts.",
+          "Choose Opus or Sonnet to plan, beside the composer. Opus is the default; the choice stays on this Mac. Needs server 6.73.10; older servers plan with Sonnet.",
+          "If an earlier handoff on the card is still unresolved, COS lists it first, with Mark reviewed, Acknowledge or Check status, instead of refusing partway through a plan.",
+          "A refused assignment shows its reason and the others stay sendable. If the task, its files or its sessions change after planning, COS asks you to plan again.",
+          "Read each session’s delivery status and results together in the task conversation. Shared task completion remains your decision; Cursor and app-owned sessions keep manual continuation."
         ]
       },
       {

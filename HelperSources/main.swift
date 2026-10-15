@@ -619,6 +619,7 @@ final class COSControlHelper {
         case "session-chat-queued": try emitSessionChatQueued(args: args)
         case "session-chat-queue-cancel": try emitSessionChatQueueCancel(args: args)
         case "work-chat": try emitWorkChat()
+        case "work-chat-capabilities": try emitWorkChatCapabilities()
         case "work-models": try emitWorkModels()
         case "work-new": try emitWorkNew()
         case "work-job": try emitWorkJob(args: args)
@@ -17025,6 +17026,18 @@ final class COSControlHelper {
             throw HelperError.message("Task chat planning is unavailable on this server. No assignment was sent.")
         }
         emit(ok: true, message: "Task chat", details: answer)
+    }
+
+    /// 0.5.308: which planners the server offers (server 6.73.10 advertises `planners`). The GET makes no model call. An older
+    /// server answers without the field, and Control then plans with Sonnet and shows no picker.
+    private func emitWorkChatCapabilities() throws {
+        try requireLiveWorkTransport()
+        guard let response = request("/api/work/chat", token: try readToken(), timeout: 5), response.status == 200,
+              let body = response.body, body["protocolVersion"] as? Int == 1 else {
+            throw HelperError.message("Task chat is unavailable on this server.")
+        }
+        let planners = (body["planners"] as? [String] ?? []).filter { ["sonnet", "opus"].contains($0) }
+        emit(ok: true, message: "Task chat", details: ["protocolVersion": 1, "planners": planners])
     }
 
     private func emitWorkNew() throws {

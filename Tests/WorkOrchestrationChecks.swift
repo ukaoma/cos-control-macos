@@ -5,10 +5,14 @@ import CryptoKit
 
 private actor WorkChatFixture {
     let ids: [String]
+    let planners: [String]?
     var calls: [String] = []
     var contextReads = 0
-    init(_ ids: [String]) { self.ids = ids }
+    var chatBodies: [[String: Any]] = []
+    init(_ ids: [String], planners: [String]? = ["sonnet", "opus"]) { self.ids = ids; self.planners = planners }
     func seen() -> [String] { calls }
+    func plannerSent() -> [String?] { chatBodies.map { $0["planner"] as? String } }
+    func plannerKeySent() -> [Bool] { chatBodies.map { $0["planner"] != nil } }
     func run(_ args: [String], _ data: Data?) async throws -> HelperResponse {
         let name = args.first ?? ""; calls.append(name)
         var out: [String: JSONValue] = [:]
@@ -20,7 +24,11 @@ private actor WorkChatFixture {
         case "work-context":
             contextReads += 1
             out = ["contextText": .string("Fixture task evidence"), "workRevision": .string(String(repeating: contextReads == 1 ? "a" : "b", count: 64)), "task": .object(["id": .string("aaaaaaaaaaaa"), "workIdentity": .string("aaaaaaaaaaaa"), "domain": .string("quilt"), "title": .string("Launch fixture"), "text": .string("Launch fixture"), "source": .string("Fixture evidence")])]
+        case "work-chat-capabilities":
+            out = ["protocolVersion": .number(1)]
+            if let planners { out["planners"] = .array(planners.map { .string($0) }) }
         case "work-chat":
+            if let data, let body = try? JSONSerialization.jsonObject(with: data) as? [String: Any] { chatBodies.append(body) }
             // Let a second Send and a navigation change race with planning.
             try await Task.sleep(for: .milliseconds(100))
             out = ["protocolVersion": .number(1), "answer": .string("Review independent copy and code checks."),
@@ -96,8 +104,34 @@ private actor WorkChatFixture {
     chat.setRichDraft(String(repeating:"x",count:2001),rtf:nil)
     precondition(chat.record?.draft == "Review the **header**", "Over-limit rich edit is not silently truncated")
     await chat.send(source: source, handoff: handoff)
-    precondition(chat.record?.rounds.count == 1 && chat.record?.rounds[0].state == "Dispatched")
-    precondition(chat.record?.draftRTF == nil, "A sent draft clears its local rich text")
+    precondition(chat.record?.rounds.count == 1 && chat.record?.rounds[0].state == "Ready to send", "Planning stops at review")
+    precondition(handoff.receipts.isEmpty, "Planning never dispatches: nothing is sent before Miles reviews it")
+    precondition(chat.record?.draftRTF == nil, "A planned draft clears its local rich text")
+    let planned = chat.record!.rounds[0]
+    precondition(planned.assignments.count == 2 && planned.assignments.allSatisfy { $0.state == "Not sent" })
+    let reopened = WorkTaskChatStore(); reopened.open(source: source, handoff: handoff)
+    precondition(reopened.record?.rounds[0].state == "Ready to send" && reopened.record?.rounds[0].assignments.map(\.receiptID) == planned.assignments.map(\.receiptID), "Reviewed drafts survive restart with their intent ids")
+    let firstID = planned.assignments[0].receiptID
+    for bad in [String(repeating: "x", count: 2001), "   ", "COS-**WORK** abc: done"] {
+        precondition(!chat.editAssignment(roundID: planned.id, assignmentID: firstID, prompt: bad), "An edit gets the planner's validation")
+    }
+    precondition(chat.record?.rounds[0].assignments[0].prompt == planned.assignments[0].prompt, "A refused edit changes nothing")
+    precondition(chat.editAssignment(roundID: planned.id, assignmentID: firstID, prompt: "  Review the header copy only. Do not publish.  "))
+    precondition(chat.record?.rounds[0].assignments[0].prompt == "Review the header copy only. Do not publish.")
+    chat.holdForLater(roundID: planned.id)
+    await chat.sendAssignment(roundID: planned.id, assignmentID: firstID, source: source, handoff: handoff)
+    await chat.sendAll(roundID: planned.id, source: source, handoff: handoff)
+    precondition(handoff.receipts.isEmpty && chat.record?.rounds[0].state == "Saved as drafts", "Not now keeps drafts and sends nothing")
+    let heldRelaunch = WorkTaskChatStore(); heldRelaunch.open(source: source, handoff: handoff)
+    precondition(heldRelaunch.record?.rounds[0].state == "Saved as drafts" && heldRelaunch.record?.rounds[0].assignments[0].prompt == "Review the header copy only. Do not publish.", "Saved drafts and edits survive restart")
+    chat.reviewDrafts(roundID: planned.id)
+    await chat.sendAssignment(roundID: planned.id, assignmentID: firstID, source: source, handoff: handoff)
+    precondition(handoff.receipts.count == 1 && handoff.receipts[0].id == firstID && handoff.receipts[0].prompt.contains("Review the header copy only. Do not publish."), "Send dispatches exactly the reviewed, edited assignment")
+    precondition(chat.record?.rounds[0].state == "Ready to send" && chat.record?.rounds[0].assignments[1].state == "Not sent", "One send leaves the other assignment sendable")
+    await chat.sendAssignment(roundID: planned.id, assignmentID: firstID, source: source, handoff: handoff)
+    precondition(handoff.receipts.count == 1, "A second click on a sent assignment never resends")
+    await chat.sendAll(roundID: planned.id, source: source, handoff: handoff)
+    precondition(chat.record?.rounds[0].state == "Dispatched", "Send all sends what is left")
     precondition(handoff.receipts.count == 2 && Set(handoff.receipts.compactMap(\.sessionID)) == Set(ids.prefix(2)))
     precondition(Set(handoff.receipts.compactMap(\.orchestrationRunID)).count == 1)
     let id = handoff.receipts[0].id
@@ -107,9 +141,14 @@ private actor WorkChatFixture {
     precondition(relaunched.record?.rounds.first?.assignments.map(\.receiptID) == chat.record?.rounds.first?.assignments.map(\.receiptID), "Chat survives restart with exact receipts")
     chat.setDraft("Do more")
     await chat.send(source: source, handoff: handoff)
-    precondition(handoff.receipts.count == 2 && chat.record?.rounds.last?.state == "Needs attention", "Foreign active run blocks more sends")
-    precondition(chat.record?.rounds.last?.assignments.allSatisfy { $0.state != "Sending" } == true, "A local refusal cannot remain Sending")
-    let refusedRound = chat.record!.rounds.last!
+    precondition(handoff.receipts.count == 2 && chat.record?.rounds.count == 1, "Earlier unresolved handoffs stop planning")
+    precondition(chat.record?.draft == "Do more", "A held card keeps the request in the composer")
+    precondition(Set(chat.blockers.map(\.id)) == Set(handoff.receipts.map(\.id)) && chat.error == WorkChatPreflight.heading, "The pre-flight lists every receipt holding the card")
+    // A request refused before 0.5.308 (Needs attention, nothing sent) still restores for review.
+    chat.setDraft("")
+    var refusedRound = WorkChatRound(question: "Do more"); refusedRound.state = "Needs attention"
+    refusedRound.assignments = [WorkChatAssignment(sessionID: ids[0], prompt: "Do more work")]
+    chat.record?.rounds.append(refusedRound)
     await chat.refresh(source: source, handoff: handoff, automatic: true)
     precondition(chat.record?.rounds.last?.assignments.allSatisfy { $0.state == "Not sent" } == true, "A known local refusal stays Not sent after polling")
     precondition(chat.record?.draft == "", "The saved failed question remains in durable history")
@@ -122,6 +161,43 @@ private actor WorkChatFixture {
     for n in handoff.receipts.indices { handoff.receipts[n].status = "completed"; handoff.receipts[n].result = "Result for " + handoff.receipts[n].provider }
     await chat.refresh(source: source, handoff: handoff)
     precondition(chat.record?.rounds[0].assignments.allSatisfy { !$0.result.isEmpty } == true, "Earlier rounds still receive independent updates")
+    await chat.recheckBlockers(source: source, handoff: handoff)
+    precondition(chat.blockers.isEmpty && chat.error == nil, "Resolved receipts release the card")
+    // Each send re-checks the plan's task revision; a change stops the round before any dispatch.
+    chat.setDraft("Third request"); await chat.send(source: source, handoff: handoff)
+    let third = chat.record!.rounds.last!
+    precondition(third.state == "Ready to send" && third.assignments.count == 2 && handoff.receipts.count == 2)
+    let changed = WorkSource(id: source.id, title: source.title, revision: source.revision + "-changed", project: source.project, context: source.context)
+    await chat.sendAll(roundID: third.id, source: changed, handoff: handoff)
+    precondition(handoff.receipts.count == 2 && chat.record?.rounds.last?.state == "Needs a new plan" && chat.error == WorkChatPolicy.staleMessage, "A changed task is never sent from a stale plan")
+    await chat.sendAssignment(roundID: third.id, assignmentID: third.assignments[0].receiptID, source: source, handoff: handoff)
+    precondition(handoff.receipts.count == 2, "A stale round stays unsendable")
+    chat.restoreUnsentRequest(roundID: third.id)
+    precondition(chat.record?.draft == "Third request", "Plan again restores the request for a new plan")
+    await chat.send(source: source, handoff: handoff)
+    let fourth = chat.record!.rounds.last!
+    precondition(fourth.id != third.id && fourth.state == "Ready to send")
+    // A receipt that appears after planning holds the next send; the assignment stays sendable.
+    var stray = WorkHandoffReceipt(id: UUID().uuidString.lowercased(), workID: source.id, workTitle: source.title, sourceRevision: source.revision, mode: .continueSession, provider: "claude", modelID: "existing", sessionID: ids[0], sessionTitle: "Exact stray", status: "unknown", detail: "Delivery was interrupted.", prompt: "Stray", createdAt: Date().timeIntervalSince1970 - 300)
+    stray.orchestrationRunID = fourth.id
+    handoff.receipts.append(stray)
+    await chat.sendAssignment(roundID: fourth.id, assignmentID: fourth.assignments[1].receiptID, source: source, handoff: handoff)
+    precondition(handoff.receipts.count == 3 && !handoff.receipts.contains { $0.id == fourth.assignments[1].receiptID } && chat.blockers.map(\.id) == [stray.id]
+        && chat.record?.rounds.last?.assignments[1].state == "Not sent", "An unknown receipt holds even the same round's other session; nothing is submitted")
+    handoff.receipts.removeAll { $0.id == stray.id }
+    chat.skipAssignment(roundID: fourth.id, assignmentID: fourth.assignments[0].receiptID)
+    precondition(chat.record?.rounds.last?.state == "Ready to send", "Skipping one leaves the other under review")
+    await chat.sendAssignment(roundID: fourth.id, assignmentID: fourth.assignments[0].receiptID, source: source, handoff: handoff)
+    precondition(chat.record?.rounds.last?.assignments[0].state == "Skipped" && handoff.receipts.count == 2, "A skipped assignment is never sent")
+    chat.skipAssignment(roundID: fourth.id, assignmentID: fourth.assignments[1].receiptID)
+    precondition(chat.record?.rounds.last?.state == "Not sent" && handoff.receipts.count == 2, "Skipping every assignment sends nothing")
+    // A session link changed since planning stops the send.
+    chat.setDraft("Fifth request"); await chat.send(source: source, handoff: handoff)
+    let fifth = chat.record!.rounds.last!
+    precondition(fifth.state == "Ready to send")
+    precondition(handoff.removeSessionCard(sessionID: ids[2], workID: source.id, expected: try WorkSessionLinks.revision(handoff.confirmedSessionCards[ids[2]]!)))
+    await chat.sendAll(roundID: fifth.id, source: source, handoff: handoff)
+    precondition(handoff.receipts.count == 2 && chat.record?.rounds.last?.state == "Needs a new plan" && chat.error == WorkChatPolicy.staleMessage, "Changed session links since planning stop the send")
     let fileStore = WorkCardFileStore(root:root.appendingPathComponent("rich-files"),isolated:true)
     let withFiles = WorkHandoffStore(isolated:true,storageURL:root.appendingPathComponent("with-files.json"),transport: { _,_ in preconditionFailure("No provider calls in attachment check") },cardFiles:fileStore)
     withFiles.sessions = sessions
@@ -133,6 +209,17 @@ private actor WorkChatFixture {
     let filesChat = WorkTaskChatStore(); filesChat.open(source:attachmentSource,handoff:withFiles)
     filesChat.setDraft("Check the attached context independently")
     await filesChat.send(source:attachmentSource,handoff:withFiles)
+    precondition(withFiles.receipts.isEmpty && filesChat.record?.rounds[0].state == "Ready to send")
+    // A file added after planning makes the plan stale; nothing goes out until it is planned again.
+    let laterURL = root.appendingPathComponent("later-notes.txt")
+    try Data("Added after planning.".utf8).write(to:laterURL)
+    await fileStore.intake(urls:[laterURL],source:attachmentSource)
+    await filesChat.sendAll(roundID:filesChat.record!.rounds[0].id,source:attachmentSource,handoff:withFiles)
+    precondition(withFiles.receipts.isEmpty && filesChat.record?.rounds[0].state == "Needs a new plan", "Attachments changed since planning stop the send")
+    filesChat.restoreUnsentRequest(roundID:filesChat.record!.rounds[0].id)
+    await filesChat.send(source:attachmentSource,handoff:withFiles)
+    precondition(filesChat.record?.rounds.count == 2 && filesChat.record?.rounds[1].state == "Ready to send")
+    await filesChat.sendAll(roundID:filesChat.record!.rounds[1].id,source:attachmentSource,handoff:withFiles)
     precondition(withFiles.receipts.count == 2, "Both independent assignments receive attachments")
     precondition(withFiles.receipts.allSatisfy { $0.prompt.contains("review-context.txt") && $0.context != nil }, "Actual handoff prompts and receipts retain saved file references")
     precondition(filesChat.record?.rounds[0].attachmentNames == ["review-context.txt"], "Question records its observed attachment names")
@@ -145,7 +232,9 @@ private actor WorkChatFixture {
     for id in ids.prefix(2) { precondition(real.confirmSessionCard(sessionID: id, source: source)) }
     await real.refresh()
     let candidate = WorkTaskChatStore(); candidate.enabled = true; candidate.open(source: source, handoff: real); candidate.setDraft("Review independent checks")
-    let first = Task { await candidate.send(source: source, handoff: real) }
+    await candidate.loadPlanners(handoff: real)
+    precondition(candidate.planners == ["sonnet", "opus"], "The advertised planners are offered")
+    let first = Task { await candidate.send(source: source, handoff: real, planner: "opus") }
     try await Task.sleep(for: .milliseconds(50))
     await candidate.send(source: source, handoff: real)
     let other = WorkSource(id: "task:quilt:bbbbbbbbbbbb", title: "Other", revision: source.revision, project: "quilt", context: "")
@@ -153,7 +242,24 @@ private actor WorkChatFixture {
     precondition(candidate.record?.workID == source.id, "Navigation cannot redirect an in-flight request")
     await first.value
     let calls = await fixture.seen()
-    precondition(calls.filter { $0 == "work-chat" }.count == 1 && real.receipts.isEmpty && candidate.record?.rounds.first?.state == "Needs attention", "Changed task stops all dispatch; double Send produces one plan")
+    precondition(calls.filter { $0 == "work-chat" }.count == 1 && real.receipts.isEmpty && candidate.record?.rounds.first?.state == "Ready to send", "Double Send produces one plan, and planning never dispatches")
+    let sentPlanner = await fixture.plannerSent()
+    precondition(sentPlanner == ["opus"] && candidate.record?.rounds.first?.planner == "opus", "The chosen planner reaches the server and is recorded on the round")
+    await candidate.sendAll(roundID: candidate.record!.rounds[0].id, source: source, handoff: real)
+    let afterSend = await fixture.seen()
+    precondition(real.receipts.isEmpty && candidate.record?.rounds.first?.state == "Needs a new plan" && candidate.error == WorkChatPolicy.staleMessage
+        && afterSend.filter { $0 == "work-context" }.count == 2, "A task changed since planning stops every send before native delivery")
+    // An older server advertises no planners: no picker, and the planner key is never sent (6.73.9 refuses unknown keys).
+    let oldFixture = WorkChatFixture(ids, planners: nil)
+    let oldServer = WorkHandoffStore(storageURL: root.appendingPathComponent("old-server.json"), transport: { args,data in try await oldFixture.run(args,data) })
+    for id in ids.prefix(2) { precondition(oldServer.confirmSessionCard(sessionID: id, source: source)) }
+    await oldServer.refresh()
+    let oldChat = WorkTaskChatStore(); oldChat.enabled = true; oldChat.open(source: source, handoff: oldServer); oldChat.setDraft("Review on an older server")
+    await oldChat.loadPlanners(handoff: oldServer)
+    precondition(oldChat.planners.isEmpty, "An older server offers no planner choice")
+    await oldChat.send(source: source, handoff: oldServer, planner: "opus")
+    let oldKeys = await oldFixture.plannerKeySent()
+    precondition(oldKeys == [false] && oldChat.record?.rounds.last?.planner == "sonnet" && oldServer.receipts.isEmpty, "An older server plans with Sonnet and never receives the planner key")
     let legacySource = WorkSource(id: "task:quilt:dddddddddddd", title: "Interrupted fixture", revision: source.revision, project: "quilt", context: "")
     let legacyChat = WorkTaskChatStore(); legacyChat.open(source: legacySource, handoff: handoff)
     var interrupted = WorkChatRound(question: "Review the 404 sheet")
@@ -166,10 +272,98 @@ private actor WorkChatFixture {
     precondition(legacyChat.record?.draft == "", "A missing historical receipt needs a manual session check")
     legacyChat.restoreUnsentRequest(roundID: interrupted.id, checkedUnconfirmed: true)
     precondition(legacyChat.record?.draft == interrupted.question, "After checking, recovery fills the composer only")
+    try runWorkChatPreflightChecks(source: source, sessions: sessions)
+    try await runWorkChatPartialRefusalChecks(source: source, ids: ids, root: root)
     try await runWorkContinuationChecks(source: source, session: sessions[0], root: root)
     try await runWorkIndependentRecoveryChecks(source: source, sessions: sessions, root: root)
     try await runWorkChatTypingChecks(source: source, handoff: handoff, root: root)
-    print("PASS Work orchestration: exact target policy, private CAS/symlinks, shared distinct-target run, duplicate/foreign-run fences, durable history, all-round provenance, navigation/double-send/task-revision drift; zero provider sends")
+    print("PASS Work orchestration: exact target policy, private CAS/symlinks, plan-then-review (edit, Not now, per-assignment Send, Skip, Send all), shared distinct-target run, duplicate/foreign-run fences and pre-flight, durable history, all-round provenance, navigation/double-send/task-revision drift; zero provider sends")
+}
+
+/// 0.5.308: one assignment's session refuses at delivery; Send all still sends the other (2026-10-15: the first refusal
+/// threw and the second assignment was never tried). Real store, real submit, fake transport; no live provider.
+private actor WorkPartialSendFixture {
+    let ids: [String]
+    private var sends: [String] = []
+    init(_ ids: [String]) { self.ids = ids }
+    func sent() -> [String] { sends }
+    func run(_ args: [String], _ data: Data?) async throws -> HelperResponse {
+        var out: [String: JSONValue] = [:]
+        let thread = args.firstIndex(of: "--thread-id").map { args[$0 + 1] } ?? ""
+        switch args.first ?? "" {
+        case "work-models": out = ["serverInstanceId": .string("partial-server"), "models": .array([])]
+        case "claude-sessions": out = ["sessions": .array(ids.prefix(2).map { id in .object([
+            "sessionId": .string(String(id.split(separator: ":")[1])), "provider": .string(String(id.split(separator: ":")[0])),
+            "name": .string("Exact " + id), "workspace": .string("/tmp/fixture"), "state": .string("recent")]) })]
+        case "work-context": out = ["contextText": .string("Fixture task evidence"), "workRevision": .string(String(repeating: "c", count: 64)), "task": .object(["id": .string("aaaaaaaaaaaa"), "workIdentity": .string("aaaaaaaaaaaa"), "domain": .string("quilt"), "title": .string("Launch fixture"), "text": .string("Launch fixture"), "source": .string("Fixture evidence")])]
+        case "work-chat": out = ["protocolVersion": .number(1), "answer": .string("Two independent checks."),
+            "assignments": .array(ids.prefix(2).map { .object(["sessionID": .string($0), "prompt": .string("Report checks; do not publish.")]) })]
+        // The first session refuses at delivery; the second accepts.
+        case "session-chat-attachability": out = ["attachable": .bool(!ids[0].hasSuffix(thread)), "reasonCopy": .string("Fixture refusal: this session cannot be continued.")]
+        case "session-chat-attach": out = ["state": .string("attached"), "bindingId": .string("partial-fixture"), "epoch": .number(1), "boundTo": .string("exact-target")]
+        case "session-chat-send": sends.append(thread); out = ["state": .string("completed")]
+        default: preconditionFailure("Partial-send fixture must not reach \(args)")
+        }
+        return HelperResponse(ok: true, message: "Fixture", details: out)
+    }
+}
+
+@MainActor private func runWorkChatPartialRefusalChecks(source: WorkSource, ids: [String], root: URL) async throws {
+    let fixture = WorkPartialSendFixture(ids)
+    let store = WorkHandoffStore(storageURL: root.appendingPathComponent("partial.json"), transport: { args, data in try await fixture.run(args, data) })
+    for id in ids.prefix(2) { precondition(store.confirmSessionCard(sessionID: id, source: source)) }
+    await store.refresh()
+    let chat = WorkTaskChatStore(); chat.enabled = true; chat.open(source: source, handoff: store); chat.setDraft("Run both checks")
+    await chat.send(source: source, handoff: store)
+    let round = chat.record!.rounds.last!
+    precondition(round.state == "Ready to send" && store.receipts.isEmpty)
+    await chat.sendAll(roundID: round.id, source: source, handoff: store)
+    let sent = await fixture.sent()
+    let after = chat.record!.rounds.last!
+    precondition(after.assignments[0].state == "refused" && after.assignments[0].detail.contains("Fixture refusal"), "A refusal marks only its own assignment, with its reason")
+    precondition(sent == [String(ids[1].split(separator: ":")[1])] && after.assignments[1].state == "delivered", "A refusal never stops the other assignment from being sent")
+    precondition(after.state == "Dispatched" && store.receipts.count == 2)
+    print("PASS Work chat partial refusal: one refused delivery, the other sent, both recorded")
+}
+
+/// 0.5.308: the one fence submit and the task chat's pre-flight share, the planner choice, and the review rules.
+@MainActor private func runWorkChatPreflightChecks(source: WorkSource, sessions: [WorkSession]) throws {
+    let run = UUID().uuidString.lowercased()
+    func row(_ status: String, session: Int, at: Double = 100) -> WorkHandoffReceipt {
+        var r = WorkHandoffReceipt(id: UUID().uuidString.lowercased(), workID: source.id, workTitle: source.title, sourceRevision: source.revision, mode: .continueSession, provider: sessions[session].provider, modelID: "existing", sessionID: sessions[session].id, sessionTitle: sessions[session].title, status: status, detail: "", prompt: "Fixture", createdAt: at)
+        r.orchestrationRunID = run; r.channel = "turn"; return r
+    }
+    let running = row("running", session: 0)
+    precondition(WorkChatPreflight.holds(running, continuations: [:]), "A running handoff holds the card")
+    precondition(!WorkChatPreflight.holds(running, continuations: [:], orchestrationRunID: run, sessionID: sessions[1].id), "One round's live delivery never holds its other session")
+    precondition(WorkChatPreflight.holds(running, continuations: [:], orchestrationRunID: run, sessionID: sessions[0].id), "The same session in the same round would be a second writer")
+    precondition(WorkChatPreflight.holds(running, continuations: [:], orchestrationRunID: "another-run", sessionID: sessions[1].id), "Another round's delivery holds the card")
+    precondition(WorkChatPreflight.holds(row("unknown", session: 0), continuations: [:], orchestrationRunID: run, sessionID: sessions[1].id), "An unconfirmed delivery holds even its own round")
+    for status in ["completed", "failed", "refused", "canceled", "reviewed"] { precondition(!WorkChatPreflight.holds(row(status, session: 0), continuations: [:]), "Terminal \(status) never holds") }
+    var continued = row("delivered", session: 0); continued.continuedBy = "next"
+    precondition(!WorkChatPreflight.holds(continued, continuations: [:]))
+    let delivered = row("delivered", session: 0)
+    precondition(WorkChatPreflight.holds(delivered, continuations: [:]), "A delivered reply holds until checked")
+    precondition(!WorkChatPreflight.holds(delivered, continuations: [delivered.id: try WorkChatPolicy.continuationKey(delivered)]), "An idle exact reply lets the chat continue")
+    var edited = delivered; edited.detail = "Changed since the read"
+    precondition(WorkChatPreflight.holds(edited, continuations: [delivered.id: try WorkChatPolicy.continuationKey(delivered)]), "A changed receipt voids the idle proof")
+    precondition(!WorkChatPreflight.holds(delivered, continuations: [:], replacing: delivered.id), "The reply a send answers never holds it")
+    var other = row("running", session: 0, at: 300); other.workID = "task:quilt:ffffffffffff"
+    let older = row("queued", session: 1, at: 50), newer = row("unknown", session: 0, at: 200)
+    precondition(WorkChatPreflight.blockers([older, other, newer, row("completed", session: 0)], workID: source.id, continuations: [:]).map(\.id) == [newer.id, older.id], "Blockers are this card's, newest first")
+    precondition(WorkChatPreflight.line(newer, now: 200 + 7_200) == sessions[0].title + " · unknown · 2 h ago")
+    precondition(WorkChatPreflight.line(newer, now: 230) == sessions[0].title + " · unknown · just now")
+    precondition(WorkChatPolicy.planner(nil, advertised: []) == nil && WorkChatPolicy.planner("opus", advertised: []) == nil, "An older server gets no planner key")
+    precondition(WorkChatPolicy.planner("opus", advertised: ["sonnet", "opus"]) == "opus" && WorkChatPolicy.planner("sonnet", advertised: ["sonnet", "opus"]) == "sonnet")
+    precondition(WorkChatPolicy.planner("opus", advertised: ["sonnet"]) == "sonnet" && WorkChatPolicy.planner(nil, advertised: ["sonnet", "opus"]) == "sonnet", "An unoffered choice falls back to Sonnet")
+    precondition(WorkChatPolicy.planner("haiku", advertised: ["sonnet", "opus", "haiku"]) == "sonnet", "Only the planners Control knows are ever requested")
+    precondition(WorkChatPolicy.plannerName("opus") == "Opus" && WorkChatPolicy.plannerName(nil) == "Sonnet")
+    func a(_ state: String) -> WorkChatAssignment { var x = WorkChatAssignment(sessionID: sessions[0].id, prompt: "p"); x.state = state; return x }
+    precondition(WorkChatPolicy.reviewedState([a("delivered"), a("Not sent")]) == "Ready to send", "A refused-before-receipt assignment stays sendable")
+    precondition(WorkChatPolicy.reviewedState([a("delivered"), a("Skipped")]) == "Dispatched" && WorkChatPolicy.reviewedState([a("Skipped"), a("Skipped")]) == "Not sent")
+    precondition(WorkChatPolicy.reviewedState([a("Sending")]) == "Ready to send")
+    precondition(WorkChatPolicy.validPrompt("Review copy.") && !WorkChatPolicy.validPrompt(" \n ") && !WorkChatPolicy.validPrompt(String(repeating: "x", count: 2001)) && !WorkChatPolicy.validPrompt("cos-`work` x: done"))
+    print("PASS Work chat pre-flight: one shared fence (run/session exemption, unknown, continuation proof, replacing, terminal), card blockers newest first, planner choice and fallback, review states, prompt validation")
 }
 
 private actor WorkRecoveryFixture {
