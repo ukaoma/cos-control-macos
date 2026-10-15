@@ -808,6 +808,7 @@ struct WorkGlassesRequest: Equatable, Sendable {
 
     /// One line for a suggestion that did not come, instead of falling back to word match in silence.
     nonisolated static func adviceUnavailableText(_ reason: String?) -> String? {
+        if let text = DecisionProvider.failureText(reason) { return text + " Showing word matches." }
         switch reason {
         case nil, "no_sessions": return nil
         case "subq_not_configured": return "Add a SubQ key in COS Control settings to get session suggestions."

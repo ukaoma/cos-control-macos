@@ -39,6 +39,18 @@ import Foundation
         precondition(WorkCompletionVerdict(details: ["provider": .string("subq"), "verdict": .string("done"), "confidence": .number(.infinity)]) == nil)
         precondition(WorkHandoffStore.adviceUnavailableText("subq_not_configured")?.contains("SubQ key") == true)
         precondition(WorkSearch.note("subq_key_rejected")?.contains("SubQ") == true)
+        // These are the actual server DecisionProviderError codes, not provider-specific invented prefixes.
+        for (reason, fragment) in ["decision_not_configured": "API key", "decision_key_rejected": "rejected",
+                                   "decision_credits_required": "credits", "decision_rate_limited": "rate limited",
+                                   "decision_cap_reached": "budget", "decision_usage_unavailable": "accounting",
+                                   "decision_breaker_open": "paused", "decision_invalid_provider": "invalid",
+                                   "decision_request_rejected": "accept", "decision_bad_answer": "unreadable",
+                                   "decision_unavailable": "unavailable", "decision_cancelled": "cancelled"] {
+            precondition(DecisionProvider.failureText(reason)?.contains(fragment) == true)
+            precondition(WorkSearch.note(reason)?.contains(fragment) == true)
+            precondition(WorkHandoffStore.adviceUnavailableText(reason)?.contains(fragment) == true)
+            precondition(WorkProgressTracker.jevUnavailableText(reason)?.contains(fragment) == true)
+        }
         precondition(!WorkHandoffStore.sendBackPrompt(missing: "check", evidence: "SubQ read the reply", reportedBy: "subq").contains("status line said"))
 
         // Real ControllerModel + a temporary helper; no live server or model calls.

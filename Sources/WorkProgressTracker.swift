@@ -402,6 +402,7 @@ struct WorkBoardReads: Equatable, Sendable {
     nonisolated static let finalJevReasons: Set<String> = ["task_not_found", "session_not_found", "no_reply", "invalid_completion_request", "no_done_when"]
 
     nonisolated static func jevUnavailableText(_ reason: String) -> String? {
+        if let text = DecisionProvider.failureText(reason) { return "The reply has no status line. " + text + " Open the session to check." }
         switch reason {
         case "server_too_old": return "The reply has no status line. Jev checks need server 6.58.0; open the session to check."
         case "subq_not_configured": return "The reply has no status line. Add a SubQ key in Settings to have replies checked."

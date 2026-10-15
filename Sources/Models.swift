@@ -2226,6 +2226,24 @@ struct WorkMeetingReference: Identifiable, Hashable, Sendable {
 enum DecisionProvider: String, CaseIterable, Sendable {
     case jev, subq
     var title: String { self == .jev ? "Jev" : "SubQ" }
+    /// New server failures intentionally identify no successful provider. Do not guess who served a failed request.
+    static func failureText(_ reason: String?) -> String? {
+        switch reason {
+        case "decision_not_configured": "The selected decision provider needs an API key in Settings."
+        case "decision_key_rejected": "The selected decision provider rejected its API key. Check it in Settings."
+        case "decision_credits_required": "The selected decision provider needs available credits."
+        case "decision_rate_limited": "The selected decision provider is rate limited. Try again later."
+        case "decision_cap_reached": "The selected decision provider has used today’s budget."
+        case "decision_usage_unavailable": "Decision usage accounting is unavailable. Requests are paused until it is repaired."
+        case "decision_breaker_open": "The selected decision provider is paused after repeated failures."
+        case "decision_invalid_provider": "The decision provider setting is invalid. Check it in Settings."
+        case "decision_request_rejected": "The selected decision provider could not accept this request."
+        case "decision_bad_answer": "The selected decision provider returned an unreadable answer."
+        case "decision_unavailable": "The selected decision provider is temporarily unavailable."
+        case "decision_cancelled": "The decision request was cancelled."
+        default: nil
+        }
+    }
 }
 
 /// Public server configuration only. Credentials never belong in a settings response or local preferences.

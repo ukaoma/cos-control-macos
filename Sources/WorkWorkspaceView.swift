@@ -816,7 +816,8 @@ enum WorkSearch {
     /// too many cards, no TypeSafe key or one TypeSafe refused, a request Jev refused, and a server without the route.
     /// A temporary or unknown failure explains the word-only fallback. A switch deliberately turned off stays quiet.
     nonisolated static func note(_ reason: String?) -> String? {
-        switch reason {
+        if let text = DecisionProvider.failureText(reason) { return text + " Showing word matches." }
+        return switch reason {
         case "subq_not_configured": "Meaning search needs a SubQ key in Settings"
         case "subq_key_rejected": "SubQ did not accept the saved key. Check it in Settings."
         case "subq_cap_reached", "subq_breaker_open", "subq_unavailable": "SubQ meaning search is unavailable. Showing word matches."
@@ -836,7 +837,7 @@ enum WorkSearch {
     }
     /// Reasons that cannot change by asking again for the same search (a refused request is refused again). A key that
     /// TypeSafe refused is asked again, so a key fixed in Settings works at once.
-    nonisolated static let definitiveReasons: Set<String> = ["search_off", "jev_not_configured", "subq_not_configured", "server_too_old", "too_many_candidates", "jev_request_rejected", "subq_request_rejected"]
+    nonisolated static let definitiveReasons: Set<String> = ["search_off", "jev_not_configured", "subq_not_configured", "server_too_old", "too_many_candidates", "jev_request_rejected", "subq_request_rejected", "decision_not_configured", "decision_invalid_provider", "decision_request_rejected"]
     /// An answer that ends the asking for its search: it ran, or its reason is definitive.
     nonisolated static func settled(_ meaning: WorkSearchMeaning) -> Bool { meaning.available || definitiveReasons.contains(meaning.reason ?? "") }
     /// An answer worth keeping at all: settled, or one that has a line to say (the cap or the breaker, asked again next

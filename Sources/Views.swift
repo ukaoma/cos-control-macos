@@ -1114,12 +1114,11 @@ struct ControlPanel: View {
     }
 
     private func decisionProviderPicker(_ title: String, workflow: String?, selection: String) -> some View {
-        Picker(title, selection: Binding(get: { selection }, set: { value in
+        COSDropdown(title, selection: Binding(get: { selection }, set: { value in
             Task { await model.setDecisionProvider(workflow: workflow, selection: value) }
-        })) {
-            Text(workflow == nil ? "Server default" : "Use default").tag("inherit")
-            ForEach(DecisionProvider.allCases, id: \.rawValue) { provider in Text(provider.title).tag(provider.rawValue) }
-        }.disabled(model.decisionBusy || model.subQKeyBusy)
+        }), options: [COSDropdownOption("inherit", workflow == nil ? "Server default" : "Use default")]
+            + DecisionProvider.allCases.map { COSDropdownOption($0.rawValue, $0.title) })
+            .disabled(model.decisionBusy || model.subQKeyBusy)
     }
 
     private var sessionPetSettings: some View {

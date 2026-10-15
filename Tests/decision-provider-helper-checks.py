@@ -60,6 +60,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         self.record()
         if self.path == "/api/work/search":
+            if state.get("search_reason"):
+                return self.reply(200, {"available": False, "reason": state["search_reason"]})
             return self.reply(200, {"available": True, "provider": state.get("search_provider", "subq"),
                                     "results": state.get("search_results", [{"id": "a" * 12, "p": 0.8}])})
         code = state["key_set"]
@@ -131,6 +133,9 @@ try:
         assert run("work-search", {"query": "draft", "scope": "all"})["details"]["reason"] == "invalid_decision_provider"
     state["search_provider"], state["search_results"] = "none", []
     assert run("work-search", {"query": "draft", "scope": "all"})["details"]["provider"] == "none"
+    for reason in ("decision_not_configured", "decision_key_rejected", "decision_rate_limited", "decision_credits_required", "decision_cap_reached", "decision_usage_unavailable"):
+        state["search_reason"] = reason
+        assert run("work-search", {"query": "draft", "scope": "all"})["details"] == {"available": False, "reason": reason}
     print("PASS decision helper: authenticated GET/PATCH, strict bounded inputs, null clear, structured 409, older/unavailable servers, secure key save/refusal/remove, no key echo or implicit selection")
 finally:
     server.shutdown()
