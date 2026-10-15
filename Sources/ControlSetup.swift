@@ -204,7 +204,7 @@ struct ControlSetupView: View {
             if stage == .ready { guide.finishJourney() }
             model.openActivity?(section)
         } label: {
-            HStack(alignment: .top, spacing: 12) {
+            HStack(alignment: .center, spacing: 12) {
                 Image(systemName: symbol).frame(width: 22).foregroundStyle(COSPalette.accent)
                 VStack(alignment: .leading, spacing: 4) {
                     Text(title).font(COSType.body(15, weight: .semibold))

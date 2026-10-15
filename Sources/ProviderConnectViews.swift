@@ -1101,7 +1101,7 @@ struct SetupDeviceChoice: View {
         VStack(alignment: .leading, spacing: 10) {
             ForEach(SetupDevicePath.allCases, id: \.rawValue) { path in
                 Button { guide.chooseDevicePath(path) } label: {
-                    HStack(alignment: .top, spacing: 12) {
+                    HStack(alignment: .center, spacing: 12) {
                         Image(systemName: guide.devicePath == path ? "checkmark.circle.fill" : "circle")
                             .foregroundStyle(guide.devicePath == path ? COSPalette.accent : COSPalette.muted)
                         VStack(alignment: .leading, spacing: 4) {
