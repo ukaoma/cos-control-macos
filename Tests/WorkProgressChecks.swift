@@ -501,14 +501,20 @@ private func stamp(_ seconds: Double) -> String { WorkProgress.stamp(seconds) }
         precondition(WorkTracking.latest(workID: base.workID, receipts: [withMove])?.undoableMove(currentStage: "qa") == nil, "No Undo once paused")
         precondition(WorkTracking.whyLine(WorkProgressEvent(id: "x", at: 0, kind: .moved, text: "the session reported done")).hasSuffix(": the session reported done."))
 
-        // A session's tasks: newest per task, still with it, not done over a day ago.
+        // A session's tasks: newest per task in this session, with parallel contributors retained,
+        // and no task done over a day ago.
         let other = receipt("c", work: "bbbbbbbbbbbb", session: "claude:one", created: now + 1)
-        let handedOn = receipt("d", work: "cccccccccccc", session: "claude:one", created: now + 2)
-        let handedOnLater = receipt("e", work: "cccccccccccc", session: "codex:else", created: now + 3)
+        let shared = receipt("d", work: "cccccccccccc", session: "claude:one", created: now + 2)
+        let parallel = receipt("e", work: "cccccccccccc", session: "codex:else", created: now + 3)
         var doneLongAgo = receipt("f", work: "dddddddddddd", session: "claude:one", created: now - 3 * 86_400)
         doneLongAgo.progress?.reported = .done; doneLongAgo.progress?.record(.done, "d", at: now - 2 * 86_400)
-        let held = WorkTracking.forSession("claude:one", receipts: [base, other, handedOn, handedOnLater, doneLongAgo], now: now)
-        precondition(held.map { $0.receipt.id } == ["a", "c"], "\(held.map { $0.receipt.id })")
+        let held = WorkTracking.forSession("claude:one", receipts: [base, other, shared, parallel, doneLongAgo], now: now)
+        precondition(held.map { $0.receipt.id } == ["a", "c", "d"], "A parallel session must not remove this session's shared task: \(held.map { $0.receipt.id })")
+        precondition(WorkTracking.forSession("codex:else", receipts: [shared, parallel], now: now).map { $0.receipt.id } == ["e"],
+                     "Each contributor retains its own receipt")
+        let replacement = receipt("d2", work: "cccccccccccc", session: "CLAUDE:ONE", created: now + 4)
+        precondition(WorkTracking.forSession("claude:one", receipts: [shared, parallel, replacement], now: now).map { $0.receipt.id } == ["d2"],
+                     "A newer handoff supersedes only this same session's receipt, with canonical case matching")
 
         // One card per session, for tracked handoffs only.
         func card(_ row: WorkHandoffReceipt) -> WorkBoardSessionCard {
@@ -1772,7 +1778,7 @@ extension TrackerSuite {
 
     func t06() async throws {
         var last: [String: String]? = nil
-        // 12. A newer handoff replaces the older: the older one's session no longer moves the card.
+        // 12. A newer handoff to the same session replaces the older: only the newer receipt moves the card.
         do {
             let (store, transport, board, _, tracker, _) = setUp("superseded")
             await store.submit(source: source(idA), mode: .continueSession, session: one, model: nil, prompt: "First")
@@ -1780,15 +1786,42 @@ extension TrackerSuite {
             await tracker.tick()
             let first = try row(store, idA)
             store.markReviewed(receiptID: first.id)
-            await store.submit(source: source(idA), mode: .continueSession, session: two, model: nil, prompt: "Second")
+            await store.submit(source: source(idA), mode: .continueSession, session: one, model: nil, prompt: "Second")
             check(store.receipts(for: "task:Quilt:" + idA).count == 2)
             await transport.setRead(replies: [("COS-WORK \(idA): done: the first session says so", stamp(first.createdAt + 60))])
             let before = board.moves.count
             await tracker.tick()
-            // Both sessions read the same fixture; only the newest handoff (session two) may act on it.
+            // Only the newest receipt in this session may act on the shared conversation read.
             let second = try row(store, idA)
             check(second.id != first.id && second.progress?.reported == .done && store.receipts.first { $0.id == first.id }?.progress?.reported == nil)
             check(board.moves.count == before + 1)
+        }
+
+        // Parallel contributors keep their own progress, while the shared task's stage stays under user control.
+        do {
+            let (store, transport, board, _, tracker, _) = setUp("parallel-contributors")
+            // Real contributor IDs require native UUIDs; the older single-session fixtures use short dummy IDs.
+            let firstNative = "11111111-1111-4111-8111-111111111111"
+            let secondNative = "22222222-2222-4222-8222-222222222222"
+            let one = WorkSession(id: "claude:" + firstNative, nativeID: firstNative, provider: "claude", title: "Copy", summary: "", project: "Website", status: "idle")
+            let two = WorkSession(id: "claude:" + secondNative, nativeID: secondNative, provider: "claude", title: "Layout", summary: "", project: "Website", status: "idle")
+            store.sessions = [one, two]
+            await store.submit(source: source(idA), mode: .continueSession, session: one, model: nil, prompt: "First contributor")
+            await transport.setTurn("completed")
+            await tracker.tick()
+            let first = try row(store, idA)
+            store.markReviewed(receiptID: first.id)
+            await store.submit(source: source(idA), mode: .continueSession, session: two, model: nil, prompt: "Second contributor")
+            let second = try row(store, idA)
+            check(second.id != first.id && store.contributorIDs(workID: first.workID).count == 2)
+            let before = board.moves.count
+            await transport.setRead(replies: [("COS-WORK \(idA): done: this contributor checked its part", stamp(second.createdAt + 60))])
+            await tracker.tick()
+            check(store.receipts.first { $0.id == first.id }?.progress?.reported == .done
+                  && store.receipts.first { $0.id == second.id }?.progress?.reported == .done,
+                  "Both contributors remain tracked independently")
+            check(board.moves.count == before && board.rows[idA] == "draft",
+                  "Neither contributor can automatically advance a shared task to QA or Complete")
         }
 
         // 13. Back-off: a session quiet for over an hour is read every 5 minutes, not every pass.
