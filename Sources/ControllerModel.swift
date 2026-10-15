@@ -3811,6 +3811,100 @@ final class ControllerModel: ObservableObject {
         else if accept { await loadWorkTasks(force: true) }
     }
 
+    // MARK: Optional decision provider. No selection or key is persisted in Control.
+    private var decisionReadGeneration = UUID()
+    @Published var decisionSettings: DecisionProviderSettings?
+    @Published var decisionSettingsAvailable: Bool?
+    @Published var decisionBusy = false
+    @Published var decisionMessage: String?
+    @Published var subQKeyStatus: SubQKeyStatus?
+    @Published var subQKeyBusy = false
+    @Published var subQKeyMessage: String?
+
+    func loadDecisionSettings() async {
+        decisionMessage = nil
+        let generation = UUID(); decisionReadGeneration = generation
+        do {
+            let response = try await helper.run(["decision-provider-status"], timeout: 25)
+            guard decisionReadGeneration == generation else { return }
+            guard response.ok else { throw HelperClientError.commandFailed(response.message) }
+            if response.details["available"]?.bool == false {
+                decisionSettingsAvailable = false; decisionSettings = nil; return
+            }
+            guard let settings = DecisionProviderSettings(details: response.details) else {
+                throw HelperClientError.commandFailed("The server returned unsupported decision settings.")
+            }
+            decisionSettings = settings; decisionSettingsAvailable = true
+        } catch {
+            guard decisionReadGeneration == generation else { return }
+            decisionSettings = nil; decisionSettingsAvailable = nil
+            decisionMessage = error.localizedDescription
+        }
+    }
+
+    func setDecisionProvider(workflow: String?, selection: String) async {
+        guard !decisionBusy, let settings = decisionSettings, let body = settings.patch(workflow: workflow, selection: selection) else { return }
+        decisionBusy = true; decisionMessage = nil; decisionReadGeneration = UUID()
+        defer { decisionBusy = false }
+        do {
+            let data = try JSONEncoder().encode(JSONValue.object(body))
+            let response = try await helper.run(["decision-provider-set"], timeout: 25, stdinData: data)
+            if response.details["reason"]?.string == "decision_settings_conflict" {
+                await loadDecisionSettings()
+                decisionMessage = decisionSettings == nil
+                    ? "Settings changed elsewhere and could not be reloaded. Refresh before choosing again."
+                    : "Settings changed elsewhere. Latest settings are shown; review and select again."
+                return
+            }
+            guard response.ok, let saved = DecisionProviderSettings(details: response.details) else {
+                throw HelperClientError.commandFailed(response.message)
+            }
+            decisionReadGeneration = UUID(); decisionSettings = saved; decisionSettingsAvailable = true
+            decisionMessage = "Saved. The next decision request uses these settings. Existing assessments keep their original source."
+        } catch {
+            await loadDecisionSettings()
+            decisionMessage = "Could not confirm the change: " + error.localizedDescription
+        }
+    }
+
+    func loadSubQKeyStatus() async {
+        do {
+            let response = try await helper.run(["subq-status"], timeout: 20)
+            guard response.ok, response.details["available"]?.bool != false else {
+                throw HelperClientError.commandFailed(response.message)
+            }
+            subQKeyStatus = SubQKeyStatus(details: response.details)
+        } catch { subQKeyStatus = nil; subQKeyMessage = error.localizedDescription }
+    }
+
+    func saveSubQKey(_ key: String) async -> Bool {
+        guard !subQKeyBusy else { return false }
+        subQKeyBusy = true; subQKeyMessage = nil
+        defer { subQKeyBusy = false }
+        do {
+            let data = try JSONSerialization.data(withJSONObject: ["key": key.trimmingCharacters(in: .whitespacesAndNewlines)])
+            let response = try await helper.run(["subq-key-set"], timeout: 45, stdinData: data)
+            guard response.ok, response.details["available"]?.bool != false else { throw HelperClientError.commandFailed(response.message) }
+            subQKeyStatus = SubQKeyStatus(details: response.details)
+            await loadDecisionSettings()
+            subQKeyMessage = "Key accepted and saved. Provider choices were not changed."
+            return true
+        } catch { subQKeyMessage = error.localizedDescription; return false }
+    }
+
+    func removeSubQKey() async {
+        guard !subQKeyBusy else { return }
+        subQKeyBusy = true; subQKeyMessage = nil
+        defer { subQKeyBusy = false }
+        do {
+            let response = try await helper.run(["subq-key-clear"], timeout: 20)
+            guard response.ok, response.details["available"]?.bool != false else { throw HelperClientError.commandFailed(response.message) }
+            subQKeyStatus = SubQKeyStatus(details: response.details)
+            await loadDecisionSettings()
+            subQKeyMessage = subQKeyStatus?.configured == true ? "Saved key removed. A server environment key is still active." : "Saved SubQ key removed."
+        } catch { subQKeyMessage = error.localizedDescription }
+    }
+
     // MARK: Jev key (server 6.57.0). The key goes to the server once and is never read back.
     @Published var jevStatus: JevStatus?
     @Published var jevBusy = false

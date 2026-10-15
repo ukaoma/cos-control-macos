@@ -376,7 +376,7 @@ struct WorkBoardReads: Equatable, Sendable {
             next.jevAsked = (next.jevAsked ?? []) + [newest.digest]
             next.record(.jev, verdict.text, at: at)
             if moves && !next.finished {
-                next.reported = .done; next.reportedBy = "jev"; next.evidence = verdict.text
+                next.reported = .done; next.reportedBy = verdict.provider.rawValue; next.evidence = verdict.text
                 if let target, next.pendingStage == nil || next.pendingStage == "draft" { next.pendingStage = target }
             }
             current.progress = next; return true
@@ -404,9 +404,11 @@ struct WorkBoardReads: Equatable, Sendable {
     nonisolated static func jevUnavailableText(_ reason: String) -> String? {
         switch reason {
         case "server_too_old": return "The reply has no status line. Jev checks need server 6.58.0; open the session to check."
+        case "subq_not_configured": return "The reply has no status line. Add a SubQ key in Settings to have replies checked."
+        case "subq_key_rejected": return "SubQ did not accept its key. Check it in Settings; the reply was not marked done."
         case "jev_not_configured": return "The reply has no status line. Add a Jev key in Settings to have replies checked."
         case "task_not_found", "session_not_found", "invalid_completion_request": return nil
-        default: return "The reply has no status line, and Jev could not check it just now. COS will try again."
+        default: return "The reply has no status line, and the decision service could not check it just now. COS will try again."
         }
     }
 
@@ -502,7 +504,7 @@ struct WorkBoardReads: Equatable, Sendable {
     }
     nonisolated static func moveReason(_ progress: WorkProgress) -> String {
         guard progress.reported == .done else { return "the session received it" }
-        return progress.reportedBy == "jev" ? "Jev read the reply as done" : "the session reported done"
+        return progress.reportedBy.flatMap(DecisionProvider.init(rawValue:)).map { $0.title + " read the reply as done" } ?? "the session reported done"
     }
 
     /// Moves the card back to where it was and stops automatic moves for this handoff.

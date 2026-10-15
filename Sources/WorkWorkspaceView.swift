@@ -793,6 +793,14 @@ enum WorkSearch {
     }
     nonisolated static func parse(_ response: HelperResponse, request: WorkSearchRequest) -> WorkSearchMeaning {
         guard response.ok else { return WorkSearchMeaning(key: request.key, available: false, reason: "unreachable") }
+        if let raw = response.details["provider"] {
+            guard let provider = raw.string, ["jev", "subq", "none"].contains(provider) else {
+                return WorkSearchMeaning(key: request.key, available: false, reason: "invalid_decision_provider")
+            }
+            if provider == "none", !(response.details["results"]?.array ?? []).isEmpty {
+                return WorkSearchMeaning(key: request.key, available: false, reason: "invalid_decision_provider")
+            }
+        }
         guard response.details["available"]?.bool == true else {
             return WorkSearchMeaning(key: request.key, available: false, reason: response.details["reason"]?.string ?? "jev_unavailable")
         }
@@ -809,6 +817,10 @@ enum WorkSearch {
     /// A temporary or unknown failure explains the word-only fallback. A switch deliberately turned off stays quiet.
     nonisolated static func note(_ reason: String?) -> String? {
         switch reason {
+        case "subq_not_configured": "Meaning search needs a SubQ key in Settings"
+        case "subq_key_rejected": "SubQ did not accept the saved key. Check it in Settings."
+        case "subq_cap_reached", "subq_breaker_open", "subq_unavailable": "SubQ meaning search is unavailable. Showing word matches."
+        case "subq_request_rejected", "subq_bad_answer": "SubQ could not answer this search. Showing word matches."
         case "jev_breaker_open": "Meaning search is paused for an hour"
         case "jev_cap_reached": "Meaning search has used today\u{2019}s budget"
         case "too_many_candidates": "Meaning search covers up to \(maxCandidates) cards. Pick a domain."
@@ -824,7 +836,7 @@ enum WorkSearch {
     }
     /// Reasons that cannot change by asking again for the same search (a refused request is refused again). A key that
     /// TypeSafe refused is asked again, so a key fixed in Settings works at once.
-    nonisolated static let definitiveReasons: Set<String> = ["search_off", "jev_not_configured", "server_too_old", "too_many_candidates", "jev_request_rejected"]
+    nonisolated static let definitiveReasons: Set<String> = ["search_off", "jev_not_configured", "subq_not_configured", "server_too_old", "too_many_candidates", "jev_request_rejected", "subq_request_rejected"]
     /// An answer that ends the asking for its search: it ran, or its reason is definitive.
     nonisolated static func settled(_ meaning: WorkSearchMeaning) -> Bool { meaning.available || definitiveReasons.contains(meaning.reason ?? "") }
     /// An answer worth keeping at all: settled, or one that has a line to say (the cap or the breaker, asked again next
@@ -2854,7 +2866,7 @@ struct WorkWorkspaceView: View {
                             .font(COSType.mono(10)).foregroundStyle(COSPalette.muted)
                     }
                     if let tracking = WorkTracking.latest(workID: task.workSourceID, receipts: handoffStore.receipts, sessionID: contributor.id) {
-                        Text((tracking.byJev ? "Jev assessment: " : "Session reported: ") + tracking.label)
+                        Text((tracking.byDecisionModel ? "\(tracking.decisionProvider!.title) assessment: " : "Session reported: ") + tracking.label)
                             .font(COSType.body(11, weight: .semibold)).foregroundStyle(tracking.tint)
                         if let evidence = tracking.evidence { Text(String(evidence.prefix(240))).font(COSType.body(11)).textSelection(.enabled) }
                     } else if let receipt = contributor.receipt {

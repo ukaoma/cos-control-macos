@@ -2222,6 +2222,79 @@ struct WorkMeetingReference: Identifiable, Hashable, Sendable {
     }
 }
 
+/// Decision services are separate from the agent provider (Claude, Codex, etc.). Unknown identities fail closed.
+enum DecisionProvider: String, CaseIterable, Sendable {
+    case jev, subq
+    var title: String { self == .jev ? "Jev" : "SubQ" }
+}
+
+/// Public server configuration only. Credentials never belong in a settings response or local preferences.
+struct DecisionProviderSettings: Equatable, Sendable {
+    static let workflows = ["session", "completion", "search"]
+    let revision: String
+    let provider: DecisionProvider
+    let savedProvider: DecisionProvider?
+    let overrides: [String: DecisionProvider]
+    let effective: [String: DecisionProvider]
+    let sources: [String: String]
+    let configured: [String: Bool]
+    let models: [String: String]
+    init?(details: [String: JSONValue]) {
+        guard details["schema"]?.double == 1,
+              let revision = details["revision"]?.string, revision.range(of: "^[a-f0-9]{64}$", options: .regularExpression) != nil,
+              let raw = details["provider"]?.string, let provider = DecisionProvider(rawValue: raw),
+              let saved = details["saved"]?.object, let rawOverrides = saved["overrides"]?.object,
+              let rawEffective = details["effective"]?.object,
+              Set(rawOverrides.keys).isSubset(of: Set(Self.workflows)) else { return nil }
+        var overrides: [String: DecisionProvider] = [:], effective: [String: DecisionProvider] = [:]
+        for (key, value) in rawOverrides {
+            guard let raw = value.string, let choice = DecisionProvider(rawValue: raw) else { return nil }
+            overrides[key] = choice
+        }
+        for key in Self.workflows {
+            guard let raw = rawEffective[key]?.string, let choice = DecisionProvider(rawValue: raw) else { return nil }
+            effective[key] = choice
+        }
+        var savedProvider: DecisionProvider?
+        if let raw = saved["provider"]?.string {
+            guard let choice = DecisionProvider(rawValue: raw) else { return nil }; savedProvider = choice
+        } else if let value = saved["provider"] { guard case .null = value else { return nil } }
+        self.revision = revision; self.provider = provider; self.savedProvider = savedProvider
+        self.overrides = overrides; self.effective = effective
+        sources = details["sources"]?.object?.compactMapValues(\.string) ?? [:]
+        configured = details["configured"]?.object?.compactMapValues(\.bool) ?? [:]
+        models = details["models"]?.object?.compactMapValues(\.string) ?? [:]
+    }
+    func patch(workflow: String?, selection: String) -> [String: JSONValue]? {
+        guard selection == "inherit" || DecisionProvider(rawValue: selection) != nil,
+              workflow == nil || Self.workflows.contains(workflow!) else { return nil }
+        let value: JSONValue = selection == "inherit" ? .null : .string(selection)
+        var body: [String: JSONValue] = ["expectedRevision": .string(revision)]
+        if let workflow { body["overrides"] = .object([workflow: value]) } else { body["provider"] = value }
+        return body
+    }
+    func effectiveText(_ workflow: String) -> String {
+        guard let choice = effective[workflow] else { return "Unavailable" }
+        return choice.title + " · " + (models[choice.rawValue] ?? "model unavailable") + " · " + (sources[workflow] ?? "server")
+    }
+}
+
+struct SubQKeyStatus: Equatable, Sendable {
+    let configured: Bool
+    let source: String
+    let savedAt: String?
+    let validatedAt: String?
+    init(details: [String: JSONValue]) {
+        configured = details["configured"]?.bool == true
+        source = details["source"]?.string ?? "none"
+        savedAt = details["savedAt"]?.string; validatedAt = details["validatedAt"]?.string
+    }
+    var summary: String {
+        guard configured else { return "No SubQ key configured." }
+        return source == "env" ? "SubQ key from the server environment." : "SubQ key accepted and saved on the server."
+    }
+}
+
 /// Jev key state from the server (6.57.0). Never carries the key itself.
 struct JevStatus: Sendable, Equatable {
     var available: Bool
@@ -2267,15 +2340,17 @@ struct JevStatus: Sendable, Equatable {
 struct SessionAdvice: Sendable, Equatable {
     enum Action: String, Sendable { case continueSession = "continue", fork, newSession = "new" }
     let action: Action
+    let provider: DecisionProvider
     let sessionID: String?
     let confidence: Double
     let reason: String
     init?(details: [String: JSONValue]) {
-        guard details["provider"]?.string == "jev", let raw = details["action"]?.string, let action = Action(rawValue: raw),
+        guard let providerRaw = details["provider"]?.string, let provider = DecisionProvider(rawValue: providerRaw),
+              let raw = details["action"]?.string, let action = Action(rawValue: raw),
               let confidence = details["confidence"]?.double, (0...1).contains(confidence) else { return nil }
         let sessionID = details["sessionId"]?.string
         if action != .newSession && (sessionID ?? "").isEmpty { return nil }
-        self.action = action; self.sessionID = action == .newSession ? nil : sessionID
+        self.action = action; self.provider = provider; self.sessionID = action == .newSession ? nil : sessionID
         self.confidence = confidence; self.reason = details["reason"]?.string ?? ""
     }
     var percent: String { "\(Int((confidence * 100).rounded()))%" }

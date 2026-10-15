@@ -93,6 +93,7 @@ python3 "$ROOT/Tests/speaker-policy-helper-checks.py" "$TMP/cos-control-helper"
 python3 "$ROOT/Tests/mac-recording-helper-checks.py" "$TMP/cos-control-helper"
 python3 "$ROOT/Tests/work-intake-helper-checks.py" "$TMP/cos-control-helper"
 python3 "$ROOT/Tests/work-jev-helper-checks.py" "$TMP/cos-control-helper"
+python3 "$ROOT/Tests/decision-provider-helper-checks.py" "$TMP/cos-control-helper"
 python3 "$ROOT/Tests/work-progress-helper-checks.py" "$TMP/cos-control-helper"
 # 0.5.259: work-search through the compiled helper (pass-through, the answer's own shape, every failure an answer) and the
 # task-row whitelist carrying createdOn, createdFrom and lineChangedAt (canaries K7, K8).
@@ -1246,6 +1247,7 @@ assert "Self.linkableJobStates.contains(state)" in store, "only a running or wel
 PY
 # The tracker's behaviour: status lines, delivery, stages, Jev gating, retries, a busy journal (synthetic transport and board).
 "$ROOT/Tests/run-work-progress.sh"
+"$ROOT/Tests/run-decision-provider.sh"
 
 # ── 0.5.254: files on a Work card ─────────────────────────────────────────────
 # Behaviour, executed against real fixtures (Tests/run-work-card-files.sh), then the wiring the compiled-only views hide.

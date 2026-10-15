@@ -426,7 +426,7 @@ struct WorkHandoffView: View {
                 Text(Self.reportedLine(reported, board: currentStage != nil))
                     .font(COSType.body(11.5)).foregroundStyle(COSPalette.muted).fixedSize(horizontal: false, vertical: true)
                 // The session's own words are quoted; Jev's reading is not the session's, so it is not.
-                Text(reported.byJev ? evidence : "\u{201C}" + evidence + "\u{201D}").font(COSType.body(11.5)).lineLimit(4).textSelection(.enabled)
+                Text(reported.byDecisionModel ? evidence : "\u{201C}" + evidence + "\u{201D}").font(COSType.body(11.5)).lineLimit(4).textSelection(.enabled)
                     .padding(.leading, 8).overlay(alignment: .leading) { Rectangle().fill(reported.tint.opacity(0.6)).frame(width: 2) }
             }
             if let failure = activity.session?.failure, !failure.isEmpty { Text(failure).font(COSType.body(11.5)).foregroundStyle(COSPalette.danger) }
@@ -573,7 +573,7 @@ struct WorkHandoffView: View {
     nonisolated static func reportedLine(_ reported: WorkTracking, board: Bool) -> String {
         switch reported.phase {
         case .done:
-            let who = reported.byJev ? "Jev read the session\u{2019}s reply as done." : "The session reported this done."
+            let who = reported.byDecisionModel ? "\(reported.decisionProvider!.title) read the session\u{2019}s reply as done." : "The session reported this done."
             return who + (board ? " Check the result, then mark it complete when you agree." : " Check the result.")
         case .blocked: return "The session is blocked on this."
         default: return "The session needs you before it can finish this."
@@ -766,7 +766,7 @@ struct WorkHandoffView: View {
                 Image(systemName: "sparkle").foregroundStyle(COSPalette.accent)
                 VStack(alignment: .leading, spacing: 3) {
                     Text(adviceTitle(advice, session)).font(COSType.body(12.5, weight: .semibold))
-                    Text("\(advice.reason) Jev · \(advice.percent)").font(COSType.body(11)).foregroundStyle(COSPalette.muted)
+                    Text("\(advice.reason) \(advice.provider.title) · \(advice.percent)").font(COSType.body(11)).foregroundStyle(COSPalette.muted)
                 }
                 Spacer(minLength: 8)
                 Button(applied ? "Selected" : "Use this") {
@@ -1039,7 +1039,7 @@ struct WorkStartSheet: View {
                     Image(systemName: fromAdvice ? "sparkle" : "arrow.turn.down.right").foregroundStyle(COSPalette.accent)
                     VStack(alignment: .leading, spacing: 3) {
                         Text(plan.label).font(COSType.body(12.5, weight: .semibold))
-                        Text(fromAdvice ? (store.advice(for: source).map { "\($0.reason) Jev · \($0.percent)" } ?? "Jev's suggestion.") : "Your saved destination for this card.")
+                        Text(fromAdvice ? (store.advice(for: source).map { "\($0.reason) \($0.provider.title) · \($0.percent)" } ?? "Decision suggestion.") : "Your saved destination for this card.")
                             .font(COSType.body(11)).foregroundStyle(COSPalette.muted)
                     }
                 }.padding(10).frame(maxWidth: .infinity, alignment: .leading).background(COSPalette.raised, in: RoundedRectangle(cornerRadius: 7))
@@ -1074,7 +1074,7 @@ struct WorkStartSheet: View {
                     VStack(alignment: .leading, spacing: 3) {
                         Text(plan.label).font(COSType.body(12.5, weight: .semibold))
                         if fromAdvice, let advice = store.advice(for: source) {
-                            Text("\(advice.reason) Jev · \(advice.percent)").font(COSType.body(11)).foregroundStyle(COSPalette.muted)
+                            Text("\(advice.reason) \(advice.provider.title) · \(advice.percent)").font(COSType.body(11)).foregroundStyle(COSPalette.muted)
                         } else {
                             Text("Your saved destination for this card.").font(COSType.body(11)).foregroundStyle(COSPalette.muted)
                         }

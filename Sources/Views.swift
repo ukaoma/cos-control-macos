@@ -522,6 +522,7 @@ struct ControlPanel: View {
     @State private var briefDraft: MorningBriefSettings?
     @State private var jevExpanded = false
     @State private var jevKeyDraft = ""
+    @State private var subQKeyDraft = ""
     @State private var briefDraftStamp = ""
     @State private var briefSourcesExpanded = false
     @State private var selectedClaudeSessions = false
@@ -1017,6 +1018,10 @@ struct ControlPanel: View {
     private var jevSettings: some View {
         DisclosureGroup(isExpanded: $jevExpanded) {
             VStack(alignment: .leading, spacing: 8) {
+                decisionProviderControls
+                Divider()
+                Text("Jev key").font(.caption.weight(.semibold))
+                Text("Key status is separate from the provider choices above.").font(.caption2).foregroundStyle(.secondary)
                 // Without an answer from the server, say so instead of "Checking…" forever (the error is below).
                 Text(model.jevStatus?.summary ?? (model.jevMessage == nil ? "Checking…" : "Status unavailable."))
                     .font(.caption).foregroundStyle(.secondary)
@@ -1043,18 +1048,78 @@ struct ControlPanel: View {
                     }
                 }
                 if let message = model.jevMessage { Text(message).font(.caption2).foregroundStyle(.secondary) }
-                Text("Used by Work to suggest Continue, Fork or New for a task, to sort meetings into Intake, and to check a reply that has no status line against the task\u{2019}s Done when (server 6.58.0). Keys come from typesafe.ai.")
+                Text("TypeSafe keys come from typesafe.ai. Meeting intake still uses Jev; the provider choices above apply to session suggestions, completion checks and Work search.")
                     .font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }.padding(.top, 6)
         } label: {
             HStack(spacing: 8) {
-                Label("Jev (TypeSafe)", systemImage: "sparkle")
+                Label("Decision models", systemImage: "sparkle")
                 Spacer(minLength: 0)
-                Text(model.jevStatus == nil ? "" : model.jevStatus?.configured == true ? "On" : "Off")
+                Text(model.decisionSettings?.provider.title ?? "")
                     .font(.caption).foregroundStyle(.secondary)
             }
         }
-        .onChange(of: jevExpanded) { _, open in if open { Task { await model.loadJevStatus() } } }
+        .onDisappear { subQKeyDraft = ""; jevKeyDraft = "" }
+        .onChange(of: jevExpanded) { _, open in
+            if open { Task { await model.loadDecisionSettings(); await model.loadJevStatus(); await model.loadSubQKeyStatus() } }
+            else { subQKeyDraft = ""; jevKeyDraft = "" }
+        }
+    }
+
+    @ViewBuilder private var decisionProviderControls: some View {
+        if let settings = model.decisionSettings {
+            Text("Used for session suggestions, completion checks and Work search. Jev remains the default; errors never switch providers automatically.")
+                .font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            decisionProviderPicker("Default", workflow: nil, selection: settings.savedProvider?.rawValue ?? "inherit")
+            ForEach(DecisionProviderSettings.workflows, id: \.self) { workflow in
+                VStack(alignment: .leading, spacing: 2) {
+                    decisionProviderPicker(workflow == "session" ? "Session suggestions" : workflow == "completion" ? "Completion checks" : "Work search",
+                                           workflow: workflow, selection: settings.overrides[workflow]?.rawValue ?? "inherit")
+                    Text(settings.effectiveText(workflow)).font(.caption2).foregroundStyle(.secondary)
+                    if let provider = settings.effective[workflow], settings.configured[provider.rawValue] != true {
+                        Text("\(provider.title) needs a key. This workflow will be unavailable until configured.")
+                            .font(.caption2).foregroundStyle(COSPalette.danger)
+                    }
+                }
+            }
+        } else if model.decisionSettingsAvailable == false {
+            Text("Choosing a decision provider needs a newer COS server. Existing Jev settings still work.").font(.caption2).foregroundStyle(.secondary)
+        } else {
+            Text(model.decisionMessage == nil ? "Checking decision settings…" : "Decision settings unavailable.").font(.caption2).foregroundStyle(.secondary)
+        }
+        if let message = model.decisionMessage { Text(message).font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
+        Button("Refresh decision settings") { Task { await model.loadDecisionSettings(); await model.loadSubQKeyStatus() } }.disabled(model.decisionBusy)
+        Text("SubQ is an optional public preview. Selected workflows send their context to SubQ. Provider retention applies; the default organization retention is indefinite.")
+            .font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        Link("SubQ data retention", destination: URL(string: "https://docs.subq.ai/using-the-api/data-retention/")!).font(.caption2)
+        Text("SubQ key").font(.caption.weight(.semibold))
+        Text(model.subQKeyStatus?.summary ?? "SubQ key status unavailable.").font(.caption2).foregroundStyle(.secondary)
+        if model.decisionSettingsAvailable == true {
+            HStack {
+                SecureField(model.subQKeyStatus?.configured == true ? "Replace SubQ key" : "SubQ API key", text: $subQKeyDraft)
+                    .textFieldStyle(.plain).cosField().disabled(model.subQKeyBusy)
+                Button(model.subQKeyBusy ? "Checking…" : "Save key") {
+                    let key = subQKeyDraft
+                    Task { if await model.saveSubQKey(key) { subQKeyDraft = "" } }
+                }.disabled(model.subQKeyBusy || subQKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+            Text("Validated against SubQ’s model list, then saved privately on the server. Saving a key does not select SubQ.")
+                .font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            if model.subQKeyStatus?.source == "config" {
+                Button("Remove saved SubQ key", role: .destructive) { Task { await model.removeSubQKey() } }
+                    .buttonStyle(COSTextButtonStyle(tone: .destructive)).disabled(model.subQKeyBusy)
+            }
+        }
+        if let message = model.subQKeyMessage { Text(message).font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
+    }
+
+    private func decisionProviderPicker(_ title: String, workflow: String?, selection: String) -> some View {
+        Picker(title, selection: Binding(get: { selection }, set: { value in
+            Task { await model.setDecisionProvider(workflow: workflow, selection: value) }
+        })) {
+            Text(workflow == nil ? "Server default" : "Use default").tag("inherit")
+            ForEach(DecisionProvider.allCases, id: \.rawValue) { provider in Text(provider.title).tag(provider.rawValue) }
+        }.disabled(model.decisionBusy || model.subQKeyBusy)
     }
 
     private var sessionPetSettings: some View {

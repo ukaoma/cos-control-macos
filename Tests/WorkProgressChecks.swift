@@ -492,6 +492,10 @@ private func stamp(_ seconds: Double) -> String { WorkProgress.stamp(seconds) }
         precondition(WorkTracking.latest(workID: base.workID, receipts: [acknowledged])?.asksForYou == false)
         var jevDone = base; jevDone.progress?.reported = .done; jevDone.progress?.reportedBy = "jev"
         precondition(WorkTracking.latest(workID: base.workID, receipts: [jevDone])?.byJev == true)
+        var subQDone = jevDone; subQDone.progress?.reportedBy = "subq"
+        let subQTracking = WorkTracking.latest(workID: base.workID, receipts: [subQDone])!
+        precondition(subQTracking.byDecisionModel && subQTracking.decisionProvider == .subq && !subQTracking.byJev)
+        precondition(WorkHandoffView.reportedLine(subQTracking, board: true).hasPrefix("SubQ read the session"))
         let newerFailed = receipt("b", work: "aaaaaaaaaaaa", session: "claude:one", status: "refused", created: now + 10)
         precondition(WorkTracking.latest(workID: base.workID, receipts: [base, newerFailed]) == nil)
         var withMove = jevDone; withMove.progress?.record(.moved, "Jev read the reply as done", at: now, from: "draft", to: "qa", id: "w")
@@ -1115,8 +1119,8 @@ extension TrackerSuite {
 
         // 9. Jev: never while the session works; once idle, about the replies since the handoff arrived; a transient
         //    failure retries later; a final one does not; a second new reply may be judged; never a third.
-        do {
-            let (store, transport, board, clock, tracker, _) = setUp("jev")
+        for decisionProvider in DecisionProvider.allCases {
+            let (store, transport, board, clock, tracker, _) = setUp("decision-" + decisionProvider.rawValue)
             await store.submit(source: source(idA), mode: .continueSession, session: one, model: nil, prompt: "Draft the CTA")
             let sent = await transport.sent()[0]
             let created = try row(store, idA).createdAt
@@ -1147,7 +1151,7 @@ extension TrackerSuite {
             check(await transport.bodies().last == ["domain": "Quilt", "id": idA, "provider": "claude", "sessionId": "s-one", "after": stamp(arrived)])
             await tracker.tick()
             check(await transport.count("work-completion-check") == 1, "Not retried before jevRetryAfter")
-            await transport.setCompletion(["provider": .string("jev"), "verdict": .string("done"), "confidence": .number(0.82), "basis": .string("task")])
+            await transport.setCompletion(["provider": .string(decisionProvider.rawValue), "verdict": .string("done"), "confidence": .number(0.82), "basis": .string("task")])
             clock.offset += WorkProgressTracker.jevRetryAfter + 1
             await tracker.tick()
             var r = try row(store, idA)
@@ -1156,13 +1160,13 @@ extension TrackerSuite {
             await tracker.tick()
             check(await transport.count("work-completion-check") == 2, "The same reply is judged once")
             // A new reply: judged again, and now done enough.
-            await transport.setCompletion(["provider": .string("jev"), "verdict": .string("done"), "confidence": .number(0.9), "basis": .string("task")])
+            await transport.setCompletion(["provider": .string(decisionProvider.rawValue), "verdict": .string("done"), "confidence": .number(0.9), "basis": .string("task")])
             let t2 = clock.now().timeIntervalSince1970
             await setReply([("I rewrote the hero copy and checked it.", created + 10), ("All checked on a phone too.", created + 30)], lastActivity: t2 - 600)
             await tracker.tick()
             r = try row(store, idA)
-            check(await transport.count("work-completion-check") == 3 && board.rows[idA] == "qa" && r.progress?.reportedBy == "jev")
-            check(r.lastAutomaticMove?.text == "Jev read the reply as done")
+            check(await transport.count("work-completion-check") == 3 && board.rows[idA] == "qa" && r.progress?.reportedBy == decisionProvider.rawValue)
+            check(r.lastAutomaticMove?.text == decisionProvider.title + " read the reply as done")
         }
         do {
             let (store, transport, _, clock, tracker, _) = setUp("jev-final")

@@ -300,6 +300,7 @@ extension WorkHandoffReceipt {
 
 /// Jev's answer to "does this reply show the task finished?" (server 6.58.0, POST /work-board/completion-check).
 struct WorkCompletionVerdict: Equatable, Sendable {
+    let provider: DecisionProvider
     /// done, not_done or unclear.
     let verdict: String
     /// Jev's probability for `verdict`.
@@ -307,10 +308,11 @@ struct WorkCompletionVerdict: Equatable, Sendable {
     /// What the reply was read against: the task's Done when ("done_when"), or the task itself ("task").
     let basis: String
     init?(details: [String: JSONValue]) {
-        guard details["provider"]?.string == "jev", let verdict = details["verdict"]?.string,
+        guard let providerRaw = details["provider"]?.string, let provider = DecisionProvider(rawValue: providerRaw),
+              let verdict = details["verdict"]?.string,
               ["done", "not_done", "unclear"].contains(verdict), let confidence = details["confidence"]?.double,
               confidence.isFinite, (0...1).contains(confidence) else { return nil }
-        self.verdict = verdict; self.confidence = confidence
+        self.provider = provider; self.verdict = verdict; self.confidence = confidence
         basis = details["basis"]?.string == "done_when" ? "done_when" : "task"
     }
     /// Moves a card only on a confident done; more confident when there was no Done when to read against.
@@ -319,10 +321,10 @@ struct WorkCompletionVerdict: Equatable, Sendable {
         let percent = Int((confidence * 100).rounded())
         let against = basis == "done_when" ? "the task\u{2019}s Done when" : "the task (it has no Done when)"
         switch verdict {
-        case "done" where movesCard: return "Jev read the reply as done (\(percent)%), against \(against)."
-        case "done": return "Jev: probably done (\(percent)%), not sure enough to move it. Open the session to check."
-        case "not_done": return "Jev: not done yet (\(percent)%). Left where it is."
-        default: return "Jev: not sure (\(percent)%). Left where it is. Open the session to check."
+        case "done" where movesCard: return "\(provider.title) read the reply as done (\(percent)%), against \(against)."
+        case "done": return "\(provider.title): probably done (\(percent)%), not sure enough to move it. Open the session to check."
+        case "not_done": return "\(provider.title): not done yet (\(percent)%). Left where it is."
+        default: return "\(provider.title): not sure (\(percent)%). Left where it is. Open the session to check."
         }
     }
 }

@@ -810,6 +810,9 @@ struct WorkGlassesRequest: Equatable, Sendable {
     nonisolated static func adviceUnavailableText(_ reason: String?) -> String? {
         switch reason {
         case nil, "no_sessions": return nil
+        case "subq_not_configured": return "Add a SubQ key in COS Control settings to get session suggestions."
+        case "subq_key_rejected": return "SubQ rejected its key. Check it in Settings. Showing word matches."
+        case "subq_cap_reached", "subq_breaker_open", "subq_unavailable", "subq_bad_answer", "subq_request_rejected": return "SubQ could not suggest a session. Showing word matches."
         case "jev_not_configured": return "Add a Jev key in COS Control settings to get Continue, Fork or New suggestions from your sessions."
         case "server_too_old": return "Session suggestions need a newer server. Run Update Server in Control."
         case "jev_key_rejected": return "Jev rejected its key. Check it in COS Control settings. Showing word matches."
@@ -817,7 +820,7 @@ struct WorkGlassesRequest: Equatable, Sendable {
         case "jev_breaker_open": return "Jev is paused after repeated failures. Showing word matches for now."
         case "reviews_unavailable", "review_store_unavailable": return "This server can\u{2019}t read meeting reviews right now. Showing word matches."
         case "task_not_found", "review_not_found": return "This work changed. Refresh Work for a suggestion."
-        default: return "No Jev suggestion this time. Showing word matches."
+        default: return "No decision suggestion this time. Showing word matches."
         }
     }
 

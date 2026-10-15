@@ -82,6 +82,8 @@ struct WorkTracking {
     var evidence: String? { reported ? progress.evidence : nil }
     /// Done came from Jev's reading, not from the session's own line: never shown as the session's words.
     var byJev: Bool { progress.reportedBy == "jev" }
+    var decisionProvider: DecisionProvider? { progress.reportedBy.flatMap(DecisionProvider.init(rawValue:)) }
+    var byDecisionModel: Bool { decisionProvider != nil }
 
     /// The automatic move this card can still undo: the newest one, while the card sits where COS put it.
     func undoableMove(currentStage: String?) -> WorkProgressEvent? {

@@ -541,6 +541,11 @@ final class COSControlHelper {
         case "work-session-recommend": try emitWorkSessionRecommend()
         case "work-completion-check": try emitWorkCompletionCheck()
         case "work-search": try emitWorkSearch()
+        case "decision-provider-status": try emitDecisionProvider(change: false)
+        case "decision-provider-set": try emitDecisionProvider(change: true)
+        case "subq-status": try emitSubQKey(action: "status")
+        case "subq-key-set": try emitSubQKey(action: "set")
+        case "subq-key-clear": try emitSubQKey(action: "clear")
         case "jev-status": try emitJevStatus()
         case "jev-key-set": try emitJevKeySet()
         case "jev-key-clear": try emitJevKeyClear()
@@ -5558,7 +5563,13 @@ final class COSControlHelper {
                   case let p = number.doubleValue, p.isFinite, p >= 0, p <= 1 else { return nil }
             return ["id": id, "p": p]
         }
-        return ["available": true, "results": results, "cached": body["cached"] as? Bool ?? false]
+        var result: [String: Any] = ["available": true, "results": results, "cached": body["cached"] as? Bool ?? false]
+        if let raw = body["provider"] {
+            guard let provider = raw as? String, ["jev", "subq", "none"].contains(provider),
+                  provider != "none" || results.isEmpty else { return ["available": false, "reason": "invalid_decision_provider"] }
+            result["provider"] = provider
+        }
+        return result
     }
 
     /// Exactly `domain`, a 12-hex task `id`, a `provider` and its `sessionId`, and optionally `after` (an ISO time: judge
@@ -5658,6 +5669,107 @@ final class COSControlHelper {
             throw HelperError.message("pairing-decision needs a request id and allow or deny.")
         }
         try emitPairingCall("/api/pairing/decision", method: "POST", body: body)
+    }
+
+    /// Settings changes use compare-and-swap so a second Control cannot silently overwrite this user's choices.
+    static func decisionProviderBodyValid(_ body: [String: Any]) -> Bool {
+        guard Set(body.keys).isSubset(of: ["expectedRevision", "provider", "overrides"]),
+              body["provider"] != nil || body["overrides"] != nil,
+              let revision = body["expectedRevision"] as? String,
+              revision.range(of: "^[a-f0-9]{64}$", options: .regularExpression) != nil else { return false }
+        func choice(_ value: Any) -> Bool { value is NSNull || (value as? String).map { ["jev", "subq"].contains($0) } == true }
+        if let value = body["provider"], !choice(value) { return false }
+        if let raw = body["overrides"] {
+            guard let overrides = raw as? [String: Any], Set(overrides.keys).isSubset(of: ["session", "completion", "search"]),
+                  overrides.values.allSatisfy(choice) else { return false }
+        }
+        return true
+    }
+
+    /// Whitelist public status fields. In particular, never forward a key or an upstream response body to Control.
+    static func subQStatusDetails(_ body: [String: Any]) -> [String: Any] {
+        var result: [String: Any] = ["configured": body["configured"] as? Bool ?? false,
+                                     "source": ["config", "env", "none"].contains(body["source"] as? String ?? "") ? body["source"]! : "none"]
+        for key in ["savedAt", "validatedAt"] {
+            if let value = body[key] as? String, value.count <= 40,
+               value.range(of: "^[0-9TZ:.+-]+$", options: .regularExpression) != nil { result[key] = value }
+        }
+        return result
+    }
+
+    static func decisionProviderDetails(_ body: [String: Any]) -> [String: Any] {
+        var result: [String: Any] = [:]
+        for key in ["schema", "revision", "provider"] { result[key] = body[key] }
+        for key in ["overrides", "effective", "sources"] {
+            if let values = body[key] as? [String: Any] {
+                result[key] = values.filter { ["session", "completion", "search"].contains($0.key) }
+            }
+        }
+        if let saved = body["saved"] as? [String: Any] {
+            var publicSaved: [String: Any] = [:]
+            publicSaved["provider"] = saved["provider"]
+            publicSaved["overrides"] = (saved["overrides"] as? [String: Any])?.filter { ["session", "completion", "search"].contains($0.key) }
+            result["saved"] = publicSaved
+        }
+        for key in ["configured", "models"] {
+            result[key] = (body[key] as? [String: Any])?.filter { ["jev", "subq"].contains($0.key) }
+        }
+        result["available"] = true
+        return result
+    }
+
+    private func emitDecisionProvider(change: Bool) throws {
+        var payload: String?
+        if change {
+            let data = try readBoundedStdin(4_096)
+            guard let body = try? JSONSerialization.jsonObject(with: data) as? [String: Any], Self.decisionProviderBodyValid(body) else {
+                throw HelperError.message("Choose Jev, SubQ or the inherited setting with the current revision.")
+            }
+            payload = String(decoding: data, as: UTF8.self)
+        }
+        let token = try readToken()
+        guard let response = request("/api/decision-provider", method: change ? "PATCH" : "GET", token: token, body: payload, timeout: 20) else {
+            throw HelperError.message("Decision settings are unavailable. Check that COS server is running.")
+        }
+        if response.status == 404 {
+            emit(ok: true, message: "Decision provider settings need a newer server.", details: ["available": false]); return
+        }
+        if response.status == 409 {
+            emit(ok: true, message: "Decision settings changed elsewhere. Reload them before trying again.", details: ["reason": "decision_settings_conflict"]); return
+        }
+        guard response.status == 200, let body = response.body else {
+            throw HelperError.message("Decision settings could not be \(change ? "saved" : "read") (HTTP \(response.status)).")
+        }
+        emit(ok: true, message: change ? "Decision settings saved" : "Decision settings ready", details: Self.decisionProviderDetails(body))
+    }
+
+    private func emitSubQKey(action: String) throws {
+        var payload: String?
+        if action == "set" {
+            let data = try readBoundedStdin(2_048)
+            guard let body = try? JSONSerialization.jsonObject(with: data) as? [String: Any], Set(body.keys) == ["key"],
+                  let key = body["key"] as? String, !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                throw HelperError.message("Paste a SubQ API key.")
+            }
+            payload = String(decoding: data, as: UTF8.self)
+        }
+        let token = try readToken()
+        let path = action == "status" ? "/api/subq-key/status" : action == "set" ? "/api/subq-key/set" : "/api/subq-key"
+        guard let response = request(path, method: action == "set" ? "POST" : action == "clear" ? "DELETE" : "GET",
+                                     token: token, body: payload, timeout: action == "set" ? 30 : 15) else {
+            throw HelperError.message("The server did not answer. SubQ key status is unknown.")
+        }
+        if response.status == 404 {
+            emit(ok: true, message: "SubQ key setup needs a newer server.", details: ["available": false]); return
+        }
+        guard response.status == 200, let body = response.body else {
+            // The provider's error body can contain submitted credentials. Never relay it.
+            let code = (response.body?["error"] as? [String: Any])?["code"] as? String
+            throw HelperError.message(code == "subq_key_not_accepted" ? "SubQ did not accept that key or the required model is unavailable. The key was not saved."
+                : "SubQ key operation failed (HTTP \(response.status)).")
+        }
+        var result = Self.subQStatusDetails(body); result["available"] = true
+        emit(ok: true, message: action == "set" ? "SubQ key accepted and saved" : action == "clear" ? "Saved SubQ key removed" : "SubQ key status ready", details: result)
     }
 
     /// Jev key status (never the key). An older server (404) reads as "not available", not an error.
