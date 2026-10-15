@@ -1,0 +1,25 @@
+{
+  "version": "0.5.297",
+  "build": "350",
+  "sourceCommit": "4c7b0f91fc161b7cfce22acc62fa3b76f4677fdd",
+  "zipSHA256": "7a2a34a4d8210826891ef8cf15ed861e26d07a88c371d3827301eb58c02a1ebd",
+  "serverVersion": "6.73.5",
+  "serverPidUnchanged": true,
+  "serverInstanceUnchanged": true,
+  "configurationUnchanged": true,
+  "liveCues": false,
+  "iphoneAsrCandidates": false,
+  "notarizationID": "9b49d874-d5ab-4431-9482-2670c3056455",
+  "notarizationStatus": "Accepted",
+  "gatekeeper": "Notarized Developer ID",
+  "runningControlCount": 1,
+  "helperWorkChecks": 68,
+  "rollbackVersion": "0.5.295",
+  "rollbackBuild": 348,
+  "publicPromotion": false,
+  "manualGates": [
+    "Visible recovery confirmation and intentional follow-up send in IT Retail",
+    "Visible typing and double-launch acceptance"
+  ],
+  "testedAt": "2026-10-14T19:16:25.848705-05:00"
+}
