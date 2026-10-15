@@ -93,6 +93,7 @@ python3 "$ROOT/Tests/hardening-helper-checks.py" "$TMP/cos-control-helper"
 python3 "$ROOT/Tests/speaker-policy-helper-checks.py" "$TMP/cos-control-helper"
 python3 "$ROOT/Tests/mac-recording-helper-checks.py" "$TMP/cos-control-helper"
 python3 "$ROOT/Tests/mac-dictation-helper-checks.py" "$TMP/cos-control-helper"
+python3 "$ROOT/Tests/transcription-dictionary-helper-checks.py" "$TMP/cos-control-helper"
 python3 "$ROOT/Tests/work-intake-helper-checks.py" "$TMP/cos-control-helper"
 python3 "$ROOT/Tests/work-jev-helper-checks.py" "$TMP/cos-control-helper"
 python3 "$ROOT/Tests/decision-provider-helper-checks.py" "$TMP/cos-control-helper"
@@ -4156,8 +4157,9 @@ need(not re.search(r"\.padding\(\.trailing, -size\.length\(", row_src),
      "tucked edge on the CONTAINER's trailing inset.")
 # Reverting the tuck to the 10pt default — the spacing rejected twice — kept
 # the suite green (2026-09-01 QA). Pin it, and ban the other overhang spellings.
-need(code.count(".padding(.trailing, size.length(2))") == 2
-     and code.count(".padding(.leading, size.length(10))") == 2,
+# Three lists since 0.5.309: sessions, finished, and Recent dictations (dictationList).
+need(code.count(".padding(.trailing, size.length(2))") == 3
+     and code.count(".padding(.leading, size.length(10))") == 3,
      "the lists lost their asymmetric trailing tuck; .horizontal 10pt restores "
      "the dead space that was rejected twice")
 for _src, _nm in ((row_src, "row"), (slot_src, "slot")):

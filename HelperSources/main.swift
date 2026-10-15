@@ -642,6 +642,7 @@ final class COSControlHelper {
         case "meeting-ask": try emitMeetingAsk()
         case "mac-recording": try emitMacRecording()
         case "mac-dictation": try emitMacDictation()
+        case "transcription-dictionary": try emitTranscriptionDictionary()
         case "live-transcript": try emitLiveTranscript(args: args)
         case "live-transcript-status": try emitLiveTranscriptStatus(args: args)
         case "meeting-orphan-recover": try emitMeetingOrphanRecover(args: args)
@@ -15405,6 +15406,114 @@ final class COSControlHelper {
             emit(ok: false, message: message, details: ["httpStatus": response.status]); return
         }
         emit(ok: true, message: "Dictation ready", details: ["text": text, "engine": "parakeet-ultra"])
+    }
+
+    /// 0.5.309: the one COS dictionary (vocabulary + corrections) and what Fix a word taught it. The request rides on
+    /// stdin as {operation, payload}, never argv: a word fixed from a dictation is private text. Only the fixed
+    /// /api/transcription-glossary routes are reachable. Every answer carries the fresh dictionary so the UI never guesses.
+    private func emitTranscriptionDictionary() throws {
+        var input = Data()
+        while input.count <= 4096 {
+            let chunk = try FileHandle.standardInput.read(upToCount: min(1024, 4097 - input.count)) ?? Data()
+            if chunk.isEmpty { break }; input.append(chunk)
+        }
+        let allowed: [String: Set<String>] = [
+            "get": [], "learn": ["heard", "written", "source"], "undo": ["id"],
+            "add-vocabulary": ["term"], "remove-vocabulary": ["term"], "remove-correction": ["heard"],
+        ]
+        guard input.count <= 4096,
+              let envelope = try? JSONSerialization.jsonObject(with: input) as? [String: Any],
+              Set(envelope.keys).isSubset(of: ["operation", "payload"]),
+              let operation = envelope["operation"] as? String, let keys = allowed[operation],
+              let payload = (envelope["payload"] ?? [String: Any]()) as? [String: Any],
+              Set(payload.keys) == keys else {
+            emit(ok: false, message: "Dictionary request is invalid."); return
+        }
+        // One word or phrase: trimmed, 1-100 characters, no line breaks or control characters.
+        func word(_ key: String) -> String? {
+            guard let raw = payload[key] as? String else { return nil }
+            let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !value.isEmpty, value.count <= 100, value.unicodeScalars.allSatisfy({ $0.value >= 32 && $0.value != 127 }) else { return nil }
+            return value
+        }
+        var fields: [String: String] = [:]
+        for key in keys {
+            guard let value = word(key) else { emit(ok: false, message: "Dictionary request is invalid."); return }
+            fields[key] = value
+        }
+        if let source = fields["source"], !["dictation", "meeting", "g2", "manual"].contains(source) {
+            emit(ok: false, message: "Dictionary request is invalid."); return
+        }
+        let token = try speakerReviewToken()
+        let unavailable = "The COS server is not answering. Your dictionary is unchanged."
+        func json(_ object: [String: Any]) -> String? {
+            (try? JSONSerialization.data(withJSONObject: object)).flatMap { String(data: $0, encoding: .utf8) }
+        }
+        func refused(_ response: HTTPResponse?, _ fallback: String) -> String {
+            guard let response else { return unavailable }
+            if response.status == 404 { return "Update the COS server to 6.73.11 to teach COS a word here." }
+            return (response.body?["error"] as? String).map { "The dictionary did not change: " + $0 } ?? fallback
+        }
+        func glossary() -> [String: Any]? {
+            guard let response = request("/api/transcription-glossary", token: token, timeout: 5), response.status == 200 else { return nil }
+            return response.body
+        }
+        func put(_ body: [String: Any]) -> HTTPResponse? {
+            json(body).flatMap { request("/api/transcription-glossary", method: "PUT", token: token, body: $0, timeout: 10) }
+        }
+        var message = "Dictionary"
+        switch operation {
+        case "learn":
+            let body = json(["heard": fields["heard"]!, "written": fields["written"]!, "source": fields["source"]!])
+            let response = body.flatMap { request("/api/transcription-glossary/correction", method: "POST", token: token, body: $0, timeout: 10) }
+            guard response?.status == 200 else { emitDictionary(token: token, ok: false, message: refused(response, "The correction was not saved.")); return }
+            message = response?.body?["unchanged"] as? Bool == true ? "Already in the dictionary" : "Saved to the dictionary"
+        case "undo":
+            let response = json(["id": fields["id"]!]).flatMap { request("/api/transcription-glossary/correction/undo", method: "POST", token: token, body: $0, timeout: 10) }
+            guard response?.status == 200 else { emitDictionary(token: token, ok: false, message: refused(response, "That correction was not undone.")); return }
+            message = "Correction undone"
+        case "add-vocabulary", "remove-vocabulary":
+            guard let current = glossary() else { emit(ok: false, message: unavailable); return }
+            let term = fields["term"]!
+            var vocabulary = (current["vocabulary"] as? [String]) ?? []
+            if operation == "add-vocabulary" {
+                if !vocabulary.contains(where: { $0.caseInsensitiveCompare(term) == .orderedSame }) { vocabulary.append(term) }
+            } else {
+                vocabulary.removeAll { $0 == term }
+            }
+            let response = put(["vocabulary": vocabulary])
+            guard response?.status == 200 else { emitDictionary(token: token, ok: false, message: refused(response, "The vocabulary did not change.")); return }
+            message = operation == "add-vocabulary" ? "Word added" : "Word removed"
+        case "remove-correction":
+            guard let current = glossary() else { emit(ok: false, message: unavailable); return }
+            var corrections = (current["corrections"] as? [String: String]) ?? [:]
+            corrections[fields["heard"]!] = nil
+            let response = put(["corrections": corrections])
+            guard response?.status == 200 else { emitDictionary(token: token, ok: false, message: refused(response, "The correction was not removed.")); return }
+            message = "Correction removed"
+        default: break
+        }
+        emitDictionary(token: token, ok: true, message: message)
+    }
+
+    /// The dictionary as COS Control shows it. `learnAvailable` is false on a server older than 6.73.11 (no recent log).
+    private func emitDictionary(token: String, ok: Bool, message: String) {
+        guard let response = request("/api/transcription-glossary", token: token, timeout: 5), response.status == 200, let body = response.body else {
+            emit(ok: false, message: ok ? "The COS server is not answering. Try again when it is ready." : message); return
+        }
+        let vocabulary = (body["vocabulary"] as? [String]) ?? []
+        let corrections = ((body["corrections"] as? [String: String]) ?? [:])
+            .sorted { $0.key.localizedCaseInsensitiveCompare($1.key) == .orderedAscending }
+            .map { ["heard": $0.key, "written": $0.value] }
+        let recentResponse = request("/api/transcription-glossary/recent", token: token, timeout: 5)
+        let recent: [[String: String]] = ((recentResponse?.body?["entries"] as? [[String: Any]]) ?? []).prefix(200).compactMap { entry in
+            guard let id = entry["id"] as? String, let heard = entry["heard"] as? String, let written = entry["written"] as? String else { return nil }
+            return ["id": id, "heard": heard, "written": written, "source": entry["source"] as? String ?? "", "at": entry["at"] as? String ?? ""]
+        }
+        emit(ok: ok, message: message, details: [
+            "vocabulary": vocabulary, "corrections": corrections, "recent": recent,
+            "learnAvailable": recentResponse?.status == 200,
+        ])
     }
 
     /// Manual Mac capture: bounded stdin and allowlisted routes. Never creates a tap or prompts for permission.

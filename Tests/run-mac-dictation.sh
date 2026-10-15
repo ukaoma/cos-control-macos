@@ -20,3 +20,7 @@ CODE="$(grep -v -E '^[[:space:]]*//' "$SRC")"
 # The shortcut monitors also take clicks (⌥-click is a chord), and NSEvent raises on a mouse event's keyCode.
 [[ $(print -r -- "$CODE" | grep -c -F 'let key = isKey ? event.keyCode : 0') == 1 && $(print -r -- "$CODE" | grep -c -F 'event.keyCode') == 2 ]] || { print -u2 "FAIL: keyCode must be read only from key events in the shortcut monitors"; exit 1; }
 print "PASS Mac dictation isolation pins: audio callbacks @Sendable, callback sites reviewed, click-safe keyCode"
+# 0.5.309 Wispr-style dictation: pet pill and lists, the Dock overlay, copy-then-insert-at-focus, private history, the
+# Dictionary route and the helper verb. Text only; the pure rules run in MacDictationChecks above. The overlay's five
+# Combine sinks (reviewed 0.5.309) each hop to the main actor before reading state; that count is pinned there.
+/usr/bin/python3 "$ROOT/Tests/dictation-wispr-pins.py" "$ROOT"

@@ -154,6 +154,8 @@ final class ControllerModel: ObservableObject {
     var recordingLabel: String { recordingCount == 1 ? "Meeting recording" : "\(recordingCount) meetings recording" }
     var recordingDockBadge: String? { recordingCount > 0 ? (recordingCount == 1 ? "REC" : "REC \(recordingCount)") : nil }
     var activityOpenRecording = false
+    /// 0.5.309: the pet's "Dictionary…" asks Activity to open on Meetings with the Dictionary pane, after the section loads.
+    var activityOpenDictionary = false
     private var recordingShortcutDeadline: Date?
 
     /// A user gesture only. Open Meetings before asking its visible poll to select a fresh live session.
@@ -492,6 +494,8 @@ final class ControllerModel: ObservableObject {
     let meetingAsk = MeetingAskStore()
     let macRecording = MacRecordingStore()
     let dictation = MacDictationStore.shared
+    /// 0.5.309: the one COS dictionary (vocabulary and corrections) and what Fix a word taught it.
+    let dictionary = TranscriptionDictionaryStore.shared
     @Published private(set) var macRecordingActive = false
     /// Transcription switcher (server 6.72.0): the Settings card's store. The server owns the choices.
     let transcriptionSettings = TranscriptionSettingsStore()
@@ -2547,6 +2551,10 @@ final class ControllerModel: ObservableObject {
     /// The window the next Import now uses. 7, 30 or 90, the only ones the server takes.
     @Published var meetingImportWindow = 30
 
+    /// True while the Dictionary pane (0.5.309, mock 07) should be the Meetings route.
+    /// Written by `openDictionary()` / `closeDictionary()`, and by nothing else.
+    @Published var dictionaryOpen = false
+
     /// True while the Suggested merges pane should be the Meetings route.
     @Published var meetingSuggestionsOpen = false
     @Published var meetingSuggestions: [MeetingSuggestion] = []
@@ -2580,6 +2588,11 @@ final class ControllerModel: ObservableObject {
         meetingImportOpen || (meetingImportLoading && meetingImportError == nil) || meetingImportError != nil
     }
 
+    /// Mounted while the Dictionary pane is open. Its load errors show inside the pane, so the flag alone is the route.
+    var dictionaryRouteActive: Bool {
+        dictionaryOpen
+    }
+
     /// Mounted when the Suggested merges pane is open, or loading, or failed.
     var meetingSuggestionsRouteActive: Bool {
         meetingSuggestionsOpen || meetingSuggestionsLoading || meetingSuggestionsError != nil
@@ -2609,6 +2622,7 @@ final class ControllerModel: ObservableObject {
     func openMeetingImport() {
         closeLiveTranscript()
         meetingSuggestionsOpen = false
+        dictionaryOpen = false
         closeLibraryDetail()
         meetingImportOpen = true
         meetingImportError = nil
@@ -2624,6 +2638,7 @@ final class ControllerModel: ObservableObject {
     func openMeetingSuggestions() {
         closeLiveTranscript()
         meetingImportOpen = false
+        dictionaryOpen = false
         closeLibraryDetail()
         meetingSuggestionsOpen = true
         meetingSuggestionsError = nil
@@ -2634,6 +2649,26 @@ final class ControllerModel: ObservableObject {
         meetingSuggestionsOpen = false
         meetingSuggestionsError = nil
         decidingSuggestion = nil
+    }
+
+    /// COS Activity → Meetings → Dictionary. The opener fires the load, so the pane never guesses whether it was asked.
+    func openDictionary() {
+        closeLiveTranscript()
+        meetingImportOpen = false
+        meetingSuggestionsOpen = false
+        closeLibraryDetail()
+        dictionaryOpen = true
+        Task { await dictionary.load() }
+    }
+
+    func closeDictionary() {
+        dictionaryOpen = false
+    }
+
+    /// From the pet's Fix a word: Activity opens on Meetings, then ActivityWindow.applyLaunchSection opens the pane.
+    func openDictionaryInActivity() {
+        activityOpenDictionary = true
+        openActivity?(.meetings)
     }
 
     /// Everything the Import card needs: which recorders are on this Mac, the key,
@@ -3236,6 +3271,7 @@ final class ControllerModel: ObservableObject {
         closeLibraryDetail()
         closeMeetingImport()
         closeMeetingSuggestions()
+        closeDictionary()
         liveTranscriptCopyNote = nil
         liveTranscriptOpenID = sessionId
         liveTranscriptErrorSince = nil

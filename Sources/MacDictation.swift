@@ -1,4 +1,5 @@
 import SwiftUI
+import Combine
 import AVFoundation
 import AudioToolbox
 import CoreAudio
@@ -103,44 +104,44 @@ private final class DictationConverter: @unchecked Sendable {
     }
 }
 
-/// Pin the actual field and caret before recording. Never paste into another app/field or press Return.
-@MainActor final class DictationInsertionTarget {
-    let pid: pid_t
-    let element: AXUIElement
-    let selection: CFRange?
-    private init(pid: pid_t, element: AXUIElement, selection: CFRange?) { self.pid = pid; self.element = element; self.selection = selection }
-    static func capture() -> DictationInsertionTarget? {
-        guard AXIsProcessTrusted(), !IsSecureEventInputEnabled(), let app = NSWorkspace.shared.frontmostApplication,
-              let element = focused(app.processIdentifier), !secure(element) else { return nil }
-        return DictationInsertionTarget(pid: app.processIdentifier, element: element, selection: selectedRange(element))
-    }
-    enum Insertion { case inserted, pasteRequested, retained }
-    func insert(_ text: String) -> Insertion {
-        guard let current = NSWorkspace.shared.frontmostApplication, let field = Self.focused(current.processIdentifier) else { return .retained }
-        let now = Self.selectedRange(field)
-        let sameSelection = selection.map { before in now.map { before.location == $0.location && before.length == $0.length } ?? false } ?? false
-        guard MacDictationPolicy.mayInsert(originalPID: pid, currentPID: current.processIdentifier,
-                                          sameElement: CFEqual(element, field), sameSelection: sameSelection,
-                                          secure: IsSecureEventInputEnabled() || Self.secure(field), trusted: AXIsProcessTrusted()) else { return .retained }
-        // AX selected text changes only the selection, never replaces the whole document.
-        if AXUIElementSetAttributeValue(field, kAXSelectedTextAttribute as CFString, text as CFString) == .success { return .inserted }
-        // Electron/browser editors often don't implement SelectedText. The user's gesture authorizes Paste,
-        // with the exact same field still focused. The clipboard stays available for manual paste too.
+/// 0.5.309 (Miles, 2026-10-15, Wispr-style): finished text is ALWAYS put on the clipboard and left there, then dropped
+/// into whatever editable text element has focus NOW in the frontmost app, so the person may click elsewhere while it
+/// transcribes. Whether to insert is DictationInsertPolicy (pure, tested); this only reads the focused element for it.
+/// Never presses Return or Send.
+@MainActor enum DictationInsertion {
+    enum Outcome: Equatable { case inserted(app: String), pasted(app: String), refused(DictationInsertPolicy.Refusal) }
+    static func deliver(_ text: String) -> Outcome {
+        NSPasteboard.general.clearContents(); NSPasteboard.general.setString(text, forType: .string)
+        let trusted = AXIsProcessTrusted()
+        let app = NSWorkspace.shared.frontmostApplication
+        let element = trusted ? app.flatMap { focused($0.processIdentifier) } : nil
+        // COS's own pet and dictation panels are never a target, even when one of them holds the keyboard.
+        let own = app?.processIdentifier == ProcessInfo.processInfo.processIdentifier
+            && (NSApp.keyWindow is PetPanel || NSApp.keyWindow is DictationOverlayPanel)
+        let refusal = DictationInsertPolicy.refusal(
+            trusted: trusted, secureInput: IsSecureEventInputEnabled(),
+            role: element.flatMap { attribute($0, kAXRoleAttribute) as? String },
+            subrole: element.flatMap { attribute($0, kAXSubroleAttribute) as? String },
+            rangeSettable: element.map(rangeSettable) ?? false,
+            editableAncestor: element.map { attribute($0, "AXEditableAncestor") != nil } ?? false,
+            ownOverlay: own)
+        if let refusal { return .refused(refusal) }
+        guard let element, let app else { return .refused(.noTextBox) }
+        let name = app.localizedName ?? "the app"
+        // AX selected text replaces only the selection (or inserts at the caret), never the whole document.
+        if AXUIElementSetAttributeValue(element, kAXSelectedTextAttribute as CFString, text as CFString) == .success { return .inserted(app: name) }
+        // Electron and browser editors often do not implement SelectedText. The text is already on the clipboard, so
+        // ⌘V into the focused field is the fallback; COS cannot confirm it landed, so it says pasted.
         guard let source = CGEventSource(stateID: .combinedSessionState),
               let down = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: true),
-              let up = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: false) else { return .retained }
-        NSPasteboard.general.clearContents(); NSPasteboard.general.setString(text, forType: .string)
+              let up = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: false) else { return .refused(.noTextBox) }
         down.flags = .maskCommand; up.flags = .maskCommand
         down.post(tap: .cghidEventTap); up.post(tap: .cghidEventTap)
-        return .pasteRequested
+        return .pasted(app: name)
     }
-    private static func selectedRange(_ element: AXUIElement) -> CFRange? {
-        guard let value = attribute(element, kAXSelectedTextRangeAttribute), CFGetTypeID(value) == AXValueGetTypeID() else { return nil }
-        let ax = value as! AXValue
-        guard AXValueGetType(ax) == .cfRange else { return nil }
-        var range = CFRange()
-        guard AXValueGetValue(ax, .cfRange, &range), range.location >= 0, range.length >= 0 else { return nil }
-        return range
+    private static func rangeSettable(_ element: AXUIElement) -> Bool {
+        var settable = DarwinBoolean(false)
+        return AXUIElementIsAttributeSettable(element, kAXSelectedTextRangeAttribute as CFString, &settable) == .success && settable.boolValue
     }
     private static func attribute(_ element: AXUIElement, _ key: String) -> CFTypeRef? {
         var value: CFTypeRef?
@@ -149,9 +150,6 @@ private final class DictationConverter: @unchecked Sendable {
     private static func focused(_ pid: pid_t) -> AXUIElement? {
         guard let value = attribute(AXUIElementCreateApplication(pid), kAXFocusedUIElementAttribute), CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }
         return (value as! AXUIElement)
-    }
-    private static func secure(_ element: AXUIElement) -> Bool {
-        (attribute(element, kAXSubroleAttribute) as? String) == kAXSecureTextFieldSubrole
     }
 }
 
@@ -176,22 +174,35 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
     @Published private(set) var toggleTrigger: DictationTrigger?
     @Published private(set) var phase = "Off"
     @Published private(set) var message: String?
-    @Published private(set) var transcript = ""
-    @Published private(set) var provisional = ""
-    @Published private(set) var audioLevel: Double = 0
-    /// Newest last; the listening panel scrolls these like a waveform.
-    @Published private(set) var levelHistory = [Double](repeating: 0, count: 28)
+    /// 0.5.309: the listening pill. It replaces the pet's ledger row only while it is not hidden, then hands it back.
+    @Published private(set) var pill: DictationPill = .hidden
+    /// Where this dictation shows, decided when it starts: on the pet, or (pet hidden) a pill above the Dock.
+    @Published private(set) var surface: DictationSurface = .pet
+    /// The short-lived card: no text box (mock 04), or a dictation that did not finish.
+    @Published private(set) var card: DictationCard?
+    /// Recent dictations, newest first, the last 50, kept on this Mac across restarts (mock 05).
+    @Published private(set) var recent: [DictationRecord]
+    /// Which dictation view is open: the pet's list, one dictation, or Fix a word.
+    @Published private(set) var listRoute: DictationListRoute?
+    @Published private(set) var fixSelection: ClosedRange<Int>?
+    @Published var fixDraft = ""
+    @Published private(set) var fixNote: String?
+    @Published private(set) var fixSaving = false
+    /// Levels for the bars. Its own object, so a 20 Hz meter redraws the pill and never the whole pet.
+    let meter = DictationMeterFeed()
     var bridge: (@MainActor (Data) async throws -> HelperResponse)?
     var petFrame: (() -> NSRect?)?
     private var capture: DictationMicrophoneCapture?
-    private var target: DictationInsertionTarget?
     private var pendingAudio: Data?
     var canRetry: Bool { pendingAudio != nil && !busy }
     private var task: Task<Void, Never>?
     private var timer: Task<Void, Never>?
-    private var previewTask: Task<Void, Never>?
     private var meterTask: Task<Void, Never>?
-    private var previewRequest: Task<HelperResponse?, Never>?
+    private var flashTask: Task<Void, Never>?
+    private var cardTask: Task<Void, Never>?
+    private var levelMeter = DictationLevelMeter()
+    private let historyURL: URL?
+    private let overlay = DictationOverlayPresenter()
     private var sessionObservers: [NSObjectProtocol] = []
     private var handler: EventHandlerRef?
     private var registrations: [EventHotKeyRef] = []
@@ -203,7 +214,6 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
     private var toggleHeld = false
     private var holdPending = false
     private var generation = UUID()
-    private var hud: NSPanel?
     var busy: Bool { ["Listening", "Starting", "Transcribing"].contains(phase) }
     private init() {
         let d = UserDefaults.standard
@@ -215,11 +225,22 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
         }
         holdTrigger = load("dictation.hold"); toggleTrigger = load("dictation.toggle")
         phase = enabled ? "Ready" : "Off"
+        let history = Self.defaultHistoryURL()
+        historyURL = history
+        recent = history.map(DictationHistory.load(from:)) ?? []
         for name in [NSWorkspace.willSleepNotification, NSWorkspace.sessionDidResignActiveNotification] {
             sessionObservers.append(NSWorkspace.shared.notificationCenter.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
                 Task { @MainActor in self?.cancel() }
             })
         }
+        overlay.bind(store: self)
+    }
+    /// ~/Library/Application Support/COS Control/dictation-history.json. A check run writes under its own test home,
+    /// and perf fixtures write nothing, so no check can touch the real history.
+    nonisolated static func defaultHistoryURL(environment: [String: String] = ProcessInfo.processInfo.environment) -> URL? {
+        if let home = environment["COS_CONTROL_TEST_HOME"] { return URL(fileURLWithPath: home).appendingPathComponent("dictation-history.json") }
+        guard environment["COS_PERF_FIXTURES"] == nil else { return nil }
+        return FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/COS Control/dictation-history.json")
     }
     func refreshMicrophones() { microphones = DictationAudioDevices.inputs() }
     func requestInsertionPermission() {
@@ -323,8 +344,11 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
     func start() {
         guard MacDictationPolicy.mayStart(enabled: enabled, busy: busy) else { return }
         generation = UUID(); let attempt = generation
-        target = DictationInsertionTarget.capture()
-        pendingAudio = nil; transcript = ""; provisional = ""; audioLevel = 0; levelHistory = [Double](repeating: 0, count: 28); message = nil; phase = "Starting"; showHUD()
+        flashTask?.cancel(); flashTask = nil; dismissCard()
+        surface = petFrame?() != nil ? .pet : .floating
+        pendingAudio = nil; message = nil; phase = "Starting"
+        levelMeter = DictationLevelMeter(); meter.reset()
+        pill = .listening(since: Date())
         task = Task {
             let permission: Bool
             switch AVCaptureDevice.authorizationStatus(for: .audio) {
@@ -333,141 +357,221 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
             default: permission = false
             }
             guard generation == attempt, !Task.isCancelled else { return }
-            guard permission else { phase = "Ready"; message = "Allow Microphone for COS Control in System Settings → Privacy & Security."; return }
+            guard permission else { fail("Allow Microphone for COS Control in System Settings → Privacy & Security."); return }
             refreshMicrophones()
             let selected = microphones.first { $0.id == microphoneUID }
-            guard microphoneUID.isEmpty || selected != nil else { phase = "Ready"; message = "Your selected microphone is disconnected. Choose another microphone."; return }
+            guard microphoneUID.isEmpty || selected != nil else { fail("Your selected microphone is disconnected. Choose another microphone."); return }
             do {
                 let next = DictationMicrophoneCapture()
                 try next.start(deviceID: selected?.deviceID); capture = next; phase = "Listening"
+                // 50 ms ticks: the meter's fast rise and slow fall are tuned to this cadence.
                 meterTask = Task {
                     while !Task.isCancelled, phase == "Listening", generation == attempt {
                         if next.failure != nil { stop(); break }
-                        audioLevel = min(1, next.level * 4)
-                        levelHistory.removeFirst(); levelHistory.append(audioLevel)
-                        try? await Task.sleep(for: .milliseconds(100))
-                    }
-                }
-                previewTask = Task {
-                    while !Task.isCancelled, generation == attempt, phase == "Listening" {
-                        try? await Task.sleep(for: .seconds(2))
-                        guard !Task.isCancelled, generation == attempt, phase == "Listening", let bridge else { break }
-                        let pcm = next.snapshot()
-                        guard pcm.count >= 32_000, let audio = try? MacDictationPolicy.wav(pcm) else { continue }
-                        let request = Task { try? await bridge(audio) }
-                        previewRequest = request
-                        let response = await request.value
-                        if generation == attempt { previewRequest = nil }
-                        if let response, generation == attempt, phase == "Listening", !Task.isCancelled,
-                           response.ok, response.details["engine"]?.string == "parakeet-ultra" {
-                            provisional = response.details["text"]?.string ?? provisional
-                        }
+                        meter.push(levelMeter.update(rms: next.level))
+                        try? await Task.sleep(for: .milliseconds(50))
                     }
                 }
                 timer = Task { try? await Task.sleep(for: .seconds(MacDictationPolicy.maximumSeconds)); if !Task.isCancelled { stop() } }
-            } catch { phase = "Ready"; let reason = error.localizedDescription; dictationLog.error("start failed: \(reason, privacy: .public)"); message = reason }
+            } catch { let reason = error.localizedDescription; dictationLog.error("start failed: \(reason, privacy: .public)"); fail(reason) }
         }
     }
     func stop() {
         if phase == "Starting" { cancel(); return }
         guard phase == "Listening", let capture else { return }
         timer?.cancel(); timer = nil; self.capture = nil
-        previewTask?.cancel(); previewTask = nil; meterTask?.cancel(); meterTask = nil
+        meterTask?.cancel(); meterTask = nil
         let attempt = generation
-        let pendingPreview = previewRequest
         do {
             let pcm = try capture.stop()
-            guard pcm.count >= 3200 else { phase = "Ready"; message = "No usable speech was captured. Try holding the shortcut longer."; return }
-            phase = "Transcribing"
+            // A stray tap of the shortcut is not worth a card: the pill just goes away.
+            guard pcm.count >= 3200 else { fail("No usable speech was captured. Try holding the shortcut longer.", card: false); return }
+            phase = "Transcribing"; pill = .transcribing
             let wav = try MacDictationPolicy.wav(pcm)
             pendingAudio = wav
-            transcribe(wav, attempt: attempt, pendingPreview: pendingPreview)
-        } catch { phase = "Ready"; let reason = error.localizedDescription; dictationLog.error("stop failed: \(reason, privacy: .public)"); message = reason }
+            transcribe(wav, attempt: attempt)
+        } catch { let reason = error.localizedDescription; dictationLog.error("stop failed: \(reason, privacy: .public)"); fail(reason) }
     }
     func retryTranscription() {
         guard canRetry, let audio = pendingAudio else { return }
-        phase = "Transcribing"; message = nil
-        transcribe(audio, attempt: generation, pendingPreview: nil)
+        dismissCard()
+        phase = "Transcribing"; pill = .transcribing; message = nil
+        transcribe(audio, attempt: generation)
     }
-    private func transcribe(_ wav: Data, attempt: UUID, pendingPreview: Task<HelperResponse?, Never>?) {
+    private func transcribe(_ wav: Data, attempt: UUID) {
         task = Task {
-            // Drain a preview already decoding before asking Parakeet for the final clip.
-            // Cancelling the timer cannot create two competing local model requests.
-            _ = await pendingPreview?.value
             guard generation == attempt, !Task.isCancelled else { return }
             do {
                 guard let bridge else { throw NSError(domain: "COSDictation", code: 2, userInfo: [NSLocalizedDescriptionKey: "The transcription server is not connected."]) }
                 let response = try await bridge(wav)
                 guard generation == attempt, !Task.isCancelled else { return }
                 guard response.ok, let text = response.details["text"]?.string, !text.isEmpty,
-                      response.details["engine"]?.string == "parakeet-ultra" else { phase = "Ready"; message = response.message; return }
-                transcript = text; pendingAudio = nil
-                // Leave the result visible if focus moved, permissions were not granted, or the field is secure.
-                let insertion = target?.insert(text) ?? .retained
-                phase = "Ready"
-                switch insertion {
-                case .inserted: message = "Text inserted. Review it before sending."
-                case .pasteRequested: message = "Paste requested. Review the field; your text is also available to copy."
-                case .retained: message = "Text ready to copy. Keep the same field and caret selected for automatic insertion; Accessibility access is required."
-                }
-                target = nil
-            } catch { guard generation == attempt else { return }; phase = "Ready"; let reason = error.localizedDescription; dictationLog.error("transcribe failed: \(reason, privacy: .public)"); message = reason }
+                      response.details["engine"]?.string == "parakeet-ultra" else { fail(response.message); return }
+                pendingAudio = nil; phase = "Ready"; message = nil
+                finish(text, outcome: DictationInsertion.deliver(text))
+            } catch { guard generation == attempt else { return }; let reason = error.localizedDescription; dictationLog.error("transcribe failed: \(reason, privacy: .public)"); fail(reason) }
         }
+    }
+    /// The text is on the clipboard already. Inserted: flash the pill. Refused: the card, which never takes focus.
+    private func finish(_ text: String, outcome: DictationInsertion.Outcome) {
+        let record: DictationRecord
+        switch outcome {
+        case .inserted(let app), .pasted(let app):
+            let pasted = outcome == .pasted(app: app)
+            record = DictationRecord(id: UUID(), text: text, createdAt: Date(), insertedApp: app, pasted: pasted)
+            let flash = DictationPill.inserted(app: app, pasted: pasted)
+            pill = flash
+            flashTask = Task {
+                try? await Task.sleep(for: .seconds(DictationPill.flashSeconds))
+                if !Task.isCancelled, pill == flash { pill = .hidden }
+            }
+        case .refused(let refusal):
+            record = DictationRecord(id: UUID(), text: text, createdAt: Date(), insertedApp: nil)
+            pill = .hidden
+            showCard(DictationCard(kind: .copied(refusal), recordID: record.id, text: text, countdown: DictationCountdown(start: Date())))
+        }
+        remember(record)
+    }
+    /// A dictation that did not finish: the reason on the card, with Retry when the audio is still held.
+    private func fail(_ reason: String, card: Bool = true) {
+        phase = enabled ? "Ready" : "Off"; message = reason; pill = .hidden; meter.reset()
+        if card { showCard(DictationCard(kind: .failed(reason), recordID: nil, text: "", countdown: DictationCountdown(start: Date()))) }
     }
     func cancel() {
-        generation = UUID(); pendingAudio = nil; task?.cancel(); task = nil; previewRequest?.cancel(); previewRequest = nil; timer?.cancel(); timer = nil
-        previewTask?.cancel(); previewTask = nil; meterTask?.cancel(); meterTask = nil
-        _ = try? capture?.stop(); capture = nil; target = nil; held = false; toggleHeld = false; holdPending = false
+        generation = UUID(); pendingAudio = nil; task?.cancel(); task = nil; timer?.cancel(); timer = nil
+        meterTask?.cancel(); meterTask = nil; flashTask?.cancel(); flashTask = nil
+        _ = try? capture?.stop(); capture = nil; held = false; toggleHeld = false; holdPending = false
         holdTracker?.reset(); toggleTracker?.reset()
         phase = enabled ? "Ready" : "Off"; message = "Dictation canceled. No text was inserted."
-        hud?.orderOut(nil)
+        pill = .hidden; meter.reset()
     }
-    func copyText() { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(transcript, forType: .string) }
-    private func showHUD() {
-        if hud == nil {
-            let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 390, height: 260), styleMask: [.nonactivatingPanel, .titled], backing: .buffered, defer: false)
-            panel.title = "COS Dictation"; panel.level = .floating; panel.hidesOnDeactivate = false
-            panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-            panel.contentView = NSHostingView(rootView: DictationHUD(store: self)); hud = panel
+
+    // MARK: Recent dictations (0.5.309)
+
+    private func remember(_ record: DictationRecord) {
+        recent = DictationHistory.adding(record, to: recent)
+        guard let historyURL else { return }
+        // Dictated text is private: a failure is logged by its reason only, never with the text.
+        do { try DictationHistory.save(recent, to: historyURL) }
+        catch { dictationLog.error("recent dictations not saved: \(error.localizedDescription, privacy: .public)") }
+    }
+    func record(_ id: UUID?) -> DictationRecord? { id.flatMap { id in recent.first { $0.id == id } } }
+    func copy(_ text: String) { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(text, forType: .string) }
+
+    // MARK: The card (mock 04)
+
+    private func showCard(_ next: DictationCard) {
+        card = next
+        let id = next.id
+        cardTask?.cancel()
+        cardTask = Task {
+            while !Task.isCancelled, let current = card, current.id == id {
+                let now = Date()
+                if current.countdown.expired(at: now) { card = nil; break }
+                try? await Task.sleep(for: .seconds(current.countdown.paused ? 0.25 : min(0.5, current.countdown.remaining(at: now))))
+            }
         }
-        if let frame = petFrame?(), let screen = NSScreen.screens.first(where: { $0.visibleFrame.intersects(frame) }) {
-            let bounds = screen.visibleFrame
-            hud?.setFrameOrigin(NSPoint(x: min(max(bounds.minX, frame.midX - 195), bounds.maxX - 390),
-                                       y: min(max(bounds.minY + 12, frame.minY - 290), bounds.maxY - 290)))
-        } else if let screen = NSScreen.main { hud?.setFrameOrigin(NSPoint(x: screen.visibleFrame.midX - 195, y: screen.visibleFrame.minY + 24)) }
-        hud?.orderFrontRegardless() // nonactivating: the user's editing field retains focus
+    }
+    func dismissCard() { cardTask?.cancel(); cardTask = nil; card = nil }
+    /// Hovering the card pauses its fold-away; leaving resumes from where it stopped.
+    func setCardHover(_ inside: Bool) {
+        guard var current = card else { return }
+        if inside { current.countdown.pause(at: Date()) } else { current.countdown.resume(at: Date()) }
+        if current != card { card = current }
+    }
+
+    // MARK: The pet's dictation views (mock 05, 06)
+
+    /// The DICTATED pill. Opening it is a choice of the pet's list, so it always shows on the pet.
+    func toggleRecent() {
+        if listRoute != nil { closeList(); return }
+        if !busy { surface = .pet }
+        listRoute = .recent
+    }
+    func openDetail(_ id: UUID) { guard record(id) != nil else { return }; listRoute = .detail(id); resetFix() }
+    func openFix(_ id: UUID?) {
+        guard let id, record(id) != nil else { return }
+        dismissCard()
+        listRoute = .fix(id); resetFix()
+    }
+    func closeList() { listRoute = nil; resetFix() }
+    func backToRecent() { listRoute = .recent; resetFix() }
+    /// Cancel on Fix a word goes back to the dictation on the pet; the floating editor has nothing behind it.
+    func cancelFix() {
+        guard case .fix(let id)? = listRoute else { return }
+        if surface == .pet { listRoute = .detail(id); resetFix() } else { closeList() }
+    }
+    /// An outside click closes the list like the session lists, unless a fix is half typed.
+    func closeListOnOutsideClick() {
+        if case .fix? = listRoute, fixSelection != nil || !fixDraft.isEmpty || fixSaving { return }
+        closeList()
+    }
+    func selectFixWord(_ index: Int) {
+        guard case .fix(let id)? = listRoute, let record = self.record(id) else { return }
+        let before = fixHeard
+        fixSelection = DictationFixText.select(index, current: fixSelection)
+        // Prefill the spelling with what was heard, but never over a spelling the person already typed.
+        if fixDraft.isEmpty || fixDraft == before {
+            fixDraft = fixSelection.map { DictationFixText.heard(DictationFixText.tokens(record.text), $0) } ?? ""
+        }
+        fixNote = nil
+    }
+    var fixHeard: String {
+        guard case .fix(let id)? = listRoute, let record = self.record(id), let range = fixSelection else { return "" }
+        return DictationFixText.heard(DictationFixText.tokens(record.text), range)
+    }
+    func saveFix(to dictionary: TranscriptionDictionaryStore) {
+        let heard = fixHeard, written = fixDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !fixSaving else { return }
+        guard !heard.isEmpty, !written.isEmpty, heard != written else {
+            fixNote = heard.isEmpty ? "Tap the word COS got wrong first." : "Type how it should be written."; return
+        }
+        fixSaving = true; fixNote = nil
+        Task {
+            let saved = await dictionary.learn(heard: heard, written: written, source: "dictation")
+            fixSaving = false
+            if saved { fixSelection = nil; fixDraft = ""; fixNote = "Saved. COS writes “\(written)” from the next sentence." }
+            else { fixNote = dictionary.message ?? "The dictionary did not save. Try again." }
+        }
+    }
+    private func resetFix() { fixSelection = nil; fixDraft = ""; fixNote = nil; fixSaving = false }
+}
+
+enum DictationSurface: Equatable, Sendable { case pet, floating }
+
+enum DictationListRoute: Equatable, Sendable {
+    case recent, detail(UUID), fix(UUID)
+    var isFix: Bool { if case .fix = self { return true }; return false }
+}
+
+/// One card at a time. `countdown` folds it after 20 seconds; hovering pauses it.
+struct DictationCard: Equatable, Identifiable {
+    enum Kind: Equatable { case copied(DictationInsertPolicy.Refusal), failed(String) }
+    let id = UUID()
+    let kind: Kind
+    let recordID: UUID?
+    let text: String
+    var countdown: DictationCountdown
+    var title: String {
+        switch kind {
+        case .copied(let refusal): refusal.title
+        case .failed: "NOTHING INSERTED"
+        }
+    }
+    var note: String {
+        switch kind {
+        case .copied(let refusal): refusal.note
+        case .failed(let reason): reason
+        }
     }
 }
 
-private struct DictationHUD: View {
-    @ObservedObject var store: MacDictationStore
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Label(store.phase, systemImage: store.phase == "Listening" ? "mic.fill" : "waveform").font(.headline)
-            if store.phase == "Listening" {
-                HStack(alignment: .center, spacing: 3) {
-                    ForEach(Array(store.levelHistory.enumerated()), id: \.offset) { _, level in
-                        Capsule().fill(COSPalette.accent).frame(width: 4, height: 3 + level * 25)
-                    }
-                }.frame(height: 28).animation(reduceMotion ? nil : .linear(duration: 0.1), value: store.levelHistory).accessibilityLabel("Microphone level")
-                if !store.provisional.isEmpty {
-                    Text("Live preview · may change").font(.caption2).foregroundStyle(.secondary)
-                    Text(store.provisional).font(.caption).lineLimit(3)
-                }
-            }
-            if !store.transcript.isEmpty {
-                ScrollView { Text(store.transcript).font(.body).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }.frame(maxHeight: 88)
-            }
-            Text(store.message ?? "Parakeet Ultra · COS dictionary · local audio").font(.caption).fixedSize(horizontal: false, vertical: true)
-            HStack {
-                if store.phase == "Listening" { Button("Stop") { store.stop() } }
-                if !store.transcript.isEmpty { Button("Copy text") { store.copyText() } }
-                if store.canRetry { Button("Retry transcription") { store.retryTranscription() } }
-                Button(store.busy ? "Cancel" : "Close") { store.cancel() }
-            }.controlSize(.small)
-        }.padding(16).frame(width: 390, height: 260, alignment: .topLeading).background(COSPalette.panel).cosControlTheme()
-    }
+/// The bars' levels, newest last.
+@MainActor final class DictationMeterFeed: ObservableObject {
+    static let bars = 11
+    @Published private(set) var history = [Double](repeating: 0, count: DictationMeterFeed.bars)
+    func push(_ level: Double) { history.removeFirst(); history.append(level) }
+    func reset() { if history.contains(where: { $0 != 0 }) { history = [Double](repeating: 0, count: Self.bars) } }
 }
 
 struct MacDictationSettings: View {
@@ -492,7 +596,7 @@ struct MacDictationSettings: View {
                 DictationShortcutRow(store: store, hold: true, activityShortcut: activityShortcut)
                 DictationShortcutRow(store: store, hold: false, activityShortcut: activityShortcut)
                 Button("Allow insertion into other apps…") { store.requestInsertionPermission() }.controlSize(.small)
-                Text("Any shortcut: a modifier plus a key, a function key, or one modifier key by itself such as Fn 🌐 or Right ⌘. Fn and single-key shortcuts use Accessibility. Text is inserted only while the same field and caret remain selected; COS never presses Send.")
+                Text("Any shortcut: a modifier plus a key, a function key, or one modifier key by itself such as Fn 🌐 or Right ⌘. Fn and single-key shortcuts use Accessibility. Finished text is always copied, then dropped into the text box that has the cursor; with no text box, the pet shows it with a Copy button. COS never presses Send or Return.")
                     .font(.caption2).foregroundStyle(.secondary)
                 if let message = store.message { Text(message).font(.caption2).foregroundStyle(COSPalette.amber) }
             }
@@ -558,5 +662,763 @@ extension DictationTrigger {
             if modifiers & Self.command != 0 { text += "⌘" }
             return text + (Self.functionKeys[key] ?? HotKeyCombo.keyName(key))
         }
+    }
+}
+
+// MARK: - Wispr-style surfaces (0.5.309)
+//
+// Built to the approved mock (design/dictation-wispr-mock.html, moments 01-07; Miles picked A/A/A, 2026-10-15 18:16)
+// from the pet's own pieces: the ledger pill, the session list and its card. The persistent "COS Dictation" window is
+// gone. With the pet showing, the pill takes the ledger's slot (SessionPet.swift ledgerSlot); with the pet hidden, the
+// same pill and card float above the Dock in DictationOverlayPresenter's panel.
+
+/// The overlay's panel. It becomes key only while Fix a word's field is open, so it never takes focus by showing.
+final class DictationOverlayPanel: NSPanel {
+    var allowsKey = false
+    override var canBecomeKey: Bool { allowsKey }
+    override var canBecomeMain: Bool { false }
+}
+
+/// The first click on Copy acts, rather than only reaching a window of an app that is not active.
+private final class DictationHostingView<Content: View>: NSHostingView<Content> {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+}
+
+/// Pet hidden (mock 02, 04): a dark pill at the bottom center of the main screen above the Dock, and the card rising
+/// from it. Borderless and nonactivating; it ignores the mouse while only the pill shows, so it cannot steal focus.
+@MainActor final class DictationOverlayPresenter {
+    private var panel: DictationOverlayPanel?
+    private var host: DictationHostingView<DictationOverlayRoot>?
+    private var observers: [AnyCancellable] = []
+    private weak var store: MacDictationStore?
+
+    func bind(store: MacDictationStore) {
+        self.store = store
+        // @Published fires before the value lands; the hop reads the new state, as SessionPetPresenter does.
+        observers = [
+            store.$pill.map(\.label).removeDuplicates().sink { [weak self] _ in Task { @MainActor in self?.sync() } },
+            store.$card.map { $0?.id }.removeDuplicates().sink { [weak self] _ in Task { @MainActor in self?.sync() } },
+            store.$listRoute.removeDuplicates().sink { [weak self] _ in Task { @MainActor in self?.sync() } },
+            store.$surface.removeDuplicates().sink { [weak self] _ in Task { @MainActor in self?.sync() } },
+            store.$fixNote.removeDuplicates().sink { [weak self] _ in Task { @MainActor in self?.sync() } },
+        ]
+    }
+
+    private func sync() {
+        guard let store else { return }
+        let fixing = store.listRoute?.isFix == true
+        guard store.surface == .floating, store.pill != .hidden || store.card != nil || fixing else {
+            panel?.allowsKey = false
+            if panel?.isVisible == true { panel?.orderOut(nil) }
+            return
+        }
+        let panel = existingPanel(store)
+        host?.rootView = DictationOverlayRoot(store: store)
+        panel.ignoresMouseEvents = store.card == nil && !fixing
+        panel.allowsKey = fixing
+        let size = host?.fittingSize ?? NSSize(width: 360, height: 60)
+        if let screen = (NSScreen.main ?? NSScreen.screens.first)?.visibleFrame {
+            panel.setFrame(NSRect(x: (screen.midX - size.width / 2).rounded(), y: screen.minY + 8, width: size.width, height: size.height), display: true)
+        }
+        if fixing { panel.makeKeyAndOrderFront(nil) } else { panel.orderFrontRegardless() }
+    }
+
+    private func existingPanel(_ store: MacDictationStore) -> DictationOverlayPanel {
+        if let panel { return panel }
+        let host = DictationHostingView(rootView: DictationOverlayRoot(store: store))
+        let panel = DictationOverlayPanel(contentRect: NSRect(x: 0, y: 0, width: 360, height: 60),
+                                          styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        panel.isFloatingPanel = true
+        panel.level = .floating
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = false
+        panel.hidesOnDeactivate = false
+        panel.isReleasedWhenClosed = false
+        panel.contentView = host
+        self.host = host
+        self.panel = panel
+        return panel
+    }
+}
+
+struct DictationOverlayRoot: View {
+    @ObservedObject var store: MacDictationStore
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    private let size = PetSize(preset: .medium, customPixels: PetSize.mediumPixels)
+    var body: some View {
+        VStack(spacing: 8) {
+            if let card = store.card {
+                DictationCardView(store: store, card: card, size: size, reduceMotion: reduceMotion)
+            }
+            if case .fix(let id)? = store.listRoute, let record = store.record(id) {
+                DictationFixEditor(store: store, dictionary: TranscriptionDictionaryStore.shared, record: record, size: size, onOpenDictionary: nil)
+                    .frame(width: 340)
+                    .dictationSurface(size)
+            }
+            if store.pill != .hidden {
+                DictationListeningPill(pill: store.pill, meter: store.meter, floating: true, size: size, reduceMotion: reduceMotion)
+            }
+        }
+        .padding(14)
+        .fixedSize()
+    }
+}
+
+/// One pill for both places (mock 01, 02, 03), so its meaning never changes. On the pet it sits in the ledger's slot
+/// on the card fill; above the Dock it is dark. Levels come from DictationMeterFeed, so only the pill redraws at 20 Hz.
+struct DictationListeningPill: View {
+    let pill: DictationPill
+    @ObservedObject var meter: DictationMeterFeed
+    let floating: Bool
+    let size: PetSize
+    let reduceMotion: Bool
+
+    private var done: Bool { if case .inserted = pill { return true }; return false }
+    private var fill: Color { done ? COSPalette.green : (floating ? COSPalette.ink : COSPalette.card) }
+    private var ink: Color { done ? .white : (floating ? COSPalette.cream : COSPalette.plateInk) }
+
+    var body: some View {
+        HStack(spacing: size.length(8)) {
+            switch pill {
+            case .hidden:
+                EmptyView()
+            case .listening(let since):
+                Circle().fill(COSPalette.green)
+                    .frame(width: size.length(6), height: size.length(6))
+                    .padding(size.length(2))
+                    .background(Circle().fill(COSPalette.green.opacity(0.3)))
+                liveBars
+                if floating {
+                    Text("COS")
+                } else {
+                    TimelineView(.periodic(from: since, by: 1)) { context in
+                        Text("LISTENING " + DictationPill.clock(context.date.timeIntervalSince(since))).monospacedDigit()
+                    }
+                }
+            case .transcribing:
+                DictationWorkingBars(size: size, reduceMotion: reduceMotion)
+                Text(pill.label)
+            case .inserted:
+                Text(pill.label)
+            }
+        }
+        .font(COSType.mono(size.typeSize(8), weight: .bold))
+        .kerning(0.6)
+        .lineLimit(1)
+        .foregroundStyle(ink)
+        .padding(.leading, size.length(10))
+        .padding(.trailing, size.length(12))
+        .padding(.vertical, size.length(6))
+        .background(Capsule().fill(fill))
+        .overlay(Capsule().stroke(floating || done ? Color.clear : COSPalette.line, lineWidth: 1))
+        .shadow(color: .black.opacity(floating ? 0.18 : 0), radius: 9, y: 6)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(pill == .transcribing ? "Transcribing dictation" : done ? pill.label : "Dictation listening")
+    }
+
+    /// Eleven bars, center weighted: the newest level at the center, older ones rippling outward.
+    private var liveBars: some View {
+        let levels = meter.history
+        let center = Double(DictationMeterFeed.bars - 1) / 2
+        return HStack(spacing: max(1, size.length(2))) {
+            ForEach(0..<DictationMeterFeed.bars, id: \.self) { index in
+                let offset = abs(Double(index) - center)
+                let level = levels[max(0, levels.count - 1 - Int(offset.rounded()))]
+                let weight = 0.45 + 0.55 * (1 - offset / (center + 1))
+                Capsule()
+                    .frame(width: max(2, size.length(2.5)), height: max(3, CGFloat(3 + 12 * level * weight) * size.scale))
+            }
+        }
+        .frame(height: size.length(15))
+        .animation(reduceMotion ? nil : .linear(duration: 0.07), value: levels)
+    }
+}
+
+/// TRANSCRIBING: seven bars sweeping; still under Reduce Motion.
+struct DictationWorkingBars: View {
+    let size: PetSize
+    let reduceMotion: Bool
+    private static let rest: [Double] = [5, 9, 13, 9, 5, 7, 4]
+    var body: some View {
+        Group {
+            if reduceMotion {
+                bars { Self.rest[$0] }
+            } else {
+                TimelineView(.animation(minimumInterval: 1.0 / 30)) { context in
+                    let t = context.date.timeIntervalSinceReferenceDate
+                    bars { index in
+                        let phase: Double = t / 1.1 - Double(index) * 0.09 / 1.1
+                        return 3 + 9 * (0.5 - 0.5 * cos(2 * Double.pi * phase))
+                    }
+                }
+            }
+        }
+        .frame(height: size.length(15))
+    }
+    private func bars(_ height: @escaping (Int) -> Double) -> some View {
+        HStack(spacing: max(1, size.length(2))) {
+            ForEach(0..<7, id: \.self) { index in
+                Capsule().frame(width: max(2, size.length(2.5)), height: max(3, CGFloat(height(index)) * size.scale))
+            }
+        }
+    }
+}
+
+/// The card's two buttons: Copy on the ink fill (the mock's primary), everything else on the card with a hairline.
+struct DictationButtonStyle: ButtonStyle {
+    var primary = false
+    let size: PetSize
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(COSType.body(size.typeSize(10), weight: .semibold))
+            .foregroundStyle(primary ? COSPalette.cream : Color.primary)
+            .padding(.horizontal, size.length(10))
+            .padding(.vertical, size.length(5))
+            .background(RoundedRectangle(cornerRadius: size.length(7), style: .continuous)
+                .fill(primary ? COSPalette.ink : COSPalette.card))
+            .overlay(RoundedRectangle(cornerRadius: size.length(7), style: .continuous)
+                .stroke(primary ? Color.clear : COSPalette.line, lineWidth: 1))
+            .opacity(configuration.isPressed ? 0.75 : 1)
+            .contentShape(RoundedRectangle(cornerRadius: size.length(7)))
+    }
+}
+
+extension View {
+    /// The pet's card surface: card fill, hairline, 12 pt corners, a soft lift.
+    func dictationSurface(_ size: PetSize) -> some View {
+        self
+            .padding(.horizontal, size.length(12))
+            .padding(.vertical, size.length(10))
+            .background(COSPalette.card, in: RoundedRectangle(cornerRadius: size.length(12), style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: size.length(12), style: .continuous).stroke(COSPalette.line, lineWidth: 1))
+            .shadow(color: .black.opacity(0.14), radius: 14, y: 8)
+    }
+}
+
+/// No text box (mock 04): the transcript, Copy first, Fix a word, and a ring on × that folds the card after 20 s.
+/// Hover pauses the ring. Shown with orderFrontRegardless only, so the app being typed in keeps focus.
+struct DictationCardView: View {
+    @ObservedObject var store: MacDictationStore
+    let card: DictationCard
+    let size: PetSize
+    let reduceMotion: Bool
+    @State private var copied = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: size.length(7)) {
+            HStack(spacing: size.length(7)) {
+                DictationWorkingBars(size: size, reduceMotion: true)
+                    .foregroundStyle(COSPalette.plateInk)
+                Text(card.title)
+                    .font(COSType.mono(size.typeSize(8), weight: .bold))
+                    .kerning(0.6)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+                Button { store.dismissCard() } label: {
+                    ZStack {
+                        Circle().stroke(COSPalette.line, lineWidth: 1)
+                        TimelineView(.periodic(from: .now, by: reduceMotion ? 1 : 0.1)) { context in
+                            Circle()
+                                .trim(from: 0, to: card.countdown.fraction(at: context.date))
+                                .stroke(COSPalette.gold, style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                                .rotationEffect(.degrees(-90))
+                        }
+                        Image(systemName: "xmark").font(.system(size: size.typeSize(8), weight: .semibold)).foregroundStyle(.secondary)
+                    }
+                    .frame(width: size.length(20), height: size.length(20))
+                    .contentShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .help("Close. The text stays in Recent dictations.")
+                .accessibilityLabel("Close")
+            }
+            if !card.text.isEmpty {
+                Text(card.text)
+                    .font(COSType.body(size.typeSize(11)))
+                    .lineLimit(3)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Text(card.note)
+                .font(COSType.body(size.typeSize(10)))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: size.length(7)) {
+                if case .copied = card.kind {
+                    Button(copied ? "Copied" : "Copy") {
+                        store.copy(card.text); copied = true
+                        Task { try? await Task.sleep(for: .seconds(1.4)); copied = false }
+                    }
+                    .buttonStyle(DictationButtonStyle(primary: true, size: size))
+                    Button("Fix a word") { store.openFix(card.recordID) }
+                        .buttonStyle(DictationButtonStyle(size: size))
+                        .disabled(card.recordID == nil)
+                } else if store.canRetry {
+                    Button("Retry") { store.retryTranscription() }
+                        .buttonStyle(DictationButtonStyle(primary: true, size: size))
+                }
+            }
+        }
+        .frame(width: size.length(300), alignment: .leading)
+        .dictationSurface(size)
+        .background(HoverSensor { store.setCardHover($0) })
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Dictation ready")
+    }
+}
+
+/// One row of Recent dictations (mock 05): first line, time · words · where it went, Copy.
+struct DictationRecordRow: View {
+    let record: DictationRecord
+    let size: PetSize
+    let onOpen: () -> Void
+    let onCopy: () -> Void
+    @State private var copied = false
+    var body: some View {
+        HStack(spacing: size.length(8)) {
+            Button(action: onOpen) {
+                VStack(alignment: .leading, spacing: size.length(2)) {
+                    Text(record.firstLine)
+                        .font(COSType.body(size.typeSize(11)))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    Text(record.metaLine(time: DictionaryLabels.when(record.createdAt, now: Date())))
+                        .font(COSType.mono(size.typeSize(8), weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("See the full text and Fix a word")
+            Button(copied ? "Copied" : "Copy") {
+                onCopy(); copied = true
+                Task { try? await Task.sleep(for: .seconds(1.4)); copied = false }
+            }
+            .buttonStyle(DictationButtonStyle(size: size))
+        }
+        .padding(.vertical, size.length(6))
+        .padding(.trailing, size.length(6))
+    }
+}
+
+/// One dictation, opened from its row: the full text, Copy, and Fix a word.
+struct DictationRecordDetail: View {
+    @ObservedObject var store: MacDictationStore
+    let record: DictationRecord
+    let size: PetSize
+    var body: some View {
+        VStack(alignment: .leading, spacing: size.length(7)) {
+            ScrollView {
+                Text(record.text)
+                    .font(COSType.body(size.typeSize(11)))
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(height: size.length(96))
+            Text(record.metaLine(time: DictionaryLabels.when(record.createdAt, now: Date())))
+                .font(COSType.mono(size.typeSize(8), weight: .medium))
+                .foregroundStyle(.secondary)
+            HStack(spacing: size.length(7)) {
+                Button("Copy") { store.copy(record.text) }
+                    .buttonStyle(DictationButtonStyle(primary: true, size: size))
+                Button("Fix a word") { store.openFix(record.id) }
+                    .buttonStyle(DictationButtonStyle(size: size))
+                Spacer(minLength: 0)
+                Button("Back") { store.backToRecent() }
+                    .buttonStyle(COSTextButtonStyle())
+                    .font(COSType.body(size.typeSize(10)))
+            }
+        }
+        .padding(.vertical, size.length(6))
+        .padding(.trailing, size.length(8))
+    }
+}
+
+/// Fix a word (mock 06): tap the word COS got wrong (tap another to widen to a phrase), type the spelling, Save. It goes
+/// into the one COS dictionary that G2 meetings, Mac recordings and dictation already use, so the fix follows Miles
+/// everywhere from the next sentence. Recent corrections show what was learned, from where and when, each with Undo.
+struct DictationFixEditor: View {
+    @ObservedObject var store: MacDictationStore
+    @ObservedObject var dictionary: TranscriptionDictionaryStore
+    let record: DictationRecord
+    let size: PetSize
+    /// Opens the Dictionary pane in Activity. Nil where Activity is not the next step (the floating editor).
+    let onOpenDictionary: (() -> Void)?
+    @FocusState private var fieldFocused: Bool
+
+    private var tokens: [String] { DictationFixText.tokens(record.text) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: size.length(8)) {
+            VStack(alignment: .leading, spacing: size.length(7)) {
+                Text("Heard:")
+                    .font(COSType.body(size.typeSize(10)))
+                    .foregroundStyle(.secondary)
+                Group {
+                    if tokens.count > 24 {
+                        ScrollView { words }.frame(height: size.length(84))
+                    } else {
+                        words
+                    }
+                }
+                Text("ALWAYS WRITE IT AS")
+                    .font(COSType.mono(size.typeSize(8), weight: .bold))
+                    .kerning(0.8)
+                    .foregroundStyle(.secondary)
+                TextField(store.fixSelection == nil ? "Tap a word above first" : "Spelling", text: $store.fixDraft)
+                    .textFieldStyle(.plain)
+                    .font(COSType.body(size.typeSize(11)))
+                    .focused($fieldFocused)
+                    .onSubmit { store.saveFix(to: dictionary) }
+                    .onExitCommand { store.cancelFix() }
+                    .disabled(store.fixSelection == nil || store.fixSaving)
+                    .padding(.horizontal, size.length(9))
+                    .padding(.vertical, size.length(5))
+                    .background(COSPalette.card, in: RoundedRectangle(cornerRadius: size.length(8), style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: size.length(8), style: .continuous)
+                        .stroke(fieldFocused ? COSPalette.gold.opacity(0.7) : COSPalette.line, lineWidth: 1))
+                HStack(spacing: size.length(8)) {
+                    Button(store.fixSaving ? "Saving…" : "Save to dictionary") { store.saveFix(to: dictionary) }
+                        .buttonStyle(DictationButtonStyle(primary: true, size: size))
+                        .disabled(store.fixSelection == nil || store.fixSaving)
+                    Button("Cancel") { store.cancelFix() }
+                        .buttonStyle(COSTextButtonStyle())
+                        .font(COSType.body(size.typeSize(10)))
+                }
+                if let note = store.fixNote {
+                    Text(note)
+                        .font(COSType.body(size.typeSize(10)))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .padding(size.length(10))
+            .background(COSPalette.gold.opacity(0.14), in: RoundedRectangle(cornerRadius: size.length(10), style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: size.length(10), style: .continuous).stroke(COSPalette.gold.opacity(0.45), lineWidth: 1))
+
+            HStack(spacing: size.length(5)) {
+                Circle().fill(COSPalette.amber).frame(width: size.length(6), height: size.length(6))
+                Text("RECENT CORRECTIONS")
+                    .font(COSType.mono(size.typeSize(8), weight: .bold))
+                    .kerning(0.5)
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 0)
+                if let onOpenDictionary {
+                    Button("Dictionary…", action: onOpenDictionary)
+                        .buttonStyle(COSTextButtonStyle())
+                        .font(COSType.body(size.typeSize(9)))
+                        .help("Open the whole dictionary in COS Activity")
+                }
+            }
+            if !dictionary.learnAvailable && dictionary.loaded {
+                Text("Update the COS server to 6.73.11 to save corrections from here.")
+                    .font(COSType.body(size.typeSize(10)))
+                    .foregroundStyle(COSPalette.amber)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if dictionary.recent.isEmpty {
+                Text(dictionary.loaded ? "Nothing learned yet." : "Loading…")
+                    .font(COSType.body(size.typeSize(10)))
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(dictionary.recent.prefix(3)) { entry in
+                    DictionaryLearnedRow(entry: entry, fontSize: size.typeSize(10), busy: dictionary.busy) {
+                        Task { await dictionary.undo(entry.id) }
+                    }
+                }
+            }
+        }
+        .task(id: record.id) { await dictionary.load() }
+    }
+
+    /// The transcript as tappable words, the picked ones marked like the mock's highlight.
+    private var words: some View {
+        ChipFlowLayout(spacing: max(2, size.length(3))) {
+            ForEach(Array(tokens.enumerated()), id: \.offset) { index, token in
+                let picked = store.fixSelection?.contains(index) == true
+                Button { store.selectFixWord(index); fieldFocused = store.fixSelection != nil } label: {
+                    Text(token)
+                        .font(COSType.body(size.typeSize(11)))
+                        .foregroundStyle(.primary)
+                        .padding(.horizontal, size.length(2))
+                        .background(RoundedRectangle(cornerRadius: size.length(3)).fill(picked ? COSPalette.amber.opacity(0.3) : Color.clear))
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityAddTraits(picked ? .isSelected : [])
+            }
+        }
+    }
+}
+
+/// heard → written, where and when, Undo. Shared by the pet's Fix a word and the Dictionary pane.
+struct DictionaryLearnedRow: View {
+    let entry: TranscriptionDictionaryStore.Learned
+    let fontSize: CGFloat
+    let busy: Bool
+    let onUndo: () -> Void
+    var body: some View {
+        HStack(spacing: 7) {
+            Text(entry.heard).strikethrough().foregroundStyle(.secondary).lineLimit(1)
+            Text("→").font(COSType.mono(fontSize, weight: .bold)).foregroundStyle(.secondary)
+            Text(entry.written).fontWeight(.semibold).lineLimit(1)
+            Spacer(minLength: 4)
+            Text(DictionaryLabels.line(source: entry.source, at: entry.at, now: Date()))
+                .font(COSType.mono(max(8, fontSize - 1), weight: .medium))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+            Button("Undo", action: onUndo)
+                .buttonStyle(COSTextButtonStyle())
+                .disabled(busy)
+                .help("Take this correction back out of the dictionary")
+        }
+        .font(COSType.body(fontSize))
+        .padding(.vertical, 5)
+        .overlay(alignment: .top) { Rectangle().fill(COSPalette.line).frame(height: 1) }
+    }
+}
+
+// MARK: - The one COS dictionary (0.5.309)
+
+/// Vocabulary and corrections from the server's transcription glossary, and what Fix a word taught it. Every change
+/// goes through the helper's `transcription-dictionary` verb; words ride on stdin, never argv.
+@MainActor final class TranscriptionDictionaryStore: ObservableObject {
+    static let shared = TranscriptionDictionaryStore()
+    struct Correction: Identifiable, Equatable { var id: String { heard }; let heard: String; let written: String }
+    struct Learned: Identifiable, Equatable { let id: String; let heard: String; let written: String; let source: String; let at: Date? }
+    @Published private(set) var vocabulary: [String] = []
+    @Published private(set) var corrections: [Correction] = []
+    @Published private(set) var recent: [Learned] = []
+    /// False on a server older than 6.73.11: the dictionary reads and edits, but Fix a word and Undo need the update.
+    @Published private(set) var learnAvailable = true
+    @Published private(set) var loaded = false
+    @Published private(set) var busy = false
+    @Published private(set) var message: String?
+    var bridge: (@MainActor (Data) async throws -> HelperResponse)?
+
+    func load() async { await send("get") }
+    @discardableResult func learn(heard: String, written: String, source: String) async -> Bool {
+        await send("learn", ["heard": heard, "written": written, "source": source])
+    }
+    func undo(_ id: String) async { await send("undo", ["id": id]) }
+    @discardableResult func addVocabulary(_ term: String) async -> Bool { await send("add-vocabulary", ["term": term]) }
+    func removeVocabulary(_ term: String) async { await send("remove-vocabulary", ["term": term]) }
+    func removeCorrection(_ heard: String) async { await send("remove-correction", ["heard": heard]) }
+
+    @discardableResult private func send(_ operation: String, _ payload: [String: String] = [:]) async -> Bool {
+        guard let bridge else { message = "COS Control is not connected to its helper yet."; return false }
+        guard let body = try? JSONSerialization.data(withJSONObject: ["operation": operation, "payload": payload]) else { return false }
+        busy = true
+        defer { busy = false }
+        do {
+            let response = try await bridge(body)
+            if response.details["vocabulary"] != nil { apply(response.details) }
+            message = response.ok ? nil : response.message
+            return response.ok
+        } catch {
+            message = error.localizedDescription
+            return false
+        }
+    }
+
+    private func apply(_ details: [String: JSONValue]) {
+        vocabulary = details["vocabulary"]?.array?.compactMap(\.string) ?? []
+        corrections = details["corrections"]?.array?.compactMap { value in
+            guard let row = value.object, let heard = row["heard"]?.string, let written = row["written"]?.string else { return nil }
+            return Correction(heard: heard, written: written)
+        } ?? []
+        let iso = ISO8601DateFormatter(); iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        recent = details["recent"]?.array?.compactMap { value in
+            guard let row = value.object, let id = row["id"]?.string, let heard = row["heard"]?.string,
+                  let written = row["written"]?.string else { return nil }
+            return Learned(id: id, heard: heard, written: written, source: row["source"]?.string ?? "", at: row["at"]?.string.flatMap(iso.date(from:)))
+        } ?? []
+        learnAvailable = details["learnAvailable"]?.bool ?? false
+        loaded = true
+    }
+}
+
+/// COS Activity → Meetings → Dictionary (mock 07): recent corrections first, then the vocabulary and every correction,
+/// each searchable and editable. The dictionary already existed on the server; this is its first home in COS Control.
+/// Mounted on `model.dictionaryRouteActive`, which only `openDictionary()` and `closeDictionary()` write.
+struct TranscriptionDictionaryPane: View {
+    @ObservedObject var model: ControllerModel
+    @ObservedObject private var dictionary: TranscriptionDictionaryStore
+    @State private var search = ""
+    @State private var newTerm = ""
+    @State private var newHeard = ""
+    @State private var newWritten = ""
+    @State private var showAllVocabulary = false
+
+    init(model: ControllerModel) {
+        self.model = model
+        self.dictionary = model.dictionary
+    }
+
+    private var needle: String { search.trimmingCharacters(in: .whitespacesAndNewlines) }
+    private var vocabulary: [String] {
+        needle.isEmpty ? dictionary.vocabulary : dictionary.vocabulary.filter { $0.localizedCaseInsensitiveContains(needle) }
+    }
+    private var corrections: [TranscriptionDictionaryStore.Correction] {
+        needle.isEmpty ? dictionary.corrections
+            : dictionary.corrections.filter { $0.heard.localizedCaseInsensitiveContains(needle) || $0.written.localizedCaseInsensitiveContains(needle) }
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                header
+                TextField("Search words and corrections", text: $search)
+                    .textFieldStyle(.plain)
+                    .cosField()
+                HStack(alignment: .top, spacing: 22) {
+                    recentColumn.frame(maxWidth: .infinity, alignment: .topLeading)
+                    vocabularyColumn.frame(maxWidth: .infinity, alignment: .topLeading)
+                }
+                correctionsSection
+                if let message = dictionary.message {
+                    Text(message)
+                        .font(COSType.body(11))
+                        .foregroundStyle(COSPalette.danger)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(22)
+        }
+        // The pane clamps itself, like MeetingImportPane: a long list must never push the toolbar off the window.
+        .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity, alignment: .top)
+        .clipped()
+        .background(COSPalette.panel)
+    }
+
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Dictionary").font(COSType.display(20, weight: .medium))
+                Spacer()
+                if dictionary.busy {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Button("Refresh") { Task { await dictionary.load() } }
+                        .buttonStyle(COSQuietButtonStyle()).controlSize(.small)
+                }
+                Button("Close") { model.closeDictionary() }
+                    .buttonStyle(COSQuietButtonStyle()).controlSize(.small)
+            }
+            Text("One dictionary for G2 meetings, Mac recordings and dictation. A word you add or fix applies from the next sentence.")
+                .font(COSType.body(12))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var recentColumn: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Recent corrections").font(COSType.display(16, weight: .semibold))
+            if !dictionary.learnAvailable && dictionary.loaded {
+                Text("Update the COS server to 6.73.11 to see what COS learned and undo it.")
+                    .font(COSType.body(11)).foregroundStyle(COSPalette.amber)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if dictionary.recent.isEmpty {
+                Text(dictionary.loaded ? "Nothing learned yet. Use Fix a word on a dictation, or add a correction below." : "Loading…")
+                    .font(COSType.body(11)).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                ForEach(dictionary.recent) { entry in
+                    DictionaryLearnedRow(entry: entry, fontSize: 12, busy: dictionary.busy) {
+                        Task { await dictionary.undo(entry.id) }
+                    }
+                }
+            }
+        }
+    }
+
+    private var vocabularyColumn: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Vocabulary · \(dictionary.vocabulary.count)").font(COSType.display(16, weight: .semibold))
+            HStack(spacing: 6) {
+                TextField("Add a word or name", text: $newTerm)
+                    .textFieldStyle(.plain)
+                    .cosField()
+                    .onSubmit(addTerm)
+                Button("Add", action: addTerm)
+                    .buttonStyle(COSQuietButtonStyle()).controlSize(.small)
+                    .disabled(newTerm.trimmingCharacters(in: .whitespaces).isEmpty || dictionary.busy)
+            }
+            let shown = showAllVocabulary || !needle.isEmpty ? vocabulary : Array(vocabulary.prefix(60))
+            ChipFlowLayout(spacing: 6) {
+                ForEach(shown, id: \.self) { term in
+                    HStack(spacing: 4) {
+                        Text(term).font(COSType.body(12)).foregroundStyle(COSPalette.plateInk)
+                        Button { Task { await dictionary.removeVocabulary(term) } } label: {
+                            Image(systemName: "xmark").font(.system(size: 8, weight: .bold)).foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Remove \(term) from the vocabulary")
+                        .accessibilityLabel("Remove \(term)")
+                        .disabled(dictionary.busy)
+                    }
+                    .padding(.horizontal, 9).padding(.vertical, 3)
+                    .overlay(Capsule().stroke(COSPalette.line, lineWidth: 1))
+                }
+                if shown.count < vocabulary.count {
+                    Button("+\(vocabulary.count - shown.count)") { showAllVocabulary = true }
+                        .buttonStyle(COSTextButtonStyle())
+                        .help("Show every word")
+                }
+            }
+        }
+    }
+
+    private var correctionsSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Corrections · \(dictionary.corrections.count)").font(COSType.display(16, weight: .semibold))
+            Text("When COS hears the word on the left, it writes the one on the right.")
+                .font(COSType.body(11)).foregroundStyle(.secondary)
+            HStack(spacing: 6) {
+                TextField("Heard", text: $newHeard).textFieldStyle(.plain).cosField()
+                Text("→").font(COSType.mono(12, weight: .bold)).foregroundStyle(.secondary)
+                TextField("Written", text: $newWritten).textFieldStyle(.plain).cosField().onSubmit(addCorrection)
+                Button("Add", action: addCorrection)
+                    .buttonStyle(COSQuietButtonStyle()).controlSize(.small)
+                    .disabled(newHeard.trimmingCharacters(in: .whitespaces).isEmpty || newWritten.trimmingCharacters(in: .whitespaces).isEmpty || dictionary.busy)
+            }
+            ForEach(corrections) { row in
+                HStack(spacing: 8) {
+                    Text(row.heard).strikethrough().foregroundStyle(.secondary).lineLimit(1)
+                    Text("→").font(COSType.mono(12, weight: .bold)).foregroundStyle(.secondary)
+                    Text(row.written).fontWeight(.semibold).lineLimit(1)
+                    Spacer(minLength: 0)
+                    Button { Task { await dictionary.removeCorrection(row.heard) } } label: { Image(systemName: "xmark") }
+                        .buttonStyle(COSIconButtonStyle())
+                        .help("Remove this correction")
+                        .accessibilityLabel("Remove the correction for \(row.heard)")
+                        .disabled(dictionary.busy)
+                }
+                .font(COSType.body(12.5))
+                .padding(.vertical, 4)
+                .overlay(alignment: .top) { Rectangle().fill(COSPalette.line).frame(height: 1) }
+            }
+        }
+    }
+
+    private func addTerm() {
+        let term = newTerm.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !term.isEmpty else { return }
+        Task { if await dictionary.addVocabulary(term) { newTerm = "" } }
+    }
+
+    /// A hand-added correction is learned like a fix (source "manual"), so it shows in Recent corrections with Undo.
+    private func addCorrection() {
+        let heard = newHeard.trimmingCharacters(in: .whitespacesAndNewlines)
+        let written = newWritten.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !heard.isEmpty, !written.isEmpty else { return }
+        Task { if await dictionary.learn(heard: heard, written: written, source: "manual") { newHeard = ""; newWritten = "" } }
     }
 }

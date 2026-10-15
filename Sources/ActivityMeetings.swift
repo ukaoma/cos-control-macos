@@ -179,6 +179,10 @@ struct MeetingLibraryBody: View {
                 Button(suggestionsLabel) { model.openMeetingSuggestions() }
                     .buttonStyle(COSQuietButtonStyle())
                     .controlSize(.small)
+                // 0.5.309: the one COS dictionary, the opener the Dictionary pane's route flag reads.
+                Button("Dictionary") { model.openDictionary() }
+                    .buttonStyle(COSQuietButtonStyle())
+                    .controlSize(.small)
               }
             }
         }

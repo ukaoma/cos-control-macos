@@ -690,7 +690,7 @@ struct ActivityWindow: View {
         case .speakers: selectedVoiceName != nil || selectedSpeakerSessionID != nil
         case .meetings:
             selectedLibraryRecordID != nil || model.meetingImportRouteActive || model.meetingSuggestionsRouteActive
-                || model.liveTranscriptRouteActive
+                || model.liveTranscriptRouteActive || model.dictionaryRouteActive
         case .memories: selectedContextID != nil || selectedLearningID != nil || selectedGraphEntityID != nil
         case .threads: selectedContextID != nil
         case .sessions: selectedSessionID != nil
@@ -794,6 +794,9 @@ struct ActivityWindow: View {
                     MeetingImportPane(model: model)
                 } else if section == .meetings, model.meetingSuggestionsRouteActive {
                     MeetingSuggestionsPane(model: model)
+                // 0.5.309: the Dictionary pane (mock 07), on its own flag, written by openDictionary and closeDictionary.
+                } else if section == .meetings, model.dictionaryRouteActive {
+                    TranscriptionDictionaryPane(model: model)
                 } else if section == .sessions, selectedSessionID != nil {
                     if model.claudeSessionRouteActive {
                         VStack(spacing: 0) {
@@ -957,8 +960,11 @@ struct ActivityWindow: View {
         let staged = sessionID.flatMap { model.petSession(id: $0) }
         let openRecording = model.activityOpenRecording
         model.activityOpenRecording = false
+        let openDictionary = model.activityOpenDictionary
+        model.activityOpenDictionary = false
         if let next { select(next) }
         if openRecording, section == .meetings { model.beginRecordingTranscriptShortcut() }
+        if openDictionary, section == .meetings { model.openDictionary() }
         if let staged {
             selectedSessionID = staged.id
             model.openClaudeSession(staged)
@@ -1257,6 +1263,8 @@ struct ActivityWindow: View {
             model.closeMeetingImport()
         } else if section == .meetings, model.meetingSuggestionsRouteActive {
             model.closeMeetingSuggestions()
+        } else if section == .meetings, model.dictionaryRouteActive {
+            model.closeDictionary()
         } else if section == .sessions, selectedSessionID != nil {
             selectedSessionID = nil
             model.closeClaudeSession()

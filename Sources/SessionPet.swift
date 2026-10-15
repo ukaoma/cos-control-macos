@@ -105,6 +105,27 @@ final class SessionPetPresenter: NSObject, ObservableObject, NSWindowDelegate {
         observers.append(model.$petComposeDraft.removeDuplicates().sink { [weak self] _ in
             Task { @MainActor in self?.syncPanel() }
         })
+        // 0.5.309: dictation's card, its DICTATED pill and its views ride the pet; each one changes the panel's height.
+        // The listening pill does not: it swaps into the ledger's fixed slot.
+        let dictation = model.dictation
+        observers.append(dictation.$card.map { $0?.id }.removeDuplicates().sink { [weak self] _ in
+            Task { @MainActor in self?.syncPanel() }
+        })
+        observers.append(dictation.$recent.map(\.count).removeDuplicates().sink { [weak self] _ in
+            Task { @MainActor in self?.syncPanel() }
+        })
+        observers.append(dictation.$listRoute.removeDuplicates().sink { [weak self] _ in
+            Task { @MainActor in self?.dictationRouteChanged() }
+        })
+        observers.append(dictation.$fixNote.removeDuplicates().sink { [weak self] _ in
+            Task { @MainActor in self?.syncPanel() }
+        })
+        observers.append(model.dictionary.$recent.map(\.count).removeDuplicates().sink { [weak self] _ in
+            Task { @MainActor in self?.syncPanel() }
+        })
+        observers.append(model.dictionary.$loaded.removeDuplicates().sink { [weak self] _ in
+            Task { @MainActor in self?.syncPanel() }
+        })
         pollTask = Task { [weak self] in
             await self?.model?.loadPetSessions()
             while !Task.isCancelled {
@@ -131,6 +152,18 @@ final class SessionPetPresenter: NSObject, ObservableObject, NSWindowDelegate {
         if open {
             panel.makeKeyAndOrderFront(nil)
         } else if panel.isKeyWindow {
+            panel.orderOut(nil)
+            panel.orderFrontRegardless()
+        }
+    }
+
+    /// Fix a word's field takes the keyboard on the pet the way the composer does, and gives it back when it closes.
+    private func dictationRouteChanged() {
+        syncLists()
+        guard let panel, let model else { return }
+        if model.dictation.listRoute?.isFix == true, model.dictation.surface == .pet {
+            panel.makeKeyAndOrderFront(nil)
+        } else if panel.isKeyWindow, model.petComposeTarget == nil {
             panel.orderOut(nil)
             panel.orderFrontRegardless()
         }
@@ -292,7 +325,7 @@ final class SessionPetPresenter: NSObject, ObservableObject, NSWindowDelegate {
 
     private func syncLists() {
         syncOutsideClickMonitor((model?.petExpanded ?? false) || (model?.petCompletionsExpanded ?? false)
-                                || model?.petComposeTarget != nil)
+                                || model?.petComposeTarget != nil || model?.dictation.listRoute != nil)
         syncPanel()
     }
 
@@ -306,6 +339,7 @@ final class SessionPetPresenter: NSObject, ObservableObject, NSWindowDelegate {
             Task { @MainActor in
                 self?.model?.petExpanded = false
                 self?.model?.petCompletionsExpanded = false
+                self?.model?.dictation.closeListOnOutsideClick()
                 // An empty, idle card closes like a list; a draft or a send in
                 // flight survives a click into the terminal.
                 if self?.model?.petComposerYieldsToOutsideClick() == true {
@@ -346,6 +380,8 @@ final class PetPanel: NSPanel {
 private struct SessionPetRoot: View {
     @ObservedObject var model: ControllerModel
     var presenter: SessionPetPresenter
+    /// 0.5.309: dictation's pill, card and Recent dictations live on the pet (mock 01-06).
+    @ObservedObject var dictation: MacDictationStore = MacDictationStore.shared
     var characterScale: CGFloat
     var viewportSize: CGSize
     @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
@@ -376,7 +412,7 @@ private struct SessionPetRoot: View {
     /// running session was dropped must stay recoverable from its own UI.
     private var revealArmed: Bool {
         !(sessions.isEmpty && model.petCompletions.isEmpty
-          && model.petDismissals.stamps.isEmpty)
+          && model.petDismissals.stamps.isEmpty && dictation.recent.isEmpty)
     }
     /// The ONE truth for the ledger crossfade: every pill opacity, hit test,
     /// and animation keys on this so an armed-state flip mid-hover still
@@ -436,6 +472,16 @@ private struct SessionPetRoot: View {
                 .help("Clear the finished list. The sessions themselves are untouched.")
                 .accessibilityLabel("Close all \(model.petCompletions.count) finished sessions")
                 .modifier(PetReveal(reduceMotion: reduceMotion))
+            }
+            // 0.5.309: Recent dictations, one dictation, or Fix a word (mock 05, 06), in the lists' slot above the figure.
+            if let route = dictation.listRoute, dictation.surface == .pet || !route.isFix {
+                dictationList(route)
+                    .modifier(PetReveal(reduceMotion: reduceMotion))
+            }
+            // No text box (mock 04): the card pops over the figure. With the pet hidden it rises from the Dock pill.
+            if dictation.surface == .pet, let card = dictation.card {
+                DictationCardView(store: dictation, card: card, size: size, reduceMotion: reduceMotion)
+                    .modifier(PetReveal(reduceMotion: reduceMotion))
             }
             // 0.5.234: the composer card. It takes the list's slot — one target,
             // named on the card — so a message costs one card above the figure,
@@ -505,16 +551,25 @@ private struct SessionPetRoot: View {
     /// hover the prototype was rebuilt to kill.
     private var ledgerSlot: some View {
         let ledger = model.petLedger
+        // 0.5.309 (Miles picked A, 2026-10-15): while dictating, the listening pill takes this same fixed slot, and the
+        // bar and pills come back the moment it hides. Nothing above the sprite changes size either way.
+        let listening = dictation.surface == .pet && dictation.pill.replacesLedger
         return ZStack {
             ledgerBar(ledger)
-                .opacity(showPills ? 0 : 1)
+                .opacity(showPills || listening ? 0 : 1)
             pillsRow(ledger)
-                .opacity(showPills ? 1 : 0)
-                .allowsHitTesting(showPills)
+                .opacity(showPills && !listening ? 1 : 0)
+                .allowsHitTesting(showPills && !listening)
+            if listening {
+                DictationListeningPill(pill: dictation.pill, meter: dictation.meter, floating: false,
+                                       size: size, reduceMotion: reduceMotion)
+                    .transition(.opacity)
+            }
         }
         .frame(height: size.length(42))
         .frame(maxWidth: .infinity)
         .animation(reduceMotion ? nil : .easeOut(duration: 0.26), value: showPills)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: listening)
     }
 
     private func ledgerBar(_ ledger: PetLedger) -> some View {
@@ -573,7 +628,7 @@ private struct SessionPetRoot: View {
                 open: model.petExpanded, index: 0
             ) {
                 model.petExpanded.toggle()
-                if model.petExpanded { model.petCompletionsExpanded = false }
+                if model.petExpanded { model.petCompletionsExpanded = false; dictation.closeList() }
                 model.petLastOpenList = .running
             }
             ledgerPill(
@@ -581,7 +636,7 @@ private struct SessionPetRoot: View {
                 enabled: ledger.done > 0, open: model.petCompletionsExpanded, index: 1
             ) {
                 model.petCompletionsExpanded.toggle()
-                if model.petCompletionsExpanded { model.petExpanded = false }
+                if model.petCompletionsExpanded { model.petExpanded = false; dictation.closeList() }
                 model.petLastOpenList = .done
             }
             ledgerPill(
@@ -596,6 +651,17 @@ private struct SessionPetRoot: View {
                 } else {
                     model.petExpanded = true
                     model.petCompletionsExpanded = false
+                }
+            }
+            // 0.5.309 (mock 05): a fourth pill, only once something has been dictated, for Recent dictations.
+            if !dictation.recent.isEmpty {
+                ledgerPill(
+                    dot: COSPalette.gold, label: "DICTATED", count: dictation.recent.count,
+                    enabled: true, open: dictation.listRoute != nil, index: 3
+                ) {
+                    model.petExpanded = false
+                    model.petCompletionsExpanded = false
+                    dictation.toggleRecent()
                 }
             }
         }
@@ -638,6 +704,7 @@ private struct SessionPetRoot: View {
         switch label {
         case "RUNNING": "Live sessions"
         case "DONE": "Finished sessions"
+        case "DICTATED": "Recent dictations: copy one, or fix a word COS got wrong"
         default: "Open the session waiting on you"
         }
     }
@@ -1235,6 +1302,10 @@ private struct SessionPetRoot: View {
     /// so a double-click while DONE was open appeared to do nothing at all.
     /// Gate on "is there anything to show" instead of a session count.
     private func toggleSessionMenu() {
+        if dictation.listRoute != nil, !model.petExpanded, !model.petCompletionsExpanded {
+            dictation.closeList()
+            return
+        }
         if model.petExpanded || model.petCompletionsExpanded {
             model.petLastOpenList = model.petCompletionsExpanded ? .done : .running
             model.petExpanded = false
@@ -1698,7 +1769,8 @@ private struct LedgerBreathing: ViewModifier {
 /// while the app is active, and the pet is a nonactivating panel of a menu-bar
 /// app — its hover would effectively never fire. `hitTest` returns nil so the
 /// sensor can never swallow a click meant for the sprite or a pill.
-private struct HoverSensor: NSViewRepresentable {
+/// Internal since 0.5.309: the dictation card pauses its fold-away on hover with the same activation-free sensor.
+struct HoverSensor: NSViewRepresentable {
     var onChange: (Bool) -> Void
 
     func makeNSView(context: Context) -> HoverSensorView {
@@ -1736,4 +1808,90 @@ final class HoverSensorView: NSView {
 
     override func mouseEntered(with event: NSEvent) { onChange(true) }
     override func mouseExited(with event: NSEvent) { onChange(false) }
+}
+
+// MARK: - Dictation on the pet (0.5.309)
+
+extension SessionPetRoot {
+    /// Recent dictations in the pet's own list (mock 05): newest first, where each one went, Copy on every row, and the
+    /// RUNNING section under it as in the mock. A row opens the full text; Fix a word teaches the dictionary (mock 06).
+    func dictationList(_ route: DictationListRoute) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            switch route {
+            case .recent:
+                petSectionHeader("RECENT DICTATIONS ·", count: dictation.recent.count, tint: COSPalette.gold)
+                // FIXED height when overflowing: a ScrollView's ideal height collapses under the panel's sizeThatFits.
+                if dictation.recent.count > 3 {
+                    ScrollView { dictationRows }
+                        .scrollIndicators(.hidden)
+                        .frame(height: size.length(176))
+                } else {
+                    dictationRows
+                }
+                let running = ClaudeSession.petSections(sessions).running
+                if !running.isEmpty {
+                    petSectionHeader("RUNNING", count: running.count, tint: COSPalette.green)
+                    ForEach(Array(running.prefix(3).enumerated()), id: \.element.id) { index, session in
+                        if index > 0 { Divider() }
+                        missionRow(session, tint: COSPalette.green)
+                    }
+                }
+            case .detail(let id):
+                dictationHeader("DICTATION", record: dictation.record(id))
+                if let record = dictation.record(id) {
+                    DictationRecordDetail(store: dictation, record: record, size: size)
+                }
+            case .fix(let id):
+                dictationHeader("FIX A WORD", record: nil)
+                if let record = dictation.record(id) {
+                    DictationFixEditor(store: dictation, dictionary: model.dictionary, record: record, size: size,
+                                       onOpenDictionary: { model.openDictionaryInActivity() })
+                        .padding(.trailing, size.length(8))
+                        .padding(.bottom, size.length(6))
+                }
+            }
+        }
+        .padding(.leading, size.length(10))
+        .padding(.trailing, size.length(2))
+        .padding(.vertical, size.length(4))
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: size.length(12), style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: size.length(12), style: .continuous).stroke(COSPalette.line, lineWidth: 1))
+    }
+
+    private var dictationRows: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(dictation.recent) { record in
+                if record.id != dictation.recent.first?.id { Divider() }
+                DictationRecordRow(record: record, size: size,
+                                   onOpen: { dictation.openDetail(record.id) },
+                                   onCopy: { dictation.copy(record.text) })
+            }
+        }
+    }
+
+    /// A section header with a way back: to the list from one dictation, to the dictation from Fix a word.
+    private func dictationHeader(_ label: String, record: DictationRecord?) -> some View {
+        HStack(spacing: size.length(5)) {
+            Button {
+                if case .fix? = dictation.listRoute { dictation.cancelFix() } else { dictation.backToRecent() }
+            } label: {
+                Image(systemName: "chevron.left")
+                    .font(.system(size: size.typeSize(8), weight: .bold))
+                    .foregroundStyle(.secondary)
+                    .padding(size.length(2))
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Back")
+            .accessibilityLabel("Back")
+            Circle().fill(COSPalette.gold).frame(width: size.length(6), height: size.length(6))
+            Text(record.map { label + " · " + DictionaryLabels.when($0.createdAt, now: Date()).uppercased() } ?? label)
+                .font(COSType.mono(size.typeSize(8), weight: .bold))
+                .kerning(0.5)
+                .foregroundStyle(.secondary)
+            Spacer(minLength: 0)
+        }
+        .padding(.top, size.length(7))
+        .padding(.bottom, size.length(3))
+    }
 }

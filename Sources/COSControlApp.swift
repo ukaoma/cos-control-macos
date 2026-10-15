@@ -29,6 +29,10 @@ struct COSControlApp: App {
             return try await model.runHelper(["mac-dictation"], timeout: 40, stdinData: audio)
         }
         model.dictation.petFrame = { [weak sessionPet] in sessionPet?.visibleFrame }
+        model.dictionary.bridge = { [weak model] request in
+            guard let model else { throw HelperClientError.commandFailed("COS Control is closing.") }
+            return try await model.runHelper(["transcription-dictionary"], timeout: 20, stdinData: request)
+        }
         model.dictation.registerHotKeys()
         model.macRecording.openLiveMeeting = { [weak model] id in
             model?.openActivity?(.meetings)
@@ -133,6 +137,7 @@ struct COSControlApp: App {
             CommandMenu("Dictation") {
                 Button("Stop dictation") { model.dictation.stop() }
                 Button("Cancel dictation") { model.dictation.cancel() }
+                Button("Dictionary…") { model.openDictionaryInActivity() }
                 Button("Microphone and shortcuts…") { model.showSettings?() }
             }
             CommandGroup(replacing: .appSettings) {
