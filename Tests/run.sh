@@ -1097,7 +1097,7 @@ assert "Image(systemName:" in plain.split(".fixedSize()", 1)[0], "the normal tra
 python3 - "$ROOT/Sources/WorkHandoffView.swift" <<'PY'
 import sys
 src = open(sys.argv[1]).read()
-assert "await store.forkToPlatform(source: sendingSource, session: sendingSession, model: sendingModel, prompt: sendingPrompt)" in src, "Fork to platform is not wired to the send button"
+assert "await store.forkToPlatform(source: sendingSource, session: sendingSession, model: sendingModel, prompt: sendingPrompt, recovery: recovery)" in src, "Fork to platform must forward the confirmed recovery instead of dropping it"
 assert "WorkHandoffStore.applying(advice, to: draft)" in src, "Use this no longer goes through WorkHandoffStore.applying"
 assert "if mode == .fork { forkTarget }" in src, "the Fork to picker is not shown in Fork mode"
 assert 'if value == .fork && mode != .fork { next.provider = ""; next.modelID = "" }' in src, "entering Fork must clear a New session provider"
@@ -1107,7 +1107,7 @@ PY
 # share sendWorkHandoff; Mark reviewed on a card is gated on the state; the live dot honours Reduce Motion.
 python3 - "$ROOT/Sources/WorkWorkspaceView.swift" "$ROOT/Sources/WorkTaskChat.swift" "$ROOT/Sources/WorkHandoffView.swift" "$ROOT/Sources/ActivityWindow.swift" <<'PY'
 import re, sys
-wwv, whv, aw = (open(p).read() for p in sys.argv[1:4])
+wwv, chat, whv, aw = (open(p).read() for p in sys.argv[1:5])
 def body(src, start, end):
     i = src.index(start); return src[i:src.index(end, i)]
 col = body(wwv, "private func boardColumn(", "private func boardCard(")
@@ -1154,7 +1154,7 @@ PY
 # notification tap and the Settings switch are wired. Behaviour is covered by Tests/run-work-progress.sh.
 python3 - "$ROOT/Sources/WorkHandoffStore.swift" "$ROOT/Sources/WorkProgress.swift" "$ROOT/Sources/WorkProgressTracker.swift" "$ROOT/Sources/ControllerModel.swift" "$ROOT/Sources/ActivityWindow.swift" "$ROOT/Sources/Views.swift" "$ROOT/Sources/WorkWorkspaceView.swift" "$ROOT/Sources/WorkTaskChat.swift" <<'PY'
 import sys
-store, progress, tracker, model, aw, views, wwv = (open(p).read() for p in sys.argv[1:8])
+store, progress, tracker, model, aw, views, wwv, chat = (open(p).read() for p in sys.argv[1:9])
 def body(src, start, end):
     i = src.index(start); return src[i:src.index(end, i)]
 submit = body(store, "    func submit(source: WorkSource", "    /// The first line of a handoff's Progress timeline.")
@@ -1182,7 +1182,7 @@ assert "if let workID = model.activityOpenWorkID {" in aw and "openHandoffWork(w
 assert 'Toggle("Work notifications", isOn: Binding(get: { model.workNotificationsEnabled }, set: { model.workNotificationsEnabled = $0 }))' in views
 undo = body(wwv, "    private func undoMove(", "    private func startWorkTarget(")
 assert "await tracker.undo(receiptID: receiptID, eventID: eventID)" in undo, "Undo goes through the tracker, which checks the card still sits where COS put it"
-assert "WorkBoardSessionsProjection.summary(allCards)" in wwv and "WorkBoardSessionsProjection.onePerSession(allCards)" in wwv
+assert "WorkBoardSessionsProjection.summary(allCards)" in wwv and "WorkBoardSessionsProjection.onePerSession(allCards.filter { !handoffStore.noticeHidden($0.activity.receipt) })" in wwv
 back = body(store, "    func sendBack(receiptID: String", "    func markReviewed(")
 assert "await submit(source: source, mode: .continueSession, session: session" in back and "let session = sendBackSession(for: old)" in back, "Not done yet continues the same session"
 assert "onSentBack: { if [.built, .qa].contains(WorkBoardStage.stage(for: task)) { move(task, to: .draft) } }" in wwv, "Not done yet moves the card back only from Built or QA"
@@ -1283,7 +1283,7 @@ assert "WorkHandoffStore.sendPlan(draft: draft, sessions: store.sessions, models
 send = inbox[inbox.index("    private func waitForStore("):inbox.index("    private func outcome(")]
 assert "now() >= deadline { return .refused(reason: Refusal.lateClaim, receiptID: nil) }" in send, "never sent after the claim deadline"
 submit = store[store.index("    func submit(source: WorkSource"):store.index("    // MARK: - Start it, then open it (0.5.249)")]
-assert submit.index("if origin != nil, mode == .continueSession, Self.appOwner(of: session.id, in: receipts) != nil {") < submit.index("let id = UUID().uuidString.lowercased()"), "an app-owned Continue from the glasses is refused before anything is recorded"
+assert submit.index("if origin != nil, mode == .continueSession, Self.appOwner(of: session.id, in: receipts) != nil {") < submit.index("let id = suppliedID ?? UUID().uuidString.lowercased()"), "an app-owned Continue from the glasses is refused before anything is recorded"
 assert 'if let origin { row.requestedFrom = "glasses"; row.requestId = origin.requestID }' in submit, "the receipt records where it came from"
 assert submit.index('row.requestedFrom = "glasses"') < submit.index("do { try persist() } catch { receipts.removeAll { $0.id == id }; throw error }"), "journaled with the intent"
 assert 'if row.requestedFrom == "glasses" { row.status = "refused"; row.detail = WorkRequestOrigin.appOwnedReason; return }' in store, "no clipboard write for the glasses"
@@ -1349,7 +1349,7 @@ for gone in ("openInTerminal", "cursorResumeScript", "Terminal.app", "cursor-age
 assert 'case "work-cursor-chat"' not in helper and "func workCursorChats(" not in helper, "the helper's Cursor chat finder is gone"
 submit = body(store, "    func submit(source: WorkSource", "    // MARK: - Start it, then open it (0.5.249)")
 assert "if origin != nil, prefill { throw failure(WorkRequestOrigin.cursorNeedsMac) }" in submit
-assert submit.index("if origin != nil, prefill { throw failure(WorkRequestOrigin.cursorNeedsMac) }") < submit.index("let id = UUID().uuidString.lowercased()"), "refused before anything is recorded"
+assert submit.index("if origin != nil, prefill { throw failure(WorkRequestOrigin.cursorNeedsMac) }") < submit.index("let id = suppliedID ?? UUID().uuidString.lowercased()"), "refused before anything is recorded"
 assert submit.index("if prefill {") < submit.index("} else if mode == .newSession {"), "Cursor never reaches work-new"
 inbox = store[store.index("@MainActor final class WorkRequestInbox {"):]
 # Every send for the glasses (Start, Reply by voice, Not done yet) goes through submit(), which refuses Cursor; the inbox
@@ -1501,13 +1501,24 @@ PY
 # button above it; Work is reached from the panel's Activity chips, which come from ActivitySection.allCases.
 python3 - "$ROOT/Sources/ControlInstance.swift" "$ROOT/Sources/COSControlApp.swift" <<'PY'
 import re, sys
-src = open(sys.argv[1]).read()
+src = "\n".join(open(path).read() for path in sys.argv[1:])
 m = re.search(r"MenuBarExtra\s*\{(.*?)ControlPanel\(model: model\)", src, re.S)
 assert m is not None, "MenuBarExtra no longer opens ControlPanel"
 before = re.sub(r"//[^\n]*", "", m.group(1))
-assert before.strip() == "", "something sits above ControlPanel in the menu-bar window: " + before.strip()[:80]
+# Only the explicit recording stop control may precede the panel; keep this exact
+# whitelist so an unrelated navigation control cannot silently return here.
+expected = '''VStack(spacing: 0) {
+    if model.macRecordingActive {
+        HStack {
+            Label("Mac recording", systemImage: "record.circle.fill").foregroundStyle(COSPalette.danger)
+            Spacer()
+            Button("Stop and save") { Task { await model.macRecording.stop() } }.buttonStyle(COSQuietButtonStyle())
+        }.font(COSType.body(12)).padding(12)
+    }
+'''
+assert re.sub(r"\s+", "", before) == re.sub(r"\s+", "", expected), "only the styled recording stop/save control may precede ControlPanel"
 PY
-/usr/bin/grep -q -F 'MenuBarIcon.variant(for: model.appUpdateFlow.phase, recording: model.recordingCount > 0)' "$ROOT/Sources/ControlInstance.swift" "$ROOT/Sources/COSControlApp.swift"
+/usr/bin/grep -q -F 'MenuBarIcon.variant(for: model.appUpdateFlow.phase, recording: model.recordingCount > 0 || model.macRecordingActive)' "$ROOT/Sources/ControlInstance.swift" "$ROOT/Sources/COSControlApp.swift"
 ! /usr/bin/grep -q 'hasNotice' "$ROOT/Sources/ControlInstance.swift" "$ROOT/Sources/COSControlApp.swift"
 /usr/bin/grep -q 'AppUpdateInfo.merging(previous: appUpdate, incoming:' "$ROOT/Sources/ControllerModel.swift"
 /usr/bin/grep -q 'static func merging(previous: AppUpdateInfo, incoming: AppUpdateInfo)' "$ROOT/Sources/Models.swift"
@@ -2066,7 +2077,7 @@ assert 'let window = ActivityHostWindow(contentViewController: hostingController
 assert 'final class ActivityHostWindow: NSWindow' in activity
 assert 'ActivityWindow(' not in views and 'ActivityWindow.live(' not in views
 assert activity.count('.sheet(') == 1
-assert '.sheet(item: $meetingTaskLink) { meeting in\n            MeetingTaskLinkSheet(model: model, meeting: meeting, onOpenWork: openConnectedWork)' in activity
+assert '.sheet(item: $meetingTaskLink) { meeting in\n            MeetingTaskLinkSheet(model: model, meeting: meeting, onOpenWork: openConnectedWork, initiallyCreating: meetingTaskCreate)' in activity
 print('PASS: the meeting-link sheet belongs to the persistent Activity window; the menu-bar panel remains sheet-free')
 ACTIVITY_SHEET
 /usr/bin/grep -q 'struct SpeakerReviewPane' "$ROOT/Sources/Views.swift"
