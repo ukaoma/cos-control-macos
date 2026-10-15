@@ -1510,18 +1510,19 @@ src = "\n".join(open(path).read() for path in sys.argv[1:])
 m = re.search(r"MenuBarExtra\s*\{(.*?)ControlPanel\(model: model\)", src, re.S)
 assert m is not None, "MenuBarExtra no longer opens ControlPanel"
 before = re.sub(r"//[^\n]*", "", m.group(1))
-# Only the explicit recording stop control may precede the panel; keep this exact
+# Only the explicit live transcript and recording stop controls may precede the panel; keep this exact
 # whitelist so an unrelated navigation control cannot silently return here.
 expected = '''VStack(spacing: 0) {
     if model.macRecordingActive {
         HStack {
             Label("Mac recording", systemImage: "record.circle.fill").foregroundStyle(COSPalette.danger)
             Spacer()
+            Button("View live transcript") { model.showRecordingTranscript() }.buttonStyle(COSQuietButtonStyle())
             Button("Stop and save") { Task { await model.macRecording.stop() } }.buttonStyle(COSQuietButtonStyle())
         }.font(COSType.body(12)).padding(12)
     }
 '''
-assert re.sub(r"\s+", "", before) == re.sub(r"\s+", "", expected), "only the styled recording stop/save control may precede ControlPanel"
+assert re.sub(r"\s+", "", before) == re.sub(r"\s+", "", expected), "only the styled live transcript and recording stop/save controls may precede ControlPanel"
 PY
 /usr/bin/grep -q -F 'MenuBarIcon.variant(for: model.appUpdateFlow.phase, recording: model.recordingCount > 0 || model.macRecordingActive)' "$ROOT/Sources/ControlInstance.swift" "$ROOT/Sources/COSControlApp.swift"
 ! /usr/bin/grep -q 'hasNotice' "$ROOT/Sources/ControlInstance.swift" "$ROOT/Sources/COSControlApp.swift"
