@@ -1083,9 +1083,9 @@ echo "    manual update check: button, method, and all three outcomes"
 # Colored update/recording variants use one original NSImage; the plain tray keeps the system glyph.
 /usr/bin/python3 -c '
 import sys
-src = open(sys.argv[1]).read()
+src = "\n".join(open(path).read() for path in sys.argv[1:])
 assert src.count("Image(nsImage:") == 1, "one shared NSImage label for colored variants"
-assert "recording: model.recordingCount > 0" in src, "recording state must reach the menu-bar icon"
+assert "recording: model.recordingCount > 0 || model.macRecordingActive" in src, "glasses and Mac recording state must reach the menu-bar icon"
 assert "if variant != .normal {" in src, "colored variants must include recording and updates"
 branch, plain = src.split("if variant != .normal {", 1)[1].split("} else {", 1)
 assert "Image(nsImage:" in branch and ".renderingMode(.original)" in branch, "colored indicators must preserve their colors"
