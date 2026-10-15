@@ -470,6 +470,27 @@ struct WorkGlassesRequest: Equatable, Sendable {
     }
 
     func taskChatCall(_ args: [String], data: Data? = nil) async throws -> [String: JSONValue] { try await call(args, data) }
+    /// Delivered native turns proven idle with their own reply, keyed by the exact receipt bytes (a journal change since the
+    /// read voids the proof). A chat follow-up may pass these without anyone marking the earlier answer reviewed.
+    func taskChatContinuations(source: WorkSource) async -> [String: Data] {
+        guard !isolated else { return [:] }
+        var continuations: [String: Data] = [:]
+        for row in receipts(for: source.id) where row.blocksNewHandoff && row.status == "delivered" && row.channel == "turn" {
+            guard let sessionID = row.sessionID,
+                  let read = try? await sessionRead(sessionID: sessionID, turns: 40),
+                  WorkChatPolicy.canContinue(receipt: row, read: read),
+                  let key = try? WorkChatPolicy.continuationKey(row) else { continue }
+            continuations[row.id] = key
+        }
+        return continuations
+    }
+    /// 0.5.308: the receipts that would refuse a task-chat send on this card, read before planning and before each send so
+    /// a held card is shown, not discovered partway through a plan. `submit` still enforces the same fence under the lock.
+    func taskChatBlockers(source: WorkSource, orchestrationRunID: String? = nil, sessionID: String? = nil) async -> [WorkHandoffReceipt] {
+        let continuations = await taskChatContinuations(source: source)
+        return WorkChatPreflight.blockers(receiptsOnDisk() ?? receipts, workID: source.id, continuations: continuations,
+                                          orchestrationRunID: orchestrationRunID, sessionID: sessionID)
+    }
     /// Opens the existing destination editor only. A second, final confirmation is required to dispatch.
     @discardableResult func prepareIndependentRecovery(source: WorkSource, prompt: String, assignmentID: String? = nil) -> Bool {
         guard !busy, !quietSend, storageReady, !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
@@ -1127,14 +1148,7 @@ struct WorkGlassesRequest: Equatable, Sendable {
             // turn before locking, then bind that idle proof to the unchanged journal row under the lock.
             // Unknown, queued, running and app-owned deliveries retain the existing fence.
             var continuations: [String: Data] = [:]
-            if orchestrationRunID != nil, !isolated {
-                for row in receipts(for: source.id) where row.blocksNewHandoff && row.status == "delivered" && row.channel == "turn" {
-                    guard let sessionID = row.sessionID,
-                          let read = try? await sessionRead(sessionID: sessionID, turns: 40),
-                          WorkChatPolicy.canContinue(receipt: row, read: read) else { continue }
-                    continuations[row.id] = try WorkChatPolicy.continuationKey(row)
-                }
-            }
+            if orchestrationRunID != nil { continuations = await taskChatContinuations(source: source) }
             let lock = try lockJournal(); defer { flock(lock, LOCK_UN); close(lock) }
             try loadJournal()
             if let recovery {
@@ -1143,7 +1157,8 @@ struct WorkGlassesRequest: Equatable, Sendable {
                     throw failure("Recovery evidence or destination changed. Review the original receipt and confirm an independent destination again.")
                 }
             }
-            guard recovery != nil || !receipts(for: source.id).contains(where: { $0.blocksNewHandoff && !(continuations[$0.id] != nil && continuations[$0.id] == (try? WorkChatPolicy.continuationKey($0))) && !($0.id == replacing && $0.status == "delivered") && !(orchestrationRunID != nil && $0.orchestrationRunID == orchestrationRunID && $0.sessionID != session?.id && ["running", "queued", "delivered"].contains($0.status)) }) else { throw failure("This work already has an active or unresolved handoff. Inspect its receipt before starting another.") }
+            // 0.5.308: the fence lives in WorkChatPreflight so the task chat checks the same rule before it plans or sends.
+            guard recovery != nil || !receipts(for: source.id).contains(where: { WorkChatPreflight.holds($0, continuations: continuations, replacing: replacing, orchestrationRunID: orchestrationRunID, sessionID: session?.id) }) else { throw failure("This work already has an active or unresolved handoff. Inspect its receipt before starting another.") }
             let text = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty, text.utf16.count <= Self.draftLimit, !source.id.isEmpty, !source.revision.isEmpty else { throw failure("Provide a bounded instruction and source revision.") }
             // 0.5.247: the status line the session reports back with, added here so no draft can leave it out.
