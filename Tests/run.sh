@@ -661,10 +661,11 @@ need('check-release-entitlements.py" "$VERIFY_DIR/COS Control.app"' in rel,
      "build-release.sh no longer checks the extracted app's entitlements")
 info = plistlib.loads((root / "Resources/Info.plist").read_bytes())
 need(str(info.get("NSAppleEventsUsageDescription", "")).strip(), "Info.plist lost NSAppleEventsUsageDescription")
+need(str(info.get("NSMicrophoneUsageDescription", "")).strip(), "Info.plist lost NSMicrophoneUsageDescription")
 ents = plistlib.loads((root / "Resources/COSControl.entitlements").read_bytes())
-need(ents == {"com.apple.security.automation.apple-events": True},
-     f"COSControl.entitlements must be exactly Apple Events, found {ents!r}")
-print("PASS: 0.5.267 Apple Events signing pins (Developer ID app + executable, helper bare, usage string)")
+need(ents == {"com.apple.security.automation.apple-events": True, "com.apple.security.device.audio-input": True},
+     f"COSControl.entitlements must be exactly Apple Events and microphone audio input, found {ents!r}")
+print("PASS: Apple Events and microphone signing pins (Developer ID app + executable, helper bare, usage strings)")
 ENTCHK
 
 # --- 0.3.0 meeting sync status ----------------------------------------------
