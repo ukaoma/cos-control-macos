@@ -1,7 +1,7 @@
 {
   "version": "0.5.313",
   "whatsNew": {
-    "summary": "Fix a dictation the moment it lands, put the fix back where you typed, and keep other audio quiet while you talk.",
+    "summary": "Fix a dictation the moment it lands, keep other audio quiet while you talk, and start a Mac recording in one click when a meeting begins.",
     "sections": [
       {
         "title": "Fix dictation faster",
@@ -11,6 +11,15 @@
           "Fix a word selects the whole misheard phrase and suggests the spelling from your dictionary. Return saves.",
           "Other apps go quiet while you dictate and come back after (Settings › Dictation: Mute, Lower or Off). Never during a Mac recording.",
           "COS Control uses much less CPU while the Work tab is open, so the pet animates smoothly."
+        ]
+      },
+      {
+        "title": "Meetings on the Mac",
+        "items": [
+          "When Zoom, Teams or Google Meet starts using your microphone, the pet offers Record. One click records all Mac audio with a title like \"Zoom meeting 2:00 PM\". It never records on its own, and when the meeting app lets go of the mic it asks before stopping.",
+          "Record on Mac is one click: the first recording shows a short COS notice once, then Record just starts. While recording, COS reminds you to let people know.",
+          "Open live meeting now opens the live transcript. With a glasses meeting and a Mac recording live at once, switch between them from the top of the live view.",
+          "In Settings, under Suggest recording when a meeting starts: turn suggestions off, choose apps, add a Never list, or show the recording notice again."
         ]
       },
       {
