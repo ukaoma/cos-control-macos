@@ -163,7 +163,7 @@ need('"Library/Application Support/COS Control/dictation-history.json"' in dicta
      and "static let limit = 50" in core and "posixPermissions: 0o600" in core and "rename(temp.path, url.path)" in core,
      "Recent dictations: last 50, private 0600 file, written by rename")
 meter = body(dictation, "    func start() {")
-need("meter.push(levelMeter.update(rms: next.level))" in meter and ".milliseconds(50)" in meter,
+need("let rms = next.level" in meter and "meter.push(levelMeter.update(rms: rms))" in meter and "DictationBars.heights(levels)" in dictation and ".milliseconds(50)" in meter,
      "the bars must go through the tested dB meter at its tuned 50 ms tick")
 need("let meter = DictationMeterFeed()" in dictation, "levels must live in their own object so the pet never redraws at 20 Hz")
 

@@ -160,19 +160,53 @@ import Foundation
         expect(both.flagsChanged(keyCode: 54, flags: rightCmd) == .pressed, "Right Command alone fires again after the chord")
         expect(DictationTrigger.alone(63, flags: 0x800000) && !DictationTrigger.alone(63, flags: 0x800000 | leftCmd) && !DictationTrigger.alone(49, flags: 0), "recorder uses the same lone rule")
         expect(LoneModifierTracker(keyCode: 49) == nil, "tracker only for modifier keys")
-        // dB meter (0.5.309): -50..-10 dBFS onto 0..1, fast rise, slow fall.
-        expect(DictationLevelMeter.normalized(dBFS: -50) == 0 && DictationLevelMeter.normalized(dBFS: -10) == 1, "meter endpoints")
-        expect(abs(DictationLevelMeter.normalized(dBFS: -30) - 0.5) < 1e-9, "meter midpoint is -30 dBFS")
-        expect(DictationLevelMeter.normalized(dBFS: -80) == 0 && DictationLevelMeter.normalized(dBFS: 0) == 1, "meter clamps")
+        // 0.5.312 listening bars, end to end through the path the app runs: an Int16 microphone buffer → DictationPCMBuffer
+        // RMS → DictationLevelMeter (50 ms ticks) → the feed's last eleven levels → DictationBars heights.
+        // Field bug 2026-10-15 21:16: loud speech on Miles's AT2020USB+ (about -45 dBFS RMS) drew flat dots.
         expect(abs(DictationLevelMeter.dBFS(rms: 0.1) - -20) < 1e-9 && DictationLevelMeter.dBFS(rms: 0) < -100, "rms to dBFS")
-        expect(DictationLevelMeter.normalized(dBFS: DictationLevelMeter.dBFS(rms: 0.01)) > 0.2, "quiet speech (-40 dBFS) moves the bars")
-        var meter = DictationLevelMeter()
-        expect(abs(meter.update(rms: 0.1) - 0.75) < 1e-9, "attack is immediate")
-        let fell = meter.update(rms: 0)
-        expect(fell > 0.6 && fell < 0.75, "release is slow: one tick keeps most of the level")
-        var falling = meter; for _ in 0..<60 { _ = falling.update(rms: 0) }
-        expect(falling.level < 0.01, "silence settles")
-        expect(abs(meter.update(rms: 0.1) - 0.75) < 1e-9, "a new peak jumps straight back up")
+        func tone(_ dbfs: Double) -> Data {
+            guard dbfs > -150 else { return Data(count: 683 * 2) }
+            let amplitude = pow(10, dbfs / 20) * 2.0.squareRoot() * 32767
+            var data = Data()
+            for i in 0..<683 {
+                var sample = Int16(clamping: Int((amplitude * sin(2 * Double.pi * 220 * Double(i) / 16_000)).rounded())).littleEndian
+                withUnsafeBytes(of: &sample) { data.append(contentsOf: $0) }
+            }
+            return data
+        }
+        func bars(_ ticks: [Double]) -> (heights: [Double], meter: DictationLevelMeter) {
+            var meter = DictationLevelMeter()
+            var history = [Double](repeating: 0, count: DictationBars.count)
+            for dbfs in ticks {
+                let buffer = DictationPCMBuffer(); buffer.append(tone(dbfs))
+                history.removeFirst(); history.append(meter.update(rms: buffer.currentLevel()))
+            }
+            return (DictationBars.heights(history), meter)
+        }
+        func mean(_ h: [Double]) -> Double { h.reduce(0, +) / Double(h.count) }
+        let tall = 0.6 * DictationBars.maximum
+        let room = [Double](repeating: -65, count: 20)
+        let quietMic = bars(room + (0..<20).map { $0 % 2 == 0 ? -45 : -50 })
+        expect(quietMic.heights[5] > tall && mean(quietMic.heights) > tall, "loud speech on a quiet USB mic (-45 dBFS) swings the bars past 60% (was 30%)")
+        for speech in [-20.0, -6.0] {
+            let fromStart = bars([Double](repeating: speech, count: 20))
+            expect(fromStart.heights[5] > tall && mean(fromStart.heights) > tall, "\(speech) dBFS from the first tick is tall")
+            let afterRoom = bars(room + [Double](repeating: speech, count: 20))
+            expect(mean(afterRoom.heights) > tall, "\(speech) dBFS after room noise is tall")
+        }
+        for silence in [[Double](repeating: -65, count: 40), [Double](repeating: -55, count: 40), [Double](repeating: -200, count: 40)] {
+            expect(bars(silence).heights.allSatisfy { $0 == DictationBars.minimum }, "silence (\(silence[0]) dBFS) stays at the floor")
+        }
+        let quieted = bars(room + [Double](repeating: -20, count: 10) + [Double](repeating: -65, count: 40))
+        expect(quieted.heights.allSatisfy { $0 < DictationBars.minimum + 0.5 }, "the bars fall back to the floor when speech stops")
+        let firstTick = bars([-40])
+        expect(firstTick.meter.floorDB == -50 && firstTick.heights[5] > DictationBars.minimum, "the floor starts no higher than -50 dBFS")
+        let falls = bars([-48, -70])
+        expect(abs((falls.meter.floorDB ?? 0) - -70) < 0.5, "the floor falls instantly to a quieter room")
+        var held = DictationLevelMeter(); let peak = held.update(rms: 0.1); let afterOne = held.update(rms: 0.0001)
+        expect(peak == 1 && afterOne > 0.8 && afterOne < 1, "fast rise, slow fall: one quiet tick keeps most of the level")
+        expect(DictationBars.heights([1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1])[5] == DictationBars.maximum && DictationBars.heights([])[0] == DictationBars.minimum,
+               "bar heights span minimum to maximum")
         // Recent dictations: newest first, last 50, private atomic file, round trip.
         func record(_ n: Int, _ delivery: DictationRecord.Delivery = .inserted(app: "Slack")) -> DictationRecord {
             DictationRecord(id: UUID(), text: "Line \(n) of text\nsecond line", createdAt: Date(timeIntervalSince1970: 1_760_000_000 + Double(n)), delivery: delivery)

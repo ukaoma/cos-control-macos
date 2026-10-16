@@ -544,9 +544,16 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
                 try next.start(deviceID: selected?.deviceID); capture = next; phase = "Listening"
                 // 50 ms ticks: the meter's fast rise and slow fall are tuned to this cadence.
                 meterTask = Task {
+                    var tick = 0
                     while !Task.isCancelled, phase == "Listening", generation == attempt {
                         if next.failure != nil { stop(); break }
-                        meter.push(levelMeter.update(rms: next.level))
+                        let rms = next.level
+                        meter.push(levelMeter.update(rms: rms))
+                        // Levels only, never audio: once a second, to confirm the meter's range on a real microphone.
+                        if tick % 20 == 0 {
+                            dictationLog.debug("listening dBFS=\(DictationLevelMeter.dBFS(rms: rms), format: .fixed(precision: 1)) floor=\(self.levelMeter.floorDB ?? 0, format: .fixed(precision: 1)) peak=\(self.levelMeter.peakDB, format: .fixed(precision: 1))")
+                        }
+                        tick += 1
                         try? await Task.sleep(for: .milliseconds(50))
                     }
                 }
@@ -774,7 +781,7 @@ struct DictationCard: Equatable, Identifiable {
 
 /// The bars' levels, newest last.
 @MainActor final class DictationMeterFeed: ObservableObject {
-    static let bars = 11
+    static let bars = DictationBars.count
     @Published private(set) var history = [Double](repeating: 0, count: DictationMeterFeed.bars)
     func push(_ level: Double) { history.removeFirst(); history.append(level) }
     func reset() { if history.contains(where: { $0 != 0 }) { history = [Double](repeating: 0, count: Self.bars) } }
@@ -1035,17 +1042,14 @@ struct DictationListeningPill: View {
         }())
     }
 
-    /// Eleven bars, center weighted: the newest level at the center, older ones rippling outward.
+    /// Eleven bars from DictationBars (pure, tested from microphone buffer to height).
     private var liveBars: some View {
         let levels = meter.history
-        let center = Double(DictationMeterFeed.bars - 1) / 2
+        let heights = DictationBars.heights(levels)
         return HStack(spacing: max(1, size.length(2))) {
-            ForEach(0..<DictationMeterFeed.bars, id: \.self) { index in
-                let offset = abs(Double(index) - center)
-                let level = levels[max(0, levels.count - 1 - Int(offset.rounded()))]
-                let weight = 0.45 + 0.55 * (1 - offset / (center + 1))
+            ForEach(0..<DictationBars.count, id: \.self) { index in
                 Capsule()
-                    .frame(width: max(2, size.length(2.5)), height: max(3, CGFloat(3 + 12 * level * weight) * size.scale))
+                    .frame(width: max(2, size.length(2.5)), height: max(3, CGFloat(heights[index]) * size.scale))
             }
         }
         .frame(height: size.length(15))

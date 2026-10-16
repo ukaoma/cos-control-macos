@@ -345,18 +345,53 @@ enum DictationDelivery {
     static let modifierWaitMilliseconds = 600
 }
 
-/// Level on a decibel scale (-50 to -10 dBFS), fast rise and slow fall, so quiet speech still moves the bars.
+/// The listening bars' level, fast rise and slow fall, ranged to THIS microphone (0.5.312).
+///
+/// 0.5.309-0.5.311 mapped a fixed -50..-10 dBFS window. Miles's default input is an AT2020USB+ (a USB condenser with
+/// no hardware gain; System Information shows it as the default input, 2 ch at 16 kHz), where loud speech measures
+/// about -45 dBFS RMS: 0.125 of that window, 3 to 4.5 pt bars of 15, the "flat dots" of 2026-10-15 21:16. Speech now
+/// reads against the mic's own noise floor and recent peak, like Wispr: the floor falls instantly and rises 2 dB/s,
+/// starts no higher than -50 dBFS (so speaking from the first tick still lights the bars), and gates 6 dB above it; the
+/// peak jumps up instantly, decays 1 dB/s, and stays at least 20 dB over the floor. Silence stays at the floor.
 struct DictationLevelMeter: Sendable {
-    static let floorDB = -50.0, ceilingDB = -10.0
-    /// Share of the previous level kept on each falling tick (one tick is 50 ms).
+    /// Below this is digital silence.
+    static let silenceDB = -90.0
+    static let startFloorDB = -50.0
+    static let gateDB = 6.0
+    static let minimumRangeDB = 20.0
+    /// Per 50 ms tick.
+    static let floorRiseDB = 0.1, peakDecayDB = 0.05
+    /// Share of the previous level kept on each falling tick.
     static let release = 0.82
     private(set) var level = 0.0
+    private(set) var floorDB: Double?
+    private(set) var peakDB = -90.0
     static func dBFS(rms: Double) -> Double { rms > 0 ? 20 * log10(rms) : -160 }
-    static func normalized(dBFS: Double) -> Double { min(1, max(0, (dBFS - floorDB) / (ceilingDB - floorDB))) }
     mutating func update(rms: Double) -> Double {
-        let target = Self.normalized(dBFS: Self.dBFS(rms: rms))
+        let db = max(Self.silenceDB, Self.dBFS(rms: rms))
+        let floor = floorDB.map { db < $0 ? db : $0 + Self.floorRiseDB } ?? min(db, Self.startFloorDB)
+        floorDB = floor
+        let gate = floor + Self.gateDB
+        peakDB = max(db, peakDB - Self.peakDecayDB, floor + Self.minimumRangeDB)
+        let target = db <= gate ? 0 : min(1, (db - gate) / (peakDB - gate))
         level = target >= level ? target : level * Self.release + target * (1 - Self.release)
         return level
+    }
+}
+
+/// The listening pill's eleven bars, center weighted: the newest level at the center, older ones rippling outward.
+/// Heights in points at the medium pet size (the view scales them). Pure, so the whole path is tested end to end.
+enum DictationBars {
+    static let count = 11
+    static let minimum = 3.0, maximum = 15.0
+    static func heights(_ history: [Double]) -> [Double] {
+        let center = Double(count - 1) / 2
+        return (0..<count).map { index in
+            let offset = abs(Double(index) - center)
+            let level = history.isEmpty ? 0 : history[max(0, history.count - 1 - Int(offset.rounded()))]
+            let weight = 0.45 + 0.55 * (1 - offset / (center + 1))
+            return minimum + (maximum - minimum) * min(1, max(0, level)) * weight
+        }
     }
 }
 
