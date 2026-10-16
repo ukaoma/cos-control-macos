@@ -2,6 +2,10 @@ import SwiftUI
 import AppKit
 import Foundation
 import CryptoKit
+import os
+
+/// 0.5.310: plan failures, history save failures and each assignment's send outcome (status and reason, never prompt text).
+private let workChatLog = Logger(subsystem: "com.gotcos.control", category: "work-chat")
 
 struct WorkChatAssignment: Codable, Equatable, Identifiable {
     var sessionID: String
@@ -34,8 +38,10 @@ struct WorkChatRound: Codable, Identifiable {
     var summaryDigest: String? = nil
     var attachmentNames: [String]? = nil
     var attachmentDigest: String? = nil
-    /// 0.5.308: the model that planned this round ("sonnet" or "opus"); nil on rounds planned before the choice existed.
+    /// 0.5.308: the planner this round asked for ("sonnet" or "opus"); nil on rounds planned before the choice existed.
     var planner: String? = nil
+    /// 0.5.310: the server's report of the model that ran. Only this may be shown as "planned with".
+    var plannerModel: String? = nil
 }
 struct WorkChatRecord: Codable {
     var workID: String
@@ -44,7 +50,11 @@ struct WorkChatRecord: Codable {
     var draftRTF: Data? = nil
     var rounds: [WorkChatRound] = []
 }
-struct WorkChatPlannerAnswer: Decodable { let protocolVersion: Int; let answer: String; let assignments: [WorkChatAssignment] }
+struct WorkChatPlannerAnswer: Decodable {
+    let protocolVersion: Int; let answer: String; let assignments: [WorkChatAssignment]
+    /// 0.5.310: what the server reports actually ran ("claude:<model>"), or "claude:<slot> (requested)" when it could not tell.
+    var model: String? = nil
+}
 
 enum WorkChatPolicy {
     static func linksDigest(_ links: [String: WorkSessionCardLink], workID: String) throws -> String {
@@ -97,13 +107,32 @@ enum WorkChatPolicy {
         return offered.contains("sonnet") ? "sonnet" : nil
     }
     static func plannerName(_ planner: String?) -> String { planner == "opus" ? "Opus" : "Sonnet" }
-    /// A reviewed round's state after a send or a skip: still under review while any assignment waits, otherwise
-    /// Dispatched if anything was sent. An assignment refused before it had a receipt stays "Not sent" and sendable.
+    /// Assignment states that mean the session received it (a receipt the server accepted, or what the session did next).
+    static let reachedSession: Set<String> = ["queued", "running", "delivered", "completed", "reviewed",
+        "Session reported done", "Session reported blocked", "Needs your input", "Reply available for review"]
+    /// A reviewed round's state after a send or a skip: still under review while any assignment waits. Dispatched only
+    /// when at least one assignment reached its session (0.5.310: an all-refused round read "Dispatched"). An unconfirmed
+    /// delivery is "Delivery uncertain"; every assignment skipped is "Not sent"; refused or failed is "Not delivered",
+    /// each assignment keeping its own reason.
     static func reviewedState(_ assignments: [WorkChatAssignment]) -> String {
         if assignments.contains(where: { ["Not sent", "Sending"].contains($0.state) }) { return "Ready to send" }
-        return assignments.contains(where: { $0.state != "Skipped" }) ? "Dispatched" : "Not sent"
+        if assignments.contains(where: { reachedSession.contains($0.state) }) { return "Dispatched" }
+        if assignments.contains(where: { ["unknown", "No delivery receipt"].contains($0.state) }) { return "Delivery uncertain" }
+        return assignments.allSatisfy { $0.state == "Skipped" } ? "Not sent" : "Not delivered"
+    }
+    /// 0.5.310: the round's planner line. Only the server's report of what ran is a claim; a request stays a request.
+    static func plannerLabel(requested: String?, ran: String?) -> String? {
+        let reported = String((ran ?? "").trimmingCharacters(in: .whitespacesAndNewlines).prefix(100))
+        if reported.hasSuffix("(requested)") || (reported.isEmpty && requested != nil) {
+            let slot = requested ?? String(reported.dropLast("(requested)".count).split(separator: ":").last ?? "").trimmingCharacters(in: .whitespaces)
+            return "requested " + plannerName(slot) + " (not confirmed)"
+        }
+        guard !reported.isEmpty else { return nil }
+        let name = reported.split(separator: ":", maxSplits: 1).last.map(String.init) ?? reported
+        return "planned with " + name
     }
     static let staleMessage = "The task changed since planning. Plan again."
+    static let plannerUnavailable = "Planner choice unavailable · using Sonnet"
 }
 
 /// 0.5.308: the task-wide handoff fence, written once. `WorkHandoffStore.submit` enforces it under the journal lock; the
@@ -168,6 +197,8 @@ enum WorkChatPreflight {
     @Published private(set) var blockers: [WorkHandoffReceipt] = []
     /// 0.5.308: planners the server advertises (GET /api/work/chat `planners`, server 6.73.10). Empty: no picker, Sonnet.
     @Published private(set) var planners: [String] = []
+    /// 0.5.310: set when the server did not answer planner discovery twice; plans then use the server default (Sonnet).
+    @Published private(set) var plannerNotice: String?
     private var url: URL?
     private var bytes: Data?
     private var draftWriter: Task<Void, Never>?
@@ -202,7 +233,11 @@ enum WorkChatPreflight {
             let data = try encoder.encode(record)
             if data != bytes { try WorkSessionLinks.chatWrite(url, data: data, expected: bytes); bytes = data }
             draftDirty = false; return true
-        } catch { self.error = "Task chat changed or could not be saved. Reopen it before sending; nothing was resent."; return false }
+        } catch {
+            let reason = error.localizedDescription
+            workChatLog.error("history save failed: \(reason, privacy: .public)")
+            self.error = "Task chat changed or could not be saved. Reopen it before sending; nothing was resent."; return false
+        }
     }
     /// Send/navigation/close flush immediately. Ordinary typing coalesces the same private CAS/fsync write.
     @discardableResult func flushDraft() -> Bool { !draftDirty || persist() }
@@ -316,11 +351,14 @@ enum WorkChatPreflight {
             self.record?.rounds[index].answer = answer.answer; self.record?.rounds[index].assignments = answer.assignments
             self.record?.rounds[index].revision = revision; self.record?.rounds[index].linkDigest = digest
             self.record?.rounds[index].planner = handoff.isolated ? nil : planner ?? "sonnet"
+            self.record?.rounds[index].plannerModel = handoff.isolated ? nil : answer.model.map { String($0.prefix(100)) }
             self.record?.rounds[index].state = answer.assignments.isEmpty ? "Answered" : "Ready to send"
             _ = persist()
         } catch {
             self.record?.rounds[index].state = "Needs attention"
             self.error = error.localizedDescription + " Nothing was sent."
+            let reason = error.localizedDescription
+            workChatLog.error("plan failed: \(reason, privacy: .public)")
             _ = persist()
         }
     }
@@ -358,9 +396,13 @@ enum WorkChatPreflight {
             do {
                 if !handoff.isolated { await handoff.refreshReceipts() }
                 let held = await handoff.taskChatBlockers(source: source, orchestrationRunID: round.id, sessionID: assignment.sessionID)
-                guard held.isEmpty else { blockers = held; error = WorkChatPreflight.heading; break sending }
+                guard held.isEmpty else {
+                    blockers = held; error = WorkChatPreflight.heading
+                    let count = held.count; workChatLog.info("send held by \(count) earlier handoff(s)"); break sending
+                }
                 guard let context = try await sendContext(round: round, source: source, handoff: handoff) else {
-                    self.record?.rounds[index].state = "Needs a new plan"; error = WorkChatPolicy.staleMessage; break sending
+                    self.record?.rounds[index].state = "Needs a new plan"; error = WorkChatPolicy.staleMessage
+                    workChatLog.info("send stopped: the task, its files or its session links changed since planning"); break sending
                 }
                 guard let session = targets(handoff,source:source).first(where: { $0.id == assignment.sessionID }), handoff.automaticChatTarget(session.id) else {
                     self.record?.rounds[index].assignments[n].detail = "This session is no longer linked for automatic sends. Nothing was sent."
@@ -373,13 +415,20 @@ enum WorkChatPreflight {
                 if let receipt = handoff.receipts.first(where: { $0.id == assignment.receiptID }) {
                     self.record?.rounds[index].assignments[n].state = receipt.status
                     self.record?.rounds[index].assignments[n].detail = receipt.detail
+                    let status = receipt.status, reason = receipt.detail, id = assignment.receiptID
+                    if WorkChatPolicy.reachedSession.contains(status) { workChatLog.info("assignment \(id, privacy: .public) sent: \(status, privacy: .public)") }
+                    else { workChatLog.error("assignment \(id, privacy: .public) \(status, privacy: .public): \(reason, privacy: .public)") }
                 } else {
                     self.record?.rounds[index].assignments[n].state = "Not sent"
                     self.record?.rounds[index].assignments[n].detail = handoff.error ?? "No delivery receipt was created. Nothing was sent."
+                    let reason = handoff.error ?? "no receipt", id = assignment.receiptID
+                    workChatLog.error("assignment \(id, privacy: .public) refused before a receipt: \(reason, privacy: .public)")
                 }
             } catch {
                 // A local failure before submit leaves this assignment as it was; the others stay sendable.
                 self.record?.rounds[index].assignments[n].detail = error.localizedDescription + " Nothing was sent."
+                let reason = error.localizedDescription, id = assignment.receiptID
+                workChatLog.error("assignment \(id, privacy: .public) not sent: \(reason, privacy: .public)")
             }
             guard persist() else { return }
         }
@@ -445,11 +494,23 @@ enum WorkChatPreflight {
         blockers = await handoff.taskChatBlockers(source: source)
         if blockers.isEmpty, error == WorkChatPreflight.heading { error = nil }
     }
-    /// Discovery only: the server's GET makes no model call. Any failure leaves Sonnet with no picker.
-    func loadPlanners(handoff: WorkHandoffStore) async {
-        guard enabled, !handoff.isolated else { planners = []; return }
-        let advertised = (try? await handoff.taskChatCall(["work-chat-capabilities"]))?["planners"]?.array?.compactMap(\.string) ?? []
-        planners = WorkChatPolicy.planners.filter { advertised.contains($0) }
+    /// Discovery only: the server's GET makes no model call. A server without the route (the helper reports routeMissing)
+    /// or without `planners` gets no picker. 0.5.310: a failed answer is retried once, then said, never silently hidden.
+    func loadPlanners(handoff: WorkHandoffStore, retryDelay: Duration = .milliseconds(600)) async {
+        guard enabled, !handoff.isolated else { planners = []; plannerNotice = nil; return }
+        for attempt in 0..<2 {
+            do {
+                let caps = try await handoff.taskChatCall(["work-chat-capabilities"])
+                let advertised = caps["planners"]?.array?.compactMap(\.string) ?? []
+                planners = WorkChatPolicy.planners.filter { advertised.contains($0) }; plannerNotice = nil
+                return
+            } catch {
+                let reason = error.localizedDescription
+                workChatLog.error("planner discovery failed (attempt \(attempt + 1)): \(reason, privacy: .public)")
+                if attempt == 0 { try? await Task.sleep(for: retryDelay) }
+            }
+        }
+        planners = []; plannerNotice = WorkChatPolicy.plannerUnavailable
     }
     /// Restore text for deliberate review and Send. Never replay any assignment automatically.
     func restoreUnsentRequest(roundID: String, checkedUnconfirmed: Bool = false) {
@@ -494,7 +555,7 @@ enum WorkChatPreflight {
             }
             if ["Planning","Executing"].contains(updated.state) { updated.state = "Needs attention" }
             let sent = updated.assignments.filter { $0.state != "Skipped" }
-            if !sent.isEmpty && !["Ready to send", "Saved as drafts"].contains(updated.state) && sent.allSatisfy({ ["completed","failed","refused","canceled","reviewed","Session reported done","Reply available for review"].contains($0.state) }) {
+            if sent.contains(where: { WorkChatPolicy.reachedSession.contains($0.state) }) && !["Ready to send", "Saved as drafts"].contains(updated.state) && sent.allSatisfy({ ["completed","failed","refused","canceled","reviewed","Session reported done","Reply available for review"].contains($0.state) }) {
                 updated.state = "Results available for review"
             }
             record?.rounds[index] = updated
@@ -531,8 +592,8 @@ struct WorkTaskChatView: View {
     @State private var recoveryRoundID: String?
     private var scopedRecord: WorkChatRecord? { chat.record?.workID == source.id ? chat.record : nil }
     private static func stateLine(_ round: WorkChatRound) -> String {
-        guard let planner = round.planner else { return round.state }
-        return round.state + " · planned with " + WorkChatPolicy.plannerName(planner)
+        guard let label = WorkChatPolicy.plannerLabel(requested: round.planner, ran: round.plannerModel) else { return round.state }
+        return round.state + " · " + label
     }
     private func roundView(_ round: WorkChatRound) -> some View {
                 VStack(alignment:.leading,spacing:10) {
@@ -738,6 +799,8 @@ private struct WorkChatSendControls: View {
                 .pickerStyle(.menu).fixedSize().disabled(chat.busy)
                 .help("The model that plans. It never sends: you review every assignment first.")
                 .accessibilityIdentifier("work-chat-planner")
+            } else if let notice = chat.plannerNotice {
+                Text(notice).font(COSType.body(10)).foregroundStyle(COSPalette.muted).help("COS could not read this server's planner choice. Plans use Sonnet until the next try.")
             }
             Button(handoff.isolated ? "Run sample plan" : "Plan") { Task { await chat.send(source:source,handoff:handoff,planner:planner) } }
                 .buttonStyle(COSPrimaryButtonStyle()).keyboardShortcut(.return,modifiers:.command)

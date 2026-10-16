@@ -125,10 +125,11 @@ enum MacRecordingSignal {
 
 /// 2026-10-15: a capture that stopped at the pilot limit, with 51 of 1,200 chunks delivered, still showed as "Live now"
 /// on Meetings for as long as the server held its session. Control knows its own capture stopped, so it says so.
+/// 0.5.310: when delivery has stopped on an error the row says it paused, not that it is saving (Finish saving stays).
 enum MacRecordingLiveRow {
-    static func label(stopped: Bool, saved: Bool, acknowledged: Int, chunks: Int) -> String? {
+    static func label(stopped: Bool, saved: Bool, acknowledged: Int, chunks: Int, paused: Bool = false) -> String? {
         guard stopped, !saved else { return nil }
-        return "Capture stopped · saving \(acknowledged)/\(chunks)"
+        return "Capture stopped · \(paused ? "delivery paused" : "saving") \(acknowledged)/\(chunks)"
     }
 }
 

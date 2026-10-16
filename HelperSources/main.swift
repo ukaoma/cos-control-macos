@@ -17141,9 +17141,16 @@ final class COSControlHelper {
     /// server answers without the field, and Control then plans with Sonnet and shows no picker.
     private func emitWorkChatCapabilities() throws {
         try requireLiveWorkTransport()
-        guard let response = request("/api/work/chat", token: try readToken(), timeout: 5), response.status == 200,
-              let body = response.body, body["protocolVersion"] as? Int == 1 else {
-            throw HelperError.message("Task chat is unavailable on this server.")
+        // 0.5.310: no answer or a server error is a failure Control retries and then reports; a 404 is a server without
+        // the route, which keeps the old behaviour (no picker, Sonnet) without a warning.
+        guard let response = request("/api/work/chat", token: try readToken(), timeout: 5) else {
+            throw HelperError.message("Task chat planner discovery got no answer from the server.")
+        }
+        if response.status == 404 {
+            emit(ok: true, message: "Task chat", details: ["protocolVersion": 1, "planners": [String](), "routeMissing": true]); return
+        }
+        guard response.status == 200, let body = response.body, body["protocolVersion"] as? Int == 1 else {
+            throw HelperError.message("Task chat planner discovery failed (HTTP \(response.status)).")
         }
         let planners = (body["planners"] as? [String] ?? []).filter { ["sonnet", "opus"].contains($0) }
         emit(ok: true, message: "Task chat", details: ["protocolVersion": 1, "planners": planners])

@@ -1,19 +1,23 @@
 #!/usr/bin/env python3
-"""0.5.308 mutation lane for Work chat review-before-send, pre-flight and planner choice. SERIAL: one compile at a time.
+"""0.5.308/0.5.310 mutation gate for Work chat review-before-send, pre-flight, honest round states and planner choice.
 
     python3 Tests/mutate-work-chat-review.py <control worktree> [name ...]   (run by hand, never by a gate)
 
-Proves the unmutated Tests/run-work-session-hub.sh green first, then applies each mutant (target must appear exactly once),
-runs the lane, records the first "Precondition failed" line, and restores the file byte-exact. A mutant that lands and
-passes is a finding.
+SERIAL by design: one hub compile at a time, each through Tests/compile-guard.sh (never parallel; see the 2026-10-07
+kernel panics). Works on a scratch copy of Sources/ and Tests/, so an interrupted run never leaves the checkout mutated.
+A GREEN baseline is required before the first mutant. Each mutant must land exactly once and make the hub checks FAIL.
+Exits non-zero on any MISSING target or any SURVIVOR other than the one documented expected survivor below.
 """
-import pathlib, subprocess, sys
+import pathlib, shutil, subprocess, sys, tempfile
 root = pathlib.Path(sys.argv[1]).resolve(); only = set(sys.argv[2:])
 C = "Sources/WorkTaskChat.swift"; S = "Sources/WorkHandoffStore.swift"
+# Defense in depth: the "Not sent" state guard and submit's intent-id refusal both stop a resend, so removing this one
+# guard alone cannot change behaviour. Any other survivor fails the gate.
+EXPECTED_SURVIVORS = {"sent receipt guard (expected survivor: state guard and submit intent id back it up)"}
 MUTANTS = [
  ("plan dispatches state", C, 'answer.assignments.isEmpty ? "Answered" : "Ready to send"', 'answer.assignments.isEmpty ? "Answered" : "Dispatched"'),
  ("no pre-flight before planning", C, 'guard held.isEmpty else { blockers = held; error = WorkChatPreflight.heading; return }', 'if !held.isEmpty { blockers = held }'),
- ("no pre-flight before a send", C, 'guard held.isEmpty else { blockers = held; error = WorkChatPreflight.heading; break sending }', 'if !held.isEmpty { blockers = held }'),
+ ("no pre-flight before a send", C, '                guard held.isEmpty else {\n                    blockers = held; error = WorkChatPreflight.heading\n                    let count = held.count; workChatLog.info("send held by \\(count) earlier handoff(s)"); break sending\n', '                if !held.isEmpty {\n                    blockers = held\n'),
  ("no revision check (isolated)", C, 'guard source.revision == round.revision else { return nil }', ''),
  ("no revision check (live)", C, 'fresh["workRevision"]?.string == round.revision else { return nil }', 'true else { return nil }'),
  ("no attachment check", C, 'guard attachments.digest == round.attachmentDigest else { return nil }', ''),
@@ -27,7 +31,16 @@ MUTANTS = [
  ("refusal stops the rest", C, '                    self.record?.rounds[index].assignments[n].detail = receipt.detail\n', '                    self.record?.rounds[index].assignments[n].detail = receipt.detail\n                    if receipt.status == "refused" { break sending }\n'),
  ("refusal reason dropped", C, '                    self.record?.rounds[index].assignments[n].detail = receipt.detail\n', ''),
  ("reviewed state ignores Not sent", C, 'if assignments.contains(where: { ["Not sent", "Sending"].contains($0.state) }) { return "Ready to send" }', 'if assignments.contains(where: { ["Sending"].contains($0.state) }) { return "Ready to send" }'),
- ("all skipped reads dispatched", C, 'return assignments.contains(where: { $0.state != "Skipped" }) ? "Dispatched" : "Not sent"', 'return "Dispatched"'),
+ ("all skipped reads not delivered", C, 'return assignments.allSatisfy { $0.state == "Skipped" } ? "Not sent" : "Not delivered"', 'return "Not delivered"'),
+ ("refused reads dispatched (0.5.309 lie)", C, 'if assignments.contains(where: { reachedSession.contains($0.state) }) { return "Dispatched" }', 'if assignments.contains(where: { $0.state != "Skipped" }) { return "Dispatched" }'),
+ ("unknown reads not delivered", C, '        if assignments.contains(where: { ["unknown", "No delivery receipt"].contains($0.state) }) { return "Delivery uncertain" }\n', ''),
+ ("refused rounds become results", C, 'if sent.contains(where: { WorkChatPolicy.reachedSession.contains($0.state) }) && !["Ready to send"', 'if !sent.isEmpty && !["Ready to send"'),
+ ("request claimed as ran", C, '        if reported.hasSuffix("(requested)") || (reported.isEmpty && requested != nil) {', '        if reported.isEmpty && requested != nil {'),
+ ("no report claims the request", C, '        if reported.hasSuffix("(requested)") || (reported.isEmpty && requested != nil) {', '        if reported.hasSuffix("(requested)") {'),
+ ("server model not recorded", C, 'self.record?.rounds[index].plannerModel = handoff.isolated ? nil : answer.model.map { String($0.prefix(100)) }', 'self.record?.rounds[index].plannerModel = nil'),
+ ("discovery not retried", C, 'if attempt == 0 { try? await Task.sleep(for: retryDelay) }', 'if attempt == 0 { try? await Task.sleep(for: retryDelay); break }'),
+ ("discovery failure hidden", C, 'planners = []; plannerNotice = WorkChatPolicy.plannerUnavailable', 'planners = []; plannerNotice = nil'),
+ ("old server warned", C, 'planners = WorkChatPolicy.planners.filter { advertised.contains($0) }; plannerNotice = nil', 'planners = WorkChatPolicy.planners.filter { advertised.contains($0) }; plannerNotice = advertised.isEmpty ? WorkChatPolicy.plannerUnavailable : nil'),
  ("planner key always sent", C, 'if let planner { body["planner"] = planner }', 'body["planner"] = planner ?? "sonnet"'),
  ("planner key never sent", C, 'if let planner { body["planner"] = planner }', ''),
  ("planner ignores choice", C, 'if let choice, offered.contains(choice) { return choice }', ''),
@@ -45,20 +58,31 @@ MUTANTS = [
  ("submit bypasses fence", S, 'guard recovery != nil || !receipts(for: source.id).contains(where: { WorkChatPreflight.holds(', 'guard true || !receipts(for: source.id).contains(where: { WorkChatPreflight.holds('),
  ("submit drops continuations", S, '            if orchestrationRunID != nil { continuations = await taskChatContinuations(source: source) }\n', ''),
 ]
-def run():
-    r = subprocess.run(["zsh", str(root / "Tests/run-work-session-hub.sh")], cwd=root, capture_output=True, text=True)
+
+def run(work: pathlib.Path):
+    r = subprocess.run(["/bin/zsh", str(work / "Tests/run-work-session-hub.sh")], cwd=work, capture_output=True, text=True)
     out = r.stdout + r.stderr
     why = next((l.strip() for l in out.splitlines() if "Precondition failed" in l or "Fatal error" in l), "")
     if not why and "error:" in out: why = "COMPILE: " + next(l.strip() for l in out.splitlines() if "error:" in l)
     return r.returncode, why, out
-code, why, out = run()
-if code != 0: sys.exit("baseline is not green; refusing to mutate:\n" + out[-3000:])
-print("baseline green")
-for name, f, a, b in MUTANTS:
-    if only and name not in only: continue
-    p = root / f; src = p.read_text()
-    if src.count(a) != 1: print(f"MISSING  {name}: target appears {src.count(a)} times"); continue
-    p.write_text(src.replace(a, b))
-    try: code, why, _ = run()
-    finally: p.write_text(src)
-    print(("KILLED   " if code != 0 else "SURVIVED ") + name + (f"  [{why}]" if why else ""))
+
+work = pathlib.Path(tempfile.mkdtemp(prefix="cos-work-chat-mutants-", dir="/private/tmp"))
+try:
+    for folder in ("Sources", "Tests"): shutil.copytree(root / folder, work / folder, ignore=shutil.ignore_patterns("__pycache__"))
+    code, why, out = run(work)
+    if code != 0: sys.exit("baseline is not green; refusing to mutate:\n" + out[-3000:])
+    print("baseline green")
+    missing, survivors = [], []
+    for name, f, a, b in MUTANTS:
+        if only and name not in only: continue
+        p = work / f; src = p.read_text()
+        if src.count(a) != 1: print(f"MISSING  {name}: target appears {src.count(a)} times"); missing.append(name); continue
+        p.write_text(src.replace(a, b))
+        try: code, why, _ = run(work)
+        finally: p.write_text(src)
+        print(("KILLED   " if code != 0 else "SURVIVED ") + name + (f"  [{why}]" if why else ""))
+        if code == 0 and name not in EXPECTED_SURVIVORS: survivors.append(name)
+    if missing or survivors: sys.exit(f"gate failed: missing={missing} survivors={survivors}")
+    print("PASS Work chat mutation gate: every mutant killed except the documented expected survivor")
+finally:
+    shutil.rmtree(work, ignore_errors=True)
