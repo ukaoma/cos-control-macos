@@ -740,6 +740,8 @@ struct SttInstallProgress: Equatable, Sendable {
     var bytesDone: Int
     var bytesTotal: Int
     var error: String?
+    /// 6.74.0: cancelled, insufficient_disk, sha_mismatch, download_failed, stalled, cli_untrusted or cli_missing.
+    var errorCode: String? = nil
 }
 
 struct SttParakeet: Equatable, Sendable {
@@ -753,9 +755,14 @@ struct SttParakeet: Equatable, Sendable {
     var warmPreview: String? = nil
     /// The server's plain sentence about Parakeet, shown under the Preview picker while Parakeet is selected there.
     var note: String? = nil
+    /// 6.74.0: how the server trusts the FluidAudio tool (developer-id for COS Control's bundled copy, sha256 for a
+    /// hand-placed pinned copy), or why it does not (missing, unsigned, signature_invalid, wrong_team, wrong_version).
+    var cliTrust: String? = nil
+    var cliReason: String? = nil
     /// The server is downloading or verifying right now.
     var serverInstalling: Bool { progress?.state == "downloading" || progress?.state == "verifying" }
     var failed: Bool { !installed && progress?.state == "failed" }
+    var cancelled: Bool { failed && progress?.errorCode == "cancelled" }
     var done: Bool { installed || progress?.state == "installed" }
 }
 
@@ -771,6 +778,9 @@ struct SttSettings: Equatable, Sendable {
     var parakeet: SttParakeet
     var appliesPreview: String?
     var appliesHQ: String?
+    /// 0.5.317 (server 6.74.0): Mac dictation's engine (auto, parakeet-ultra or whisper). nil on an older server, whose
+    /// dictation is Parakeet Ultra only.
+    var dictation: SttDictationChoice? = nil
 
     /// The helper's `details.settings`, which is already the contract's GET shape with its keys whitelisted.
     init?(_ value: JSONValue?) {
@@ -785,16 +795,55 @@ struct SttSettings: Equatable, Sendable {
         var progress: SttInstallProgress?
         if let row = parakeet["progress"]?.object, let state = row["state"]?.string {
             progress = SttInstallProgress(state: state, bytesDone: max(0, row["bytesDone"]?.int ?? 0), bytesTotal: max(0, row["bytesTotal"]?.int ?? 0),
-                                          error: row["error"]?.string.flatMap { $0.isEmpty ? nil : $0 })
+                                          error: row["error"]?.string.flatMap { $0.isEmpty ? nil : $0 }, errorCode: row["errorCode"]?.string)
         }
         self.parakeet = SttParakeet(installed: parakeet["installed"]?.bool ?? false, installable: parakeet["installable"]?.bool ?? false,
                                     version: parakeet["version"]?.string, bytes: max(0, parakeet["bytes"]?.int ?? 0), progress: progress,
                                     warmPreview: parakeet["warm"]?.object?["preview"]?.string,
-                                    note: parakeet["note"]?.string.flatMap { $0.isEmpty ? nil : $0 })
+                                    note: parakeet["note"]?.string.flatMap { $0.isEmpty ? nil : $0 },
+                                    cliTrust: parakeet["cli"]?.object?["trust"]?.string, cliReason: parakeet["cli"]?.object?["reason"]?.string)
         let applies = object["appliesTo"]?.object ?? [:]
         appliesPreview = applies["preview"]?.string
         appliesHQ = applies["hq"]?.string
+        dictation = SttDictationChoice(object["dictation"])
     }
+}
+
+/// The server's `dictation.desktop` (6.74.0), whitelisted by the helper: the person's choice, the engine a dictation
+/// would use right now (`effective`: parakeet-ultra, whisper or none) and why.
+struct SttDictationChoice: Equatable, Sendable {
+    var selected: String
+    var options: [SttOption]
+    var effective: String?
+    var reason: String?
+    var reasonCode: String?
+    var note: String?
+    init(selected: String, options: [SttOption] = [], effective: String? = nil, reason: String? = nil, reasonCode: String? = nil, note: String? = nil) {
+        self.selected = selected; self.options = options; self.effective = effective; self.reason = reason; self.reasonCode = reasonCode; self.note = note
+    }
+    init?(_ value: JSONValue?) {
+        guard let object = value?.object, let selected = object["selected"]?.string, !selected.isEmpty else { return nil }
+        self.selected = selected
+        effective = object["effective"]?.string
+        func text(_ key: String) -> String? { object[key]?.string.flatMap { $0.isEmpty ? nil : $0 } }
+        reason = text("reason"); reasonCode = text("reasonCode"); note = text("note")
+        options = (object["options"]?.array ?? []).compactMap { row in
+            guard let row = row.object, let id = row["id"]?.string, !id.isEmpty else { return nil }
+            return SttOption(id: id, label: row["label"]?.string, available: row["available"]?.bool ?? true,
+                             experimental: row["experimental"]?.bool ?? false, note: row["note"]?.string)
+        }
+    }
+}
+
+/// What the Parakeet row says and offers. Never a greyed-out control without its reason and one action (0.5.317).
+enum ParakeetRowState: Equatable, Sendable {
+    enum Action: String, Equatable, Sendable { case install, retryInstall, cancel, checkAgain, afterRecording, useWhisper, none }
+    case installed(String)
+    case installing(String)
+    /// Install (or Try again after a failure) is offered. `line` is the failure's reason, when there was one.
+    case offer(title: String, line: String?)
+    /// Parakeet cannot be installed right now: why, and what to do about it.
+    case blocked(reason: String, action: Action)
 }
 
 /// One row the card's pickers draw.
@@ -878,7 +927,7 @@ enum Transcription {
         guard parakeet.failed else { return nil }
         return parakeet.progress?.error ?? "The Parakeet install did not finish. Try again."
     }
-    static let installCaption = "Parakeet runs on this Mac as the second opinion. The download is checked before it is installed."
+    static let installCaption = "Parakeet Ultra runs on this Mac, for dictation and as the second opinion. Every file is checked before it is installed, and dictation keeps working with Whisper meanwhile."
     static let recordingHold = "Install Parakeet after the recording ends."
     static func installingLine(bytes: Int) -> String {
         bytes > 0 ? "Installing Parakeet. \(megabytes(bytes)) MB so far." : "Installing Parakeet."
@@ -889,6 +938,102 @@ enum Transcription {
         return "Parakeet \(version) is installed."
     }
     static let installTimedOut = "The Parakeet install is taking longer than expected. Check again in a few minutes."
+
+    // MARK: Dictation engine and the Parakeet row (0.5.317, server 6.74.0)
+
+    static let installTitle = "Install Parakeet (654 MB)"
+    /// The server's own precheck (507 insufficient_disk) uses the same floor: the 654 MB download, staging and the swap.
+    static let requiredFreeBytes: Int64 = 1_500_000_000
+    static let dictationCaption = "Automatic uses Parakeet Ultra when it is installed and ready, and Whisper on this Mac otherwise. Dictation never uses the cloud."
+    static let dictationOldServer = "This COS server dictates with Parakeet Ultra only. Update the server to dictate with Whisper."
+    static let licensesLine = "Parakeet Ultra model: CC BY 4.0, FluidInference. FluidAudio: Apache 2.0."
+    static let dictationTitles = ["auto": "Automatic (recommended)", "parakeet-ultra": "Parakeet Ultra", "whisper": "Whisper"]
+
+    /// The Dictation engine picker's rows: the server's options in its order, with COS's names for the three ids.
+    static func dictationRows(_ choice: SttDictationChoice) -> [SttPickerRow] {
+        let options = choice.options.isEmpty ? ["auto", "parakeet-ultra", "whisper"].map { SttOption(id: $0, label: nil, available: true, experimental: false, note: nil) } : choice.options
+        var rows = options.map { option in
+            let title = dictationTitles[option.id] ?? option.label.flatMap { $0.isEmpty ? nil : $0 } ?? option.id
+            return SttPickerRow(id: option.id, title: title, note: option.available ? nil : (option.note.flatMap { $0.isEmpty ? nil : $0 } ?? "Not available"), enabled: option.available)
+        }
+        if !rows.contains(where: { $0.id == choice.selected }) {
+            rows.insert(SttPickerRow(id: choice.selected, title: dictationTitles[choice.selected] ?? choice.selected, note: nil, enabled: true), at: 0)
+        }
+        return rows
+    }
+
+    /// One line under the picker: what a dictation uses right now. The server's note wins; nil fields read plainly.
+    static func dictationLine(_ settings: SttSettings) -> String {
+        guard let choice = settings.dictation else { return dictationOldServer }
+        if let note = choice.note { return note }
+        switch choice.effective {
+        case "parakeet-ultra": return "Dictation uses Parakeet Ultra on this Mac."
+        case "whisper":
+            return choice.selected == "whisper" ? "Dictation uses Whisper on this Mac."
+                : settings.parakeet.installed ? "Dictation uses Whisper until Parakeet Ultra is ready." : "Dictation uses Whisper until Parakeet Ultra is installed."
+        case "none": return choice.reason ?? "No speech engine is ready for dictation. Set up voice in the setup guide."
+        default: return choice.reason ?? dictationCaption
+        }
+    }
+
+    /// Why the server cannot install Parakeet, in its own words when it sent them.
+    static func notInstallableLine(_ parakeet: SttParakeet) -> String {
+        if let note = parakeet.note { return note }
+        if let line = cliLine(parakeet.cliReason) { return line }
+        return "This COS server cannot install Parakeet on this Mac."
+    }
+    static func cliLine(_ reason: String?) -> String? {
+        switch reason {
+        case "missing": "COS Control's speech tool was not found. Download COS Control again, then check again."
+        case "unsigned", "signature_invalid": "COS Control's speech tool failed its signature check. Download COS Control again, then check again."
+        case "wrong_team", "wrong_version": "COS Control's speech tool does not match this server. Update COS Control, then check again."
+        default: nil
+        }
+    }
+    static func diskLine(free: Int64) -> String {
+        "Parakeet needs 1.5 GB free; \(gigabytes(free)) is free. Free some space, then check again."
+    }
+    static func gigabytes(_ bytes: Int64) -> String {
+        bytes >= 1_000_000_000 ? String(format: "%.1f GB", Double(bytes) / 1_000_000_000) : "\(max(0, bytes / 1_000_000)) MB"
+    }
+    /// A failed install's reason: the server's sentence first, else COS's words for its error code.
+    static func installFailureLine(_ parakeet: SttParakeet) -> String? {
+        guard parakeet.failed else { return nil }
+        if parakeet.cancelled { return "Install cancelled. Nothing was kept, and dictation keeps using Whisper." }
+        if let said = parakeet.progress?.error { return said }
+        switch parakeet.progress?.errorCode {
+        case "insufficient_disk": return "Not enough free disk space. Parakeet needs 1.5 GB free."
+        case "sha_mismatch": return "A downloaded file did not match its checksum, so nothing was installed. Try again."
+        case "download_failed", "stalled": return "The download did not finish. Nothing was installed. Try again."
+        case "cli_untrusted", "cli_missing": return cliLine(parakeet.cliReason) ?? "COS Control's speech tool could not be verified. Download COS Control again."
+        default: return "The Parakeet install did not finish. Try again."
+        }
+    }
+
+    /// The Parakeet row: installed, installing, Install offered, or why not with one action. Never a dead control.
+    static func parakeetState(_ settings: SttSettings, installing: Bool, recording: Bool, freeBytes: Int64?) -> ParakeetRowState {
+        let parakeet = settings.parakeet
+        if installing || parakeet.serverInstalling { return .installing(progressLine(parakeet)) }
+        if let line = installedLine(parakeet) { return .installed(line) }
+        if recording { return .blocked(reason: recordingHold, action: .afterRecording) }
+        if !parakeet.installable {
+            let explicit = settings.dictation?.selected == "parakeet-ultra"
+            return .blocked(reason: notInstallableLine(parakeet), action: explicit ? .useWhisper : .checkAgain)
+        }
+        if let freeBytes, freeBytes < requiredFreeBytes { return .blocked(reason: diskLine(free: freeBytes), action: .checkAgain) }
+        if let failure = installFailureLine(parakeet) { return .offer(title: parakeet.cancelled ? installTitle : "Try again", line: failure) }
+        return .offer(title: installTitle, line: nil)
+    }
+    static func actionTitle(_ action: ParakeetRowState.Action) -> String? {
+        switch action {
+        case .install: installTitle
+        case .retryInstall: "Try again"
+        case .cancel: "Cancel"
+        case .checkAgain: "Check again"
+        case .useWhisper: "Use Whisper"
+        case .afterRecording, .none: nil
+        }
+    }
     /// 15 minutes at one check every 2 seconds: a backstop only, the server's installed or failed state ends the poll.
     static let installPollLimit = 450
     static let installPollNanoseconds: UInt64 = 2_000_000_000
@@ -916,12 +1061,61 @@ final class TranscriptionSettingsStore: ObservableObject {
         guard visible, !installing, !recording, let parakeet = settings?.parakeet else { return false }
         return !parakeet.installed && parakeet.installable && !parakeet.serverInstalling
     }
+    /// 0.5.317: free space on this Mac's home volume, read when the card asks (nil: unknown, the server still checks).
+    var freeBytes: () -> Int64? = {
+        (try? URL(fileURLWithPath: NSHomeDirectory()).resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]))?
+            .volumeAvailableCapacityForImportantUsage
+    }
+    /// COS Control's bundled FluidAudio tool (Contents/Helpers/fluidaudiocli), passed to the server's install. nil in a
+    /// build without it (the server then looks for its own copy).
+    var cliPath: () -> String? = {
+        let path = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/fluidaudiocli").path
+        return FileManager.default.isExecutableFile(atPath: path) ? path : nil
+    }
+    /// The server's answer to register-parakeet-cli, once per launch: nil before it, or on a server before 6.74.0.
+    @Published private(set) var cliTrusted: Bool?
+    func rowState(recording: Bool) -> ParakeetRowState? {
+        guard visible, let settings else { return nil }
+        return Transcription.parakeetState(settings, installing: installing, recording: recording, freeBytes: freeBytes())
+    }
+    /// Cancel is offered while an install runs here or on the server.
+    var offersCancel: Bool { showsProgress && settings?.dictation != nil }
+    private var cancelRequested = false
+    private var cliRegistered = false
+
+    /// Tells the server where COS Control's bundled tool is (POST /api/stt-settings/parakeet/cli). Called at launch and
+    /// from Check again; the server also looks in /Applications on its own.
+    func registerCLI(_ run: Run) async {
+        guard let path = cliPath() else { return }
+        guard let data = try? JSONSerialization.data(withJSONObject: ["cliPath": path]),
+              let answer = try? await run(["register-parakeet-cli"], data), answer.ok else { return }
+        cliTrusted = answer.details["httpStatus"]?.int == 200 ? answer.details["trusted"]?.bool : nil
+    }
+
+    /// Check again: re-register the bundled tool, then read the settings.
+    func checkAgain(_ run: Run) async {
+        await registerCLI(run)
+        await load(run)
+    }
+
+    /// DELETE the install. The server keeps nothing partial; the next read shows it cancelled.
+    func cancelInstall(_ run: Run) async {
+        guard showsProgress else { return }
+        cancelRequested = true
+        do {
+            let answer = try await run(["cancel-parakeet-install"], nil)
+            if let settings = SttSettings(answer.details["settings"]) { self.settings = settings }
+            if !answer.ok { error = answer.message }
+        } catch { self.error = error.localizedDescription }
+    }
     /// The card shows progress while this store polls or while the server says it is downloading or verifying.
     var showsProgress: Bool { installing || settings?.parakeet.serverInstalling == true }
 
     /// A read. When the server is already installing (started from another open of the panel), it follows that
     /// install the same way the button does, until installed or failed.
     func load(_ run: Run, pause: Pause = { try? await Task.sleep(nanoseconds: $0) }) async {
+        // 0.5.317: the first read of a launch tells the server where COS Control's speech tool is.
+        if !cliRegistered { cliRegistered = true; await registerCLI(run) }
         do { apply(try await run(["stt-settings"], nil)) }
         catch { if availability == .supported { self.error = error.localizedDescription }; return }
         guard visible, !installing, settings?.parakeet.serverInstalling == true else { return }
@@ -951,11 +1145,15 @@ final class TranscriptionSettingsStore: ObservableObject {
 
     func install(_ run: Run, recording: Bool, pause: Pause = { try? await Task.sleep(nanoseconds: $0) }) async {
         guard offersInstall(recording: recording) else { return }
+        // The same floor the server checks (507), before anything downloads.
+        if let free = freeBytes(), free < Transcription.requiredFreeBytes { error = Transcription.diskLine(free: free); return }
         installing = true
+        cancelRequested = false
         defer { installing = false }
         error = nil
         do {
-            let started = try await run(["install-parakeet"], nil)
+            let request = try JSONSerialization.data(withJSONObject: cliPath().map { ["cliPath": $0] } ?? [String: String]())
+            let started = try await run(["install-parakeet"], request)
             switch started.details["httpStatus"]?.int {
             case 200, 202:
                 if let settings = SttSettings(started.details["settings"]) { self.settings = settings }
@@ -963,6 +1161,10 @@ final class TranscriptionSettingsStore: ObservableObject {
                 if started.details["started"]?.bool == false { return }
             case 404:
                 error = "This server cannot install Parakeet."; return
+            case 507:
+                error = Transcription.diskLine(free: Int64(started.details["freeBytes"]?.int ?? 0)); return
+            case 422:
+                error = Transcription.cliLine(started.details["cliReason"]?.string) ?? started.details["error"]?.string ?? started.message; return
             default:
                 error = started.details["error"]?.string ?? started.message; return
             }
@@ -976,6 +1178,8 @@ final class TranscriptionSettingsStore: ObservableObject {
     private func follow(_ run: Run, pause: Pause) async throws {
         for _ in 0..<Transcription.installPollLimit {
             if let parakeet = settings?.parakeet, parakeet.done || parakeet.failed { return }
+            // Cancelled here: one more read shows the server's cancelled state, then stop.
+            if cancelRequested, settings?.parakeet.serverInstalling != true { return }
             await pause(Transcription.installPollNanoseconds)
             // The panel closed (its .task was cancelled): stop; the next open reads the state again.
             if Task.isCancelled { return }

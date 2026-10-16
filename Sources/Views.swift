@@ -1905,6 +1905,8 @@ struct ControlPanel: View {
                     .id("setup-guide")
                 // Permissions: one line ("All set", "1 needs you") that opens the guide card in place.
                 PanelPermissionsRow(guide: model.permissionGuide)
+                // 0.5.317: Install Parakeet from the menu bar while dictation is on and Parakeet is not installed.
+                PanelParakeetRow(model: model, store: model.transcriptionSettings, dictationOn: model.dictation.enabled)
                 if model.status.morningBriefSupported { morningBriefCard }
                 if model.status.tasksGate != nil { domainsCard }
                 if !model.fenceRecords.isEmpty { fencesCard }
@@ -1915,6 +1917,7 @@ struct ControlPanel: View {
                 // Transcription (server 6.72.0): hidden on an older server (404) and until the server has answered,
                 // so it is loaded from here, a view that is always drawn.
                 TranscriptionSettingsCard(store: model.transcriptionSettings, model: model)
+                    .id("transcription")
                 utilities
                 footer
             }

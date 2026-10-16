@@ -760,6 +760,17 @@ struct VoiceFacts: Sendable, Equatable {
     var previewReason: String?
     var hqReason: String?
     var parakeetInstalled = false
+    // 0.5.317 (server 6.74.0): Mac dictation's engine, the install's state, and this Mac's proofs.
+    /// nil on a server before 6.74.0 (dictation there is Parakeet Ultra only).
+    var dictationSelected: String?
+    var dictationEffective: String?
+    var dictationReason: String?
+    var parakeetInstallable = false
+    var parakeetInstalling = false
+    /// The helper's dictation-check: the pinned sample through a real dictation round trip.
+    var dictationCheck: DictationCheck?
+    /// The helper's dictation-benchmark: the engine step's test.
+    var engineTest: EngineTest?
     var usesParakeet: Bool { selectedPreview == "parakeet" || selectedHQ == "parakeet-ultra" }
     var parakeetReady: Bool {
         func ready(_ selected: String?, _ effective: String?) -> Bool {
@@ -789,7 +800,15 @@ struct VoiceFacts: Sendable, Equatable {
         effectiveHQ = hq["effective"] as? String
         previewReason = preview["reason"] as? String
         hqReason = hq["reason"] as? String
-        parakeetInstalled = (settings["parakeet"] as? [String: Any])?["installed"] as? Bool ?? false
+        let parakeet = settings["parakeet"] as? [String: Any]
+        parakeetInstalled = parakeet?["installed"] as? Bool ?? false
+        parakeetInstallable = parakeet?["installable"] as? Bool ?? false
+        let state = (parakeet?["progress"] as? [String: Any])?["state"] as? String
+        parakeetInstalling = state == "downloading" || state == "verifying"
+        let dictation = settings["dictation"] as? [String: Any]
+        dictationSelected = dictation?["selected"] as? String
+        dictationEffective = dictation?["effective"] as? String
+        dictationReason = (dictation?["note"] as? String) ?? (dictation?["reason"] as? String)
     }
 
     static func engineTitle(_ engine: String?) -> String {
@@ -820,6 +839,8 @@ struct VoiceFacts: Sendable, Equatable {
         facts.freeBytes = (object["freeBytes"] as? NSNumber)?.int64Value ?? 0
         facts.setupAvailable = object["setupAvailable"] as? Bool ?? false
         facts.terminalCommand = object["terminalCommand"] as? [String: String] ?? [:]
+        facts.dictationCheck = (object["dictationCheck"] as? [String: Any]).flatMap(DictationCheck.init)
+        facts.engineTest = (object["dictationBenchmark"] as? [String: Any]).flatMap(EngineTest.init)
         return facts
     }
 }
@@ -841,7 +862,7 @@ enum VoiceTier {
 // MARK: - The setup guide (Miles 2026-10-08 10:52: every AI and its settings, skippable, resumable, prominent)
 
 enum SetupRowID: String, CaseIterable, Sendable {
-    case claude, codex, cursor, ollama, voice, sessions, continueThreads, jev, permissions
+    case claude, codex, cursor, ollama, voice, dictationEngine, sessions, continueThreads, jev, permissions
     /// The Glasses section (contract 2026-10-09). Optional and never counted in Finish setup (G2 is optional).
     case tailscaleMac, tailscalePhone, glassesPair
 }
@@ -853,6 +874,8 @@ enum SetupAction: Sendable, Equatable {
     case voiceNeedsWhisper(String)     // the exact install command for whisper.cpp
     case voiceDownload(String)         // tier
     case voiceApply(String)            // tier
+    case testDictation                 // 0.5.317: the pinned sample through a real dictation round trip
+    case useEngine(String)             // 0.5.317: the Dictation engine setting (auto, parakeet-ultra, whisper)
     case turnOnSessions
     case turnOnContinue
     case addJevKey
@@ -898,6 +921,20 @@ struct SetupFacts: Sendable, Equatable {
     var requestedTier: String?
     /// The Glasses section's own facts (GlassesPairingState). Its rows are uncounted.
     var glasses = GlassesFacts()
+    // 0.5.317: dictation's proof and the engine step.
+    /// The running server's version; a proof holds only for the version it was made on.
+    var serverVersion: String?
+    /// A real dictation that transcribed (MacDictationStore writes it).
+    var dictationProof: DictationProof?
+    /// The one background dictation-check is running (the row says Checking, never amber, meanwhile).
+    var dictationChecking = false
+    /// The server version the one background check last ran for (nil: never).
+    var dictationCheckAttempted: String?
+    var engineTesting = false
+    /// The person picked a dictation engine in the setup guide.
+    var engineChosen = false
+    var appleSilicon = true
+    var memoryBytes: UInt64 = 0
 }
 
 enum SetupGuideRules {
@@ -918,6 +955,7 @@ enum SetupGuideRules {
         }
         rows.append(ollama(facts, skipped: skipped.contains(.ollama)))
         rows.append(voice(facts, skipped: skipped.contains(.voice)))
+        rows.append(dictationEngine(facts, skipped: skipped.contains(.dictationEngine)))
         if facts.serverRunning || facts.claudeSessionsEnabled != nil {
             let on = facts.claudeSessionsEnabled == true
             rows.append(SetupRow(id: .sessions, title: "Show your AI sessions", status: on ? "On" : "Off",
@@ -981,7 +1019,41 @@ enum SetupGuideRules {
                         actionTitle: running ? nil : status?.installed == true ? "Open Ollama" : "Get Ollama")
     }
 
+    /// 0.5.317: the Voice row is green only when a dictation engine has actually transcribed on this Mac: a real
+    /// dictation on this server version (DictationProof), or the helper's dictation-check of the pinned sample. Until
+    /// one exists the row says Checking (one background check runs), never amber; a failed check is amber with its
+    /// reason and Test again.
     static func voice(_ facts: SetupFacts, skipped: Bool) -> SetupRow {
+        var row = voiceEngines(facts, skipped: skipped)
+        guard row.done else { return row }
+        switch DictationTruth.of(facts) {
+        case .proven(let engine):
+            let line = "Dictation tested with \(engine == "whisper" ? "Whisper" : VoiceFacts.engineTitle(engine))."
+            row.detail = row.detail.map { $0 + ". " + line } ?? line
+        case .checking:
+            row.done = false
+            row.status = checkingDictation
+            row.detail = "COS is dictating its 30 second sample on this Mac to confirm an engine works."
+        case .unproven:
+            row.done = false
+            row.status = "Not tested yet"
+            row.detail = "Test dictation once to confirm an engine works on this Mac."
+            row.action = .testDictation; row.actionTitle = "Test dictation"
+        case .failed(let message):
+            row.done = false
+            row.status = "Dictation needs attention"
+            row.detail = message
+            row.action = .testDictation; row.actionTitle = "Test again"
+        }
+        return row
+    }
+
+    /// A row that is waiting on COS's own check, not on the person: drawn muted, never amber.
+    static func voiceWaiting(_ row: SetupRow) -> Bool { row.id == .voice && !row.done && row.status == checkingDictation }
+    static let checkingDictation = "Checking dictation…"
+
+    /// The engine facts alone (the rule before 0.5.317): is a transcription engine installed and running.
+    static func voiceEngines(_ facts: SetupFacts, skipped: Bool) -> SetupRow {
         let tier = facts.voiceTier == "auto" ? (facts.voice?.preparedTier ?? facts.voice?.explicitTier ?? "balanced") : facts.voiceTier
         var row = SetupRow(id: .voice, title: "Voice (local transcription)", status: "Checking…",
                            unlocks: "Meetings and dictation transcribed on this Mac. Speaker names require high confidence.",
@@ -1143,6 +1215,23 @@ final class SetupGuideState: ObservableObject {
     @Published private(set) var voiceRunning = false
     @Published private(set) var voiceProgress: String?
     @Published var voiceMessage: String?
+    // 0.5.317: dictation's proof and the engine step.
+    @Published private(set) var dictationChecking = false
+    @Published private(set) var engineTesting = false
+    @Published var engineMessage: String?
+    @Published private(set) var engineChosen: Bool
+    static let engineChosenKey = "cos.setupGuide.engineChosen"
+    /// The server version the one background dictation-check last ran for.
+    static let checkVersionKey = "cos.setupGuide.dictationCheckVersion"
+    /// `cos-control-helper dictation-check`: the pinned sample through a real dictation; returns its message.
+    var runDictationCheck: @MainActor () async throws -> String = { throw ProviderGuideError.unreadable }
+    /// `cos-control-helper dictation-benchmark`: the engine test; returns its message.
+    var runEngineTest: @MainActor () async throws -> String = { throw ProviderGuideError.unreadable }
+    /// set-stt-settings {"dictation": id}; true when the server took it.
+    var setDictationEngine: @MainActor (String) async -> Bool = { _ in false }
+    var installParakeet: @MainActor () -> Void = {}
+    /// Runs after each voice refresh (ControllerModel.maybeCheckDictation decides the background check).
+    var afterRefresh: @MainActor () -> Void = {}
     private let defaults: UserDefaults
     static let skippedKey = "cos.setupGuide.skipped"
     static let hiddenKey = "cos.setupGuide.hidden"
@@ -1170,6 +1259,7 @@ final class SetupGuideState: ObservableObject {
         glassesHandled = defaults.bool(forKey: Self.glassesHandledKey)
         skipped = Set((defaults.stringArray(forKey: Self.skippedKey) ?? []).compactMap(SetupRowID.init(rawValue:)))
         hidden = defaults.bool(forKey: Self.hiddenKey)
+        engineChosen = defaults.bool(forKey: Self.engineChosenKey)
     }
 
     func chooseDevicePath(_ path: SetupDevicePath) {
@@ -1239,6 +1329,61 @@ final class SetupGuideState: ObservableObject {
         // Never retain a previous ready Parakeet snapshot after a failed refresh.
         voice = loaded
         adoptServerTier(loaded?.explicitTier)
+        afterRefresh()
+    }
+
+    /// Test dictation (and the one background check): the pinned sample through the real dictation path. A full
+    /// decode on the real engine, so only from the setup guide or when the person asks, never on a timer.
+    func testDictation() {
+        guard !dictationChecking else { return }
+        dictationChecking = true
+        Task { [weak self] in
+            guard let self else { return }
+            do { self.engineMessage = try await self.runDictationCheck() }
+            catch { self.engineMessage = error.localizedDescription; self.log("dictation-check failed error=\(error.localizedDescription)") }
+            self.dictationChecking = false
+            await self.refreshVoice()
+        }
+    }
+
+    /// The background check, once per server version, when DictationTruth.wantsBackgroundCheck says so.
+    var checkAttemptedVersion: String? { defaults.string(forKey: Self.checkVersionKey) }
+    func backgroundCheckIfNeeded(_ facts: SetupFacts, recording: Bool) {
+        guard DictationTruth.wantsBackgroundCheck(facts, recording: recording), let version = facts.serverVersion else { return }
+        defaults.set(version, forKey: Self.checkVersionKey)
+        log("dictation-check background server=\(version)")
+        testDictation()
+    }
+
+    /// Test on this Mac: Whisper and, when installed, Parakeet Ultra on the pinned sample.
+    func testEngines() {
+        guard !engineTesting else { return }
+        engineTesting = true
+        engineMessage = nil
+        unskip(.dictationEngine)
+        Task { [weak self] in
+            guard let self else { return }
+            do { self.engineMessage = try await self.runEngineTest() }
+            catch { self.engineMessage = error.localizedDescription }
+            self.engineTesting = false
+            await self.refreshVoice()
+        }
+    }
+
+    /// The person's pick. `auto` with Parakeet not installed starts the install in the background; dictation keeps
+    /// working with Whisper until Parakeet Ultra is ready (Automatic never waits for it).
+    func useEngine(_ setting: String, installParakeetToo: Bool) {
+        unskip(.dictationEngine)
+        Task { [weak self] in
+            guard let self else { return }
+            guard await self.setDictationEngine(setting) else {
+                self.engineMessage = "COS could not save the dictation engine. Check Transcription settings."; return
+            }
+            self.engineChosen = true
+            self.defaults.set(true, forKey: Self.engineChosenKey)
+            if installParakeetToo { self.installParakeet(); self.engineMessage = "Parakeet Ultra is installing in the background. Dictation uses Whisper until it is ready." }
+            await self.refreshVoice()
+        }
     }
 
     /// Prepares and measures voice. Only Automatic may apply a recommendation; saved choices win.
@@ -1957,5 +2102,193 @@ enum PairingStateError: LocalizedError {
         case .helper(let message): message.isEmpty ? "the helper refused" : message
         case .unreadable(let verb): "the helper's \(verb) answer could not be read"
         }
+    }
+}
+
+
+// MARK: - Dictation for everyone (0.5.317, server 6.74.0)
+
+/// A dictation that transcribed on this Mac, and the server version it ran on. Written by MacDictationStore after each
+/// transcribed dictation; read by the setup guide's Voice row. Engine and version only, never text.
+struct DictationProof: Equatable, Sendable {
+    var engine: String
+    var serverVersion: String?
+    var at: Date
+    static let key = "dictation.proof"
+    static func record(engine: String, serverVersion: String?, defaults: UserDefaults = .standard, now: Date = Date()) {
+        defaults.set(["engine": engine, "serverVersion": serverVersion ?? "", "at": now.timeIntervalSince1970], forKey: key)
+    }
+    static func load(defaults: UserDefaults = .standard) -> DictationProof? {
+        guard let row = defaults.dictionary(forKey: key), let engine = row["engine"] as? String, !engine.isEmpty,
+              let at = row["at"] as? Double else { return nil }
+        let version = (row["serverVersion"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+        return DictationProof(engine: engine, serverVersion: version, at: Date(timeIntervalSince1970: at))
+    }
+}
+
+/// The helper's dictation-check record (dictation-check.json, through voice-status).
+struct DictationCheck: Equatable, Sendable {
+    var ok: Bool
+    var engine: String?
+    var serverVersion: String?
+    var message: String?
+    var wer: Double?
+    init(ok: Bool, engine: String? = nil, serverVersion: String? = nil, message: String? = nil, wer: Double? = nil) {
+        self.ok = ok; self.engine = engine; self.serverVersion = serverVersion; self.message = message; self.wer = wer
+    }
+    init?(_ object: [String: Any]) {
+        guard let ok = object["ok"] as? Bool else { return nil }
+        self.ok = ok
+        engine = object["engine"] as? String
+        serverVersion = (object["serverVersion"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+        message = object["message"] as? String
+        wer = (object["wer"] as? NSNumber)?.doubleValue
+    }
+}
+
+/// What the Voice row may claim about dictation.
+enum DictationTruth: Equatable, Sendable {
+    case proven(String)
+    case checking
+    case unproven
+    case failed(String)
+
+    static func of(_ facts: SetupFacts) -> DictationTruth {
+        guard let current = facts.serverVersion else { return facts.dictationChecking ? .checking : .unproven }
+        // A real dictation on this server version is the strongest proof; a check on it is the next.
+        if let proof = facts.dictationProof, proof.serverVersion == current { return .proven(proof.engine) }
+        if facts.dictationChecking { return .checking }
+        if let check = facts.voice?.dictationCheck, check.serverVersion == current {
+            return check.ok ? .proven(check.engine ?? "parakeet-ultra")
+                : .failed(check.message ?? "The test dictation did not transcribe. Check Transcription settings.")
+        }
+        // The one background check is about to run on this version (or waits for a recording to end): Checking, not amber.
+        if facts.dictationCheckAttempted != current { return .checking }
+        return .unproven
+    }
+
+    /// The one background check runs only when the engines look ready, nothing proves dictation for this server, no
+    /// recording is live, and it has not been tried on this server version (never on a timer).
+    static func wantsBackgroundCheck(_ facts: SetupFacts, recording: Bool) -> Bool {
+        guard !recording, !facts.dictationChecking, let current = facts.serverVersion, facts.dictationCheckAttempted != current,
+              SetupGuideRules.voiceEngines(facts, skipped: false).done else { return false }
+        if let proof = facts.dictationProof, proof.serverVersion == current { return false }
+        if let check = facts.voice?.dictationCheck, check.serverVersion == current { return false }
+        return true
+    }
+}
+
+/// The helper's dictation-benchmark: one row per engine on the pinned 30 s sample.
+struct EngineTest: Equatable, Sendable {
+    struct Result: Equatable, Sendable {
+        var engine: String
+        var ran: Bool
+        var rtf: Double?
+        var peakRssBytes: Int64?
+        var warmupMs: Double?
+        var wer: Double?
+        var words: Int?
+        var skipped: String?
+    }
+    var results: [Result]
+    var audioSeconds: Double
+    init(results: [Result], audioSeconds: Double = 30) { self.results = results; self.audioSeconds = audioSeconds }
+    init?(_ object: [String: Any]) {
+        guard let rows = object["results"] as? [[String: Any]] else { return nil }
+        audioSeconds = (object["audioSeconds"] as? NSNumber)?.doubleValue ?? 30
+        results = rows.compactMap { row in
+            guard let engine = row["engine"] as? String else { return nil }
+            return Result(engine: engine, ran: row["ran"] as? Bool ?? false, rtf: (row["rtf"] as? NSNumber)?.doubleValue,
+                          peakRssBytes: (row["peakRssBytes"] as? NSNumber)?.int64Value, warmupMs: (row["warmupMs"] as? NSNumber)?.doubleValue,
+                          wer: (row["wer"] as? NSNumber)?.doubleValue, words: (row["words"] as? NSNumber)?.intValue, skipped: row["skipped"] as? String)
+        }
+    }
+    func result(_ engine: String) -> Result? { results.first { $0.engine == engine } }
+}
+
+/// The engine step's recommendation (decision 6): Parakeet Ultra on Apple silicon unless memory or the test says
+/// otherwise. The person picks; this only says what COS would choose and why.
+enum DictationEngineAdvice {
+    struct Advice: Equatable, Sendable { var engine: String; var reason: String }
+    static let minimumParakeetMemory: UInt64 = 8 * 1_073_741_824
+    /// Parakeet must not be clearly less accurate on the sample (more than 5 of 58 words worse) or slower than speech.
+    static let werMargin = 0.10
+    static let slowestParakeetRTF = 1.0
+
+    static func recommend(appleSilicon: Bool, memoryBytes: UInt64, parakeetAvailable: Bool, test: EngineTest?) -> Advice {
+        guard appleSilicon else { return Advice(engine: "whisper", reason: "Parakeet Ultra needs Apple silicon, so this Mac dictates with Whisper.") }
+        guard memoryBytes == 0 || memoryBytes >= minimumParakeetMemory else {
+            return Advice(engine: "whisper", reason: "This Mac has less than 8 GB of memory, and Whisper is already running for meetings.")
+        }
+        guard parakeetAvailable else { return Advice(engine: "whisper", reason: "Parakeet Ultra cannot be installed from this server, so Whisper it is.") }
+        if let parakeet = test?.result("parakeet-ultra") {
+            guard parakeet.ran else { return Advice(engine: "whisper", reason: "Parakeet Ultra did not run in the test. Whisper until it does.") }
+            if let rtf = parakeet.rtf, rtf > slowestParakeetRTF {
+                return Advice(engine: "whisper", reason: "Parakeet Ultra ran slower than speech on this Mac in the test.")
+            }
+            if let p = parakeet.wer, let w = test?.result("whisper")?.wer, test?.result("whisper")?.ran == true, p > w + werMargin {
+                return Advice(engine: "whisper", reason: "Whisper made clearly fewer mistakes on the sample.")
+            }
+            return Advice(engine: "parakeet-ultra", reason: "Recommended for this Mac: Parakeet Ultra is fast on Apple silicon, and the test agrees.")
+        }
+        return Advice(engine: "parakeet-ultra", reason: "Recommended for this Mac: Parakeet Ultra is fast on Apple silicon. Test it after the install.")
+    }
+
+    /// One plain line per engine. Warm-up is a one-time cost, never speed; Whisper's memory is never shown (it is the
+    /// running meeting engine, so a dictation adds nothing).
+    static func line(_ result: EngineTest.Result, seconds: Double) -> String {
+        let name = result.engine == "parakeet-ultra" ? "Parakeet Ultra" : "Whisper"
+        guard result.ran else {
+            return name + (result.skipped == "not_installed" ? ": not installed yet." : result.skipped == "timeout" ? ": did not finish in time." : ": did not run.")
+        }
+        var parts: [String] = []
+        if let rtf = result.rtf { parts.append(String(format: "%.0f s of speech in %.1f s", seconds, rtf * seconds)) }
+        if let wer = result.wer, let words = result.words {
+            let wrong = Int((wer * Double(words)).rounded())
+            parts.append(wrong == 0 ? "no words wrong" : "\(wrong) of \(words) words wrong")
+        }
+        if result.engine == "whisper" { parts.append("already running, so no extra memory") }
+        else if let peak = result.peakRssBytes, peak > 0 { parts.append(String(format: "%.1f GB peak memory", Double(peak) / 1_000_000_000)) }
+        if let warm = result.warmupMs, warm >= 1000 { parts.append(String(format: "first start took %.0f s (once)", warm / 1000)) }
+        return name + ": " + (parts.isEmpty ? "ran." : parts.joined(separator: ", ") + ".")
+    }
+    static let scopeLine = "One 30 second sample: a quick check of this Mac, not a full accuracy test."
+}
+
+extension SetupGuideRules {
+    /// The engine step, after Voice (decision 6): what dictation uses, COS's recommendation, the test, and the pick.
+    /// Done once the person picks, or once the recommended engine is the one dictating. On a server before 6.74.0
+    /// dictation is Parakeet Ultra only, so the step is informational and uncounted.
+    static func dictationEngine(_ facts: SetupFacts, skipped: Bool) -> SetupRow {
+        var row = SetupRow(id: .dictationEngine, title: "Dictation engine", status: "Checking…",
+                           unlocks: "Which speech engine turns your dictation into text, on this Mac.", detail: nil, done: false, skipped: skipped)
+        guard facts.serverRunning else { row.status = "After Get started"; row.afterSetup = true; return row }
+        guard let voice = facts.voice else { return row }
+        guard let selected = voice.dictationSelected else {
+            row.counted = false
+            row.done = voice.parakeetInstalled
+            row.status = voice.parakeetInstalled ? "Parakeet Ultra" : "Parakeet Ultra only"
+            row.detail = "This COS server dictates with Parakeet Ultra only. Update the server to dictate with Whisper."
+            return row
+        }
+        let advice = DictationEngineAdvice.recommend(appleSilicon: facts.appleSilicon, memoryBytes: facts.memoryBytes,
+                                                     parakeetAvailable: voice.parakeetInstalled || voice.parakeetInstallable, test: voice.engineTest)
+        let effective = voice.dictationEffective
+        row.status = facts.engineTesting ? "Testing…" : voice.parakeetInstalling ? "Installing Parakeet…"
+            : effective == "parakeet-ultra" ? "Using Parakeet Ultra" : effective == "whisper" ? "Using Whisper" : "No engine yet"
+        var lines = [advice.reason]
+        if let test = voice.engineTest {
+            lines += test.results.map { DictationEngineAdvice.line($0, seconds: test.audioSeconds) }
+            lines.append(DictationEngineAdvice.scopeLine)
+        }
+        if voice.parakeetInstalling { lines.append("Dictation uses Whisper until Parakeet Ultra is ready.") }
+        row.detail = lines.joined(separator: " ")
+        let recommendedInUse = effective == advice.engine && (selected == "auto" || selected == advice.engine)
+        row.done = facts.engineChosen || recommendedInUse
+        if !row.done {
+            row.action = .useEngine(advice.engine == "parakeet-ultra" ? "auto" : "whisper")
+            row.actionTitle = advice.engine == "parakeet-ultra" ? (voice.parakeetInstalled ? "Use Parakeet Ultra" : "Install Parakeet (654 MB)") : "Use Whisper"
+        }
+        return row
     }
 }

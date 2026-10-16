@@ -148,7 +148,7 @@ need("let delivered = copyOnly ? DictationInsertion.copyOnly(text, clipboardMove
 need("let copyOnly = pendingInterrupted\n                let clipboardMoved = interruptedChangeCount.map { $0 != NSPasteboard.general.changeCount } ?? false\n                pendingAudio = nil" in transcribe,
      "the copy-only flag and the interrupt's clipboard stamp must be read before pendingAudio is cleared (clearing it resets both)")
 need("if pointer, held { pointerDuringHold = true }" in body(dictation, "    private func keyEvent(")
-     and "fail(response.message, card: !(noSpeech && pointerDuringHold), retry: !noSpeech)" in transcribe
+     and "fail(response.message, card: !(noSpeech && pointerDuringHold), action: action)" in transcribe
      and 'phase = "Starting"; pointerDuringHold = false' in dictation,
      "a slow modifier-click with no speech ends quietly, and the flag resets each dictation (QA 2026-10-15)")
 need("quiet.end()" in body(dictation, "    func recordingStarted() {") and "if count > 0, lastRecordingCount == 0 { dictation.recordingStarted() }" in model
@@ -174,12 +174,17 @@ finish = body(dictation, "private func finish(_ text: String, outcome: Dictation
 need("remember(record)" in finish and "showCard(" in finish and "DictationPill.flashSeconds" in finish
      and "delivery: outcome.delivery" in finish and "outcome.flash" in finish,
      "finish must record the honest outcome, flash only what the outcome allows, and card when refused")
-need('let noSpeech = response.details["noSpeech"]?.bool == true' in transcribe and "retry: !noSpeech); return" in transcribe,
+# 0.5.317: the card's one action comes from DictationFailureAction.resolve, which offers nothing for no speech
+# (MacDictationChecks "no speech offers nothing").
+need('let noSpeech = response.details["noSpeech"]?.bool == true' in transcribe
+     and 'retryable: response.details["retryable"]?.bool,\n                                                                noSpeech: noSpeech, audioHeld: pendingAudio != nil)' in transcribe,
      "no speech offers no Retry")
 card = body(dictation, "struct DictationCardView: View {")
 need('Button("Allow…") { store.requestInsertionPermission() }' in card and "if refusal == .notTrusted {" in card,
      "the Accessibility card carries Allow…")
-need('Button("Open Settings") { store.openMicrophoneSettings() }' in card and "} else if retry, store.canRetry {" in card,
+need('fail("Allow Microphone for COS Control in System Settings → Privacy & Security.", action: .openMicrophoneSettings)' in dictation
+     and "if let title = action.title, action != .retry || store.canRetry {" in card and "store.performFailureAction(action)" in card
+     and "case .openMicrophoneSettings: openMicrophoneSettings()" in dictation,
      "the microphone card opens Settings; Retry only when worth it")
 need("loadOrQuarantine(from: $0, now: Date())" in dictation and "historyURL = loaded?.writable == false ? nil : history" in dictation,
      "an unreadable history is moved aside, and never overwritten when it could not be")
@@ -418,7 +423,9 @@ need("value.utf16.count <= Self.dictionaryMaxTermUTF16" in verb and "value.count
      "the helper counts UTF-16 units, as the server's MAX_TERM_LEN does")
 need('if ok { emit(ok: true, message: message, details: ["stale": true, "unchanged": unchanged]) }' in emit_dictionary,
      "a change that worked stays a success when the read-back fails")
-need('details: ["noSpeech": true]' in body(helper, "private func emitMacDictation() throws {"), "the helper marks no speech")
+# 0.5.317: the answer's meaning moved to DictationBridge.answer (ProviderStatusCore), shared with dictation-check.
+need("let answer = try dictate(audio)" in body(helper, "private func emitMacDictation() throws {")
+     and 'details: ["noSpeech": true, "action": "none"]' in read("HelperSources/ProviderStatusCore.swift"), "the helper marks no speech")
 need('model.runHelper(["transcription-dictionary"], timeout: 20, stdinData: request)' in app,
      "Control must send the request as stdinData with an argument list of exactly the verb")
 

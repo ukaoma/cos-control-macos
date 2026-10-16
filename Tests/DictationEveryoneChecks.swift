@@ -1,0 +1,132 @@
+import Foundation
+
+// 0.5.317 dictation for everyone: the helper's pure half (HelperSources/ProviderStatusCore.swift) compiled on its own.
+// The compatibility gate (which route each server gets), what each answer means and which one action it offers, the
+// word error rate against the pinned reference, the engine test's whitelist, and the bundled tool's path rule. No
+// server, no audio, no helper binary. Each check names its behaviour for Tests/mutate-dictation-everyone.py.
+
+nonisolated(unsafe) var passes = 0
+nonisolated(unsafe) var failures = 0
+func check(_ condition: Bool, _ behaviour: String, _ detail: @autoclosure () -> String = "") {
+    if condition { passes += 1; return }
+    failures += 1
+    FileHandle.standardError.write(Data("check failed [\(behaviour)]: \(detail())\n".utf8))
+}
+
+@main
+struct DictationEveryoneChecks {
+    static func main() {
+        let reference = CommandLine.arguments.count > 1 ? (try? String(contentsOfFile: CommandLine.arguments[1], encoding: .utf8)) ?? "" : ""
+
+        // The gate. 6.74.0 keeps desktopDictationVersion 1 (the 0.5.316 helper requires exactly 1) and lists 2.
+        let v2: [String: Any] = ["desktopDictationVersion": 1, "desktopDictationVersions": [1, 2], "requiredEngines": ["parakeet-ultra", "local"], "localOnly": true]
+        let v1: [String: Any] = ["desktopDictationVersion": 1, "requiredEngines": ["parakeet-ultra"], "localOnly": true]
+        check(DictationBridge.route(v2) == "/api/transcribe?mode=fast&requiredEngine=local", "gate local", "a server listing 2 gets requiredEngine=local")
+        check(DictationBridge.route(v1) == "/api/transcribe?mode=fast&requiredEngine=parakeet-ultra", "gate old", "a 6.73.14 server keeps the Parakeet-only route")
+        check(DictationBridge.route(["desktopDictationVersion": 1, "desktopDictationVersions": [1], "localOnly": true]) == DictationBridge.parakeetRoute, "gate old", "a list without 2 is an old server")
+        check(DictationBridge.route(["desktopDictationVersion": 1, "desktopDictationVersions": [1, true], "localOnly": true]) == DictationBridge.parakeetRoute, "gate strict", "a boolean is not version 2")
+        check(DictationBridge.route(["desktopDictationVersion": 1, "desktopDictationVersions": ["2"], "localOnly": true]) == DictationBridge.parakeetRoute, "gate strict", "a string is not version 2")
+        check(DictationBridge.route(["desktopDictationVersion": 2, "desktopDictationVersions": [2], "localOnly": true]) == nil, "gate refuses", "a server that dropped version 1 gets no audio")
+        check(DictationBridge.route(["desktopDictationVersion": 1, "desktopDictationVersions": [1, 2], "localOnly": false]) == nil, "gate refuses", "a server that is not local-only gets no audio")
+        check(DictationBridge.route(nil) == nil && DictationBridge.route([:]) == nil, "gate refuses", "no capabilities, no audio")
+
+        // A 200 on the local route: any local engine, with the fallback reason and the setting whitelisted.
+        let whisper = DictationBridge.answer(status: 200, body: ["text": "Ask not.", "engine": "whisper", "fallbackReason": "parakeet_warming", "dictationSetting": "auto"], local: true)
+        check(whisper.ok && whisper.details["engine"] as? String == "whisper" && whisper.details["text"] as? String == "Ask not.", "local accepts whisper", "\(whisper.details)")
+        check(whisper.details["fallbackReason"] as? String == "parakeet_warming" && whisper.details["dictationSetting"] as? String == "auto", "fallback passes", "\(whisper.details)")
+        let parakeet = DictationBridge.answer(status: 200, body: ["text": "Ask not.", "engine": "parakeet-ultra"], local: true)
+        check(parakeet.ok && parakeet.details["engine"] as? String == "parakeet-ultra" && parakeet.details["fallbackReason"] == nil, "local accepts parakeet", "\(parakeet.details)")
+        let sneaky = DictationBridge.answer(status: 200, body: ["text": "x", "engine": "whisper", "fallbackReason": "rm -rf", "dictationSetting": "cloud"], local: true)
+        check(sneaky.ok && sneaky.details["fallbackReason"] == nil && sneaky.details["dictationSetting"] == nil, "fallback whitelist", "unknown reason and setting are dropped")
+        for engine in ["openai", "cloud", "large-v3", ""] {
+            check(!DictationBridge.answer(status: 200, body: ["text": "x", "engine": engine], local: true).ok, "local refuses other engines", engine)
+        }
+        check(!DictationBridge.answer(status: 200, body: ["text": "", "engine": "whisper"], local: true).ok, "empty refused", "empty text is not a dictation")
+        check(!DictationBridge.answer(status: 200, body: ["text": String(repeating: "a", count: 64_001), "engine": "whisper"], local: true).ok, "bounded text", "over 64,000 bytes refused")
+
+        // The old route: exactly 0.5.316. Only parakeet-ultra, and its words.
+        check(DictationBridge.answer(status: 200, body: ["text": "x", "engine": "parakeet-ultra"], local: false).ok, "old accepts parakeet", "")
+        let oldWhisper = DictationBridge.answer(status: 200, body: ["text": "x", "engine": "whisper"], local: false)
+        check(!oldWhisper.ok && oldWhisper.message == "Dictation needs the matched server with Parakeet support. No text was inserted.", "old refuses whisper", oldWhisper.message)
+        let old503 = DictationBridge.answer(status: 503, body: ["error": "busy", "reason": "parakeet_unavailable", "action": "install_parakeet"], local: false)
+        check(old503.message == "Parakeet is not ready. Check Transcription settings and retry." && old503.details["action"] as? String == "retry", "old words kept", old503.message)
+
+        // 503 on the local route: the server's reason, its sentence, and one action.
+        let notInstalled = DictationBridge.answer(status: 503, body: ["error": "Parakeet Ultra is not installed.", "reason": "parakeet_unavailable", "retryable": false, "action": "install_parakeet"], local: true)
+        check(!notInstalled.ok && notInstalled.details["action"] as? String == "install_parakeet" && notInstalled.details["retryable"] as? Bool == false, "action install", "\(notInstalled.details)")
+        check(notInstalled.message == "Parakeet Ultra is not installed.", "server sentence shown", notInstalled.message)
+        let warming = DictationBridge.answer(status: 503, body: ["reason": "parakeet_unavailable", "retryable": true, "action": "retry_when_warm"], local: true)
+        check(warming.details["action"] as? String == "retry" && warming.details["retryable"] as? Bool == true, "retry when warm", "\(warming.details)")
+        check(warming.message == "Parakeet Ultra is warming up. Try again in a few seconds.", "own words when the server sends none", warming.message)
+        let deadRetry = DictationBridge.answer(status: 503, body: ["reason": "no_local_engine", "retryable": false, "action": "retry_when_warm"], local: true)
+        check(deadRetry.details["action"] as? String == "open_transcription_settings" && deadRetry.details["retryable"] as? Bool == false, "never a dead retry", "\(deadRetry.details)")
+        check(!deadRetry.message.contains("Try again"), "never a dead retry", "the words do not promise a retry: \(deadRetry.message)")
+        let starting = DictationBridge.answer(status: 503, body: ["reason": "no_local_engine", "retryable": true, "action": "retry_when_warm", "detail": "whisper_starting"], local: true)
+        check(starting.details["detail"] as? String == "whisper_starting" && starting.message == "Whisper is still starting. Try again in a few seconds.", "detail passes", starting.message)
+        let noEngine = DictationBridge.answer(status: 503, body: ["reason": "no_local_engine", "retryable": false, "action": "open_transcription_settings", "detail": "whisper_unavailable"], local: true)
+        check(noEngine.details["action"] as? String == "open_transcription_settings", "action settings", "\(noEngine.details)")
+        let useWhisper = DictationBridge.answer(status: 503, body: ["reason": "parakeet_unavailable", "retryable": false, "action": "use_whisper"], local: true)
+        check(useWhisper.details["action"] as? String == "use_whisper", "action use whisper", "\(useWhisper.details)")
+        let junk = DictationBridge.answer(status: 503, body: ["reason": "parakeet_unavailable", "action": "format_disk", "error": "line one\nline two", "detail": "bad detail; rm"], local: true)
+        check(junk.details["action"] as? String == "open_transcription_settings" && junk.details["detail"] == nil, "action whitelist", "\(junk.details)")
+        check(!junk.message.contains("line two"), "one-line sentences only", junk.message)
+        let long = DictationBridge.answer(status: 503, body: ["reason": "no_local_engine", "action": "install_parakeet", "error": String(repeating: "x", count: 201)], local: true)
+        check(long.message.count <= 200, "bounded sentence", "\(long.message.count)")
+        let unknown503 = DictationBridge.answer(status: 503, body: ["error": "SECRET stack", "reason": "maintenance"], local: true)
+        check(!unknown503.message.contains("SECRET") && unknown503.details["action"] as? String == "retry", "unknown 503 is a busy server", unknown503.message)
+        let bad = DictationBridge.answer(status: 400, body: ["error": "invalid"], local: true)
+        check(bad.details["action"] as? String == "open_transcription_settings" && bad.details["retryable"] as? Bool == false, "4xx never retries", "\(bad.details)")
+        let quiet = DictationBridge.answer(status: 204, body: nil, local: true)
+        check(!quiet.ok && quiet.details["noSpeech"] as? Bool == true && quiet.details["action"] as? String == "none", "no speech", "\(quiet.details)")
+        let gone = DictationBridge.answer(status: nil, body: nil, local: true)
+        check(!gone.ok && gone.details["action"] as? String == "retry" && gone.details["retryable"] as? Bool == true, "unreachable retries", "\(gone.details)")
+
+        // Word error rate on the pinned sample. Lowercase, punctuation stripped.
+        check(VoiceAccuracy.words("And so, my fellow Americans!") == ["and", "so", "my", "fellow", "americans"], "wer words", "\(VoiceAccuracy.words("And so, my fellow Americans!"))")
+        check(VoiceAccuracy.words("you'll 'quoted'") == ["you'll", "quoted"], "wer apostrophes", "\(VoiceAccuracy.words("you'll 'quoted'"))")
+        check(VoiceAccuracy.errors(reference: ["a", "b", "c"], hypothesis: ["a", "x", "c", "d"]) == 2, "wer distance", "one substitution and one insertion")
+        check(VoiceAccuracy.errors(reference: ["a", "b", "c"], hypothesis: ["a", "c"]) == 1, "wer distance", "one deletion")
+        check(VoiceAccuracy.errors(reference: [], hypothesis: ["a"]) == 1 && VoiceAccuracy.errors(reference: ["a"], hypothesis: []) == 1, "wer distance", "empty sides")
+        check(VoiceAccuracy.wordErrorRate(reference: "", hypothesis: "x") == nil, "wer no reference", "nothing to score against")
+        check(!reference.isEmpty, "reference pinned", "Resources/VoiceBenchmark/speech-30s.txt is readable")
+        check(VoiceAccuracy.words(reference).count == VoiceAccuracy.referenceWords, "reference pinned", "\(VoiceAccuracy.words(reference).count) words, pinned \(VoiceAccuracy.referenceWords)")
+        let turbo = "And so my fellow Americans, ask not what your country can do for you. Ask what you can do for your country. And so my fellow Americans, ask not what your country can do for you. Ask what you can do for your country. And so my fellow Americans, ask not what your country can do for you."
+        check(VoiceAccuracy.wordErrorRate(reference: reference, hypothesis: turbo) == 0, "wer exact", "Turbo's transcript of the sample scores 0 (punctuation does not count)")
+        let oneOff = turbo.replacingOccurrences(of: "fellow", with: "yellow")
+        check(abs((VoiceAccuracy.wordErrorRate(reference: reference, hypothesis: oneOff) ?? 0) - 3.0 / 58.0) < 1e-9, "wer exact", "three substitutions of 58")
+
+        // The engine test: whitelisted rows, WER on the raw text, memory never invented for Whisper.
+        let rows = DictationBenchmark.results(["audioSeconds": 30, "results": [
+            ["engine": "whisper", "model": "large-v3-turbo", "ran": true, "elapsedMs": 2400, "rtf": 0.08, "peakRssBytes": NSNull(), "text": turbo],
+            ["engine": "parakeet-ultra", "model": "ultra", "ran": true, "elapsedMs": 900, "rtf": 0.03, "peakRssBytes": 1_200_000_000, "warmupMs": 14_000, "text": oneOff],
+            ["engine": "openai", "ran": true, "text": "x"],
+            ["engine": "whisper", "ran": false, "skipped": "format_disk"],
+        ]], reference: reference) ?? []
+        check(rows.count == 3 && rows.allSatisfy { ["whisper", "parakeet-ultra"].contains($0["engine"] as? String ?? "") }, "benchmark whitelist", "\(rows.count) rows")
+        check((rows[0]["wer"] as? Double) == 0 && rows[0]["peakRssBytes"] is NSNull && rows[0]["text"] == nil, "benchmark whisper", "\(rows[0])")
+        check(abs((rows[1]["wer"] as? Double ?? 1) - 3.0 / 58.0) < 1e-9 && (rows[1]["peakRssBytes"] as? NSNumber)?.int64Value == 1_200_000_000 && (rows[1]["warmupMs"] as? NSNumber)?.doubleValue == 14_000, "benchmark parakeet", "\(rows[1])")
+        check(rows[2]["skipped"] as? String == "unavailable" && rows[2]["wer"] is NSNull, "benchmark skipped", "an unknown skip reads unavailable, unscored")
+        check(DictationBenchmark.results(["results": "nope"], reference: reference) == nil, "benchmark shape", "a non-list is not an answer")
+
+        // The bundled tool's path: absolute, inside an app's Contents/Helpers, executable, no dot segments.
+        let yes: (String) -> Bool = { _ in true }
+        check(ParakeetCLIPath.valid("/Applications/COS Control.app/Contents/Helpers/fluidaudiocli", isExecutable: yes), "cli path", "the installed app's copy")
+        check(!ParakeetCLIPath.valid("/tmp/fluidaudiocli", isExecutable: yes), "cli path", "anywhere else is refused")
+        check(!ParakeetCLIPath.valid("Applications/X.app/Contents/Helpers/fluidaudiocli", isExecutable: yes), "cli path", "relative is refused")
+        check(!ParakeetCLIPath.valid("/Applications/X.app/Contents/Helpers/../../../tmp/Contents/Helpers/fluidaudiocli", isExecutable: yes), "cli path", "dot segments are refused")
+        check(!ParakeetCLIPath.valid("/Applications/COS Control.app/Contents/Helpers/fluidaudiocli", isExecutable: { _ in false }), "cli path", "a missing or non-executable file is refused")
+
+        // Copy the card may show: no em dash, arrow or eyebrow-style caps.
+        for line in [DictationBridge.refusalLine(reason: "parakeet_unavailable", action: "install_parakeet", detail: nil),
+                     DictationBridge.refusalLine(reason: "parakeet_unavailable", action: "retry", detail: nil),
+                     DictationBridge.refusalLine(reason: "parakeet_unavailable", action: "use_whisper", detail: nil),
+                     DictationBridge.refusalLine(reason: "no_local_engine", action: "retry", detail: "whisper_starting"),
+                     DictationBridge.refusalLine(reason: "no_local_engine", action: "install_parakeet", detail: nil),
+                     DictationBridge.refusalLine(reason: "no_local_engine", action: "open_transcription_settings", detail: nil)] {
+            check(!line.contains("\u{2014}") && !line.contains("\u{2192}") && !line.contains("->") && line != line.uppercased(), "copy", line)
+        }
+
+        if failures > 0 { print("FAIL dictation for everyone (helper core): \(failures) failed, \(passes) passed"); exit(1) }
+        print("PASS dictation for everyone (helper core) checks: \(passes) passed")
+    }
+}

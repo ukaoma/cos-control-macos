@@ -525,6 +525,8 @@ final class COSControlHelper {
         case "stt-settings": try emitSttSettings(.read)
         case "set-stt-settings": try emitSttSettings(.change)
         case "install-parakeet": try emitSttSettings(.installParakeet)
+        case "cancel-parakeet-install": try emitSttSettings(.cancelInstall)
+        case "register-parakeet-cli": try emitSttSettings(.registerCLI)
         case "tasks": try emitTasks(args: args)
         case "work-tasks": try emitWorkTasks()
         case "work-your-move": try emitWorkYourMove()
@@ -644,6 +646,8 @@ final class COSControlHelper {
         case "meeting-ask": try emitMeetingAsk()
         case "mac-recording": try emitMacRecording()
         case "mac-dictation": try emitMacDictation()
+        case "dictation-check": try emitDictationCheck()
+        case "dictation-benchmark": try emitDictationBenchmark()
         case "transcription-dictionary": try emitTranscriptionDictionary()
         case "live-transcript": try emitLiveTranscript(args: args)
         case "live-transcript-status": try emitLiveTranscriptStatus(args: args)
@@ -4691,8 +4695,15 @@ final class COSControlHelper {
     // server, an auth refusal, an unreadable answer or an unexpected status is ok:false. A change arrives on stdin,
     // never in argv, and only the contract's keys cross: preview, hq, secondOpinion, frontEnd and quietGate as short
     // option ids, resolver as a bool.
-    enum SttCall { case read, change, installParakeet }
+    // 0.5.317 (server 6.74.0): `dictation` (Mac dictation's engine: auto, parakeet-ultra or whisper) is read when the
+    // server sends it and never required, so a 6.73.14 answer still reads. The install carries {allowDownload, cliPath}
+    // (COS Control's bundled Contents/Helpers/fluidaudiocli), cancel is a DELETE of the same route, and
+    // register-parakeet-cli tells the server where that CLI is (POST /api/stt-settings/parakeet/cli).
+    enum SttCall { case read, change, installParakeet, cancelInstall, registerCLI }
     static let sttChoiceKeys = ["preview", "hq", "secondOpinion", "frontEnd", "quietGate"]
+    static let sttChangeKeys = sttChoiceKeys + ["dictation"]
+    static let parakeetErrorCodes: Set<String> = ["cancelled", "insufficient_disk", "sha_mismatch", "download_failed", "stalled", "cli_untrusted", "cli_missing"]
+    static let parakeetCLIReasons: Set<String> = ["missing", "unsigned", "signature_invalid", "wrong_team", "wrong_version"]
 
     static func sttOptionID(_ value: Any?) -> String? {
         guard let text = value as? String, (1...48).contains(text.count),
@@ -4726,6 +4737,16 @@ final class COSControlHelper {
         }
         guard let resolver = body["resolver"] as? [String: Any], let enabled = flag(resolver["enabled"]) else { return nil }
         out["resolver"] = ["enabled": enabled, "effective": flag(resolver["effective"]).map { $0 as Any } ?? NSNull()]
+        if let desktop = (body["dictation"] as? [String: Any])?["desktop"] as? [String: Any], let selected = sttOptionID(desktop["selected"]) {
+            let rows: [[String: Any]] = (desktop["options"] as? [[String: Any]] ?? []).prefix(8).compactMap { option in
+                guard let id = sttOptionID(option["id"]) else { return nil }
+                return ["id": id, "label": bounded(option["label"], 60), "available": flag(option["available"]) ?? true,
+                        "experimental": flag(option["experimental"]) ?? false, "note": bounded(option["note"], 160)]
+            }
+            out["dictation"] = ["selected": selected, "options": rows, "effective": sttOptionID(desktop["effective"]) ?? NSNull(),
+                                "reason": bounded(desktop["reason"], 200), "reasonCode": sttOptionID(desktop["reasonCode"]) ?? NSNull(),
+                                "note": bounded(desktop["note"], 200)]
+        }
         func count(_ value: Any?) -> Int64 { (value as? NSNumber).map { max(0, $0.int64Value) } ?? 0 }
         func oneOf(_ value: Any?, _ allowed: Set<String>) -> Any { (value as? String).flatMap { allowed.contains($0) ? $0 : nil } ?? NSNull() }
         let parakeet = body["parakeet"] as? [String: Any] ?? [:]
@@ -4735,7 +4756,11 @@ final class COSControlHelper {
         if let progress = parakeet["progress"] as? [String: Any] {
             parakeetOut["progress"] = ["state": oneOf(progress["state"], ["idle", "downloading", "verifying", "installed", "failed"]),
                                        "bytesDone": count(progress["bytesDone"]), "bytesTotal": count(progress["bytesTotal"]),
-                                       "error": bounded(progress["error"], 200)]
+                                       "error": bounded(progress["error"], 200),
+                                       "errorCode": oneOf(progress["errorCode"], Self.parakeetErrorCodes)]
+        }
+        if let cli = parakeet["cli"] as? [String: Any] {
+            parakeetOut["cli"] = ["trust": oneOf(cli["trust"], ["developer-id", "sha256"]), "reason": oneOf(cli["reason"], Self.parakeetCLIReasons)]
         }
         if let warm = parakeet["warm"] as? [String: Any] {
             parakeetOut["warm"] = ["preview": oneOf(warm["preview"], ["cold", "warming", "warm", "failed"])]
@@ -4759,7 +4784,7 @@ final class COSControlHelper {
                 emit(ok: false, message: "The transcription change was not readable."); return
             }
             var change: [String: Any] = [:]
-            for key in Self.sttChoiceKeys where object[key] != nil {
+            for key in Self.sttChangeKeys where object[key] != nil {
                 guard let id = Self.sttOptionID(object[key]) else { emit(ok: false, message: "That transcription choice is not one the server offers."); return }
                 change[key] = id
             }
@@ -4772,11 +4797,57 @@ final class COSControlHelper {
             guard !change.isEmpty else { emit(ok: false, message: "The transcription change was not readable."); return }
             body = try jsonObject(change)
         }
+        if call == .installParakeet || call == .registerCLI {
+            // {"cliPath": "<COS Control.app>/Contents/Helpers/fluidaudiocli"} on stdin, optional for the install. The
+            // app knows where it is; this helper runs from its stable copy and cannot tell.
+            var input = Data()
+            while input.count <= 2_048 {
+                let chunk = try FileHandle.standardInput.read(upToCount: 2_049 - input.count) ?? Data()
+                if chunk.isEmpty { break }
+                input.append(chunk)
+            }
+            let object = input.isEmpty ? [:] : (try? JSONSerialization.jsonObject(with: input)) as? [String: Any]
+            guard input.count <= 2_048, let object else { emit(ok: false, message: "The Parakeet request was not readable."); return }
+            var payload: [String: Any] = call == .installParakeet ? ["allowDownload": true] : [:]
+            if let path = object["cliPath"] as? String {
+                guard ParakeetCLIPath.valid(path, isExecutable: { fm.isExecutableFile(atPath: $0) }) else {
+                    emit(ok: false, message: "COS Control's speech tool is missing from the app. Download COS Control again."); return
+                }
+                payload["cliPath"] = path
+            } else if call == .registerCLI {
+                emit(ok: false, message: "The Parakeet request was not readable."); return
+            }
+            body = try jsonObject(payload)
+        }
         let token = try readToken()
-        let path = call == .installParakeet ? "/api/stt-settings/parakeet/install" : "/api/stt-settings"
-        let method = call == .read ? "GET" : call == .change ? "PUT" : "POST"
-        guard let response = request(path, method: method, token: token, body: call == .installParakeet ? "{}" : body, timeout: 15) else {
+        let path = switch call {
+        case .installParakeet, .cancelInstall: "/api/stt-settings/parakeet/install"
+        case .registerCLI: "/api/stt-settings/parakeet/cli"
+        case .read, .change: "/api/stt-settings"
+        }
+        let method = switch call {
+        case .read: "GET"
+        case .change: "PUT"
+        case .cancelInstall: "DELETE"
+        case .installParakeet, .registerCLI: "POST"
+        }
+        guard let response = request(path, method: method, token: token, body: body, timeout: 15) else {
             emit(ok: false, message: "Could not reach the glasses server. Check that it is running, then try again."); return
+        }
+        if call == .registerCLI {
+            // 200 {trusted, trust, teamId, version} or 422 {trusted:false, reason}; 404 is a server before 6.74.0.
+            let trusted = response.status == 200 && response.body?["trusted"] as? Bool == true
+            switch response.status {
+            case 200, 422:
+                var details: [String: Any] = ["httpStatus": response.status, "trusted": trusted]
+                if let reason = (response.body?["reason"] as? String).flatMap({ Self.parakeetCLIReasons.contains($0) ? $0 : nil }) { details["reason"] = reason }
+                if let version = response.body?["version"] as? String, VoiceAccuracy.isIdentifier(version.replacingOccurrences(of: ".", with: "_")) { details["version"] = version }
+                emit(ok: true, message: trusted ? "Speech tool trusted" : "Speech tool not trusted", details: details)
+            case 404: emit(ok: true, message: "Needs server 6.74.0", details: ["httpStatus": 404])
+            case 401, 403: emit(ok: false, message: "Reconnect COS Control to the server.")
+            default: emit(ok: false, message: "The server could not check COS Control's speech tool (HTTP \(response.status)).")
+            }
+            return
         }
         switch response.status {
         case 200, 202:
@@ -4789,7 +4860,27 @@ final class COSControlHelper {
                 // The install may answer with a short receipt; a read or a change must answer with the settings.
                 emit(ok: false, message: "The server's transcription settings were not readable."); return
             }
-            let message = call == .read ? "Transcription" : call == .change ? "Transcription saved" : "Parakeet install started"
+            let message = switch call {
+            case .read: "Transcription"
+            case .change: "Transcription saved"
+            case .cancelInstall: "Parakeet install cancelled"
+            case .installParakeet, .registerCLI: "Parakeet install started"
+            }
+            emit(ok: true, message: message, details: details)
+        case 422 where call == .installParakeet, 507 where call == .installParakeet:
+            // 422 {reason:'cli_untrusted', cli:{reason}} and 507 {reason:'insufficient_disk', freeBytes, requiredBytes}:
+            // answers with a cause the card names, never a stack.
+            var details: [String: Any] = ["httpStatus": response.status]
+            if response.status == 507 {
+                func bytes(_ key: String) -> Int64 { (response.body?[key] as? NSNumber).map { max(0, $0.int64Value) } ?? 0 }
+                details["reason"] = "insufficient_disk"; details["freeBytes"] = bytes("freeBytes"); details["requiredBytes"] = bytes("requiredBytes")
+            } else {
+                details["reason"] = "cli_untrusted"
+                if let reason = ((response.body?["cli"] as? [String: Any])?["reason"] as? String).flatMap({ Self.parakeetCLIReasons.contains($0) ? $0 : nil }) { details["cliReason"] = reason }
+            }
+            let said = DictationBridge.sentence(response.body?["error"])
+            let message = said ?? (response.status == 507 ? "Not enough free disk space for Parakeet." : "The server did not trust COS Control's speech tool.")
+            details["error"] = message
             emit(ok: true, message: message, details: details)
         case 400, 409:
             // The server's own sentence, bounded; never a stack.
@@ -4803,6 +4894,7 @@ final class COSControlHelper {
         default:
             emit(ok: false, message: call == .installParakeet
                  ? "The server could not start the Parakeet install (HTTP \(response.status))."
+                 : call == .cancelInstall ? "The server could not cancel the Parakeet install (HTTP \(response.status))."
                  : "The server could not \(call == .read ? "read" : "save") the transcription settings (HTTP \(response.status)).")
         }
     }
@@ -6439,8 +6531,11 @@ final class COSControlHelper {
         let battery = (try? execute("/usr/bin/pmset", ["-g", "batt"], timeout: 5).output.contains("Battery Power")) ?? true
         let chip = (try? execute("/usr/sbin/sysctl", ["-n", "machdep.cpu.brand_string"], timeout: 5).output.trimmingCharacters(in: .whitespacesAndNewlines)) ?? "Apple silicon"
         progress("Testing 30 seconds of sample speech on this Mac…")
+        // 0.5.317: the transcript goes to a private file too, scored against the pinned reference (VoiceAccuracy).
+        let transcriptBase = support.appendingPathComponent("voice-benchmark-\(getpid())")
+        defer { try? fm.removeItem(at: transcriptBase.appendingPathExtension("txt")) }
         let start = Date()
-        let result = try spawnStreaming("/usr/bin/time", ["-l", cli, "-m", VoiceSetupCore.modelDirectory(home: home.path) + "/" + modelName, "-f", sample.path, "-l", "en", "-t", "4", "-nt"], environment: environment, workingDirectory: home.path, timeout: 180)
+        let result = try spawnStreaming("/usr/bin/time", ["-l", cli, "-m", VoiceSetupCore.modelDirectory(home: home.path) + "/" + modelName, "-f", sample.path, "-l", "en", "-t", "4", "-nt", "-otxt", "-of", transcriptBase.path], environment: environment, workingDirectory: home.path, timeout: 180)
         let seconds = Date().timeIntervalSince(start)
         guard result.code == 0, voiceSetupCancelled == 0 else { throw HelperError.message("Voice speed test stopped. Your voice setting did not change.") }
         let metal = result.text.contains("using Metal backend") || result.text.contains("Metal device") || result.text.contains("GPU name:")
@@ -6450,6 +6545,14 @@ final class COSControlHelper {
             throw HelperError.message("The voice test returned no usable timing. Your setting was kept.")
         }
         let rtf = milliseconds / 1000 / 30
+        let referenceURL = voiceResourceRoot.appendingPathComponent(VoiceAccuracy.referenceFile)
+        var wer: Any = NSNull()
+        if (try? sha256(referenceURL)) == VoiceAccuracy.referenceSHA256,
+           let reference = try? String(contentsOf: referenceURL, encoding: .utf8),
+           let heard = try? String(contentsOf: transcriptBase.appendingPathExtension("txt"), encoding: .utf8),
+           let rate = VoiceAccuracy.wordErrorRate(reference: reference, hypothesis: heard) {
+            wer = rate
+        }
         let free = ((try? home.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]))?.volumeAvailableCapacityForImportantUsage) ?? 0
         let recommended = VoiceBenchmarkPolicy.recommendation(memoryBytes: ProcessInfo.processInfo.physicalMemory, realTimeFactor: rtf, onBattery: battery, metal: metal)
         let output: [String: Any] = ["schemaVersion": 1, "policyVersion": VoiceBenchmarkPolicy.version,
@@ -6457,6 +6560,7 @@ final class COSControlHelper {
             "memoryBytes": ProcessInfo.processInfo.physicalMemory, "onBattery": battery, "metal": metal,
             "freeDiskBytes": free, "sampleSeconds": 30, "elapsedSeconds": seconds, "engineSeconds": milliseconds / 1000, "realTimeFactor": rtf,
             "peakMemoryBytes": peak.map { $0 as Any } ?? NSNull(), "recommendedTier": recommended,
+            "wordErrorRate": wer, "referenceWords": VoiceAccuracy.referenceWords,
             "calibration": "provisional; smaller-Mac validation pending", "timingIncludesModelLoad": true]
         return output
     }
@@ -6522,6 +6626,9 @@ final class COSControlHelper {
             "setupAvailable": cli.map { fm.fileExists(atPath: $0) } ?? false,
             "terminalCommand": terminal,
             "pendingEnvRestore": fm.fileExists(atPath: voiceEnvSnapshotURL.path),
+            // 0.5.317: the last dictation-check and engine test (results only, never text).
+            "dictationCheck": storedJSON(dictationCheckURL) ?? NSNull(),
+            "dictationBenchmark": storedJSON(dictationBenchmarkURL) ?? NSNull(),
         ]
     }
 
@@ -15381,7 +15488,7 @@ final class COSControlHelper {
 
     /// Microphone audio arrives only on stdin, never argv, a caller path, or a log.
     private func emitMacDictation() throws {
-        let limit = 3_840_044
+        let limit = DictationBridge.audioLimit
         var audio = Data()
         while audio.count <= limit {
             let chunk = try FileHandle.standardInput.read(upToCount: min(65_536, limit + 1 - audio.count)) ?? Data()
@@ -15392,23 +15499,99 @@ final class COSControlHelper {
               String(data: audio.dropFirst(8).prefix(4), encoding: .ascii) == "WAVE" else {
             emit(ok: false, message: "Dictation audio is invalid or exceeds two minutes."); return
         }
+        let answer = try dictate(audio)
+        emit(ok: answer.ok, message: answer.message, details: answer.details)
+    }
+
+    /// One dictation round trip: the capability gate, then the route this server takes (DictationBridge). Shared by
+    /// mac-dictation and dictation-check, so the check proves exactly the path a dictation uses.
+    private func dictate(_ audio: Data) throws -> DictationBridge.Answer {
         let token = try speakerReviewToken()
         guard let capabilities = request("/api/transcribe/capabilities", token: token, timeout: 5), capabilities.status == 200,
-              capabilities.body?["desktopDictationVersion"] as? Int == 1,
-              capabilities.body?["localOnly"] as? Bool == true else {
-            emit(ok: false, message: "Update to the matched COS server before using Mac dictation. No audio was sent."); return
+              let route = DictationBridge.route(capabilities.body) else {
+            return DictationBridge.Answer(ok: false, message: "Update to the matched COS server before using Mac dictation. No audio was sent.",
+                                          details: ["action": "none"])
         }
-        guard let response = request("/api/transcribe?mode=fast&requiredEngine=parakeet-ultra", method: "POST", token: token, rawBody: audio, timeout: 35) else {
-            emit(ok: false, message: "The local transcription server is unavailable. Try again when it is ready."); return
+        let local = route == DictationBridge.localRoute
+        let response = request(route, method: "POST", token: token, rawBody: audio, timeout: 35)
+        var answer = DictationBridge.answer(status: response?.status, body: response?.body, local: local)
+        answer.details["localRoute"] = local
+        return answer
+    }
+
+    /// 0.5.317: the onboarding Voice row's proof. The pinned 30 s sample goes through the same round trip a dictation
+    /// takes (a full decode on the real engine), so it runs only from onboarding or when the person asks, never on a
+    /// timer. The result (never the text) is kept in dictation-check.json for voice-status.
+    private func emitDictationCheck() throws {
+        let sample = voiceResourceRoot.appendingPathComponent("VoiceBenchmark/speech-30s.wav")
+        let pin = try whisperRuntimePin()
+        guard try sha256(sample) == pin["benchmarkSHA256"] as? String else { throw HelperError.message("The voice test sample is missing or damaged.") }
+        let started = Date()
+        let answer = try dictate(try Data(contentsOf: sample))
+        var record: [String: Any] = ["schemaVersion": 1, "ok": answer.ok, "at": ISO8601DateFormatter().string(from: Date()),
+                                     "elapsedSeconds": Date().timeIntervalSince(started),
+                                     "engine": answer.details["engine"] ?? NSNull(), "localRoute": answer.details["localRoute"] ?? false,
+                                     "serverVersion": (request("/api/health", timeout: 3)?.body?["server_version"] as? String).map { String($0.prefix(40)) } ?? NSNull()]
+        for key in ["fallbackReason", "reason", "action", "httpStatus"] { if let value = answer.details[key] { record[key] = value } }
+        if !answer.ok { record["message"] = answer.message }
+        if answer.ok, let text = answer.details["text"] as? String,
+           let reference = try? String(contentsOf: voiceResourceRoot.appendingPathComponent(VoiceAccuracy.referenceFile), encoding: .utf8),
+           try sha256(voiceResourceRoot.appendingPathComponent(VoiceAccuracy.referenceFile)) == VoiceAccuracy.referenceSHA256 {
+            // Dictation text has the COS dictionary applied; the score is a sanity check, not the engine's own WER.
+            record["wer"] = VoiceAccuracy.wordErrorRate(reference: reference, hypothesis: text).map { $0 as Any } ?? NSNull()
         }
-        // noSpeech: the server heard nothing it could transcribe; COS Control offers no Retry of the same audio.
-        if response.status == 204 { emit(ok: false, message: "No speech detected. Check your selected microphone and try again.", details: ["noSpeech": true]); return }
-        guard response.status == 200, let details = response.body, details["engine"] as? String == "parakeet-ultra",
-              let text = details["text"] as? String, !text.isEmpty, text.utf8.count <= 64_000 else {
-            let message = response.status == 503 ? "Parakeet is not ready. Check Transcription settings and retry." : "Dictation needs the matched server with Parakeet support. No text was inserted."
-            emit(ok: false, message: message, details: ["httpStatus": response.status]); return
+        try ensureDirectories()
+        try atomicWriteData(try JSONSerialization.data(withJSONObject: record, options: [.sortedKeys]), to: dictationCheckURL, permissions: 0o600)
+        emit(ok: answer.ok, message: answer.ok ? "Dictation works on this Mac." : answer.message, details: record)
+    }
+
+    private var dictationCheckURL: URL { support.appendingPathComponent("dictation-check.json") }
+    private var dictationBenchmarkURL: URL { support.appendingPathComponent("dictation-benchmark.json") }
+    private func storedJSON(_ url: URL) -> [String: Any]? {
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+    }
+
+    /// 0.5.317: the onboarding engine step's test. The server times Whisper and, when installed, Parakeet Ultra on the
+    /// pinned 30 s sample (POST /api/transcribe/benchmark, 6.74.0); this scores each against the pinned reference.
+    /// One clip is a sanity check of this Mac, not a benchmark, and the stored result says so.
+    private func emitDictationBenchmark() throws {
+        let sample = voiceResourceRoot.appendingPathComponent("VoiceBenchmark/speech-30s.wav")
+        let referenceURL = voiceResourceRoot.appendingPathComponent(VoiceAccuracy.referenceFile)
+        let pin = try whisperRuntimePin()
+        guard try sha256(sample) == pin["benchmarkSHA256"] as? String, try sha256(referenceURL) == VoiceAccuracy.referenceSHA256,
+              let reference = try? String(contentsOf: referenceURL, encoding: .utf8) else {
+            throw HelperError.message("The voice test sample is missing or damaged.")
         }
-        emit(ok: true, message: "Dictation ready", details: ["text": text, "engine": "parakeet-ultra"])
+        let token = try speakerReviewToken()
+        guard let capabilities = request("/api/transcribe/capabilities", token: token, timeout: 5), capabilities.status == 200,
+              capabilities.body?["benchmark"] as? Int == 1 else {
+            emit(ok: true, message: "Needs server 6.74.0", details: ["httpStatus": 404]); return
+        }
+        guard let response = request(DictationBenchmark.route, method: "POST", token: token, rawBody: try Data(contentsOf: sample), timeout: 160) else {
+            emit(ok: false, message: "The engine test did not finish. Your settings did not change."); return
+        }
+        switch response.status {
+        case 200:
+            guard let results = DictationBenchmark.results(response.body, reference: reference) else {
+                emit(ok: false, message: "The engine test answer was not readable. Your settings did not change."); return
+            }
+            let free = ((try? home.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]))?.volumeAvailableCapacityForImportantUsage) ?? 0
+            let record: [String: Any] = ["schemaVersion": 1, "createdAt": ISO8601DateFormatter().string(from: Date()),
+                "audioSeconds": (response.body?["audioSeconds"] as? NSNumber) ?? NSNumber(value: 30), "results": results,
+                "chip": machineArchitecture(), "memoryBytes": ProcessInfo.processInfo.physicalMemory, "freeDiskBytes": free,
+                "scope": "one 30 s sample; a sanity check, not a benchmark"]
+            try ensureDirectories()
+            try atomicWriteData(try JSONSerialization.data(withJSONObject: record, options: [.sortedKeys]), to: dictationBenchmarkURL, permissions: 0o600)
+            emit(ok: true, message: "Engine test complete", details: record.merging(["httpStatus": 200]) { a, _ in a })
+        case 409:
+            let busy = response.body?["reason"] as? String == "recording_live" ? "Test the engines after the recording ends." : "An engine test is already running."
+            emit(ok: true, message: busy, details: ["httpStatus": 409, "error": busy])
+        case 404:
+            emit(ok: true, message: "Needs server 6.74.0", details: ["httpStatus": 404])
+        default:
+            emit(ok: false, message: "The engine test did not finish (HTTP \(response.status)). Your settings did not change.")
+        }
     }
 
     /// 0.5.309: the one COS dictionary (vocabulary + corrections) and what Fix a word taught it. The request rides on

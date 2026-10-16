@@ -53,3 +53,5 @@ print "PASS Mac dictation isolation pins: audio callbacks @Sendable, callback si
 # Dictionary route and the helper verb. Text only; the pure rules run in MacDictationChecks above. The overlay's five
 # Combine sinks (reviewed 0.5.309) each hop to the main actor before reading state; that count is pinned there.
 /usr/bin/python3 "$ROOT/Tests/dictation-wispr-pins.py" "$ROOT"
+# 0.5.317: dictation for everyone (the helper core, the CLI checks, the pins).
+zsh "$ROOT/Tests/run-dictation-everyone.sh"

@@ -117,6 +117,71 @@ import SwiftUI
             TranscriptionSettingsCard(store: f, model: model)
             Text("Harness marker: the next card (Utilities)").font(COSType.body(11)).foregroundStyle(.tertiary)
         }, name: "stt-404-hidden", out: out)
+        // 0.5.317 dictation for everyone (server 6.74.0): the Dictation engine, the Parakeet row's reason and action, the
+        // menu bar line, the failure card's one action, and the setup guide's engine step.
+        func dictated(_ selected: String, effective: String, installed: Bool = false, installable: Bool = true, state: String = "idle",
+                      done: Double = 0, errorCode: String? = nil, cliReason: String? = nil, note: String? = nil) -> JSONValue {
+            settings { o in
+                o["dictation"] = .object(["selected": .string(selected), "effective": .string(effective),
+                    "options": .array(["auto", "parakeet-ultra", "whisper"].map { .object(["id": .string($0), "available": .bool($0 != "parakeet-ultra" || installed),
+                                                                                         "note": $0 == "parakeet-ultra" && !installed ? .string("Install Parakeet first.") : .null]) })])
+                var p: [String: JSONValue] = ["installed": .bool(installed), "installable": .bool(installable), "version": .string("Ultra 95eaa59a, CLI 0.17.4"), "bytes": .number(done),
+                    "progress": .object(["state": .string(state), "bytesDone": .number(done), "bytesTotal": .number(654_000_000), "error": .null, "errorCode": errorCode.map(JSONValue.string) ?? .null])]
+                if let cliReason { p["cli"] = .object(["trust": .null, "reason": .string(cliReason)]) }
+                p["note"] = note.map(JSONValue.string) ?? .null
+                o["parakeet"] = .object(p)
+            }
+        }
+        func store317(_ value: JSONValue, free: Int64? = 80_000_000_000) async -> TranscriptionSettingsStore {
+            let s = TranscriptionSettingsStore(); s.freeBytes = { free }
+            await s.load(answers([reply(200, settings: value)]))
+            return s
+        }
+        let whisperOnly = await store317(dictated("auto", effective: "whisper"))
+        precondition(whisperOnly.settings?.dictation != nil && whisperOnly.rowState(recording: false) == .offer(title: Transcription.installTitle, line: nil))
+        try render(TranscriptionSettingsCard(store: whisperOnly, model: model), name: "d317-settings-whisper-install", out: out)
+        let onParakeet = await store317(dictated("auto", effective: "parakeet-ultra", installed: true, state: "installed", done: 654_000_000))
+        try render(TranscriptionSettingsCard(store: onParakeet, model: model), name: "d317-settings-parakeet", out: out)
+        let installing317 = try await following(reply(200, settings: dictated("auto", effective: "whisper", state: "downloading", done: 212_000_000)))
+        precondition(installing317.offersCancel)
+        try render(TranscriptionSettingsCard(store: installing317, model: model), name: "d317-settings-installing-cancel", out: out)
+        let untrusted = await store317(dictated("auto", effective: "whisper", installable: false, cliReason: "signature_invalid"))
+        try render(TranscriptionSettingsCard(store: untrusted, model: model), name: "d317-settings-untrusted-tool", out: out)
+        let lowDisk = await store317(dictated("auto", effective: "whisper"), free: 900_000_000)
+        try render(TranscriptionSettingsCard(store: lowDisk, model: model), name: "d317-settings-low-disk", out: out)
+        let cancelled = await store317(dictated("auto", effective: "whisper", state: "failed", errorCode: "cancelled"))
+        try render(TranscriptionSettingsCard(store: cancelled, model: model), name: "d317-settings-cancelled", out: out)
+        let explicitBlocked = await store317(dictated("parakeet-ultra", effective: "none", installable: false, note: "Parakeet Ultra needs Apple silicon."))
+        try render(TranscriptionSettingsCard(store: explicitBlocked, model: model), name: "d317-settings-explicit-parakeet-blocked", out: out)
+        let oldServer = await store317(settings())
+        try render(TranscriptionSettingsCard(store: oldServer, model: model), name: "d317-settings-old-server", out: out)
+        try render(PanelParakeetRow(model: model, store: whisperOnly, dictationOn: true), name: "d317-menubar-install", out: out)
+        try render(PanelParakeetRow(model: model, store: installing317, dictationOn: true), name: "d317-menubar-installing", out: out)
+        // The failure card: one action each (Retry needs held audio, so it is not drawn here).
+        let pet = PetSize(preset: .medium, customPixels: PetSize.mediumPixels)
+        for (name, reason, action) in [("install", "Parakeet Ultra is not installed on this Mac.", DictationFailureAction.installParakeet),
+                                       ("use-whisper", "Parakeet Ultra cannot run right now. Whisper can take this dictation.", .useWhisper),
+                                       ("settings", "No speech engine is set up on this Mac. Set one up in Transcription settings.", .openTranscriptionSettings)] {
+            let card = DictationCard(kind: .failed(reason, action: action), recordID: nil, text: "", countdown: DictationCountdown(start: Date()))
+            try render(DictationCardView(store: model.dictation, card: card, size: pet, reduceMotion: true), name: "d317-card-\(name)", out: out)
+        }
+        // The setup guide's engine step, before and after a test.
+        let guide = SetupGuideState(defaults: UserDefaults(suiteName: "cos-d317-render-\(UUID().uuidString)")!)
+        var v = VoiceFacts(); v.whisperCli = true; v.whisperServer = true; v.whisperReady = true; v.requestedTier = "balanced"
+        v.adoptTranscription(Data(#"{"preview":{"selected":"turbo","effective":"turbo"},"hq":{"selected":"large-v3","effective":"large-v3"},"parakeet":{"installed":false,"installable":true},"dictation":{"selected":"auto","effective":"whisper"}}"#.utf8))
+        guide.voice = v
+        var stepFacts = SetupFacts(); stepFacts.serverRunning = true; stepFacts.voice = v; stepFacts.appleSilicon = true; stepFacts.memoryBytes = 16 * 1_073_741_824
+        stepFacts.serverVersion = "6.74.0"
+        let step = SetupGuideRules.dictationEngine(stepFacts, skipped: false)
+        let engineModel = ControllerModel(startBackgroundWork: false)
+        await engineModel.transcriptionSettings.load(answers([reply(200, settings: dictated("auto", effective: "whisper"))]))
+        try render(SetupRowView(model: engineModel, guide: guide, row: step), name: "d317-setup-engine-step", out: out)
+        v.engineTest = EngineTest(results: [EngineTest.Result(engine: "whisper", ran: true, rtf: 0.08, peakRssBytes: nil, warmupMs: nil, wer: 0, words: 58, skipped: nil),
+                                            EngineTest.Result(engine: "parakeet-ultra", ran: false, rtf: nil, peakRssBytes: nil, warmupMs: nil, wer: nil, words: nil, skipped: "not_installed")])
+        stepFacts.voice = v; guide.voice = v
+        try render(SetupRowView(model: engineModel, guide: guide, row: SetupGuideRules.dictationEngine(stepFacts, skipped: false)), name: "d317-setup-engine-tested", out: out)
+        var voiceFacts = stepFacts; voiceFacts.dictationCheckAttempted = nil
+        try render(SetupRowView(model: engineModel, guide: guide, row: SetupGuideRules.voice(voiceFacts, skipped: false)), name: "d317-setup-voice-checking", out: out)
         for hold in holds { hold.continuation?.resume() }
         print("wrote PNGs to \(out.path)")
     }

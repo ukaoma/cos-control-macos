@@ -48,6 +48,12 @@ def problems(app: Path) -> list:
     got = entitlements(helper)
     if got:
         found.append(f"the helper carries entitlements it does not need: {got!r}")
+    # 0.5.317: the bundled FluidAudio CLI needs none (Core ML and the Neural Engine take no entitlement).
+    cli = app / "Contents/Helpers/fluidaudiocli"
+    if cli.exists():
+        got = entitlements(cli)
+        if got:
+            found.append(f"the bundled fluidaudiocli carries entitlements it does not need: {got!r}")
     if node.exists():
         got = entitlements(node)
         if got != NODE_WANT:
@@ -78,7 +84,7 @@ def selftest(scratch: Path, binary: Path) -> int:
     dlv = scratch / "app-with-dlv.entitlements"
     dlv.write_bytes(plistlib.dumps({APPLE_EVENTS: True, "com.apple.security.cs.disable-library-validation": True}))
 
-    def make(name, app_ents=True, exe_ents=True, helper_ents=False, usage=True, app_dlv=False, microphone_usage=True, microphone_entitlement=True) -> Path:
+    def make(name, app_ents=True, exe_ents=True, helper_ents=False, usage=True, app_dlv=False, microphone_usage=True, microphone_entitlement=True, cli_ents=None) -> Path:
         app = scratch / name / "COS Control.app"
         (app / "Contents/MacOS").mkdir(parents=True)
         (app / "Contents/Resources").mkdir(parents=True)
@@ -100,6 +106,11 @@ def selftest(scratch: Path, binary: Path) -> int:
             subprocess.run(cmd + [str(path)], check=True, capture_output=True)
 
         sign(helper, helper_ents)
+        if cli_ents is not None:
+            (app / "Contents/Helpers").mkdir(parents=True)
+            cli = app / "Contents/Helpers/fluidaudiocli"
+            shutil.copy(binary, cli)
+            sign(cli, cli_ents)
         sign(main, exe_ents)
         if app_dlv:
             subprocess.run(["/usr/bin/codesign", "--force", "--sign", "-", "--entitlements", str(dlv), str(app)],
@@ -123,6 +134,8 @@ def selftest(scratch: Path, binary: Path) -> int:
         ("no-microphone-usage", {"microphone_usage": False}, 1),
         ("no-microphone-entitlement", {"microphone_entitlement": False}, 1),
         ("app-disables-library-validation", {"app_dlv": True}, 1),
+        ("cli-without-entitlements", {"cli_ents": False}, 0),
+        ("cli-with-entitlements", {"cli_ents": True}, 1),
     ]
     bad = []
     for name, kwargs, want in cases:

@@ -1167,6 +1167,13 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
     /// The shipped pack installed now (DictationSoundLibrary.installedPack), for the Jedi Miles Windu saber.
     var petPack: (() -> String?)?
     var macRecordingActive: (() -> Bool)?
+    /// 0.5.317: what a failure card's one action does (ControllerModel, wired in COSControlApp). Install Parakeet and
+    /// Open Transcription settings act in COS; Use Whisper sets the Dictation engine, then retries the held audio.
+    var installParakeet: (() -> Void)?
+    var useWhisper: (@MainActor () async -> Bool)?
+    var openTranscriptionSettings: (() -> Void)?
+    /// The server version a dictation succeeded on, for the setup guide's Voice row (DictationProof).
+    var serverVersion: (() -> String?)?
     /// The screen the floating pill uses, chosen when dictation starts (the focused window's screen).
     @Published private(set) var floatingScreen: CGRect?
     private let soundPlayer = DictationSoundPlayer()
@@ -1240,6 +1247,8 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
     /// 0.5.313 (QA): someone clicked while holding the key. No speech then means a modifier-click, not a failed dictation.
     private var pointerDuringHold = false
     var canRetry: Bool { pendingAudio != nil && !busy }
+    /// The engine the latest answer named, kept until finish() stores it with the record.
+    private var lastEngine: (engine: String, fallback: String?)?
     private var task: Task<Void, Never>?
     private var timer: Task<Void, Never>?
     private var meterTask: Task<Void, Never>?
@@ -1483,7 +1492,7 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
             default: permission = false
             }
             guard generation == attempt, !Task.isCancelled else { return }
-            guard permission else { fail("Allow Microphone for COS Control in System Settings → Privacy & Security.", microphone: true); return }
+            guard permission else { fail("Allow Microphone for COS Control in System Settings → Privacy & Security.", action: .openMicrophoneSettings); return }
             refreshMicrophones()
             let selected = microphones.first { $0.id == microphoneUID }
             guard microphoneUID.isEmpty || selected != nil else { fail("Your selected microphone is disconnected. Choose another microphone."); return }
@@ -1574,16 +1583,24 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
                 guard let bridge else { throw NSError(domain: "COSDictation", code: 2, userInfo: [NSLocalizedDescriptionKey: "The transcription server is not connected."]) }
                 let response = try await bridge(wav)
                 guard generation == attempt, !Task.isCancelled else { return }
+                // 0.5.317: any local engine the helper accepted (Parakeet Ultra, or Whisper on a 6.74.0 server). The
+                // helper refuses every other engine, and on an older server everything but Parakeet Ultra.
                 guard response.ok, let heard = response.details["text"]?.string, !heard.isEmpty,
-                      response.details["engine"]?.string == "parakeet-ultra" else {
+                      let engine = response.details["engine"]?.string, DictationEngineName.title(engine) != nil else {
                     // No speech (the server's 204) is an answer, not a failure: retrying the same audio cannot help.
                     let noSpeech = response.details["noSpeech"]?.bool == true
                     if noSpeech { pendingAudio = nil }
                     let reason = response.details["reason"]?.string ?? (noSpeech ? "no_speech" : "unknown")
-                    dictationLog.notice("transcription refused reason=\(reason, privacy: .public) noSpeech=\(noSpeech)")
+                    let action = DictationFailureAction.resolve(action: response.details["action"]?.string, retryable: response.details["retryable"]?.bool,
+                                                                noSpeech: noSpeech, audioHeld: pendingAudio != nil)
+                    dictationLog.notice("transcription refused reason=\(reason, privacy: .public) noSpeech=\(noSpeech) action=\(action.rawValue, privacy: .public)")
                     // A click while holding and nothing said: the person was ⌥-clicking slowly, not dictating. No card.
-                    fail(response.message, card: !(noSpeech && pointerDuringHold), retry: !noSpeech); return
+                    fail(response.message, card: !(noSpeech && pointerDuringHold), action: action); return
                 }
+                let fallback = response.details["fallbackReason"]?.string
+                lastEngine = (engine, fallback)
+                dictationLog.notice("transcribed engine=\(engine, privacy: .public) fallback=\(fallback ?? "none", privacy: .public)")
+                DictationProof.record(engine: engine, serverVersion: serverVersion?())
                 let text = formatLists ? DictationListFormat.format(heard) : heard
                 let copyOnly = pendingInterrupted
                 let clipboardMoved = interruptedChangeCount.map { $0 != NSPasteboard.general.changeCount } ?? false
@@ -1591,12 +1608,17 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
                 let delivered = copyOnly ? DictationInsertion.copyOnly(text, clipboardMoved: clipboardMoved)
                     : await DictationInsertion.deliver(text, restoreClipboard: restoreClipboard)
                 finish(text, outcome: delivered.outcome, target: delivered.target)
-            } catch { guard generation == attempt else { return }; let reason = error.localizedDescription; dictationLog.error("transcribe failed: \(reason, privacy: .public)"); fail(reason) }
+            } catch {
+                guard generation == attempt else { return }; let reason = error.localizedDescription; dictationLog.error("transcribe failed: \(reason, privacy: .public)")
+                fail(reason, action: DictationFailureAction.resolve(action: nil, retryable: nil, noSpeech: false, audioHeld: pendingAudio != nil))
+            }
         }
     }
     /// The text is on the clipboard already. Measured or sent: flash the pill. Refused: the card, which never takes focus.
     private func finish(_ text: String, outcome: DictationDeliveryOutcome, target: DictationInsertTarget?) {
-        let record = DictationRecord(id: UUID(), text: text, createdAt: Date(), delivery: outcome.delivery)
+        let record = DictationRecord(id: UUID(), text: text, createdAt: Date(), delivery: outcome.delivery,
+                                     engine: lastEngine?.engine, fallbackReason: lastEngine?.fallback)
+        lastEngine = nil
         if let target { rememberTarget(target, for: record.id) }
         // 0.5.318: watch the field it went into for the person's own fixes (native apps; Electron is only measured).
         if let target, case .inserted = outcome {
@@ -1619,14 +1641,34 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
         }
         remember(record)
     }
-    /// A dictation that did not finish: the reason on the card, with Retry while the audio is held and worth retrying,
-    /// and Open Settings when the microphone is not allowed.
-    private func fail(_ reason: String, card: Bool = true, retry: Bool = true, microphone: Bool = false) {
+    /// A dictation that did not finish: the reason on the card, with its one action (0.5.317): Retry while the audio is
+    /// held and a retry can succeed, Install Parakeet, Use Whisper, Open Transcription settings, or Open Settings when
+    /// the microphone is not allowed. A failure COS raised itself retries the held audio (DictationFailureAction).
+    private func fail(_ reason: String, card: Bool = true, action: DictationFailureAction? = nil) {
+        let action = action ?? DictationFailureAction.resolve(action: nil, retryable: nil, noSpeech: false, audioHeld: pendingAudio != nil)
         quiet.end()
         phase = enabled ? "Ready" : "Off"; message = reason; pill = .hidden; meter.reset()
         if card {
-            showCard(DictationCard(kind: .failed(reason, retry: retry, microphone: microphone), recordID: nil, text: "",
+            showCard(DictationCard(kind: .failed(reason, action: action), recordID: nil, text: "",
                                    countdown: DictationCountdown(start: Date())))
+        }
+    }
+    /// The failure card's button.
+    func performFailureAction(_ action: DictationFailureAction) {
+        switch action {
+        case .retry: retryTranscription()
+        case .openMicrophoneSettings: openMicrophoneSettings()
+        case .openTranscriptionSettings: dismissCard(); openTranscriptionSettings?()
+        case .installParakeet:
+            // The held audio stays; Install runs in the background and dictation keeps working with Whisper.
+            dismissCard(); installParakeet?()
+        case .useWhisper:
+            dismissCard()
+            Task {
+                guard await useWhisper?() == true else { fail("COS could not switch dictation to Whisper. Open Transcription settings to choose an engine.", action: .openTranscriptionSettings); return }
+                if canRetry { retryTranscription() }
+            }
+        case .none: break
         }
     }
     func openMicrophoneSettings() {
@@ -2014,7 +2056,7 @@ enum DictationListRoute: Equatable, Sendable {
 
 /// One card at a time. `countdown` folds it after 20 seconds; hovering pauses it.
 struct DictationCard: Equatable, Identifiable {
-    enum Kind: Equatable { case copied(DictationInsertPolicy.Refusal), failed(String, retry: Bool, microphone: Bool) }
+    enum Kind: Equatable { case copied(DictationInsertPolicy.Refusal), failed(String, action: DictationFailureAction) }
     let id = UUID()
     let kind: Kind
     let recordID: UUID?
@@ -2029,7 +2071,7 @@ struct DictationCard: Equatable, Identifiable {
     var note: String {
         switch kind {
         case .copied(let refusal): refusal.note
-        case .failed(let reason, _, _): reason
+        case .failed(let reason, _): reason
         }
     }
 }
@@ -2064,7 +2106,7 @@ struct MacDictationSettings: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Toggle("Dictate into Mac apps", isOn: $store.enabled).toggleStyle(COSSwitchStyle()).disabled(store.busy)
-            Text("Parakeet Ultra and your COS dictionary. Glasses are optional. Dictation uses your microphone; Record on Mac captures meeting playback.")
+            Text("Transcribed on this Mac with your COS dictionary, by Parakeet Ultra or Whisper (Settings, Transcription). Glasses are optional. Dictation uses your microphone; Record on Mac captures meeting playback.")
                 .font(.caption2).foregroundStyle(.secondary)
             if store.enabled {
                 COSDropdown("Microphone", selection: $store.microphoneUID, options: microphoneOptions).disabled(store.busy)
@@ -2523,12 +2565,10 @@ struct DictationCardView: View {
                     Button("Fix a word") { store.openFix(card.recordID) }
                         .buttonStyle(DictationButtonStyle(size: size))
                         .disabled(card.recordID == nil)
-                case .failed(_, let retry, let microphone):
-                    if microphone {
-                        Button("Open Settings") { store.openMicrophoneSettings() }
-                            .buttonStyle(DictationButtonStyle(primary: true, size: size))
-                    } else if retry, store.canRetry {
-                        Button("Retry") { store.retryTranscription() }
+                case .failed(_, let action):
+                    // One action, and Retry only while the held audio can be retried (QA: never a dead Retry).
+                    if let title = action.title, action != .retry || store.canRetry {
+                        Button(title) { store.performFailureAction(action) }
                             .buttonStyle(DictationButtonStyle(primary: true, size: size))
                     }
                 }
@@ -2611,6 +2651,13 @@ struct DictationRecordDetail: View {
             Text(record.metaLine(time: DictionaryLabels.when(record.createdAt, now: Date())))
                 .font(COSType.mono(size.typeSize(8), weight: .medium))
                 .foregroundStyle(.secondary)
+            // 0.5.317: which engine ran, and why Automatic used Whisper when it did.
+            if let engine = DictationEngineName.detailLine(engine: record.engine, fallbackReason: record.fallbackReason) {
+                Text(engine)
+                    .font(COSType.body(size.typeSize(9)))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             HStack(spacing: size.length(7)) {
                 Button("Copy") { store.copy(record.text) }
                     .buttonStyle(DictationButtonStyle(primary: true, size: size))
@@ -3175,6 +3222,9 @@ private struct DictationHistoryRow: View {
                     .font(COSType.mono(9, weight: .medium))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
+                if let engine = DictationEngineName.detailLine(engine: record.engine, fallbackReason: record.fallbackReason) {
+                    Text(engine).font(COSType.body(10)).foregroundStyle(.secondary).lineLimit(2)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             Button(copied ? "Copied" : "Copy") {

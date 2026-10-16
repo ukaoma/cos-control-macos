@@ -600,6 +600,7 @@ struct TranscriptionSettingsCard: View {
         let recording = model.recordingCount > 0
         return VStack(alignment: .leading, spacing: 8) {
             Text("Transcription").font(COSType.body(13, weight: .semibold))
+            dictationPicker(settings)
             picker("Preview model", .preview, settings.preview)
             quiet(Transcription.previewLine(settings))
             picker("HQ model", .hq, settings.hq)
@@ -662,36 +663,117 @@ struct TranscriptionSettingsCard: View {
             Text(line).font(COSType.body(11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }
     }
+    /// 0.5.317: Mac dictation's engine (server 6.74.0). On an older server, one line says dictation is Parakeet only.
+    @ViewBuilder
+    private func dictationPicker(_ settings: SttSettings) -> some View {
+        if let choice = settings.dictation {
+            COSDropdown("Dictation engine", selection: Binding(
+                get: { store.settings?.dictation?.selected ?? choice.selected },
+                set: { id in
+                    guard id != choice.selected else { return }
+                    Task { await store.set("dictation", .string(id), run: Self.run(model)) }
+                }), options: Transcription.dictationRows(choice).map { row in
+                    COSDropdownOption(row.id, row.title, note: row.note, muted: !row.enabled, enabled: row.enabled)
+                }, labelWidth: 112)
+                .font(COSType.body(12))
+                .disabled(store.pending != nil)
+                .accessibilityIdentifier("dictation-engine")
+        }
+        quiet(Transcription.dictationLine(settings))
+    }
+
+    /// The Parakeet row (0.5.317): installed, installing with Cancel, Install Parakeet (654 MB), or the reason it cannot
+    /// be installed with the one thing to do about it. Never a greyed-out control without its reason.
     @ViewBuilder
     private func parakeetRow(_ parakeet: SttParakeet, recording: Bool) -> some View {
-        if store.showsProgress {
+        if let state = store.rowState(recording: recording) {
+            VStack(alignment: .leading, spacing: 4) {
+                ParakeetRowView(state: state, offersCancel: store.offersCancel,
+                                install: { Task { await store.install(Self.run(model), recording: model.recordingCount > 0) } },
+                                cancel: { Task { await store.cancelInstall(Self.run(model)) } },
+                                checkAgain: { Task { await store.checkAgain(Self.run(model)) } },
+                                useWhisper: { Task { await store.set("dictation", .string("whisper"), run: Self.run(model)) } })
+                Button("Licenses") { model.openLicenses() }
+                    .buttonStyle(COSTextButtonStyle())
+                    .font(COSType.body(11))
+                    .help(Transcription.licensesLine)
+            }
+        }
+    }
+}
+
+/// 0.5.317: the menu bar panel's Parakeet line, while dictation is on and Parakeet Ultra is not installed (or is
+/// installing). Hidden on a server that cannot say (the card is not visible) and once Parakeet is installed.
+struct PanelParakeetRow: View {
+    @ObservedObject var model: ControllerModel
+    @ObservedObject var store: TranscriptionSettingsStore
+    /// Read, not observed: the dictation store publishes every phase change, and the panel redraws on the model's.
+    let dictationOn: Bool
+    static func shows(enabled: Bool, settings: SttSettings?, installing: Bool) -> Bool {
+        guard enabled, let settings else { return false }
+        return installing || settings.parakeet.serverInstalling || !settings.parakeet.installed
+    }
+    var body: some View {
+        if Self.shows(enabled: dictationOn, settings: store.visible ? store.settings : nil, installing: store.installing),
+           let state = store.rowState(recording: model.recordingCount > 0), let settings = store.settings {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Dictation").font(COSType.body(12, weight: .semibold))
+                Text(Transcription.dictationLine(settings)).font(COSType.body(11)).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                ParakeetRowView(state: state, offersCancel: store.offersCancel, compact: true,
+                                install: { model.installParakeet() },
+                                cancel: { Task { await store.cancelInstall(TranscriptionSettingsCard.run(model)) } },
+                                checkAgain: { Task { await store.checkAgain(TranscriptionSettingsCard.run(model)) } },
+                                useWhisper: { Task { await store.set("dictation", .string("whisper"), run: TranscriptionSettingsCard.run(model)) } })
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 12))
+        }
+    }
+}
+
+/// One Parakeet row, shared by Settings, the menu bar panel and the setup guide's engine step, so every place says the
+/// same thing and offers the same action.
+struct ParakeetRowView: View {
+    let state: ParakeetRowState
+    var offersCancel = false
+    var compact = false
+    let install: () -> Void
+    let cancel: () -> Void
+    let checkAgain: () -> Void
+    let useWhisper: () -> Void
+    var body: some View {
+        switch state {
+        case .installing(let line):
             HStack(spacing: 8) {
                 ProgressView().controlSize(.small)
-                Text(Transcription.progressLine(parakeet)).font(COSType.body(11)).foregroundStyle(.secondary)
+                caption(line)
+                if offersCancel { Button("Cancel", action: cancel).buttonStyle(COSQuietButtonStyle()) }
             }
-        } else if let installed = Transcription.installedLine(parakeet) {
-            Text(installed).font(COSType.body(11)).foregroundStyle(.secondary)
-        } else {
-            // A failed install shows the server's plain reason whether or not it can be retried.
-            if let failure = Transcription.failureLine(parakeet) {
-                Text(failure).font(COSType.body(11)).foregroundStyle(COSPalette.amber)
-                    .fixedSize(horizontal: false, vertical: true)
+        case .installed(let line):
+            caption(line)
+        case .offer(let title, let line):
+            VStack(alignment: .leading, spacing: 4) {
+                if let line { Text(line).font(COSType.body(11)).foregroundStyle(COSPalette.amber).fixedSize(horizontal: false, vertical: true) }
+                Button(title, action: install).buttonStyle(COSQuietButtonStyle())
+                if !compact { caption(Transcription.installCaption) }
             }
-            if !parakeet.installable {
-                EmptyView()
-            } else if recording {
-                Text(Transcription.recordingHold).font(COSType.body(11)).foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            } else if store.offersInstall(recording: recording) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Button("Install Parakeet") {
-                        Task { await store.install(Self.run(model), recording: model.recordingCount > 0) }
-                    }.buttonStyle(COSQuietButtonStyle())
-                    Text(Transcription.installCaption).font(COSType.body(11)).foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
+        case .blocked(let reason, let action):
+            VStack(alignment: .leading, spacing: 4) {
+                caption(reason)
+                switch action {
+                case .checkAgain: Button("Check again", action: checkAgain).buttonStyle(COSQuietButtonStyle())
+                case .useWhisper: Button("Use Whisper", action: useWhisper).buttonStyle(COSQuietButtonStyle())
+                case .install, .retryInstall: Button(Transcription.installTitle, action: install).buttonStyle(COSQuietButtonStyle())
+                case .cancel: Button("Cancel", action: cancel).buttonStyle(COSQuietButtonStyle())
+                case .afterRecording, .none: EmptyView()
                 }
             }
         }
+    }
+    private func caption(_ line: String) -> some View {
+        Text(line).font(COSType.body(11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
     }
 }
 

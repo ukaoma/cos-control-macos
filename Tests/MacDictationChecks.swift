@@ -864,6 +864,37 @@ final class FakeDictationBoard: DictationPasteboardAccess {
         expect(DictationMedia.decide(playing: nil) == .leave && DictationMedia.decide(playing: false) == .leave && DictationMedia.decide(playing: true) == .pause,
                "pause only a known, playing state; unknown is left alone")
         }
+        // 0.5.317 dictation for everyone: each failure's one action, and Retry only when it can work.
+        typealias A = DictationFailureAction
+        expect(A.resolve(action: "install_parakeet", retryable: false, noSpeech: false, audioHeld: true) == .installParakeet, "server action: Install Parakeet")
+        expect(A.resolve(action: "use_whisper", retryable: false, noSpeech: false, audioHeld: true) == .useWhisper, "server action: Use Whisper")
+        expect(A.resolve(action: "open_transcription_settings", retryable: false, noSpeech: false, audioHeld: true) == .openTranscriptionSettings, "server action: Open Transcription settings")
+        expect(A.resolve(action: "retry", retryable: true, noSpeech: false, audioHeld: true) == .retry, "a retry the server says can succeed, with the audio held")
+        expect(A.resolve(action: "retry", retryable: false, noSpeech: false, audioHeld: true) == .openTranscriptionSettings, "never Retry when the server says it cannot succeed")
+        expect(A.resolve(action: "retry", retryable: true, noSpeech: false, audioHeld: false) == .none, "never Retry without the audio")
+        expect(A.resolve(action: nil, retryable: nil, noSpeech: false, audioHeld: true) == .retry, "a failure COS raised retries the held audio")
+        expect(A.resolve(action: nil, retryable: nil, noSpeech: false, audioHeld: false) == .none, "nothing held, nothing to retry")
+        expect(A.resolve(action: "install_parakeet", retryable: true, noSpeech: true, audioHeld: true) == .none, "no speech offers nothing")
+        expect(A.resolve(action: "format_disk", retryable: true, noSpeech: false, audioHeld: true) == .retry, "an unknown action is COS's own")
+        expect(A.installParakeet.title == "Install Parakeet (654 MB)" && A.useWhisper.title == "Use Whisper" && A.openTranscriptionSettings.title == "Open Transcription settings"
+               && A.retry.title == "Retry" && A.none.title == nil, "button titles name what happens")
+        expect(DictationEngineName.detailLine(engine: "parakeet-ultra", fallbackReason: nil) == "Transcribed on this Mac with Parakeet Ultra.", "history names Parakeet Ultra")
+        expect(DictationEngineName.detailLine(engine: "whisper", fallbackReason: "parakeet_warming") == "Transcribed on this Mac with Whisper, because Parakeet Ultra was warming up.",
+               "history says why Automatic used Whisper")
+        expect(DictationEngineName.detailLine(engine: "whisper", fallbackReason: nil) == "Transcribed on this Mac with Whisper.", "Whisper by choice")
+        expect(DictationEngineName.detailLine(engine: nil, fallbackReason: nil) == nil && DictationEngineName.title("openai") == nil, "no engine line for an old record or an unknown engine")
+        for reason in ["parakeet_not_installed", "parakeet_warming", "parakeet_warm_failed", "parakeet_breaker_open", "parakeet_busy", "parakeet_failed", "audio_not_pcm_wav"] {
+            let line = DictationEngineName.detailLine(engine: "whisper", fallbackReason: reason) ?? ""
+            expect(line.hasPrefix("Transcribed on this Mac with Whisper, because ") && !line.contains("\u{2014}"), "every fallback reason reads as a sentence: \(reason)")
+        }
+        // The engine survives the history file, and a 0.5.316 record (no engine) still loads.
+        let engineRecord = DictationRecord(id: UUID(), text: "ask not", createdAt: Date(timeIntervalSince1970: 1_760_000_000), delivery: .inserted(app: "Notes"),
+                                           engine: "whisper", fallbackReason: "parakeet_busy")
+        let roundTrip = try JSONDecoder().decode(DictationRecord.self, from: JSONEncoder().encode(engineRecord))
+        expect(roundTrip == engineRecord && roundTrip.engine == "whisper" && roundTrip.fallbackReason == "parakeet_busy", "the engine is saved with the dictation")
+        let legacy = try JSONDecoder().decode(DictationRecord.self, from: Data(#"{"id":"5A0C2A3C-6A7B-4C8D-9E0F-1A2B3C4D5E6F","text":"old","createdAt":0,"kind":"inserted","app":"Notes"}"#.utf8))
+        expect(legacy.engine == nil && legacy.text == "old", "a record from before 0.5.317 loads without an engine")
+        expect(DictationHistory.correcting(engineRecord.id, to: "ask now", in: [engineRecord]).first?.engine == "whisper", "Fix a word keeps the engine")
         print("PASS Mac dictation: \(count) policy checks; insert-target table, measured delivery, terminals, layout ⌘V, listening bars end to end, clipboard restore, sounds, pill placement, recent dictations file, card countdown, fix-a-word selection, quick fix, replace, span guess, quiet and restore, bounded audio, PCM16 WAV, device failure, any-key triggers")
     }
 }

@@ -438,9 +438,14 @@ struct DictationRecord: Codable, Equatable, Identifiable, Sendable {
     let text: String
     let createdAt: Date
     let delivery: Delivery
+    /// 0.5.317: which local engine transcribed it (parakeet-ultra or whisper), and why Automatic used Whisper when it
+    /// wanted Parakeet. nil in records from before 0.5.317, which were all Parakeet Ultra.
+    let engine: String?
+    let fallbackReason: String?
 
-    init(id: UUID, text: String, createdAt: Date, delivery: Delivery) {
+    init(id: UUID, text: String, createdAt: Date, delivery: Delivery, engine: String? = nil, fallbackReason: String? = nil) {
         self.id = id; self.text = text; self.createdAt = createdAt; self.delivery = delivery
+        self.engine = engine; self.fallbackReason = fallbackReason
     }
 
     var wordCount: Int { text.split(whereSeparator: { $0.isWhitespace || $0.isNewline }).count }
@@ -461,12 +466,14 @@ struct DictationRecord: Codable, Equatable, Identifiable, Sendable {
     }
 
     // Stored as kind/app/reason. 0.5.309 files carry insertedApp/pasted instead and still load.
-    private enum Keys: String, CodingKey { case id, text, createdAt, kind, app, reason, viaPaste, insertedApp, pasted }
+    private enum Keys: String, CodingKey { case id, text, createdAt, kind, app, reason, viaPaste, insertedApp, pasted, engine, fallbackReason }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: Keys.self)
         id = try c.decode(UUID.self, forKey: .id)
         text = try c.decode(String.self, forKey: .text)
         createdAt = try c.decode(Date.self, forKey: .createdAt)
+        engine = try c.decodeIfPresent(String.self, forKey: .engine)
+        fallbackReason = try c.decodeIfPresent(String.self, forKey: .fallbackReason)
         if let kind = try c.decodeIfPresent(String.self, forKey: .kind) {
             let app = try c.decodeIfPresent(String.self, forKey: .app) ?? "the app"
             switch kind {
@@ -484,6 +491,7 @@ struct DictationRecord: Codable, Equatable, Identifiable, Sendable {
     func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: Keys.self)
         try c.encode(id, forKey: .id); try c.encode(text, forKey: .text); try c.encode(createdAt, forKey: .createdAt)
+        try c.encodeIfPresent(engine, forKey: .engine); try c.encodeIfPresent(fallbackReason, forKey: .fallbackReason)
         switch delivery {
         case .inserted(let app): try c.encode("inserted", forKey: .kind); try c.encode(app, forKey: .app)
         case .unconfirmed(let app, let viaPaste):
@@ -561,7 +569,7 @@ enum DictationHistory {
     /// Fix a word's Save corrects the dictation itself (0.5.318, Miles: Heard still read "Y joule 360" after he saved
     /// "Jewel360"): same id, time, place and order; only the text changes.
     static func correcting(_ id: UUID, to text: String, in list: [DictationRecord]) -> [DictationRecord] {
-        list.map { $0.id == id ? DictationRecord(id: $0.id, text: text, createdAt: $0.createdAt, delivery: $0.delivery) : $0 }
+        list.map { $0.id == id ? DictationRecord(id: $0.id, text: text, createdAt: $0.createdAt, delivery: $0.delivery, engine: $0.engine, fallbackReason: $0.fallbackReason) : $0 }
     }
     /// A file that exists but does not read is moved aside to `<name>.corrupt-<UTC stamp>` before anything is saved
     /// over it, so a bad build can never silently erase someone's history. `writable` is false when it could not move.
@@ -1759,4 +1767,78 @@ enum DictationMuteIO {
 enum DictationMedia {
     enum Action: Equatable, Sendable { case leave, pause }
     static func decide(playing: Bool?) -> Action { playing == true ? .pause : .leave }
+}
+
+// MARK: - Dictation for everyone (0.5.317, server 6.74.0)
+//
+// Mac dictation runs on any local engine the server has: Parakeet Ultra, or Whisper on this Mac. The server chooses by
+// the person's Dictation engine setting (Automatic by default) and says which ran. When a dictation cannot be
+// transcribed, the card names the reason and offers one action that can fix it.
+
+enum DictationEngineName {
+    static func title(_ engine: String?) -> String? {
+        switch engine {
+        case "parakeet-ultra": "Parakeet Ultra"
+        case "whisper": "Whisper"
+        default: nil
+        }
+    }
+    /// Why Automatic used Whisper for this one, as the end of a sentence.
+    static func fallbackPhrase(_ reason: String?) -> String? {
+        switch reason {
+        case "parakeet_not_installed": "Parakeet Ultra is not installed"
+        case "parakeet_warming": "Parakeet Ultra was warming up"
+        case "parakeet_warm_failed": "Parakeet Ultra could not start"
+        case "parakeet_breaker_open": "Parakeet Ultra is paused after repeated errors"
+        case "parakeet_busy": "Parakeet Ultra was busy"
+        case "parakeet_failed": "Parakeet Ultra could not transcribe this audio"
+        case "audio_not_pcm_wav": "this audio needed Whisper"
+        default: nil
+        }
+    }
+    /// The history detail's engine line. nil for a record from before 0.5.317 (no engine stored).
+    static func detailLine(engine: String?, fallbackReason: String?) -> String? {
+        guard let title = title(engine) else { return nil }
+        if engine == "whisper", let why = fallbackPhrase(fallbackReason) { return "Transcribed on this Mac with Whisper, because \(why)." }
+        return "Transcribed on this Mac with \(title)."
+    }
+}
+
+/// The one action a failure card offers (0.5.317). From the helper's `action`: the server's own for a 6.74.0 refusal,
+/// COS's for a transport failure or an older server. Retry is offered only while the audio is held and the server has
+/// not said a retry cannot succeed.
+enum DictationFailureAction: String, Equatable, Sendable {
+    case installParakeet = "install_parakeet"
+    case useWhisper = "use_whisper"
+    case retry
+    case openTranscriptionSettings = "open_transcription_settings"
+    case openMicrophoneSettings = "open_microphone_settings"
+    case none
+
+    var title: String? {
+        switch self {
+        case .installParakeet: "Install Parakeet (654 MB)"
+        case .useWhisper: "Use Whisper"
+        case .retry: "Retry"
+        case .openTranscriptionSettings: "Open Transcription settings"
+        case .openMicrophoneSettings: "Open Settings"
+        case .none: nil
+        }
+    }
+
+    /// `action`: the helper's, nil for a failure COS raised itself (the server not connected). `retryable` false means
+    /// the server said a retry cannot succeed.
+    static func resolve(action: String?, retryable: Bool?, noSpeech: Bool, audioHeld: Bool) -> DictationFailureAction {
+        if noSpeech { return .none }
+        let asked = action.flatMap(Self.init(rawValue:))
+        switch asked {
+        case .retry?:
+            if retryable == false { return .openTranscriptionSettings }
+            return audioHeld ? .retry : .none
+        case nil:
+            return audioHeld && retryable != false ? .retry : .none
+        case let other?:
+            return other
+        }
+    }
 }

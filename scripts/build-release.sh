@@ -90,6 +90,28 @@ fi
 mkdir -p "$APP/Contents/Resources/Sounds"
 cp "$ROOT/Resources/Sounds/"*.wav "$APP/Contents/Resources/Sounds/"
 python3 "$ROOT/scripts/prepare-node-runtime.py" "$APP/Contents/Resources/BundledNode"
+# 0.5.317: FluidAudio's command line tool (Parakeet Ultra and speaker separation), built from its pinned tag by
+# scripts/build-fluidaudio-cli.sh, so the glasses server can install Parakeet from the GUI. Bytes must match the pinned
+# build; its licenses ride in Resources/ThirdParty/FluidAudio and the About credits. A Developer ID release refuses to
+# ship without it; a local build without it says so and the server falls back to its own copy.
+FLUIDAUDIO_PIN="$ROOT/Resources/fluidaudio-cli.json"
+FLUIDAUDIO_VERSION="$(/usr/bin/python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$FLUIDAUDIO_PIN")"
+FLUIDAUDIO_SHA="$(/usr/bin/python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["builtSHA256"])' "$FLUIDAUDIO_PIN")"
+FLUIDAUDIO_CLI="${COS_FLUIDAUDIO_CLI:-$ROOT/dist/fluidaudio-cli/fluidaudiocli-$FLUIDAUDIO_VERSION}"
+if [ -f "$FLUIDAUDIO_CLI" ] && [ -n "$FLUIDAUDIO_SHA" ]; then
+  if [ "$(/usr/bin/shasum -a 256 "$FLUIDAUDIO_CLI" | /usr/bin/awk '{print $1}')" != "$FLUIDAUDIO_SHA" ]; then
+    echo "Refusing to ship: $FLUIDAUDIO_CLI does not match the pinned fluidaudiocli build $FLUIDAUDIO_SHA" >&2; exit 70
+  fi
+  mkdir -p "$APP/Contents/Helpers"
+  cp "$FLUIDAUDIO_CLI" "$APP/Contents/Helpers/fluidaudiocli"
+  chmod 755 "$APP/Contents/Helpers/fluidaudiocli"
+  /usr/bin/python3 -I "$ROOT/Tests/check-fluidaudio-cli.py" "$FLUIDAUDIO_PIN" "$APP/Contents/Helpers/fluidaudiocli"
+elif [ -n "${COS_SIGN_IDENTITY:-}" ]; then
+  echo "Refusing to ship a Developer ID release without the pinned fluidaudiocli: run scripts/build-fluidaudio-cli.sh and record its SHA-256 in Resources/fluidaudio-cli.json." >&2; exit 70
+else
+  echo "Note: no pinned fluidaudiocli at $FLUIDAUDIO_CLI; this local build cannot install Parakeet from the GUI." >&2
+fi
+cp "$ROOT/Resources/Credits.html" "$APP/Contents/Resources/Credits.html"
 chmod 700 "$APP/Contents/MacOS/COS Control" "$APP/Contents/Resources/cos-control-helper"
 /usr/bin/xattr -cr "$APP"
 # Public releases fail closed unless both Developer ID signing and notarization
@@ -140,6 +162,10 @@ APP_ENTITLEMENTS="$ROOT/Resources/COSControl.entitlements"
 if [ -n "$SIGN_ID" ]; then
   /usr/bin/codesign --force --options runtime --timestamp --entitlements "$ROOT/Resources/Node.entitlements" --sign "$SIGN_ID" "$APP/Contents/Resources/BundledNode/bin/node"
   /usr/bin/codesign --force --options runtime --timestamp --sign "$SIGN_ID" "$APP/Contents/Resources/cos-control-helper"
+  # No entitlements; the identifier is the one its embedded Info.plist names and the server checks.
+  if [ -f "$APP/Contents/Helpers/fluidaudiocli" ]; then
+    /usr/bin/codesign --force --options runtime --timestamp --identifier com.gotcos.control.fluidaudiocli --sign "$SIGN_ID" "$APP/Contents/Helpers/fluidaudiocli"
+  fi
   # 0.5.267: the main executable and the bundle carry COSControl.entitlements (Apple Events only). Hardened runtime
   # without com.apple.security.automation.apple-events silently refuses every Apple Event, so 0.5.266's jump-to-session
   # reopen (NSAppleScript) and Guided Setup's Terminal script (osascript child) could not work. The helper gets none.
@@ -157,6 +183,10 @@ elif [ -n "$LOCAL_SIGN_ID" ]; then
   printf 'designated => identifier "cos-control-helper" and certificate root = H"%s"\n' "$LOCAL_ROOT_HASH" > "$HELPER_REQ"
   /usr/bin/csreq -r "$HELPER_REQ" -t >/dev/null || { echo "helper requirement did not parse" >&2; exit 70; }
   /usr/bin/codesign --force --sign "$LOCAL_SIGN_ID" -r "$HELPER_REQ" "$APP/Contents/Resources/cos-control-helper"
+  # A local identity has no Developer ID team, so the server will not trust this copy; it keeps its own pinned one.
+  if [ -f "$APP/Contents/Helpers/fluidaudiocli" ]; then
+    /usr/bin/codesign --force --options runtime --identifier com.gotcos.control.fluidaudiocli --sign "$LOCAL_SIGN_ID" "$APP/Contents/Helpers/fluidaudiocli"
+  fi
   rm -f "$HELPER_REQ"
   /usr/bin/codesign --force --entitlements "$APP_ENTITLEMENTS" --sign "$LOCAL_SIGN_ID" "$APP/Contents/MacOS/COS Control"
   /usr/bin/codesign --force --entitlements "$APP_ENTITLEMENTS" --sign "$LOCAL_SIGN_ID" "$APP"
@@ -213,6 +243,15 @@ VERIFY_DIR="$BUILD_DIR/verify"
 /usr/bin/ditto -x -k "$ZIP" "$VERIFY_DIR"
 /usr/bin/codesign --verify --deep --strict "$VERIFY_DIR/COS Control.app"
 python3 "$ROOT/Tests/check-bundled-runtime.py" "$VERIFY_DIR/COS Control.app/Contents/Resources"
+# 0.5.317: in the extracted app, the bundled CLI still carries its Info.plist, bound to a strict, hardened signature
+# with the COS team on a Developer ID release (what the server checks at install and at every run).
+if [ -f "$VERIFY_DIR/COS Control.app/Contents/Helpers/fluidaudiocli" ] && { [ -n "$SIGN_ID" ] || [ -n "$LOCAL_SIGN_ID" ]; }; then
+  if [ -n "$SIGN_ID" ]; then
+    /usr/bin/python3 -I "$ROOT/Tests/check-fluidaudio-cli.py" "$FLUIDAUDIO_PIN" "$VERIFY_DIR/COS Control.app/Contents/Helpers/fluidaudiocli" --signed --team NV3X46LLCR
+  else
+    /usr/bin/python3 -I "$ROOT/Tests/check-fluidaudio-cli.py" "$FLUIDAUDIO_PIN" "$VERIFY_DIR/COS Control.app/Contents/Helpers/fluidaudiocli" --signed
+  fi
+fi
 if [ -n "$SIGN_ID" ]; then
   /usr/bin/xcrun stapler validate "$VERIFY_DIR/COS Control.app"
   /usr/sbin/spctl -a -vv --type execute "$VERIFY_DIR/COS Control.app"

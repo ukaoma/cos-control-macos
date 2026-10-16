@@ -1,8 +1,19 @@
 {
   "version": "0.5.317",
   "whatsNew": {
-    "summary": "Work chat keeps taking ideas while earlier work runs: a send it would hold now queues, or goes in parallel. Dictation fixes a word right where you typed it, writes spoken lists and learns from your edits, with a new Dictation tab in Activity. Plus 0.5.316 (Miles Windu moves more naturally), 0.5.315 (Mute other apps while dictating now mutes them), 0.5.314 (a crash fix when a dictation sound finished, and REC on the pet while a meeting records) and everything in 0.5.313: dictation that keeps listening while you click, one-click Mac meeting recording, and a lighter Work tab.",
+    "summary": "Dictation for everyone: dictate with Whisper or Parakeet Ultra, and install Parakeet right from COS. Work chat keeps taking ideas while earlier work runs: a send it would hold now queues, or goes in parallel. Dictation fixes a word right where you typed it, writes spoken lists and learns from your edits, with a new Dictation tab in Activity. Plus 0.5.316 (Miles Windu moves more naturally), 0.5.315 (Mute other apps while dictating now mutes them), 0.5.314 (a crash fix when a dictation sound finished, and REC on the pet while a meeting records) and everything in 0.5.313: dictation that keeps listening while you click, one-click Mac meeting recording, and a lighter Work tab.",
     "sections": [
+      {
+        "title": "Dictation for everyone",
+        "items": [
+          "Dictation works with Whisper too. Settings, Transcription, Dictation engine: Automatic (recommended), Parakeet Ultra or Whisper. Automatic uses Parakeet Ultra when it is installed and ready, and Whisper on this Mac otherwise. Dictation never uses the cloud.",
+          "Install Parakeet (654 MB) from Settings, the menu bar or a dictation card. COS Control now includes the speech tool Parakeet needs, so there is no Terminal step. Progress and Cancel show while it downloads, every file is checked, and dictation keeps working with Whisper meanwhile.",
+          "When a dictation cannot be transcribed, the card says why and offers the one thing that fixes it: Install Parakeet, Use Whisper, Retry, or Open Transcription settings. Retry appears only when it can work.",
+          "The setup guide has a Dictation engine step after Voice. Test on this Mac dictates a 30 second sample with each installed engine and shows its speed and how many words it got wrong. It is a quick check, not a full accuracy test. Voice turns green only once a real test dictation works.",
+          "Dictation history shows which engine transcribed each dictation.",
+          "Whisper dictation and the Parakeet install need server 6.74.0. An older server keeps Parakeet-only dictation, as before."
+        ]
+      },
       {
         "title": "0.5.317",
         "items": [

@@ -124,6 +124,8 @@ struct ProviderConnectChecks {
         glassesProgress()
         await glassesFlow()
         await glassesQA()
+        dictationEveryone()
+        await dictationEveryoneFlow()
         if failures > 0 {
             FileHandle.standardError.write(Data("Connect your AI checks: \(failures) failed, \(passes) passed\n".utf8))
             exit(1)
@@ -440,6 +442,8 @@ struct ProviderConnectChecks {
 
     static func facts(_ r: ProviderStatusReport, running: Bool = true, voice: VoiceFacts? = nil) -> SetupFacts {
         var f = SetupFacts(); f.report = r; f.serverRunning = running; f.voice = voice
+        // 0.5.317: these fixtures are a Mac that has dictated on this server; dictationEveryone() covers the rest.
+        f.serverVersion = "6.74.0"; f.dictationProof = DictationProof(engine: "parakeet-ultra", serverVersion: "6.74.0", at: Date(timeIntervalSince1970: 1_760_000_000))
         f.claudeSessionsEnabled = running ? false : nil; f.threadAttachSupported = running; f.threadAttachEnabled = running ? true : nil
         f.jevConfigured = running ? false : nil; f.permissionsNeedCount = 1
         return f
@@ -448,7 +452,7 @@ struct ProviderConnectChecks {
     static func setupGuide() {
         // Early user before Get started: server rows wait and are not counted.
         let early = SetupGuideRules.rows(facts(allMissing, running: false), skipped: [])
-        check(early.filter { $0.afterSetup && $0.counted }.map(\.id) == [.voice, .sessions], "setup guide early", "\(early.filter(\.afterSetup).map(\.id))")
+        check(early.filter { $0.afterSetup && $0.counted }.map(\.id) == [.voice, .dictationEngine, .sessions], "setup guide early", "\(early.filter(\.afterSetup).map(\.id))")
         check(early.filter { $0.afterSetup && !$0.counted }.map(\.id) == [.jev, .glassesPair], "setup guide early", "the glasses code waits for the server too, uncounted")
         check(SetupGuideRules.progress(early) == (0, 5), "setup guide early", "counts claude, codex, cursor, ollama, permissions: \(SetupGuideRules.progress(early))")
         check(SetupGuideRules.showFinishCard(early, hidden: false) && SetupGuideRules.finishTitle(early) == "Finish setup · 0 of 5", "finish card early", SetupGuideRules.finishTitle(early))
@@ -459,8 +463,9 @@ struct ProviderConnectChecks {
         let p = SetupGuideRules.progress(mid)
         check(p.total == 8 && p.handled == 4, "finish card mid", "codex, cursor (skipped), voice, continue: \(p)")
         // 2026-10-09: the three Glasses rows come last and are never counted (the totals above are unchanged).
-        check(mid.map(\.id) == [.claude, .codex, .cursor, .ollama, .voice, .sessions, .continueThreads, .jev, .permissions, .tailscaleMac, .tailscalePhone, .glassesPair], "setup guide rows", "\(mid.map(\.id))")
-        check(SetupRowID.allCases.count == 12 && mid.filter { !$0.counted }.map(\.id) == [.jev, .tailscaleMac, .tailscalePhone, .glassesPair], "glasses uncounted", "\(mid.filter { !$0.counted }.map(\.id))")
+        // 0.5.317: the Dictation engine step follows Voice; on a server before 6.74.0 it is informational and uncounted.
+        check(mid.map(\.id) == [.claude, .codex, .cursor, .ollama, .voice, .dictationEngine, .sessions, .continueThreads, .jev, .permissions, .tailscaleMac, .tailscalePhone, .glassesPair], "setup guide rows", "\(mid.map(\.id))")
+        check(SetupRowID.allCases.count == 13 && mid.filter { !$0.counted }.map(\.id) == [.dictationEngine, .jev, .tailscaleMac, .tailscalePhone, .glassesPair], "glasses uncounted", "\(mid.filter { !$0.counted }.map(\.id))")
         // Done: everything done or skipped.
         var allDone = facts(allIn, voice: voiceReady())
         allDone.claudeSessionsEnabled = true; allDone.jevConfigured = true; allDone.permissionsNeedCount = 0
@@ -1164,5 +1169,151 @@ extension ProviderConnectChecks {
         clock = clock.addingTimeInterval(60)
         for _ in 0..<6 { await sb.refreshStatus(); clock = clock.addingTimeInterval(10.1) }
         check(sbf.count("pairing-status") == 8, "status backoff", "never longer than 10 s: \(sbf.count("pairing-status"))")
+    }
+}
+
+// MARK: - 0.5.317 dictation for everyone
+
+extension ProviderConnectChecks {
+    static func v2Voice(selected: String = "auto", effective: String = "whisper", installed: Bool = false, installable: Bool = true) -> VoiceFacts {
+        var v = voiceReady()
+        v.adoptTranscription(Data(#"{"preview":{"selected":"turbo","effective":"turbo"},"hq":{"selected":"large-v3","effective":"large-v3"},"parakeet":{"installed":\#(installed),"installable":\#(installable)},"dictation":{"selected":"\#(selected)","effective":"\#(effective)"}}"#.utf8))
+        return v
+    }
+
+    static func dictationEveryone() {
+        func voiceRow(_ f: SetupFacts) -> SetupRow { SetupGuideRules.voice(f, skipped: false) }
+        // Voice truth: green only with a real round trip on THIS server version.
+        var f = facts(allIn, voice: v2Voice()); f.dictationProof = nil
+        f.dictationCheckAttempted = nil
+        var row = voiceRow(f)
+        check(!row.done && row.status == "Checking dictation…" && SetupGuideRules.voiceWaiting(row), "voice truth", "no proof yet: Checking (muted), never green and never amber: \(row.status)")
+        check(DictationTruth.wantsBackgroundCheck(f, recording: false), "check once", "the one background check runs")
+        check(!DictationTruth.wantsBackgroundCheck(f, recording: true), "check once", "never during a recording")
+        f.dictationChecking = true
+        check(!DictationTruth.wantsBackgroundCheck(f, recording: false) && voiceRow(f).status == "Checking dictation…", "check once", "never twice at once")
+        f.dictationChecking = false; f.dictationCheckAttempted = "6.74.0"
+        check(!DictationTruth.wantsBackgroundCheck(f, recording: false), "check once", "once per server version, never on a timer")
+        row = voiceRow(f)
+        check(!row.done && row.status == "Not tested yet" && row.action == .testDictation && row.actionTitle == "Test dictation" && !SetupGuideRules.voiceWaiting(row),
+              "voice truth", "tried with no result: Test dictation")
+        var checked = v2Voice(); checked.dictationCheck = DictationCheck(ok: true, engine: "whisper", serverVersion: "6.74.0")
+        f.voice = checked
+        row = voiceRow(f)
+        check(row.done && row.detail?.contains("Dictation tested with Whisper.") == true, "voice truth", "a successful check on this version is proof: \(row.detail ?? "")")
+        checked.dictationCheck = DictationCheck(ok: false, engine: nil, serverVersion: "6.74.0", message: "No speech engine is set up on this Mac. Set one up in Transcription settings.")
+        f.voice = checked
+        row = voiceRow(f)
+        check(!row.done && row.status == "Dictation needs attention" && row.detail?.contains("No speech engine") == true && row.actionTitle == "Test again", "voice truth", "a failed check says why")
+        checked.dictationCheck = DictationCheck(ok: true, engine: "parakeet-ultra", serverVersion: "6.73.14")
+        f.voice = checked; f.dictationCheckAttempted = "6.73.14"
+        row = voiceRow(f)
+        check(!row.done && row.status == "Checking dictation…" && DictationTruth.wantsBackgroundCheck(f, recording: false), "voice truth", "a check on an older server version proves nothing now")
+        // A real dictation on this version is proof, even with no check at all (existing users never go amber).
+        f.voice = v2Voice(); f.dictationProof = DictationProof(engine: "parakeet-ultra", serverVersion: "6.74.0", at: Date())
+        check(voiceRow(f).done && !DictationTruth.wantsBackgroundCheck(f, recording: false), "voice truth", "a dictation on this server version is proof")
+        f.dictationProof = DictationProof(engine: "parakeet-ultra", serverVersion: "6.73.14", at: Date()); f.dictationCheckAttempted = nil
+        check(voiceRow(f).status == "Checking dictation…", "voice truth", "a dictation before the server update re-proves, quietly")
+        // Whisper merely present is not enough: the engines rule is unchanged, the proof is new.
+        var notReady = facts(allIn, voice: { var v = v2Voice(); v.whisperReady = false; return v }()); notReady.dictationProof = nil
+        check(!voiceRow(notReady).done && !DictationTruth.wantsBackgroundCheck(notReady, recording: false), "voice truth", "no engine: no check, the engine row's own action")
+
+        // The engine step.
+        var e = facts(allIn, voice: v2Voice()); e.appleSilicon = true; e.memoryBytes = 16 * 1_073_741_824
+        var engine = SetupGuideRules.rows(e, skipped: []).first { $0.id == .dictationEngine }!
+        check(engine.counted && !engine.done && engine.status == "Using Whisper" && engine.actionTitle == "Install Parakeet (654 MB)" && engine.action == .useEngine("auto"),
+              "engine step", "Apple silicon, not installed: recommend Parakeet, install it under Automatic")
+        check(engine.detail?.hasPrefix("Recommended for this Mac: Parakeet Ultra") == true, "engine step", engine.detail ?? "")
+        e.voice = v2Voice(effective: "parakeet-ultra", installed: true)
+        engine = SetupGuideRules.rows(e, skipped: []).first { $0.id == .dictationEngine }!
+        check(engine.done && engine.status == "Using Parakeet Ultra", "engine step", "the recommended engine already dictating is done")
+        e.voice = v2Voice(); e.engineChosen = true
+        check(SetupGuideRules.rows(e, skipped: []).first { $0.id == .dictationEngine }!.done, "engine step", "the person's pick is done, whatever it is")
+        e.engineChosen = false; e.appleSilicon = false
+        engine = SetupGuideRules.rows(e, skipped: []).first { $0.id == .dictationEngine }!
+        check(engine.done && engine.detail?.contains("needs Apple silicon") == true, "engine step", "Intel: Automatic already dictates with Whisper, the recommendation")
+        e.voice = v2Voice(selected: "parakeet-ultra", effective: "none")
+        engine = SetupGuideRules.rows(e, skipped: []).first { $0.id == .dictationEngine }!
+        check(!engine.done && engine.actionTitle == "Use Whisper" && engine.action == .useEngine("whisper") && engine.status == "No engine yet", "engine step", "Intel set to Parakeet: Use Whisper")
+        var old = facts(allIn, voice: voiceReady())
+        engine = SetupGuideRules.rows(old, skipped: []).first { $0.id == .dictationEngine }!
+        check(!engine.counted && engine.detail == "This COS server dictates with Parakeet Ultra only. Update the server to dictate with Whisper.", "engine step", "an older server: informational")
+        old.serverRunning = false
+        check(SetupGuideRules.rows(old, skipped: []).first { $0.id == .dictationEngine }!.afterSetup, "engine step", "waits for Get started")
+
+        // The recommendation (decision 6) and its honest lines.
+        typealias Adv = DictationEngineAdvice
+        let mem16: UInt64 = 16 * 1_073_741_824
+        check(Adv.recommend(appleSilicon: true, memoryBytes: mem16, parakeetAvailable: true, test: nil).engine == "parakeet-ultra", "advice", "Apple silicon: Parakeet")
+        check(Adv.recommend(appleSilicon: true, memoryBytes: 4 * 1_073_741_824, parakeetAvailable: true, test: nil).engine == "whisper", "advice", "too little memory: Whisper")
+        check(Adv.recommend(appleSilicon: true, memoryBytes: mem16, parakeetAvailable: false, test: nil).engine == "whisper", "advice", "cannot install: Whisper")
+        func result(_ engine: String, ran: Bool = true, rtf: Double? = 0.05, wer: Double? = 0.02, peak: Int64? = nil, warm: Double? = nil, skipped: String? = nil) -> EngineTest.Result {
+            EngineTest.Result(engine: engine, ran: ran, rtf: rtf, peakRssBytes: peak, warmupMs: warm, wer: wer, words: 58, skipped: skipped)
+        }
+        let good = EngineTest(results: [result("whisper", rtf: 0.08, wer: 0.03), result("parakeet-ultra", rtf: 0.02, wer: 0.02, peak: 1_200_000_000, warm: 14_000)])
+        check(Adv.recommend(appleSilicon: true, memoryBytes: mem16, parakeetAvailable: true, test: good).engine == "parakeet-ultra", "advice", "the test agrees")
+        let worse = EngineTest(results: [result("whisper", wer: 0.0), result("parakeet-ultra", wer: 0.2)])
+        check(Adv.recommend(appleSilicon: true, memoryBytes: mem16, parakeetAvailable: true, test: worse).engine == "whisper", "advice", "clearly more mistakes: Whisper")
+        let close = EngineTest(results: [result("whisper", wer: 0.0), result("parakeet-ultra", wer: 0.05)])
+        check(Adv.recommend(appleSilicon: true, memoryBytes: mem16, parakeetAvailable: true, test: close).engine == "parakeet-ultra", "advice", "within the margin: still Parakeet")
+        let slow = EngineTest(results: [result("whisper"), result("parakeet-ultra", rtf: 1.4)])
+        check(Adv.recommend(appleSilicon: true, memoryBytes: mem16, parakeetAvailable: true, test: slow).engine == "whisper", "advice", "slower than speech: Whisper")
+        let skipped = EngineTest(results: [result("whisper"), result("parakeet-ultra", ran: false, rtf: nil, wer: nil, skipped: "unavailable")])
+        check(Adv.recommend(appleSilicon: true, memoryBytes: mem16, parakeetAvailable: true, test: skipped).engine == "whisper", "advice", "did not run: Whisper until it does")
+        let whisperLine = Adv.line(result("whisper", rtf: 0.08, wer: 2.0 / 58.0, peak: 3_000_000_000), seconds: 30)
+        check(whisperLine == "Whisper: 30 s of speech in 2.4 s, 2 of 58 words wrong, already running, so no extra memory.", "advice lines", whisperLine)
+        check(!whisperLine.contains("GB"), "advice lines", "never a memory figure for Whisper")
+        let parakeetLine = Adv.line(result("parakeet-ultra", rtf: 0.02, wer: 0, peak: 1_200_000_000, warm: 14_000), seconds: 30)
+        check(parakeetLine == "Parakeet Ultra: 30 s of speech in 0.6 s, no words wrong, 1.2 GB peak memory, first start took 14 s (once).", "advice lines", parakeetLine)
+        check(Adv.line(result("parakeet-ultra", ran: false, skipped: "not_installed"), seconds: 30) == "Parakeet Ultra: not installed yet.", "advice lines", "not installed")
+        e.appleSilicon = true; var tested = v2Voice(); tested.engineTest = good; e.voice = tested
+        let detail = SetupGuideRules.rows(e, skipped: []).first { $0.id == .dictationEngine }!.detail ?? ""
+        check(detail.contains(Adv.scopeLine) && detail.contains("Whisper: 30 s of speech"), "honest scope", "the test result says it is one sample: \(detail)")
+        for line in [whisperLine, parakeetLine, Adv.scopeLine, detail, voiceRow(f).detail ?? "", SetupGuideRules.checkingDictation] {
+            check(!line.contains("\u{2014}") && !line.contains("\u{2192}") && !line.contains("->"), "copy", "no em dash or arrow: \(line)")
+        }
+        check(!detail.lowercased().contains("benchmark") || detail.contains("not a full accuracy test"), "honest scope", "never claims a benchmark")
+
+        // The proof store: engine and version only, read back.
+        let d = freshDefaults()
+        DictationProof.record(engine: "whisper", serverVersion: "6.74.0", defaults: d, now: Date(timeIntervalSince1970: 5))
+        check(DictationProof.load(defaults: d) == DictationProof(engine: "whisper", serverVersion: "6.74.0", at: Date(timeIntervalSince1970: 5)), "proof store", "round trip")
+        check(DictationProof.load(defaults: freshDefaults()) == nil, "proof store", "none on a fresh Mac")
+        // voice-status carries the helper's check and engine test.
+        let status = VoiceFacts.decode(Data(#"{"dictationCheck":{"ok":true,"engine":"whisper","serverVersion":"6.74.0","wer":0},"dictationBenchmark":{"audioSeconds":30,"results":[{"engine":"parakeet-ultra","ran":true,"rtf":0.02,"wer":0.0,"words":58}]}}"#.utf8))
+        check(status?.dictationCheck == DictationCheck(ok: true, engine: "whisper", serverVersion: "6.74.0", wer: 0) && status?.engineTest?.result("parakeet-ultra")?.rtf == 0.02,
+              "voice-status", "check and test decoded")
+        check(VoiceFacts.decode(Data(#"{"dictationCheck":null,"dictationBenchmark":null}"#.utf8))?.dictationCheck == nil, "voice-status", "absent is nil")
+    }
+
+    /// The guide's own effects, against stand-ins: the pick saves the setting, Automatic installs in the background.
+    static func dictationEveryoneFlow() async {
+        let d = freshDefaults()
+        let guide = SetupGuideState(defaults: d)
+        var saved: [String] = []; var installs = 0; var checks = 0
+        guide.setDictationEngine = { id in saved.append(id); return true }
+        guide.installParakeet = { installs += 1 }
+        guide.runDictationCheck = { checks += 1; return "Dictation works on this Mac." }
+        guide.readVoice = { Data("{}".utf8) }
+        guide.useEngine("auto", installParakeetToo: true)
+        try? await Task.sleep(for: .milliseconds(50))
+        check(saved == ["auto"] && installs == 1 && guide.engineChosen && d.bool(forKey: SetupGuideState.engineChosenKey), "engine pick", "Automatic saved, install started, pick remembered")
+        check(guide.engineMessage == "Parakeet Ultra is installing in the background. Dictation uses Whisper until it is ready.", "engine pick", guide.engineMessage ?? "")
+        let refused = SetupGuideState(defaults: freshDefaults())
+        refused.setDictationEngine = { _ in false }
+        refused.useEngine("whisper", installParakeetToo: false)
+        try? await Task.sleep(for: .milliseconds(50))
+        check(!refused.engineChosen && refused.engineMessage?.contains("could not save") == true, "engine pick", "a refused save is not a pick")
+        var f = facts(allIn, voice: v2Voice()); f.dictationProof = nil
+        guide.backgroundCheckIfNeeded(f, recording: false)
+        try? await Task.sleep(for: .milliseconds(50))
+        check(checks == 1 && guide.checkAttemptedVersion == "6.74.0", "check once", "the background check ran once and remembers the version")
+        f.dictationCheckAttempted = guide.checkAttemptedVersion
+        guide.backgroundCheckIfNeeded(f, recording: false)
+        try? await Task.sleep(for: .milliseconds(50))
+        check(checks == 1, "check once", "and does not run again on the same version")
+        guide.testDictation()
+        try? await Task.sleep(for: .milliseconds(50))
+        check(checks == 2 && !guide.dictationChecking && guide.engineMessage == "Dictation works on this Mac.", "test dictation", "on demand, any time")
     }
 }

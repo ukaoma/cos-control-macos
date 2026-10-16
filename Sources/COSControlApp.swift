@@ -29,6 +29,11 @@ struct COSControlApp: App {
             return try await model.runHelper(["mac-dictation"], timeout: 40, stdinData: audio)
         }
         model.dictation.petFrame = { [weak sessionPet] in sessionPet?.visibleFrame }
+        // 0.5.317: a failure card's one action, and the server version a dictation succeeded on (the Voice row's proof).
+        model.dictation.installParakeet = { [weak model] in model?.installParakeet() }
+        model.dictation.useWhisper = { [weak model] in await model?.useWhisperForDictation() ?? false }
+        model.dictation.openTranscriptionSettings = { [weak model] in model?.showTranscriptionSettings?() }
+        model.dictation.serverVersion = { [weak model] in model?.status.version }
         // 0.5.312 sounds: the pet's family picks its default sound; nothing plays while a Mac recording captures.
         // Any live COS recording, Mac or glasses (QA 2026-10-15): muting other apps would silence the call being recorded,
         // and a glasses mic hears the call through the Mac's speakers.
@@ -100,6 +105,10 @@ struct COSControlApp: App {
         // the notch, menu bar only) gets the real Settings window.
         model.showSettings = {
             SettingsOpener.open(model: model, window: settingsWindow) { section in activityWindow.show(model: model, section: section) }
+        }
+        // 0.5.317: a dictation card's "Open Transcription settings" lands on COS's Transcription card, never macOS Privacy.
+        model.showTranscriptionSettings = {
+            SettingsOpener.open(model: model, window: settingsWindow, scroll: "transcription") { section in activityWindow.show(model: model, section: section) }
         }
         COSAppDelegate.panelVisible = { model.panelVisible }
         COSAppDelegate.onOpenActivity = { activityWindow.show(model: model, section: nil) }

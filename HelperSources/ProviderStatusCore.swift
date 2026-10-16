@@ -592,3 +592,191 @@ enum VoiceEnvFile {
 
 /// voice-setup's Cancel: the SIGTERM handler kills the child group and sets this; the helper then restores the
 /// .env snapshot before it exits.
+
+// MARK: - Mac dictation for every engine (0.5.317, server 6.74.0)
+//
+// The pure half of the helper's `mac-dictation`, `dictation-check` and `dictation-benchmark`. The helper does the I/O.
+// A server whose capabilities list 2 in `desktopDictationVersions` takes `requiredEngine=local`: Parakeet Ultra or
+// local Whisper, by the person's Dictation engine setting, never the cloud. Any other server keeps the 0.5.316 request
+// (`requiredEngine=parakeet-ultra`) and its words, byte for byte. `desktopDictationVersion` stays 1 on 6.74.0 because
+// the 0.5.316 helper requires exactly 1.
+enum DictationBridge {
+    static let audioLimit = 3_840_044
+    static let localRoute = "/api/transcribe?mode=fast&requiredEngine=local"
+    static let parakeetRoute = "/api/transcribe?mode=fast&requiredEngine=parakeet-ultra"
+    static let engines: Set<String> = ["parakeet-ultra", "whisper"]
+    static let settings: Set<String> = ["auto", "parakeet-ultra", "whisper"]
+    static let fallbackReasons: Set<String> = ["parakeet_not_installed", "parakeet_warming", "parakeet_warm_failed",
+                                               "parakeet_breaker_open", "parakeet_busy", "parakeet_failed", "audio_not_pcm_wav"]
+    static let reasons: Set<String> = ["no_local_engine", "parakeet_unavailable"]
+    /// The one action a failure card offers. `retry_when_warm` reaches Control as `retry` with retryable true.
+    static let actions: Set<String> = ["install_parakeet", "use_whisper", "retry", "open_transcription_settings", "none"]
+
+    /// Whether this server takes the local route. Old servers (no list, or a list without 2) do not.
+    static func local(_ capabilities: [String: Any]) -> Bool {
+        guard let versions = capabilities["desktopDictationVersions"] as? [Any] else { return false }
+        return versions.contains { ($0 as? NSNumber).map { CFGetTypeID($0) != CFBooleanGetTypeID() && $0.intValue == 2 } ?? false }
+    }
+
+    /// The route for this server, or nil when Mac dictation may not send it audio at all (no audio is sent).
+    static func route(_ capabilities: [String: Any]?) -> String? {
+        guard let capabilities, capabilities["desktopDictationVersion"] as? Int == 1,
+              capabilities["localOnly"] as? Bool == true else { return nil }
+        return local(capabilities) ? localRoute : parakeetRoute
+    }
+
+    struct Answer { var ok: Bool; var message: String; var details: [String: Any] }
+
+    static func id(_ value: Any?, _ allowed: Set<String>) -> String? { (value as? String).flatMap { allowed.contains($0) ? $0 : nil } }
+
+    /// A server sentence fit for the card: one line, at most 200 characters, never empty.
+    static func sentence(_ value: Any?) -> String? {
+        guard let text = (value as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty,
+              text.count <= 200, !text.contains("\n") else { return nil }
+        return text
+    }
+
+    /// COS's own words for a local-route refusal, when the server sent none it can show.
+    static func refusalLine(reason: String?, action: String, detail: String?) -> String {
+        switch (reason, action) {
+        case ("parakeet_unavailable", "install_parakeet"): return "Parakeet Ultra is not installed on this Mac."
+        case ("parakeet_unavailable", "retry"): return "Parakeet Ultra is warming up. Try again in a few seconds."
+        case ("parakeet_unavailable", _): return "Parakeet Ultra cannot run right now. Whisper can take this dictation."
+        case (_, "retry"): return detail == "whisper_starting" ? "Whisper is still starting. Try again in a few seconds." : "The speech engine is getting ready. Try again in a few seconds."
+        case (_, "install_parakeet"): return "No speech engine is ready on this Mac. Parakeet Ultra can be installed now."
+        default: return "No speech engine is set up on this Mac. Set one up in Transcription settings."
+        }
+    }
+
+    /// What one transcribe answer means. `status` nil: the server did not answer.
+    static func answer(status: Int?, body: [String: Any]?, local: Bool) -> Answer {
+        guard let status else {
+            return Answer(ok: false, message: "The local transcription server is unavailable. Try again when it is ready.",
+                          details: ["action": "retry", "retryable": true])
+        }
+        // noSpeech: the server heard nothing it could transcribe; COS Control offers no Retry of the same audio.
+        if status == 204 { return Answer(ok: false, message: "No speech detected. Check your selected microphone and try again.", details: ["noSpeech": true, "action": "none"]) }
+        if status == 200, let body, let text = body["text"] as? String, !text.isEmpty, text.utf8.count <= 64_000 {
+            if local, let engine = id(body["engine"], engines) {
+                var details: [String: Any] = ["text": text, "engine": engine]
+                if let reason = id(body["fallbackReason"], fallbackReasons) { details["fallbackReason"] = reason }
+                if let setting = id(body["dictationSetting"], settings) { details["dictationSetting"] = setting }
+                return Answer(ok: true, message: "Dictation ready", details: details)
+            }
+            if !local, body["engine"] as? String == "parakeet-ultra" {
+                return Answer(ok: true, message: "Dictation ready", details: ["text": text, "engine": "parakeet-ultra"])
+            }
+        }
+        guard local else {
+            // 0.5.316's words and its Retry, unchanged, for a server without the local route.
+            let message = status == 503 ? "Parakeet is not ready. Check Transcription settings and retry." : "Dictation needs the matched server with Parakeet support. No text was inserted."
+            return Answer(ok: false, message: message, details: ["httpStatus": status, "action": "retry", "retryable": true])
+        }
+        if status == 503, let body, let reason = id(body["reason"], reasons) {
+            let raw = body["action"] as? String
+            let asked = raw == "retry_when_warm" ? "retry" : id(raw, actions) ?? "open_transcription_settings"
+            // Retry only when the server says it can succeed (contract: retryable is true only then). A retry it
+            // says cannot succeed becomes the settings, where the cause can be fixed.
+            let retryable = asked == "retry" && (body["retryable"] as? Bool) == true
+            let action = asked == "retry" && !retryable ? "open_transcription_settings" : asked
+            let detail = (body["detail"] as? String).flatMap { VoiceAccuracy.isIdentifier($0) ? $0 : nil }
+            var details: [String: Any] = ["httpStatus": 503, "reason": reason, "action": action, "retryable": retryable]
+            if let detail { details["detail"] = detail }
+            return Answer(ok: false, message: sentence(body["error"]) ?? refusalLine(reason: reason, action: action, detail: detail), details: details)
+        }
+        if status == 200 {
+            return Answer(ok: false, message: "The server answered without text COS can use. No text was inserted.", details: ["httpStatus": 200, "action": "retry", "retryable": true])
+        }
+        // A maintenance hold (409/503 with Retry-After) or a busy server can pass; a 4xx is this request's own fault.
+        let passing = status == 409 || status == 503 || status == 429 || status >= 500
+        return Answer(ok: false, message: passing ? "The transcription server is busy. Try again in a moment." : "The server could not transcribe this dictation (HTTP \(status)). No text was inserted.",
+                      details: ["httpStatus": status, "action": passing ? "retry" : "open_transcription_settings", "retryable": passing])
+    }
+}
+
+/// Word error rate on the pinned 30 s sample, against Resources/VoiceBenchmark/speech-30s.txt. Lowercase, punctuation
+/// stripped, words split on anything else. (substitutions + deletions + insertions) / reference words. One clip is a
+/// sanity check of a speech engine on this Mac, never an accuracy benchmark.
+enum VoiceAccuracy {
+    static let referenceFile = "VoiceBenchmark/speech-30s.txt"
+    static let referenceSHA256 = "a3726daf65f3b1f41a1e8e3bf9fa6abe0f4022e873589738d8c0339965a782ec"
+    static let referenceWords = 58
+
+    static func words(_ text: String) -> [String] {
+        let lowered = text.lowercased()
+        var out: [String] = [], current = ""
+        for scalar in lowered.unicodeScalars {
+            if CharacterSet.alphanumerics.contains(scalar) || scalar == "'" { current.unicodeScalars.append(scalar) }
+            else if !current.isEmpty { out.append(current); current = "" }
+        }
+        if !current.isEmpty { out.append(current) }
+        // A quote mark at a word's edge is punctuation ("'tis" keeps its own, "you'" does not).
+        return out.map { $0.trimmingCharacters(in: CharacterSet(charactersIn: "'")) }.filter { !$0.isEmpty }
+    }
+
+    /// Word-level edit distance.
+    static func errors(reference: [String], hypothesis: [String]) -> Int {
+        guard !reference.isEmpty else { return hypothesis.count }
+        guard !hypothesis.isEmpty else { return reference.count }
+        var previous = Array(0...hypothesis.count)
+        for (i, word) in reference.enumerated() {
+            var row = [i + 1] + Array(repeating: 0, count: hypothesis.count)
+            for (j, heard) in hypothesis.enumerated() {
+                row[j + 1] = min(previous[j + 1] + 1, row[j] + 1, previous[j] + (word == heard ? 0 : 1))
+            }
+            previous = row
+        }
+        return previous[hypothesis.count]
+    }
+
+    /// nil when there is no reference to score against.
+    static func wordErrorRate(reference: String, hypothesis: String) -> Double? {
+        let ref = words(reference)
+        guard !ref.isEmpty else { return nil }
+        return Double(errors(reference: ref, hypothesis: words(hypothesis))) / Double(ref.count)
+    }
+
+    static func isIdentifier(_ text: String) -> Bool {
+        (1...48).contains(text.count) && text.allSatisfy { ($0.isASCII && ($0.isLetter || $0.isNumber)) || $0 == "_" || $0 == "-" }
+    }
+}
+
+/// POST /api/transcribe/benchmark (server 6.74.0): each engine's result, whitelisted, with its word error rate against
+/// the pinned reference. The server's text is raw (no dictionary), so the score is the engine's own.
+enum DictationBenchmark {
+    static let route = "/api/transcribe/benchmark?engines=whisper,parakeet-ultra"
+    static let skips: Set<String> = ["not_installed", "unavailable", "timeout"]
+
+    static func results(_ body: [String: Any]?, reference: String) -> [[String: Any]]? {
+        guard let rows = body?["results"] as? [Any] else { return nil }
+        return rows.prefix(4).compactMap { raw -> [String: Any]? in
+            guard let row = raw as? [String: Any], let engine = DictationBridge.id(row["engine"], DictationBridge.engines) else { return nil }
+            func number(_ key: String) -> Any {
+                guard let value = row[key] as? NSNumber, CFGetTypeID(value) != CFBooleanGetTypeID(), value.doubleValue.isFinite, value.doubleValue >= 0 else { return NSNull() }
+                return value
+            }
+            let ran = row["ran"] as? Bool == true
+            var out: [String: Any] = ["engine": engine, "ran": ran, "elapsedMs": number("elapsedMs"), "rtf": number("rtf"),
+                                      "peakRssBytes": number("peakRssBytes"), "warmupMs": number("warmupMs"),
+                                      "model": (row["model"] as? String).flatMap { (1...48).contains($0.count) && $0.allSatisfy { $0.isASCII && !$0.isNewline } ? $0 : nil } ?? NSNull(),
+                                      "skipped": DictationBridge.id(row["skipped"], skips) ?? NSNull(), "wer": NSNull(), "words": NSNull()]
+            if ran, let text = row["text"] as? String, text.utf8.count <= 64_000, let wer = VoiceAccuracy.wordErrorRate(reference: reference, hypothesis: text) {
+                out["wer"] = wer
+                out["words"] = VoiceAccuracy.words(reference).count
+            }
+            if !ran, out["skipped"] is NSNull { out["skipped"] = "unavailable" }
+            return out
+        }
+    }
+}
+
+/// The bundled FluidAudio command line tool COS Control passes to the server (Contents/Helpers/fluidaudiocli). The
+/// server proves it (codesign, team, the embedded Info.plist's version); this only refuses a path that is not one.
+enum ParakeetCLIPath {
+    static let suffix = "/Contents/Helpers/fluidaudiocli"
+    static func valid(_ path: String, isExecutable: (String) -> Bool) -> Bool {
+        guard path.hasPrefix("/"), path.hasSuffix(suffix), path.utf8.count <= 1024, !path.contains("\0"),
+              !path.split(separator: "/").contains(where: { $0 == ".." || $0 == "." }) else { return false }
+        return isExecutable(path)
+    }
+}

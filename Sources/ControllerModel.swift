@@ -584,6 +584,8 @@ final class ControllerModel: ObservableObject {
     var showSetupGuide: (() -> Void)?
     /// Opens the menu-bar panel on its settings (the pet's and the Dock's Settings…).
     var showSettings: (() -> Void)?
+    /// 0.5.317: opens Settings on COS's Transcription card (a dictation card's action), never macOS Privacy.
+    var showTranscriptionSettings: (() -> Void)?
     /// The panel scrolls here when it appears ("settings"); the panel clears it.
     @Published var panelScrollTarget: String?
     /// F4: the one-line session pet introduction, once, for anyone who never touched the pet settings.
@@ -734,6 +736,30 @@ final class ControllerModel: ObservableObject {
             guard response.ok else { throw HelperClientError.commandFailed(response.message) }
         }
         guide.log = { line in onboardingLog.info("\(line, privacy: .public)") }
+        // 0.5.317: dictation's proof and the engine step.
+        guide.runDictationCheck = {
+            // A full decode of 30 s through the dictation route: 35 s for the transcribe call, plus the capability read.
+            let response = try await helper.run(["dictation-check"], timeout: 60)
+            return response.message
+        }
+        guide.runEngineTest = {
+            // The server limits the test to 150 s for both engines; the helper waits 160 s.
+            let response = try await helper.run(["dictation-benchmark"], timeout: 180)
+            guard response.ok else { throw HelperClientError.commandFailed(response.message) }
+            return response.message
+        }
+        guide.setDictationEngine = { [weak self] id in
+            guard let self else { return false }
+            let run = TranscriptionSettingsCard.run(self)
+            if !self.transcriptionSettings.visible { await self.transcriptionSettings.load(run) }
+            await self.transcriptionSettings.set("dictation", .string(id), run: run)
+            return self.transcriptionSettings.settings?.dictation?.selected == id
+        }
+        guide.installParakeet = { [weak self] in self?.installParakeet() }
+        guide.afterRefresh = { [weak self, weak guide] in
+            guard let self, let guide else { return }
+            guide.backgroundCheckIfNeeded(self.setupFacts(provider: self.providerGuide, guide: guide), recording: self.recordingCount > 0 || self.macRecordingActive)
+        }
         return guide
     }
 
@@ -2767,6 +2793,31 @@ final class ControllerModel: ObservableObject {
     /// 0.5.318: Activity → Dictation, to review what Learn from my edits suggested.
     func openDictationInActivity() {
         openActivity?(.dictation)
+    }
+
+    /// 0.5.317: Install Parakeet from anywhere (Settings, the menu bar panel, a dictation card, the setup guide's engine
+    /// step). One store, so its progress and Cancel show in every place at once. It reads the settings first when no
+    /// place has yet; the store refuses while a recording is live and checks free disk before anything downloads.
+    func installParakeet() {
+        let run = TranscriptionSettingsCard.run(self)
+        Task {
+            if !transcriptionSettings.visible { await transcriptionSettings.load(run) }
+            await transcriptionSettings.install(run, recording: recordingCount > 0)
+        }
+    }
+
+    /// 0.5.317: the Dictation engine set to Whisper (a card's Use Whisper). True when the server took it.
+    func useWhisperForDictation() async -> Bool {
+        let run = TranscriptionSettingsCard.run(self)
+        if !transcriptionSettings.visible { await transcriptionSettings.load(run) }
+        await transcriptionSettings.set("dictation", .string("whisper"), run: run)
+        return transcriptionSettings.settings?.dictation?.selected == "whisper"
+    }
+
+    /// 0.5.317: About COS Control, whose credits (Resources/Credits.html) name FluidAudio and the Parakeet Ultra model.
+    func openLicenses() {
+        NSApp.activate(ignoringOtherApps: true)
+        NSApp.orderFrontStandardAboutPanel(nil)
     }
 
     /// From the pet's Fix a word: Activity opens on Meetings, then ActivityWindow.applyLaunchSection opens the pane.

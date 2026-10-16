@@ -725,6 +725,18 @@ extension ControllerModel {
         facts.permissionsNeedCount = permissionGuide.needCount
         facts.ollamaPinnedModel = status.ollamaConfiguredModel
         facts.glasses = glassesPairing.facts(serverRunning: status.running, pairingSupported: status.pairingSupported)
+        facts.serverVersion = status.version
+        facts.dictationProof = DictationProof.load()
+        facts.dictationChecking = guide.dictationChecking
+        facts.dictationCheckAttempted = guide.checkAttemptedVersion
+        facts.engineTesting = guide.engineTesting
+        facts.engineChosen = guide.engineChosen
+        #if arch(arm64)
+        facts.appleSilicon = true
+        #else
+        facts.appleSilicon = false
+        #endif
+        facts.memoryBytes = ProcessInfo.processInfo.physicalMemory
         return facts
     }
 }
@@ -734,6 +746,8 @@ struct SetupRowView: View {
     @ObservedObject var model: ControllerModel
     @ObservedObject var guide: SetupGuideState
     let row: SetupRow
+    /// 0.5.317: Checking dictation is a wait, never a problem: no amber while it runs (SetupGuideRules.voiceWaiting).
+    private var waiting: Bool { SetupGuideRules.voiceWaiting(row) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
@@ -741,11 +755,11 @@ struct SetupRowView: View {
                 Text(row.title).font(COSType.body(12.5, weight: .semibold))
                 Spacer(minLength: 6)
                 HStack(spacing: 5) {
-                    if row.id == .voice && guide.voiceRunning { ProgressView().controlSize(.mini) }
-                    else { Circle().fill(row.done ? COSPalette.green : row.skipped || row.afterSetup ? COSPalette.muted : COSPalette.amber).frame(width: 7, height: 7) }
+                    if (row.id == .voice && (guide.voiceRunning || guide.dictationChecking)) || (row.id == .dictationEngine && guide.engineTesting) { ProgressView().controlSize(.mini) }
+                    else { Circle().fill(row.done ? COSPalette.green : row.skipped || row.afterSetup || waiting ? COSPalette.muted : COSPalette.amber).frame(width: 7, height: 7) }
                     Text(row.id == .voice && guide.voiceRunning ? "Downloading…" : row.skipped && !row.done ? "Skipped for now" : row.status)
-                        .font(COSType.body(11, weight: row.done || row.skipped || row.afterSetup ? .regular : .semibold))
-                        .foregroundStyle(row.done ? COSPalette.green : row.skipped || row.afterSetup ? COSPalette.muted : COSPalette.amber)
+                        .font(COSType.body(11, weight: row.done || row.skipped || row.afterSetup || waiting ? .regular : .semibold))
+                        .foregroundStyle(row.done ? COSPalette.green : row.skipped || row.afterSetup || waiting ? COSPalette.muted : COSPalette.amber)
                 }.fixedSize()
             }
             Text(row.unlocks).font(COSType.body(11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
@@ -753,12 +767,13 @@ struct SetupRowView: View {
                 Text(detail).font(COSType.body(10.5)).foregroundStyle(COSPalette.muted).fixedSize(horizontal: false, vertical: true)
             }
             if row.id == .voice { voiceControls }
+            if row.id == .dictationEngine { engineControls }
             if !row.done && !row.afterSetup {
                 HStack(spacing: 12) {
                     if let title = row.actionTitle, row.action != .none {
                         Button(title) { perform(row.action) }
                             .buttonStyle(COSPrimaryButtonStyle())
-                            .disabled(row.id == .voice && guide.voiceRunning)
+                            .disabled((row.id == .voice && (guide.voiceRunning || guide.dictationChecking)) || (row.id == .dictationEngine && guide.engineTesting))
                     }
                     if row.id == .voice && guide.voiceRunning {
                         Button("Cancel") { guide.cancelVoiceSetup() }.buttonStyle(COSTextButtonStyle())
@@ -819,6 +834,12 @@ struct SetupRowView: View {
         }
     }
 
+    @ViewBuilder private var engineControls: some View {
+        if !row.afterSetup, guide.voice?.dictationSelected != nil {
+            DictationEngineControls(model: model, guide: guide, store: model.transcriptionSettings)
+        }
+    }
+
     /// Every action a row can carry does something; `.none` rows show no button (QA 2026-10-08 B1: Get Ollama did not).
     private func perform(_ action: SetupAction) {
         switch action {
@@ -831,6 +852,9 @@ struct SetupRowView: View {
         case .voiceNeedsWhisper: Task { await guide.refreshVoice() }
         case .voiceDownload: guide.startVoiceSetup()
         case .voiceApply(let tier): model.setTranscriptionTier(tier)
+        case .testDictation: guide.testDictation()
+        // Automatic with Parakeet not installed: install it in the background, dictate with Whisper meanwhile.
+        case .useEngine(let setting): guide.useEngine(setting, installParakeetToo: setting == "auto" && guide.voice?.parakeetInstalled != true && guide.voice?.parakeetInstallable == true)
         case .turnOnSessions: model.setClaudeSessionsEnabled(true)
         case .turnOnContinue: model.setThreadAttachEnabled(true)
         case .addJevKey: model.showSettings?()
@@ -839,6 +863,46 @@ struct SetupRowView: View {
         case .getTailscale: _ = model.providerGuide.openURL(GlassesRules.tailscaleDownload)
         case .openTailscale: if !GlassesWindowHolder.openTailscaleApp() { _ = model.providerGuide.openURL(GlassesRules.tailscaleDownload) }
         }
+    }
+}
+
+/// 0.5.317: the setup guide's engine step controls (decision 6): the Parakeet row (install with progress and Cancel, or
+/// why not), the pick, and the 30 second test. The pick is a dropdown, the same control as Settings; no pill-row tabs.
+struct DictationEngineControls: View {
+    @ObservedObject var model: ControllerModel
+    @ObservedObject var guide: SetupGuideState
+    @ObservedObject var store: TranscriptionSettingsStore
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if let state = store.rowState(recording: model.recordingCount > 0) {
+                ParakeetRowView(state: state, offersCancel: store.offersCancel, compact: true,
+                                install: { model.installParakeet() },
+                                cancel: { Task { await store.cancelInstall(TranscriptionSettingsCard.run(model)) } },
+                                checkAgain: { Task { await store.checkAgain(TranscriptionSettingsCard.run(model)); await guide.refreshVoice() } },
+                                useWhisper: { guide.useEngine("whisper", installParakeetToo: false) })
+            }
+            COSDropdown("Dictation engine", selection: Binding(
+                get: { guide.voice?.dictationSelected ?? "auto" },
+                set: { id in guide.useEngine(id, installParakeetToo: false) }),
+                options: ["auto", "parakeet-ultra", "whisper"].map { id in
+                    let usable = id != "parakeet-ultra" || guide.voice?.parakeetInstalled == true
+                    return COSDropdownOption(id, Transcription.dictationTitles[id] ?? id, note: usable ? nil : "Install first", muted: !usable, enabled: usable)
+                }, labelWidth: 112)
+                .font(COSType.body(12))
+            HStack(spacing: 12) {
+                Button(guide.voice?.engineTest == nil ? "Test on this Mac" : "Test again") { guide.testEngines() }
+                    .buttonStyle(COSTextButtonStyle())
+                    .disabled(guide.engineTesting || model.recordingCount > 0)
+                    .help("Dictates COS's 30 second sample with each installed engine. A quick check, not a full accuracy test.")
+                Spacer(minLength: 0)
+            }
+            if let message = guide.engineMessage {
+                Text(message).font(COSType.body(10.5)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .task { await store.load(TranscriptionSettingsCard.run(model)) }
+        // An install finished here or anywhere else: the row reads the new state.
+        .onChange(of: store.settings?.parakeet.done) { _, _ in Task { await guide.refreshVoice() } }
     }
 }
 
@@ -873,7 +937,7 @@ struct SetupGuideView: View {
                 }
             }
             section("On this Mac") {
-                ForEach(Array(rows.filter { [.ollama, .voice].contains($0.id) }.enumerated()), id: \.element.id) { index, row in
+                ForEach(Array(rows.filter { [.ollama, .voice, .dictationEngine].contains($0.id) }.enumerated()), id: \.element.id) { index, row in
                     if index > 0 { Divider() }
                     SetupRowView(model: model, guide: guide, row: row)
                 }
@@ -1016,8 +1080,8 @@ struct FinishSetupCard: View {
 final class SettingsWindowPresenter: ObservableObject {
     private var controller: NSWindowController?
 
-    func show(model: ControllerModel, openActivity: @escaping (ActivitySection?) -> Void) {
-        model.panelScrollTarget = "settings"
+    func show(model: ControllerModel, scroll: String = "settings", openActivity: @escaping (ActivitySection?) -> Void) {
+        model.panelScrollTarget = scroll
         if controller == nil {
             let host = NSHostingController(rootView: ControlPanel(model: model, openActivity: openActivity, hostedInWindow: true))
             let window = NSWindow(contentViewController: host)
@@ -1036,15 +1100,16 @@ final class SettingsWindowPresenter: ObservableObject {
 /// Settings… from the Dock menu, ⌘, and the pet: the open panel scrolls, a visible icon opens the panel, anything
 /// else gets the Settings window.
 @MainActor enum SettingsOpener {
-    static func open(model: ControllerModel, window: SettingsWindowPresenter, openActivity: @escaping (ActivitySection?) -> Void) {
+    /// `scroll`: the panel section to land on ("settings", or "transcription" for a dictation card's action, 0.5.317).
+    static func open(model: ControllerModel, window: SettingsWindowPresenter, scroll: String = "settings", openActivity: @escaping (ActivitySection?) -> Void) {
         let target = SettingsRoute.decide(panelOpen: model.panelVisible, item: MenuBarPanelOpener.statusItemFacts())
-        onboardingLog.info("settings opened target=\(String(describing: target), privacy: .public)")
+        onboardingLog.info("settings opened target=\(String(describing: target), privacy: .public) scroll=\(scroll, privacy: .public)")
         switch target {
-        case .scrollOpenPanel: model.panelScrollTarget = "settings"
+        case .scrollOpenPanel: model.panelScrollTarget = scroll
         case .clickStatusItem:
-            model.panelScrollTarget = "settings"
-            if !MenuBarPanelOpener.clickStatusItem() { window.show(model: model, openActivity: openActivity) }
-        case .window: window.show(model: model, openActivity: openActivity)
+            model.panelScrollTarget = scroll
+            if !MenuBarPanelOpener.clickStatusItem() { window.show(model: model, scroll: scroll, openActivity: openActivity) }
+        case .window: window.show(model: model, scroll: scroll, openActivity: openActivity)
         }
     }
 }

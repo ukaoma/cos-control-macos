@@ -1,0 +1,11 @@
+{
+  "version": "0.17.4",
+  "sourceRepository": "https://github.com/FluidInference/FluidAudio.git",
+  "sourceCommit": "21493f8dac5a97e65742e6ff26f42f164c2fda0f",
+  "license": "Apache-2.0",
+  "identifier": "com.gotcos.control.fluidaudiocli",
+  "team": "NV3X46LLCR",
+  "bundlePath": "Contents/Helpers/fluidaudiocli",
+  "builtSHA256": "",
+  "builtBytes": 0
+}
