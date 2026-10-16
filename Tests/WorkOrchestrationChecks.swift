@@ -13,9 +13,12 @@ private actor WorkChatFixture {
     var capabilityFailures = 0
     init(_ ids: [String], planners: [String]? = ["sonnet", "opus"], model: String = "claude:opus-fixture-model") { self.ids = ids; self.planners = planners; self.model = model }
     func failCapabilities(_ times: Int) { capabilityFailures = times }
+    var echoEffort = true
+    func stopEchoingEffort() { echoEffort = false }
     func seen() -> [String] { calls }
     func plannerSent() -> [String?] { chatBodies.map { $0["planner"] as? String } }
     func plannerKeySent() -> [Bool] { chatBodies.map { $0["planner"] != nil } }
+    func effortSent() -> [String?] { chatBodies.map { $0["effort"] as? String } }
     func run(_ args: [String], _ data: Data?) async throws -> HelperResponse {
         let name = args.first ?? ""; calls.append(name)
         var out: [String: JSONValue] = [:]
@@ -30,13 +33,16 @@ private actor WorkChatFixture {
         case "work-chat-capabilities":
             if capabilityFailures > 0 { capabilityFailures -= 1; throw HelperClientError.commandFailed("Task chat planner discovery got no answer from the server.") }
             out = ["protocolVersion": .number(1)]
-            if let planners { out["planners"] = .array(planners.map { .string($0) }) }
+            // A planners-advertising fixture is a 6.73.12 server, which also advertises efforts.
+            if let planners { out["planners"] = .array(planners.map { .string($0) }); out["efforts"] = .array(["low", "medium", "high"].map { .string($0) }) }
         case "work-chat":
-            if let data, let body = try? JSONSerialization.jsonObject(with: data) as? [String: Any] { chatBodies.append(body) }
+            var ranEffort: String? = planners == nil ? nil : "high"
+            if let data, let body = try? JSONSerialization.jsonObject(with: data) as? [String: Any] { chatBodies.append(body); ranEffort = (body["effort"] as? String) ?? ranEffort }
             // Let a second Send and a navigation change race with planning.
             try await Task.sleep(for: .milliseconds(100))
             out = ["protocolVersion": .number(1), "answer": .string("Review independent copy and code checks."), "model": .string(model),
                 "assignments": .array(ids.prefix(2).map { .object(["sessionID": .string($0), "prompt": .string("Report checks; do not publish.")]) })]
+            if let ranEffort, echoEffort { out["effort"] = .string(ranEffort) }
         default: preconditionFailure("Fixture must stop before any provider delivery: \(args)")
         }
         return HelperResponse(ok: true, message: "Fixture", details: out)
@@ -239,7 +245,8 @@ private actor WorkChatFixture {
     let candidate = WorkTaskChatStore(); candidate.enabled = true; candidate.open(source: source, handoff: real); candidate.setDraft("Review independent checks")
     await candidate.loadPlanners(handoff: real)
     precondition(candidate.planners == ["sonnet", "opus"], "The advertised planners are offered")
-    let first = Task { await candidate.send(source: source, handoff: real, planner: "opus") }
+    precondition(candidate.efforts == ["low", "medium", "high"], "The advertised efforts are offered")
+    let first = Task { await candidate.send(source: source, handoff: real, planner: "opus", effort: "medium") }
     try await Task.sleep(for: .milliseconds(50))
     await candidate.send(source: source, handoff: real)
     let other = WorkSource(id: "task:quilt:bbbbbbbbbbbb", title: "Other", revision: source.revision, project: "quilt", context: "")
@@ -254,6 +261,9 @@ private actor WorkChatFixture {
     precondition(sentPlanner == ["opus"] && candidate.record?.rounds.first?.planner == "opus", "The chosen planner reaches the server and is recorded on the round")
     precondition(candidate.record?.rounds.first?.plannerModel == "claude:opus-fixture-model", "The round keeps the model the server reports ran")
     precondition(WorkChatPolicy.plannerLabel(requested: "opus", ran: candidate.record?.rounds.first?.plannerModel) == "planned with opus-fixture-model", "Only the server's report becomes \"planned with\"")
+    let sentEffort = await fixture.effortSent()
+    precondition(sentEffort == ["medium"] && candidate.record?.rounds.first?.plannerEffort == "medium", "The chosen effort reaches the server and the reported effort is recorded")
+    precondition(WorkChatPolicy.plannerLabel(requested: "opus", ran: candidate.record?.rounds.first?.plannerModel, effort: candidate.record?.rounds.first?.plannerEffort) == "planned with opus-fixture-model · medium effort", "The round names the model and effort the server reports")
     await candidate.sendAll(roundID: candidate.record!.rounds[0].id, source: source, handoff: real)
     let afterSend = await fixture.seen()
     precondition(real.receipts.isEmpty && candidate.record?.rounds.first?.state == "Needs a new plan" && candidate.error == WorkChatPolicy.staleMessage
@@ -265,22 +275,32 @@ private actor WorkChatFixture {
     await oldServer.refresh()
     let oldChat = WorkTaskChatStore(); oldChat.enabled = true; oldChat.open(source: source, handoff: oldServer); oldChat.setDraft("Review on an older server")
     await oldChat.loadPlanners(handoff: oldServer)
-    precondition(oldChat.planners.isEmpty && oldChat.plannerNotice == nil, "An older server offers no planner choice, and that is not a failure")
-    await oldChat.send(source: source, handoff: oldServer, planner: "opus")
+    precondition(oldChat.planners.isEmpty && oldChat.efforts.isEmpty && oldChat.plannerNotice == nil, "An older server offers no planner or effort choice, and that is not a failure")
+    await oldChat.send(source: source, handoff: oldServer, planner: "opus", effort: "high")
     let oldKeys = await oldFixture.plannerKeySent()
+    let oldEffort = await oldFixture.effortSent()
+    precondition(oldEffort == [nil] && oldChat.record?.rounds.last?.plannerEffort == nil, "An older server never receives the effort key, and no effort is claimed")
     precondition(oldKeys == [false] && oldChat.record?.rounds.last?.planner == "sonnet" && oldServer.receipts.isEmpty, "An older server plans with Sonnet and never receives the planner key")
     precondition(WorkChatPolicy.plannerLabel(requested: oldChat.record?.rounds.last?.planner, ran: oldChat.record?.rounds.last?.plannerModel) == "requested Sonnet (not confirmed)", "A requested model is never shown as the one that ran")
     // 0.5.310: a server that fails planner discovery is retried once, then named, never silently hidden.
     await fixture.failCapabilities(1)
     let retried = WorkTaskChatStore(); retried.enabled = true
     await retried.loadPlanners(handoff: real, retryDelay: .zero)
-    precondition(retried.planners == ["sonnet", "opus"] && retried.plannerNotice == nil, "One failed discovery is retried and recovers")
+    precondition(retried.planners == ["sonnet", "opus"] && retried.efforts == ["low", "medium", "high"] && retried.plannerNotice == nil, "One failed discovery is retried and recovers")
     await fixture.failCapabilities(2)
     let unavailable = WorkTaskChatStore(); unavailable.enabled = true
     await unavailable.loadPlanners(handoff: real, retryDelay: .zero)
-    precondition(unavailable.planners.isEmpty && unavailable.plannerNotice == WorkChatPolicy.plannerUnavailable, "Two failed discoveries say the choice is unavailable and Sonnet is used")
+    precondition(unavailable.planners.isEmpty && unavailable.efforts.isEmpty && unavailable.plannerNotice == WorkChatPolicy.plannerUnavailable, "Two failed discoveries say the choice is unavailable and Sonnet is used")
+    // A server that took the effort but did not report one: the round claims no effort.
+    await fixture.stopEchoingEffort()
+    let unreported = WorkTaskChatStore(); unreported.enabled = true; unreported.open(source: source, handoff: real)
+    await unreported.loadPlanners(handoff: real, retryDelay: .zero)
+    unreported.setDraft("Plan without a reported effort")
+    await unreported.send(source: source, handoff: real, planner: "opus", effort: "low")
+    let lastEffort = await fixture.effortSent().last ?? nil
+    precondition(lastEffort == "low" && unreported.record?.rounds.last?.state == "Ready to send" && unreported.record?.rounds.last?.plannerEffort == nil, "A requested effort is never recorded as the one that ran")
     let capabilityCalls = await fixture.seen().filter { $0 == "work-chat-capabilities" }.count
-    precondition(capabilityCalls == 5, "Discovery asks once, retries once, and no more: \(capabilityCalls)")
+    precondition(capabilityCalls == 6, "Discovery asks once, retries once, and no more: \(capabilityCalls)")
     let legacySource = WorkSource(id: "task:quilt:dddddddddddd", title: "Interrupted fixture", revision: source.revision, project: "quilt", context: "")
     let legacyChat = WorkTaskChatStore(); legacyChat.open(source: legacySource, handoff: handoff)
     var interrupted = WorkChatRound(question: "Review the 404 sheet")
@@ -410,6 +430,15 @@ private actor WorkPartialSendFixture {
     precondition(WorkChatPolicy.plannerLabel(requested: "opus", ran: nil) == "requested Opus (not confirmed)", "No report is not a confirmation")
     precondition(WorkChatPolicy.plannerLabel(requested: nil, ran: "claude:sonnet (requested)") == "requested Sonnet (not confirmed)")
     precondition(WorkChatPolicy.plannerLabel(requested: nil, ran: nil) == nil && WorkChatPolicy.plannerLabel(requested: nil, ran: "  ") == nil)
+    precondition(WorkChatPolicy.effort(nil, advertised: []) == nil && WorkChatPolicy.effort("high", advertised: []) == nil, "An older server gets no effort key")
+    precondition(WorkChatPolicy.effort("low", advertised: ["low", "medium", "high"]) == "low" && WorkChatPolicy.effort("medium", advertised: ["low", "medium", "high"]) == "medium")
+    precondition(WorkChatPolicy.effort(nil, advertised: ["low", "medium", "high"]) == "high" && WorkChatPolicy.effort("max", advertised: ["low", "medium", "high", "max"]) == "high", "Unknown or unoffered levels fall back to high, never xhigh or max")
+    precondition(WorkChatPolicy.effort("low", advertised: ["high"]) == "high")
+    precondition(WorkChatPolicy.plannerLabel(requested: "opus", ran: "claude:claude-opus-4-8", effort: "high") == "planned with claude-opus-4-8 · high effort")
+    precondition(WorkChatPolicy.plannerLabel(requested: "opus", ran: "claude:claude-opus-4-8", effort: nil) == "planned with claude-opus-4-8", "No reported effort is never claimed")
+    precondition(WorkChatPolicy.plannerLabel(requested: "opus", ran: "claude:claude-opus-4-8", effort: "max") == "planned with claude-opus-4-8", "Only known levels are shown")
+    precondition(WorkChatPolicy.plannerLabel(requested: nil, ran: nil, effort: "high") == nil)
+    precondition(WorkChatPolicy.effortName("medium") == "Medium")
     precondition(WorkChatPolicy.validPrompt("Review copy.") && !WorkChatPolicy.validPrompt(" \n ") && !WorkChatPolicy.validPrompt(String(repeating: "x", count: 2001)) && !WorkChatPolicy.validPrompt("cos-`work` x: done"))
     print("PASS Work chat pre-flight: one shared fence (run/session exemption, unknown, continuation proof, replacing, terminal), card blockers newest first, planner choice and fallback, review states, prompt validation")
 }

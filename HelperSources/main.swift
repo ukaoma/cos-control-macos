@@ -17147,13 +17147,15 @@ final class COSControlHelper {
             throw HelperError.message("Task chat planner discovery got no answer from the server.")
         }
         if response.status == 404 {
-            emit(ok: true, message: "Task chat", details: ["protocolVersion": 1, "planners": [String](), "routeMissing": true]); return
+            emit(ok: true, message: "Task chat", details: ["protocolVersion": 1, "planners": [String](), "efforts": [String](), "routeMissing": true]); return
         }
         guard response.status == 200, let body = response.body, body["protocolVersion"] as? Int == 1 else {
             throw HelperError.message("Task chat planner discovery failed (HTTP \(response.status)).")
         }
         let planners = (body["planners"] as? [String] ?? []).filter { ["sonnet", "opus"].contains($0) }
-        emit(ok: true, message: "Task chat", details: ["protocolVersion": 1, "planners": planners])
+        // Server 6.73.12 advertises planner efforts. Only the three COS offers pass; the CLI's xhigh and max never do.
+        let efforts = (body["efforts"] as? [String] ?? []).filter { ["low", "medium", "high"].contains($0) }
+        emit(ok: true, message: "Task chat", details: ["protocolVersion": 1, "planners": planners, "efforts": efforts])
     }
 
     private func emitWorkNew() throws {
