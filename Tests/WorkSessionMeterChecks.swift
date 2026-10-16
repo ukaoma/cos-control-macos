@@ -16,8 +16,8 @@ import Foundation
         // Claude: the newest main-thread assistant usage; sidechain and synthetic turns never count.
         let claude = try lines("claude.jsonl")
         let claudeContext = WorkSessionMeter.claudeContext(lines: claude)
-        expect(claudeContext == WorkSessionMeter.Context(used: 121_003, window: 200_000, model: "claude-opus-5-5"), "Claude usage = input + cache read + cache creation of the last real turn")
-        expect(claudeContext?.label == "61% · 121k / 200k" && claudeContext?.nearlyFull == false, "Claude label")
+        expect(claudeContext == WorkSessionMeter.Context(used: 121_003, window: 1_000_000, model: "claude-opus-5-5"), "Claude usage = input + cache read + cache creation of the last real turn")
+        expect(claudeContext?.label == "12% · 121k / 1M" && claudeContext?.nearlyFull == false, "Claude label")
         expect(WorkSessionMeter.claudeContext(lines: Array(claude.prefix(1))) == nil, "no usage line: unknown, never 0%")
         let sidechain = claude.first { $0.contains("SIDECHAIN.md") }!
         let synthetic = #"{"type":"assistant","message":{"model":"<synthetic>","usage":{"input_tokens":5000}}}"#
@@ -44,9 +44,19 @@ import Foundation
         expect(WorkSessionMeter.patchPaths("*** Delete File: a\n*** Add File: b\n*** Update File:  \n") == ["b"], "patch headers")
 
         // The window table, in one place, and an estimate.
-        expect(WorkSessionMeter.window(provider: "claude", model: "claude-opus-5-5[1m]", reported: nil, used: 10) == 1_000_000, "Claude [1m] marker")
-        expect(WorkSessionMeter.window(provider: "claude", model: "claude-opus-5-5", reported: nil, used: 250_000) == 1_000_000, "usage past 200k proves a 1M window")
-        expect(WorkSessionMeter.window(provider: "claude", model: "claude-sonnet-5-5", reported: nil, used: 150_000) == 200_000, "Claude default 200k")
+        // Claude by family (lead QA 2026-10-15: Opus 5.5 at 180k must not read "close to compacting").
+        for model in ["claude-opus-5-5", "claude-opus-5", "claude-fable-5-1", "claude-fable-5", "claude-sonnet-5-5", "claude-haiku-5-5"] {
+            expect(WorkSessionMeter.window(provider: "claude", model: model, reported: nil, used: 180_000) == 1_000_000, "\(model) is a 1M window")
+        }
+        func claudeAt(_ model: String, _ used: Int) -> WorkSessionMeter.Context? {
+            WorkSessionMeter.claudeContext(lines: [#"{"type":"assistant","message":{"model":"\#(model)","usage":{"input_tokens":\#(used)}}}"#])
+        }
+        expect(claudeAt("claude-opus-5-5", 180_000)?.label == "18% · 180k / 1M" && claudeAt("claude-opus-5-5", 180_000)?.nearlyFull == false, "Opus 5.5 at 180k: 18%, not orange")
+        expect(claudeAt("claude-opus-4-8", 180_000)?.label == "90% · 180k / 200k" && claudeAt("claude-opus-4-8", 180_000)?.nearlyFull == true, "a 200k model at 180k: orange")
+        expect(claudeAt("opus", 180_000) == nil && claudeAt("claude-next-9", 180_000) == nil, "an unrecognized model is unknown, so hidden")
+        expect(WorkSessionMeter.window(provider: "claude", model: "claude-opus-4-8[1m]", reported: nil, used: 10) == 1_000_000, "Claude [1m] marker on a 200k family")
+        expect(WorkSessionMeter.window(provider: "claude", model: "claude-sonnet-4-5", reported: nil, used: 250_000) == 1_000_000, "usage past 200k proves a 1M window")
+        expect(WorkSessionMeter.window(provider: "claude", model: "claude-3-5-haiku", reported: nil, used: 150_000) == 200_000, "the 3 family is 200k")
         expect(WorkSessionMeter.window(provider: "codex", model: "gpt-5-codex", reported: nil, used: 1) == 272_000, "Codex gpt-5 without a stated window")
         expect(WorkSessionMeter.window(provider: "codex", model: "o3", reported: nil, used: 1) == nil, "unknown Codex model: hidden")
         expect(WorkSessionMeter.window(provider: "codex", model: "", reported: 400_000, used: 1) == 400_000, "a stated window wins")

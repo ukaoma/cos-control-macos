@@ -64,7 +64,7 @@ try:
     result = run('--session', f'claude:{sid}', '--since', f'{since:.3f}')
     d = result['details']
     check(result['ok'] and d['known'] is True and d['provider'] == 'claude', 'a Claude transcript is known')
-    check(d['context'] == {'used': 171_010, 'window': 200_000, 'model': 'claude-opus-5-5'}, 'context from the newest usage line')
+    check(d['context'] == {'used': 171_010, 'window': 1_000_000, 'model': 'claude-opus-5-5'}, 'context from the newest usage line; Opus 5.5 is a 1M window')
     check([o['path'] for o in d['outputs']] == [str(tail_file), str(image)], 'existing outputs since the handoff, newest first; a deleted file is not listed')
     check(d['outputsTotal'] == 2 and d['outputsPartial'] is True, 'an output older than the bounded window is not read, and that is said')
     check(str(head_file) not in json.dumps(d), 'the head of a multi-MB transcript is never read')
@@ -88,7 +88,7 @@ try:
     sid2 = str(uuid.uuid4())
     (project / f'{sid2}.jsonl').write_text(json.dumps(assistant('2026-10-15T12:00:00.000Z', {'input_tokens': 5, 'cache_read_input_tokens': 900_000}, [])).replace(str(repo), str(plain)) + '\n')
     d = run('--session', f'claude:{sid2}', '--since', f'{since:.3f}')['details']
-    check(d['changes'] == {'repo': False} and d['context']['window'] == 1_000_000 and d['context']['used'] == 900_005, 'not a repo; usage past 200k reads as a 1M window')
+    check(d['changes'] == {'repo': False} and d['context']['window'] == 1_000_000 and d['context']['used'] == 900_005, 'not a repo; Opus 5.5 is a 1M window')
 
     # Codex: the rollout found from the UUIDv7 time, its stated window.
     ms = int(iso('2026-10-15T12:00:00Z') * 1000)

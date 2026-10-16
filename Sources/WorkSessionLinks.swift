@@ -230,16 +230,19 @@ enum WorkSessionMeter {
     static let claudeWriteTools: Set<String> = ["Write", "Edit", "MultiEdit", "NotebookEdit"]
 
     /// THE context-window table, and it is an ESTIMATE. A window the transcript states (Codex `model_context_window`)
-    /// wins. Claude: 1M when the model id carries the 1M marker, or when usage already passed 200k (only a 1M window
-    /// holds that); otherwise 200k. Codex without a stated window: 272k for the gpt-5 family. Anything else is unknown,
-    /// and an unknown window hides the meter rather than drawing a guess.
+    /// wins. Claude, by the model id the JSONL records (claude-opus-5-5, claude-opus-5, claude-fable-5-1,
+    /// claude-sonnet-5-5, claude-haiku-5-5 seen on this Mac 2026-10-15): the 5 family is 1M (Miles's panel: Opus 5.5
+    /// "238.3k / 1M"). Only the 4 and 3 families are 200k, unless the id carries the 1M marker or usage already passed
+    /// 200k. Any other id (an alias such as "opus") is unknown. Codex without a stated window: 272k for gpt-5.
+    /// An unknown window hides the meter rather than drawing a guess.
     static func window(provider: String, model: String, reported: Int?, used: Int) -> Int? {
         if let reported, reported > 0 { return reported }
         let id = model.lowercased()
         switch provider {
         case "claude":
-            if id.contains("[1m]") || id.hasSuffix("-1m") || used > 200_000 { return 1_000_000 }
-            return 200_000
+            if ["claude-opus-5", "claude-sonnet-5", "claude-fable-5", "claude-haiku-5"].contains(where: { id.hasPrefix($0) }) { return 1_000_000 }
+            guard ["claude-opus-4", "claude-sonnet-4", "claude-haiku-4", "claude-3"].contains(where: { id.hasPrefix($0) }) else { return nil }
+            return id.contains("[1m]") || id.hasSuffix("-1m") || used > 200_000 ? 1_000_000 : 200_000
         case "codex":
             return id.hasPrefix("gpt-5") ? 272_000 : nil
         default:
