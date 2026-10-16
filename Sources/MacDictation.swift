@@ -534,8 +534,13 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
     @Published private(set) var surface: DictationSurface = .pet
     /// The short-lived card: no text box (mock 04), or a dictation that did not finish.
     @Published private(set) var card: DictationCard?
-    /// Recent dictations, newest first, the last 50, kept on this Mac across restarts (mock 05).
+    /// Dictation history, newest first, decoded once and kept in memory; on disk as long as `retention` says, never more
+    /// than 5,000 (0.5.312). The pet shows the first 10 (`petRecent`); COS Activity shows them all.
     @Published private(set) var recent: [DictationRecord]
+    var petRecent: [DictationRecord] { Array(recent.prefix(DictationHistory.petCount)) }
+    /// Settings → Keep dictations for. 30 days by default. Changing it prunes now; "Don't keep" is set through
+    /// `stopKeepingHistory()` after the person confirms.
+    @Published private(set) var retention: DictationRetention
     /// Which dictation view is open: the pet's list, one dictation, or Fix a word.
     @Published private(set) var listRoute: DictationListRoute?
     @Published private(set) var fixSelection: ClosedRange<Int>?
@@ -585,7 +590,12 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
         let history = Self.defaultHistoryURL()
         let loaded = history.map { DictationHistory.loadOrQuarantine(from: $0, now: Date()) }
         historyURL = loaded?.writable == false ? nil : history
-        recent = loaded?.records ?? []
+        // Prune on launch: older than the retention, past the 5,000 cap; "Don't keep" leaves nothing on disk.
+        // From a local: a @Published property cannot be read before every stored property is set (Swift 6 init order).
+        let keep = DictationRetention(rawValue: d.string(forKey: "dictation.history.retention") ?? "") ?? .default
+        retention = keep
+        let kept = DictationHistory.pruned(loaded?.records ?? [], retention: keep, now: Date())
+        recent = keep.writesToDisk ? kept : []
         if let aside = loaded?.movedTo { dictationLog.notice("recent dictations unreadable; moved aside to \(aside.lastPathComponent, privacy: .public)") }
         for name in [NSWorkspace.willSleepNotification, NSWorkspace.sessionDidResignActiveNotification] {
             sessionObservers.append(NSWorkspace.shared.notificationCenter.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
@@ -593,6 +603,7 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
             })
         }
         overlay.bind(store: self)
+        if recent.count != (loaded?.records.count ?? 0) || !retention.writesToDisk { saveRecent() }
     }
     /// ~/Library/Application Support/COS Control/dictation-history.json. A check run writes under its own test home,
     /// and perf fixtures write nothing, so no check can touch the real history.
@@ -919,11 +930,16 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
     // MARK: Recent dictations (0.5.309)
 
     private func remember(_ record: DictationRecord) {
-        recent = DictationHistory.adding(record, to: recent)
+        recent = DictationHistory.adding(record, to: recent, retention: retention, now: Date())
         saveRecent()
     }
+    /// Prunes on every save. "Don't keep" removes the file instead of writing one.
     private func saveRecent() {
         guard let historyURL else { return }
+        guard retention.writesToDisk else {
+            if FileManager.default.fileExists(atPath: historyURL.path) { try? FileManager.default.removeItem(at: historyURL) }
+            return
+        }
         // Dictated text is private: a failure is logged by its reason only, never with the text.
         do { try DictationHistory.save(recent, to: historyURL) }
         catch { dictationLog.error("recent dictations not saved: \(error.localizedDescription, privacy: .public)") }
@@ -938,7 +954,21 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
         }
         saveRecent()
     }
-    /// Settings → Clear recent dictations.
+    /// Keep dictations for 7, 30 or 90 days, or forever. Applies now.
+    func setRetention(_ next: DictationRetention) {
+        guard next.writesToDisk else { return }   // "Don't keep" goes through stopKeepingHistory, after a confirm
+        retention = next
+        UserDefaults.standard.set(next.rawValue, forKey: "dictation.history.retention")
+        recent = DictationHistory.pruned(recent, retention: next, now: Date())
+        saveRecent()
+    }
+    /// "Don't keep", confirmed: the history is cleared and nothing is written from now on.
+    func stopKeepingHistory() {
+        retention = .none
+        UserDefaults.standard.set(DictationRetention.none.rawValue, forKey: "dictation.history.retention")
+        clearRecent()
+    }
+    /// Clear dictation history (Settings and COS Activity, each after a confirm).
     func clearRecent() {
         recent = []
         if card?.recordID != nil { dismissCard() }
@@ -979,6 +1009,12 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
         listRoute = .recent
     }
     func openDetail(_ id: UUID) { guard record(id) != nil else { return }; listRoute = .detail(id); resetFix() }
+    /// Fix a word from COS Activity's history: on the pet when it is showing, else in the floating editor.
+    func openFixFromHistory(_ id: UUID) {
+        guard record(id) != nil, !busy else { return }
+        surface = petFrame?() != nil ? .pet : .floating
+        openFix(id)
+    }
     func openFix(_ id: UUID?) {
         guard let id, record(id) != nil else { return }
         dismissCard()
@@ -1067,6 +1103,14 @@ struct DictationCard: Equatable, Identifiable {
 struct MacDictationSettings: View {
     @ObservedObject var store: MacDictationStore
     let activityShortcut: HotKeyCombo?
+    @State private var confirmingDontKeep = false
+    @State private var confirmingClear = false
+    /// "Don't keep" waits for a confirm, because choosing it deletes the history already on this Mac.
+    private var retentionChoice: Binding<DictationRetention> {
+        Binding(get: { store.retention }, set: { next in
+            if next.writesToDisk { store.setRetention(next) } else if store.retention.writesToDisk { confirmingDontKeep = true }
+        })
+    }
     private var microphoneOptions: [COSDropdownOption<String>] {
         var options = [COSDropdownOption("", "System default")]
         options += store.microphones.map { COSDropdownOption($0.id, $0.name) }
@@ -1093,11 +1137,33 @@ struct MacDictationSettings: View {
                     .font(.caption2).foregroundStyle(.secondary)
                 if let message = store.message { Text(message).font(.caption2).foregroundStyle(COSPalette.amber) }
             }
-            // 0.5.310: Recent dictations stay on this Mac until cleared here (or one at a time on the pet).
-            Button("Clear recent dictations (\(store.recent.count))") { store.clearRecent() }
+            // 0.5.312: dictations stay on this Mac for the chosen time, never more than DictationHistory.cap.
+            COSDropdown("Keep dictations for", selection: retentionChoice,
+                        options: DictationRetention.allCases.map { COSDropdownOption($0, $0.title) })
+                .disabled(store.busy)
+            Button("Clear dictation history") { confirmingClear = true }
                 .controlSize(.small)
                 .disabled(store.recent.isEmpty || store.busy)
-        }.onAppear { store.refreshMicrophones() }
+        }
+        .onAppear { store.refreshMicrophones() }
+        .cosConfirm(
+            "Stop keeping dictations?",
+            isPresented: $confirmingDontKeep,
+            message: "COS deletes the dictations kept on this Mac and saves none from now on. The pet still shows this session's.",
+            actions: [
+                .destructive("Delete and stop keeping") { store.stopKeepingHistory() },
+                .cancel(),
+            ]
+        )
+        .cosConfirm(
+            "Clear dictation history?",
+            isPresented: $confirmingClear,
+            message: "Every dictation kept on this Mac is deleted. Your dictionary stays as it is.",
+            actions: [
+                .destructive("Clear history") { store.clearRecent() },
+                .cancel(),
+            ]
+        )
     }
 }
 
@@ -1793,6 +1859,148 @@ struct DictionaryLearnedRow: View {
 /// COS Activity → Meetings → Dictionary (mock 07): recent corrections first, then the vocabulary and every correction,
 /// each searchable and editable. The dictionary already existed on the server; this is its first home in COS Control.
 /// Mounted on `model.dictionaryRouteActive`, which only `openDictionary()` and `closeDictionary()` write.
+/// COS Activity → Meetings → Dictation history (0.5.312): every kept dictation by day, searched on this Mac.
+/// Opened from the pet's "All dictations" row, the Dictionary pane's History button and Dictation → History….
+struct DictationHistoryPane: View {
+    @ObservedObject var model: ControllerModel
+    @ObservedObject private var store: MacDictationStore
+    @State private var search = ""
+    @State private var confirmingClear = false
+
+    init(model: ControllerModel) {
+        self.model = model
+        self.store = model.dictation
+    }
+
+    private var days: [DictationHistory.Day] {
+        DictationHistory.days(DictationHistory.search(store.recent, search))
+    }
+
+    var body: some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 12) {
+                header
+                TextField("Search dictations", text: $search)
+                    .textFieldStyle(.plain)
+                    .cosField()
+                if store.recent.isEmpty {
+                    Text(store.retention.writesToDisk ? "No dictations yet. Anything you dictate shows up here."
+                         : "Dictations aren't kept. Choose how long to keep them in Settings → Dictation.")
+                        .font(COSType.body(12)).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else if days.isEmpty {
+                    Text("No dictation matches that search.")
+                        .font(COSType.body(12)).foregroundStyle(.secondary)
+                }
+                ForEach(days) { group in
+                    Text(Self.dayTitle(group.day))
+                        .font(COSType.mono(10, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .padding(.top, 6)
+                    ForEach(group.records) { record in
+                        DictationHistoryRow(record: record, busy: store.busy,
+                                            onCopy: { store.copy(record.text) },
+                                            onFix: { store.openFixFromHistory(record.id) },
+                                            onDelete: { store.deleteRecord(record.id) })
+                        Divider()
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(22)
+        }
+        // The pane clamps itself, like the Dictionary pane: a long list must never push the toolbar off the window.
+        .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity, alignment: .top)
+        .clipped()
+        .background(COSPalette.panel)
+        .cosConfirm(
+            "Clear dictation history?",
+            isPresented: $confirmingClear,
+            message: "Every dictation kept on this Mac is deleted. Your dictionary stays as it is.",
+            actions: [
+                .destructive("Clear history") { store.clearRecent() },
+                .cancel(),
+            ]
+        )
+    }
+
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Dictation history").font(COSType.display(20, weight: .medium))
+                Spacer()
+                Button("Clear history…") { confirmingClear = true }
+                    .buttonStyle(COSQuietButtonStyle()).controlSize(.small)
+                    .disabled(store.recent.isEmpty || store.busy)
+                Button("Close") { model.closeDictationHistory() }
+                    .buttonStyle(COSQuietButtonStyle()).controlSize(.small)
+            }
+            Text(Self.keepLine(store.retention, count: store.recent.count))
+                .font(COSType.body(12))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    static func keepLine(_ retention: DictationRetention, count: Int) -> String {
+        let kept = "\(count) \(count == 1 ? "dictation" : "dictations") on this Mac"
+        switch retention {
+        case .none: return "Not kept: this session only, never saved. Change it in Settings → Dictation."
+        case .forever: return kept + ", kept until you delete them (at most \(DictationHistory.cap.formatted()))."
+        default: return kept + ", kept for \(retention.title) (at most \(DictationHistory.cap.formatted()))."
+        }
+    }
+
+    static func dayTitle(_ day: Date) -> String {
+        let calendar = Calendar.current
+        if calendar.isDateInToday(day) { return "TODAY" }
+        if calendar.isDateInYesterday(day) { return "YESTERDAY" }
+        return day.formatted(date: .complete, time: .omitted).uppercased()
+    }
+}
+
+private struct DictationHistoryRow: View {
+    let record: DictationRecord
+    let busy: Bool
+    let onCopy: () -> Void
+    let onFix: () -> Void
+    let onDelete: () -> Void
+    @State private var copied = false
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            Text(record.createdAt.formatted(date: .omitted, time: .shortened))
+                .font(COSType.mono(10, weight: .medium))
+                .foregroundStyle(.secondary)
+                .frame(width: 64, alignment: .leading)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(record.firstLine)
+                    .font(COSType.body(12))
+                    .lineLimit(2)
+                    .truncationMode(.tail)
+                    .textSelection(.enabled)
+                Text("\(record.wordCount) \(record.wordCount == 1 ? "word" : "words") · \(record.outcomeLabel)")
+                    .font(COSType.mono(9, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            Button(copied ? "Copied" : "Copy") {
+                onCopy(); copied = true
+                Task { try? await Task.sleep(for: .seconds(1.4)); copied = false }
+            }
+            .buttonStyle(COSQuietButtonStyle()).controlSize(.small)
+            Button("Fix a word", action: onFix)
+                .buttonStyle(COSQuietButtonStyle()).controlSize(.small)
+                .disabled(busy)
+                .help("Opens on the pet: tap the word COS got wrong")
+            Button("Delete", action: onDelete)
+                .buttonStyle(COSQuietButtonStyle()).controlSize(.small)
+                .help("Delete this dictation from this Mac")
+        }
+        .padding(.vertical, 4)
+    }
+}
+
 struct TranscriptionDictionaryPane: View {
     @ObservedObject var model: ControllerModel
     @ObservedObject private var dictionary: TranscriptionDictionaryStore
@@ -1855,6 +2063,9 @@ struct TranscriptionDictionaryPane: View {
                     Button("Refresh") { Task { await dictionary.load() } }
                         .buttonStyle(COSQuietButtonStyle()).controlSize(.small)
                 }
+                Button("History") { model.openDictationHistory() }
+                    .buttonStyle(COSQuietButtonStyle()).controlSize(.small)
+                    .help("Every dictation kept on this Mac, by day")
                 Button("Close") { model.closeDictionary() }
                     .buttonStyle(COSQuietButtonStyle()).controlSize(.small)
             }

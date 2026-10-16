@@ -146,6 +146,7 @@ struct COSControlApp: App {
                 Button("Stop dictation") { model.dictation.stop() }
                 Button("Cancel dictation") { model.dictation.cancel() }
                 Button("Dictionary…") { model.openDictionaryInActivity() }
+                Button("History…") { model.openDictationHistoryInActivity() }
                 Button("Microphone and shortcuts…") { model.showSettings?() }
             }
             CommandGroup(replacing: .appSettings) {

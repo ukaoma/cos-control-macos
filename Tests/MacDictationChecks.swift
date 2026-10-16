@@ -223,16 +223,16 @@ final class FakeDictationBoard: DictationPasteboardAccess {
         expect(peak == 1 && afterOne > 0.8 && afterOne < 1, "fast rise, slow fall: one quiet tick keeps most of the level")
         expect(DictationBars.heights([1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1])[5] == DictationBars.maximum && DictationBars.heights([])[0] == DictationBars.minimum,
                "bar heights span minimum to maximum")
-        // Recent dictations: newest first, last 50, private atomic file, round trip.
+        // Dictation history: newest first, private atomic file, round trip (bounded by retention and 5,000 since 0.5.312).
         func record(_ n: Int, _ delivery: DictationRecord.Delivery = .inserted(app: "Slack")) -> DictationRecord {
             DictationRecord(id: UUID(), text: "Line \(n) of text\nsecond line", createdAt: Date(timeIntervalSince1970: 1_760_000_000 + Double(n)), delivery: delivery)
         }
         var history: [DictationRecord] = []
         let kinds: [DictationRecord.Delivery] = [.inserted(app: "Slack"), .unconfirmed(app: "iTerm2", viaPaste: true), .copied(.secureInput)]
         for n in 0..<55 { history = DictationHistory.adding(record(n, kinds[n % 3]), to: history) }
-        expect(history.count == DictationHistory.limit && history.first?.text.hasPrefix("Line 54") == true && history.last?.text.hasPrefix("Line 5 ") == true, "bounded to 50, newest first")
+        expect(history.count == 55 && history.first?.text.hasPrefix("Line 54") == true && history.last?.text.hasPrefix("Line 0 ") == true, "newest first, nothing lost under the cap")
         let again = DictationHistory.adding(history[3], to: history)
-        expect(again.count == 50 && again.first?.id == history[3].id && Set(again.map(\.id)).count == 50, "re-adding moves to the top, never duplicates")
+        expect(again.count == 55 && again.first?.id == history[3].id && Set(again.map(\.id)).count == 55, "re-adding moves to the top, never duplicates")
         let one = record(1)
         expect(one.wordCount == 6 && one.firstLine == "Line 1 of text", "word count and first line")
         expect(one.metaLine(time: "6:02 PM") == "6:02 PM · 6 words · inserted · Slack", "row meta (mock 05)")
@@ -246,7 +246,7 @@ final class FakeDictationBoard: DictationPasteboardAccess {
         expect(DictationHistory.load(from: file).isEmpty, "a missing file is an empty history")
         try DictationHistory.save(history.reversed() + [pasted], to: file)
         let loaded = DictationHistory.load(from: file)
-        expect(loaded.count == 50 && loaded == DictationHistory.ordered(history.reversed() + [pasted]), "round trip keeps order and bound")
+        expect(loaded.count == 56 && loaded == DictationHistory.ordered(history.reversed() + [pasted]), "round trip keeps order")
         expect(loaded.first?.id == history.first?.id, "the file is newest first however it was handed in")
         let mode = (try FileManager.default.attributesOfItem(atPath: file.path)[.posixPermissions] as? NSNumber)?.intValue
         expect(mode == 0o600, "history file is 0600")
@@ -256,12 +256,38 @@ final class FakeDictationBoard: DictationPasteboardAccess {
         expect(reread.records == loaded && reread.movedTo == nil && reread.writable, "a good file is read, never moved")
         expect(loaded.contains(where: { $0.delivery == .copied(.secureInput) }) && loaded.contains(where: { $0.delivery == .unconfirmed(app: "iTerm2", viaPaste: true) })
                && loaded.contains(where: { $0.delivery == .inserted(app: "Slack") }), "every kind of delivery round-trips")
-        expect(DictationHistory.removing(loaded[1].id, from: loaded).count == 49 && !DictationHistory.removing(loaded[1].id, from: loaded).contains(loaded[1]), "delete one")
+        expect(DictationHistory.removing(loaded[1].id, from: loaded).count == 55 && !DictationHistory.removing(loaded[1].id, from: loaded).contains(loaded[1]), "delete one")
+        // 0.5.312 retention (Miles 21:40): by age, then the 5,000 cap; "Don't keep" writes nothing.
+        let now = Date(timeIntervalSince1970: 1_760_000_000 + 100 * 86_400)
+        func aged(_ days: Double) -> DictationRecord { DictationRecord(id: UUID(), text: "aged \(days)", createdAt: now.addingTimeInterval(-days * 86_400), delivery: .inserted(app: "Notes")) }
+        let ages = [aged(1), aged(6.9), aged(8), aged(29), aged(31), aged(89), aged(91), aged(400)]
+        let byAge = { (r: DictationRetention) in DictationHistory.pruned(ages, retention: r, now: now).map(\.text) }
+        expect(byAge(.week) == ["aged 1.0", "aged 6.9"] && byAge(.month) == ["aged 1.0", "aged 6.9", "aged 8.0", "aged 29.0"]
+               && byAge(.quarter).count == 6 && byAge(.forever).count == 8, "kept by age, newest first")
+        let many = (0..<(DictationHistory.cap + 7)).map { DictationRecord(id: UUID(), text: "n\($0)", createdAt: now.addingTimeInterval(-Double($0)), delivery: .inserted(app: "Notes")) }
+        let capped = DictationHistory.pruned(many, retention: .forever, now: now)
+        expect(capped.count == DictationHistory.cap && capped.first?.text == "n0" && capped.last?.text == "n4999", "never more than 5,000; the oldest go")
+        expect(DictationHistory.adding(aged(0), to: capped, retention: .forever, now: now).count == DictationHistory.cap, "adding past the cap drops the oldest")
+        expect(DictationRetention.default == .month && DictationRetention.month.rawValue == "30" && !DictationRetention.none.writesToDisk
+               && DictationRetention.allCases.filter(\.writesToDisk).count == 4, "30 days by default; Don't keep never writes")
+        let dontKeep = (0..<15).reduce([DictationRecord]()) { list, n in DictationHistory.adding(aged(Double(n) / 1000), to: list, retention: .none, now: now) }
+        expect(dontKeep.count == DictationHistory.sessionOnly, "Don't keep holds only this run's last few, in memory")
+        expect(DictationHistory.search(ages, "AGED 8.0").map(\.text) == ["aged 8.0"] && DictationHistory.search(ages, "  ").count == 8
+               && DictationHistory.search([DictationRecord(id: UUID(), text: "Café Santé", createdAt: now, delivery: .copied(.noTextBox))], "cafe sante").count == 1,
+               "search: local substring, case and accent insensitive")
+        var utc = Calendar(identifier: .gregorian); utc.timeZone = TimeZone(identifier: "UTC")!
+        let grouped = DictationHistory.days([aged(0.01), aged(1.2), aged(0.02)], calendar: utc)
+        expect(grouped.count == 2 && grouped[0].records.count == 2 && grouped[0].day > grouped[1].day, "grouped by day, newest day first")
+        expect(DictationHistory.pillLabel == "DICTATIONS" && DictationHistory.pillLabel.allSatisfy { !$0.isNumber } && DictationHistory.petCount == 10,
+               "the pet pill names the history, with no count")
         // 0.5.309 files carry insertedApp/pasted; they still load, and an old "inserted" reads as unconfirmed.
         let legacy = Data(#"{"version":1,"dictations":[{"id":"6F9619FF-8B86-D011-B42D-00C04FC964FF","text":"hi","createdAt":"2026-10-15T18:00:00Z","insertedApp":"Slack","pasted":false},{"id":"7F9619FF-8B86-D011-B42D-00C04FC964FF","text":"yo","createdAt":"2026-10-15T17:00:00Z"}]}"#.utf8)
         try legacy.write(to: file)
         let old = DictationHistory.load(from: file)
         expect(old.map(\.delivery) == [.unconfirmed(app: "Slack", viaPaste: false), .copied(.noTextBox)], "0.5.309 history still loads, honestly")
+        let migrated = DictationHistory.pruned(old, retention: .default, now: Date(timeIntervalSince1970: 1_760_571_000 + 365 * 86_400 * 2))
+        expect(DictationHistory.pruned(old, retention: .default, now: old[0].createdAt.addingTimeInterval(86_400)).count == 2 && migrated.isEmpty,
+               "0.5.309-0.5.311 history migrates under the 30-day default")
         try Data("not json".utf8).write(to: file)
         expect(DictationHistory.load(from: file).isEmpty, "a corrupt file reads as empty, never a crash")
         let moved = DictationHistory.loadOrQuarantine(from: file, now: Date(timeIntervalSince1970: 1_760_571_000))

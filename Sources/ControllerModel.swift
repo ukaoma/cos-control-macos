@@ -156,6 +156,8 @@ final class ControllerModel: ObservableObject {
     var activityOpenRecording = false
     /// 0.5.309: the pet's "Dictionary…" asks Activity to open on Meetings with the Dictionary pane, after the section loads.
     var activityOpenDictionary = false
+    /// 0.5.312: the pet's "All dictations" and Dictation → History… open the history pane after Meetings loads.
+    var activityOpenDictationHistory = false
     private var recordingShortcutDeadline: Date?
 
     /// A user gesture only. Open Meetings before asking its visible poll to select a fresh live session.
@@ -2554,6 +2556,9 @@ final class ControllerModel: ObservableObject {
     /// True while the Dictionary pane (0.5.309, mock 07) should be the Meetings route.
     /// Written by `openDictionary()` / `closeDictionary()`, and by nothing else.
     @Published var dictionaryOpen = false
+    /// True while the Dictation history pane (0.5.312) should be the Meetings route.
+    /// Written by `openDictationHistory()` / `closeDictationHistory()`, and by nothing else.
+    @Published var dictationHistoryOpen = false
 
     /// True while the Suggested merges pane should be the Meetings route.
     @Published var meetingSuggestionsOpen = false
@@ -2623,6 +2628,7 @@ final class ControllerModel: ObservableObject {
         closeLiveTranscript()
         meetingSuggestionsOpen = false
         dictionaryOpen = false
+        dictationHistoryOpen = false
         closeLibraryDetail()
         meetingImportOpen = true
         meetingImportError = nil
@@ -2639,6 +2645,7 @@ final class ControllerModel: ObservableObject {
         closeLiveTranscript()
         meetingImportOpen = false
         dictionaryOpen = false
+        dictationHistoryOpen = false
         closeLibraryDetail()
         meetingSuggestionsOpen = true
         meetingSuggestionsError = nil
@@ -2656,6 +2663,7 @@ final class ControllerModel: ObservableObject {
         closeLiveTranscript()
         meetingImportOpen = false
         meetingSuggestionsOpen = false
+        dictationHistoryOpen = false
         closeLibraryDetail()
         dictionaryOpen = true
         Task { await dictionary.load() }
@@ -2663,6 +2671,31 @@ final class ControllerModel: ObservableObject {
 
     func closeDictionary() {
         dictionaryOpen = false
+    }
+
+    /// Mounted while the Dictation history pane is open. The history is in memory already, so there is nothing to load.
+    var dictationHistoryRouteActive: Bool {
+        dictationHistoryOpen
+    }
+
+    /// COS Activity → Meetings → Dictation history (0.5.312): every dictation kept on this Mac, by day, searchable.
+    func openDictationHistory() {
+        closeLiveTranscript()
+        meetingImportOpen = false
+        meetingSuggestionsOpen = false
+        dictionaryOpen = false
+        closeLibraryDetail()
+        dictationHistoryOpen = true
+    }
+
+    func closeDictationHistory() {
+        dictationHistoryOpen = false
+    }
+
+    /// From the pet's "All dictations" and Dictation → History…: Activity opens on Meetings, then the pane.
+    func openDictationHistoryInActivity() {
+        activityOpenDictationHistory = true
+        openActivity?(.meetings)
     }
 
     /// From the pet's Fix a word: Activity opens on Meetings, then ActivityWindow.applyLaunchSection opens the pane.
@@ -3273,6 +3306,7 @@ final class ControllerModel: ObservableObject {
         closeMeetingImport()
         closeMeetingSuggestions()
         closeDictionary()
+        closeDictationHistory()
         liveTranscriptCopyNote = nil
         liveTranscriptOpenID = sessionId
         liveTranscriptErrorSince = nil

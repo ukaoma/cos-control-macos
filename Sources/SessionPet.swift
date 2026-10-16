@@ -655,10 +655,11 @@ private struct SessionPetRoot: View {
                     model.petCompletionsExpanded = false
                 }
             }
-            // 0.5.309 (mock 05): a fourth pill, only once something has been dictated, for Recent dictations.
+            // 0.5.309 (mock 05): a fourth pill, only once something has been dictated. 0.5.312 (Miles 21:40): it names
+            // the history and never counts it; a count "can become just arbitrarily large".
             if !dictation.recent.isEmpty {
                 ledgerPill(
-                    dot: COSPalette.gold, label: "DICTATED", count: dictation.recent.count,
+                    dot: COSPalette.gold, label: DictationHistory.pillLabel, count: nil,
                     enabled: true, open: dictation.listRoute != nil, index: 3
                 ) {
                     model.petExpanded = false
@@ -670,7 +671,7 @@ private struct SessionPetRoot: View {
     }
 
     private func ledgerPill(
-        dot: Color, label: String, count: Int, enabled: Bool, open: Bool,
+        dot: Color, label: String, count: Int?, enabled: Bool, open: Bool,
         index: Int, action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
@@ -678,7 +679,7 @@ private struct SessionPetRoot: View {
                 Circle()
                     .fill(enabled ? dot : Color.secondary.opacity(0.4))
                     .frame(width: size.length(6), height: size.length(6))
-                Text("\(label) \(count)")
+                Text(count.map { "\(label) \($0)" } ?? label)
                     .font(COSType.mono(size.typeSize(8), weight: .bold))
                     .kerning(0.5)
             }
@@ -706,7 +707,7 @@ private struct SessionPetRoot: View {
         switch label {
         case "RUNNING": "Live sessions"
         case "DONE": "Finished sessions"
-        case "DICTATED": "Recent dictations: copy one, or fix a word COS got wrong"
+        case DictationHistory.pillLabel: "Your latest dictations: copy one, or fix a word COS got wrong. All of them are in COS Activity."
         default: "Open the session waiting on you"
         }
     }
@@ -1821,15 +1822,38 @@ extension SessionPetRoot {
         VStack(alignment: .leading, spacing: 0) {
             switch route {
             case .recent:
-                petSectionHeader("RECENT DICTATIONS ·", count: dictation.recent.count, tint: COSPalette.gold)
+                // The latest 10, then a way to all of them (0.5.312). No count: the history can be long.
+                HStack(spacing: size.length(5)) {
+                    Circle().fill(COSPalette.gold).frame(width: size.length(6), height: size.length(6))
+                    Text("LATEST DICTATIONS").font(COSType.mono(size.typeSize(8), weight: .bold)).kerning(0.5).foregroundStyle(.secondary)
+                    Spacer(minLength: 0)
+                }
+                .padding(.top, size.length(7))
+                .padding(.bottom, size.length(3))
                 // FIXED height when overflowing: a ScrollView's ideal height collapses under the panel's sizeThatFits.
-                if dictation.recent.count > 3 {
+                if dictation.petRecent.count > 3 {
                     ScrollView { dictationRows }
                         .scrollIndicators(.hidden)
                         .frame(height: size.length(176))
                 } else {
                     dictationRows
                 }
+                Divider()
+                Button {
+                    dictation.closeList()
+                    model.openDictationHistoryInActivity()
+                } label: {
+                    HStack {
+                        Text("All dictations").font(COSType.body(size.typeSize(11), weight: .semibold))
+                        Spacer(minLength: 0)
+                        Image(systemName: "chevron.right").font(.system(size: size.typeSize(8), weight: .bold)).foregroundStyle(.secondary)
+                    }
+                    .padding(.vertical, size.length(7))
+                    .padding(.trailing, size.length(8))
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Open Dictation history in COS Activity: search, copy, fix a word or delete")
                 // 0.5.311 (Miles 2026-10-15): the dictation list shows dictations only; sessions have their own pills.
             case .detail(let id):
                 dictationHeader("DICTATION", record: dictation.record(id))
@@ -1855,8 +1879,8 @@ extension SessionPetRoot {
 
     private var dictationRows: some View {
         VStack(alignment: .leading, spacing: 0) {
-            ForEach(dictation.recent) { record in
-                if record.id != dictation.recent.first?.id { Divider() }
+            ForEach(dictation.petRecent) { record in
+                if record.id != dictation.petRecent.first?.id { Divider() }
                 DictationRecordRow(record: record, size: size,
                                    onOpen: { dictation.openDetail(record.id) },
                                    onCopy: { dictation.copy(record.text) },

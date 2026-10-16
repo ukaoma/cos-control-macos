@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""0.5.309/0.5.310 mutation gate for the pure dictation rules (Sources/MacDictationCore.swift + Tests/MacDictationChecks.swift).
+"""0.5.309-0.5.312 mutation gate for the pure dictation rules (Sources/MacDictationCore.swift + Tests/MacDictationChecks.swift).
 
 SERIAL by design: one small two-file compile at a time, each through Tests/compile-guard.sh (never parallel; see the
 2026-10-07 kernel panics). Works on a scratch copy, so the checkout is never mutated. A GREEN baseline is required
@@ -82,7 +82,16 @@ MUTANTS = [
     ("pitch in semitones, not cents", "return min(pitchRange.upperBound, max(pitchRange.lowerBound, semitones.rounded())) * 100", "return min(pitchRange.upperBound, max(pitchRange.lowerBound, semitones.rounded()))"),
     ("bars ignore the level", "return minimum + (maximum - minimum) * min(1, max(0, level)) * weight", "return minimum + (maximum - minimum) * 0.1 * weight"),
     ("slow attack", "level = target >= level ? target : level * Self.release + target * (1 - Self.release)", "level = level * Self.release + target * (1 - Self.release)"),
-    ("history unbounded", "Array(([record] + list.filter { $0.id != record.id }).prefix(limit))", "[record] + list.filter { $0.id != record.id }"),
+    # 0.5.312 retention: Keep dictations for 7/30/90 days, Forever or Don't keep, never more than 5,000.
+    ("retention ignored", "        let kept = retention.days.map { days in sorted.filter { now.timeIntervalSince($0.createdAt) <= Double(days) * 86_400 } } ?? sorted\n",
+     "        let kept = sorted\n"),
+    ("cap ignored", "        return Array(kept.prefix(cap))\n", "        return kept\n"),
+    ("Don't keep keeps everything", "        if retention == .none { return Array(sorted.prefix(sessionOnly)) }\n", ""),
+    ("Don't keep still writes", "    var writesToDisk: Bool { self != .none }", "    var writesToDisk: Bool { true }"),
+    ("default retention is Forever", "    static let `default` = DictationRetention.month", "    static let `default` = DictationRetention.forever"),
+    ("search is case sensitive", "options: [.caseInsensitive, .diacriticInsensitive]", "options: [.diacriticInsensitive]"),
+    ("days out of order", "groups.keys.sorted(by: >)", "groups.keys.sorted(by: <)"),
+    ("a count back on the pill", 'static let pillLabel = "DICTATIONS"', 'static let pillLabel = "DICTATIONS 10"'),
     ("history world-readable", "attributes: [.posixPermissions: 0o600]", "attributes: [.posixPermissions: 0o644]"),
     ("temp file left behind", "        guard rename(temp.path, url.path) == 0 else {", "        guard link(temp.path, url.path) == 0 else {"),
     ("hover does not pause", "mutating func pause(at now: Date) { guard let since = runningSince else { return }; spent += max(0, now.timeIntervalSince(since)); runningSince = nil }",

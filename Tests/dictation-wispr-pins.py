@@ -155,8 +155,34 @@ need('Button("Open Settings") { store.openMicrophoneSettings() }' in card and "}
 need("loadOrQuarantine(from: $0, now: Date())" in dictation and "historyURL = loaded?.writable == false ? nil : history" in dictation,
      "an unreadable history is moved aside, and never overwritten when it could not be")
 need("func deleteRecord(_ id: UUID)" in dictation and "func clearRecent()" in dictation
-     and 'Button("Clear recent dictations' in dictation and "onDelete: { dictation.deleteRecord(record.id) }" in pet,
-     "dictations can be deleted one at a time on the pet and all at once in Settings")
+     and "onDelete: { dictation.deleteRecord(record.id) }" in pet,
+     "dictations can be deleted one at a time on the pet")
+# 0.5.312: history is cleared only through a confirm, in Settings and in the history pane. Every UI call of
+# clearRecent / stopKeepingHistory sits inside a .destructive confirm action (the store calls itself are not UI).
+ui = dictation[dictation.index("struct MacDictationSettings: View {"):]
+for call in ("store.clearRecent()", "store.stopKeepingHistory()"):
+    hits = [m.start() for m in re.finditer(re.escape(call), ui)]
+    need(hits and all(re.search(r'\.destructive\("[^"]+"\) \{ $', ui[ui.rfind("\n", 0, h) + 1:h]) for h in hits),
+         f"{call} runs only from a confirm's destructive action, never straight off a button")
+settings = body(dictation, "struct MacDictationSettings: View {")
+need('Button("Clear dictation history") { confirmingClear = true }' in settings and "isPresented: $confirmingClear," in settings,
+     "Settings → Clear dictation history asks first")
+need('COSDropdown("Keep dictations for", selection: retentionChoice,' in settings
+     and "if next.writesToDisk { store.setRetention(next) } else if store.retention.writesToDisk { confirmingDontKeep = true }" in settings
+     and "isPresented: $confirmingDontKeep," in settings,
+     "Keep dictations for: Don't keep goes through a confirm; the others apply at once")
+need('DictationRetention(rawValue: d.string(forKey: "dictation.history.retention") ?? "") ?? .default' in dictation
+     and "static let `default` = DictationRetention.month" in core,
+     "retention defaults to 30 days when nothing (or something unreadable) is stored")
+need("DictationHistory.pruned(loaded?.records ?? [], retention: keep, now: Date())" in dictation
+     and "recent = keep.writesToDisk ? kept : []" in dictation,
+     "launch prunes the loaded history (and migrates 0.5.309-0.5.311 files) under the retention")
+need("DictationHistory.adding(record, to: recent, retention: retention, now: Date())" in dictation,
+     "each save prunes under the retention")
+save = body(dictation, "    private func saveRecent() {")
+need(save.index("guard retention.writesToDisk else {") < save.index("DictationHistory.save(recent, to: historyURL)")
+     and "removeItem(at: historyURL)" in save,
+     "Don't keep writes nothing and removes the file")
 need("pill = .transcribing" in body(dictation, "    func stop() {"), "release must show TRANSCRIBING")
 need("pill = .listening(since: Date())" in body(dictation, "    func start() {"), "the shortcut must show the listening pill")
 start_fn = body(dictation, "    func start() {")
@@ -208,8 +234,8 @@ for log in re.findall(r"dictationLog\.\w+\(([^\n]*)\)", dictation):
 need("completeFileProtectionUnlessOpen" not in dictation + core and ".completeUnlessOpen" not in dictation + core,
      "class-B protection locks minutes after the screen does; history must stay class C")
 need('"Library/Application Support/COS Control/dictation-history.json"' in dictation
-     and "static let limit = 50" in core and "posixPermissions: 0o600" in core and "rename(temp.path, url.path)" in core,
-     "Recent dictations: last 50, private 0600 file, written by rename")
+     and "static let cap = 5_000" in core and "posixPermissions: 0o600" in core and "rename(temp.path, url.path)" in core,
+     "Dictation history: at most 5,000, private 0600 file, written by rename")
 meter = body(dictation, "    func start() {")
 need("let rms = next.level" in meter and "meter.push(levelMeter.update(rms: rms))" in meter and "DictationBars.heights(levels)" in dictation and ".milliseconds(50)" in meter,
      "the bars must go through the tested dB meter at its tuned 50 ms tick")
@@ -238,9 +264,11 @@ need(".opacity(showPills || listening ? 0 : 1)" in slot and ".opacity(showPills 
 need("DictationListeningPill(pill: dictation.pill, meter: dictation.meter, floating: false" in slot,
      "the pet's slot must mount the inline listening pill")
 pills = pet[pet.index("private func pillsRow("):pet.index("private func ledgerPill(")]
-dictated = pills[pills.index('label: "DICTATED"') - 400:]
+dictated = pills[pills.index("label: DictationHistory.pillLabel") - 400:]
 need("if !dictation.recent.isEmpty {" in dictated and "dictation.toggleRecent()" in dictated and "COSPalette.gold" in dictated,
-     "the DICTATED pill (gold) shows only once something was dictated, and opens Recent dictations")
+     "the DICTATIONS pill (gold) shows only once something was dictated, and opens the latest dictations")
+need("label: DictationHistory.pillLabel, count: nil," in dictated and "recent.count" not in dictated and '"DICTATED' not in pet,
+     "the DICTATIONS pill never counts (Miles 21:40: a count can become arbitrarily large)")
 need("dictation.recent.isEmpty" in pet[pet.index("private var revealArmed"):pet.index("private var showPills")],
      "a pet whose only history is dictations must still reveal its pills")
 root_body = pet[pet.index("var body: some View"):pet.index("private var ledgerSlot")]
@@ -250,6 +278,12 @@ lst = body(pet, "func dictationList(_ route: DictationListRoute) -> some View {"
 need("ScrollView" in lst and ".frame(height: size.length(176))" in lst and "maxHeight" not in lst,
      "the dictations list must scroll in a FIXED frame; maxHeight collapses under sizeThatFits")
 need("DictationFixEditor(" in lst and "model.openDictionaryInActivity()" in lst, "Fix a word and its doorway to the Dictionary pane")
+rows = body(pet, "private var dictationRows: some View {")
+need("dictationRows" in lst and "ForEach(dictation.petRecent)" in rows and "dictation.recent" not in lst + rows
+     and "var petRecent: [DictationRecord] { Array(recent.prefix(DictationHistory.petCount)) }" in dictation,
+     "the pet lists the latest 10, not the whole history")
+need(re.search(r"dictation\.closeList\(\)\s*model\.openDictationHistoryInActivity\(\)", lst) is not None and '"All dictations"' in lst,
+     "the pet list ends in All dictations, which opens the history pane")
 need("missionRow(" not in lst and "petSections(" not in lst, "Recent dictations shows dictations only, no RUNNING sessions under it (Miles 2026-10-15)")
 route_changed = body(pet, "private func dictationRouteChanged() {")
 need("panel.makeKeyAndOrderFront(nil)" in route_changed and "panel.orderFrontRegardless()" in route_changed,
@@ -285,6 +319,36 @@ launch = body(activity, "private func applyLaunchSection() {")
 need(launch.index("if let next { select(next) }") < launch.index("if openDictionary, section == .meetings { model.openDictionary() }"),
      "the pet's Dictionary… opens the pane AFTER the section is selected, or select's reset hides it")
 need("activityOpenDictionary = true" in body(model, "func openDictionaryInActivity() {"), "the pet's doorway must set the launch flag")
+
+# ── 6b. COS Activity → Meetings → Dictation history (0.5.312), the same route-flag shape.
+need(re.search(r"else if section == \.meetings, model\.dictationHistoryRouteActive \{\s*DictationHistoryPane\(model: model\)", activity) is not None,
+     "the history pane must sit on its own else-if whose condition is exactly model.dictationHistoryRouteActive")
+route = re.search(r"var dictationHistoryRouteActive: Bool \{[^}]*\}", model, re.S)
+need(route is not None and re.search(r"\bdictationHistoryOpen\b", route.group(0)) is not None,
+     "dictationHistoryRouteActive must read dictationHistoryOpen, the var its opener writes")
+opener = body(model, "func openDictationHistory() {")
+need(re.search(r"\bdictationHistoryOpen = true\b", opener) is not None and "meetingImportOpen = false" in opener
+     and "meetingSuggestionsOpen = false" in opener and "dictionaryOpen = false" in opener and "closeLibraryDetail()" in opener,
+     "openDictationHistory must set its flag and close the other panes and the detail")
+for other, closes in (("func openMeetingImport() {", "dictationHistoryOpen = false"), ("func openMeetingSuggestions() {", "dictationHistoryOpen = false"),
+                      ("func openDictionary() {", "dictationHistoryOpen = false"), ("func openLiveTranscript(_ sessionId: String) {", "closeDictationHistory()")):
+    need(closes in body(model, other), f"{other} must close the history pane, or two panes claim the route")
+need(re.search(r"section == \.meetings, model\.dictationHistoryRouteActive \{\s*model\.closeDictationHistory\(\)", body(activity, "private func goBack() {")) is not None,
+     "Back must leave the history pane")
+need("model.dictionaryRouteActive || model.dictationHistoryRouteActive" in activity, "hasDetail must count the history pane")
+need(launch.index("if let next { select(next) }") < launch.index("if openDictationHistory, section == .meetings { model.openDictationHistory() }"),
+     "All dictations opens the pane AFTER the section is selected, or select's reset hides it")
+need("activityOpenDictationHistory = true" in body(model, "func openDictationHistoryInActivity() {"), "the history doorway must set the launch flag")
+need('Button("History") { model.openDictationHistory() }' in body(dictation, "struct TranscriptionDictionaryPane: View {"),
+     "the Dictionary pane header carries History")
+need('Button("History…") { model.openDictationHistoryInActivity() }' in app, "the Dictation menu carries History…")
+pane = body(dictation, "struct DictationHistoryPane: View {")
+need("LazyVStack" in pane and "DictationHistory.days(DictationHistory.search(store.recent, search))" in pane
+     and 'Button("Clear history…") { confirmingClear = true }' in pane and "isPresented: $confirmingClear," in pane
+     and "store.openFixFromHistory(record.id)" in pane and "store.deleteRecord(record.id)" in pane and "store.copy(record.text)" in pane,
+     "the history pane: lazy, grouped by day, searched locally; Copy, Fix a word, Delete; Clear history… asks first")
+need(".frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity, alignment: .top)" in pane and ".clipped()" in pane,
+     "the history pane clamps itself so a long list never pushes the toolbar off")
 
 # ── 7. The helper verb: words on stdin, fixed routes only.
 need('case "transcription-dictionary": try emitTranscriptionDictionary()' in helper, "the helper verb is not dispatched")

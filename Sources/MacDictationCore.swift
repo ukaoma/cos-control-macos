@@ -463,11 +463,68 @@ struct DictationRecord: Codable, Equatable, Identifiable, Sendable {
     }
 }
 
-/// Recent dictations: the last 50, newest first, kept on this Mac across restarts (Miles picked A, 2026-10-15).
+/// How long dictation history is kept (0.5.312, Miles 21:40: "how many dictations do we really want to store").
+enum DictationRetention: String, CaseIterable, Sendable {
+    case week = "7", month = "30", quarter = "90", forever = "forever", none = "none"
+    static let `default` = DictationRetention.month
+    var title: String {
+        switch self {
+        case .week: "7 days"
+        case .month: "30 days"
+        case .quarter: "90 days"
+        case .forever: "Forever"
+        case .none: "Don't keep"
+        }
+    }
+    var days: Int? {
+        switch self {
+        case .week: 7
+        case .month: 30
+        case .quarter: 90
+        case .forever, .none: nil
+        }
+    }
+    /// "Don't keep" writes nothing to disk; this run still holds its last few so a card's Fix a word works.
+    var writesToDisk: Bool { self != .none }
+}
+
+/// Dictation history, newest first, kept on this Mac (private file). 0.5.312: as long as the retention setting says,
+/// never more than 5,000 entries.
 enum DictationHistory {
-    static let limit = 50
-    static func adding(_ record: DictationRecord, to list: [DictationRecord]) -> [DictationRecord] {
-        Array(([record] + list.filter { $0.id != record.id }).prefix(limit))
+    static let cap = 5_000
+    /// What "Don't keep" holds in memory for this run only.
+    static let sessionOnly = 10
+    /// How many the pet's list shows; the rest live in COS Activity → Dictation history.
+    static let petCount = 10
+    /// The pet pill names the history and never counts it (Miles: a count "can become just arbitrarily large").
+    static let pillLabel = "DICTATIONS"
+    static func adding(_ record: DictationRecord, to list: [DictationRecord], retention: DictationRetention = .forever, now: Date = Date()) -> [DictationRecord] {
+        pruned([record] + list.filter { $0.id != record.id }, retention: retention, now: now)
+    }
+    /// Newest first; older than the retention dropped; never more than `cap`. "Don't keep": this run's last few only.
+    static func pruned(_ list: [DictationRecord], retention: DictationRetention, now: Date) -> [DictationRecord] {
+        let sorted = list.sorted { $0.createdAt > $1.createdAt }
+        if retention == .none { return Array(sorted.prefix(sessionOnly)) }
+        let kept = retention.days.map { days in sorted.filter { now.timeIntervalSince($0.createdAt) <= Double(days) * 86_400 } } ?? sorted
+        return Array(kept.prefix(cap))
+    }
+    /// Local substring search over the text, case and diacritic insensitive. Empty finds everything.
+    static func search(_ list: [DictationRecord], _ query: String) -> [DictationRecord] {
+        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !needle.isEmpty else { return list }
+        return list.filter { $0.text.range(of: needle, options: [.caseInsensitive, .diacriticInsensitive]) != nil }
+    }
+    /// One day of the history pane: its records, newest first.
+    struct Day: Identifiable, Sendable {
+        let day: Date
+        let records: [DictationRecord]
+        var id: Date { day }
+    }
+    /// Grouped by calendar day, newest day first.
+    static func days(_ list: [DictationRecord], calendar: Calendar = .current) -> [Day] {
+        var groups: [Date: [DictationRecord]] = [:]
+        for record in list { groups[calendar.startOfDay(for: record.createdAt), default: []].append(record) }
+        return groups.keys.sorted(by: >).map { day in Day(day: day, records: groups[day]!.sorted { $0.createdAt > $1.createdAt }) }
     }
     static func removing(_ id: UUID, from list: [DictationRecord]) -> [DictationRecord] { list.filter { $0.id != id } }
     /// A file that exists but does not read is moved aside to `<name>.corrupt-<UTC stamp>` before anything is saved
@@ -481,7 +538,7 @@ enum DictationHistory {
         return ([], aside, true)
     }
     static func ordered(_ list: [DictationRecord]) -> [DictationRecord] {
-        Array(list.sorted { $0.createdAt > $1.createdAt }.prefix(limit))
+        Array(list.sorted { $0.createdAt > $1.createdAt }.prefix(cap))
     }
     private static func encoder() -> JSONEncoder {
         let e = JSONEncoder(); e.dateEncodingStrategy = .iso8601; e.outputFormatting = [.sortedKeys]; return e
