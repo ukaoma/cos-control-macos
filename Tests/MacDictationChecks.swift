@@ -257,6 +257,7 @@ final class FakeDictationBoard: DictationPasteboardAccess {
         expect(loaded.contains(where: { $0.delivery == .copied(.secureInput) }) && loaded.contains(where: { $0.delivery == .unconfirmed(app: "iTerm2", viaPaste: true) })
                && loaded.contains(where: { $0.delivery == .inserted(app: "Slack") }), "every kind of delivery round-trips")
         expect(DictationHistory.removing(loaded[1].id, from: loaded).count == 55 && !DictationHistory.removing(loaded[1].id, from: loaded).contains(loaded[1]), "delete one")
+        do { // own scope: names here must not collide with earlier sections
         // 0.5.312 retention (Miles 21:40): by age, then the 5,000 cap; "Don't keep" writes nothing.
         let now = Date(timeIntervalSince1970: 1_760_000_000 + 100 * 86_400)
         func aged(_ days: Double) -> DictationRecord { DictationRecord(id: UUID(), text: "aged \(days)", createdAt: now.addingTimeInterval(-days * 86_400), delivery: .inserted(app: "Notes")) }
@@ -280,6 +281,7 @@ final class FakeDictationBoard: DictationPasteboardAccess {
         expect(grouped.count == 2 && grouped[0].records.count == 2 && grouped[0].day > grouped[1].day, "grouped by day, newest day first")
         expect(DictationHistory.pillLabel == "DICTATIONS" && DictationHistory.pillLabel.allSatisfy { !$0.isNumber } && DictationHistory.petCount == 10,
                "the pet pill names the history, with no count")
+        }
         // 0.5.309 files carry insertedApp/pasted; they still load, and an old "inserted" reads as unconfirmed.
         let legacy = Data(#"{"version":1,"dictations":[{"id":"6F9619FF-8B86-D011-B42D-00C04FC964FF","text":"hi","createdAt":"2026-10-15T18:00:00Z","insertedApp":"Slack","pasted":false},{"id":"7F9619FF-8B86-D011-B42D-00C04FC964FF","text":"yo","createdAt":"2026-10-15T17:00:00Z"}]}"#.utf8)
         try legacy.write(to: file)
@@ -381,6 +383,7 @@ final class FakeDictationBoard: DictationPasteboardAccess {
         expect(L.customRefusal(byteCount: 500_000, duration: 1.2) == nil && L.customRefusal(byteCount: L.maximumSourceBytes + 1, duration: 1) != nil
                && L.customRefusal(byteCount: 19_000_000, duration: 8.76) == nil && L.customRefusal(byteCount: 10, duration: nil) != nil
                && L.customRefusal(byteCount: 10, duration: 0) != nil, "your own file: a source up to 20 MB that decodes; long files are trimmed, not refused")
+        do { // own scope: names here must not collide with earlier sections
         // Trim on import, on Miles's test file's shape: 8.76 s at 48 kHz, the ignition at 0.30 s, the sound over at 8.26 s.
         let rate = 48_000.0
         var file = [Float](repeating: 0, count: Int(8.76 * rate))
@@ -410,6 +413,8 @@ final class FakeDictationBoard: DictationPasteboardAccess {
         expect(L.name("unstable-saber") == "Unstable saber" && L.name("unstable-saber-bright") == "Unstable saber (bright)"
                && L.name("dark-saber") == "Dark saber" && L.sounds.count == 8, "names")
         expect(L.defaultVolume == 0.6 && L.sounds.map(\.id).allSatisfy { !$0.isEmpty } && Set(L.sounds.map(\.id)).count == L.sounds.count, "library")
+        }
+        do { // own scope: names here must not collide with earlier sections
         // The pill goes where the person is looking.
         let left = CGRect(x: 0, y: 0, width: 1512, height: 982), right = CGRect(x: 1512, y: 0, width: 3440, height: 1440)
         let petOnLeft = CGRect(x: 1200, y: 40, width: 300, height: 260)
@@ -424,6 +429,7 @@ final class FakeDictationBoard: DictationPasteboardAccess {
                "no Accessibility: the main screen")
         expect(DictationPlacement.choose(petFrame: petOnLeft, focusedWindow: CGRect(x: 1400, y: 100, width: 600, height: 400), screens: [left, right], mainScreen: left) == .floating(screen: right),
                "a window across both screens counts where most of it is")
+        }
         print("PASS Mac dictation: \(count) policy checks; insert-target table, measured delivery, terminals, layout ⌘V, listening bars end to end, clipboard restore, sounds, pill placement, recent dictations file, card countdown, fix-a-word selection, bounded audio, PCM16 WAV, device failure, any-key triggers")
     }
 }

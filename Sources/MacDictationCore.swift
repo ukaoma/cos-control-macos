@@ -501,11 +501,12 @@ enum DictationHistory {
     static func adding(_ record: DictationRecord, to list: [DictationRecord], retention: DictationRetention = .forever, now: Date = Date()) -> [DictationRecord] {
         pruned([record] + list.filter { $0.id != record.id }, retention: retention, now: now)
     }
-    /// Newest first; older than the retention dropped; never more than `cap`. "Don't keep": this run's last few only.
+    /// Keeps the list's own order (newest used first: `adding` puts a re-added record on top), drops anything older than the
+    /// retention, never more than `cap`. "Don't keep": this run's last few only. Never re-sorts by date, or a retried
+    /// dictation would sink back to where it was first made.
     static func pruned(_ list: [DictationRecord], retention: DictationRetention, now: Date) -> [DictationRecord] {
-        let sorted = list.sorted { $0.createdAt > $1.createdAt }
-        if retention == .none { return Array(sorted.prefix(sessionOnly)) }
-        let kept = retention.days.map { days in sorted.filter { now.timeIntervalSince($0.createdAt) <= Double(days) * 86_400 } } ?? sorted
+        if retention == .none { return Array(list.prefix(sessionOnly)) }
+        let kept = retention.days.map { days in list.filter { now.timeIntervalSince($0.createdAt) <= Double(days) * 86_400 } } ?? list
         return Array(kept.prefix(cap))
     }
     /// Local substring search over the text, case and diacritic insensitive. Empty finds everything.
