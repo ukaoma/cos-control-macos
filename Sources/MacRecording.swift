@@ -42,7 +42,12 @@ final class MacRecordingStore: ObservableObject {
     @Published private(set) var heardSound = false
     /// 0.5.310: the last delivery attempt stopped on an error; cleared when delivery runs again.
     @Published private(set) var deliveryPaused = false
-    var signalWarning: String? { MacRecordingSignal.warning(silentChunks: silentChunks, source: manifest?.sourceName ?? "the selected source") }
+    /// Only while recording (Miles 2026-10-15: "No sound… for 24s" stayed on the live pane and this panel after the capture
+    /// stopped and saved). Once stopped, a silent capture is reported by the save (noSpeech), not by this live check.
+    var signalWarning: String? {
+        guard isRecording else { return nil }
+        return MacRecordingSignal.warning(silentChunks: silentChunks, source: manifest?.sourceName ?? "the selected source")
+    }
     var isRecording: Bool { phase == "recording" }
     var occupied: Bool { !["idle", "saved", "pending"].contains(phase) }
     var canStart: Bool { !occupied && deliveryTask == nil && (manifest == nil || manifest!.saved || manifest!.chunks.isEmpty) }
@@ -78,6 +83,10 @@ final class MacRecordingStore: ObservableObject {
                 sources = [.allMacAudio] + (try await Task.detached(priority: .utility) { try MacAudioCapture.sources() }.value)
                 if !sources.contains(where: { $0.id == selectedID }) { selectedID = MacAudioSource.allMacAudioID }
             } else { throw MacRecordingError.unavailable("Manual system audio recording requires macOS 14.2 or later.") }
+        } catch is CancellationError {
+            // The panel's .task is cancelled when Meetings goes away (Miles 2026-10-15: the panel showed "The operation
+            // couldn't be completed. (Swift.CancellationError error 1.)"). Leaving is not a failure: keep what was known.
+            return
         } catch { available = false; self.error = error.localizedDescription }
     }
     private func invoke(_ operation: String, _ payload: [String: JSONValue]) async throws -> [String: JSONValue] {

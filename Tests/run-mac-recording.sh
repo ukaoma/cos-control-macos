@@ -17,3 +17,16 @@ assert catch.index("self.deliveryPaused = false") < catch.index("do {"), "a new 
 assert "paused: macRecording.deliveryPaused)" in model, "the Meetings row must pass the store's paused state to its label"
 print("PASS Mac recording paused-delivery wiring")
 PY
+# 0.5.313 (Miles 2026-10-15 field bugs): the silence warning is a live check only, and a cancelled panel task is not an
+# error. Comments are stripped so an explanatory comment can never satisfy a pin.
+python3 - "$ROOT/Sources/MacRecording.swift" <<'PY'
+import re, sys
+code = "\n".join(l for l in open(sys.argv[1]).read().splitlines() if not l.lstrip().startswith("//") and not l.lstrip().startswith("///"))
+warn = code[code.index("    var signalWarning: String? {"):code.index("    var isRecording: Bool")]
+assert "guard isRecording else { return nil }" in warn and warn.index("guard isRecording") < warn.index("MacRecordingSignal.warning("), \
+    "the no-sound warning must show only while recording, never after stop or save"
+prep = code[code.index("    func prepare(bridge: @escaping Bridge) async {"):code.index("    private func invoke(")]
+assert re.search(r"\} catch is CancellationError \{\s*return\s*\} catch \{ available = false; self\.error = error\.localizedDescription \}", prep), \
+    "a cancelled prepare (the panel's .task when Meetings goes away) must not set error or mark recording unavailable"
+print("PASS Mac recording: live-only silence warning, cancelled prepare is not an error")
+PY
