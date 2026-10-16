@@ -19,7 +19,7 @@ private actor WorkChatFixture {
         switch name {
         case "work-models": out = ["serverInstanceId": .string("fixture-server"), "models": .array([])]
         case "claude-sessions": out = ["sessions": .array(ids.prefix(2).map { id in .object([
-            "sessionId": .string(String(id.split(separator: ":")[1])), "provider": .string(String(id.split(separator: ":")[0])),
+            "id": .string(String(id.split(separator: ":")[1])), "provider": .string(String(id.split(separator: ":")[0])),
             "name": .string("Exact " + id), "workspace": .string("/tmp/fixture"), "state": .string("recent")]) })]
         case "work-context":
             contextReads += 1
@@ -243,7 +243,9 @@ private actor WorkChatFixture {
     precondition(candidate.record?.workID == source.id, "Navigation cannot redirect an in-flight request")
     await first.value
     let calls = await fixture.seen()
-    precondition(calls.filter { $0 == "work-chat" }.count == 1 && real.receipts.isEmpty && candidate.record?.rounds.first?.state == "Ready to send", "Double Send produces one plan, and planning never dispatches")
+    precondition(calls.filter { $0 == "work-chat" }.count == 1, "Double Send produces one plan: \(calls)")
+    precondition(real.receipts.isEmpty, "Planning never dispatches: \(real.receipts.map(\.status))")
+    precondition(candidate.record?.rounds.first?.state == "Ready to send", "A plan waits for review: \(candidate.record?.rounds.map(\.state) ?? []) \(candidate.error ?? "")")
     let sentPlanner = await fixture.plannerSent()
     precondition(sentPlanner == ["opus"] && candidate.record?.rounds.first?.planner == "opus", "The chosen planner reaches the server and is recorded on the round")
     await candidate.sendAll(roundID: candidate.record!.rounds[0].id, source: source, handoff: real)
@@ -294,7 +296,7 @@ private actor WorkPartialSendFixture {
         switch args.first ?? "" {
         case "work-models": out = ["serverInstanceId": .string("partial-server"), "models": .array([])]
         case "claude-sessions": out = ["sessions": .array(ids.prefix(2).map { id in .object([
-            "sessionId": .string(String(id.split(separator: ":")[1])), "provider": .string(String(id.split(separator: ":")[0])),
+            "id": .string(String(id.split(separator: ":")[1])), "provider": .string(String(id.split(separator: ":")[0])),
             "name": .string("Exact " + id), "workspace": .string("/tmp/fixture"), "state": .string("recent")]) })]
         case "work-context": out = ["contextText": .string("Fixture task evidence"), "workRevision": .string(String(repeating: "c", count: 64)), "task": .object(["id": .string("aaaaaaaaaaaa"), "workIdentity": .string("aaaaaaaaaaaa"), "domain": .string("quilt"), "title": .string("Launch fixture"), "text": .string("Launch fixture"), "source": .string("Fixture evidence")])]
         case "work-chat": out = ["protocolVersion": .number(1), "answer": .string("Two independent checks."),

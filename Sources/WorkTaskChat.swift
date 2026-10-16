@@ -311,7 +311,8 @@ enum WorkChatPreflight {
             }
             if !handoff.isolated { await handoff.refreshActivity() }
             let automatic = Set(targets(handoff,source:source).filter { handoff.automaticChatTarget($0.id) }.map(\.id))
-            guard WorkChatPolicy.valid(answer,targets:automatic) else { throw WorkSessionLinks.Failure.corrupt }
+            // Not a file error: the plan named a destination that is not a linked automatic session right now (or broke a bound).
+            guard WorkChatPolicy.valid(answer,targets:automatic) else { throw HelperClientError.commandFailed("The plan named a session that is not linked for automatic sends here, or broke a limit. Refresh the task's sessions and plan again.") }
             self.record?.rounds[index].answer = answer.answer; self.record?.rounds[index].assignments = answer.assignments
             self.record?.rounds[index].revision = revision; self.record?.rounds[index].linkDigest = digest
             self.record?.rounds[index].planner = handoff.isolated ? nil : planner ?? "sonnet"
