@@ -1081,6 +1081,12 @@ struct ModelsContract {
                      "the ledger must report the fleet regardless of motion preference")
         precondition(ledger.caption == "1 WAITING · 2 RUNNING · 1 DONE",
                      "calm motion must not change one character of the status caption")
+        // 0.5.316: WAITING is absent at 0 and present at 1 or more.
+        let idleLedger = PetLedger.resolve(sessions: [fleet("a", "running"), fleet("d", "recent")], completions: chips)
+        let twoWaiting = PetLedger.resolve(sessions: [fleet("c", "waiting"), fleet("e", "waiting")], completions: [])
+        precondition(ledger.showsWaitingPill && twoWaiting.showsWaitingPill && !idleLedger.showsWaitingPill
+                        && !PetLedger(running: 0, waiting: 0, done: 8, unseen: 0).showsWaitingPill,
+                     "the WAITING pill shows only while a session waits")
 
         precondition(PetSpritePose.matching(fileName: "01-idle-strip.png") == .idle)
         precondition(PetSpritePose.matching(fileName: "02-search-strip-alpha.png") == .waiting)

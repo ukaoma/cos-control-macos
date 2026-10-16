@@ -3015,6 +3015,10 @@ struct PetLedger: Equatable {
 
     var isQuiet: Bool { running + waiting + done == 0 }
 
+    /// 0.5.316 (Miles 2026-10-16 15:33, "RUNNING 0 · DONE 8 · WAITING 0 · DICTATIONS"): the WAITING pill shows only while
+    /// a session waits on a person, so the row uses less space; it is back the moment one does. No other pill changes.
+    var showsWaitingPill: Bool { waiting > 0 }
+
     /// Waiting takes the FRONT of the bar in amber — it is the state allowed
     /// to interrupt the visual order. Zero-count segments never render.
     var segments: [Segment] {

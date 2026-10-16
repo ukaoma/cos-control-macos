@@ -114,3 +114,20 @@ need("static func resolvedAspect(frames:" in models and
      "parent and child do not share the square missing-frame aspect")
 
 print("COS Control: stable pet viewport and dropdown-only expansion passed")
+# 0.5.316 (Miles 2026-10-16 15:33): WAITING hides at 0 and returns at 1+ (PetLedger.showsWaitingPill, executed in
+# ModelsContract); every other pill keeps its own condition, and nothing places a pill by its position.
+_rows = pet[pet.index("private func pillsRow("):pet.index("private func ledgerPill(")]
+need("if ledger.showsWaitingPill {" in _rows
+     and _rows.index("if ledger.showsWaitingPill {") < _rows.index('label: "WAITING"') < _rows.index("if !dictation.recent.isEmpty {"),
+     "the WAITING pill is not gated on a waiting session")
+# RUNNING and DONE sit at the row's own level (12 spaces), outside any condition.
+for _label, _dot in (("RUNNING", "green"), ("DONE", "gold")):
+    need(f'\n            ledgerPill(\n                dot: COSPalette.{_dot}, label: "{_label}"' in _rows,
+         f"the {_label} pill must always show, at the row's own level")
+need("var showsWaitingPill: Bool { waiting > 0 }" in models, "showsWaitingPill must mean a session is waiting")
+_gates = re.findall(r"\n            if ([^\n]*) \{\n(?:\s*//[^\n]*\n)*\s*ledgerPill\(", _rows)
+need(_gates == ["model.recordingCount > 0", "ledger.showsWaitingPill", "!dictation.recent.isEmpty"],
+     f"only REC, WAITING and DICTATIONS are conditional; RUNNING and DONE always show (gates: {_gates})")
+need("index:" not in pet[pet.index("private func ledgerPill("):pet.index("private func pillHelp(")].split(".animation(", 1)[0].split(") -> some View {", 1)[1],
+     "a pill's index is only its reveal stagger")
+print("PASS pet layout: WAITING shows only while a session waits; other pills unchanged")

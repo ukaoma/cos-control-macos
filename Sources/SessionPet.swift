@@ -662,18 +662,22 @@ private struct SessionPetRoot: View {
                 if model.petCompletionsExpanded { model.petExpanded = false; dictation.closeList() }
                 model.petLastOpenList = .done
             }
-            ledgerPill(
-                dot: COSPalette.amber, label: "WAITING", count: ledger.waiting,
-                enabled: ledger.waiting > 0, open: false, index: 2
-            ) {
-                // One waiting session jumps; several open the list so the
-                // choice is yours instead of arbitrary.
-                if let only = ClaudeSession.petWaitingJumpTarget(sessions) {
-                    model.petFocusID = only.id
-                    model.openSessionInPlatform(only)
-                } else {
-                    model.petExpanded = true
-                    model.petCompletionsExpanded = false
+            // 0.5.316: only while a session waits (PetLedger.showsWaitingPill). Nothing keys off a pill's position: each
+            // is its own button, `index` only staggers the reveal, and the row is centred in the fixed-width slot.
+            if ledger.showsWaitingPill {
+                ledgerPill(
+                    dot: COSPalette.amber, label: "WAITING", count: ledger.waiting,
+                    enabled: ledger.waiting > 0, open: false, index: 2
+                ) {
+                    // One waiting session jumps; several open the list so the
+                    // choice is yours instead of arbitrary.
+                    if let only = ClaudeSession.petWaitingJumpTarget(sessions) {
+                        model.petFocusID = only.id
+                        model.openSessionInPlatform(only)
+                    } else {
+                        model.petExpanded = true
+                        model.petCompletionsExpanded = false
+                    }
                 }
             }
             // 0.5.309 (mock 05): a fourth pill, only once something has been dictated. 0.5.312 (Miles 21:40): it names
