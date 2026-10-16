@@ -633,8 +633,7 @@ private struct SessionPetRoot: View {
     }
 
     private func pillsRow(_ ledger: PetLedger) -> some View {
-        // 0.5.316: 4pt between pills and 7pt inside them, so three pills sit well inside the pet's width.
-        HStack(spacing: size.length(4)) {
+        HStack(spacing: size.length(6)) {
             // 0.5.314 (Miles 2026-10-16): while anything records (this Mac or the glasses), REC leads the row and opens the
             // live meeting through the same showRecordingTranscript the menu bar's Open live meeting uses. "REC" matches
             // the Dock badge and keeps five pills inside the 260pt pet.
@@ -713,7 +712,7 @@ private struct SessionPetRoot: View {
                     .kerning(0.5)
             }
             .foregroundStyle(open ? COSPalette.cream : COSPalette.plateInk)
-            .padding(.horizontal, size.length(7))
+            .padding(.horizontal, size.length(8))
             .padding(.vertical, size.length(5))
             .background(Capsule().fill(open ? COSPalette.ink : COSPalette.card))
             .overlay(Capsule().stroke(open ? Color.clear : COSPalette.line, lineWidth: 1))
