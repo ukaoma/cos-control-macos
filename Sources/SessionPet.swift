@@ -633,7 +633,8 @@ private struct SessionPetRoot: View {
     }
 
     private func pillsRow(_ ledger: PetLedger) -> some View {
-        HStack(spacing: size.length(6)) {
+        // 0.5.316: 4pt between pills and 7pt inside them, so three pills sit well inside the pet's width.
+        HStack(spacing: size.length(4)) {
             // 0.5.314 (Miles 2026-10-16): while anything records (this Mac or the glasses), REC leads the row and opens the
             // live meeting through the same showRecordingTranscript the menu bar's Open live meeting uses. "REC" matches
             // the Dock badge and keeps five pills inside the 260pt pet.
@@ -654,13 +655,16 @@ private struct SessionPetRoot: View {
                 if model.petExpanded { model.petCompletionsExpanded = false; dictation.closeList() }
                 model.petLastOpenList = .running
             }
-            ledgerPill(
-                dot: COSPalette.gold, label: "DONE", count: ledger.done,
-                enabled: ledger.done > 0, open: model.petCompletionsExpanded, index: 1
-            ) {
-                model.petCompletionsExpanded.toggle()
-                if model.petCompletionsExpanded { model.petExpanded = false; dictation.closeList() }
-                model.petLastOpenList = .done
+            // 0.5.316 (Miles 15:55): only while something finished is listed or its list is open (showsDonePill).
+            if ledger.showsDonePill(listOpen: model.petCompletionsExpanded) {
+                ledgerPill(
+                    dot: COSPalette.gold, label: "DONE", count: ledger.done,
+                    enabled: ledger.done > 0 || model.petCompletionsExpanded, open: model.petCompletionsExpanded, index: 1
+                ) {
+                    model.petCompletionsExpanded.toggle()
+                    if model.petCompletionsExpanded { model.petExpanded = false; dictation.closeList() }
+                    model.petLastOpenList = .done
+                }
             }
             // 0.5.316: only while a session waits (PetLedger.showsWaitingPill). Nothing keys off a pill's position: each
             // is its own button, `index` only staggers the reveal, and the row is centred in the fixed-width slot.
@@ -709,7 +713,7 @@ private struct SessionPetRoot: View {
                     .kerning(0.5)
             }
             .foregroundStyle(open ? COSPalette.cream : COSPalette.plateInk)
-            .padding(.horizontal, size.length(8))
+            .padding(.horizontal, size.length(7))
             .padding(.vertical, size.length(5))
             .background(Capsule().fill(open ? COSPalette.ink : COSPalette.card))
             .overlay(Capsule().stroke(open ? Color.clear : COSPalette.line, lineWidth: 1))

@@ -3019,6 +3019,11 @@ struct PetLedger: Equatable {
     /// a session waits on a person, so the row uses less space; it is back the moment one does. No other pill changes.
     var showsWaitingPill: Bool { waiting > 0 }
 
+    /// 0.5.316 (Miles 2026-10-16 15:55, "When there are items that are complete, like done, and waiting, we should remove
+    /// them"): DONE shows only while something finished is listed, or while its own list is open, so an emptied list can
+    /// still be closed from the pill that opened it. RUNNING stays, REC follows recording, DICTATIONS follows history.
+    func showsDonePill(listOpen: Bool) -> Bool { done > 0 || listOpen }
+
     /// Waiting takes the FRONT of the bar in amber — it is the state allowed
     /// to interrupt the visual order. Zero-count segments never render.
     var segments: [Segment] {

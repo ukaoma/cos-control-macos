@@ -120,14 +120,16 @@ _rows = pet[pet.index("private func pillsRow("):pet.index("private func ledgerPi
 need("if ledger.showsWaitingPill {" in _rows
      and _rows.index("if ledger.showsWaitingPill {") < _rows.index('label: "WAITING"') < _rows.index("if !dictation.recent.isEmpty {"),
      "the WAITING pill is not gated on a waiting session")
-# RUNNING and DONE sit at the row's own level (12 spaces), outside any condition.
-for _label, _dot in (("RUNNING", "green"), ("DONE", "gold")):
-    need(f'\n            ledgerPill(\n                dot: COSPalette.{_dot}, label: "{_label}"' in _rows,
-         f"the {_label} pill must always show, at the row's own level")
+# RUNNING sits at the row's own level (12 spaces), outside any condition (Miles: "we should not remove ... the running").
+need('\n            ledgerPill(\n                dot: COSPalette.green, label: "RUNNING"' in _rows,
+     "the RUNNING pill must always show, at the row's own level")
 need("var showsWaitingPill: Bool { waiting > 0 }" in models, "showsWaitingPill must mean a session is waiting")
+need("func showsDonePill(listOpen: Bool) -> Bool { done > 0 || listOpen }" in models,
+     "showsDonePill must mean something finished is listed, or its list is open")
 _gates = re.findall(r"\n            if ([^\n]*) \{\n(?:\s*//[^\n]*\n)*\s*ledgerPill\(", _rows)
-need(_gates == ["model.recordingCount > 0", "ledger.showsWaitingPill", "!dictation.recent.isEmpty"],
-     f"only REC, WAITING and DICTATIONS are conditional; RUNNING and DONE always show (gates: {_gates})")
+need(_gates == ["model.recordingCount > 0", "ledger.showsDonePill(listOpen: model.petCompletionsExpanded)",
+                "ledger.showsWaitingPill", "!dictation.recent.isEmpty"],
+     f"only REC, DONE, WAITING and DICTATIONS are conditional; RUNNING always shows (gates: {_gates})")
 need("index:" not in pet[pet.index("private func ledgerPill("):pet.index("private func pillHelp(")].split(".animation(", 1)[0].split(") -> some View {", 1)[1],
      "a pill's index is only its reveal stagger")
-print("PASS pet layout: WAITING shows only while a session waits; other pills unchanged")
+print("PASS pet layout: DONE and WAITING show only when they hold something; RUNNING always shows")

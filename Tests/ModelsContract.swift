@@ -1087,6 +1087,12 @@ struct ModelsContract {
         precondition(ledger.showsWaitingPill && twoWaiting.showsWaitingPill && !idleLedger.showsWaitingPill
                         && !PetLedger(running: 0, waiting: 0, done: 8, unseen: 0).showsWaitingPill,
                      "the WAITING pill shows only while a session waits")
+        // 0.5.316 (Miles 15:55): DONE is absent at 0 unless its own list is open, present at 1 or more.
+        let noneDone = PetLedger(running: 2, waiting: 0, done: 0, unseen: 0)
+        precondition(!noneDone.showsDonePill(listOpen: false) && noneDone.showsDonePill(listOpen: true)
+                        && PetLedger(running: 0, waiting: 0, done: 1, unseen: 1).showsDonePill(listOpen: false)
+                        && ledger.showsDonePill(listOpen: false),
+                     "the DONE pill shows only while something finished is listed or its list is open")
 
         precondition(PetSpritePose.matching(fileName: "01-idle-strip.png") == .idle)
         precondition(PetSpritePose.matching(fileName: "02-search-strip-alpha.png") == .waiting)
