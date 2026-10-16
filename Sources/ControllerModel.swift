@@ -348,7 +348,7 @@ final class ControllerModel: ObservableObject {
     private static let petDefaultSeededKey = "cos.sessionPetDefaultSeeded"
     private static let petDismissedKey = "cos.sessionPetDismissed"
     private static let petDefaultArtGenerationKey = "cos.sessionPetDefaultArtGeneration"
-    private static let petDefaultArtGeneration = 19
+    private static let petDefaultArtGeneration = 20
 
     private static func loadPetCharacterPercent(defaults: UserDefaults = .standard) -> Int {
         PetCharacterScale.loadPersistedPercent(
@@ -4642,6 +4642,9 @@ final class ControllerModel: ObservableObject {
             // recognized stock Miles idle from 1.30x to 1.45x.
             // Generation 19 lands the approved Three-session footwork and
             // strike repair, including the immediate severed-droid beat.
+            // Generation 20 (0.5.316) promotes any recognized stock Miles pack
+            // to the whole V12.6 pack (all ten poses); an install that already
+            // IS V12.6 reports .current and is left untouched.
             let bundledRefresh = PetSpriteStore.refreshRecognizedBundledCharacter(
                 into: directory
             )

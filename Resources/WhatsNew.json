@@ -1,8 +1,14 @@
 {
-  "version": "0.5.315",
+  "version": "0.5.316",
   "whatsNew": {
-    "summary": "While dictating, Mute other apps now actually mutes them. Plus 0.5.314 (a crash fix when a dictation sound finished, and REC on the pet while a meeting records) and everything in 0.5.313: dictation that keeps listening while you click, one-click Mac meeting recording, and a lighter Work tab.",
+    "summary": "Miles Windu moves more naturally, and while dictating, Mute other apps now actually mutes them. Plus 0.5.314 (a crash fix when a dictation sound finished, and REC on the pet while a meeting records) and everything in 0.5.313: dictation that keeps listening while you click, one-click Mac meeting recording, and a lighter Work tab.",
     "sections": [
+      {
+        "title": "0.5.316",
+        "items": [
+          "Miles Windu moves more naturally: faster droid entrances, no frozen stance, smoother deflections."
+        ]
+      },
       {
         "title": "0.5.315",
         "items": [

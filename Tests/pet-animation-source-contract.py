@@ -29,35 +29,27 @@ def png_header(path: pathlib.Path) -> tuple[int, int, int]:
 
 def validate(root: pathlib.Path, models: str, controller: str, motion: str, pet: str) -> None:
     state = json.loads((root / "Resources/DefaultPet/session-pet-states.json").read_text())["poses"]
-    need(
-        state["working"] == {
-            "file": "session-pet-working-one-droid-v15-2.png", "frames": 16, "interval": 0.1
-        },
-        "one session does not point at the run/brake/error/run story",
-    )
-    need(
-        state["duel"] == {
-            "file": "session-pet-duel-two-droid-v15-2.png", "frames": 17,
-            "interval": 0.11,
-        },
-        "two sessions do not point at the run/brake/two-droid/run story",
-    )
-    need(
-        state["trio"] == {
-            "file": "session-pet-trio-story-v17.png", "frames": 26, "interval": 0.11
-        },
-        "three sessions do not point at the approved footwork-and-strike repair",
-    )
-    need(
-        state["swarm"] == {
-            "file": "session-pet-swarm-story-v16.png", "frames": 52, "interval": 0.11
-        },
-        "four-plus sessions do not point at the approved sparse-bridge story",
-    )
-    need(state["idle"].get("renderScale") == 1.45, "Miles idle is not authored at 1.45x scale")
+    # 0.5.316: Miles approved V12.6 (2026-10-16 13:07) as the bundled pack, every pose. The map is his reviewed
+    # review-candidate-v12.6/session-pet-states.json byte for byte (hash pinned below).
+    approved_state = {
+        "attention": {"file": "session-pet-attention-retime-v12-v1.png", "frames": 13, "interval": 0.14},
+        "done": {"file": "session-pet-done-retime-v12-v1.png", "frames": 10, "interval": 0.16},
+        "duel": {"file": "session-pet-duel-tail-tighter-v12-5.png", "frames": 37, "interval": 0.08},
+        "error": {"file": "session-pet-error-reassembled-v12-v5.png", "frames": 8, "interval": 0.14},
+        "idle": {"file": "session-pet-idle-cutouts-v2.png", "frames": 8, "renderScale": 1.0},
+        "patrol": {"file": "session-pet-patrol-polish-v3.png", "frames": 8, "interval": 0.14},
+        "swarm": {"file": "session-pet-swarm-alpha-v11-r2.png", "frames": 64, "interval": 0.08},
+        "trio": {"file": "session-pet-trio-deflect-eased-v12-6.png", "frames": 42, "interval": 0.08},
+        "waiting": {"file": "session-pet-waiting-release-v1.png", "frames": 11, "interval": 0.18},
+        "working": {"file": "session-pet-working-run-slowed-v12-1.png", "frames": 46, "interval": 0.08, "renderScale": 0.75},
+    }
+    for pose, row in approved_state.items():
+        need(state.get(pose) == row, f"{pose} does not point at the approved V12.6 strip, count, cadence and scale")
+    need(set(state) == set(approved_state), "the shipped Miles map has a pose V12.6 does not declare")
     frame_cap = int(re.search(r"static let maxFrames = (\d+)", models).group(1))
-    need(frame_cap == 64, "runtime frame limit must preserve the 52-cell authored swarm")
-    cell_widths = {"working": 304, "duel": 304, "trio": 286, "swarm": 311}
+    need(frame_cap == 64, "runtime frame limit must preserve the 64-cell authored swarm")
+    cell_widths = {"attention": 121, "done": 99, "duel": 304, "error": 224, "idle": 83, "patrol": 128,
+                   "swarm": 311, "trio": 286, "waiting": 97, "working": 304}
     for pose, cell_width in cell_widths.items():
         row = state[pose]
         width, height, color_type = png_header(root / "Resources/DefaultPet" / row["file"])
@@ -74,6 +66,19 @@ def validate(root: pathlib.Path, models: str, controller: str, motion: str, pet:
         "session-pet-trio-story-v16.png": "bd0147eccacc01ef7cded5dd247cb35dbddc966c010d6bb0e1a0e0f6a227ccbd",
         "session-pet-trio-story-v17.png": "e08983b98e99220dd09885c4e68ef4061bdfd2b15756aae110de9fd7166b2bc1",
         "session-pet-swarm-story-v16.png": "80415ed66aa649763b42c3a934df40511e0ff258185b82b39a73fb8aca3211f3",
+        # V12.6, the version-manifest.json sha256 of each reviewed file (retained V15/V16 stock above stays for
+        # recognition: the refresh compares installed bytes against these retained files).
+        "session-pet-states.json": "37b7f0ec37be7daba1d369bd50c05ab2a07a07c0eb8289ae5216c7299b711d24",
+        "session-pet-attention-retime-v12-v1.png": "50edef0550ac04f8f388545ef072c125bafe75cccb1b3110b0f687440b8661ea",
+        "session-pet-done-retime-v12-v1.png": "baf49d90057f7a44ef348f25a2dd7273b7bedaea80fdaee3ed53d5623f39dac1",
+        "session-pet-duel-tail-tighter-v12-5.png": "074efb1f0ec6bbb489caaa31b803ec316e4bea1f783b33c7a97283358b5c3a61",
+        "session-pet-error-reassembled-v12-v5.png": "e39b47f27e73b71ec3d70c9f14abfdcb30437a69a70cf3b07fc21e4ecf0abc34",
+        "session-pet-idle-cutouts-v2.png": "f16814c7139b1d72009c755497f9e97b9100635c86cde123bbc232565ae6e33c",
+        "session-pet-patrol-polish-v3.png": "c1340d57fd902522cc686664b225358b14a9d3246eada3e98221fbedd9efc4c6",
+        "session-pet-swarm-alpha-v11-r2.png": "d9ff4d799890f03616e76bd492aa477ae36fd1a3bc26c03cc8683dbb7dc4ddc1",
+        "session-pet-trio-deflect-eased-v12-6.png": "32f90389979a93d64455ffbf26defccb954436afb6c98d5140a2235404e44685",
+        "session-pet-waiting-release-v1.png": "e885beb423f2e8febd348d0a8fc566ed2e20da6c1b78bbe33efc3a9aa6b765f3",
+        "session-pet-working-run-slowed-v12-1.png": "b48d1eba464629eb393dcdc9be1c7f7bdb8d553339a53f542b758ee3cd98693b",
     }
     for file, expected_hash in approved_hashes.items():
         actual_hash = hashlib.sha256((root / "Resources/DefaultPet" / file).read_bytes()).hexdigest()
@@ -131,11 +136,13 @@ def validate(root: pathlib.Path, models: str, controller: str, motion: str, pet:
         "refreshRecognizedBundledDefault" in models
         and "BundledDefaultRefreshResult" in models
         and "installed.count == retainedStock.count" in models
-        and "let storyPoses: [PetSpritePose] = [.working, .duel, .trio, .swarm]" in models
+        and "for pose in PetSpritePose.allCases where retainedStock[pose] != nil {" in models
+        and "guard bundled.count == retainedStock.count else { return .failed }" in models
         and "updated[story.pose] = (story.file, story.frames)" in models
-        and int(re.search(r"petDefaultArtGeneration = (\d+)", controller).group(1)) >= 19
+        and "            return .current\n" in models
+        and int(re.search(r"petDefaultArtGeneration = (\d+)", controller).group(1)) >= 20
         and "if refresh != .failed" in controller,
-        "installed Miles packs will not receive all four new story assets",
+        "installed stock Miles packs will not receive the whole V12.6 pack",
     )
     # The BODY of handleSpriteClick: toggleSessionMenu now sits between it and
     # handleSpriteDrop and legitimately names petExpanded. Two toggle sites are
@@ -193,10 +200,17 @@ def main() -> None:
     )
 
     must_fail(
-        "old art generation strands installed V16 packs",
+        "old art generation strands installed 0.5.314 packs",
         root, models,
-        re.sub(r"petDefaultArtGeneration = \d+", "petDefaultArtGeneration = 18", controller),
+        re.sub(r"petDefaultArtGeneration = \d+", "petDefaultArtGeneration = 19", controller),
         motion, pet,
+    )
+    must_fail(
+        "refresh promotes only the four stories again",
+        root,
+        models.replace("for pose in PetSpritePose.allCases where retainedStock[pose] != nil {",
+                       "for pose in [PetSpritePose.working, .duel, .trio, .swarm] {", 1),
+        controller, motion, pet,
     )
 
     must_fail(
@@ -225,7 +239,7 @@ def main() -> None:
         1,
     )
     must_fail("character click expands sessions", root, models, controller, motion, click_mutation)
-    print("COS Control: four authored Miles stories and chevron-only expansion passed")
+    print("COS Control: approved Miles V12.6 pack, whole-pack refresh and chevron-only expansion passed")
 
 
 if __name__ == "__main__":

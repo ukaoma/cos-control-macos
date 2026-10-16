@@ -8331,6 +8331,10 @@ enum PetSpriteStore {
 
     enum BundledDefaultRefreshResult: Equatable {
         case notApplicable
+        /// Already the bundled pack, file for file and byte for byte (0.5.316: Miles installed V12.6 by hand before it
+        /// shipped). Nothing is written; the art generation still advances, and a later release that lists this pack
+        /// as retained stock can promote it.
+        case current
         case refreshed
         case failed
     }
@@ -8881,9 +8885,13 @@ enum PetSpriteStore {
     /// Upgrade a retained stock Miles pack without touching a chosen OpenPets
     /// still, COS figure, custom animation, or another bundled Jedi. Every
     /// recognized mapping and asset must be byte-identical to the retained stock
-    /// files. The four replacement strips land first and the state map changes
+    /// files. The replacement strips land first and the state map changes
     /// last, so
     /// an interrupted write leaves the old pack readable and retryable.
+    /// 0.5.316 (V12.6): every pose is new art, so a recognized stock pack takes
+    /// the WHOLE bundled pack (all ten poses, their intervals and pack-owned
+    /// scales), not only the four stories. The bytes are written raw: no
+    /// importer cleanup (suppressTruncatedEdgeSlivers, normalizeStrip) runs here.
     @discardableResult
     static func refreshRecognizedBundledDefault(
         into directory: URL,
@@ -8893,6 +8901,18 @@ enum PetSpriteStore {
     ) -> BundledDefaultRefreshResult {
         guard let source = sourceOverride ?? bundledDefaultURL(bundle: bundle) else { return .failed }
         let installed = loadStateMap(in: directory, fileManager: fileManager)
+        let bundled = loadStateMap(in: source, fileManager: fileManager)
+        // Already the bundled pack: a clean no-op, never a rewrite or a downgrade.
+        if !bundled.isEmpty, installed.count == bundled.count,
+           bundled.allSatisfy({ pose, row in
+               guard let mine = installed[pose], mine.file == row.file, mine.frames == row.frames,
+                     let installedData = try? Data(contentsOf: directory.appendingPathComponent(row.file)),
+                     let bundledData = try? Data(contentsOf: source.appendingPathComponent(row.file))
+               else { return false }
+               return installedData == bundledData
+           }) {
+            return .current
+        }
         let retainedStock: [PetSpritePose: [(file: String, frames: Int)]] = [
             .idle: [(poseFileName(.idle), 8)],
             .patrol: [(poseFileName(.patrol), 8)],
@@ -8954,11 +8974,11 @@ enum PetSpriteStore {
             return installedData == bundledData
         }) else { return .notApplicable }
 
-        let bundled = loadStateMap(in: source, fileManager: fileManager)
-        let storyPoses: [PetSpritePose] = [.working, .duel, .trio, .swarm]
+        // Every pose the bundled pack declares, and it must declare every pose the stock pack had.
+        guard bundled.count == retainedStock.count else { return .failed }
         var stories: [(pose: PetSpritePose, file: String, frames: Int, data: Data)] = []
-        for pose in storyPoses {
-            guard let row = bundled[pose], row.file != poseFileName(pose),
+        for pose in PetSpritePose.allCases where retainedStock[pose] != nil {
+            guard let row = bundled[pose],
                   let data = try? Data(contentsOf: source.appendingPathComponent(row.file)),
                   NSImage(data: data) != nil
             else { return .failed }
@@ -8985,6 +9005,7 @@ enum PetSpriteStore {
             let idleScaleWasStock = installedScales[.idle] == nil
                 || abs((installedScales[.idle] ?? 0) - 1.2) < 0.001
                 || abs((installedScales[.idle] ?? 0) - 1.3) < 0.001
+                || abs((installedScales[.idle] ?? 0) - 1.45) < 0.001
                 || abs((installedScales[.idle] ?? 0) - 2) < 0.001
                 || abs((installedScales[.idle] ?? 0) - 3) < 0.001
             let scaleOverrides: [PetSpritePose: CGFloat] = idleScaleWasStock

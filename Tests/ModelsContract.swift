@@ -1936,11 +1936,29 @@ struct ModelsContract {
                         && PetSpriteStrip.clampFrames(64) == 64
                         && PetSpriteStrip.clampFrames(99) == 64,
                      "authored counts above 16 must survive the bounded frame contract")
+        // 0.5.316: Miles Windu V12.6, approved 2026-10-16 13:07 (review-candidate-v12.6).
         let authoredStories: [(pose: PetSpritePose, file: String, frames: Int)] = [
-            (.working, "session-pet-working-one-droid-v15-2.png", 16),
-            (.duel, "session-pet-duel-two-droid-v15-2.png", 17),
-            (.trio, "session-pet-trio-story-v17.png", 26),
-            (.swarm, "session-pet-swarm-story-v16.png", 52),
+            (.working, "session-pet-working-run-slowed-v12-1.png", 46),
+            (.duel, "session-pet-duel-tail-tighter-v12-5.png", 37),
+            (.trio, "session-pet-trio-deflect-eased-v12-6.png", 42),
+            (.swarm, "session-pet-swarm-alpha-v11-r2.png", 64),
+        ]
+        // V12.6 frames whose art reaches within 3 px of the cell edge by design (droids entering and leaving, the
+        // jump and saber arcs above the frame), 1-based, measured from the reviewed strips. Any OTHER frame touching
+        // an edge is a cut or a crop. Swarm 55-59 also carries ink across the cut into its neighbour (its exit run).
+        let approvedEdgeFrames: [PetSpritePose: Set<Int>] = [
+            .working: [15, 16, 17, 39, 40, 41, 42],
+            .duel: [10, 11, 14, 28, 29, 30, 31, 32],
+            .trio: [29, 30, 31, 32, 33, 34, 35, 36, 37],
+            .swarm: [55, 56, 57, 58, 59, 60, 61],
+        ]
+        // The reviewed hold structure: consecutive identical cells at 0.08 s per tick (2 = a 160 ms hold).
+        let approvedRuns: [PetSpritePose: [Int]] = [
+            .working: [2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2, 2],
+            .duel: [1, 1, 2, 1, 2, 1, 1, 1, 1, 1, 1, 1, 1, 2, 1, 1, 1, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+            .trio: [2, 2, 1, 2, 1, 2, 1, 1, 2, 1, 2, 1, 3, 1, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 1, 1],
+            .swarm: [2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2, 2,
+                     1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
         ]
         var storyFrames: [PetSpritePose: [NSImage]] = [:]
         for story in authoredStories {
@@ -1994,10 +2012,10 @@ struct ModelsContract {
                       let box = PetSpriteStrip.inkBounds(frame) else {
                     preconditionFailure("\(story.pose.rawValue) frame \(index) must contain art")
                 }
-                precondition(box.x >= 3 && box.x + box.w <= raster.width - 3,
-                             "\(story.pose.rawValue) frame \(index) touches a cut boundary")
-                precondition(box.y >= 3 && box.y + box.h <= raster.height - 3,
-                             "\(story.pose.rawValue) frame \(index) crops authored art")
+                let insideCell = box.x >= 3 && box.x + box.w <= raster.width - 3
+                    && box.y >= 3 && box.y + box.h <= raster.height - 3
+                precondition(insideCell || approvedEdgeFrames[story.pose]!.contains(index + 1),
+                             "\(story.pose.rawValue) frame \(index + 1) reaches a cell edge outside the approved entrances")
                 // Swarm's late sprint-away beat intentionally pulls Miles back
                 // to sell depth before the next rush; 80px still rejects the
                 // genuinely tiny legacy figures without rejecting that shot.
@@ -2006,10 +2024,8 @@ struct ModelsContract {
                 let subjects = subjectColorCounts(frame)
                 precondition(subjects.hero >= 20,
                              "\(story.pose.rawValue) frame \(index) drops Miles")
-                let authoredDroidFreeBeat = (story.pose == .duel && [12, 13, 14].contains(index + 1))
-                    || (story.pose == .swarm && [43, 44].contains(index + 1))
-                if (story.pose == .duel || story.pose == .trio || story.pose == .swarm)
-                    && !authoredDroidFreeBeat {
+                // V12.6 has no droid-free beat in Two, Three or Four-plus (measured on the reviewed strips).
+                if story.pose == .duel || story.pose == .trio || story.pose == .swarm {
                     precondition(subjects.droidEye >= 1,
                                  "\(story.pose.rawValue) frame \(index) drops every droid")
                 }
@@ -2022,22 +2038,12 @@ struct ModelsContract {
                     grouped.append([data])
                 }
             }
-            if story.pose == .trio || story.pose == .swarm {
-                let expectedRuns = story.pose == .trio ? 20 : 28
-                let expectedHolds = story.pose == .trio ? 6 : 24
-                precondition(runs.count == expectedRuns
-                                && runs.filter({ $0.count == 2 }).count == expectedHolds
-                                && runs.allSatisfy({ $0.count == 1 || $0.count == 2 }),
-                             "\(story.pose.rawValue) must encode only approved 220ms holds and 110ms bridges")
-            } else {
-                precondition(runs.count == frames.count,
-                             "\(story.pose.rawValue) frame cadence stalls unexpectedly")
-            }
-            // V15.1 uses a continuous seam rather than duplicating F1 at the
-            // end: the final recovery beat leads into the opening beat. Exact
-            // duplicate endpoints would add a visible one-frame stall.
-            precondition(pngData(frames.first!) != pngData(frames.last!),
-                         "\(story.pose.rawValue) must not stall on a duplicated seam frame")
+            precondition(runs.map(\.count) == approvedRuns[story.pose]!,
+                         "\(story.pose.rawValue) holds drifted from the reviewed V12.6 cadence: \(runs.map(\.count))")
+            // Only Two closes its loop on a repeat of its first cell (V12.4: "last frame equals the first"); any
+            // other duplicated seam is an unreviewed stall.
+            precondition((pngData(frames.first!) == pngData(frames.last!)) == (story.pose == .duel),
+                         "\(story.pose.rawValue) seam differs from the reviewed V12.6 loop")
         }
 
         // SHIPPED DEFAULT: seeds an empty install, and never overwrites the
@@ -2227,6 +2233,21 @@ struct ModelsContract {
                 at: file, to: legacyTemplate.appendingPathComponent(file.lastPathComponent)
             )
         }
+        // 0.5.314's published stock map (generation 19). V12.6 replaces every pose, so the refresh is checked
+        // pose by pose against the bundled map, not only the four stories.
+        let stock0514Map = #"{"poses":{"attention":{"file":"session-pet-attention.png","frames":6},"done":{"file":"session-pet-done.png","frames":8},"duel":{"file":"session-pet-duel-two-droid-v15-2.png","frames":17,"interval":0.11},"error":{"file":"session-pet-error.png","frames":8},"idle":{"file":"session-pet-idle.png","frames":8,"renderScale":1.45},"patrol":{"file":"session-pet-patrol.png","frames":8},"swarm":{"file":"session-pet-swarm-story-v16.png","frames":52,"interval":0.11},"trio":{"file":"session-pet-trio-story-v17.png","frames":26,"interval":0.11},"waiting":{"file":"session-pet-waiting.png","frames":8},"working":{"file":"session-pet-working-one-droid-v15-2.png","frames":16,"interval":0.1}}}"#
+        let bundledMiles = PetSpriteStore.loadStateMap(in: defaultPet)
+        let bundledIntervals = PetSpriteStore.loadFrameIntervals(in: defaultPet)
+        func isWholeV126(_ dir: URL) -> Bool {
+            let map = PetSpriteStore.loadStateMap(in: dir)
+            let intervals = PetSpriteStore.loadFrameIntervals(in: dir)
+            return bundledMiles.count == 10 && map.count == bundledMiles.count && bundledMiles.allSatisfy { pose, row in
+                map[pose]?.file == row.file && map[pose]?.frames == row.frames
+                    && (try? Data(contentsOf: dir.appendingPathComponent(row.file)))
+                        == (try? Data(contentsOf: defaultPet.appendingPathComponent(row.file)))
+                    && intervals[pose].map { abs($0 - (bundledIntervals[pose] ?? -1)) < 0.000001 } ?? (bundledIntervals[pose] == nil)
+            }
+        }
         let legacyMilesMap = #"{"poses":{"idle":{"file":"session-pet-idle.png","frames":8},"patrol":{"file":"session-pet-patrol.png","frames":8},"waiting":{"file":"session-pet-waiting.png","frames":8},"working":{"file":"session-pet-working.png","frames":8},"done":{"file":"session-pet-done.png","frames":8},"error":{"file":"session-pet-error.png","frames":8},"attention":{"file":"session-pet-attention.png","frames":6},"duel":{"file":"session-pet-duel.png","frames":8,"interval":0.14666666666666667},"trio":{"file":"session-pet-trio.png","frames":6},"swarm":{"file":"session-pet-swarm.png","frames":6}}}"#
         try! Data(legacyMilesMap.utf8).write(
             to: legacyTemplate.appendingPathComponent("session-pet-states.json"), options: .atomic
@@ -2238,23 +2259,24 @@ struct ModelsContract {
         ) == .refreshed, "the recognized pre-story Miles pack must refresh once")
         let refreshedMap = PetSpriteStore.loadStateMap(in: refreshDest)
         let refreshedScales = PetSpriteStore.loadRenderScales(in: refreshDest)
-        precondition(refreshedMap[.working]?.frames == 16
-                        && refreshedMap[.duel]?.frames == 17
-                        && refreshedMap[.trio]?.frames == 26
-                        && refreshedMap[.swarm]?.frames == 52,
+        precondition(refreshedMap[.working]?.frames == 46
+                        && refreshedMap[.duel]?.frames == 37
+                        && refreshedMap[.trio]?.frames == 42
+                        && refreshedMap[.swarm]?.frames == 64,
                      "the refresh must install all four authored story strips")
-        precondition(refreshedScales[.idle] == 1.45,
-                     "the refresh must land the pack-owned Miles idle scale")
+        precondition(isWholeV126(refreshDest), "the refresh must land the whole V12.6 pack, every pose")
+        precondition(refreshedScales[.idle] == 1.0 && refreshedScales[.working] == 0.75,
+                     "the refresh must land the pack-owned Miles idle and Session 1 scales")
         // The live 0.5.141 defect: the seed carries the stale V15-1 duel
         // interval (0.1467), and the refresh replaces the duel FILE — so the
         // cadence must come from the bundle, not be retained. Retention left
         // the 17-frame V15.2 duel playing 33% slow on Miles's machine.
         let refreshedIntervals = PetSpriteStore.loadFrameIntervals(in: refreshDest)
-        precondition(refreshedIntervals[.duel].map { abs($0 - 0.11) < 0.0001 } == true,
+        precondition(refreshedIntervals[.duel].map { abs($0 - 0.08) < 0.0001 } == true,
                      "a pose whose art is replaced must take the bundled interval, "
                      + "got \(String(describing: refreshedIntervals[.duel]))")
-        precondition(refreshedMap[.patrol]?.file == "session-pet-patrol.png",
-                     "the targeted refresh must preserve every unrelated pose mapping")
+        precondition(refreshedMap[.patrol]?.file == "session-pet-patrol-polish-v3.png",
+                     "V12.6 is new art in every pose: patrol is promoted too")
 
         let priorStoryTemplate = seedRoot.appendingPathComponent(
             "prior-story-template", isDirectory: true
@@ -2267,12 +2289,12 @@ struct ModelsContract {
         )
         precondition(PetSpriteStore.refreshRecognizedBundledDefault(
             into: priorStoryTemplate, from: defaultPet
-        ) == .refreshed, "the retained prior story pack must upgrade to V15.1")
+        ) == .refreshed, "the retained prior story pack must upgrade to V12.6")
         let priorRefreshedMap = PetSpriteStore.loadStateMap(in: priorStoryTemplate)
         for story in authoredStories {
             precondition(priorRefreshedMap[story.pose]?.file == story.file
                             && priorRefreshedMap[story.pose]?.frames == story.frames,
-                         "prior story refresh must promote \(story.pose.rawValue) to V15.1")
+                         "prior story refresh must promote \(story.pose.rawValue) to V12.6")
         }
 
         // 0.5.134 already stamped the previous art generation after installing
@@ -2286,12 +2308,12 @@ struct ModelsContract {
         )
         precondition(PetSpriteStore.refreshRecognizedBundledDefault(
             into: v7Template, from: defaultPet
-        ) == .refreshed, "the retained V7 Miles pack must upgrade to V15.1")
+        ) == .refreshed, "the retained V7 Miles pack must upgrade to V12.6")
         let v7RefreshedMap = PetSpriteStore.loadStateMap(in: v7Template)
         for story in authoredStories {
             precondition(v7RefreshedMap[story.pose]?.file == story.file
                             && v7RefreshedMap[story.pose]?.frames == story.frames,
-                         "V7 refresh must promote \(story.pose.rawValue) to V15.1")
+                         "V7 refresh must promote \(story.pose.rawValue) to V12.6")
         }
 
         // 0.5.138 shipped V15 even though V15.1 had been approved in canary.
@@ -2305,15 +2327,16 @@ struct ModelsContract {
         )
         precondition(PetSpriteStore.refreshRecognizedBundledDefault(
             into: v15Template, from: defaultPet
-        ) == .refreshed, "the retained V15 Miles pack must upgrade to V15.1")
+        ) == .refreshed, "the retained V15 Miles pack must upgrade to V12.6")
         let v15RefreshedMap = PetSpriteStore.loadStateMap(in: v15Template)
         for story in authoredStories {
             precondition(v15RefreshedMap[story.pose]?.file == story.file
                             && v15RefreshedMap[story.pose]?.frames == story.frames,
-                         "V15 refresh must promote \(story.pose.rawValue) to V15.1")
+                         "V15 refresh must promote \(story.pose.rawValue) to V12.6")
         }
-        precondition(PetSpriteStore.loadRenderScales(in: v15Template)[.idle] == 1.45,
-                     "V15 refresh must land the approved 1.45x idle scale")
+        precondition(PetSpriteStore.loadRenderScales(in: v15Template)[.idle] == 1.0,
+                     "V15 refresh must land the approved V12.6 1.0x idle scale")
+        precondition(isWholeV126(v15Template), "V15 refresh must land the whole V12.6 pack")
 
         // 0.5.139 already carries the V15.1 story bytes and a stock 2x idle
         // scale. Generation 11 must recognize that exact install, upgrade the
@@ -2321,6 +2344,7 @@ struct ModelsContract {
         let stockV151 = seedRoot.appendingPathComponent("stock-v15-1", isDirectory: true)
         try! FileManager.default.copyItem(at: defaultPet, to: stockV151)
         let stockMapURL = stockV151.appendingPathComponent("session-pet-states.json")
+        try! Data(stock0514Map.utf8).write(to: stockMapURL, options: .atomic)
         var stockPayload = try! JSONSerialization.jsonObject(
             with: Data(contentsOf: stockMapURL)
         ) as! [String: Any]
@@ -2344,8 +2368,8 @@ struct ModelsContract {
         precondition(PetSpriteStore.refreshRecognizedBundledDefault(
             into: stockV151, from: defaultPet
         ) == .refreshed, "the retained V15.1 Miles pack must accept the idle correction")
-        precondition(PetSpriteStore.loadRenderScales(in: stockV151)[.idle] == 1.45,
-                     "the retained stock 2x Miles idle must normalize to 1.45x")
+        precondition(PetSpriteStore.loadRenderScales(in: stockV151)[.idle] == 1.0,
+                     "the retained stock 2x Miles idle must normalize to the V12.6 1.0x")
         let migratedV152 = PetSpriteStore.loadStateMap(in: stockV151)
         for story in authoredStories {
             precondition(migratedV152[story.pose]?.file == story.file
@@ -2353,8 +2377,8 @@ struct ModelsContract {
                          "published V15.1 must migrate every story to the approved pack")
         }
         let migratedIntervals = PetSpriteStore.loadFrameIntervals(in: stockV151)
-        precondition(abs((migratedIntervals[.duel] ?? 0) - 0.11) < 0.000001,
-                     "V15.2 duel migration must preserve all 17 frames at 0.11s")
+        precondition(abs((migratedIntervals[.duel] ?? 0) - 0.08) < 0.000001,
+                     "the duel migration must play all 37 V12.6 frames at 0.08s")
 
         // The public 0.5.142 pack already stamped generation 12. Keep its old
         // bytes available so generation 13 recognizes it without overwriting
@@ -2362,6 +2386,7 @@ struct ModelsContract {
         let stockV152 = seedRoot.appendingPathComponent("stock-v15-2", isDirectory: true)
         try! FileManager.default.copyItem(at: defaultPet, to: stockV152)
         let v152MapURL = stockV152.appendingPathComponent("session-pet-states.json")
+        try! Data(stock0514Map.utf8).write(to: v152MapURL, options: .atomic)
         var v152Payload = try! JSONSerialization.jsonObject(
             with: Data(contentsOf: v152MapURL)
         ) as! [String: Any]
@@ -2396,22 +2421,23 @@ struct ModelsContract {
                          && v153Map[story.pose]?.frames == story.frames,
                          "V15.2 migration must retain every approved story mapping")
         }
-        precondition(abs((PetSpriteStore.loadFrameIntervals(in: stockV152)[.swarm] ?? 0) - 0.11) < 0.000001,
-                     "V16 migration must preserve the authored 0.11-second runtime cadence")
+        precondition(abs((PetSpriteStore.loadFrameIntervals(in: stockV152)[.swarm] ?? 0) - 0.08) < 0.000001,
+                     "the swarm migration must take the authored 0.08-second V12.6 cadence")
         precondition(PetSpriteStore.loadRenderScales(in: stockV152)[.idle] == 1.75,
                      "V15.2 migration must preserve custom pose scale")
-        precondition(try! Data(contentsOf: stockV152.appendingPathComponent("session-pet-swarm-story-v16.png"))
-                     == Data(contentsOf: defaultPet.appendingPathComponent("session-pet-swarm-story-v16.png")),
-                     "V16 installed bytes must match the approved bundle")
+        precondition(try! Data(contentsOf: stockV152.appendingPathComponent("session-pet-swarm-alpha-v11-r2.png"))
+                     == Data(contentsOf: defaultPet.appendingPathComponent("session-pet-swarm-alpha-v11-r2.png")),
+                     "V12.6 installed swarm bytes must match the approved bundle")
 
         // Public 0.5.148 has V15.3, 25 swarm frames and a stock 3x idle.
         // Exercise that exact mapping, not just a copy of the new defaults.
-        for idleScale in [3.0, 1.3, 1.75] {
+        for idleScale in [3.0, 1.3, 1.45, 1.75] {
             let currentStock = seedRoot.appendingPathComponent(
                 "stock-v15-3-\(idleScale)", isDirectory: true
             )
             try! FileManager.default.copyItem(at: defaultPet, to: currentStock)
             let mapURL = currentStock.appendingPathComponent("session-pet-states.json")
+            try! Data(stock0514Map.utf8).write(to: mapURL, options: .atomic)
             var payload = try! JSONSerialization.jsonObject(
                 with: Data(contentsOf: mapURL)
             ) as! [String: Any]
@@ -2426,20 +2452,21 @@ struct ModelsContract {
             ))
             precondition(PetSpriteStore.refreshRecognizedBundledDefault(
                 into: currentStock, from: defaultPet
-            ) == .refreshed, "published V15.3 must upgrade to V15.4")
+            ) == .refreshed, "published V15.3 must upgrade to V12.6")
             let upgraded = PetSpriteStore.loadStateMap(in: currentStock)
-            precondition(upgraded[.swarm]?.file == "session-pet-swarm-story-v16.png"
-                         && upgraded[.swarm]?.frames == 52, "all 52 cadence cells must land")
-            let expectedScale = idleScale == 3 || idleScale == 1.3 ? 1.45 : idleScale
+            precondition(upgraded[.swarm]?.file == "session-pet-swarm-alpha-v11-r2.png"
+                         && upgraded[.swarm]?.frames == 64, "all 64 cadence cells must land")
+            precondition(isWholeV126(currentStock), "published V15.3 must take the whole V12.6 pack")
+            let expectedScale = idleScale == 1.75 ? 1.75 : 1.0
             precondition(abs((PetSpriteStore.loadRenderScales(in: currentStock)[.idle] ?? 0)
                              - expectedScale) < 0.000001,
-                         "normalize only stock 3x; retain custom and already-approved scales")
+                         "stock 3x, 1.3x and 1.45x idle take V12.6's 1.0x; a custom scale stays")
             precondition(try! Data(contentsOf: currentStock.appendingPathComponent(
                 "session-pet-working-one-droid-v15-2.png"
             )) == priorWorking, "the one-session strip must remain byte-identical")
             precondition(PetSpriteStore.refreshRecognizedBundledDefault(
                 into: currentStock, from: defaultPet
-            ) == .refreshed, "repeating the refresh must remain safe")
+            ) == .current, "repeating the refresh finds the pack current and writes nothing")
             precondition(abs((PetSpriteStore.loadRenderScales(in: currentStock)[.idle] ?? 0)
                              - expectedScale) < 0.000001, "repeated refresh must preserve scale")
         }
@@ -2451,6 +2478,7 @@ struct ModelsContract {
         let customScaleMapURL = customScaleV151.appendingPathComponent(
             "session-pet-states.json"
         )
+        try! Data(stock0514Map.utf8).write(to: customScaleMapURL, options: .atomic)
         var customScalePayload = try! JSONSerialization.jsonObject(
             with: Data(contentsOf: customScaleMapURL)
         ) as! [String: Any]
@@ -2484,10 +2512,98 @@ struct ModelsContract {
             ))) == customData, "migration changed customized \(pose.rawValue) bytes")
         }
 
+        // 0.5.316 GENERATION 20: the exact 0.5.314 stock pack is promoted to the whole V12.6 pack; a customised
+        // 0.5.314 pack is left alone; an install that already IS V12.6 (Miles's Mac, installed by hand) is a no-op.
+        let stock0514 = seedRoot.appendingPathComponent("stock-0-5-314", isDirectory: true)
+        try! FileManager.default.copyItem(at: legacyTemplate, to: stock0514)
+        try! Data(stock0514Map.utf8).write(
+            to: stock0514.appendingPathComponent("session-pet-states.json"), options: .atomic
+        )
+        let customised0514 = seedRoot.appendingPathComponent("custom-0-5-314", isDirectory: true)
+        try! FileManager.default.copyItem(at: stock0514, to: customised0514)
+        precondition(PetSpriteStore.refreshRecognizedBundledDefault(
+            into: stock0514, from: defaultPet
+        ) == .refreshed, "the exact 0.5.314 stock Miles pack must be promoted to V12.6")
+        precondition(isWholeV126(stock0514), "0.5.314 stock must take every V12.6 pose, file, count and cadence")
+        let promotedScales = PetSpriteStore.loadRenderScales(in: stock0514)
+        precondition(promotedScales[.idle] == 1.0 && promotedScales[.working] == 0.75,
+                     "the stock 1.45x idle takes V12.6's 1.0x and Session 1 its 0.75x")
+        let promotedMap = try! Data(contentsOf: stock0514.appendingPathComponent("session-pet-states.json"))
+        precondition(PetSpriteStore.refreshRecognizedBundledDefault(
+            into: stock0514, from: defaultPet
+        ) == .current, "a promoted pack is current on the next launch")
+        precondition(try! Data(contentsOf: stock0514.appendingPathComponent("session-pet-states.json")) == promotedMap,
+                     "a current pack's map is not rewritten")
+
+        let customisedTrio = customised0514.appendingPathComponent("session-pet-trio-story-v17.png")
+        var customisedTrioData = try! Data(contentsOf: customisedTrio)
+        customisedTrioData.append(Data("custom trio".utf8))
+        try! customisedTrioData.write(to: customisedTrio, options: .atomic)
+        let customisedMapBefore = try! Data(contentsOf: customised0514.appendingPathComponent("session-pet-states.json"))
+        precondition(PetSpriteStore.refreshRecognizedBundledDefault(
+            into: customised0514, from: defaultPet
+        ) == .notApplicable, "a customised 0.5.314 pack must never be promoted")
+        precondition(try! Data(contentsOf: customisedTrio) == customisedTrioData
+                        && (try! Data(contentsOf: customised0514.appendingPathComponent("session-pet-states.json"))) == customisedMapBefore,
+                     "a customised 0.5.314 pack's bytes and map are untouched")
+
+        let handInstalled = seedRoot.appendingPathComponent("hand-installed-v12-6", isDirectory: true)
+        try! FileManager.default.createDirectory(at: handInstalled, withIntermediateDirectories: true)
+        for file in Set(bundledMiles.values.map(\.file)).union(["session-pet-states.json"]) {
+            try! FileManager.default.copyItem(at: defaultPet.appendingPathComponent(file),
+                                              to: handInstalled.appendingPathComponent(file))
+        }
+        let handMap = try! Data(contentsOf: handInstalled.appendingPathComponent("session-pet-states.json"))
+        let handDates = try! FileManager.default.contentsOfDirectory(at: handInstalled, includingPropertiesForKeys: [.contentModificationDateKey])
+            .map { ($0.lastPathComponent, try! $0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate!) }
+        precondition(PetSpriteStore.refreshRecognizedBundledDefault(
+            into: handInstalled, from: defaultPet
+        ) == .current, "an install that already IS V12.6 is current: no rewrite, no downgrade")
+        precondition(try! Data(contentsOf: handInstalled.appendingPathComponent("session-pet-states.json")) == handMap
+                        && handDates.allSatisfy({ name, date in
+                            (try? handInstalled.appendingPathComponent(name).resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) == date
+                        }),
+                     "a current pack is not written at all")
+        // A speed or scale the person tuned on V12.6 is still V12.6: current, and their tuning stays.
+        let tunedV126 = seedRoot.appendingPathComponent("tuned-v12-6", isDirectory: true)
+        try! FileManager.default.copyItem(at: handInstalled, to: tunedV126)
+        let tunedURL = tunedV126.appendingPathComponent("session-pet-states.json")
+        var tunedPayload = try! JSONSerialization.jsonObject(with: Data(contentsOf: tunedURL)) as! [String: Any]
+        var tunedPoses = tunedPayload["poses"] as! [String: [String: Any]]
+        tunedPoses["duel"]?["interval"] = 0.12
+        tunedPayload["poses"] = tunedPoses
+        try! JSONSerialization.data(withJSONObject: tunedPayload).write(to: tunedURL, options: .atomic)
+        let tunedBefore = try! Data(contentsOf: tunedURL)
+        precondition(PetSpriteStore.refreshRecognizedBundledDefault(into: tunedV126, from: defaultPet) == .current
+                        && (try! Data(contentsOf: tunedURL)) == tunedBefore,
+                     "a tuned V12.6 pack is current and keeps its tuning")
+        // One V12.6 strip changed by the person: not current, and not stock either, so it is left alone.
+        let editedV126 = seedRoot.appendingPathComponent("edited-v12-6", isDirectory: true)
+        try! FileManager.default.copyItem(at: handInstalled, to: editedV126)
+        let editedDuel = editedV126.appendingPathComponent("session-pet-duel-tail-tighter-v12-5.png")
+        var editedDuelData = try! Data(contentsOf: editedDuel)
+        editedDuelData.append(Data("edited".utf8))
+        try! editedDuelData.write(to: editedDuel, options: .atomic)
+        precondition(PetSpriteStore.refreshRecognizedBundledDefault(into: editedV126, from: defaultPet) == .notApplicable
+                        && (try! Data(contentsOf: editedDuel)) == editedDuelData,
+                     "an edited V12.6 strip is neither current nor stock: untouched")
+
+        // Same V12.6 files declared with a different frame count is not the bundled pack either.
+        let recountedV126 = seedRoot.appendingPathComponent("recounted-v12-6", isDirectory: true)
+        try! FileManager.default.copyItem(at: handInstalled, to: recountedV126)
+        let recountedURL = recountedV126.appendingPathComponent("session-pet-states.json")
+        var recountedPayload = try! JSONSerialization.jsonObject(with: Data(contentsOf: recountedURL)) as! [String: Any]
+        var recountedPoses = recountedPayload["poses"] as! [String: [String: Any]]
+        recountedPoses["trio"]?["frames"] = 21
+        recountedPayload["poses"] = recountedPoses
+        try! JSONSerialization.data(withJSONObject: recountedPayload).write(to: recountedURL, options: .atomic)
+        precondition(PetSpriteStore.refreshRecognizedBundledDefault(into: recountedV126, from: defaultPet) == .notApplicable,
+                     "V12.6 files with another frame count are neither current nor stock")
+
         let brokenSource = seedRoot.appendingPathComponent("broken-source", isDirectory: true)
         try! FileManager.default.copyItem(at: defaultPet, to: brokenSource)
         try! FileManager.default.removeItem(
-            at: brokenSource.appendingPathComponent("session-pet-swarm-story-v16.png")
+            at: brokenSource.appendingPathComponent("session-pet-swarm-alpha-v11-r2.png")
         )
         let retryDest = seedRoot.appendingPathComponent("retryable-legacy", isDirectory: true)
         try! FileManager.default.copyItem(at: legacyTemplate, to: retryDest)
