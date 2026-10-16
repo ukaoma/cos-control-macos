@@ -338,6 +338,16 @@ enum SpriteRenderContract {
         let em = measure(image: eaten, frames: 2, label: "synthetic/eaten", fixture: none)!
         expect(!violations(em, label: "synthetic/eaten", fixture: none).isEmpty && em.fadeHolesPercent == 0,
                "an unevenly eaten garment must still fail the hole gate")
+        // A small patch eaten at ONE alpha inside the garment (under fadeMinHoles): still a hole, not a fade.
+        let patch = strip(cells: 2, width: W, height: H) { ctx in
+            for cell in 0..<2 {
+                fill(ctx, height: H, x: cell * W + 10, y: 10, w: 40, h: 40, alpha: 1)
+                fill(ctx, height: H, x: cell * W + 20, y: 20, w: 6, h: 6, alpha: 0.5, copy: true)
+            }
+        }
+        let pm = measure(image: patch, frames: 2, label: "synthetic/patch", fixture: none)!
+        expect(!violations(pm, label: "synthetic/patch", fixture: none).isEmpty && pm.fadeHolesPercent == 0,
+               "a small uniform patch eaten into the garment must still fail the hole gate")
         // A figure at the cell edge: cropped unless its frame is a listed entrance.
         let edge = strip(cells: 2, width: W, height: H) { ctx in
             fill(ctx, height: H, x: 20, y: 10, w: 20, h: 40, alpha: 1)
@@ -362,6 +372,13 @@ enum SpriteRenderContract {
         let spillM = measure(image: spill, frames: 3, label: "synthetic/spill", fixture: none)!
         expect(spillM.slivers.count == 1 && spillM.slivers[0].contains("frame 2 left edge"),
                "a neighbour's object spilling across the cut must be one sliver, in frame 2: \(spillM.slivers)")
+        // The same spill at 4 x 2 px (8 px, like V12.6 swarm frame 59): invisible at 1x, reported as a speck, not failed.
+        let streak = strip(cells: 3, width: W, height: H) { ctx in
+            fill(ctx, height: H, x: 30, y: 20, w: W - 30 + 4, h: 2, alpha: 1)
+        }
+        let streakM = measure(image: streak, frames: 3, label: "synthetic/streak", fixture: none)!
+        expect(streakM.slivers.isEmpty && streakM.specks.count == 1 && streakM.specks[0].contains("frame 2 left edge"),
+               "an 8 px stray at a cut is a reported speck, not a sliver: \(streakM.slivers) \(streakM.specks)")
         return failures
     }
 }
@@ -383,7 +400,7 @@ struct SpriteRenderMain {
             for f in failures { print("  - \(f)") }
             exit(1)
         }
-        print("self-check: fade exempt, eaten garment caught, listed edge only, entering pair owned, spill caught")
+        print("self-check: fade exempt, eaten garment and small eaten patch caught, listed edge only, entering pair owned, spill caught, 8 px stray reported as a speck")
         var checked = 0
 
         func check(_ url: URL, frames: Int, label: String) {
