@@ -2158,12 +2158,15 @@ extension WorkCardFiles {
     /// The one composer the send and the Agent workspace's "What gets sent" both use (WorkCardFiles.handoff).
     /// 0.5.258: the card's files, then its meetings' files (WorkCardFiles.withMeetings). `fits` is the whole send's limit
     /// (the draft limit, Cursor's link); only meeting files are dropped to meet it.
+    /// 0.5.312: `include` limits the send to these file ids (one Work chat assignment's selection); nil carries every file.
     func handoff(for workID: String, mode: WorkHandoffMode, sessionID: String?, receipts: [WorkHandoffReceipt], resendAll: Bool,
-                 fits: (String) -> Bool = { _ in true }) -> WorkHandoffFiles {
+                 include: Set<String>? = nil, fits: (String) -> Bool = { _ in true }) -> WorkHandoffFiles {
         guard let folder = folder(for: workID) else { return WorkHandoffFiles() }
-        let card = WorkCardFiles.handoff(files: files(for: workID), folder: folder, mode: mode, sessionID: sessionID, workID: workID,
+        let card = WorkCardFiles.handoff(files: files(for: workID).filter { include?.contains($0.id) ?? true }, folder: folder, mode: mode, sessionID: sessionID, workID: workID,
                                      receipts: receipts, resendAll: resendAll, copyExists: { FileManager.default.fileExists(atPath: $0.path) })
-        guard policy == .work, let groups = meetingGroups?(workID), !groups.isEmpty else { return card }
+        guard policy == .work, var groups = meetingGroups?(workID), !groups.isEmpty else { return card }
+        if let include { groups = groups.map { var g = $0; g.files = g.files.filter { include.contains($0.id) }; return g }.filter { !$0.files.isEmpty } }
+        guard !groups.isEmpty else { return card }
         return WorkCardFiles.withMeetings(card, cardFolder: folder, meetings: groups, mode: mode, sessionID: sessionID, workID: workID, receipts: receipts,
                                           resendAll: resendAll, copyExists: { FileManager.default.fileExists(atPath: $0.path) }, fits: fits)
     }

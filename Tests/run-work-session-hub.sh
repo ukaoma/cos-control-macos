@@ -16,6 +16,29 @@ assert h >= 185, f"helper waits {h}s for a plan the server may run for 180s"
 assert c >= h + 2 + 5, f"Control waits {c}s for a helper that may wait {h + 2}s"
 print(f"PASS Work chat timeouts: server 180s < helper {h}s (+2) < Control {c}s")
 PY
+# 0.5.312: the Work Context Meter's wiring. Item lists start collapsed and their open state is remembered per Mac; a file
+# previews in the native Quick Look panel on its local copy, a text item shows its exact excerpt; the send uses only the
+# assignment's items and files; the helper passes the server's contextItems capability through.
+python3 - "$ROOT/Sources/WorkContextMeter.swift" "$ROOT/Sources/WorkTaskChat.swift" "$ROOT/Sources/WorkHandoffStore.swift" "$ROOT/HelperSources/main.swift" <<'PY'
+import sys
+meter, chat, store, helper = (open(p).read() for p in sys.argv[1:5])
+assert '@AppStorage(WorkContextMeter.expandedKey) private var expanded = ""' in meter, "item lists must start collapsed (empty memory)"
+assert 'static let expandedKey = "cos.workContextExpanded"' in meter, "the open state is remembered per Mac"
+assert "private var isOpen: Bool { WorkContextMeter.isExpanded(expanded, assignment.receiptID) }" in meter and "if isOpen {" in meter, "the list shows only when opened"
+preview = chat[chat.index("    private func openPreview("):chat.index("    @ViewBuilder private func contextMeter(")]
+assert "if item.kind == .files, let url = chat.previewURL(for: item, source: source, handoff: handoff) { quickLook = url; return }" in preview, "a file opens in Quick Look"
+assert ".quickLookPreview($quickLook)" in chat and chat.count(".quickLookPreview(") == 1, "one Quick Look presenter on the chat"
+assert '.onKeyPress(.space) { onPreview(item); return .handled }' in meter, "Space previews the hovered or focused row"
+assert ".onHover { inside in if inside { focusedRow = item.id }" in meter, "hovering a row makes Space reach it"
+dispatch = chat[chat.index("    private func dispatch("):chat.index("    private func sendContext(")]
+assert "WorkContextMeter.prompt(question: round.question, assignment: assignment.prompt, items: items, selected: selected)" in dispatch, "the send builds its prompt from the assignment's items"
+assert "contextFileIDs:fileIDs)" in dispatch and "include: contextFileIDs" in store, "the send lists only the assignment's files"
+assert '"contextItems": body["contextItems"] as? Bool == true' in helper, "the helper passes the server's context-items capability"
+import re
+logged = re.findall(r'workChatLog\.\w+\("((?:[^"\\]|\\.)*)"', chat)
+assert len(logged) >= 8 and not any(re.search(r'\\\((?:prompt|built|question|context|text|assignment\.prompt|round\.question)\b', line) for line in logged), "the work-chat log never carries prompt, question or context text"
+print("PASS Work context meter wiring: collapsed by default and remembered per Mac, Quick Look for files, per-assignment prompt and files")
+PY
 SOURCES=("$ROOT"/Sources/*.swift)
 SOURCES=("${(@)SOURCES:#*/COSControlApp.swift}")
 COS_COMPILE_PROFILE=bounded "$ROOT/Tests/compile-guard.sh" swiftc -target arm64-apple-macosx14.0 -swift-version 6 -strict-concurrency=complete -parse-as-library \

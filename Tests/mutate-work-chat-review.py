@@ -4,13 +4,13 @@
     python3 Tests/mutate-work-chat-review.py <control worktree> [name ...]   (run by hand, never by a gate)
 
 SERIAL by design: one hub compile at a time, each through Tests/compile-guard.sh (never parallel; see the 2026-10-07
-kernel panics). Works on a scratch copy of Sources/ and Tests/, so an interrupted run never leaves the checkout mutated.
+kernel panics). Works on a scratch copy of Sources/, Tests/ and HelperSources/ (the hub runner pins read the helper), so an interrupted run never leaves the checkout mutated.
 A GREEN baseline is required before the first mutant. Each mutant must land exactly once and make the hub checks FAIL.
 Exits non-zero on any MISSING target or any SURVIVOR other than the one documented expected survivor below.
 """
 import pathlib, shutil, subprocess, sys, tempfile
 root = pathlib.Path(sys.argv[1]).resolve(); only = set(sys.argv[2:])
-C = "Sources/WorkTaskChat.swift"; S = "Sources/WorkHandoffStore.swift"
+C = "Sources/WorkTaskChat.swift"; S = "Sources/WorkHandoffStore.swift"; M = "Sources/WorkContextMeter.swift"; F = "Sources/WorkCardFiles.swift"
 # Defense in depth: the "Not sent" state guard and submit's intent-id refusal both stop a resend, so removing this one
 # guard alone cannot change behaviour. Any other survivor fails the gate.
 EXPECTED_SURVIVORS = {"sent receipt guard (expected survivor: state guard and submit intent id back it up)"}
@@ -39,16 +39,51 @@ MUTANTS = [
  ("no report claims the request", C, '        if reported.hasSuffix("(requested)") || (reported.isEmpty && requested != nil) {', '        if reported.hasSuffix("(requested)") {'),
  ("server model not recorded", C, 'self.record?.rounds[index].plannerModel = handoff.isolated ? nil : answer.model.map { String($0.prefix(100)) }', 'self.record?.rounds[index].plannerModel = nil'),
  ("discovery not retried", C, 'if attempt == 0 { try? await Task.sleep(for: retryDelay) }', 'if attempt == 0 { try? await Task.sleep(for: retryDelay); break }'),
- ("discovery failure hidden", C, 'planners = []; efforts = []; plannerNotice = WorkChatPolicy.plannerUnavailable', 'planners = []; efforts = []; plannerNotice = nil'),
+ ("discovery failure hidden", C, 'planners = []; efforts = []; contextItemsOffered = false; plannerNotice = WorkChatPolicy.plannerUnavailable', 'planners = []; efforts = []; contextItemsOffered = false; plannerNotice = nil'),
  ("effort key always sent", C, 'if let effort { body["effort"] = effort }', 'body["effort"] = effort ?? "high"'),
  ("effort key never sent", C, 'if let effort { body["effort"] = effort }', ''),
  ("effort ignores choice", C, '        if let choice, offered.contains(choice) { return choice }\n        return offered.contains("high") ? "high" : nil', '        return offered.contains("high") ? "high" : nil'),
  ("effort trusts unknown", C, 'let offered = efforts.filter { advertised.contains($0) }', 'let offered = advertised'),
  ("efforts not filtered", C, 'efforts = WorkChatPolicy.efforts.filter { levels.contains($0) }', 'efforts = levels'),
- ("effort not sent with Plan", C, 'mode:"plan",planner:planner,effort:effort)', 'mode:"plan",planner:planner)'),
+ ("effort not sent with Plan", C, 'mode:"plan",planner:planner,effort:effort,items:chooses ? items : nil)', 'mode:"plan",planner:planner,items:chooses ? items : nil)'),
  ("reported effort not recorded", C, 'self.record?.rounds[index].plannerEffort = handoff.isolated ? nil : answer.effort.flatMap { WorkChatPolicy.efforts.contains($0) ? $0 : nil }', 'self.record?.rounds[index].plannerEffort = nil'),
  ("requested effort claimed", C, 'self.record?.rounds[index].plannerEffort = handoff.isolated ? nil : answer.effort.flatMap { WorkChatPolicy.efforts.contains($0) ? $0 : nil }', 'self.record?.rounds[index].plannerEffort = handoff.isolated ? nil : effort'),
  ("unknown effort shown", C, '        guard let effort, efforts.contains(effort) else { return base }', '        guard let effort else { return base }'),
+ # 0.5.312 Work Context Meter
+ ("text estimate rounds down", M, 'static func textTokens(_ text: String) -> Int { (text.count + 3) / 4 }', 'static func textTokens(_ text: String) -> Int { text.count / 4 }'),
+ ("claude image ignores the 1568 edge", M, '        let edge = min(1, 1568 / max(w, h)); w *= edge; h *= edge\n', ''),
+ ("claude image ignores the area cap", M, '        let area = min(1, (1_150_000 / (w * h)).squareRoot()); w *= area; h *= area\n', ''),
+ ("codex image uses claude's rule", M, '        if provider == "codex" {\n            let fit', '        if provider == "none" {\n            let fit'),
+ ("codex tiles ignore the short side", M, '            let short = min(1, 768 / min(w, h)); w *= short; h *= short\n', ''),
+ ("video frames ignored", M, 'case "video": body = (frames ?? 0) * imageTokens(', 'case "video": body = 0 * imageTokens('),
+ ("file line not counted", M, '        return body + fileLineTokens\n', '        return body\n'),
+ ("duplicate files listed twice", M, 'for input in files where seen.insert(input.file.id).inserted {', 'for input in files where seen.insert(UUID().uuidString).inserted {'),
+ ("empty prior results listed", M, 'for prior in priors where !prior.result.isEmpty {', 'for prior in priors {'),
+ ("meetings not split", M, '            guard line.hasPrefix("- ") else { continue }\n', '            guard line.hasPrefix("+ ") else { continue }\n'),
+ ("selection forgets the fixed items", M, '        let chosen = Set(ids).union(fixedIDs)\n        return items.filter', '        let chosen = Set(ids)\n        return items.filter'),
+ ("no choice sends only the fixed items", M, '        guard let ids else { return items.map(\\.id) }', '        guard let ids else { return fixedIDs }'),
+ ("unknown ids accepted", M, '        return Set(ids).count == ids.count && ids.allSatisfy(known.contains) && fixedIDs.allSatisfy(ids.contains)', '        return Set(ids).count == ids.count && fixedIDs.allSatisfy(ids.contains)'),
+ ("fixed items removable", M, '        guard let item = items.first(where: { $0.id == itemID }), !item.fixed else { return nil }', '        guard let item = items.first(where: { $0.id == itemID }) else { return nil }'),
+ ("codex sends use claude counts", M, '        provider == "codex" ? (item.codexTokens ?? item.estTokens) : item.estTokens', '        item.estTokens'),
+ ("skipped assignments counted", M, '        assignments.filter { $0.state != "Skipped" }.reduce(0) {', '        assignments.reduce(0) {'),
+ ("canary rounds wrong way", M, 'linked > 0 ? Int((Double(sent) / Double(linked) * 100).rounded()) : 0', 'linked > 0 ? Int(Double(sent) / Double(linked) * 100) - 1 : 0'),
+ ("window guessed when unknown", M, '        guard let window, window.windowTokens > 0 else { return nil }', '        guard let window, window.windowTokens > 0 else { return ("0.0% of this session\'s window", false) }'),
+ ("full session not warned", M, '        if used >= 0.85 {', '        if used >= 0.95 {'),
+ ("prompt sends unselected meetings", M, '        let meetings = picked.filter { $0.kind == .meet }.compactMap(\\.text)', '        let meetings = items.filter { $0.kind == .meet }.compactMap(\\.text)'),
+ ("prompt drops priors", M, '        if !priors.isEmpty { context +=', '        if priors.isEmpty { context +='),
+ ("prompt lists unselected files", M, '        return (text, Set(picked.compactMap(\\.fileID)))', '        return (text, Set(items.compactMap(\\.fileID)))'),
+ ("lists start expanded", M, 'static func isExpanded(_ stored: String, _ id: String) -> Bool { stored.split(separator: ",").contains { $0 == id } }', 'static func isExpanded(_ stored: String, _ id: String) -> Bool { !stored.split(separator: ",").contains { $0 == id } }'),
+ ("memory unbounded", M, '        return ids.suffix(40).joined(separator: ",")', '        return ids.joined(separator: ",")'),
+ ("server choice ignored", C, 'var a = a; a.contextItemIDs = WorkContextMeter.selection(chooses ? a.contextItemIDs : nil, items: items); return a', 'var a = a; a.contextItemIDs = WorkContextMeter.selection(nil, items: items); return a'),
+ ("items sent to an older server", C, 'let chooses = !handoff.isolated && contextItemsOffered && items.count <= WorkContextMeter.maxItems', 'let chooses = !handoff.isolated && items.count <= WorkContextMeter.maxItems'),
+ ("capability ignored", C, '                contextItemsOffered = caps["contextItems"]?.bool == true', '                contextItemsOffered = false'),
+ ("edits not persisted", C, '        record?.rounds[r].assignments[n].contextItemIDs = next\n        return persist()', '        record?.rounds[r].assignments[n].contextItemIDs = next\n        return true'),
+ ("edits allowed after sending", C, 'let n = record?.rounds[r].assignments.firstIndex(where: { $0.receiptID == assignmentID && $0.state == "Not sent" }),\n              let current = record?.rounds[r].assignments[n].contextItemIDs,', 'let n = record?.rounds[r].assignments.firstIndex(where: { $0.receiptID == assignmentID }),\n              let current = record?.rounds[r].assignments[n].contextItemIDs,'),
+ ("send ignores the selection", C, '                    prompt = built.text; fileIDs = built.fileIDs', '                    fileIDs = built.fileIDs'),
+ ("send lists every file", C, 'orchestrationRunID:round.id,intentID:assignment.receiptID,contextFileIDs:fileIDs)', 'orchestrationRunID:round.id,intentID:assignment.receiptID,contextFileIDs:nil)'),
+ ("stale selection sent", C, '                    guard WorkContextMeter.validSelection(selected, items: items),', '                    guard true,'),
+ ("file filter ignored", F, 'files(for: workID).filter { include?.contains($0.id) ?? true }', 'files(for: workID)'),
+ ("meeting file filter ignored", F, '        if let include { groups = groups.map', '        if false, let include { groups = groups.map'),
  ("old server warned", C, 'planners = WorkChatPolicy.planners.filter { advertised.contains($0) }; plannerNotice = nil', 'planners = WorkChatPolicy.planners.filter { advertised.contains($0) }; plannerNotice = advertised.isEmpty ? WorkChatPolicy.plannerUnavailable : nil'),
  ("planner key always sent", C, 'if let planner { body["planner"] = planner }', 'body["planner"] = planner ?? "sonnet"'),
  ("planner key never sent", C, 'if let planner { body["planner"] = planner }', ''),
@@ -77,7 +112,7 @@ def run(work: pathlib.Path):
 
 work = pathlib.Path(tempfile.mkdtemp(prefix="cos-work-chat-mutants-", dir="/private/tmp"))
 try:
-    for folder in ("Sources", "Tests"): shutil.copytree(root / folder, work / folder, ignore=shutil.ignore_patterns("__pycache__"))
+    for folder in ("Sources", "Tests", "HelperSources"): shutil.copytree(root / folder, work / folder, ignore=shutil.ignore_patterns("__pycache__"))
     code, why, out = run(work)
     if code != 0: sys.exit("baseline is not green; refusing to mutate:\n" + out[-3000:])
     print("baseline green")

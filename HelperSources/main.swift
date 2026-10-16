@@ -17175,7 +17175,9 @@ final class COSControlHelper {
         let planners = (body["planners"] as? [String] ?? []).filter { ["sonnet", "opus"].contains($0) }
         // Server 6.73.12 advertises planner efforts. Only the three COS offers pass; the CLI's xhigh and max never do.
         let efforts = (body["efforts"] as? [String] ?? []).filter { ["low", "medium", "high"].contains($0) }
-        emit(ok: true, message: "Task chat", details: ["protocolVersion": 1, "planners": planners, "efforts": efforts])
+        // Server 6.73.13 chooses each assignment's context items (the Work Context Meter).
+        emit(ok: true, message: "Task chat", details: ["protocolVersion": 1, "planners": planners, "efforts": efforts,
+                                                     "contextItems": body["contextItems"] as? Bool == true])
     }
 
     private func emitWorkNew() throws {
