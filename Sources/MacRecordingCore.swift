@@ -390,3 +390,189 @@ enum MacRecordingRecoveryPolicy {
         noSpeech && pending && stopped && !delivering
     }
 }
+
+// MARK: - Meeting detection (0.5.313, Miles 2026-10-15 22:39)
+//
+// "When a meeting's been detected, something from Zoom, Google Meet, Microsoft Teams ... a recording request that
+// allows us to fast track and start recording." Detection reads only which processes hold the microphone (CoreAudio
+// process objects) and, for a browser, whether one of its window titles names Google Meet. Pure, so every rule is
+// tested and mutated; the app reads CoreAudio and AX, calls these, and acts.
+
+enum MeetingApp: String, CaseIterable, Sendable {
+    case zoom, teams, meet
+    var title: String {
+        switch self {
+        case .zoom: "Zoom"
+        case .teams: "Microsoft Teams"
+        case .meet: "Google Meet"
+        }
+    }
+}
+
+/// The app a microphone holder belongs to: its meeting app, the app to name and to put on the Never list.
+struct MeetingSource: Hashable, Sendable {
+    let app: MeetingApp
+    let ownerBundleID: String
+    let ownerName: String
+}
+
+/// One CoreAudio process object, as read: no titles, no audio.
+struct MeetingAudioProcess: Equatable, Sendable {
+    let pid: Int32
+    let bundleID: String
+    let input: Bool
+}
+
+/// THE table of meeting apps (one place). A process matches a rule when its bundle ID equals one of the prefixes or
+/// continues it after a dot (helpers: us.zoom.CptHost, com.microsoft.teams2.modulehost, com.google.Chrome.helper).
+/// A prefix ending in "." matches anything under it. Browsers count only with a Google Meet window title.
+enum MeetingApps {
+    struct Rule: Sendable {
+        let app: MeetingApp
+        let owner: String
+        let ownerName: String
+        let prefixes: [String]
+        var browser: Bool { app == .meet }
+        var source: MeetingSource { MeetingSource(app: app, ownerBundleID: owner, ownerName: ownerName) }
+    }
+    static let rules: [Rule] = [
+        Rule(app: .zoom, owner: "us.zoom.xos", ownerName: "Zoom", prefixes: ["us.zoom.xos", "us.zoom.CptHost", "us.zoom."]),
+        Rule(app: .teams, owner: "com.microsoft.teams2", ownerName: "Microsoft Teams", prefixes: ["com.microsoft.teams2", "com.microsoft.teams"]),
+        Rule(app: .meet, owner: "com.google.Chrome", ownerName: "Google Chrome", prefixes: ["com.google.Chrome"]),
+        // Safari's microphone is held by WebKit's GPU process, which names no app; the Meet title in Safari decides.
+        Rule(app: .meet, owner: "com.apple.Safari", ownerName: "Safari", prefixes: ["com.apple.Safari", "com.apple.WebKit.GPU"]),
+        Rule(app: .meet, owner: "company.thebrowser.Browser", ownerName: "Arc", prefixes: ["company.thebrowser."]),
+        Rule(app: .meet, owner: "ai.perplexity.comet", ownerName: "Comet", prefixes: ["ai.perplexity.comet"]),
+        Rule(app: .meet, owner: "com.microsoft.edgemac", ownerName: "Microsoft Edge", prefixes: ["com.microsoft.edgemac"]),
+        Rule(app: .meet, owner: "com.brave.Browser", ownerName: "Brave", prefixes: ["com.brave.Browser"]),
+        Rule(app: .meet, owner: "org.mozilla.firefox", ownerName: "Firefox", prefixes: ["org.mozilla.firefox", "org.mozilla.plugincontainer"]),
+    ]
+    static func rule(forBundleID bundleID: String) -> Rule? {
+        let id = bundleID.lowercased()
+        // COS (Control, its helper, dictation's own capture) is in no rule, and its own pid is skipped in `holding`.
+        guard !id.isEmpty else { return nil }
+        return rules.first { rule in
+            rule.prefixes.contains { raw in
+                let prefix = raw.lowercased()
+                return prefix.hasSuffix(".") ? id.hasPrefix(prefix) : (id == prefix || id.hasPrefix(prefix + "."))
+            }
+        }
+    }
+    /// A window title that names Google Meet: "Meet - abc-defg-hij", "Meet – Weekly sync", or the meet.google.com
+    /// address. "Meeting notes" is not a Meet.
+    static func showsMeet(_ titles: [String]) -> Bool {
+        titles.contains { title in
+            title.range(of: "meet.google.com", options: .caseInsensitive) != nil
+                || title.range(of: #"(^|[^A-Za-z])Meet($|[^A-Za-z])"#, options: .regularExpression) != nil
+        }
+    }
+    /// Who holds the microphone right now, after exclusions. `browserShowsMeet(owner)` is nil when it cannot be read
+    /// (no Accessibility): that browser is skipped and `browserUnchecked` says so.
+    static func holding(_ processes: [MeetingAudioProcess], ownPID: Int32, never: Set<String>,
+                        browserShowsMeet: (String) -> Bool?) -> (sources: Set<MeetingSource>, browserUnchecked: Bool) {
+        var sources = Set<MeetingSource>()
+        var unchecked = false
+        var titles: [String: Bool?] = [:]
+        for process in processes where process.input && process.pid != ownPID {
+            guard let rule = rule(forBundleID: process.bundleID), !never.contains(rule.owner) else { continue }
+            if rule.browser {
+                if titles[rule.owner] == nil { titles[rule.owner] = .some(browserShowsMeet(rule.owner)) }
+                switch titles[rule.owner]! {
+                case true?: sources.insert(rule.source)
+                case nil: unchecked = true
+                case false?: break
+                }
+            } else {
+                sources.insert(rule.source)
+            }
+        }
+        return (sources, unchecked)
+    }
+}
+
+/// A meeting is continuous microphone use by one app. It is detected after a 10 s hold, ends after a 60 s release,
+/// and is offered at most once (Not now, the 60 s fold-away and Never all count as offered).
+struct MeetingDetectionState: Equatable, Sendable {
+    static let holdSeconds: TimeInterval = 10
+    static let releaseSeconds: TimeInterval = 60
+    struct Track: Equatable, Sendable {
+        var holding = false
+        var heldSince: Date?
+        var releasedAt: Date?
+        var inMeeting = false
+        var handled = false
+    }
+    struct Context: Equatable, Sendable {
+        var suggestEnabled: Bool
+        var allowed: Set<MeetingApp>
+        /// A Mac recording is active, starting, stopping, pending delivery or recoverable; or a COS recording is live.
+        var recordingBusy: Bool
+        var dictating: Bool
+        var cardShowing: Bool
+    }
+    enum Event: Equatable, Sendable {
+        case suggest(MeetingSource)
+        case ended(MeetingSource)
+    }
+    private(set) var tracks: [MeetingSource: Track] = [:]
+    /// Ticks are needed only while something holds the microphone or a meeting has not ended yet.
+    var wantsTicks: Bool { tracks.values.contains { $0.holding || $0.inMeeting } }
+
+    mutating func step(holding: Set<MeetingSource>, now: Date, context: Context) -> [Event] {
+        var events: [Event] = []
+        for source in Set(tracks.keys).union(holding).sorted(by: { $0.ownerBundleID < $1.ownerBundleID }) {
+            var t = tracks[source] ?? Track()
+            if holding.contains(source) {
+                if !t.holding {
+                    t.holding = true; t.heldSince = now; t.releasedAt = nil
+                    if !t.inMeeting { t.inMeeting = true; t.handled = false }
+                }
+            } else if t.holding {
+                t.holding = false; t.releasedAt = now
+            }
+            if !t.holding, t.inMeeting, let released = t.releasedAt, now.timeIntervalSince(released) >= Self.releaseSeconds {
+                t = Track()
+                events.append(.ended(source))
+            }
+            if t.holding, t.inMeeting, !t.handled, let since = t.heldSince, now.timeIntervalSince(since) >= Self.holdSeconds {
+                if !context.suggestEnabled || !context.allowed.contains(source.app) || context.recordingBusy {
+                    // Off, not allowed, or already recording: not this meeting, even once that changes.
+                    t.handled = true
+                } else if !context.dictating, !context.cardShowing {
+                    t.handled = true
+                    events.append(.suggest(source))
+                }
+            }
+            tracks[source] = t.holding || t.inMeeting ? t : nil
+        }
+        return events
+    }
+}
+
+/// The card's words, the recording's title, and the end offer.
+enum MeetingSuggestion {
+    static let dismissSeconds: TimeInterval = 60
+    static func headline(_ source: MeetingSource) -> String { "Meeting detected · " + source.app.title }
+    static let line = "Record on Mac with live transcript? Let people know you're recording."
+    static func never(_ source: MeetingSource) -> String { "Never for " + source.ownerName }
+    static let endHeadline = "Meeting ended?"
+    static func endLine(_ source: MeetingSource) -> String {
+        source.app.title + " has been off the microphone for a minute. COS is still recording."
+    }
+    /// "Zoom meeting 2:05 PM".
+    static func title(_ source: MeetingSource, at date: Date, calendar: Calendar = .current) -> String {
+        let f = DateFormatter(); f.calendar = calendar; f.timeZone = calendar.timeZone
+        f.locale = Locale(identifier: "en_US_POSIX"); f.dateFormat = "h:mm a"
+        return source.app.title + " meeting " + f.string(from: date)
+    }
+    /// "Meeting ended? Stop and save" only for the recording this card started, while it is still the one running.
+    /// COS never stops it on its own.
+    static func offersEnd(ended: MeetingSource, startedFrom: MeetingSource?, startedCaptureID: String?, runningCaptureID: String?) -> Bool {
+        guard let startedFrom, startedFrom == ended, let startedCaptureID, let runningCaptureID else { return false }
+        return startedCaptureID == runningCaptureID
+    }
+    /// Busy for suggestions: anything a new recording would collide with or bury.
+    static func recordingBusy(macOccupied: Bool, macCanStart: Bool, recoverable: Int, liveRecordings: Int) -> Bool {
+        macOccupied || !macCanStart || recoverable > 0 || liveRecordings > 0
+    }
+}

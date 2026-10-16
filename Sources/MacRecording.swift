@@ -1,4 +1,7 @@
 import SwiftUI
+import Combine
+import CoreAudio
+import ApplicationServices
 import os
 
 private let recordingLog = Logger(subsystem: "com.gotcos.control", category: "mac-recording")
@@ -187,6 +190,26 @@ final class MacRecordingStore: ObservableObject {
         phase = "pending"; message = "Capture stopped. Audio stays on this Mac until its saved-meeting receipt is verified."
         deliverPending()
     }
+    /// 0.5.313: Record on the meeting card. The card click is the person's explicit confirmation, so this path skips the
+    /// panel's dialog (which every other start keeps). Always All Mac audio, the proven source, never a per-app tap.
+    /// Returns the capture id once recording, or nil with `error` saying why.
+    func startFromMeetingSuggestion(title meetingTitle: String, bridge: @escaping Bridge) async -> String? {
+        if !available || self.bridge == nil { await prepare(bridge: bridge) }
+        guard available, canStart, recoverable.isEmpty else {
+            if error == nil { error = "A Mac recording is waiting to be saved. Open Meetings to finish it before recording another." }
+            return nil
+        }
+        let previousTitle = title, previousSource = selectedID
+        selectedID = MacAudioSource.allMacAudioID; title = meetingTitle
+        await start()
+        title = previousTitle; selectedID = previousSource
+        return isRecording ? manifest?.captureId : nil
+    }
+    /// The spool's recoverable list, read locally (no helper, no capture), so a meeting suggestion never buries one.
+    func refreshRecoverable() async {
+        guard !occupied, let retained = try? await spool.recoverable() else { return }
+        recoverable = retained
+    }
     /// Quit defers only for native teardown and local flush, never network or ASR.
     func prepareToQuit() async { await stop() }
     func recover(_ value: MacRecordingManifest) async {
@@ -321,6 +344,410 @@ struct MacRecordingPanel: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("Confirm participants know you are recording. All Mac audio captures every sound this Mac plays, including notifications and media. A single app captures only that app. Your microphone is off. Audio is retained locally; transcription follows your meeting settings. macOS may ask for system audio permission.")
+        }
+    }
+}
+
+// MARK: - Meeting detection and the record suggestion (0.5.313)
+
+enum MeetingCardKind: Equatable {
+    case suggest
+    case ended
+}
+
+struct MeetingCard: Equatable, Identifiable {
+    let id = UUID()
+    let kind: MeetingCardKind
+    let source: MeetingSource
+}
+
+/// Watches which processes hold the microphone (CoreAudio property listeners; a 2 s tick only while a meeting app
+/// holds it or a meeting has not ended), and offers to record. Reads no audio and no screen; for a browser, only its
+/// window titles through Accessibility, never logged. Logs name the app only.
+@MainActor final class MeetingDetectorStore: ObservableObject {
+    static let shared = MeetingDetectorStore()
+    private static let neverKey = "meetingSuggest.never"
+
+    @Published var suggestEnabled: Bool = UserDefaults.standard.object(forKey: "meetingSuggest.enabled") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(suggestEnabled, forKey: "meetingSuggest.enabled"); suggestEnabled ? activate() : deactivate() }
+    }
+    @Published private(set) var allowed: Set<MeetingApp> = Set(MeetingApp.allCases.filter {
+        UserDefaults.standard.object(forKey: "meetingSuggest.app." + $0.rawValue) as? Bool ?? true
+    })
+    /// Owner bundle ID → name, for "Never for <App>" and its Remove in Settings.
+    @Published private(set) var never: [String: String] = (UserDefaults.standard.dictionary(forKey: neverKey) as? [String: String]) ?? [:]
+    @Published private(set) var card: MeetingCard?
+    @Published private(set) var surface: DictationSurface = .pet
+    @Published private(set) var floatingScreen: CGRect?
+    /// A browser held the microphone but its titles could not be read: Google Meet needs Accessibility.
+    @Published private(set) var browserNeedsAccessibility = false
+    @Published private(set) var note: String?
+
+    var recordingBusy: (() -> Bool)?
+    var dictating: (() -> Bool)?
+    var petFrame: (() -> NSRect?)?
+    var runningCaptureID: (() -> String?)?
+    var record: ((MeetingSource) async -> String?)?
+    var stopRecording: (() async -> Void)?
+
+    private var state = MeetingDetectionState()
+    private var startedFrom: (source: MeetingSource, captureID: String)?
+    private var listBlock: AudioObjectPropertyListenerBlock?
+    private var inputBlocks: [AudioObjectID: AudioObjectPropertyListenerBlock] = [:]
+    private var listenersUnavailable = false
+    private var tickTask: Task<Void, Never>?
+    private var dismissTask: Task<Void, Never>?
+    private let presenter = MeetingCardPresenter()
+
+    private init() {}
+
+    func setAllowed(_ app: MeetingApp, _ on: Bool) {
+        if on { allowed.insert(app) } else { allowed.remove(app) }
+        UserDefaults.standard.set(on, forKey: "meetingSuggest.app." + app.rawValue)
+    }
+    func removeNever(_ owner: String) {
+        never[owner] = nil
+        UserDefaults.standard.set(never, forKey: Self.neverKey)
+    }
+
+    // MARK: Listening
+
+    func activate() {
+        presenter.bind(store: self)
+        guard suggestEnabled, listBlock == nil, !listenersUnavailable || tickTask == nil else { return }
+        guard #available(macOS 14.2, *) else { return }
+        var address = Self.address(kAudioHardwarePropertyProcessObjectList)
+        let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+            MainActor.assumeIsolated { self?.processesChanged() }
+        }
+        if AudioObjectAddPropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &address, DispatchQueue.main, block) == noErr {
+            listBlock = block
+        } else {
+            listenersUnavailable = true
+            recordingLog.notice("meeting detection: no process listener; checking every 2 s")
+        }
+        processesChanged()
+    }
+    func deactivate() {
+        tickTask?.cancel(); tickTask = nil
+        if let listBlock, #available(macOS 14.2, *) {
+            var address = Self.address(kAudioHardwarePropertyProcessObjectList)
+            AudioObjectRemovePropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &address, DispatchQueue.main, listBlock)
+        }
+        listBlock = nil
+        unbindInputs(keeping: [])
+        listenersUnavailable = false
+        state = MeetingDetectionState()
+        if card?.kind == .suggest { dismiss() }
+    }
+
+    private func processesChanged() {
+        guard #available(macOS 14.2, *), suggestEnabled else { return }
+        let ids = Self.processObjects()
+        if !listenersUnavailable { bindInputs(ids) }
+        evaluate(ids)
+    }
+
+    @available(macOS 14.2, *)
+    private func bindInputs(_ ids: [AudioObjectID]) {
+        unbindInputs(keeping: Set(ids))
+        for id in ids where inputBlocks[id] == nil {
+            var address = Self.address(kAudioProcessPropertyIsRunningInput)
+            let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+                MainActor.assumeIsolated { self?.processesChanged() }
+            }
+            if AudioObjectAddPropertyListenerBlock(id, &address, DispatchQueue.main, block) == noErr { inputBlocks[id] = block }
+        }
+    }
+    private func unbindInputs(keeping: Set<AudioObjectID>) {
+        guard #available(macOS 14.2, *) else { return }
+        for (id, block) in inputBlocks where !keeping.contains(id) {
+            var address = Self.address(kAudioProcessPropertyIsRunningInput)
+            AudioObjectRemovePropertyListenerBlock(id, &address, DispatchQueue.main, block)
+            inputBlocks[id] = nil
+        }
+    }
+
+    @available(macOS 14.2, *)
+    private func evaluate(_ ids: [AudioObjectID]) {
+        let processes = ids.compactMap { Self.process($0) }
+        var browserTitles: [String: Bool?] = [:]
+        let found = MeetingApps.holding(processes, ownPID: ProcessInfo.processInfo.processIdentifier, never: Set(never.keys)) { owner in
+            if let known = browserTitles[owner] { return known }
+            let value = Self.browserShowsMeet(owner)
+            browserTitles[owner] = .some(value)
+            return value
+        }
+        if browserNeedsAccessibility != found.browserUnchecked { browserNeedsAccessibility = found.browserUnchecked }
+        let context = MeetingDetectionState.Context(
+            suggestEnabled: suggestEnabled, allowed: allowed, recordingBusy: recordingBusy?() ?? true,
+            dictating: dictating?() ?? false, cardShowing: card != nil)
+        for event in state.step(holding: found.sources, now: Date(), context: context) { handle(event) }
+        scheduleTick()
+    }
+    /// Thresholds pass without a property change, so a 2 s tick runs while it can matter, and never otherwise.
+    private func scheduleTick() {
+        let needed = state.wantsTicks || listenersUnavailable
+        if !needed { tickTask?.cancel(); tickTask = nil; return }
+        guard tickTask == nil else { return }
+        tickTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(2))
+                guard let self, !Task.isCancelled else { return }
+                self.tickTask = nil
+                self.processesChanged()
+                return
+            }
+        }
+    }
+
+    // MARK: The card
+
+    private func handle(_ event: MeetingDetectionState.Event) {
+        switch event {
+        case .suggest(let source):
+            recordingLog.notice("meeting detected app=\(source.app.title, privacy: .public)")
+            show(MeetingCard(kind: .suggest, source: source))
+        case .ended(let source):
+            if card?.kind == .suggest, card?.source == source { dismiss() }
+            if MeetingSuggestion.offersEnd(ended: source, startedFrom: startedFrom?.source, startedCaptureID: startedFrom?.captureID,
+                                           runningCaptureID: runningCaptureID?()) {
+                recordingLog.notice("meeting ended app=\(source.app.title, privacy: .public); offering stop")
+                show(MeetingCard(kind: .ended, source: source))
+            }
+        }
+    }
+    private func show(_ next: MeetingCard) {
+        let placement = DictationPlacement.choose(petFrame: petFrame?(), focusedWindow: DictationFocusedWindow.frame(),
+                                                  screens: NSScreen.screens.map(\.frame), mainScreen: NSScreen.main?.frame)
+        if case .floating(let screen)? = placement { surface = .floating; floatingScreen = screen } else { surface = .pet; floatingScreen = nil }
+        note = nil
+        card = next
+        dismissTask?.cancel(); dismissTask = nil
+        // The suggestion folds away after 60 s; the end offer waits for an answer (COS never stops on its own).
+        guard next.kind == .suggest else { return }
+        let id = next.id
+        dismissTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(MeetingSuggestion.dismissSeconds))
+            guard !Task.isCancelled, let self, self.card?.id == id else { return }
+            self.card = nil
+        }
+    }
+    func dismiss() { dismissTask?.cancel(); dismissTask = nil; card = nil }
+
+    /// Record: one click, the card being the confirmation.
+    func recordSuggested() {
+        guard let current = card, current.kind == .suggest else { return }
+        dismiss()
+        Task {
+            guard let captureID = await record?(current.source) else {
+                note = "COS couldn't start recording. Open Meetings → Record on Mac to see why."
+                return
+            }
+            startedFrom = (current.source, captureID)
+            recordingLog.notice("recording started from a meeting suggestion app=\(current.source.app.title, privacy: .public)")
+        }
+    }
+    func notNow() { dismiss() }
+    func neverFor() {
+        guard let current = card else { return }
+        never[current.source.ownerBundleID] = current.source.ownerName
+        UserDefaults.standard.set(never, forKey: Self.neverKey)
+        dismiss()
+    }
+    /// "Meeting ended? Stop and save": only this button stops the recording.
+    func stopAndSave() {
+        guard card?.kind == .ended else { return }
+        dismiss(); startedFrom = nil
+        Task { await stopRecording?() }
+    }
+    func keepRecording() { dismiss() }
+    /// The end offer has nothing to stop once the recording stopped some other way.
+    func recordingStopped() {
+        startedFrom = nil
+        if card?.kind == .ended { dismiss() }
+    }
+
+    // MARK: CoreAudio and AX reads
+
+    nonisolated private static func address(_ selector: AudioObjectPropertySelector) -> AudioObjectPropertyAddress {
+        AudioObjectPropertyAddress(mSelector: selector, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+    }
+    @available(macOS 14.2, *)
+    nonisolated private static func processObjects() -> [AudioObjectID] {
+        var address = address(kAudioHardwarePropertyProcessObjectList); var bytes: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &bytes) == noErr,
+              bytes > 0, bytes <= 65_536 else { return [] }
+        var ids = [AudioObjectID](repeating: 0, count: Int(bytes) / MemoryLayout<AudioObjectID>.size)
+        guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &bytes, &ids) == noErr else { return [] }
+        return Array(ids.prefix(Int(bytes) / MemoryLayout<AudioObjectID>.size))
+    }
+    @available(macOS 14.2, *)
+    nonisolated private static func process(_ id: AudioObjectID) -> MeetingAudioProcess? {
+        var pid: pid_t = 0, input: UInt32 = 0
+        var size = UInt32(MemoryLayout<pid_t>.size)
+        var pidAddress = address(kAudioProcessPropertyPID)
+        guard AudioObjectGetPropertyData(id, &pidAddress, 0, nil, &size, &pid) == noErr else { return nil }
+        size = UInt32(MemoryLayout<UInt32>.size)
+        var inputAddress = address(kAudioProcessPropertyIsRunningInput)
+        guard AudioObjectGetPropertyData(id, &inputAddress, 0, nil, &size, &input) == noErr else { return nil }
+        var bundleRef: Unmanaged<CFString>?
+        var bundleSize = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+        var bundleAddress = address(kAudioProcessPropertyBundleID)
+        guard AudioObjectGetPropertyData(id, &bundleAddress, 0, nil, &bundleSize, &bundleRef) == noErr else { return nil }
+        let bundle = bundleRef?.takeRetainedValue() as String? ?? ""
+        return MeetingAudioProcess(pid: pid, bundleID: bundle, input: input != 0)
+    }
+    /// The browser's window titles, read for that one app and only to look for Google Meet. nil without Accessibility.
+    private static func browserShowsMeet(_ owner: String) -> Bool? {
+        guard AXIsProcessTrusted() else { return nil }
+        guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: owner).first else { return false }
+        let element = AXUIElementCreateApplication(app.processIdentifier)
+        AXUIElementSetMessagingTimeout(element, 0.25)
+        var windows: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXWindowsAttribute as CFString, &windows) == .success,
+              let list = windows as? [AXUIElement] else { return false }
+        let titles = list.prefix(40).compactMap { window -> String? in
+            var title: CFTypeRef?
+            return AXUIElementCopyAttributeValue(window, kAXTitleAttribute as CFString, &title) == .success ? title as? String : nil
+        }
+        return MeetingApps.showsMeet(titles)
+    }
+}
+
+/// The meeting card (same family as the dictation card): on the pet, or above the Dock pill's spot on the focused
+/// screen when the pet is hidden.
+struct MeetingCardView: View {
+    @ObservedObject var store: MeetingDetectorStore
+    let card: MeetingCard
+    let size: PetSize
+    var body: some View {
+        VStack(alignment: .leading, spacing: size.length(7)) {
+            HStack(spacing: size.length(7)) {
+                Circle().fill(card.kind == .suggest ? COSPalette.danger : COSPalette.amber)
+                    .frame(width: size.length(7), height: size.length(7))
+                Text(card.kind == .suggest ? MeetingSuggestion.headline(card.source) : MeetingSuggestion.endHeadline)
+                    .font(COSType.mono(size.typeSize(8), weight: .bold))
+                    .kerning(0.6)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+                Button { card.kind == .suggest ? store.notNow() : store.keepRecording() } label: {
+                    Image(systemName: "xmark").font(.system(size: size.typeSize(8), weight: .semibold)).foregroundStyle(.secondary)
+                        .frame(width: size.length(20), height: size.length(20)).contentShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(card.kind == .suggest ? "Not now" : "Keep recording")
+            }
+            Text(card.kind == .suggest ? MeetingSuggestion.line : MeetingSuggestion.endLine(card.source))
+                .font(COSType.body(size.typeSize(11)))
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: size.length(7)) {
+                switch card.kind {
+                case .suggest:
+                    Button("Record") { store.recordSuggested() }
+                        .buttonStyle(DictationButtonStyle(primary: true, size: size))
+                    Button("Not now") { store.notNow() }
+                        .buttonStyle(DictationButtonStyle(size: size))
+                    Spacer(minLength: 0)
+                    Button(MeetingSuggestion.never(card.source)) { store.neverFor() }
+                        .buttonStyle(COSTextButtonStyle())
+                        .font(COSType.body(size.typeSize(9)))
+                case .ended:
+                    Button("Stop and save") { store.stopAndSave() }
+                        .buttonStyle(DictationButtonStyle(primary: true, size: size))
+                    Button("Keep recording") { store.keepRecording() }
+                        .buttonStyle(DictationButtonStyle(size: size))
+                }
+            }
+        }
+        .frame(width: size.length(300), alignment: .leading)
+        .dictationSurface(size)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(card.kind == .suggest ? "Meeting detected" : "Meeting ended")
+    }
+}
+
+final class MeetingCardPanel: NSPanel {
+    override var canBecomeKey: Bool { false }
+    override var canBecomeMain: Bool { false }
+}
+
+private final class MeetingCardHostingView<Content: View>: NSHostingView<Content> {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+}
+
+/// Pet hidden: the card floats above where the dictation pill sits, bottom center of the focused screen. Borderless
+/// and nonactivating, so it never takes focus from the meeting.
+@MainActor final class MeetingCardPresenter {
+    private var panel: MeetingCardPanel?
+    private var host: MeetingCardHostingView<AnyView>?
+    private var observers: [AnyCancellable] = []
+    private weak var store: MeetingDetectorStore?
+    private let size = PetSize(preset: .medium, customPixels: PetSize.mediumPixels)
+
+    func bind(store: MeetingDetectorStore) {
+        guard self.store == nil else { return }
+        self.store = store
+        observers = [
+            store.$card.map { $0?.id }.removeDuplicates().sink { [weak self] _ in Task { @MainActor in self?.sync() } },
+            store.$surface.removeDuplicates().sink { [weak self] _ in Task { @MainActor in self?.sync() } },
+        ]
+    }
+    private func sync() {
+        guard let store, store.surface == .floating, let card = store.card else {
+            if panel?.isVisible == true { panel?.orderOut(nil) }
+            return
+        }
+        let view = AnyView(MeetingCardView(store: store, card: card, size: size).padding(14).fixedSize())
+        if host == nil {
+            let host = MeetingCardHostingView(rootView: view)
+            let panel = MeetingCardPanel(contentRect: NSRect(x: 0, y: 0, width: 340, height: 140),
+                                         styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+            panel.isFloatingPanel = true; panel.level = .floating
+            panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+            panel.isOpaque = false; panel.backgroundColor = .clear; panel.hasShadow = false
+            panel.hidesOnDeactivate = false; panel.isReleasedWhenClosed = false
+            panel.contentView = host
+            self.host = host; self.panel = panel
+        } else {
+            host?.rootView = view
+        }
+        guard let panel else { return }
+        let fitted = host?.fittingSize ?? NSSize(width: 340, height: 140)
+        let chosen = store.floatingScreen.flatMap { frame in NSScreen.screens.first { $0.frame == frame } } ?? NSScreen.main ?? NSScreen.screens.first
+        if let screen = chosen?.visibleFrame {
+            panel.setFrame(NSRect(x: (screen.midX - fitted.width / 2).rounded(), y: screen.minY + 64, width: fitted.width, height: fitted.height), display: true)
+        }
+        panel.orderFrontRegardless()
+    }
+}
+
+/// Settings → Meetings: suggest recording when a meeting starts.
+struct MeetingSuggestSettings: View {
+    @ObservedObject var store: MeetingDetectorStore
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Toggle("Suggest recording when a meeting starts", isOn: $store.suggestEnabled)
+                .toggleStyle(COSSwitchStyle())
+                .help("When Zoom, Microsoft Teams or Google Meet has used the microphone for 10 seconds, the pet offers Record on Mac with live transcript. COS never starts or stops a recording on its own")
+            if store.suggestEnabled {
+                ForEach(MeetingApp.allCases, id: \.self) { app in
+                    Toggle(app.title, isOn: Binding(get: { store.allowed.contains(app) }, set: { store.setAllowed(app, $0) }))
+                        .toggleStyle(COSSwitchStyle()).controlSize(.small)
+                }
+                if store.browserNeedsAccessibility {
+                    Text("Google Meet in a browser needs Accessibility (the same permission dictation uses) to see the Meet tab's title. Until then COS watches Zoom and Teams only.")
+                        .font(.caption2).foregroundStyle(COSPalette.amber)
+                }
+                ForEach(store.never.keys.sorted(), id: \.self) { owner in
+                    HStack {
+                        Text("Never for \(store.never[owner] ?? owner)").font(.caption)
+                        Button("Remove") { store.removeNever(owner) }.controlSize(.mini)
+                    }
+                }
+            }
         }
     }
 }

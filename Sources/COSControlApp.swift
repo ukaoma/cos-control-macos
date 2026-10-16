@@ -42,6 +42,31 @@ struct COSControlApp: App {
             return try await model.runHelper(["transcription-dictionary"], timeout: 20, stdinData: request)
         }
         model.dictation.registerHotKeys()
+        // 0.5.313: a meeting app on the microphone for 10 s gets a Record card on the pet. COS never records or stops
+        // on its own: Record and Stop and save are the person's clicks.
+        let meetings = MeetingDetectorStore.shared
+        meetings.petFrame = { [weak sessionPet] in sessionPet?.visibleFrame }
+        meetings.dictating = { [weak model] in model?.dictation.busy ?? false }
+        meetings.recordingBusy = { [weak model] in
+            guard let model else { return true }
+            return MeetingSuggestion.recordingBusy(macOccupied: model.macRecording.occupied, macCanStart: model.macRecording.canStart,
+                                                   recoverable: model.macRecording.recoverable.count, liveRecordings: model.recordingCount)
+        }
+        meetings.runningCaptureID = { [weak model] in
+            guard let model, model.macRecording.isRecording else { return nil }
+            return model.macRecording.manifest?.captureId
+        }
+        meetings.record = { [weak model] source in
+            guard let model else { return nil }
+            let id = await model.macRecording.startFromMeetingSuggestion(title: MeetingSuggestion.title(source, at: Date()), bridge: model.macRecordingBridge)
+            if id == nil { model.petNotice = model.macRecording.error ?? "COS couldn't start recording. Open Meetings → Record on Mac to see why." }
+            return id
+        }
+        meetings.stopRecording = { [weak model] in await model?.macRecording.stop() }
+        Task { [weak model] in
+            await model?.macRecording.refreshRecoverable()
+            meetings.activate()
+        }
         model.macRecording.openLiveMeeting = { [weak model] id in
             model?.openActivity?(.meetings)
             model?.openLiveTranscript(id)
