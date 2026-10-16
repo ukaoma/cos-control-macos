@@ -510,6 +510,14 @@ final class ControllerModel: ObservableObject {
 
     /// The Memories web host runs the same helper commands the native panes do,
     /// through this one door, so the page cannot reach the client directly.
+    /// The Mac recording transport outside the Meetings panel (0.5.313: the pet's meeting card records too).
+    var macRecordingBridge: MacRecordingStore.Bridge {
+        { [weak self] operation, payload in
+            guard let self else { throw HelperClientError.commandFailed("COS Control is closing.") }
+            let data = try JSONEncoder().encode(JSONValue.object(["operation": .string(operation), "payload": .object(payload)]))
+            return try await self.runHelper(["mac-recording"], timeout: 90, stdinData: data)
+        }
+    }
     func runHelper(_ arguments: [String], timeout: TimeInterval, stdinData: Data? = nil) async throws -> HelperResponse {
         try await helper.run(arguments, timeout: timeout, stdinData: stdinData)
     }
@@ -577,6 +585,8 @@ final class ControllerModel: ObservableObject {
         macRecording.activeChanged = { [weak self] active in
             guard let self else { return }
             self.macRecordingActive = active
+            // 0.5.313: a recording that stopped any way at all needs no "Meeting ended? Stop and save".
+            if !active { MeetingDetectorStore.shared.recordingStopped() }
             self.recordingStatusChanged?(self.recordingCount)
         }
         guard startBackgroundWork else { return }

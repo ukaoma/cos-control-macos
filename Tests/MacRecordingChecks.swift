@@ -191,6 +191,97 @@ import Darwin
         await rejects("journal traversal filename rejected") { try await spool.write(malformed) }
         var title = manifest(12); title.title = String(repeating: "a", count: 161)
         await rejects("title matches helper bound") { try await spool.write(title) }
+        do { // 0.5.313 meeting detection; own scope
+            func app(_ bundle: String) -> String? { MeetingApps.rule(forBundleID: bundle).map { $0.app.rawValue + ":" + $0.owner } }
+            check(app("us.zoom.xos") == "zoom:us.zoom.xos" && app("us.zoom.CptHost") == "zoom:us.zoom.xos", "Zoom and its CptHost helper")
+            check(app("com.microsoft.teams2") == "teams:com.microsoft.teams2" && app("com.microsoft.teams2.modulehost") == "teams:com.microsoft.teams2",
+                  "Teams and its ModuleHost helper")
+            check(app("com.google.Chrome.helper") == "meet:com.google.Chrome" && app("com.apple.WebKit.GPU") == "meet:com.apple.Safari"
+                  && app("company.thebrowser.browser.helper") == "meet:company.thebrowser.Browser" && app("org.mozilla.plugincontainer") == "meet:org.mozilla.firefox",
+                  "browser helpers map to their browser")
+            check(app("com.gotcos.control") == nil && app("com.gotcos.control.helper") == nil && app("") == nil, "COS itself never counts")
+            check(app("com.microsoft.teamsfake") == nil && app("com.google.Chromecast") == nil && app("com.apple.Music") == nil,
+                  "a prefix matches whole name parts only")
+            check(MeetingApps.showsMeet(["Meet - abc-defg-hij"]) && MeetingApps.showsMeet(["Inbox", "Meet – Weekly sync - Google Chrome"])
+                  && MeetingApps.showsMeet(["https://meet.google.com/abc-defg-hij"]), "a Meet tab title")
+            check(!MeetingApps.showsMeet(["Meeting notes"]) && !MeetingApps.showsMeet(["Gmail", "Calendar"]) && !MeetingApps.showsMeet([]),
+                  "Meeting notes is not a Meet")
+            let processes = [MeetingAudioProcess(pid: 10, bundleID: "us.zoom.CptHost", input: true),
+                             MeetingAudioProcess(pid: 11, bundleID: "com.google.Chrome.helper", input: true),
+                             MeetingAudioProcess(pid: 12, bundleID: "com.apple.WebKit.GPU", input: true),
+                             MeetingAudioProcess(pid: 13, bundleID: "com.microsoft.teams2", input: false),
+                             MeetingAudioProcess(pid: 99, bundleID: "com.microsoft.teams2", input: true),
+                             MeetingAudioProcess(pid: 14, bundleID: "com.brave.Browser.helper", input: true)]
+            var asked: [String] = []
+            let found = MeetingApps.holding(processes, ownPID: 99, never: [], browserShowsMeet: { owner in
+                asked.append(owner)
+                return ["com.google.Chrome": true, "com.brave.Browser": false][owner] ?? nil
+            })
+            check(Set(found.sources.map(\.ownerBundleID)) == ["us.zoom.xos", "com.google.Chrome"] && found.browserUnchecked,
+                  "Zoom holds the mic; Chrome only with a Meet title; Safari unreadable without Accessibility; Teams off the mic; own pid out")
+            check(asked.sorted() == ["com.apple.Safari", "com.brave.Browser", "com.google.Chrome"], "titles are read only for browsers holding the mic")
+            let never = MeetingApps.holding(processes, ownPID: 99, never: ["us.zoom.xos", "com.google.Chrome"], browserShowsMeet: { _ in true })
+            check(Set(never.sources.map(\.ownerBundleID)) == ["com.apple.Safari", "com.brave.Browser"], "the Never list excludes the app and its helpers")
+            // The state machine.
+            let zoom = MeetingApps.rule(forBundleID: "us.zoom.xos")!.source
+            let t0 = Date(timeIntervalSince1970: 1_760_570_000)
+            let open = MeetingDetectionState.Context(suggestEnabled: true, allowed: Set(MeetingApp.allCases), recordingBusy: false, dictating: false, cardShowing: false)
+            func run(_ steps: [(Double, Bool, MeetingDetectionState.Context)]) -> [String] {
+                var state = MeetingDetectionState(); var out: [String] = []
+                for (at, held, context) in steps {
+                    for event in state.step(holding: held ? [zoom] : [], now: t0.addingTimeInterval(at), context: context) {
+                        switch event {
+                        case .suggest: out.append("suggest@\(Int(at))")
+                        case .ended: out.append("ended@\(Int(at))")
+                        }
+                    }
+                }
+                return out
+            }
+            check(run([(0, true, open), (9, true, open), (10, true, open), (20, true, open)]) == ["suggest@10"], "10 s on the mic, then once")
+            check(run([(0, true, open), (5, false, open), (6, true, open), (15, true, open), (16, true, open)]) == ["suggest@16"],
+                  "the 10 s must be continuous")
+            check(run([(0, true, open), (10, true, open), (30, false, open), (60, false, open), (70, true, open), (85, true, open),
+                       (90, false, open), (149, false, open), (150, false, open), (160, true, open), (170, true, open)])
+                  == ["suggest@10", "ended@150", "suggest@170"], "a release under 60 s is the same meeting; 60 s ends it; the next one is offered again")
+            var busy = open; busy.recordingBusy = true
+            check(run([(0, true, open), (10, true, busy), (12, true, open), (40, true, open)]).isEmpty,
+                  "never while a Mac recording is active, pending or recoverable, and not later in that meeting")
+            var dictating = open; dictating.dictating = true
+            check(run([(0, true, open), (10, true, dictating), (11, true, dictating), (12, true, open)]) == ["suggest@12"], "dictation defers it")
+            var showing = open; showing.cardShowing = true
+            check(run([(0, true, open), (10, true, showing), (14, true, open)]) == ["suggest@14"], "one card at a time")
+            var off = open; off.suggestEnabled = false
+            var noZoom = open; noZoom.allowed = [.teams, .meet]
+            check(run([(0, true, off), (10, true, off), (12, true, open)]).isEmpty && run([(0, true, noZoom), (12, true, noZoom)]).isEmpty,
+                  "the setting and the per-app toggle")
+            var idle = MeetingDetectionState()
+            _ = idle.step(holding: [zoom], now: t0, context: open)
+            check(idle.wantsTicks, "ticks while a meeting app holds the mic")
+            _ = idle.step(holding: [], now: t0.addingTimeInterval(1), context: open)
+            _ = idle.step(holding: [], now: t0.addingTimeInterval(61), context: open)
+            check(!idle.wantsTicks && idle.tracks.isEmpty, "no ticks once the meeting ended")
+            // Words, title and the end offer.
+            var utc = Calendar(identifier: .gregorian); utc.timeZone = TimeZone(identifier: "UTC")!
+            check(MeetingSuggestion.title(zoom, at: Date(timeIntervalSince1970: 1_760_544_300), calendar: utc) == "Zoom meeting 4:05 PM", "the recording's title")
+            check(MeetingSuggestion.headline(zoom) == "Meeting detected · Zoom"
+                  && MeetingSuggestion.line == "Record on Mac with live transcript? Let people know you're recording."
+                  && MeetingSuggestion.never(MeetingApps.rule(forBundleID: "com.google.Chrome")!.source) == "Never for Google Chrome"
+                  && MeetingSuggestion.dismissSeconds == 60, "the card's words")
+            let chrome = MeetingApps.rule(forBundleID: "com.google.Chrome")!.source
+            check(MeetingSuggestion.offersEnd(ended: zoom, startedFrom: zoom, startedCaptureID: "mac_1", runningCaptureID: "mac_1"), "the recording this card started")
+            check(!MeetingSuggestion.offersEnd(ended: zoom, startedFrom: zoom, startedCaptureID: "mac_1", runningCaptureID: "mac_2")
+                  && !MeetingSuggestion.offersEnd(ended: zoom, startedFrom: zoom, startedCaptureID: "mac_1", runningCaptureID: nil)
+                  && !MeetingSuggestion.offersEnd(ended: zoom, startedFrom: nil, startedCaptureID: nil, runningCaptureID: "mac_1")
+                  && !MeetingSuggestion.offersEnd(ended: chrome, startedFrom: zoom, startedCaptureID: "mac_1", runningCaptureID: "mac_1"),
+                  "no end offer for a manual recording, another meeting, or one already stopped")
+            check(!MeetingSuggestion.recordingBusy(macOccupied: false, macCanStart: true, recoverable: 0, liveRecordings: 0)
+                  && MeetingSuggestion.recordingBusy(macOccupied: true, macCanStart: true, recoverable: 0, liveRecordings: 0)
+                  && MeetingSuggestion.recordingBusy(macOccupied: false, macCanStart: false, recoverable: 0, liveRecordings: 0)
+                  && MeetingSuggestion.recordingBusy(macOccupied: false, macCanStart: true, recoverable: 1, liveRecordings: 0)
+                  && MeetingSuggestion.recordingBusy(macOccupied: false, macCanStart: true, recoverable: 0, liveRecordings: 1),
+                  "busy: recording, starting, pending, recoverable, or any live COS recording")
+        }
         print("Mac recording core checks: \(checks) passed (fixture bytes only)")
     }
 }

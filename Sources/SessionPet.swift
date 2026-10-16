@@ -122,6 +122,9 @@ final class SessionPetPresenter: NSObject, ObservableObject, NSWindowDelegate {
         observers.append(dictation.$fixNote.removeDuplicates().sink { [weak self] _ in
             Task { @MainActor in self?.syncPanel() }
         })
+        observers.append(MeetingDetectorStore.shared.$card.map { $0?.id }.removeDuplicates().sink { [weak self] _ in
+            Task { @MainActor in self?.syncPanel() }
+        })
         observers.append(model.dictionary.$recent.map(\.count).removeDuplicates().sink { [weak self] _ in
             Task { @MainActor in self?.syncPanel() }
         })
@@ -384,6 +387,8 @@ private struct SessionPetRoot: View {
     var presenter: SessionPetPresenter
     /// 0.5.309: dictation's pill, card and Recent dictations live on the pet (mock 01-06).
     @ObservedObject var dictation: MacDictationStore = MacDictationStore.shared
+    /// 0.5.313: the meeting card (Record / Stop and save) in the same slot as dictation's card.
+    @ObservedObject var meetings: MeetingDetectorStore = MeetingDetectorStore.shared
     var characterScale: CGFloat
     var viewportSize: CGSize
     @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
@@ -483,6 +488,10 @@ private struct SessionPetRoot: View {
             // No text box (mock 04): the card pops over the figure. With the pet hidden it rises from the Dock pill.
             if dictation.surface == .pet, let card = dictation.card {
                 DictationCardView(store: dictation, card: card, size: size, reduceMotion: reduceMotion)
+                    .modifier(PetReveal(reduceMotion: reduceMotion))
+            }
+            if meetings.surface == .pet, let card = meetings.card {
+                MeetingCardView(store: meetings, card: card, size: size)
                     .modifier(PetReveal(reduceMotion: reduceMotion))
             }
             // 0.5.234: the composer card. It takes the list's slot — one target,

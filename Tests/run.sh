@@ -23,6 +23,8 @@ mkdir -p "$TMP/home"
 "$ROOT/Tests/run-pairing.sh"
 # Manual Mac spool/flush checks use fixture bytes only; never open audio or permissions.
 zsh "$ROOT/Tests/run-mac-recording.sh"
+# 0.5.313: meeting detection and the record suggestion (text only; the rules run in MacRecordingChecks above).
+/usr/bin/python3 "$ROOT/Tests/meeting-detect-pins.py" "$ROOT"
 zsh "$ROOT/Tests/run-mac-dictation.sh"
 
 # 0.5.254 (Miles, 2026-10-01 08:44: resizing Work with 268 tasks lagged; the board was rebuilt 27 times on each step).
