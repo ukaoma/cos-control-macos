@@ -63,6 +63,8 @@ struct COSControlApp: App {
             return id
         }
         meetings.stopRecording = { [weak model] in await model?.macRecording.stop() }
+        meetings.noticeAcknowledged = { [weak model] in model?.macRecording.noticeAcknowledged ?? false }
+        meetings.acknowledgeNotice = { [weak model] in model?.macRecording.acknowledgeNotice() }
         Task { [weak model] in
             await model?.macRecording.refreshRecoverable()
             meetings.activate()
@@ -130,6 +132,7 @@ struct COSControlApp: App {
                 if model.macRecordingActive {
                     HStack {
                         Label("Mac recording", systemImage: "record.circle.fill").foregroundStyle(COSPalette.danger)
+                        Text(MacRecordingNotice.reminder).font(COSType.body(10.5)).foregroundStyle(.secondary)
                         Spacer()
                         Button("View live transcript") { model.showRecordingTranscript() }.buttonStyle(COSQuietButtonStyle())
                         Button("Stop and save") { Task { await model.macRecording.stop() } }.buttonStyle(COSQuietButtonStyle())

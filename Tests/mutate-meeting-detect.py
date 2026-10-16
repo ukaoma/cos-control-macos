@@ -41,7 +41,15 @@ MUTANTS = [
     ("busy ignores live recordings", " || liveRecordings > 0", ""),
     ("busy ignores pending", "macOccupied || !macCanStart ||", "macOccupied ||"),
     ("fold-away changed", "    static let dismissSeconds: TimeInterval = 60", "    static let dismissSeconds: TimeInterval = 600"),
-    ("title clock changed", 'f.dateFormat = "h:mm a"\n        return source.app.title', 'f.dateFormat = "HH:mm"\n        return source.app.title'),
+    ("title clock changed", 'f.dateFormat = "h:mm a"\n        return (meetingApp', 'f.dateFormat = "HH:mm"\n        return (meetingApp'),
+    # The one-time notice (0.5.313, Miles 22:39).
+    ("notice every time", "    static func step(acknowledged: Bool) -> Step { acknowledged ? .start : .notice }", "    static func step(acknowledged: Bool) -> Step { .notice }"),
+    ("never a notice on first use", "    static func step(acknowledged: Bool) -> Step { acknowledged ? .start : .notice }", "    static func step(acknowledged: Bool) -> Step { .start }"),
+    ("permission footnote always shown", "    static func footnote(permissionGranted: Bool) -> String? { permissionGranted ? nil : permissionFootnote }",
+     "    static func footnote(permissionGranted: Bool) -> String? { permissionFootnote }"),
+    ("typed title ignored", "        return trimmed.isEmpty ? autoTitle(meetingApp: meetingApp, at: date, calendar: calendar) : String(trimmed.prefix(160))",
+     "        return autoTitle(meetingApp: meetingApp, at: date, calendar: calendar)"),
+    ("detected app not in the title", '(meetingApp.map { $0 + " meeting" } ?? "Mac recording")', '"Mac recording"'),
     ("card asks no consent", '"Record on Mac with live transcript? Let people know you\'re recording."', '"Record on Mac with live transcript?"'),
 ]
 

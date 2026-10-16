@@ -281,6 +281,21 @@ import Darwin
                   && MeetingSuggestion.recordingBusy(macOccupied: false, macCanStart: true, recoverable: 1, liveRecordings: 0)
                   && MeetingSuggestion.recordingBusy(macOccupied: false, macCanStart: true, recoverable: 0, liveRecordings: 1),
                   "busy: recording, starting, pending, recoverable, or any live COS recording")
+            // The one-time recording notice and the automatic title.
+            check(MacRecordingNotice.step(acknowledged: false) == .notice && MacRecordingNotice.step(acknowledged: true) == .start,
+                  "the notice the first time, then every Record starts at once")
+            check(MacRecordingNotice.title == "Record this Mac's audio" && MacRecordingNotice.lines.count == 2
+                  && MacRecordingNotice.lines[1] == "Let people know you're recording."
+                  && MacRecordingNotice.reminder == "Recording · let people know", "the notice's words")
+            check(MacRecordingNotice.footnote(permissionGranted: false) == MacRecordingNotice.permissionFootnote
+                  && MacRecordingNotice.footnote(permissionGranted: true) == nil, "macOS's prompt is mentioned only while not granted")
+            let at = Date(timeIntervalSince1970: 1_760_544_300)
+            check(MacRecordingNotice.autoTitle(meetingApp: "Zoom", at: at, calendar: utc) == "Zoom meeting 4:05 PM"
+                  && MacRecordingNotice.autoTitle(meetingApp: nil, at: at, calendar: utc) == "Mac recording 4:05 PM", "the automatic title")
+            check(MacRecordingNotice.title(typed: "  ", meetingApp: "Microsoft Teams", at: at, calendar: utc) == "Microsoft Teams meeting 4:05 PM"
+                  && MacRecordingNotice.title(typed: " Board prep ", meetingApp: "Zoom", at: at, calendar: utc) == "Board prep"
+                  && MacRecordingNotice.title(typed: String(repeating: "x", count: 200), meetingApp: nil, at: at, calendar: utc).count == 160,
+                  "a typed title wins, trimmed and bounded; empty means automatic")
         }
         print("Mac recording core checks: \(checks) passed (fixture bytes only)")
     }
