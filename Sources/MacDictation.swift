@@ -218,14 +218,15 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
     var busy: Bool { ["Listening", "Starting", "Transcribing"].contains(phase) }
     private init() {
         let d = UserDefaults.standard
-        enabled = d.bool(forKey: "dictation.enabled")
+        let on = d.bool(forKey: "dictation.enabled")
+        enabled = on
         microphoneUID = d.string(forKey: "dictation.microphoneUID") ?? ""
         func load(_ prefix: String) -> DictationTrigger? {
             guard d.bool(forKey: prefix + ".enabled") else { return nil }
             return DictationTrigger.load(kind: d.string(forKey: prefix + ".kind"), key: d.integer(forKey: prefix + ".key"), modifiers: d.integer(forKey: prefix + ".modifiers"))
         }
         holdTrigger = load("dictation.hold"); toggleTrigger = load("dictation.toggle")
-        phase = enabled ? "Ready" : "Off"
+        phase = on ? "Ready" : "Off"
         let history = Self.defaultHistoryURL()
         historyURL = history
         recent = history.map(DictationHistory.load(from:)) ?? []
