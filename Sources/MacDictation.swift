@@ -139,7 +139,8 @@ private final class DictationConverter: @unchecked Sendable {
         down.post(tap: .cghidEventTap); up.post(tap: .cghidEventTap)
         return .pasted(app: name)
     }
-    private static func rangeSettable(_ element: AXUIElement) -> Bool {
+    // nonisolated: pure AX query, passed as a function value to Optional.map above.
+    nonisolated private static func rangeSettable(_ element: AXUIElement) -> Bool {
         var settable = DarwinBoolean(false)
         return AXUIElementIsAttributeSettable(element, kAXSelectedTextRangeAttribute as CFString, &settable) == .success && settable.boolValue
     }
