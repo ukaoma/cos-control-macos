@@ -14,7 +14,7 @@ MUTANTS = [
     ("sidechain counted", 'row["type"] as? String == "assistant", row["isSidechain"] as? Bool != true,', 'row["type"] as? String == "assistant",'),
     # Not a mutant: deleting the "<synthetic>" skip is equivalent, because window(provider:model:) returns nil for any
     # model it does not know, so a synthetic turn can never be counted either way (2026-10-15 overnight run). The skip
-    # stays as stated intent; "unknown model hidden" below is what actually guards it.
+    # stays as stated intent; the "unknown Claude model guessed" mutant below is what actually guards it.
     ("zero usage shown", "            guard used > 0, let window = window(provider: \"claude\"", "            guard let window = window(provider: \"claude\""),
     ("oldest usage, not newest", "        for line in lines.reversed() where line.contains(\"\\\"usage\\\"\") {", "        for line in lines where line.contains(\"\\\"usage\\\"\") {"),
     ("Codex stated window ignored", 'reported: int(info["model_context_window"]), used: used)', 'reported: nil, used: used)'),
