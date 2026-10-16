@@ -48,7 +48,7 @@
 // ceiling, so they cannot get worse and are printed as pre-existing; nothing new is accepted silently.
 //
 // Run from the repo root: swiftc Sources/Models.swift Tests/SpriteRenderContract.swift -framework AppKit
-// Tests/run.sh does not run this contract.
+// Tests/run.sh runs it right after models-contract (0.5.316).
 
 import AppKit
 

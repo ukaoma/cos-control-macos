@@ -154,6 +154,9 @@ python3 "$ROOT/Tests/reuse-compile.py" --root "$ROOT" --receipt "$TMP/app-compil
   -framework AppKit -o "$TMP/helper-transport-contract"
 "$TMP/helper-transport-contract"
 "$TMP/models-contract"
+# 0.5.316: sprite appearance (holes, edges, cut ownership) over every shipped strip, after its own synthetic
+# self-check. Approved V12.6 exceptions and pre-0.5.316 ceilings: Tests/fixtures/sprite-render/approved-exceptions.json.
+( cd "$ROOT" && "$ROOT/Tests/compile-guard.sh" swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete "$ROOT/Sources/Models.swift" "$ROOT/Tests/SpriteRenderContract.swift" -framework AppKit -o "$TMP/sprite-render" && "$TMP/sprite-render" )
 zsh "$ROOT/Tests/run-simple-pet.sh" "$TMP/simple-pet-proof"
 zsh "$ROOT/Tests/run-session-open-recovery.sh"
 zsh "$ROOT/Tests/run-meeting-task-link.sh"
