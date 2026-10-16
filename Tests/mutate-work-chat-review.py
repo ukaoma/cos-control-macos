@@ -40,7 +40,7 @@ MUTANTS = [
  ("no report claims the request", C, '        if reported.hasSuffix("(requested)") || (reported.isEmpty && requested != nil) {', '        if reported.hasSuffix("(requested)") {'),
  ("server model not recorded", C, 'self.record?.rounds[index].plannerModel = handoff.isolated ? nil : answer.model.map { String($0.prefix(100)) }', 'self.record?.rounds[index].plannerModel = nil'),
  ("discovery not retried", C, 'if attempt == 0 { try? await Task.sleep(for: retryDelay) }', 'if attempt == 0 { try? await Task.sleep(for: retryDelay); break }'),
- ("discovery failure hidden", C, 'serverQueueMissing = false; plannerNotice = WorkChatPolicy.plannerUnavailable', 'serverQueueMissing = false; plannerNotice = nil'),
+ ("discovery failure hidden", C, 'referencesOffered = false; plannerNotice = WorkChatPolicy.plannerUnavailable', 'referencesOffered = false; plannerNotice = nil'),
  ("effort key always sent", C, 'if let effort { body["effort"] = effort }', 'body["effort"] = effort ?? "high"'),
  ("effort key never sent", C, 'if let effort { body["effort"] = effort }', ''),
  ("effort ignores choice", C, '        if let choice, offered.contains(choice) { return choice }\n        return offered.contains("high") ? "high" : nil', '        return offered.contains("high") ? "high" : nil'),

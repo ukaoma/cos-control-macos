@@ -2768,6 +2768,8 @@ struct WorkWorkspaceView: View {
                             taskChat.sessionWindow = { id in
                                 WorkSessionMeterStore.shared.sessionContextWindow(id).map { WorkSessionWindow(usedTokens: $0.used, windowTokens: $0.window) }
                             }
+                            // 0.5.316: a reference's outputs and change counts since it was linked, as its card shows them.
+                            taskChat.referenceFacts = { id, since in WorkReferencesGroup.facts(WorkSessionMeterStore.shared.snapshot(id, since: since)) }
                         }
                 }
             }.frame(maxWidth: .infinity, alignment: .leading).padding(22)
@@ -2951,6 +2953,9 @@ struct WorkWorkspaceView: View {
                     }
                 }.padding(12).background(COSPalette.raised, in: RoundedRectangle(cornerRadius: 8))
             }
+            // 0.5.316: read-only references, apart from the sessions working on this task. No send controls here.
+            let references = taskChat.referencesOffered ? handoffStore.referenceRows(workID: task.workSourceID) : []
+            if !references.isEmpty { WorkReferencesGroup(rows: references, handoffStore: handoffStore, workID: task.workSourceID, onOpenSession: onOpenSession) }
             if linkingSessions {
                 WorkBoardSearchField(prompt: "Find a session by title, provider or ID", query: $sessionLinkQuery, focusRequest: 0, onKey: { _ in false })
                 let unique = Dictionary((handoffStore.sessions + handoffStore.observedSessions()).map { ($0.id.lowercased(), $0) }, uniquingKeysWith: { _, fresh in fresh })
@@ -2968,13 +2973,27 @@ struct WorkWorkspaceView: View {
                                         .font(COSType.body(10)).foregroundStyle(COSPalette.muted)
                                 }
                                 Spacer()
-                                Button("Link") { _ = handoffStore.confirmSessionCard(sessionID: session.id, source: .taskSnapshot(task)) }
-                                    .buttonStyle(COSQuietButtonStyle()).disabled(linked != nil || handoffStore.busy)
+                                // 0.5.316: a session linked to another task can still be a read-only reference here.
+                                let referenced = handoffStore.referenceLinks[session.id.lowercased()]?.contains { $0.workID == task.workSourceID } == true
+                                if taskChat.referencesOffered, linked?.workID != task.workSourceID {
+                                    if referenced { Text("Reference").font(COSType.body(10)).foregroundStyle(COSPalette.muted) }
+                                    else {
+                                        Button("Link as reference") { _ = handoffStore.addReference(sessionID: session.id, source: .taskSnapshot(task)) }
+                                            .buttonStyle(COSTextButtonStyle()).disabled(handoffStore.busy)
+                                            .help("Read-only: COS may use this session's summary, outputs and changes as context here. It never sends to it from this task.")
+                                            .accessibilityIdentifier("work-link-reference-" + session.id)
+                                    }
+                                }
+                                if linked == nil || !taskChat.referencesOffered {
+                                    Button("Link") { _ = handoffStore.confirmSessionCard(sessionID: session.id, source: .taskSnapshot(task)) }
+                                        .buttonStyle(COSQuietButtonStyle()).disabled(linked != nil || handoffStore.busy)
+                                }
                             }
                         }
                     }
                 }.frame(maxHeight: 190)
-                Text("Linking sends no prompt. Copy context for an exact ID missing from this catalog. Cursor opens Agents; confirm the intended chat there.")
+                Text("Linking sends no prompt. Copy context for an exact ID missing from this catalog. Cursor opens Agents; confirm the intended chat there."
+                     + (taskChat.referencesOffered ? " A reference is read-only: COS uses its summary, outputs and changes as context here and never sends to it from this task." : ""))
                     .font(COSType.body(10)).foregroundStyle(COSPalette.muted)
             }
         }.padding(.vertical, 10)

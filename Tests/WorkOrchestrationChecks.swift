@@ -896,11 +896,18 @@ private actor WorkQueueFixture {
     let ids: [String]
     let queue: Bool
     let server: String
+    /// 0.5.316 reference links: the server takes `references` (6.73.15).
+    let refs: Bool
+    /// The sessions the planner assigns to (default: the first two fixture sessions).
+    private(set) var assign: [String]
     private(set) var turn = "pending"
     private(set) var revision = String(repeating: "e", count: 64)
     private var sends: [String] = []
     private var bodies: [[String: Any]] = []
-    init(_ ids: [String], server: String, queue: Bool = true) { self.ids = ids; self.server = server; self.queue = queue }
+    init(_ ids: [String], server: String, queue: Bool = true, refs: Bool = false) { self.ids = ids; self.server = server; self.queue = queue; self.refs = refs; assign = Array(ids.prefix(2)) }
+    func setAssign(_ value: [String]) { assign = value }
+    func referencesSent() -> [[String]?] { bodies.map { ($0["references"] as? [[String: Any]])?.compactMap { $0["id"] as? String } } }
+    func sessionsSent() -> [[String]] { bodies.map { ($0["sessions"] as? [[String: Any]] ?? []).compactMap { $0["id"] as? String } } }
     func setTurn(_ state: String) { turn = state }
     func setRevision(_ value: String) { revision = value }
     func sent() -> [String] { sends }
@@ -918,11 +925,12 @@ private actor WorkQueueFixture {
         case "work-chat-capabilities":
             out = ["protocolVersion": .number(1), "planners": .array([.string("sonnet"), .string("opus")]), "efforts": .array([.string("high")])]
             if queue { out["queueRounds"] = .bool(true) }
+            if refs { out["references"] = .bool(true); out["contextItems"] = .bool(true) }
         case "work-context": out = ["contextText": .string("Fixture task evidence"), "workRevision": .string(revision), "task": .object(["id": .string("aaaaaaaaaaaa"), "workIdentity": .string("aaaaaaaaaaaa"), "domain": .string("quilt"), "title": .string("Launch fixture"), "text": .string("Launch fixture"), "source": .string("Fixture evidence")])]
         case "work-chat":
             if let data, let body = try? JSONSerialization.jsonObject(with: data) as? [String: Any] { bodies.append(body) }
             out = ["protocolVersion": .number(1), "answer": .string("Two independent checks."),
-                "assignments": .array(ids.prefix(2).map { .object(["sessionID": .string($0), "prompt": .string("Next idea; do not publish.")]) })]
+                "assignments": .array(assign.map { .object(["sessionID": .string($0), "prompt": .string("Next idea; do not publish.")]) })]
         // The earlier handoff on the first session: still running until the fixture says its turn completed.
         case "session-chat-turn": out = ["state": .string(turn)]
         case "session-chat-attachability": out = ["attachable": .bool(true)]
@@ -1119,6 +1127,8 @@ private actor WorkQueueFixture {
         print("PASS Work chat Plan and send: queues behind earlier work, never asks, never bypasses")
     }
 
+    try await runWorkReferenceChecks(ids: ids, sessions: sessions, root: root)
+
     // 5. An older server (no queueRounds): today's behaviour, said plainly; never an openWork key.
     do {
         let (fixture, store, chat, card, blocker) = try await setup("old", queue: false)
@@ -1176,4 +1186,102 @@ private enum PendingHoldCheck {
         try rep.representation(using: .png, properties: [:])!.write(to: out.appendingPathComponent("work-chat-" + name + "-" + (appearance == .aqua ? "light" : "dark") + ".png"))
         window.close()
     }
+}
+
+/// 0.5.316 (Miles 2026-10-16 12:16): reference links. A session works on one task, and may be a read-only reference on any
+/// number of others. A reference never receives a send, never holds the fence or the queue, never owns the stage, and its
+/// summary reaches the planner within the bound. An older server: no references anywhere.
+@MainActor private func runWorkReferenceChecks(ids: [String], sessions: [WorkSession], root: URL) async throws {
+    struct Journal: Encodable { var version = 2; var receipts: [WorkHandoffReceipt]; var sessions: [WorkSession] }
+    func card(_ hex: String, _ title: String) -> WorkSource {
+        WorkSource.taskSnapshot(TaskRow(.object(["id": .string(hex), "workIdentity": .string(hex), "domain": .string("quilt"), "title": .string(title), "text": .string(title), "source": .string("Fixture evidence")]))!)
+    }
+    // The file store: the working-link rule is unchanged, references are many, idempotent, and never touch working links.
+    let cards = root.appendingPathComponent("ref-store/handoffs.session-cards.json")
+    let refsURL = WorkSessionLinks.referencesURL(cards: cards)
+    precondition(refsURL.lastPathComponent == "handoffs.session-references.json")
+    let itRetail = WorkSessionCardLink(workID: "task:quilt:111111111111", title: "IT Retail Gen 2 Modules", sourceRevision: "r1", at: 1)
+    let organic = WorkSessionCardLink(workID: "task:quilt:222222222222", title: "Quilt organic cleanup", sourceRevision: "r2", at: 2)
+    try WorkSessionLinks.associate(cards, sessionID: ids[0], link: itRetail, expected: "none")
+    do { try WorkSessionLinks.associate(cards, sessionID: ids[0], link: organic, expected: "none"); preconditionFailure("A session works on one task at a time") } catch {}
+    let workingBefore = try WorkSessionLinks.chatRead(cards)
+    try WorkSessionLinks.addReference(refsURL, sessionID: ids[0], link: organic)
+    try WorkSessionLinks.addReference(refsURL, sessionID: ids[0], link: organic)
+    try WorkSessionLinks.addReference(refsURL, sessionID: ids[0].uppercased().replacingOccurrences(of: "CLAUDE", with: "claude"), link: WorkSessionCardLink(workID: "task:quilt:333333333333", title: "Third", sourceRevision: "r3", at: 3))
+    let refs = try WorkSessionLinks.loadReferences(refsURL)
+    precondition(refs[ids[0]]?.map(\.workID) == ["task:quilt:222222222222", "task:quilt:333333333333"], "A session may reference many tasks, each once: \(refs)")
+    let workingAfter = try WorkSessionLinks.chatRead(cards), working = try WorkSessionLinks.load(cards)
+    precondition(workingAfter == workingBefore && working[ids[0]]?.workID == itRetail.workID, "A reference never changes the working link")
+    try WorkSessionLinks.removeReference(refsURL, sessionID: ids[0], workID: "task:quilt:333333333333")
+    let left = try WorkSessionLinks.loadReferences(refsURL)
+    precondition(left[ids[0]]?.map(\.workID) == ["task:quilt:222222222222"])
+    do { try WorkSessionLinks.removeReference(refsURL, sessionID: ids[0], workID: "task:quilt:333333333333"); preconditionFailure("Removing a missing reference is a conflict") } catch {}
+
+    // The live path. Card A: the IT Retail session works on the Gen 2 card (with a running handoff there); the organic card
+    // links the Codex session as its working session and the IT Retail session as a reference.
+    let organicCard = card("aaaaaaaaaaaa", "Launch fixture"), gen2 = card("cccccccccccc", "IT Retail Gen 2 Modules")
+    var busy = WorkHandoffReceipt(id: UUID().uuidString.lowercased(), workID: gen2.id, workTitle: gen2.title, sourceRevision: gen2.revision, mode: .continueSession, provider: "claude", modelID: "existing", sessionID: ids[0], sessionTitle: "Gen 2 blog cleanup", status: "running", detail: "Provider turn accepted.", prompt: "Gen 2 work", createdAt: Date().timeIntervalSince1970 - 60)
+    busy.channel = "turn"; busy.bindingID = "gen2-binding"
+    let file = root.appendingPathComponent("refs-live.json")
+    try JSONEncoder().encode(Journal(receipts: [busy], sessions: sessions)).write(to: file)
+    let fixture = WorkQueueFixture(ids, server: "refs-live", refs: true)
+    let store = WorkHandoffStore(storageURL: file, transport: { args, data in try await fixture.run(args, data) })
+    precondition(store.confirmSessionCard(sessionID: ids[0], source: gen2) && store.confirmSessionCard(sessionID: ids[1], source: organicCard))
+    precondition(!store.addReference(sessionID: ids[1], source: organicCard), "A session is never a reference on the task it works on")
+    precondition(store.addReference(sessionID: ids[0], source: organicCard), "A session working elsewhere can be a reference here")
+    precondition(store.confirmedSessionCards[ids[0]]?.workID == gen2.id, "Its working link stays with its own task")
+    await store.refresh()
+    let chat = WorkTaskChatStore(); chat.enabled = true; chat.open(source: organicCard, handoff: store)
+    await chat.loadPlanners(handoff: store, retryDelay: .zero)
+    precondition(chat.referencesOffered, "A 6.73.15 server takes references")
+    let referenced = ids[0]
+    chat.referenceFacts = { id, _ in
+        guard id == referenced else { return nil }
+        return (outputs: ["blog-cleanup.md"], changes: "4 files, +120 -30")
+    }
+    precondition(store.referenceRows(workID: organicCard.id).map(\.id) == [ids[0]] && !store.contributorIDs(workID: organicCard.id).contains(ids[0]),
+                 "A reference is listed apart, and never owns the card's stage")
+    // The planner names the reference anyway: the plan is refused before anything is sent.
+    await fixture.setAssign([ids[0]])
+    chat.setDraft("Use the Gen 2 cleanup as the pattern")
+    await chat.send(source: organicCard, handoff: store)
+    let sent0 = await fixture.sent(), told = await fixture.referencesSent(), offered = await fixture.sessionsSent()
+    precondition(told.last == [ids[0]] && offered.last == [ids[1]], "The planner gets the reference as evidence, never as a session: \(told) \(offered)")
+    precondition(sent0.isEmpty && chat.record!.rounds.last!.state == "Needs attention" && store.receipts.allSatisfy { $0.workID != organicCard.id }, "A reference never receives a send, even when the planner names it")
+    // An assignment for the working session goes now: the reference's running work on Gen 2 never holds this card.
+    await fixture.setAssign([ids[1]])
+    chat.setDraft("Now the organic cleanup itself")
+    await chat.send(source: organicCard, handoff: store)
+    let round = chat.record!.rounds.last!
+    let item = round.contextItems?.first { $0.label.hasPrefix("Reference: ") }
+    precondition(item?.text?.contains("blog-cleanup.md") == true && item?.text?.contains("4 files, +120 -30") == true && item?.kind == .prior, "The reference rides as read-only evidence with its outputs and changes")
+    await chat.sendAll(roundID: round.id, source: organicCard, handoff: store)
+    let sent1 = await fixture.sent()
+    precondition(sent1 == [String(ids[1].split(separator: ":")[1])] && chat.record!.rounds.last!.state == "Dispatched" && chat.pendingHold == nil && chat.blockers.isEmpty,
+                 "A reference never holds the fence or the queue: \(sent1) \(chat.record!.rounds.last!.state)")
+    // The bound: seven references, six reach the planner.
+    for n in 0..<7 {
+        let extra = "claude:abcdefab-0000-4000-8000-00000000010\(n)"
+        precondition(store.addReference(sessionID: extra, source: organicCard))
+    }
+    await fixture.setAssign([])
+    chat.setDraft("Summarize what the references did"); await chat.send(source: organicCard, handoff: store)
+    let bounded = await fixture.referencesSent()
+    precondition(bounded.last??.count == WorkChatPolicy.maxReferences && WorkChatPolicy.maxReferences == 6
+        && (chat.record!.rounds.last!.contextItems ?? []).filter { $0.label.hasPrefix("Reference: ") }.count == 6, "At most six references reach the planner: \(String(describing: bounded.last))")
+    // An older server: no references key, no reference items, and nothing offered.
+    let oldFixture = WorkQueueFixture(ids, server: "refs-old", refs: false)
+    let oldFile = root.appendingPathComponent("refs-old.json")
+    try JSONEncoder().encode(Journal(receipts: [], sessions: sessions)).write(to: oldFile)
+    let old = WorkHandoffStore(storageURL: oldFile, transport: { args, data in try await oldFixture.run(args, data) })
+    precondition(old.confirmSessionCard(sessionID: ids[1], source: organicCard) && old.addReference(sessionID: ids[0], source: organicCard))
+    await old.refresh()
+    let oldChat = WorkTaskChatStore(); oldChat.enabled = true; oldChat.open(source: organicCard, handoff: old)
+    await oldChat.loadPlanners(handoff: old, retryDelay: .zero)
+    await oldFixture.setAssign([])
+    oldChat.setDraft("Older server with a saved reference"); await oldChat.send(source: organicCard, handoff: old)
+    let oldTold = await oldFixture.referencesSent()
+    precondition(!oldChat.referencesOffered && oldTold == [nil] && oldChat.record!.rounds.last!.state == "Answered"
+        && !(oldChat.record!.rounds.last!.contextItems ?? []).contains { $0.label.hasPrefix("Reference: ") }, "An older server never receives references: \(oldTold)")
+    print("PASS Work references: one working link per session kept, many references, never a send target, never holds the fence or queue, never owns the stage, planner evidence within six, older server untouched")
 }

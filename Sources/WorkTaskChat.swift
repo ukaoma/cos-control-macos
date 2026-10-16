@@ -184,6 +184,8 @@ enum WorkChatPolicy {
     static func confirmBeforeAutoSend(acknowledged: Bool) -> Bool { !acknowledged }
     static let autoSendExplanation = "Plan and send plans, then sends every assignment to its session at once, without stopping for your review. The same checks still run: an earlier unresolved handoff, or a task that changed, stops it and leaves the round for you."
     static let plannerUnavailable = "Planner choice unavailable · using Sonnet"
+    /// 0.5.316: the most reference sessions one plan carries (server 6.73.15 WORK_CHAT_MAX_REFERENCES).
+    static let maxReferences = 6
 }
 
 /// 0.5.308: the task-wide handoff fence, written once. `WorkHandoffStore.submit` enforces it under the journal lock; the
@@ -272,6 +274,12 @@ enum WorkChatPreflight {
     @Published private(set) var queueOffered = false
     /// The server answered discovery without `queueRounds` (an older server). The fence says why it still checks first.
     @Published private(set) var serverQueueMissing = false
+    /// 0.5.316 / server 6.73.15 (`references`): the planner takes reference sessions, so Link as reference is offered and
+    /// this card's references go to the planner and, as items, to its assignments. False: no references anywhere.
+    @Published private(set) var referencesOffered = false
+    /// A reference's outputs and change counts since it was linked, from the Connections session cards (another view owns
+    /// that read). Unwired: summary only.
+    var referenceFacts: (_ sessionID: String, _ since: Double) -> (outputs: [String], changes: String?)? = { _, _ in nil }
     /// 0.5.316, Ask each time: the send waiting for Queue it, Send in parallel or Check first. Nothing has been sent for it.
     struct PendingHold: Equatable { let roundID: String; let assignmentIDs: [String] }
     @Published private(set) var pendingHold: PendingHold?
@@ -380,6 +388,10 @@ enum WorkChatPreflight {
         if let planner { body["planner"] = planner } // Only when the server advertised planners; 6.73.9 refuses unknown keys.
         if let effort { body["effort"] = effort }    // Only when the server advertised efforts; 6.73.11 refuses unknown keys.
         if let items { body["items"] = WorkContextMeter.plannerItems(items) } // Only when advertised (6.73.13); ids and estimates, no contents.
+        // 0.5.316: only when advertised (6.73.15); 6.73.14 refuses unknown keys. Evidence; the server never lets one be a target.
+        if referencesOffered, !handoff.isolated, mode == "plan" {
+            body["references"] = referenceContext(source: source, handoff: handoff).map { ["id": $0.id, "title": $0.title, "summary": $0.summary, "result": $0.result] }
+        }
         return try JSONSerialization.data(withJSONObject: body)
     }
     /// 0.5.312: everything linked to the card, as context items: the request, the task, the card's and its meetings' files,
@@ -400,8 +412,27 @@ enum WorkChatPreflight {
             guard let last = record?.rounds.reversed().lazy.compactMap({ $0.assignments.last { $0.sessionID == session.id && !$0.result.isEmpty } }).first else { return nil }
             return WorkContextMeter.PriorInput(sessionID: session.id, title: session.title, status: last.state, result: last.result)
         }
-        return WorkContextMeter.items(question: question, context: context, files: files, priors: priors,
+        // 0.5.316: each reference is an earlier-update item the planner (and Miles) may give an assignment. Read-only.
+        let references = referenceContext(source: source, handoff: handoff).map { ref -> WorkContextMeter.PriorInput in
+            let text = [ref.summary, ref.result].filter { !$0.isEmpty }.joined(separator: "\n")
+            return .init(sessionID: WorkContextMeter.referencePrefix + ref.id, title: ref.title, status: "reference, read-only", result: text.isEmpty ? "No summary yet." : text)
+        }
+        return WorkContextMeter.items(question: question, context: context, files: files, priors: priors + references,
                                       statusInstructionChars: WorkProgress.instruction(tag: WorkProgress.tag(forWorkID: source.id)).count)
+    }
+    /// 0.5.316: the card's reference sessions as bounded evidence: title, summary, recent outputs and change counts.
+    /// At most `WorkChatPolicy.maxReferences`, newest link last; empty unless the server takes references.
+    struct ReferenceContext { let id: String; let title: String; let summary: String; let result: String }
+    func referenceContext(source: WorkSource, handoff: WorkHandoffStore) -> [ReferenceContext] {
+        guard referencesOffered, !handoff.isolated else { return [] }
+        return handoff.referenceRows(workID: source.id).suffix(WorkChatPolicy.maxReferences).map { row in
+            let facts = referenceFacts(row.id, row.link.at)
+            var result: [String] = []
+            if let outputs = facts?.outputs, !outputs.isEmpty { result.append("Outputs: " + outputs.prefix(5).joined(separator: ", ") + (outputs.count > 5 ? " and \(outputs.count - 5) more" : "")) }
+            if let changes = facts?.changes { result.append("Changes: " + changes) }
+            return ReferenceContext(id: row.id, title: String(row.title.prefix(300)), summary: String((row.session?.summary ?? "").prefix(1000)),
+                                    result: String(result.joined(separator: "\n").prefix(1500)))
+        }
     }
     /// The card or meeting copy of a file item, for Quick Look.
     func previewURL(for item: WorkContextItem, source: WorkSource, handoff: WorkHandoffStore) -> URL? {
@@ -794,7 +825,7 @@ enum WorkChatPreflight {
     /// Discovery only: the server's GET makes no model call. A server without the route (the helper reports routeMissing)
     /// or without `planners` gets no picker. 0.5.310: a failed answer is retried once, then said, never silently hidden.
     func loadPlanners(handoff: WorkHandoffStore, retryDelay: Duration = .milliseconds(600)) async {
-        guard enabled, !handoff.isolated else { planners = []; efforts = []; contextItemsOffered = false; queueOffered = false; serverQueueMissing = false; plannerNotice = nil; return }
+        guard enabled, !handoff.isolated else { planners = []; efforts = []; contextItemsOffered = false; queueOffered = false; serverQueueMissing = false; referencesOffered = false; plannerNotice = nil; return }
         for attempt in 0..<2 {
             do {
                 let caps = try await handoff.taskChatCall(["work-chat-capabilities"])
@@ -804,6 +835,7 @@ enum WorkChatPreflight {
                 efforts = WorkChatPolicy.efforts.filter { levels.contains($0) }
                 contextItemsOffered = caps["contextItems"]?.bool == true
                 queueOffered = caps["queueRounds"]?.bool == true; serverQueueMissing = !queueOffered
+                referencesOffered = caps["references"]?.bool == true
                 return
             } catch {
                 let reason = error.localizedDescription
@@ -811,7 +843,7 @@ enum WorkChatPreflight {
                 if attempt == 0 { try? await Task.sleep(for: retryDelay) }
             }
         }
-        planners = []; efforts = []; contextItemsOffered = false; queueOffered = false; serverQueueMissing = false; plannerNotice = WorkChatPolicy.plannerUnavailable
+        planners = []; efforts = []; contextItemsOffered = false; queueOffered = false; serverQueueMissing = false; referencesOffered = false; plannerNotice = WorkChatPolicy.plannerUnavailable
     }
     /// Restore text for deliberate review and Send. Never replay any assignment automatically.
     func restoreUnsentRequest(roundID: String, checkedUnconfirmed: Bool = false) {

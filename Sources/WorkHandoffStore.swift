@@ -125,6 +125,14 @@ enum WorkContributorProjection {
         return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 }
+/// 0.5.316: one session this card references (read-only), with what is observed of it now.
+struct WorkReferenceRow: Identifiable {
+    let id: String
+    let link: WorkSessionCardLink
+    let session: WorkSession?
+    let title: String
+    var provider: String { String(id.split(separator: ":").first ?? "") }
+}
 struct WorkModelChoice: Identifiable, Codable, Equatable, Sendable {
     let id: String
     let provider: String
@@ -378,6 +386,9 @@ struct WorkRecommendationKey: Equatable {
     }
     private(set) var noticesEpoch = 0
     @Published private(set) var sessionCardsError: String?
+    /// 0.5.316 (Miles 2026-10-16 12:16): read-only reference links, session id to the cards that reference it. Never a
+    /// send target, never part of the fence or the queue, never a stage mover: only `referenceRows` reads them.
+    @Published private(set) var referenceLinks: [String: [WorkSessionCardLink]] = [:]
     private let storageURL: URL
     private let transport: Transport
     private var storageReady = true
@@ -548,6 +559,35 @@ struct WorkRecommendationKey: Equatable {
     func contributorIDs(workID: String) -> Set<String> {
         Set(contributors(workID: workID).map(\.id))
     }
+    /// 0.5.316: link a session to this card as a read-only reference. Refused for the card it already works on (that link
+    /// already gives the planner everything) and for a Cursor or invalid id. Sends no prompt; changes no working link.
+    func addReference(sessionID: String, source: WorkSource) -> Bool {
+        guard !busy, storageReady, WorkSessionLinks.validSessionID(sessionID, includeCursor: true) else { return false }
+        let sessionID = sessionID.lowercased()
+        guard confirmedSessionCards[sessionID]?.workID != source.id else { error = "This session already works on this task."; return false }
+        do {
+            let link = WorkSessionCardLink(workID: source.id, title: source.title, sourceRevision: source.revision, at: Date().timeIntervalSince1970)
+            referenceLinks = try WorkSessionLinks.addReference(referencesURL, sessionID: sessionID, link: link)
+            return true
+        } catch { self.error = "The reference could not be saved: \(error.localizedDescription)"; return false }
+    }
+    func removeReference(sessionID: String, workID: String) -> Bool {
+        guard !busy, storageReady else { return false }
+        do { referenceLinks = try WorkSessionLinks.removeReference(referencesURL, sessionID: sessionID, workID: workID); return true }
+        catch { self.error = "The reference could not be removed: \(error.localizedDescription)"; return false }
+    }
+    /// The sessions this card references, oldest link first, with what is observed of each now (nil when not seen).
+    func referenceRows(workID: String) -> [WorkReferenceRow] {
+        let observed = observedSessions() + sessions + activitySessions
+        return referenceLinks.compactMap { id, rows in rows.first { $0.workID == workID }.map { (id, $0) } }
+            .filter { confirmedSessionCards[$0.0]?.workID != workID }
+            .sorted { $0.1.at < $1.1.at }
+            .map { id, link in
+                let session = observed.first { $0.id.lowercased() == id }
+                return WorkReferenceRow(id: id, link: link, session: session,
+                                        title: session?.title ?? rememberedTitles[id] ?? String(id.split(separator: ":").last?.prefix(8) ?? ""))
+            }
+    }
     func removeSessionCard(sessionID: String, workID: String, expected: String) -> Bool {
         guard !busy, storageReady else { return false }
         do {
@@ -566,11 +606,14 @@ struct WorkRecommendationKey: Equatable {
     }
     private var noticesURL: URL { storageURL.deletingPathExtension().appendingPathExtension("hidden-notices.json") }
     private var sessionCardsURL: URL { storageURL.deletingPathExtension().appendingPathExtension("session-cards.json") }
+    private var referencesURL: URL { WorkSessionLinks.referencesURL(cards: sessionCardsURL) }
     func reloadSessionCards() throws {
         do {
             confirmedSessionCards = try WorkSessionLinks.load(sessionCardsURL)
             sessionCardsError = nil
             hiddenNotices = try WorkSessionLinks.loadNotices(noticesURL)
+            // A broken references file never takes the working links with it.
+            if let refs = try? WorkSessionLinks.loadReferences(referencesURL) { referenceLinks = refs }
         } catch {
             confirmedSessionCards = [:]
             sessionCardsError = "Session associations are unavailable: \(error.localizedDescription)"

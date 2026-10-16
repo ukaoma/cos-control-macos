@@ -17185,7 +17185,8 @@ final class COSControlHelper {
         // takes each session's openWork, so Control 0.5.316 may queue a held send or send it in parallel.
         emit(ok: true, message: "Task chat", details: ["protocolVersion": 1, "planners": planners, "efforts": efforts,
                                                      "contextItems": body["contextItems"] as? Bool == true,
-                                                     "queueRounds": body["queueRounds"] as? Bool == true])
+                                                     "queueRounds": body["queueRounds"] as? Bool == true,
+                                                     "references": body["references"] as? Bool == true])
     }
 
     private func emitWorkNew() throws {

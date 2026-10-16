@@ -53,9 +53,14 @@ PY
 # 0.5.316: the Work chat queue's wiring the hub checks cannot execute: the helper passes the server's queueRounds through,
 # Settings › Work has the switch with Queue it as its default, the app starts the app-wide pump, and an open card pumps its
 # own queue and tells the app-wide pump to leave it alone.
-python3 - "$ROOT/Sources/WorkTaskChat.swift" "$ROOT/HelperSources/main.swift" "$ROOT/Sources/Views.swift" "$ROOT/Sources/ControllerModel.swift" "$ROOT/Sources/WorkChatQueue.swift" <<'PY'
+python3 - "$ROOT/Sources/WorkTaskChat.swift" "$ROOT/HelperSources/main.swift" "$ROOT/Sources/Views.swift" "$ROOT/Sources/ControllerModel.swift" "$ROOT/Sources/WorkChatQueue.swift" "$ROOT/Sources/WorkWorkspaceView.swift" "$ROOT/Sources/WorkReferences.swift" <<'PY'
 import sys
-chat, helper, views, model, queue = (open(p).read() for p in sys.argv[1:6])
+chat, helper, views, model, queue, workspace, refs = (open(p).read() for p in sys.argv[1:8])
+# 0.5.316 reference links: offered only by a server that takes them, apart from the working sessions, with no send control.
+assert '"references": body["references"] as? Bool == true' in helper, "the helper passes the server's references capability"
+assert "if taskChat.referencesOffered, linked?.workID != task.workSourceID {" in workspace and 'Button("Link as reference")' in workspace, "Link as reference only when the server takes references"
+assert "let references = taskChat.referencesOffered ? handoffStore.referenceRows(workID: task.workSourceID) : []" in workspace, "the References group only when offered"
+assert "submit(" not in refs and 'Button("Send' not in refs and "sendAll(" not in refs, "the References group has no send control"
 assert '"queueRounds": body["queueRounds"] as? Bool == true' in helper, "the helper passes the server's queueRounds capability"
 assert "@AppStorage(WorkChatHold.settingKey) private var workChatWhenHeld = WorkChatHold.settingDefault" in views, "Settings reads the default"
 assert 'COSDropdown("When earlier work is still open", selection: $workChatWhenHeld,' in views, "Settings › Work has the switch"
@@ -63,7 +68,7 @@ assert "    static let settingDefault = queueSetting\n" in queue, "Queue it is t
 assert "let pump = WorkChatQueuePump(handoff: store, sources:" in model and "pump.start()" in model, "the app starts the app-wide pump"
 loop = chat[chat.index("WorkChatQueuePump.show(source.id); defer { WorkChatQueuePump.hide(source.id) }"):chat.index('}.confirmationDialog("Check the connected session first"')]
 assert "await chat.pumpQueued(source:source,handoff:handoff)" in loop and "chat.syncFromDisk()" in loop, "an open card pumps its own queue and reads the app-wide pump's writes"
-print("PASS Work chat queue wiring: helper capability, Settings default Queue it, app-wide pump started, open card pumps itself")
+print("PASS Work chat queue and reference wiring: helper capabilities, Settings default Queue it, app-wide pump started, open card pumps itself, references gated and send-free")
 PY
 # 0.5.313: the idle CPU fixes stay in place (text pins; the behaviour is checked in WorkInputChecks).
 /usr/bin/python3 "$ROOT/Tests/idle-cpu-pins.py" "$ROOT"

@@ -53,8 +53,21 @@ MUTANTS = [
  ("openWork sent to an older server", C, 'open:hold == .stop ? nil : held)', 'open:held)'),
  ("openWork never true", C, '            if let open { row["openWork"] = open.contains { WorkChatPreflight.onSession($0, session.id) } }', '            if let open { row["openWork"] = open.isEmpty }'),
  ("queue on a sample card", C, 'offered: queueOffered && !handoff.isolated)', 'offered: queueOffered || handoff.isolated)'),
+ # Reference links (Miles 2026-10-16 12:16).
+ ("reference becomes a send target", C, 'handoff.observedSessions().filter { handoff.confirmedSessionCards[$0.id]?.workID == source.id }', 'handoff.observedSessions().filter { handoff.confirmedSessionCards[$0.id]?.workID == source.id || handoff.referenceLinks[$0.id.lowercased()]?.contains { r in r.workID == source.id } == true }'),
+ ("references unbounded", C, '.suffix(WorkChatPolicy.maxReferences)', '.suffix(100)'),
+ ("references sent to an older server", C, '        if referencesOffered, !handoff.isolated, mode == "plan" {', '        if !handoff.isolated, mode == "plan" {'),
+ ("reference context ungated", C, '        guard referencesOffered, !handoff.isolated else { return [] }', '        guard !handoff.isolated else { return [] }'),
+ ("reference capability ignored", C, '                referencesOffered = caps["references"]?.bool == true', '                referencesOffered = true'),
+ ("references left out of the items", C, 'files: files, priors: priors + references,', 'files: files, priors: priors,'),
+ ("reference outputs dropped", C, '            if let outputs = facts?.outputs, !outputs.isEmpty { result.append(', '            if false, let outputs = facts?.outputs, !outputs.isEmpty { result.append('),
+ ("reference on its own working card", S, '        guard confirmedSessionCards[sessionID]?.workID != source.id else {', '        guard true else {'),
+ ("working link rule open", "Sources/WorkSessionLinks.swift", '            guard current == expected else { throw Failure.conflict }\n            links[sessionID] = link', '            links[sessionID] = link'),
+ ("reference added twice", "Sources/WorkSessionLinks.swift", '            if rows.contains(where: { $0.workID == link.workID }) { return refs }\n', ''),
+ ("helper drops references", H, '"references": body["references"] as? Bool == true])', '"references": false])'),
+ ("Link as reference ungated", "Sources/WorkWorkspaceView.swift", 'if taskChat.referencesOffered, linked?.workID != task.workSourceID {', 'if linked?.workID != task.workSourceID {'),
  # Wiring the hub checks cannot execute (pinned in run-work-session-hub.sh).
- ("helper drops queueRounds", H, '"queueRounds": body["queueRounds"] as? Bool == true])', '"queueRounds": false])'),
+ ("helper drops queueRounds", H, '"queueRounds": body["queueRounds"] as? Bool == true,', '"queueRounds": false,'),
  ("Settings switch removed", V, 'COSDropdown("When earlier work is still open", selection: $workChatWhenHeld,', 'COSDropdown("When earlier work is open", selection: $workChatWhenHeld,'),
  ("open card never pumps", C, '                await chat.pumpQueued(source:source,handoff:handoff)\n', ''),
 ]
