@@ -406,7 +406,8 @@ private actor WorkContextFixture {
     private(set) var chatBody: [String: Any] = [:]
     private(set) var prompts: [String: String] = [:]
     init(_ ids: [String]) { self.ids = ids }
-    func items() -> [[String: Any]] { chatBody["items"] as? [[String: Any]] ?? [] }
+    /// Sendable copy for the checks: each item's keys and its values as text (estTokens included), so it can leave the actor.
+    func items() -> [[String: String]] { (chatBody["items"] as? [[String: Any]] ?? []).map { $0.mapValues { "\($0)" } } }
     func prompt(_ native: String) -> String { prompts[native] ?? "" }
     static let context = "Canonical Work ID: task:quilt:aaaaaaaaaaaa\nTask: Launch fixture\nDomain: quilt\nStage: draft\nDone when: Launch reviewed\nSource: Fixture evidence\n"
         + WorkContextMeter.meetingsHeader + "\n- Oct 14 meeting | canonical ID: g2:onboarding14 | domain: quilt | month: 2026-10 | file: a.md"
@@ -454,7 +455,7 @@ private actor WorkContextFixture {
     let round = chat.record!.rounds.last!
     let meet14 = WorkContextMeter.itemID("meet", "g2:onboarding14"), meet15 = WorkContextMeter.itemID("meet", "g2:recording15")
     precondition(round.state == "Ready to send" && round.contextChosen == true, "The server chose: \(round.state) \(String(describing: round.contextChosen))")
-    precondition(told.map { $0["id"] as? String ?? "" } == ["req", "task", meet14, meet15, "cos"], "The planner is told every linked item in order")
+    precondition(told.map { $0["id"] ?? "" } == ["req", "task", meet14, meet15, "cos"], "The planner is told every linked item in order")
     precondition(told.allSatisfy { Set($0.keys) == ["id", "kind", "label", "estTokens"] }, "Items carry ids, kinds, labels and estimates only, never contents")
     precondition(round.assignments[0].contextItemIDs == ["req", "task", meet14, "cos"], "The planner's choice, in the card's order")
     precondition(round.assignments[1].contextItemIDs == ["req", "task", meet14, meet15, "cos"], "No choice from the planner means every item")
@@ -542,7 +543,8 @@ private actor WorkContextFixture {
     precondition(WorkContextMeter.imageTokens(width: 1000, height: 1000, provider: "claude") == 1334, "Claude: width x height / 750")
     precondition((1530...1536).contains(WorkContextMeter.imageTokens(width: 3000, height: 2000, provider: "claude")), "Claude scales to 1568 px and about 1.15 MP first")
     precondition(WorkContextMeter.imageTokens(width: 1024, height: 1024, provider: "codex") == 765 && WorkContextMeter.imageTokens(width: 2356, height: 2680, provider: "codex") == 765, "Codex: 512 px tiles after fitting")
-    precondition(WorkContextMeter.imageTokens(width: 512, height: 512, provider: "codex") == 765 && WorkContextMeter.imageTokens(width: 0, height: 0, provider: "claude") == 1600, "Unknown size reads as a full image")
+    precondition(WorkContextMeter.imageTokens(width: 512, height: 512, provider: "codex") == 255, "Codex never scales a small image up: one 512 px tile is 85 + 170")
+    precondition(WorkContextMeter.imageTokens(width: 0, height: 0, provider: "claude") == 1600 && WorkContextMeter.imageTokens(width: 0, height: 0, provider: "codex") == 765, "Unknown size reads as a full image")
     precondition(WorkContextMeter.fileTokens(kind: "text", pixelWidth: nil, pixelHeight: nil, pages: nil, frames: nil, frameWidth: nil, frameHeight: nil, textChars: 400, bytes: 9999, provider: "claude") == 125)
     precondition(WorkContextMeter.fileTokens(kind: "pdf", pixelWidth: nil, pixelHeight: nil, pages: 3, frames: nil, frameWidth: nil, frameHeight: nil, textChars: nil, bytes: 0, provider: "claude") == 1525)
     precondition(WorkContextMeter.fileTokens(kind: "folder", pixelWidth: nil, pixelHeight: nil, pages: nil, frames: nil, frameWidth: nil, frameHeight: nil, textChars: nil, bytes: 0, provider: "claude") == 25, "A folder or link is its line only")
