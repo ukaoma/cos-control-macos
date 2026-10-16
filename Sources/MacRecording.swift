@@ -474,6 +474,8 @@ struct MeetingCard: Equatable, Identifiable {
     var stopRecording: (() async -> Void)?
 
     private var state = MeetingDetectionState()
+    /// The meeting app on the microphone now (the Record button's automatic title). Read when Record is pressed.
+    var current: MeetingSource? { state.current }
     private var startedFrom: (source: MeetingSource, captureID: String)?
     private var listBlock: AudioObjectPropertyListenerBlock?
     private var inputBlocks: [AudioObjectID: AudioObjectPropertyListenerBlock] = [:]
@@ -593,7 +595,7 @@ struct MeetingCard: Equatable, Identifiable {
             show(MeetingCard(kind: .suggest, source: source))
         case .ended(let source):
             if card?.kind != .ended, card?.source == source { dismiss() }
-            if MeetingSuggestion.offersEnd(ended: source, startedFrom: startedFrom?.source, startedCaptureID: startedFrom?.captureID,
+            if MeetingDetectedCard.offersEnd(ended: source, startedFrom: startedFrom?.source, startedCaptureID: startedFrom?.captureID,
                                            runningCaptureID: runningCaptureID?()) {
                 recordingLog.notice("meeting ended app=\(source.app.title, privacy: .public); offering stop")
                 show(MeetingCard(kind: .ended, source: source))
@@ -611,7 +613,7 @@ struct MeetingCard: Equatable, Identifiable {
         guard next.kind != .ended else { return }
         let id = next.id
         dismissTask = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(MeetingSuggestion.dismissSeconds))
+            try? await Task.sleep(for: .seconds(MeetingDetectedCard.dismissSeconds))
             guard !Task.isCancelled, let self, self.card?.id == id else { return }
             self.card = nil
         }
@@ -729,7 +731,7 @@ struct MeetingCardView: View {
             HStack(spacing: size.length(7)) {
                 Circle().fill(card.kind == .suggest ? COSPalette.danger : COSPalette.amber)
                     .frame(width: size.length(7), height: size.length(7))
-                Text(card.kind == .suggest ? MeetingSuggestion.headline(card.source) : MeetingSuggestion.endHeadline)
+                Text(card.kind == .suggest ? MeetingDetectedCard.headline(card.source) : MeetingDetectedCard.endHeadline)
                     .font(COSType.mono(size.typeSize(8), weight: .bold))
                     .kerning(0.6)
                     .foregroundStyle(.secondary)
@@ -742,7 +744,7 @@ struct MeetingCardView: View {
                 .buttonStyle(.plain)
                 .accessibilityLabel(card.kind == .suggest ? "Not now" : "Keep recording")
             }
-            Text(card.kind == .suggest ? MeetingSuggestion.line : MeetingSuggestion.endLine(card.source))
+            Text(card.kind == .suggest ? MeetingDetectedCard.line : MeetingDetectedCard.endLine(card.source))
                 .font(COSType.body(size.typeSize(11)))
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .fixedSize(horizontal: false, vertical: true)
@@ -754,7 +756,7 @@ struct MeetingCardView: View {
                     Button("Not now") { store.notNow() }
                         .buttonStyle(DictationButtonStyle(size: size))
                     Spacer(minLength: 0)
-                    Button(MeetingSuggestion.never(card.source)) { store.neverFor() }
+                    Button(MeetingDetectedCard.never(card.source)) { store.neverFor() }
                         .buttonStyle(COSTextButtonStyle())
                         .font(COSType.body(size.typeSize(9)))
                 case .notice:

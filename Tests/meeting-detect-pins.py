@@ -80,7 +80,7 @@ need(len(starts) == 1, f"Mac recording starts from exactly one place, record(), 
 records = [(name, m.group(0)) for name, src in sources.items() for m in re.finditer(r"(?:store\.|await )record\(title:", src)]
 need(len(records) == 2, f"record() is reached from Meetings' Record and the card only, found {records}")
 need(sum(src.count("startFromMeetingSuggestion(") for src in sources.values()) == 2
-     and "model.macRecording.startFromMeetingSuggestion(title: MeetingSuggestion.title(source, at: Date()), bridge: model.macRecordingBridge)" in app,
+     and "model.macRecording.startFromMeetingSuggestion(title: MeetingDetectedCard.title(source, at: Date()), bridge: model.macRecordingBridge)" in app,
      "the card's start is called only from the meeting card's record closure")
 for alert in (".confirmationDialog(", "NSAlert", ".alert(", "Record this Mac’s audio?"):
     need(alert not in recording, f"no stock alert for a recording start: {alert}")
@@ -126,7 +126,7 @@ need(".stop()" not in detector and "macRecording.stop()" not in body(app, "meeti
      "no detector path calls the recording's stop")
 need("guard next.kind != .ended else { return }" in body(detector, "    private func show(_ next: MeetingCard) {"),
      "the end offer waits for an answer; only the suggestion folds away")
-need("MeetingSuggestion.offersEnd(" in body(detector, "    private func handle(_ event: MeetingDetectionState.Event) {"),
+need("MeetingDetectedCard.offersEnd(" in body(detector, "    private func handle(_ event: MeetingDetectionState.Event) {"),
      "the end offer goes through the tested rule")
 need("if !active { MeetingDetectorStore.shared.recordingStopped() }" in model, "a recording stopped any other way clears the end offer")
 
@@ -149,7 +149,7 @@ need(core.count("static let rules: [Rule] = [") == 1 and sum(src.count("us.zoom.
 
 # ── 4. Gates and wiring.
 busy = body(app, "meetings.recordingBusy = {")
-need("MeetingSuggestion.recordingBusy(macOccupied: model.macRecording.occupied, macCanStart: model.macRecording.canStart," in busy
+need("MeetingDetectedCard.recordingBusy(macOccupied: model.macRecording.occupied, macCanStart: model.macRecording.canStart," in busy
      and "recoverable: model.macRecording.recoverable.count, liveRecordings: model.recordingCount)" in busy,
      "busy covers active, pending, recoverable and live recordings")
 need("meetings.dictating = { [weak model] in model?.dictation.busy ?? false }" in app, "dictation defers the card")

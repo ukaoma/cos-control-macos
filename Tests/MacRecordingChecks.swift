@@ -263,23 +263,23 @@ import Darwin
             check(!idle.wantsTicks && idle.tracks.isEmpty, "no ticks once the meeting ended")
             // Words, title and the end offer.
             var utc = Calendar(identifier: .gregorian); utc.timeZone = TimeZone(identifier: "UTC")!
-            check(MeetingSuggestion.title(zoom, at: Date(timeIntervalSince1970: 1_760_544_300), calendar: utc) == "Zoom meeting 4:05 PM", "the recording's title")
-            check(MeetingSuggestion.headline(zoom) == "Meeting detected · Zoom"
-                  && MeetingSuggestion.line == "Record on Mac with live transcript? Let people know you're recording."
-                  && MeetingSuggestion.never(MeetingApps.rule(forBundleID: "com.google.Chrome")!.source) == "Never for Google Chrome"
-                  && MeetingSuggestion.dismissSeconds == 60, "the card's words")
+            check(MeetingDetectedCard.title(zoom, at: Date(timeIntervalSince1970: 1_760_544_300), calendar: utc) == "Zoom meeting 4:05 PM", "the recording's title")
+            check(MeetingDetectedCard.headline(zoom) == "Meeting detected · Zoom"
+                  && MeetingDetectedCard.line == "Record on Mac with live transcript? Let people know you're recording."
+                  && MeetingDetectedCard.never(MeetingApps.rule(forBundleID: "com.google.Chrome")!.source) == "Never for Google Chrome"
+                  && MeetingDetectedCard.dismissSeconds == 60, "the card's words")
             let chrome = MeetingApps.rule(forBundleID: "com.google.Chrome")!.source
-            check(MeetingSuggestion.offersEnd(ended: zoom, startedFrom: zoom, startedCaptureID: "mac_1", runningCaptureID: "mac_1"), "the recording this card started")
-            check(!MeetingSuggestion.offersEnd(ended: zoom, startedFrom: zoom, startedCaptureID: "mac_1", runningCaptureID: "mac_2")
-                  && !MeetingSuggestion.offersEnd(ended: zoom, startedFrom: zoom, startedCaptureID: "mac_1", runningCaptureID: nil)
-                  && !MeetingSuggestion.offersEnd(ended: zoom, startedFrom: nil, startedCaptureID: nil, runningCaptureID: "mac_1")
-                  && !MeetingSuggestion.offersEnd(ended: chrome, startedFrom: zoom, startedCaptureID: "mac_1", runningCaptureID: "mac_1"),
+            check(MeetingDetectedCard.offersEnd(ended: zoom, startedFrom: zoom, startedCaptureID: "mac_1", runningCaptureID: "mac_1"), "the recording this card started")
+            check(!MeetingDetectedCard.offersEnd(ended: zoom, startedFrom: zoom, startedCaptureID: "mac_1", runningCaptureID: "mac_2")
+                  && !MeetingDetectedCard.offersEnd(ended: zoom, startedFrom: zoom, startedCaptureID: "mac_1", runningCaptureID: nil)
+                  && !MeetingDetectedCard.offersEnd(ended: zoom, startedFrom: nil, startedCaptureID: nil, runningCaptureID: "mac_1")
+                  && !MeetingDetectedCard.offersEnd(ended: chrome, startedFrom: zoom, startedCaptureID: "mac_1", runningCaptureID: "mac_1"),
                   "no end offer for a manual recording, another meeting, or one already stopped")
-            check(!MeetingSuggestion.recordingBusy(macOccupied: false, macCanStart: true, recoverable: 0, liveRecordings: 0)
-                  && MeetingSuggestion.recordingBusy(macOccupied: true, macCanStart: true, recoverable: 0, liveRecordings: 0)
-                  && MeetingSuggestion.recordingBusy(macOccupied: false, macCanStart: false, recoverable: 0, liveRecordings: 0)
-                  && MeetingSuggestion.recordingBusy(macOccupied: false, macCanStart: true, recoverable: 1, liveRecordings: 0)
-                  && MeetingSuggestion.recordingBusy(macOccupied: false, macCanStart: true, recoverable: 0, liveRecordings: 1),
+            check(!MeetingDetectedCard.recordingBusy(macOccupied: false, macCanStart: true, recoverable: 0, liveRecordings: 0)
+                  && MeetingDetectedCard.recordingBusy(macOccupied: true, macCanStart: true, recoverable: 0, liveRecordings: 0)
+                  && MeetingDetectedCard.recordingBusy(macOccupied: false, macCanStart: false, recoverable: 0, liveRecordings: 0)
+                  && MeetingDetectedCard.recordingBusy(macOccupied: false, macCanStart: true, recoverable: 1, liveRecordings: 0)
+                  && MeetingDetectedCard.recordingBusy(macOccupied: false, macCanStart: true, recoverable: 0, liveRecordings: 1),
                   "busy: recording, starting, pending, recoverable, or any live COS recording")
             // The one-time recording notice and the automatic title.
             check(MacRecordingNotice.step(acknowledged: false) == .notice && MacRecordingNotice.step(acknowledged: true) == .start,

@@ -554,7 +554,7 @@ struct MeetingDetectionState: Equatable, Sendable {
 }
 
 /// The card's words, the recording's title, and the end offer.
-enum MeetingSuggestion {
+enum MeetingDetectedCard {
     static let dismissSeconds: TimeInterval = 60
     static func headline(_ source: MeetingSource) -> String { "Meeting detected · " + source.app.title }
     static let line = "Record on Mac with live transcript? Let people know you're recording."

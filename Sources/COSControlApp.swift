@@ -49,7 +49,7 @@ struct COSControlApp: App {
         meetings.dictating = { [weak model] in model?.dictation.busy ?? false }
         meetings.recordingBusy = { [weak model] in
             guard let model else { return true }
-            return MeetingSuggestion.recordingBusy(macOccupied: model.macRecording.occupied, macCanStart: model.macRecording.canStart,
+            return MeetingDetectedCard.recordingBusy(macOccupied: model.macRecording.occupied, macCanStart: model.macRecording.canStart,
                                                    recoverable: model.macRecording.recoverable.count, liveRecordings: model.recordingCount)
         }
         meetings.runningCaptureID = { [weak model] in
@@ -58,7 +58,7 @@ struct COSControlApp: App {
         }
         meetings.record = { [weak model] source in
             guard let model else { return nil }
-            let id = await model.macRecording.startFromMeetingSuggestion(title: MeetingSuggestion.title(source, at: Date()), bridge: model.macRecordingBridge)
+            let id = await model.macRecording.startFromMeetingSuggestion(title: MeetingDetectedCard.title(source, at: Date()), bridge: model.macRecordingBridge)
             if id == nil { model.petNotice = model.macRecording.error ?? "COS couldn't start recording. Open Meetings → Record on Mac to see why." }
             return id
         }
