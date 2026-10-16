@@ -5,6 +5,11 @@ import Foundation
 enum MacDictationPolicy {
     static let maximumSeconds = 120
     static let maximumPCMBytes = maximumSeconds * 16_000 * 2
+    /// 0.5.313 (Miles 2026-10-15): a dictation something else ends (a key chord while talking, sleep, a session switch) is
+    /// transcribed and copied, never thrown away, once it holds this much audio. Under a second is a shortcut combination
+    /// (Fn+arrow) or a stray tap, not speech worth a card. 16 kHz mono Int16: 32,000 bytes a second.
+    static let salvageMinimumBytes = 16_000 * 2
+    static func salvages(pcmBytes: Int) -> Bool { pcmBytes >= salvageMinimumBytes }
     static func mayStart(enabled: Bool, busy: Bool) -> Bool {
         enabled && !busy
     }
@@ -116,18 +121,24 @@ enum DictationTrigger: Equatable, Sendable {
 }
 
 /// One lone-modifier trigger fed raw key events. A press counts only when no other modifier is held and
-/// no other key goes down before release, so Fn+arrow, ⌘C or ⌥-click never start dictation.
+/// no other key goes down before release, so Fn+arrow or ⌘C never start dictation. A click is a chord only right after
+/// the press (⌥-click, ⌘-click): once the person is talking, clicking or dragging to place the cursor or move a window
+/// must not stop listening (Miles 2026-10-15, as in Wispr Flow).
 struct LoneModifierTracker: Sendable {
     enum Output: Equatable, Sendable { case pressed, released, chord }
+    /// A modifier-click lands within this of the modifier going down; a later click is the person working while they talk.
+    static let clickChordWindow: TimeInterval = 0.4
     let keyCode: UInt16
     private let device: UInt64, family: UInt64
     private(set) var down = false
     private var clean = false
+    private var pressedAt: TimeInterval = 0
     init?(keyCode: UInt16) {
         guard let key = DictationTrigger.modifierKeys[keyCode] else { return nil }
         self.keyCode = keyCode; device = key.device; family = key.family
     }
-    mutating func flagsChanged(keyCode changed: UInt16, flags: UInt64) -> Output? {
+    /// `at` is the event's timestamp (seconds since boot, NSEvent.timestamp); only clicks compare against it.
+    mutating func flagsChanged(keyCode changed: UInt16, flags: UInt64, at time: TimeInterval = 0) -> Output? {
         guard changed == keyCode else {
             // Another modifier joined while ours is held: a chord, never dictation.
             guard down, clean else { return nil }
@@ -135,7 +146,7 @@ struct LoneModifierTracker: Sendable {
         }
         let nowDown = flags & device != 0
         if nowDown, !down {
-            down = true
+            down = true; pressedAt = time
             clean = DictationTrigger.alone(keyCode, flags: flags)
             return clean ? .pressed : nil
         }
@@ -150,6 +161,12 @@ struct LoneModifierTracker: Sendable {
         guard down, clean else { return nil }
         clean = false; return .chord
     }
+    /// A mouse button went down. A chord only inside clickChordWindow of the press; later it is ignored, so the
+    /// release still finishes the dictation where the person clicked.
+    mutating func pointerDown(at time: TimeInterval) -> Output? {
+        guard down, clean, time - pressedAt < Self.clickChordWindow else { return nil }
+        clean = false; return .chord
+    }
     /// The app lost key events (sleep, monitor removed): forget a press rather than stay latched.
     mutating func reset() { down = false; clean = false }
 }
@@ -162,7 +179,7 @@ struct LoneModifierTracker: Sendable {
 enum DictationInsertPolicy {
     /// Why nothing was typed. The raw value is what Recent dictations stores.
     enum Refusal: String, Equatable, Sendable, CaseIterable {
-        case notTrusted, secureInput, secureField, ownOverlay, noTextBox, keysHeld, clipboardChanged, clipboardFailed
+        case notTrusted, secureInput, secureField, ownOverlay, noTextBox, keysHeld, clipboardChanged, clipboardFailed, interrupted
         /// The card's heading (mock 04).
         var title: String {
             switch self {
@@ -173,6 +190,7 @@ enum DictationInsertPolicy {
             case .keysHeld: "KEYS HELD · COPIED"
             case .clipboardChanged: "CLIPBOARD CHANGED · NOT PASTED"
             case .clipboardFailed: "CLIPBOARD UNAVAILABLE"
+            case .interrupted: "INTERRUPTED · COPIED"
             }
         }
         var note: String {
@@ -184,6 +202,7 @@ enum DictationInsertPolicy {
             case .keysHeld: "A modifier key was still held, so COS did not paste. Click where you want it and press ⌘V."
             case .clipboardChanged: "Something else changed the clipboard before COS could paste. Copy it again here."
             case .clipboardFailed: "COS could not put the text on the clipboard. Copy it here."
+            case .interrupted: "Dictation was interrupted, so COS copied what you said instead of typing it. Click where you want it and press ⌘V."
             }
         }
         /// "copied, <this>" in Recent dictations.
@@ -196,6 +215,7 @@ enum DictationInsertPolicy {
             case .keysHeld: "keys held"
             case .clipboardChanged: "clipboard changed"
             case .clipboardFailed: "clipboard unavailable"
+            case .interrupted: "interrupted"
             }
         }
     }

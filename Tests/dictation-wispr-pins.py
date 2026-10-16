@@ -139,9 +139,26 @@ need(hosts is not None and terminals is not None and set(re.findall(r'"([^"]+)"'
 
 # ── 3. Store flow: the pill, the flash, the card; text stays private.
 transcribe = body(dictation, "private func transcribe(_ wav: Data, attempt: UUID) {")
-need("let delivered = await DictationInsertion.deliver(text, restoreClipboard: restoreClipboard)" in transcribe
+need("let delivered = copyOnly ? DictationInsertion.copyOnly(text)\n                    : await DictationInsertion.deliver(text, restoreClipboard: restoreClipboard)" in transcribe
      and "finish(text, outcome: delivered.outcome, target: delivered.target)" in transcribe,
      "a finished transcript must be delivered and recorded")
+# 0.5.313 (Miles 2026-10-15): an interrupted dictation is transcribed and copied, never thrown away and never typed.
+need("let copyOnly = pendingInterrupted\n                pendingAudio = nil" in transcribe,
+     "the copy-only flag must be read before pendingAudio is cleared (clearing it resets the flag)")
+interrupt = body(dictation, "    func interrupt() {")
+need("MacDictationPolicy.salvages(pcmBytes: pcm.count)" in interrupt and "pendingAudio = wav; pendingInterrupted = true" in interrupt
+     and "transcribe(wav, attempt: attempt)" in interrupt and "quiet.end()" in interrupt,
+     "interrupt must transcribe a salvageable capture as copy-only and give other apps their sound back")
+need('if phase == "Transcribing" { pendingInterrupted = pendingAudio != nil; return }' in interrupt,
+     "sleep while transcribing must copy, not type after wake")
+key = body(dictation, "    private func keyEvent(")
+need("case .chord?: if held { interrupt() }" in key and "cancel()" not in key, "a chord while talking must salvage, not cancel")
+need(dictation.count("Task { @MainActor in self?.interrupt() }") == 1 and "Task { @MainActor in self?.cancel() }" not in dictation,
+     "sleep and session switch must salvage, not cancel")
+copy_only = body(dictation, "    static func copyOnly(_ text: String) -> DictationDelivered {")
+need("writeTranscript(text, markerTypes: [])" in copy_only and ".refused(wrote ? .interrupted : .clipboardFailed)" in copy_only
+     and "AXUIElement" not in copy_only and "postPaste" not in copy_only and "CGEvent" not in copy_only,
+     "copy-only writes a durable clipboard item and never types or pastes")
 finish = body(dictation, "private func finish(_ text: String, outcome: DictationDeliveryOutcome, target: DictationInsertTarget?) {")
 need("remember(record)" in finish and "showCard(" in finish and "DictationPill.flashSeconds" in finish
      and "delivery: outcome.delivery" in finish and "outcome.flash" in finish,
@@ -384,8 +401,12 @@ need(stop_fn.index("let pcm = try capture.stop()") < stop_fn.index("quiet.end()"
      "other apps come back after the microphone closes and before the stop sound")
 need(body(dictation, "    private func fail(").count("quiet.end()") == 1 and body(dictation, "    func cancel() {").count("quiet.end()") == 1,
      "every other way listening ends restores: fail and cancel")
-need("COSAppDelegate.onTerminate = { model.dictation.cancel();" in app and "Task { @MainActor in self?.cancel() }" in dictation,
-     "quit, sleep and a session switch reach cancel, so they restore too")
+need("COSAppDelegate.onTerminate = { model.dictation.cancel();" in app and "Task { @MainActor in self?.interrupt() }" in dictation,
+     "quit reaches cancel; sleep and a session switch reach interrupt, so they restore too")
+# interrupt restores on every branch: its cancel fallbacks (cancel restores) and the salvage, which restores itself.
+_int = body(dictation, "    func interrupt() {")
+need(_int.count("cancel(); message = nil; return") == 2 and _int.count("quiet.end()") == 1,
+     "every interrupt branch that was listening gives other apps their sound back")
 need("quiet.restoreAfterInterruptedRun()" in dictation, "a volume lowered before a crash goes back at the next launch")
 quiet = body(dictation, "@MainActor final class DictationQuietController {")
 begin = body(quiet, "    func begin(mode: DictationQuietMode, macRecording: Bool) {")

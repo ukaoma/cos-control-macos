@@ -115,6 +115,13 @@ MUTANTS = [
     # 0.5.312 retention: Keep dictations for 7/30/90 days, Forever or Don't keep, never more than 5,000.
     ("retention ignored", "        let kept = retention.days.map { days in list.filter { now.timeIntervalSince($0.createdAt) <= Double(days) * 86_400 } } ?? list\n",
      "        let kept = list\n"),
+    ("every click cancels", "        guard down, clean, time - pressedAt < Self.clickChordWindow else { return nil }\n", "        guard down, clean else { return nil }\n"),
+    ("clicks never chord", "        guard down, clean, time - pressedAt < Self.clickChordWindow else { return nil }\n", "        guard down, clean, false else { return nil }\n"),
+    ("click window inclusive", "time - pressedAt < Self.clickChordWindow", "time - pressedAt <= Self.clickChordWindow"),
+    ("press time not kept", "            down = true; pressedAt = time\n", "            down = true\n"),
+    ("click chord does not latch", "        guard down, clean, time - pressedAt < Self.clickChordWindow else { return nil }\n        clean = false; return .chord", "        guard down, clean, time - pressedAt < Self.clickChordWindow else { return nil }\n        return .chord"),
+    ("salvage keeps a tap", "    static func salvages(pcmBytes: Int) -> Bool { pcmBytes >= salvageMinimumBytes }", "    static func salvages(pcmBytes: Int) -> Bool { pcmBytes > 0 }"),
+    ("salvage never", "    static func salvages(pcmBytes: Int) -> Bool { pcmBytes >= salvageMinimumBytes }", "    static func salvages(pcmBytes: Int) -> Bool { false }"),
     ("cap ignored", "        return Array(kept.prefix(cap))\n", "        return kept\n"),
     ("Don't keep keeps everything", "        if retention == .none { return Array(list.prefix(sessionOnly)) }\n", ""),
     ("Don't keep still writes", "    var writesToDisk: Bool { self != .none }", "    var writesToDisk: Bool { true }"),

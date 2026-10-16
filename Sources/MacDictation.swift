@@ -368,6 +368,14 @@ struct DictationDelivered: Sendable {
 
     /// One of COS's own windows (Activity, Settings) has the keyboard: insert through its first responder, and measure
     /// the field editor the same way.
+    /// 0.5.313: an interrupted dictation is copied and never typed, since where the person was typing may have changed.
+    static func copyOnly(_ text: String) -> DictationDelivered {
+        let wrote = SystemDictationPasteboard(NSPasteboard.general).writeTranscript(text, markerTypes: [])
+        let outcome: DictationDeliveryOutcome = .refused(wrote ? .interrupted : .clipboardFailed)
+        dictationLog.notice("delivery route=interrupted outcome=\(String(describing: outcome), privacy: .public)")
+        return DictationDelivered(outcome: outcome, target: nil)
+    }
+
     private static func ownWindow(_ text: String, app: String) -> DictationDeliveryOutcome {
         guard let responder = NSApp.keyWindow?.firstResponder else { return .refused(.noTextBox) }
         if let view = responder as? NSTextView {
@@ -808,7 +816,9 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
     var bridge: (@MainActor (Data) async throws -> HelperResponse)?
     var petFrame: (() -> NSRect?)?
     private var capture: DictationMicrophoneCapture?
-    private var pendingAudio: Data?
+    private var pendingAudio: Data? { didSet { if pendingAudio == nil { pendingInterrupted = false } } }
+    /// The held audio is from an interrupted dictation: a retry copies it too, never types it.
+    private var pendingInterrupted = false
     var canRetry: Bool { pendingAudio != nil && !busy }
     private var task: Task<Void, Never>?
     private var timer: Task<Void, Never>?
@@ -865,7 +875,7 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
         if let aside = loaded?.movedTo { dictationLog.notice("recent dictations unreadable; moved aside to \(aside.lastPathComponent, privacy: .public)") }
         for name in [NSWorkspace.willSleepNotification, NSWorkspace.sessionDidResignActiveNotification] {
             sessionObservers.append(NSWorkspace.shared.notificationCenter.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
-                Task { @MainActor in self?.cancel() }
+                Task { @MainActor in self?.interrupt() }
             })
         }
         overlay.bind(store: self)
@@ -958,12 +968,13 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
         }
         if holdTracker != nil || toggleTracker != nil || fixTracker != nil {
             // Monitors run on the main thread in event order; never hop through a Task, which could reorder down/up.
-            // A click while the modifier is down (⌥-click, ⌘-click) is a chord like a key, so the monitors take clicks too and
-            // feed them as a key down. keyCode is read only from key events: NSEvent raises on a mouse event's keyCode.
+            // A click right after the modifier goes down (⌥-click, ⌘-click) is a chord, so the monitors take clicks too;
+            // a later click (placing the cursor, dragging a window) is ignored and listening continues. keyCode is read
+            // only from key events: NSEvent raises on a mouse event's keyCode.
             let handle: (NSEvent) -> Void = { [weak self] event in
                 let flags = event.type == .flagsChanged, isKey = flags || event.type == .keyDown
-                let key = isKey ? event.keyCode : 0, raw = UInt64(event.modifierFlags.rawValue)
-                MainActor.assumeIsolated { self?.keyEvent(flags: flags, keyCode: key, raw: raw) }
+                let key = isKey ? event.keyCode : 0, raw = UInt64(event.modifierFlags.rawValue), time = event.timestamp
+                MainActor.assumeIsolated { self?.keyEvent(flags: flags, pointer: !isKey, keyCode: key, raw: raw, at: time) }
             }
             let mask: NSEvent.EventTypeMask = [.flagsChanged, .keyDown, .leftMouseDown, .rightMouseDown, .otherMouseDown]
             if let global = NSEvent.addGlobalMonitorForEvents(matching: mask, handler: handle) { keyMonitors.append(global) }
@@ -974,17 +985,19 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
         }
         if !busy { phase = "Ready" }
     }
-    private func keyEvent(flags: Bool, keyCode: UInt16, raw: UInt64) {
+    private func keyEvent(flags: Bool, pointer: Bool, keyCode: UInt16, raw: UInt64, at time: TimeInterval) {
         func feed(_ tracker: inout LoneModifierTracker?) -> LoneModifierTracker.Output? {
             guard var current = tracker else { return nil }
-            let output = flags ? current.flagsChanged(keyCode: keyCode, flags: raw) : current.keyDown()
+            let output = flags ? current.flagsChanged(keyCode: keyCode, flags: raw, at: time)
+                : pointer ? current.pointerDown(at: time) : current.keyDown()
             tracker = current; return output
         }
         switch feed(&holdTracker) {
         case .pressed?: hotKey(1, down: true)
         case .released?: hotKey(1, down: false)
-        // Fn+arrow, ⌘C: the press was a chord, so drop it quietly; nothing was inserted.
-        case .chord?: if held { cancel(); message = nil }
+        // Fn+arrow, ⌘C: the press was a chord. Right after the press nothing was said, so it is dropped quietly; after
+        // a second of talking, what was said is transcribed and copied (interrupt).
+        case .chord?: if held { interrupt() }
         case nil: break
         }
         // A lone-modifier toggle acts on a clean tap, so holding Fn for a chord never toggles.
@@ -1073,6 +1086,27 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
             transcribe(wav, attempt: attempt)
         } catch { let reason = error.localizedDescription; dictationLog.error("stop failed: \(reason, privacy: .public)"); fail(reason) }
     }
+    /// 0.5.313 (Miles 2026-10-15: "if the transcription does get broken… copy to the clipboard what's been transcribed so
+    /// it's not a complete loss"). Listening ended by something other than the person's stop: a key chord while
+    /// talking, sleep or a session switch. A second or more of audio is transcribed and COPIED, never typed, with the
+    /// card; less is dropped as before. Quit and turning dictation off still cancel: there is nothing left to show it in.
+    func interrupt() {
+        // Already transcribing (slept between stop and the answer): finish it, but copy rather than type after wake.
+        if phase == "Transcribing" { pendingInterrupted = pendingAudio != nil; return }
+        guard phase == "Listening", let capture else { cancel(); message = nil; return }
+        timer?.cancel(); timer = nil; self.capture = nil
+        meterTask?.cancel(); meterTask = nil
+        held = false; toggleHeld = false; holdPending = false
+        holdTracker?.reset(); toggleTracker?.reset()
+        let attempt = generation
+        guard let pcm = try? capture.stop(), MacDictationPolicy.salvages(pcmBytes: pcm.count),
+              let wav = try? MacDictationPolicy.wav(pcm) else { cancel(); message = nil; return }
+        quiet.end()
+        dictationLog.notice("interrupted after \(pcm.count / 32_000) s; transcribing to copy")
+        phase = "Transcribing"; pill = .transcribing
+        pendingAudio = wav; pendingInterrupted = true
+        transcribe(wav, attempt: attempt)
+    }
     func retryTranscription() {
         guard canRetry, let audio = pendingAudio else { return }
         dismissCard()
@@ -1093,8 +1127,10 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
                     if noSpeech { pendingAudio = nil }
                     fail(response.message, retry: !noSpeech); return
                 }
+                let copyOnly = pendingInterrupted
                 pendingAudio = nil; phase = "Ready"; message = nil
-                let delivered = await DictationInsertion.deliver(text, restoreClipboard: restoreClipboard)
+                let delivered = copyOnly ? DictationInsertion.copyOnly(text)
+                    : await DictationInsertion.deliver(text, restoreClipboard: restoreClipboard)
                 finish(text, outcome: delivered.outcome, target: delivered.target)
             } catch { guard generation == attempt else { return }; let reason = error.localizedDescription; dictationLog.error("transcribe failed: \(reason, privacy: .public)"); fail(reason) }
         }

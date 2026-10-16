@@ -176,6 +176,40 @@ final class FakeDictationBoard: DictationPasteboardAccess {
         expect(both.flagsChanged(keyCode: 54, flags: rightCmd) == .pressed, "Right Command alone fires again after the chord")
         expect(DictationTrigger.alone(63, flags: 0x800000) && !DictationTrigger.alone(63, flags: 0x800000 | leftCmd) && !DictationTrigger.alone(49, flags: 0), "recorder uses the same lone rule")
         expect(LoneModifierTracker(keyCode: 49) == nil, "tracker only for modifier keys")
+        // 0.5.313 (Miles 2026-10-15): clicking or dragging while holding the key must not stop listening. A click right
+        // after the press is still ⌥-click / ⌘-click; boundaries derive from the shipped window, never a restated number.
+        let window = LoneModifierTracker.clickChordWindow
+        expect(window > 0 && window <= 1, "click-chord window is a fraction of a second")
+        var talk = LoneModifierTracker(keyCode: 63)!
+        expect(talk.flagsChanged(keyCode: 63, flags: fnDown, at: 100) == .pressed, "held Fn starts at t=100")
+        expect(talk.pointerDown(at: 100 + window + 0.5) == nil, "a click while talking is ignored")
+        expect(talk.pointerDown(at: 100 + window * 10) == nil, "a drag later is ignored too")
+        expect(talk.flagsChanged(keyCode: 63, flags: 0, at: 105) == .released, "release after clicking still finishes the dictation")
+        var optClick = LoneModifierTracker(keyCode: 58)!
+        expect(optClick.flagsChanged(keyCode: 58, flags: 0x20 | 0x80000, at: 50) == .pressed, "Option press")
+        expect(optClick.pointerDown(at: 50 + window / 2) == .chord, "⌥-click right after the press is a chord")
+        expect(optClick.pointerDown(at: 50 + window / 2) == nil && optClick.flagsChanged(keyCode: 58, flags: 0, at: 51) == nil, "that chord never dictates")
+        var edge = LoneModifierTracker(keyCode: 63)!
+        _ = edge.flagsChanged(keyCode: 63, flags: fnDown, at: 7)
+        expect(edge.pointerDown(at: 7 + window) == nil, "a click exactly at the window edge is talking, not a chord")
+        var idle = LoneModifierTracker(keyCode: 63)!
+        expect(idle.pointerDown(at: 1) == nil, "a click with the key up is nothing")
+        _ = idle.flagsChanged(keyCode: 63, flags: fnDown, at: 1000)
+        expect(idle.pointerDown(at: 1000 + window / 2) == .chord, "the window runs from THIS press, not the first")
+        _ = idle.flagsChanged(keyCode: 63, flags: 0, at: 1001)
+        _ = idle.flagsChanged(keyCode: 63, flags: fnDown, at: 2000)
+        expect(idle.keyDown() == .chord, "a key while talking is still a chord (Fn+arrow), however late")
+        // 0.5.313: an interrupted dictation keeps what was said once there is a second of it (16 kHz mono Int16).
+        let second = 16_000 * 2
+        expect(MacDictationPolicy.salvageMinimumBytes == second, "salvage threshold is one second of dictation audio")
+        expect(MacDictationPolicy.salvages(pcmBytes: second) && MacDictationPolicy.salvages(pcmBytes: MacDictationPolicy.maximumPCMBytes), "a second or more is kept")
+        expect(!MacDictationPolicy.salvages(pcmBytes: second - 2) && !MacDictationPolicy.salvages(pcmBytes: 0), "under a second (a shortcut combination) is dropped")
+        expect(DictationInsertPolicy.Refusal.interrupted.title == "INTERRUPTED · COPIED" && DictationInsertPolicy.Refusal.interrupted.note.contains("⌘V"), "interrupted card says it was copied and how to paste")
+        expect(DictationClipboard.use(for: .refused(.interrupted)) == .keepForCard, "an interrupted transcript stays on the clipboard")
+        let cut = DictationRecord(id: UUID(), text: "half a thought", createdAt: Date(timeIntervalSince1970: 0), delivery: .copied(.interrupted))
+        if let data = try? JSONEncoder().encode(cut), let back = try? JSONDecoder().decode(DictationRecord.self, from: data) {
+            expect(back.delivery == .copied(.interrupted) && back.outcomeLabel == "copied, interrupted", "interrupted round-trips in history")
+        } else { expect(false, "interrupted record encodes and decodes") }
         // 0.5.312 listening bars, end to end through the path the app runs: an Int16 microphone buffer → DictationPCMBuffer
         // RMS → DictationLevelMeter (50 ms ticks) → the feed's last eleven levels → DictationBars heights.
         // Field bug 2026-10-15 21:16: loud speech on Miles's AT2020USB+ (about -45 dBFS RMS) drew flat dots.

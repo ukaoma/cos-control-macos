@@ -7,6 +7,8 @@
         "title": "Fix dictation faster",
         "items": [
           "Fix a dictation the moment it lands: Fix on the pill for 5 seconds, or ⌃⌥F (set in Settings).",
+          "Click, drag and move windows while you hold the dictation key: COS keeps listening, and the text lands where your cursor ends up. A click right after the press is still ⌥-click or ⌘-click.",
+          "If something interrupts a dictation (another key, sleep), COS still transcribes what you said and copies it, with a card to paste it. Under a second is dropped.",
           "After you fix a word, Replace it in the app puts the corrected text back where COS typed it, when that spot hasn't changed; otherwise COS copies the corrected text.",
           "Fix a word selects the whole misheard phrase and suggests the spelling from your dictionary. Return saves.",
           "Other apps go quiet while you dictate and come back after (Settings › Dictation: Mute, Lower or Off). Never during a Mac recording.",
