@@ -2801,7 +2801,7 @@ struct ControlPanel: View {
                 .toggleStyle(COSSwitchStyle())
                 .help("While a glasses meeting records, show it at the top of Meetings with the text so far. The transcript opens only when you click it. Off: no live row, no live dots, and nothing is read")
                 .onChange(of: showLiveTranscript) { _, _ in model.liveTranscriptSettingChanged() }
-            MeetingSuggestSettings(store: MeetingDetectorStore.shared)
+            MeetingSuggestSettings(store: MeetingDetectorStore.shared, recording: model.macRecording)
             DisclosureGroup("Advanced") {
                 // 0.5.234: the Meetings clock. The server sends 24-hour times and
                 // the tab used to print them raw; twelve-hour is the default here
