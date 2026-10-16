@@ -525,12 +525,19 @@ struct DictationDelivered: Sendable {
 
     private func muteOtherApps() -> Bool {
         guard #available(macOS 14.2, *) else { return false }
-        let description = CATapDescription(stereoGlobalTapButExcludeProcesses: Self.ownProcessObject())
+        let own = Self.ownProcessObject()
+        // Without COS's own object the tap would mute the start sound too: say so (QA 2026-10-15).
+        if own.isEmpty { dictationLog.notice("quiet: COS's own audio object not found; its sounds may be muted too") }
+        let description = CATapDescription(stereoGlobalTapButExcludeProcesses: own)
         description.name = "COS dictation quiet"
         description.isPrivate = true
         description.muteBehavior = .muted
         var id = AudioObjectID(kAudioObjectUnknown)
-        guard AudioHardwareCreateProcessTap(description, &id) == noErr, id != kAudioObjectUnknown else { return false }
+        let status = AudioHardwareCreateProcessTap(description, &id)
+        guard status == noErr, id != kAudioObjectUnknown else {
+            dictationLog.error("quiet: mute tap refused status=\(status, privacy: .public); lowering the volume instead")
+            return false
+        }
         tap = id
         return true
     }
@@ -1008,6 +1015,13 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
         if feed(&toggleTracker) == .released { hotKey(2, down: true); hotKey(2, down: false) }
         if feed(&fixTracker) == .released { hotKey(3, down: true) }
     }
+    /// A Mac recording started while listening (QA 2026-10-15): other apps' sound comes back at once, or the recording
+    /// would capture the mute. Listening itself continues.
+    func recordingStarted() {
+        guard busy else { return }
+        dictationLog.notice("quiet: a Mac recording started while dictating; other apps' sound restored")
+        quiet.end()
+    }
     func hotKey(_ id: UInt32, down: Bool) {
         if id == 1 {
             if down, !held { held = true; holdPending = true; start() }
@@ -1103,8 +1117,15 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
         held = false; toggleHeld = false; holdPending = false
         holdTracker?.reset(); toggleTracker?.reset()
         let attempt = generation
-        guard let pcm = try? capture.stop(), MacDictationPolicy.salvages(pcmBytes: pcm.count),
-              let wav = try? MacDictationPolicy.wav(pcm) else { cancel(); message = nil; return }
+        let pcm: Data
+        do { pcm = try capture.stop() } catch {
+            dictationLog.error("interrupted; capture stop failed: \(error.localizedDescription, privacy: .public)")
+            cancel(); message = nil; return
+        }
+        guard MacDictationPolicy.salvages(pcmBytes: pcm.count), let wav = try? MacDictationPolicy.wav(pcm) else {
+            dictationLog.notice("interrupted after \(pcm.count / 32_000) s; under the salvage minimum, dropped")
+            cancel(); message = nil; return
+        }
         quiet.end()
         dictationLog.notice("interrupted after \(pcm.count / 32_000) s; transcribing to copy")
         phase = "Transcribing"; pill = .transcribing
@@ -1129,6 +1150,8 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
                     // No speech (the server's 204) is an answer, not a failure: retrying the same audio cannot help.
                     let noSpeech = response.details["noSpeech"]?.bool == true
                     if noSpeech { pendingAudio = nil }
+                    let reason = response.details["reason"]?.string ?? (noSpeech ? "no_speech" : "unknown")
+                    dictationLog.notice("transcription refused reason=\(reason, privacy: .public) noSpeech=\(noSpeech)")
                     // A click while holding and nothing said: the person was ⌥-clicking slowly, not dictating. No card.
                     fail(response.message, card: !(noSpeech && pointerDuringHold), retry: !noSpeech); return
                 }

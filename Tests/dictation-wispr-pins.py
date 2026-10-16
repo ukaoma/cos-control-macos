@@ -149,6 +149,9 @@ need("if pointer, held { pointerDuringHold = true }" in body(dictation, "    pri
      and "fail(response.message, card: !(noSpeech && pointerDuringHold), retry: !noSpeech)" in transcribe
      and 'phase = "Starting"; pointerDuringHold = false' in dictation,
      "a slow modifier-click with no speech ends quietly, and the flag resets each dictation (QA 2026-10-15)")
+need("quiet.end()" in body(dictation, "    func recordingStarted() {") and "if active { self.dictation.recordingStarted() }" in model
+     and "model.dictation.macRecordingActive = { [weak model] in (model?.recordingCount ?? 0) > 0 }" in app,
+     "a recording that starts mid-dictation restores other apps' sound, and any live COS recording counts (QA 2026-10-15)")
 interrupt = body(dictation, "    func interrupt() {")
 need("MacDictationPolicy.salvages(pcmBytes: pcm.count)" in interrupt and "pendingAudio = wav; pendingInterrupted = true" in interrupt
      and "transcribe(wav, attempt: attempt)" in interrupt and "quiet.end()" in interrupt,
@@ -219,8 +222,8 @@ need("playSound(" not in body(dictation, "    func cancel() {"), "a cancel (a ch
 need('forKey: "dictation.sound.start") ?? "pet"' in dictation and 'forKey: "dictation.sound.stop") ?? "pet"' in dictation
      and 'forKey: "dictation.sound.volume") as? Double ?? DictationSoundLibrary.defaultVolume' in dictation and "static let defaultVolume = 0.6" in core,
      "sound defaults: the pet's sound for start and stop, volume 60%")
-need("macRecording: macRecordingActive?() ?? false" in dictation and "model.dictation.macRecordingActive = { [weak model] in model?.macRecordingActive ?? false }" in read("Sources/COSControlApp.swift"),
-     "sounds know about a Mac recording")
+need("macRecording: macRecordingActive?() ?? false" in dictation and "model.dictation.macRecordingActive = { [weak model] in (model?.recordingCount ?? 0) > 0 }" in read("Sources/COSControlApp.swift"),
+     "sounds and quiet know about any live COS recording (Mac or glasses)")
 need('forKey: "dictation.sound.pitch") as? Double ?? 0' in dictation and "Slider(value: $store.soundPitch, in: DictationSoundLibrary.pitchRange, step: 1)" in dictation
      and "semitones: soundPitch" in dictation and "AVAudioUnitTimePitch()" in dictation and "pitch.pitch = Float(DictationSoundLibrary.cents(semitones))" in dictation
      and "static let pitchRange = -12.0...6.0" in core, "Pitch: -12 to +6 st, default 0, applied at playback to every sound")
@@ -409,7 +412,7 @@ need("COSAppDelegate.onTerminate = { model.dictation.cancel();" in app and "Task
      "quit reaches cancel; sleep and a session switch reach interrupt, so they restore too")
 # interrupt restores on every branch: its cancel fallbacks (cancel restores) and the salvage, which restores itself.
 _int = body(dictation, "    func interrupt() {")
-need(_int.count("cancel(); message = nil; return") == 2 and _int.count("quiet.end()") == 1,
+need(_int.count("cancel(); message = nil; return") == 3 and _int.count("quiet.end()") == 1,
      "every interrupt branch that was listening gives other apps their sound back")
 need("quiet.restoreAfterInterruptedRun()" in dictation, "a volume lowered before a crash goes back at the next launch")
 quiet = body(dictation, "@MainActor final class DictationQuietController {")
@@ -419,7 +422,7 @@ need(begin.index("UserDefaults.standard.set(data, forKey: Self.pendingKey)") < b
 end = body(quiet, "    func end() {")
 need("AudioHardwareDestroyProcessTap(tap)" in end and "DictationQuiet.restoreVolume(" in end and "removeObject(forKey: Self.pendingKey)" in end,
      "end removes the tap, restores the volume and clears the pending record")
-need("description.muteBehavior = .muted" in quiet and "stereoGlobalTapButExcludeProcesses: Self.ownProcessObject()" in quiet
+need("description.muteBehavior = .muted" in quiet and "let own = Self.ownProcessObject()" in quiet and "stereoGlobalTapButExcludeProcesses: own)" in quiet
      and "description.isPrivate = true" in quiet, "the mute is a private global tap that excludes COS")
 need("DictationQuiet.plan(mode: mode, macRecording: macRecording," in begin, "the tested plan decides mute, lower or leave")
 need('forKey: "dictation.quiet") ?? "") ?? .default' in dictation and "DictationQuietSettings(store: store)" in dictation,

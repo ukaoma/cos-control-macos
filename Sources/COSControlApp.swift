@@ -30,7 +30,9 @@ struct COSControlApp: App {
         }
         model.dictation.petFrame = { [weak sessionPet] in sessionPet?.visibleFrame }
         // 0.5.312 sounds: the pet's family picks its default sound; nothing plays while a Mac recording captures.
-        model.dictation.macRecordingActive = { [weak model] in model?.macRecordingActive ?? false }
+        // Any live COS recording, Mac or glasses (QA 2026-10-15): muting other apps would silence the call being recorded,
+        // and a glasses mic hears the call through the Mac's speakers.
+        model.dictation.macRecordingActive = { [weak model] in (model?.recordingCount ?? 0) > 0 }
         model.dictation.petKind = { [weak model] in
             guard let model else { return .other }
             let names = (try? FileManager.default.contentsOfDirectory(atPath: PetSpriteStore.supportDirectory().path)) ?? []

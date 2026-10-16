@@ -307,6 +307,11 @@ import Darwin
                   && MeetingDetectedCard.recordingBusy(macOccupied: false, macCanStart: false, liveRecordings: 0)
                   && MeetingDetectedCard.recordingBusy(macOccupied: false, macCanStart: true, liveRecordings: 1),
                   "busy: recording, starting, pending, or any live COS recording; a retained capture is not busy")
+            // QA 2026-10-15: the two-hour limit is a complete recording up to then, never "Incomplete".
+            let limit = MacRecordingInterruption.line(MacRecordingInterruption.pilotLimit)
+            check(!limit.problem && !limit.text.contains("Incomplete") && limit.text.contains("two-hour"), "the pilot limit reads as stopped, not incomplete")
+            let broken = MacRecordingInterruption.line("The app ended during recording.")
+            check(broken.problem && broken.text == "Incomplete recording: The app ended during recording.", "any other interruption stays Incomplete")
             // The one-time recording notice and the automatic title.
             check(MacRecordingNotice.step(acknowledged: false) == .notice && MacRecordingNotice.step(acknowledged: true) == .start,
                   "the notice the first time, then every Record starts at once")

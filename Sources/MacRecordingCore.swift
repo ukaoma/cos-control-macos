@@ -98,6 +98,16 @@ struct MacAudioSource: Identifiable, Equatable, Sendable {
     var isAllMacAudio: Bool { id == Self.allMacAudioID }
 }
 
+/// How a capture's interruption reads (QA 2026-10-15): reaching the pilot's two-hour limit is a complete recording up to
+/// that point, not an incomplete one.
+enum MacRecordingInterruption {
+    static let pilotLimit = "The two-hour recording pilot limit was reached."
+    static func line(_ reason: String) -> (text: String, problem: Bool) {
+        reason == pilotLimit ? ("Stopped at the two-hour limit. Everything recorded up to then is kept.", false)
+            : ("Incomplete recording: " + reason, true)
+    }
+}
+
 /// Signal check per stored chunk, so "N/N chunks received" can no longer stand in for usable audio.
 enum MacRecordingSignal {
     /// About -54 dBFS. A tap that reaches nothing delivers exact zeros; quiet room tone sits well above this.

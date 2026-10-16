@@ -136,7 +136,7 @@ final class MacAudioCapture: @unchecked Sendable {
                 throw MacRecordingError.unavailable("Recording stopped: no audio buffers arrived for 15 seconds. Check the selected app and system audio permission.")
             }
             guard Date().timeIntervalSince(started) < 7_200 else {
-                throw MacRecordingError.unavailable("The two-hour recording pilot limit was reached.")
+                throw MacRecordingError.unavailable(MacRecordingInterruption.pilotLimit)
             }
         } catch {
             interruption = error.localizedDescription

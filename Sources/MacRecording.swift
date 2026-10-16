@@ -413,7 +413,10 @@ struct MacRecordingPanel: View {
                     } else if store.isRecording {
                         Text(store.heardSound ? "Sound detected" : "Listening for sound…").font(COSType.body(11)).foregroundStyle(store.heardSound ? COSPalette.ink : COSPalette.muted)
                     }
-                    if let interruption = value.interruption { Text("Incomplete recording: \(interruption)").font(COSType.body(11)).foregroundStyle(COSPalette.danger) }
+                    if let interruption = value.interruption {
+                        let line = MacRecordingInterruption.line(interruption)
+                        Text(line.text).font(COSType.body(11)).foregroundStyle(line.problem ? COSPalette.danger : COSPalette.muted)
+                    }
                     if store.phase == "pending", !value.chunks.isEmpty {
                         Text(store.noSpeech ? "No speech was found in this audio. It stays on this Mac." : "Save this retained recording before starting another.").font(COSType.body(11)).foregroundStyle(.secondary)
                         if store.noSpeech {

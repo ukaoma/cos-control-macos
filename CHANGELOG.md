@@ -15,6 +15,7 @@
   - The live hand-off waits 180 s plus a twelfth of the recording (batch HQ re-transcribes every chunk before the meeting exists).
   - Unsaved captures: Save on a Mac capture recovers it directly (the copy named a removed button); Save all leaves Mac captures to Recover instead of failing them.
   - Dictation: a click while holding with nothing said ends quietly (a slow ⌥-click); Work chat clamps item labels to 200 UTF-16 units and estimates to the server's cap.
+  - Hardening: a Mac recording that starts while dictating restores other apps' sound at once (it would have recorded the mute); quiet mode and sounds treat any live COS recording, glasses too, as a recording. The two-hour limit reads as stopped, not "Incomplete". Logged: mute-tap refusals with their status, a missing COS audio object, transcription refusals by reason, and why an interrupted dictation was dropped.
   - Tests: run.sh runs run-work-session-hub.sh; live-meeting-open and idle-CPU pins strip comments; mutate-card-files tracks `var groups`; new deadline mutants.
 - Pair with server 6.73.14 (saved Mac recordings list in Meetings; Work chat cleans planner ids). With 6.73.13 or older, saved Mac recordings still do not appear in Meetings.
 

@@ -585,6 +585,8 @@ final class ControllerModel: ObservableObject {
         macRecording.activeChanged = { [weak self] active in
             guard let self else { return }
             self.macRecordingActive = active
+            // 0.5.313 (QA): a Mac recording that starts while dictation has other apps muted would record the mute.
+            if active { self.dictation.recordingStarted() }
             // 0.5.313: a recording that stopped any way at all needs no "Meeting ended? Stop and save".
             if !active { MeetingDetectorStore.shared.recordingStopped() }
             self.recordingStatusChanged?(self.recordingCount)
