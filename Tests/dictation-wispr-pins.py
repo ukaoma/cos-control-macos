@@ -195,7 +195,7 @@ for sound_id in ids:
     for edge in ("start", "stop"):
         f = root / "Resources/Sounds" / f"{sound_id}-{edge}.wav"
         need(f.exists() and 1_000 < f.stat().st_size < 200_000, f"{f.name} is rendered and small")
-need(len(ids) == 7 and (root / "scripts/render-dictation-sounds.py").exists(), "every library sound is rendered by the committed script")
+need(len(ids) == 8 and (root / "scripts/render-dictation-sounds.py").exists(), "every library sound is rendered by the committed script")
 need('cp "$ROOT/Resources/Sounds/"*.wav "$APP/Contents/Resources/Sounds/"' in (root / "scripts/build-release.sh").read_text(), "the sounds ship in the app")
 for field in ("pill", "surface", "card", "recent", "listRoute", "fixSelection", "fixNote", "fixSaving"):
     decl = re.search(rf"@Published private\(set\) var {field}\b[^\n]*", dictation)

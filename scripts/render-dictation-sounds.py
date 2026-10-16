@@ -2,7 +2,7 @@
 """Render COS dictation start/stop sounds offline (0.5.312).
 
 A deterministic port of the Web Audio synthesis Miles approved on 2026-10-15 (design/dictation-sounds-preview.html:
-functions v2() "Unstable saber", unstable() "Unstable saber (bright)", cine(), saber(), blips(), chime()). Original synthesis only: oscillators, filters, a tanh
+functions v2() "Unstable saber", unstable() "Unstable saber (bright)", v3() "Dark saber", cine(), saber(), blips(), chime()). Original synthesis only: oscillators, filters, a tanh
 waveshaper and seeded noise. Python standard library only; fixed RNG seed; 44.1 kHz mono 16-bit WAV, peak-normalized
 to -1 dBFS, with no high-pass anywhere: v2 lives below 120 Hz and its sub-bass is kept. Rendered at 0 semitones and
 the preview's 60% volume; pitch is the person's control at playback (AVAudioUnitTimePitch), never baked into the files.
@@ -328,6 +328,53 @@ def unstable_v2(rng, up):
     return signal, 1.25
 
 
+def dark_saber(rng, up):
+    """v3 "Dark saber", from Miles's second reference: an instant bright blast held ~0.45 s, then a long settle into an
+    82 Hz harmonic buzz with an equally strong octave, a slow swell and rare razor clicks. Stop dips and cuts."""
+    p = P
+    f0, dur = 82 * p, (1.6 if up else 0.3)
+    n = length_for(dur + 0.1, 0.6 / p)
+    trem = [0.8] * n
+    for rate, depth in [(1.1, 0.14), (0.8, 0.08), (40, 0.05)]:
+        for i in range(int(min(n, (dur + 0.1) * SR))):
+            trem[i] += depth * math.sin(2 * math.pi * rate * i / SR)
+    voices = [0.0] * n
+    for m, kind, g in [(0.8, "sine", 0.18), (1, "sawtooth", 0.5), (2, "sawtooth", 0.5), (3, "sawtooth", 0.2), (4, "triangle", 0.11)]:
+        f = f0 * m
+        freq = Param(f)
+        if up:
+            freq.set(f * 1.8, 0).exp(f * 0.64, 0.06).exp(f, 0.5)
+        else:
+            freq.set(f, 0).exp(f * 0.92, 0.25)
+        voices = add(voices, oscillator(n, kind, freq.curve(n), stop=dur + 0.05, lfo=("triangle", 1.3 + m * 0.7, f * 0.012)), g)
+    cutoff, bus = Param(350.0), Param(1.0)
+    if up:
+        cutoff.set(3600 * p, 0).set(3600 * p, 0.42).exp(1500 * p, 0.62).exp(650 * p, 1.0)
+        bus.set(0.0001, 0).exp(1.0, 0.008).set(1.0, 0.45).exp(0.35, 0.7).exp(0.2, 1.35).exp(0.0001, dur)
+    else:
+        cutoff.set(650 * p, 0)
+        bus.set(0.3, 0).exp(0.16, 0.12).exp(0.32, 0.22).lin(0.0, 0.27)
+    signal = biquad(shaper(mul(mul(voices, trem), bus.curve(n)), 1.8), "lowpass", cutoff.curve(n), 0.7)
+    if up:  # bright blast body 0.06-0.6 s
+        m = int(math.ceil(SR * 0.6))
+        blast = []
+        for i in range(m):
+            k = i / m
+            blast.append((rng.random() * 2 - 1) * (k / 0.06 if k < 0.06 else 1 if k < 0.7 else (1 - (k - 0.7) / 0.3) ** 2))
+        band = Param(350.0).set(3200 * p, 0).exp(1600 * p, 0.6)
+        signal = add(signal, biquad(play_buffer(n, blast, rate=p), "bandpass", band.curve(n), 0.8), 0.3)
+    # rare razor clicks: a few samples each
+    m = int(math.ceil(SR * dur))
+    clicks = [0.0] * m
+    at = int(SR * (0.5 + rng.random() * 0.3))
+    while at < m - 40:
+        for j in range(24):
+            clicks[at + j] = (-1 if j % 2 else 1) * (1 - j / 24) ** 3
+        at += int(SR * (0.45 + rng.random() * 0.5))
+    signal = add(signal, biquad(play_buffer(n, clicks), "highpass", [3000.0] * n, 1.0), 0.35)
+    return signal, 1.15
+
+
 def master(signal, gain):
     return compressor([x * gain * LEVEL for x in signal])
 
@@ -347,6 +394,7 @@ def write(path, signal):
 SOUNDS = {
     "unstable-saber": (lambda rng: unstable_v2(rng, True), lambda rng: unstable_v2(rng, False)),
     "unstable-saber-bright": (lambda rng: unstable(rng, True), lambda rng: unstable(rng, False)),
+    "dark-saber": (lambda rng: dark_saber(rng, True), lambda rng: dark_saber(rng, False)),
     "saber-full": (lambda rng: cine(rng, True), lambda rng: cine(rng, False)),
     "saber-ignite": (lambda rng: saber(rng, True, False), lambda rng: saber(rng, False, False)),
     "saber-soft": (lambda rng: saber(rng, True, True), lambda rng: saber(rng, False, True)),

@@ -703,7 +703,7 @@ enum DictationSoundEdge: String, Sendable, CaseIterable { case start, stop }
 enum DictationSoundLibrary {
     /// Bundled sounds, in menu order: id (file prefix) and the name Settings shows.
     static let sounds: [(id: String, name: String)] = [
-        ("unstable-saber", "Unstable saber"), ("unstable-saber-bright", "Unstable saber (bright)"),
+        ("unstable-saber", "Unstable saber"), ("unstable-saber-bright", "Unstable saber (bright)"), ("dark-saber", "Dark saber"),
         ("saber-full", "Saber, full ignition"), ("saber-ignite", "Saber ignite"),
         ("saber-soft", "Saber, soft"), ("droid-chirp", "Droid chirp"), ("soft-chime", "Soft chime"),
     ]

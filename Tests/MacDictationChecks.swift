@@ -381,7 +381,8 @@ final class FakeDictationBoard: DictationPasteboardAccess {
         expect(stored.count == 44 + trimmed.count * 2 && String(decoding: stored.prefix(4), as: UTF8.self) == "RIFF" && stored[22] == 1, "stored as mono 16-bit WAV")
         expect(L.cents(0) == 0 && L.cents(-4) == -400 && L.cents(2.4) == 200 && L.cents(-20) == -1_200 && L.cents(9) == 600 && L.cents(.nan) == 0,
                "pitch: whole semitones, -12 to +6, in cents")
-        expect(L.name("unstable-saber") == "Unstable saber" && L.name("unstable-saber-bright") == "Unstable saber (bright)", "names")
+        expect(L.name("unstable-saber") == "Unstable saber" && L.name("unstable-saber-bright") == "Unstable saber (bright)"
+               && L.name("dark-saber") == "Dark saber" && L.sounds.count == 8, "names")
         expect(L.defaultVolume == 0.6 && L.sounds.map(\.id).allSatisfy { !$0.isEmpty } && Set(L.sounds.map(\.id)).count == L.sounds.count, "library")
         // The pill goes where the person is looking.
         let left = CGRect(x: 0, y: 0, width: 1512, height: 982), right = CGRect(x: 1512, y: 0, width: 3440, height: 1440)
