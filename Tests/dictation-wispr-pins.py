@@ -74,7 +74,7 @@ need("styleMask: [.borderless, .nonactivatingPanel]" in dictation and ".titled" 
      "the only dictation window is the borderless nonactivating overlay")
 
 # ── 2. Delivery (0.5.310, clipboard 0.5.312): MEASURED. ✓ only for a measured change (Miles 20:07, iTerm2).
-deliver = body(dictation, "static func deliver(_ raw: String, restoreClipboard: Bool) async -> DictationDeliveryOutcome {")
+deliver = body(dictation, "static func deliver(_ raw: String, restoreClipboard: Bool) async -> DictationDelivered {")
 # 0.5.312 (Miles 21:23): the clipboard is written only for a posted ⌘V (then restored) or for the card. Accessibility
 # insertion never touches it.
 ax_at = deliver.index("if route == .accessibility, let target {")
@@ -139,9 +139,10 @@ need(hosts is not None and terminals is not None and set(re.findall(r'"([^"]+)"'
 
 # ── 3. Store flow: the pill, the flash, the card; text stays private.
 transcribe = body(dictation, "private func transcribe(_ wav: Data, attempt: UUID) {")
-need("let outcome = await DictationInsertion.deliver(text, restoreClipboard: restoreClipboard)" in transcribe and "finish(text, outcome: outcome)" in transcribe,
+need("let delivered = await DictationInsertion.deliver(text, restoreClipboard: restoreClipboard)" in transcribe
+     and "finish(text, outcome: delivered.outcome, target: delivered.target)" in transcribe,
      "a finished transcript must be delivered and recorded")
-finish = body(dictation, "private func finish(_ text: String, outcome: DictationDeliveryOutcome) {")
+finish = body(dictation, "private func finish(_ text: String, outcome: DictationDeliveryOutcome, target: DictationInsertTarget?) {")
 need("remember(record)" in finish and "showCard(" in finish and "DictationPill.flashSeconds" in finish
      and "delivery: outcome.delivery" in finish and "outcome.flash" in finish,
      "finish must record the honest outcome, flash only what the outcome allows, and card when refused")
@@ -251,8 +252,8 @@ need("if fixing { panel.makeKeyAndOrderFront(nil) } else { panel.orderFrontRegar
 need("screen.minY + 8" in overlay and "screen.midX - size.width / 2" in overlay and "store.floatingScreen.flatMap" in overlay,
      "bottom center, above the Dock, on the chosen screen")
 sinks = re.findall(r"\.sink \{ \[weak self\] _ in Task \{ @MainActor in self\?\.sync\(\) \} \}", overlay)
-need(len(sinks) == 5 and overlay.count(".sink") == 5,
-     "every overlay sink hops to the main actor before reading the new state (reviewed 0.5.309); a new sink needs the same review")
+need(len(sinks) == 7 and overlay.count(".sink") == 7,
+     "every overlay sink hops to the main actor before reading the new state (reviewed 0.5.309; 0.5.313 added fixOfferID and replaceOffer); a new sink needs the same review")
 
 # ── 5. The pet: the pill takes the ledger's slot, a DICTATED pill, the lists, the card.
 slot = pet[pet.index("private var ledgerSlot"):pet.index("private func ledgerBar")]
@@ -372,4 +373,66 @@ need('details: ["noSpeech": true]' in body(helper, "private func emitMacDictatio
 need('model.runHelper(["transcription-dictionary"], timeout: 20, stdinData: request)' in app,
      "Control must send the request as stdinData with an argument list of exactly the verb")
 
-print(f"PASS dictation-wispr pins: {checks} checks; HUD gone, copy-then-insert-at-focus, private history, overlay focus, pet slot and lists, Dictionary route, helper stdin")
+# ── 8. 0.5.313: fix from the moment it lands, replace the pasted text, quiet while dictating.
+sources = {path.name: strip_comments(path.read_text(encoding="utf-8")) for path in (root / "Sources").glob("*.swift")}
+start_fn = body(dictation, "    func start() {")
+stop_fn = body(dictation, "    func stop() {")
+need(start_fn.index("playSound(.start)") < start_fn.index("quiet.begin(mode: quietMode, macRecording: macRecordingActive?() ?? false)")
+     < start_fn.index("task = Task {"),
+     "quiet begins after the start sound is scheduled and knows about a Mac recording")
+need(stop_fn.index("let pcm = try capture.stop()") < stop_fn.index("quiet.end()") < stop_fn.index("playSound(.stop)"),
+     "other apps come back after the microphone closes and before the stop sound")
+need(body(dictation, "    private func fail(").count("quiet.end()") == 1 and body(dictation, "    func cancel() {").count("quiet.end()") == 1,
+     "every other way listening ends restores: fail and cancel")
+need("COSAppDelegate.onTerminate = { model.dictation.cancel();" in app and "Task { @MainActor in self?.cancel() }" in dictation,
+     "quit, sleep and a session switch reach cancel, so they restore too")
+need("quiet.restoreAfterInterruptedRun()" in dictation, "a volume lowered before a crash goes back at the next launch")
+quiet = body(dictation, "@MainActor final class DictationQuietController {")
+begin = body(quiet, "    func begin(mode: DictationQuietMode, macRecording: Bool) {")
+need(begin.index("UserDefaults.standard.set(data, forKey: Self.pendingKey)") < begin.index("Self.setVolume(device, target)"),
+     "the volume to put back is on disk before COS lowers it")
+end = body(quiet, "    func end() {")
+need("AudioHardwareDestroyProcessTap(tap)" in end and "DictationQuiet.restoreVolume(" in end and "removeObject(forKey: Self.pendingKey)" in end,
+     "end removes the tap, restores the volume and clears the pending record")
+need("description.muteBehavior = .muted" in quiet and "stereoGlobalTapButExcludeProcesses: Self.ownProcessObject()" in quiet
+     and "description.isPrivate = true" in quiet, "the mute is a private global tap that excludes COS")
+need("DictationQuiet.plan(mode: mode, macRecording: macRecording," in begin, "the tested plan decides mute, lower or leave")
+need('forKey: "dictation.quiet") ?? "") ?? .default' in dictation and "DictationQuietSettings(store: store)" in dictation,
+     "While dictating defaults to Mute other apps and is in Settings")
+media = ("NX_KEYTYPE", "systemDefined", "MRMediaRemote", "MediaRemote.framework", "MPRemoteCommand", "keyCode: 16, keyDown")
+need(not any(m in src for src in sources.values() for m in media),
+     "no media key and no MediaRemote: a blind play/pause can START playback (0.5.313 finding)")
+replace = body(dictation, "    static func replace(_ target: DictationInsertTarget, inserted: String, corrected: String) async -> ReplaceResult {")
+need("CGEvent" not in replace and ".post(" not in replace and "kAXValueAttribute" not in replace,
+     "Replace presses no key (never Return) and never reads the field's whole value")
+need("DictationReplace.decide(" in replace and "DictationReplace.verified(" in replace and "string(element, at: target.span)" in replace,
+     "Replace goes through the tested decision, reads only the span, and measures")
+need("kAXStringForRangeParameterizedAttribute" in dictation, "the span is read with AXStringForRange")
+replace_ui = body(dictation, "    func replaceCorrected() {")
+need(replace_ui.count("copy(offer.corrected)") == 3 and 'fixNote = "Copied the corrected text."' in replace_ui,
+     "every path that does not replace copies the corrected text and says so")
+need("DictationReplace.span(pid: app.processIdentifier, baseline: baseline, after: after, count: count)" in deliver
+     and "baseline: beforePaste, after: measuredAfterPaste, count: count)" in deliver,
+     "the inserted range is recorded from the measurement, on the Accessibility and ⌘V routes")
+need("if case .inserted = outcome { return DictationDelivered(outcome: outcome, target: landed) }" in deliver,
+     "only a measured insertion carries a target")
+finish = body(dictation, "    private func finish(")
+need("fixOfferID = offer ? record.id : nil" in finish and "DictationQuickFix.offerSeconds" in finish, "the flash carries Fix for 5 s")
+need(dictation.count("onFix: store.fixOfferID == nil ? nil : { store.quickFix() }") == 1
+     and pet.count("onFix: dictation.fixOfferID == nil ? nil : { dictation.quickFix() }") == 1,
+     "both pills (floating and the pet) wire Fix to quickFix")
+need("panel.ignoresMouseEvents = store.card == nil && !fixing && store.fixOfferID == nil" in dictation,
+     "the floating pill takes the click on Fix")
+need("} else if id == 3, down {\n            quickFix()" in dictation and "if feed(&fixTracker) == .released { hotKey(3, down: true) }" in dictation,
+     "the Fix last dictation shortcut, keys or a lone modifier, opens Fix a word")
+need("DictationShortcutRow(store: store, slot: .fix, activityShortcut: activityShortcut)" in dictation
+     and "DictationShortcuts.conflicts(trigger, slot: slot, assigned: assignedShortcuts, activity: activityTrigger)" in dictation,
+     "Fix last dictation is settable like the others and conflict-checked")
+need('d.object(forKey: "dictation.fix.enabled") == nil' in dictation and "DictationShortcuts.defaultFix" in dictation,
+     "⌃⌥F unless the person set or turned it off")
+need("DictationFixGuess.guess(tokens: tokens, tapped: index, vocabulary: TranscriptionDictionaryStore.shared.vocabulary," in body(dictation, "    func selectFixWord(_ index: Int) {"),
+     "the first tap guesses the span and the dictionary suggestion")
+need('Button(offer.app.map { "Replace it in \\($0)" } ?? "Copy the corrected text") { store.replaceCorrected() }' in dictation,
+     "Fix a word offers Replace it in <App> after Save")
+
+print(f"PASS dictation-wispr pins: {checks} checks; HUD gone, copy-then-insert-at-focus, private history, overlay focus, pet slot and lists, Dictionary route, helper stdin, quick fix, replace, quiet restore on every exit")

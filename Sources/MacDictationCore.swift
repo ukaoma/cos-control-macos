@@ -928,3 +928,290 @@ enum DictationSoundTrim {
         return data
     }
 }
+
+// MARK: - 0.5.313 editing and quiet (Miles, 2026-10-15 22:02-22:06)
+//
+// "Fix from the moment it lands": a Fix button on the pill for a few seconds and a shortcut for the latest dictation.
+// "Replace the pasted text": the corrected dictation goes back where COS put it, only when COS can prove that spot
+// still holds exactly what it inserted. "Mute the rest of the sound ... and as soon as you're done it picks back up."
+
+/// The three dictation shortcuts. Each must differ from the other two and from Open Activity.
+enum DictationShortcutSlot: String, CaseIterable, Sendable {
+    case hold, toggle, fix
+    /// UserDefaults prefix: dictation.hold, dictation.toggle, dictation.fix.
+    var defaultsPrefix: String { "dictation." + rawValue }
+    var title: String {
+        switch self {
+        case .hold: "Push to talk"
+        case .toggle: "Start / stop"
+        case .fix: "Fix last dictation"
+        }
+    }
+    /// The Carbon hot key id, and the id `MacDictationStore.hotKey` dispatches on.
+    var hotKeyID: UInt32 {
+        switch self {
+        case .hold: 1
+        case .toggle: 2
+        case .fix: 3
+        }
+    }
+}
+
+enum DictationShortcuts {
+    /// ⌃⌥F (ANSI F is key code 3): Fix a word on the most recent dictation.
+    static let defaultFix = DictationTrigger.keys(keyCode: 3, modifiers: DictationTrigger.control | DictationTrigger.option)
+    /// True when `trigger` is already Open Activity's or another dictation slot's. Turning a slot off never conflicts.
+    static func conflicts(_ trigger: DictationTrigger?, slot: DictationShortcutSlot,
+                          assigned: [DictationShortcutSlot: DictationTrigger], activity: DictationTrigger?) -> Bool {
+        guard let trigger else { return false }
+        if trigger == activity { return true }
+        return assigned.contains { $0.key != slot && $0.value == trigger }
+    }
+}
+
+enum DictationQuickFix {
+    /// The pill keeps its INSERTED / PASTED flash, with Fix, this long.
+    static let offerSeconds: TimeInterval = 5
+    /// The shortcut and the pill's Fix open the newest dictation, never while one is being dictated.
+    static func target(_ recent: [DictationRecord], busy: Bool) -> UUID? { busy ? nil : recent.first?.id }
+    /// Fix is offered on every flash (inserted, pasted, sent). A refusal shows the card, which has its own Fix a word.
+    static func offers(_ outcome: DictationDeliveryOutcome) -> Bool { outcome.flash != nil }
+}
+
+/// Where COS put a dictation, measured: the app and the UTF-16 range the inserted text occupies.
+struct DictationInsertedSpan: Equatable, Sendable {
+    let pid: Int32
+    let location: Int
+    let length: Int
+}
+
+/// Replace it in <App> (after Save in Fix a word). Pure: the app reads the field, calls `decide`, acts, re-measures and
+/// calls `verified`. Anything short of proof copies the corrected text instead. COS never presses Return.
+enum DictationReplace {
+    enum Reason: String, Sendable { case notMeasured, terminal, appGone, fieldGone, fieldChanged, textMoved }
+    enum Decision: Equatable, Sendable {
+        case replace(location: Int, length: Int)
+        case copy(Reason)
+    }
+    /// Recorded only when the measurement proved exactly `count` units landed at a known caret (verdict `landed`).
+    /// A `changed` field (something else moved too) has no trustworthy range.
+    static func span(pid: Int32, baseline: DictationFieldSnapshot, after: DictationFieldSnapshot, count: Int) -> DictationInsertedSpan? {
+        guard let location = baseline.location, count > 0,
+              DictationDelivery.verdict(baseline: baseline, after: after, count: count) == .landed else { return nil }
+        return DictationInsertedSpan(pid: pid, location: location, length: count)
+    }
+    /// `textAtSpan` is the field's text in the span only (AXStringForRange, or the selection set to the span); the
+    /// field's whole value is never read.
+    static func decide(span: DictationInsertedSpan?, terminal: Bool, appRunning: Bool, fieldCharacters: Int?,
+                       textAtSpan: String?, inserted: String) -> Decision {
+        if terminal { return .copy(.terminal) }
+        guard let span else { return .copy(.notMeasured) }
+        guard appRunning else { return .copy(.appGone) }
+        guard let fieldCharacters else { return .copy(.fieldGone) }
+        guard fieldCharacters >= span.location + span.length else { return .copy(.fieldChanged) }
+        guard inserted.utf16.count == span.length, let textAtSpan, textAtSpan == inserted else { return .copy(.textMoved) }
+        return .replace(location: span.location, length: span.length)
+    }
+    /// After selecting the span and setting the corrected text: the count moved by exactly the difference and the caret
+    /// sits after the new text. A same-length correction needs the caret, since the count cannot move.
+    static func verified(before: DictationFieldSnapshot, after: DictationFieldSnapshot, span: DictationInsertedSpan, newLength: Int) -> Bool {
+        let countOK = before.characters.flatMap { n0 in after.characters.map { $0 == n0 - span.length + newLength } }
+        let caretOK = after.location.map { $0 == span.location + newLength && after.length == 0 }
+        if countOK == false || caretOK == false { return false }
+        if newLength == span.length { return caretOK == true }
+        return countOK == true || caretOK == true
+    }
+    /// The dictation with the tapped words replaced by the spelling, keeping punctuation that hugged either end and
+    /// every other character as it was. nil when the range is not in the text.
+    static func corrected(_ text: String, range: ClosedRange<Int>, written: String) -> String? {
+        var spans: [Range<String.Index>] = []
+        var start: String.Index?
+        var i = text.startIndex
+        while i < text.endIndex {
+            if text[i].isWhitespace || text[i].isNewline {
+                if let s = start { spans.append(s..<i); start = nil }
+            } else if start == nil { start = i }
+            i = text.index(after: i)
+        }
+        if let s = start { spans.append(s..<text.endIndex) }
+        guard range.lowerBound >= 0, range.upperBound < spans.count, !written.isEmpty else { return nil }
+        let whole = spans[range.lowerBound].lowerBound..<spans[range.upperBound].upperBound
+        let phrase = Array(text[whole])
+        let edge = CharacterSet.punctuationCharacters.union(.symbols)
+        func isEdge(_ c: Character) -> Bool { c.unicodeScalars.allSatisfy { edge.contains($0) } }
+        let lead = phrase.prefix(while: isEdge).count
+        let trail = lead == phrase.count ? 0 : phrase.reversed().prefix(while: isEdge).count
+        return String(text[..<whole.lowerBound]) + String(phrase.prefix(lead)) + written
+            + String(phrase.suffix(trail)) + String(text[whole.upperBound...])
+    }
+    /// The note under Fix a word after a copy, by reason.
+    static func copiedNote(_ reason: Reason, app: String) -> String {
+        switch reason {
+        case .terminal: "Copied the corrected text. COS doesn't edit text in a terminal; paste it yourself."
+        case .notMeasured: "Copied the corrected text. COS couldn't measure where it went, so it won't touch \(app)."
+        case .appGone: "Copied the corrected text. \(app) is no longer open."
+        case .fieldGone, .fieldChanged, .textMoved: "Copied the corrected text. The text in \(app) changed since COS put it there."
+        }
+    }
+}
+
+/// Fix a word's first tap: the likely misheard span, and a suggestion from the COS dictionary (Miles: "yellow fanduna"
+/// is one mishearing of "yellowfin tuna"). Pure; the app passes the vocabulary and an English-word check.
+enum DictationFixGuess {
+    struct Guess: Equatable, Sendable {
+        let range: ClosedRange<Int>
+        let suggestion: String?
+    }
+    static let threshold = 0.78
+    static let maximumWords = 3
+
+    /// Lowercased letters and digits, accents folded.
+    static func normalized(_ s: String) -> String {
+        String(s.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "en_US_POSIX"))
+            .lowercased().filter { $0.isLetter || $0.isNumber })
+    }
+    /// A sound-alike key: vowels dropped after the first letter, voiced and unvoiced pairs merged, repeats collapsed.
+    /// "yellow fanduna" and "yellowfin tuna" share "alfntn".
+    static func skeleton(_ s: String) -> String {
+        var out: [Character] = []
+        for (i, c) in normalized(s).enumerated() {
+            let mapped: Character?
+            switch c {
+            case "a", "e", "i", "o", "u", "y", "h", "w": mapped = i == 0 ? "a" : nil
+            case "b", "p": mapped = "p"
+            case "d", "t": mapped = "t"
+            case "c", "g", "j", "k", "q": mapped = "k"
+            case "f", "v": mapped = "f"
+            case "s", "x", "z": mapped = "s"
+            case "m", "n": mapped = "n"
+            default: mapped = c
+            }
+            if let mapped, out.last != mapped { out.append(mapped) }
+        }
+        return String(out)
+    }
+    static func distance(_ a: String, _ b: String) -> Int {
+        let a = Array(a), b = Array(b)
+        if a.isEmpty { return b.count }
+        if b.isEmpty { return a.count }
+        var row = Array(0...b.count)
+        for i in 1...a.count {
+            var previous = row[0]; row[0] = i
+            for j in 1...b.count {
+                let current = row[j]
+                row[j] = min(row[j] + 1, row[j - 1] + 1, previous + (a[i - 1] == b[j - 1] ? 0 : 1))
+                previous = current
+            }
+        }
+        return row[b.count]
+    }
+    static func similarity(_ a: String, _ b: String) -> Double {
+        let longest = max(a.count, b.count)
+        return longest == 0 ? 0 : 1 - Double(distance(a, b)) / Double(longest)
+    }
+    /// The better of spelling and sound; sound counts a little less and only on keys of three or more.
+    static func score(heard: String, term: String) -> Double {
+        let spelled = similarity(normalized(heard), normalized(term))
+        let h = skeleton(heard), t = skeleton(term)
+        let sounded = h.count >= 3 && t.count >= 3 ? similarity(h, t) * 0.95 : 0
+        return max(spelled, sounded)
+    }
+    /// Every span of up to three words around the tap is scored against the vocabulary; the best match at or above the
+    /// threshold wins (ties go to the narrower span). With none, the tap widens over neighbors that are neither English
+    /// words nor dictionary words. A span already spelled like a dictionary word is not suggested again.
+    static func guess(tokens: [String], tapped: Int, vocabulary: [String], known: (String) -> Bool) -> Guess {
+        guard tapped >= 0, tapped < tokens.count else { return Guess(range: max(0, tapped)...max(0, tapped), suggestion: nil) }
+        var best: (score: Double, width: Int, range: ClosedRange<Int>, term: String)?
+        for width in 1...maximumWords {
+            for start in max(0, tapped - width + 1)...tapped where start + width - 1 < tokens.count {
+                let range = start...(start + width - 1)
+                let heard = DictationFixText.heard(tokens, range)
+                let h = normalized(heard)
+                guard h.count >= 3 else { continue }
+                for term in vocabulary {
+                    let t = normalized(term)
+                    guard !t.isEmpty, t != h else { continue }
+                    let s = score(heard: heard, term: term)
+                    guard s >= threshold else { continue }
+                    if best == nil || s > best!.score + 1e-9 || (abs(s - best!.score) <= 1e-9 && width < best!.width) {
+                        best = (s, width, range, term)
+                    }
+                }
+            }
+        }
+        if let best { return Guess(range: best.range, suggestion: best.term) }
+        let dictionary = Set(vocabulary.map(normalized))
+        func unknown(_ index: Int) -> Bool {
+            let word = DictationFixText.heard(tokens, index...index)
+            let n = normalized(word)
+            return !n.isEmpty && !n.allSatisfy(\.isNumber) && !dictionary.contains(n) && !known(word)
+        }
+        var lower = tapped, upper = tapped
+        while upper - lower + 1 < maximumWords {
+            if lower > 0, unknown(lower - 1) { lower -= 1 }
+            else if upper + 1 < tokens.count, unknown(upper + 1) { upper += 1 }
+            else { break }
+        }
+        return Guess(range: lower...upper, suggestion: nil)
+    }
+}
+
+/// While dictating: mute other apps (default), lower other audio, or leave it alone.
+enum DictationQuietMode: String, CaseIterable, Sendable {
+    case mute, lower, off
+    static let `default` = DictationQuietMode.mute
+    var title: String {
+        switch self {
+        case .mute: "Mute other apps"
+        case .lower: "Lower other audio"
+        case .off: "Off"
+        }
+    }
+}
+
+enum DictationQuiet {
+    enum Plan: Equatable, Sendable {
+        case leave(String)
+        /// A global process tap, COS excluded, with muteBehavior .muted, removed when listening ends.
+        case muteTap
+        /// The default output device's volume scalar, saved first and put back after.
+        case lowerVolume(to: Float)
+    }
+    static let loweredFraction: Float = 0.25
+    /// Never during a Mac recording: muting would silence the meeting the person is listening to.
+    static func plan(mode: DictationQuietMode, macRecording: Bool, tapPermitted: Bool, volume: Float?, volumeSettable: Bool) -> Plan {
+        if macRecording { return .leave("a Mac recording is capturing") }
+        switch mode {
+        case .off: return .leave("off")
+        case .mute where tapPermitted: return .muteTap
+        case .mute, .lower:
+            guard let volume, volumeSettable else { return .leave("output volume not adjustable") }
+            guard volume > 0.001 else { return .leave("already silent") }
+            return .lowerVolume(to: volume * loweredFraction)
+        }
+    }
+    /// The exact saved scalar goes back, unless the person moved the volume while dictating: theirs wins.
+    static func restoreVolume(saved: Float, lowered: Float, current: Float?) -> Float? {
+        guard let current else { return saved }
+        return abs(current - lowered) < 0.02 ? saved : nil
+    }
+    /// Written before COS lowers the volume and removed after it restores it, so a quit or crash in between is undone
+    /// on the next launch.
+    struct Pending: Codable, Equatable, Sendable {
+        let deviceUID: String
+        let saved: Float
+        let lowered: Float
+    }
+    static func launchRestore(_ pending: Pending?, current: Float?) -> Float? {
+        guard let pending else { return nil }
+        return restoreVolume(saved: pending.saved, lowered: pending.lowered, current: current)
+    }
+}
+
+/// "Also pause music and video": not built. macOS 15.4 and later withhold Now Playing (MediaRemote) from apps without
+/// Apple's entitlement, so COS cannot know whether anything plays, and the play/pause key toggles: sent while nothing
+/// plays, it STARTS playback. COS pauses only on a known, playing state, which it never has.
+enum DictationMedia {
+    enum Action: Equatable, Sendable { case leave, pause }
+    static func decide(playing: Bool?) -> Action { playing == true ? .pause : .leave }
+}

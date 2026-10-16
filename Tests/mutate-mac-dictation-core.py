@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""0.5.309-0.5.312 mutation gate for the pure dictation rules (Sources/MacDictationCore.swift + Tests/MacDictationChecks.swift).
+"""0.5.309-0.5.313 mutation gate for the pure dictation rules (Sources/MacDictationCore.swift + Tests/MacDictationChecks.swift).
 
 SERIAL by design: one small two-file compile at a time, each through Tests/compile-guard.sh (never parallel; see the
 2026-10-07 kernel panics). Works on a scratch copy, so the checkout is never mutated. A GREEN baseline is required
@@ -82,14 +82,44 @@ MUTANTS = [
     ("pitch in semitones, not cents", "return min(pitchRange.upperBound, max(pitchRange.lowerBound, semitones.rounded())) * 100", "return min(pitchRange.upperBound, max(pitchRange.lowerBound, semitones.rounded()))"),
     ("bars ignore the level", "return minimum + (maximum - minimum) * min(1, max(0, level)) * weight", "return minimum + (maximum - minimum) * 0.1 * weight"),
     ("slow attack", "level = target >= level ? target : level * Self.release + target * (1 - Self.release)", "level = level * Self.release + target * (1 - Self.release)"),
+    # 0.5.313 quiet: the volume always comes back, never during a Mac recording, never a blind media key.
+    ("never restores the volume", "        return abs(current - lowered) < 0.02 ? saved : nil\n", "        return nil\n"),
+    ("the person's volume change overwritten", "        return abs(current - lowered) < 0.02 ? saved : nil\n", "        return saved\n"),
+    ("launch never restores", "        guard let pending else { return nil }\n        return restoreVolume(saved: pending.saved, lowered: pending.lowered, current: current)",
+     "        _ = pending; _ = current; return nil"),
+    ("mute during a Mac recording", "        if macRecording { return .leave(\"a Mac recording is capturing\") }\n", ""),
+    ("mute without System Audio Recording", "        case .mute where tapPermitted: return .muteTap", "        case .mute: return .muteTap"),
+    ("lowered to silence", "            return .lowerVolume(to: volume * loweredFraction)", "            return .lowerVolume(to: 0)"),
+    ("Mute not the default", "    static let `default` = DictationQuietMode.mute", "    static let `default` = DictationQuietMode.lower"),
+    ("blind media key", "playing == true ? .pause : .leave", "playing == false ? .leave : .pause"),
+    # 0.5.313 shortcuts, quick fix, replace, span guess.
+    ("slot conflicts ignored", "        return assigned.contains { $0.key != slot && $0.value == trigger }", "        return false"),
+    ("Open Activity conflict ignored", "        if trigger == activity { return true }\n", ""),
+    ("default Fix shortcut changed", "modifiers: DictationTrigger.control | DictationTrigger.option)", "modifiers: DictationTrigger.control)"),
+    ("quick fix while dictating", "busy ? nil : recent.first?.id", "recent.first?.id"),
+    ("Fix offered on a refusal", "    static func offers(_ outcome: DictationDeliveryOutcome) -> Bool { outcome.flash != nil }",
+     "    static func offers(_ outcome: DictationDeliveryOutcome) -> Bool { true }"),
+    ("a changed field records a span", "DictationDelivery.verdict(baseline: baseline, after: after, count: count) == .landed else { return nil }",
+     "DictationDelivery.verdict(baseline: baseline, after: after, count: count) != .unreadable else { return nil }"),
+    ("replace over moved text", "guard inserted.utf16.count == span.length, let textAtSpan, textAtSpan == inserted else", "guard let textAtSpan, !textAtSpan.isEmpty else"),
+    ("terminal edited in place", "        if terminal { return .copy(.terminal) }\n", ""),
+    ("replace in a shorter field", "        guard fieldCharacters >= span.location + span.length else { return .copy(.fieldChanged) }\n", ""),
+    ("replace after the app quit", "        guard appRunning else { return .copy(.appGone) }\n", ""),
+    ("same-length fix proved by the count", "        if newLength == span.length { return caretOK == true }\n", ""),
+    ("corrected text loses trailing punctuation", "            + String(phrase.suffix(trail)) + String(text[whole.upperBound...])", "            + String(text[whole.upperBound...])"),
+    ("guess ignores sound", "let sounded = h.count >= 3 && t.count >= 3 ? similarity(h, t) * 0.95 : 0", "let sounded = 0.0"),
+    ("guess prefers the wider span", "(abs(s - best!.score) <= 1e-9 && width < best!.width)", "(abs(s - best!.score) <= 1e-9 && width > best!.width)"),
+    ("the tap never widens", "            if lower > 0, unknown(lower - 1) { lower -= 1 }\n            else if upper + 1 < tokens.count, unknown(upper + 1) { upper += 1 }\n            else { break }",
+     "            break"),
+    ("suggests what is already spelled right", "                    guard !t.isEmpty, t != h else { continue }", "                    guard !t.isEmpty else { continue }"),
     # 0.5.312 retention: Keep dictations for 7/30/90 days, Forever or Don't keep, never more than 5,000.
-    ("retention ignored", "        let kept = retention.days.map { days in sorted.filter { now.timeIntervalSince($0.createdAt) <= Double(days) * 86_400 } } ?? sorted\n",
-     "        let kept = sorted\n"),
+    ("retention ignored", "        let kept = retention.days.map { days in list.filter { now.timeIntervalSince($0.createdAt) <= Double(days) * 86_400 } } ?? list\n",
+     "        let kept = list\n"),
     ("cap ignored", "        return Array(kept.prefix(cap))\n", "        return kept\n"),
-    ("Don't keep keeps everything", "        if retention == .none { return Array(sorted.prefix(sessionOnly)) }\n", ""),
+    ("Don't keep keeps everything", "        if retention == .none { return Array(list.prefix(sessionOnly)) }\n", ""),
     ("Don't keep still writes", "    var writesToDisk: Bool { self != .none }", "    var writesToDisk: Bool { true }"),
     ("default retention is Forever", "    static let `default` = DictationRetention.month", "    static let `default` = DictationRetention.forever"),
-    ("search is case sensitive", "options: [.caseInsensitive, .diacriticInsensitive]", "options: [.diacriticInsensitive]"),
+    ("search is case sensitive", "range(of: needle, options: [.caseInsensitive, .diacriticInsensitive])", "range(of: needle, options: [.diacriticInsensitive])"),
     ("days out of order", "groups.keys.sorted(by: >)", "groups.keys.sorted(by: <)"),
     ("a count back on the pill", 'static let pillLabel = "DICTATIONS"', 'static let pillLabel = "DICTATIONS 10"'),
     ("history world-readable", "attributes: [.posixPermissions: 0o600]", "attributes: [.posixPermissions: 0o644]"),

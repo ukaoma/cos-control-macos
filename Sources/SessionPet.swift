@@ -564,7 +564,8 @@ private struct SessionPetRoot: View {
                 .allowsHitTesting(showPills && !listening)
             if listening {
                 DictationListeningPill(pill: dictation.pill, meter: dictation.meter, floating: false,
-                                       size: size, reduceMotion: reduceMotion)
+                                       size: size, reduceMotion: reduceMotion,
+                                       onFix: dictation.fixOfferID == nil ? nil : { dictation.quickFix() })
                     .transition(.opacity)
             }
         }

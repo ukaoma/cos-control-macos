@@ -113,11 +113,34 @@ private final class DictationConverter: @unchecked Sendable {
 /// that returns success proves nothing. COS measures the field before and after (AXNumberOfCharacters and
 /// AXSelectedTextRange, never AXValue) and DictationDelivery.decide (pure, tested) turns the measurements into the
 /// outcome. ✓ INSERTED only when a measured change proves it. Terminals go straight to ⌘V.
+/// Where a measured insertion landed (0.5.313): the element COS set or pasted into and the range it proved. Held in
+/// memory only, for Replace it in <App>; an AXUIElement means nothing to another run. Unchecked: it is created and
+/// used only on the main actor (DictationInsertion and MacDictationStore).
+struct DictationInsertTarget: @unchecked Sendable {
+    let element: AXUIElement
+    let span: DictationInsertedSpan
+    let terminal: Bool
+    let app: String
+}
+
+/// After Save in Fix a word: the corrected dictation and the app it can go back into (nil: copy only).
+struct DictationReplaceOffer: Equatable {
+    let recordID: UUID
+    let corrected: String
+    let app: String?
+}
+
+/// What `deliver` did, and where, when it can prove it.
+struct DictationDelivered: Sendable {
+    let outcome: DictationDeliveryOutcome
+    let target: DictationInsertTarget?
+}
+
 @MainActor enum DictationInsertion {
     /// Bundle path → Electron/Chromium. A frontmost app's frameworks do not change while it runs.
     private static var chromium: [String: Bool] = [:]
 
-    static func deliver(_ raw: String, restoreClipboard: Bool) async -> DictationDeliveryOutcome {
+    static func deliver(_ raw: String, restoreClipboard: Bool) async -> DictationDelivered {
         let started = Date()
         let app = NSWorkspace.shared.frontmostApplication
         let bundle = app?.bundleIdentifier
@@ -130,14 +153,17 @@ private final class DictationConverter: @unchecked Sendable {
         // person to paste. Accessibility insertion never touches it (DictationClipboard.use).
         let board = SystemDictationPasteboard(NSPasteboard.general)
         var wroteTranscript = false
+        // 0.5.313: set only when a measurement proved exactly where the text landed.
+        var landed: DictationInsertTarget?
         // Durable, and never the text: what was focused, what COS measured, what it did (0.5.310).
-        func done(_ outcome: DictationDeliveryOutcome) -> DictationDeliveryOutcome {
+        func done(_ outcome: DictationDeliveryOutcome) -> DictationDelivered {
             if DictationClipboard.use(for: outcome) == .keepForCard, !wroteTranscript, outcome != .refused(.clipboardChanged) {
                 wroteTranscript = board.writeTranscript(text, markerTypes: [])
             }
-            let ms = Int(Date().timeIntervalSince(started) * 1000)
-            dictationLog.notice("delivery \(facts, privacy: .public) outcome=\(String(describing: outcome), privacy: .public) ms=\(ms)")
-            return outcome
+            let ms = Int(Date().timeIntervalSince(started) * 1000), span = landed != nil ? "measured" : "none"
+            dictationLog.notice("delivery \(facts, privacy: .public) outcome=\(String(describing: outcome), privacy: .public) ms=\(ms) span=\(span, privacy: .public)")
+            if case .inserted = outcome { return DictationDelivered(outcome: outcome, target: landed) }
+            return DictationDelivered(outcome: outcome, target: nil)
         }
 
         let trusted = AXIsProcessTrusted()
@@ -191,7 +217,12 @@ private final class DictationConverter: @unchecked Sendable {
                                                 finalPoll: index == DictationDelivery.pollMilliseconds.count - 1, pasted: false,
                                                 afterPaste: DictationFieldSnapshot(), count: count, app: name) {
                 case .wait: continue
-                case .done(let outcome): facts += " after=\(after.logDescription)"; return done(outcome)
+                case .done(let outcome):
+                    facts += " after=\(after.logDescription)"
+                    if let app, let span = DictationReplace.span(pid: app.processIdentifier, baseline: baseline, after: after, count: count) {
+                        landed = DictationInsertTarget(element: target, span: span, terminal: terminal, app: name)
+                    }
+                    return done(outcome)
                 case .paste: facts += " after=\(after.logDescription)"; break polling
                 }
             }
@@ -209,9 +240,11 @@ private final class DictationConverter: @unchecked Sendable {
         facts += " paste=sent"
         var waited = 0
         var decision = DictationDecision.wait
+        var measuredAfterPaste = DictationFieldSnapshot()
         for ms in [80, 200, 400] {
             try? await Task.sleep(for: .milliseconds(ms - waited)); waited = ms
             let after = snapshot(target)
+            measuredAfterPaste = after
             decision = DictationDelivery.decide(route: .paste, baseline: beforePaste, setterSucceeded: false, afterSetter: DictationFieldSnapshot(),
                                                 finalPoll: true, pasted: true, afterPaste: after, count: count, app: name)
             facts += " afterPaste=\(after.logDescription)"
@@ -235,8 +268,62 @@ private final class DictationConverter: @unchecked Sendable {
         case .skip(let reason):
             dictationLog.notice("clipboard not restored: \(reason, privacy: .public)")
         }
+        if let app, let target, let span = DictationReplace.span(pid: app.processIdentifier, baseline: beforePaste, after: measuredAfterPaste, count: count) {
+            landed = DictationInsertTarget(element: target, span: span, terminal: terminal, app: name)
+        }
         if case .done(let outcome) = decision { return done(outcome) }
         return done(.unconfirmed(app: name, viaPaste: true))
+    }
+
+    enum ReplaceResult: Equatable { case replaced, copied(DictationReplace.Reason), unverified }
+
+    /// Replace it in <App> (0.5.313). Reads only the inserted span (AXStringForRange; else the selection set to the span),
+    /// never the field's whole value. Replaces only when that span still holds exactly what COS inserted, then measures.
+    /// No key is pressed, so nothing is sent.
+    static func replace(_ target: DictationInsertTarget, inserted: String, corrected: String) async -> ReplaceResult {
+        let element = target.element
+        AXUIElementSetMessagingTimeout(element, 0.25)
+        let running = NSRunningApplication(processIdentifier: target.span.pid).map { !$0.isTerminated } ?? false
+        let original = running ? snapshot(element) : DictationFieldSnapshot()
+        var text = running && !target.terminal ? string(element, at: target.span) : nil
+        var selectedToRead = false
+        if running, !target.terminal, text == nil, let n = original.characters, n >= target.span.location + target.span.length,
+           select(element, location: target.span.location, length: target.span.length) {
+            selectedToRead = true
+            text = attribute(element, kAXSelectedTextAttribute) as? String
+        }
+        let decision = DictationReplace.decide(span: target.span, terminal: target.terminal, appRunning: running,
+                                               fieldCharacters: original.characters, textAtSpan: text, inserted: inserted)
+        guard case .replace(let location, let length) = decision else {
+            // Put the person's selection back if COS moved it only to read.
+            if selectedToRead, let l = original.location, let n = original.length { _ = select(element, location: l, length: n) }
+            if case .copy(let reason) = decision { return .copied(reason) }
+            return .copied(.notMeasured)
+        }
+        guard selectedToRead || select(element, location: location, length: length) else { return .copied(.fieldGone) }
+        let before = snapshot(element)
+        guard AXUIElementSetAttributeValue(element, kAXSelectedTextAttribute as CFString, corrected as CFString) == .success else {
+            if let l = original.location, let n = original.length { _ = select(element, location: l, length: n) }
+            return .copied(.fieldGone)
+        }
+        var elapsed = 0
+        for ms in DictationDelivery.pollMilliseconds {
+            if ms > elapsed { try? await Task.sleep(for: .milliseconds(ms - elapsed)); elapsed = ms }
+            if DictationReplace.verified(before: before, after: snapshot(element), span: target.span, newLength: corrected.utf16.count) { return .replaced }
+        }
+        return .unverified
+    }
+    nonisolated private static func string(_ element: AXUIElement, at span: DictationInsertedSpan) -> String? {
+        var range = CFRange(location: span.location, length: span.length)
+        guard let parameter = AXValueCreate(.cfRange, &range) else { return nil }
+        var value: CFTypeRef?
+        guard AXUIElementCopyParameterizedAttributeValue(element, kAXStringForRangeParameterizedAttribute as CFString, parameter, &value) == .success else { return nil }
+        return value as? String
+    }
+    nonisolated private static func select(_ element: AXUIElement, location: Int, length: Int) -> Bool {
+        var range = CFRange(location: location, length: length)
+        guard let value = AXValueCreate(.cfRange, &range) else { return false }
+        return AXUIElementSetAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, value) == .success
     }
 
     /// ⌘V on the current layout's V, only once no modifier is physically held and only while the clipboard still
@@ -349,6 +436,145 @@ private final class DictationConverter: @unchecked Sendable {
     nonisolated private static func focused(_ application: AXUIElement) -> AXUIElement? {
         guard let value = attribute(application, kAXFocusedUIElementAttribute), CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }
         return (value as! AXUIElement)
+    }
+}
+
+/// Quiet while dictating (0.5.313, Miles 22:06: "mute the rest of the sound playing through the speakers when dictation
+/// mode is running ... as soon as you're done it picks back up"). Mute is a global process tap that excludes COS, with
+/// muteBehavior .muted, alive only while listening; process taps die with the process, so a crash cannot leave apps
+/// muted. Without System Audio Recording, COS lowers the default output's volume instead and saves the exact scalar
+/// first, on disk too, so a quit or crash in between is put back at the next launch. `end()` is safe to call any time.
+@MainActor final class DictationQuietController {
+    private static let pendingKey = "dictation.quiet.pending"
+    private var tap = AudioObjectID(kAudioObjectUnknown)
+    private var lowered: (device: AudioObjectID, pending: DictationQuiet.Pending)?
+
+    func begin(mode: DictationQuietMode, macRecording: Bool) {
+        end()
+        let device = Self.defaultOutput()
+        let volume = device.flatMap { Self.volume($0) }
+        let settable = device.map { Self.volumeSettable($0) } ?? false
+        var plan = DictationQuiet.plan(mode: mode, macRecording: macRecording, tapPermitted: Self.tapPermitted,
+                                       volume: volume, volumeSettable: settable)
+        if plan == .muteTap, !muteOtherApps() {
+            plan = DictationQuiet.plan(mode: mode, macRecording: macRecording, tapPermitted: false, volume: volume, volumeSettable: settable)
+        }
+        switch plan {
+        case .leave(let reason): dictationLog.notice("quiet: left alone (\(reason, privacy: .public))")
+        case .muteTap: dictationLog.notice("quiet: other apps muted")
+        case .lowerVolume(let target):
+            guard let device, let volume, let uid = Self.uid(device) else { return }
+            let pending = DictationQuiet.Pending(deviceUID: uid, saved: volume, lowered: target)
+            // On disk BEFORE the change, so no exit path can lose the volume to put back.
+            if let data = try? JSONEncoder().encode(pending) { UserDefaults.standard.set(data, forKey: Self.pendingKey) }
+            if Self.setVolume(device, target) {
+                lowered = (device, pending)
+                dictationLog.notice("quiet: output lowered")
+            } else {
+                UserDefaults.standard.removeObject(forKey: Self.pendingKey)
+            }
+        }
+    }
+
+    /// Listening ended (stop, fail, cancel, quit, sleep): unmute and put the volume back.
+    func end() {
+        if tap != kAudioObjectUnknown {
+            if #available(macOS 14.2, *) { AudioHardwareDestroyProcessTap(tap) }
+            tap = AudioObjectID(kAudioObjectUnknown)
+            dictationLog.notice("quiet: other apps unmuted")
+        }
+        if let lowered {
+            self.lowered = nil
+            if let value = DictationQuiet.restoreVolume(saved: lowered.pending.saved, lowered: lowered.pending.lowered,
+                                                        current: Self.volume(lowered.device)) {
+                _ = Self.setVolume(lowered.device, value)
+            }
+            UserDefaults.standard.removeObject(forKey: Self.pendingKey)
+            dictationLog.notice("quiet: output restored")
+        }
+    }
+
+    /// Launch: a lowered volume a quit or crash never put back goes back on the device it was taken from.
+    func restoreAfterInterruptedRun() {
+        guard let data = UserDefaults.standard.data(forKey: Self.pendingKey) else { return }
+        UserDefaults.standard.removeObject(forKey: Self.pendingKey)
+        guard let pending = try? JSONDecoder().decode(DictationQuiet.Pending.self, from: data),
+              let device = Self.device(uid: pending.deviceUID) else { return }
+        if let value = DictationQuiet.launchRestore(pending, current: Self.volume(device)) {
+            _ = Self.setVolume(device, value)
+            dictationLog.notice("quiet: restored the output volume an interrupted dictation lowered")
+        }
+    }
+
+    /// System Audio Recording, through TCC's preflight (the check Apple's AudioCap sample uses). Unknown reads as no,
+    /// which only means COS lowers the volume instead of muting.
+    nonisolated static var tapPermitted: Bool {
+        guard let handle = dlopen("/System/Library/PrivateFrameworks/TCC.framework/Versions/A/TCC", RTLD_NOW),
+              let symbol = dlsym(handle, "TCCAccessPreflight") else { return false }
+        typealias Preflight = @convention(c) (CFString, CFDictionary?) -> Int32
+        return unsafeBitCast(symbol, to: Preflight.self)("kTCCServiceAudioCapture" as CFString, nil) == 0
+    }
+
+    private func muteOtherApps() -> Bool {
+        guard #available(macOS 14.2, *) else { return false }
+        let description = CATapDescription(stereoGlobalTapButExcludeProcesses: Self.ownProcessObject())
+        description.name = "COS dictation quiet"
+        description.isPrivate = true
+        description.muteBehavior = .muted
+        var id = AudioObjectID(kAudioObjectUnknown)
+        guard AudioHardwareCreateProcessTap(description, &id) == noErr, id != kAudioObjectUnknown else { return false }
+        tap = id
+        return true
+    }
+    /// COS's own audio object (it exists once the start sound has been scheduled), so its sounds are never muted.
+    nonisolated private static func ownProcessObject() -> [AudioObjectID] {
+        var address = address(kAudioHardwarePropertyTranslatePIDToProcessObject, scope: kAudioObjectPropertyScopeGlobal)
+        var pid = ProcessInfo.processInfo.processIdentifier
+        var object = AudioObjectID(kAudioObjectUnknown); var size = UInt32(MemoryLayout<AudioObjectID>.size)
+        let status = AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, UInt32(MemoryLayout<pid_t>.size), &pid, &size, &object)
+        return status == noErr && object != kAudioObjectUnknown ? [object] : []
+    }
+    nonisolated private static func address(_ selector: AudioObjectPropertySelector, scope: AudioObjectPropertyScope) -> AudioObjectPropertyAddress {
+        AudioObjectPropertyAddress(mSelector: selector, mScope: scope, mElement: kAudioObjectPropertyElementMain)
+    }
+    nonisolated private static func defaultOutput() -> AudioObjectID? {
+        var address = address(kAudioHardwarePropertyDefaultOutputDevice, scope: kAudioObjectPropertyScopeGlobal)
+        var device = AudioObjectID(kAudioObjectUnknown); var size = UInt32(MemoryLayout<AudioObjectID>.size)
+        guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &device) == noErr,
+              device != kAudioObjectUnknown else { return nil }
+        return device
+    }
+    nonisolated private static func volume(_ device: AudioObjectID) -> Float? {
+        var address = address(kAudioHardwareServiceDeviceProperty_VirtualMainVolume, scope: kAudioDevicePropertyScopeOutput)
+        var value = Float32(0); var size = UInt32(MemoryLayout<Float32>.size)
+        guard AudioObjectHasProperty(device, &address),
+              AudioObjectGetPropertyData(device, &address, 0, nil, &size, &value) == noErr else { return nil }
+        return value
+    }
+    nonisolated private static func volumeSettable(_ device: AudioObjectID) -> Bool {
+        var address = address(kAudioHardwareServiceDeviceProperty_VirtualMainVolume, scope: kAudioDevicePropertyScopeOutput)
+        var settable = DarwinBoolean(false)
+        return AudioObjectHasProperty(device, &address) && AudioObjectIsPropertySettable(device, &address, &settable) == noErr && settable.boolValue
+    }
+    nonisolated private static func setVolume(_ device: AudioObjectID, _ value: Float) -> Bool {
+        var address = address(kAudioHardwareServiceDeviceProperty_VirtualMainVolume, scope: kAudioDevicePropertyScopeOutput)
+        var scalar = Float32(min(1, max(0, value)))
+        return AudioObjectSetPropertyData(device, &address, 0, nil, UInt32(MemoryLayout<Float32>.size), &scalar) == noErr
+    }
+    nonisolated private static func uid(_ device: AudioObjectID) -> String? {
+        var address = address(kAudioDevicePropertyDeviceUID, scope: kAudioObjectPropertyScopeGlobal)
+        var value: Unmanaged<CFString>?; var size = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+        guard AudioObjectGetPropertyData(device, &address, 0, nil, &size, &value) == noErr else { return nil }
+        return value?.takeRetainedValue() as String?
+    }
+    nonisolated private static func device(uid: String) -> AudioObjectID? {
+        var address = address(kAudioHardwarePropertyTranslateUIDToDevice, scope: kAudioObjectPropertyScopeGlobal)
+        var cfUID = uid as CFString
+        var device = AudioObjectID(kAudioObjectUnknown); var size = UInt32(MemoryLayout<AudioObjectID>.size)
+        let status = withUnsafePointer(to: &cfUID) { pointer in
+            AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, UInt32(MemoryLayout<CFString>.size), pointer, &size, &device)
+        }
+        return status == noErr && device != kAudioObjectUnknown ? device : nil
     }
 }
 
@@ -526,6 +752,16 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
     @Published private(set) var microphones: [DictationMicrophone] = []
     @Published private(set) var holdTrigger: DictationTrigger?
     @Published private(set) var toggleTrigger: DictationTrigger?
+    /// 0.5.313: Fix last dictation, ⌃⌥F unless the person changed or turned it off.
+    @Published private(set) var fixTrigger: DictationTrigger?
+    /// The dictation the pill's Fix opens, for DictationQuickFix.offerSeconds after the flash.
+    @Published private(set) var fixOfferID: UUID?
+    /// After Save in Fix a word: put the corrected dictation back where COS inserted it, or copy it.
+    @Published private(set) var replaceOffer: DictationReplaceOffer?
+    /// While dictating: mute other apps (default), lower other audio, or off (0.5.313).
+    @Published var quietMode: DictationQuietMode = DictationQuietMode(rawValue: UserDefaults.standard.string(forKey: "dictation.quiet") ?? "") ?? .default {
+        didSet { UserDefaults.standard.set(quietMode.rawValue, forKey: "dictation.quiet") }
+    }
     @Published private(set) var phase = "Off"
     @Published private(set) var message: String?
     /// 0.5.309: the listening pill. It replaces the pet's ledger row only while it is not hidden, then hands it back.
@@ -547,6 +783,11 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
     @Published var fixDraft = ""
     @Published private(set) var fixNote: String?
     @Published private(set) var fixSaving = false
+    /// What the first tap pre-filled from the dictionary, so a later tap may replace it.
+    private var fixSuggestion: String?
+    /// Where the latest dictations landed, measured, for Replace it in <App>. Memory only; the newest few.
+    private var insertTargets: [UUID: DictationInsertTarget] = [:]
+    private let quiet = DictationQuietController()
     /// Levels for the bars. Its own object, so a 20 Hz meter redraws the pill and never the whole pet.
     let meter = DictationMeterFeed()
     var bridge: (@MainActor (Data) async throws -> HelperResponse)?
@@ -569,6 +810,7 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
     private var keyMonitors: [Any] = []
     private var holdTracker: LoneModifierTracker?
     private var toggleTracker: LoneModifierTracker?
+    private var fixTracker: LoneModifierTracker?
     private var held = false
     private var toggleHeld = false
     private var holdPending = false
@@ -583,7 +825,16 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
             guard d.bool(forKey: prefix + ".enabled") else { return nil }
             return DictationTrigger.load(kind: d.string(forKey: prefix + ".kind"), key: d.integer(forKey: prefix + ".key"), modifiers: d.integer(forKey: prefix + ".modifiers"))
         }
-        holdTrigger = load("dictation.hold"); toggleTrigger = load("dictation.toggle")
+        let hold = load("dictation.hold"), toggle = load("dictation.toggle")
+        holdTrigger = hold; toggleTrigger = toggle
+        // Never stored: ⌃⌥F, unless that is already Push to talk, Start / stop or Open Activity.
+        let activityTrigger = HotKeyCombo.load().map { DictationTrigger.keys(keyCode: $0.keyCode, modifiers: $0.modifiers) }
+        var others: [DictationShortcutSlot: DictationTrigger] = [:]
+        if let hold { others[.hold] = hold }
+        if let toggle { others[.toggle] = toggle }
+        fixTrigger = d.object(forKey: "dictation.fix.enabled") == nil
+            ? (DictationShortcuts.conflicts(DictationShortcuts.defaultFix, slot: .fix, assigned: others, activity: activityTrigger) ? nil : DictationShortcuts.defaultFix)
+            : load("dictation.fix")
         phase = on ? "Ready" : "Off"
         // A history file that does not read is moved aside before anything can be saved over it (0.5.310); when it
         // cannot be moved, this run keeps its dictations in memory only.
@@ -604,6 +855,8 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
         }
         overlay.bind(store: self)
         if recent.count != (loaded?.records.count ?? 0) || !retention.writesToDisk { saveRecent() }
+        // A volume COS lowered and never put back (a quit or crash mid-dictation) goes back now.
+        quiet.restoreAfterInterruptedRun()
     }
     /// ~/Library/Application Support/COS Control/dictation-history.json. A check run writes under its own test home,
     /// and perf fixtures write nothing, so no check can touch the real history.
@@ -616,24 +869,39 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
     func requestInsertionPermission() {
         _ = AXIsProcessTrustedWithOptions(["AXTrustedCheckOptionPrompt": true] as CFDictionary)
     }
-    /// True when the Activity shortcut would collide with either dictation shortcut.
-    func uses(_ combo: HotKeyCombo) -> Bool {
-        let trigger = DictationTrigger.keys(keyCode: combo.keyCode, modifiers: combo.modifiers)
-        return trigger == holdTrigger || trigger == toggleTrigger
+    func trigger(_ slot: DictationShortcutSlot) -> DictationTrigger? {
+        switch slot {
+        case .hold: holdTrigger
+        case .toggle: toggleTrigger
+        case .fix: fixTrigger
+        }
     }
-    func setShortcut(_ trigger: DictationTrigger?, hold: Bool, activity: HotKeyCombo?) {
+    private var assignedShortcuts: [DictationShortcutSlot: DictationTrigger] {
+        var out: [DictationShortcutSlot: DictationTrigger] = [:]
+        for slot in DictationShortcutSlot.allCases { if let bound = trigger(slot) { out[slot] = bound } }
+        return out
+    }
+    /// True when the Activity shortcut would collide with any dictation shortcut.
+    func uses(_ combo: HotKeyCombo) -> Bool {
+        assignedShortcuts.values.contains(DictationTrigger.keys(keyCode: combo.keyCode, modifiers: combo.modifiers))
+    }
+    func setShortcut(_ trigger: DictationTrigger?, slot: DictationShortcutSlot, activity: HotKeyCombo?) {
         guard !busy else { message = "Finish dictating before changing a shortcut."; return }
         let activityTrigger = activity.map { DictationTrigger.keys(keyCode: $0.keyCode, modifiers: $0.modifiers) }
-        guard trigger == nil || (trigger != activityTrigger && trigger != (hold ? toggleTrigger : holdTrigger)) else {
+        guard !DictationShortcuts.conflicts(trigger, slot: slot, assigned: assignedShortcuts, activity: activityTrigger) else {
             message = "That shortcut is already used by COS. Choose a different one."; return
         }
-        let prefix = hold ? "dictation.hold" : "dictation.toggle"
+        let prefix = slot.defaultsPrefix
         let d = UserDefaults.standard
         d.set(trigger != nil, forKey: prefix + ".enabled")
         if let stored = trigger?.stored {
             d.set(stored.kind, forKey: prefix + ".kind"); d.set(stored.key, forKey: prefix + ".key"); d.set(stored.modifiers, forKey: prefix + ".modifiers")
         }
-        if hold { holdTrigger = trigger } else { toggleTrigger = trigger }
+        switch slot {
+        case .hold: holdTrigger = trigger
+        case .toggle: toggleTrigger = trigger
+        case .fix: fixTrigger = trigger
+        }
         message = nil; registerHotKeys()
         if trigger?.isFn == true, message == nil {
             message = "Fn is set. In System Settings → Keyboard, set “Press 🌐 key to” Do Nothing, and move Wispr Flow off Fn."
@@ -642,7 +910,7 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
     func registerHotKeys() {
         registrations.forEach { UnregisterEventHotKey($0) }; registrations.removeAll()
         keyMonitors.forEach { NSEvent.removeMonitor($0) }; keyMonitors.removeAll()
-        holdTracker = nil; toggleTracker = nil
+        holdTracker = nil; toggleTracker = nil; fixTracker = nil
         guard enabled else { phase = "Off"; return }
         if handler == nil {
             var events = [EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed)), EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyReleased))]
@@ -654,11 +922,16 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
             }
         }
         let activity = HotKeyCombo.load()
-        for (number, trigger) in [(UInt32(1), holdTrigger), (UInt32(2), toggleTrigger)] {
-            switch trigger {
+        for slot in DictationShortcutSlot.allCases {
+            let number = slot.hotKeyID
+            switch trigger(slot) {
             case nil: continue
             case .modifier(let key)?:
-                if number == 1 { holdTracker = LoneModifierTracker(keyCode: key) } else { toggleTracker = LoneModifierTracker(keyCode: key) }
+                switch slot {
+                case .hold: holdTracker = LoneModifierTracker(keyCode: key)
+                case .toggle: toggleTracker = LoneModifierTracker(keyCode: key)
+                case .fix: fixTracker = LoneModifierTracker(keyCode: key)
+                }
             case .keys(let key, let modifiers)?:
                 if let activity, activity.keyCode == key, activity.modifiers == modifiers {
                     message = "Dictation shortcut conflicts with Open Activity. Choose another shortcut."; continue
@@ -668,7 +941,7 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
                 else { dictationLog.error("shortcut \(number) unavailable"); message = "Shortcut is unavailable. Another app may already use it. Choose another one." }
             }
         }
-        if holdTracker != nil || toggleTracker != nil {
+        if holdTracker != nil || toggleTracker != nil || fixTracker != nil {
             // Monitors run on the main thread in event order; never hop through a Task, which could reorder down/up.
             // A click while the modifier is down (⌥-click, ⌘-click) is a chord like a key, so the monitors take clicks too and
             // feed them as a key down. keyCode is read only from key events: NSEvent raises on a mouse event's keyCode.
@@ -701,6 +974,7 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
         }
         // A lone-modifier toggle acts on a clean tap, so holding Fn for a chord never toggles.
         if feed(&toggleTracker) == .released { hotKey(2, down: true); hotKey(2, down: false) }
+        if feed(&fixTracker) == .released { hotKey(3, down: true) }
     }
     func hotKey(_ id: UInt32, down: Bool) {
         if id == 1 {
@@ -709,12 +983,14 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
         } else if id == 2 {
             if down, !toggleHeld { toggleHeld = true; phase == "Listening" ? stop() : start() }
             else if !down { toggleHeld = false }
+        } else if id == 3, down {
+            quickFix()
         }
     }
     func start() {
         guard MacDictationPolicy.mayStart(enabled: enabled, busy: busy) else { return }
         generation = UUID(); let attempt = generation
-        flashTask?.cancel(); flashTask = nil; dismissCard()
+        flashTask?.cancel(); flashTask = nil; fixOfferID = nil; dismissCard()
         // On the pet only when the pet is on the screen with the focused window; else the pill on that screen.
         let placement = DictationPlacement.choose(petFrame: petFrame?(), focusedWindow: DictationFocusedWindow.frame(),
                                                   screens: NSScreen.screens.map(\.frame), mainScreen: NSScreen.main?.frame)
@@ -725,6 +1001,9 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
         // The start sound plays as the pill appears and the microphone opens at once (no added latency). See
         // DictationSoundPlayer for why the sound is not trimmed from the recording.
         playSound(.start)
+        // After the start sound is scheduled (COS is excluded from the mute, so it still plays); never during a Mac
+        // recording. Every way listening ends calls quiet.end(): stop (before the stop sound), fail and cancel.
+        quiet.begin(mode: quietMode, macRecording: macRecordingActive?() ?? false)
         task = Task {
             let permission: Bool
             switch AVCaptureDevice.authorizationStatus(for: .audio) {
@@ -767,6 +1046,8 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
         let attempt = generation
         do {
             let pcm = try capture.stop()
+            // The microphone is closed: other apps come back before the stop sound plays.
+            quiet.end()
             // A stray tap of the shortcut is not worth a card: the pill just goes away.
             guard pcm.count >= 3200 else { fail("No usable speech was captured. Try holding the shortcut longer.", card: false); return }
             phase = "Transcribing"; pill = .transcribing
@@ -798,19 +1079,23 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
                     fail(response.message, retry: !noSpeech); return
                 }
                 pendingAudio = nil; phase = "Ready"; message = nil
-                let outcome = await DictationInsertion.deliver(text, restoreClipboard: restoreClipboard)
-                finish(text, outcome: outcome)
+                let delivered = await DictationInsertion.deliver(text, restoreClipboard: restoreClipboard)
+                finish(text, outcome: delivered.outcome, target: delivered.target)
             } catch { guard generation == attempt else { return }; let reason = error.localizedDescription; dictationLog.error("transcribe failed: \(reason, privacy: .public)"); fail(reason) }
         }
     }
     /// The text is on the clipboard already. Measured or sent: flash the pill. Refused: the card, which never takes focus.
-    private func finish(_ text: String, outcome: DictationDeliveryOutcome) {
+    private func finish(_ text: String, outcome: DictationDeliveryOutcome, target: DictationInsertTarget?) {
         let record = DictationRecord(id: UUID(), text: text, createdAt: Date(), delivery: outcome.delivery)
+        if let target { rememberTarget(target, for: record.id) }
         if let flash = outcome.flash {
             pill = flash
+            // 0.5.313: the flash carries Fix for a few seconds, so a mishearing can be fixed the moment it lands.
+            let offer = DictationQuickFix.offers(outcome)
+            fixOfferID = offer ? record.id : nil
             flashTask = Task {
-                try? await Task.sleep(for: .seconds(DictationPill.flashSeconds))
-                if !Task.isCancelled, pill == flash { pill = .hidden }
+                try? await Task.sleep(for: .seconds(offer ? DictationQuickFix.offerSeconds : DictationPill.flashSeconds))
+                if !Task.isCancelled, pill == flash { pill = .hidden; fixOfferID = nil }
             }
         } else if case .refused(let refusal) = outcome {
             pill = .hidden
@@ -821,6 +1106,7 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
     /// A dictation that did not finish: the reason on the card, with Retry while the audio is held and worth retrying,
     /// and Open Settings when the microphone is not allowed.
     private func fail(_ reason: String, card: Bool = true, retry: Bool = true, microphone: Bool = false) {
+        quiet.end()
         phase = enabled ? "Ready" : "Off"; message = reason; pill = .hidden; meter.reset()
         if card {
             showCard(DictationCard(kind: .failed(reason, retry: retry, microphone: microphone), recordID: nil, text: "",
@@ -830,13 +1116,15 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
     func openMicrophoneSettings() {
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone") { NSWorkspace.shared.open(url) }
     }
+    /// Also the quit path (COSAppDelegate.onTerminate) and sleep / session switch: other apps' sound always comes back.
     func cancel() {
+        quiet.end()
         generation = UUID(); pendingAudio = nil; task?.cancel(); task = nil; timer?.cancel(); timer = nil
         meterTask?.cancel(); meterTask = nil; flashTask?.cancel(); flashTask = nil
         _ = try? capture?.stop(); capture = nil; held = false; toggleHeld = false; holdPending = false
         holdTracker?.reset(); toggleTracker?.reset()
         phase = enabled ? "Ready" : "Off"; message = "Dictation canceled. No text was inserted."
-        pill = .hidden; meter.reset()
+        pill = .hidden; fixOfferID = nil; meter.reset()
     }
 
     // MARK: Sounds (0.5.312)
@@ -1020,6 +1308,20 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
         dismissCard()
         listRoute = .fix(id); resetFix()
     }
+    /// The pill's Fix and the Fix last dictation shortcut (⌃⌥F): Fix a word on the newest dictation, no navigation.
+    /// On the pet when it shares the screen with the focused window, else the floating editor there.
+    func quickFix() {
+        guard let id = DictationQuickFix.target(recent, busy: busy) else {
+            if !busy { message = "Nothing dictated yet to fix." }
+            return
+        }
+        flashTask?.cancel(); flashTask = nil; fixOfferID = nil
+        if case .flash = pill { pill = .hidden }
+        let placement = DictationPlacement.choose(petFrame: petFrame?(), focusedWindow: DictationFocusedWindow.frame(),
+                                                  screens: NSScreen.screens.map(\.frame), mainScreen: NSScreen.main?.frame)
+        if case .floating(let screen)? = placement { surface = .floating; floatingScreen = screen } else { surface = .pet; floatingScreen = nil }
+        openFix(id)
+    }
     func closeList() { listRoute = nil; resetFix() }
     func backToRecent() { listRoute = .recent; resetFix() }
     /// Cancel on Fix a word goes back to the dictation on the pet; the floating editor has nothing behind it.
@@ -1035,12 +1337,30 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
     func selectFixWord(_ index: Int) {
         guard case .fix(let id)? = listRoute, let record = self.record(id) else { return }
         let before = fixHeard
-        fixSelection = DictationFixText.select(index, current: fixSelection)
-        // Prefill the spelling with what was heard, but never over a spelling the person already typed.
-        if fixDraft.isEmpty || fixDraft == before {
-            fixDraft = fixSelection.map { DictationFixText.heard(DictationFixText.tokens(record.text), $0) } ?? ""
+        let tokens = DictationFixText.tokens(record.text)
+        guard tokens.indices.contains(index) else { return }
+        var suggestion: String?
+        if fixSelection == nil {
+            // 0.5.313 first tap: the likely misheard span and a dictionary suggestion ("yellow fanduna" → "yellowfin tuna").
+            let nearby = max(0, index - DictationFixGuess.maximumWords)...min(max(0, tokens.count - 1), index + DictationFixGuess.maximumWords)
+            let english = Set(tokens.indices.filter { nearby.contains($0) }.map { DictationFixText.heard(tokens, $0...$0) }.filter { Self.isEnglishWord($0) })
+            let guess = DictationFixGuess.guess(tokens: tokens, tapped: index, vocabulary: TranscriptionDictionaryStore.shared.vocabulary,
+                                                known: { english.contains($0) })
+            fixSelection = guess.range; suggestion = guess.suggestion
+        } else {
+            fixSelection = DictationFixText.select(index, current: fixSelection)
         }
-        fixNote = nil
+        // Prefill the suggestion, else what was heard, but never over a spelling the person already typed.
+        if fixDraft.isEmpty || fixDraft == before || fixDraft == fixSuggestion {
+            fixDraft = suggestion ?? fixSelection.map { DictationFixText.heard(tokens, $0) } ?? ""
+        }
+        fixSuggestion = suggestion
+        replaceOffer = nil
+        fixNote = suggestion.map { "Suggested from your dictionary. Press Return to save “\($0)”." }
+    }
+    /// A word the system spell checker accepts. Only the few words around the tap are checked.
+    private static func isEnglishWord(_ word: String) -> Bool {
+        !word.isEmpty && NSSpellChecker.shared.checkSpelling(of: word, startingAt: 0).location == NSNotFound
     }
     var fixHeard: String {
         guard case .fix(let id)? = listRoute, let record = self.record(id), let range = fixSelection else { return "" }
@@ -1053,14 +1373,57 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
             fixNote = heard.isEmpty ? "Tap the word COS got wrong first." : "Type how it should be written."; return
         }
         fixSaving = true; fixNote = nil
+        let selection = fixSelection
+        let recordID: UUID? = { if case .fix(let id)? = listRoute { return id }; return nil }()
         Task {
             let saved = await dictionary.learn(heard: heard, written: written, source: "dictation")
             fixSaving = false
-            if saved { fixSelection = nil; fixDraft = ""; fixNote = dictionary.message ?? "Saved. COS writes “\(written)” from the next sentence." }
+            if saved {
+                fixSelection = nil; fixDraft = ""; fixSuggestion = nil
+                fixNote = dictionary.message ?? "Saved. COS writes “\(written)” from the next sentence."
+                // 0.5.313: offer the corrected dictation back where it went (or on the clipboard).
+                if let recordID, let selection, let fixed = self.record(recordID),
+                   let corrected = DictationReplace.corrected(fixed.text, range: selection, written: written) {
+                    replaceOffer = DictationReplaceOffer(recordID: recordID, corrected: corrected, app: insertTargets[recordID]?.app)
+                }
+            }
             else { fixNote = dictionary.message ?? "The dictionary did not save. Try again." }
         }
     }
-    private func resetFix() { fixSelection = nil; fixDraft = ""; fixNote = nil; fixSaving = false }
+    /// Replace it in <App>: only where COS can prove the spot still holds exactly what it inserted; anything else
+    /// (a terminal, a paste it could not measure, an edited field) copies the corrected text. Never presses Return.
+    func replaceCorrected() {
+        guard let offer = replaceOffer, let record = self.record(offer.recordID) else { return }
+        replaceOffer = nil
+        guard let target = insertTargets[offer.recordID] else {
+            copy(offer.corrected); fixNote = "Copied the corrected text."; return
+        }
+        Task {
+            let result = await DictationInsertion.replace(target, inserted: record.text, corrected: offer.corrected)
+            dictationLog.notice("replace result=\(String(describing: result), privacy: .public)")
+            switch result {
+            case .replaced:
+                let updated = DictationRecord(id: record.id, text: offer.corrected, createdAt: record.createdAt, delivery: record.delivery)
+                recent = recent.map { $0.id == record.id ? updated : $0 }
+                insertTargets[record.id] = DictationInsertTarget(element: target.element,
+                    span: DictationInsertedSpan(pid: target.span.pid, location: target.span.location, length: offer.corrected.utf16.count),
+                    terminal: target.terminal, app: target.app)
+                saveRecent()
+                fixNote = "Replaced it in \(target.app)."
+            case .copied(let reason):
+                copy(offer.corrected); fixNote = DictationReplace.copiedNote(reason, app: target.app)
+            case .unverified:
+                copy(offer.corrected)
+                fixNote = "COS set the text in \(target.app) but couldn't confirm it, so the corrected text is on the clipboard too."
+            }
+        }
+    }
+    private func rememberTarget(_ target: DictationInsertTarget, for id: UUID) {
+        insertTargets[id] = target
+        let keep = Set(([id] + recent.prefix(DictationHistory.petCount).map(\.id)))
+        insertTargets = insertTargets.filter { keep.contains($0.key) }
+    }
+    private func resetFix() { fixSelection = nil; fixDraft = ""; fixNote = nil; fixSaving = false; fixSuggestion = nil; replaceOffer = nil }
 }
 
 enum DictationSurface: Equatable, Sendable { case pet, floating }
@@ -1127,10 +1490,12 @@ struct MacDictationSettings: View {
             if store.enabled {
                 COSDropdown("Microphone", selection: $store.microphoneUID, options: microphoneOptions).disabled(store.busy)
                 Button("Refresh microphones") { store.refreshMicrophones() }.controlSize(.small)
-                DictationShortcutRow(store: store, hold: true, activityShortcut: activityShortcut)
-                DictationShortcutRow(store: store, hold: false, activityShortcut: activityShortcut)
+                DictationShortcutRow(store: store, slot: .hold, activityShortcut: activityShortcut)
+                DictationShortcutRow(store: store, slot: .toggle, activityShortcut: activityShortcut)
+                DictationShortcutRow(store: store, slot: .fix, activityShortcut: activityShortcut)
                 Button("Allow insertion into other apps…") { store.requestInsertionPermission() }.controlSize(.small)
                 DictationSoundSettings(store: store)
+                DictationQuietSettings(store: store)
                 Toggle("Restore my clipboard after pasting", isOn: $store.restoreClipboard).toggleStyle(COSSwitchStyle())
                     .help("When COS pastes with ⌘V, it puts back whatever you had copied once the app has the text.")
                 Text("Any shortcut: a modifier plus a key, a function key, or one modifier key by itself such as Fn 🌐 or Right ⌘. Fn and single-key shortcuts use Accessibility. Finished text drops into the text box that has the cursor; with no text box it is copied, and the pet shows it with a Copy button. Some apps, such as terminals and Electron editors, get ⌘V; COS shows Pasted when it can't confirm, then puts your clipboard back. COS never presses Send or Return.")
@@ -1167,19 +1532,41 @@ struct MacDictationSettings: View {
     }
 }
 
+/// While dictating: Mute other apps (default) / Lower other audio / Off (0.5.313). "Also pause music and video" is not
+/// offered: COS cannot read what is playing (see DictationMedia), and a blind play/pause key can start playback.
+private struct DictationQuietSettings: View {
+    @ObservedObject var store: MacDictationStore
+    @State private var permitted = DictationQuietController.tapPermitted
+    var body: some View {
+        COSDropdown("While dictating", selection: $store.quietMode,
+                    options: DictationQuietMode.allCases.map { COSDropdownOption($0, $0.title) })
+            .disabled(store.busy)
+        if store.quietMode == .mute, !permitted {
+            Text("Muting other apps needs Screen & System Audio Recording for COS Control. Until it's allowed, COS lowers your Mac's volume while you dictate and puts it back after.")
+                .font(.caption2).foregroundStyle(COSPalette.amber)
+            Button("Open Screen & System Audio Recording…") {
+                if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") { NSWorkspace.shared.open(url) }
+            }.controlSize(.small)
+        }
+        Text("Never during a Mac recording. Music and video stay muted, not paused: COS can't tell what's playing, so it never presses Play/Pause.")
+            .font(.caption2).foregroundStyle(.secondary)
+            .onAppear { permitted = DictationQuietController.tapPermitted }
+    }
+}
+
 private struct DictationShortcutRow: View {
     @ObservedObject var store: MacDictationStore
-    let hold: Bool
+    let slot: DictationShortcutSlot
     let activityShortcut: HotKeyCombo?
     @State private var monitor: Any?
     @State private var note: String?
     @State private var pendingModifier: UInt16?
     var body: some View {
         HStack {
-            Text(hold ? "Push to talk" : "Start / stop").font(.caption)
-            Text(monitor != nil ? "Press shortcut…" : ((hold ? store.holdTrigger : store.toggleTrigger)?.display ?? "Off")).font(.caption.monospaced())
+            Text(slot.title).font(.caption)
+            Text(monitor != nil ? "Press shortcut…" : (store.trigger(slot)?.display ?? "Off")).font(.caption.monospaced())
             Button(monitor == nil ? "Change" : "Cancel") { monitor == nil ? record() : stop() }
-            Button("Off") { store.setShortcut(nil, hold: hold, activity: activityShortcut); stop() }
+            Button("Off") { store.setShortcut(nil, slot: slot, activity: activityShortcut); stop() }
             if let note { Text(note).font(.caption2) }
         }.controlSize(.mini).disabled(store.busy).onDisappear { stop() }
     }
@@ -1198,7 +1585,7 @@ private struct DictationShortcutRow: View {
         if keyDown {
             pendingModifier = nil
             if key == 53 { stop() }
-            else if let trigger = DictationTrigger.keys(UInt32(key), modifiers: modifiers) { store.setShortcut(trigger, hold: hold, activity: activityShortcut); stop() }
+            else if let trigger = DictationTrigger.keys(UInt32(key), modifiers: modifiers) { store.setShortcut(trigger, slot: slot, activity: activityShortcut); stop() }
             else { note = "Add Command, Control or Option, use a function key, or press one modifier key such as Fn by itself." }
             return
         }
@@ -1206,7 +1593,7 @@ private struct DictationShortcutRow: View {
         if raw & info.device != 0 {
             pendingModifier = DictationTrigger.alone(key, flags: raw) ? key : nil
         } else if pendingModifier == key, let trigger = DictationTrigger.modifier(key) {
-            store.setShortcut(trigger, hold: hold, activity: activityShortcut); stop()
+            store.setShortcut(trigger, slot: slot, activity: activityShortcut); stop()
         } else { pendingModifier = nil }
     }
     private func stop() { if let monitor { NSEvent.removeMonitor(monitor) }; monitor = nil }
@@ -1264,6 +1651,8 @@ private final class DictationHostingView<Content: View>: NSHostingView<Content> 
             store.$listRoute.removeDuplicates().sink { [weak self] _ in Task { @MainActor in self?.sync() } },
             store.$surface.removeDuplicates().sink { [weak self] _ in Task { @MainActor in self?.sync() } },
             store.$fixNote.removeDuplicates().sink { [weak self] _ in Task { @MainActor in self?.sync() } },
+            store.$fixOfferID.removeDuplicates().sink { [weak self] _ in Task { @MainActor in self?.sync() } },
+            store.$replaceOffer.removeDuplicates().sink { [weak self] _ in Task { @MainActor in self?.sync() } },
         ]
     }
 
@@ -1277,7 +1666,8 @@ private final class DictationHostingView<Content: View>: NSHostingView<Content> 
         }
         let panel = existingPanel(store)
         host?.rootView = DictationOverlayRoot(store: store)
-        panel.ignoresMouseEvents = store.card == nil && !fixing
+        // The pill's Fix (0.5.313) is the one control on a bare pill, so the panel takes clicks while it shows.
+        panel.ignoresMouseEvents = store.card == nil && !fixing && store.fixOfferID == nil
         panel.allowsKey = fixing
         let size = host?.fittingSize ?? NSSize(width: 360, height: 60)
         let chosen = store.floatingScreen.flatMap { frame in NSScreen.screens.first { $0.frame == frame } } ?? NSScreen.main ?? NSScreen.screens.first
@@ -1322,7 +1712,8 @@ struct DictationOverlayRoot: View {
                     .dictationSurface(size)
             }
             if store.pill != .hidden {
-                DictationListeningPill(pill: store.pill, meter: store.meter, floating: true, size: size, reduceMotion: reduceMotion)
+                DictationListeningPill(pill: store.pill, meter: store.meter, floating: true, size: size, reduceMotion: reduceMotion,
+                                       onFix: store.fixOfferID == nil ? nil : { store.quickFix() })
             }
         }
         .padding(14)
@@ -1338,6 +1729,8 @@ struct DictationListeningPill: View {
     let floating: Bool
     let size: PetSize
     let reduceMotion: Bool
+    /// 0.5.313: Fix on the flash, for DictationQuickFix.offerSeconds. Nil: no button.
+    var onFix: (() -> Void)? = nil
 
     /// Green with ✓ only for a measured insertion; an unconfirmed paste flashes in the neutral colors.
     private var done: Bool { if case .flash(_, true) = pill { return true }; return false }
@@ -1367,6 +1760,18 @@ struct DictationListeningPill: View {
                 Text(pill.label)
             case .flash:
                 Text(pill.label)
+                if let onFix {
+                    Button(action: onFix) {
+                        Text("FIX")
+                            .padding(.horizontal, size.length(7))
+                            .padding(.vertical, size.length(2))
+                            .background(Capsule().fill(ink.opacity(0.16)))
+                            .contentShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Fix a word in this dictation")
+                    .accessibilityLabel("Fix a word in this dictation")
+                }
             }
         }
         .font(COSType.mono(size.typeSize(8), weight: .bold))
@@ -1379,7 +1784,7 @@ struct DictationListeningPill: View {
         .background(Capsule().fill(fill))
         .overlay(Capsule().stroke(floating || done ? Color.clear : COSPalette.line, lineWidth: 1))
         .shadow(color: .black.opacity(floating ? 0.18 : 0), radius: 9, y: 6)
-        .accessibilityElement(children: .combine)
+        .accessibilityElement(children: onFix == nil ? .combine : .contain)
         .accessibilityLabel({ () -> String in
             switch pill {
             case .transcribing: return "Transcribing dictation"
@@ -1688,6 +2093,12 @@ struct DictationFixEditor: View {
                     Button("Cancel") { store.cancelFix() }
                         .buttonStyle(COSTextButtonStyle())
                         .font(COSType.body(size.typeSize(10)))
+                }
+                if let offer = store.replaceOffer, offer.recordID == record.id {
+                    // 0.5.313: the corrected dictation back where it went, or on the clipboard. Never Return.
+                    Button(offer.app.map { "Replace it in \($0)" } ?? "Copy the corrected text") { store.replaceCorrected() }
+                        .buttonStyle(DictationButtonStyle(primary: true, size: size))
+                        .help("Puts the corrected dictation in place of what COS inserted, only if that text is unchanged; otherwise copies it")
                 }
                 if let note = store.fixNote {
                     Text(note)

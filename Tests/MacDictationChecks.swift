@@ -430,6 +430,110 @@ final class FakeDictationBoard: DictationPasteboardAccess {
         expect(DictationPlacement.choose(petFrame: petOnLeft, focusedWindow: CGRect(x: 1400, y: 100, width: 600, height: 400), screens: [left, right], mainScreen: left) == .floating(screen: right),
                "a window across both screens counts where most of it is")
         }
-        print("PASS Mac dictation: \(count) policy checks; insert-target table, measured delivery, terminals, layout ⌘V, listening bars end to end, clipboard restore, sounds, pill placement, recent dictations file, card countdown, fix-a-word selection, bounded audio, PCM16 WAV, device failure, any-key triggers")
+        do { // 0.5.313 editing and quiet; own scope
+        // Shortcuts: ⌃⌥F by default; no slot may take another's combo or Open Activity's.
+        let fix = DictationShortcuts.defaultFix, f9 = DictationTrigger.keys(101, modifiers: 0)!
+        expect(fix == .keys(keyCode: 3, modifiers: DictationTrigger.control | DictationTrigger.option), "Fix last dictation defaults to ⌃⌥F (ANSI F is 3)")
+        let assigned: [DictationShortcutSlot: DictationTrigger] = [.hold: .modifier(keyCode: 63), .toggle: f9, .fix: fix]
+        expect(DictationShortcuts.conflicts(fix, slot: .hold, assigned: assigned, activity: nil)
+               && DictationShortcuts.conflicts(f9, slot: .fix, assigned: assigned, activity: nil)
+               && DictationShortcuts.conflicts(.modifier(keyCode: 63), slot: .toggle, assigned: assigned, activity: nil),
+               "a combo another dictation slot holds conflicts")
+        expect(!DictationShortcuts.conflicts(fix, slot: .fix, assigned: assigned, activity: nil) && !DictationShortcuts.conflicts(nil, slot: .fix, assigned: assigned, activity: fix),
+               "re-setting a slot's own combo, or turning it off, is not a conflict")
+        expect(DictationShortcuts.conflicts(fix, slot: .fix, assigned: [:], activity: fix), "Open Activity's combo conflicts")
+        expect(DictationShortcutSlot.allCases.map(\.hotKeyID) == [1, 2, 3] && DictationShortcutSlot.fix.defaultsPrefix == "dictation.fix",
+               "hot key ids and stored keys")
+        // Fix from the moment it lands.
+        let t0 = Date(timeIntervalSince1970: 1_760_000_000)
+        let newest = DictationRecord(id: UUID(), text: "new", createdAt: t0, delivery: .inserted(app: "Notes"))
+        let older = DictationRecord(id: UUID(), text: "old", createdAt: t0.addingTimeInterval(-60), delivery: .inserted(app: "Notes"))
+        expect(DictationQuickFix.target([newest, older], busy: false) == newest.id && DictationQuickFix.target([newest], busy: true) == nil
+               && DictationQuickFix.target([], busy: false) == nil, "the shortcut opens the newest dictation, never while dictating")
+        expect(DictationQuickFix.offerSeconds == 5 && DictationQuickFix.offers(.inserted(app: "Notes", viaPaste: false))
+               && DictationQuickFix.offers(.unconfirmed(app: "iTerm2", viaPaste: true)) && !DictationQuickFix.offers(.refused(.noTextBox)),
+               "Fix rides every flash for 5 s; a refusal has the card")
+        // Replace the pasted text: the span is recorded only on an exact measurement.
+        let base = DictationFieldSnapshot(characters: 100, location: 40, length: 0)
+        let span = DictationReplace.span(pid: 42, baseline: base, after: DictationFieldSnapshot(characters: 112, location: 52, length: 0), count: 12)
+        expect(span == DictationInsertedSpan(pid: 42, location: 40, length: 12), "a landed insertion records where it went")
+        expect(DictationReplace.span(pid: 42, baseline: base, after: DictationFieldSnapshot(characters: 130, location: 70, length: 0), count: 12) == nil
+               && DictationReplace.span(pid: 42, baseline: DictationFieldSnapshot(characters: 100, location: nil, length: nil),
+                                        after: DictationFieldSnapshot(characters: 112, location: nil, length: nil), count: 12) == nil,
+               "a field that moved more than the text, or no caret, records nothing")
+        let inserted = "yellow fanduna"
+        let s14 = DictationInsertedSpan(pid: 42, location: 40, length: 14)
+        func decide(_ span: DictationInsertedSpan?, terminal: Bool = false, running: Bool = true, n: Int? = 120, at: String? = "yellow fanduna") -> DictationReplace.Decision {
+            DictationReplace.decide(span: span, terminal: terminal, appRunning: running, fieldCharacters: n, textAtSpan: at, inserted: inserted)
+        }
+        expect(decide(s14) == .replace(location: 40, length: 14), "range still matches: replace")
+        expect(decide(s14, at: "low fanduna to") == .copy(.textMoved), "text moved (typed above it): copy")
+        expect(decide(s14, at: "yellow fandunas") == .copy(.textMoved) && decide(s14, at: nil) == .copy(.textMoved), "edited or unreadable span: copy")
+        expect(decide(s14, n: 30) == .copy(.fieldChanged) && decide(s14, n: nil) == .copy(.fieldGone), "field changed or gone: copy")
+        expect(decide(s14, terminal: true) == .copy(.terminal) && decide(nil) == .copy(.notMeasured) && decide(s14, running: false) == .copy(.appGone),
+               "terminal, unmeasured paste and a quit app: copy")
+        // Before the set, the span is selected: 120 characters, 40+14.
+        let selected = DictationFieldSnapshot(characters: 120, location: 40, length: 14)
+        func verified(_ n: Int?, _ caret: Int?, _ length: Int? = 0, new: Int) -> Bool {
+            DictationReplace.verified(before: selected, after: DictationFieldSnapshot(characters: n, location: caret, length: caret == nil ? nil : length), span: s14, newLength: new)
+        }
+        expect(verified(120, 54, new: 14) && !verified(120, nil, new: 14) && !verified(120, 40, 14, new: 14) && !verified(120, 40, 0, new: 14),
+               "a same-length fix is proved by the caret after it, never by the unchanged count")
+        expect(!verified(125, 54, new: 14), "a count that moved on a same-length fix is not proof")
+        expect(verified(123, 57, new: 17) && verified(123, nil, new: 17) && verified(nil, 57, new: 17),
+               "a longer fix: the count moved by the difference, or the caret sits after it")
+        expect(!verified(120, 54, new: 17) && !verified(123, 40, 14, new: 17) && !verified(123, 54, new: 17) && !verified(nil, nil, new: 17),
+               "anything else is unproved")
+        expect(DictationReplace.corrected("I caught a yellow fanduna, today.", range: 3...4, written: "yellowfin tuna") == "I caught a yellowfin tuna, today."
+               && DictationReplace.corrected("\"Kubernetes\"\nnext", range: 0...0, written: "Kubernetes") == "\"Kubernetes\"\nnext"
+               && DictationReplace.corrected("hi  there", range: 1...1, written: "you") == "hi  you"
+               && DictationReplace.corrected("hi", range: 1...1, written: "x") == nil,
+               "the corrected dictation keeps punctuation and spacing")
+        // Smarter selection: the likely misheard span, and a suggestion from the dictionary.
+        let tokens = DictationFixText.tokens("I caught a yellow fanduna today")
+        let english: Set<String> = ["I", "caught", "a", "yellow", "today"]
+        let guess = DictationFixGuess.guess(tokens: tokens, tapped: 4, vocabulary: ["Bottle POS", "yellowfin tuna"], known: { english.contains($0) })
+        expect(guess == .init(range: 3...4, suggestion: "yellowfin tuna"), "\"yellow fanduna\" is one mishearing of \"yellowfin tuna\"")
+        expect(DictationFixGuess.guess(tokens: tokens, tapped: 3, vocabulary: ["yellowfin tuna"], known: { english.contains($0) }).suggestion == "yellowfin tuna",
+               "tapping either word finds it")
+        expect(DictationFixGuess.guess(tokens: ["open", "bottle", "pause", "now"], tapped: 2, vocabulary: ["Bottle POS"], known: { _ in true })
+               == .init(range: 1...2, suggestion: "Bottle POS"), "a sound-alike the spelling alone misses (\"bottle pause\")")
+        expect(DictationFixGuess.skeleton("yellow fanduna") == DictationFixGuess.skeleton("yellowfin tuna") && DictationFixGuess.distance("kitten", "sitting") == 3,
+               "sound-alike key and edit distance")
+        let plain = DictationFixGuess.guess(tokens: DictationFixText.tokens("ship it to kuberneetus prod now"), tapped: 3, vocabulary: [], known: { ["ship", "it", "to", "now"].contains($0) })
+        expect(plain == .init(range: 3...4, suggestion: nil), "no dictionary match: the tap widens over neighbors that are not English words")
+        expect(DictationFixGuess.guess(tokens: tokens, tapped: 1, vocabulary: ["yellowfin tuna"], known: { english.contains($0) }) == .init(range: 1...1, suggestion: nil),
+               "a known word far from any match stays one word")
+        expect(DictationFixGuess.guess(tokens: DictationFixText.tokens("yellowfin tuna again"), tapped: 0, vocabulary: ["yellowfin tuna"], known: { _ in false }).suggestion == nil,
+               "a span already spelled like the dictionary is not suggested again")
+        expect(DictationFixGuess.guess(tokens: ["dog", "food"], tapped: 0, vocabulary: ["Bottle POS"], known: { _ in true }) == .init(range: 0...0, suggestion: nil),
+               "an unrelated dictionary suggests nothing")
+        // Quiet: mute (default), lower, off; never during a Mac recording; the exact volume back.
+        expect(DictationQuietMode.default == .mute && DictationQuietMode.allCases.map(\.title) == ["Mute other apps", "Lower other audio", "Off"], "Mute by default")
+        expect(DictationQuiet.plan(mode: .mute, macRecording: false, tapPermitted: true, volume: 0.5, volumeSettable: true) == .muteTap,
+               "permitted: a muting tap")
+        expect(DictationQuiet.plan(mode: .mute, macRecording: false, tapPermitted: false, volume: 0.5, volumeSettable: true) == .lowerVolume(to: 0.125)
+               && DictationQuiet.plan(mode: .lower, macRecording: false, tapPermitted: true, volume: 0.8, volumeSettable: true) == .lowerVolume(to: 0.2),
+               "no System Audio Recording, or Lower: the volume to a quarter")
+        for mode in DictationQuietMode.allCases {
+            if case .leave = DictationQuiet.plan(mode: mode, macRecording: true, tapPermitted: true, volume: 0.5, volumeSettable: true) {} else {
+                expect(false, "never during a Mac recording (\(mode))")
+            }
+        }
+        if case .leave = DictationQuiet.plan(mode: .off, macRecording: false, tapPermitted: true, volume: 0.5, volumeSettable: true) {} else { expect(false, "Off leaves it") }
+        if case .leave = DictationQuiet.plan(mode: .lower, macRecording: false, tapPermitted: false, volume: 0.5, volumeSettable: false) {} else { expect(false, "fixed volume: left alone") }
+        if case .leave = DictationQuiet.plan(mode: .lower, macRecording: false, tapPermitted: false, volume: 0, volumeSettable: true) {} else { expect(false, "silent: left alone") }
+        expect(DictationQuiet.restoreVolume(saved: 0.62, lowered: 0.155, current: 0.155) == 0.62 && DictationQuiet.restoreVolume(saved: 0.62, lowered: 0.155, current: nil) == 0.62,
+               "the exact saved scalar goes back")
+        expect(DictationQuiet.restoreVolume(saved: 0.62, lowered: 0.155, current: 0.9) == nil, "a volume the person changed while dictating stays theirs")
+        let pending = DictationQuiet.Pending(deviceUID: "BuiltInSpeakerDevice", saved: 0.62, lowered: 0.155)
+        let decoded = try JSONDecoder().decode(DictationQuiet.Pending.self, from: try JSONEncoder().encode(pending))
+        expect(decoded == pending && DictationQuiet.launchRestore(decoded, current: 0.155) == 0.62 && DictationQuiet.launchRestore(nil, current: 0.1) == nil,
+               "interrupted dictation: the next launch puts the volume back")
+        // Media: never a blind play/pause key.
+        expect(DictationMedia.decide(playing: nil) == .leave && DictationMedia.decide(playing: false) == .leave && DictationMedia.decide(playing: true) == .pause,
+               "pause only a known, playing state; unknown is left alone")
+        }
+        print("PASS Mac dictation: \(count) policy checks; insert-target table, measured delivery, terminals, layout ⌘V, listening bars end to end, clipboard restore, sounds, pill placement, recent dictations file, card countdown, fix-a-word selection, quick fix, replace, span guess, quiet and restore, bounded audio, PCM16 WAV, device failure, any-key triggers")
     }
 }
