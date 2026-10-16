@@ -1,5 +1,7 @@
 import Foundation
 import AppKit
+import SwiftUI
+import CoreText
 import Combine
 import CryptoKit
 
@@ -336,6 +338,7 @@ private actor WorkChatFixture {
     try await runWorkContinuationChecks(source: source, session: sessions[0], root: root)
     try await runWorkIndependentRecoveryChecks(source: source, sessions: sessions, root: root)
     try await runWorkChatTypingChecks(source: source, handoff: handoff, root: root)
+    try await runWorkChatQueueChecks(ids: ids, sessions: sessions, root: root)
     print("PASS Work orchestration: exact target policy, private CAS/symlinks, plan-then-review (edit, Not now, per-assignment Send, Skip, Send all), shared distinct-target run, duplicate/foreign-run fences and pre-flight, durable history, all-round provenance, navigation/double-send/task-revision drift; zero provider sends")
 }
 
@@ -885,4 +888,292 @@ private actor WorkContinuationFixture {
         } else { precondition(!store.receipts.contains { $0.id == newID }, "Refused handoff cannot create a delivery receipt") }
     }
     print("PASS follow-up delivery: idle exact native reply, active/unknown/refreshed-row fences, duplicate intent, unchanged review status, durable two-turn history")
+}
+
+/// 0.5.316 (Miles 2026-10-16): Queue it, Send in parallel, Check first. A server that advertises queueRounds, the real
+/// store, real submit and a fake transport: an earlier handoff on the first session runs until the check says otherwise.
+private actor WorkQueueFixture {
+    let ids: [String]
+    let queue: Bool
+    let server: String
+    private(set) var turn = "pending"
+    private(set) var revision = String(repeating: "e", count: 64)
+    private var sends: [String] = []
+    private var bodies: [[String: Any]] = []
+    init(_ ids: [String], server: String, queue: Bool = true) { self.ids = ids; self.server = server; self.queue = queue }
+    func setTurn(_ state: String) { turn = state }
+    func setRevision(_ value: String) { revision = value }
+    func sent() -> [String] { sends }
+    /// Each plan's sessions as the planner saw them: openWork per session, nil when the key was left out.
+    func openWork() -> [[Bool?]] { bodies.map { ($0["sessions"] as? [[String: Any]] ?? []).map { $0["openWork"] as? Bool } } }
+    func openWorkKeys() -> [Bool] { bodies.map { ($0["sessions"] as? [[String: Any]] ?? []).contains { $0["openWork"] != nil } } }
+    func run(_ args: [String], _ data: Data?) async throws -> HelperResponse {
+        var out: [String: JSONValue] = [:]
+        let thread = args.firstIndex(of: "--thread-id").map { args[$0 + 1] } ?? ""
+        switch args.first ?? "" {
+        case "work-models": out = ["serverInstanceId": .string(server), "models": .array([])]
+        case "claude-sessions": out = ["sessions": .array(ids.prefix(2).map { id in .object([
+            "id": .string(String(id.split(separator: ":")[1])), "provider": .string(String(id.split(separator: ":")[0])),
+            "name": .string("Exact " + id), "workspace": .string("/tmp/fixture"), "state": .string("recent")]) })]
+        case "work-chat-capabilities":
+            out = ["protocolVersion": .number(1), "planners": .array([.string("sonnet"), .string("opus")]), "efforts": .array([.string("high")])]
+            if queue { out["queueRounds"] = .bool(true) }
+        case "work-context": out = ["contextText": .string("Fixture task evidence"), "workRevision": .string(revision), "task": .object(["id": .string("aaaaaaaaaaaa"), "workIdentity": .string("aaaaaaaaaaaa"), "domain": .string("quilt"), "title": .string("Launch fixture"), "text": .string("Launch fixture"), "source": .string("Fixture evidence")])]
+        case "work-chat":
+            if let data, let body = try? JSONSerialization.jsonObject(with: data) as? [String: Any] { bodies.append(body) }
+            out = ["protocolVersion": .number(1), "answer": .string("Two independent checks."),
+                "assignments": .array(ids.prefix(2).map { .object(["sessionID": .string($0), "prompt": .string("Next idea; do not publish.")]) })]
+        // The earlier handoff on the first session: still running until the fixture says its turn completed.
+        case "session-chat-turn": out = ["state": .string(turn)]
+        case "session-chat-attachability": out = ["attachable": .bool(true)]
+        case "session-chat-attach": out = ["state": .string("attached"), "bindingId": .string("queue-fixture"), "epoch": .number(1), "boundTo": .string("exact-target")]
+        case "session-chat-send": sends.append(thread); out = ["state": .string("completed")]
+        // No reply history: a delivered turn is never proven idle here, so it holds until it is marked reviewed.
+        case "session-recent-replies": throw HelperClientError.commandFailed("Fixture has no session history")
+        default: preconditionFailure("Queue fixture must not reach \(args)")
+        }
+        return HelperResponse(ok: true, message: "Fixture", details: out)
+    }
+}
+
+@MainActor private func runWorkChatQueueChecks(ids: [String], sessions: [WorkSession], root: URL) async throws {
+    struct Journal: Encodable { var version = 2; var receipts: [WorkHandoffReceipt]; var sessions: [WorkSession] }
+    // Settings › Work › When earlier work is still open: Queue it by default, Ask each time on request.
+    precondition(WorkChatHold.settingDefault == WorkChatHold.queueSetting && WorkChatHold.queueSetting == "queue", "Queue it is the default")
+    let fresh = UserDefaults(suiteName: "cos-queue-check-" + UUID().uuidString)!
+    precondition(WorkChatHold.storedSetting(fresh) == "queue", "An unset Mac reads Queue it")
+    fresh.set("ask", forKey: WorkChatHold.settingKey)
+    precondition(WorkChatHold.storedSetting(fresh) == "ask")
+    precondition(WorkChatHold.onHold(setting: "queue", autoSend: false, offered: true) == .queue && WorkChatHold.onHold(setting: "ask", autoSend: false, offered: true) == .ask)
+    precondition(WorkChatHold.onHold(setting: "ask", autoSend: true, offered: true) == .queue && WorkChatHold.onHold(setting: "queue", autoSend: true, offered: true) == .queue, "Plan and send queues; it never asks and never skips the fence")
+    precondition(WorkChatHold.onHold(setting: "queue", autoSend: true, offered: false) == .stop && WorkChatHold.onHold(setting: "ask", autoSend: false, offered: false) == .stop, "An older server keeps the check-first fence")
+    precondition(WorkChatHold.queuedLine(titles: []) == "Queued behind earlier work on this card" && WorkChatHold.queuedLine(titles: ["Copy", "Copy"]) == "Queued behind \u{201C}Copy\u{201D}"
+        && WorkChatHold.queuedLine(titles: ["A", "B"]) == "Queued behind \u{201C}A\u{201D} and \u{201C}B\u{201D}" && WorkChatHold.queuedLine(titles: ["A", "B", "C"]) == "Queued behind \u{201C}A\u{201D} and 2 more")
+    // The store path below reads this Mac's setting (whenHeld nil); start from an unset Mac.
+    UserDefaults.standard.removeObject(forKey: WorkChatHold.settingKey)
+    defer { UserDefaults.standard.removeObject(forKey: WorkChatHold.settingKey) }
+
+    func earlier(_ card: WorkSource, session: Int = 0) -> WorkHandoffReceipt {
+        var row = WorkHandoffReceipt(id: UUID().uuidString.lowercased(), workID: card.id, workTitle: card.title, sourceRevision: card.revision, mode: .continueSession, provider: sessions[session].provider, modelID: "existing", sessionID: sessions[session].id, sessionTitle: "Copy review", status: "running", detail: "Provider turn accepted.", prompt: "Earlier work", createdAt: Date().timeIntervalSince1970 - 60)
+        row.channel = "turn"; row.bindingID = "earlier-binding"; row.orchestrationRunID = UUID().uuidString.lowercased(); return row
+    }
+    func setup(_ name: String, queue: Bool = true, held: Bool = true) async throws -> (WorkQueueFixture, WorkHandoffStore, WorkTaskChatStore, WorkSource, WorkHandoffReceipt) {
+        let task = TaskRow(.object(["id": .string("aaaaaaaaaaaa"), "workIdentity": .string("aaaaaaaaaaaa"), "domain": .string("quilt"), "title": .string("Launch fixture"), "text": .string("Launch fixture"), "source": .string("Fixture evidence")]))!
+        let card = WorkSource.taskSnapshot(task)
+        let blocker = earlier(card)
+        let file = root.appendingPathComponent("queue-" + name + ".json")
+        try JSONEncoder().encode(Journal(receipts: held ? [blocker] : [], sessions: sessions)).write(to: file)
+        let fixture = WorkQueueFixture(ids, server: "queue-" + name, queue: queue)
+        let store = WorkHandoffStore(storageURL: file, transport: { args, data in try await fixture.run(args, data) })
+        for id in ids.prefix(2) { precondition(store.confirmSessionCard(sessionID: id, source: card)) }
+        await store.refresh()
+        let chat = WorkTaskChatStore(); chat.enabled = true; chat.open(source: card, handoff: store)
+        await chat.loadPlanners(handoff: store, retryDelay: .zero)
+        return (fixture, store, chat, card, blocker)
+    }
+    let firstThread = String(ids[0].split(separator: ":")[1]), secondThread = String(ids[1].split(separator: ":")[1])
+
+    // 1. Queue it (the default). Planning goes ahead while earlier work runs; Send queues; it sends once that work resolves.
+    do {
+        let (fixture, store, chat, card, blocker) = try await setup("queue")
+        precondition(chat.queueOffered && !chat.serverQueueMissing, "A 6.73.15 server offers the queue")
+        chat.setDraft("A new idea while the copy review runs")
+        await chat.send(source: card, handoff: store)
+        let round = chat.record!.rounds.last!
+        precondition(round.state == "Ready to send" && chat.blockers.isEmpty && chat.error == nil, "Earlier open work no longer stops planning: \(round.state) \(chat.error ?? "")")
+        let seen = await fixture.openWork()
+        precondition(seen == [[true, false]], "The planner is told which session has earlier work open: \(seen)")
+        await chat.sendAll(roundID: round.id, source: card, handoff: store)
+        var after = chat.record!.rounds.last!
+        let none = await fixture.sent()
+        precondition(none.isEmpty && after.state == WorkChatHold.queuedState && after.assignments.allSatisfy { $0.state == WorkChatHold.queuedState && $0.waitingOn == [blocker.id] && $0.parallel == false },
+                     "With Queue it, a held Send queues every assignment behind the earlier handoff: \(after.state) \(after.assignments.map(\.state))")
+        precondition(chat.blockers.isEmpty && chat.pendingHold == nil && chat.error == nil, "Queue it never shows the wall or asks")
+        precondition(WorkChatHold.waitingTitles(after, receipts: store.receipts) == ["Copy review", "Copy review"], "The card names the session it waits on")
+        try renderQueueStates(chat: chat, handoff: store, source: card, round: after, name: "queued")
+        let relaunched = WorkTaskChatStore(); relaunched.enabled = true; relaunched.open(source: card, handoff: store)
+        precondition(relaunched.record?.rounds.last?.assignments.allSatisfy { $0.state == WorkChatHold.queuedState && $0.waitingOn == [blocker.id] } == true, "A queued round survives a restart")
+        // Still running: nothing goes. Delivered but not checked: still nothing.
+        await chat.pumpQueued(source: card, handoff: store)
+        await fixture.setTurn("completed")
+        await chat.pumpQueued(source: card, handoff: store)
+        let stillNone = await fixture.sent()
+        precondition(stillNone.isEmpty && store.error == nil && store.receipts.first { $0.id == blocker.id }?.status == "delivered" && chat.record?.rounds.last?.state == WorkChatHold.queuedState,
+                     "A queued round never sends while its earlier handoff is running or delivered and unchecked: \(stillNone)")
+        // The app-wide pump leaves a card a Work chat view has open to that view.
+        store.markReviewed(receiptID: blocker.id)
+        let pump = WorkChatQueuePump(handoff: store, sources: { [card] })
+        WorkChatQueuePump.show(card.id)
+        await pump.pass()
+        let whileShown = await fixture.sent()
+        precondition(whileShown.isEmpty, "The app-wide pump never sends a card that is open in a Work chat view")
+        WorkChatQueuePump.hide(card.id)
+        // Marked reviewed: the app-wide pump sends both, once, with every send check again.
+        await pump.pass()
+        let both = await fixture.sent()
+        chat.syncFromDisk()
+        after = chat.record!.rounds.last!
+        precondition(both.sorted() == [firstThread, secondThread].sorted() && after.state == "Dispatched" && after.assignments.allSatisfy { $0.state == "delivered" && $0.waitingOn == nil },
+                     "Once the earlier handoff resolves, the queue sends each assignment once: \(both) \(after.state)")
+        precondition(after.assignments.allSatisfy { a in store.receipts.contains { $0.id == a.receiptID && $0.orchestrationRunID == round.id } }, "Through the same receipts and run as Send all")
+        await pump.pass(); await chat.pumpQueued(source: card, handoff: store)
+        let again = await fixture.sent()
+        precondition(again.count == 2, "A sent queue never sends twice: \(again)")
+        // Cancel puts waiting assignments back for review; nothing is sent.
+        let blocker2 = earlier(card)
+        try JSONEncoder().encode(Journal(receipts: store.receipts + [blocker2], sessions: sessions)).write(to: root.appendingPathComponent("queue-queue.json"))
+        await fixture.setTurn("pending")
+        chat.setDraft("Another idea"); await chat.send(source: card, handoff: store)
+        let next = chat.record!.rounds.last!
+        let nextSeen = await fixture.openWork()
+        precondition(nextSeen.last == [true, true], "Each session with a delivered reply not yet checked counts as open work: \(nextSeen)")
+        await chat.sendAll(roundID: next.id, source: card, handoff: store)
+        precondition(chat.record!.rounds.last!.state == WorkChatHold.queuedState)
+        chat.cancelQueued(roundID: next.id)
+        let canceled = chat.record!.rounds.last!
+        let afterCancel = await fixture.sent()
+        precondition(canceled.state == "Ready to send" && canceled.assignments.allSatisfy { $0.state == "Not sent" && $0.waitingOn == nil } && afterCancel.count == 2, "Cancel sends nothing and returns the plan for review")
+        print("PASS Work chat Queue it: plans while held, queues on Send, survives restart, never sends while running or unchecked, app-wide pump skips an open card, sends once on resolve, Cancel")
+    }
+
+    // 2. A task changed while queued: at the moment it would dispatch, the round reads Needs a new plan and sends nothing.
+    do {
+        let (fixture, store, chat, card, blocker) = try await setup("stale")
+        chat.setDraft("Queue then change the task"); await chat.send(source: card, handoff: store)
+        let round = chat.record!.rounds.last!
+        await chat.sendAll(roundID: round.id, source: card, handoff: store)
+        precondition(chat.record!.rounds.last!.state == WorkChatHold.queuedState)
+        await fixture.setTurn("completed"); await chat.refresh(source: card, handoff: store)
+        store.markReviewed(receiptID: blocker.id)
+        await fixture.setRevision(String(repeating: "f", count: 64))
+        await chat.pumpQueued(source: card, handoff: store)
+        let after = chat.record!.rounds.last!
+        let sent = await fixture.sent()
+        precondition(sent.isEmpty && after.state == "Needs a new plan" && chat.error == WorkChatPolicy.staleMessage && after.assignments.allSatisfy { $0.state == "Not sent" && $0.waitingOn == nil },
+                     "A task that changed while queued is never sent from the old plan: \(after.state) \(after.assignments.map(\.state)) \(sent)")
+        await chat.pumpQueued(source: card, handoff: store)
+        let later = await fixture.sent()
+        precondition(later.isEmpty, "A stale round stays unsent")
+        print("PASS Work chat queue re-checks: a task changed while queued reads Needs a new plan and sends nothing")
+    }
+
+    // 3. Ask each time: three choices. Send in parallel sends the free session now; the busy one waits for its own session.
+    do {
+        UserDefaults.standard.set(WorkChatHold.askSetting, forKey: WorkChatHold.settingKey)
+        defer { UserDefaults.standard.removeObject(forKey: WorkChatHold.settingKey) }
+        let (fixture, store, chat, card, blocker) = try await setup("parallel")
+        chat.setDraft("Route around the busy session"); await chat.send(source: card, handoff: store)
+        let round = chat.record!.rounds.last!
+        await chat.sendAll(roundID: round.id, source: card, handoff: store)
+        let none = await fixture.sent()
+        precondition(none.isEmpty && chat.pendingHold == PendingHoldCheck.expect(round) && chat.blockers.map(\.id) == [blocker.id]
+            && chat.record!.rounds.last!.assignments.allSatisfy { $0.state == "Not sent" }, "Ask each time asks before anything is sent")
+        try renderQueueStates(chat: chat, handoff: store, source: card, round: chat.record!.rounds.last!, name: "ask")
+        // Check first: today's fence, nothing sent, the plan stays.
+        await chat.resolveHold(.stop, source: card, handoff: store)
+        precondition(chat.pendingHold == nil && chat.error == WorkChatPreflight.heading && chat.blockers.map(\.id) == [blocker.id] && chat.record!.rounds.last!.state == "Ready to send", "Check first is the old check")
+        await chat.sendAll(roundID: round.id, source: card, handoff: store)
+        await chat.resolveHold(.parallel, source: card, handoff: store)
+        var after = chat.record!.rounds.last!
+        let firstSends = await fixture.sent()
+        precondition(firstSends == [secondThread] && after.assignments[1].state == "delivered", "Send in parallel sends the free session now: \(firstSends)")
+        precondition(after.assignments[0].state == WorkChatHold.queuedState && after.assignments[0].parallel == true && after.assignments[0].waitingOn == [blocker.id] && after.state == WorkChatHold.queuedState,
+                     "The busy session's assignment waits behind its own session: \(after.assignments.map(\.state))")
+        try renderQueueStates(chat: chat, handoff: store, source: card, round: after, name: "parallel")
+        // The one rule: a session with an open handoff never gets a second instruction, whichever path tries.
+        await chat.pumpQueued(source: card, handoff: store)
+        let direct = UUID().uuidString.lowercased()
+        await store.submit(source: card, mode: .continueSession, session: store.sessions.first { $0.id == ids[0] }!, model: nil, prompt: "Second writer", orchestrationRunID: UUID().uuidString, intentID: direct, sessionFence: true)
+        let guarded = await fixture.sent()
+        precondition(guarded == [secondThread] && !store.receipts.contains { $0.id == direct }, "Parallel never sends into a session that still has a running handoff: \(guarded)")
+        await fixture.setTurn("completed"); await chat.refresh(source: card, handoff: store)
+        await chat.pumpQueued(source: card, handoff: store)
+        let unchecked = await fixture.sent()
+        precondition(unchecked == [secondThread], "Nor while its delivered reply is unchecked")
+        store.markReviewed(receiptID: blocker.id)
+        await chat.pumpQueued(source: card, handoff: store)
+        after = chat.record!.rounds.last!
+        let all = await fixture.sent()
+        precondition(all.filter { $0 == firstThread }.count == 1 && all.count == 2 && after.state == "Dispatched", "Its own session resolved: it goes, once: \(all)")
+        // A second parallel round: each session now holds its own delivered reply, so both wait, and nothing is sent twice.
+        chat.setDraft("One more idea"); await chat.send(source: card, handoff: store)
+        let third = chat.record!.rounds.last!
+        await chat.sendAll(roundID: third.id, source: card, handoff: store)
+        await chat.resolveHold(.parallel, source: card, handoff: store)
+        let held = await fixture.sent()
+        precondition(held.count == 2 && chat.record!.rounds.last!.assignments.allSatisfy { $0.state == WorkChatHold.queuedState && $0.parallel == true }, "A delivered reply not yet checked holds its session in parallel too: \(held)")
+        print("PASS Work chat parallel: asks first, Check first unchanged, free session now, busy session waits for its own work, never a second instruction into a held session")
+    }
+
+    // 4. Plan and send with earlier work open queues, even with Ask each time: sending without review never skips the fence.
+    do {
+        UserDefaults.standard.set(WorkChatHold.askSetting, forKey: WorkChatHold.settingKey)
+        defer { UserDefaults.standard.removeObject(forKey: WorkChatHold.settingKey) }
+        let (fixture, store, chat, card, blocker) = try await setup("auto")
+        chat.setDraft("Plan and send while earlier work runs")
+        await chat.send(source: card, handoff: store, autoSend: true)
+        let round = chat.record!.rounds.last!
+        let sent = await fixture.sent()
+        precondition(sent.isEmpty && round.sentWithoutReview == true && round.state == WorkChatHold.queuedState && chat.pendingHold == nil
+            && round.assignments.allSatisfy { $0.state == WorkChatHold.queuedState && $0.parallel == false && $0.waitingOn == [blocker.id] }, "Plan and send queues instead of bypassing the fence: \(round.state) \(sent)")
+        print("PASS Work chat Plan and send: queues behind earlier work, never asks, never bypasses")
+    }
+
+    // 5. An older server (no queueRounds): today's behaviour, said plainly; never an openWork key.
+    do {
+        let (fixture, store, chat, card, blocker) = try await setup("old", queue: false)
+        precondition(!chat.queueOffered && chat.serverQueueMissing, "An older server offers no queue, and Control knows why")
+        chat.setDraft("Older server, earlier work open"); await chat.send(source: card, handoff: store)
+        precondition(chat.record!.rounds.isEmpty && chat.blockers.map(\.id) == [blocker.id] && chat.error == WorkChatPreflight.heading && chat.record?.draft == "Older server, earlier work open",
+                     "An older server keeps the check-first fence before planning")
+        await fixture.setTurn("completed"); await store.refreshReceipts(); store.markReviewed(receiptID: blocker.id)
+        await chat.recheckBlockers(source: card, handoff: store)
+        await chat.send(source: card, handoff: store)
+        let round = chat.record!.rounds.last!
+        let keys = await fixture.openWorkKeys()
+        precondition(round.state == "Ready to send" && keys == [false], "An older server never receives openWork: \(keys)")
+        try JSONEncoder().encode(Journal(receipts: store.receipts + [earlier(card)], sessions: sessions)).write(to: root.appendingPathComponent("queue-old.json"))
+        await fixture.setTurn("pending")
+        await chat.sendAll(roundID: round.id, source: card, handoff: store)
+        let sent = await fixture.sent()
+        precondition(sent.isEmpty && chat.pendingHold == nil && chat.error == WorkChatPreflight.heading && chat.record!.rounds.last!.assignments.allSatisfy { $0.state == "Not sent" },
+                     "On an older server a held Send shows the fence; nothing queues")
+        print("PASS Work chat older server: check-first fence before planning and sending, no openWork key, nothing queued")
+    }
+}
+
+private enum PendingHoldCheck {
+    @MainActor static func expect(_ round: WorkChatRound) -> WorkTaskChatStore.PendingHold { .init(roundID: round.id, assignmentIDs: round.assignments.map(\.receiptID)) }
+}
+
+/// The queued line and the Ask each time choices, rendered offscreen from the real state above (light and dark).
+@MainActor private func renderQueueStates(chat: WorkTaskChatStore, handoff: WorkHandoffStore, source: WorkSource, round: WorkChatRound, name: String) throws {
+    guard CommandLine.arguments.contains("--render") else { return }
+    let fonts = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("Resources/Fonts")
+    for font in ["Fraunces", "Fraunces-Italic", "DMSans", "JetBrainsMono"] { CTFontManagerRegisterFontsForURL(fonts.appendingPathComponent(font + ".ttf") as CFURL, .process, nil) }
+    NSApplication.shared.setActivationPolicy(.prohibited)
+    let out = URL(fileURLWithPath: CommandLine.arguments.last!)
+    try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+    for appearance in [NSAppearance.Name.aqua, .darkAqua] {
+        let content = VStack(alignment: .leading, spacing: 10) {
+            Text(round.question).font(COSType.body(14, weight: .semibold))
+            ForEach(round.assignments) { a in
+                HStack { Text(handoff.contributors(workID: source.id).first { $0.id == a.sessionID }?.title ?? a.sessionID).font(COSType.body(12)); Spacer(); Text(a.state).font(COSType.mono(10)) }
+                    .padding(10).background(COSPalette.raised, in: RoundedRectangle(cornerRadius: 8))
+            }
+            if chat.pendingHold?.roundID == round.id { WorkChatHoldChoices(chat: chat, handoff: handoff, source: source) }
+            if round.assignments.contains(where: { $0.state == WorkChatHold.queuedState }) { WorkChatQueuedLine(chat: chat, handoff: handoff, source: source, round: round) }
+        }.padding(14).frame(width: 560, alignment: .leading).background(COSPalette.card)
+        let host = NSHostingView(rootView: content)
+        host.frame = NSRect(x: 0, y: 0, width: 560, height: max(200, host.fittingSize.height))
+        let window = NSWindow(contentRect: host.frame.offsetBy(dx: -20000, dy: -20000), styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        host.appearance = NSAppearance(named: appearance); window.appearance = host.appearance; window.contentView = host
+        let until = Date().addingTimeInterval(0.5)
+        while Date() < until { RunLoop.main.run(until: Date().addingTimeInterval(0.05)); host.layoutSubtreeIfNeeded() }
+        guard let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds) else { throw CocoaError(.fileWriteUnknown) }
+        host.cacheDisplay(in: host.bounds, to: rep)
+        try rep.representation(using: .png, properties: [:])!.write(to: out.appendingPathComponent("work-chat-" + name + "-" + (appearance == .aqua ? "light" : "dark") + ".png"))
+        window.close()
+    }
 }

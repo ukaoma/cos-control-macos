@@ -485,9 +485,16 @@ struct WorkRecommendationKey: Equatable {
     /// Delivered native turns proven idle with their own reply, keyed by the exact receipt bytes (a journal change since the
     /// read voids the proof). A chat follow-up may pass these without anyone marking the earlier answer reviewed.
     func taskChatContinuations(source: WorkSource) async -> [String: Data] {
+        await continuations(for: receipts(for: source.id))
+    }
+    /// 0.5.316: the same idle proofs for every delivered turn on one session, from any card (Send in parallel).
+    func sessionContinuations(sessionID: String) async -> [String: Data] {
+        await continuations(for: receipts.filter { WorkChatPreflight.onSession($0, sessionID) })
+    }
+    private func continuations(for rows: [WorkHandoffReceipt]) async -> [String: Data] {
         guard !isolated else { return [:] }
         var continuations: [String: Data] = [:]
-        for row in receipts(for: source.id) where row.blocksNewHandoff && row.status == "delivered" && row.channel == "turn" {
+        for row in rows where row.blocksNewHandoff && row.status == "delivered" && row.channel == "turn" {
             guard let sessionID = row.sessionID,
                   let read = try? await sessionRead(sessionID: sessionID, turns: 40),
                   WorkChatPolicy.canContinue(receipt: row, read: read),
@@ -503,6 +510,14 @@ struct WorkRecommendationKey: Equatable {
         return WorkChatPreflight.blockers(receiptsOnDisk() ?? receipts, workID: source.id, continuations: continuations,
                                           orchestrationRunID: orchestrationRunID, sessionID: sessionID)
     }
+    /// 0.5.316, Send in parallel: what would refuse a send into this one session (submit's `sessionFence`).
+    func taskChatSessionBlockers(sessionID: String, orchestrationRunID: String? = nil) async -> [WorkHandoffReceipt] {
+        let continuations = await sessionContinuations(sessionID: sessionID)
+        return WorkChatPreflight.sessionBlockers(receiptsOnDisk() ?? receipts, sessionID: sessionID, continuations: continuations,
+                                                 orchestrationRunID: orchestrationRunID)
+    }
+    /// 0.5.316: nothing else is sending or holds the journal, so a queued assignment may go now.
+    var canSendQueued: Bool { !busy && !quietSend && storageReady }
     /// Opens the existing destination editor only. A second, final confirmation is required to dispatch.
     @discardableResult func prepareIndependentRecovery(source: WorkSource, prompt: String, assignmentID: String? = nil) -> Bool {
         guard !busy, !quietSend, storageReady, !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
@@ -1155,7 +1170,7 @@ struct WorkRecommendationKey: Equatable {
     /// `resendAllFiles` (0.5.254, "Send all N again"): a Continue or Fork carries every file on the card, not only new ones.
     func submit(source: WorkSource, mode: WorkHandoffMode, session: WorkSession?, model: WorkModelChoice?, prompt: String,
                 journalPrompt: String? = nil, origin: WorkRequestOrigin? = nil, replacing: String? = nil, resendAllFiles: Bool = false, orchestrationRunID: String? = nil, intentID suppliedID: String? = nil, recovery: WorkIndependentRecovery? = nil,
-                contextFileIDs: Set<String>? = nil) async {
+                contextFileIDs: Set<String>? = nil, sessionFence: Bool = false) async {
         guard !busy else { return }
         // 0.5.252: one send at a time. A send for the glasses does not take `busy` (the Agent workspace stays usable).
         guard !quietSend else { if origin == nil { _ = refusedForGlassesSend() }; return }
@@ -1178,6 +1193,8 @@ struct WorkRecommendationKey: Equatable {
             // Unknown, queued, running and app-owned deliveries retain the existing fence.
             var continuations: [String: Data] = [:]
             if orchestrationRunID != nil { continuations = await taskChatContinuations(source: source) }
+            // 0.5.316 (Send in parallel): a Continue whose fence is its own session also needs the session's other cards' proofs.
+            if sessionFence, let session { let more = await sessionContinuations(sessionID: session.id); continuations.merge(more) { mine, _ in mine } }
             let lock = try lockJournal(); defer { flock(lock, LOCK_UN); close(lock) }
             try loadJournal()
             if let recovery {
@@ -1187,7 +1204,16 @@ struct WorkRecommendationKey: Equatable {
                 }
             }
             // 0.5.308: the fence lives in WorkChatPreflight so the task chat checks the same rule before it plans or sends.
-            guard recovery != nil || !receipts(for: source.id).contains(where: { WorkChatPreflight.holds($0, continuations: continuations, replacing: replacing, orchestrationRunID: orchestrationRunID, sessionID: session?.id) }) else { throw failure("This work already has an active or unresolved handoff. Inspect its receipt before starting another.") }
+            // 0.5.316: Send in parallel keeps one rule, a session with an open handoff never gets a second instruction, so its
+            // fence is that session's handoffs from every card instead of the whole card. Continue only.
+            if sessionFence {
+                guard mode == .continueSession, let session, origin == nil, recovery == nil else { throw failure("Only a Continue into a linked session can be sent in parallel.") }
+                guard !receipts.contains(where: { WorkChatPreflight.onSession($0, session.id) && WorkChatPreflight.holds($0, continuations: continuations, replacing: replacing, orchestrationRunID: orchestrationRunID, sessionID: session.id) }) else {
+                    throw failure("\u{201C}\(session.title)\u{201D} still has an earlier handoff open. Nothing was sent to it.")
+                }
+            } else {
+                guard recovery != nil || !receipts(for: source.id).contains(where: { WorkChatPreflight.holds($0, continuations: continuations, replacing: replacing, orchestrationRunID: orchestrationRunID, sessionID: session?.id) }) else { throw failure("This work already has an active or unresolved handoff. Inspect its receipt before starting another.") }
+            }
             let text = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty, text.utf16.count <= Self.draftLimit, !source.id.isEmpty, !source.revision.isEmpty else { throw failure("Provide a bounded instruction and source revision.") }
             // 0.5.247: the status line the session reports back with, added here so no draft can leave it out.
