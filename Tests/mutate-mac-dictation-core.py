@@ -3,12 +3,18 @@
 
 SERIAL by design: one small two-file compile at a time, each through Tests/compile-guard.sh (never parallel; see the
 2026-10-07 kernel panics). Works on a scratch copy, so the checkout is never mutated. A GREEN baseline is required
-before the first mutant (a red suite would "kill" every mutant). Each mutant must replace its target exactly once and
-must make the checks FAIL; a mutant that compiles, runs and passes is a SURVIVOR and fails this gate.
+before the first mutant (a red suite would "kill" every mutant). Each mutant must replace its target exactly once.
+
+A KILL counts only when the mutant compiles, runs, and a named check in Tests/MacDictationChecks.swift fails (its
+precondition message is printed beside the mutant, so every kill is attributed to the behaviour that caught it).
+Everything else fails this gate on its own line: SURVIVED (the checks passed), INVALID (did not compile, or timed
+out: rewrite the mutant so it compiles and runs), CRASHED (a trap outside the checks, such as an index out of range:
+rewrite the mutant, or add the check that names that behaviour). 0.5.318: before this, a mutant that did not compile
+was counted as killed, which proves nothing about the checks.
 
 Usage: python3 Tests/mutate-mac-dictation-core.py <repo root>
 """
-import pathlib, shutil, subprocess, sys, tempfile
+import pathlib, re, shutil, subprocess, sys, tempfile
 
 root = pathlib.Path(sys.argv[1]).resolve()
 CORE = "Sources/MacDictationCore.swift"
@@ -146,7 +152,7 @@ MUTANTS = [
      "        guard let edit = wordEdit(from: current, to: corrected) else { return .copy(.textMoved) }"),
     ("edit drops the common words before", "        while p < a.count, p < b.count, a[p] == b[p] { p += 1 }\n", ""),
     ("edit drops the common words after", "        while s < a.count - p, s < b.count - p, a[a.count - 1 - s] == b[b.count - 1 - s] { s += 1 }\n", ""),
-    ("edit prefix and suffix overlap", "        while s < a.count - p, s < b.count - p, a[a.count - 1 - s]", "        while s < b.count - p, a[a.count - 1 - s]"),
+    ("edit suffix stops one word early", "        while s < a.count - p, s < b.count - p, a[a.count - 1 - s]", "        while s < a.count - p - 1, s < b.count - p, a[a.count - 1 - s]"),
     ("edit not on word boundaries", "                if gap != nil, g != gap { out.append(current); current = \"\" }", "                out.append(current); current = \"\""),
     ("window reads from the field's start", "        let start = max(0, min(span.location, fieldCharacters) - windowRadius)", "        let start = 0"),
     ("window ignores a longer dictation", "span.location + max(span.length, currentLength) + windowRadius)", "span.location + span.length + windowRadius)"),
@@ -270,7 +276,10 @@ MUTANTS = [
 ]
 
 
-def compile_and_run(work: pathlib.Path) -> int:
+CHECK_FAILURE = re.compile(r"MacDictationChecks\.swift:\d+: Fatal error: (.+)|Fatal error: (.+?): file [^\n]*MacDictationChecks\.swift, line \d+")
+
+
+def compile_checks(work: pathlib.Path) -> tuple[bool, str]:
     out = work / "checks"
     if out.exists():
         out.unlink()
@@ -278,9 +287,26 @@ def compile_and_run(work: pathlib.Path) -> int:
                             "-swift-version", "6", "-strict-concurrency=complete", "-parse-as-library",
                             str(work / CORE), str(work / "Tests/MacDictationChecks.swift"), "-o", str(out)],
                            capture_output=True, text=True)
-    if build.returncode != 0:
-        return 2
-    return subprocess.run([str(out)], capture_output=True, text=True).returncode
+    first_error = next((line for line in (build.stderr + build.stdout).splitlines() if "error:" in line), "")
+    return build.returncode == 0, first_error.strip()
+
+
+def classify(work: pathlib.Path) -> tuple[str, str]:
+    """(verdict, detail): KILLED with the failing check's message, or SURVIVED, INVALID, CRASHED."""
+    built, error = compile_checks(work)
+    if not built:
+        return "INVALID", "did not compile: " + error
+    try:
+        run = subprocess.run([str(work / "checks")], capture_output=True, text=True, timeout=120)
+    except subprocess.TimeoutExpired:
+        return "INVALID", "timed out"
+    if run.returncode == 0:
+        return "SURVIVED", ""
+    found = CHECK_FAILURE.search(run.stderr + run.stdout)
+    if found:
+        return "KILLED", (found.group(1) or found.group(2)).strip()
+    tail = (run.stderr + run.stdout).strip().splitlines()
+    return "CRASHED", tail[-1] if tail else f"exit {run.returncode}"
 
 
 work = pathlib.Path(tempfile.mkdtemp(prefix="cos-dictation-mutants-", dir="/private/tmp"))
@@ -289,21 +315,24 @@ try:
     shutil.copy(root / CORE, work / CORE)
     shutil.copy(root / "Tests/MacDictationChecks.swift", work / "Tests/MacDictationChecks.swift")
     original = (work / CORE).read_text()
-    if compile_and_run(work) != 0:
-        sys.exit("baseline is not green: fix the checks before reading any mutant")
-    survivors = []
-    for name, old, new in MUTANTS:
+    verdict, detail = classify(work)
+    if verdict != "SURVIVED":
+        sys.exit(f"baseline is not green ({verdict}: {detail}): fix the checks before reading any mutant")
+    for name, old, _ in MUTANTS:
         if original.count(old) != 1:
             sys.exit(f"mutant '{name}' targets {original.count(old)} sites; it must land exactly once")
+    results: dict[str, list[str]] = {"KILLED": [], "SURVIVED": [], "INVALID": [], "CRASHED": []}
+    for name, old, new in MUTANTS:
         (work / CORE).write_text(original.replace(old, new))
-        code = compile_and_run(work)
-        verdict = "KILLED (did not compile)" if code == 2 else ("KILLED" if code != 0 else "SURVIVED")
-        print(f"{verdict:24} {name}")
-        if code == 0:
-            survivors.append(name)
+        verdict, detail = classify(work)
+        results[verdict].append(name)
+        print(f"{verdict:9} {name}" + (f"  <- {detail}" if detail else ""), flush=True)
         (work / CORE).write_text(original)
-    if survivors:
-        sys.exit(f"{len(survivors)} survivor(s): {survivors}")
-    print(f"PASS dictation core mutation gate: {len(MUTANTS)} mutants, all killed, green baseline")
+    print(f"{len(results['KILLED'])} killed by a named check, {len(results['SURVIVED'])} survived, "
+          f"{len(results['INVALID'])} invalid (did not compile or timed out), {len(results['CRASHED'])} crashed outside the checks")
+    failing = {k: v for k, v in results.items() if k != "KILLED" and v}
+    if failing:
+        sys.exit("mutation gate FAILED: " + "; ".join(f"{k.lower()}: {v}" for k, v in failing.items()))
+    print(f"PASS dictation core mutation gate: {len(MUTANTS)} mutants, each killed by a named check, green baseline")
 finally:
     shutil.rmtree(work, ignore_errors=True)
