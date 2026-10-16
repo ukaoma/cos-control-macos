@@ -31,9 +31,9 @@ MUTANTS = [
     # ── The pure reducer, liveness, hand-off and copy (models lane).
     ("first copy of an index wins", P, "            chunks[chunk.i] = chunk\n", "            chunks[chunk.i] = chunks[chunk.i] ?? chunk\n", "the newer read of an index wins", "models"),
     ("turns not in index order", P, "        for index in chunks.keys.sorted() {", "        for index in chunks.keys.sorted(by: >) {", CHK, "models"),
-    ("no speaker merge", P, "            if let last = runs.last, last.speaker == speaker {", "            if let last = runs.last, false, last.speaker == speaker {", CHK, "models"),
-    ("turn id not kept (W3)", P, "            let id = inherited ?? (used.contains(first.i) ? -(first.i + 1) : first.i)", "            let id = used.contains(first.i) ? -(first.i + 1) : first.i", "keeps its id", "models"),
-    ("taken first index reused (W3)", P, "            let id = inherited ?? (used.contains(first.i) ? -(first.i + 1) : first.i)", "            let id = inherited ?? first.i", "takes -(index + 1)", "models"),
+    ("no speaker merge", P, "            if let last = runs.last, last.speaker == speaker,", "            if let last = runs.last, false, last.speaker == speaker,", CHK, "models"),
+    ("turn id not kept (W3)", P, "            var id = inherited ?? first.i", "            var id = first.i", "keeps its id", "models"),
+    ("taken first index reused (W3)", P, "            if used.contains(id) {", "            if false, used.contains(id) {", "takes -(index + 1)", "models"),
     ("duration runs past the end (W2)", P, "        let now = endedAt.map { min($0, now) } ?? now\n", "", "QA W2", "models"),
     ("ended row loses its end (W2)", P, "phase: feed.phase, endedAt: feed.endedAt))", "phase: feed.phase))", "carries its end time", "models"),
     ("quiet clock ignores the file (N1)", P, "                                             lastActivity: max(feed?.lastActivityAt ?? mtime, mtime),", "                                             lastActivity: feed?.lastActivityAt ?? mtime,", "QA N1", "models"),
@@ -166,7 +166,7 @@ MUTANTS = [
     ("old file holds the poll", C, "                feeds[file.sessionId]?.seenLive = false\n            } else if serverLive,", "            }\n            if serverLive,", "never holds the poll open", "wiring"),
     ("saved leftover forgotten", C, "else if !(feed.leftover && liveTranscriptFiles.contains { $0.sessionId == id }) { liveTranscriptFeeds[id] = nil }", "else { liveTranscriptFeeds[id] = nil }", "server saved", "wiring"),
     ("route_absent is a state", C, '        if response.details["reason"]?.string == "route_absent" { return nil }\n', "", "no status route on the server keeps", "wiring"),
-    ("hand-off ignores last audio", C, "lastActivity: feed.lastActivityAt, leftover: feed.leftover)", "lastActivity: nil, leftover: feed.leftover)", "past the 4 h retention is never Recording ended", "wiring"),
+    ("hand-off ignores last audio", C, "lastActivity: feed.lastActivityAt, leftover: feed.leftover,", "lastActivity: nil, leftover: feed.leftover,", "past the 4 h retention is never Recording ended", "wiring"),
 ]
 
 
