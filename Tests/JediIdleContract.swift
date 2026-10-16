@@ -40,7 +40,11 @@ struct JediIdleContract {
                     waitingCount: waiting, focusState: nil, completing: false)
                 precondition(pose == expectedPose)
                 let frames = kit.frames(for: pose)
-                precondition(frames.count == 8, "\(character.id)/\(label) still resolves to a static pose")
+                // Each pack authors its own loop length (Miles Windu V12.6 waiting = 11, approved 2026-10-16); every one
+                // must play exactly what its state map declares, and at least the 8-frame floor, never a static pose.
+                let authored = map[pose]!.frames
+                precondition(frames.count == authored && authored >= 8,
+                             "\(character.id)/\(label) still resolves to a static pose (\(frames.count) of \(authored) frames)")
                 let interval = intervals[pose] ?? pose.frameInterval(forFrames: frames.count)
                 let restPoses = PetSpriteStore.restPoses(for: pose, stateMap: map)
                 if character.id != PetSpriteStore.legacyDefaultCharacterID {
@@ -71,7 +75,8 @@ struct JediIdleContract {
                     }
                 }
                 precondition(pixels.count >= 4, "\(character.id) has no visible idle motion")
-                precondition(sprite.playbackFrame(elapsed: 8.25 * interval) === frames[0])
+                precondition(sprite.playbackFrame(elapsed: (Double(frames.count) + 0.25) * interval) === frames[0],
+                             "\(character.id)/\(label) must loop back to its first frame after its last")
                 sprite.reduceMotion = true
                 let held = sprite.playbackFrame(elapsed: 0)
                 precondition(held != nil && sprite.playbackFrame(elapsed: 3.25 * interval) === held)
@@ -91,7 +96,7 @@ struct JediIdleContract {
             .patrol: ("walk.png", 8), .idle: ("rest.png", 8), .waiting: ("rest.png", 8)]
         precondition(PetSpriteStore.restPoses(for: .patrol, stateMap: shared) == [.idle])
         precondition(PetSpriteStore.restPoses(for: .working, stateMap: shared).isEmpty)
-        print("Jedi idle contracts PASS: 12 real resolver paths, all 8 playback frames at four speeds, reduced motion, seams and rest deduplication")
+        print("Jedi idle contracts PASS: 12 real resolver paths, every authored playback frame at four speeds, reduced motion, seams and rest deduplication")
 
         // 0.5.253: the on-screen canary that opened a window and took the focus is gone (Miles, 2026-09-30 19:06). Its
         // frames are the ones checked above, read without putting anything on screen.
