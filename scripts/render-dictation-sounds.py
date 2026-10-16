@@ -2,9 +2,10 @@
 """Render COS dictation start/stop sounds offline (0.5.312).
 
 A deterministic port of the Web Audio synthesis Miles approved on 2026-10-15 (design/dictation-sounds-preview.html:
-functions v2() "Unstable saber" and unstable() v1, cine(), saber(), blips(), chime()). Original synthesis only: oscillators, filters, a tanh
+functions v2() "Unstable saber", unstable() "Unstable saber (bright)", cine(), saber(), blips(), chime()). Original synthesis only: oscillators, filters, a tanh
 waveshaper and seeded noise. Python standard library only; fixed RNG seed; 44.1 kHz mono 16-bit WAV, peak-normalized
-to -1 dBFS. The preview's default pitch (0 semitones, as of 21:32) and volume (60%) are the rendering defaults.
+to -1 dBFS, with no high-pass anywhere: v2 lives below 120 Hz and its sub-bass is kept. Rendered at 0 semitones and
+the preview's 60% volume; pitch is the person's control at playback (AVAudioUnitTimePitch), never baked into the files.
 
 Usage: python3 scripts/render-dictation-sounds.py [out_dir]   (default Resources/Sounds)
 """
@@ -345,7 +346,7 @@ def write(path, signal):
 
 SOUNDS = {
     "unstable-saber": (lambda rng: unstable_v2(rng, True), lambda rng: unstable_v2(rng, False)),
-    "unstable-saber-v1": (lambda rng: unstable(rng, True), lambda rng: unstable(rng, False)),
+    "unstable-saber-bright": (lambda rng: unstable(rng, True), lambda rng: unstable(rng, False)),
     "saber-full": (lambda rng: cine(rng, True), lambda rng: cine(rng, False)),
     "saber-ignite": (lambda rng: saber(rng, True, False), lambda rng: saber(rng, False, False)),
     "saber-soft": (lambda rng: saber(rng, True, True), lambda rng: saber(rng, False, True)),

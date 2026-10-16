@@ -173,6 +173,12 @@ need('forKey: "dictation.sound.start") ?? "pet"' in dictation and 'forKey: "dict
      "sound defaults: the pet's sound for start and stop, volume 60%")
 need("macRecording: macRecordingActive?() ?? false" in dictation and "model.dictation.macRecordingActive = { [weak model] in model?.macRecordingActive ?? false }" in read("Sources/COSControlApp.swift"),
      "sounds know about a Mac recording")
+need('forKey: "dictation.sound.pitch") as? Double ?? 0' in dictation and "Slider(value: $store.soundPitch, in: DictationSoundLibrary.pitchRange, step: 1)" in dictation
+     and "semitones: soundPitch" in dictation and "AVAudioUnitTimePitch()" in dictation and "pitch.pitch = Float(DictationSoundLibrary.cents(semitones))" in dictation
+     and "static let pitchRange = -12.0...6.0" in core, "Pitch: -12 to +6 st, default 0, applied at playback to every sound")
+need("laptop speakers reproduce little of it" in dictation, "the caption says the saber is mostly bass")
+need('"high-pass' not in (root / "scripts/render-dictation-sounds.py").read_text() and '"highpass"' not in (root / "scripts/render-dictation-sounds.py").read_text().split("def unstable_v2(")[1].split("def master(")[0].split("# sparse spits")[0],
+     "v2's growl is never high-passed (only its spits are)")
 need('Button("Preview") { store.previewSound(edge) }' in dictation and 'COSDropdownOption("import", "Your own file…")' in dictation
      and "Slider(value: $store.soundVolume, in: 0...1)" in dictation and "DictationSoundSettings(store: store)" in dictation, "Settings: choice, your own file, volume, preview")
 need("attributes: [.posixPermissions: 0o600]" in body(dictation, "    func importCustomSound(_ edge: DictationSoundEdge) {")

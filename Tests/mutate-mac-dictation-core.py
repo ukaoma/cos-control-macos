@@ -74,6 +74,8 @@ MUTANTS = [
     ("Jedi default changed", 'case .jedi: "unstable-saber"', 'case .jedi: "soft-chime"'),
     ("custom length unchecked", "        guard duration <= maximumCustomSeconds else {", "        guard duration <= 1_000 else {"),
     ("pill always on the pet", "        if let petFrame, let focused, overlap(focused, petFrame) > 0 { return .pet }", "        if petFrame != nil { return .pet }"),
+    ("pitch not clamped", "return min(pitchRange.upperBound, max(pitchRange.lowerBound, semitones.rounded())) * 100", "return semitones.rounded() * 100"),
+    ("pitch in semitones, not cents", "return min(pitchRange.upperBound, max(pitchRange.lowerBound, semitones.rounded())) * 100", "return min(pitchRange.upperBound, max(pitchRange.lowerBound, semitones.rounded()))"),
     ("bars ignore the level", "return minimum + (maximum - minimum) * min(1, max(0, level)) * weight", "return minimum + (maximum - minimum) * 0.1 * weight"),
     ("slow attack", "level = target >= level ? target : level * Self.release + target * (1 - Self.release)", "level = level * Self.release + target * (1 - Self.release)"),
     ("history unbounded", "Array(([record] + list.filter { $0.id != record.id }).prefix(limit))", "[record] + list.filter { $0.id != record.id }"),

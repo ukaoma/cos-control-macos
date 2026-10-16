@@ -375,20 +375,38 @@ enum DictationFocusedWindow {
     }
 }
 
-/// Dictation's start and stop sounds. AVAudioPlayer plays asynchronously on the main thread; nothing waits on it.
+/// Dictation's start and stop sounds, through a small output-only AVAudioEngine so the person's Pitch applies to every
+/// sound, their own file included, without changing its length (AVAudioUnitTimePitch). Playback is scheduled and never
+/// waited on; this engine has no input, so it never touches the dictation microphone.
 ///
 /// The start sound is NOT trimmed from the recording and the microphone is NOT delayed for it: either would cost the
 /// first words of someone who starts talking as they press. The microphone opens at once, the sound plays alongside,
 /// and the stop sound plays only after the microphone has closed. Speech models ignore a short non-speech tone; a
 /// person who hears it in a transcript can lower the volume or turn it off (0).
 @MainActor final class DictationSoundPlayer {
-    private var player: AVAudioPlayer?
-    func play(_ url: URL, volume: Float) {
-        guard let next = try? AVAudioPlayer(contentsOf: url) else { return }
-        next.volume = max(0, min(1, volume))
-        next.prepareToPlay()
-        next.play()
-        player = next
+    private let engine = AVAudioEngine()
+    private let node = AVAudioPlayerNode()
+    private let pitch = AVAudioUnitTimePitch()
+    private var format: AVAudioFormat?
+    init() { engine.attach(node); engine.attach(pitch) }
+    func play(_ url: URL, volume: Float, semitones: Double) {
+        guard let file = try? AVAudioFile(forReading: url) else { return }
+        if format != file.processingFormat {
+            engine.stop()
+            engine.disconnectNodeOutput(node); engine.disconnectNodeOutput(pitch)
+            engine.connect(node, to: pitch, format: file.processingFormat)
+            engine.connect(pitch, to: engine.mainMixerNode, format: file.processingFormat)
+            format = file.processingFormat
+        }
+        pitch.pitch = Float(DictationSoundLibrary.cents(semitones))
+        node.volume = max(0, min(1, volume))
+        if !engine.isRunning {
+            engine.prepare()
+            do { try engine.start() } catch { dictationLog.error("sound output unavailable: \(error.localizedDescription, privacy: .public)"); return }
+        }
+        node.stop()
+        node.scheduleFile(file, at: nil)
+        node.play()
     }
 }
 
@@ -446,6 +464,9 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
     }
     @Published var soundVolume: Double = UserDefaults.standard.object(forKey: "dictation.sound.volume") as? Double ?? DictationSoundLibrary.defaultVolume {
         didSet { UserDefaults.standard.set(soundVolume, forKey: "dictation.sound.volume") }
+    }
+    @Published var soundPitch: Double = UserDefaults.standard.object(forKey: "dictation.sound.pitch") as? Double ?? 0 {
+        didSet { UserDefaults.standard.set(soundPitch, forKey: "dictation.sound.pitch") }
     }
     @Published private(set) var soundNote: String?
     /// Set by the app: which family the pet is (its default sound), and whether a Mac recording is capturing.
@@ -785,7 +806,7 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
         let resolved = resolvedSound(edge)
         if case .silent(let why) = resolved { dictationLog.debug("sound \(edge.rawValue, privacy: .public) silent: \(why, privacy: .public)"); return }
         guard let url = soundURL(resolved) else { return }
-        soundPlayer.play(url, volume: Float(soundVolume))
+        soundPlayer.play(url, volume: Float(soundVolume), semitones: soundPitch)
     }
     /// Settings' Preview. Same rules as dictation, so a preview during a Mac recording says why it is silent.
     func previewSound(_ edge: DictationSoundEdge) {
@@ -1894,6 +1915,10 @@ struct DictationSoundSettings: View {
         list.append(COSDropdownOption("import", "Your own file…"))
         return list
     }
+    static func semitones(_ value: Double) -> String {
+        let n = Int(DictationSoundLibrary.cents(value) / 100)
+        return n == 0 ? "0 st" : (n > 0 ? "+\(n) st" : "−\(-n) st")
+    }
     private func binding(_ edge: DictationSoundEdge) -> Binding<String> {
         Binding(get: { store.soundChoice(edge) }, set: { value in
             if value == "import" { store.importCustomSound(edge) }
@@ -1914,8 +1939,14 @@ struct DictationSoundSettings: View {
                 Slider(value: $store.soundVolume, in: 0...1)
                 Text(store.soundVolume <= 0 ? "Off" : "\(Int((store.soundVolume * 100).rounded()))%").font(.caption.monospacedDigit())
             }
+            HStack {
+                Text("Pitch").font(.caption)
+                Slider(value: $store.soundPitch, in: DictationSoundLibrary.pitchRange, step: 1)
+                Text(Self.semitones(store.soundPitch)).font(.caption.monospacedDigit())
+            }
             if let note = store.soundNote { Text(note).font(.caption2).foregroundStyle(COSPalette.amber) }
-            Text("Sounds never play while a Mac recording is capturing.").font(.caption2).foregroundStyle(.secondary)
+            Text("Unstable saber is mostly bass: use headphones or real speakers, laptop speakers reproduce little of it. Sounds never play while a Mac recording is capturing.")
+                .font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }
     }
 }

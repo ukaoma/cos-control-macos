@@ -355,6 +355,9 @@ final class FakeDictationBoard: DictationPasteboardAccess {
         expect(L.customRefusal(byteCount: 500_000, duration: 1.2) == nil && L.customRefusal(byteCount: L.maximumCustomBytes + 1, duration: 1) != nil
                && L.customRefusal(byteCount: 10, duration: 3.5) != nil && L.customRefusal(byteCount: 10, duration: nil) != nil
                && L.customRefusal(byteCount: 10, duration: 3.0) == nil, "your own file: 2 MB, 3 s, and it must decode")
+        expect(L.cents(0) == 0 && L.cents(-4) == -400 && L.cents(2.4) == 200 && L.cents(-20) == -1_200 && L.cents(9) == 600 && L.cents(.nan) == 0,
+               "pitch: whole semitones, -12 to +6, in cents")
+        expect(L.name("unstable-saber") == "Unstable saber" && L.name("unstable-saber-bright") == "Unstable saber (bright)", "names")
         expect(L.defaultVolume == 0.6 && L.sounds.map(\.id).allSatisfy { !$0.isEmpty } && Set(L.sounds.map(\.id)).count == L.sounds.count, "library")
         // The pill goes where the person is looking.
         let left = CGRect(x: 0, y: 0, width: 1512, height: 982), right = CGRect(x: 1512, y: 0, width: 3440, height: 1440)

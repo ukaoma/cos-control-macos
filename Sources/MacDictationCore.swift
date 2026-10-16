@@ -692,8 +692,8 @@ enum DictationClipboard {
 
 // MARK: - Dictation sounds (0.5.312)
 //
-// Miles approved the library 2026-10-15 21:16-21:32 (design/dictation-sounds-preview.html; "Unstable saber" is the v2
-// matched to his reference, v1 is kept as the earlier take), rendered offline to
+// Miles approved the library 2026-10-15 21:16-21:32 (design/dictation-sounds-preview.html; "Unstable saber" is v2,
+// matched to his reference; v1 is "Unstable saber (bright)"), rendered offline to
 // Resources/Sounds by scripts/render-dictation-sounds.py. Original synthesis only.
 
 enum DictationPetKind: String, Sendable { case jedi, droid, other }
@@ -703,11 +703,17 @@ enum DictationSoundEdge: String, Sendable, CaseIterable { case start, stop }
 enum DictationSoundLibrary {
     /// Bundled sounds, in menu order: id (file prefix) and the name Settings shows.
     static let sounds: [(id: String, name: String)] = [
-        ("unstable-saber", "Unstable saber"), ("unstable-saber-v1", "Unstable saber (earlier take)"),
+        ("unstable-saber", "Unstable saber"), ("unstable-saber-bright", "Unstable saber (bright)"),
         ("saber-full", "Saber, full ignition"), ("saber-ignite", "Saber ignite"),
         ("saber-soft", "Saber, soft"), ("droid-chirp", "Droid chirp"), ("soft-chime", "Soft chime"),
     ]
     static let defaultVolume = 0.6
+    /// Pitch at playback, in semitones (AVAudioUnitTimePitch: duration unchanged). Default 0.
+    static let pitchRange = -12.0...6.0
+    static func cents(_ semitones: Double) -> Double {
+        guard semitones.isFinite else { return 0 }
+        return min(pitchRange.upperBound, max(pitchRange.lowerBound, semitones.rounded())) * 100
+    }
     static let maximumCustomBytes = 2 * 1024 * 1024
     static let maximumCustomSeconds = 3.0
 

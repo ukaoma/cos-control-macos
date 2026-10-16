@@ -46,7 +46,8 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--gold); outl
   <div class="vol"><label for="pitch">Pitch</label><input type="range" id="pitch" min="-12" max="6" step="1" value="0"><output id="pitchOut" for="pitch">0 st</output></div>
 
   <div class="cards">
-    <div class="snd"><h2>Unstable saber v2 <span class="tag">MATCHED TO YOUR REFERENCE</span></h2><p>Rebuilt from measurements of the clip you sent: a 47 Hz growl with beating partials and almost no treble, loudness that swells and flutters, sparse spits, an ignition that drops into the hilt with a bright eject burst, and a retract that flares then cuts. Original synthesis; no reference audio is used.</p><div class="btns"><button class="primary" type="button" data-s="v2">Start</button><button type="button" data-s="v2Off">Stop</button></div></div>
+    <div class="snd"><h2>Dark saber <span class="tag">MATCHED TO YOUR SECOND REFERENCE</span></h2><p>An instant bright blast held almost half a second, then a long settle into an 82 Hz harmonic buzz with an equally strong octave, a slow swell and rare razor clicks. Stop dips and cuts. Original synthesis; no reference audio is used.</p><div class="btns"><button class="primary" type="button" data-s="v3">Start</button><button type="button" data-s="v3Off">Stop</button></div></div>
+    <div class="snd"><h2>Unstable saber v2 <span class="tag">MATCHED TO YOUR FIRST REFERENCE</span></h2><p>Rebuilt from measurements of the clip you sent: a 47 Hz growl with beating partials and almost no treble, loudness that swells and flutters, sparse spits, an ignition that drops into the hilt with a bright eject burst, and a retract that flares then cuts. Original synthesis; no reference audio is used.</p><div class="btns"><button class="primary" type="button" data-s="v2">Start</button><button type="button" data-s="v2Off">Stop</button></div></div>
     <div class="snd"><h2>Unstable saber v1 <span class="tag">EARLIER TAKE</span></h2><p>The crackling, sputtering kind: a violent ignition with vents flaring, then a raw hum that spits and wavers. Stop sputters out. Original synthesis.</p><div class="btns"><button class="primary" type="button" data-s="unstable">Start</button><button type="button" data-s="unstableOff">Stop</button></div></div>
     <div class="snd"><h2>Saber, full ignition <span class="tag">JEDI PET</span></h2><p>The cinematic shape: a sharp snap-hiss, a heavy distorted hum that swells and settles, about a second. Stop is the falling power-down. Original synthesis, not film audio.</p><div class="btns"><button class="primary" type="button" data-s="cine">Start</button><button type="button" data-s="cineOff">Stop</button></div></div>
     <div class="snd"><h2>Saber ignite <span class="tag">JEDI PET</span></h2><p>A quick rising buzz that settles into a low hum, about half a second. Stop is a short power-down.</p><div class="btns"><button class="primary" type="button" data-s="saber">Start</button><button type="button" data-s="saberOff">Stop</button></div></div>
@@ -207,7 +208,47 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--gold); outl
     const shp = c.createBiquadFilter(); shp.type = 'highpass'; shp.frequency.value = 2200; const sg = c.createGain(); sg.gain.value = 0.22;
     sp.buffer = sb; sp.connect(shp).connect(sg).connect(out); sp.start(t);
   }
-  const S = { v2: () => v2(true), v2Off: () => v2(false), unstable: () => unstable(true), unstableOff: () => unstable(false), cine: () => cine(true), cineOff: () => cine(false), saber: () => saber(true, false), saberOff: () => saber(false, false), saberSoft: () => saber(true, true), saberSoftOff: () => saber(false, true),
+
+  // Dark saber, from the second reference's measurements: instant blast at full level held ~0.45 s with 16-23% energy
+  // above 2 kHz to ~0.6 s; settle to -9 dB by 0.7 s and to the hum (-14 dB) by ~1.5 s. Hum: 82 Hz with an equal 164 Hz,
+  // 246 Hz at -8 dB, 330 Hz at -13 dB, a 66 Hz undertone at -15 dB; swell 0.8-1.6 Hz ±3 dB, faint 40 Hz flutter; rare
+  // (~1.6/s) very sharp clicks. Retract: a dip, then silence within ~50 ms.
+  function v3(up) {
+    const c = ac(), t = c.currentTime, out = master(c, 1.15), p = P();
+    const f0 = 82 * p, dur = up ? 1.6 : 0.3;
+    const bus = c.createGain(), ws = shaper(c, 1.8), lp = c.createBiquadFilter(); lp.type = 'lowpass'; lp.Q.value = 0.7;
+    bus.connect(ws).connect(lp).connect(out);
+    const trem = c.createGain(); trem.gain.value = 0.8; trem.connect(bus);
+    [[1.1, 0.14], [0.8, 0.08], [40, 0.05]].forEach(([r, d]) => { const o = c.createOscillator(); o.frequency.value = r; const g = c.createGain(); g.gain.value = d; o.connect(g).connect(trem.gain); o.start(t); o.stop(t + dur + 0.1) });
+    if (up) {
+      lp.frequency.setValueAtTime(3600 * p, t); lp.frequency.setValueAtTime(3600 * p, t + 0.42); lp.frequency.exponentialRampToValueAtTime(1500 * p, t + 0.62); lp.frequency.exponentialRampToValueAtTime(650 * p, t + 1.0);
+      bus.gain.setValueAtTime(0.0001, t); bus.gain.exponentialRampToValueAtTime(1.0, t + 0.008); bus.gain.setValueAtTime(1.0, t + 0.45); bus.gain.exponentialRampToValueAtTime(0.35, t + 0.7); bus.gain.exponentialRampToValueAtTime(0.2, t + 1.35); bus.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    } else {
+      lp.frequency.setValueAtTime(650 * p, t);
+      bus.gain.setValueAtTime(0.3, t); bus.gain.exponentialRampToValueAtTime(0.16, t + 0.12); bus.gain.exponentialRampToValueAtTime(0.32, t + 0.22); bus.gain.linearRampToValueAtTime(0.0, t + 0.27);
+    }
+    [[0.8, 'sine', 0.18], [1, 'sawtooth', 0.5], [2, 'sawtooth', 0.5], [3, 'sawtooth', 0.2], [4, 'triangle', 0.11]].forEach(([m, type, g]) => {
+      const o = c.createOscillator(); o.type = type; const og = c.createGain(); og.gain.value = g; o.connect(og).connect(trem);
+      const f = f0 * m;
+      if (up) { o.frequency.setValueAtTime(f * 1.8, t); o.frequency.exponentialRampToValueAtTime(f * 0.64, t + 0.06); o.frequency.exponentialRampToValueAtTime(f, t + 0.5) }
+      else { o.frequency.setValueAtTime(f, t); o.frequency.exponentialRampToValueAtTime(f * 0.92, t + 0.25) }
+      const wand = c.createOscillator(); wand.type = 'triangle'; wand.frequency.value = 1.3 + m * 0.7; const wg = c.createGain(); wg.gain.value = f * 0.012; wand.connect(wg).connect(o.frequency);
+      o.start(t); wand.start(t); o.stop(t + dur + 0.05); wand.stop(t + dur + 0.05);
+    });
+    if (up) { // bright blast body 0.06-0.6 s
+      const n = c.createBufferSource(), b = c.createBuffer(1, Math.ceil(c.sampleRate * 0.6), c.sampleRate), d = b.getChannelData(0);
+      for (let i = 0; i < d.length; i++) { const k = i / d.length; d[i] = (Math.random() * 2 - 1) * (k < 0.06 ? k / 0.06 : k < 0.7 ? 1 : Math.pow(1 - (k - 0.7) / 0.3, 2)) }
+      const bp = c.createBiquadFilter(); bp.type = 'bandpass'; bp.Q.value = 0.8; bp.frequency.setValueAtTime(3200 * p, t); bp.frequency.exponentialRampToValueAtTime(1600 * p, t + 0.6);
+      const g = c.createGain(); g.gain.value = 0.3; n.buffer = b; n.playbackRate.value = p; n.connect(bp).connect(g).connect(out); n.start(t);
+    }
+    // rare razor clicks: a few samples each
+    const sp = c.createBufferSource(), sb = c.createBuffer(1, Math.ceil(c.sampleRate * dur), c.sampleRate), sd = sb.getChannelData(0);
+    let at = Math.floor(c.sampleRate * (0.5 + Math.random() * 0.3));
+    while (at < sd.length - 40) { for (let j = 0; j < 24; j++) sd[at + j] = (j % 2 ? -1 : 1) * Math.pow(1 - j / 24, 3); at += Math.floor(c.sampleRate * (0.45 + Math.random() * 0.5)) }
+    const shp = c.createBiquadFilter(); shp.type = 'highpass'; shp.frequency.value = 3000; const sg = c.createGain(); sg.gain.value = 0.35;
+    sp.buffer = sb; sp.connect(shp).connect(sg).connect(out); sp.start(t);
+  }
+  const S = { v3: () => v3(true), v3Off: () => v3(false), v2: () => v2(true), v2Off: () => v2(false), unstable: () => unstable(true), unstableOff: () => unstable(false), cine: () => cine(true), cineOff: () => cine(false), saber: () => saber(true, false), saberOff: () => saber(false, false), saberSoft: () => saber(true, true), saberSoftOff: () => saber(false, true),
     chirp: () => blips([1320, 1980], 0.07, 'square', 0.25), chirpOff: () => blips([1980, 1320], 0.07, 'square', 0.25), chime: () => chime(true), chimeOff: () => chime(false) };
   document.querySelectorAll('[data-s]').forEach(b => b.addEventListener('click', () => { try { S[b.dataset.s]() } catch (e) { b.textContent = 'Audio unavailable here' } }));
 })();
