@@ -985,7 +985,8 @@ struct DictationListeningPill: View {
     let size: PetSize
     let reduceMotion: Bool
 
-    private var done: Bool { if case .inserted = pill { return true }; return false }
+    /// Green with ✓ only for a measured insertion; an unconfirmed paste flashes in the neutral colors.
+    private var done: Bool { if case .flash(_, true) = pill { return true }; return false }
     private var fill: Color { done ? COSPalette.green : (floating ? COSPalette.ink : COSPalette.card) }
     private var ink: Color { done ? .white : (floating ? COSPalette.cream : COSPalette.plateInk) }
 
@@ -1010,7 +1011,7 @@ struct DictationListeningPill: View {
             case .transcribing:
                 DictationWorkingBars(size: size, reduceMotion: reduceMotion)
                 Text(pill.label)
-            case .inserted:
+            case .flash:
                 Text(pill.label)
             }
         }
@@ -1025,7 +1026,13 @@ struct DictationListeningPill: View {
         .overlay(Capsule().stroke(floating || done ? Color.clear : COSPalette.line, lineWidth: 1))
         .shadow(color: .black.opacity(floating ? 0.18 : 0), radius: 9, y: 6)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel(pill == .transcribing ? "Transcribing dictation" : done ? pill.label : "Dictation listening")
+        .accessibilityLabel({ () -> String in
+            switch pill {
+            case .transcribing: return "Transcribing dictation"
+            case .flash(let label, _): return label
+            default: return "Dictation listening"
+            }
+        }())
     }
 
     /// Eleven bars, center weighted: the newest level at the center, older ones rippling outward.
