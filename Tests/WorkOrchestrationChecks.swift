@@ -973,6 +973,11 @@ private actor WorkQueueFixture {
     precondition(WorkChatHold.onHold(setting: "queue", autoSend: true, offered: false) == .stop && WorkChatHold.onHold(setting: "ask", autoSend: false, offered: false) == .stop, "An older server keeps the check-first fence")
     precondition(WorkChatHold.queuedLine(titles: []) == "Queued behind earlier work on this card" && WorkChatHold.queuedLine(titles: ["Copy", "Copy"]) == "Queued behind \u{201C}Copy\u{201D}"
         && WorkChatHold.queuedLine(titles: ["A", "B"]) == "Queued behind \u{201C}A\u{201D} and \u{201C}B\u{201D}" && WorkChatHold.queuedLine(titles: ["A", "B", "C"]) == "Queued behind \u{201C}A\u{201D} and 2 more")
+    // 0.5.317 (Miles 2026-10-16 14:28): Complete is the last board column again, latest completions first.
+    precondition(WorkBoardStage.boardColumns == [.planned, .draft, .built, .qa, .complete], "Planned, Draft, Built, QA, Complete")
+    let completedAt = ["b": Date(timeIntervalSince1970: 2), "c": Date(timeIntervalSince1970: 5), "e": Date(timeIntervalSince1970: 5)]
+    precondition(WorkBoardStage.recentFirst(["a", "b", "c", "d", "e"], id: { $0 }, moves: completedAt) == ["c", "e", "b", "a", "d"],
+                 "Newest completion first, ties and unknown dates in board order")
     // The store path below reads this Mac's setting (whenHeld nil); start from an unset Mac.
     UserDefaults.standard.removeObject(forKey: WorkChatHold.settingKey)
     defer { UserDefaults.standard.removeObject(forKey: WorkChatHold.settingKey) }

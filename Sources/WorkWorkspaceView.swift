@@ -196,6 +196,20 @@ enum WorkBoardStage: String, CaseIterable, Identifiable {
         case .complete: "Task marked complete"
         }
     }
+    /// 0.5.317: the board's columns, left to right. Mentioned is the list above the board.
+    static let boardColumns: [Self] = [.planned, .draft, .built, .qa, .complete]
+    /// Newest stage change first (the moves Control recorded); cards with none keep their order after them.
+    static func recentFirst<T>(_ items: [T], id: (T) -> String, moves: [String: Date]) -> [T] {
+        let indexed = items.enumerated().map { (offset: $0.offset, item: $0.element, at: moves[id($0.element)]) }
+        return indexed.sorted { a, b in
+            switch (a.at, b.at) {
+            case let (x?, y?): return x != y ? x > y : a.offset < b.offset
+            case (.some, nil): return true
+            case (nil, .some): return false
+            case (nil, nil): return a.offset < b.offset
+            }
+        }.map(\.item)
+    }
     static func stage(for task: TaskRow) -> Self {
         if task.checked { return .complete }
         let value = Self(rawValue: task.workStage) ?? .planned
@@ -1863,7 +1877,8 @@ struct WorkWorkspaceView: View {
                 }.padding(.horizontal, 18).padding(.bottom, 10)
             }
             HStack {
-                ForEach([WorkBoardStage.mentioned, .complete]) { stage in
+                // 0.5.317 (Miles 2026-10-16 14:28): Complete is a board column again; Mentioned stays a list above the board.
+                ForEach([WorkBoardStage.mentioned]) { stage in
                     Menu {
                         ForEach(WorkSearch.kept(board.column(stage), pass.search)) { item in Button(item.title) { select(item) } }
                     } label: { COSMenuLabel(title: stage.title + " · \(WorkSearch.kept(board.column(stage), pass.search).count)") }.cosMenu()
@@ -1873,7 +1888,7 @@ struct WorkWorkspaceView: View {
             latestMoveStrip
             ScrollView(.horizontal) {
                 HStack(alignment: .top, spacing: 12) {
-                    ForEach([WorkBoardStage.planned, .draft, .built, .qa]) { stage in boardColumn(stage, pass: pass) }
+                    ForEach(WorkBoardStage.boardColumns) { stage in boardColumn(stage, pass: pass) }
                 }.padding(.horizontal, 18).padding(.bottom, 18)
             }.frame(minHeight: 220)
             Text(handoffStore.isolated ? "Sample stages reset when this preview closes." : "Stages reflect your decisions. Moving a card does not run an agent or publish changes. Start work asks before anything is sent.")
@@ -2266,7 +2281,11 @@ struct WorkWorkspaceView: View {
         let all = board.column(stage)
         // 0.5.259: a search keeps only its matches; Order sorts what is left.
         let kept = WorkSearch.kept(all, pass.search)
-        let cards = WorkCardDating.sorted(kept, id: \.id, order: pass.order, dates: pass.dates)
+        let ordered = WorkCardDating.sorted(kept, id: \.id, order: pass.order, dates: pass.dates)
+        // 0.5.317: on board order the Complete column leads with the latest completions (the column is lazy, so a long
+        // history is reached by scrolling, never drawn at once).
+        let cards = stage == .complete && pass.order == .board
+            ? WorkBoardStage.recentFirst(ordered, id: \.sourceID, moves: model.workActivity.moves) : ordered
         let targeted = columnTarget == stage
         // One decision for the header, the list, and a card face. The list is a scroll view, so a drop on the
         // column behind it never arrived. No size is measured here.

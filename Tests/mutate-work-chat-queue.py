@@ -76,6 +76,10 @@ MUTANTS = [
  ("loading never shown", S, '    var sessionsKnown: Bool { refreshedOnce || activityCheckedAt != nil }', '    var sessionsKnown: Bool { true }'),
  ("no automatic re-check", C, '                await chat.recheckBlockers(source:source,handoff:handoff,automatic:true)\n', ''),
  ("history waits for the session read", C, '            if handoff.isolated || handoff.taskChatServerID != nil { chat.open(source:source,handoff:handoff) }\n', ''),
+ ("Complete column missing", "Sources/WorkWorkspaceView.swift", 'static let boardColumns: [Self] = [.planned, .draft, .built, .qa, .complete]', 'static let boardColumns: [Self] = [.planned, .draft, .built, .qa]'),
+ ("completions not newest first", "Sources/WorkWorkspaceView.swift", '            case let (x?, y?): return x != y ? x > y : a.offset < b.offset', '            case let (x?, y?): return x != y ? x < y : a.offset < b.offset'),
+ ("Complete dropdown back", "Sources/WorkWorkspaceView.swift", 'ForEach([WorkBoardStage.mentioned]) { stage in', 'ForEach([WorkBoardStage.mentioned, .complete]) { stage in'),
+ ("Complete column in board order", "Sources/WorkWorkspaceView.swift", '? WorkBoardStage.recentFirst(ordered, id: \\.sourceID, moves: model.workActivity.moves) : ordered', '? ordered : ordered'),
  # Wiring the hub checks cannot execute (pinned in run-work-session-hub.sh).
  ("helper drops queueRounds", H, '"queueRounds": body["queueRounds"] as? Bool == true,', '"queueRounds": false,'),
  ("Settings switch removed", V, 'COSDropdown("When earlier work is still open", selection: $workChatWhenHeld,', 'COSDropdown("When earlier work is open", selection: $workChatWhenHeld,'),

@@ -75,6 +75,12 @@ assert 'if store.sessions.isEmpty && !store.sessionsKnown {' in handoffview, "th
 assert 'Text("Loading Work chat history\\u{2026}")' in chat and ".frame(maxWidth: .infinity, minHeight: 72, alignment: .leading)" in chat, "Work chat shows a placeholder until its history opens"
 assert loop.index("chat.open(source:source,handoff:handoff) }") < loop.index("await handoff.refresh()"), "the history opens before the session read when the server is known"
 assert "await chat.recheckBlockers(source:source,handoff:handoff,automatic:true)" in loop, "shown blockers are checked again by themselves"
+# 0.5.317: Complete is a board column (a drop asks, then completes through move; a drag out un-completes through move),
+# Mentioned is the only list above the board, and the Complete column leads with the latest completions.
+assert "ForEach(WorkBoardStage.boardColumns) { stage in boardColumn(stage, pass: pass) }" in workspace, "the board draws boardColumns"
+assert "ForEach([WorkBoardStage.mentioned]) { stage in" in workspace and "WorkBoardStage.mentioned, .complete" not in workspace, "no Complete dropdown above the board"
+assert "if stage == .complete { state.pendingComplete = task } else { move(task, to: stage) }" in workspace, "a drop on Complete completes through the stage path"
+assert "WorkBoardStage.recentFirst(ordered, id: \\.sourceID, moves: model.workActivity.moves)" in workspace and "LazyVStack(alignment: .leading, spacing: 10) {" in workspace, "Complete leads with recent completions, drawn lazily"
 print("PASS Work chat queue and reference wiring: helper capabilities, Settings default Queue it, app-wide pump started, open card pumps itself, references gated and send-free")
 PY
 # 0.5.313: the idle CPU fixes stay in place (text pins; the behaviour is checked in WorkInputChecks).

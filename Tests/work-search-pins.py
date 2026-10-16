@@ -49,7 +49,9 @@ need('_ = board.visible(scope: state.scope, domain: state.domain, query: "")' in
 need("let kept = WorkSearch.kept(all, pass.search)" in col, "a column keeps only what the search shows")
 need("let shownCount = WorkSearch.kept(cards.filter { $0.task != nil }, search).count" in dash,
      "the board line counts with the same rule as the columns")
-need("let cards = WorkCardDating.sorted(kept, id: \\.id, order: pass.order, dates: pass.dates)" in col, "Order sorts every column")
+need("let ordered = WorkCardDating.sorted(kept, id: \\.id, order: pass.order, dates: pass.dates)" in col, "Order sorts every column")
+# 0.5.317: only on board order does the Complete column lead with its latest completions; a chosen Order still wins.
+need("let cards = stage == .complete && pass.order == .board" in col, "Complete reorders only on board order")
 need("WorkSearch.countLabel(kept: cards.count, of: all.count, active: pass.search.active)" in col, "a column header says n of m while searching")
 need('WorkSearch.emptyColumn(stage, key: pass.key, active: pass.search.active, pending: pass.pending)' in col,
      "an empty column says what is true: searching, no matches, or no word matches where Jev did not look")
