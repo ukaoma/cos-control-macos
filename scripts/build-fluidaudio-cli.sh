@@ -52,9 +52,9 @@ PLIST
 /usr/bin/plutil -lint "$PLIST" >/dev/null
 
 cd "$SOURCE"
-"$ROOT/Tests/compile-guard.sh" /usr/bin/swift build -c release --product fluidaudiocli --arch arm64 \
+"$ROOT/Tests/compile-guard.sh" /usr/bin/swift build -c release --product fluidaudiocli \
   -Xlinker -sectcreate -Xlinker __TEXT -Xlinker __info_plist -Xlinker "$PLIST"
-BIN="$(/usr/bin/swift build -c release --product fluidaudiocli --arch arm64 --show-bin-path)/fluidaudiocli"
+BIN="$(/usr/bin/swift build -c release --product fluidaudiocli --show-bin-path)/fluidaudiocli"
 [[ -x "$BIN" ]] || { print -u2 "swift build produced no fluidaudiocli"; exit 66; }
 # Only system libraries: the tool must run from Contents/Helpers on a Mac with nothing else installed.
 /usr/bin/otool -L "$BIN" | /usr/bin/tail -n +2 | /usr/bin/awk '{print $1}' | while read -r dependency; do
