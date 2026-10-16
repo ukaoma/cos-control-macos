@@ -1943,15 +1943,16 @@ struct ModelsContract {
             (.trio, "session-pet-trio-deflect-eased-v12-6.png", 42),
             (.swarm, "session-pet-swarm-alpha-v11-r2.png", 64),
         ]
-        // V12.6 frames whose art reaches within 3 px of the cell edge by design (droids entering and leaving, the
-        // jump and saber arcs above the frame), 1-based, measured from the reviewed strips. Any OTHER frame touching
-        // an edge is a cut or a crop. Swarm 55-59 also carries ink across the cut into its neighbour (its exit run).
-        let approvedEdgeFrames: [PetSpritePose: Set<Int>] = [
-            .working: [15, 16, 17, 39, 40, 41, 42],
-            .duel: [10, 11, 14, 28, 29, 30, 31, 32],
-            .trio: [29, 30, 31, 32, 33, 34, 35, 36, 37],
-            .swarm: [55, 56, 57, 58, 59, 60, 61],
-        ]
+        // V12.6 frames whose art may reach the cell edge by design (droids entering and leaving, the jump and saber
+        // arcs above the frame), 1-based. The list is shared with SpriteRenderContract (its 6 px gate), so it lives in
+        // one fixture; any OTHER frame touching an edge is a cut or a crop.
+        let edgeFixture = try! JSONSerialization.jsonObject(with: Data(contentsOf: repositoryRoot
+            .appendingPathComponent("Tests/fixtures/sprite-render/approved-exceptions.json"))) as! [String: Any]
+        let edgeLists = edgeFixture["edgeFrames"] as! [String: [Int]]
+        var approvedEdgeFrames: [PetSpritePose: Set<Int>] = [:]
+        for pose in [PetSpritePose.working, .duel, .trio, .swarm] {
+            approvedEdgeFrames[pose] = Set(edgeLists["DefaultPet/\(pose.rawValue)"] ?? [])
+        }
         // The reviewed hold structure: consecutive identical cells at 0.08 s per tick (2 = a 160 ms hold).
         let approvedRuns: [PetSpritePose: [Int]] = [
             .working: [2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2, 2],
