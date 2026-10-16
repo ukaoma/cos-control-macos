@@ -43,8 +43,14 @@ pin("ISO8601DateFormatter()" not in new_items and "row.producedDate" in new_item
     "newItems must use the date parsed when the row was decoded")
 pin("producedDate = Self.stamp(producedAt)" in models, "intake dates at decode", "the row parses its date once")
 player = between(dictation, "@MainActor final class DictationSoundPlayer {", "struct DictationSoundImport {")
-pin("scheduleFile(file, at: nil, completionCallbackType: .dataPlayedBack)" in player and "Task { @MainActor in self?.finished(id) }" in player,
-    "sound engine stops", "the player must learn when its sound has played")
+# 0.5.314: the completion is built by the nonisolated playedBack (a closure formed inside the @MainActor player trapped
+# on AVAudioPlayerNode's queue in 0.5.313), so the pin follows the signal through it: every sound is scheduled with
+# playedBack as its .dataPlayedBack completion, and playedBack hops to the main actor and reports finished(id).
+played_back = between(player, "    private nonisolated static func playedBack(_ owner: DictationSoundPlayer, id: Int)", "    var isRunning: Bool")
+pin(player.count("scheduleFile(") == 1
+    and player.count("node.scheduleFile(file, at: nil, completionCallbackType: .dataPlayedBack, completionHandler: Self.playedBack(self, id: id))") == 1
+    and "Task { @MainActor in owner?.finished(id) }" in played_back,
+    "sound engine stops", "the player must learn when its sound has played (scheduleFile's completion is playedBack, which reports finished(id))")
 pin("node.stop(); engine.stop()" in between(player, "    private func finished(_ id: Int) {", "    nonisolated static func stopsAfter"),
     "sound engine stops", "the output engine must stop after the newest sound (no audio IO while idle)")
 pin("scheduleFile(file, at: nil)\n" not in player, "sound engine stops", "no sound is scheduled without its completion")
