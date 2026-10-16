@@ -14,6 +14,11 @@ root = pathlib.Path(sys.argv[1]).resolve()
 CORE = "Sources/MacDictationCore.swift"
 MUTANTS = [
     # 0.5.310 measured delivery: each of these is a way to show ✓ when nothing landed, or to paste twice.
+    # 0.5.311: the held-key guard asks physical keys; both directions are bugs (paste during a chord, or never paste).
+    ("held-key guard never blocks", "    static func modifiersHeld(isDown: (UInt16) -> Bool) -> Bool { modifierKeyCodes.contains(where: isDown) }",
+     "    static func modifiersHeld(isDown: (UInt16) -> Bool) -> Bool { false }"),
+    ("Fn counted as held again (the F17 bug)", "    static let modifierKeyCodes: [UInt16] = [55, 54, 58, 61, 59, 62, 56, 60]",
+     "    static let modifierKeyCodes: [UInt16] = [55, 54, 58, 61, 59, 62, 56, 60, 63, 64]"),
     ("verification deleted: an unchanged field counts as landed", "        if after == baseline { return .unchanged }\n", ""),
     ("iTerm2 bug back: a final unchanged poll reports inserted", "            return route == .ownWindow ? .done(.refused(.noTextBox)) : .paste",
      "            return .done(.inserted(app: app, viaPaste: false))"),

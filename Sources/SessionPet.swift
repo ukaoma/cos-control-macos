@@ -1828,14 +1828,7 @@ extension SessionPetRoot {
                 } else {
                     dictationRows
                 }
-                let running = ClaudeSession.petSections(sessions).running
-                if !running.isEmpty {
-                    petSectionHeader("RUNNING", count: running.count, tint: COSPalette.green)
-                    ForEach(Array(running.prefix(3).enumerated()), id: \.element.id) { index, session in
-                        if index > 0 { Divider() }
-                        missionRow(session, tint: COSPalette.green)
-                    }
-                }
+                // 0.5.311 (Miles 2026-10-15): the dictation list shows dictations only; sessions have their own pills.
             case .detail(let id):
                 dictationHeader("DICTATION", record: dictation.record(id))
                 if let record = dictation.record(id) {

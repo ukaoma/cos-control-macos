@@ -337,9 +337,11 @@ enum DictationDelivery {
         return nil
     }
 
-    /// ⌘ ⌥ ⌃ ⇧ Fn bits of CGEventFlags. ⌘V must not be posted while any is physically held, or it becomes another chord.
-    static let modifierMask: UInt64 = 0x100000 | 0x80000 | 0x40000 | 0x20000 | 0x800000
-    static func modifiersHeld(_ flags: UInt64) -> Bool { flags & modifierMask != 0 }
+    /// Left and right ⌘ ⌥ ⌃ ⇧ key codes. ⌘V must not be posted while one is physically down, or it becomes another chord.
+    /// 0.5.311: asked key by key, never from CGEventSource.flagsState. Its Fn bit (0x800000) stays set after function-key
+    /// events (Miles's F17 shortcut, 2026-10-15), so every paste read as "keys held". Fn never changes what ⌘V does.
+    static let modifierKeyCodes: [UInt16] = [55, 54, 58, 61, 59, 62, 56, 60]
+    static func modifiersHeld(isDown: (UInt16) -> Bool) -> Bool { modifierKeyCodes.contains(where: isDown) }
     static let modifierWaitMilliseconds = 600
 }
 

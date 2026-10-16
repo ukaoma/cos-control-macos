@@ -86,9 +86,14 @@ import Foundation
         precondition(DictationDelivery.keyCode(for: "v") { $0 == 9 ? "v" : nil } == 9
                      && DictationDelivery.keyCode(for: "v") { dvorak[$0] } == 47
                      && DictationDelivery.keyCode(for: "v") { _ in "x" } == nil, "⌘V on the current layout's V"); count += 1
-        precondition(!DictationDelivery.modifiersHeld(0) && !DictationDelivery.modifiersHeld(0x10000) && DictationDelivery.modifiersHeld(0x100000)
-                     && DictationDelivery.modifiersHeld(0x80000) && DictationDelivery.modifiersHeld(0x40000) && DictationDelivery.modifiersHeld(0x20000)
-                     && DictationDelivery.modifiersHeld(0x800000), "⌘ ⌥ ⌃ ⇧ Fn block the paste; Caps Lock does not"); count += 1
+        precondition(!DictationDelivery.modifiersHeld(isDown: { _ in false }), "nothing down: paste"); count += 1
+        for code: UInt16 in [55, 54, 58, 61, 59, 62, 56, 60] {
+            precondition(DictationDelivery.modifiersHeld(isDown: { $0 == code }), "left/right ⌘ ⌥ ⌃ ⇧ \(code) held blocks the paste"); count += 1
+        }
+        // Fn (63), Caps Lock (57) and F17 (64), Miles's shortcut, never block it.
+        for code: UInt16 in [63, 57, 64] {
+            precondition(!DictationDelivery.modifiersHeld(isDown: { $0 == code }), "key \(code) does not block the paste"); count += 1
+        }
         for enabled in [false, true] { for busy in [false, true] {
             precondition(MacDictationPolicy.mayStart(enabled: enabled, busy: busy) == (enabled && !busy)); count += 1
         }}

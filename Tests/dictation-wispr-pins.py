@@ -108,7 +108,7 @@ need("kAXValueAttribute" not in dictation.replace("isSettable(element, kAXValueA
 settable = body(dictation, "nonisolated private static func textSettable(_ element: AXUIElement) -> Bool {")
 need("kAXSelectedTextAttribute" in settable and "kAXValueAttribute" in settable, "a role alone is not a text box")
 paste = body(dictation, "private static func paste(changeCount: Int) async -> DictationInsertPolicy.Refusal? {")
-need("DictationDelivery.modifiersHeld(CGEventSource.flagsState(.hidSystemState).rawValue)" in paste and "return .keysHeld" in paste
+need("DictationDelivery.modifiersHeld(isDown: { CGEventSource.keyState(.hidSystemState, key: CGKeyCode($0)) })" in paste and "flagsState" not in paste and "return .keysHeld" in paste
      and "NSPasteboard.general.changeCount == changeCount" in paste and "CGKeyCode(vKeyCode())" in paste,
      "⌘V waits for released modifiers, refuses a changed clipboard, and uses the layout's V")
 need(re.findall(r"virtualKey: (\w+)", dictation) == ["key", "key"] and "kVK_Return" not in dictation
@@ -201,7 +201,7 @@ lst = body(pet, "func dictationList(_ route: DictationListRoute) -> some View {"
 need("ScrollView" in lst and ".frame(height: size.length(176))" in lst and "maxHeight" not in lst,
      "the dictations list must scroll in a FIXED frame; maxHeight collapses under sizeThatFits")
 need("DictationFixEditor(" in lst and "model.openDictionaryInActivity()" in lst, "Fix a word and its doorway to the Dictionary pane")
-need("missionRow(session, tint: COSPalette.green)" in lst, "the RUNNING section sits under Recent dictations, as in the mock")
+need("missionRow(" not in lst and "petSections(" not in lst, "Recent dictations shows dictations only, no RUNNING sessions under it (Miles 2026-10-15)")
 route_changed = body(pet, "private func dictationRouteChanged() {")
 need("panel.makeKeyAndOrderFront(nil)" in route_changed and "panel.orderFrontRegardless()" in route_changed,
      "Fix a word's field must take the keyboard on the pet and give it back")

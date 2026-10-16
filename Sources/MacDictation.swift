@@ -217,7 +217,7 @@ private final class DictationConverter: @unchecked Sendable {
     /// holds what COS put there. Returns why it did not paste.
     private static func paste(changeCount: Int) async -> DictationInsertPolicy.Refusal? {
         var waited = 0
-        while DictationDelivery.modifiersHeld(CGEventSource.flagsState(.hidSystemState).rawValue) {
+        while DictationDelivery.modifiersHeld(isDown: { CGEventSource.keyState(.hidSystemState, key: CGKeyCode($0)) }) {
             guard waited < DictationDelivery.modifierWaitMilliseconds else { return .keysHeld }
             try? await Task.sleep(for: .milliseconds(30)); waited += 30
         }

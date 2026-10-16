@@ -1,3 +1,9 @@
+## 0.5.311 (build 364), paste with any shortcut
+
+- Fix: every dictation read "KEYS HELD · COPIED" and never pasted (Miles 2026-10-15 20:57, F17 shortcut). The held-modifier guard read CGEventSource.flagsState, whose Fn bit (0x800000) stays set after function-key events with nothing pressed. It now asks each left and right ⌘ ⌥ ⌃ ⇧ key directly (CGEventSource.keyState); Fn, Caps Lock and the shortcut key never block ⌘V. Checks cover every key code; mutants for "never blocks" and "Fn counted again" are in the core mutation lane.
+- Recent dictations on the pet lists dictations only; the RUNNING sessions section under it is gone (Miles: it took space for nothing).
+- Pair with server 6.73.12 (unchanged).
+
 ## 0.5.310 (build 363), dictation insertion you can trust
 
 - Field bug (Miles 2026-10-15 20:07): with iTerm2 focused the pet flashed "✓ INSERTED · ITERM2" and nothing landed. An Accessibility set that returns success proves nothing. COS now measures the focused field before and after (AXNumberOfCharacters and AXSelectedTextRange, never its text) and a pure, tested decision (DictationDelivery) sets the outcome. Polls run at 0, 50, 150 and 300 ms without blocking the main thread. Any change counts as landed and is never pasted over; no change goes to ⌘V, which is measured too. ✓ INSERTED only for a measured change. After a posted ⌘V, an unmeasured or unmoved field reads "PASTED · ⌘V SENT" without a check (history: pasted, unconfirmed); COS never tells you to press ⌘V once it has sent one, so nothing can be pasted twice.

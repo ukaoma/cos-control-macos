@@ -1,5 +1,5 @@
 {
-  "version": "0.5.310",
+  "version": "0.5.311",
   "whatsNew": {
     "summary": "Dictation, Wispr-style: hold your shortcut, watch the pet listen, and the text drops in where your cursor is. Fix a word once and the COS dictionary remembers it everywhere.",
     "sections": [
@@ -12,7 +12,8 @@
           "No text box selected? A card pops over the pet with the text and a Copy button. It folds away after 20 seconds; hover to keep it.",
           "A Dictated pill on the pet opens Recent dictations: your last 50, kept on this Mac, each with where it went and a Copy button.",
           "Still refused: password fields, and secure keyboard input held by another app (its own card). COS never presses Send or Return, and line breaks become spaces in a terminal.",
-          "Delete a dictation from its row, or clear them all in Settings."
+          "Delete a dictation from its row, or clear them all in Settings.",
+          "Recent dictations on the pet shows only your dictations, without the running sessions under it."
         ]
       },
       {
