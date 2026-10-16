@@ -13,6 +13,9 @@ private actor WorkChatFixture {
     var capabilityFailures = 0
     init(_ ids: [String], planners: [String]? = ["sonnet", "opus"], model: String = "claude:opus-fixture-model") { self.ids = ids; self.planners = planners; self.model = model }
     func failCapabilities(_ times: Int) { capabilityFailures = times }
+    /// 0.5.316: the next discovery reads are cancelled, as when the view's task goes away mid-read.
+    var capabilityCancels = 0
+    func cancelCapabilities(_ times: Int) { capabilityCancels = times }
     var echoEffort = true
     func stopEchoingEffort() { echoEffort = false }
     func seen() -> [String] { calls }
@@ -32,6 +35,7 @@ private actor WorkChatFixture {
             contextReads += 1
             out = ["contextText": .string("Fixture task evidence"), "workRevision": .string(String(repeating: contextReads == 1 ? "a" : "b", count: 64)), "task": .object(["id": .string("aaaaaaaaaaaa"), "workIdentity": .string("aaaaaaaaaaaa"), "domain": .string("quilt"), "title": .string("Launch fixture"), "text": .string("Launch fixture"), "source": .string("Fixture evidence")])]
         case "work-chat-capabilities":
+            if capabilityCancels > 0 { capabilityCancels -= 1; throw CancellationError() }
             if capabilityFailures > 0 { capabilityFailures -= 1; throw HelperClientError.commandFailed("Task chat planner discovery got no answer from the server.") }
             out = ["protocolVersion": .number(1)]
             // A planners-advertising fixture is a 6.73.12 server, which also advertises efforts.
@@ -307,6 +311,47 @@ private actor WorkChatFixture {
     precondition(lastEffort == "low" && unreported.record?.rounds.last?.state == "Ready to send" && unreported.record?.rounds.last?.plannerEffort == nil, "A requested effort is never recorded as the one that ran")
     let capabilityCalls = await fixture.seen().filter { $0 == "work-chat-capabilities" }.count
     precondition(capabilityCalls == 6, "Discovery asks once, retries once, and no more: \(capabilityCalls)")
+    // 0.5.316 (Miles 2026-10-16 14:29): a cancelled discovery is not an answer. It keeps what the store had and says nothing.
+    func capabilityReads() async -> Int { await fixture.seen().filter { $0 == "work-chat-capabilities" }.count }
+    await fixture.cancelCapabilities(1)
+    let kept = WorkTaskChatStore(); kept.enabled = true
+    await kept.loadPlanners(handoff: real, retryDelay: .zero)
+    precondition(kept.planners.isEmpty && kept.plannerNotice == nil && kept.discovery == .unknown, "A cancelled first discovery says nothing and stays unknown")
+    await kept.loadPlanners(handoff: real, retryDelay: .zero)
+    precondition(kept.planners == ["sonnet", "opus"] && kept.discovery == .loaded, "The next discovery loads the planners")
+    await fixture.cancelCapabilities(1)
+    await kept.loadPlanners(handoff: real, retryDelay: .zero)
+    precondition(kept.planners == ["sonnet", "opus"] && kept.efforts == ["low", "medium", "high"] && kept.plannerNotice == nil && kept.discovery == .loaded,
+                 "A cancelled re-read keeps the planners already loaded")
+    // Cancelled during the retry wait: no second read, no notice, nothing changed.
+    await fixture.failCapabilities(1)
+    let waiting = WorkTaskChatStore(); waiting.enabled = true
+    let readsBefore = await capabilityReads()
+    let backoff = Task { await waiting.loadPlanners(handoff: real, retryDelay: .seconds(30)) }
+    try await Task.sleep(for: .milliseconds(300)); backoff.cancel(); await backoff.value
+    let readsAfter = await capabilityReads()
+    precondition(readsAfter == readsBefore + 1 && waiting.planners.isEmpty && waiting.plannerNotice == nil && waiting.discovery == .unknown,
+                 "Cancelled during its backoff, discovery stops: no second read and no unavailable notice (\(readsAfter - readsBefore) reads)")
+    // Plan reads the planner choice the view never finished, and asks for Opus (Miles's default) when chosen.
+    await fixture.cancelCapabilities(1)
+    let unfinished = WorkTaskChatStore(); unfinished.enabled = true; unfinished.open(source: source, handoff: real)
+    await unfinished.loadPlanners(handoff: real)
+    precondition(unfinished.discovery == .unknown, "The view's discovery was cancelled")
+    unfinished.setDraft("Plan after a cancelled discovery")
+    await unfinished.send(source: source, handoff: real, planner: "opus", effort: "high")
+    let unfinishedPlanner = await fixture.plannerSent().last ?? nil
+    precondition(unfinished.discovery == .loaded && unfinished.planners == ["sonnet", "opus"] && unfinishedPlanner == "opus"
+                 && unfinished.record?.rounds.last?.planner == "opus", "Plan re-reads discovery and plans with the chosen Opus: \(String(describing: unfinishedPlanner)) \(unfinished.error ?? "")")
+    // A discovery that failed twice is read again at Plan; once the server answers, the notice goes and Opus is used.
+    await fixture.failCapabilities(2)
+    let failedFirst = WorkTaskChatStore(); failedFirst.enabled = true; failedFirst.open(source: source, handoff: real)
+    await failedFirst.loadPlanners(handoff: real, retryDelay: .zero)
+    precondition(failedFirst.discovery == .failed && failedFirst.plannerNotice == WorkChatPolicy.plannerUnavailable, "Two failures are still said")
+    failedFirst.setDraft("Plan after a failed discovery")
+    await failedFirst.send(source: source, handoff: real, planner: "opus", effort: "high")
+    let failedFirstPlanner = await fixture.plannerSent().last ?? nil
+    precondition(failedFirst.discovery == .loaded && failedFirst.plannerNotice == nil && failedFirstPlanner == "opus",
+                 "Plan re-reads a failed discovery and plans with Opus once the server answers: \(String(describing: failedFirstPlanner)) \(failedFirst.error ?? "")")
     let legacySource = WorkSource(id: "task:quilt:dddddddddddd", title: "Interrupted fixture", revision: source.revision, project: "quilt", context: "")
     let legacyChat = WorkTaskChatStore(); legacyChat.open(source: legacySource, handoff: handoff)
     var interrupted = WorkChatRound(question: "Review the 404 sheet")
@@ -359,6 +404,8 @@ private actor WorkPartialSendFixture {
         case "work-context": out = ["contextText": .string("Fixture task evidence"), "workRevision": .string(String(repeating: "c", count: 64)), "task": .object(["id": .string("aaaaaaaaaaaa"), "workIdentity": .string("aaaaaaaaaaaa"), "domain": .string("quilt"), "title": .string("Launch fixture"), "text": .string("Launch fixture"), "source": .string("Fixture evidence")])]
         case "work-chat": out = ["protocolVersion": .number(1), "answer": .string("Two independent checks."),
             "assignments": .array(ids.prefix(2).map { .object(["sessionID": .string($0), "prompt": .string("Report checks; do not publish.")]) })]
+        // 0.5.316: Plan reads discovery it never had; this fixture is a server that offers no planner choice.
+        case "work-chat-capabilities": out = ["protocolVersion": .number(1)]
         // The first session refuses at delivery; the second accepts.
         case "session-chat-attachability": out = ["attachable": .bool(!refuseAll && !ids[0].hasSuffix(thread)), "reasonCopy": .string("Fixture refusal: this session cannot be continued.")]
         case "session-chat-attach": out = ["state": .string("attached"), "bindingId": .string("partial-fixture"), "epoch": .number(1), "boundTo": .string("exact-target")]

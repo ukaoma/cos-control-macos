@@ -38,7 +38,12 @@ MUTANTS = [
  ("request claimed as ran", C, '        if reported.hasSuffix("(requested)") || (reported.isEmpty && requested != nil) {', '        if reported.isEmpty && requested != nil {'),
  ("no report claims the request", C, '        if reported.hasSuffix("(requested)") || (reported.isEmpty && requested != nil) {', '        if reported.hasSuffix("(requested)") {'),
  ("server model not recorded", C, 'self.record?.rounds[index].plannerModel = handoff.isolated ? nil : answer.model.map { String($0.prefix(100)) }', 'self.record?.rounds[index].plannerModel = nil'),
- ("discovery not retried", C, 'if attempt == 0 { try? await Task.sleep(for: retryDelay) }', 'if attempt == 0 { try? await Task.sleep(for: retryDelay); break }'),
+ ("discovery not retried", C, '                    do { try await Task.sleep(for: retryDelay) } catch {', '                    do { try await Task.sleep(for: retryDelay); break } catch {'),
+ # 0.5.316 (Miles 2026-10-16 14:29): cancelled discovery, a backoff that swallowed cancellation, Plan not re-reading.
+ ("cancelled discovery reads as a failure", C, '                if error is CancellationError || Task.isCancelled {', '                if false {'),
+ ("backoff swallows cancellation", C, 'the planner choice is left as it was")\n                        return\n', 'the planner choice is left as it was")\n'),
+ ("Plan never re-reads discovery", C, '        if !handoff.isolated, enabled, discovery != .loaded {', '        if false {'),
+ ("discovery never marked loaded", C, '                discovery = .loaded\n                return\n', '                return\n'),
  ("discovery failure hidden", C, 'planners = []; efforts = []; contextItemsOffered = false; plannerNotice = WorkChatPolicy.plannerUnavailable', 'planners = []; efforts = []; contextItemsOffered = false; plannerNotice = nil'),
  ("effort key always sent", C, 'if let effort { body["effort"] = effort }', 'body["effort"] = effort ?? "high"'),
  ("effort key never sent", C, 'if let effort { body["effort"] = effort }', ''),

@@ -17154,13 +17154,47 @@ final class COSControlHelper {
                 guard let id = row["id"] as? String else { return false }
                 return links[id]?.workID == workID
               }) else { throw HelperError.message("Task connections changed. Nothing was dispatched.") }
-        guard let response = request("/api/work/chat", method: "POST", token: try readToken(),
-                                    // 0.5.310: server 6.73.12 lets a high-effort plan think for up to 180 s before it stops it.
-                                    body: String(decoding: data, as: UTF8.self), timeout: 190), response.status == 200,
-              let answer = response.body, answer["protocolVersion"] as? Int == 1 else {
-            throw HelperError.message("Task chat planning is unavailable on this server. No assignment was sent.")
+        let started = ProcessInfo.processInfo.systemUptime
+        let response = request("/api/work/chat", method: "POST", token: try readToken(),
+                               // 0.5.310: server 6.73.12 lets a high-effort plan think for up to 180 s before it stops it.
+                               body: String(decoding: data, as: UTF8.self), timeout: 190)
+        let elapsedMs = Int((ProcessInfo.processInfo.systemUptime - started) * 1000)
+        if let failure = Self.workChatPlanFailure(status: response?.status, body: response?.body, elapsedMs: elapsedMs, timeoutSeconds: 190) {
+            throw HelperError.message(failure)
         }
+        guard let answer = response?.body else { throw HelperError.message("The server's plan arrived empty.") }
         emit(ok: true, message: "Task chat", details: answer)
+    }
+
+    /// 0.5.316 (Miles 2026-10-16 14:31): every non-200, protocol mismatch and timeout read "Task chat planning is unavailable
+    /// on this server", while the server had run the planner for 10.6 s and refused its answer (503 work_chat_unavailable).
+    /// Nil when the answer is a usable protocol 1 plan; otherwise the server's actual status and error code, in words, with
+    /// status, code and elapsed time (Control logs this text and adds "Nothing was sent."). Only a 404 means the route is
+    /// missing. The server's error is `{error: code, message}`; `{error: {code, message}}` is read too.
+    static func workChatPlanFailure(status: Int?, body: [String: Any]?, elapsedMs: Int, timeoutSeconds: Int) -> String? {
+        let seconds = String(format: "%.1f s", Double(elapsedMs) / 1000)
+        guard let status else {
+            return elapsedMs >= (timeoutSeconds - 5) * 1000
+                ? "COS took too long to plan (over \(timeoutSeconds) s)."
+                : "COS could not reach the server to plan (no answer after \(seconds))."
+        }
+        if status == 404 { return "Task chat planning is unavailable on this server (HTTP 404)." }
+        if status == 200 {
+            let version = body?["protocolVersion"] as? Int
+            return version == 1 ? nil
+                : "The server answered in a planning format this Control cannot read (protocol \(version.map { String($0) } ?? "missing"), \(seconds))."
+        }
+        let nested = body?["error"] as? [String: Any]
+        let code = (body?["error"] as? String) ?? (nested?["code"] as? String)
+        let detail = "HTTP \(status)\(code.map { " · \($0)" } ?? "") · \(seconds)"
+        switch code {
+        case "work_chat_busy":
+            return "The server is already planning another request or is pausing for maintenance (\(detail)). Try again in a moment."
+        case "invalid_work_chat":
+            return "The server refused this planning request as invalid (\(detail))."
+        default:
+            return "The planner did not return a usable plan (\(detail))."
+        }
     }
 
     /// 0.5.308: which planners the server offers (server 6.73.10 advertises `planners`). The GET makes no model call. An older
@@ -17237,6 +17271,27 @@ final class COSControlHelper {
         body["running_active"] is Bool && body["running_stamped"] as? Bool == true && body["runningDegraded"] as? Bool == false
     }
     private func selfTestWork() throws {
+        // 0.5.316: a planning failure says what the server said; only a 404 is "unavailable on this server".
+        let planOK = Self.workChatPlanFailure(status: 200, body: ["protocolVersion": 1], elapsedMs: 900, timeoutSeconds: 190)
+        let plan404 = Self.workChatPlanFailure(status: 404, body: ["error": "Not found"], elapsedMs: 40, timeoutSeconds: 190) ?? ""
+        let plan503 = Self.workChatPlanFailure(status: 503, body: ["error": "work_chat_unavailable", "message": "No assignment was dispatched."],
+                                               elapsedMs: 10_612, timeoutSeconds: 190) ?? ""
+        let plan409 = Self.workChatPlanFailure(status: 409, body: ["error": "work_chat_busy"], elapsedMs: 12, timeoutSeconds: 190) ?? ""
+        let plan400 = Self.workChatPlanFailure(status: 400, body: ["error": ["code": "invalid_work_chat", "message": "x"]], elapsedMs: 8, timeoutSeconds: 190) ?? ""
+        let planTimeout = Self.workChatPlanFailure(status: nil, body: nil, elapsedMs: 190_004, timeoutSeconds: 190) ?? ""
+        let planDown = Self.workChatPlanFailure(status: nil, body: nil, elapsedMs: 30, timeoutSeconds: 190) ?? ""
+        let planOld = Self.workChatPlanFailure(status: 200, body: ["protocolVersion": 2], elapsedMs: 900, timeoutSeconds: 190) ?? ""
+        guard planOK == nil,
+              plan404 == "Task chat planning is unavailable on this server (HTTP 404).",
+              plan503 == "The planner did not return a usable plan (HTTP 503 · work_chat_unavailable · 10.6 s).",
+              plan409.hasPrefix("The server is already planning another request") && plan409.contains("HTTP 409 · work_chat_busy"),
+              plan400 == "The server refused this planning request as invalid (HTTP 400 · invalid_work_chat · 0.0 s).",
+              planTimeout == "COS took too long to plan (over 190 s).",
+              planDown == "COS could not reach the server to plan (no answer after 0.0 s).",
+              planOld.contains("protocol 2"),
+              ![plan503, plan409, plan400, planTimeout, planDown, planOld].contains(where: { $0.contains("unavailable on this server") }) else {
+            throw HelperError.message("Work chat plan failure words self-test failed: \([plan404, plan503, plan409, plan400, planTimeout, planDown, planOld])")
+        }
         guard Self.recentActivityVerified(["running_active": false, "running_stamped": true, "runningDegraded": false]),
               Self.recentActivityVerified(["running_active": true, "running_stamped": true, "runningDegraded": false]),
               !Self.recentActivityVerified([:]),

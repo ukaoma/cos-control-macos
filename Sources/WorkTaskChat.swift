@@ -241,6 +241,10 @@ enum WorkChatPreflight {
     @Published private(set) var planners: [String] = []
     /// 0.5.310: set when the server did not answer planner discovery twice; plans then use the server default (Sonnet).
     @Published private(set) var plannerNotice: String?
+    /// 0.5.316: whether discovery has an answer. A cancelled read is not one: it leaves this, the planners and the notice
+    /// as they were. Plan re-runs discovery itself when this is not `.loaded`.
+    enum PlannerDiscovery: Equatable, Sendable { case unknown, loaded, failed }
+    @Published private(set) var discovery: PlannerDiscovery = .unknown
     /// Server 6.73.12: the planner efforts it advertises. Empty: no effort picker, and no effort key is sent.
     @Published private(set) var efforts: [String] = []
     /// Server 6.73.13: it takes context items and chooses each assignment's. False: every assignment sends every item.
@@ -402,6 +406,12 @@ enum WorkChatPreflight {
         if !handoff.isolated { await handoff.refreshReceipts() }
         let held = await handoff.taskChatBlockers(source: source)
         guard held.isEmpty else { blockers = held; error = WorkChatPreflight.heading; return }
+        // 0.5.316: discovery the view's task never finished (cancelled) or that failed is read again here, outside the
+        // view's task, so the planner Miles chose (Opus by default) is honoured rather than a silent Sonnet.
+        if !handoff.isolated, enabled, discovery != .loaded {
+            phase = "Reading the planner choice…"
+            await loadPlanners(handoff: handoff)
+        }
         let planner = handoff.isolated ? nil : WorkChatPolicy.planner(choice, advertised: planners)
         let effort = handoff.isolated ? nil : WorkChatPolicy.effort(effortChoice, advertised: efforts)
         phase = "Reading the task and its connections…"
@@ -620,8 +630,11 @@ enum WorkChatPreflight {
     }
     /// Discovery only: the server's GET makes no model call. A server without the route (the helper reports routeMissing)
     /// or without `planners` gets no picker. 0.5.310: a failed answer is retried once, then said, never silently hidden.
+    /// 0.5.316 (Miles 2026-10-16 14:29, 0.5.315): the view's `.task` was cancelled mid-discovery; the CancellationError
+    /// counted as a failed answer, `try? await Task.sleep` returned at once, the retry was cancelled too, and the picker
+    /// vanished for "using Sonnet". Cancellation, during the call or the backoff, now changes nothing.
     func loadPlanners(handoff: WorkHandoffStore, retryDelay: Duration = .milliseconds(600)) async {
-        guard enabled, !handoff.isolated else { planners = []; efforts = []; contextItemsOffered = false; plannerNotice = nil; return }
+        guard enabled, !handoff.isolated else { planners = []; efforts = []; contextItemsOffered = false; plannerNotice = nil; discovery = .loaded; return }
         for attempt in 0..<2 {
             do {
                 let caps = try await handoff.taskChatCall(["work-chat-capabilities"])
@@ -630,14 +643,24 @@ enum WorkChatPreflight {
                 let levels = caps["efforts"]?.array?.compactMap(\.string) ?? []
                 efforts = WorkChatPolicy.efforts.filter { levels.contains($0) }
                 contextItemsOffered = caps["contextItems"]?.bool == true
+                discovery = .loaded
                 return
             } catch {
+                if error is CancellationError || Task.isCancelled {
+                    workChatLog.notice("planner discovery cancelled (attempt \(attempt + 1)); the planner choice is left as it was")
+                    return
+                }
                 let reason = error.localizedDescription
                 workChatLog.error("planner discovery failed (attempt \(attempt + 1)): \(reason, privacy: .public)")
-                if attempt == 0 { try? await Task.sleep(for: retryDelay) }
+                if attempt == 0 {
+                    do { try await Task.sleep(for: retryDelay) } catch {
+                        workChatLog.notice("planner discovery cancelled during its retry wait; the planner choice is left as it was")
+                        return
+                    }
+                }
             }
         }
-        planners = []; efforts = []; contextItemsOffered = false; plannerNotice = WorkChatPolicy.plannerUnavailable
+        planners = []; efforts = []; contextItemsOffered = false; plannerNotice = WorkChatPolicy.plannerUnavailable; discovery = .failed
     }
     /// Restore text for deliberate review and Send. Never replay any assignment automatically.
     func restoreUnsentRequest(roundID: String, checkedUnconfirmed: Bool = false) {

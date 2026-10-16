@@ -15,6 +15,11 @@ c = int(re.search(r'args\.first == "work-chat" \? (\d+)', store).group(1))
 assert h >= 185, f"helper waits {h}s for a plan the server may run for 180s"
 assert c >= h + 2 + 5, f"Control waits {c}s for a helper that may wait {h + 2}s"
 print(f"PASS Work chat timeouts: server 180s < helper {h}s (+2) < Control {c}s")
+# 0.5.316: the plan's failure words come from the server's answer (self-test-work runs workChatPlanFailure itself; the
+# live POST cannot run in a check, so this pins that emitWorkChat uses it and never the old one-size message).
+assert "if let failure = Self.workChatPlanFailure(status: response?.status, body: response?.body, elapsedMs: elapsedMs, timeoutSeconds: 190) {\n            throw HelperError.message(failure)" in chat, "emitWorkChat must say what the server answered"
+assert "No assignment was sent." not in chat and chat.count("timeout: 190)") == 1, "no blanket 'unavailable' failure, and the mapping's timeout is the request's"
+print("PASS Work chat plan failures: emitWorkChat maps the server's status, code and elapsed time")
 PY
 # 0.5.312: the Work Context Meter's wiring. Item lists start collapsed and their open state is remembered per Mac; a file
 # previews in the native Quick Look panel on its local copy, a text item shows its exact excerpt; the send uses only the
