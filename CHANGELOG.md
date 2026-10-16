@@ -8,6 +8,9 @@
 - Dictionary: single words and corrections use server 6.73.12's atomic routes, so a Fix a word can no longer be lost to a read-then-write. Lengths count UTF-16 units like the server. A save whose read-back fails stays a success. The pet's Fix a word shows dictionary errors and never sticks on Loading…; Save is off when the server cannot learn.
 - Pair with server 6.73.12.
 
+- Work chat says what happened: a round reads Dispatched only when an assignment reached its session; otherwise Not delivered (each reason kept), Delivery uncertain or Not sent. The planner line names the model and effort the server reports ran, or "requested Opus (not confirmed)". If planner choice can't be read after one retry, it says "Planner choice unavailable · using Sonnet". Plan, save and send outcomes are logged (com.gotcos.control, work-chat), never prompt text.
+- Effort menu (Low / Medium / High, default High, per Mac) beside the planner, both now COSDropdown. Control and its helper wait up to 200 and 190 seconds for a Work chat plan (were 65 and 55); pair with server 6.73.12, which gives Work chat real thinking at medium and high.
+- A stopped Mac capture whose delivery paused on an error reads "Capture stopped · delivery paused N/M"; Finish saving stays.
 ## 0.5.309 (build 362), dictation Wispr-style and the COS dictionary
 
 - Built to the approved mock (design/dictation-wispr-mock.html, moments 01-07; Miles picked A/A/A, 2026-10-15 18:16). The persistent "COS Dictation" panel is gone.

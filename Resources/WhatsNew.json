@@ -105,7 +105,8 @@
           "Choose Opus or Sonnet to plan, beside the composer. Opus is the default; the choice stays on this Mac. Needs server 6.73.10; older servers plan with Sonnet.",
           "If an earlier handoff on the card is still unresolved, COS lists it first, with Mark reviewed, Acknowledge or Check status, instead of refusing partway through a plan.",
           "A refused assignment shows its reason and the others stay sendable. If the task, its files or its sessions change after planning, COS asks you to plan again.",
-          "Read each session’s delivery status and results together in the task conversation. Shared task completion remains your decision; Cursor and app-owned sessions keep manual continuation."
+          "Read each session’s delivery status and results together in the task conversation. Shared task completion remains your decision; Cursor and app-owned sessions keep manual continuation.",
+          "Choose how hard the planner thinks: Low, Medium or High (default). Each round names the model and effort that planned it, and says Dispatched only when a session received an assignment."
         ]
       },
       {
@@ -118,7 +119,8 @@
       {
         "title": "Close a live recording",
         "items": [
-          "A Live now row that has had no audio for two minutes offers End and save. It saves everything the server received; audio the glasses or phone still hold is not added after that."
+          "A Live now row that has had no audio for two minutes offers End and save. It saves everything the server received; audio the glasses or phone still hold is not added after that.",
+          "A stopped recording whose upload paused says so, with Finish saving."
         ]
       },
       {
