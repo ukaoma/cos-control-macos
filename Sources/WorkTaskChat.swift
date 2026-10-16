@@ -53,6 +53,8 @@ struct WorkChatRound: Codable, Identifiable {
     /// True when the server chose each assignment's items; false when every assignment got every item (an older server,
     /// or more items than the server takes).
     var contextChosen: Bool? = nil
+    /// 0.5.312 (Miles 2026-10-15): planned and sent in one step, without stopping for review ("Plan and send").
+    var sentWithoutReview: Bool? = nil
 }
 struct WorkChatRecord: Codable {
     var workID: String
@@ -163,6 +165,15 @@ enum WorkChatPolicy {
         return "planned with " + name
     }
     static let staleMessage = "The task changed since planning. Plan again."
+    /// 0.5.312 (Miles 2026-10-15, "let the agent run unfettered"): Settings › Work › Send plans without review, per Mac.
+    /// Off by default: review stays the normal path.
+    static let autoSendKey = "cos.workChatSendWithoutReview"
+    static let autoSendDefault = false
+    /// Miles has confirmed once that Plan and send goes straight to the sessions.
+    static let autoSendAcknowledgedKey = "cos.workChatSendWithoutReviewAcknowledged"
+    /// The first Plan and send, from either button, asks once.
+    static func confirmBeforeAutoSend(acknowledged: Bool) -> Bool { !acknowledged }
+    static let autoSendExplanation = "Plan and send plans, then sends every assignment to its session at once, without stopping for your review. The same checks still run: an earlier unresolved handoff, or a task that changed, stops it and leaves the round for you."
     static let plannerUnavailable = "Planner choice unavailable · using Sonnet"
 }
 
@@ -377,7 +388,9 @@ enum WorkChatPreflight {
     }
     /// Plans only. 0.5.308 (Miles 2026-10-15: "get confirmation and choose when it's being sent"): the round stops at
     /// "Ready to send" and nothing is dispatched until Miles sends an assignment or Send all.
-    func send(source: WorkSource, handoff: WorkHandoffStore, planner choice: String? = nil, effort effortChoice: String? = nil) async {
+    /// `autoSend` (Plan and send): after planning, every assignment goes through the same send path as Send all, with every
+    /// pre-flight and stale-plan guard. A guard that trips stops it and leaves the round as a manual send would.
+    func send(source: WorkSource, handoff: WorkHandoffStore, planner choice: String? = nil, effort effortChoice: String? = nil, autoSend: Bool = false) async {
         guard !busy, !refreshing, var record, record.workID == source.id, record.serverID != "unverified", enabled || handoff.isolated else { return }
         guard flushDraft() else { return }
         let question = record.draft.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -442,7 +455,13 @@ enum WorkChatPreflight {
             self.record?.rounds[index].plannerModel = handoff.isolated ? nil : answer.model.map { String($0.prefix(100)) }
             self.record?.rounds[index].plannerEffort = handoff.isolated ? nil : answer.effort.flatMap { WorkChatPolicy.efforts.contains($0) ? $0 : nil }
             self.record?.rounds[index].state = answer.assignments.isEmpty ? "Answered" : "Ready to send"
-            _ = persist()
+            guard persist() else { return }
+            if autoSend, !answer.assignments.isEmpty, let roundID = self.record?.rounds[index].id {
+                self.record?.rounds[index].sentWithoutReview = true
+                guard persist() else { return }
+                workChatLog.info("plan and send: sending \(answer.assignments.count) assignment(s) without review")
+                await dispatch(roundID: roundID, assignmentIDs: answer.assignments.map(\.receiptID), source: source, handoff: handoff)
+            }
         } catch {
             self.record?.rounds[index].state = "Needs attention"
             self.error = error.localizedDescription + " Nothing was sent."
@@ -734,8 +753,9 @@ struct WorkTaskChatView: View {
         return base + " · " + WorkContextMeter.format(WorkContextMeter.roundTokens(items: items, assignments: waiting)) + " tokens"
     }
     private static func stateLine(_ round: WorkChatRound) -> String {
-        guard let label = WorkChatPolicy.plannerLabel(requested: round.planner, ran: round.plannerModel, effort: round.plannerEffort) else { return round.state }
-        return round.state + " · " + label
+        let auto = round.sentWithoutReview == true ? " · sent without review" : ""
+        guard let label = WorkChatPolicy.plannerLabel(requested: round.planner, ran: round.plannerModel, effort: round.plannerEffort) else { return round.state + auto }
+        return round.state + auto + " · " + label
     }
     private func roundView(_ round: WorkChatRound) -> some View {
                 VStack(alignment:.leading,spacing:10) {
@@ -939,15 +959,29 @@ private struct WorkChatSendControls: View {
     @AppStorage(WorkChatPolicy.plannerKey) private var planner = "opus"
     /// 0.5.310: per Mac. High by default (Miles 2026-10-15); offered only when the server advertises efforts.
     @AppStorage(WorkChatPolicy.effortKey) private var effort = "high"
+    /// 0.5.312: Settings › Work › Send plans without review. Off by default; on makes Plan and send the primary button.
+    @AppStorage(WorkChatPolicy.autoSendKey) private var autoSend = WorkChatPolicy.autoSendDefault
+    @AppStorage(WorkChatPolicy.autoSendAcknowledgedKey) private var autoSendAcknowledged = false
+    @State private var confirmAutoSend = false
+    private static let autoSendHelp = "Plans, then sends every assignment without stopping for review"
+    private var blocked: Bool {
+        chat.busy || chat.refreshing || !(chat.enabled || handoff.isolated) || chat.record?.workID != source.id || draft.value.text.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty
+    }
+    private func plan() { Task { await chat.send(source:source,handoff:handoff,planner:planner,effort:effort) } }
+    /// Every Plan and send comes through here; the first one, from either button, asks once.
+    private func planAndSend() {
+        if WorkChatPolicy.confirmBeforeAutoSend(acknowledged: autoSendAcknowledged) { confirmAutoSend = true; return }
+        Task { await chat.send(source:source,handoff:handoff,planner:planner,effort:effort,autoSend:true) }
+    }
     var body: some View {
         HStack {
-            Text(chat.refreshing ? "Refreshing receipts and updates… Your draft is preserved." : "⌘ Return to plan · Return adds a line").font(COSType.body(10)).foregroundStyle(COSPalette.muted)
+            Text(chat.refreshing ? "Refreshing receipts and updates… Your draft is preserved." : (autoSend ? "⌘ Return to plan and send · Return adds a line" : "⌘ Return to plan · Return adds a line")).font(COSType.body(10)).foregroundStyle(COSPalette.muted)
             Spacer()
             if !chat.planners.isEmpty {
                 // GOTCOS theme (0.5.251): COSDropdown, never a stock Picker.
                 COSDropdown("Plan with", selection: $planner, options: chat.planners.map { COSDropdownOption($0, WorkChatPolicy.plannerName($0)) })
                     .frame(maxWidth: 190).disabled(chat.busy)
-                    .help("The model that plans. It never sends: you review every assignment first.")
+                    .help(autoSend ? "The model that plans." : "The model that plans. Plan never sends: you review every assignment first.")
                     .accessibilityIdentifier("work-chat-planner")
                 if !chat.efforts.isEmpty {
                     COSDropdown("Effort", selection: $effort, options: chat.efforts.map { COSDropdownOption($0, WorkChatPolicy.effortName($0)) })
@@ -958,11 +992,27 @@ private struct WorkChatSendControls: View {
             } else if let notice = chat.plannerNotice {
                 Text(notice).font(COSType.body(10)).foregroundStyle(COSPalette.muted).help("COS could not read this server's planner choice. Plans use Sonnet until the next try.")
             }
-            Button(handoff.isolated ? "Run sample plan" : "Plan") { Task { await chat.send(source:source,handoff:handoff,planner:planner,effort:effort) } }
-                .buttonStyle(COSPrimaryButtonStyle()).keyboardShortcut(.return,modifiers:.command)
-                .disabled(chat.busy || chat.refreshing || !(chat.enabled || handoff.isolated) || chat.record?.workID != source.id || draft.value.text.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty)
-                .accessibilityIdentifier("work-chat-send")
+            if autoSend {
+                Button("Plan") { plan() }.buttonStyle(COSQuietButtonStyle()).disabled(blocked)
+                    .help("Plans and stops for your review").accessibilityIdentifier("work-chat-send")
+                Button("Plan and send") { planAndSend() }.buttonStyle(COSPrimaryButtonStyle()).keyboardShortcut(.return,modifiers:.command)
+                    .disabled(blocked).help(Self.autoSendHelp).accessibilityIdentifier("work-chat-plan-and-send")
+            } else {
+                Button("Plan and send") { planAndSend() }.buttonStyle(COSQuietButtonStyle())
+                    .disabled(blocked).help(Self.autoSendHelp).accessibilityIdentifier("work-chat-plan-and-send")
+                Button(handoff.isolated ? "Run sample plan" : "Plan") { plan() }
+                    .buttonStyle(COSPrimaryButtonStyle()).keyboardShortcut(.return,modifiers:.command)
+                    .disabled(blocked)
+                    .accessibilityIdentifier("work-chat-send")
+            }
         }
+        .confirmationDialog("Send plans without review?", isPresented: $confirmAutoSend) {
+            Button("Plan and send") {
+                autoSendAcknowledged = true
+                Task { await chat.send(source:source,handoff:handoff,planner:planner,effort:effort,autoSend:true) }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: { Text(WorkChatPolicy.autoSendExplanation) }
     }
 }
 

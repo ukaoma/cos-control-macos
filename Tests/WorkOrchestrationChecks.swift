@@ -322,6 +322,8 @@ private actor WorkChatFixture {
     try runWorkChatPreflightChecks(source: source, sessions: sessions)
     try runWorkContextMeterPureChecks(sessions: sessions)
     try await runWorkContextMeterChecks(source: source, ids: ids, sessions: sessions, root: root)
+    try await runWorkChatPartialRefusalChecks(source: source, ids: ids, root: root, autoSend: true)
+    try await runWorkChatAutoSendChecks(source: source, ids: ids, sessions: sessions, root: root)
     try await runWorkChatPartialRefusalChecks(source: source, ids: ids, root: root)
     try await runWorkChatPartialRefusalChecks(source: source, ids: ids, root: root, refuseAll: true)
     // A round whose every assignment was refused or failed never becomes "Results available" on a poll.
@@ -342,14 +344,15 @@ private actor WorkChatFixture {
 private actor WorkPartialSendFixture {
     let ids: [String]
     let refuseAll: Bool
+    let server: String
     private var sends: [String] = []
-    init(_ ids: [String], refuseAll: Bool = false) { self.ids = ids; self.refuseAll = refuseAll }
+    init(_ ids: [String], refuseAll: Bool = false, server: String? = nil) { self.ids = ids; self.refuseAll = refuseAll; self.server = server ?? (refuseAll ? "refuse-all-server" : "partial-server") }
     func sent() -> [String] { sends }
     func run(_ args: [String], _ data: Data?) async throws -> HelperResponse {
         var out: [String: JSONValue] = [:]
         let thread = args.firstIndex(of: "--thread-id").map { args[$0 + 1] } ?? ""
         switch args.first ?? "" {
-        case "work-models": out = ["serverInstanceId": .string(refuseAll ? "refuse-all-server" : "partial-server"), "models": .array([])]
+        case "work-models": out = ["serverInstanceId": .string(server), "models": .array([])]
         case "claude-sessions": out = ["sessions": .array(ids.prefix(2).map { id in .object([
             "id": .string(String(id.split(separator: ":")[1])), "provider": .string(String(id.split(separator: ":")[0])),
             "name": .string("Exact " + id), "workspace": .string("/tmp/fixture"), "state": .string("recent")]) })]
@@ -366,16 +369,22 @@ private actor WorkPartialSendFixture {
     }
 }
 
-@MainActor private func runWorkChatPartialRefusalChecks(source: WorkSource, ids: [String], root: URL, refuseAll: Bool = false) async throws {
-    let fixture = WorkPartialSendFixture(ids, refuseAll: refuseAll)
-    let store = WorkHandoffStore(storageURL: root.appendingPathComponent(refuseAll ? "refuse-all.json" : "partial.json"), transport: { args, data in try await fixture.run(args, data) })
+@MainActor private func runWorkChatPartialRefusalChecks(source: WorkSource, ids: [String], root: URL, refuseAll: Bool = false, autoSend: Bool = false) async throws {
+    let fixture = WorkPartialSendFixture(ids, refuseAll: refuseAll, server: autoSend ? "partial-auto-server" : nil)
+    let store = WorkHandoffStore(storageURL: root.appendingPathComponent(autoSend ? "partial-auto.json" : refuseAll ? "refuse-all.json" : "partial.json"), transport: { args, data in try await fixture.run(args, data) })
     for id in ids.prefix(2) { precondition(store.confirmSessionCard(sessionID: id, source: source)) }
     await store.refresh()
     let chat = WorkTaskChatStore(); chat.enabled = true; chat.open(source: source, handoff: store); chat.setDraft("Run both checks")
-    await chat.send(source: source, handoff: store)
-    let round = chat.record!.rounds.last!
-    precondition(round.state == "Ready to send" && store.receipts.isEmpty)
-    await chat.sendAll(roundID: round.id, source: source, handoff: store)
+    if autoSend {
+        // 0.5.312: Plan and send uses the same per-assignment path; a refusal on one never stops the other.
+        await chat.send(source: source, handoff: store, autoSend: true)
+        precondition(chat.record!.rounds.last!.sentWithoutReview == true, "The round records it was sent without review")
+    } else {
+        await chat.send(source: source, handoff: store)
+        let round = chat.record!.rounds.last!
+        precondition(round.state == "Ready to send" && store.receipts.isEmpty)
+        await chat.sendAll(roundID: round.id, source: source, handoff: store)
+    }
     let sent = await fixture.sent()
     let after = chat.record!.rounds.last!
     if refuseAll {
@@ -388,7 +397,7 @@ private actor WorkPartialSendFixture {
     precondition(after.assignments[0].state == "refused" && after.assignments[0].detail.contains("Fixture refusal"), "A refusal marks only its own assignment, with its reason")
     precondition(sent == [String(ids[1].split(separator: ":")[1])] && after.assignments[1].state == "delivered", "A refusal never stops the other assignment from being sent")
     precondition(after.state == "Dispatched" && store.receipts.count == 2)
-    print("PASS Work chat partial refusal: one refused delivery, the other sent, both recorded")
+    print("PASS Work chat partial refusal\(autoSend ? " (Plan and send)" : ""): one refused delivery, the other sent, both recorded")
 }
 
 /// 0.5.312: a 6.73.13 server that chooses each assignment's context items. Records what it was told and what was sent.
@@ -480,14 +489,51 @@ private actor WorkContextFixture {
     precondition(planned.contextChosen == false && items.filter { $0.kind == .files }.count == 2, "The sample plan does not choose; both files are linked")
     precondition(planned.assignments.allSatisfy { $0.contextItemIDs == items.map(\.id) }, "Without a choice every assignment sends every item")
     precondition(meter.toggleContextItem(roundID: planned.id, assignmentID: planned.assignments[0].receiptID, itemID: drop.id))
+    precondition(meter.editAssignment(roundID: planned.id, assignmentID: planned.assignments[0].receiptID, prompt: "Use only the keep notes."))
+    let restarted = WorkTaskChatStore(); restarted.open(source: card, handoff: handoff)
+    let kept = restarted.record!.rounds.last!.assignments[0]
+    precondition(kept.prompt == "Use only the keep notes." && kept.contextItemIDs?.contains(drop.id) == false, "An edited prompt and a trimmed context both survive restart")
     let shown = WorkContextMeter.sendTokens(items: items, selected: meter.record!.rounds.last!.assignments[0].contextItemIDs!, provider: "claude")
     precondition(shown == WorkContextMeter.linkedTokens(items) - drop.estTokens, "Removing an item lowers that send by its estimate")
     await meter.sendAll(roundID: planned.id, source: card, handoff: handoff)
     let firstSend = handoff.receipts.first { $0.id == planned.assignments[0].receiptID }?.prompt ?? ""
     let secondSend = handoff.receipts.first { $0.id == planned.assignments[1].receiptID }?.prompt ?? ""
     precondition(firstSend.contains("keep-notes.txt") && !firstSend.contains("drop-notes.txt"), "A removed file is not in that send's file list")
+    precondition(firstSend.contains("Use only the keep notes."), "The edited prompt is what was sent")
     precondition(secondSend.contains("keep-notes.txt") && secondSend.contains("drop-notes.txt"), "The other assignment still sends both")
     print("PASS Work context meter: planner choice, fixed items, persisted edits and undo, per-assignment prompts and file lists, older-server fallback")
+}
+
+/// 0.5.312 (Miles 2026-10-15): Plan and send. Off by default, asks once, and goes through every guard a manual send has.
+@MainActor private func runWorkChatAutoSendChecks(source: WorkSource, ids: [String], sessions: [WorkSession], root: URL) async throws {
+    precondition(WorkChatPolicy.autoSendDefault == false, "Send plans without review is off by default")
+    precondition(WorkChatPolicy.confirmBeforeAutoSend(acknowledged: false) && !WorkChatPolicy.confirmBeforeAutoSend(acknowledged: true), "The first Plan and send asks once")
+    let handoff = WorkHandoffStore(isolated: true, storageURL: root.appendingPathComponent("auto.json"), transport: { _,_ in preconditionFailure("No provider calls in the sample") })
+    handoff.sessions = sessions
+    let card = WorkSource.taskSnapshot(TaskRow(.object(["id": .string("ffffffffffff"), "workIdentity": .string("ffffffffffff"), "domain": .string("quilt"), "title": .string("Auto fixture"), "text": .string("Auto fixture"), "source": .string("Evidence")]))!)
+    for id in ids { precondition(handoff.confirmSessionCard(sessionID: id, source: card)) }
+    let chat = WorkTaskChatStore(); chat.open(source: card, handoff: handoff); chat.setDraft("Ship both checks")
+    await chat.send(source: card, handoff: handoff, autoSend: true)
+    let round = chat.record!.rounds.last!
+    precondition(round.sentWithoutReview == true && round.state == "Dispatched" && handoff.receipts.count == round.assignments.count && round.assignments.count == 2,
+                 "Plan and send dispatches every assignment: \(round.state), \(handoff.receipts.count)")
+    precondition(round.assignments.allSatisfy { a in handoff.receipts.contains { $0.id == a.receiptID && $0.orchestrationRunID == round.id } }, "Through the same receipts and run as Send all")
+    precondition(round.contextItems != nil && round.assignments.allSatisfy { $0.contextItemIDs != nil }, "The meter still records what each assignment received")
+    chat.setDraft("Again, straight away")
+    await chat.send(source: card, handoff: handoff, autoSend: true)
+    precondition(chat.record!.rounds.count == 1 && handoff.receipts.count == 2 && chat.record?.draft == "Again, straight away" && chat.error == WorkChatPreflight.heading,
+                 "Earlier unresolved handoffs stop Plan and send before it plans; the request stays")
+    // A guard that trips after planning stops the send and leaves the round for review, as a manual send would.
+    let fixture = WorkChatFixture(ids)
+    let real = WorkHandoffStore(storageURL: root.appendingPathComponent("auto-real.json"), transport: { args, data in try await fixture.run(args, data) })
+    for id in ids.prefix(2) { precondition(real.confirmSessionCard(sessionID: id, source: source)) }
+    await real.refresh()
+    let stale = WorkTaskChatStore(); stale.enabled = true; stale.open(source: source, handoff: real); stale.setDraft("Plan and send on a changing task")
+    await stale.send(source: source, handoff: real, autoSend: true)
+    let stopped = stale.record!.rounds.last!
+    precondition(stopped.sentWithoutReview == true && stopped.state == "Needs a new plan" && stale.error == WorkChatPolicy.staleMessage && real.receipts.isEmpty,
+                 "A task changed between planning and sending stops Plan and send before any delivery: \(stopped.state)")
+    print("PASS Plan and send: off by default, asks once, dispatches every assignment through the same guards, stops on earlier handoffs and on a changed task")
 }
 
 /// 0.5.312: estimates, the context split, selection rules, totals and the canary, formatting, the disclosure memory.

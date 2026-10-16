@@ -19,9 +19,20 @@ PY
 # 0.5.312: the Work Context Meter's wiring. Item lists start collapsed and their open state is remembered per Mac; a file
 # previews in the native Quick Look panel on its local copy, a text item shows its exact excerpt; the send uses only the
 # assignment's items and files; the helper passes the server's contextItems capability through.
-python3 - "$ROOT/Sources/WorkContextMeter.swift" "$ROOT/Sources/WorkTaskChat.swift" "$ROOT/Sources/WorkHandoffStore.swift" "$ROOT/HelperSources/main.swift" <<'PY'
+python3 - "$ROOT/Sources/WorkContextMeter.swift" "$ROOT/Sources/WorkTaskChat.swift" "$ROOT/Sources/WorkHandoffStore.swift" "$ROOT/HelperSources/main.swift" "$ROOT/Sources/Views.swift" <<'PY'
 import sys
-meter, chat, store, helper = (open(p).read() for p in sys.argv[1:5])
+meter, chat, store, helper, views = (open(p).read() for p in sys.argv[1:6])
+# 0.5.312 Plan and send: off by default in both places that read it, asks once, and sends through the one guarded path.
+assert "    static let autoSendDefault = false\n" in chat, "Send plans without review is off by default"
+assert "@AppStorage(WorkChatPolicy.autoSendKey) private var autoSend = WorkChatPolicy.autoSendDefault" in chat, "the composer reads the default"
+assert "@AppStorage(WorkChatPolicy.autoSendKey) private var workChatSendWithoutReview = WorkChatPolicy.autoSendDefault" in views and 'Toggle("Send plans without review", isOn: $workChatSendWithoutReview)' in views, "Settings › Work has the switch"
+gate = chat[chat.index("    private func planAndSend() {"):chat.index("    var body: some View {", chat.index("    private func planAndSend() {"))]
+assert gate.index("if WorkChatPolicy.confirmBeforeAutoSend(acknowledged: autoSendAcknowledged) { confirmAutoSend = true; return }") < gate.index("autoSend:true"), "the first Plan and send asks before sending"
+dialog = chat[chat.index('.confirmationDialog("Send plans without review?"'):]
+assert dialog.index("autoSendAcknowledged = true") < dialog.index("autoSend:true"), "confirming records the acknowledgement"
+assert chat.count("autoSend:true") == 2 and chat.count('Button("Plan and send") { planAndSend() }') == 2, "both Plan and send buttons go through the gate"
+auto = chat[chat.index("            if autoSend, !answer.assignments.isEmpty"):chat.index("        } catch {", chat.index("            if autoSend, !answer.assignments.isEmpty"))]
+assert "await dispatch(roundID: roundID, assignmentIDs: answer.assignments.map(\\.receiptID), source: source, handoff: handoff)" in auto and "submit(" not in auto, "Plan and send uses the guarded send path, never submit directly"
 assert '@AppStorage(WorkContextMeter.expandedKey) private var expanded = ""' in meter, "item lists must start collapsed (empty memory)"
 assert 'static let expandedKey = "cos.workContextExpanded"' in meter, "the open state is remembered per Mac"
 assert "private var isOpen: Bool { WorkContextMeter.isExpanded(expanded, assignment.receiptID) }" in meter and "if isOpen {" in meter, "the list shows only when opened"
