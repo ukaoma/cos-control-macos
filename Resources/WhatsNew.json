@@ -1,8 +1,18 @@
 {
-  "version": "0.5.312",
+  "version": "0.5.313",
   "whatsNew": {
-    "summary": "See what each Work assignment sends before it goes, choose your dictation sound, and get your clipboard back after every paste.",
+    "summary": "Fix a dictation the moment it lands, put the fix back where you typed, and keep other audio quiet while you talk.",
     "sections": [
+      {
+        "title": "Fix dictation faster",
+        "items": [
+          "Fix a dictation the moment it lands: Fix on the pill for 5 seconds, or ⌃⌥F (set in Settings).",
+          "After you fix a word, Replace it in the app puts the corrected text back where COS typed it, when that spot hasn't changed; otherwise COS copies the corrected text.",
+          "Fix a word selects the whole misheard phrase and suggests the spelling from your dictionary. Return saves.",
+          "Other apps go quiet while you dictate and come back after (Settings › Dictation: Mute, Lower or Off). Never during a Mac recording.",
+          "COS Control uses much less CPU while the Work tab is open, so the pet animates smoothly."
+        ]
+      },
       {
         "title": "Work context meter",
         "items": [
