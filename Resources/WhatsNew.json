@@ -8,7 +8,7 @@
         "items": [
           "Hold your shortcut and the bar under your pet becomes a listening pill with a live waveform that moves for quiet speech too. No window opens, and nothing takes focus from the app you are typing in. With the pet hidden, the same pill sits above the Dock.",
           "Release and COS transcribes, copies the text, and drops it into whatever text box has your cursor when it finishes, so you can click somewhere else while it works. The pill flashes ✓ Inserted with the app's name only when COS sees the text land. The text stays on the clipboard, so ⌘V works again anywhere.",
-          "Some apps, such as terminals and Electron editors, get ⌘V; COS shows Pasted when it can't confirm. If ⌘V changed nothing, the card says so and keeps Copy.",
+          "Some apps, such as terminals and Electron editors, get ⌘V; COS shows Pasted when it can't confirm. COS sends ⌘V once and never asks you to paste again; the text stays on the clipboard and in Recent dictations with Copy.",
           "No text box selected? A card pops over the pet with the text and a Copy button. It folds away after 20 seconds; hover to keep it.",
           "A Dictated pill on the pet opens Recent dictations: your last 50, kept on this Mac, each with where it went and a Copy button.",
           "Still refused: password fields, and secure keyboard input held by another app (its own card). COS never presses Send or Return, and line breaks become spaces in a terminal.",
