@@ -16,7 +16,11 @@ CODE="$(grep -v -E '^[[:space:]]*//' "$SRC")"
 # Every place a closure can be handed to another thread or to AppKit's event dispatch, reviewed 0.5.307: the tap, the
 # engine observer, the global key-and-click monitor and the two local monitors (shortcut and recorder). A new site of
 # any of these kinds changes the count and must get the same isolation review before the count is updated.
-[[ $(print -r -- "$CODE" | grep -c -E 'installTap\(|queue: *nil\)|DispatchQueue|OperationQueue\(|DispatchSource|addGlobalMonitorForEvents|addLocalMonitorForEvents') == 5 ]] || { print -u2 "FAIL: a new off-main or event-monitor callback site needs the @Sendable / isolation review, then this count"; exit 1; }
+# 0.5.314: scheduleFile/scheduleBuffer joined the census after 0.5.313 shipped an unreviewed scheduleFile completion that
+# trapped on every dictation sound. It is built by a nonisolated static (playedBack), which the runtime check executes.
+[[ $(print -r -- "$CODE" | grep -c -E 'installTap\(|queue: *nil\)|DispatchQueue|OperationQueue\(|DispatchSource|addGlobalMonitorForEvents|addLocalMonitorForEvents|scheduleFile\(|scheduleBuffer\(|scheduleSegment\(') == 6 ]] || { print -u2 "FAIL: a new off-main or event-monitor callback site needs the @Sendable / isolation review, then this count"; exit 1; }
+[[ $(print -r -- "$CODE" | grep -c -F 'completionCallbackType: .dataPlayedBack, completionHandler: Self.playedBack(self, id: id))') == 1 && $(print -r -- "$CODE" | grep -c -F 'private nonisolated static func playedBack(') == 1 ]] || { print -u2 "FAIL: the sound completion must be built by the nonisolated playedBack (0.5.313 trapped)"; exit 1; }
+zsh "$ROOT/Tests/run-dictation-sound-runtime.sh"
 # The shortcut monitors also take clicks (⌥-click is a chord), and NSEvent raises on a mouse event's keyCode.
 [[ $(print -r -- "$CODE" | grep -c -F 'let key = isKey ? event.keyCode : 0') == 1 && $(print -r -- "$CODE" | grep -c -F 'event.keyCode') == 2 ]] || { print -u2 "FAIL: keyCode must be read only from key events in the shortcut monitors"; exit 1; }
 # 0.5.313: clicks reach the HOLD tracker as clicks (time-windowed chord), never as a key down, or any click while talking

@@ -1,3 +1,9 @@
+## 0.5.314 (build 367), dictation sound crash fix, pet REC pill
+
+- Crash fix (Miles 2026-10-16 09:33, 0.5.313 build 366): every dictation start or stop sound trapped as it finished (EXC_BREAKPOINT, dispatch_assert_queue on AVAudioPlayerNodeImpl.CompletionHandlerQueue). 0.5.313 added a scheduleFile completion to stop the idle output engine; the closure, formed inside @MainActor DictationSoundPlayer, inherited main-actor isolation and Swift 6 checks it on entry. The completion is now built by a nonisolated static and only hops to the main actor. New runtime check (run-dictation-sound-runtime.sh) executes the real player in Swift 6 mode and plays a sound to its end; with the 0.5.313 closure it dies with SIGTRAP (exit 133). The isolation census now counts scheduleFile/scheduleBuffer/scheduleSegment, which is how this site escaped review.
+- Pet REC pill (Miles 2026-10-16): while anything records, REC leads the pet's pills (count when more than one) and opens the live meeting through showRecordingTranscript, the same path as the menu bar's Open live meeting.
+- Pair with server 6.73.14 (unchanged).
+
 ## 0.5.313 (build 366), fix dictation faster, quiet while dictating, idle CPU
 
 - Fix on the INSERTED / PASTED flash for 5 s and a "Fix last dictation" shortcut (⌃⌥F default, conflict-checked); Replace it in <App> puts the corrected dictation back only where delivery measured the inserted range and that range still holds what COS inserted, re-measured, never pressing a key; otherwise it copies the corrected text. Fix a word's first tap picks the likely misheard span and pre-fills a dictionary suggestion.

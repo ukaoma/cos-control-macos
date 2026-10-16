@@ -55,3 +55,8 @@ assert "await self.macRecording.retainedCaptures()" in saved and "self.macRecord
 assert 'if store.canKeepForLater {' in store, "Keep audio is offered whenever the policy allows (silence or paused delivery)"
 print("PASS Mac recording: one interruption line, stop notice, safe Recover and stranded Save, keep when paused")
 PY
+# 0.5.314 (Miles 2026-10-16): the pet's REC pill appears only while something records and opens the live meeting through
+# the menu bar's own showRecordingTranscript, never a second route.
+PET="$(grep -v -E '^[[:space:]]*//' "$ROOT/Sources/SessionPet.swift")"
+[[ $(print -r -- "$PET" | grep -c -F 'if model.recordingCount > 0 {') == 1 && $(print -r -- "$PET" | grep -c -F 'dot: COSPalette.live, label: "REC"') == 1 && $(print -r -- "$PET" | grep -c -F 'model.showRecordingTranscript()') == 1 ]] || { print -u2 "FAIL: the pet REC pill must show only while recording and open showRecordingTranscript"; exit 1; }
+print "PASS pet REC pill: shown while recording, opens the live meeting"

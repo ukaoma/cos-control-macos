@@ -659,11 +659,18 @@ enum DictationFocusedWindow {
         // 0.5.313: the engine stops when the sound has played. It was left running after the first start or stop sound,
         // so an idle Mac kept an output stream open (an audio IO thread here and render work in coreaudiod) for as long as
         // COS Control ran.
-        node.scheduleFile(file, at: nil, completionCallbackType: .dataPlayedBack) { [weak self] _ in
-            Task { @MainActor in self?.finished(id) }
-        }
+        node.scheduleFile(file, at: nil, completionCallbackType: .dataPlayedBack, completionHandler: Self.playedBack(self, id: id))
         node.play()
     }
+    /// 0.5.314: AVAudioPlayerNode calls this on its own completion queue. A closure written inside this @MainActor
+    /// class inherits main-actor isolation, and Swift 6 checks that on entry: 0.5.313 trapped (EXC_BREAKPOINT in
+    /// dispatch_assert_queue) the moment a start or stop sound finished. Built here, outside the actor, the closure
+    /// carries no isolation and only hops to the main actor.
+    private nonisolated static func playedBack(_ owner: DictationSoundPlayer, id: Int) -> @Sendable (AVAudioPlayerNodeCompletionCallbackType) -> Void {
+        { [weak owner] _ in Task { @MainActor in owner?.finished(id) } }
+    }
+    /// For the runtime check (run-dictation-sound-runtime.sh): true while a sound plays, false once its end stopped it.
+    var isRunning: Bool { engine.isRunning }
     private func finished(_ id: Int) {
         guard DictationSoundPlayer.stopsAfter(finished: id, newest: playID), engine.isRunning else { return }
         node.stop(); engine.stop()

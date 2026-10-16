@@ -634,6 +634,17 @@ private struct SessionPetRoot: View {
 
     private func pillsRow(_ ledger: PetLedger) -> some View {
         HStack(spacing: size.length(6)) {
+            // 0.5.314 (Miles 2026-10-16): while anything records (this Mac or the glasses), REC leads the row and opens the
+            // live meeting through the same showRecordingTranscript the menu bar's Open live meeting uses. "REC" matches
+            // the Dock badge and keeps five pills inside the 260pt pet.
+            if model.recordingCount > 0 {
+                ledgerPill(
+                    dot: COSPalette.live, label: "REC", count: model.recordingCount > 1 ? model.recordingCount : nil,
+                    enabled: model.liveTranscriptEnabled, open: model.liveTranscriptRouteActive, index: 0
+                ) {
+                    model.showRecordingTranscript()
+                }
+            }
             ledgerPill(
                 dot: COSPalette.green, label: "RUNNING", count: ledger.running,
                 enabled: !sessions.isEmpty || !model.petDismissals.stamps.isEmpty,
@@ -715,6 +726,7 @@ private struct SessionPetRoot: View {
 
     private func pillHelp(_ label: String) -> String {
         switch label {
+        case "REC": "Open the live meeting"
         case "RUNNING": "Live sessions"
         case "DONE": "Finished sessions"
         case DictationHistory.pillLabel: "Your latest dictations: copy one, or fix a word COS got wrong. All of them are in COS Activity."
