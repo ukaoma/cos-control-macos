@@ -256,6 +256,12 @@ import Foundation
         var macRow = LiveTranscriptRow(sessionId: "mac_43879e59-3039-4f2c-9cd2-4fcc59486d71", startTime: nil, lastActivity: now, phase: .live)
         macRow.deliveryLabel = "Capture stopped · saving 51/1200"
         check(LiveTranscript.endActionTitle(row: quietRow, now: now) == "End and save", "a live row quiet for the No audio mark can be ended and saved")
+        // 0.5.313: the live view's source switcher names each live recording.
+        let chicago = TimeZone(identifier: "America/Chicago")!
+        let at = Date(timeIntervalSince1970: 1_792_121_940) // 2026-10-15 22:39 CDT
+        check(LiveTranscript.sourceLabel("mac_43879e59-3039-4f2c-9cd2-4fcc59486d71", start: at, timeZone: chicago) == "Mac recording 10:39 PM", "a Mac capture is named with its start")
+        check(LiveTranscript.sourceLabel("meeting_1792098620540_yeuti0", start: at.addingTimeInterval(-1_740), timeZone: chicago) == "Glasses meeting 10:10 PM", "a glasses meeting is named with its start")
+        check(LiveTranscript.sourceLabel("meeting_1", start: nil) == "Glasses meeting", "no start, just the kind")
         check(LiveTranscript.endActionTitle(row: busyRow, now: now) == nil, "a row still receiving audio offers no close")
         check(LiveTranscript.endActionTitle(row: macRow, now: now) == "Finish saving", "a stopped Mac capture finishes delivering, never a partial save")
         check(LiveTranscript.endActionTitle(row: LiveTranscriptRow(sessionId: "meeting_1_x", startTime: nil, lastActivity: nil, phase: .live), now: now) == nil, "no activity known, no close")

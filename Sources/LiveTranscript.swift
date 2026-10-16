@@ -291,6 +291,14 @@ enum LiveTranscript {
 
     static func rowID(_ sessionId: String) -> String { "live:" + sessionId }
 
+    /// 0.5.313: names a live source in the switcher: "Mac recording 10:39 PM" or "Glasses meeting 10:10 PM".
+    static func sourceLabel(_ sessionId: String, start: Date?, timeZone: TimeZone = .current) -> String {
+        let kind = sessionId.hasPrefix("mac_") ? "Mac recording" : "Glasses meeting"
+        guard let start else { return kind }
+        let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX"); f.timeZone = timeZone; f.dateFormat = "h:mm a"
+        return kind + " " + f.string(from: start)
+    }
+
     /// How long a listed file has been quiet: from the later of the last read's activity and the file's own mtime.
     static func quietFor(_ file: LiveTranscriptFileRow, feed: LiveTranscriptFeed?, now: Date) -> TimeInterval {
         let mtime = Date(timeIntervalSince1970: file.mtimeMs / 1000)

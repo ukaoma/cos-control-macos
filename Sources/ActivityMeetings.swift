@@ -2216,6 +2216,14 @@ struct LiveTranscriptPane: View {
                 LiveDot(live: feed?.ended != true, size: 10)
                 Text(feed?.ended == true ? "Meeting ended" : "Live meeting")
                     .font(COSType.display(22, weight: .medium))
+                // 0.5.313 (Miles 2026-10-15): a G2 meeting and a Mac recording can be live together; switch between them
+                // here, without leaving the live view.
+                let liveRows = model.liveTranscriptRows.filter { $0.phase == .live }
+                if liveRows.count > 1, let current = model.liveTranscriptOpenID {
+                    COSDropdown("Showing", selection: Binding(get: { current }, set: { model.openLiveTranscript($0) }),
+                                options: liveRows.map { COSDropdownOption($0.sessionId, LiveTranscript.sourceLabel($0.sessionId, start: $0.startTime)) })
+                        .fixedSize()
+                }
                 Spacer()
                 if model.macRecording.isRecording, model.macRecording.manifest?.captureId == model.liveTranscriptOpenID {
                     Button("Stop and save") { Task { await model.macRecording.stop() } }.buttonStyle(COSQuietButtonStyle())
