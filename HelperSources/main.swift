@@ -17130,7 +17130,8 @@ final class COSControlHelper {
                 return links[id]?.workID == workID
               }) else { throw HelperError.message("Task connections changed. Nothing was dispatched.") }
         guard let response = request("/api/work/chat", method: "POST", token: try readToken(),
-                                    body: String(decoding: data, as: UTF8.self), timeout: 55), response.status == 200,
+                                    // 0.5.310: server 6.73.12 lets a high-effort plan think for up to 180 s before it stops it.
+                                    body: String(decoding: data, as: UTF8.self), timeout: 190), response.status == 200,
               let answer = response.body, answer["protocolVersion"] as? Int == 1 else {
             throw HelperError.message("Task chat planning is unavailable on this server. No assignment was sent.")
         }

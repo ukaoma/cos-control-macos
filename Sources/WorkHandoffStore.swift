@@ -399,7 +399,7 @@ struct WorkGlassesRequest: Equatable, Sendable {
         self.cardFiles = cardFiles ?? (isolated ? .preview() : storageURL == nil ? WorkCardFileStore(root: ProcessInfo.processInfo.environment["COS_CONTROL_TEST_HOME"].map { URL(fileURLWithPath: $0).appendingPathComponent("work-context") } ?? WorkCardFiles.defaultRoot()) : WorkCardFileStore(root: nil))
         let helper = HelperClient()
         self.transport = transport ?? { args, data in
-            try await helper.run(args, timeout: args.first == "session-chat-fork" ? 310 : (args.first == "work-new" ? 85 : (args.first == "work-chat" ? 65 : 45)), stdinData: data)
+            try await helper.run(args, timeout: args.first == "session-chat-fork" ? 310 : (args.first == "work-new" ? 85 : (args.first == "work-chat" ? 200 : 45)), stdinData: data)
         }
         let base: URL
         if isolated {
