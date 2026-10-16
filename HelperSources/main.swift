@@ -17149,7 +17149,8 @@ final class COSControlHelper {
                 return links[id]?.workID == workID
               }) else { throw HelperError.message("Task connections changed. Nothing was dispatched.") }
         guard let response = request("/api/work/chat", method: "POST", token: try readToken(),
-                                    body: String(decoding: data, as: UTF8.self), timeout: 55), response.status == 200,
+                                    // 0.5.310: server 6.73.12 lets a high-effort plan think for up to 180 s before it stops it.
+                                    body: String(decoding: data, as: UTF8.self), timeout: 190), response.status == 200,
               let answer = response.body, answer["protocolVersion"] as? Int == 1 else {
             throw HelperError.message("Task chat planning is unavailable on this server. No assignment was sent.")
         }
@@ -17160,12 +17161,21 @@ final class COSControlHelper {
     /// server answers without the field, and Control then plans with Sonnet and shows no picker.
     private func emitWorkChatCapabilities() throws {
         try requireLiveWorkTransport()
-        guard let response = request("/api/work/chat", token: try readToken(), timeout: 5), response.status == 200,
-              let body = response.body, body["protocolVersion"] as? Int == 1 else {
-            throw HelperError.message("Task chat is unavailable on this server.")
+        // 0.5.310: no answer or a server error is a failure Control retries and then reports; a 404 is a server without
+        // the route, which keeps the old behaviour (no picker, Sonnet) without a warning.
+        guard let response = request("/api/work/chat", token: try readToken(), timeout: 5) else {
+            throw HelperError.message("Task chat planner discovery got no answer from the server.")
+        }
+        if response.status == 404 {
+            emit(ok: true, message: "Task chat", details: ["protocolVersion": 1, "planners": [String](), "efforts": [String](), "routeMissing": true]); return
+        }
+        guard response.status == 200, let body = response.body, body["protocolVersion"] as? Int == 1 else {
+            throw HelperError.message("Task chat planner discovery failed (HTTP \(response.status)).")
         }
         let planners = (body["planners"] as? [String] ?? []).filter { ["sonnet", "opus"].contains($0) }
-        emit(ok: true, message: "Task chat", details: ["protocolVersion": 1, "planners": planners])
+        // Server 6.73.12 advertises planner efforts. Only the three COS offers pass; the CLI's xhigh and max never do.
+        let efforts = (body["efforts"] as? [String] ?? []).filter { ["low", "medium", "high"].contains($0) }
+        emit(ok: true, message: "Task chat", details: ["protocolVersion": 1, "planners": planners, "efforts": efforts])
     }
 
     private func emitWorkNew() throws {

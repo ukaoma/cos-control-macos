@@ -9,10 +9,16 @@ private actor WorkChatFixture {
     var calls: [String] = []
     var contextReads = 0
     var chatBodies: [[String: Any]] = []
-    init(_ ids: [String], planners: [String]? = ["sonnet", "opus"]) { self.ids = ids; self.planners = planners }
+    let model: String
+    var capabilityFailures = 0
+    init(_ ids: [String], planners: [String]? = ["sonnet", "opus"], model: String = "claude:opus-fixture-model") { self.ids = ids; self.planners = planners; self.model = model }
+    func failCapabilities(_ times: Int) { capabilityFailures = times }
+    var echoEffort = true
+    func stopEchoingEffort() { echoEffort = false }
     func seen() -> [String] { calls }
     func plannerSent() -> [String?] { chatBodies.map { $0["planner"] as? String } }
     func plannerKeySent() -> [Bool] { chatBodies.map { $0["planner"] != nil } }
+    func effortSent() -> [String?] { chatBodies.map { $0["effort"] as? String } }
     func run(_ args: [String], _ data: Data?) async throws -> HelperResponse {
         let name = args.first ?? ""; calls.append(name)
         var out: [String: JSONValue] = [:]
@@ -25,14 +31,18 @@ private actor WorkChatFixture {
             contextReads += 1
             out = ["contextText": .string("Fixture task evidence"), "workRevision": .string(String(repeating: contextReads == 1 ? "a" : "b", count: 64)), "task": .object(["id": .string("aaaaaaaaaaaa"), "workIdentity": .string("aaaaaaaaaaaa"), "domain": .string("quilt"), "title": .string("Launch fixture"), "text": .string("Launch fixture"), "source": .string("Fixture evidence")])]
         case "work-chat-capabilities":
+            if capabilityFailures > 0 { capabilityFailures -= 1; throw HelperClientError.commandFailed("Task chat planner discovery got no answer from the server.") }
             out = ["protocolVersion": .number(1)]
-            if let planners { out["planners"] = .array(planners.map { .string($0) }) }
+            // A planners-advertising fixture is a 6.73.12 server, which also advertises efforts.
+            if let planners { out["planners"] = .array(planners.map { .string($0) }); out["efforts"] = .array(["low", "medium", "high"].map { .string($0) }) }
         case "work-chat":
-            if let data, let body = try? JSONSerialization.jsonObject(with: data) as? [String: Any] { chatBodies.append(body) }
+            var ranEffort: String? = planners == nil ? nil : "high"
+            if let data, let body = try? JSONSerialization.jsonObject(with: data) as? [String: Any] { chatBodies.append(body); ranEffort = (body["effort"] as? String) ?? ranEffort }
             // Let a second Send and a navigation change race with planning.
             try await Task.sleep(for: .milliseconds(100))
-            out = ["protocolVersion": .number(1), "answer": .string("Review independent copy and code checks."),
+            out = ["protocolVersion": .number(1), "answer": .string("Review independent copy and code checks."), "model": .string(model),
                 "assignments": .array(ids.prefix(2).map { .object(["sessionID": .string($0), "prompt": .string("Report checks; do not publish.")]) })]
+            if let ranEffort, echoEffort { out["effort"] = .string(ranEffort) }
         default: preconditionFailure("Fixture must stop before any provider delivery: \(args)")
         }
         return HelperResponse(ok: true, message: "Fixture", details: out)
@@ -235,7 +245,8 @@ private actor WorkChatFixture {
     let candidate = WorkTaskChatStore(); candidate.enabled = true; candidate.open(source: source, handoff: real); candidate.setDraft("Review independent checks")
     await candidate.loadPlanners(handoff: real)
     precondition(candidate.planners == ["sonnet", "opus"], "The advertised planners are offered")
-    let first = Task { await candidate.send(source: source, handoff: real, planner: "opus") }
+    precondition(candidate.efforts == ["low", "medium", "high"], "The advertised efforts are offered")
+    let first = Task { await candidate.send(source: source, handoff: real, planner: "opus", effort: "medium") }
     try await Task.sleep(for: .milliseconds(50))
     await candidate.send(source: source, handoff: real)
     let other = WorkSource(id: "task:quilt:bbbbbbbbbbbb", title: "Other", revision: source.revision, project: "quilt", context: "")
@@ -248,21 +259,48 @@ private actor WorkChatFixture {
     precondition(candidate.record?.rounds.first?.state == "Ready to send", "A plan waits for review: \(candidate.record?.rounds.map(\.state) ?? []) \(candidate.error ?? "")")
     let sentPlanner = await fixture.plannerSent()
     precondition(sentPlanner == ["opus"] && candidate.record?.rounds.first?.planner == "opus", "The chosen planner reaches the server and is recorded on the round")
+    precondition(candidate.record?.rounds.first?.plannerModel == "claude:opus-fixture-model", "The round keeps the model the server reports ran")
+    precondition(WorkChatPolicy.plannerLabel(requested: "opus", ran: candidate.record?.rounds.first?.plannerModel) == "planned with opus-fixture-model", "Only the server's report becomes \"planned with\"")
+    let sentEffort = await fixture.effortSent()
+    precondition(sentEffort == ["medium"] && candidate.record?.rounds.first?.plannerEffort == "medium", "The chosen effort reaches the server and the reported effort is recorded")
+    precondition(WorkChatPolicy.plannerLabel(requested: "opus", ran: candidate.record?.rounds.first?.plannerModel, effort: candidate.record?.rounds.first?.plannerEffort) == "planned with opus-fixture-model · medium effort", "The round names the model and effort the server reports")
     await candidate.sendAll(roundID: candidate.record!.rounds[0].id, source: source, handoff: real)
     let afterSend = await fixture.seen()
     precondition(real.receipts.isEmpty && candidate.record?.rounds.first?.state == "Needs a new plan" && candidate.error == WorkChatPolicy.staleMessage
         && afterSend.filter { $0 == "work-context" }.count == 2, "A task changed since planning stops every send before native delivery")
     // An older server advertises no planners: no picker, and the planner key is never sent (6.73.9 refuses unknown keys).
-    let oldFixture = WorkChatFixture(ids, planners: nil)
+    let oldFixture = WorkChatFixture(ids, planners: nil, model: "claude:sonnet (requested)")
     let oldServer = WorkHandoffStore(storageURL: root.appendingPathComponent("old-server.json"), transport: { args,data in try await oldFixture.run(args,data) })
     for id in ids.prefix(2) { precondition(oldServer.confirmSessionCard(sessionID: id, source: source)) }
     await oldServer.refresh()
     let oldChat = WorkTaskChatStore(); oldChat.enabled = true; oldChat.open(source: source, handoff: oldServer); oldChat.setDraft("Review on an older server")
     await oldChat.loadPlanners(handoff: oldServer)
-    precondition(oldChat.planners.isEmpty, "An older server offers no planner choice")
-    await oldChat.send(source: source, handoff: oldServer, planner: "opus")
+    precondition(oldChat.planners.isEmpty && oldChat.efforts.isEmpty && oldChat.plannerNotice == nil, "An older server offers no planner or effort choice, and that is not a failure")
+    await oldChat.send(source: source, handoff: oldServer, planner: "opus", effort: "high")
     let oldKeys = await oldFixture.plannerKeySent()
+    let oldEffort = await oldFixture.effortSent()
+    precondition(oldEffort == [nil] && oldChat.record?.rounds.last?.plannerEffort == nil, "An older server never receives the effort key, and no effort is claimed")
     precondition(oldKeys == [false] && oldChat.record?.rounds.last?.planner == "sonnet" && oldServer.receipts.isEmpty, "An older server plans with Sonnet and never receives the planner key")
+    precondition(WorkChatPolicy.plannerLabel(requested: oldChat.record?.rounds.last?.planner, ran: oldChat.record?.rounds.last?.plannerModel) == "requested Sonnet (not confirmed)", "A requested model is never shown as the one that ran")
+    // 0.5.310: a server that fails planner discovery is retried once, then named, never silently hidden.
+    await fixture.failCapabilities(1)
+    let retried = WorkTaskChatStore(); retried.enabled = true
+    await retried.loadPlanners(handoff: real, retryDelay: .zero)
+    precondition(retried.planners == ["sonnet", "opus"] && retried.efforts == ["low", "medium", "high"] && retried.plannerNotice == nil, "One failed discovery is retried and recovers")
+    await fixture.failCapabilities(2)
+    let unavailable = WorkTaskChatStore(); unavailable.enabled = true
+    await unavailable.loadPlanners(handoff: real, retryDelay: .zero)
+    precondition(unavailable.planners.isEmpty && unavailable.efforts.isEmpty && unavailable.plannerNotice == WorkChatPolicy.plannerUnavailable, "Two failed discoveries say the choice is unavailable and Sonnet is used")
+    // A server that took the effort but did not report one: the round claims no effort.
+    await fixture.stopEchoingEffort()
+    let unreported = WorkTaskChatStore(); unreported.enabled = true; unreported.open(source: source, handoff: real)
+    await unreported.loadPlanners(handoff: real, retryDelay: .zero)
+    unreported.setDraft("Plan without a reported effort")
+    await unreported.send(source: source, handoff: real, planner: "opus", effort: "low")
+    let lastEffort = await fixture.effortSent().last ?? nil
+    precondition(lastEffort == "low" && unreported.record?.rounds.last?.state == "Ready to send" && unreported.record?.rounds.last?.plannerEffort == nil, "A requested effort is never recorded as the one that ran")
+    let capabilityCalls = await fixture.seen().filter { $0 == "work-chat-capabilities" }.count
+    precondition(capabilityCalls == 6, "Discovery asks once, retries once, and no more: \(capabilityCalls)")
     let legacySource = WorkSource(id: "task:quilt:dddddddddddd", title: "Interrupted fixture", revision: source.revision, project: "quilt", context: "")
     let legacyChat = WorkTaskChatStore(); legacyChat.open(source: legacySource, handoff: handoff)
     var interrupted = WorkChatRound(question: "Review the 404 sheet")
@@ -277,6 +315,14 @@ private actor WorkChatFixture {
     precondition(legacyChat.record?.draft == interrupted.question, "After checking, recovery fills the composer only")
     try runWorkChatPreflightChecks(source: source, sessions: sessions)
     try await runWorkChatPartialRefusalChecks(source: source, ids: ids, root: root)
+    try await runWorkChatPartialRefusalChecks(source: source, ids: ids, root: root, refuseAll: true)
+    // A round whose every assignment was refused or failed never becomes "Results available" on a poll.
+    var undelivered = WorkChatRound(question: "Nothing arrived"); undelivered.state = "Not delivered"
+    var refusedOne = WorkChatAssignment(sessionID: ids[0], prompt: "One"); refusedOne.state = "refused"
+    var failedOne = WorkChatAssignment(sessionID: ids[1], prompt: "Two"); failedOne.state = "failed"
+    undelivered.assignments = [refusedOne, failedOne]; legacyChat.record?.rounds.append(undelivered)
+    await legacyChat.refresh(source: legacySource, handoff: handoff, automatic: true)
+    precondition(legacyChat.record?.rounds.last?.state == "Not delivered", "Refused and failed assignments are never reported as results")
     try await runWorkContinuationChecks(source: source, session: sessions[0], root: root)
     try await runWorkIndependentRecoveryChecks(source: source, sessions: sessions, root: root)
     try await runWorkChatTypingChecks(source: source, handoff: handoff, root: root)
@@ -287,14 +333,15 @@ private actor WorkChatFixture {
 /// threw and the second assignment was never tried). Real store, real submit, fake transport; no live provider.
 private actor WorkPartialSendFixture {
     let ids: [String]
+    let refuseAll: Bool
     private var sends: [String] = []
-    init(_ ids: [String]) { self.ids = ids }
+    init(_ ids: [String], refuseAll: Bool = false) { self.ids = ids; self.refuseAll = refuseAll }
     func sent() -> [String] { sends }
     func run(_ args: [String], _ data: Data?) async throws -> HelperResponse {
         var out: [String: JSONValue] = [:]
         let thread = args.firstIndex(of: "--thread-id").map { args[$0 + 1] } ?? ""
         switch args.first ?? "" {
-        case "work-models": out = ["serverInstanceId": .string("partial-server"), "models": .array([])]
+        case "work-models": out = ["serverInstanceId": .string(refuseAll ? "refuse-all-server" : "partial-server"), "models": .array([])]
         case "claude-sessions": out = ["sessions": .array(ids.prefix(2).map { id in .object([
             "id": .string(String(id.split(separator: ":")[1])), "provider": .string(String(id.split(separator: ":")[0])),
             "name": .string("Exact " + id), "workspace": .string("/tmp/fixture"), "state": .string("recent")]) })]
@@ -302,7 +349,7 @@ private actor WorkPartialSendFixture {
         case "work-chat": out = ["protocolVersion": .number(1), "answer": .string("Two independent checks."),
             "assignments": .array(ids.prefix(2).map { .object(["sessionID": .string($0), "prompt": .string("Report checks; do not publish.")]) })]
         // The first session refuses at delivery; the second accepts.
-        case "session-chat-attachability": out = ["attachable": .bool(!ids[0].hasSuffix(thread)), "reasonCopy": .string("Fixture refusal: this session cannot be continued.")]
+        case "session-chat-attachability": out = ["attachable": .bool(!refuseAll && !ids[0].hasSuffix(thread)), "reasonCopy": .string("Fixture refusal: this session cannot be continued.")]
         case "session-chat-attach": out = ["state": .string("attached"), "bindingId": .string("partial-fixture"), "epoch": .number(1), "boundTo": .string("exact-target")]
         case "session-chat-send": sends.append(thread); out = ["state": .string("completed")]
         default: preconditionFailure("Partial-send fixture must not reach \(args)")
@@ -311,9 +358,9 @@ private actor WorkPartialSendFixture {
     }
 }
 
-@MainActor private func runWorkChatPartialRefusalChecks(source: WorkSource, ids: [String], root: URL) async throws {
-    let fixture = WorkPartialSendFixture(ids)
-    let store = WorkHandoffStore(storageURL: root.appendingPathComponent("partial.json"), transport: { args, data in try await fixture.run(args, data) })
+@MainActor private func runWorkChatPartialRefusalChecks(source: WorkSource, ids: [String], root: URL, refuseAll: Bool = false) async throws {
+    let fixture = WorkPartialSendFixture(ids, refuseAll: refuseAll)
+    let store = WorkHandoffStore(storageURL: root.appendingPathComponent(refuseAll ? "refuse-all.json" : "partial.json"), transport: { args, data in try await fixture.run(args, data) })
     for id in ids.prefix(2) { precondition(store.confirmSessionCard(sessionID: id, source: source)) }
     await store.refresh()
     let chat = WorkTaskChatStore(); chat.enabled = true; chat.open(source: source, handoff: store); chat.setDraft("Run both checks")
@@ -323,6 +370,13 @@ private actor WorkPartialSendFixture {
     await chat.sendAll(roundID: round.id, source: source, handoff: store)
     let sent = await fixture.sent()
     let after = chat.record!.rounds.last!
+    if refuseAll {
+        // 0.5.310: an all-refused round read "Dispatched".
+        precondition(sent.isEmpty && after.assignments.allSatisfy { $0.state == "refused" && $0.detail.contains("Fixture refusal") } && store.receipts.count == 2, "Every assignment keeps its own refusal")
+        precondition(after.state == "Not delivered", "A round with nothing delivered never reads Dispatched: \(after.state)")
+        print("PASS Work chat all refused: Not delivered, each reason kept, nothing sent")
+        return
+    }
     precondition(after.assignments[0].state == "refused" && after.assignments[0].detail.contains("Fixture refusal"), "A refusal marks only its own assignment, with its reason")
     precondition(sent == [String(ids[1].split(separator: ":")[1])] && after.assignments[1].state == "delivered", "A refusal never stops the other assignment from being sent")
     precondition(after.state == "Dispatched" && store.receipts.count == 2)
@@ -366,6 +420,25 @@ private actor WorkPartialSendFixture {
     precondition(WorkChatPolicy.reviewedState([a("delivered"), a("Not sent")]) == "Ready to send", "A refused-before-receipt assignment stays sendable")
     precondition(WorkChatPolicy.reviewedState([a("delivered"), a("Skipped")]) == "Dispatched" && WorkChatPolicy.reviewedState([a("Skipped"), a("Skipped")]) == "Not sent")
     precondition(WorkChatPolicy.reviewedState([a("Sending")]) == "Ready to send")
+    precondition(WorkChatPolicy.reviewedState([a("refused"), a("refused")]) == "Not delivered", "All refused is not Dispatched")
+    precondition(WorkChatPolicy.reviewedState([a("failed"), a("failed")]) == "Not delivered", "All failed is not Dispatched")
+    precondition(WorkChatPolicy.reviewedState([a("refused"), a("Skipped")]) == "Not delivered" && WorkChatPolicy.reviewedState([a("refused"), a("delivered")]) == "Dispatched")
+    precondition(WorkChatPolicy.reviewedState([a("unknown"), a("refused")]) == "Delivery uncertain", "An unconfirmed delivery is not a refusal and not a send")
+    precondition(WorkChatPolicy.reviewedState([a("Session reported done")]) == "Dispatched")
+    precondition(WorkChatPolicy.plannerLabel(requested: "opus", ran: "claude:claude-opus-4-8") == "planned with claude-opus-4-8")
+    precondition(WorkChatPolicy.plannerLabel(requested: "opus", ran: "claude:opus (requested)") == "requested Opus (not confirmed)", "A requested model is never claimed")
+    precondition(WorkChatPolicy.plannerLabel(requested: "opus", ran: nil) == "requested Opus (not confirmed)", "No report is not a confirmation")
+    precondition(WorkChatPolicy.plannerLabel(requested: nil, ran: "claude:sonnet (requested)") == "requested Sonnet (not confirmed)")
+    precondition(WorkChatPolicy.plannerLabel(requested: nil, ran: nil) == nil && WorkChatPolicy.plannerLabel(requested: nil, ran: "  ") == nil)
+    precondition(WorkChatPolicy.effort(nil, advertised: []) == nil && WorkChatPolicy.effort("high", advertised: []) == nil, "An older server gets no effort key")
+    precondition(WorkChatPolicy.effort("low", advertised: ["low", "medium", "high"]) == "low" && WorkChatPolicy.effort("medium", advertised: ["low", "medium", "high"]) == "medium")
+    precondition(WorkChatPolicy.effort(nil, advertised: ["low", "medium", "high"]) == "high" && WorkChatPolicy.effort("max", advertised: ["low", "medium", "high", "max"]) == "high", "Unknown or unoffered levels fall back to high, never xhigh or max")
+    precondition(WorkChatPolicy.effort("low", advertised: ["high"]) == "high")
+    precondition(WorkChatPolicy.plannerLabel(requested: "opus", ran: "claude:claude-opus-4-8", effort: "high") == "planned with claude-opus-4-8 · high effort")
+    precondition(WorkChatPolicy.plannerLabel(requested: "opus", ran: "claude:claude-opus-4-8", effort: nil) == "planned with claude-opus-4-8", "No reported effort is never claimed")
+    precondition(WorkChatPolicy.plannerLabel(requested: "opus", ran: "claude:claude-opus-4-8", effort: "max") == "planned with claude-opus-4-8", "Only known levels are shown")
+    precondition(WorkChatPolicy.plannerLabel(requested: nil, ran: nil, effort: "high") == nil)
+    precondition(WorkChatPolicy.effortName("medium") == "Medium")
     precondition(WorkChatPolicy.validPrompt("Review copy.") && !WorkChatPolicy.validPrompt(" \n ") && !WorkChatPolicy.validPrompt(String(repeating: "x", count: 2001)) && !WorkChatPolicy.validPrompt("cos-`work` x: done"))
     print("PASS Work chat pre-flight: one shared fence (run/session exemption, unknown, continuation proof, replacing, terminal), card blockers newest first, planner choice and fallback, review states, prompt validation")
 }

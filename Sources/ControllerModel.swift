@@ -3171,7 +3171,8 @@ final class ControllerModel: ObservableObject {
                                        stale: Set(status.staleTranscriptionSessionIds), stranded: Set(strandedCaptures.map(\.sessionId)),
                                        now: Date())
         guard let mac = macRecording.manifest,
-              let label = MacRecordingLiveRow.label(stopped: mac.stopped, saved: mac.saved, acknowledged: mac.acknowledged, chunks: mac.chunks.count)
+              let label = MacRecordingLiveRow.label(stopped: mac.stopped, saved: mac.saved, acknowledged: mac.acknowledged, chunks: mac.chunks.count,
+                                                    paused: macRecording.deliveryPaused)
         else { return rows }
         return rows.map { row in
             guard row.sessionId == mac.captureId else { return row }

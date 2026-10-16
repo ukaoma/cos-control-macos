@@ -77,6 +77,10 @@ import Darwin
         check(MacRecordingLiveRow.label(stopped: true, saved: false, acknowledged: 51, chunks: 1_200) == "Capture stopped · saving 51/1200", "a stopped, unsaved capture says it is saving, with progress")
         check(MacRecordingLiveRow.label(stopped: false, saved: false, acknowledged: 51, chunks: 60) == nil, "a running capture stays Live now")
         check(MacRecordingLiveRow.label(stopped: true, saved: true, acknowledged: 60, chunks: 60) == nil, "a saved capture leaves the row to the saved hand-off")
+        // 0.5.310: delivery stopped on an error; the row must not claim it is still saving.
+        check(MacRecordingLiveRow.label(stopped: true, saved: false, acknowledged: 51, chunks: 1_200, paused: true) == "Capture stopped · delivery paused 51/1200", "a paused delivery says paused, with progress")
+        check(MacRecordingLiveRow.label(stopped: false, saved: false, acknowledged: 51, chunks: 60, paused: true) == nil, "a running capture stays Live now even while delivery is paused")
+        check(MacRecordingLiveRow.label(stopped: true, saved: true, acknowledged: 60, chunks: 60, paused: true) == nil, "a saved capture is never shown as paused")
         check(MacAudioSource.allMacAudio.isAllMacAudio && MacAudioSource.allMacAudio.id == UInt32.max, "All Mac audio is a fixed sentinel")
         check(!MacAudioSource(id: 7, pid: 1, bundleID: "x", name: "App").isAllMacAudio, "an app source is never the system mix")
         let normalRoot = fm.homeDirectoryForCurrentUser.appendingPathComponent("cos-data/mac-recordings")

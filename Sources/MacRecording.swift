@@ -36,6 +36,8 @@ final class MacRecordingStore: ObservableObject {
     /// Consecutive stored chunks below the silence floor; resets on the first chunk with sound.
     @Published private(set) var silentChunks = 0
     @Published private(set) var heardSound = false
+    /// 0.5.310: the last delivery attempt stopped on an error; cleared when delivery runs again.
+    @Published private(set) var deliveryPaused = false
     var signalWarning: String? { MacRecordingSignal.warning(silentChunks: silentChunks, source: manifest?.sourceName ?? "the selected source") }
     var isRecording: Bool { phase == "recording" }
     var occupied: Bool { !["idle", "saved", "pending"].contains(phase) }
@@ -87,7 +89,7 @@ final class MacRecordingStore: ObservableObject {
     func start() async {
         guard canStart, available, let instance, let source = sources.first(where: { $0.id == selectedID }) else { return }
         guard #available(macOS 14.2, *) else { return }
-        phase = "starting"; error = nil; noSpeech = false; captureInterruption = nil; silentChunks = 0; heardSound = false
+        phase = "starting"; error = nil; noSpeech = false; captureInterruption = nil; silentChunks = 0; heardSound = false; deliveryPaused = false
         let attempt = UUID(); startAttempt = attempt
         installStopObservers()
         var localCapture: MacAudioCapture?
@@ -202,7 +204,7 @@ final class MacRecordingStore: ObservableObject {
         guard MacRecordingRecoveryPolicy.canKeepForLater(noSpeech: noSpeech, pending: phase == "pending", stopped: manifest?.stopped == true, delivering: deliveryTask != nil) else { return }
         do {
             let retained = try await spool.recoverable()
-            recoverable = retained; manifest = nil; selectedID = MacAudioSource.allMacAudioID; noSpeech = false; silentChunks = 0; error = nil; phase = "idle"
+            recoverable = retained; manifest = nil; deliveryPaused = false; selectedID = MacAudioSource.allMacAudioID; noSpeech = false; silentChunks = 0; error = nil; phase = "idle"
             message = "Previous audio is kept on this Mac. All Mac audio is selected: it records whatever app plays the call."
         } catch { self.error = error.localizedDescription }
     }
@@ -213,6 +215,7 @@ final class MacRecordingStore: ObservableObject {
         deliveryTask = Task { [weak self] in
             guard let self else { return }
             var failed = false
+            self.deliveryPaused = false
             defer {
                 self.deliveryTask = nil
                 if self.deliveryWake && !failed { self.deliveryWake = false; self.deliverPending() }
@@ -247,7 +250,7 @@ final class MacRecordingStore: ObservableObject {
                     }
                     break
                 }
-            } catch { failed = true; let reason = error.localizedDescription; recordingLog.error("delivery paused: \(reason, privacy: .public)"); self.error = "Delivery paused: \(error.localizedDescription) Audio is retained. Retry does not restart recording." }
+            } catch { failed = true; self.deliveryPaused = true; let reason = error.localizedDescription; recordingLog.error("delivery paused: \(reason, privacy: .public)"); self.error = "Delivery paused: \(error.localizedDescription) Audio is retained. Retry does not restart recording." }
         }
     }
 }
