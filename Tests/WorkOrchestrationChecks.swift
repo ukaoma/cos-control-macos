@@ -890,13 +890,13 @@ private actor WorkContinuationFixture {
     print("PASS follow-up delivery: idle exact native reply, active/unknown/refreshed-row fences, duplicate intent, unchanged review status, durable two-turn history")
 }
 
-/// 0.5.316 (Miles 2026-10-16): Queue it, Send in parallel, Check first. A server that advertises queueRounds, the real
+/// 0.5.317 (Miles 2026-10-16): Queue it, Send in parallel, Check first. A server that advertises queueRounds, the real
 /// store, real submit and a fake transport: an earlier handoff on the first session runs until the check says otherwise.
 private actor WorkQueueFixture {
     let ids: [String]
     let queue: Bool
     let server: String
-    /// 0.5.316 reference links: the server takes `references` (6.73.15).
+    /// 0.5.317 reference links: the server takes `references` (6.73.15).
     let refs: Bool
     /// The sessions the planner assigns to (default: the first two fixture sessions).
     private(set) var assign: [String]
@@ -1210,7 +1210,7 @@ private enum PendingHoldCheck {
     }
 }
 
-/// 0.5.316 (Miles 2026-10-16 12:16): reference links. A session works on one task, and may be a read-only reference on any
+/// 0.5.317 (Miles 2026-10-16 12:16): reference links. A session works on one task, and may be a read-only reference on any
 /// number of others. A reference never receives a send, never holds the fence or the queue, never owns the stage, and its
 /// summary reaches the planner within the bound. An older server: no references anywhere.
 @MainActor private func runWorkReferenceChecks(ids: [String], sessions: [WorkSession], root: URL) async throws {

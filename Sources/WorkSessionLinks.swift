@@ -81,7 +81,7 @@ enum WorkSessionLinks {
             return links
         }
     }
-    // MARK: 0.5.316 reference links (Miles 2026-10-16 12:16)
+    // MARK: 0.5.317 reference links (Miles 2026-10-16 12:16)
     //
     // A working link (the map above) is one card per session: it receives handoffs, reports to that card and counts for
     // the fence and the queue. A REFERENCE is read-only and may name any number of cards: the card's planner and new

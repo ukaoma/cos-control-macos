@@ -17,7 +17,7 @@ EXPECTED_SURVIVORS = {"sent receipt guard (expected survivor: state guard and su
 MUTANTS = [
  ("plan dispatches state", C, 'answer.assignments.isEmpty ? "Answered" : "Ready to send"', 'answer.assignments.isEmpty ? "Answered" : "Dispatched"'),
  ("no pre-flight before planning", C, 'guard held.isEmpty || hold != .stop else { blockers = held; error = WorkChatPreflight.heading; return }', 'if !held.isEmpty { blockers = held }'),
- # 0.5.316: the held branch is a switch on WorkChatHold; .stop is today's fence.
+ # 0.5.317: the held branch is a switch on WorkChatHold; .stop is today's fence.
  ("no pre-flight before a send", C, '                guard held.isEmpty else {\n                    if wasQueued {', '                guard held.isEmpty || hold == .stop else {\n                    if wasQueued {'),
  ("no revision check (isolated)", C, 'guard source.revision == round.revision else { return nil }', ''),
  ("no revision check (live)", C, 'fresh["workRevision"]?.string == round.revision else { return nil }', 'true else { return nil }'),
@@ -108,7 +108,7 @@ MUTANTS = [
  ("fence: no replacing", C, 'if row.id == replacing && row.status == "delivered" { return false }', ''),
  ("fence: terminal holds", C, '        guard row.blocksNewHandoff else { return false }\n', ''),
  ("blockers other cards", C, 'rows.filter { $0.workID == workID && holds(', 'rows.filter { holds('),
- ("blockers oldest first", C, '.sorted { $0.createdAt > $1.createdAt }\n    }\n    /// 0.5.316: the handoffs that write', '.sorted { $0.createdAt < $1.createdAt }\n    }\n    /// 0.5.316: the handoffs that write'),
+ ("blockers oldest first", C, '.sorted { $0.createdAt > $1.createdAt }\n    }\n    /// 0.5.317: the handoffs that write', '.sorted { $0.createdAt < $1.createdAt }\n    }\n    /// 0.5.317: the handoffs that write'),
  ("submit bypasses fence", S, 'guard recovery != nil || !receipts(for: source.id).contains(where: { WorkChatPreflight.holds(', 'guard true || !receipts(for: source.id).contains(where: { WorkChatPreflight.holds('),
  ("submit drops continuations", S, '            if orchestrationRunID != nil { continuations = await taskChatContinuations(source: source) }\n', ''),
 ]

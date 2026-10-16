@@ -506,7 +506,7 @@ struct ControlPanel: View {
     @AppStorage(LiveTranscript.enabledKey) private var showLiveTranscript = true
     /// 0.5.312: Work chat's Plan and send as the primary button. Off by default (review stays normal).
     @AppStorage(WorkChatPolicy.autoSendKey) private var workChatSendWithoutReview = WorkChatPolicy.autoSendDefault
-    /// 0.5.316: Settings › Work › When earlier work is still open. Queue it by default.
+    /// 0.5.317: Settings › Work › When earlier work is still open. Queue it by default.
     @AppStorage(WorkChatHold.settingKey) private var workChatWhenHeld = WorkChatHold.settingDefault
     let openActivity: (ActivitySection?) -> Void
     /// Onboarding P1: the same panel hosted in the Settings window (SettingsWindowPresenter), which must not claim
@@ -2798,7 +2798,7 @@ struct ControlPanel: View {
             Toggle("Send plans without review", isOn: $workChatSendWithoutReview)
                 .toggleStyle(COSSwitchStyle())
                 .help("Work chat's main button becomes Plan and send: assignments go to their sessions as soon as they are planned. Plan, with review, stays available")
-            // 0.5.316 (Miles 2026-10-16): a send that earlier work on the card would hold queues by default. Plan and send
+            // 0.5.317 (Miles 2026-10-16): a send that earlier work on the card would hold queues by default. Plan and send
             // always queues; it never skips the check.
             COSDropdown("When earlier work is still open", selection: $workChatWhenHeld,
                         options: WorkChatHold.settingOptions.map { COSDropdownOption($0.0, $0.1) })

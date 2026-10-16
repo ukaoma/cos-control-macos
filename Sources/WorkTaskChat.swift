@@ -18,7 +18,7 @@ struct WorkChatAssignment: Codable, Equatable, Identifiable {
     /// 0.5.312: the context items this assignment sends (WorkContextMeter). From the planner (server 6.73.13), then Miles's
     /// edits; nil on assignments planned before the meter, which send the round's whole context as they always did.
     var contextItemIDs: [String]? = nil
-    /// 0.5.316 (Miles 2026-10-16, queue and parallel sends): set while the state is "Queued", the receipts it waits on when
+    /// 0.5.317 (Miles 2026-10-16, queue and parallel sends): set while the state is "Queued", the receipts it waits on when
     /// it was last checked. The hold is read again at every check; these ids only name what the card shows.
     var waitingOn: [String]? = nil
     /// True when it was sent in parallel: only handoffs on its own session hold it. False or nil: the whole card's.
@@ -138,7 +138,7 @@ enum WorkChatPolicy {
     /// each assignment keeping its own reason.
     static func reviewedState(_ assignments: [WorkChatAssignment]) -> String {
         if assignments.contains(where: { ["Not sent", "Sending"].contains($0.state) }) { return "Ready to send" }
-        // 0.5.316: nothing left to review, and something waits for earlier work.
+        // 0.5.317: nothing left to review, and something waits for earlier work.
         if assignments.contains(where: { $0.state == WorkChatHold.queuedState }) { return WorkChatHold.queuedState }
         if assignments.contains(where: { reachedSession.contains($0.state) }) { return "Dispatched" }
         if assignments.contains(where: { ["unknown", "No delivery receipt"].contains($0.state) }) { return "Delivery uncertain" }
@@ -184,7 +184,7 @@ enum WorkChatPolicy {
     static func confirmBeforeAutoSend(acknowledged: Bool) -> Bool { !acknowledged }
     static let autoSendExplanation = "Plan and send plans, then sends every assignment to its session at once, without stopping for your review. The same checks still run: an earlier unresolved handoff, or a task that changed, stops it and leaves the round for you."
     static let plannerUnavailable = "Planner choice unavailable · using Sonnet"
-    /// 0.5.316: the most reference sessions one plan carries (server 6.73.15 WORK_CHAT_MAX_REFERENCES).
+    /// 0.5.317: the most reference sessions one plan carries (server 6.73.15 WORK_CHAT_MAX_REFERENCES).
     static let maxReferences = 6
 }
 
@@ -210,13 +210,13 @@ enum WorkChatPreflight {
         rows.filter { $0.workID == workID && holds($0, continuations: continuations, orchestrationRunID: orchestrationRunID, sessionID: sessionID) }
             .sorted { $0.createdAt > $1.createdAt }
     }
-    /// 0.5.316: the handoffs that write into this exact session: a Continue or turn into it, or its queued turn. A fork or
+    /// 0.5.317: the handoffs that write into this exact session: a Continue or turn into it, or its queued turn. A fork or
     /// New session names its own child, so it never holds the session it came from.
     static func onSession(_ row: WorkHandoffReceipt, _ sessionID: String) -> Bool {
         if let id = row.sessionID, ClaudeSession.sameSession(id, sessionID) { return true }
         return row.mode == .continueSession && row.sourceSessionID.map { ClaudeSession.sameSession($0, sessionID) } == true
     }
-    /// 0.5.316, Send in parallel: only handoffs on this session hold it, from any card, so it never gets a second
+    /// 0.5.317, Send in parallel: only handoffs on this session hold it, from any card, so it never gets a second
     /// instruction while one is open. The rest of the card does not.
     static func sessionBlockers(_ rows: [WorkHandoffReceipt], sessionID: String, continuations: [String: Data],
                                 orchestrationRunID: String? = nil) -> [WorkHandoffReceipt] {
@@ -273,18 +273,18 @@ enum WorkChatPreflight {
     @Published private(set) var efforts: [String] = []
     /// Server 6.73.13: it takes context items and chooses each assignment's. False: every assignment sends every item.
     @Published private(set) var contextItemsOffered = false
-    /// 0.5.316 / server 6.73.15 (`queueRounds`): a held send can queue or go in parallel, and the planner is told which
+    /// 0.5.317 / server 6.73.15 (`queueRounds`): a held send can queue or go in parallel, and the planner is told which
     /// sessions have earlier work open. False: today's check-first fence.
     @Published private(set) var queueOffered = false
     /// The server answered discovery without `queueRounds` (an older server). The fence says why it still checks first.
     @Published private(set) var serverQueueMissing = false
-    /// 0.5.316 / server 6.73.15 (`references`): the planner takes reference sessions, so Link as reference is offered and
+    /// 0.5.317 / server 6.73.15 (`references`): the planner takes reference sessions, so Link as reference is offered and
     /// this card's references go to the planner and, as items, to its assignments. False: no references anywhere.
     @Published private(set) var referencesOffered = false
     /// A reference's outputs and change counts since it was linked, from the Connections session cards (another view owns
     /// that read). Unwired: summary only.
     var referenceFacts: WorkReferenceFacts = { _, _ in nil }
-    /// 0.5.316, Ask each time: the send waiting for Queue it, Send in parallel or Check first. Nothing has been sent for it.
+    /// 0.5.317, Ask each time: the send waiting for Queue it, Send in parallel or Check first. Nothing has been sent for it.
     struct PendingHold: Equatable { let roundID: String; let assignmentIDs: [String] }
     @Published private(set) var pendingHold: PendingHold?
     /// One queue pass at a time across every store (the open card's and the app-wide pump's), so two never race one session.
@@ -319,7 +319,7 @@ enum WorkChatPreflight {
     }
     /// Where every card's chat history is saved (one file per card and server).
     static func historyFolder() -> URL { WorkSessionLinks.defaultURL().deletingLastPathComponent().appendingPathComponent("task-chat") }
-    /// 0.5.316: the queue pump may have written this card's history from another store (the app-wide pump, while the card
+    /// 0.5.317: the queue pump may have written this card's history from another store (the app-wide pump, while the card
     /// was not open here). Read it again when idle, keeping a draft still being typed.
     func syncFromDisk() {
         guard !busy, !refreshing, let url, let current = savedRecord,
@@ -381,7 +381,7 @@ enum WorkChatPreflight {
         let rows: [[String: Any]] = sessions.map { session in
             var row: [String: Any] = ["id":session.id, "title":String(session.title.prefix(300)), "summary":String(session.summary.prefix(2000)),
                 "status":session.status, "automatic":handoff.automaticChatTarget(session.id)]
-            // 0.5.316: only to a server that advertised queueRounds (6.73.15); 6.73.14 refuses unknown session keys.
+            // 0.5.317: only to a server that advertised queueRounds (6.73.15); 6.73.14 refuses unknown session keys.
             if let open { row["openWork"] = open.contains { WorkChatPreflight.onSession($0, session.id) } }
             return row
         }
@@ -392,7 +392,7 @@ enum WorkChatPreflight {
         if let planner { body["planner"] = planner } // Only when the server advertised planners; 6.73.9 refuses unknown keys.
         if let effort { body["effort"] = effort }    // Only when the server advertised efforts; 6.73.11 refuses unknown keys.
         if let items { body["items"] = WorkContextMeter.plannerItems(items) } // Only when advertised (6.73.13); ids and estimates, no contents.
-        // 0.5.316: only when advertised (6.73.15); 6.73.14 refuses unknown keys. Evidence; the server never lets one be a target.
+        // 0.5.317: only when advertised (6.73.15); 6.73.14 refuses unknown keys. Evidence; the server never lets one be a target.
         if referencesOffered, !handoff.isolated, mode == "plan" {
             body["references"] = referenceContext(source: source, handoff: handoff).map { ["id": $0.id, "title": $0.title, "summary": $0.summary, "result": $0.result] }
         }
@@ -416,14 +416,14 @@ enum WorkChatPreflight {
             guard let last = record?.rounds.reversed().lazy.compactMap({ $0.assignments.last { $0.sessionID == session.id && !$0.result.isEmpty } }).first else { return nil }
             return WorkContextMeter.PriorInput(sessionID: session.id, title: session.title, status: last.state, result: last.result)
         }
-        // 0.5.316: each reference is an earlier-update item the planner (and Miles) may give an assignment. Read-only.
+        // 0.5.317: each reference is an earlier-update item the planner (and Miles) may give an assignment. Read-only.
         let references = referenceContext(source: source, handoff: handoff).map {
             WorkContextMeter.PriorInput(sessionID: WorkContextMeter.referencePrefix + $0.id, title: $0.title, status: "reference, read-only", result: $0.body)
         }
         return WorkContextMeter.items(question: question, context: context, files: files, priors: priors + references,
                                       statusInstructionChars: WorkProgress.instruction(tag: WorkProgress.tag(forWorkID: source.id)).count)
     }
-    /// 0.5.316: the card's reference sessions as bounded evidence (WorkHandoffStore.referenceEvidence, shared with manual
+    /// 0.5.317: the card's reference sessions as bounded evidence (WorkHandoffStore.referenceEvidence, shared with manual
     /// handoffs). Empty unless the server takes references.
     func referenceContext(source: WorkSource, handoff: WorkHandoffStore) -> [WorkReferenceEvidence] {
         guard referencesOffered, !handoff.isolated else { return [] }
@@ -464,7 +464,7 @@ enum WorkChatPreflight {
     /// "Ready to send" and nothing is dispatched until Miles sends an assignment or Send all.
     /// `autoSend` (Plan and send): after planning, every assignment goes through the same send path as Send all, with every
     /// pre-flight and stale-plan guard. A guard that trips stops it and leaves the round as a manual send would.
-    /// `whenHeld` (0.5.316): Settings › Work › When earlier work is still open; nil reads this Mac's setting.
+    /// `whenHeld` (0.5.317): Settings › Work › When earlier work is still open; nil reads this Mac's setting.
     func send(source: WorkSource, handoff: WorkHandoffStore, planner choice: String? = nil, effort effortChoice: String? = nil, autoSend: Bool = false, whenHeld: String? = nil) async {
         guard !busy, !refreshing, var record, record.workID == source.id, record.serverID != "unverified", enabled || handoff.isolated else { return }
         guard flushDraft() else { return }
@@ -479,7 +479,7 @@ enum WorkChatPreflight {
         // request stays in the composer.
         if !handoff.isolated { await handoff.refreshReceipts() }
         let held = await handoff.taskChatBlockers(source: source)
-        // 0.5.316: with a queue, earlier open work no longer stops planning (planning sends nothing); the send decides.
+        // 0.5.317: with a queue, earlier open work no longer stops planning (planning sends nothing); the send decides.
         let hold = holdChoice(whenHeld, autoSend: autoSend, handoff: handoff)
         guard held.isEmpty || hold != .stop else { blockers = held; error = WorkChatPreflight.heading; return }
         let planner = handoff.isolated ? nil : WorkChatPolicy.planner(choice, advertised: planners)
@@ -568,11 +568,11 @@ enum WorkChatPreflight {
         await dispatch(roundID: roundID, assignmentIDs: round.assignments.filter { $0.state == "Not sent" }.map(\.receiptID), source: source, handoff: handoff,
                        hold: holdChoice(whenHeld, autoSend: false, handoff: handoff))
     }
-    /// 0.5.316: what a held send does here. The queue needs a server that advertises it; a sample card keeps the fence.
+    /// 0.5.317: what a held send does here. The queue needs a server that advertises it; a sample card keeps the fence.
     private func holdChoice(_ setting: String?, autoSend: Bool, handoff: WorkHandoffStore) -> WorkChatHold {
         WorkChatHold.onHold(setting: setting ?? WorkChatHold.storedSetting(), autoSend: autoSend, offered: queueOffered && !handoff.isolated)
     }
-    /// 0.5.316, Ask each time: the choice for the send that was held. Check first shows the earlier work, as before.
+    /// 0.5.317, Ask each time: the choice for the send that was held. Check first shows the earlier work, as before.
     func resolveHold(_ choice: WorkChatHold, source: WorkSource, handoff: WorkHandoffStore) async {
         guard let pending = pendingHold, !busy, !refreshing, record?.workID == source.id else { return }
         pendingHold = nil
@@ -581,7 +581,7 @@ enum WorkChatPreflight {
         defer { busy = false; phase = "" }
         await dispatch(roundID: pending.roundID, assignmentIDs: pending.assignmentIDs, source: source, handoff: handoff, hold: choice)
     }
-    /// 0.5.316: Cancel on a queued round. Its waiting assignments go back to review; nothing was sent for them.
+    /// 0.5.317: Cancel on a queued round. Its waiting assignments go back to review; nothing was sent for them.
     func cancelQueued(roundID: String) {
         syncFromDisk()
         guard !busy, !refreshing, let r = record?.rounds.firstIndex(where: { $0.id == roundID }) else { return }
@@ -597,7 +597,7 @@ enum WorkChatPreflight {
         workChatLog.info("queue canceled")
         _ = persist()
     }
-    /// 0.5.316: a queued round's waiting assignments stop waiting for the whole card and go as Send in parallel would.
+    /// 0.5.317: a queued round's waiting assignments stop waiting for the whole card and go as Send in parallel would.
     func sendQueuedInParallel(roundID: String, source: WorkSource, handoff: WorkHandoffStore) async {
         syncFromDisk()
         guard !busy, !refreshing, let r = record?.rounds.firstIndex(where: { $0.id == roundID }) else { return }
@@ -607,7 +607,7 @@ enum WorkChatPreflight {
         guard persist() else { return }
         await pumpQueued(source: source, handoff: handoff)
     }
-    /// 0.5.316: sends each queued assignment on this card whose earlier work has resolved, oldest round first, through the
+    /// 0.5.317: sends each queued assignment on this card whose earlier work has resolved, oldest round first, through the
     /// same path and checks as Send. Called by this card's chat every 15 s and by the app-wide pump for cards not open.
     func pumpQueued(source: WorkSource, handoff: WorkHandoffStore) async {
         guard !Self.pumping, !busy, !refreshing, enabled || handoff.isolated, let record, record.workID == source.id,
@@ -624,7 +624,7 @@ enum WorkChatPreflight {
     }
     /// Re-checks, per click, everything planning assumed: no receipt holds the card, and the attachments, session links and
     /// task revision are the ones the plan was made from. The intent id is the assignment's, so a repeat never sends twice.
-    /// 0.5.316: `hold` says what a held assignment does (WorkChatHold). A queued assignment comes back through here when the
+    /// 0.5.317: `hold` says what a held assignment does (WorkChatHold). A queued assignment comes back through here when the
     /// pump finds its earlier work resolved, and gets every check again; while still held it stays queued.
     private func dispatch(roundID: String, assignmentIDs: [String], source: WorkSource, handoff: WorkHandoffStore, hold: WorkChatHold = .stop) async {
         guard let record, record.workID == source.id, record.serverID != "unverified", enabled || handoff.isolated,
@@ -643,7 +643,7 @@ enum WorkChatPreflight {
                 continue
             }
             let assignment = current
-            // 0.5.316: Send in parallel (now, or chosen earlier for this queued assignment) holds it only on its own session.
+            // 0.5.317: Send in parallel (now, or chosen earlier for this queued assignment) holds it only on its own session.
             let parallel = hold == .parallel || assignment.parallel == true
             phase = wasQueued ? "Checking queued work…" : assignmentIDs.count > 1 ? "Sending assignment \(step+1) of \(assignmentIDs.count)…" : "Sending the assignment…"
             do {
@@ -744,12 +744,12 @@ enum WorkChatPreflight {
         }
         _ = persist()
     }
-    /// 0.5.316: what holds this assignment now. Parallel: handoffs on its own session. Otherwise: the card's fence.
+    /// 0.5.317: what holds this assignment now. Parallel: handoffs on its own session. Otherwise: the card's fence.
     private func heldBy(parallel: Bool, assignment: WorkChatAssignment, round: WorkChatRound, source: WorkSource, handoff: WorkHandoffStore) async -> [WorkHandoffReceipt] {
         if parallel { return await handoff.taskChatSessionBlockers(sessionID: assignment.sessionID, orchestrationRunID: round.id) }
         return await handoff.taskChatBlockers(source: source, orchestrationRunID: round.id, sessionID: assignment.sessionID)
     }
-    /// A plan that no longer matches the task: nothing more is sent, and 0.5.316 queued assignments go back to Not sent.
+    /// A plan that no longer matches the task: nothing more is sent, and 0.5.317 queued assignments go back to Not sent.
     private func stale(_ index: Int, reason: String) {
         record?.rounds[index].state = "Needs a new plan"; error = WorkChatPolicy.staleMessage
         for n in record!.rounds[index].assignments.indices where record!.rounds[index].assignments[n].state == WorkChatHold.queuedState {
@@ -999,7 +999,7 @@ struct WorkTaskChatView: View {
                     }
                     if !round.summary.isEmpty { Text("Latest updates").font(COSType.body(13,weight:.semibold)); COSMarkdownText(round.summary,bodySize:13).font(COSType.body(13)).textSelection(.enabled) }
                     Text(Self.stateLine(round)).font(COSType.body(11)).foregroundStyle(COSPalette.muted)
-                    // 0.5.316: Ask each time, for the send just held; and what queued assignments wait on.
+                    // 0.5.317: Ask each time, for the send just held; and what queued assignments wait on.
                     if chat.pendingHold?.roundID == round.id { WorkChatHoldChoices(chat: chat, handoff: handoff, source: source) }
                     if round.assignments.contains(where: { $0.state == WorkChatHold.queuedState }) { WorkChatQueuedLine(chat: chat, handoff: handoff, source: source, round: round) }
                     if round.state == "Ready to send" {
@@ -1039,7 +1039,7 @@ struct WorkTaskChatView: View {
             WorkChatContextComposer(chat:chat,handoff:handoff,files:handoff.cardFiles,source:source)
             WorkChatSendControls(chat: chat, draft: chat.draft, handoff: handoff, source: source)
         }.task(id:source.id) {
-            // 0.5.316: while this card is open here, this store sends its queued work; the app-wide pump leaves it alone.
+            // 0.5.317: while this card is open here, this store sends its queued work; the app-wide pump leaves it alone.
             WorkChatQueuePump.show(source.id); defer { WorkChatQueuePump.hide(source.id) }
             chat.enabled = Bundle.main.object(forInfoDictionaryKey: "COSWorkChatEnabled") as? Bool == true
                 || ProcessInfo.processInfo.environment["COS_WORK_ORCHESTRATION_CANDIDATE"] == "1"
@@ -1148,7 +1148,7 @@ private struct WorkChatBlockersView: View {
             Text(chat.queueOffered ? "Nothing was sent. Check each one, then Check again. The plan stays ready to send."
                                    : "COS plans and sends only when nothing earlier on this card is unresolved. Check each one, then Check again.")
                 .font(COSType.body(11)).foregroundStyle(COSPalette.muted).fixedSize(horizontal: false, vertical: true)
-            // 0.5.316: an older server cannot queue, so this card checks first; say so in plain words.
+            // 0.5.317: an older server cannot queue, so this card checks first; say so in plain words.
             if chat.serverQueueMissing && !handoff.isolated {
                 Text(WorkChatHold.olderServer).font(COSType.body(11)).foregroundStyle(COSPalette.muted).fixedSize(horizontal: false, vertical: true)
             }

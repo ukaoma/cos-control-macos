@@ -125,7 +125,7 @@ enum WorkContributorProjection {
         return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 }
-/// 0.5.316: one session this card references (read-only), with what is observed of it now.
+/// 0.5.317: one session this card references (read-only), with what is observed of it now.
 struct WorkReferenceRow: Identifiable {
     let id: String
     let link: WorkSessionCardLink
@@ -386,7 +386,7 @@ struct WorkRecommendationKey: Equatable {
     }
     private(set) var noticesEpoch = 0
     @Published private(set) var sessionCardsError: String?
-    /// 0.5.316 (Miles 2026-10-16 12:16): read-only reference links, session id to the cards that reference it. Never a
+    /// 0.5.317 (Miles 2026-10-16 12:16): read-only reference links, session id to the cards that reference it. Never a
     /// send target, never part of the fence or the queue, never a stage mover: only `referenceRows` reads them.
     @Published private(set) var referenceLinks: [String: [WorkSessionCardLink]] = [:]
     /// Set by Work chat discovery (server 6.73.15 `references`). Off: no reference reaches any send.
@@ -505,7 +505,7 @@ struct WorkRecommendationKey: Equatable {
     func taskChatContinuations(source: WorkSource) async -> [String: Data] {
         await continuations(for: receipts(for: source.id))
     }
-    /// 0.5.316: the same idle proofs for every delivered turn on one session, from any card (Send in parallel).
+    /// 0.5.317: the same idle proofs for every delivered turn on one session, from any card (Send in parallel).
     func sessionContinuations(sessionID: String) async -> [String: Data] {
         await continuations(for: receipts.filter { WorkChatPreflight.onSession($0, sessionID) })
     }
@@ -528,13 +528,13 @@ struct WorkRecommendationKey: Equatable {
         return WorkChatPreflight.blockers(receiptsOnDisk() ?? receipts, workID: source.id, continuations: continuations,
                                           orchestrationRunID: orchestrationRunID, sessionID: sessionID)
     }
-    /// 0.5.316, Send in parallel: what would refuse a send into this one session (submit's `sessionFence`).
+    /// 0.5.317, Send in parallel: what would refuse a send into this one session (submit's `sessionFence`).
     func taskChatSessionBlockers(sessionID: String, orchestrationRunID: String? = nil) async -> [WorkHandoffReceipt] {
         let continuations = await sessionContinuations(sessionID: sessionID)
         return WorkChatPreflight.sessionBlockers(receiptsOnDisk() ?? receipts, sessionID: sessionID, continuations: continuations,
                                                  orchestrationRunID: orchestrationRunID)
     }
-    /// 0.5.316: nothing else is sending or holds the journal, so a queued assignment may go now.
+    /// 0.5.317: nothing else is sending or holds the journal, so a queued assignment may go now.
     var canSendQueued: Bool { !busy && !quietSend && storageReady }
     /// Opens the existing destination editor only. A second, final confirmation is required to dispatch.
     @discardableResult func prepareIndependentRecovery(source: WorkSource, prompt: String, assignmentID: String? = nil) -> Bool {
@@ -566,7 +566,7 @@ struct WorkRecommendationKey: Equatable {
     func contributorIDs(workID: String) -> Set<String> {
         Set(contributors(workID: workID).map(\.id))
     }
-    /// 0.5.316: link a session to this card as a read-only reference. Refused for the card it already works on (that link
+    /// 0.5.317: link a session to this card as a read-only reference. Refused for the card it already works on (that link
     /// already gives the planner everything) and for a Cursor or invalid id. Sends no prompt; changes no working link.
     func addReference(sessionID: String, source: WorkSource) -> Bool {
         guard !busy, storageReady, WorkSessionLinks.validSessionID(sessionID, includeCursor: true) else { return false }
@@ -1266,7 +1266,7 @@ struct WorkRecommendationKey: Equatable {
             // Unknown, queued, running and app-owned deliveries retain the existing fence.
             var continuations: [String: Data] = [:]
             if orchestrationRunID != nil { continuations = await taskChatContinuations(source: source) }
-            // 0.5.316 (Send in parallel): a Continue whose fence is its own session also needs the session's other cards' proofs.
+            // 0.5.317 (Send in parallel): a Continue whose fence is its own session also needs the session's other cards' proofs.
             if sessionFence, let session { let more = await sessionContinuations(sessionID: session.id); continuations.merge(more) { mine, _ in mine } }
             let lock = try lockJournal(); defer { flock(lock, LOCK_UN); close(lock) }
             try loadJournal()
@@ -1277,7 +1277,7 @@ struct WorkRecommendationKey: Equatable {
                 }
             }
             // 0.5.308: the fence lives in WorkChatPreflight so the task chat checks the same rule before it plans or sends.
-            // 0.5.316: Send in parallel keeps one rule, a session with an open handoff never gets a second instruction, so its
+            // 0.5.317: Send in parallel keeps one rule, a session with an open handoff never gets a second instruction, so its
             // fence is that session's handoffs from every card instead of the whole card. Continue only.
             if sessionFence {
                 guard mode == .continueSession, let session, origin == nil, recovery == nil else { throw failure("Only a Continue into a linked session can be sent in parallel.") }

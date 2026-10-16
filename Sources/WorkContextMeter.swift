@@ -60,9 +60,9 @@ enum WorkContextMeter {
     /// The server takes at most 40 items (6.73.13, WORK_CHAT_MAX_ITEMS). A card with more sends every item.
     static let maxItems = 40
     static let fixedIDs = ["req", "task", "cos"]
-    /// 0.5.316: a PriorInput whose session id starts with this is a reference session, not a working one.
+    /// 0.5.317: a PriorInput whose session id starts with this is a reference session, not a working one.
     static let referencePrefix = "ref:"
-    /// 0.5.316: how a reference session reads in any send, Work chat item or manual handoff alike.
+    /// 0.5.317: how a reference session reads in any send, Work chat item or manual handoff alike.
     static func referenceText(title: String, body: String) -> String {
         "Reference session \u{201C}\(title)\u{201D} (linked as a reference, read-only): " + String(body.prefix(2500))
     }
@@ -178,7 +178,7 @@ enum WorkContextMeter {
         for prior in priors where !prior.result.isEmpty {
             let id = itemID("prior", prior.sessionID)
             guard !out.contains(where: { $0.id == id }) else { continue }
-            // 0.5.316: a reference session (read-only) rides as an earlier update, so every server that takes items takes it.
+            // 0.5.317: a reference session (read-only) rides as an earlier update, so every server that takes items takes it.
             let reference = prior.sessionID.hasPrefix(referencePrefix)
             let text = reference ? referenceText(title: prior.title, body: prior.result)
                                  : "Earlier update from \u{201C}\(prior.title)\u{201D} (\(prior.status)): " + String(prior.result.prefix(1500))

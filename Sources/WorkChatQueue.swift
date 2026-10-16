@@ -1,7 +1,7 @@
 import SwiftUI
 import Foundation
 
-/// 0.5.316 (Miles 2026-10-16 12:02, approved design): keep feeding a card while its earlier work runs. When the handoff
+/// 0.5.317 (Miles 2026-10-16 12:02, approved design): keep feeding a card while its earlier work runs. When the handoff
 /// fence would hold a send, it can queue (send by itself once the earlier work resolves, after every send check again),
 /// go in parallel (send now; a session with its own open handoff still waits), or check first (the 0.5.308 fence).
 ///
@@ -54,7 +54,7 @@ enum WorkChatHold: Equatable {
     }
 }
 
-/// 0.5.316: sends queued work for cards whose Work chat is not open, while COS Control runs. A card open in a Work chat
+/// 0.5.317: sends queued work for cards whose Work chat is not open, while COS Control runs. A card open in a Work chat
 /// view is pumped by that view's own store, so one card's history has one writer at a time.
 @MainActor final class WorkChatQueuePump {
     /// Cards a Work chat view has open (counted: two windows may show one card).

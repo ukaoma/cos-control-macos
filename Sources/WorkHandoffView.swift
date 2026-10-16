@@ -34,7 +34,7 @@ extension WorkSource {
 
 /// Sends a resolved plan exactly as the Agent workspace does. Shared with the board's Start work overlay (0.5.244).
 /// `resendAllFiles` (0.5.254): a Continue or Fork carries every file on the card again ("Send all N again").
-/// 0.5.316: the card's reference sessions go with it as read-only evidence, bounded as in Work chat (none to Cursor, whose
+/// 0.5.317: the card's reference sessions go with it as read-only evidence, bounded as in Work chat (none to Cursor, whose
 /// link has its own length limit, and none when the server does not take references).
 @MainActor func sendWorkHandoff(store: WorkHandoffStore, source sendingSource: WorkSource, plan: WorkSendPlan, resendAllFiles: Bool = false, recovery: WorkIndependentRecovery? = nil,
                                 referenceFacts: WorkReferenceFacts = WorkReferencesGroup.liveFacts) async {

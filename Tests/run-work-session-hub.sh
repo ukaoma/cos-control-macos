@@ -50,13 +50,13 @@ logged = re.findall(r'workChatLog\.\w+\("((?:[^"\\]|\\.)*)"', chat)
 assert len(logged) >= 8 and not any(re.search(r'\\\((?:prompt|built|question|context|text|assignment\.prompt|round\.question)\b', line) for line in logged), "the work-chat log never carries prompt, question or context text"
 print("PASS Work context meter wiring: collapsed by default and remembered per Mac, Quick Look for files, per-assignment prompt and files")
 PY
-# 0.5.316: the Work chat queue's wiring the hub checks cannot execute: the helper passes the server's queueRounds through,
+# 0.5.317: the Work chat queue's wiring the hub checks cannot execute: the helper passes the server's queueRounds through,
 # Settings › Work has the switch with Queue it as its default, the app starts the app-wide pump, and an open card pumps its
 # own queue and tells the app-wide pump to leave it alone.
 python3 - "$ROOT/Sources/WorkTaskChat.swift" "$ROOT/HelperSources/main.swift" "$ROOT/Sources/Views.swift" "$ROOT/Sources/ControllerModel.swift" "$ROOT/Sources/WorkChatQueue.swift" "$ROOT/Sources/WorkWorkspaceView.swift" "$ROOT/Sources/WorkReferences.swift" <<'PY'
 import sys
 chat, helper, views, model, queue, workspace, refs = (open(p).read() for p in sys.argv[1:8])
-# 0.5.316 reference links: offered only by a server that takes them, apart from the working sessions, with no send control.
+# 0.5.317 reference links: offered only by a server that takes them, apart from the working sessions, with no send control.
 assert '"references": body["references"] as? Bool == true' in helper, "the helper passes the server's references capability"
 assert "if taskChat.referencesOffered, linked?.workID != task.workSourceID {" in workspace and 'Button("Link as reference")' in workspace, "Link as reference only when the server takes references"
 assert "let references = taskChat.referencesOffered ? handoffStore.referenceRows(workID: task.workSourceID) : []" in workspace, "the References group only when offered"

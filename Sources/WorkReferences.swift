@@ -1,7 +1,7 @@
 import SwiftUI
 import Foundation
 
-/// 0.5.316: one reference session as bounded, read-only evidence: its title, summary (1,000 characters), and its recent
+/// 0.5.317: one reference session as bounded, read-only evidence: its title, summary (1,000 characters), and its recent
 /// outputs and change counts since it was linked (1,500). The same for Work chat and a manual handoff.
 struct WorkReferenceEvidence: Equatable {
     let id: String
@@ -13,7 +13,7 @@ struct WorkReferenceEvidence: Equatable {
 }
 typealias WorkReferenceFacts = @MainActor (_ sessionID: String, _ since: Double) -> (outputs: [String], changes: String?)?
 
-/// 0.5.316 (Miles 2026-10-16 12:16): the sessions a card references, read-only. A reference link (WorkSessionLinks
+/// 0.5.317 (Miles 2026-10-16 12:16): the sessions a card references, read-only. A reference link (WorkSessionLinks
 /// references file) is never a send target, never part of the fence or the queue and never moves the card's stage; the
 /// card's planner and new assignments may read its summary, outputs and change counts. Open and Unlink only.
 struct WorkReferencesGroup: View {

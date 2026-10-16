@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""0.5.316 mutation gate for the Work chat queue: Queue it, Send in parallel, Check first, the setting, Plan and send,
+"""0.5.317 mutation gate for the Work chat queue: Queue it, Send in parallel, Check first, the setting, Plan and send,
 the app-wide pump and the older-server fallback.
 
     python3 Tests/mutate-work-chat-queue.py <control worktree> [name ...]   (run by hand, never by a gate)
