@@ -2761,13 +2761,18 @@ final class ControllerModel: ObservableObject {
     /// From the pet's "All dictations" and Dictation → History…: Activity opens on Meetings, then the pane.
     func openDictationHistoryInActivity() {
         activityOpenDictationHistory = true
-        openActivity?(.meetings)
+        openActivity?(.dictation)
+    }
+
+    /// 0.5.318: Activity → Dictation, to review what Learn from my edits suggested.
+    func openDictationInActivity() {
+        openActivity?(.dictation)
     }
 
     /// From the pet's Fix a word: Activity opens on Meetings, then ActivityWindow.applyLaunchSection opens the pane.
     func openDictionaryInActivity() {
         activityOpenDictionary = true
-        openActivity?(.meetings)
+        openActivity?(.dictation)
     }
 
     /// Everything the Import card needs: which recorders are on this Mac, the key,

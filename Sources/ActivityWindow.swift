@@ -318,12 +318,14 @@ enum ActivitySection: String, CaseIterable, Identifiable {
     case sessions
     case tasks
     case work
+    /// 0.5.318 (Miles 2026-10-16): dictations, what Learn from my edits suggested and saved, and the dictionary.
+    case dictation
 
     /// The same collection drives menu chips, Activity home and its peer rail.
     /// Work is the production Tasks home. A rollback switch preserves the old pane.
     static func visibleSections(environment: [String: String]) -> [ActivitySection] {
         let existing: [ActivitySection] = [.messages, .speakers, .meetings, .memories, .threads, .sessions, .tasks]
-        return environment["COS_CONTROL_WORK_DISABLED"] == "1" ? existing : existing.map { $0 == .tasks ? .work : $0 }
+        return (environment["COS_CONTROL_WORK_DISABLED"] == "1" ? existing : existing.map { $0 == .tasks ? .work : $0 }) + [.dictation]
     }
     static var allCases: [ActivitySection] { visibleSections(environment: ProcessInfo.processInfo.environment) }
 
@@ -345,6 +347,7 @@ enum ActivitySection: String, CaseIterable, Identifiable {
         case .sessions: "Sessions"
         case .tasks: "Tasks"
         case .work: "Work"
+        case .dictation: "Dictation"
         }
     }
 
@@ -358,6 +361,7 @@ enum ActivitySection: String, CaseIterable, Identifiable {
         case .sessions: "terminal"
         case .tasks: "checklist"
         case .work: "tray.full"
+        case .dictation: "mic"
         }
     }
 
@@ -371,6 +375,7 @@ enum ActivitySection: String, CaseIterable, Identifiable {
         case .sessions: Color(red: 0.36, green: 0.36, blue: 0.40)
         case .tasks: Color(red: 0.18, green: 0.45, blue: 0.52)
         case .work: COSPalette.gold
+        case .dictation: Color(red: 0.66, green: 0.42, blue: 0.24)
         }
     }
 
@@ -384,6 +389,7 @@ enum ActivitySection: String, CaseIterable, Identifiable {
         case .sessions: "Claude, Codex, and Cursor sessions on this Mac."
         case .tasks: "Capture, schedule, and run the work sitting in tasks.md."
         case .work: "Manage your tasks and turn meeting decisions into prepared work."
+        case .dictation: "Your dictations, the corrections COS learned from your edits, and the dictionary."
         }
     }
 }
@@ -696,6 +702,7 @@ struct ActivityWindow: View {
         case .sessions: selectedSessionID != nil
         case .tasks: taskDetail != nil
         case .work: !isolatedWorkPreview && workSubview == .tasks && taskDetail != nil
+        case .dictation: model.dictionaryRouteActive || model.dictationHistoryRouteActive
         case nil: false
         }
     }
@@ -799,6 +806,11 @@ struct ActivityWindow: View {
                     TranscriptionDictionaryPane(model: model)
                 // 0.5.312: Dictation history, on its own flag, written by openDictationHistory and closeDictationHistory.
                 } else if section == .meetings, model.dictationHistoryRouteActive {
+                    DictationHistoryPane(model: model)
+                // 0.5.318: the same two panes from the Dictation tab, on the same flags.
+                } else if section == .dictation, model.dictionaryRouteActive {
+                    TranscriptionDictionaryPane(model: model)
+                } else if section == .dictation, model.dictationHistoryRouteActive {
                     DictationHistoryPane(model: model)
                 } else if section == .sessions, selectedSessionID != nil {
                     if model.claudeSessionRouteActive {
@@ -974,6 +986,8 @@ struct ActivityWindow: View {
         if openRecording, section == .meetings { model.beginRecordingTranscriptShortcut() }
         if openDictionary, section == .meetings { model.openDictionary() }
         if openDictationHistory, section == .meetings { model.openDictationHistory() }
+        if openDictionary, section == .dictation { model.openDictionary() }
+        if openDictationHistory, section == .dictation { model.openDictationHistory() }
         if let staged {
             selectedSessionID = staged.id
             model.openClaudeSession(staged)
@@ -1276,6 +1290,10 @@ struct ActivityWindow: View {
             model.closeDictionary()
         } else if section == .meetings, model.dictationHistoryRouteActive {
             model.closeDictationHistory()
+        } else if section == .dictation, model.dictionaryRouteActive {
+            model.closeDictionary()
+        } else if section == .dictation, model.dictationHistoryRouteActive {
+            model.closeDictationHistory()
         } else if section == .sessions, selectedSessionID != nil {
             selectedSessionID = nil
             model.closeClaudeSession()
@@ -1327,6 +1345,9 @@ struct ActivityWindow: View {
         model.closeGraphEntity()
         model.closeLibraryDetail()
         model.closeClaudeSession()
+        // 0.5.318: the Dictionary and history panes are reached from two tabs; a tab switch closes them like any detail.
+        model.closeDictionary()
+        model.closeDictationHistory()
     }
 
     private func withOptionalAnimation(_ changes: () -> Void) {
@@ -1848,6 +1869,9 @@ struct ActivityWindow: View {
             }
         }
         input.tasks = model.tasks.isEmpty ? nil : model.tasks
+        input.dictations = model.dictation.recent.isEmpty ? nil : model.dictation.recent.count
+        input.dictationSuggestions = model.dictation.suggestions.suggestions.count
+        input.lastDictation = model.dictation.recent.first?.createdAt
         return input
     }
 
@@ -1864,6 +1888,7 @@ struct ActivityWindow: View {
         case .sessions: sessionsList
         case .tasks: tasksList
         case .work: workSurface
+        case .dictation: DictationActivityPane(model: model)
         }
     }
 
@@ -5879,6 +5904,9 @@ struct ActivityWindow: View {
             reconcileTaskDomain()
             await model.loadWorkTasks()
             await reviewStore.refresh()
+        case .dictation:
+            model.dictation.pruneSuggestions()
+            await model.dictionary.load()
         }
     }
 

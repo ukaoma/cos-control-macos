@@ -483,12 +483,35 @@ need('forKey: "dictation.quiet") ?? "") ?? .default' in dictation and "Dictation
 media = ("NX_KEYTYPE", "systemDefined", "MRMediaRemote", "MediaRemote.framework", "MPRemoteCommand", "keyCode: 16, keyDown")
 need(not any(m in src for src in sources.values() for m in media),
      "no media key and no MediaRemote: a blind play/pause can START playback (0.5.313 finding)")
-replace = body(dictation, "    static func replace(_ target: DictationInsertTarget, inserted: String, corrected: String) async -> ReplaceResult {")
+replace = body(dictation, "    static func replace(_ target: DictationInsertTarget, corrected: String, restoreClipboard: Bool) async -> Replaced {")
 need("CGEvent" not in replace and ".post(" not in replace and "kAXValueAttribute" not in replace,
-     "Replace presses no key (never Return) and never reads the field's whole value")
-need("DictationReplace.decide(" in replace and "DictationReplace.verified(" in replace and "string(element, at: target.span)" in replace,
-     "Replace goes through the tested decision, reads only the span, and measures")
+     "Replace posts no key of its own (only paste's ⌘V, below) and never reads the field's whole value")
+need("DictationReplace.plan(" in replace and "DictationReplace.route(setterWorked: target.setterWorked)" in replace
+     and replace.count("DictationReplace.confirmed(") == 2 and "DictationReplace.window(span: target.span," in replace,
+     "Replace reads a bounded window, plans through the tested rules, takes the route delivery proved, and measures both routes")
 need("kAXStringForRangeParameterizedAttribute" in dictation, "the span is read with AXStringForRange")
+# 0.5.318 (Miles 13:02, Claude): the Accessibility set is a no-op in Electron, so a replace there pastes, and only after
+# the tested proof that the selection is exactly the misheard words in the app's own focused field.
+need(replace.count("await paste(changeCount: changeCount)") == 1
+     and replace.index("DictationReplace.pasteProof(") < replace.index("if let proof {") < replace.index("await paste(changeCount: changeCount)"),
+     "the replace ⌘V is posted once, only after pasteProof passed")
+need(replace.index("key.orderOut(nil); key.orderFrontRegardless()") < replace.index("DictationReplace.pasteProof("),
+     "COS's own panel gives the keyboard back before focus is proved")
+need("setterWorked: true" in deliver and "setterWorked: false" in deliver and deliver.count("text: text,") == 2,
+     "delivery records which route moved the field and what it typed, for the replace")
+need('dictationLog.notice("replace \\(facts, privacy: .public) result=' in replace and "selectedMatch=" in replace and "focused=" in replace and "readback=" in replace,
+     "one replace log line carries the discriminating facts (route, found, focus, selection, read-back), never text")
+save_fn = body(dictation, "    func saveFix(to dictionary: TranscriptionDictionaryStore) {")
+need(save_fn.index("recent = DictationHistory.correcting(recordID, to: corrected, in: recent)") < save_fn.index("saveRecent()")
+     < save_fn.index("replaceOffer = DictationReplaceOffer("),
+     "Save corrects the stored dictation (Heard, history) before offering Replace (Miles: Heard still read the mishearing)")
+need("recent = recent.map" not in body(dictation, "    func replaceCorrected() {"), "Replace no longer owns the record update; Save does")
+# 0.5.318 spoken lists: on by default, applied once to the transcript before it is delivered and recorded.
+need('forKey: "dictation.formatLists") as? Bool ?? true' in dictation
+     and 'Toggle("Format spoken lists", isOn: $store.formatLists)' in dictation, "Format spoken lists is a setting, on by default")
+need(transcribe.count("DictationListFormat.format(") == 1
+     and transcribe.index("let text = formatLists ? DictationListFormat.format(heard) : heard") < transcribe.index("let delivered = copyOnly"),
+     "the list format runs before delivery, so what is typed and what is kept match")
 replace_ui = body(dictation, "    func replaceCorrected() {")
 need(replace_ui.count("copy(offer.corrected)") == 3 and 'fixNote = "Copied the corrected text."' in replace_ui,
      "every path that does not replace copies the corrected text and says so")
@@ -515,6 +538,55 @@ need("DictationFixGuess.guess(tokens: tokens, tapped: index, vocabulary: Transcr
      "the first tap guesses the span and the dictionary suggestion")
 need('Button(offer.app.map { "Replace it in \\($0)" } ?? "Copy the corrected text") { store.replaceCorrected() }' in dictation,
      "Fix a word offers Replace it in <App> after Save")
+
+# ── 9. 0.5.318 Learn from my edits (Miles 13:31): Save automatically by default, native first, never secure, Undo.
+need('UserDefaults.standard.string(forKey: "dictation.learnMode") ?? "") ?? .default' in dictation
+     and 'COSDropdown("Learn from my edits", selection: $store.learnMode,' in dictation, "Learn from my edits is a Setting with the tested default")
+need("Never in terminals or password fields." in dictation and "Electron apps are being measured first" in dictation,
+     "the Settings footnote says terminals and password fields never learn, and Electron is only measured")
+finish = body(dictation, "    private func finish(")
+need("if let target, case .inserted = outcome {\n            editWatcher.start(target, mode: learnMode)" in finish and 'editWatcher.stop("not inserted")' in finish,
+     "only a measured insertion starts a watch; anything else ends the last one")
+need('editWatcher.stop("new dictation")' in body(dictation, "    func start() {") and 'editWatcher.stop("fix a word")' in body(dictation, "    func openFix(_ id: UUID?) {"),
+     "a new dictation or Fix a word (whose Replace edits the field) ends the watch")
+need('if learnMode == .off { editWatcher.stop("learning off") }' in dictation, "turning learning off ends a watch at once")
+watcher = body(dictation, "@MainActor final class DictationEditWatcher {")
+need(watcher.count("DictationEditLearning.eligibility(mode: mode, secure: DictationInsertion.secure(element)") == 1
+     and "if case .skip(let reason) = eligibility {" in watcher and "let learning = eligibility == .learn" in watcher
+     and "let candidate = learning ? Self.candidate(edit) : nil" in watcher,
+     "the tested gate decides learn, probe or skip, and only .learn produces a candidate (Electron is probed only)")
+need("DictationEditLearning.stop(elapsed: Date().timeIntervalSince(started), reads: reads, appRunning: running,\n                                                        secure: DictationInsertion.secure(element)," in watcher,
+     "every poll asks the tested stop rule, secure input and password fields included")
+need("DictationReplace.holds(baseline, at: target.span.location - bounds.location, target.text)" in watcher
+     and "DictationEditLearning.readLength(" in watcher and "DictationEditLearning.track(" in watcher,
+     "a watch starts only from proof of what COS typed, and reads the bounded window it planned")
+need("kAXValueAttribute" not in watcher and "AXObserver" not in watcher and "DictationInsertion.text(element, location: bounds.location" in watcher,
+     "the watch reads only the bounded window, never AXValue")
+learned_fn = body(dictation, "    private func editLearned(")
+need(learned_fn.index("DictationSuggestions.isQuiet(") < learned_fn.index("if learnMode == .suggest {") < learned_fn.index("TranscriptionDictionaryStore.shared.learn(")
+     and "DictationSuggestions.suggesting(item, in: suggestions, now: now)" in learned_fn and "DictationSuggestions.learning(item, in: suggestions, now: Date())" in learned_fn,
+     "a dismissed or undone pair stays quiet; Suggest only suggests; Save automatically saves, then lists it for Undo")
+undo = body(dictation, "    func undoLearned(_ id: UUID) async {")
+need("DictationSuggestions.recentID(for: item, in: rows)" in undo and "await dictionary.undo(entry)" in undo
+     and "DictationSuggestions.dismissing(id, in: suggestions, now: Date())" in undo,
+     "Undo reverses the dictionary entry COS made and keeps the pair from coming back")
+pane = body(dictation, "struct DictationActivityPane: View {")
+need("store.applySuggestions(Set(items.map(\\.id)))" in pane and "store.dismissSuggestion(item.id)" in pane and "store.undoLearned(item.id)" in pane
+     and "DictionaryLearnedRow(" in pane and 'Button("History") { model.openDictationHistory() }' in pane and 'Button("Dictionary") { model.openDictionary() }' in pane,
+     "Activity → Dictation: Add all, Add, Dismiss, Undo, Recent corrections, and the history and dictionary panes")
+need("Picker(" not in pane and ".pickerStyle(.segmented)" not in pane, "no pill-row tabs in the Dictation tab")
+need("case .dictation: DictationActivityPane(model: model)" in activity
+     and re.search(r"else if section == \.dictation, model\.dictionaryRouteActive \{\s*TranscriptionDictionaryPane\(model: model\)", activity) is not None
+     and re.search(r"else if section == \.dictation, model\.dictationHistoryRouteActive \{\s*DictationHistoryPane\(model: model\)", activity) is not None
+     and re.search(r"section == \.dictation, model\.dictionaryRouteActive \{\s*model\.closeDictionary\(\)", body(activity, "private func goBack() {")) is not None
+     and "case .dictation: model.dictionaryRouteActive || model.dictationHistoryRouteActive" in activity,
+     "the Dictation tab mounts its pane and both sub-panes on their own flags, with Back and hasDetail")
+need(launch.index("if let next { select(next) }") < launch.index("if openDictionary, section == .dictation { model.openDictionary() }"),
+     "the pet's Dictionary… opens in the Dictation tab after the section is selected")
+need("openActivity?(.dictation)" in body(model, "func openDictionaryInActivity() {") and "openActivity?(.dictation)" in body(model, "func openDictationInActivity() {"),
+     "the pet's doorways open the Dictation tab")
+need("onReview: { dictation.closeList(); model.openDictationInActivity() }" in pet and "dictation.suggestions.suggestions.isEmpty" in lst,
+     "the pet shows suggestions where Fix a word lives, and a row into Activity → Dictation")
 
 # QA 0.5.313 pass 2: a refused press never latches the hold key; only the hold tracker gets the click window; an
 # interrupted dictation never overwrites a clipboard the person changed while it transcribed.

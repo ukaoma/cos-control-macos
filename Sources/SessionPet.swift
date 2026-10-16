@@ -1868,6 +1868,28 @@ extension SessionPetRoot {
                     dictationRows
                 }
                 Divider()
+                // 0.5.318 Suggest only: the corrections waiting for review, one row, into Activity → Dictation.
+                if !dictation.suggestions.suggestions.isEmpty {
+                    Button {
+                        dictation.closeList()
+                        model.openDictationInActivity()
+                    } label: {
+                        HStack {
+                            let n = dictation.suggestions.suggestions.count
+                            Text(n == 1 ? "1 suggested correction" : "\(n) suggested corrections")
+                                .font(COSType.body(size.typeSize(11), weight: .semibold))
+                                .foregroundStyle(COSPalette.amber)
+                            Spacer(minLength: 0)
+                            Image(systemName: "chevron.right").font(.system(size: size.typeSize(8), weight: .bold)).foregroundStyle(.secondary)
+                        }
+                        .padding(.vertical, size.length(7))
+                        .padding(.trailing, size.length(8))
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Review what COS noticed you fix, in COS Activity → Dictation")
+                    Divider()
+                }
                 Button {
                     dictation.closeList()
                     model.openDictationHistoryInActivity()
@@ -1893,7 +1915,8 @@ extension SessionPetRoot {
                 dictationHeader("FIX A WORD", record: nil)
                 if let record = dictation.record(id) {
                     DictationFixEditor(store: dictation, dictionary: model.dictionary, record: record, size: size,
-                                       onOpenDictionary: { model.openDictionaryInActivity() })
+                                       onOpenDictionary: { model.openDictionaryInActivity() },
+                                       onReview: { dictation.closeList(); model.openDictationInActivity() })
                         .padding(.trailing, size.length(8))
                         .padding(.bottom, size.length(6))
                 }

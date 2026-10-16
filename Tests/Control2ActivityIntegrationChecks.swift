@@ -3,7 +3,7 @@ import SwiftUI
 
 @MainActor func runControl2ActivityIntegrationChecks() {
     let normal = ActivitySection.visibleSections(environment: [:])
-    precondition(normal.count == 7 && normal.contains(.work) && !normal.contains(.tasks))
+    precondition(normal.count == 8 && normal.contains(.work) && !normal.contains(.tasks) && normal.last == .dictation)
     precondition(ActivitySection.visibleSections(environment: ["COS_CONTROL2_FOUNDATION": "0"]) == normal)
     precondition(ActivitySection.visibleSections(environment: ["COS_CONTROL2_FOUNDATION": "1"]) == normal)
     let rollback = ActivitySection.visibleSections(environment: ["COS_CONTROL_WORK_DISABLED": "1"])
@@ -60,6 +60,6 @@ import SwiftUI
         "text": .string(task.text), "doneWhen": .string("A revised finish line"), "source": .string(task.source)
     ]))!
     precondition(WorkSource.taskSnapshot(changed).revision != source.revision, "A changed goal must not reuse the previewed context revision")
-    print("PASS: seven shared Activity peers, legacy Tasks maps to Work/Tasks, shared workspace routing and notification marks, isolated preview/live-load policy")
+    print("PASS: eight shared Activity peers, legacy Tasks maps to Work/Tasks, shared workspace routing and notification marks, isolated preview/live-load policy")
     print("PASS: handoff context retains the full task/finish line/source and changes snapshot revision with the goal")
 }

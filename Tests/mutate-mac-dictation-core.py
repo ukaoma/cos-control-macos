@@ -3,12 +3,18 @@
 
 SERIAL by design: one small two-file compile at a time, each through Tests/compile-guard.sh (never parallel; see the
 2026-10-07 kernel panics). Works on a scratch copy, so the checkout is never mutated. A GREEN baseline is required
-before the first mutant (a red suite would "kill" every mutant). Each mutant must replace its target exactly once and
-must make the checks FAIL; a mutant that compiles, runs and passes is a SURVIVOR and fails this gate.
+before the first mutant (a red suite would "kill" every mutant). Each mutant must replace its target exactly once.
+
+A KILL counts only when the mutant compiles, runs, and a named check in Tests/MacDictationChecks.swift fails (its
+precondition message is printed beside the mutant, so every kill is attributed to the behaviour that caught it).
+Everything else fails this gate on its own line: SURVIVED (the checks passed), INVALID (did not compile, or timed
+out: rewrite the mutant so it compiles and runs), CRASHED (a trap outside the checks, such as an index out of range:
+rewrite the mutant, or add the check that names that behaviour). 0.5.318: before this, a mutant that did not compile
+was counted as killed, which proves nothing about the checks.
 
 Usage: python3 Tests/mutate-mac-dictation-core.py <repo root>
 """
-import pathlib, shutil, subprocess, sys, tempfile
+import pathlib, re, shutil, subprocess, sys, tempfile
 
 root = pathlib.Path(sys.argv[1]).resolve()
 CORE = "Sources/MacDictationCore.swift"
@@ -130,10 +136,110 @@ MUTANTS = [
      "    static func offers(_ outcome: DictationDeliveryOutcome) -> Bool { true }"),
     ("a changed field records a span", "DictationDelivery.verdict(baseline: baseline, after: after, count: count) == .landed else { return nil }",
      "DictationDelivery.verdict(baseline: baseline, after: after, count: count) != .unreadable else { return nil }"),
-    ("replace over moved text", "guard inserted.utf16.count == span.length, let textAtSpan, textAtSpan == inserted else", "guard let textAtSpan, !textAtSpan.isEmpty else"),
     ("terminal edited in place", "        if terminal { return .copy(.terminal) }\n", ""),
-    ("replace in a shorter field", "        guard fieldCharacters >= span.location + span.length else { return .copy(.fieldChanged) }\n", ""),
     ("replace after the app quit", "        guard appRunning else { return .copy(.appGone) }\n", ""),
+    # 0.5.318 replace (Miles 13:02, Claude): plan, route, paste proof, confirmation; Save corrects the record.
+    ("replace ignores where COS put it", "        if !whole.isEmpty, matches(whole, in: field, at: expected) { return .edit(placed(expected), dictationAt: span.location) }\n", ""),
+    ("moved dictation not followed", "        if found.count == 1 { return .edit(placed(found[0]), dictationAt: windowStart + found[0]) }\n", ""),
+    ("ambiguous dictation replaced", "        if found.count == 1 { return .edit(placed(found[0]), dictationAt: windowStart + found[0]) }",
+     "        if found.count >= 1 { return .edit(placed(found[0]), dictationAt: windowStart + found[0]) }"),
+    ("words searched beside a second copy", "        if found.isEmpty, phrase.count >= minimumPhraseUnits {", "        if phrase.count >= minimumPhraseUnits {"),
+    ("short words searched", "        if found.isEmpty, phrase.count >= minimumPhraseUnits {", "        if found.isEmpty, phrase.count >= 1 {"),
+    ("words matched inside other words", "            let hits = occurrences(phrase, in: field, wordBounded: true)", "            let hits = occurrences(phrase, in: field, wordBounded: false)"),
+    ("repeated words replaced", "            if hits.count == 1 {", "            if !hits.isEmpty {"),
+    ("words-only edit still tracked", "replacement: edit.replacement), dictationAt: nil)", "replacement: edit.replacement), dictationAt: windowStart + hits[0])"),
+    ("no change reported as moved text", "        guard let edit = wordEdit(from: current, to: corrected) else { return .copy(.noChange) }",
+     "        guard let edit = wordEdit(from: current, to: corrected) else { return .copy(.textMoved) }"),
+    ("edit drops the common words before", "        while p < a.count, p < b.count, a[p] == b[p] { p += 1 }\n", ""),
+    ("edit drops the common words after", "        while s < a.count - p, s < b.count - p, a[a.count - 1 - s] == b[b.count - 1 - s] { s += 1 }\n", ""),
+    ("edit suffix stops one word early", "        while s < a.count - p, s < b.count - p, a[a.count - 1 - s]", "        while s < a.count - p - 1, s < b.count - p, a[a.count - 1 - s]"),
+    ("edit not on word boundaries", "                if gap != nil, g != gap { out.append(current); current = \"\" }", "                out.append(current); current = \"\""),
+    ("window reads from the field's start", "        let start = max(0, min(span.location, fieldCharacters) - windowRadius)", "        let start = 0"),
+    ("window ignores a longer dictation", "span.location + max(span.length, currentLength) + windowRadius)", "span.location + span.length + windowRadius)"),
+    ("window not clipped to the field", "        let end = min(fieldCharacters, span.location + max(span.length, currentLength) + windowRadius)",
+     "        let end = span.location + max(span.length, currentLength) + windowRadius"),
+    ("Electron replace by the no-op setter", "    static func route(setterWorked: Bool) -> Route { setterWorked ? .accessibility : .paste }",
+     "    static func route(setterWorked: Bool) -> Route { .accessibility }"),
+    ("paste into a background app", "        guard frontmost, !ownWindowKey, focusedIsTarget else { return .notFocused }", "        guard !ownWindowKey, focusedIsTarget else { return .notFocused }"),
+    ("paste into COS's own panel", "        guard frontmost, !ownWindowKey, focusedIsTarget else { return .notFocused }", "        guard frontmost, focusedIsTarget else { return .notFocused }"),
+    ("paste into another field", "        guard frontmost, !ownWindowKey, focusedIsTarget else { return .notFocused }", "        guard frontmost, !ownWindowKey else { return .notFocused }"),
+    ("selection length unchecked", "        guard selection.location == edit.location, selection.length == edit.length else { return .selectionUnproven }",
+     "        guard selection.location == edit.location else { return .selectionUnproven }"),
+    ("selection place unchecked", "        guard selection.location == edit.location, selection.length == edit.length else { return .selectionUnproven }",
+     "        guard selection.length == edit.length else { return .selectionUnproven }"),
+    ("selected text unchecked", "        guard edit.length == 0 || selectedText == edit.original else { return .selectionUnproven }\n", ""),
+    ("read-back ignored", "        return readback == nil || readback == edit.replacement", "        return true"),
+    ("Electron no-op confirmed", "        guard verified(before: before, after: after, span: span, newLength: edit.replacement.utf16.count) else { return false }\n", ""),
+    ("Save corrects another dictation", "list.map { $0.id == id ? DictationRecord(", "list.map { $0.id != id ? DictationRecord("),
+    # 0.5.318 Learn from my edits (Miles 13:31): default, native-only gating, secure exclusion, window cap, 7-day expiry, undo.
+    ("learn mode defaults to Suggest only", "    static let `default` = DictationLearnMode.automatic", "    static let `default` = DictationLearnMode.suggest"),
+    ("Off still watches", '        if mode == .off { return .skip("off") }\n', ""),
+    ("password fields watched", '        if secure { return .skip("secure") }\n', ""),
+    ("terminals watched", '        if terminal { return .skip("terminal") }\n', ""),
+    ("Electron learned from", "        if electron { return .probe }\n", ""),
+    ("web editors learned from", "        if chromium, !setterWorked { return .probe }\n", ""),
+    ("secure checked after Electron", '        if secure { return .skip("secure") }\n        if terminal { return .skip("terminal") }\n        if electron { return .probe }',
+     '        if electron { return .probe }\n        if secure { return .skip("secure") }\n        if terminal { return .skip("terminal") }'),
+    ("secure input ignored while watching", "        if secure { return .secure }\n", ""),
+    ("secure checked after the app", "        if secure { return .secure }\n        if !appRunning { return .appGone }", "        if !appRunning { return .appGone }\n        if secure { return .secure }"),
+    ("watch never capped", "        if elapsed >= watchSeconds { return .cap }\n", ""),
+    ("cap one tick late", "        if elapsed >= watchSeconds { return .cap }", "        if elapsed > watchSeconds { return .cap }"),
+    ("five-minute cap", "    static let watchSeconds: TimeInterval = 180", "    static let watchSeconds: TimeInterval = 300"),
+    ("reads never capped", "        if reads >= maximumReads { return .reads }\n", ""),
+    ("one read too many", "        if reads >= maximumReads { return .reads }", "        if reads > maximumReads { return .reads }"),
+    ("focus leaving ignored", "        if !focused { return .focusLeft }\n", ""),
+    ("sent message still watched", "        if fieldCharacters == 0 { return .emptied }\n", ""),
+    ("read not clipped to the field", "        max(0, min(currentCharacters - start, baselineLength + currentCharacters - baselineCharacters))",
+     "        max(0, baselineLength + currentCharacters - baselineCharacters)"),
+    ("typing after it reads as inside", "        if edit.location >= end { return .moved(start: start, length: length) }\n", ""),
+    ("typing before it does not move it", "return .moved(start: start + delta, length: length) }", "return .moved(start: start, length: length) }"),
+    ("inside edit keeps the old length", "            return .inside(relative, length: length + delta)", "            return .inside(relative, length: length)"),
+    ("four-word edits learned", "    static let pollMilliseconds = 500\n    static let maximumWords = 3", "    static let pollMilliseconds = 500\n    static let maximumWords = 4"),
+    ("punctuation fixes learned", "            guard heard.lowercased() == written.lowercased() else { return nil }\n", ""),
+    ("sentence capitals learned", "            guard innerCapital || !heardWords.allSatisfy(known) else { return nil }\n", ""),
+    ("rewordings learned", "            guard DictationFixGuess.score(heard: heard, term: written) >= DictationFixGuess.threshold else { return nil }\n", ""),
+    ("homophones learned", "            if heardWords.allSatisfy(known), writtenWords.allSatisfy(known) { return nil }\n", ""),
+    ("already learned learned again", "        guard !learned(heard, written) else { return nil }\n", ""),
+    ("learned across a line break", ", !(heard + written).contains(where: \\.isNewline) else { return nil }", " else { return nil }"),
+    ("watch starts from an empty proof", "        !text.isEmpty && matches(Array(text.utf16), in: Array(window.utf16), at: offset)", "        matches(Array(text.utf16), in: Array(window.utf16), at: offset)"),
+    ("suggestions kept eight days", "    static let keepDays = 7", "    static let keepDays = 8"),
+    ("suggestions kept through day seven", "    private static func fresh(_ date: Date, days: Int, now: Date) -> Bool { now.timeIntervalSince(date) < Double(days) * 86_400 }",
+     "    private static func fresh(_ date: Date, days: Int, now: Date) -> Bool { now.timeIntervalSince(date) <= Double(days) * 86_400 }"),
+    ("suggestions never expire", "        next.suggestions = Array(state.suggestions.filter { fresh($0.at, days: keepDays, now: now) }.prefix(cap))",
+     "        next.suggestions = Array(state.suggestions.prefix(cap))"),
+    ("learned rows never expire", "        next.learned = Array(state.learned.filter { fresh($0.at, days: learnedDays, now: now) }.prefix(cap))",
+     "        next.learned = Array(state.learned.prefix(cap))"),
+    ("dismissals never expire", "        next.dismissed = state.dismissed.filter { fresh($0.value, days: dismissDays, now: now) }", "        next.dismissed = state.dismissed"),
+    ("dismissed pairs suggested again", "        guard !isQuiet(item.heard, item.written, in: next, now: now) else { return next }\n", ""),
+    ("quiet forever", "        state.dismissed[key(heard, written)].map { fresh($0, days: dismissDays, now: now) } ?? false", "        state.dismissed[key(heard, written)] != nil"),
+    ("the same pair listed twice", "        next.suggestions = [item] + next.suggestions.filter { key($0.heard, $0.written) != k }", "        next.suggestions = [item] + next.suggestions"),
+    ("Add leaves it suggested", "        next.suggestions = next.suggestions.filter { key($0.heard, $0.written) != k }\n        return pruned(next, now: now)\n    }\n    /// Added",
+     "        return pruned(next, now: now)\n    }\n    /// Added"),
+    ("Add does nothing", "        for item in state.suggestions where ids.contains(item.id) { next = learning(item, in: next, now: now) }\n", ""),
+    ("Dismiss and Undo forget the pair", "        for item in state.suggestions + state.learned where item.id == id { next.dismissed[key(item.heard, item.written)] = now }\n", ""),
+    ("Undo leaves it learned", "        next.learned.removeAll { $0.id == id }\n", ""),
+    ("Undo reverses the wrong entry", "        recent.first { $0.heard == item.heard && $0.written == item.written }?.id", "        recent.first { $0.heard == item.heard }?.id"),
+    ("suggestions world-readable", 'contents: data, attributes: [.posixPermissions: 0o600]) else {\n            throw NSError(domain: "COSDictation", code: 4,',
+     'contents: data, attributes: [.posixPermissions: 0o644]) else {\n            throw NSError(domain: "COSDictation", code: 4,'),
+    ("CEF apps taken for browsers", '$0 == "Electron Framework.framework" || $0 == "Chromium Embedded Framework.framework" }', '$0 == "Electron Framework.framework" }'),
+    # 0.5.318 spoken lists: prose stays prose.
+    ("markers anywhere in a sentence", "            guard atSentenceStart(match.range.location, in: ns, comma: kind != .cardinal) else { return nil }\n", ""),
+    ("counting after commas is a list", "comma: kind != .cardinal) else { return nil }", "comma: true) else { return nil }"),
+    ("no punctuation needed after number N", '.number: connector + #"\\bnumber\\s+("# + n + #"|10|[1-9])\\b\\s*"# + punctuation + #"\\s*"#',
+     '.number: connector + #"\\bnumber\\s+("# + n + #"|10|[1-9])\\b\\s*"# + punctuation + "?" + #"\\s*"#'),
+    ("two bare numbers make a list", "    static func minimum(_ kind: Kind) -> Int { kind == .cardinal ? 3 : 2 }", "    static func minimum(_ kind: Kind) -> Int { 2 }"),
+    ("one marker makes a list", "    static func minimum(_ kind: Kind) -> Int { kind == .cardinal ? 3 : 2 }", "    static func minimum(_ kind: Kind) -> Int { kind == .cardinal ? 3 : 1 }"),
+    ("numbers out of order", "        for marker in found where marker.value == run.count + 1 { run.append(marker) }", "        for marker in found { run.append(marker) }"),
+    ("punctuation-only items listed", "        guard item.unicodeScalars.contains(where: { CharacterSet.alphanumerics.contains($0) }), let first = item.first else { return nil }",
+     "        guard let first = item.first else { return nil }"),
+    ("bare dash or bullet without punctuation", '                if word == "bullet" || word == "dash", separator.rangeOfCharacter(from: CharacterSet(charactersIn: ",:;.-–—")) == nil { return nil }\n', ""),
+    ("items not capitalized", "        return word == word.lowercased() ? first.uppercased() + item.dropFirst() : item", "        return item"),
+    ("iPhone capitalized", "        return word == word.lowercased() ? first.uppercased() + item.dropFirst() : item", "        return first.uppercased() + item.dropFirst()"),
+    ("lead-in comma kept", '        if lead.hasSuffix(",") { lead = String(lead.dropLast()) + ":" }\n', ""),
+    ("later list wins", "            if best == nil || run[0].start < best!.run[0].start { best = (kind, run) }", "            if best == nil || run[0].start > best!.run[0].start { best = (kind, run) }"),
+    ("connectors not consumed", '    private static let connector = #"(?:\\b(?:and then|and|then|also|plus)\\s+)?"#', '    private static let connector = #""#'),
+    ("trailing comma kept on items", '        while let last = item.last, last == "," || last == ";" { item = String(item.dropLast()).trimmingCharacters(in: .whitespaces) }\n', ""),
+    ("ordered bullets", '            items.append((best.kind == .bullet ? "- " : "\\(i + 1). ") + item)', '            items.append("\\(i + 1). " + item)'),
     ("same-length fix proved by the count", "        if newLength == span.length { return caretOK == true }\n", ""),
     ("corrected text loses trailing punctuation", "            + String(phrase.suffix(trail)) + String(text[whole.upperBound...])", "            + String(text[whole.upperBound...])"),
     ("guess ignores sound", "let sounded = h.count >= 3 && t.count >= 3 ? similarity(h, t) * 0.95 : 0", "let sounded = 0.0"),
@@ -158,8 +264,10 @@ MUTANTS = [
     ("search is case sensitive", "range(of: needle, options: [.caseInsensitive, .diacriticInsensitive])", "range(of: needle, options: [.diacriticInsensitive])"),
     ("days out of order", "groups.keys.sorted(by: >)", "groups.keys.sorted(by: <)"),
     ("a count back on the pill", 'static let pillLabel = "DICTATIONS"', 'static let pillLabel = "DICTATIONS 10"'),
-    ("history world-readable", "attributes: [.posixPermissions: 0o600]", "attributes: [.posixPermissions: 0o644]"),
-    ("temp file left behind", "        guard rename(temp.path, url.path) == 0 else {", "        guard link(temp.path, url.path) == 0 else {"),
+    ("history world-readable", 'attributes: [.posixPermissions: 0o600]) else {\n            throw NSError(domain: "COSDictation", code: 3,',
+     'attributes: [.posixPermissions: 0o644]) else {\n            throw NSError(domain: "COSDictation", code: 3,'),
+    ("temp file left behind", '        guard rename(temp.path, url.path) == 0 else {\n            try? FileManager.default.removeItem(at: temp)\n            throw NSError(domain: "COSDictation", code: 3,',
+     '        guard link(temp.path, url.path) == 0 else {\n            try? FileManager.default.removeItem(at: temp)\n            throw NSError(domain: "COSDictation", code: 3,'),
     ("hover does not pause", "mutating func pause(at now: Date) { guard let since = runningSince else { return }; spent += max(0, now.timeIntervalSince(since)); runningSince = nil }",
      "mutating func pause(at now: Date) { }"),
     ("tap never clears", "        if current == index...index { return nil }\n", ""),
@@ -168,7 +276,10 @@ MUTANTS = [
 ]
 
 
-def compile_and_run(work: pathlib.Path) -> int:
+CHECK_FAILURE = re.compile(r"MacDictationChecks\.swift:\d+: Fatal error: (.+)|Fatal error: (.+?): file [^\n]*MacDictationChecks\.swift, line \d+")
+
+
+def compile_checks(work: pathlib.Path) -> tuple[bool, str]:
     out = work / "checks"
     if out.exists():
         out.unlink()
@@ -176,9 +287,26 @@ def compile_and_run(work: pathlib.Path) -> int:
                             "-swift-version", "6", "-strict-concurrency=complete", "-parse-as-library",
                             str(work / CORE), str(work / "Tests/MacDictationChecks.swift"), "-o", str(out)],
                            capture_output=True, text=True)
-    if build.returncode != 0:
-        return 2
-    return subprocess.run([str(out)], capture_output=True, text=True).returncode
+    first_error = next((line for line in (build.stderr + build.stdout).splitlines() if "error:" in line), "")
+    return build.returncode == 0, first_error.strip()
+
+
+def classify(work: pathlib.Path) -> tuple[str, str]:
+    """(verdict, detail): KILLED with the failing check's message, or SURVIVED, INVALID, CRASHED."""
+    built, error = compile_checks(work)
+    if not built:
+        return "INVALID", "did not compile: " + error
+    try:
+        run = subprocess.run([str(work / "checks")], capture_output=True, text=True, timeout=120)
+    except subprocess.TimeoutExpired:
+        return "INVALID", "timed out"
+    if run.returncode == 0:
+        return "SURVIVED", ""
+    found = CHECK_FAILURE.search(run.stderr + run.stdout)
+    if found:
+        return "KILLED", (found.group(1) or found.group(2)).strip()
+    tail = (run.stderr + run.stdout).strip().splitlines()
+    return "CRASHED", tail[-1] if tail else f"exit {run.returncode}"
 
 
 work = pathlib.Path(tempfile.mkdtemp(prefix="cos-dictation-mutants-", dir="/private/tmp"))
@@ -187,21 +315,24 @@ try:
     shutil.copy(root / CORE, work / CORE)
     shutil.copy(root / "Tests/MacDictationChecks.swift", work / "Tests/MacDictationChecks.swift")
     original = (work / CORE).read_text()
-    if compile_and_run(work) != 0:
-        sys.exit("baseline is not green: fix the checks before reading any mutant")
-    survivors = []
-    for name, old, new in MUTANTS:
+    verdict, detail = classify(work)
+    if verdict != "SURVIVED":
+        sys.exit(f"baseline is not green ({verdict}: {detail}): fix the checks before reading any mutant")
+    for name, old, _ in MUTANTS:
         if original.count(old) != 1:
             sys.exit(f"mutant '{name}' targets {original.count(old)} sites; it must land exactly once")
+    results: dict[str, list[str]] = {"KILLED": [], "SURVIVED": [], "INVALID": [], "CRASHED": []}
+    for name, old, new in MUTANTS:
         (work / CORE).write_text(original.replace(old, new))
-        code = compile_and_run(work)
-        verdict = "KILLED (did not compile)" if code == 2 else ("KILLED" if code != 0 else "SURVIVED")
-        print(f"{verdict:24} {name}")
-        if code == 0:
-            survivors.append(name)
+        verdict, detail = classify(work)
+        results[verdict].append(name)
+        print(f"{verdict:9} {name}" + (f"  <- {detail}" if detail else ""), flush=True)
         (work / CORE).write_text(original)
-    if survivors:
-        sys.exit(f"{len(survivors)} survivor(s): {survivors}")
-    print(f"PASS dictation core mutation gate: {len(MUTANTS)} mutants, all killed, green baseline")
+    print(f"{len(results['KILLED'])} killed by a named check, {len(results['SURVIVED'])} survived, "
+          f"{len(results['INVALID'])} invalid (did not compile or timed out), {len(results['CRASHED'])} crashed outside the checks")
+    failing = {k: v for k, v in results.items() if k != "KILLED" and v}
+    if failing:
+        sys.exit("mutation gate FAILED: " + "; ".join(f"{k.lower()}: {v}" for k, v in failing.items()))
+    print(f"PASS dictation core mutation gate: {len(MUTANTS)} mutants, each killed by a named check, green baseline")
 finally:
     shutil.rmtree(work, ignore_errors=True)

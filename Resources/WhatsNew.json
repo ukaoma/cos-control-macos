@@ -1,7 +1,7 @@
 {
   "version": "0.5.317",
   "whatsNew": {
-    "summary": "Work chat keeps taking ideas while earlier work runs: a send it would hold now queues, or goes in parallel. Plus 0.5.316 (Miles Windu moves more naturally), 0.5.315 (Mute other apps while dictating now mutes them), 0.5.314 (a crash fix when a dictation sound finished, and REC on the pet while a meeting records) and everything in 0.5.313: dictation that keeps listening while you click, one-click Mac meeting recording, and a lighter Work tab.",
+    "summary": "Work chat keeps taking ideas while earlier work runs: a send it would hold now queues, or goes in parallel. Dictation fixes a word right where you typed it, writes spoken lists and learns from your edits, with a new Dictation tab in Activity. Plus 0.5.316 (Miles Windu moves more naturally), 0.5.315 (Mute other apps while dictating now mutes them), 0.5.314 (a crash fix when a dictation sound finished, and REC on the pet while a meeting records) and everything in 0.5.313: dictation that keeps listening while you click, one-click Mac meeting recording, and a lighter Work tab.",
     "sections": [
       {
         "title": "0.5.317",
@@ -12,7 +12,11 @@
           "Fixed: a card could keep saying Earlier handoffs need a check first, with Check again greyed out, while COS wrote its update summary. Check again, Plan and Send now stay available, and a message you send goes right after that summary.",
           "The Work board has a Complete column again, after QA. Drop a card there to mark it complete (COS asks once), or drag it out to reopen it. The latest completions come first.",
           "Opening a card with many sessions now says Loading 8 sessions, and Work chat shows its history as soon as it can, instead of looking empty for a few seconds.",
-          "Link a session to other tasks as a reference: in Link existing session, choose Link as reference, even for a session already working on another task. References sit in their own group on the card with Open and Unlink. COS uses their summary, outputs and changes as context there, never sends to them from that task, and they never change its stage."
+          "Link a session to other tasks as a reference: in Link existing session, choose Link as reference, even for a session already working on another task. References sit in their own group on the card with Open and Unlink. COS uses their summary, outputs and changes as context there, never sends to them from that task, and they never change its stage.",
+          "Fix a word now fixes the dictation itself: Heard shows your spelling as soon as you save. Replace it in now works in Claude, Slack and other Electron apps, by pasting the corrected words over exactly the text COS typed. When COS can't prove that text is still there, it copies the fix and tells you what to do.",
+          "Format spoken lists (Settings, Dictation, on by default): say \"number one, number two\" or \"bullet, next bullet\" and COS writes a numbered or bulleted list, one item per line. Ordinary sentences with numbers in them stay as they are.",
+          "Learn from my edits (Settings, Dictation): when you fix a word COS just typed, in that same field, COS learns it. Save automatically is the default, with Undo in Recent corrections. Suggest only keeps suggestions for a week so you can add them in a batch. Native apps for now; Claude, Slack and other Electron apps are measured first. Never in terminals or password fields.",
+          "COS Activity has a new Dictation tab: suggested and learned corrections with Undo, recent corrections, your latest dictations, the full history and the dictionary."
         ]
       },
       {
