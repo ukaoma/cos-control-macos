@@ -7,11 +7,18 @@ Each failure names its behaviour as "pin failed [<behaviour>]".
 import pathlib, re, sys
 
 root = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else ".")
-store = (root / "Sources/WorkHandoffStore.swift").read_text(encoding="utf-8")
-models = (root / "Sources/Models.swift").read_text(encoding="utf-8")
-dictation = (root / "Sources/MacDictation.swift").read_text(encoding="utf-8")
-handoff = (root / "Sources/WorkHandoffView.swift").read_text(encoding="utf-8")
-workspace = (root / "Sources/WorkWorkspaceView.swift").read_text(encoding="utf-8")
+
+
+def code(rel):
+    """Source with comment lines removed (QA 2026-10-15): a commented-out statement never satisfies a pin."""
+    return "\n".join(l for l in (root / rel).read_text(encoding="utf-8").splitlines() if not l.lstrip().startswith("//"))
+
+
+store = code("Sources/WorkHandoffStore.swift")
+models = code("Sources/Models.swift")
+dictation = code("Sources/MacDictation.swift")
+handoff = code("Sources/WorkHandoffView.swift")
+workspace = code("Sources/WorkWorkspaceView.swift")
 
 
 def pin(ok, behaviour, why):
@@ -35,7 +42,7 @@ new_items = between(models, "    func newItems(now: Date = Date()) -> [WorkIntak
 pin("ISO8601DateFormatter()" not in new_items and "row.producedDate" in new_items, "intake dates at decode",
     "newItems must use the date parsed when the row was decoded")
 pin("producedDate = Self.stamp(producedAt)" in models, "intake dates at decode", "the row parses its date once")
-player = between(dictation, "@MainActor final class DictationSoundPlayer {", "/// A chosen file, decoded to mono")
+player = between(dictation, "@MainActor final class DictationSoundPlayer {", "struct DictationSoundImport {")
 pin("scheduleFile(file, at: nil, completionCallbackType: .dataPlayedBack)" in player and "Task { @MainActor in self?.finished(id) }" in player,
     "sound engine stops", "the player must learn when its sound has played")
 pin("node.stop(); engine.stop()" in between(player, "    private func finished(_ id: Int) {", "    nonisolated static func stopsAfter"),

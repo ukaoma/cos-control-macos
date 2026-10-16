@@ -1906,7 +1906,11 @@ final class ControllerModel: ObservableObject {
         // arrived so far would be partial (2026-10-15: 52 of 1,200). Finish delivering it instead.
         if sessionId.hasPrefix("mac_") {
             if macRecording.manifest?.captureId == sessionId { macRecording.deliverPending(); notice = "Delivering this Mac recording’s retained audio. It saves when every chunk has arrived." }
-            else { notice = "Save this Mac recording from Record on Mac: open Set up recording, then Recover." }
+            // 0.5.313 (QA): the old copy named a "Set up recording" button that 0.5.313 removed. Recover it directly.
+            else if let retained = macRecording.recoverable.first(where: { $0.captureId == sessionId }) {
+                Task { await macRecording.recover(retained) }
+                notice = "Recovering this Mac recording’s retained audio. It saves when every chunk has arrived."
+            } else { notice = "This Mac recording’s audio is not on this Mac, so COS can’t finish saving it here." }
             return
         }
         orphanBusy = true
@@ -3456,7 +3460,8 @@ final class ControllerModel: ObservableObject {
             }
             guard liveTranscriptEnabled, liveTranscriptFeeds[id] != nil else { continue }
             feed.phase = LiveTranscript.handoff(serverState: feed.serverState, endedAt: endedAt, now: now, savedRowFound: found != nil,
-                                                lastActivity: feed.lastActivityAt, leftover: feed.leftover)
+                                                lastActivity: feed.lastActivityAt, leftover: feed.leftover,
+                                                recorded: feed.startTime.map { endedAt.timeIntervalSince($0) })
             liveTranscriptFeeds[id] = feed
             if feed.phase == .saved, let found {
                 if liveTranscriptOpenID == id { liveTranscriptHandoff = found }
@@ -3511,7 +3516,7 @@ final class ControllerModel: ObservableObject {
             await self.checkLiveTranscriptHandoffs(now: Date())
             // Still nothing: back to the deadline's word rather than Finalizing forever.
             if var after = self.liveTranscriptFeeds[sessionId], after.phase == .finalizing, let ended = after.endedAt,
-               Date().timeIntervalSince(ended) >= LiveTranscript.finalizingDeadline {
+               Date().timeIntervalSince(ended) >= LiveTranscript.finalizingDeadline(recorded: after.startTime.map { ended.timeIntervalSince($0) }) {
                 after.phase = .notFoundYet
                 self.liveTranscriptFeeds[sessionId] = after
             }

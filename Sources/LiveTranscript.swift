@@ -281,6 +281,10 @@ enum LiveTranscript {
     static let serverIdleRetention: TimeInterval = 4 * 60 * 60
     /// Finalizing waits this long for the saved meeting, then says "Saved meeting not found yet".
     static let finalizingDeadline: TimeInterval = 180
+    /// The save re-transcribes every chunk before the meeting exists (batch HQ, about 0.5 s per 6 s chunk measured on
+    /// this Mac), so a long recording gets longer: 180 s plus a twelfth of its length (QA 2026-10-15: a 2 h capture
+    /// needs ~600 s and would have said "Saved meeting not found yet" for 7 minutes).
+    static func finalizingDeadline(recorded: TimeInterval?) -> TimeInterval { finalizingDeadline + max(0, recorded ?? 0) / 12 }
     /// A session the server calls closed or missing this long after its file went is a recording ended without saving.
     static let unsavedGrace: TimeInterval = 20
     /// How often an ended session, or a quiet one whose file is still there, asks the server what happened.
@@ -394,7 +398,7 @@ enum LiveTranscript {
     /// with no speech) or for a session whose last audio was past the server's retention: those are `.ended`, no row.
     /// A leftover the server answers with a state this build does not know is `.ended` too.
     static func handoff(serverState: String?, endedAt: Date, now: Date, savedRowFound: Bool,
-                        lastActivity: Date? = nil, leftover: Bool = false) -> LiveTranscriptPhase {
+                        lastActivity: Date? = nil, leftover: Bool = false, recorded: TimeInterval? = nil) -> LiveTranscriptPhase {
         if savedRowFound { return .saved }
         let waited = now.timeIntervalSince(endedAt)
         if serverState == "closed" || serverState == "missing" {
@@ -404,7 +408,7 @@ enum LiveTranscript {
         // Server 6.71.14: receipted is finished with no meeting (no speech, say), so there is nothing to wait for.
         if serverState == "receipted" { return .ended }
         if leftover, let serverState, serverState != "active", !savesMeeting(serverState) { return .ended }
-        return waited >= finalizingDeadline ? .notFoundYet : .finalizing
+        return waited >= finalizingDeadline(recorded: recorded) ? .notFoundYet : .finalizing
     }
 
     /// Whole minutes of quiet once it passes two minutes, else nil.

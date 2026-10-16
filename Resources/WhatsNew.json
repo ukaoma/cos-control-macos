@@ -1,42 +1,48 @@
 {
   "version": "0.5.313",
   "whatsNew": {
-    "summary": "Fix a dictation the moment it lands, keep other audio quiet while you talk, and start a Mac recording in one click when a meeting begins.",
+    "summary": "Dictation that keeps listening while you click, Mac recordings that start in one click when a meeting begins and show up in Meetings, and a lighter Work tab.",
     "sections": [
       {
         "title": "Fix dictation faster",
         "items": [
           "Fix a dictation the moment it lands: Fix on the pill for 5 seconds, or ⌃⌥F (set in Settings).",
           "Click, drag and move windows while you hold the dictation key: COS keeps listening, and the text lands where your cursor ends up. A click right after the press is still ⌥-click or ⌘-click.",
-          "If something interrupts a dictation (another key, sleep), COS still transcribes what you said and copies it, with a card to paste it. Under a second is dropped.",
+          "If a dictation is cut short (another key while you hold the shortcut, or sleep), COS still transcribes what you said and copies it; a card shows the text with Copy. Under a second is dropped.",
           "After you fix a word, Replace it in the app puts the corrected text back where COS typed it, when that spot hasn't changed; otherwise COS copies the corrected text.",
           "Fix a word selects the whole misheard phrase and suggests the spelling from your dictionary. Return saves.",
-          "Other apps go quiet while you dictate and come back after (Settings › Dictation: Mute, Lower or Off). Never during a Mac recording.",
-          "COS Control uses much less CPU while the Work tab is open, so the pet animates smoothly."
+          "Other apps go quiet while you dictate and come back after (Settings, While dictating: Mute, Lower or Off). Never during a Mac recording."
         ]
       },
       {
         "title": "Meetings on the Mac",
         "items": [
-          "When Zoom, Teams or Google Meet starts using your microphone, the pet offers Record. One click records all Mac audio with a title like \"Zoom meeting 2:00 PM\". It never records on its own, and when the meeting app lets go of the mic it asks before stopping.",
+          "When Zoom, Teams or Google Meet starts using your microphone, the pet offers Record. One click records all Mac audio with a title like \"Zoom meeting 2:00 PM\". COS never records or stops on its own; for a recording started from that card, it asks before stopping once the meeting app lets go of the mic.",
           "Record on Mac is one click: the first recording shows a short COS notice once, then Record just starts. While recording, COS reminds you to let people know.",
           "Open live meeting now opens the live transcript. With a glasses meeting and a Mac recording live at once, switch between them from the top of the live view.",
-          "In Settings, under Suggest recording when a meeting starts: turn suggestions off, choose apps, add a Never list, or show the recording notice again."
+          "Saved Mac recordings now appear in Meetings, and the live view opens them when saving finishes (needs server 6.73.14). The no-sound warning shows only while recording.",
+          "In Settings: Suggest recording when a meeting starts (on or off), which apps to watch, apps you set to Never from the pet's card (remove them here), and Show the recording notice again."
+        ]
+      },
+      {
+        "title": "Smoother",
+        "items": [
+          "COS Control uses much less CPU while the Work tab is open, so the pet animates smoothly."
         ]
       },
       {
         "title": "Work context meter",
         "items": [
           "Each Work chat assignment shows what it will send, split by source, before you click Send. Open it to preview any item (Space opens Quick Look), remove it or add one that was left out.",
-          "The planner (server 6.73.13) picks only what each assignment needs, and the round shows how much it sends of everything linked to the card.",
-          "Prefer not to review? Plan and send sends every assignment as soon as it is planned, through the same checks. Review stays the default; Settings › Work › Send plans without review changes that.",
+          "The planner (server 6.73.13 or later) picks only what each assignment needs, and the round shows how much it sends of everything linked to the card.",
+          "Prefer not to review? Plan and send sends every assignment as soon as it is planned, through the same checks. Review stays the default; Send plans without review in Settings changes that.",
           "Connections shows how full each linked session's context is, the files it wrote since your handoff, and its code changes, with Review changes."
         ]
       },
       {
         "title": "Dictation sounds and history",
         "items": [
-          "Start and stop sounds per pet: Unstable saber for the Jedi, chirps for droids, a chime for the rest, or any of eight original sounds or your own file (trimmed for you). Set pitch and volume in Settings › Dictation › Sound.",
+          "Start and stop sounds per pet: Unstable saber for the Jedi, chirps for droids, a chime for the rest, or any of eight original sounds or your own file (trimmed for you). Set pitch and volume in Settings.",
           "After COS pastes, your clipboard comes back exactly as it was.",
           "The listening waveform reads quiet USB microphones properly, and the pill appears on whichever screen you're typing on.",
           "The DICTATIONS pill shows your latest 10; All dictations opens a searchable history. Keep dictations for 7, 30 (default) or 90 days, or forever; Clear dictation history asks first."
@@ -49,7 +55,7 @@
           "Release and COS transcribes, copies the text, and drops it into whatever text box has your cursor when it finishes, so you can click somewhere else while it works. The pill flashes ✓ Inserted with the app's name only when COS sees the text land. The text stays on the clipboard, so ⌘V works again anywhere.",
           "Some apps, such as terminals and Electron editors, get ⌘V; COS shows Pasted when it can't confirm. COS sends ⌘V once and never asks you to paste again; the text stays on the clipboard and in Recent dictations with Copy.",
           "No text box selected? A card pops over the pet with the text and a Copy button. It folds away after 20 seconds; hover to keep it.",
-          "A Dictated pill on the pet opens Recent dictations: your last 50, kept on this Mac, each with where it went and a Copy button.",
+          "The DICTATIONS pill on the pet opens Recent dictations, kept on this Mac, each with where it went and a Copy button.",
           "Still refused: password fields, and secure keyboard input held by another app (its own card). COS never presses Send or Return, and line breaks become spaces in a terminal.",
           "Delete a dictation from its row, or clear them all in Settings.",
           "Recent dictations on the pet shows only your dictations, without the running sessions under it."
@@ -69,13 +75,13 @@
           "Turn on Dictate into Mac apps in Settings, choose a microphone, and set Push to talk and Start / stop shortcuts. Speech runs through Parakeet Ultra on this Mac with your COS dictionary.",
           "Any key can be the shortcut: a modifier plus a key, a function key, or one modifier key by itself such as Fn 🌐 or Right ⌘. Fn+arrow and other chords never start dictation.",
           "To use Fn, set System Settings → Keyboard → Press 🌐 key to Do Nothing, and move Wispr Flow off Fn. Fn and single-key shortcuts use Accessibility, which insertion already needs.",
-          "A click while your shortcut modifier is held (⌥-click, ⌘-click) counts as a chord and never starts dictation."
+          "A click right after you press your shortcut modifier (⌥-click, ⌘-click) counts as a chord and never starts dictation; later clicks keep dictating."
         ]
       },
       {
         "title": "Manual Mac recording",
         "items": [
-          "Choose Record on Mac in Meetings and confirm Start recording. All Mac audio is the default: it records whatever app plays the call, without picking one. Your microphone is not recorded; glasses are optional.",
+          "Choose Record on Mac in Meetings and press Record (a short notice the first time). All Mac audio is the default: it records whatever app plays the call, without picking one. Your microphone is not recorded; glasses are optional.",
           "Open live meeting shows the transcript as it arrives, with COS Ask and meeting files, the same view as a glasses recording.",
           "Live COS Ask opens Mac recordings, with server 6.73.9.",
           "The panel checks every chunk for sound. If nothing reaches COS for 12 seconds it says so, instead of only counting chunks received.",

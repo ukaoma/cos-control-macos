@@ -8,7 +8,15 @@
 - One-time recording notice: the stock confirmation is gone; the first Mac recording on this Mac shows an inline COS card (Record / Not now), acknowledged per Mac, resettable in Settings. Every start goes through MacRecordingStore.record, which refuses until acknowledged. "Recording · let people know" shows on Meetings, the menu bar and the control panel. Record on Mac is one button with an automatic title; title and source sit under Options (collapsed).
 - Open live meeting opens the live transcript after the Meetings switch (it was dropped by the section change), and the live view has a Showing switcher when a glasses meeting and a Mac recording are live together.
 - Idle CPU (Miles 2026-10-15: pet lag, Control at ~28% idle): the Work tab rescored session recommendations inside a sort comparator on every redraw (10.7% of the main thread), re-parsed session dates in the shortlist sort (8.3%) and rebuilt intake date formatters per redraw (3.3%); each is now computed once and cached by its inputs. The 0.5.312 dictation sound player left its output engine running for the life of the app; it now stops after the newest sound. A once-a-minute performance log counts Activity, Work and Agent workspace rebuilds.
-- Pair with server 6.73.13 (unchanged).
+- QA (2026-10-15 23:25, four reviewers) before install:
+  - A retained Mac capture no longer blocks Record or meeting suggestions (record() and recordingBusy refused while any unsaved capture was in the spool, so Miles's 2 PM capture made both dead). A start that fails before its capture exists keeps the prior phase; "Delivery paused" clears on retry and save; a failed Record from the pet card opens Meetings.
+  - The no-sound warning shows only while recording; a cancelled panel task is no longer shown as "Swift.CancellationError".
+  - Meeting detection compiles: its card enum is MeetingDetectedCard (MeetingSuggestion was the merge model's name).
+  - The live hand-off waits 180 s plus a twelfth of the recording (batch HQ re-transcribes every chunk before the meeting exists).
+  - Unsaved captures: Save on a Mac capture recovers it directly (the copy named a removed button); Save all leaves Mac captures to Recover instead of failing them.
+  - Dictation: a click while holding with nothing said ends quietly (a slow ⌥-click); Work chat clamps item labels to 200 UTF-16 units and estimates to the server's cap.
+  - Tests: run.sh runs run-work-session-hub.sh; live-meeting-open and idle-CPU pins strip comments; mutate-card-files tracks `var groups`; new deadline mutants.
+- Pair with server 6.73.14 (saved Mac recordings list in Meetings; Work chat cleans planner ids). With 6.73.13 or older, saved Mac recordings still do not appear in Meetings.
 
 ## 0.5.312 (build 365), Work context meter, dictation sounds and history
 

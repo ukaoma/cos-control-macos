@@ -587,7 +587,16 @@ private actor WorkContextFixture {
     precondition(WorkContextMeter.isExpanded(opened, "r1") && !WorkContextMeter.isExpanded(WorkContextMeter.toggleExpanded(opened, "r1"), "r1"))
     let many = (0..<45).reduce("") { WorkContextMeter.toggleExpanded($0, "r\($1)") }
     precondition(many.split(separator: ",").count == 40 && !WorkContextMeter.isExpanded(many, "r0") && WorkContextMeter.isExpanded(many, "r44"), "The memory keeps the 40 newest")
-    print("PASS Work context meter rules: estimates by provider, context split, selection and edits, totals and canary, window share, prompt, disclosure memory")
+    // 0.5.313 (QA): the server's item contract, so one odd item never fails a whole plan. Bounds from the shipped constants.
+    let emoji = String(repeating: "👩‍💻", count: 120)
+    let clamped = WorkContextMeter.plannerLabel(emoji, kind: "file")
+    precondition(emoji.count <= 200 && emoji.utf16.count > WorkContextMeter.plannerLabelUTF16, "fixture: fits 200 Characters, not 200 UTF-16 units")
+    precondition(clamped.utf16.count <= WorkContextMeter.plannerLabelUTF16 && !clamped.isEmpty && emoji.hasPrefix(clamped), "Label clamps by UTF-16, whole characters only")
+    precondition(WorkContextMeter.plannerLabel("   ", kind: "meeting") == "meeting", "A blank label names its kind (the server refuses a blank one)")
+    precondition(WorkContextMeter.plannerLabel("Report.pdf", kind: "file") == "Report.pdf")
+    let huge = WorkContextMeter.plannerItems([WorkContextItem(id: "f_bbbbbbbbbbbb", kind: .files, label: "big.log", estTokens: WorkContextMeter.plannerMaxEstTokens * 3)])
+    precondition((huge.first?["estTokens"] as? Int) == WorkContextMeter.plannerMaxEstTokens, "An estimate past the server cap is sent at the cap")
+    print("PASS Work context meter rules: estimates by provider, context split, selection and edits, totals and canary, window share, prompt, disclosure memory, planner item contract")
 }
 
 /// 0.5.308: the one fence submit and the task chat's pre-flight share, the planner choice, and the review rules.

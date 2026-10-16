@@ -16032,9 +16032,13 @@ final class COSControlHelper {
     private func emitMeetingStrandedSaveAll() throws {
         let body = try meetingOrphansBody()
         let stranded = ((body["stranded"] as? [[String: Any]]) ?? []).compactMap(Self.strandedItemProjection)
-        let ids = stranded.filter { $0["canSave"] as? Bool == true }.compactMap { $0["sessionId"] as? String }
+        let saveable = stranded.filter { $0["canSave"] as? Bool == true }.compactMap { $0["sessionId"] as? String }
+        // 0.5.313 (QA): a Mac capture saves only through Control's delivery (the server refuses a Mac save without its
+        // identity pin), so Save all skipped nothing and reported "1 failed" every time. Mac captures are left to Recover.
+        let ids = saveable.filter { !$0.hasPrefix("mac_") }
+        let macLeft = saveable.count - ids.count
         if ids.isEmpty {
-            emit(ok: true, message: "No still-live captures", details: [
+            emit(ok: true, message: macLeft > 0 ? "Mac recordings finish from Record on Mac → Recover." : "No still-live captures", details: [
                 "saved": 0, "failed": [] as [String],
             ])
             return
@@ -16056,7 +16060,8 @@ final class COSControlHelper {
         }
         let message: String
         if failed.isEmpty {
-            message = saved == 1 ? "Saved 1 capture as a meeting." : "Saved \(saved) captures as meetings."
+            message = (saved == 1 ? "Saved 1 capture as a meeting." : "Saved \(saved) captures as meetings.")
+                + (macLeft > 0 ? " Mac recordings finish from Record on Mac → Recover." : "")
         } else {
             message = "Saved \(saved). \(failed.count) failed. Session files were not deleted."
         }

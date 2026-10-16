@@ -239,7 +239,11 @@ import Foundation
         check(LiveTranscript.handoff(serverState: "saved", endedAt: ended, now: now.addingTimeInterval(5), savedRowFound: true) == .saved,
               "the saved row found opens it")
         check(LiveTranscript.handoff(serverState: "saved", endedAt: ended, now: now.addingTimeInterval(179), savedRowFound: false) == .finalizing
-              && LiveTranscript.handoff(serverState: "saved", endedAt: ended, now: now.addingTimeInterval(180), savedRowFound: false) == .notFoundYet,
+              && LiveTranscript.handoff(serverState: "saved", endedAt: ended, now: now.addingTimeInterval(180), savedRowFound: false) == .notFoundYet
+              // A 2 h recording waits 180 s + 7,200 / 12 = 780 s, from the shipped rule, not a restated number.
+              && LiveTranscript.handoff(serverState: "saved", endedAt: ended, now: now.addingTimeInterval(LiveTranscript.finalizingDeadline(recorded: 7_200) - 1), savedRowFound: false, recorded: 7_200) == .finalizing
+              && LiveTranscript.handoff(serverState: "saved", endedAt: ended, now: now.addingTimeInterval(LiveTranscript.finalizingDeadline(recorded: 7_200)), savedRowFound: false, recorded: 7_200) == .notFoundYet
+              && LiveTranscript.finalizingDeadline(recorded: 7_200) > 700 && LiveTranscript.finalizingDeadline(recorded: nil) == LiveTranscript.finalizingDeadline,
               "saved but no row: Finalizing until 3 minutes, then Saved meeting not found yet")
         check(LiveTranscript.handoff(serverState: "closed", endedAt: ended, now: now.addingTimeInterval(19), savedRowFound: false) == .finalizing
               && LiveTranscript.handoff(serverState: "closed", endedAt: ended, now: now.addingTimeInterval(20), savedRowFound: false) == .endedUnsaved

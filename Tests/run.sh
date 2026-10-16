@@ -157,6 +157,9 @@ python3 "$ROOT/Tests/reuse-compile.py" --root "$ROOT" --receipt "$TMP/app-compil
 zsh "$ROOT/Tests/run-simple-pet.sh" "$TMP/simple-pet-proof"
 zsh "$ROOT/Tests/run-session-open-recovery.sh"
 zsh "$ROOT/Tests/run-meeting-task-link.sh"
+# 0.5.313 (QA): the Work session hub runner (WorkOrchestrationChecks, context meter, Plan and send, idle CPU pins) ran
+# only inside mutate-work-chat-review.py, never in the full suite. Serial like every runner here (one compile at a time).
+zsh "$ROOT/Tests/run-work-session-hub.sh"
 # 0.5.232: the Markdown parser is pure Foundation and pinned by an EXECUTED contract
 # (the scribe's meeting, lists, tasks, tables, code, quotes, details, speaker lines).
 "$ROOT/Tests/compile-guard.sh" swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \

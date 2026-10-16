@@ -145,6 +145,10 @@ need("let delivered = copyOnly ? DictationInsertion.copyOnly(text)\n            
 # 0.5.313 (Miles 2026-10-15): an interrupted dictation is transcribed and copied, never thrown away and never typed.
 need("let copyOnly = pendingInterrupted\n                pendingAudio = nil" in transcribe,
      "the copy-only flag must be read before pendingAudio is cleared (clearing it resets the flag)")
+need("if pointer, held { pointerDuringHold = true }" in body(dictation, "    private func keyEvent(")
+     and "fail(response.message, card: !(noSpeech && pointerDuringHold), retry: !noSpeech)" in transcribe
+     and 'phase = "Starting"; pointerDuringHold = false' in dictation,
+     "a slow modifier-click with no speech ends quietly, and the flag resets each dictation (QA 2026-10-15)")
 interrupt = body(dictation, "    func interrupt() {")
 need("MacDictationPolicy.salvages(pcmBytes: pcm.count)" in interrupt and "pendingAudio = wav; pendingInterrupted = true" in interrupt
      and "transcribe(wav, attempt: attempt)" in interrupt and "quiet.end()" in interrupt,
@@ -163,7 +167,7 @@ finish = body(dictation, "private func finish(_ text: String, outcome: Dictation
 need("remember(record)" in finish and "showCard(" in finish and "DictationPill.flashSeconds" in finish
      and "delivery: outcome.delivery" in finish and "outcome.flash" in finish,
      "finish must record the honest outcome, flash only what the outcome allows, and card when refused")
-need('let noSpeech = response.details["noSpeech"]?.bool == true' in transcribe and "fail(response.message, retry: !noSpeech)" in transcribe,
+need('let noSpeech = response.details["noSpeech"]?.bool == true' in transcribe and "retry: !noSpeech); return" in transcribe,
      "no speech offers no Retry")
 card = body(dictation, "struct DictationCardView: View {")
 need('Button("Allow…") { store.requestInsertionPermission() }' in card and "if refusal == .notTrusted {" in card,

@@ -183,7 +183,21 @@ enum WorkContextMeter {
 
     /// What the server is told about the items: ids, kinds, labels and estimates. No contents.
     static func plannerItems(_ items: [WorkContextItem]) -> [[String: Any]] {
-        items.map { ["id": $0.id, "kind": $0.kind.rawValue, "label": String($0.label.prefix(200)), "estTokens": $0.estTokens] }
+        items.map { ["id": $0.id, "kind": $0.kind.rawValue, "label": plannerLabel($0.label, kind: $0.kind.rawValue),
+                     "estTokens": min(max(0, $0.estTokens), plannerMaxEstTokens)] }
+    }
+    /// The server's item contract (server lib/work-chat.ts): a non-blank label of at most 200 UTF-16 units and an
+    /// estimate within 0...10,000,000. One item outside it failed the whole plan (QA 2026-10-15: emoji-heavy names fit 200
+    /// Characters but not 200 UTF-16 units; a 40 MB text file estimated past the cap).
+    static let plannerLabelUTF16 = 200, plannerMaxEstTokens = 10_000_000
+    static func plannerLabel(_ label: String, kind: String) -> String {
+        let trimmed = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        var out = ""
+        for character in trimmed.isEmpty ? kind : trimmed {
+            guard out.utf16.count + String(character).utf16.count <= plannerLabelUTF16 else { break }
+            out.append(character)
+        }
+        return out
     }
 
     // MARK: Selection

@@ -819,6 +819,8 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
     private var pendingAudio: Data? { didSet { if pendingAudio == nil { pendingInterrupted = false } } }
     /// The held audio is from an interrupted dictation: a retry copies it too, never types it.
     private var pendingInterrupted = false
+    /// 0.5.313 (QA): someone clicked while holding the key. No speech then means a modifier-click, not a failed dictation.
+    private var pointerDuringHold = false
     var canRetry: Bool { pendingAudio != nil && !busy }
     private var task: Task<Void, Never>?
     private var timer: Task<Void, Never>?
@@ -986,6 +988,8 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
         if !busy { phase = "Ready" }
     }
     private func keyEvent(flags: Bool, pointer: Bool, keyCode: UInt16, raw: UInt64, at time: TimeInterval) {
+        // A click while the hold key is down: if nothing was said, a slow ⌥-click or ⌘-click must not end in a card.
+        if pointer, held { pointerDuringHold = true }
         func feed(_ tracker: inout LoneModifierTracker?) -> LoneModifierTracker.Output? {
             guard var current = tracker else { return nil }
             let output = flags ? current.flagsChanged(keyCode: keyCode, flags: raw, at: time)
@@ -1023,7 +1027,7 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
         let placement = DictationPlacement.choose(petFrame: petFrame?(), focusedWindow: DictationFocusedWindow.frame(),
                                                   screens: NSScreen.screens.map(\.frame), mainScreen: NSScreen.main?.frame)
         if case .floating(let screen)? = placement { surface = .floating; floatingScreen = screen } else { surface = .pet; floatingScreen = nil }
-        pendingAudio = nil; message = nil; phase = "Starting"
+        pendingAudio = nil; message = nil; phase = "Starting"; pointerDuringHold = false
         levelMeter = DictationLevelMeter(); meter.reset()
         pill = .listening(since: Date())
         // The start sound plays as the pill appears and the microphone opens at once (no added latency). See
@@ -1125,7 +1129,8 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
                     // No speech (the server's 204) is an answer, not a failure: retrying the same audio cannot help.
                     let noSpeech = response.details["noSpeech"]?.bool == true
                     if noSpeech { pendingAudio = nil }
-                    fail(response.message, retry: !noSpeech); return
+                    // A click while holding and nothing said: the person was ⌥-clicking slowly, not dictating. No card.
+                    fail(response.message, card: !(noSpeech && pointerDuringHold), retry: !noSpeech); return
                 }
                 let copyOnly = pendingInterrupted
                 pendingAudio = nil; phase = "Ready"; message = nil
@@ -1167,7 +1172,8 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
     func openMicrophoneSettings() {
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone") { NSWorkspace.shared.open(url) }
     }
-    /// Also the quit path (COSAppDelegate.onTerminate) and sleep / session switch: other apps' sound always comes back.
+    /// Also the quit path (COSAppDelegate.onTerminate) and turning dictation off; sleep and a session switch reach
+    /// interrupt(), which falls back here. Other apps' sound always comes back.
     func cancel() {
         quiet.end()
         generation = UUID(); pendingAudio = nil; task?.cancel(); task = nil; timer?.cancel(); timer = nil
