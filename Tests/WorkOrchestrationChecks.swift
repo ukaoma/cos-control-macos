@@ -195,7 +195,8 @@ private actor WorkChatFixture {
     chat.setDraft("Fifth request"); await chat.send(source: source, handoff: handoff)
     let fifth = chat.record!.rounds.last!
     precondition(fifth.state == "Ready to send")
-    precondition(handoff.removeSessionCard(sessionID: ids[2], workID: source.id, expected: try WorkSessionLinks.revision(handoff.confirmedSessionCards[ids[2]]!)))
+    let removeRevision = try WorkSessionLinks.revision(handoff.confirmedSessionCards[ids[2]]!)
+    precondition(handoff.removeSessionCard(sessionID: ids[2], workID: source.id, expected: removeRevision))
     await chat.sendAll(roundID: fifth.id, source: source, handoff: handoff)
     precondition(handoff.receipts.count == 2 && chat.record?.rounds.last?.state == "Needs a new plan" && chat.error == WorkChatPolicy.staleMessage, "Changed session links since planning stop the send")
     let fileStore = WorkCardFileStore(root:root.appendingPathComponent("rich-files"),isolated:true)
@@ -344,9 +345,10 @@ private actor WorkPartialSendFixture {
     precondition(!WorkChatPreflight.holds(continued, continuations: [:]))
     let delivered = row("delivered", session: 0)
     precondition(WorkChatPreflight.holds(delivered, continuations: [:]), "A delivered reply holds until checked")
-    precondition(!WorkChatPreflight.holds(delivered, continuations: [delivered.id: try WorkChatPolicy.continuationKey(delivered)]), "An idle exact reply lets the chat continue")
+    let deliveredKey = try WorkChatPolicy.continuationKey(delivered)
+    precondition(!WorkChatPreflight.holds(delivered, continuations: [delivered.id: deliveredKey]), "An idle exact reply lets the chat continue")
     var edited = delivered; edited.detail = "Changed since the read"
-    precondition(WorkChatPreflight.holds(edited, continuations: [delivered.id: try WorkChatPolicy.continuationKey(delivered)]), "A changed receipt voids the idle proof")
+    precondition(WorkChatPreflight.holds(edited, continuations: [delivered.id: deliveredKey]), "A changed receipt voids the idle proof")
     precondition(!WorkChatPreflight.holds(delivered, continuations: [:], replacing: delivered.id), "The reply a send answers never holds it")
     var other = row("running", session: 0, at: 300); other.workID = "task:quilt:ffffffffffff"
     let older = row("queued", session: 1, at: 50), newer = row("unknown", session: 0, at: 200)
