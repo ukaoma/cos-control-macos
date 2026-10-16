@@ -279,7 +279,7 @@ enum WorkChatPreflight {
     @Published private(set) var referencesOffered = false
     /// A reference's outputs and change counts since it was linked, from the Connections session cards (another view owns
     /// that read). Unwired: summary only.
-    var referenceFacts: (_ sessionID: String, _ since: Double) -> (outputs: [String], changes: String?)? = { _, _ in nil }
+    var referenceFacts: WorkReferenceFacts = { _, _ in nil }
     /// 0.5.316, Ask each time: the send waiting for Queue it, Send in parallel or Check first. Nothing has been sent for it.
     struct PendingHold: Equatable { let roundID: String; let assignmentIDs: [String] }
     @Published private(set) var pendingHold: PendingHold?
@@ -413,26 +413,17 @@ enum WorkChatPreflight {
             return WorkContextMeter.PriorInput(sessionID: session.id, title: session.title, status: last.state, result: last.result)
         }
         // 0.5.316: each reference is an earlier-update item the planner (and Miles) may give an assignment. Read-only.
-        let references = referenceContext(source: source, handoff: handoff).map { ref -> WorkContextMeter.PriorInput in
-            let text = [ref.summary, ref.result].filter { !$0.isEmpty }.joined(separator: "\n")
-            return .init(sessionID: WorkContextMeter.referencePrefix + ref.id, title: ref.title, status: "reference, read-only", result: text.isEmpty ? "No summary yet." : text)
+        let references = referenceContext(source: source, handoff: handoff).map {
+            WorkContextMeter.PriorInput(sessionID: WorkContextMeter.referencePrefix + $0.id, title: $0.title, status: "reference, read-only", result: $0.body)
         }
         return WorkContextMeter.items(question: question, context: context, files: files, priors: priors + references,
                                       statusInstructionChars: WorkProgress.instruction(tag: WorkProgress.tag(forWorkID: source.id)).count)
     }
-    /// 0.5.316: the card's reference sessions as bounded evidence: title, summary, recent outputs and change counts.
-    /// At most `WorkChatPolicy.maxReferences`, newest link last; empty unless the server takes references.
-    struct ReferenceContext { let id: String; let title: String; let summary: String; let result: String }
-    func referenceContext(source: WorkSource, handoff: WorkHandoffStore) -> [ReferenceContext] {
+    /// 0.5.316: the card's reference sessions as bounded evidence (WorkHandoffStore.referenceEvidence, shared with manual
+    /// handoffs). Empty unless the server takes references.
+    func referenceContext(source: WorkSource, handoff: WorkHandoffStore) -> [WorkReferenceEvidence] {
         guard referencesOffered, !handoff.isolated else { return [] }
-        return handoff.referenceRows(workID: source.id).suffix(WorkChatPolicy.maxReferences).map { row in
-            let facts = referenceFacts(row.id, row.link.at)
-            var result: [String] = []
-            if let outputs = facts?.outputs, !outputs.isEmpty { result.append("Outputs: " + outputs.prefix(5).joined(separator: ", ") + (outputs.count > 5 ? " and \(outputs.count - 5) more" : "")) }
-            if let changes = facts?.changes { result.append("Changes: " + changes) }
-            return ReferenceContext(id: row.id, title: String(row.title.prefix(300)), summary: String((row.session?.summary ?? "").prefix(1000)),
-                                    result: String(result.joined(separator: "\n").prefix(1500)))
-        }
+        return handoff.referenceEvidence(workID: source.id, facts: referenceFacts)
     }
     /// The card or meeting copy of a file item, for Quick Look.
     func previewURL(for item: WorkContextItem, source: WorkSource, handoff: WorkHandoffStore) -> URL? {
@@ -835,7 +826,7 @@ enum WorkChatPreflight {
                 efforts = WorkChatPolicy.efforts.filter { levels.contains($0) }
                 contextItemsOffered = caps["contextItems"]?.bool == true
                 queueOffered = caps["queueRounds"]?.bool == true; serverQueueMissing = !queueOffered
-                referencesOffered = caps["references"]?.bool == true
+                referencesOffered = caps["references"]?.bool == true; handoff.referencesOffered = referencesOffered
                 return
             } catch {
                 let reason = error.localizedDescription
@@ -843,7 +834,7 @@ enum WorkChatPreflight {
                 if attempt == 0 { try? await Task.sleep(for: retryDelay) }
             }
         }
-        planners = []; efforts = []; contextItemsOffered = false; queueOffered = false; serverQueueMissing = false; referencesOffered = false; plannerNotice = WorkChatPolicy.plannerUnavailable
+        planners = []; efforts = []; contextItemsOffered = false; queueOffered = false; serverQueueMissing = false; referencesOffered = false; handoff.referencesOffered = false; plannerNotice = WorkChatPolicy.plannerUnavailable
     }
     /// Restore text for deliberate review and Send. Never replay any assignment automatically.
     func restoreUnsentRequest(roundID: String, checkedUnconfirmed: Bool = false) {

@@ -62,6 +62,10 @@ enum WorkContextMeter {
     static let fixedIDs = ["req", "task", "cos"]
     /// 0.5.316: a PriorInput whose session id starts with this is a reference session, not a working one.
     static let referencePrefix = "ref:"
+    /// 0.5.316: how a reference session reads in any send, Work chat item or manual handoff alike.
+    static func referenceText(title: String, body: String) -> String {
+        "Reference session \u{201C}\(title)\u{201D} (linked as a reference, read-only): " + String(body.prefix(2500))
+    }
     /// The line every assignment ends with, before the status-line instruction submit adds (WorkProgress.instruction).
     static let cosText = "Preserve other session work. Report changes, checks and questions. This assignment does not authorize external publication, messages to other people, deletion or security changes."
     static let meetingsHeader = "Confirmed source meetings (references; transcript evidence is not included):"
@@ -176,8 +180,8 @@ enum WorkContextMeter {
             guard !out.contains(where: { $0.id == id }) else { continue }
             // 0.5.316: a reference session (read-only) rides as an earlier update, so every server that takes items takes it.
             let reference = prior.sessionID.hasPrefix(referencePrefix)
-            let text = (reference ? "Reference session \u{201C}\(prior.title)\u{201D} (linked as a reference, read-only): "
-                                  : "Earlier update from \u{201C}\(prior.title)\u{201D} (\(prior.status)): ") + String(prior.result.prefix(reference ? 2500 : 1500))
+            let text = reference ? referenceText(title: prior.title, body: prior.result)
+                                 : "Earlier update from \u{201C}\(prior.title)\u{201D} (\(prior.status)): " + String(prior.result.prefix(1500))
             out.append(WorkContextItem(id: id, kind: .prior, label: (reference ? "Reference: " : "Earlier update from ") + String(prior.title.prefix(120)),
                                        note: reference ? "read-only reference" : nil, estTokens: textTokens(text), text: text))
         }

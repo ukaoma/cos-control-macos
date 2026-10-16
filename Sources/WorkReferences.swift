@@ -1,6 +1,18 @@
 import SwiftUI
 import Foundation
 
+/// 0.5.316: one reference session as bounded, read-only evidence: its title, summary (1,000 characters), and its recent
+/// outputs and change counts since it was linked (1,500). The same for Work chat and a manual handoff.
+struct WorkReferenceEvidence: Equatable {
+    let id: String
+    let title: String
+    let summary: String
+    let result: String
+    var body: String { let text = [summary, result].filter { !$0.isEmpty }.joined(separator: "\n"); return text.isEmpty ? "No summary yet." : text }
+    var text: String { WorkContextMeter.referenceText(title: title, body: body) }
+}
+typealias WorkReferenceFacts = @MainActor (_ sessionID: String, _ since: Double) -> (outputs: [String], changes: String?)?
+
 /// 0.5.316 (Miles 2026-10-16 12:16): the sessions a card references, read-only. A reference link (WorkSessionLinks
 /// references file) is never a send target, never part of the fence or the queue and never moves the card's stage; the
 /// card's planner and new assignments may read its summary, outputs and change counts. Open and Unlink only.
@@ -11,6 +23,10 @@ struct WorkReferencesGroup: View {
     let onOpenSession: (String) -> Void
     @State private var confirmUnlink: String?
     /// A reference's outputs (file names) and change counts since it was linked, for the planner. Nil when unknown.
+    /// From the Connections session cards' meters, as cached; nil until read.
+    static func liveFacts(_ sessionID: String, _ since: Double) -> (outputs: [String], changes: String?)? {
+        facts(WorkSessionMeterStore.shared.snapshot(sessionID, since: since))
+    }
     static func facts(_ snapshot: WorkSessionMeterSnapshot?) -> (outputs: [String], changes: String?)? {
         guard let snapshot else { return nil }
         let changes = snapshot.changes.map { "\($0.files) file\($0.files == 1 ? "" : "s"), +\($0.insertions) -\($0.deletions)" }

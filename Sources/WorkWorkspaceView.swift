@@ -2769,7 +2769,7 @@ struct WorkWorkspaceView: View {
                                 WorkSessionMeterStore.shared.sessionContextWindow(id).map { WorkSessionWindow(usedTokens: $0.used, windowTokens: $0.window) }
                             }
                             // 0.5.316: a reference's outputs and change counts since it was linked, as its card shows them.
-                            taskChat.referenceFacts = { id, since in WorkReferencesGroup.facts(WorkSessionMeterStore.shared.snapshot(id, since: since)) }
+                            taskChat.referenceFacts = WorkReferencesGroup.liveFacts
                         }
                 }
             }.frame(maxWidth: .infinity, alignment: .leading).padding(22)

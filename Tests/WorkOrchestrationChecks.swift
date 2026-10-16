@@ -903,7 +903,9 @@ private actor WorkQueueFixture {
     private(set) var turn = "pending"
     private(set) var revision = String(repeating: "e", count: 64)
     private var sends: [String] = []
+    private var prompts: [String: String] = [:]
     private var bodies: [[String: Any]] = []
+    func prompt(_ thread: String) -> String { prompts[thread] ?? "" }
     init(_ ids: [String], server: String, queue: Bool = true, refs: Bool = false) { self.ids = ids; self.server = server; self.queue = queue; self.refs = refs; assign = Array(ids.prefix(2)) }
     func setAssign(_ value: [String]) { assign = value }
     func referencesSent() -> [[String]?] { bodies.map { ($0["references"] as? [[String: Any]])?.compactMap { $0["id"] as? String } } }
@@ -935,7 +937,7 @@ private actor WorkQueueFixture {
         case "session-chat-turn": out = ["state": .string(turn)]
         case "session-chat-attachability": out = ["attachable": .bool(true)]
         case "session-chat-attach": out = ["state": .string("attached"), "bindingId": .string("queue-fixture"), "epoch": .number(1), "boundTo": .string("exact-target")]
-        case "session-chat-send": sends.append(thread); out = ["state": .string("completed")]
+        case "session-chat-send": sends.append(thread); prompts[thread] = data.map { String(decoding: $0, as: UTF8.self) } ?? ""; out = ["state": .string("completed")]
         // No reply history: a delivered turn is never proven idle here, so it holds until it is marked reviewed.
         case "session-recent-replies": throw HelperClientError.commandFailed("Fixture has no session history")
         default: preconditionFailure("Queue fixture must not reach \(args)")
@@ -1269,6 +1271,19 @@ private enum PendingHoldCheck {
     let bounded = await fixture.referencesSent()
     precondition(bounded.last??.count == WorkChatPolicy.maxReferences && WorkChatPolicy.maxReferences == 6
         && (chat.record!.rounds.last!.contextItems ?? []).filter { $0.label.hasPrefix("Reference: ") }.count == 6, "At most six references reach the planner: \(String(describing: bounded.last))")
+    // A manual handoff (the Agent workspace) carries the same read-only references, within the same bound.
+    for receipt in store.receipts where receipt.workID == organicCard.id && receipt.status == "delivered" { store.markReviewed(receiptID: receipt.id) }
+    let codex = store.sessions.first { $0.id == ids[1] }!
+    let lastExtra = "claude:abcdefab-0000-4000-8000-000000000106"
+    await sendWorkHandoff(store: store, source: organicCard, plan: WorkSendPlan(mode: .continueSession, session: codex, model: nil, crossPlatform: false, prompt: "Manual follow-up"),
+                          referenceFacts: { id, _ in
+                              guard id == lastExtra else { return nil }
+                              return (outputs: ["extra-notes.md"], changes: "1 file, +3 -0")
+                          })
+    let manual = await fixture.prompt(String(ids[1].split(separator: ":")[1]))
+    precondition(manual.contains("Manual follow-up") && manual.contains("Reference sessions (linked to this task as read-only reference points")
+        && manual.components(separatedBy: "Reference session \u{201C}").count - 1 == WorkChatPolicy.maxReferences && manual.contains("extra-notes.md"),
+                 "A manual handoff carries the card's references, read-only, at most six: \(manual.suffix(400))")
     // An older server: no references key, no reference items, and nothing offered.
     let oldFixture = WorkQueueFixture(ids, server: "refs-old", refs: false)
     let oldFile = root.appendingPathComponent("refs-old.json")
@@ -1283,5 +1298,8 @@ private enum PendingHoldCheck {
     let oldTold = await oldFixture.referencesSent()
     precondition(!oldChat.referencesOffered && oldTold == [nil] && oldChat.record!.rounds.last!.state == "Answered"
         && !(oldChat.record!.rounds.last!.contextItems ?? []).contains { $0.label.hasPrefix("Reference: ") }, "An older server never receives references: \(oldTold)")
-    print("PASS Work references: one working link per session kept, many references, never a send target, never holds the fence or queue, never owns the stage, planner evidence within six, older server untouched")
+    await sendWorkHandoff(store: old, source: organicCard, plan: WorkSendPlan(mode: .continueSession, session: old.sessions.first { $0.id == ids[1] }!, model: nil, crossPlatform: false, prompt: "Manual on an older server"))
+    let oldManual = await oldFixture.prompt(String(ids[1].split(separator: ":")[1]))
+    precondition(oldManual.contains("Manual on an older server") && !oldManual.contains("Reference session"), "An older server's manual handoff carries no references")
+    print("PASS Work references: one working link per session kept, many references, never a send target, never holds the fence or queue, never owns the stage, planner evidence and manual handoffs within six, older server untouched")
 }
