@@ -19,6 +19,7 @@ private actor WorkChatFixture {
     func plannerSent() -> [String?] { chatBodies.map { $0["planner"] as? String } }
     func plannerKeySent() -> [Bool] { chatBodies.map { $0["planner"] != nil } }
     func effortSent() -> [String?] { chatBodies.map { $0["effort"] as? String } }
+    func itemsSent() -> [Bool] { chatBodies.map { $0["items"] != nil } }
     func run(_ args: [String], _ data: Data?) async throws -> HelperResponse {
         let name = args.first ?? ""; calls.append(name)
         var out: [String: JSONValue] = [:]
@@ -281,6 +282,11 @@ private actor WorkChatFixture {
     let oldEffort = await oldFixture.effortSent()
     precondition(oldEffort == [nil] && oldChat.record?.rounds.last?.plannerEffort == nil, "An older server never receives the effort key, and no effort is claimed")
     precondition(oldKeys == [false] && oldChat.record?.rounds.last?.planner == "sonnet" && oldServer.receipts.isEmpty, "An older server plans with Sonnet and never receives the planner key")
+    // 0.5.312: an older server never receives items; every assignment sends every item, and the round says so.
+    let oldItemsSent = await oldFixture.itemsSent()
+    let oldRound = oldChat.record!.rounds.last!
+    precondition(oldItemsSent == [false] && oldRound.contextChosen == false && oldRound.contextItems?.isEmpty == false
+        && oldRound.assignments.allSatisfy { $0.contextItemIDs == oldRound.contextItems?.map(\.id) }, "An older server falls back to every item, honestly marked")
     precondition(WorkChatPolicy.plannerLabel(requested: oldChat.record?.rounds.last?.planner, ran: oldChat.record?.rounds.last?.plannerModel) == "requested Sonnet (not confirmed)", "A requested model is never shown as the one that ran")
     // 0.5.310: a server that fails planner discovery is retried once, then named, never silently hidden.
     await fixture.failCapabilities(1)
@@ -314,6 +320,10 @@ private actor WorkChatFixture {
     legacyChat.restoreUnsentRequest(roundID: interrupted.id, checkedUnconfirmed: true)
     precondition(legacyChat.record?.draft == interrupted.question, "After checking, recovery fills the composer only")
     try runWorkChatPreflightChecks(source: source, sessions: sessions)
+    try runWorkContextMeterPureChecks(sessions: sessions)
+    try await runWorkContextMeterChecks(source: source, ids: ids, sessions: sessions, root: root)
+    try await runWorkChatPartialRefusalChecks(source: source, ids: ids, root: root, autoSend: true)
+    try await runWorkChatAutoSendChecks(source: source, ids: ids, sessions: sessions, root: root)
     try await runWorkChatPartialRefusalChecks(source: source, ids: ids, root: root)
     try await runWorkChatPartialRefusalChecks(source: source, ids: ids, root: root, refuseAll: true)
     // A round whose every assignment was refused or failed never becomes "Results available" on a poll.
@@ -334,14 +344,15 @@ private actor WorkChatFixture {
 private actor WorkPartialSendFixture {
     let ids: [String]
     let refuseAll: Bool
+    let server: String
     private var sends: [String] = []
-    init(_ ids: [String], refuseAll: Bool = false) { self.ids = ids; self.refuseAll = refuseAll }
+    init(_ ids: [String], refuseAll: Bool = false, server: String? = nil) { self.ids = ids; self.refuseAll = refuseAll; self.server = server ?? (refuseAll ? "refuse-all-server" : "partial-server") }
     func sent() -> [String] { sends }
     func run(_ args: [String], _ data: Data?) async throws -> HelperResponse {
         var out: [String: JSONValue] = [:]
         let thread = args.firstIndex(of: "--thread-id").map { args[$0 + 1] } ?? ""
         switch args.first ?? "" {
-        case "work-models": out = ["serverInstanceId": .string(refuseAll ? "refuse-all-server" : "partial-server"), "models": .array([])]
+        case "work-models": out = ["serverInstanceId": .string(server), "models": .array([])]
         case "claude-sessions": out = ["sessions": .array(ids.prefix(2).map { id in .object([
             "id": .string(String(id.split(separator: ":")[1])), "provider": .string(String(id.split(separator: ":")[0])),
             "name": .string("Exact " + id), "workspace": .string("/tmp/fixture"), "state": .string("recent")]) })]
@@ -358,16 +369,22 @@ private actor WorkPartialSendFixture {
     }
 }
 
-@MainActor private func runWorkChatPartialRefusalChecks(source: WorkSource, ids: [String], root: URL, refuseAll: Bool = false) async throws {
-    let fixture = WorkPartialSendFixture(ids, refuseAll: refuseAll)
-    let store = WorkHandoffStore(storageURL: root.appendingPathComponent(refuseAll ? "refuse-all.json" : "partial.json"), transport: { args, data in try await fixture.run(args, data) })
+@MainActor private func runWorkChatPartialRefusalChecks(source: WorkSource, ids: [String], root: URL, refuseAll: Bool = false, autoSend: Bool = false) async throws {
+    let fixture = WorkPartialSendFixture(ids, refuseAll: refuseAll, server: autoSend ? "partial-auto-server" : nil)
+    let store = WorkHandoffStore(storageURL: root.appendingPathComponent(autoSend ? "partial-auto.json" : refuseAll ? "refuse-all.json" : "partial.json"), transport: { args, data in try await fixture.run(args, data) })
     for id in ids.prefix(2) { precondition(store.confirmSessionCard(sessionID: id, source: source)) }
     await store.refresh()
     let chat = WorkTaskChatStore(); chat.enabled = true; chat.open(source: source, handoff: store); chat.setDraft("Run both checks")
-    await chat.send(source: source, handoff: store)
-    let round = chat.record!.rounds.last!
-    precondition(round.state == "Ready to send" && store.receipts.isEmpty)
-    await chat.sendAll(roundID: round.id, source: source, handoff: store)
+    if autoSend {
+        // 0.5.312: Plan and send uses the same per-assignment path; a refusal on one never stops the other.
+        await chat.send(source: source, handoff: store, autoSend: true)
+        precondition(chat.record!.rounds.last!.sentWithoutReview == true, "The round records it was sent without review")
+    } else {
+        await chat.send(source: source, handoff: store)
+        let round = chat.record!.rounds.last!
+        precondition(round.state == "Ready to send" && store.receipts.isEmpty)
+        await chat.sendAll(roundID: round.id, source: source, handoff: store)
+    }
     let sent = await fixture.sent()
     let after = chat.record!.rounds.last!
     if refuseAll {
@@ -380,7 +397,195 @@ private actor WorkPartialSendFixture {
     precondition(after.assignments[0].state == "refused" && after.assignments[0].detail.contains("Fixture refusal"), "A refusal marks only its own assignment, with its reason")
     precondition(sent == [String(ids[1].split(separator: ":")[1])] && after.assignments[1].state == "delivered", "A refusal never stops the other assignment from being sent")
     precondition(after.state == "Dispatched" && store.receipts.count == 2)
-    print("PASS Work chat partial refusal: one refused delivery, the other sent, both recorded")
+    print("PASS Work chat partial refusal\(autoSend ? " (Plan and send)" : ""): one refused delivery, the other sent, both recorded")
+}
+
+/// 0.5.312: a 6.73.13 server that chooses each assignment's context items. Records what it was told and what was sent.
+private actor WorkContextFixture {
+    let ids: [String]
+    private(set) var chatBody: [String: Any] = [:]
+    private(set) var prompts: [String: String] = [:]
+    init(_ ids: [String]) { self.ids = ids }
+    func items() -> [[String: Any]] { chatBody["items"] as? [[String: Any]] ?? [] }
+    func prompt(_ native: String) -> String { prompts[native] ?? "" }
+    static let context = "Canonical Work ID: task:quilt:aaaaaaaaaaaa\nTask: Launch fixture\nDomain: quilt\nStage: draft\nDone when: Launch reviewed\nSource: Fixture evidence\n"
+        + WorkContextMeter.meetingsHeader + "\n- Oct 14 meeting | canonical ID: g2:onboarding14 | domain: quilt | month: 2026-10 | file: a.md"
+        + "\n- Oct 15 call | canonical ID: g2:recording15 | domain: quilt | month: 2026-10 | file: b.md"
+    func run(_ args: [String], _ data: Data?) async throws -> HelperResponse {
+        var out: [String: JSONValue] = [:]
+        let thread = args.firstIndex(of: "--thread-id").map { args[$0 + 1] } ?? ""
+        switch args.first ?? "" {
+        case "work-models": out = ["serverInstanceId": .string("context-server"), "models": .array([])]
+        case "claude-sessions": out = ["sessions": .array(ids.prefix(2).map { id in .object([
+            "id": .string(String(id.split(separator: ":")[1])), "provider": .string(String(id.split(separator: ":")[0])),
+            "name": .string("Exact " + id), "workspace": .string("/tmp/fixture"), "state": .string("recent")]) })]
+        case "work-chat-capabilities": out = ["protocolVersion": .number(1), "planners": .array([.string("sonnet"), .string("opus")]), "efforts": .array([.string("high")]), "contextItems": .bool(true)]
+        case "work-context": out = ["contextText": .string(Self.context), "workRevision": .string(String(repeating: "d", count: 64)), "task": .object(["id": .string("aaaaaaaaaaaa"), "workIdentity": .string("aaaaaaaaaaaa"), "domain": .string("quilt"), "title": .string("Launch fixture"), "text": .string("Launch fixture"), "source": .string("Fixture evidence")])]
+        case "work-chat":
+            chatBody = (data.flatMap { try? JSONSerialization.jsonObject(with: $0) } as? [String: Any]) ?? [:]
+            // The onboarding session needs only the Oct 14 meeting; the server leaves the recording session's choice out,
+            // which means every item.
+            out = ["protocolVersion": .number(1), "answer": .string("Two independent checks."), "assignments": .array([
+                .object(["sessionID": .string(ids[0]), "prompt": .string("Onboarding only."), "contextItemIDs": .array(["req", "task", "cos", WorkContextMeter.itemID("meet", "g2:onboarding14")].map { .string($0) })]),
+                .object(["sessionID": .string(ids[1]), "prompt": .string("Recording only.")])])]
+        case "session-chat-attachability": out = ["attachable": .bool(true)]
+        case "session-chat-attach": out = ["state": .string("attached"), "bindingId": .string("context-fixture"), "epoch": .number(1), "boundTo": .string("exact-target")]
+        case "session-chat-send": prompts[thread] = data.map { String(decoding: $0, as: UTF8.self) } ?? ""; out = ["state": .string("completed")]
+        // The first delivery is checked for an idle reply before the second send; no history means no exemption is claimed.
+        case "session-recent-replies": throw HelperClientError.commandFailed("Fixture has no session history")
+        default: preconditionFailure("Context fixture must not reach \(args)")
+        }
+        return HelperResponse(ok: true, message: "Fixture", details: out)
+    }
+}
+
+@MainActor private func runWorkContextMeterChecks(source: WorkSource, ids: [String], sessions: [WorkSession], root: URL) async throws {
+    // Real path: the server chooses, Miles edits, the send carries only the assignment's items.
+    let fixture = WorkContextFixture(ids)
+    let store = WorkHandoffStore(storageURL: root.appendingPathComponent("context.json"), transport: { args, data in try await fixture.run(args, data) })
+    for id in ids.prefix(2) { precondition(store.confirmSessionCard(sessionID: id, source: source)) }
+    await store.refresh()
+    let chat = WorkTaskChatStore(); chat.enabled = true; chat.open(source: source, handoff: store)
+    await chat.loadPlanners(handoff: store)
+    precondition(chat.contextItemsOffered, "A 6.73.13 server offers context items")
+    chat.setDraft("Split onboarding and recording")
+    await chat.send(source: source, handoff: store, planner: "opus", effort: "high")
+    let told = await fixture.items()
+    let round = chat.record!.rounds.last!
+    let meet14 = WorkContextMeter.itemID("meet", "g2:onboarding14"), meet15 = WorkContextMeter.itemID("meet", "g2:recording15")
+    precondition(round.state == "Ready to send" && round.contextChosen == true, "The server chose: \(round.state) \(String(describing: round.contextChosen))")
+    precondition(told.map { $0["id"] as? String ?? "" } == ["req", "task", meet14, meet15, "cos"], "The planner is told every linked item in order")
+    precondition(told.allSatisfy { Set($0.keys) == ["id", "kind", "label", "estTokens"] }, "Items carry ids, kinds, labels and estimates only, never contents")
+    precondition(round.assignments[0].contextItemIDs == ["req", "task", meet14, "cos"], "The planner's choice, in the card's order")
+    precondition(round.assignments[1].contextItemIDs == ["req", "task", meet14, meet15, "cos"], "No choice from the planner means every item")
+    // Edits: a fixed item never leaves; an added item persists across a restart.
+    precondition(!chat.toggleContextItem(roundID: round.id, assignmentID: round.assignments[0].receiptID, itemID: "req"), "Your request is never removed")
+    precondition(chat.toggleContextItem(roundID: round.id, assignmentID: round.assignments[0].receiptID, itemID: meet15))
+    let reopened = WorkTaskChatStore(); reopened.open(source: source, handoff: store)
+    precondition(reopened.record?.rounds.last?.assignments[0].contextItemIDs == ["req", "task", meet14, meet15, "cos"], "An edit survives restart")
+    precondition(chat.toggleContextItem(roundID: round.id, assignmentID: round.assignments[0].receiptID, itemID: meet15), "Undo puts it back")
+    precondition(chat.toggleContextItem(roundID: round.id, assignmentID: round.assignments[1].receiptID, itemID: meet14))
+    await chat.sendAll(roundID: round.id, source: source, handoff: store)
+    let first = await fixture.prompt(String(ids[0].split(separator: ":")[1])), second = await fixture.prompt(String(ids[1].split(separator: ":")[1]))
+    precondition(chat.record?.rounds.last?.state == "Dispatched", "Both sent: \(chat.record?.rounds.last?.state ?? "")")
+    precondition(first.contains("g2:onboarding14") && !first.contains("g2:recording15"), "The onboarding send carries only its meeting")
+    precondition(second.contains("g2:recording15") && !second.contains("g2:onboarding14"), "A removed item never goes")
+    precondition([first, second].allSatisfy { $0.contains("Task: Launch fixture") && $0.contains(WorkContextMeter.cosText) && $0.contains("Split onboarding and recording") }, "The fixed items always go")
+
+    // Isolated card with two files: removing one from an assignment keeps it out of that send's file list only.
+    let fileStore = WorkCardFileStore(root: root.appendingPathComponent("meter-files"), isolated: true)
+    let handoff = WorkHandoffStore(isolated: true, storageURL: root.appendingPathComponent("meter.json"), transport: { _,_ in preconditionFailure("No provider calls in the meter check") }, cardFiles: fileStore)
+    handoff.sessions = sessions
+    let card = WorkSource.taskSnapshot(TaskRow(.object(["id": .string("eeeeeeeeeeee"), "workIdentity": .string("eeeeeeeeeeee"), "domain": .string("quilt"), "title": .string("Meter fixture"), "text": .string("Meter fixture"), "source": .string("Evidence")]))!)
+    for id in ids { precondition(handoff.confirmSessionCard(sessionID: id, source: card)) }
+    let keepURL = root.appendingPathComponent("keep-notes.txt"), dropURL = root.appendingPathComponent("drop-notes.txt")
+    try Data(String(repeating: "keep ", count: 80).utf8).write(to: keepURL); try Data(String(repeating: "drop ", count: 80).utf8).write(to: dropURL)
+    await fileStore.intake(urls: [keepURL, dropURL], source: card)
+    let meter = WorkTaskChatStore(); meter.open(source: card, handoff: handoff); meter.setDraft("Use the notes")
+    await meter.send(source: card, handoff: handoff)
+    let planned = meter.record!.rounds.last!
+    let items = planned.contextItems ?? []
+    let drop = items.first { $0.label == "drop-notes.txt" }!
+    precondition(planned.contextChosen == false && items.filter { $0.kind == .files }.count == 2, "The sample plan does not choose; both files are linked")
+    precondition(planned.assignments.allSatisfy { $0.contextItemIDs == items.map(\.id) }, "Without a choice every assignment sends every item")
+    precondition(meter.toggleContextItem(roundID: planned.id, assignmentID: planned.assignments[0].receiptID, itemID: drop.id))
+    precondition(meter.editAssignment(roundID: planned.id, assignmentID: planned.assignments[0].receiptID, prompt: "Use only the keep notes."))
+    let restarted = WorkTaskChatStore(); restarted.open(source: card, handoff: handoff)
+    let kept = restarted.record!.rounds.last!.assignments[0]
+    precondition(kept.prompt == "Use only the keep notes." && kept.contextItemIDs?.contains(drop.id) == false, "An edited prompt and a trimmed context both survive restart")
+    let shown = WorkContextMeter.sendTokens(items: items, selected: meter.record!.rounds.last!.assignments[0].contextItemIDs!, provider: "claude")
+    precondition(shown == WorkContextMeter.linkedTokens(items) - drop.estTokens, "Removing an item lowers that send by its estimate")
+    await meter.sendAll(roundID: planned.id, source: card, handoff: handoff)
+    let firstSend = handoff.receipts.first { $0.id == planned.assignments[0].receiptID }?.prompt ?? ""
+    let secondSend = handoff.receipts.first { $0.id == planned.assignments[1].receiptID }?.prompt ?? ""
+    precondition(firstSend.contains("keep-notes.txt") && !firstSend.contains("drop-notes.txt"), "A removed file is not in that send's file list")
+    precondition(firstSend.contains("Use only the keep notes."), "The edited prompt is what was sent")
+    precondition(secondSend.contains("keep-notes.txt") && secondSend.contains("drop-notes.txt"), "The other assignment still sends both")
+    print("PASS Work context meter: planner choice, fixed items, persisted edits and undo, per-assignment prompts and file lists, older-server fallback")
+}
+
+/// 0.5.312 (Miles 2026-10-15): Plan and send. Off by default, asks once, and goes through every guard a manual send has.
+@MainActor private func runWorkChatAutoSendChecks(source: WorkSource, ids: [String], sessions: [WorkSession], root: URL) async throws {
+    precondition(WorkChatPolicy.autoSendDefault == false, "Send plans without review is off by default")
+    precondition(WorkChatPolicy.confirmBeforeAutoSend(acknowledged: false) && !WorkChatPolicy.confirmBeforeAutoSend(acknowledged: true), "The first Plan and send asks once")
+    let handoff = WorkHandoffStore(isolated: true, storageURL: root.appendingPathComponent("auto.json"), transport: { _,_ in preconditionFailure("No provider calls in the sample") })
+    handoff.sessions = sessions
+    let card = WorkSource.taskSnapshot(TaskRow(.object(["id": .string("ffffffffffff"), "workIdentity": .string("ffffffffffff"), "domain": .string("quilt"), "title": .string("Auto fixture"), "text": .string("Auto fixture"), "source": .string("Evidence")]))!)
+    for id in ids { precondition(handoff.confirmSessionCard(sessionID: id, source: card)) }
+    let chat = WorkTaskChatStore(); chat.open(source: card, handoff: handoff); chat.setDraft("Ship both checks")
+    await chat.send(source: card, handoff: handoff, autoSend: true)
+    let round = chat.record!.rounds.last!
+    precondition(round.sentWithoutReview == true && round.state == "Dispatched" && handoff.receipts.count == round.assignments.count && round.assignments.count == 2,
+                 "Plan and send dispatches every assignment: \(round.state), \(handoff.receipts.count)")
+    precondition(round.assignments.allSatisfy { a in handoff.receipts.contains { $0.id == a.receiptID && $0.orchestrationRunID == round.id } }, "Through the same receipts and run as Send all")
+    precondition(round.contextItems != nil && round.assignments.allSatisfy { $0.contextItemIDs != nil }, "The meter still records what each assignment received")
+    chat.setDraft("Again, straight away")
+    await chat.send(source: card, handoff: handoff, autoSend: true)
+    precondition(chat.record!.rounds.count == 1 && handoff.receipts.count == 2 && chat.record?.draft == "Again, straight away" && chat.error == WorkChatPreflight.heading,
+                 "Earlier unresolved handoffs stop Plan and send before it plans; the request stays")
+    // A guard that trips after planning stops the send and leaves the round for review, as a manual send would.
+    let fixture = WorkChatFixture(ids)
+    let real = WorkHandoffStore(storageURL: root.appendingPathComponent("auto-real.json"), transport: { args, data in try await fixture.run(args, data) })
+    for id in ids.prefix(2) { precondition(real.confirmSessionCard(sessionID: id, source: source)) }
+    await real.refresh()
+    let stale = WorkTaskChatStore(); stale.enabled = true; stale.open(source: source, handoff: real); stale.setDraft("Plan and send on a changing task")
+    await stale.send(source: source, handoff: real, autoSend: true)
+    let stopped = stale.record!.rounds.last!
+    precondition(stopped.sentWithoutReview == true && stopped.state == "Needs a new plan" && stale.error == WorkChatPolicy.staleMessage && real.receipts.isEmpty,
+                 "A task changed between planning and sending stops Plan and send before any delivery: \(stopped.state)")
+    print("PASS Plan and send: off by default, asks once, dispatches every assignment through the same guards, stops on earlier handoffs and on a changed task")
+}
+
+/// 0.5.312: estimates, the context split, selection rules, totals and the canary, formatting, the disclosure memory.
+@MainActor private func runWorkContextMeterPureChecks(sessions: [WorkSession]) throws {
+    precondition(WorkContextMeter.textTokens("") == 0 && WorkContextMeter.textTokens("abcd") == 1 && WorkContextMeter.textTokens("abcde") == 2, "Text is about 4 characters a token, rounded up")
+    precondition(WorkContextMeter.imageTokens(width: 1000, height: 1000, provider: "claude") == 1334, "Claude: width x height / 750")
+    precondition((1530...1536).contains(WorkContextMeter.imageTokens(width: 3000, height: 2000, provider: "claude")), "Claude scales to 1568 px and about 1.15 MP first")
+    precondition(WorkContextMeter.imageTokens(width: 1024, height: 1024, provider: "codex") == 765 && WorkContextMeter.imageTokens(width: 2356, height: 2680, provider: "codex") == 765, "Codex: 512 px tiles after fitting")
+    precondition(WorkContextMeter.imageTokens(width: 512, height: 512, provider: "codex") == 765 && WorkContextMeter.imageTokens(width: 0, height: 0, provider: "claude") == 1600, "Unknown size reads as a full image")
+    precondition(WorkContextMeter.fileTokens(kind: "text", pixelWidth: nil, pixelHeight: nil, pages: nil, frames: nil, frameWidth: nil, frameHeight: nil, textChars: 400, bytes: 9999, provider: "claude") == 125)
+    precondition(WorkContextMeter.fileTokens(kind: "pdf", pixelWidth: nil, pixelHeight: nil, pages: 3, frames: nil, frameWidth: nil, frameHeight: nil, textChars: nil, bytes: 0, provider: "claude") == 1525)
+    precondition(WorkContextMeter.fileTokens(kind: "folder", pixelWidth: nil, pixelHeight: nil, pages: nil, frames: nil, frameWidth: nil, frameHeight: nil, textChars: nil, bytes: 0, provider: "claude") == 25, "A folder or link is its line only")
+    precondition(WorkContextMeter.fileTokens(kind: "video", pixelWidth: nil, pixelHeight: nil, pages: nil, frames: 3, frameWidth: 1000, frameHeight: 1000, textChars: nil, bytes: 0, provider: "claude") == 3 * 1334 + 25, "Video counts its frames")
+    let split = WorkContextMeter.split(context: "Task: A\nSource: B\n" + WorkContextMeter.meetingsHeader + "\n- Oct 14 | canonical ID: g2:x | domain: q\n- Oct 15 | canonical ID: g2:y | domain: q")
+    precondition(split.task == "Task: A\nSource: B" && split.meetings.map(\.key) == ["g2:x", "g2:y"] && split.meetings.map(\.label) == ["Oct 14", "Oct 15"], "The task block and one item per meeting line")
+    precondition(WorkContextMeter.split(context: "Task: only").meetings.isEmpty)
+    let file = WorkContextFile(id: "f_aaaaaaaaaaaa", display: "Shot.png", stored: "01-shot.png", sha256: "s", bytes: 1, sniffed: "image/png", kind: "image", pixelWidth: 1000, pixelHeight: 1000, source: "finder", addedAt: 0, state: "ready", seq: 1)
+    let items = WorkContextMeter.items(question: "Do it", context: "Task: A\n" + WorkContextMeter.meetingsHeader + "\n- M | canonical ID: g2:x | d\n- M again | canonical ID: g2:x | d",
+                                       files: [.init(file: file), .init(file: file)], priors: [.init(sessionID: sessions[0].id, title: "S", status: "done", result: "Shipped"), .init(sessionID: sessions[1].id, title: "T", status: "idle", result: "")],
+                                       statusInstructionChars: 40)
+    precondition(items.map(\.kind) == [.req, .task, .files, .meet, .prior, .cos], "One item per thing, duplicates and empty results left out: \(items.map(\.kind))")
+    precondition(items[2].estTokens == 1334 + 25 && items[2].codexTokens == 765 + 25 && items[2].fileID == "f_aaaaaaaaaaaa", "A file carries both providers' estimates")
+    precondition(items.last!.estTokens == WorkContextMeter.textTokens(WorkContextMeter.cosText) + 10 && items.filter(\.fixed).map(\.id) == ["req", "task", "cos"])
+    precondition(items.allSatisfy { $0.id.range(of: "^(req|task|cos|(file|meet|prior):[a-f0-9]{12})$", options: .regularExpression) != nil }, "Every id matches the server's pattern")
+    let all = items.map(\.id), file1 = items[2].id, meet = items[3].id, prior = items[4].id
+    precondition(WorkContextMeter.selection(nil, items: items) == all && WorkContextMeter.selection([], items: items) == ["req", "task", "cos"], "No choice is every item; an empty choice is the fixed three")
+    precondition(WorkContextMeter.selection([prior, "file:000000000000", file1], items: items) == ["req", "task", file1, prior, "cos"], "Unknown ids drop; the card's order holds")
+    precondition(WorkContextMeter.validSelection(["req", "task", "cos"], items: items) && !WorkContextMeter.validSelection(["req", "task"], items: items)
+        && !WorkContextMeter.validSelection(["req", "task", "cos", "cos"], items: items) && !WorkContextMeter.validSelection(["req", "task", "cos", "meet:000000000000"], items: items), "A send needs the fixed three, each id once, all known")
+    precondition(WorkContextMeter.toggled(all, itemID: "task", items: items) == nil && WorkContextMeter.toggled(all, itemID: "file:000000000000", items: items) == nil, "Fixed and unknown items never toggle")
+    precondition(WorkContextMeter.toggled(all, itemID: meet, items: items) == ["req", "task", file1, prior, "cos"] && WorkContextMeter.toggled(["req", "task", "cos"], itemID: meet, items: items) == ["req", "task", meet, "cos"])
+    precondition(WorkContextMeter.sendTokens(items: items, selected: ["req", "task", file1, "cos"], provider: "codex") == items[0].estTokens + items[1].estTokens + 765 + 25 + items[5].estTokens, "Codex sends count Codex image tokens")
+    precondition(WorkContextMeter.byKind(items: items, selected: ["req", "task", "cos"], provider: "claude").map(\.kind) == [.req, .task, .cos], "The bar has only the kinds sent")
+    var a = WorkChatAssignment(sessionID: sessions[1].id, prompt: "x"); a.contextItemIDs = ["req", "task", file1, "cos"]
+    var skipped = a; skipped.state = "Skipped"
+    precondition(WorkContextMeter.roundTokens(items: items, assignments: [a, skipped]) == WorkContextMeter.sendTokens(items: items, selected: a.contextItemIDs!, provider: "codex"), "A round counts its assignments by their own provider; skipped ones are left out")
+    precondition(WorkContextMeter.canaryPercent(sent: 50, linked: 200) == 25 && WorkContextMeter.canaryPercent(sent: 0, linked: 0) == 0 && WorkContextMeter.canaryPercent(sent: 300, linked: 200) == 150, "Over 100 means items go to several sessions")
+    precondition(WorkContextMeter.format(950) == "≈ 950" && WorkContextMeter.format(18_400) == "≈ 18.4k")
+    precondition(WorkContextMeter.windowLine(send: 10_000, window: nil) == nil, "No window: no share, never a guess")
+    precondition(WorkContextMeter.windowLine(send: 18_400, window: WorkSessionWindow(usedTokens: 100_000, windowTokens: 512_000))?.text == "3.6% of this session's 512k window")
+    let full = WorkContextMeter.windowLine(send: 1_000, window: WorkSessionWindow(usedTokens: 466_000, windowTokens: 512_000))
+    precondition(full?.warn == true && full?.text == "Session is 91% full · may compact soon")
+    let sent = WorkContextMeter.prompt(question: "Q", assignment: "P", items: items, selected: ["req", "task", file1, "cos"])
+    precondition(sent.fileIDs == ["f_aaaaaaaaaaaa"] && !sent.text.contains(WorkContextMeter.meetingsHeader) && !sent.text.contains("Shipped") && sent.text.hasSuffix(WorkContextMeter.cosText), "Only selected items are in the prompt")
+    let withMeet = WorkContextMeter.prompt(question: "Q", assignment: "P", items: items, selected: ["req", "task", meet, prior, "cos"])
+    precondition(withMeet.fileIDs.isEmpty && withMeet.text.contains(WorkContextMeter.meetingsHeader + "\n- M | canonical ID: g2:x") && withMeet.text.contains("Shipped"))
+    precondition(!WorkContextMeter.isExpanded("", "r1"), "Collapsed by default")
+    let opened = WorkContextMeter.toggleExpanded("", "r1")
+    precondition(WorkContextMeter.isExpanded(opened, "r1") && !WorkContextMeter.isExpanded(WorkContextMeter.toggleExpanded(opened, "r1"), "r1"))
+    let many = (0..<45).reduce("") { WorkContextMeter.toggleExpanded($0, "r\($1)") }
+    precondition(many.split(separator: ",").count == 40 && !WorkContextMeter.isExpanded(many, "r0") && WorkContextMeter.isExpanded(many, "r44"), "The memory keeps the 40 newest")
+    print("PASS Work context meter rules: estimates by provider, context split, selection and edits, totals and canary, window share, prompt, disclosure memory")
 }
 
 /// 0.5.308: the one fence submit and the task chat's pre-flight share, the planner choice, and the review rules.

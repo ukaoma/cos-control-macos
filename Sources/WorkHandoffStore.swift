@@ -1126,7 +1126,8 @@ struct WorkGlassesRequest: Equatable, Sendable {
     /// it is marked reviewed only once the new handoff is on its way (never when the send was refused or failed).
     /// `resendAllFiles` (0.5.254, "Send all N again"): a Continue or Fork carries every file on the card, not only new ones.
     func submit(source: WorkSource, mode: WorkHandoffMode, session: WorkSession?, model: WorkModelChoice?, prompt: String,
-                journalPrompt: String? = nil, origin: WorkRequestOrigin? = nil, replacing: String? = nil, resendAllFiles: Bool = false, orchestrationRunID: String? = nil, intentID suppliedID: String? = nil, recovery: WorkIndependentRecovery? = nil) async {
+                journalPrompt: String? = nil, origin: WorkRequestOrigin? = nil, replacing: String? = nil, resendAllFiles: Bool = false, orchestrationRunID: String? = nil, intentID suppliedID: String? = nil, recovery: WorkIndependentRecovery? = nil,
+                contextFileIDs: Set<String>? = nil) async {
         guard !busy else { return }
         // 0.5.252: one send at a time. A send for the glasses does not take `busy` (the Agent workspace stays usable).
         guard !quietSend else { if origin == nil { _ = refusedForGlassesSend() }; return }
@@ -1170,8 +1171,10 @@ struct WorkGlassesRequest: Equatable, Sendable {
             // 0.5.258: the card's linked meetings' files go too, and only they are dropped to fit the draft limit and, for
             // Cursor, its link. The card's own files keep their 0.5.254 refusals below.
             let cutsForCursor = Self.prefillProviders.contains(mode == .newSession ? model?.provider ?? "" : session?.provider ?? "") && mode != .fork
+            // 0.5.312: a Work chat assignment lists exactly its selected files, already sent or not, so the meter's count is
+            // what this send asks the session to read.
             let files = cardFiles.handoff(for: source.id, mode: mode, sessionID: mode == .newSession ? nil : session?.id,
-                                          receipts: receipts, resendAll: resendAllFiles, fits: { block in
+                                          receipts: receipts, resendAll: resendAllFiles || contextFileIDs != nil, include: contextFileIDs, fits: { block in
                                               let candidate = WorkCardFiles.compose(text: text, block: block, instruction: instruction)
                                               return candidate.utf16.count - instruction.utf16.count <= Self.draftLimit
                                                   && (!cutsForCursor || Self.cursorPrefillFits(candidate, tag: tag, instruction: instruction))

@@ -504,6 +504,8 @@ struct ControlPanel: View {
     }
     /// 0.5.278: Settings, "Show live meeting transcript". Off: no Live now row, no live dots, no live-transcript helper.
     @AppStorage(LiveTranscript.enabledKey) private var showLiveTranscript = true
+    /// 0.5.312: Work chat's Plan and send as the primary button. Off by default (review stays normal).
+    @AppStorage(WorkChatPolicy.autoSendKey) private var workChatSendWithoutReview = WorkChatPolicy.autoSendDefault
     let openActivity: (ActivitySection?) -> Void
     /// Onboarding P1: the same panel hosted in the Settings window (SettingsWindowPresenter), which must not claim
     /// to be the menu-bar panel being open.
@@ -2786,6 +2788,10 @@ struct ControlPanel: View {
             Toggle("Open new sessions in the app", isOn: Binding(get: { model.workOpensTabs }, set: { model.workOpensTabs = $0 }))
                 .toggleStyle(COSSwitchStyle())
                 .help("Start Claude and Codex work in the background, then open it in their app when the first reply is done. Off: it stays in the background on this Mac. Cursor always opens its own window with the handoff filled in, for you to send")
+            // 0.5.312 (Miles 2026-10-15): Work chat plans and sends in one step. The first use still asks once.
+            Toggle("Send plans without review", isOn: $workChatSendWithoutReview)
+                .toggleStyle(COSSwitchStyle())
+                .help("Work chat's main button becomes Plan and send: assignments go to their sessions as soon as they are planned. Plan, with review, stays available")
             // 0.5.278: the live meeting transcript in Meetings. Stored in AppStorage, read by the model before any poll.
             Toggle("Show live meeting transcript", isOn: $showLiveTranscript)
                 .toggleStyle(COSSwitchStyle())
