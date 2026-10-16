@@ -71,18 +71,25 @@ final class MacRecordingStore: ObservableObject {
         self.bridge = bridge
         guard !occupied else { return }
         do {
-            recoverable = try await spool.recoverable()
-            let warnings = await spool.recoveryWarnings()
-            if !warnings.isEmpty { error = warnings.joined(separator: " ") }
-            if #available(macOS 14.2, *) {
-                let result = try await invoke("capabilities", [:])
-                guard result["available"]?.bool == true, let id = result["serverInstanceId"]?.string, !id.isEmpty else {
-                    throw MacRecordingError.unavailable("Manual Mac recording needs the matched server candidate. Your current recording settings have not changed.")
-                }
-                instance = id; available = true
-                sources = [.allMacAudio] + (try await Task.detached(priority: .utility) { try MacAudioCapture.sources() }.value)
-                if !sources.contains(where: { $0.id == selectedID }) { selectedID = MacAudioSource.allMacAudioID }
-            } else { throw MacRecordingError.unavailable("Manual system audio recording requires macOS 14.2 or later.") }
+            do {
+                recoverable = try await spool.recoverable()
+                let warnings = await spool.recoveryWarnings()
+                if !warnings.isEmpty { error = warnings.joined(separator: " ") }
+                if #available(macOS 14.2, *) {
+                    let result = try await invoke("capabilities", [:])
+                    guard result["available"]?.bool == true, let id = result["serverInstanceId"]?.string, !id.isEmpty else {
+                        throw MacRecordingError.unavailable("Manual Mac recording needs the matched server candidate. Your current recording settings have not changed.")
+                    }
+                    instance = id; available = true
+                    sources = [.allMacAudio] + (try await Task.detached(priority: .utility) { try MacAudioCapture.sources() }.value)
+                    if !sources.contains(where: { $0.id == selectedID }) { selectedID = MacAudioSource.allMacAudioID }
+                } else { throw MacRecordingError.unavailable("Manual system audio recording requires macOS 14.2 or later.") }
+            } catch where !(error is CancellationError) {
+                // QA 0.5.313 telemetry: the reason, once; cancellation is not a failure and is not logged.
+                let reason = error.localizedDescription
+                recordingLog.error("prepare failed: \(reason, privacy: .public)")
+                throw error
+            }
         } catch is CancellationError {
             // The panel's .task is cancelled when Meetings goes away (Miles 2026-10-15: the panel showed "The operation
             // couldn't be completed. (Swift.CancellationError error 1.)"). Leaving is not a failure: keep what was known.
@@ -113,7 +120,12 @@ final class MacRecordingStore: ObservableObject {
         // A retained capture has its own id and spool folder and stays listed with Recover; it never blocks a new one
         // (0.5.311 recorded beside one; QA 2026-10-15: a recoverable gate here made Record and the meeting card dead).
         guard available, canStart else {
-            if error == nil { error = "A Mac recording is waiting to be saved. Open Meetings to finish it before recording another." }
+            let pendingCapture = deliveryTask != nil || (manifest.map { !$0.saved && !$0.chunks.isEmpty } ?? false)
+            switch MacRecordingRefusal.decide(available: available, currentError: error, live: occupied, pendingCapture: pendingCapture) {
+            case .keep: break
+            case .set(let text): error = text
+            }
+            recordingLog.notice("record refused: available=\(self.available) live=\(self.occupied) pending=\(pendingCapture)")
             return nil
         }
         let previousTitle = title, previousSource = selectedID
@@ -165,22 +177,32 @@ final class MacRecordingStore: ObservableObject {
                         }
                         self.deliverPending()
                     }
-                    catch { self.captureInterruption = error.localizedDescription; self.error = error.localizedDescription; Task { await self.stop() }; break }
+                    catch {
+                        let reason = error.localizedDescription
+                        recordingLog.error("append failed: \(reason, privacy: .public)")
+                        self.captureInterruption = reason; self.error = reason; Task { await self.stop() }; break
+                    }
                 }
             }
             let engine = MacAudioCapture(chunk: { value in
                 if case .enqueued = continuation.yield(value) { return true }
                 return false
             }, failure: { [weak self] reason in
-                Task { @MainActor in self?.captureInterruption = reason; self?.error = reason; await self?.stop() }
+                Task { @MainActor in
+                    recordingLog.error("capture failed: \(reason, privacy: .public)")
+                    self?.captureInterruption = reason; self?.error = reason; await self?.stop()
+                }
             })
             localCapture = engine; capture = engine
             try await engine.start(source: source)
             guard startAttempt == attempt, phase == "starting" else { _ = await engine.stop(); throw CancellationError() }
             phase = "recording"
+            recordingLog.notice("start ok source=\(source.isAllMacAudio ? "all Mac audio" : "one app", privacy: .public)")
             message = source.isAllMacAudio ? "Recording everything this Mac plays. Microphone off." : "Recording \(source.name) playback only. Microphone off."
         } catch {
             let interruption = await localCapture?.stop(); localContinuation?.finish()
+            let reason = error is CancellationError ? "cancelled" : error.localizedDescription
+            recordingLog.error("start failed: \(reason, privacy: .public)")
             guard startAttempt == attempt else { return }
             capture = nil
             streamContinuation?.finish(); await chunksTask?.value
@@ -214,6 +236,7 @@ final class MacRecordingStore: ObservableObject {
         guard ["recording", "starting"].contains(phase) else { return }
         startAttempt = nil
         phase = "stopping"
+        recordingLog.notice("stop")
         if let reason = await capture?.stop() { captureInterruption = reason; error = reason }
         capture = nil
         streamContinuation?.finish(); streamContinuation = nil
@@ -224,7 +247,11 @@ final class MacRecordingStore: ObservableObject {
                 if let reason = captureInterruption { _ = try await spool.interrupt(id, reason: reason) }
                 manifest = try await spool.markStopped(id)
             }
-            catch { self.error = error.localizedDescription }
+            catch {
+                let reason = error.localizedDescription
+                recordingLog.error("markStopped failed: \(reason, privacy: .public)")
+                self.error = reason
+            }
         }
         phase = "pending"; message = "Capture stopped. Audio stays on this Mac until its saved-meeting receipt is verified."
         deliverPending()
@@ -246,8 +273,13 @@ final class MacRecordingStore: ObservableObject {
             // A restart never resumes the tap. Pinning refuses replay into a different server instance.
             if !value.stopped { _ = try await spool.interrupt(value.captureId, reason: "The app ended during recording. Unflushed audio may be missing; retained chunks can be recovered.") }
             manifest = try await spool.markStopped(value.captureId); phase = "pending"; error = nil; noSpeech = false
+            recordingLog.notice("recover chunks=\(value.chunks.count)")
             deliverPending()
-        } catch { self.error = error.localizedDescription }
+        } catch {
+            let reason = error.localizedDescription
+            recordingLog.error("recover failed: \(reason, privacy: .public)")
+            self.error = reason
+        }
     }
     /// Leaves the immutable journal and WAVs untouched; only releases the current editor.
     /// Offered only after the server positively reported that no speech was saved.
@@ -257,7 +289,11 @@ final class MacRecordingStore: ObservableObject {
             let retained = try await spool.recoverable()
             recoverable = retained; manifest = nil; deliveryPaused = false; selectedID = MacAudioSource.allMacAudioID; noSpeech = false; silentChunks = 0; error = nil; phase = "idle"
             message = "Previous audio is kept on this Mac. All Mac audio is selected: it records whatever app plays the call."
-        } catch { self.error = error.localizedDescription }
+        } catch {
+            let reason = error.localizedDescription
+            recordingLog.error("keep for later failed: \(reason, privacy: .public)")
+            self.error = reason
+        }
     }
     func deliverPending() {
         if deliveryTask != nil { deliveryWake = true; return }
@@ -298,6 +334,7 @@ final class MacRecordingStore: ObservableObject {
                             throw MacRecordingError.unavailable("A saved-meeting receipt was not verified. Audio is retained for recovery.")
                         }
                         self.manifest = try await self.spool.markSaved(id)
+                        recordingLog.notice("save ok chunks=\(current.chunks.count)")
                         if self.error?.hasPrefix("Delivery paused:") == true { self.error = nil }
                         self.phase = "saved"; self.message = "Saved Mac recording. Open Meetings to review the transcript."
                         self.recoverable = try await self.spool.recoverable()
@@ -324,6 +361,9 @@ struct MacRecordingPanel: View {
     @AppStorage(MacRecordingNotice.optionsExpandedKey) private var optionsExpanded = false
     /// The one-time notice, inline (never a system alert; Tests/run.sh keeps confirmations inline).
     @State private var showingNotice = false
+    /// The notice hides the moment it is acknowledged anywhere (the pet's notice too), not only by this card.
+    @AppStorage(MacRecordingNotice.acknowledgedKey) private var acknowledged = false
+    private var noticeVisible: Bool { MacRecordingNotice.panelShowsNotice(requested: showingNotice, acknowledged: acknowledged, occupied: store.occupied) }
     private var recordable: Bool { store.canStart && store.available && store.sources.contains { $0.id == store.selectedID } }
     private var automaticTitle: String { MacRecordingNotice.autoTitle(meetingApp: meetings.current?.app.title, at: Date()) }
     var body: some View {
@@ -339,12 +379,12 @@ struct MacRecordingPanel: View {
                     Button("Open live meeting") { store.openLiveMeeting?(id) }.buttonStyle(COSQuietButtonStyle())
                 }
                 if store.isRecording || store.phase == "starting" { Button("Stop and save") { Task { await store.stop() } }.buttonStyle(COSQuietButtonStyle()) }
-                else if !store.occupied, !showingNotice {
+                else if !store.occupied, !noticeVisible {
                     Button("Record") { record() }.buttonStyle(COSPrimaryButtonStyle()).disabled(!recordable)
                         .help("Records everything this Mac plays, with a live transcript. Your microphone stays off")
                 }
             }
-            if showingNotice {
+            if noticeVisible {
                 MacRecordingNoticeCard(onRecord: {
                     store.acknowledgeNotice(); showingNotice = false; record()
                 }, onNotNow: { showingNotice = false })
@@ -384,7 +424,7 @@ struct MacRecordingPanel: View {
                 }
             }
             if let error = store.error { Text(error).font(COSType.body(11)).foregroundStyle(COSPalette.danger) }
-            ForEach(store.recoverable.filter { $0.captureId != store.manifest?.captureId }) { value in
+            ForEach(MacRecordingRecoveryPolicy.listed(store.recoverable, current: store.manifest?.captureId)) { value in
                 Button("Recover \(value.title) · \(value.chunks.count) chunks") { Task { await store.recover(value) } }.disabled(!store.canStart)
             }
         }
@@ -488,6 +528,13 @@ struct MeetingCard: Equatable, Identifiable {
     private var inputBlocks: [AudioObjectID: AudioObjectPropertyListenerBlock] = [:]
     private var listenersUnavailable = false
     private var tickTask: Task<Void, Never>?
+    /// QA 0.5.313: browser pids that showed a Meet title while on the mic (a tab switch never ends the call), the last
+    /// title answer per browser, the reads in flight, and what held the mic at the last evaluation.
+    private var browserLatch = Set<Int32>()
+    private var titleCache: [String: Bool?] = [:]
+    private var titleReads = Set<String>()
+    private var lastHolders = Set<String>()
+    private var tick = 0
     private var dismissTask: Task<Void, Never>?
     private let presenter = MeetingCardPresenter()
 
@@ -530,6 +577,7 @@ struct MeetingCard: Equatable, Identifiable {
         unbindInputs(keeping: [])
         listenersUnavailable = false
         state = MeetingDetectionState()
+        browserLatch = []; titleCache = [:]; lastHolders = []; tick = 0
         if card?.kind == .suggest || card?.kind == .notice { dismiss() }
     }
 
@@ -563,13 +611,18 @@ struct MeetingCard: Equatable, Identifiable {
     @available(macOS 14.2, *)
     private func evaluate(_ ids: [AudioObjectID]) {
         let processes = ids.compactMap { Self.process($0) }
-        var browserTitles: [String: Bool?] = [:]
-        let found = MeetingApps.holding(processes, ownPID: ProcessInfo.processInfo.processIdentifier, never: Set(never.keys)) { owner in
-            if let known = browserTitles[owner] { return known }
-            let value = Self.browserShowsMeet(owner)
-            browserTitles[owner] = .some(value)
-            return value
+        let holders = Set(processes.filter(\.input).map { "\($0.pid):\($0.bundleID)" })
+        let holdersChanged = holders != lastHolders
+        lastHolders = holders; tick += 1
+        // Titles come from the cache; a read runs off the main actor only when due and feeds the next evaluation.
+        let found = MeetingApps.holding(processes, ownPID: ProcessInfo.processInfo.processIdentifier, never: Set(never.keys),
+                                        latched: browserLatch) { owner in
+            let cached = titleCache[owner]
+            if MeetingApps.titleReadDue(holdersChanged: holdersChanged, cached: cached != nil, tick: tick) { readTitles(owner) }
+            if let cached { return cached }
+            return false
         }
+        browserLatch = found.latched
         if browserNeedsAccessibility != found.browserUnchecked { browserNeedsAccessibility = found.browserUnchecked }
         let context = MeetingDetectionState.Context(
             suggestEnabled: suggestEnabled, allowed: allowed, recordingBusy: recordingBusy?() ?? true,
@@ -600,6 +653,8 @@ struct MeetingCard: Equatable, Identifiable {
         case .suggest(let source):
             recordingLog.notice("meeting detected app=\(source.app.title, privacy: .public)")
             show(MeetingCard(kind: .suggest, source: source))
+        case .skipped(let source, let reason):
+            recordingLog.notice("meeting not offered app=\(source.app.title, privacy: .public) reason=\(reason, privacy: .public)")
         case .ended(let source):
             if card?.kind != .ended, card?.source == source { dismiss() }
             if MeetingDetectedCard.offersEnd(ended: source, startedFrom: startedFrom?.source, startedCaptureID: startedFrom?.captureID,
@@ -644,7 +699,10 @@ struct MeetingCard: Equatable, Identifiable {
         dismiss()
         Task {
             // A failure is shown by the record closure (pet notice, and Meetings opened on Record on Mac).
-            guard let captureID = await record?(current.source) else { return }
+            guard let captureID = await record?(current.source) else {
+                recordingLog.error("meeting card start failed app=\(current.source.app.title, privacy: .public)")
+                return
+            }
             startedFrom = (current.source, captureID)
             recordingLog.notice("recording started from a meeting suggestion app=\(current.source.app.title, privacy: .public)")
         }
@@ -700,17 +758,37 @@ struct MeetingCard: Equatable, Identifiable {
         return MeetingAudioProcess(pid: pid, bundleID: bundle, input: input != 0)
     }
     /// The browser's window titles, read for that one app and only to look for Google Meet. nil without Accessibility.
-    private static func browserShowsMeet(_ owner: String) -> Bool? {
-        guard AXIsProcessTrusted() else { return nil }
-        guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: owner).first else { return false }
-        let element = AXUIElementCreateApplication(app.processIdentifier)
+    /// One browser's window titles, read off the main actor (a hung browser cannot stall COS): the app element and
+    /// every window bounded at 0.25 s, at most 40 windows and about 1 s in all. Titles are matched, never kept or logged.
+    private func readTitles(_ owner: String) {
+        guard !titleReads.contains(owner) else { return }
+        guard AXIsProcessTrusted() else { titleCache[owner] = .some(nil); return }
+        guard let pid = NSRunningApplication.runningApplications(withBundleIdentifier: owner).first?.processIdentifier else {
+            titleCache[owner] = .some(false); return
+        }
+        titleReads.insert(owner)
+        Task { @MainActor [weak self] in
+            let shows = await Self.windowTitlesShowMeet(pid: pid)
+            guard let self else { return }
+            self.titleReads.remove(owner)
+            let changed = self.titleCache[owner] != .some(shows)
+            self.titleCache[owner] = .some(shows)
+            if changed { self.processesChanged() }
+        }
+    }
+    nonisolated private static func windowTitlesShowMeet(pid: pid_t) async -> Bool {
+        let started = Date()
+        let element = AXUIElementCreateApplication(pid)
         AXUIElementSetMessagingTimeout(element, 0.25)
         var windows: CFTypeRef?
         guard AXUIElementCopyAttributeValue(element, kAXWindowsAttribute as CFString, &windows) == .success,
               let list = windows as? [AXUIElement] else { return false }
-        let titles = list.prefix(40).compactMap { window -> String? in
+        var titles: [String] = []
+        for window in list.prefix(40) {
+            guard Date().timeIntervalSince(started) < 1 else { break }
+            AXUIElementSetMessagingTimeout(window, 0.25)
             var title: CFTypeRef?
-            return AXUIElementCopyAttributeValue(window, kAXTitleAttribute as CFString, &title) == .success ? title as? String : nil
+            if AXUIElementCopyAttributeValue(window, kAXTitleAttribute as CFString, &title) == .success, let text = title as? String { titles.append(text) }
         }
         return MeetingApps.showsMeet(titles)
     }
@@ -839,10 +917,14 @@ private final class MeetingCardHostingView<Content: View>: NSHostingView<Content
 struct MeetingSuggestSettings: View {
     @ObservedObject var store: MeetingDetectorStore
     @AppStorage(MacRecordingNotice.acknowledgedKey) private var acknowledged = false
+    /// Settings passes the model's recording store so the reset publishes to every view reading it.
+    var recording: MacRecordingStore? = nil
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             // 0.5.313: the one-time recording notice can be shown again.
-            Button("Show the recording notice again") { acknowledged = false }
+            Button("Show the recording notice again") {
+                if let recording { recording.resetNotice() } else { acknowledged = false }
+            }
                 .controlSize(.small)
                 .disabled(!acknowledged)
                 .help("The next Mac recording shows what COS records and asks once more before it starts")

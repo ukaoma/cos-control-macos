@@ -34,6 +34,17 @@ MUTANTS = [
     ("Meeting notes is a Meet", '|| title.range(of: #"(^|[^A-Za-z])Meet($|[^A-Za-z])"#, options: .regularExpression) != nil', '|| title.contains("Meet")'),
     ("prefix matches part of a name", '(id == prefix || id.hasPrefix(prefix + "."))', "id.hasPrefix(prefix)"),
     ("Zoom helper not mapped", '"us.zoom.xos", "us.zoom.CptHost", "us.zoom."]', '"us.zoom.xos"]'),
+    # QA 0.5.313.
+    ("Meet latch ignored", "                if latched.contains(process.pid) {\n                    sources.insert(rule.source); latch.insert(process.pid); continue\n                }\n", ""),
+    ("latch outlives the microphone", "        return (sources, unchecked, latch)", "        return (sources, unchecked, latch.union(latched))"),
+    ("titles read every tick", "        holdersChanged || !cached || (every > 0 && tick % every == 0)", "        true"),
+    ("titles never re-read", "        holdersChanged || !cached || (every > 0 && tick % every == 0)", "        !cached"),
+    ("skip not reported", "                    events.append(.skipped(source, context.recordingBusy ? \"recording busy\" : (!context.suggestEnabled ? \"off\" : \"app not allowed\")))\n", ""),
+    ("refusal paints a live recording", "        if live { return .keep }\n", ""),
+    ("unavailable drops prepare's reason", "            if let currentError, !currentError.isEmpty { return .set(currentError) }\n", ""),
+    ("pending refusal keeps a stale line", "        if pendingCapture { return .set(pending) }", "        if pendingCapture { return currentError.map { .set($0) } ?? .set(pending) }"),
+    ("zero-chunk journal offered", "        retained.filter { !$0.chunks.isEmpty && $0.captureId != current }", "        retained.filter { $0.captureId != current }"),
+    ("panel notice ignores acknowledgement", "{ requested && !acknowledged && !occupied }", "{ requested && !occupied }"),
     # Words, title, end offer, busy.
     ("end offer for another recording", "        return startedCaptureID == runningCaptureID", "        return true"),
     ("end offer for another meeting", "guard let startedFrom, startedFrom == ended, let startedCaptureID", "guard let startedFrom, let startedCaptureID"),
