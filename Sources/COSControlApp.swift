@@ -29,6 +29,14 @@ struct COSControlApp: App {
             return try await model.runHelper(["mac-dictation"], timeout: 40, stdinData: audio)
         }
         model.dictation.petFrame = { [weak sessionPet] in sessionPet?.visibleFrame }
+        // 0.5.312 sounds: the pet's family picks its default sound; nothing plays while a Mac recording captures.
+        model.dictation.macRecordingActive = { [weak model] in model?.macRecordingActive ?? false }
+        model.dictation.petKind = { [weak model] in
+            guard let model else { return .other }
+            let names = (try? FileManager.default.contentsOfDirectory(atPath: PetSpriteStore.supportDirectory().path)) ?? []
+            return DictationSoundLibrary.petKind(hasCombatStories: model.petSpriteKit.poses[.duel] != nil && model.petSpriteKit.poses[.swarm] != nil,
+                                                 assetNames: names)
+        }
         model.dictionary.bridge = { [weak model] request in
             guard let model else { throw HelperClientError.commandFailed("COS Control is closing.") }
             return try await model.runHelper(["transcription-dictionary"], timeout: 20, stdinData: request)

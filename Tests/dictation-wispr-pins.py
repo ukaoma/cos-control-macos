@@ -159,8 +159,31 @@ need("func deleteRecord(_ id: UUID)" in dictation and "func clearRecent()" in di
      "dictations can be deleted one at a time on the pet and all at once in Settings")
 need("pill = .transcribing" in body(dictation, "    func stop() {"), "release must show TRANSCRIBING")
 need("pill = .listening(since: Date())" in body(dictation, "    func start() {"), "the shortcut must show the listening pill")
-need("surface = petFrame?() != nil ? .pet : .floating" in body(dictation, "    func start() {"),
-     "with the pet hidden the pill must float above the Dock")
+start_fn = body(dictation, "    func start() {")
+need("DictationPlacement.choose(petFrame: petFrame?(), focusedWindow: DictationFocusedWindow.frame()," in start_fn
+     and "if case .floating(let screen)? = placement { surface = .floating; floatingScreen = screen } else { surface = .pet; floatingScreen = nil }" in start_fn,
+     "the pill goes on the pet only when the pet is on the focused screen; else on that screen (0.5.312)")
+need("playSound(.start)" in start_fn and "playSound(.stop)" in body(dictation, "    func stop() {")
+     and start_fn.index("pill = .listening(since: Date())") < start_fn.index("playSound(.start)"), "start and stop sounds")
+stop_fn = body(dictation, "    func stop() {")
+need(stop_fn.index("let pcm = try capture.stop()") < stop_fn.index("playSound(.stop)"), "the stop sound plays only after the microphone closed")
+need("playSound(" not in body(dictation, "    func cancel() {"), "a cancel (a chord) is silent")
+need('forKey: "dictation.sound.start") ?? "pet"' in dictation and 'forKey: "dictation.sound.stop") ?? "pet"' in dictation
+     and 'forKey: "dictation.sound.volume") as? Double ?? DictationSoundLibrary.defaultVolume' in dictation and "static let defaultVolume = 0.6" in core,
+     "sound defaults: the pet's sound for start and stop, volume 60%")
+need("macRecording: macRecordingActive?() ?? false" in dictation and "model.dictation.macRecordingActive = { [weak model] in model?.macRecordingActive ?? false }" in read("Sources/COSControlApp.swift"),
+     "sounds know about a Mac recording")
+need('Button("Preview") { store.previewSound(edge) }' in dictation and 'COSDropdownOption("import", "Your own file…")' in dictation
+     and "Slider(value: $store.soundVolume, in: 0...1)" in dictation and "DictationSoundSettings(store: store)" in dictation, "Settings: choice, your own file, volume, preview")
+need("attributes: [.posixPermissions: 0o600]" in body(dictation, "    func importCustomSound(_ edge: DictationSoundEdge) {")
+     and "DictationSoundLibrary.customRefusal(byteCount: bytes, duration: duration)" in dictation, "your own file is validated and stored privately")
+ids = re.findall(r'\("([a-z0-9-]+)", "[^"]+"\)', core[core.index("static let sounds:"):core.index("static let defaultVolume")])
+for sound_id in ids:
+    for edge in ("start", "stop"):
+        f = root / "Resources/Sounds" / f"{sound_id}-{edge}.wav"
+        need(f.exists() and 1_000 < f.stat().st_size < 200_000, f"{f.name} is rendered and small")
+need(len(ids) == 7 and (root / "scripts/render-dictation-sounds.py").exists(), "every library sound is rendered by the committed script")
+need('cp "$ROOT/Resources/Sounds/"*.wav "$APP/Contents/Resources/Sounds/"' in (root / "scripts/build-release.sh").read_text(), "the sounds ship in the app")
 for field in ("pill", "surface", "card", "recent", "listRoute", "fixSelection", "fixNote", "fixSaving"):
     decl = re.search(rf"@Published private\(set\) var {field}\b[^\n]*", dictation)
     need(decl is not None, f"{field} is not a published, store-owned field")
@@ -186,7 +209,8 @@ need("panel.allowsKey = fixing" in overlay and "override var canBecomeKey: Bool 
      "the overlay may take the keyboard only for Fix a word")
 need("if fixing { panel.makeKeyAndOrderFront(nil) } else { panel.orderFrontRegardless() }" in overlay,
      "showing the pill or card must never make the overlay key")
-need("screen.minY + 8" in overlay and "screen.midX - size.width / 2" in overlay, "bottom center, above the Dock")
+need("screen.minY + 8" in overlay and "screen.midX - size.width / 2" in overlay and "store.floatingScreen.flatMap" in overlay,
+     "bottom center, above the Dock, on the chosen screen")
 sinks = re.findall(r"\.sink \{ \[weak self\] _ in Task \{ @MainActor in self\?\.sync\(\) \} \}", overlay)
 need(len(sinks) == 5 and overlay.count(".sink") == 5,
      "every overlay sink hops to the main actor before reading the new state (reviewed 0.5.309); a new sink needs the same review")

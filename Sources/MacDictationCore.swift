@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 
 /// Desktop dictation is a user gesture, separate from meeting recording and glasses gestures.
@@ -686,5 +687,111 @@ enum DictationClipboard {
 
     static func restore(_ snapshot: DictationClipboardSnapshot, to board: some DictationPasteboardAccess) -> Bool {
         board.replace(with: snapshot.items)
+    }
+}
+
+// MARK: - Dictation sounds (0.5.312)
+//
+// Miles approved the library 2026-10-15 21:16-21:32 (design/dictation-sounds-preview.html; "Unstable saber" is the v2
+// matched to his reference, v1 is kept as the earlier take), rendered offline to
+// Resources/Sounds by scripts/render-dictation-sounds.py. Original synthesis only.
+
+enum DictationPetKind: String, Sendable { case jedi, droid, other }
+
+enum DictationSoundEdge: String, Sendable, CaseIterable { case start, stop }
+
+enum DictationSoundLibrary {
+    /// Bundled sounds, in menu order: id (file prefix) and the name Settings shows.
+    static let sounds: [(id: String, name: String)] = [
+        ("unstable-saber", "Unstable saber"), ("unstable-saber-v1", "Unstable saber (earlier take)"),
+        ("saber-full", "Saber, full ignition"), ("saber-ignite", "Saber ignite"),
+        ("saber-soft", "Saber, soft"), ("droid-chirp", "Droid chirp"), ("soft-chime", "Soft chime"),
+    ]
+    static let defaultVolume = 0.6
+    static let maximumCustomBytes = 2 * 1024 * 1024
+    static let maximumCustomSeconds = 3.0
+
+    /// THE pet → default table (Miles: the Jedi's crackling Unstable saber is his favorite).
+    static func petDefault(_ kind: DictationPetKind) -> String {
+        switch kind {
+        case .jedi: "unstable-saber"
+        case .droid: "droid-chirp"
+        case .other: "soft-chime"
+        }
+    }
+    static func name(_ id: String) -> String { sounds.first { $0.id == id }?.name ?? id }
+    static func fileName(_ id: String, _ edge: DictationSoundEdge) -> String { "\(id)-\(edge.rawValue).wav" }
+
+    /// A pack with the duel and swarm stories is one of the Jedi packs; a pack whose files name a droid or robot is a
+    /// droid; anything else (Cloud Puff, a gallery pet) is other.
+    static func petKind(hasCombatStories: Bool, assetNames: [String]) -> DictationPetKind {
+        if hasCombatStories { return .jedi }
+        let names = assetNames.map { $0.lowercased() }
+        return names.contains { $0.contains("droid") || $0.contains("robot") || $0.contains("astromech") } ? .droid : .other
+    }
+
+    /// What Settings stores: "pet", "library:<id>" or "custom:<file name>".
+    enum Choice: Equatable, Sendable {
+        case pet, library(String), custom(String)
+        init(stored: String) {
+            if stored.hasPrefix("library:") { self = .library(String(stored.dropFirst(8))) }
+            else if stored.hasPrefix("custom:") { self = .custom(String(stored.dropFirst(7))) }
+            else { self = .pet }
+        }
+        var stored: String {
+            switch self {
+            case .pet: "pet"
+            case .library(let id): "library:" + id
+            case .custom(let file): "custom:" + file
+            }
+        }
+    }
+
+    enum Resolved: Equatable, Sendable {
+        case silent(String)
+        case bundled(String)
+        case custom(String)
+    }
+
+    /// Pet default, then the person's choice; a custom file that is no longer valid falls back to the pet's sound.
+    /// Volume 0 is off, and nothing plays while a Mac recording is capturing (it would be recorded).
+    static func resolve(_ choice: Choice, edge: DictationSoundEdge, pet: DictationPetKind, volume: Double,
+                        macRecording: Bool, customUsable: (String) -> Bool) -> Resolved {
+        guard volume > 0 else { return .silent("volume off") }
+        guard !macRecording else { return .silent("a Mac recording is capturing") }
+        switch choice {
+        case .library(let id) where sounds.contains(where: { $0.id == id }): return .bundled(fileName(id, edge))
+        case .custom(let file) where customUsable(file): return .custom(file)
+        default: return .bundled(fileName(petDefault(pet), edge))
+        }
+    }
+
+    /// Your own file: at most 2 MB and 3 s, and it must decode (a duration). Nil means accepted.
+    static func customRefusal(byteCount: Int, duration: Double?) -> String? {
+        guard byteCount <= maximumCustomBytes else { return "That file is over 2 MB. Choose a short sound." }
+        guard let duration, duration.isFinite, duration > 0 else { return "COS could not play that file. Choose an audio file." }
+        guard duration <= maximumCustomSeconds else { return "That sound is longer than 3 seconds. Choose a short sound." }
+        return nil
+    }
+}
+
+/// Where the listening pill goes (Miles accepted 2026-10-15): on the pet when the pet is on the screen that holds the
+/// focused window; otherwise the floating pill, bottom center of THAT screen (pet on another display, in another
+/// space, or hidden).
+enum DictationPlacement: Equatable, Sendable {
+    case pet
+    case floating(screen: CGRect)
+
+    static func choose(petFrame: CGRect?, focusedWindow: CGRect?, screens: [CGRect], mainScreen: CGRect?) -> DictationPlacement? {
+        let focused = focusedWindow.flatMap { window in
+            screens.max { overlap($0, window) < overlap($1, window) }.flatMap { overlap($0, window) > 0 ? $0 : nil }
+        } ?? mainScreen ?? screens.first
+        if let petFrame, let focused, overlap(focused, petFrame) > 0 { return .pet }
+        if petFrame != nil, focused == nil { return .pet }
+        return focused.map { .floating(screen: $0) }
+    }
+    private static func overlap(_ a: CGRect, _ b: CGRect) -> CGFloat {
+        let i = a.intersection(b)
+        return i.isNull ? 0 : i.width * i.height
     }
 }

@@ -1,5 +1,6 @@
 import SwiftUI
 import Combine
+import UniformTypeIdentifiers
 import AVFoundation
 import AudioToolbox
 import CoreAudio
@@ -351,6 +352,46 @@ private final class DictationConverter: @unchecked Sendable {
     }
 }
 
+/// The focused window's frame in Cocoa screen coordinates, read through Accessibility (nil without it).
+enum DictationFocusedWindow {
+    @MainActor static func frame() -> CGRect? {
+        guard AXIsProcessTrusted(), let app = NSWorkspace.shared.frontmostApplication,
+              let primary = NSScreen.screens.first?.frame else { return nil }
+        let element = AXUIElementCreateApplication(app.processIdentifier)
+        AXUIElementSetMessagingTimeout(element, 0.25)
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXFocusedWindowAttribute as CFString, &value) == .success,
+              let window = value, CFGetTypeID(window) == AXUIElementGetTypeID() else { return nil }
+        let ax = window as! AXUIElement
+        var position = CGPoint.zero, size = CGSize.zero
+        var raw: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(ax, kAXPositionAttribute as CFString, &raw) == .success, let p = raw,
+              CFGetTypeID(p) == AXValueGetTypeID(), AXValueGetValue(p as! AXValue, .cgPoint, &position) else { return nil }
+        raw = nil
+        guard AXUIElementCopyAttributeValue(ax, kAXSizeAttribute as CFString, &raw) == .success, let z = raw,
+              CFGetTypeID(z) == AXValueGetTypeID(), AXValueGetValue(z as! AXValue, .cgSize, &size) else { return nil }
+        // Accessibility measures from the top-left of the primary screen; Cocoa from its bottom-left.
+        return CGRect(x: position.x, y: primary.maxY - position.y - size.height, width: size.width, height: size.height)
+    }
+}
+
+/// Dictation's start and stop sounds. AVAudioPlayer plays asynchronously on the main thread; nothing waits on it.
+///
+/// The start sound is NOT trimmed from the recording and the microphone is NOT delayed for it: either would cost the
+/// first words of someone who starts talking as they press. The microphone opens at once, the sound plays alongside,
+/// and the stop sound plays only after the microphone has closed. Speech models ignore a short non-speech tone; a
+/// person who hears it in a transcript can lower the volume or turn it off (0).
+@MainActor final class DictationSoundPlayer {
+    private var player: AVAudioPlayer?
+    func play(_ url: URL, volume: Float) {
+        guard let next = try? AVAudioPlayer(contentsOf: url) else { return }
+        next.volume = max(0, min(1, volume))
+        next.prepareToPlay()
+        next.play()
+        player = next
+    }
+}
+
 /// A pasteboard behind DictationPasteboardAccess (NSPasteboard.general in the app). Items are read once, on first use.
 /// Not actor-isolated so it can satisfy the plain protocol; DictationInsertion only uses it on the main actor.
 final class SystemDictationPasteboard: DictationPasteboardAccess {
@@ -396,6 +437,23 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
     static let shared = MacDictationStore()
     @Published var enabled: Bool { didSet { UserDefaults.standard.set(enabled, forKey: "dictation.enabled"); if !enabled { cancel() }; registerHotKeys() } }
     @Published var microphoneUID: String { didSet { UserDefaults.standard.set(microphoneUID, forKey: "dictation.microphoneUID") } }
+    /// 0.5.312 sounds: "pet", "library:<id>" or "custom:<file>" for each edge, and a volume (0 is off).
+    @Published var soundStart: String = UserDefaults.standard.string(forKey: "dictation.sound.start") ?? "pet" {
+        didSet { UserDefaults.standard.set(soundStart, forKey: "dictation.sound.start") }
+    }
+    @Published var soundStop: String = UserDefaults.standard.string(forKey: "dictation.sound.stop") ?? "pet" {
+        didSet { UserDefaults.standard.set(soundStop, forKey: "dictation.sound.stop") }
+    }
+    @Published var soundVolume: Double = UserDefaults.standard.object(forKey: "dictation.sound.volume") as? Double ?? DictationSoundLibrary.defaultVolume {
+        didSet { UserDefaults.standard.set(soundVolume, forKey: "dictation.sound.volume") }
+    }
+    @Published private(set) var soundNote: String?
+    /// Set by the app: which family the pet is (its default sound), and whether a Mac recording is capturing.
+    var petKind: (() -> DictationPetKind)?
+    var macRecordingActive: (() -> Bool)?
+    /// The screen the floating pill uses, chosen when dictation starts (the focused window's screen).
+    @Published private(set) var floatingScreen: CGRect?
+    private let soundPlayer = DictationSoundPlayer()
     /// 0.5.312: put the person's clipboard back after a ⌘V COS posted (Wispr Flow does). On unless turned off.
     @Published var restoreClipboard: Bool = UserDefaults.standard.object(forKey: "dictation.restoreClipboard") as? Bool ?? true {
         didSet { UserDefaults.standard.set(restoreClipboard, forKey: "dictation.restoreClipboard") }
@@ -581,10 +639,16 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
         guard MacDictationPolicy.mayStart(enabled: enabled, busy: busy) else { return }
         generation = UUID(); let attempt = generation
         flashTask?.cancel(); flashTask = nil; dismissCard()
-        surface = petFrame?() != nil ? .pet : .floating
+        // On the pet only when the pet is on the screen with the focused window; else the pill on that screen.
+        let placement = DictationPlacement.choose(petFrame: petFrame?(), focusedWindow: DictationFocusedWindow.frame(),
+                                                  screens: NSScreen.screens.map(\.frame), mainScreen: NSScreen.main?.frame)
+        if case .floating(let screen)? = placement { surface = .floating; floatingScreen = screen } else { surface = .pet; floatingScreen = nil }
         pendingAudio = nil; message = nil; phase = "Starting"
         levelMeter = DictationLevelMeter(); meter.reset()
         pill = .listening(since: Date())
+        // The start sound plays as the pill appears and the microphone opens at once (no added latency). See
+        // DictationSoundPlayer for why the sound is not trimmed from the recording.
+        playSound(.start)
         task = Task {
             let permission: Bool
             switch AVCaptureDevice.authorizationStatus(for: .audio) {
@@ -630,6 +694,8 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
             // A stray tap of the shortcut is not worth a card: the pill just goes away.
             guard pcm.count >= 3200 else { fail("No usable speech was captured. Try holding the shortcut longer.", card: false); return }
             phase = "Transcribing"; pill = .transcribing
+            // After the microphone has closed, so the stop sound is never in the recording.
+            playSound(.stop)
             let wav = try MacDictationPolicy.wav(pcm)
             pendingAudio = wav
             transcribe(wav, attempt: attempt)
@@ -695,6 +761,70 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
         holdTracker?.reset(); toggleTracker?.reset()
         phase = enabled ? "Ready" : "Off"; message = "Dictation canceled. No text was inserted."
         pill = .hidden; meter.reset()
+    }
+
+    // MARK: Sounds (0.5.312)
+
+    func soundChoice(_ edge: DictationSoundEdge) -> String { edge == .start ? soundStart : soundStop }
+    var petSoundName: String { DictationSoundLibrary.name(DictationSoundLibrary.petDefault(petKind?() ?? .other)) }
+
+    private func resolvedSound(_ edge: DictationSoundEdge) -> DictationSoundLibrary.Resolved {
+        DictationSoundLibrary.resolve(DictationSoundLibrary.Choice(stored: soundChoice(edge)), edge: edge, pet: petKind?() ?? .other,
+                                      volume: soundVolume, macRecording: macRecordingActive?() ?? false,
+                                      customUsable: { [directory = Self.customSoundDirectory()] file in
+                                          FileManager.default.isReadableFile(atPath: directory.appendingPathComponent(file).path) })
+    }
+    private func soundURL(_ resolved: DictationSoundLibrary.Resolved) -> URL? {
+        switch resolved {
+        case .silent: nil
+        case .bundled(let file): Bundle.main.url(forResource: (file as NSString).deletingPathExtension, withExtension: "wav", subdirectory: "Sounds")
+        case .custom(let file): Self.customSoundDirectory().appendingPathComponent(file)
+        }
+    }
+    func playSound(_ edge: DictationSoundEdge) {
+        let resolved = resolvedSound(edge)
+        if case .silent(let why) = resolved { dictationLog.debug("sound \(edge.rawValue, privacy: .public) silent: \(why, privacy: .public)"); return }
+        guard let url = soundURL(resolved) else { return }
+        soundPlayer.play(url, volume: Float(soundVolume))
+    }
+    /// Settings' Preview. Same rules as dictation, so a preview during a Mac recording says why it is silent.
+    func previewSound(_ edge: DictationSoundEdge) {
+        if case .silent(let why) = resolvedSound(edge) { soundNote = "No sound: \(why)."; return }
+        soundNote = nil
+        playSound(edge)
+    }
+    /// ~/Library/Application Support/COS Control/dictation-sounds (a check run uses its own test home).
+    nonisolated static func customSoundDirectory(environment: [String: String] = ProcessInfo.processInfo.environment) -> URL {
+        if let home = environment["COS_CONTROL_TEST_HOME"] { return URL(fileURLWithPath: home).appendingPathComponent("dictation-sounds", isDirectory: true) }
+        return FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/COS Control/dictation-sounds", isDirectory: true)
+    }
+    /// Your own file…: an audio file of at most 2 MB and 3 s that decodes, copied in privately (0600).
+    func importCustomSound(_ edge: DictationSoundEdge) {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.audio]; panel.allowsMultipleSelection = false; panel.canChooseDirectories = false
+        panel.message = "Choose a short sound (3 seconds or less) for when dictation \(edge == .start ? "starts" : "stops")."
+        guard panel.runModal() == .OK, let source = panel.url else { return }
+        let bytes = (try? source.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? Int.max
+        let duration = (try? AVAudioPlayer(contentsOf: source)).map(\.duration)
+        if let refusal = DictationSoundLibrary.customRefusal(byteCount: bytes, duration: duration) { soundNote = refusal; return }
+        let directory = Self.customSoundDirectory()
+        let name = "\(edge.rawValue)-\(UUID().uuidString.prefix(8)).\(source.pathExtension.lowercased())"
+        let target = directory.appendingPathComponent(name)
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+            guard let data = try? Data(contentsOf: source), data.count <= DictationSoundLibrary.maximumCustomBytes,
+                  FileManager.default.createFile(atPath: target.path, contents: data, attributes: [.posixPermissions: 0o600]) else {
+                soundNote = "COS could not copy that sound."; return
+            }
+        } catch { soundNote = "COS could not copy that sound."; return }
+        // The previous file for this edge goes; the new one is the choice.
+        if case .custom(let old) = DictationSoundLibrary.Choice(stored: soundChoice(edge)) {
+            try? FileManager.default.removeItem(at: directory.appendingPathComponent(old))
+        }
+        let stored = DictationSoundLibrary.Choice.custom(name).stored
+        if edge == .start { soundStart = stored } else { soundStop = stored }
+        soundNote = nil
+        previewSound(edge)
     }
 
     // MARK: Recent dictations (0.5.309)
@@ -867,6 +997,7 @@ struct MacDictationSettings: View {
                 DictationShortcutRow(store: store, hold: true, activityShortcut: activityShortcut)
                 DictationShortcutRow(store: store, hold: false, activityShortcut: activityShortcut)
                 Button("Allow insertion into other apps…") { store.requestInsertionPermission() }.controlSize(.small)
+                DictationSoundSettings(store: store)
                 Toggle("Restore my clipboard after pasting", isOn: $store.restoreClipboard).toggleStyle(COSSwitchStyle())
                     .help("When COS pastes with ⌘V, it puts back whatever you had copied once the app has the text.")
                 Text("Any shortcut: a modifier plus a key, a function key, or one modifier key by itself such as Fn 🌐 or Right ⌘. Fn and single-key shortcuts use Accessibility. Finished text drops into the text box that has the cursor; with no text box it is copied, and the pet shows it with a Copy button. Some apps, such as terminals and Electron editors, get ⌘V; COS shows Pasted when it can't confirm, then puts your clipboard back. COS never presses Send or Return.")
@@ -994,7 +1125,8 @@ private final class DictationHostingView<Content: View>: NSHostingView<Content> 
         panel.ignoresMouseEvents = store.card == nil && !fixing
         panel.allowsKey = fixing
         let size = host?.fittingSize ?? NSSize(width: 360, height: 60)
-        if let screen = (NSScreen.main ?? NSScreen.screens.first)?.visibleFrame {
+        let chosen = store.floatingScreen.flatMap { frame in NSScreen.screens.first { $0.frame == frame } } ?? NSScreen.main ?? NSScreen.screens.first
+        if let screen = chosen?.visibleFrame {
             panel.setFrame(NSRect(x: (screen.midX - size.width / 2).rounded(), y: screen.minY + 8, width: size.width, height: size.height), display: true)
         }
         if fixing { panel.makeKeyAndOrderFront(nil) } else { panel.orderFrontRegardless() }
@@ -1746,5 +1878,44 @@ struct TranscriptionDictionaryPane: View {
         let written = newWritten.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !heard.isEmpty, !written.isEmpty else { return }
         Task { if await dictionary.learn(heard: heard, written: written, source: "manual") { newHeard = ""; newWritten = "" } }
+    }
+}
+
+/// Settings → Dictation → Sound (0.5.312): the pet's sound by default, any library sound, or your own file, for start
+/// and stop separately, a volume (0 is off) and a Preview for each.
+struct DictationSoundSettings: View {
+    @ObservedObject var store: MacDictationStore
+    private func options(_ edge: DictationSoundEdge) -> [COSDropdownOption<String>] {
+        var list = [COSDropdownOption("pet", "Pet's sound (\(store.petSoundName))")]
+        list += DictationSoundLibrary.sounds.map { COSDropdownOption(DictationSoundLibrary.Choice.library($0.id).stored, $0.name) }
+        if case .custom(let file) = DictationSoundLibrary.Choice(stored: store.soundChoice(edge)) {
+            list.append(COSDropdownOption(store.soundChoice(edge), "Your file (\(file))"))
+        }
+        list.append(COSDropdownOption("import", "Your own file…"))
+        return list
+    }
+    private func binding(_ edge: DictationSoundEdge) -> Binding<String> {
+        Binding(get: { store.soundChoice(edge) }, set: { value in
+            if value == "import" { store.importCustomSound(edge) }
+            else if edge == .start { store.soundStart = value } else { store.soundStop = value }
+        })
+    }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Sound").font(.caption)
+            ForEach(DictationSoundEdge.allCases, id: \.self) { edge in
+                HStack {
+                    COSDropdown(edge == .start ? "Start" : "Stop", selection: binding(edge), options: options(edge))
+                    Button("Preview") { store.previewSound(edge) }.controlSize(.small)
+                }
+            }
+            HStack {
+                Text("Volume").font(.caption)
+                Slider(value: $store.soundVolume, in: 0...1)
+                Text(store.soundVolume <= 0 ? "Off" : "\(Int((store.soundVolume * 100).rounded()))%").font(.caption.monospacedDigit())
+            }
+            if let note = store.soundNote { Text(note).font(.caption2).foregroundStyle(COSPalette.amber) }
+            Text("Sounds never play while a Mac recording is capturing.").font(.caption2).foregroundStyle(.secondary)
+        }
     }
 }

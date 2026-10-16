@@ -10,7 +10,9 @@ import UniformTypeIdentifiers
 @MainActor
 final class SessionPetPresenter: NSObject, ObservableObject, NSWindowDelegate {
     private var panel: NSPanel?
-    var visibleFrame: NSRect? { panel?.isVisible == true ? panel?.frame : nil }
+    /// The pet's frame while it is on screen in the ACTIVE space (0.5.312: a pet left in another space or full-screen
+    /// app is not where the person is looking, so dictation shows its pill on the focused screen instead).
+    var visibleFrame: NSRect? { panel?.isVisible == true && panel?.isOnActiveSpace == true ? panel?.frame : nil }
     private weak var model: ControllerModel?
     private var showActivity: ((ActivitySection?) -> Void)?
     private var pollTask: Task<Void, Never>?

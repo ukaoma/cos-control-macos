@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 
 /// 0.5.312: a pasteboard the clipboard-restore checks can watch.
@@ -332,6 +333,43 @@ final class FakeDictationBoard: DictationPasteboardAccess {
         expect(DictationClipboard.keepWaiting(elapsedMilliseconds: 100, fieldChanging: false) && !DictationClipboard.keepWaiting(elapsedMilliseconds: 500, fieldChanging: false)
                && DictationClipboard.keepWaiting(elapsedMilliseconds: 700, fieldChanging: true) && !DictationClipboard.keepWaiting(elapsedMilliseconds: 1_500, fieldChanging: true),
                "restore no sooner than 500 ms, later while the field moves, never past 1.5 s")
-        print("PASS Mac dictation: \(count) policy checks; insert-target table, measured delivery, terminals, layout ⌘V, listening bars end to end, clipboard restore, recent dictations file, card countdown, fix-a-word selection, bounded audio, PCM16 WAV, device failure, any-key triggers")
+        // 0.5.312 sounds: pet default → the person's choice → a custom file that must still be usable.
+        typealias L = DictationSoundLibrary
+        expect(L.petDefault(.jedi) == "unstable-saber" && L.petDefault(.droid) == "droid-chirp" && L.petDefault(.other) == "soft-chime", "one pet table")
+        expect(L.petKind(hasCombatStories: true, assetNames: ["session-pet-duel-two-droid-v15.png"]) == .jedi
+               && L.petKind(hasCombatStories: false, assetNames: ["Astromech-Droid-idle.png"]) == .droid
+               && L.petKind(hasCombatStories: false, assetNames: ["cloud-puff-idle.png"]) == .other, "pet kind")
+        let usable: (String) -> Bool = { $0 == "start-ok.m4a" }
+        func pick(_ stored: String, _ edge: DictationSoundEdge = .start, pet: DictationPetKind = .jedi, volume: Double = 0.6, recording: Bool = false) -> L.Resolved {
+            L.resolve(L.Choice(stored: stored), edge: edge, pet: pet, volume: volume, macRecording: recording, customUsable: usable)
+        }
+        expect(pick("pet") == .bundled("unstable-saber-start.wav") && pick("pet", .stop, pet: .other) == .bundled("soft-chime-stop.wav"), "the pet's sound by default")
+        expect(pick("library:droid-chirp", pet: .jedi) == .bundled("droid-chirp-start.wav"), "a library choice overrides the pet")
+        expect(pick("library:not-a-sound") == .bundled("unstable-saber-start.wav"), "an unknown library id falls back to the pet")
+        expect(pick("custom:start-ok.m4a") == .custom("start-ok.m4a") && pick("custom:gone.m4a") == .bundled("unstable-saber-start.wav"),
+               "your own file, or the pet's sound once it is gone")
+        expect(pick("pet", volume: 0) == .silent("volume off") && pick("custom:start-ok.m4a", volume: 0) == .silent("volume off"), "volume 0 is silent")
+        expect(pick("pet", recording: true) == .silent("a Mac recording is capturing") && pick("library:soft-chime", .stop, recording: true) == .silent("a Mac recording is capturing"),
+               "never during a Mac recording (it would be recorded)")
+        expect(L.Choice(stored: "garbage") == .pet && L.Choice(stored: L.Choice.custom("a b.wav").stored) == .custom("a b.wav"), "stored choices round-trip")
+        expect(L.customRefusal(byteCount: 500_000, duration: 1.2) == nil && L.customRefusal(byteCount: L.maximumCustomBytes + 1, duration: 1) != nil
+               && L.customRefusal(byteCount: 10, duration: 3.5) != nil && L.customRefusal(byteCount: 10, duration: nil) != nil
+               && L.customRefusal(byteCount: 10, duration: 3.0) == nil, "your own file: 2 MB, 3 s, and it must decode")
+        expect(L.defaultVolume == 0.6 && L.sounds.map(\.id).allSatisfy { !$0.isEmpty } && Set(L.sounds.map(\.id)).count == L.sounds.count, "library")
+        // The pill goes where the person is looking.
+        let left = CGRect(x: 0, y: 0, width: 1512, height: 982), right = CGRect(x: 1512, y: 0, width: 3440, height: 1440)
+        let petOnLeft = CGRect(x: 1200, y: 40, width: 300, height: 260)
+        expect(DictationPlacement.choose(petFrame: petOnLeft, focusedWindow: CGRect(x: 100, y: 100, width: 800, height: 600), screens: [left, right], mainScreen: left) == .pet,
+               "pet on the focused screen: the pill rides the pet")
+        expect(DictationPlacement.choose(petFrame: petOnLeft, focusedWindow: CGRect(x: 2000, y: 200, width: 1200, height: 900), screens: [left, right], mainScreen: left) == .floating(screen: right),
+               "pet on another display: the pill on the focused window's screen")
+        expect(DictationPlacement.choose(petFrame: nil, focusedWindow: CGRect(x: 2000, y: 200, width: 1200, height: 900), screens: [left, right], mainScreen: left) == .floating(screen: right),
+               "pet hidden or in another space: the focused screen")
+        expect(DictationPlacement.choose(petFrame: nil, focusedWindow: nil, screens: [left, right], mainScreen: right) == .floating(screen: right)
+               && DictationPlacement.choose(petFrame: petOnLeft, focusedWindow: nil, screens: [left, right], mainScreen: right) == .floating(screen: right),
+               "no Accessibility: the main screen")
+        expect(DictationPlacement.choose(petFrame: petOnLeft, focusedWindow: CGRect(x: 1400, y: 100, width: 600, height: 400), screens: [left, right], mainScreen: left) == .floating(screen: right),
+               "a window across both screens counts where most of it is")
+        print("PASS Mac dictation: \(count) policy checks; insert-target table, measured delivery, terminals, layout ⌘V, listening bars end to end, clipboard restore, sounds, pill placement, recent dictations file, card countdown, fix-a-word selection, bounded audio, PCM16 WAV, device failure, any-key triggers")
     }
 }
