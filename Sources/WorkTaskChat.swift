@@ -824,19 +824,16 @@ private struct WorkChatSendControls: View {
             Text(chat.refreshing ? "Refreshing receipts and updates… Your draft is preserved." : "⌘ Return to plan · Return adds a line").font(COSType.body(10)).foregroundStyle(COSPalette.muted)
             Spacer()
             if !chat.planners.isEmpty {
-                Picker("Plan with", selection: $planner) {
-                    ForEach(chat.planners, id: \.self) { Text(WorkChatPolicy.plannerName($0)).tag($0) }
-                }
-                .pickerStyle(.menu).fixedSize().disabled(chat.busy)
-                .help("The model that plans. It never sends: you review every assignment first.")
-                .accessibilityIdentifier("work-chat-planner")
+                // GOTCOS theme (0.5.251): COSDropdown, never a stock Picker.
+                COSDropdown("Plan with", selection: $planner, options: chat.planners.map { COSDropdownOption($0, WorkChatPolicy.plannerName($0)) })
+                    .frame(maxWidth: 190).disabled(chat.busy)
+                    .help("The model that plans. It never sends: you review every assignment first.")
+                    .accessibilityIdentifier("work-chat-planner")
                 if !chat.efforts.isEmpty {
-                    Picker("Effort", selection: $effort) {
-                        ForEach(chat.efforts, id: \.self) { Text(WorkChatPolicy.effortName($0)).tag($0) }
-                    }
-                    .pickerStyle(.menu).fixedSize().disabled(chat.busy)
-                    .help("How hard the planner thinks. Higher takes longer and costs more per plan.")
-                    .accessibilityIdentifier("work-chat-effort")
+                    COSDropdown("Effort", selection: $effort, options: chat.efforts.map { COSDropdownOption($0, WorkChatPolicy.effortName($0)) })
+                        .frame(maxWidth: 170).disabled(chat.busy)
+                        .help("How hard the planner thinks. Higher takes longer and costs more per plan.")
+                        .accessibilityIdentifier("work-chat-effort")
                 }
             } else if let notice = chat.plannerNotice {
                 Text(notice).font(COSType.body(10)).foregroundStyle(COSPalette.muted).help("COS could not read this server's planner choice. Plans use Sonnet until the next try.")
