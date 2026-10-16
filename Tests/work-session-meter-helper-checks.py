@@ -39,7 +39,6 @@ try:
     (repo / 'a.txt').write_text('one\n2\n3\n4\n5\n6\n7\n8\n9\n')
     base = git('rev-list', '-1', '--before=2026-10-15T11:00:00Z', 'HEAD').strip()
     expected = git('diff', '--shortstat', base).strip()
-    status_before = git('status', '--porcelain'); index = repo / '.git/index'; index_before = index.stat().st_mtime_ns
 
     # Claude: an output written early (beyond the tail window), > 4 MB of padding, then the newest turns.
     sid = str(uuid.uuid4())
@@ -61,6 +60,8 @@ try:
     transcript.write_text('\n'.join(json.dumps(r) for r in rows) + '\n')
     check(transcript.stat().st_size > 4_500_000, 'the fixture is bigger than the bounded windows')
 
+    # Snapshot AFTER every fixture file is written (several are output files inside the repo), right before the helper runs.
+    status_before = git('status', '--porcelain'); index = repo / '.git/index'; index_before = index.stat().st_mtime_ns
     result = run('--session', f'claude:{sid}', '--since', f'{since:.3f}')
     d = result['details']
     check(result['ok'] and d['known'] is True and d['provider'] == 'claude', 'a Claude transcript is known')
