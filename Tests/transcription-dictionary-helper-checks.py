@@ -14,7 +14,10 @@ seen = []
 state = {'vocabulary': ['Parakeet', 'Wispr'], 'corrections': {'Myles': 'Miles', 'carrot iq': 'CaratIQ'}, 'negative_rules': []}
 entry = {'id': 'c1', 'heard': 'Whisper', 'written': 'Wispr', 'source': 'dictation', 'at': '2026-10-15T23:05:00.000Z',
          'replacedKey': None, 'previous': None, 'addedVocabulary': True}
-routes = {'recent': (200, {'entries': [entry, {'id': 7}]}), 'learn': (200, {'unchanged': False, 'entry': entry}), 'undo': (200, {'undone': entry})}
+routes = {'recent': (200, {'entries': [entry, {'id': 7}]}), 'learn': (200, {'unchanged': False, 'entry': entry}), 'undo': (200, {'undone': entry}),
+          'single': 200, 'glossary': 200}
+# The server's MAX_TERM_LEN (server/lib/glossary-learn.ts) in UTF-16 units; the helper's dictionaryMaxTermUTF16 must match.
+MAX_TERM_LEN = 100
 checks = 0
 
 
@@ -32,7 +35,21 @@ class Handler(BaseHTTPRequestHandler):
             if self.headers.get('X-COS-Token') != token:
                 status, body = 401, {'error': 'unauthorized'}
             elif self.path == '/api/transcription-glossary' and self.command == 'GET':
-                status, body = 200, state
+                status, body = (200, state) if routes['glossary'] == 200 else (routes['glossary'], {'error': 'down'})
+            elif self.path in ('/api/transcription-glossary/vocabulary/add', '/api/transcription-glossary/vocabulary/remove',
+                               '/api/transcription-glossary/correction/remove'):
+                patch = json.loads(data)
+                if routes['single'] != 200:
+                    status, body = routes['single'], {'error': 'Cannot POST'}
+                else:
+                    before = copy.deepcopy(state)
+                    if self.path.endswith('/vocabulary/add'):
+                        if not any(t.lower() == patch['term'].lower() for t in state['vocabulary']): state['vocabulary'].append(patch['term'])
+                    elif self.path.endswith('/vocabulary/remove'):
+                        state['vocabulary'] = [t for t in state['vocabulary'] if t != patch['term']]
+                    else:
+                        state['corrections'].pop(patch['heard'], None)
+                    status, body = 200, {'unchanged': before == state, 'glossary': state}
             elif self.path == '/api/transcription-glossary' and self.command == 'PUT':
                 patch = json.loads(data)
                 state.update({k: v for k, v in patch.items() if k in ('vocabulary', 'corrections')})
@@ -104,21 +121,55 @@ try:
     result = run({'operation': 'undo', 'payload': {'id': 'c1'}})
     check(not result['ok'] and 'newer correction' in result['message'], 'a refused undo says why')
 
-    check(run({'operation': 'add-vocabulary', 'payload': {'term': 'Jewel360'}})['details']['vocabulary'] == ['Parakeet', 'Wispr', 'Jewel360'], 'a word is appended')
-    run({'operation': 'add-vocabulary', 'payload': {'term': 'wispr'}})
-    check(state['vocabulary'] == ['Parakeet', 'Wispr', 'Jewel360'], 'a case variant is not added twice')
+    # 6.73.12: single items go to their own atomic routes; the helper never reads the map and writes it back.
+    before = len(seen)
+    result = run({'operation': 'add-vocabulary', 'payload': {'term': 'Jewel360'}})
+    check(result['details']['vocabulary'] == ['Parakeet', 'Wispr', 'Jewel360'] and result['message'] == 'Word added', 'a word is added')
+    check([s for s in seen[before:] if s[0] != 'GET'] == [('POST', '/api/transcription-glossary/vocabulary/add', {'term': 'Jewel360'})],
+          'exactly one atomic add, no PUT of the whole dictionary')
+    result = run({'operation': 'add-vocabulary', 'payload': {'term': 'wispr'}})
+    check(state['vocabulary'] == ['Parakeet', 'Wispr', 'Jewel360'] and result['message'] == 'Already in the dictionary'
+          and result['details']['unchanged'] is True, 'a case variant is not added twice, and says so')
     run({'operation': 'remove-vocabulary', 'payload': {'term': 'Parakeet'}})
     check(state['vocabulary'] == ['Wispr', 'Jewel360'], 'a word is removed exactly')
     before = len(seen)
     run({'operation': 'remove-correction', 'payload': {'heard': 'Myles'}})
+    check([s for s in seen[before:] if s[0] != 'GET'] == [('POST', '/api/transcription-glossary/correction/remove', {'heard': 'Myles'})],
+          'remove-correction is one atomic POST')
+    check(state['corrections'] == {'carrot iq': 'CaratIQ'}, 'only that correction went')
+
+    # An older server: single edits say which version; a hand-added correction still saves the old way.
+    routes['single'] = 404; routes['learn'] = (404, {'error': 'Cannot POST'})
+    before = len(seen)
+    result = run({'operation': 'add-vocabulary', 'payload': {'term': 'Bottle POS'}})
+    check(not result['ok'] and '6.73.12' in result['message'] and not [s for s in seen[before:] if s[0] == 'PUT'], 'no PUT fallback for single edits')
+    before = len(seen)
+    result = run({'operation': 'learn', 'payload': {'heard': 'Santi', 'written': 'Sante HQ', 'source': 'manual'}})
     puts = [s for s in seen[before:] if s[0] == 'PUT']
-    check(puts == [('PUT', '/api/transcription-glossary', {'corrections': {'carrot iq': 'CaratIQ'}})], 'remove-correction PUTs only the corrections map')
+    check(result['ok'] and len(puts) == 1 and puts[0][2]['corrections']['Santi'] == 'Sante HQ' and 'Sante HQ' in puts[0][2]['vocabulary'],
+          'a hand-added correction falls back to the whole-dictionary write on an older server')
+    before = len(seen)
+    result = run({'operation': 'learn', 'payload': {'heard': 'x', 'written': 'y', 'source': 'dictation'}})
+    check(not result['ok'] and '6.73.12' in result['message'] and not [s for s in seen[before:] if s[0] == 'PUT'], 'Fix a word never falls back')
+    routes['single'] = 200; routes['learn'] = (200, {'unchanged': False, 'entry': entry})
+
+    # A save that worked stays a success when the read-back fails.
+    routes['glossary'] = 503
+    result = run({'operation': 'learn', 'payload': {'heard': 'Whisper', 'written': 'Wispr', 'source': 'dictation'}})
+    check(result['ok'] and result['details'].get('stale') is True and 'vocabulary' not in result['details'], 'stale, not failed')
+    routes['glossary'] = 200
+
+    # Length is UTF-16 units, as on the server: 50 emoji are exactly MAX_TERM_LEN; 51 are refused before the network.
+    check(run({'operation': 'add-vocabulary', 'payload': {'term': '\U0001F600' * (MAX_TERM_LEN // 2)}})['ok'], 'exactly MAX_TERM_LEN UTF-16 units accepted')
+    before = len(seen)
+    check(not run({'operation': 'add-vocabulary', 'payload': {'term': '\U0001F600' * (MAX_TERM_LEN // 2 + 1)}})['ok'] and len(seen) == before,
+          'one UTF-16 unit over is refused before the network')
 
     for envelope in [{'operation': 'delete-everything', 'payload': {}},
                      {'operation': 'learn', 'payload': {'heard': 'a', 'written': 'b'}},
                      {'operation': 'learn', 'payload': {'heard': 'a', 'written': 'b', 'source': 'email'}},
                      {'operation': 'learn', 'payload': {'heard': 'a', 'written': 'b', 'source': 'manual', 'path': '/api/x'}},
-                     {'operation': 'learn', 'payload': {'heard': 'a' * 101, 'written': 'b', 'source': 'manual'}},
+                     {'operation': 'learn', 'payload': {'heard': 'a' * (MAX_TERM_LEN + 1), 'written': 'b', 'source': 'manual'}},
                      {'operation': 'learn', 'payload': {'heard': 'a\nb', 'written': 'b', 'source': 'manual'}},
                      {'operation': 'undo', 'payload': {'id': 5}},
                      {'operation': 'get', 'payload': {}, 'route': '/api/health'}]:

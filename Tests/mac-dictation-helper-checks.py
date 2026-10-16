@@ -53,6 +53,10 @@ try:
         capability['body'] = body; before = len(seen)
         check(not run()['ok'] and len(seen) == before + 1, 'unmatched server gets no audio')
     capability['body'] = {'desktopDictationVersion': 1, 'localOnly': True}
+    answer.update(status=204, body={}); result = run()
+    check(not result['ok'] and result['details'].get('noSpeech') is True, 'no speech is marked, so Control offers no Retry of the same audio')
+    answer.update(status=503, body={'error': 'busy'}); result = run()
+    check(not result['ok'] and not result['details'].get('noSpeech'), 'only the 204 is no speech')
     for status, body in [(204, {}), (503, {'error': 'private content ' + token}), (200, {'text': 'wrong engine', 'engine': 'whisper'}), (200, {'text': '', 'engine': 'parakeet-ultra'})]:
         answer.update(status=status, body=body); result = run()
         check(not result['ok'] and 'private content' not in json.dumps(result), 'silence, unavailable, wrong-engine and empty text refused safely')

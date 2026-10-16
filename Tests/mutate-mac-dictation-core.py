@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""0.5.309 mutation gate for the pure dictation rules (Sources/MacDictationCore.swift + Tests/MacDictationChecks.swift).
+"""0.5.309/0.5.310 mutation gate for the pure dictation rules (Sources/MacDictationCore.swift + Tests/MacDictationChecks.swift).
 
 SERIAL by design: one small two-file compile at a time, each through Tests/compile-guard.sh (never parallel; see the
 2026-10-07 kernel panics). Works on a scratch copy, so the checkout is never mutated. A GREEN baseline is required
@@ -13,30 +13,49 @@ import pathlib, shutil, subprocess, sys, tempfile
 root = pathlib.Path(sys.argv[1]).resolve()
 CORE = "Sources/MacDictationCore.swift"
 MUTANTS = [
+    # 0.5.310 measured delivery: each of these is a way to show ✓ when nothing landed, or to paste twice.
+    ("verification deleted: an unchanged field counts as landed", "        if after == baseline { return .unchanged }\n", ""),
+    ("iTerm2 bug back: a final unchanged poll reports inserted", "            return route == .ownWindow ? .done(.refused(.noTextBox)) : .paste",
+     "            return .done(.inserted(app: app, viaPaste: false))"),
+    ("inserted and pasted swapped", "            case .landed, .changed: return .done(.inserted(app: app, viaPaste: true))",
+     "            case .landed, .changed: return .done(.inserted(app: app, viaPaste: false))"),
+    ("a ⌘V that changed nothing reads inserted", "            case .unchanged: return .done(.refused(.pasteDidNotLand))", "            case .unchanged: return .done(.inserted(app: app, viaPaste: true))"),
+    ("an unverifiable ⌘V earns the ✓", "            case .unreadable: return .done(.unconfirmed(app: app, viaPaste: true))", "            case .unreadable: return .done(.inserted(app: app, viaPaste: true))"),
+    ("a changed field is pasted over (double insert)", "        case .landed, .changed:\n            return .done(.inserted(app: app, viaPaste: false))",
+     "        case .landed:\n            return .done(.inserted(app: app, viaPaste: false))\n        case .changed:\n            return .paste"),
+    ("no wait for a slow field", "            guard !setterSucceeded || finalPoll else { return .wait }\n", ""),
+    ("unreadable baseline still tries AX", "        guard baseline.readable else { return route == .ownWindow ? .done(.unconfirmed(app: app, viaPaste: false)) : .paste }\n", ""),
+    ("landed-by-count dropped", "n == n0 - length0 + count { return .landed }", "n == n0 + count + 1 { return .landed }"),
+    ("landed-by-caret dropped", "after.length == 0, location == location0 + count { return .landed }", "after.length == 0, location == location0 + count + 1 { return .landed }"),
+    ("terminals take the AX route", "        if terminal || !baselineReadable { return .paste }", "        if !baselineReadable { return .paste }"),
+    ("unreadable baseline takes the AX route", "        if terminal || !baselineReadable { return .paste }", "        if terminal { return .paste }"),
+    ("line breaks reach a terminal", 'for breakSequence in ["\\r\\n", "\\r", "\\n", "\\u{2028}", "\\u{2029}"]', 'for breakSequence in ["\\u{2028}", "\\u{2029}"]'),
+    ("unconfirmed ⌘V shows a ✓", 'case .unconfirmed(_, true): .flash(label: "PASTED · ⌘V SENT", confirmed: false)', 'case .unconfirmed(_, true): .flash(label: "✓ PASTED · ⌘V SENT", confirmed: true)'),
+    ("Warp prefix forgotten", 'terminals.contains(bundleID) || bundleID.hasPrefix("dev.warp.")', "terminals.contains(bundleID)"),
+    ("Electron not detected", 'name == "Electron Framework.framework" || ', ""),
+    ("layout ignored", "for code in UInt16(0)..<128 where translate(code)?.lowercased() == character { return code }", "return 9"),
+    ("Shift no longer blocks the paste", "0x100000 | 0x80000 | 0x40000 | 0x20000 | 0x800000", "0x100000 | 0x80000 | 0x40000 | 0x800000"),
+    # Policy: a role alone is not a text box; distinct refusals stay distinct.
     ("trust ignored", "        guard trusted else { return .notTrusted }\n", ""),
-    ("secure input ignored", "        guard !secureInput else { return .secureInput }\n", ""),
-    ("password field allowed", "        if subrole == secureSubrole { return .secureField }\n", ""),
+    ("password field reads as secure input", "        if subrole == secureSubrole { return .secureField }\n", ""),
+    ("secure input ignored", "        if secureInput { return .secureInput }\n", ""),
     ("own panel allowed", "        if ownOverlay { return .ownOverlay }\n", ""),
-    ("no focus treated as a text box", "        guard let role else { return .noTextBox }\n", "        guard let role else { return nil }\n"),
-    ("search-field subrole ignored", "editableRoles.contains(role) || subrole.map({ editableRoles.contains($0) }) == true", "editableRoles.contains(role)"),
-    ("settable range ignored", "return rangeSettable || editableAncestor ? nil : .noTextBox", "return editableAncestor ? nil : .noTextBox"),
-    ("web editor ignored", "return rangeSettable || editableAncestor ? nil : .noTextBox", "return rangeSettable ? nil : .noTextBox"),
-    ("any element accepted", "return rangeSettable || editableAncestor ? nil : .noTextBox", "return nil"),
+    ("read-only field accepted", "        if focused, textSettable || editableAncestor { return nil }", "        if focused { return nil }"),
+    ("web editor ignored", "        if focused, textSettable || editableAncestor { return nil }", "        if focused, textSettable { return nil }"),
+    ("terminal/Electron refused", "        return pasteApp ? nil : .noTextBox", "        return .noTextBox"),
+    # History, meter, card, fix-a-word.
+    ("legacy inserted trusted as inserted", "            delivery = .unconfirmed(app: app, viaPaste: try c.decodeIfPresent(Bool.self, forKey: .pasted) ?? false)",
+     "            delivery = .inserted(app: app)"),
+    ("corrupt history overwritten", "        guard rename(url.path, aside.path) == 0 else { return ([], nil, false) }\n        return ([], aside, true)", "        return ([], nil, true)"),
+    ("delete removes nothing", "list.filter { $0.id != id } }", "list }"),
     ("meter floor moved", "static let floorDB = -50.0, ceilingDB = -10.0", "static let floorDB = -60.0, ceilingDB = -10.0"),
-    ("meter not clamped", "min(1, max(0, (dBFS - floorDB) / (ceilingDB - floorDB)))", "(dBFS - floorDB) / (ceilingDB - floorDB)"),
     ("slow attack", "level = target >= level ? target : level * Self.release + target * (1 - Self.release)", "level = level * Self.release + target * (1 - Self.release)"),
-    ("instant release", "level = target >= level ? target : level * Self.release + target * (1 - Self.release)", "level = target"),
     ("history unbounded", "Array(([record] + list.filter { $0.id != record.id }).prefix(limit))", "[record] + list.filter { $0.id != record.id }"),
-    ("history duplicates", "Array(([record] + list.filter { $0.id != record.id }).prefix(limit))", "Array(([record] + list).prefix(limit))"),
-    ("history oldest first", "list.sorted { $0.createdAt > $1.createdAt }", "list.sorted { $0.createdAt < $1.createdAt }"),
     ("history world-readable", "attributes: [.posixPermissions: 0o600]", "attributes: [.posixPermissions: 0o644]"),
     ("temp file left behind", "        guard rename(temp.path, url.path) == 0 else {", "        guard link(temp.path, url.path) == 0 else {"),
     ("hover does not pause", "mutating func pause(at now: Date) { guard let since = runningSince else { return }; spent += max(0, now.timeIntervalSince(since)); runningSince = nil }",
      "mutating func pause(at now: Date) { }"),
-    ("resume restarts the clock", "mutating func resume(at now: Date) { if runningSince == nil { runningSince = now } }", "mutating func resume(at now: Date) { spent = 0; runningSince = now }"),
-    ("heard keeps punctuation", "return tokens[range].joined(separator: \" \").trimmingCharacters(in: edge)", "return tokens[range].joined(separator: \" \")"),
     ("tap never clears", "        if current == index...index { return nil }\n", ""),
-    ("tap inside never restarts", "        if current.contains(index) { return index...index }\n", ""),
     ("pill never hands the ledger back", "var replacesLedger: Bool { self != .hidden }", "var replacesLedger: Bool { true }"),
     ("RMS becomes peak", "return (sum / Double(samples)).squareRoot()", "return sum > 0 ? 1 : 0"),
 ]

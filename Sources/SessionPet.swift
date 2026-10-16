@@ -1864,7 +1864,8 @@ extension SessionPetRoot {
                 if record.id != dictation.recent.first?.id { Divider() }
                 DictationRecordRow(record: record, size: size,
                                    onOpen: { dictation.openDetail(record.id) },
-                                   onCopy: { dictation.copy(record.text) })
+                                   onCopy: { dictation.copy(record.text) },
+                                   onDelete: { dictation.deleteRecord(record.id) })
             }
         }
     }

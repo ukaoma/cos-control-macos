@@ -104,52 +104,224 @@ private final class DictationConverter: @unchecked Sendable {
     }
 }
 
-/// 0.5.309 (Miles, 2026-10-15, Wispr-style): finished text is ALWAYS put on the clipboard and left there, then dropped
-/// into whatever editable text element has focus NOW in the frontmost app, so the person may click elsewhere while it
-/// transcribes. Whether to insert is DictationInsertPolicy (pure, tested); this only reads the focused element for it.
-/// Never presses Return or Send.
+/// Wispr-style delivery. The text is ALWAYS put on the clipboard and left there, then dropped into the editable text
+/// element focused NOW in the frontmost app, so the person may click elsewhere while it transcribes. Never presses
+/// Return or Send.
+///
+/// 0.5.310 (Miles, 2026-10-15 20:07: iTerm2 focused, the pet flashed "✓ INSERTED · ITERM2", nothing landed): an AX set
+/// that returns success proves nothing. COS measures the field before and after (AXNumberOfCharacters and
+/// AXSelectedTextRange, never AXValue) and DictationDelivery.decide (pure, tested) turns the measurements into the
+/// outcome. ✓ INSERTED only when a measured change proves it. Terminals go straight to ⌘V.
 @MainActor enum DictationInsertion {
-    enum Outcome: Equatable { case inserted(app: String), pasted(app: String), refused(DictationInsertPolicy.Refusal) }
-    static func deliver(_ text: String) -> Outcome {
-        NSPasteboard.general.clearContents(); NSPasteboard.general.setString(text, forType: .string)
-        let trusted = AXIsProcessTrusted()
+    /// Bundle path → Electron/Chromium. A frontmost app's frameworks do not change while it runs.
+    private static var chromium: [String: Bool] = [:]
+
+    static func deliver(_ raw: String) async -> DictationDeliveryOutcome {
+        let started = Date()
         let app = NSWorkspace.shared.frontmostApplication
-        let element = trusted ? app.flatMap { focused($0.processIdentifier) } : nil
-        // COS's own pet and dictation panels are never a target, even when one of them holds the keyboard.
+        let bundle = app?.bundleIdentifier
+        let name = app?.localizedName ?? "the app"
+        let terminal = KnownApps.isTerminal(bundle)
+        let text = terminal ? DictationDelivery.terminalText(raw) : raw
+        let count = text.utf16.count
+        var facts = "bundle=\(bundle ?? "-") terminal=\(terminal)"
+        // Durable, and never the text: what was focused, what COS measured, what it did (0.5.310).
+        func done(_ outcome: DictationDeliveryOutcome) -> DictationDeliveryOutcome {
+            let ms = Int(Date().timeIntervalSince(started) * 1000)
+            dictationLog.notice("delivery \(facts, privacy: .public) outcome=\(String(describing: outcome), privacy: .public) ms=\(ms)")
+            return outcome
+        }
+
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        guard pasteboard.setString(text, forType: .string) else { return done(.refused(.clipboardFailed)) }
+        let changeCount = pasteboard.changeCount
+
+        let trusted = AXIsProcessTrusted()
         let own = app?.processIdentifier == ProcessInfo.processInfo.processIdentifier
-            && (NSApp.keyWindow is PetPanel || NSApp.keyWindow is DictationOverlayPanel)
-        let refusal = DictationInsertPolicy.refusal(
-            trusted: trusted, secureInput: IsSecureEventInputEnabled(),
-            role: element.flatMap { attribute($0, kAXRoleAttribute) as? String },
-            subrole: element.flatMap { attribute($0, kAXSubroleAttribute) as? String },
-            rangeSettable: element.map(rangeSettable) ?? false,
-            editableAncestor: element.map { attribute($0, "AXEditableAncestor") != nil } ?? false,
-            ownOverlay: own)
-        if let refusal { return .refused(refusal) }
-        guard let element, let app else { return .refused(.noTextBox) }
-        let name = app.localizedName ?? "the app"
-        // AX selected text replaces only the selection (or inserts at the caret), never the whole document.
-        if AXUIElementSetAttributeValue(element, kAXSelectedTextAttribute as CFString, text as CFString) == .success { return .inserted(app: name) }
-        // Electron and browser editors often do not implement SelectedText. The text is already on the clipboard, so
-        // ⌘V into the focused field is the fallback; COS cannot confirm it landed, so it says pasted.
+        // COS's own pet and dictation panels are never a target, even when one of them holds the keyboard.
+        let ownOverlay = own && (NSApp.keyWindow is PetPanel || NSApp.keyWindow is DictationOverlayPanel)
+        if own, !ownOverlay {
+            facts += " route=ownWindow"
+            return done(ownWindow(text, app: name))
+        }
+
+        var element: AXUIElement?
+        var family = false
+        if trusted, let app, !own {
+            let appElement = AXUIElementCreateApplication(app.processIdentifier)
+            AXUIElementSetMessagingTimeout(appElement, 0.25)
+            element = focused(appElement)
+            family = isChromiumFamily(app)
+            // Electron and Chromium build their accessibility tree only when asked (ControllerModel's Claude jump does
+            // the same), then focus is read again before anything is refused.
+            if family, element.map({ !textCapable($0) }) ?? true {
+                AXUIElementSetAttributeValue(appElement, "AXManualAccessibility" as CFString, kCFBooleanTrue)
+                element = focused(appElement)
+            }
+        }
+        if let element { AXUIElementSetMessagingTimeout(element, 0.25) }
+        let role = element.flatMap { attribute($0, kAXRoleAttribute) as? String }
+        let subrole = element.flatMap { attribute($0, kAXSubroleAttribute) as? String }
+        let settable = element.map { textSettable($0) } ?? false
+        let ancestor = element.flatMap { editableAncestor($0) }
+        facts += " family=\(family) role=\(role ?? "-") subrole=\(subrole ?? "-") settable=\(settable) ancestor=\(ancestor != nil)"
+        if let refusal = DictationInsertPolicy.refusal(
+            trusted: trusted, secureInput: IsSecureEventInputEnabled(), subrole: subrole, focused: element != nil,
+            textSettable: settable, editableAncestor: ancestor != nil, pasteApp: terminal || family, ownOverlay: ownOverlay) {
+            return done(.refused(refusal))
+        }
+        // A web editor's caret lives on its editable ancestor; that is the element to set and measure.
+        let target = settable ? element : (ancestor ?? element)
+        let baseline = snapshot(target)
+        let route = DictationDelivery.route(isOwnApp: false, terminal: terminal, baselineReadable: baseline.readable)
+        facts += " route=\(route.rawValue) before=\(baseline.logDescription)"
+
+        if route == .accessibility, let target {
+            let setter = AXUIElementSetAttributeValue(target, kAXSelectedTextAttribute as CFString, text as CFString)
+            facts += " setter=\(setter.rawValue)"
+            var elapsed = 0
+            polling: for (index, ms) in DictationDelivery.pollMilliseconds.enumerated() {
+                if ms > elapsed { try? await Task.sleep(for: .milliseconds(ms - elapsed)); elapsed = ms }
+                let after = snapshot(target)
+                switch DictationDelivery.decide(route: route, baseline: baseline, setterSucceeded: setter == .success, afterSetter: after,
+                                                finalPoll: index == DictationDelivery.pollMilliseconds.count - 1, pasted: false,
+                                                afterPaste: DictationFieldSnapshot(), count: count, app: name) {
+                case .wait: continue
+                case .done(let outcome): facts += " after=\(after.logDescription)"; return done(outcome)
+                case .paste: facts += " after=\(after.logDescription)"; break polling
+                }
+            }
+        }
+
+        // ⌘V. Nothing above changed the field, so this cannot double the text.
+        let beforePaste = snapshot(target)
+        if let refusal = await paste(changeCount: changeCount) { return done(.refused(refusal)) }
+        facts += " paste=sent"
+        var waited = 0
+        var decision = DictationDecision.wait
+        for ms in [80, 200, 400] {
+            try? await Task.sleep(for: .milliseconds(ms - waited)); waited = ms
+            let after = snapshot(target)
+            decision = DictationDelivery.decide(route: .paste, baseline: beforePaste, setterSucceeded: false, afterSetter: DictationFieldSnapshot(),
+                                                finalPoll: true, pasted: true, afterPaste: after, count: count, app: name)
+            if case .done(.refused) = decision { facts += " afterPaste=\(after.logDescription)"; continue }
+            facts += " afterPaste=\(after.logDescription)"
+            break
+        }
+        if case .done(let outcome) = decision { return done(outcome) }
+        return done(.unconfirmed(app: name, viaPaste: true))
+    }
+
+    /// ⌘V on the current layout's V, only once no modifier is physically held and only while the clipboard still
+    /// holds what COS put there. Returns why it did not paste.
+    private static func paste(changeCount: Int) async -> DictationInsertPolicy.Refusal? {
+        var waited = 0
+        while DictationDelivery.modifiersHeld(CGEventSource.flagsState(.hidSystemState).rawValue) {
+            guard waited < DictationDelivery.modifierWaitMilliseconds else { return .keysHeld }
+            try? await Task.sleep(for: .milliseconds(30)); waited += 30
+        }
+        guard NSPasteboard.general.changeCount == changeCount else { return .clipboardChanged }
+        let key = CGKeyCode(vKeyCode())
         guard let source = CGEventSource(stateID: .combinedSessionState),
-              let down = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: true),
-              let up = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: false) else { return .refused(.noTextBox) }
+              let down = CGEvent(keyboardEventSource: source, virtualKey: key, keyDown: true),
+              let up = CGEvent(keyboardEventSource: source, virtualKey: key, keyDown: false) else { return .noTextBox }
         down.flags = .maskCommand; up.flags = .maskCommand
         down.post(tap: .cghidEventTap); up.post(tap: .cghidEventTap)
-        return .pasted(app: name)
+        return nil
     }
-    // nonisolated: pure AX query, passed as a function value to Optional.map above.
-    nonisolated private static func rangeSettable(_ element: AXUIElement) -> Bool {
+
+    /// The key that types "v" with ⌘ held on the current layout (Dvorak, AZERTY, Dvorak-QWERTY ⌘). ANSI V (9) when the
+    /// layout cannot be read.
+    private static func vKeyCode() -> UInt16 {
+        guard let source = TISCopyCurrentKeyboardLayoutInputSource()?.takeRetainedValue(),
+              let raw = TISGetInputSourceProperty(source, kTISPropertyUnicodeKeyLayoutData) else { return 9 }
+        let layoutData = Unmanaged<CFData>.fromOpaque(raw).takeUnretainedValue() as Data
+        let commandState = UInt32((cmdKey >> 8) & 0xFF)
+        let keyboard = UInt32(LMGetKbdType())
+        return layoutData.withUnsafeBytes { bytes -> UInt16 in
+            guard let layout = bytes.baseAddress?.assumingMemoryBound(to: UCKeyboardLayout.self) else { return 9 }
+            let found = DictationDelivery.keyCode(for: "v") { code in
+                var dead: UInt32 = 0
+                var length = 0
+                var chars = [UniChar](repeating: 0, count: 4)
+                let status = UCKeyTranslate(layout, code, UInt16(kUCKeyActionDisplay), commandState, keyboard,
+                                            OptionBits(kUCKeyTranslateNoDeadKeysMask), &dead, 4, &length, &chars)
+                return status == noErr && length > 0 ? String(utf16CodeUnits: chars, count: length) : nil
+            }
+            return found ?? 9
+        }
+    }
+
+    /// One of COS's own windows (Activity, Settings) has the keyboard: insert through its first responder, and measure
+    /// the field editor the same way.
+    private static func ownWindow(_ text: String, app: String) -> DictationDeliveryOutcome {
+        guard let responder = NSApp.keyWindow?.firstResponder else { return .refused(.noTextBox) }
+        if let view = responder as? NSTextView {
+            if view.delegate is NSSecureTextField { return .refused(.secureField) }
+            guard view.isEditable else { return .refused(.noTextBox) }
+            func measure() -> DictationFieldSnapshot {
+                let range = view.selectedRange()
+                return DictationFieldSnapshot(characters: view.string.utf16.count, location: range.location, length: range.length)
+            }
+            let before = measure()
+            view.insertText(text, replacementRange: NSRange(location: NSNotFound, length: 0))
+            let decision = DictationDelivery.decide(route: .ownWindow, baseline: before, setterSucceeded: true, afterSetter: measure(),
+                                                    finalPoll: true, pasted: false, afterPaste: DictationFieldSnapshot(), count: text.utf16.count, app: app)
+            if case .done(let outcome) = decision { return outcome }
+            return .refused(.noTextBox)
+        }
+        if let client = responder as? NSTextInputClient {
+            client.insertText(text, replacementRange: NSRange(location: NSNotFound, length: 0))
+            return .unconfirmed(app: app, viaPaste: false)
+        }
+        return .refused(.noTextBox)
+    }
+
+    private static func isChromiumFamily(_ app: NSRunningApplication) -> Bool {
+        guard let url = app.bundleURL else { return false }
+        if let known = chromium[url.path] { return known }
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: url.appendingPathComponent("Contents/Frameworks").path)) ?? []
+        let result = KnownApps.isChromiumFamily(frameworks: names)
+        chromium[url.path] = result
+        return result
+    }
+
+    /// AXNumberOfCharacters and AXSelectedTextRange only. The field's text (AXValue) is never read.
+    nonisolated private static func snapshot(_ element: AXUIElement?) -> DictationFieldSnapshot {
+        guard let element else { return DictationFieldSnapshot() }
+        var result = DictationFieldSnapshot()
+        result.characters = (attribute(element, kAXNumberOfCharactersAttribute) as? NSNumber)?.intValue
+        if let value = attribute(element, kAXSelectedTextRangeAttribute), CFGetTypeID(value) == AXValueGetTypeID() {
+            let ax = value as! AXValue
+            var range = CFRange()
+            if AXValueGetType(ax) == .cfRange, AXValueGetValue(ax, .cfRange, &range), range.location >= 0, range.length >= 0 {
+                result.location = range.location; result.length = range.length
+            }
+        }
+        return result
+    }
+    /// The element takes text: AXSelectedText or AXValue is settable. A role alone proves nothing (iTerm2).
+    nonisolated private static func textSettable(_ element: AXUIElement) -> Bool {
+        isSettable(element, kAXSelectedTextAttribute) || isSettable(element, kAXValueAttribute)
+    }
+    nonisolated private static func textCapable(_ element: AXUIElement) -> Bool {
+        textSettable(element) || editableAncestor(element) != nil
+    }
+    nonisolated private static func editableAncestor(_ element: AXUIElement) -> AXUIElement? {
+        guard let value = attribute(element, "AXEditableAncestor"), CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }
+        return (value as! AXUIElement)
+    }
+    nonisolated private static func isSettable(_ element: AXUIElement, _ key: String) -> Bool {
         var settable = DarwinBoolean(false)
-        return AXUIElementIsAttributeSettable(element, kAXSelectedTextRangeAttribute as CFString, &settable) == .success && settable.boolValue
+        return AXUIElementIsAttributeSettable(element, key as CFString, &settable) == .success && settable.boolValue
     }
-    private static func attribute(_ element: AXUIElement, _ key: String) -> CFTypeRef? {
+    nonisolated private static func attribute(_ element: AXUIElement, _ key: String) -> CFTypeRef? {
         var value: CFTypeRef?
         return AXUIElementCopyAttributeValue(element, key as CFString, &value) == .success ? value : nil
     }
-    private static func focused(_ pid: pid_t) -> AXUIElement? {
-        guard let value = attribute(AXUIElementCreateApplication(pid), kAXFocusedUIElementAttribute), CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }
+    nonisolated private static func focused(_ application: AXUIElement) -> AXUIElement? {
+        guard let value = attribute(application, kAXFocusedUIElementAttribute), CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }
         return (value as! AXUIElement)
     }
 }
@@ -227,9 +399,13 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
         }
         holdTrigger = load("dictation.hold"); toggleTrigger = load("dictation.toggle")
         phase = on ? "Ready" : "Off"
+        // A history file that does not read is moved aside before anything can be saved over it (0.5.310); when it
+        // cannot be moved, this run keeps its dictations in memory only.
         let history = Self.defaultHistoryURL()
-        historyURL = history
-        recent = history.map(DictationHistory.load(from:)) ?? []
+        let loaded = history.map { DictationHistory.loadOrQuarantine(from: $0, now: Date()) }
+        historyURL = loaded?.writable == false ? nil : history
+        recent = loaded?.records ?? []
+        if let aside = loaded?.movedTo { dictationLog.notice("recent dictations unreadable; moved aside to \(aside.lastPathComponent, privacy: .public)") }
         for name in [NSWorkspace.willSleepNotification, NSWorkspace.sessionDidResignActiveNotification] {
             sessionObservers.append(NSWorkspace.shared.notificationCenter.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
                 Task { @MainActor in self?.cancel() }
@@ -359,7 +535,7 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
             default: permission = false
             }
             guard generation == attempt, !Task.isCancelled else { return }
-            guard permission else { fail("Allow Microphone for COS Control in System Settings → Privacy & Security."); return }
+            guard permission else { fail("Allow Microphone for COS Control in System Settings → Privacy & Security.", microphone: true); return }
             refreshMicrophones()
             let selected = microphones.first { $0.id == microphoneUID }
             guard microphoneUID.isEmpty || selected != nil else { fail("Your selected microphone is disconnected. Choose another microphone."); return }
@@ -408,36 +584,44 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
                 let response = try await bridge(wav)
                 guard generation == attempt, !Task.isCancelled else { return }
                 guard response.ok, let text = response.details["text"]?.string, !text.isEmpty,
-                      response.details["engine"]?.string == "parakeet-ultra" else { fail(response.message); return }
+                      response.details["engine"]?.string == "parakeet-ultra" else {
+                    // No speech (the server's 204) is an answer, not a failure: retrying the same audio cannot help.
+                    let noSpeech = response.details["noSpeech"]?.bool == true
+                    if noSpeech { pendingAudio = nil }
+                    fail(response.message, retry: !noSpeech); return
+                }
                 pendingAudio = nil; phase = "Ready"; message = nil
-                finish(text, outcome: DictationInsertion.deliver(text))
+                let outcome = await DictationInsertion.deliver(text)
+                finish(text, outcome: outcome)
             } catch { guard generation == attempt else { return }; let reason = error.localizedDescription; dictationLog.error("transcribe failed: \(reason, privacy: .public)"); fail(reason) }
         }
     }
-    /// The text is on the clipboard already. Inserted: flash the pill. Refused: the card, which never takes focus.
-    private func finish(_ text: String, outcome: DictationInsertion.Outcome) {
-        let record: DictationRecord
-        switch outcome {
-        case .inserted(let app), .pasted(let app):
-            let pasted = outcome == .pasted(app: app)
-            record = DictationRecord(id: UUID(), text: text, createdAt: Date(), insertedApp: app, pasted: pasted)
-            let flash = DictationPill.inserted(app: app, pasted: pasted)
+    /// The text is on the clipboard already. Measured or sent: flash the pill. Refused: the card, which never takes focus.
+    private func finish(_ text: String, outcome: DictationDeliveryOutcome) {
+        let record = DictationRecord(id: UUID(), text: text, createdAt: Date(), delivery: outcome.delivery)
+        if let flash = outcome.flash {
             pill = flash
             flashTask = Task {
                 try? await Task.sleep(for: .seconds(DictationPill.flashSeconds))
                 if !Task.isCancelled, pill == flash { pill = .hidden }
             }
-        case .refused(let refusal):
-            record = DictationRecord(id: UUID(), text: text, createdAt: Date(), insertedApp: nil)
+        } else if case .refused(let refusal) = outcome {
             pill = .hidden
             showCard(DictationCard(kind: .copied(refusal), recordID: record.id, text: text, countdown: DictationCountdown(start: Date())))
         }
         remember(record)
     }
-    /// A dictation that did not finish: the reason on the card, with Retry when the audio is still held.
-    private func fail(_ reason: String, card: Bool = true) {
+    /// A dictation that did not finish: the reason on the card, with Retry while the audio is held and worth retrying,
+    /// and Open Settings when the microphone is not allowed.
+    private func fail(_ reason: String, card: Bool = true, retry: Bool = true, microphone: Bool = false) {
         phase = enabled ? "Ready" : "Off"; message = reason; pill = .hidden; meter.reset()
-        if card { showCard(DictationCard(kind: .failed(reason), recordID: nil, text: "", countdown: DictationCountdown(start: Date()))) }
+        if card {
+            showCard(DictationCard(kind: .failed(reason, retry: retry, microphone: microphone), recordID: nil, text: "",
+                                   countdown: DictationCountdown(start: Date())))
+        }
+    }
+    func openMicrophoneSettings() {
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone") { NSWorkspace.shared.open(url) }
     }
     func cancel() {
         generation = UUID(); pendingAudio = nil; task?.cancel(); task = nil; timer?.cancel(); timer = nil
@@ -452,10 +636,30 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
 
     private func remember(_ record: DictationRecord) {
         recent = DictationHistory.adding(record, to: recent)
+        saveRecent()
+    }
+    private func saveRecent() {
         guard let historyURL else { return }
         // Dictated text is private: a failure is logged by its reason only, never with the text.
         do { try DictationHistory.save(recent, to: historyURL) }
         catch { dictationLog.error("recent dictations not saved: \(error.localizedDescription, privacy: .public)") }
+    }
+    /// Delete one dictation from this Mac (its row, or its detail).
+    func deleteRecord(_ id: UUID) {
+        recent = DictationHistory.removing(id, from: recent)
+        if let card, card.recordID == id { dismissCard() }
+        switch listRoute {
+        case .detail(id)?, .fix(id)?: listRoute = recent.isEmpty ? nil : .recent; resetFix()
+        default: if recent.isEmpty { listRoute = nil }
+        }
+        saveRecent()
+    }
+    /// Settings → Clear recent dictations.
+    func clearRecent() {
+        recent = []
+        if card?.recordID != nil { dismissCard() }
+        listRoute = nil; resetFix()
+        saveRecent()
     }
     func record(_ id: UUID?) -> DictationRecord? { id.flatMap { id in recent.first { $0.id == id } } }
     func copy(_ text: String) { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(text, forType: .string) }
@@ -532,7 +736,7 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
         Task {
             let saved = await dictionary.learn(heard: heard, written: written, source: "dictation")
             fixSaving = false
-            if saved { fixSelection = nil; fixDraft = ""; fixNote = "Saved. COS writes “\(written)” from the next sentence." }
+            if saved { fixSelection = nil; fixDraft = ""; fixNote = dictionary.message ?? "Saved. COS writes “\(written)” from the next sentence." }
             else { fixNote = dictionary.message ?? "The dictionary did not save. Try again." }
         }
     }
@@ -548,7 +752,7 @@ enum DictationListRoute: Equatable, Sendable {
 
 /// One card at a time. `countdown` folds it after 20 seconds; hovering pauses it.
 struct DictationCard: Equatable, Identifiable {
-    enum Kind: Equatable { case copied(DictationInsertPolicy.Refusal), failed(String) }
+    enum Kind: Equatable { case copied(DictationInsertPolicy.Refusal), failed(String, retry: Bool, microphone: Bool) }
     let id = UUID()
     let kind: Kind
     let recordID: UUID?
@@ -563,7 +767,7 @@ struct DictationCard: Equatable, Identifiable {
     var note: String {
         switch kind {
         case .copied(let refusal): refusal.note
-        case .failed(let reason): reason
+        case .failed(let reason, _, _): reason
         }
     }
 }
@@ -598,10 +802,14 @@ struct MacDictationSettings: View {
                 DictationShortcutRow(store: store, hold: true, activityShortcut: activityShortcut)
                 DictationShortcutRow(store: store, hold: false, activityShortcut: activityShortcut)
                 Button("Allow insertion into other apps…") { store.requestInsertionPermission() }.controlSize(.small)
-                Text("Any shortcut: a modifier plus a key, a function key, or one modifier key by itself such as Fn 🌐 or Right ⌘. Fn and single-key shortcuts use Accessibility. Finished text is always copied, then dropped into the text box that has the cursor; with no text box, the pet shows it with a Copy button. COS never presses Send or Return.")
+                Text("Any shortcut: a modifier plus a key, a function key, or one modifier key by itself such as Fn 🌐 or Right ⌘. Fn and single-key shortcuts use Accessibility. Finished text is always copied, then dropped into the text box that has the cursor; with no text box, the pet shows it with a Copy button. Some apps, such as terminals and Electron editors, get ⌘V; COS shows Pasted when it can't confirm. COS never presses Send or Return.")
                     .font(.caption2).foregroundStyle(.secondary)
                 if let message = store.message { Text(message).font(.caption2).foregroundStyle(COSPalette.amber) }
             }
+            // 0.5.310: Recent dictations stay on this Mac until cleared here (or one at a time on the pet).
+            Button("Clear recent dictations (\(store.recent.count))") { store.clearRecent() }
+                .controlSize(.small)
+                .disabled(store.recent.isEmpty || store.busy)
         }.onAppear { store.refreshMicrophones() }
     }
 }
@@ -949,18 +1157,29 @@ struct DictationCardView: View {
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             HStack(spacing: size.length(7)) {
-                if case .copied = card.kind {
+                switch card.kind {
+                case .copied(let refusal):
                     Button(copied ? "Copied" : "Copy") {
                         store.copy(card.text); copied = true
                         Task { try? await Task.sleep(for: .seconds(1.4)); copied = false }
                     }
                     .buttonStyle(DictationButtonStyle(primary: true, size: size))
+                    // 0.5.310: the card that says Accessibility is off carries the way to turn it on.
+                    if refusal == .notTrusted {
+                        Button("Allow…") { store.requestInsertionPermission() }
+                            .buttonStyle(DictationButtonStyle(size: size))
+                    }
                     Button("Fix a word") { store.openFix(card.recordID) }
                         .buttonStyle(DictationButtonStyle(size: size))
                         .disabled(card.recordID == nil)
-                } else if store.canRetry {
-                    Button("Retry") { store.retryTranscription() }
-                        .buttonStyle(DictationButtonStyle(primary: true, size: size))
+                case .failed(_, let retry, let microphone):
+                    if microphone {
+                        Button("Open Settings") { store.openMicrophoneSettings() }
+                            .buttonStyle(DictationButtonStyle(primary: true, size: size))
+                    } else if retry, store.canRetry {
+                        Button("Retry") { store.retryTranscription() }
+                            .buttonStyle(DictationButtonStyle(primary: true, size: size))
+                    }
                 }
             }
         }
@@ -978,6 +1197,7 @@ struct DictationRecordRow: View {
     let size: PetSize
     let onOpen: () -> Void
     let onCopy: () -> Void
+    let onDelete: () -> Void
     @State private var copied = false
     var body: some View {
         HStack(spacing: size.length(8)) {
@@ -1003,9 +1223,23 @@ struct DictationRecordRow: View {
                 Task { try? await Task.sleep(for: .seconds(1.4)); copied = false }
             }
             .buttonStyle(DictationButtonStyle(size: size))
+            Button(action: onDelete) {
+                Image(systemName: "xmark")
+                    .font(.system(size: size.typeSize(8), weight: .bold))
+                    .foregroundStyle(.secondary)
+                    .padding(size.length(3))
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Delete this dictation from this Mac")
+            .accessibilityLabel("Delete this dictation")
         }
         .padding(.vertical, size.length(6))
         .padding(.trailing, size.length(6))
+        .contextMenu {
+            Button("Copy", action: onCopy)
+            Button("Delete", action: onDelete)
+        }
     }
 }
 
@@ -1032,6 +1266,9 @@ struct DictationRecordDetail: View {
                 Button("Fix a word") { store.openFix(record.id) }
                     .buttonStyle(DictationButtonStyle(size: size))
                 Spacer(minLength: 0)
+                Button("Delete") { store.deleteRecord(record.id) }
+                    .buttonStyle(COSTextButtonStyle(tone: .destructive))
+                    .font(COSType.body(size.typeSize(10)))
                 Button("Back") { store.backToRecent() }
                     .buttonStyle(COSTextButtonStyle())
                     .font(COSType.body(size.typeSize(10)))
@@ -1055,6 +1292,7 @@ struct DictationFixEditor: View {
     @FocusState private var fieldFocused: Bool
 
     private var tokens: [String] { DictationFixText.tokens(record.text) }
+    private var learnUnavailable: Bool { dictionary.loaded && !dictionary.learnAvailable }
 
     var body: some View {
         VStack(alignment: .leading, spacing: size.length(8)) {
@@ -1088,7 +1326,7 @@ struct DictationFixEditor: View {
                 HStack(spacing: size.length(8)) {
                     Button(store.fixSaving ? "Saving…" : "Save to dictionary") { store.saveFix(to: dictionary) }
                         .buttonStyle(DictationButtonStyle(primary: true, size: size))
-                        .disabled(store.fixSelection == nil || store.fixSaving)
+                        .disabled(store.fixSelection == nil || store.fixSaving || learnUnavailable)
                     Button("Cancel") { store.cancelFix() }
                         .buttonStyle(COSTextButtonStyle())
                         .font(COSType.body(size.typeSize(10)))
@@ -1097,6 +1335,12 @@ struct DictationFixEditor: View {
                     Text(note)
                         .font(COSType.body(size.typeSize(10)))
                         .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else if let message = dictionary.message {
+                    // A failed load or undo says so here, rather than leaving "Loading…" forever.
+                    Text(message)
+                        .font(COSType.body(size.typeSize(10)))
+                        .foregroundStyle(COSPalette.amber)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
@@ -1118,8 +1362,8 @@ struct DictationFixEditor: View {
                         .help("Open the whole dictionary in COS Activity")
                 }
             }
-            if !dictionary.learnAvailable && dictionary.loaded {
-                Text("Update the COS server to 6.73.11 to save corrections from here.")
+            if learnUnavailable {
+                Text("Update the COS server to 6.73.12 to save corrections from here.")
                     .font(COSType.body(size.typeSize(10)))
                     .foregroundStyle(COSPalette.amber)
                     .fixedSize(horizontal: false, vertical: true)
@@ -1129,7 +1373,7 @@ struct DictationFixEditor: View {
                     .foregroundStyle(.secondary)
             } else {
                 ForEach(dictionary.recent.prefix(3)) { entry in
-                    DictionaryLearnedRow(entry: entry, fontSize: size.typeSize(10), busy: dictionary.busy) {
+                    DictionaryLearnedRow(entry: entry, fontSize: size.typeSize(10), busy: dictionary.busy || store.fixSaving) {
                         Task { await dictionary.undo(entry.id) }
                     }
                 }
@@ -1220,10 +1464,19 @@ struct DictionaryLearnedRow: View {
         do {
             let response = try await bridge(body)
             if response.details["vocabulary"] != nil { apply(response.details) }
-            message = response.ok ? nil : response.message
+            if response.ok, response.details["stale"]?.bool == true {
+                message = "Saved. The dictionary could not be read back; Refresh to see it."
+            } else if response.ok, response.details["unchanged"]?.bool == true {
+                message = "Already in the dictionary."
+            } else {
+                message = response.ok ? nil : response.message
+            }
+            loaded = true
             return response.ok
         } catch {
             message = error.localizedDescription
+            // A failed first load must not leave "Loading…" up forever.
+            loaded = true
             return false
         }
     }

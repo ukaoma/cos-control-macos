@@ -2879,6 +2879,9 @@ extension ClaudeSession {
     /// negative-membership asserts for all three non-terminal tty owners the
     /// 2026-08-30 census found (Claude Desktop itself owned ttys006). tty
     /// presence is NEVER the classifier; this list is.
+    /// Dictation's KnownApps.terminals (MacDictationCore.swift) is the wider set that gets ⌘V instead of Accessibility;
+    /// this jump list must stay inside it (Tests/dictation-wispr-pins.py). Not derived from it: the jump is implemented
+    /// only for these two hosts, and ModelsContract pins exactly them.
     static let terminalHostBundleIds: Set<String> = [
         "com.googlecode.iterm2",
         "com.apple.Terminal",

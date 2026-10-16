@@ -15,6 +15,8 @@ checks = 0
 
 
 def strip_comments(src: str) -> str:
+    # Block comments first (0.5.310 QA: a /* */ quoting a pinned line satisfied the pin), newlines kept.
+    src = re.sub(r"/\*.*?\*/", lambda m: "\n" * m.group(0).count("\n"), src, flags=re.S)
     out = []
     for line in src.splitlines():
         cut, quoted, i = None, False, 0
@@ -71,31 +73,75 @@ need('"COS Dictation"' not in dictation and "DictationHUD" not in dictation and 
 need("styleMask: [.borderless, .nonactivatingPanel]" in dictation and ".titled" not in dictation,
      "the only dictation window is the borderless nonactivating overlay")
 
-# ── 2. Delivery: always copied, then the focused text box NOW, through the tested policy. Never Return.
-deliver = body(dictation, "static func deliver(_ text: String) -> Outcome {")
-copy_at = deliver.find("NSPasteboard.general.setString(text, forType: .string)")
-refuse_at = deliver.find("if let refusal { return .refused(refusal) }")
-need(copy_at >= 0 and refuse_at > copy_at, "the text must be on the clipboard BEFORE any refusal returns")
-need(deliver.count("NSPasteboard.general") == 2, "deliver must set the clipboard once and never restore it")
-need("DictationInsertPolicy.refusal(" in deliver, "insertion no longer goes through the tested DictationInsertPolicy")
+# ── 2. Delivery (0.5.310): always copied, then MEASURED. ✓ only for a measured change (Miles 20:07, iTerm2).
+deliver = body(dictation, "static func deliver(_ raw: String) async -> DictationDeliveryOutcome {")
+copy_at = deliver.find("guard pasteboard.setString(text, forType: .string) else { return done(.refused(.clipboardFailed)) }")
+refuse_at = deliver.find("return done(.refused(refusal))")
+need(copy_at >= 0 and refuse_at > copy_at, "the text must be on the clipboard (checked) BEFORE any refusal returns")
+need(deliver.count("pasteboard.setString") == 1 and "pasteboard.clearContents()" in deliver and deliver.count("clearContents") == 1,
+     "deliver sets the clipboard once and never restores it")
+need("let changeCount = pasteboard.changeCount" in deliver and "await paste(changeCount: changeCount)" in deliver,
+     "⌘V must re-check that the clipboard still holds COS's text")
+need("DictationInsertPolicy.refusal(" in deliver and "DictationDelivery.decide(" in deliver and "DictationDelivery.route(" in deliver,
+     "delivery goes through the tested policy, route and decision")
 need("IsSecureEventInputEnabled()" in deliver and "kAXSubroleAttribute" in deliver and "AXIsProcessTrusted()" in deliver,
      "secure input, the secure-field subrole and trust must all feed the policy")
 need("NSApp.keyWindow is PetPanel" in deliver and "NSApp.keyWindow is DictationOverlayPanel" in deliver,
      "COS's own pet and dictation panels must never be an insertion target")
 need("NSWorkspace.shared.frontmostApplication" in deliver and "capture()" not in dictation,
      "the target is the app focused when transcription FINISHES, not one captured at start")
-need(re.findall(r"virtualKey: (\d+)", dictation) == ["9", "9"] and "kVK_Return" not in dictation
-     and "kVK_ANSI_KeypadEnter" not in dictation,
+need(deliver.count("AXUIElementSetMessagingTimeout(") == 2 and "0.25" in deliver, "AX calls are bounded at 0.25 s on the app and the element")
+need("KnownApps.isTerminal(bundle)" in deliver and "DictationDelivery.terminalText(raw)" in deliver, "terminals get ⌘V and no line breaks")
+need('"AXManualAccessibility" as CFString, kCFBooleanTrue' in deliver and "isChromiumFamily(app)" in deliver,
+     "Electron/Chromium get their accessibility tree switched on before refusing")
+need("for (index, ms) in DictationDelivery.pollMilliseconds.enumerated()" in deliver and "try? await Task.sleep(for: .milliseconds(ms - elapsed))" in deliver,
+     "the AX result is polled asynchronously, never spun on the main thread")
+need("let beforePaste = snapshot(target)" in deliver and "pasted: true, afterPaste: after" in deliver, "a ⌘V is measured too")
+need("dictationLog.notice(\"delivery \\(facts, privacy: .public)" in deliver, "every delivery leaves one durable log line")
+snap = body(dictation, "nonisolated private static func snapshot(_ element: AXUIElement?) -> DictationFieldSnapshot {")
+need("kAXNumberOfCharactersAttribute" in snap and "kAXSelectedTextRangeAttribute" in snap and "kAXValueAttribute" not in snap,
+     "the field is measured by counts only; its text (AXValue) is never read")
+need("kAXValueAttribute" not in dictation.replace("isSettable(element, kAXValueAttribute)", ""), "AXValue is only ever asked whether it is settable")
+settable = body(dictation, "nonisolated private static func textSettable(_ element: AXUIElement) -> Bool {")
+need("kAXSelectedTextAttribute" in settable and "kAXValueAttribute" in settable, "a role alone is not a text box")
+paste = body(dictation, "private static func paste(changeCount: Int) async -> DictationInsertPolicy.Refusal? {")
+need("DictationDelivery.modifiersHeld(CGEventSource.flagsState(.hidSystemState).rawValue)" in paste and "return .keysHeld" in paste
+     and "NSPasteboard.general.changeCount == changeCount" in paste and "CGKeyCode(vKeyCode())" in paste,
+     "⌘V waits for released modifiers, refuses a changed clipboard, and uses the layout's V")
+need(re.findall(r"virtualKey: (\w+)", dictation) == ["key", "key"] and "kVK_Return" not in dictation
+     and "kVK_ANSI_KeypadEnter" not in dictation and "virtualKey: 36" not in dictation,
      "the only key COS may post is ⌘V; it never presses Return or Send")
+need("UCKeyTranslate(" in dictation and "DictationDelivery.keyCode(for: \"v\")" in dictation, "V is found on the current layout")
+own_window = body(dictation, "private static func ownWindow(_ text: String, app: String) -> DictationDeliveryOutcome {")
+need("NSApp.keyWindow?.firstResponder" in own_window and "insertText(" in own_window and "NSSecureTextField" in own_window,
+     "COS's own windows insert through their first responder, never AX on this process")
 need("mayInsert" not in core, "the old same-field-and-caret rule is gone; one insertion rule, not two")
+models = (root / "Sources/Models.swift").read_text(encoding="utf-8")
+hosts = re.search(r"static let terminalHostBundleIds: Set<String> = \[(.*?)\]", models, re.S)
+terminals = re.search(r"static let terminals: Set<String> = \[(.*?)\]", core, re.S)
+need(hosts is not None and terminals is not None and set(re.findall(r'"([^"]+)"', hosts.group(1))) <= set(re.findall(r'"([^"]+)"', terminals.group(1))),
+     "every terminal the session jump knows must also get ⌘V (KnownApps.terminals)")
 
 # ── 3. Store flow: the pill, the flash, the card; text stays private.
 transcribe = body(dictation, "private func transcribe(_ wav: Data, attempt: UUID) {")
-need("finish(text, outcome: DictationInsertion.deliver(text))" in transcribe,
+need("let outcome = await DictationInsertion.deliver(text)" in transcribe and "finish(text, outcome: outcome)" in transcribe,
      "a finished transcript must be delivered and recorded")
-finish = body(dictation, "private func finish(_ text: String, outcome: DictationInsertion.Outcome) {")
-need("remember(record)" in finish and "showCard(" in finish and "DictationPill.flashSeconds" in finish,
-     "finish must record every dictation, flash when inserted and card when refused")
+finish = body(dictation, "private func finish(_ text: String, outcome: DictationDeliveryOutcome) {")
+need("remember(record)" in finish and "showCard(" in finish and "DictationPill.flashSeconds" in finish
+     and "delivery: outcome.delivery" in finish and "outcome.flash" in finish,
+     "finish must record the honest outcome, flash only what the outcome allows, and card when refused")
+need('let noSpeech = response.details["noSpeech"]?.bool == true' in transcribe and "fail(response.message, retry: !noSpeech)" in transcribe,
+     "no speech offers no Retry")
+card = body(dictation, "struct DictationCardView: View {")
+need('Button("Allow…") { store.requestInsertionPermission() }' in card and "if refusal == .notTrusted {" in card,
+     "the Accessibility card carries Allow…")
+need('Button("Open Settings") { store.openMicrophoneSettings() }' in card and "} else if retry, store.canRetry {" in card,
+     "the microphone card opens Settings; Retry only when worth it")
+need("loadOrQuarantine(from: $0, now: Date())" in dictation and "historyURL = loaded?.writable == false ? nil : history" in dictation,
+     "an unreadable history is moved aside, and never overwritten when it could not be")
+need("func deleteRecord(_ id: UUID)" in dictation and "func clearRecent()" in dictation
+     and 'Button("Clear recent dictations' in dictation and "onDelete: { dictation.deleteRecord(record.id) }" in pet,
+     "dictations can be deleted one at a time on the pet and all at once in Settings")
 need("pill = .transcribing" in body(dictation, "    func stop() {"), "release must show TRANSCRIBING")
 need("pill = .listening(since: Date())" in body(dictation, "    func start() {"), "the shortcut must show the listening pill")
 need("surface = petFrame?() != nil ? .pet : .floating" in body(dictation, "    func start() {"),
@@ -106,7 +152,7 @@ for field in ("pill", "surface", "card", "recent", "listRoute", "fixSelection", 
     rest = dictation.replace(decl.group(0), "")
     need(len(re.findall(rf"(?<![\w.]){field}\s*=(?!=)", rest)) >= 1, f"{field} has no writer: a field nobody assigns is a feature that does not exist")
 for log in re.findall(r"dictationLog\.\w+\(([^\n]*)\)", dictation):
-    need(not re.search(r"\\\((?:text|record|transcript|heard|written|fixDraft|card)\b", log),
+    need(not re.search(r"\\\((?:text|raw|record|transcript|heard|written|fixDraft|card)\b", log),
          "a dictation log line interpolates dictated text; it is private")
 need("completeFileProtectionUnlessOpen" not in dictation + core and ".completeUnlessOpen" not in dictation + core,
      "class-B protection locks minutes after the screen does; history must stay class C")
@@ -193,9 +239,20 @@ need('case "transcription-dictionary": try emitTranscriptionDictionary()' in hel
 verb = body(helper, "private func emitTranscriptionDictionary() throws {")
 need("FileHandle.standardInput" in verb and 'option("--' not in verb and "args" not in verb,
      "dictionary words ride on stdin; a word in argv is published to every process on this Mac")
-paths = set(re.findall(r'"(/api/[^"?]*)', verb + body(helper, "private func emitDictionary(token: String, ok: Bool, message: String) {")))
+emit_dictionary = body(helper, "private func emitDictionary(token: String, ok: Bool, message: String, unchanged: Bool = false) {")
+paths = set(re.findall(r'"(/api/[^"?]*)', verb + emit_dictionary))
 need(paths == {"/api/transcription-glossary", "/api/transcription-glossary/correction", "/api/transcription-glossary/correction/undo",
-               "/api/transcription-glossary/recent"}, f"the dictionary verb reaches only the glossary routes, got {sorted(paths)}")
+               "/api/transcription-glossary/recent", "/api/transcription-glossary/vocabulary/add", "/api/transcription-glossary/vocabulary/remove",
+               "/api/transcription-glossary/correction/remove"}, f"the dictionary verb reaches only the glossary routes, got {sorted(paths)}")
+# 0.5.310: single items go to the server's atomic routes. The ONE whole-dictionary write left is the hand-added
+# correction on a server older than 6.73.11, so a Fix a word can never be lost to a read-then-write.
+need(verb.count("put([") == 1 and 'if response?.status == 404, source == "manual" {' in verb,
+     "the only PUT is the old-server fallback for a hand-added correction")
+need("value.utf16.count <= Self.dictionaryMaxTermUTF16" in verb and "value.count <=" not in verb,
+     "the helper counts UTF-16 units, as the server's MAX_TERM_LEN does")
+need('if ok { emit(ok: true, message: message, details: ["stale": true, "unchanged": unchanged]) }' in emit_dictionary,
+     "a change that worked stays a success when the read-back fails")
+need('details: ["noSpeech": true]' in body(helper, "private func emitMacDictation() throws {"), "the helper marks no speech")
 need('model.runHelper(["transcription-dictionary"], timeout: 20, stdinData: request)' in app,
      "Control must send the request as stdinData with an argument list of exactly the verb")
 

@@ -15400,7 +15400,8 @@ final class COSControlHelper {
         guard let response = request("/api/transcribe?mode=fast&requiredEngine=parakeet-ultra", method: "POST", token: token, rawBody: audio, timeout: 35) else {
             emit(ok: false, message: "The local transcription server is unavailable. Try again when it is ready."); return
         }
-        if response.status == 204 { emit(ok: false, message: "No speech detected. Check your selected microphone and try again."); return }
+        // noSpeech: the server heard nothing it could transcribe; COS Control offers no Retry of the same audio.
+        if response.status == 204 { emit(ok: false, message: "No speech detected. Check your selected microphone and try again.", details: ["noSpeech": true]); return }
         guard response.status == 200, let details = response.body, details["engine"] as? String == "parakeet-ultra",
               let text = details["text"] as? String, !text.isEmpty, text.utf8.count <= 64_000 else {
             let message = response.status == 503 ? "Parakeet is not ready. Check Transcription settings and retry." : "Dictation needs the matched server with Parakeet support. No text was inserted."
@@ -15430,11 +15431,12 @@ final class COSControlHelper {
               Set(payload.keys) == keys else {
             emit(ok: false, message: "Dictionary request is invalid."); return
         }
-        // One word or phrase: trimmed, 1-100 characters, no line breaks or control characters.
+        // One word or phrase: trimmed, 1-100 UTF-16 units (the server's MAX_TERM_LEN counts JavaScript string length,
+        // which is UTF-16), no line breaks or control characters.
         func word(_ key: String) -> String? {
             guard let raw = payload[key] as? String else { return nil }
             let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !value.isEmpty, value.count <= 100, value.unicodeScalars.allSatisfy({ $0.value >= 32 && $0.value != 127 }) else { return nil }
+            guard !value.isEmpty, value.utf16.count <= Self.dictionaryMaxTermUTF16, value.unicodeScalars.allSatisfy({ $0.value >= 32 && $0.value != 127 }) else { return nil }
             return value
         }
         var fields: [String: String] = [:]
@@ -15452,8 +15454,11 @@ final class COSControlHelper {
         }
         func refused(_ response: HTTPResponse?, _ fallback: String) -> String {
             guard let response else { return unavailable }
-            if response.status == 404 { return "Update the COS server to 6.73.11 to teach COS a word here." }
+            if response.status == 404 { return "Update the COS server to 6.73.12 to do this here. Your dictionary is unchanged." }
             return (response.body?["error"] as? String).map { "The dictionary did not change: " + $0 } ?? fallback
+        }
+        func post(_ path: String, _ body: [String: Any]) -> HTTPResponse? {
+            json(body).flatMap { request(path, method: "POST", token: token, body: $0, timeout: 10) }
         }
         func glossary() -> [String: Any]? {
             guard let response = request("/api/transcription-glossary", token: token, timeout: 5), response.status == 200 else { return nil }
@@ -15463,44 +15468,58 @@ final class COSControlHelper {
             json(body).flatMap { request("/api/transcription-glossary", method: "PUT", token: token, body: $0, timeout: 10) }
         }
         var message = "Dictionary"
+        var unchanged = false
         switch operation {
         case "learn":
-            let body = json(["heard": fields["heard"]!, "written": fields["written"]!, "source": fields["source"]!])
-            let response = body.flatMap { request("/api/transcription-glossary/correction", method: "POST", token: token, body: $0, timeout: 10) }
+            let heard = fields["heard"]!, written = fields["written"]!, source = fields["source"]!
+            let response = post("/api/transcription-glossary/correction", ["heard": heard, "written": written, "source": source])
+            if response?.status == 404, source == "manual" {
+                // A server older than 6.73.11 has no learn route. A correction added by hand in the Dictionary pane still
+                // works there, the old way: read the dictionary, add this one entry and its spelling, write it back.
+                guard let current = glossary() else { emit(ok: false, message: unavailable); return }
+                var corrections = (current["corrections"] as? [String: String]) ?? [:]
+                var vocabulary = (current["vocabulary"] as? [String]) ?? []
+                corrections[heard] = written
+                if !vocabulary.contains(where: { $0.caseInsensitiveCompare(written) == .orderedSame }) { vocabulary.append(written) }
+                let fallback = put(["corrections": corrections, "vocabulary": vocabulary])
+                guard fallback?.status == 200 else { emitDictionary(token: token, ok: false, message: refused(fallback, "The correction was not saved.")); return }
+                message = "Saved to the dictionary"
+                break
+            }
             guard response?.status == 200 else { emitDictionary(token: token, ok: false, message: refused(response, "The correction was not saved.")); return }
-            message = response?.body?["unchanged"] as? Bool == true ? "Already in the dictionary" : "Saved to the dictionary"
+            unchanged = response?.body?["unchanged"] as? Bool == true
+            message = unchanged ? "Already in the dictionary" : "Saved to the dictionary"
         case "undo":
-            let response = json(["id": fields["id"]!]).flatMap { request("/api/transcription-glossary/correction/undo", method: "POST", token: token, body: $0, timeout: 10) }
+            let response = post("/api/transcription-glossary/correction/undo", ["id": fields["id"]!])
             guard response?.status == 200 else { emitDictionary(token: token, ok: false, message: refused(response, "That correction was not undone.")); return }
             message = "Correction undone"
-        case "add-vocabulary", "remove-vocabulary":
-            guard let current = glossary() else { emit(ok: false, message: unavailable); return }
-            let term = fields["term"]!
-            var vocabulary = (current["vocabulary"] as? [String]) ?? []
-            if operation == "add-vocabulary" {
-                if !vocabulary.contains(where: { $0.caseInsensitiveCompare(term) == .orderedSame }) { vocabulary.append(term) }
-            } else {
-                vocabulary.removeAll { $0 == term }
+        case "add-vocabulary", "remove-vocabulary", "remove-correction":
+            // 6.73.12: one item, changed atomically on the server. No read-then-write here, so a Fix a word landing at the
+            // same moment can never be lost.
+            let (route, body, done): (String, [String: Any], String) = switch operation {
+            case "add-vocabulary": ("/api/transcription-glossary/vocabulary/add", ["term": fields["term"]!], "Word added")
+            case "remove-vocabulary": ("/api/transcription-glossary/vocabulary/remove", ["term": fields["term"]!], "Word removed")
+            default: ("/api/transcription-glossary/correction/remove", ["heard": fields["heard"]!], "Correction removed")
             }
-            let response = put(["vocabulary": vocabulary])
-            guard response?.status == 200 else { emitDictionary(token: token, ok: false, message: refused(response, "The vocabulary did not change.")); return }
-            message = operation == "add-vocabulary" ? "Word added" : "Word removed"
-        case "remove-correction":
-            guard let current = glossary() else { emit(ok: false, message: unavailable); return }
-            var corrections = (current["corrections"] as? [String: String]) ?? [:]
-            corrections[fields["heard"]!] = nil
-            let response = put(["corrections": corrections])
-            guard response?.status == 200 else { emitDictionary(token: token, ok: false, message: refused(response, "The correction was not removed.")); return }
-            message = "Correction removed"
+            let response = post(route, body)
+            guard response?.status == 200 else { emitDictionary(token: token, ok: false, message: refused(response, "The dictionary did not change.")); return }
+            unchanged = response?.body?["unchanged"] as? Bool == true
+            message = unchanged && operation == "add-vocabulary" ? "Already in the dictionary" : done
         default: break
         }
-        emitDictionary(token: token, ok: true, message: message)
+        emitDictionary(token: token, ok: true, message: message, unchanged: unchanged)
     }
 
+    /// The server's MAX_TERM_LEN (server/lib/glossary-learn.ts), in UTF-16 units.
+    static let dictionaryMaxTermUTF16 = 100
+
     /// The dictionary as COS Control shows it. `learnAvailable` is false on a server older than 6.73.11 (no recent log).
-    private func emitDictionary(token: String, ok: Bool, message: String) {
+    /// A change that succeeded stays a success when the read-back fails: `stale` says the lists were not refreshed.
+    private func emitDictionary(token: String, ok: Bool, message: String, unchanged: Bool = false) {
         guard let response = request("/api/transcription-glossary", token: token, timeout: 5), response.status == 200, let body = response.body else {
-            emit(ok: false, message: ok ? "The COS server is not answering. Try again when it is ready." : message); return
+            if ok { emit(ok: true, message: message, details: ["stale": true, "unchanged": unchanged]) }
+            else { emit(ok: false, message: message) }
+            return
         }
         let vocabulary = (body["vocabulary"] as? [String]) ?? []
         let corrections = ((body["corrections"] as? [String: String]) ?? [:])
@@ -15513,7 +15532,7 @@ final class COSControlHelper {
         }
         emit(ok: ok, message: message, details: [
             "vocabulary": vocabulary, "corrections": corrections, "recent": recent,
-            "learnAvailable": recentResponse?.status == 200,
+            "learnAvailable": recentResponse?.status == 200, "unchanged": unchanged,
         ])
     }
 

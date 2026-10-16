@@ -3,31 +3,89 @@ import Foundation
 @main struct MacDictationChecks {
     static func main() throws {
         var count = 0
-        // 0.5.309 insert-target policy: the whole matrix against an independent statement of the rule.
-        let roles: [String?] = [nil, "AXTextField", "AXTextArea", "AXComboBox", "AXSearchField", "AXWebArea", "AXGroup", "AXButton"]
-        let subroles: [String?] = [nil, "AXSecureTextField", "AXSearchField"]
-        for trusted in [false, true] { for secureInput in [false, true] { for role in roles { for subrole in subroles {
-            for settable in [false, true] { for ancestor in [false, true] { for own in [false, true] {
-                let got = DictationInsertPolicy.refusal(trusted: trusted, secureInput: secureInput, role: role, subrole: subrole,
-                                                        rangeSettable: settable, editableAncestor: ancestor, ownOverlay: own)
-                let textRole = ["AXTextField", "AXTextArea", "AXComboBox", "AXSearchField"].contains(role ?? "") || subrole == "AXSearchField"
-                let want: DictationInsertPolicy.Refusal?
-                if !trusted { want = .notTrusted }
-                else if secureInput { want = .secureInput }
-                else if subrole == "AXSecureTextField" { want = .secureField }
-                else if own { want = .ownOverlay }
-                else if role == nil { want = .noTextBox }
-                else if textRole || settable || ancestor { want = nil }
-                else { want = .noTextBox }
-                precondition(got == want, "insert policy \(trusted) \(secureInput) \(role ?? "-") \(subrole ?? "-") \(settable) \(ancestor) \(own)")
-                count += 1
-            }}}
-        }}}}
-        // The cases Miles named, by name: a password field never gets text, the desktop gets the card.
-        precondition(DictationInsertPolicy.refusal(trusted: true, secureInput: false, role: "AXTextField", subrole: "AXSecureTextField", rangeSettable: true, editableAncestor: false, ownOverlay: false) == .secureField)
-        precondition(DictationInsertPolicy.refusal(trusted: true, secureInput: false, role: nil, subrole: nil, rangeSettable: false, editableAncestor: false, ownOverlay: false)?.title == "NO TEXT BOX · COPIED")
-        precondition(DictationInsertPolicy.refusal(trusted: true, secureInput: false, role: "AXTextArea", subrole: nil, rangeSettable: false, editableAncestor: false, ownOverlay: false) == nil)
-        count += 3
+        // 0.5.310 insert-target policy: hand-written rows, each with its own expected answer (not a re-derivation).
+        typealias R = DictationInsertPolicy.Refusal
+        let rows: [(String, Bool, Bool, String?, Bool, Bool, Bool, Bool, Bool, R?)] = [
+            // name, trusted, secureInput, subrole, focused, textSettable, ancestor, pasteApp, ownOverlay, expected
+            ("Accessibility off", false, false, nil, true, true, false, false, false, .notTrusted),
+            ("Accessibility off beats secure input", false, true, "AXSecureTextField", true, true, false, false, false, .notTrusted),
+            ("another app holds secure input", true, true, nil, true, true, false, false, false, .secureInput),
+            ("a real password field", true, false, "AXSecureTextField", true, true, false, false, false, .secureField),
+            ("a password field, secure input on too", true, true, "AXSecureTextField", true, true, false, false, false, .secureField),
+            ("COS's own pet holds the keyboard", true, false, nil, true, true, false, false, true, .ownOverlay),
+            ("own panel even in a terminal-like app", true, false, nil, true, false, false, true, true, .ownOverlay),
+            ("an editable text field", true, false, nil, true, true, false, false, false, nil),
+            ("a web editor via its editable ancestor", true, false, nil, true, false, true, false, false, nil),
+            ("a read-only AXTextArea in an ordinary app", true, false, nil, true, false, false, false, false, .noTextBox),
+            ("iTerm2's read-only AXTextArea gets ⌘V", true, false, nil, true, false, false, true, false, nil),
+            ("Finder or the desktop", true, false, nil, false, false, false, false, false, .noTextBox),
+            ("Electron with no focused element gets ⌘V", true, false, nil, false, false, false, true, false, nil),
+            ("settable but nothing focused is not a target", true, false, nil, false, true, false, false, false, .noTextBox),
+        ]
+        for (name, trusted, secureInput, subrole, focused, settable, ancestor, pasteApp, own, expected) in rows {
+            let got = DictationInsertPolicy.refusal(trusted: trusted, secureInput: secureInput, subrole: subrole, focused: focused,
+                                                    textSettable: settable, editableAncestor: ancestor, pasteApp: pasteApp, ownOverlay: own)
+            precondition(got == expected, "insert policy: \(name)"); count += 1
+        }
+        precondition(R.secureInput.title == "SECURE INPUT ON · COPIED" && R.secureField.title == "PASSWORD FIELD · COPIED"
+                     && R.pasteDidNotLand.title == "COPIED · PRESS ⌘V", "distinct card titles"); count += 1
+        precondition(Set(R.allCases.map(\.historyLabel)).count == R.allCases.count - 1, "every reason but ownOverlay/noTextBox reads differently"); count += 1
+
+        // 0.5.310 measured delivery (Miles 20:07: iTerm2 flashed ✓ INSERTED and nothing landed).
+        func snap(_ n: Int?, _ location: Int?, _ length: Int?) -> DictationFieldSnapshot { DictationFieldSnapshot(characters: n, location: location, length: length) }
+        let none = DictationFieldSnapshot()
+        let field = snap(100, 100, 0)
+        func step(_ route: DictationRoute, _ baseline: DictationFieldSnapshot, setter: Bool = true, after: DictationFieldSnapshot,
+                  final: Bool, pasted: Bool = false, afterPaste: DictationFieldSnapshot = DictationFieldSnapshot()) -> DictationDecision {
+            DictationDelivery.decide(route: route, baseline: baseline, setterSucceeded: setter, afterSetter: after, finalPoll: final,
+                                     pasted: pasted, afterPaste: afterPaste, count: 5, app: "iTerm2")
+        }
+        precondition(step(.accessibility, field, after: field, final: false) == .wait, "setter said success, nothing moved yet: wait"); count += 1
+        precondition(step(.accessibility, field, after: field, final: true) == .paste, "iTerm2 shape: success but unchanged after 300 ms → ⌘V, never ✓"); count += 1
+        precondition(step(.accessibility, field, setter: false, after: field, final: false) == .paste, "a failed set goes to ⌘V at once"); count += 1
+        precondition(step(.accessibility, snap(nil, 10, 0), after: snap(nil, 15, 0), final: false) == .done(.inserted(app: "iTerm2", viaPaste: false)), "landed via the caret"); count += 1
+        precondition(step(.accessibility, snap(100, 10, 3), after: snap(102, 99, 7), final: false) == .done(.inserted(app: "iTerm2", viaPaste: false)), "landed via the count"); count += 1
+        precondition(step(.accessibility, field, after: snap(130, 0, 0), final: false) == .done(.inserted(app: "iTerm2", viaPaste: false)), "any other change counts and is never followed by ⌘V"); count += 1
+        precondition(step(.accessibility, field, after: none, final: false) == .wait && step(.accessibility, field, after: none, final: true) == .done(.unconfirmed(app: "iTerm2", viaPaste: false)),
+                     "a field that stops answering is unconfirmed, never pasted over"); count += 1
+        precondition(step(.accessibility, none, after: none, final: true) == .paste, "an unreadable baseline never tries AX"); count += 1
+        precondition(step(.paste, field, after: none, final: true) == .paste, "the paste route pastes"); count += 1
+        precondition(step(.paste, field, after: none, final: true, pasted: true, afterPaste: snap(105, 105, 0)) == .done(.inserted(app: "iTerm2", viaPaste: true)), "⌘V verified"); count += 1
+        precondition(step(.paste, field, after: none, final: true, pasted: true, afterPaste: none) == .done(.unconfirmed(app: "iTerm2", viaPaste: true)), "⌘V unverifiable"); count += 1
+        precondition(step(.paste, field, after: none, final: true, pasted: true, afterPaste: field) == .done(.refused(.pasteDidNotLand)), "⌘V that changed nothing"); count += 1
+        precondition(step(.ownWindow, field, after: field, final: true) == .done(.refused(.noTextBox)), "COS's own window that did not take it"); count += 1
+        precondition(step(.ownWindow, field, after: snap(105, 105, 0), final: true) == .done(.inserted(app: "iTerm2", viaPaste: false)), "COS's own window measured"); count += 1
+        precondition(DictationDelivery.verdict(baseline: snap(100, 10, 5), after: snap(100, 10, 5), count: 5) == .unchanged, "same-length replace with no change is not landed"); count += 1
+        precondition(DictationDelivery.verdict(baseline: snap(100, 10, 0), after: snap(105, 15, 0), count: 5) == .landed
+                     && DictationDelivery.verdict(baseline: snap(100, 10, 0), after: snap(101, 3, 0), count: 5) == .changed
+                     && DictationDelivery.verdict(baseline: snap(nil, 10, 0), after: snap(nil, 15, 0), count: 5) == .landed
+                     && DictationDelivery.verdict(baseline: snap(100, 10, 2), after: snap(103, 0, 0), count: 5) == .landed
+                     && DictationDelivery.verdict(baseline: none, after: field, count: 5) == .unreadable, "verdicts"); count += 1
+        precondition(DictationDelivery.route(isOwnApp: false, terminal: true, baselineReadable: true) == .paste
+                     && DictationDelivery.route(isOwnApp: false, terminal: false, baselineReadable: false) == .paste
+                     && DictationDelivery.route(isOwnApp: false, terminal: false, baselineReadable: true) == .accessibility
+                     && DictationDelivery.route(isOwnApp: true, terminal: true, baselineReadable: false) == .ownWindow, "routes"); count += 1
+        let stripped = DictationDelivery.terminalText("ls -la\r\nrm old\nnext\rlast\u{2028}end")
+        precondition(stripped == "ls -la rm old next last end" && !stripped.contains("\n") && !stripped.contains("\r"), "terminals never get a line break"); count += 1
+        precondition(DictationDeliveryOutcome.inserted(app: "iTerm2", viaPaste: true).flash == .flash(label: "✓ INSERTED · ITERM2", confirmed: true), "✓ only for a measured change"); count += 1
+        let unverified = DictationDeliveryOutcome.unconfirmed(app: "iTerm2", viaPaste: true).flash
+        precondition(unverified == .flash(label: "PASTED · ⌘V SENT", confirmed: false) && unverified?.label.contains("✓") == false, "unconfirmed ⌘V has no ✓"); count += 1
+        precondition(DictationDeliveryOutcome.unconfirmed(app: "Notes", viaPaste: false).flash?.label.contains("✓") == false
+                     && DictationDeliveryOutcome.refused(.noTextBox).flash == nil, "unconfirmed AX has no ✓; a refusal shows the card"); count += 1
+        precondition(KnownApps.isTerminal("com.googlecode.iterm2") && KnownApps.isTerminal("com.apple.Terminal") && KnownApps.isTerminal("dev.warp.Warp-Preview")
+                     && KnownApps.isTerminal("com.mitchellh.ghostty") && KnownApps.isTerminal("net.kovidgoyal.kitty") && KnownApps.isTerminal("io.alacritty")
+                     && KnownApps.isTerminal("org.alacritty") && KnownApps.isTerminal("com.github.wez.wezterm")
+                     && !KnownApps.isTerminal("com.apple.TextEdit") && !KnownApps.isTerminal(nil), "known terminals"); count += 1
+        precondition(KnownApps.isChromiumFamily(frameworks: ["Sparkle.framework", "Electron Framework.framework"])
+                     && KnownApps.isChromiumFamily(frameworks: ["Google Chrome Framework.framework"])
+                     && !KnownApps.isChromiumFamily(frameworks: ["Sparkle.framework", "Squirrel.framework"]), "Electron and Chromium detected"); count += 1
+        let dvorak: [UInt16: String] = [9: "k", 47: "v", 0: "a"]
+        precondition(DictationDelivery.keyCode(for: "v") { $0 == 9 ? "v" : nil } == 9
+                     && DictationDelivery.keyCode(for: "v") { dvorak[$0] } == 47
+                     && DictationDelivery.keyCode(for: "v") { _ in "x" } == nil, "⌘V on the current layout's V"); count += 1
+        precondition(!DictationDelivery.modifiersHeld(0) && !DictationDelivery.modifiersHeld(0x10000) && DictationDelivery.modifiersHeld(0x100000)
+                     && DictationDelivery.modifiersHeld(0x80000) && DictationDelivery.modifiersHeld(0x40000) && DictationDelivery.modifiersHeld(0x20000)
+                     && DictationDelivery.modifiersHeld(0x800000), "⌘ ⌥ ⌃ ⇧ Fn block the paste; Caps Lock does not"); count += 1
         for enabled in [false, true] { for busy in [false, true] {
             precondition(MacDictationPolicy.mayStart(enabled: enabled, busy: busy) == (enabled && !busy)); count += 1
         }}
@@ -108,20 +166,22 @@ import Foundation
         expect(falling.level < 0.01, "silence settles")
         expect(abs(meter.update(rms: 0.1) - 0.75) < 1e-9, "a new peak jumps straight back up")
         // Recent dictations: newest first, last 50, private atomic file, round trip.
-        func record(_ n: Int, app: String? = "Slack") -> DictationRecord {
-            DictationRecord(id: UUID(), text: "Line \(n) of text\nsecond line", createdAt: Date(timeIntervalSince1970: 1_760_000_000 + Double(n)), insertedApp: app)
+        func record(_ n: Int, _ delivery: DictationRecord.Delivery = .inserted(app: "Slack")) -> DictationRecord {
+            DictationRecord(id: UUID(), text: "Line \(n) of text\nsecond line", createdAt: Date(timeIntervalSince1970: 1_760_000_000 + Double(n)), delivery: delivery)
         }
         var history: [DictationRecord] = []
-        for n in 0..<55 { history = DictationHistory.adding(record(n), to: history) }
+        let kinds: [DictationRecord.Delivery] = [.inserted(app: "Slack"), .unconfirmed(app: "iTerm2", viaPaste: true), .copied(.secureInput)]
+        for n in 0..<55 { history = DictationHistory.adding(record(n, kinds[n % 3]), to: history) }
         expect(history.count == DictationHistory.limit && history.first?.text.hasPrefix("Line 54") == true && history.last?.text.hasPrefix("Line 5 ") == true, "bounded to 50, newest first")
         let again = DictationHistory.adding(history[3], to: history)
         expect(again.count == 50 && again.first?.id == history[3].id && Set(again.map(\.id)).count == 50, "re-adding moves to the top, never duplicates")
         let one = record(1)
         expect(one.wordCount == 6 && one.firstLine == "Line 1 of text", "word count and first line")
         expect(one.metaLine(time: "6:02 PM") == "6:02 PM · 6 words · inserted · Slack", "row meta (mock 05)")
-        expect(record(2, app: nil).outcomeLabel == "copied, no text box", "copied label")
-        var pasted = record(3); pasted.pasted = true
-        expect(pasted.outcomeLabel == "pasted · Slack", "a ⌘V insert says pasted")
+        expect(record(2, .copied(.noTextBox)).outcomeLabel == "copied, no text box" && record(2, .copied(.secureField)).outcomeLabel == "copied, password field", "copied says why")
+        let pasted = record(3, .unconfirmed(app: "iTerm2", viaPaste: true))
+        expect(pasted.outcomeLabel == "pasted (unconfirmed) · iTerm2" && record(4, .unconfirmed(app: "Notes", viaPaste: false)).outcomeLabel == "sent (unconfirmed) · Notes", "unconfirmed is said")
+        expect(DictationDeliveryOutcome.refused(.keysHeld).delivery == .copied(.keysHeld) && DictationDeliveryOutcome.inserted(app: "Slack", viaPaste: true).delivery == .inserted(app: "Slack"), "history keeps the honest outcome")
         let folder = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("cos-dictation-history-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: folder) }
         let file = folder.appendingPathComponent("COS Control/dictation-history.json")
@@ -134,8 +194,22 @@ import Foundation
         expect(mode == 0o600, "history file is 0600")
         let leftovers = try FileManager.default.contentsOfDirectory(atPath: file.deletingLastPathComponent().path).filter { $0.hasSuffix(".tmp") }
         expect(leftovers.isEmpty, "no temp file left behind")
+        let reread = DictationHistory.loadOrQuarantine(from: file, now: Date())
+        expect(reread.records == loaded && reread.movedTo == nil && reread.writable, "a good file is read, never moved")
+        expect(loaded.contains(where: { $0.delivery == .copied(.secureInput) }) && loaded.contains(where: { $0.delivery == .unconfirmed(app: "iTerm2", viaPaste: true) })
+               && loaded.contains(where: { $0.delivery == .inserted(app: "Slack") }), "every kind of delivery round-trips")
+        expect(DictationHistory.removing(loaded[1].id, from: loaded).count == 49 && !DictationHistory.removing(loaded[1].id, from: loaded).contains(loaded[1]), "delete one")
+        // 0.5.309 files carry insertedApp/pasted; they still load, and an old "inserted" reads as unconfirmed.
+        let legacy = Data(#"{"version":1,"dictations":[{"id":"6F9619FF-8B86-D011-B42D-00C04FC964FF","text":"hi","createdAt":"2026-10-15T18:00:00Z","insertedApp":"Slack","pasted":false},{"id":"7F9619FF-8B86-D011-B42D-00C04FC964FF","text":"yo","createdAt":"2026-10-15T17:00:00Z"}]}"#.utf8)
+        try legacy.write(to: file)
+        let old = DictationHistory.load(from: file)
+        expect(old.map(\.delivery) == [.unconfirmed(app: "Slack", viaPaste: false), .copied(.noTextBox)], "0.5.309 history still loads, honestly")
         try Data("not json".utf8).write(to: file)
         expect(DictationHistory.load(from: file).isEmpty, "a corrupt file reads as empty, never a crash")
+        let moved = DictationHistory.loadOrQuarantine(from: file, now: Date(timeIntervalSince1970: 1_760_571_000))
+        expect(moved.records.isEmpty && moved.writable && moved.movedTo?.lastPathComponent == "dictation-history.json.corrupt-20251015-233000", "a corrupt file is moved aside")
+        expect(!FileManager.default.fileExists(atPath: file.path) && moved.movedTo.map { FileManager.default.fileExists(atPath: $0.path) } == true, "nothing is saved over it")
+        expect(DictationHistory.loadOrQuarantine(from: file, now: Date()).movedTo == nil, "a missing file is not moved")
         // The 20 s card: hover pauses, leaving resumes where it stopped.
         let t0 = Date(timeIntervalSince1970: 1_000)
         var countdown = DictationCountdown(start: t0)
@@ -167,8 +241,8 @@ import Foundation
         expect(DictionaryLabels.line(source: "manual", at: nil, now: now, calendar: calendar) == "added", "no time")
         // The pill hands the ledger back the moment it hides.
         expect(!DictationPill.hidden.replacesLedger && DictationPill.transcribing.replacesLedger && DictationPill.listening(since: now).replacesLedger, "pill owns the ledger only while showing")
-        expect(DictationPill.inserted(app: "Slack", pasted: false).label == "✓ INSERTED · SLACK" && DictationPill.inserted(app: "Notes", pasted: true).label == "✓ PASTED · NOTES", "flash label")
+        expect(DictationPill.flash(label: "PASTED · ⌘V SENT", confirmed: false).label == "PASTED · ⌘V SENT" && DictationPill.flash(label: "x", confirmed: true).replacesLedger, "flash label")
         expect(DictationPill.clock(4.9) == "0:04" && DictationPill.clock(65) == "1:05" && DictationPill.clock(-1) == "0:00", "elapsed clock")
-        print("PASS Mac dictation: \(count) policy checks; insert-target matrix, dB meter, recent dictations file, card countdown, fix-a-word selection, bounded audio, PCM16 WAV, device failure, any-key triggers")
+        print("PASS Mac dictation: \(count) policy checks; insert-target table, measured delivery, terminals, layout ⌘V, dB meter, recent dictations file, card countdown, fix-a-word selection, bounded audio, PCM16 WAV, device failure, any-key triggers")
     }
 }

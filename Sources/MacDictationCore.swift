@@ -159,38 +159,190 @@ struct LoneModifierTracker: Sendable {
 /// has focus at the moment transcription finishes, so the person may click elsewhere while it transcribes. Insertion is
 /// refused, and the text stays on the clipboard with the pet's card, when any of these hold. Never presses Return.
 enum DictationInsertPolicy {
-    enum Refusal: Equatable, Sendable {
-        case notTrusted, secureInput, secureField, ownOverlay, noTextBox
+    /// Why nothing was typed. The raw value is what Recent dictations stores.
+    enum Refusal: String, Equatable, Sendable, CaseIterable {
+        case notTrusted, secureInput, secureField, ownOverlay, noTextBox, pasteDidNotLand, keysHeld, clipboardChanged, clipboardFailed
         /// The card's heading (mock 04).
         var title: String {
             switch self {
             case .notTrusted: "COPIED · ALLOW ACCESSIBILITY"
-            case .secureInput, .secureField: "PASSWORD FIELD · COPIED"
+            case .secureInput: "SECURE INPUT ON · COPIED"
+            case .secureField: "PASSWORD FIELD · COPIED"
             case .ownOverlay, .noTextBox: "NO TEXT BOX · COPIED"
+            case .pasteDidNotLand: "COPIED · PRESS ⌘V"
+            case .keysHeld: "KEYS HELD · COPIED"
+            case .clipboardChanged: "CLIPBOARD CHANGED · NOT PASTED"
+            case .clipboardFailed: "CLIPBOARD UNAVAILABLE"
             }
         }
         var note: String {
             switch self {
             case .notTrusted: "Allow COS Control in Accessibility to drop text in for you. For now, click where you want it and press ⌘V."
-            case .secureInput, .secureField: "COS never types into a password field or secure input. Press ⌘V yourself if you mean to."
+            case .secureInput: "Another app is holding secure keyboard input, so COS will not type. Click where you want it and press ⌘V."
+            case .secureField: "COS never types into a password field. Press ⌘V yourself if you mean to."
             case .ownOverlay, .noTextBox: "Click where you want it, then press ⌘V."
+            case .pasteDidNotLand: "COS sent ⌘V and nothing changed in the field. Click where you want it and press ⌘V."
+            case .keysHeld: "A modifier key was still held, so COS did not paste. Click where you want it and press ⌘V."
+            case .clipboardChanged: "Something else changed the clipboard before COS could paste. Copy it again here."
+            case .clipboardFailed: "COS could not put the text on the clipboard. Copy it here."
+            }
+        }
+        /// "copied, <this>" in Recent dictations.
+        var historyLabel: String {
+            switch self {
+            case .notTrusted: "Accessibility off"
+            case .secureInput: "secure input on"
+            case .secureField: "password field"
+            case .ownOverlay, .noTextBox: "no text box"
+            case .pasteDidNotLand: "paste did not land"
+            case .keysHeld: "keys held"
+            case .clipboardChanged: "clipboard changed"
+            case .clipboardFailed: "clipboard unavailable"
             }
         }
     }
-    static let editableRoles: Set<String> = ["AXTextField", "AXTextArea", "AXComboBox", "AXSearchField"]
     static let secureSubrole = "AXSecureTextField"
-    /// nil means insert. `role` nil means nothing has keyboard focus. `rangeSettable` is AXSelectedTextRange being
-    /// settable; `editableAncestor` is a web editor's AXEditableAncestor (contenteditable, rich editors).
-    static func refusal(trusted: Bool, secureInput: Bool, role: String?, subrole: String?, rangeSettable: Bool,
-                        editableAncestor: Bool, ownOverlay: Bool) -> Refusal? {
+    /// nil means deliver. A text role alone is NOT enough (0.5.310 QA: iTerm2's read-only AXTextArea took a "successful"
+    /// set and showed nothing): the focused element must take text (`textSettable`: AXSelectedText or AXValue is
+    /// settable) or sit in a web editor (`editableAncestor`). A known terminal or Electron/Chromium app with no such
+    /// element still gets ⌘V (`pasteApp`), labelled as unconfirmed.
+    static func refusal(trusted: Bool, secureInput: Bool, subrole: String?, focused: Bool, textSettable: Bool,
+                        editableAncestor: Bool, pasteApp: Bool, ownOverlay: Bool) -> Refusal? {
         guard trusted else { return .notTrusted }
-        guard !secureInput else { return .secureInput }
         if subrole == secureSubrole { return .secureField }
+        if secureInput { return .secureInput }
         if ownOverlay { return .ownOverlay }
-        guard let role else { return .noTextBox }
-        if editableRoles.contains(role) || subrole.map({ editableRoles.contains($0) }) == true { return nil }
-        return rangeSettable || editableAncestor ? nil : .noTextBox
+        if focused, textSettable || editableAncestor { return nil }
+        return pasteApp ? nil : .noTextBox
     }
+}
+
+/// Apps that need ⌘V rather than Accessibility. ClaudeSession.terminalHostBundleIds (Models.swift) is the subset whose
+/// session jump is implemented; it must stay inside `terminals` (pinned by Tests/dictation-wispr-pins.py).
+enum KnownApps {
+    static let terminals: Set<String> = [
+        "com.googlecode.iterm2", "com.apple.Terminal", "dev.warp.Warp-Stable", "com.mitchellh.ghostty",
+        "net.kovidgoyal.kitty", "org.alacritty", "io.alacritty", "com.github.wez.wezterm",
+    ]
+    static func isTerminal(_ bundleID: String?) -> Bool {
+        guard let bundleID else { return false }
+        return terminals.contains(bundleID) || bundleID.hasPrefix("dev.warp.")
+    }
+    /// Electron and Chromium apps expose their text fields to Accessibility only after AXManualAccessibility is set.
+    static func isChromiumFamily(frameworks: [String]) -> Bool {
+        frameworks.contains { name in
+            name == "Electron Framework.framework" || name == "Chromium Embedded Framework.framework"
+                || (name.hasSuffix(" Framework.framework") && ["Chrome", "Chromium", "Edge", "Brave", "Vivaldi", "Opera", "Arc"].contains { name.contains($0) })
+        }
+    }
+}
+
+/// What COS can measure about the focused field without ever reading its text: AXNumberOfCharacters and
+/// AXSelectedTextRange. Nil fields could not be read.
+struct DictationFieldSnapshot: Equatable, Sendable {
+    var characters: Int?
+    var location: Int?
+    var length: Int?
+    var readable: Bool { characters != nil || location != nil }
+    /// "n=120 r=40+0" for the delivery log; counts only, never text.
+    var logDescription: String {
+        "n=" + (characters.map(String.init) ?? "?") + " r=" + (location.map(String.init) ?? "?") + "+" + (length.map(String.init) ?? "?")
+    }
+}
+
+enum DictationRoute: String, Sendable { case accessibility, paste, ownWindow }
+
+/// How a dictation ended. Only `inserted` earns the ✓: a measured change in the field proved it.
+enum DictationDeliveryOutcome: Equatable, Sendable {
+    case inserted(app: String, viaPaste: Bool)
+    case unconfirmed(app: String, viaPaste: Bool)
+    case refused(DictationInsertPolicy.Refusal)
+    var delivery: DictationRecord.Delivery {
+        switch self {
+        case .inserted(let app, _): .inserted(app: app)
+        case .unconfirmed(let app, let viaPaste): .unconfirmed(app: app, viaPaste: viaPaste)
+        case .refused(let refusal): .copied(refusal)
+        }
+    }
+    /// The pill's flash, or nil when the card shows instead.
+    var flash: DictationPill? {
+        switch self {
+        case .inserted(let app, _): .flash(label: "✓ INSERTED · " + app.uppercased(), confirmed: true)
+        case .unconfirmed(_, true): .flash(label: "PASTED · ⌘V SENT", confirmed: false)
+        case .unconfirmed(_, false): .flash(label: "SENT · NOT CONFIRMED", confirmed: false)
+        case .refused: nil
+        }
+    }
+}
+
+enum DictationDecision: Equatable, Sendable { case wait, paste, done(DictationDeliveryOutcome) }
+
+/// The delivery decision (0.5.310, after Miles's 20:07 field bug: iTerm2 flashed "✓ INSERTED" and nothing landed).
+/// Pure, so every branch is tested and mutated. The app measures the field, calls `decide`, and acts.
+enum DictationDelivery {
+    /// When the app re-measures after setting AXSelectedText, in milliseconds after the set.
+    static let pollMilliseconds = [0, 50, 150, 300]
+    enum Verdict: Equatable, Sendable { case landed, changed, unchanged, unreadable }
+
+    /// `count` is the inserted text's UTF-16 length, the unit AXNumberOfCharacters and AXSelectedTextRange count in.
+    static func verdict(baseline: DictationFieldSnapshot, after: DictationFieldSnapshot, count: Int) -> Verdict {
+        guard baseline.readable, after.readable else { return .unreadable }
+        if after == baseline { return .unchanged }
+        if let n0 = baseline.characters, let n = after.characters, let length0 = baseline.length, n == n0 - length0 + count { return .landed }
+        if let location0 = baseline.location, let location = after.location, after.length == 0, location == location0 + count { return .landed }
+        return .changed
+    }
+
+    /// COS's own windows take insertText directly; terminals and unmeasurable fields take ⌘V; everything else AX.
+    static func route(isOwnApp: Bool, terminal: Bool, baselineReadable: Bool) -> DictationRoute {
+        if isOwnApp { return .ownWindow }
+        if terminal || !baselineReadable { return .paste }
+        return .accessibility
+    }
+
+    /// One step. `pasted` is whether ⌘V has been sent; `afterPaste` is then the field measured after it.
+    /// Any change after the AX set counts as landed and is NEVER followed by a paste (no double insert).
+    static func decide(route: DictationRoute, baseline: DictationFieldSnapshot, setterSucceeded: Bool,
+                       afterSetter: DictationFieldSnapshot, finalPoll: Bool, pasted: Bool,
+                       afterPaste: DictationFieldSnapshot, count: Int, app: String) -> DictationDecision {
+        if pasted {
+            switch verdict(baseline: baseline, after: afterPaste, count: count) {
+            case .landed, .changed: return .done(.inserted(app: app, viaPaste: true))
+            case .unchanged: return .done(.refused(.pasteDidNotLand))
+            case .unreadable: return .done(.unconfirmed(app: app, viaPaste: true))
+            }
+        }
+        if route == .paste { return .paste }
+        guard baseline.readable else { return route == .ownWindow ? .done(.unconfirmed(app: app, viaPaste: false)) : .paste }
+        switch verdict(baseline: baseline, after: afterSetter, count: count) {
+        case .landed, .changed:
+            return .done(.inserted(app: app, viaPaste: false))
+        case .unchanged:
+            guard !setterSucceeded || finalPoll else { return .wait }
+            return route == .ownWindow ? .done(.refused(.noTextBox)) : .paste
+        case .unreadable:
+            return finalPoll ? .done(.unconfirmed(app: app, viaPaste: false)) : .wait
+        }
+    }
+
+    /// A terminal runs a line on Return, so dictated line breaks become spaces there. COS never presses Return.
+    static func terminalText(_ text: String) -> String {
+        var out = text
+        for breakSequence in ["\r\n", "\r", "\n", "\u{2028}", "\u{2029}"] { out = out.replacingOccurrences(of: breakSequence, with: " ") }
+        return out
+    }
+
+    /// The virtual key that types `character` with ⌘ held on the current layout (Dvorak, AZERTY…), from a translate
+    /// function the app backs with UCKeyTranslate. Nil when no key does; the caller falls back to ANSI V (9).
+    static func keyCode(for character: String, translate: (UInt16) -> String?) -> UInt16? {
+        for code in UInt16(0)..<128 where translate(code)?.lowercased() == character { return code }
+        return nil
+    }
+
+    /// ⌘ ⌥ ⌃ ⇧ Fn bits of CGEventFlags. ⌘V must not be posted while any is physically held, or it becomes another chord.
+    static let modifierMask: UInt64 = 0x100000 | 0x80000 | 0x40000 | 0x20000 | 0x800000
+    static func modifiersHeld(_ flags: UInt64) -> Bool { flags & modifierMask != 0 }
+    static let modifierWaitMilliseconds = 600
 }
 
 /// Level on a decibel scale (-50 to -10 dBFS), fast rise and slow fall, so quiet speech still moves the bars.
@@ -210,25 +362,68 @@ struct DictationLevelMeter: Sendable {
 
 /// One finished dictation. The text is private: it lives only in this record, the history file and the clipboard.
 struct DictationRecord: Codable, Equatable, Identifiable, Sendable {
+    /// Where it went, honestly: typed and measured, sent but unconfirmed, or only copied and why.
+    enum Delivery: Equatable, Sendable {
+        case inserted(app: String)
+        case unconfirmed(app: String, viaPaste: Bool)
+        case copied(DictationInsertPolicy.Refusal)
+    }
     let id: UUID
     let text: String
     let createdAt: Date
-    /// The app the text went into, or nil when it was only copied (no text box, or insertion refused).
-    let insertedApp: String?
-    /// True when the text went in through ⌘V, which COS cannot confirm landed.
-    var pasted: Bool = false
+    let delivery: Delivery
+
+    init(id: UUID, text: String, createdAt: Date, delivery: Delivery) {
+        self.id = id; self.text = text; self.createdAt = createdAt; self.delivery = delivery
+    }
 
     var wordCount: Int { text.split(whereSeparator: { $0.isWhitespace || $0.isNewline }).count }
     var firstLine: String {
         text.split(whereSeparator: \.isNewline).first.map { String($0).trimmingCharacters(in: .whitespaces) } ?? ""
     }
-    /// "inserted · Slack", "pasted · Slack", or "copied, no text box" (mock 05).
+    /// "inserted · Slack", "pasted (unconfirmed) · iTerm2", "copied, password field" (mock 05).
     var outcomeLabel: String {
-        guard let app = insertedApp else { return "copied, no text box" }
-        return (pasted ? "pasted · " : "inserted · ") + app
+        switch delivery {
+        case .inserted(let app): "inserted · " + app
+        case .unconfirmed(let app, true): "pasted (unconfirmed) · " + app
+        case .unconfirmed(let app, false): "sent (unconfirmed) · " + app
+        case .copied(let refusal): "copied, " + refusal.historyLabel
+        }
     }
     func metaLine(time: String) -> String {
         "\(time) · \(wordCount) \(wordCount == 1 ? "word" : "words") · \(outcomeLabel)"
+    }
+
+    // Stored as kind/app/reason. 0.5.309 files carry insertedApp/pasted instead and still load.
+    private enum Keys: String, CodingKey { case id, text, createdAt, kind, app, reason, viaPaste, insertedApp, pasted }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: Keys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        text = try c.decode(String.self, forKey: .text)
+        createdAt = try c.decode(Date.self, forKey: .createdAt)
+        if let kind = try c.decodeIfPresent(String.self, forKey: .kind) {
+            let app = try c.decodeIfPresent(String.self, forKey: .app) ?? "the app"
+            switch kind {
+            case "inserted": delivery = .inserted(app: app)
+            case "unconfirmed": delivery = .unconfirmed(app: app, viaPaste: try c.decodeIfPresent(Bool.self, forKey: .viaPaste) ?? true)
+            default: delivery = .copied(DictationInsertPolicy.Refusal(rawValue: try c.decodeIfPresent(String.self, forKey: .reason) ?? "") ?? .noTextBox)
+            }
+        } else if let app = try c.decodeIfPresent(String.self, forKey: .insertedApp) {
+            // 0.5.309 called an unverified set "inserted"; it cannot be trusted now, so it reads as unconfirmed.
+            delivery = .unconfirmed(app: app, viaPaste: try c.decodeIfPresent(Bool.self, forKey: .pasted) ?? false)
+        } else {
+            delivery = .copied(.noTextBox)
+        }
+    }
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: Keys.self)
+        try c.encode(id, forKey: .id); try c.encode(text, forKey: .text); try c.encode(createdAt, forKey: .createdAt)
+        switch delivery {
+        case .inserted(let app): try c.encode("inserted", forKey: .kind); try c.encode(app, forKey: .app)
+        case .unconfirmed(let app, let viaPaste):
+            try c.encode("unconfirmed", forKey: .kind); try c.encode(app, forKey: .app); try c.encode(viaPaste, forKey: .viaPaste)
+        case .copied(let refusal): try c.encode("copied", forKey: .kind); try c.encode(refusal.rawValue, forKey: .reason)
+        }
     }
 }
 
@@ -237,6 +432,17 @@ enum DictationHistory {
     static let limit = 50
     static func adding(_ record: DictationRecord, to list: [DictationRecord]) -> [DictationRecord] {
         Array(([record] + list.filter { $0.id != record.id }).prefix(limit))
+    }
+    static func removing(_ id: UUID, from list: [DictationRecord]) -> [DictationRecord] { list.filter { $0.id != id } }
+    /// A file that exists but does not read is moved aside to `<name>.corrupt-<UTC stamp>` before anything is saved
+    /// over it, so a bad build can never silently erase someone's history. `writable` is false when it could not move.
+    static func loadOrQuarantine(from url: URL, now: Date) -> (records: [DictationRecord], movedTo: URL?, writable: Bool) {
+        guard FileManager.default.fileExists(atPath: url.path) else { return ([], nil, true) }
+        if let data = try? Data(contentsOf: url), let file = try? decoder().decode(File.self, from: data) { return (ordered(file.dictations), nil, true) }
+        let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX"); f.timeZone = TimeZone(identifier: "UTC"); f.dateFormat = "yyyyMMdd-HHmmss"
+        let aside = url.deletingLastPathComponent().appendingPathComponent(url.lastPathComponent + ".corrupt-" + f.string(from: now))
+        guard rename(url.path, aside.path) == 0 else { return ([], nil, false) }
+        return ([], aside, true)
     }
     static func ordered(_ list: [DictationRecord]) -> [DictationRecord] {
         Array(list.sorted { $0.createdAt > $1.createdAt }.prefix(limit))
@@ -336,8 +542,8 @@ enum DictationPill: Equatable, Sendable {
     case hidden
     case listening(since: Date)
     case transcribing
-    /// About 1.5 seconds after the text went in.
-    case inserted(app: String, pasted: Bool)
+    /// About 1.5 seconds after delivery. `confirmed` (green, ✓) only when a measured change proved the text landed.
+    case flash(label: String, confirmed: Bool)
     static let flashSeconds: TimeInterval = 1.5
     var replacesLedger: Bool { self != .hidden }
     var label: String {
@@ -345,7 +551,7 @@ enum DictationPill: Equatable, Sendable {
         case .hidden: ""
         case .listening: "LISTENING"
         case .transcribing: "TRANSCRIBING"
-        case .inserted(let app, let pasted): (pasted ? "✓ PASTED · " : "✓ INSERTED · ") + app.uppercased()
+        case .flash(let label, _): label
         }
     }
     static func clock(_ seconds: TimeInterval) -> String {
