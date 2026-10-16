@@ -1,8 +1,26 @@
 {
-  "version": "0.5.311",
+  "version": "0.5.312",
   "whatsNew": {
-    "summary": "Dictation, Wispr-style: hold your shortcut, watch the pet listen, and the text drops in where your cursor is. Fix a word once and the COS dictionary remembers it everywhere.",
+    "summary": "See what each Work assignment sends before it goes, choose your dictation sound, and get your clipboard back after every paste.",
     "sections": [
+      {
+        "title": "Work context meter",
+        "items": [
+          "Each Work chat assignment shows what it will send, split by source, before you click Send. Open it to preview any item (Space opens Quick Look), remove it or add one that was left out.",
+          "The planner (server 6.73.13) picks only what each assignment needs, and the round shows how much it sends of everything linked to the card.",
+          "Prefer not to review? Plan and send sends every assignment as soon as it is planned, through the same checks. Review stays the default; Settings › Work › Send plans without review changes that.",
+          "Connections shows how full each linked session's context is, the files it wrote since your handoff, and its code changes, with Review changes."
+        ]
+      },
+      {
+        "title": "Dictation sounds and history",
+        "items": [
+          "Start and stop sounds per pet: Unstable saber for the Jedi, chirps for droids, a chime for the rest, or any of eight original sounds or your own file (trimmed for you). Set pitch and volume in Settings › Dictation › Sound.",
+          "After COS pastes, your clipboard comes back exactly as it was.",
+          "The listening waveform reads quiet USB microphones properly, and the pill appears on whichever screen you're typing on.",
+          "The DICTATIONS pill shows your latest 10; All dictations opens a searchable history. Keep dictations for 7, 30 (default) or 90 days, or forever; Clear dictation history asks first."
+        ]
+      },
       {
         "title": "Dictation, Wispr-style",
         "items": [
