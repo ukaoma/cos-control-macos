@@ -388,6 +388,8 @@ enum DictationFocusedWindow {
     private let node = AVAudioPlayerNode()
     private let pitch = AVAudioUnitTimePitch()
     private var format: AVAudioFormat?
+    /// 0.5.313: the newest sound. Its end stops the engine; an older sound's end (stopped by a newer one) does nothing.
+    private var playID = 0
     init() { engine.attach(node); engine.attach(pitch) }
     func play(_ url: URL, volume: Float, semitones: Double) {
         guard let file = try? AVAudioFile(forReading: url) else { return }
@@ -405,9 +407,22 @@ enum DictationFocusedWindow {
             do { try engine.start() } catch { dictationLog.error("sound output unavailable: \(error.localizedDescription, privacy: .public)"); return }
         }
         node.stop()
-        node.scheduleFile(file, at: nil)
+        playID &+= 1
+        let id = playID
+        // 0.5.313: the engine stops when the sound has played. It was left running after the first start or stop sound,
+        // so an idle Mac kept an output stream open (an audio IO thread here and render work in coreaudiod) for as long as
+        // COS Control ran.
+        node.scheduleFile(file, at: nil, completionCallbackType: .dataPlayedBack) { [weak self] _ in
+            Task { @MainActor in self?.finished(id) }
+        }
         node.play()
     }
+    private func finished(_ id: Int) {
+        guard DictationSoundPlayer.stopsAfter(finished: id, newest: playID), engine.isRunning else { return }
+        node.stop(); engine.stop()
+    }
+    /// Only the newest sound's end stops the engine.
+    nonisolated static func stopsAfter(finished: Int, newest: Int) -> Bool { finished == newest }
 }
 
 /// A chosen file, decoded to mono, with where its sound begins and ends; `window` is what Save keeps.

@@ -2063,6 +2063,9 @@ struct WorkIntakeItem: Identifiable, Hashable, Sendable {
     let kind: Kind
     let status: String
     let producedAt: String
+    /// 0.5.313: `producedAt` read once, when the row is decoded. The Work tab's title asked for every row's date on every
+    /// redraw, with two new date formatters each time (3% of the main thread while idle, 2026-10-15 22:30 sample).
+    let producedDate: Date?
     let meeting: WorkMeetingReference
     let confidence: Double
     let text: String
@@ -2074,6 +2077,12 @@ struct WorkIntakeItem: Identifiable, Hashable, Sendable {
     let reason: String?
     let askEvidenceText: String?
 
+    /// ISO 8601 with or without fractional seconds. The formatters are made once (they are thread-safe to read with).
+    nonisolated(unsafe) private static let fractionStamp: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter(); f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]; return f
+    }()
+    nonisolated(unsafe) private static let plainStamp = ISO8601DateFormatter()
+    static func stamp(_ text: String) -> Date? { fractionStamp.date(from: text) ?? plainStamp.date(from: text) }
     var isReview: Bool { status == "review" }
     /// A short reason shown on a Review row; an unknown reason from a newer server shows nothing.
     var reasonLabel: String? {
@@ -2106,6 +2115,7 @@ struct WorkIntakeItem: Identifiable, Hashable, Sendable {
         let text = kind == .link ? task?["text"]?.string : row["text"]?.string
         guard let text, !text.isEmpty else { return nil }
         producedAt = row["producedAt"]?.string ?? ""
+        producedDate = Self.stamp(producedAt)
         self.id = id; self.kind = kind; self.status = status; self.meeting = meeting; self.confidence = confidence; self.text = text
         owner = row["owner"]?.string
         ownerIsMiles = row["ownerIsMiles"]?.bool == true
@@ -2144,10 +2154,8 @@ struct WorkIntakeSnapshot: Sendable {
     static let unavailable = WorkIntakeSnapshot(available: false, message: nil, items: [], cardCreation: false, linkWrites: false)
     func newItems(now: Date = Date()) -> [WorkIntakeItem] {
         let cutoff = Calendar.current.date(byAdding: .day, value: -1, to: Calendar.current.startOfDay(for: now))!
-        let iso = ISO8601DateFormatter(), fraction = ISO8601DateFormatter()
-        fraction.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return items.filter { row in
-            guard let stamp = fraction.date(from: row.producedAt) ?? iso.date(from: row.producedAt) else { return false }
+            guard let stamp = row.producedDate else { return false }
             return stamp >= cutoff
         }
     }

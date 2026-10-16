@@ -323,7 +323,7 @@ struct WorkHandoffView: View {
     }
 
     var body: some View {
-        let _ = { WorkBoardMetrics.handoffBodies += 1 }()
+        let _ = WorkBoardMetrics.countHandoffBody()
         VStack(alignment: .leading, spacing: 14) {
             HStack {
                 if !embedded { Text("Agent workspace").font(COSType.display(20, weight: .medium)) }
