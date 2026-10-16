@@ -629,6 +629,7 @@ final class COSControlHelper {
         case "self-test-work": try selfTestWork()
         case "session-chat-turn": try emitSessionChatTurn(args: args)
         case "session-context": try emitSessionContext(args: args)
+        case "work-session-meter": try emitWorkSessionMeter(args: args)
         case "session-chat-fork": try emitSessionChatFork(args: args)
         case "session-chat-fork-status": try emitSessionChatForkStatus(args: args)
         case "session-chat-reply": try emitSessionChatReply(args: args)
@@ -17390,6 +17391,108 @@ final class COSControlHelper {
         }
         if response.status == 401 || response.status == 403 { throw HelperError.message("Unauthorized") }
         emit(ok: true, message: "Session context", details: response.status == 200 ? (response.body ?? ["fit": "unknown"]) : ["fit": "unknown"])
+    }
+
+    /// 0.5.312 Work → Connections: one linked session's context, outputs and code changes. Reads ONLY the tail of the
+    /// session's own transcript (never a whole multi-MB file) and returns numbers and file paths, never transcript
+    /// text. Changes run read-only git in the session's working folder with a timeout. Claude and Codex only; anything
+    /// else, or no transcript, answers `known: false` so the card hides the meter rather than showing 0%.
+    private func emitWorkSessionMeter(args: [String]) throws {
+        guard let session = option("--session", in: args)?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+              let colon = session.firstIndex(of: ":") else { throw HelperError.message("--session provider:id is required") }
+        let provider = String(session[..<colon]), id = String(session[session.index(after: colon)...])
+        guard ["claude", "codex"].contains(provider), id.count == 36, UUID(uuidString: id) != nil else {
+            emit(ok: true, message: "No meter for this session", details: ["known": false]); return
+        }
+        let since = option("--since", in: args).flatMap { Double($0) }.flatMap { $0.isFinite && $0 > 0 ? Date(timeIntervalSince1970: $0) : nil }
+        let file = provider == "claude"
+            ? Self.claudeTranscriptURL(sessionId: id, projectsRoot: home.appendingPathComponent(".claude/projects", isDirectory: true))
+            : Self.codexRolloutURL(threadId: id, sessionsRoot: home.appendingPathComponent(".codex/sessions", isDirectory: true))
+        guard let file else { emit(ok: true, message: "Transcript not found", details: ["known": false]); return }
+
+        // Context: the newest usage line, from a tail widened only until one is found.
+        var bytes = WorkSessionMeter.contextTailBytes
+        var context: WorkSessionMeter.Context?
+        var tail = Self.workSessionTail(file, maxBytes: bytes)
+        while true {
+            context = provider == "claude" ? WorkSessionMeter.claudeContext(lines: tail.lines) : WorkSessionMeter.codexContext(lines: tail.lines)
+            if context != nil || tail.fromStart || bytes >= WorkSessionMeter.contextTailMaxBytes { break }
+            bytes = min(bytes * 2, WorkSessionMeter.contextTailMaxBytes)
+            tail = Self.workSessionTail(file, maxBytes: bytes)
+        }
+        var details: [String: Any] = ["known": true, "provider": provider]
+        if let context { details["context"] = ["used": context.used, "window": context.window, "model": context.model] }
+
+        // Outputs and the working folder, from a bounded tail. A handoff older than the window is reported as partial.
+        let wide = Self.workSessionTail(file, maxBytes: WorkSessionMeter.outputsTailBytes)
+        let cwd = WorkSessionMeter.workingFolder(provider: provider, lines: wide.lines)
+        if let cwd { details["cwd"] = cwd }
+        if let since {
+            let raw = provider == "claude" ? WorkSessionMeter.claudeOutputs(lines: wide.lines, since: since)
+                : WorkSessionMeter.codexOutputs(lines: wide.lines, since: since, cwd: cwd)
+            var isDirectory: ObjCBool = false
+            let existing = WorkSessionMeter.newestUnique(raw).filter { fm.fileExists(atPath: $0.path, isDirectory: &isDirectory) && !isDirectory.boolValue }
+            let stamp = ISO8601DateFormatter()
+            details["outputs"] = existing.prefix(50).map { ["path": $0.path, "at": stamp.string(from: $0.at)] }
+            details["outputsTotal"] = existing.count
+            let oldest = wide.lines.lazy.compactMap { line -> Date? in
+                guard let data = line.data(using: .utf8), let row = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return nil }
+                return WorkSessionMeter.date(row["timestamp"])
+            }.first
+            details["outputsPartial"] = !wide.fromStart && (oldest.map { $0 > since } ?? true)
+            if let cwd { details["changes"] = workSessionChanges(cwd: cwd, since: since) }
+        }
+        emit(ok: true, message: "Session meter", details: details)
+    }
+
+    /// A real git: Homebrew's, or /usr/bin/git only when developer tools are installed (else it is the install stub).
+    static func workSessionGit(_ fm: FileManager) -> String? {
+        for path in ["/opt/homebrew/bin/git", "/usr/local/bin/git"] where fm.isExecutableFile(atPath: path) { return path }
+        let tools = ["/Library/Developer/CommandLineTools/usr/bin/git", "/Applications/Xcode.app/Contents/Developer/usr/bin/git"]
+        return tools.contains(where: { fm.isExecutableFile(atPath: $0) }) ? "/usr/bin/git" : nil
+    }
+
+    /// The last `maxBytes` of a file, as whole lines. Never reads more than that.
+    static func workSessionTail(_ file: URL, maxBytes: Int) -> (lines: [String], fromStart: Bool) {
+        guard let handle = try? FileHandle(forReadingFrom: file) else { return ([], true) }
+        defer { try? handle.close() }
+        let size = (try? handle.seekToEnd()) ?? 0
+        let start = size > UInt64(maxBytes) ? size - UInt64(maxBytes) : 0
+        guard (try? handle.seek(toOffset: start)) != nil, let data = try? handle.read(upToCount: maxBytes) else { return ([], true) }
+        return (WorkSessionMeter.lines(data, fromStart: start == 0), start == 0)
+    }
+
+    /// Read-only git in the session's folder: commits since the handoff plus the working tree, against the newest commit
+    /// before the handoff. Never a mutating command, no pager, no optional index lock, a 5 s timeout per call.
+    private func workSessionChanges(cwd: String, since: Date) -> [String: Any] {
+        var isDirectory: ObjCBool = false
+        guard fm.fileExists(atPath: cwd, isDirectory: &isDirectory), isDirectory.boolValue else { return ["repo": false] }
+        // Without developer tools /usr/bin/git is a stub that pops an install dialog; a background meter must never.
+        guard let gitPath = Self.workSessionGit(fm) else { return ["repo": false, "gitUnavailable": true] }
+        var environment = ProcessInfo.processInfo.environment
+        environment["GIT_TERMINAL_PROMPT"] = "0"; environment["GIT_OPTIONAL_LOCKS"] = "0"; environment["GIT_PAGER"] = "cat"
+        func git(_ arguments: [String]) -> CommandResult? {
+            try? execute(gitPath, ["--no-optional-locks", "-C", cwd, "-c", "core.pager=cat", "-c", "color.ui=never"] + arguments,
+                         environment: environment, timeout: 5)
+        }
+        guard let inside = git(["rev-parse", "--is-inside-work-tree"]), inside.code == 0,
+              inside.output.trimmingCharacters(in: .whitespacesAndNewlines).hasSuffix("true") else { return ["repo": false] }
+        let stamp = ISO8601DateFormatter().string(from: since)
+        let base = git(["rev-list", "-1", "--before=" + stamp, "HEAD"])?.output.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let baseFound = base.count == 40 && base.allSatisfy(\.isHexDigit)
+        let against = baseFound ? base : "HEAD"
+        guard let short = git(["diff", "--shortstat", against]), short.code == 0 else { return ["repo": true, "failed": true] }
+        let changes = WorkSessionMeter.shortstat(short.output)
+        let files = git(["diff", "--numstat", against]).map { WorkSessionMeter.numstat($0.output) } ?? []
+        return [
+            "repo": true, "baseFound": baseFound, "files": changes.files, "insertions": changes.insertions, "deletions": changes.deletions,
+            "perFile": files.prefix(200).map { row -> [String: Any] in
+                var item: [String: Any] = ["path": row.path]
+                if let added = row.insertions { item["insertions"] = added }
+                if let removed = row.deletions { item["deletions"] = removed }
+                return item
+            },
+        ]
     }
 
     private func emitSessionChatFork(args: [String]) throws {

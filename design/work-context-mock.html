@@ -1,0 +1,406 @@
+<title>Work Context Meter</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600&family=Fraunces:opsz,wght@9..144,600&family=JetBrains+Mono:wght@500;700&display=swap">
+<style>
+/* Layout: the Work task page as COS Control draws it: task chat on the left (a planned round with three assignments, each carrying a context meter), Connections on the right (session cards with context used, outputs and changes). Notes and three picks follow. */
+:root {
+  --bg: #efe8dc; --panel: #f6f1e7; --card: #fbf8f2; --sunk: #ece4d6; --line: #ddd2c0; --ink: #1f1712; --plate: #3a2c22; --muted: #7b6d60; --gold: #c9a86e; --gold-ink: #6b5226;
+  --c-req: #3f74c8; --c-task: #2f9a8a; --c-files: #d0892f; --c-meet: #8a5cc2; --c-prior: #4f9a4f; --c-cos: #9a8f84; --free: #e3d9c8;
+  --warn: #b5562c; --add: #2f8a4a; --del: #c0392b;
+  --display: "Fraunces", Georgia, serif; --body: "DM Sans", -apple-system, "Helvetica Neue", sans-serif; --mono: "JetBrains Mono", ui-monospace, Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #17120e; --panel: #1f1914; --card: #28211b; --sunk: #211b16; --line: #3d3229; --ink: #f2ebdf; --plate: #e4d8c6; --muted: #a8998a; --gold-ink: #e3c48e; --free: #352c24;
+  --c-req: #6d9be6; --c-task: #4dbcaa; --c-files: #e7a24a; --c-meet: #a988dd; --c-prior: #74bd6e; --c-cos: #8f857b; --warn: #e07a4a; --add: #5cc27a; --del: #ec6b5c; color-scheme: dark } }
+:root[data-theme="dark"] {
+  --bg: #17120e; --panel: #1f1914; --card: #28211b; --sunk: #211b16; --line: #3d3229; --ink: #f2ebdf; --plate: #e4d8c6; --muted: #a8998a; --gold-ink: #e3c48e; --free: #352c24;
+  --c-req: #6d9be6; --c-task: #4dbcaa; --c-files: #e7a24a; --c-meet: #a988dd; --c-prior: #74bd6e; --c-cos: #8f857b; --warn: #e07a4a; --add: #5cc27a; --del: #ec6b5c; color-scheme: dark }
+* { box-sizing: border-box }
+body { background: var(--bg); color: var(--ink); font: 14px/1.5 var(--body); padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 28px 64px }
+.wrap { max-width: 1180px; margin: 0 auto; display: grid; gap: 22px }
+h1 { font: 600 30px/1.15 var(--display); margin: 0; text-wrap: balance }
+.lede { color: var(--muted); max-width: 72ch; margin: 6px 0 0 }
+.num { font-family: var(--mono); font-variant-numeric: tabular-nums }
+.ex { font: 700 10px var(--mono); letter-spacing: .08em; color: var(--muted); border: 1px solid var(--line); border-radius: 6px; padding: 2px 6px; vertical-align: 2px }
+
+.app { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr); background: var(--panel); border: 1px solid var(--line); border-radius: 14px; overflow: hidden }
+@media (max-width: 900px) { .app { grid-template-columns: minmax(0, 1fr) } }
+.left { padding: 20px 22px; display: grid; gap: 14px; align-content: start; min-width: 0 }
+.right { padding: 20px 18px; border-left: 1px solid var(--line); background: color-mix(in srgb, var(--panel) 60%, var(--sunk)); display: grid; gap: 12px; align-content: start; min-width: 0 }
+@media (max-width: 900px) { .right { border-left: 0; border-top: 1px solid var(--line) } }
+.app h2 { font: 600 22px/1.2 var(--display); margin: 0 }
+.app h3 { font: 600 17px/1.2 var(--display); margin: 0 }
+.sub { color: var(--muted); font-size: 12.5px }
+
+.round { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; display: grid; gap: 12px }
+.round .head { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap }
+.state { font: 700 10.5px var(--mono); letter-spacing: .07em; padding: 3px 8px; border-radius: 999px; background: color-mix(in srgb, var(--gold) 22%, transparent); color: var(--gold-ink) }
+.planned { font: 500 11.5px var(--mono); color: var(--muted) }
+.round p { margin: 0; color: var(--plate); max-width: 78ch }
+
+/* Canary summary for the whole round */
+.canary { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 4px 14px; align-items: center; padding: 10px 12px; border-radius: 10px; background: var(--sunk); border: 1px dashed var(--line) }
+.canary .big { font: 600 26px/1 var(--display); grid-row: span 2 }
+.canary .line { font-size: 13px; color: var(--plate) }
+.canary .line b { color: var(--ink) }
+
+.asg { border: 1px solid var(--line); border-radius: 11px; padding: 12px 14px; display: grid; gap: 10px; background: var(--panel) }
+.asg .top { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap }
+.asg .who { font-weight: 600 }
+.asg .prov { font: 700 10px var(--mono); letter-spacing: .06em; color: var(--muted) }
+.asg .prompt { color: var(--plate); font-size: 13px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden }
+.meter { display: grid; gap: 6px }
+.meter .row1 { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; flex-wrap: wrap }
+.meter .t { font-weight: 600 }
+.meter .t .num { font-size: 13px }
+.meter .of { font: 500 11.5px var(--mono); color: var(--muted) }
+.bar { display: flex; height: 8px; border-radius: 99px; overflow: hidden; background: var(--free) }
+.bar i { display: block; height: 100% }
+.bar i + i { box-shadow: -1px 0 0 var(--panel) }
+.legend { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 3px 14px; font-size: 12px; color: var(--plate) }
+@media (max-width: 560px) { .legend { grid-template-columns: repeat(2, minmax(0, 1fr)) } }
+.legend span { display: flex; gap: 6px; align-items: center; min-width: 0 }
+.legend span em { font-style: normal; white-space: nowrap; overflow: hidden; text-overflow: ellipsis }
+.legend span .num { margin-left: auto; color: var(--muted); font-size: 11.5px }
+.sw { width: 9px; height: 9px; border-radius: 2px; flex: none }
+details.why summary { cursor: pointer; font-size: 12.5px; color: var(--gold-ink); list-style: none }
+details.why summary::-webkit-details-marker { display: none }
+details.why summary::before { content: "›"; display: inline-block; margin-right: 6px; transition: transform .15s }
+details.why[open] summary::before { transform: rotate(90deg) }
+.why ul { margin: 8px 0 0; padding: 0; list-style: none; display: grid; gap: 4px; font-size: 12.5px }
+.why li { display: grid; grid-template-columns: 16px minmax(0, 1fr) auto; gap: 8px; align-items: baseline; color: var(--plate) }
+.why li .num { color: var(--muted); font-size: 11.5px }
+.why li.out { color: var(--muted) }
+.why .k { font: 700 10px var(--mono); }
+.why .in .k { color: var(--add) } .why .out .k { color: var(--muted) }
+.acts { display: flex; gap: 8px; flex-wrap: wrap }
+button { font: 600 12.5px var(--body); border-radius: 9px; padding: 6px 12px; border: 1px solid var(--line); background: var(--card); color: var(--ink); cursor: pointer }
+button.primary { background: var(--ink); color: var(--panel); border-color: transparent }
+button:focus-visible, summary:focus-visible { outline: 2px solid var(--gold); outline-offset: 2px }
+.warnline { font-size: 12.5px; color: var(--warn) }
+
+/* Connections */
+.sess { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; display: grid; gap: 10px }
+.sess .top { display: flex; gap: 8px; align-items: baseline }
+.sess .top .prov { font: 700 10px var(--mono); letter-spacing: .06em; color: var(--muted) }
+.sess .top b { font: 600 15px/1.25 var(--display) }
+.sess .top .st { margin-left: auto; font: 500 11px var(--mono); color: var(--muted); white-space: nowrap }
+.sec { border-top: 1px solid var(--line); padding-top: 8px; display: grid; gap: 6px }
+.sec .h { display: flex; justify-content: space-between; align-items: baseline; font-size: 12.5px; font-weight: 600 }
+.sec .h .num { font-weight: 500; color: var(--muted); font-size: 11.5px }
+.ctxbar { display: flex; height: 6px; border-radius: 99px; overflow: hidden; background: var(--free) }
+.ctxbar i { display: block; height: 100% }
+.ctxline { display: flex; justify-content: space-between; font-size: 12px; color: var(--plate) }
+.ctxline.hot { color: var(--warn); font-weight: 600 }
+.files { display: grid; gap: 3px; font-size: 12.5px }
+.files a { color: var(--ink); text-decoration: none; display: flex; gap: 7px; align-items: center; min-width: 0 }
+.files a span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis }
+.files a:hover span { text-decoration: underline }
+.ico { width: 13px; height: 13px; flex: none; stroke: var(--muted); fill: none; stroke-width: 1.5 }
+.more { font-size: 12px; color: var(--muted) }
+.chg { display: flex; align-items: center; gap: 10px; font: 600 12.5px var(--mono); flex-wrap: wrap }
+.chg .a { color: var(--add) } .chg .d { color: var(--del) }
+.chg .n { color: var(--muted); font-weight: 500 }
+.chg button { margin-left: auto; padding: 4px 10px; font-size: 12px }
+
+.notes { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px }
+@media (max-width: 900px) { .notes { grid-template-columns: minmax(0, 1fr) } }
+.note { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px }
+.note h3 { margin: 0 0 6px; font: 600 16px var(--display) }
+.note p { margin: 0; color: var(--plate); font-size: 13.5px }
+.note ul { margin: 6px 0 0; padding-left: 18px; color: var(--plate); font-size: 13px }
+.qs { display: grid; gap: 10px }
+.q { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 13px 16px }
+.q h3 { margin: 0 0 5px; font: 600 15.5px var(--display) }
+.q p { margin: 0; color: var(--plate); font-size: 13.5px }
+.opt { display: inline-block; font: 700 11px var(--mono); padding: 1px 7px; border-radius: 6px; background: var(--ink); color: var(--panel); margin-right: 5px }
+.rec { font: 700 10px var(--mono); color: var(--add); margin-left: 4px }
+
+/* Interactive context rows */
+.disclose { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; background: transparent; border: 0; padding: 4px 0 0; font: 500 12.5px var(--body); color: var(--plate) }
+.disclose .chev { display: inline-block; transition: transform .15s; color: var(--muted); font-size: 14px }
+.disclose[aria-expanded="true"] .chev { transform: rotate(90deg) }
+.disclose .dim { margin-left: auto; color: var(--gold-ink); font-size: 12px }
+.disclose:hover .dim { text-decoration: underline }
+
+.items { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px }
+.item { display: grid; grid-template-columns: 10px minmax(0, 1fr) auto auto; gap: 8px; align-items: center; padding: 5px 8px; border-radius: 8px; font-size: 12.5px; color: var(--plate); outline: none; position: relative }
+.item .lbl { white-space: nowrap; overflow: hidden; text-overflow: ellipsis }
+.item .lbl small { color: var(--muted); font-size: 11.5px; margin-left: 6px }
+.item .num { color: var(--muted); font-size: 11.5px }
+.item .tools { display: flex; gap: 2px; opacity: 0; transition: opacity .12s }
+.item:hover .tools, .item:focus-visible .tools, .item.lit .tools { opacity: 1 }
+.item:hover, .item:focus-visible, .item.lit { background: color-mix(in srgb, var(--gold) 14%, transparent) }
+.item:focus-visible { box-shadow: 0 0 0 2px var(--gold) inset }
+.item.off { color: var(--muted) }
+.item.off .lbl { text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--muted) 60%, transparent) }
+.item.off .sw { opacity: .35 }
+.tb { width: 24px; height: 24px; padding: 0; display: grid; place-items: center; border-radius: 7px; border: 1px solid transparent; background: transparent; color: var(--muted) }
+.tb:hover { border-color: var(--line); background: var(--card); color: var(--ink) }
+.tb svg { width: 14px; height: 14px; stroke: currentColor; fill: none; stroke-width: 1.6 }
+.groupttl { font: 700 10px var(--mono); letter-spacing: .08em; color: var(--muted); padding: 6px 8px 2px }
+.bar i { cursor: pointer; transition: opacity .12s, width .25s ease }
+.bar.focus i { opacity: .35 } .bar.focus i.on { opacity: 1 }
+.hint { font-size: 12px; color: var(--muted); align-self: center; margin-left: auto }
+kbd { font: 600 11px var(--mono); border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 5px; padding: 0 5px; background: var(--card); color: var(--plate) }
+.toast { position: sticky; bottom: 12px; justify-self: center; display: flex; gap: 12px; align-items: center; background: var(--ink); color: var(--panel); padding: 8px 10px 8px 14px; border-radius: 10px; font-size: 13px; box-shadow: 0 8px 22px rgba(0,0,0,.25) }
+.toast button { background: transparent; color: var(--panel); border-color: color-mix(in srgb, var(--panel) 40%, transparent) }
+.segtip { position: fixed; z-index: 20; pointer-events: none; background: var(--ink); color: var(--panel); font-size: 12px; padding: 6px 9px; border-radius: 8px; max-width: 260px; box-shadow: 0 6px 18px rgba(0,0,0,.25) }
+/* Quick Look style preview */
+.ql { position: fixed; inset: 0; z-index: 30; display: grid; place-items: center; background: rgba(15,10,6,.45); padding: 24px max(16px, env(safe-area-inset-left, 0px)) }
+.ql[hidden] { display: none }
+.qlbox { width: min(560px, 100%); max-height: 86vh; overflow: auto; background: var(--card); border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 24px 60px rgba(0,0,0,.35); display: grid }
+.qlhead { display: flex; gap: 10px; align-items: center; padding: 10px 12px; border-bottom: 1px solid var(--line); font-weight: 600; font-size: 13px }
+.qlhead .num { color: var(--muted); font-weight: 500; font-size: 11.5px }
+.qlhead .sp { margin-left: auto; display: flex; gap: 8px }
+.qlbody { padding: 16px }
+.shot { aspect-ratio: 2356 / 2680; max-height: 52vh; margin: 0 auto; border-radius: 10px; border: 1px solid var(--line); background: linear-gradient(180deg, var(--sunk), var(--panel)); display: grid; grid-template-rows: 38px 1fr; overflow: hidden }
+.shot .chrome { background: var(--panel); border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: 6px; padding: 0 10px }
+.shot .chrome i { width: 9px; height: 9px; border-radius: 50% ; background: var(--line) }
+.shot .inner { display: grid; place-items: center; text-align: center; padding: 18px; color: var(--muted); font-size: 12.5px }
+.shot .inner b { display: block; color: var(--plate); font: 600 16px var(--display); margin-bottom: 4px }
+.quote { border-left: 3px solid var(--c-meet); padding: 4px 0 4px 12px; color: var(--plate); font-size: 14px; margin: 0 0 10px }
+.qlfoot { padding: 0 16px 14px; font-size: 12px; color: var(--muted) }
+@media (prefers-reduced-motion: reduce) { details.why summary::before, .bar i, .item .tools { transition: none } }
+</style>
+
+<div class="wrap">
+  <header>
+    <h1>Work Context Meter</h1>
+    <p class="lede">How much each send puts into a session, how much of what's linked it left out, and what each session has filled and produced. Drawn on your real "Cleanup Proposal Approved, COS Revamp (G2)" task. <span class="ex">EXAMPLE NUMBERS</span></p>
+  </header>
+
+  <section class="app" aria-label="Work task page preview">
+    <div class="left">
+      <div>
+        <h2>Work chat</h2>
+        <div class="sub">Describe the outcome. COS explains its plan and drafts assignments. You review, edit and send each one.</div>
+      </div>
+
+      <article class="round">
+        <div class="head">
+          <span class="state">READY TO SEND</span>
+          <span class="planned">planned with Opus · high effort · 41 s</span>
+        </div>
+        <p>Split into three releases. Onboarding goes to Simplify gotcos Control onboarding, the meeting-taker design pass to COS Product Work (CODEX). Glasses integration waits until Release 1 settles.</p>
+
+        <div class="canary" role="group" aria-label="Context sent versus linked" id="canary"></div>
+        <div id="asgs"></div>
+        <div class="acts"><button class="primary" type="button" id="sendall">Send all</button><button type="button">Not now</button><span class="hint">Hover a row or a bar segment · <kbd>Space</kbd> previews · <kbd>⌫</kbd> removes</span></div>
+        <div class="toast" id="toast" hidden><span id="toastText"></span><button type="button" id="undo">Undo</button></div>
+      </article>
+    </div>
+
+    <aside class="right" aria-label="Connections preview">
+      <h3 style="font-size:22px">Connections</h3>
+
+      <div class="sess">
+        <div class="top"><span class="prov">CODEX</span><b>Simplify gotcos Control onboarding</b><span class="st">working · 12 h</span></div>
+        <div class="sec">
+          <div class="h">Context <span class="num">24% · 124k / 512k</span></div>
+          <div class="ctxbar" aria-hidden="true"><i style="width:24%;background:var(--c-req)"></i></div>
+          <div class="ctxline"><span>Room for this send</span><span class="num">≈ 18.4k</span></div>
+        </div>
+        <div class="sec">
+          <div class="h">Outputs <span class="num">5</span></div>
+          <div class="files">
+            <a href="#outputs"><svg class="ico" viewBox="0 0 16 16"><rect x="2" y="3" width="12" height="10" rx="1.5"/><circle cx="6" cy="7" r="1.3"/><path d="M3 12l3.5-3 2.5 2 2-1.5L13 12"/></svg><span>onboarding_glasses_path.png</span></a>
+            <a href="#outputs"><svg class="ico" viewBox="0 0 16 16"><rect x="2" y="3" width="12" height="10" rx="1.5"/><circle cx="6" cy="7" r="1.3"/><path d="M3 12l3.5-3 2.5 2 2-1.5L13 12"/></svg><span>onboarding_mac_only.png</span></a>
+            <a href="#outputs"><svg class="ico" viewBox="0 0 16 16"><path d="M4 2h6l3 3v9H4z"/><path d="M10 2v3h3"/></svg><span>ONBOARDING_PLAN.md</span></a>
+            <span class="more">Show 2 more</span>
+          </div>
+        </div>
+        <div class="sec">
+          <div class="h">Changes</div>
+          <div class="chg"><span class="a">+1,284</span><span class="d">−312</span><span class="n">9 files · since this handoff</span><button type="button">Review changes</button></div>
+        </div>
+      </div>
+
+      <div class="sess">
+        <div class="top"><span class="prov">CODEX</span><b>COS Product Work (CODEX)</b><span class="st">idle · 7 h</span></div>
+        <div class="sec">
+          <div class="h">Context <span class="num">91% · 466k / 512k</span></div>
+          <div class="ctxbar" aria-hidden="true"><i style="width:91%;background:var(--warn)"></i></div>
+          <div class="ctxline hot"><span>Close to compacting. A fresh session keeps this send intact.</span></div>
+        </div>
+        <div class="sec">
+          <div class="h">Outputs <span class="num">2</span></div>
+          <div class="files">
+            <a href="#outputs"><svg class="ico" viewBox="0 0 16 16"><path d="M4 2h6l3 3v9H4z"/><path d="M10 2v3h3"/></svg><span>TRANSCRIPTION_BAKEOFF.md</span></a>
+            <a href="#outputs"><svg class="ico" viewBox="0 0 16 16"><path d="M4 2h6l3 3v9H4z"/><path d="M10 2v3h3"/></svg><span>results.csv</span></a>
+          </div>
+        </div>
+        <div class="sec">
+          <div class="h">Changes</div>
+          <div class="chg"><span class="n">No code changes since its last handoff</span></div>
+        </div>
+      </div>
+
+      <div class="sess">
+        <div class="top"><span class="prov">CLAUDE</span><b>COS Glasses · QA review before publish</b><span class="st">idle · 1 d</span></div>
+        <div class="sec">
+          <div class="h">Context <span class="num">38% · 380k / 1M</span></div>
+          <div class="ctxbar" aria-hidden="true"><i style="width:38%;background:var(--c-req)"></i></div>
+          <div class="ctxline"><span>Not assigned this round</span></div>
+        </div>
+      </div>
+    </aside>
+  </section>
+
+  <section class="notes" aria-label="How it works">
+    <div class="note"><h3>Per send: the meter</h3><p>Every assignment shows what it will put into the session, split by source, before you click Send. Screenshots usually dominate, so they get their own color.</p></div>
+    <div class="note"><h3>Per round: the canary</h3><p>The round line compares what is sent with everything linked to the card. "What's in and what's left out" names each item and why, so a flooding orchestrator is visible at a glance.</p></div>
+    <div class="note"><h3>Per session: room, outputs, changes</h3><p>Each linked session shows how full it already is, the files it produced since the handoff, and its code changes. A nearly full session suggests Send to a new session.</p></div>
+  </section>
+
+  <section class="qs" aria-label="Questions">
+    <h2 style="font:600 20px var(--display);margin:0">Three picks before I build</h2>
+    <div class="q"><h3>Token counts before sending</h3><p><span class="opt">A</span>Estimates marked ≈, from text length and image size (instant, close).<span class="rec">RECOMMENDED</span> <span class="opt">B</span>Exact counts from the provider's token-count call (adds a request per assignment).</p></div>
+    <div class="q"><h3>Session "Context used" source</h3><p><span class="opt">A</span>Read each session's own usage from its local transcript, refreshed while the card is visible.<span class="rec">RECOMMENDED</span> <span class="opt">B</span>Only count what COS itself sent (no transcript reads; ignores the session's own work).</p></div>
+    <div class="q"><h3>What counts as Changes</h3><p><span class="opt">A</span>Git diff of the session's working folder since the handoff, with Review changes.<span class="rec">RECOMMENDED</span> <span class="opt">B</span>Only files the session reported in its reply.</p></div>
+  </section>
+</div>
+
+<div class="segtip" id="segtip" hidden></div>
+<div class="ql" id="ql" hidden role="dialog" aria-modal="true" aria-labelledby="qlTitle">
+  <div class="qlbox">
+    <div class="qlhead"><span id="qlTitle"></span><span class="num" id="qlMeta"></span><span class="sp"><button type="button" id="qlToggle"></button><button type="button" id="qlClose">Close</button></span></div>
+    <div class="qlbody" id="qlBody"></div>
+    <div class="qlfoot">Space or Esc closes. In COS Control this is the macOS Quick Look panel for files, and the exact excerpt for meeting text.</div>
+  </div>
+</div>
+
+<script>
+(() => {
+  const K = { req: 'var(--c-req)', task: 'var(--c-task)', files: 'var(--c-files)', meet: 'var(--c-meet)', prior: 'var(--c-prior)', cos: 'var(--c-cos)' };
+  const KN = { req: 'Your request', task: 'Task + finish line', files: 'Files', meet: 'Meeting excerpts', prior: 'Prior updates', cos: 'COS instructions' };
+  const LINKED = 264.0;
+  const shot = (name, dims, what) => ({ type: 'shot', name, dims, what });
+  const quote = (lines) => ({ type: 'quote', lines });
+  const A = [
+    { who: 'Simplify gotcos Control onboarding', prov: 'CODEX', windowK: 512,
+      prompt: 'Scope: onboarding only. Adopt the strong parts of the onboarding shown in the 2026-10-14 meeting screenshots, inside the current COS theme, with a glasses path and a Mac-only default.',
+      items: [
+        { k: 'req', label: 'Your request', t: 0.7, in: true, fixed: true, pv: quote(['"I absolutely love the onboarding that they\'re showing now. For us we need it to be inclusive of the glasses if the user has them."']) },
+        { k: 'task', label: 'Task, finish line and source', t: 1.3, in: true, fixed: true, pv: quote(['Finish line: When new release passes /qa and is ready for user testing.', 'Source: Cleanup Proposal Approved, COS Revamp (G2) [2026-10-14]']) },
+        { k: 'files', label: 'Screenshot 2026-10-14 at 7.58.22 PM.png', note: 'onboarding, step 1', t: 2.9, in: true, pv: shot('Screenshot 2026-10-14 at 7.58.22 PM.png', '2356 × 2680 · 713 KB', 'Onboarding · welcome step') },
+        { k: 'files', label: 'Dropped file.png', note: 'onboarding, glasses', t: 3.1, in: true, pv: shot('Dropped file.png', '2674 × 2962 · 820 KB', 'Onboarding · pair your glasses') },
+        { k: 'files', label: 'Dropped file.png', note: 'onboarding, Mac only', t: 3.0, in: true, pv: shot('Dropped file.png', '3180 × 2630 · 1.3 MB', 'Onboarding · Mac-only path') },
+        { k: 'files', label: 'Screenshot 2026-10-14 at 8.03.18 PM.png', note: 'Work tab', t: 1.7, in: true, pv: shot('Screenshot 2026-10-14 at 8.03.18 PM.png', '3044 × 570 · 251 KB', 'Work tab header, not onboarding') },
+        { k: 'meet', label: 'Oct 14 meeting', note: '"onboarding" passage', t: 2.1, in: true, pv: quote(['Example excerpt: the onboarding walkthrough discussion, about two minutes of transcript around the screenshots.']) },
+        { k: 'meet', label: 'Oct 14 meeting', note: '"glasses optional" passage', t: 1.4, in: true, pv: quote(['Example excerpt: the passage on Mac-only users and the optional glasses path.']) },
+        { k: 'prior', label: 'Earlier update from this session', t: 0.9, in: true, pv: quote(['Session reported: Working. Example of the last update text COS includes so the session does not repeat itself.']) },
+        { k: 'cos', label: 'COS instructions', note: 'scope and safety', t: 1.3, in: true, fixed: true, pv: quote(['Preserve other session work. Report changes, checks and questions. Do not publish, delete data, change security settings or message other people.']) },
+        { k: 'files', label: 'Dropped file.png', note: 'dashboard', t: 2.6, in: false, pv: shot('Dropped file.png', '384 × 486 · 26 KB', 'Dashboard thumbnail') },
+        { k: 'meet', label: 'Full Oct 14 transcript', note: 'two passages were enough', t: 38.2, in: false, pv: quote(['The whole meeting, about 61 minutes. Left out because the two passages above cover this assignment.']) },
+      ] },
+    { who: 'COS Product Work (CODEX)', prov: 'CODEX', windowK: 512, used: 91,
+      prompt: 'Design and feasibility pass for the meeting-taker: audio capture approach, permissions, and detection method. Do not touch onboarding files.',
+      items: [
+        { k: 'req', label: 'Your request', t: 0.7, in: true, fixed: true, pv: quote(['"We want to build and incorporate a similar feature to what Fireflies and Granola are now doing as meeting takers."']) },
+        { k: 'task', label: 'Task, finish line and source', t: 1.3, in: true, fixed: true, pv: quote(['Finish line: When new release passes /qa and is ready for user testing.']) },
+        { k: 'meet', label: 'Oct 14 meeting', note: '"meeting-taker" passage', t: 3.4, in: true, pv: quote(['Example excerpt: detecting an in-progress meeting from the sound card and showing Start recording on the pet.']) },
+        { k: 'meet', label: 'Oct 15 call', note: 'All Mac audio field test', t: 2.9, in: true, pv: quote(['Example excerpt: the 2:00 PM Mac recording, chunk 51 stall and the two-hour pilot limit.']) },
+        { k: 'meet', label: 'Oct 13 note', note: 'diarization confidence', t: 2.5, in: true, pv: quote(['Example excerpt: speaker names only at high confidence on Mac playback.']) },
+        { k: 'prior', label: 'Bake-off results summary', t: 1.1, in: true, pv: quote(['Example: TRANSCRIPTION_BAKEOFF.md summary lines this session wrote earlier.']) },
+        { k: 'cos', label: 'COS instructions', note: 'scope and safety', t: 1.3, in: true, fixed: true, pv: quote(['Preserve other session work. Report changes, checks and questions.']) },
+        { k: 'files', label: '4 onboarding screenshots', note: 'not about recording', t: 10.7, in: false, pv: shot('4 screenshots', '7.3 MB total', 'Onboarding screens, not about recording') },
+      ] },
+  ];
+  const fmt = (t) => (t >= 10 ? t.toFixed(1) : t.toFixed(1)) + 'k';
+  const total = (a) => a.items.filter(i => i.in).reduce((s, i) => s + i.t, 0);
+  const icon = { eye: '<svg viewBox="0 0 16 16"><path d="M1.5 8s2.4-4.5 6.5-4.5S14.5 8 14.5 8s-2.4 4.5-6.5 4.5S1.5 8 1.5 8z"/><circle cx="8" cy="8" r="2"/></svg>', x: '<svg viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8"/></svg>', plus: '<svg viewBox="0 0 16 16"><path d="M8 3v10M3 8h10"/></svg>' };
+  const root = document.getElementById('asgs'), canary = document.getElementById('canary'), sendall = document.getElementById('sendall');
+  let hovered = null, lastRemoved = null;
+  const open = A.map(() => false); // collapsed by default; remembered per Mac in the app
+
+  function render() {
+    root.innerHTML = '';
+    A.forEach((a, ai) => {
+      const t = total(a);
+      const el = document.createElement('div'); el.className = 'asg';
+      const kinds = Object.keys(K);
+      const bars = kinds.map(k => { const v = a.items.filter(i => i.in && i.k === k).reduce((s, i) => s + i.t, 0); return v ? `<i data-k="${k}" style="width:${(v / t * 100).toFixed(2)}%;background:${K[k]}" title="${KN[k]} ${fmt(v)}"></i>` : '' }).join('');
+      const pct = (t / a.windowK * 100).toFixed(1);
+      const right = a.used ? `<span class="of warnline">Session is ${a.used}% full · may compact soon</span>` : `<span class="of">${pct}% of this session's ${a.windowK}k window</span>`;
+      const row = (it, idx) => `<li class="item${it.in ? '' : ' off'}" tabindex="0" data-a="${ai}" data-i="${idx}" data-k="${it.k}"><i class="sw" style="background:${K[it.k]}"></i><span class="lbl">${it.label}${it.note ? `<small>${it.note}</small>` : ''}</span><span class="num">${fmt(it.t)}</span><span class="tools"><button class="tb" type="button" data-act="pv" aria-label="Preview ${it.label}" title="Preview (Space)">${icon.eye}</button>${it.fixed ? '' : (it.in ? `<button class="tb" type="button" data-act="rm" aria-label="Remove ${it.label} from this send" title="Remove from this send">${icon.x}</button>` : `<button class="tb" type="button" data-act="add" aria-label="Add ${it.label} to this send" title="Add to this send">${icon.plus}</button>`)}</span></li>`;
+      const ins = a.items.map((it, i) => [it, i]).filter(([it]) => it.in), outs = a.items.map((it, i) => [it, i]).filter(([it]) => !it.in);
+      el.innerHTML = `<div class="top"><span class="prov">${a.prov}</span><span class="who">${a.who}</span></div>
+        <div class="prompt">${a.prompt}</div>
+        <div class="meter"><div class="row1"><span class="t">Sends <span class="num">≈ ${fmt(t)}</span> tokens</span>${right}</div><div class="bar" data-a="${ai}">${bars}</div>
+          <button class="disclose" type="button" data-toggle="${ai}" aria-expanded="${open[ai]}"><span class="chev">›</span>${ins.length} items in this send${outs.length ? ` · ${outs.length} left out` : ''}<span class="dim">${open[ai] ? 'Hide' : 'Show, preview or trim'}</span></button></div>
+        ${open[ai] ? `<ul class="items"><li class="groupttl">IN THIS SEND · ${ins.length}</li>${ins.map(([it, i]) => row(it, i)).join('')}${outs.length ? `<li class="groupttl">LINKED, LEFT OUT · ${outs.length}</li>${outs.map(([it, i]) => row(it, i)).join('')}` : ''}</ul>` : ''}
+        <div class="acts"><button class="primary" type="button">Send · ≈ ${fmt(t)}</button>${a.used ? '<button type="button">Send to a new session</button>' : ''}<button type="button">Edit</button><button type="button">Skip</button></div>`;
+      root.appendChild(el);
+    });
+    const sum = A.reduce((s, a) => s + total(a), 0);
+    canary.innerHTML = `<div class="big num">${Math.round(sum / LINKED * 100)}%</div><div class="line">This round sends <b class="num">${fmt(sum)}</b> tokens of the <b class="num">${LINKED}k</b> linked to this card.</div><div class="line" style="color:var(--muted)">Each session gets only what its assignment needs. Open an assignment's items to preview, remove or add; this updates.</div>`;
+    sendall.textContent = `Send all · ≈ ${fmt(sum)} tokens`;
+    wire();
+  }
+
+  function setLit(ai, k, on) {
+    const bar = root.querySelector(`.bar[data-a="${ai}"]`); if (!bar) return;
+    bar.classList.toggle('focus', on);
+    bar.querySelectorAll('i').forEach(i => i.classList.toggle('on', on && i.dataset.k === k));
+    root.querySelectorAll(`.item[data-a="${ai}"]`).forEach(r => r.classList.toggle('lit', on && r.dataset.k === k && !r.classList.contains('off')));
+  }
+  const tip = document.getElementById('segtip');
+  function wire() {
+    root.querySelectorAll('[data-toggle]').forEach(b => b.addEventListener('click', () => { const a = +b.dataset.toggle; open[a] = !open[a]; render(); root.querySelector(`[data-toggle="${a}"]`)?.focus() }));
+    root.querySelectorAll('.item').forEach(r => {
+      const a = +r.dataset.a, i = +r.dataset.i;
+      r.addEventListener('mouseenter', () => { hovered = [a, i]; setLit(a, r.dataset.k, true) });
+      r.addEventListener('mouseleave', () => { hovered = null; setLit(a, r.dataset.k, false) });
+      r.addEventListener('focus', () => { hovered = [a, i] });
+      r.querySelectorAll('[data-act]').forEach(b => b.addEventListener('click', (e) => { e.stopPropagation(); act(b.dataset.act, a, i) }));
+    });
+    root.querySelectorAll('.bar i').forEach(seg => {
+      const a = +seg.parentElement.dataset.a, k = seg.dataset.k;
+      seg.addEventListener('mouseenter', () => { setLit(a, k, true); const names = A[a].items.filter(it => it.in && it.k === k).map(it => it.label + (it.note ? ' · ' + it.note : '')); tip.innerHTML = `<b>${KN[k]}</b><br>${names.join('<br>')}<br><span style="opacity:.7">Hover a row, then Space to preview</span>`; tip.hidden = false });
+      seg.addEventListener('mousemove', (e) => { tip.style.left = Math.min(e.clientX + 12, innerWidth - 270) + 'px'; tip.style.top = (e.clientY + 14) + 'px' });
+      seg.addEventListener('mouseleave', () => { setLit(a, k, false); tip.hidden = true });
+      seg.addEventListener('click', () => { if (!open[a]) { open[a] = true; render() } const first = A[a].items.findIndex(it => it.in && it.k === k); if (first >= 0) openPreview(a, first) });
+    });
+  }
+  const toast = document.getElementById('toast'), toastText = document.getElementById('toastText');
+  function act(kind, a, i) {
+    const it = A[a].items[i];
+    if (kind === 'pv') return openPreview(a, i);
+    if (it.fixed) return;
+    it.in = kind === 'add';
+    lastRemoved = [a, i, !it.in];
+    toastText.textContent = (it.in ? 'Added ' : 'Removed ') + it.label + (it.in ? ' to ' : ' from ') + 'this send · ' + fmt(it.t);
+    toast.hidden = false; clearTimeout(act.t); act.t = setTimeout(() => toast.hidden = true, 6000);
+    render();
+    const again = root.querySelector(`.item[data-a="${a}"][data-i="${i}"]`); again?.focus();
+  }
+  document.getElementById('undo').addEventListener('click', () => { if (!lastRemoved) return; const [a, i, wasIn] = lastRemoved; A[a].items[i].in = wasIn; lastRemoved = null; toast.hidden = true; render() });
+
+  const ql = document.getElementById('ql'), qlBody = document.getElementById('qlBody'), qlTitle = document.getElementById('qlTitle'), qlMeta = document.getElementById('qlMeta'), qlToggle = document.getElementById('qlToggle');
+  let qlAt = null, qlReturn = null;
+  function openPreview(a, i) {
+    const it = A[a].items[i]; qlAt = [a, i]; qlReturn = document.activeElement;
+    qlTitle.textContent = it.label; qlMeta.textContent = `${KN[it.k]} · ≈ ${fmt(it.t)} tokens`;
+    qlBody.innerHTML = it.pv.type === 'shot'
+      ? `<div class="shot"><div class="chrome"><i></i><i></i><i></i></div><div class="inner"><div><b>${it.pv.what}</b>${it.pv.name}<br>${it.pv.dims}<br><span style="font-size:11.5px">Real screenshot shows here</span></div></div></div>`
+      : it.pv.lines.map(l => `<p class="quote">${l}</p>`).join('');
+    qlToggle.hidden = !!it.fixed;
+    qlToggle.textContent = it.in ? 'Remove from this send' : 'Add to this send';
+    ql.hidden = false; qlToggle.hidden ? document.getElementById('qlClose').focus() : qlToggle.focus();
+  }
+  function closePreview() { ql.hidden = true; qlReturn?.focus?.() }
+  qlToggle.addEventListener('click', () => { const [a, i] = qlAt; closePreview(); act(A[a].items[i].in ? 'rm' : 'add', a, i) });
+  document.getElementById('qlClose').addEventListener('click', closePreview);
+  ql.addEventListener('click', (e) => { if (e.target === ql) closePreview() });
+  document.addEventListener('keydown', (e) => {
+    if (!ql.hidden) { if (e.key === ' ' || e.key === 'Escape') { e.preventDefault(); closePreview() } return }
+    if (!hovered) return;
+    const [a, i] = hovered;
+    if (e.key === ' ') { e.preventDefault(); openPreview(a, i) }
+    if ((e.key === 'Backspace' || e.key === 'Delete') && !A[a].items[i].fixed) { e.preventDefault(); act(A[a].items[i].in ? 'rm' : 'add', a, i) }
+  });
+  render();
+})();
+</script>

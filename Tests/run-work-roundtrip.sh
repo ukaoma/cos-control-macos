@@ -13,3 +13,5 @@ else
     -framework Security -framework AppKit -o "$HELPER"
 fi
 /usr/bin/python3 "$ROOT/Tests/work-roundtrip-helper-checks.py" "$HELPER"
+# 0.5.312: Connections meter (pure parsers, pins, and the helper verb against this same helper).
+"$ROOT/Tests/run-work-session-meter.sh" "$HELPER"

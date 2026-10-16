@@ -1,3 +1,5 @@
+import AppKit
+import QuickLook
 import SwiftUI
 
 /// 0.5.247: what the board and the Agent workspace show for a tracked handoff.
@@ -244,4 +246,267 @@ struct WorkLatestMoveStrip: View {
         let tail: String = " to " + WorkProgress.stageTitle(shown.move.toStage ?? "") + ". " + reason + evidence
         return Text("Moved ") + Text(title).fontWeight(.semibold) + Text(tail)
     }
+}
+
+// MARK: - 0.5.312 Connections: context, outputs, changes (design/work-context-mock.html, right column)
+
+/// What the helper's `work-session-meter` returned for one linked session. Paths and counts only.
+struct WorkSessionMeterSnapshot: Equatable {
+    struct Output: Equatable, Identifiable {
+        let path: String
+        var id: String { path }
+        var name: String { (path as NSString).lastPathComponent }
+        var image: Bool { WorkSessionMeter.isImage(path) }
+    }
+    var context: WorkSessionMeter.Context?
+    var outputs: [Output] = []
+    var outputsTotal = 0
+    var outputsPartial = false
+    var cwd: String?
+    /// Nil until the handoff time and the working folder are both known; then git's answer (not a repo reads as no changes).
+    var changes: WorkSessionMeter.Changes?
+    var changesKnown = false
+    var perFile: [WorkSessionMeter.FileChange] = []
+
+    /// `known: false` (no transcript, an unsupported provider) is nil: the card shows nothing, never 0%.
+    static func parse(_ details: [String: JSONValue]) -> Self? {
+        guard details["known"]?.bool == true else { return nil }
+        var snapshot = Self()
+        if let context = details["context"]?.object, let used = context["used"]?.int, let window = context["window"]?.int, used > 0, window > 0 {
+            snapshot.context = WorkSessionMeter.Context(used: used, window: window, model: context["model"]?.string ?? "")
+        }
+        snapshot.outputs = details["outputs"]?.array?.compactMap { $0.object?["path"]?.string }.filter { $0.hasPrefix("/") }.map { Output(path: $0) } ?? []
+        snapshot.outputsTotal = max(details["outputsTotal"]?.int ?? 0, snapshot.outputs.count)
+        snapshot.outputsPartial = details["outputsPartial"]?.bool == true
+        snapshot.cwd = details["cwd"]?.string
+        if let changes = details["changes"]?.object {
+            snapshot.changesKnown = changes["failed"]?.bool != true
+            if changes["repo"]?.bool == true, changes["failed"]?.bool != true {
+                snapshot.changes = WorkSessionMeter.Changes(files: changes["files"]?.int ?? 0, insertions: changes["insertions"]?.int ?? 0,
+                                                            deletions: changes["deletions"]?.int ?? 0)
+                snapshot.perFile = changes["perFile"]?.array?.compactMap { row -> WorkSessionMeter.FileChange? in
+                    guard let item = row.object, let path = item["path"]?.string else { return nil }
+                    return WorkSessionMeter.FileChange(path: path, insertions: item["insertions"]?.int, deletions: item["deletions"]?.int)
+                } ?? []
+            }
+        }
+        return snapshot
+    }
+}
+
+/// Backs the Connections cards' meters, and the assignment meters through `sessionContextWindow`.
+/// Read through the helper (bounded transcript tail, read-only git), cached for `ttl`, refreshed while a card is visible.
+@MainActor final class WorkSessionMeterStore: ObservableObject {
+    static let shared = WorkSessionMeterStore()
+    static let ttl: TimeInterval = 30
+    typealias Transport = @Sendable ([String]) async throws -> HelperResponse
+    @Published private(set) var snapshots: [String: WorkSessionMeterSnapshot] = [:]
+    /// Newest context per session, whatever handoff it was read for.
+    @Published private(set) var contexts: [String: WorkSessionMeter.Context] = [:]
+    private var fetchedAt: [String: Date] = [:]
+    private var inFlight: Set<String> = []
+    private let transport: Transport
+
+    init(transport: Transport? = nil) {
+        let helper = HelperClient()
+        self.transport = transport ?? { args in try await helper.run(args, timeout: 15) }
+    }
+
+    static func key(_ sessionID: String, since: Double?) -> String {
+        sessionID.lowercased() + "|" + (since.map { String(Int($0)) } ?? "-")
+    }
+
+    func snapshot(_ sessionID: String, since: Double?) -> WorkSessionMeterSnapshot? { snapshots[Self.key(sessionID, since: since)] }
+
+    /// SHARED API (0.5.312): how full a linked session's context is, as an estimate from its own transcript, or nil when
+    /// unknown (never a guessed 0). `sessionID` is the Work contributor id, "claude:<uuid>" or "codex:<uuid>".
+    /// Call `refresh(sessionID:since:)` to load it; this only reads what is cached.
+    func sessionContextWindow(_ sessionID: String) -> (used: Int, window: Int)? {
+        contexts[sessionID.lowercased()].map { ($0.used, $0.window) }
+    }
+
+    func refresh(sessionID: String, since: Double?, force: Bool = false) async {
+        let id = sessionID.lowercased()
+        let key = Self.key(id, since: since)
+        guard !inFlight.contains(key) else { return }
+        if !force, let at = fetchedAt[key], Date().timeIntervalSince(at) < Self.ttl { return }
+        inFlight.insert(key)
+        defer { inFlight.remove(key) }
+        var args = ["work-session-meter", "--session", id]
+        if let since, since.isFinite, since > 0 { args += ["--since", String(format: "%.3f", since)] }
+        guard let response = try? await transport(args), response.ok else { return }
+        fetchedAt[key] = Date()
+        let snapshot = WorkSessionMeterSnapshot.parse(response.details)
+        if snapshots[key] != snapshot { snapshots[key] = snapshot }
+        if let context = snapshot?.context { contexts[id] = context } else if snapshot == nil { contexts[id] = nil }
+    }
+}
+
+/// Context, Outputs and Changes on one linked session card. Every section is hidden while unknown: no transcript, no
+/// usage line, or a provider COS cannot read never shows 0%.
+struct WorkSessionMeterSections: View {
+    @ObservedObject var store: WorkSessionMeterStore
+    let sessionID: String
+    /// The handoff time (receipt or link), epoch seconds. Outputs and Changes are scoped to it.
+    let since: Double?
+    @State private var showAllOutputs = false
+    @State private var reviewing = false
+    @State private var preview: URL?
+
+    private var snapshot: WorkSessionMeterSnapshot? { store.snapshot(sessionID, since: since) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if let context = snapshot?.context { contextSection(context) }
+            if let snapshot, !snapshot.outputs.isEmpty { outputsSection(snapshot) }
+            if let snapshot, since != nil, snapshot.cwd != nil, snapshot.changesKnown { changesSection(snapshot) }
+        }
+        .quickLookPreview($preview)
+        // Refresh while the card is on screen; the task ends when it leaves.
+        .task(id: WorkSessionMeterStore.key(sessionID, since: since)) {
+            while !Task.isCancelled {
+                await store.refresh(sessionID: sessionID, since: since)
+                try? await Task.sleep(for: .seconds(WorkSessionMeterStore.ttl))
+            }
+        }
+    }
+
+    private func header(_ title: String, _ value: String?) -> some View {
+        HStack(alignment: .firstTextBaseline) {
+            Text(title).font(COSType.body(12.5, weight: .semibold))
+            Spacer(minLength: 6)
+            if let value { Text(value).font(COSType.mono(11)).foregroundStyle(COSPalette.muted) }
+        }
+    }
+
+    private func section<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 6) { content() }
+            .padding(.top, 8)
+            .overlay(alignment: .top) { Rectangle().fill(COSPalette.line).frame(height: 1) }
+    }
+
+    /// "24% · 124k / 512k" and a bar; orange with the compacting line at 85% and above (mock, second card).
+    private func contextSection(_ context: WorkSessionMeter.Context) -> some View {
+        section {
+            header("Context", context.label)
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(WorkSessionMeterColors.free)
+                    Capsule().fill(context.nearlyFull ? WorkSessionMeterColors.warn : WorkSessionMeterColors.used)
+                        .frame(width: max(2, geo.size.width * context.fraction))
+                }
+            }
+            .frame(height: 6)
+            .accessibilityElement()
+            .accessibilityLabel("Context \(context.percent) percent used")
+            if context.nearlyFull {
+                Text(WorkSessionMeter.compactingNote)
+                    .font(COSType.body(12, weight: .semibold)).foregroundStyle(WorkSessionMeterColors.warn)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .help("An estimate from this session's own transcript: what its last turn held, against its model's window.")
+    }
+
+    /// Newest first, three, then Show N more. Click opens the file; Space or the menu previews it with Quick Look.
+    private func outputsSection(_ snapshot: WorkSessionMeterSnapshot) -> some View {
+        let shown = showAllOutputs ? snapshot.outputs : Array(snapshot.outputs.prefix(3))
+        return section {
+            header("Outputs", "\(snapshot.outputsTotal)")
+            ForEach(shown) { output in
+                Button { NSWorkspace.shared.open(URL(fileURLWithPath: output.path)) } label: {
+                    HStack(spacing: 7) {
+                        Image(systemName: output.image ? "photo" : "doc.text").font(.system(size: 11)).foregroundStyle(COSPalette.muted)
+                            .frame(width: 13)
+                        Text(output.name).font(COSType.body(12.5)).lineLimit(1).truncationMode(.middle)
+                    }.contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help(output.path)
+                .onKeyPress(.space) { preview = URL(fileURLWithPath: output.path); return .handled }
+                .contextMenu {
+                    Button("Open") { NSWorkspace.shared.open(URL(fileURLWithPath: output.path)) }
+                    Button("Quick Look") { preview = URL(fileURLWithPath: output.path) }
+                    Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: output.path)]) }
+                }
+            }
+            if snapshot.outputs.count > 3 {
+                Button(showAllOutputs ? "Show fewer" : "Show \(snapshot.outputs.count - 3) more") { showAllOutputs.toggle() }
+                    .buttonStyle(COSTextButtonStyle()).font(COSType.body(12))
+            }
+            if snapshot.outputsPartial {
+                Text("Earlier files from this handoff are not listed.").font(COSType.body(11)).foregroundStyle(COSPalette.muted)
+            }
+        }
+    }
+
+    /// "+1,284 −312 · 9 files · since this handoff" with Review changes, or the quiet line (mock).
+    private func changesSection(_ snapshot: WorkSessionMeterSnapshot) -> some View {
+        section {
+            header("Changes", nil)
+            HStack(spacing: 10) {
+                if let changes = snapshot.changes, !changes.isEmpty {
+                    Text("+" + Self.grouped(changes.insertions)).foregroundStyle(WorkSessionMeterColors.added)
+                    Text("−" + Self.grouped(changes.deletions)).foregroundStyle(WorkSessionMeterColors.removed)
+                    Text("\(changes.files) \(changes.files == 1 ? "file" : "files") · since this handoff").foregroundStyle(COSPalette.muted)
+                    Spacer(minLength: 6)
+                    Button(reviewing ? "Hide changes" : "Review changes") { reviewing.toggle() }.buttonStyle(COSQuietButtonStyle()).controlSize(.small)
+                } else {
+                    Text(WorkSessionMeter.noChanges).foregroundStyle(COSPalette.muted)
+                }
+            }
+            .font(COSType.mono(12.5, weight: .semibold))
+            // Work overlays are inline, never sheets (Tests/run.sh): the review opens in the card.
+            if reviewing, let changes = snapshot.changes, !changes.isEmpty { reviewList(snapshot) }
+        }
+    }
+
+    private func reviewList(_ snapshot: WorkSessionMeterSnapshot) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 3) {
+                    ForEach(snapshot.perFile, id: \.path) { row in
+                        HStack(spacing: 8) {
+                            Text(row.insertions.map { "+\($0)" } ?? "bin").foregroundStyle(WorkSessionMeterColors.added).frame(width: 52, alignment: .trailing)
+                            Text(row.deletions.map { "−\($0)" } ?? "").foregroundStyle(WorkSessionMeterColors.removed).frame(width: 52, alignment: .trailing)
+                            Text(row.path).foregroundStyle(.primary).lineLimit(1).truncationMode(.middle)
+                        }
+                        .font(COSType.mono(11))
+                    }
+                }.frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(height: min(180, CGFloat(max(1, snapshot.perFile.count)) * 17 + 4))
+            HStack(spacing: 8) {
+                Text("Read-only: git diff since this handoff, including uncommitted work in this folder.")
+                    .font(COSType.body(11)).foregroundStyle(COSPalette.muted)
+                Spacer(minLength: 6)
+                if let cwd = snapshot.cwd {
+                    Button("Open folder") { NSWorkspace.shared.open(URL(fileURLWithPath: cwd, isDirectory: true)) }
+                        .buttonStyle(COSTextButtonStyle()).font(COSType.body(11.5))
+                }
+            }
+        }
+        .padding(8)
+        .background(COSPalette.panel, in: RoundedRectangle(cornerRadius: 7))
+    }
+
+    private static func grouped(_ n: Int) -> String {
+        let f = NumberFormatter(); f.numberStyle = .decimal; f.locale = Locale(identifier: "en_US")
+        return f.string(from: NSNumber(value: n)) ?? String(n)
+    }
+}
+
+/// The mock's meter colors (blue used, orange near full, green and red diff counts), light and dark.
+enum WorkSessionMeterColors {
+    private static func adaptive(_ light: (CGFloat, CGFloat, CGFloat), _ dark: (CGFloat, CGFloat, CGFloat)) -> Color {
+        Color(nsColor: NSColor(name: nil) { appearance in
+            let c = appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? dark : light
+            return NSColor(red: c.0, green: c.1, blue: c.2, alpha: 1)
+        })
+    }
+    static let used = adaptive((0.247, 0.455, 0.784), (0.427, 0.608, 0.902))
+    static let warn = adaptive((0.710, 0.337, 0.173), (0.878, 0.478, 0.290))
+    static let free = adaptive((0.890, 0.851, 0.784), (0.208, 0.173, 0.141))
+    static let added = adaptive((0.184, 0.541, 0.290), (0.361, 0.761, 0.478))
+    static let removed = adaptive((0.753, 0.224, 0.169), (0.925, 0.420, 0.361))
 }

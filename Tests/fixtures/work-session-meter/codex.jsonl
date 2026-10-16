@@ -1,0 +1,7 @@
+{"timestamp": "2026-10-15T10:00:00.000Z", "type": "session_meta", "payload": {"id": "x", "cwd": "/Users/fixture/codexproj"}}
+{"timestamp": "2026-10-15T10:00:01.000Z", "type": "turn_context", "payload": {"cwd": "/Users/fixture/codexproj", "model": "gpt-5-codex"}}
+{"timestamp": "2026-10-15T10:30:00.000Z", "type": "response_item", "payload": {"type": "custom_tool_call", "name": "apply_patch", "input": "*** Begin Patch\n*** Add File: EARLY.md\n+x\n*** End Patch"}}
+{"timestamp": "2026-10-15T12:00:00.000Z", "type": "response_item", "payload": {"type": "custom_tool_call", "name": "apply_patch", "input": "*** Begin Patch\n*** Add File: docs/BAKEOFF.md\n+PRIVATE-TRANSCRIPT-TEXT\n*** End Patch"}}
+{"timestamp": "2026-10-15T12:10:00.000Z", "type": "response_item", "payload": {"type": "function_call", "name": "shell", "arguments": "{\"command\": [\"apply_patch\", \"*** Begin Patch\\n*** Update File: /Users/fixture/codexproj/results.csv\\n*** Move to: /Users/fixture/codexproj/final.csv\\n*** Delete File: gone.txt\\n*** End Patch\"]}"}}
+{"timestamp": "2026-10-15T12:11:00.000Z", "type": "event_msg", "payload": {"type": "token_count", "info": {"last_token_usage": {"input_tokens": 200000, "cached_input_tokens": 150000, "output_tokens": 3000, "total_tokens": 233000}, "model_context_window": 258400}}}
+{"timestamp": "2026-10-15T12:12:00.000Z", "type": "event_msg", "payload": {"type": "token_count", "info": null}}

@@ -183,3 +183,244 @@ enum WorkSessionLinks {
         guard fsync(fd) == 0, rename(temp.path, url.path) == 0 else { throw Failure.unsafeFile }
     }
 }
+
+// MARK: - 0.5.312 Work session meter (Connections: context, outputs, changes)
+//
+// Miles approved the Work Context Meter on 2026-10-15 21:00 (design/work-context-mock.html, right column), with
+// A/A/A: estimates, each session's usage read from its own local transcript, and Changes as a git diff of the
+// session's working folder since the handoff. Pure, so the helper (which reads the files) and Control (which draws
+// them) share one parser, and Tests/WorkSessionMeterChecks.swift runs every branch. Paths and counts only: no
+// transcript text ever leaves these functions.
+enum WorkSessionMeter {
+    struct Context: Equatable, Sendable {
+        let used: Int
+        let window: Int
+        let model: String
+        var fraction: Double { window > 0 ? min(1, max(0, Double(used) / Double(window))) : 0 }
+        var percent: Int { Int((fraction * 100).rounded()) }
+        /// The mock's orange state.
+        var nearlyFull: Bool { fraction >= WorkSessionMeter.compactingFraction }
+        /// "24% · 124k / 512k"
+        var label: String { "\(percent)% · \(WorkSessionMeter.tokens(used)) / \(WorkSessionMeter.tokens(window))" }
+    }
+    struct Output: Equatable, Sendable {
+        let path: String
+        let at: Date
+    }
+    struct Changes: Equatable, Sendable {
+        let files: Int
+        let insertions: Int
+        let deletions: Int
+        var isEmpty: Bool { files == 0 && insertions == 0 && deletions == 0 }
+    }
+    struct FileChange: Equatable, Sendable {
+        let path: String
+        /// Nil for a binary file (git prints "-").
+        let insertions: Int?
+        let deletions: Int?
+    }
+
+    static let compactingFraction = 0.85
+    static let compactingNote = "Close to compacting. A fresh session keeps this send intact."
+    /// Bytes read from the END of a transcript: enough for the newest usage line, then widened to find one.
+    static let contextTailBytes = 512 * 1024
+    static let contextTailMaxBytes = 4 * 1024 * 1024
+    /// Outputs since the handoff are read from at most this much of the tail; older ones are reported as partial.
+    static let outputsTailBytes = 4 * 1024 * 1024
+    static let claudeWriteTools: Set<String> = ["Write", "Edit", "MultiEdit", "NotebookEdit"]
+
+    /// THE context-window table, and it is an ESTIMATE. A window the transcript states (Codex `model_context_window`)
+    /// wins. Claude: 1M when the model id carries the 1M marker, or when usage already passed 200k (only a 1M window
+    /// holds that); otherwise 200k. Codex without a stated window: 272k for the gpt-5 family. Anything else is unknown,
+    /// and an unknown window hides the meter rather than drawing a guess.
+    static func window(provider: String, model: String, reported: Int?, used: Int) -> Int? {
+        if let reported, reported > 0 { return reported }
+        let id = model.lowercased()
+        switch provider {
+        case "claude":
+            if id.contains("[1m]") || id.hasSuffix("-1m") || used > 200_000 { return 1_000_000 }
+            return 200_000
+        case "codex":
+            return id.hasPrefix("gpt-5") ? 272_000 : nil
+        default:
+            return nil
+        }
+    }
+
+    /// "124k", "1M", "1.2M", "640".
+    static func tokens(_ n: Int) -> String {
+        if n >= 1_000_000 {
+            let m = (Double(n) / 1_000_000 * 10).rounded() / 10
+            return (m == m.rounded() ? String(Int(m)) : String(m)) + "M"
+        }
+        if n >= 1_000 { return "\(Int((Double(n) / 1_000).rounded()))k" }
+        return "\(max(0, n))"
+    }
+
+    /// Whole lines from a tail read. A read that did not start at byte 0 drops its first, partial line.
+    static func lines(_ data: Data, fromStart: Bool) -> [String] {
+        var rows = String(decoding: data, as: UTF8.self).split(whereSeparator: \.isNewline).map(String.init)
+        if !fromStart, !rows.isEmpty { rows.removeFirst() }
+        return rows
+    }
+
+    private static func object(_ line: String) -> [String: Any]? {
+        guard let data = line.data(using: .utf8) else { return nil }
+        return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+    }
+    private static func int(_ value: Any?) -> Int? { (value as? NSNumber)?.intValue }
+    nonisolated(unsafe) private static let fractional: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter(); f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]; return f
+    }()
+    nonisolated(unsafe) private static let plain = ISO8601DateFormatter()
+    static func date(_ value: Any?) -> Date? {
+        guard let raw = value as? String else { return nil }
+        return fractional.date(from: raw) ?? plain.date(from: raw)
+    }
+
+    /// The newest main-thread assistant turn's usage: input + cache read + cache creation is what the context holds.
+    static func claudeContext(lines: [String]) -> Context? {
+        for line in lines.reversed() where line.contains("\"usage\"") {
+            guard let row = object(line), row["type"] as? String == "assistant", row["isSidechain"] as? Bool != true,
+                  let message = row["message"] as? [String: Any], let usage = message["usage"] as? [String: Any] else { continue }
+            let model = message["model"] as? String ?? ""
+            if model == "<synthetic>" { continue }
+            let used = (int(usage["input_tokens"]) ?? 0) + (int(usage["cache_read_input_tokens"]) ?? 0) + (int(usage["cache_creation_input_tokens"]) ?? 0)
+            guard used > 0, let window = window(provider: "claude", model: model, reported: nil, used: used) else { continue }
+            return Context(used: used, window: window, model: model)
+        }
+        return nil
+    }
+
+    /// The newest `token_count` event: last_token_usage is what the last turn put in the window.
+    static func codexContext(lines: [String]) -> Context? {
+        var model = ""
+        for line in lines.reversed() where line.contains("\"turn_context\"") {
+            if let row = object(line), row["type"] as? String == "turn_context", let payload = row["payload"] as? [String: Any],
+               let name = payload["model"] as? String { model = name; break }
+        }
+        for line in lines.reversed() where line.contains("\"token_count\"") {
+            guard let row = object(line), let payload = row["payload"] as? [String: Any], payload["type"] as? String == "token_count",
+                  let info = payload["info"] as? [String: Any], let last = info["last_token_usage"] as? [String: Any] else { continue }
+            let used = int(last["total_tokens"]) ?? ((int(last["input_tokens"]) ?? 0) + (int(last["output_tokens"]) ?? 0))
+            guard used > 0, let window = window(provider: "codex", model: model, reported: int(info["model_context_window"]), used: used) else { continue }
+            return Context(used: used, window: window, model: model)
+        }
+        return nil
+    }
+
+    /// The session's working folder: Claude stamps `cwd` on every line; Codex on session_meta and turn_context.
+    static func workingFolder(provider: String, lines: [String]) -> String? {
+        for line in lines.reversed() where line.contains("\"cwd\"") {
+            guard let row = object(line) else { continue }
+            let cwd = provider == "codex" ? (row["payload"] as? [String: Any])?["cwd"] as? String : row["cwd"] as? String
+            if let cwd, cwd.hasPrefix("/") { return cwd }
+        }
+        return nil
+    }
+
+    /// Files a Claude session wrote at or after `since`: Write, Edit, MultiEdit and NotebookEdit tool calls.
+    static func claudeOutputs(lines: [String], since: Date) -> [Output] {
+        var found: [Output] = []
+        for line in lines where line.contains("\"tool_use\"") {
+            guard let row = object(line), row["type"] as? String == "assistant", let at = date(row["timestamp"]), at >= since,
+                  let content = (row["message"] as? [String: Any])?["content"] as? [[String: Any]] else { continue }
+            for item in content where item["type"] as? String == "tool_use" {
+                guard let name = item["name"] as? String, claudeWriteTools.contains(name), let input = item["input"] as? [String: Any],
+                      let path = (input["file_path"] as? String) ?? (input["notebook_path"] as? String), path.hasPrefix("/") else { continue }
+                found.append(Output(path: path, at: at))
+            }
+        }
+        return found
+    }
+
+    /// Files a Codex session added or updated at or after `since`, from apply_patch headers anywhere in a response
+    /// item (a custom tool call's input, or a shell call's escaped arguments). Relative paths resolve against `cwd`.
+    static func codexOutputs(lines: [String], since: Date, cwd: String?) -> [Output] {
+        var found: [Output] = []
+        for line in lines where line.contains("*** Add File: ") || line.contains("*** Update File: ") || line.contains("*** Move to: ") {
+            guard let row = object(line), let at = date(row["timestamp"]), at >= since else { continue }
+            var texts: [String] = []
+            collectStrings(row["payload"], into: &texts, depth: 0)
+            for text in texts {
+                for path in patchPaths(text) {
+                    if path.hasPrefix("/") { found.append(Output(path: path, at: at)) }
+                    else if let cwd { found.append(Output(path: (cwd as NSString).appendingPathComponent(path), at: at)) }
+                }
+            }
+        }
+        return found
+    }
+
+    private static func collectStrings(_ value: Any?, into out: inout [String], depth: Int) {
+        guard depth < 6 else { return }
+        if let text = value as? String {
+            out.append(text)
+            // Shell and function calls carry their arguments as a JSON string; the patch is one level further in.
+            if text.hasPrefix("{") || text.hasPrefix("["), let data = text.data(using: .utf8),
+               let inner = try? JSONSerialization.jsonObject(with: data) { collectStrings(inner, into: &out, depth: depth + 1) }
+        } else if let list = value as? [Any] {
+            for item in list { collectStrings(item, into: &out, depth: depth + 1) }
+        } else if let map = value as? [String: Any] {
+            for item in map.values { collectStrings(item, into: &out, depth: depth + 1) }
+        }
+    }
+
+    /// apply_patch headers for files that exist afterwards: Add, Update and the destination of a Move. Never Delete.
+    static func patchPaths(_ patch: String) -> [String] {
+        patch.split(whereSeparator: \.isNewline).compactMap { raw -> String? in
+            let line = String(raw)
+            for prefix in ["*** Add File: ", "*** Update File: ", "*** Move to: "] where line.hasPrefix(prefix) {
+                let path = String(line.dropFirst(prefix.count)).trimmingCharacters(in: .whitespaces)
+                return path.isEmpty ? nil : path
+            }
+            return nil
+        }
+    }
+
+    /// Newest first, one row per file.
+    static func newestUnique(_ outputs: [Output]) -> [Output] {
+        var seen = Set<String>()
+        return outputs.sorted { $0.at > $1.at }.filter { seen.insert(($0.path as NSString).standardizingPath).inserted }
+    }
+
+    static func isImage(_ path: String) -> Bool {
+        ["png", "jpg", "jpeg", "gif", "heic", "webp", "tiff", "tif", "bmp", "svg"].contains((path as NSString).pathExtension.lowercased())
+    }
+
+    /// `git diff --shortstat`: " 9 files changed, 1284 insertions(+), 312 deletions(-)". Empty output is no change.
+    /// Other lines (a warning on stderr) are ignored.
+    static func shortstat(_ output: String) -> Changes {
+        for raw in output.split(whereSeparator: \.isNewline) {
+            let line = String(raw)
+            guard let files = firstNumber(line, before: " file") else { continue }
+            return Changes(files: files, insertions: firstNumber(line, before: " insertion") ?? 0, deletions: firstNumber(line, before: " deletion") ?? 0)
+        }
+        return Changes(files: 0, insertions: 0, deletions: 0)
+    }
+
+    private static func firstNumber(_ line: String, before marker: String) -> Int? {
+        guard let range = line.range(of: marker) else { return nil }
+        let digits = line[..<range.lowerBound].reversed().prefix { $0.isNumber }
+        return digits.isEmpty ? nil : Int(String(digits.reversed()))
+    }
+
+    /// `git diff --numstat`: "12\t3\tpath", "-\t-\timage.png" for binary files.
+    static func numstat(_ output: String) -> [FileChange] {
+        output.split(whereSeparator: \.isNewline).compactMap { raw -> FileChange? in
+            let parts = raw.split(separator: "\t", maxSplits: 2, omittingEmptySubsequences: false)
+            guard parts.count == 3, !parts[2].isEmpty,
+                  parts[0] == "-" || Int(parts[0]) != nil, parts[1] == "-" || Int(parts[1]) != nil else { return nil }
+            return FileChange(path: String(parts[2]), insertions: Int(parts[0]), deletions: Int(parts[1]))
+        }
+    }
+
+    /// "+1,284 −312 · 9 files · since this handoff", or the mock's quiet line when nothing changed.
+    static func changesLine(_ changes: Changes?) -> String {
+        guard let changes, !changes.isEmpty else { return noChanges }
+        let f = NumberFormatter(); f.numberStyle = .decimal; f.locale = Locale(identifier: "en_US")
+        let n: (Int) -> String = { f.string(from: NSNumber(value: $0)) ?? String($0) }
+        return "+\(n(changes.insertions)) −\(n(changes.deletions)) · \(n(changes.files)) \(changes.files == 1 ? "file" : "files") · since this handoff"
+    }
+    static let noChanges = "No code changes since its last handoff"
+}

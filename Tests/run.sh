@@ -89,6 +89,7 @@ python3 "$ROOT/Tests/HeldNamingTransport.py" "$TMP/cos-control-helper"
 # Work helper transports against loopback fixtures (never the live service): reviews and Intake.
 python3 "$ROOT/Tests/work-review-helper-checks.py" "$TMP/cos-control-helper"
 python3 "$ROOT/Tests/work-roundtrip-helper-checks.py" "$TMP/cos-control-helper"
+python3 "$ROOT/Tests/work-session-meter-helper-checks.py" "$TMP/cos-control-helper"
 python3 "$ROOT/Tests/hardening-helper-checks.py" "$TMP/cos-control-helper"
 python3 "$ROOT/Tests/speaker-policy-helper-checks.py" "$TMP/cos-control-helper"
 python3 "$ROOT/Tests/mac-recording-helper-checks.py" "$TMP/cos-control-helper"
@@ -1251,6 +1252,8 @@ assert "Self.linkableJobStates.contains(state)" in store, "only a running or wel
 PY
 # The tracker's behaviour: status lines, delivery, stages, Jev gating, retries, a busy journal (synthetic transport and board).
 "$ROOT/Tests/run-work-progress.sh"
+# 0.5.312: Connections meter parsers and wiring (the helper verb ran with the other helper checks above).
+"$ROOT/Tests/run-work-session-meter.sh"
 "$ROOT/Tests/run-decision-provider.sh"
 
 # ── 0.5.254: files on a Work card ─────────────────────────────────────────────

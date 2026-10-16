@@ -2891,6 +2891,11 @@ struct WorkWorkspaceView: View {
                     if contributor.historical {
                         Text("Historical contribution · currently linked to another task").font(COSType.body(10)).foregroundStyle(COSPalette.muted)
                     }
+                    // 0.5.312: context, outputs and code changes since this handoff (Connections, mock right column).
+                    if !contributor.historical {
+                        WorkSessionMeterSections(store: WorkSessionMeterStore.shared, sessionID: contributor.id,
+                                                 since: contributor.receipt?.createdAt ?? contributor.link?.at)
+                    }
                     HStack {
                         Button("View progress") {
                             workspaceSessions[task.workSourceID] = contributor.id
