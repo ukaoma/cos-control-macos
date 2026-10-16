@@ -50,6 +50,8 @@ logged = re.findall(r'workChatLog\.\w+\("((?:[^"\\]|\\.)*)"', chat)
 assert len(logged) >= 8 and not any(re.search(r'\\\((?:prompt|built|question|context|text|assignment\.prompt|round\.question)\b', line) for line in logged), "the work-chat log never carries prompt, question or context text"
 print("PASS Work context meter wiring: collapsed by default and remembered per Mac, Quick Look for files, per-assignment prompt and files")
 PY
+# 0.5.313: the idle CPU fixes stay in place (text pins; the behaviour is checked in WorkInputChecks).
+/usr/bin/python3 "$ROOT/Tests/idle-cpu-pins.py" "$ROOT"
 SOURCES=("$ROOT"/Sources/*.swift)
 SOURCES=("${(@)SOURCES:#*/COSControlApp.swift}")
 COS_COMPILE_PROFILE=bounded "$ROOT/Tests/compile-guard.sh" swiftc -target arm64-apple-macosx14.0 -swift-version 6 -strict-concurrency=complete -parse-as-library \

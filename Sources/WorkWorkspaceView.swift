@@ -1,5 +1,8 @@
 import AppKit
 import SwiftUI
+import os
+
+private let performanceLog = Logger(subsystem: "com.gotcos.control", category: "performance")
 
 struct WorkActivity: Identifiable {
     let receipt: WorkHandoffReceipt
@@ -367,9 +370,25 @@ enum WorkBoardMetrics {
     nonisolated(unsafe) static var dates = 0
     nonisolated(unsafe) static var activityBodies = 0
     nonisolated(unsafe) static var handoffBodies = 0
-    static func countActivityBody() { activityBodies += 1 }
-    static func countBody() { bodies += 1 }
+    static func countActivityBody() { activityBodies += 1; noteRedraw() }
+    static func countBody() { bodies += 1; noteRedraw() }
     static func countBoard() { boards += 1 }
+    static func countHandoffBody() { handoffBodies += 1; noteRedraw() }
+
+    /// 0.5.313: once a minute while they redraw, how often the Activity, Work and Agent workspace views were rebuilt. An
+    /// idle Work tab rebuilt the Agent workspace several times a second (2026-10-15 22:30 sample) and nothing said why;
+    /// this rate names it in the next report (log stream --predicate 'subsystem == "com.gotcos.control"').
+    nonisolated(unsafe) private static var windowStart = Date()
+    nonisolated(unsafe) private static var window = (activity: 0, work: 0, handoff: 0)
+    private static func noteRedraw() {
+        window = (activityBodies, bodies, handoffBodies)
+        let now = Date()
+        guard now.timeIntervalSince(windowStart) >= 60 else { return }
+        let rates = (activity: window.activity - start.activity, work: window.work - start.work, handoff: window.handoff - start.handoff)
+        performanceLog.notice("view rebuilds in the last minute: activity \(rates.activity), work \(rates.work), agent workspace \(rates.handoff)")
+        windowStart = now; start = window
+    }
+    nonisolated(unsafe) private static var start = (activity: 0, work: 0, handoff: 0)
 }
 
 /// 0.5.254 resize pass: what the board's rows are built from. Each count is an epoch its source bumps on every change

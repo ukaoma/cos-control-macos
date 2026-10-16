@@ -324,6 +324,18 @@ struct WorkGlassesRequest: Equatable, Sendable {
 /// Operator-directed context transfers. This does not own task execution, mark
 /// tasks complete, or grant tools/publication authority. Existing server gates own
 /// provider execution. The journal records intent BEFORE any delivery call.
+/// What a session recommendation depends on: the card as the Agent workspace sees it, and the store's session and
+/// receipt epochs (each bumps on every change).
+struct WorkRecommendationKey: Equatable {
+    let sourceID: String
+    let revision: String
+    let project: String
+    let title: String
+    let context: String
+    let sessions: Int
+    let receipts: Int
+}
+
 @MainActor final class WorkHandoffStore: ObservableObject {
     typealias Transport = @Sendable ([String], Data?) async throws -> HelperResponse
     /// 0.5.254 resize pass: each source of the Work board's rows bumps its epoch on every change (WorkBoardMemo).
@@ -723,7 +735,9 @@ struct WorkGlassesRequest: Equatable, Sendable {
         func add(_ session: WorkSession) { if out.count < limit, !out.contains(where: { $0.id == session.id }) { out.append(session) } }
         if let advised, let session = sessions.first(where: { $0.id == advised }) { add(session) }
         matches.forEach(add)
-        sessions.sorted { ($0.updatedDate ?? .distantPast) > ($1.updatedDate ?? .distantPast) }.forEach(add)
+        // 0.5.313: each date is read once. The comparator parsed both sessions' ISO dates on every comparison: 8% of an idle
+        // main thread (2026-10-15 22:30 sample).
+        sessions.map { ($0, $0.updatedDate ?? .distantPast) }.sorted { $0.1 > $1.1 }.forEach { add($0.0) }
         return out
     }
 
@@ -1037,7 +1051,14 @@ struct WorkGlassesRequest: Equatable, Sendable {
         let overlap = meaningfulWords(source.title + " " + source.context).intersection(meaningfulWords(session.title + " " + session.summary))
         return "Shared topic words: " + overlap.sorted().prefix(3).joined(separator: ", ") + ". Choose explicitly."
     }
+    /// 0.5.313: the Agent workspace asks for this on every redraw, once per session row too. It scored every session inside
+    /// the sort comparator (two word splits per comparison), so an idle Work tab spent 11% of the main thread here
+    /// (2026-10-15 22:30 sample, Control 0.5.311). Now each session is scored once, and the answer is kept until the
+    /// card, its sessions or its receipts change.
     func recommendations(for source: WorkSource) -> [WorkSession] {
+        let key = WorkRecommendationKey(sourceID: source.id, revision: source.revision, project: source.project, title: source.title,
+                                        context: source.context, sessions: sessionsEpoch, receipts: receiptsEpoch)
+        if let cached = recommendationCache, cached.key == key { return cached.value }
         let words = meaningfulWords(source.title + " " + source.context)
         func score(_ row: WorkSession) -> Int {
             if priorAssociation(row, source: source) != nil { return 1_000 }
@@ -1045,8 +1066,15 @@ struct WorkGlassesRequest: Equatable, Sendable {
             let project = !source.project.isEmpty && row.project.caseInsensitiveCompare(source.project) == .orderedSame ? 100 : 0
             return project + (overlap >= 2 ? overlap : 0)
         }
-        return sessions.filter { score($0) > 0 }.sorted { score($0) == score($1) ? $0.id < $1.id : score($0) > score($1) }.prefix(5).map { $0 }
+        let value = Self.ranked(sessions.map { ($0, score($0)) })
+        recommendationCache = (key, value)
+        return value
     }
+    /// Highest score first, ties by id, at most five; a score of zero is not a recommendation.
+    nonisolated static func ranked(_ scored: [(WorkSession, Int)]) -> [WorkSession] {
+        scored.filter { $0.1 > 0 }.sorted { $0.1 == $1.1 ? $0.0.id < $1.0.id : $0.1 > $1.1 }.prefix(5).map { $0.0 }
+    }
+    private var recommendationCache: (key: WorkRecommendationKey, value: [WorkSession])?
     func refresh() async {
         guard !busy else { return }
         if isolated { return }
