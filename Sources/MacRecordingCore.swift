@@ -106,6 +106,11 @@ enum MacRecordingInterruption {
         reason == pilotLimit ? ("Stopped at the two-hour limit. Everything recorded up to then is kept.", false)
             : ("Incomplete recording: " + reason, true)
     }
+    /// QA 0.5.313: a recording that stops without the person stopping it says so outside the panel, which is usually
+    /// closed during a call. The call may still be going.
+    static func notification(_ reason: String) -> (title: String, body: String) {
+        ("Mac recording stopped", line(reason).text + " If the meeting is still going, start a new recording.")
+    }
 }
 
 /// Signal check per stored chunk, so "N/N chunks received" can no longer stand in for usable audio.
@@ -396,8 +401,10 @@ actor MacRecordingSpool {
 
 /// A confirmed no-speech result may release the composer, never an uncertain or live delivery.
 enum MacRecordingRecoveryPolicy {
-    static func canKeepForLater(noSpeech: Bool, pending: Bool, stopped: Bool, delivering: Bool) -> Bool {
-        noSpeech && pending && stopped && !delivering
+    /// QA 0.5.313: also when delivery paused on an error, so a capture that cannot reach the server never holds
+    /// Record hostage; the audio stays in the spool and is listed with Recover.
+    static func canKeepForLater(noSpeech: Bool, paused: Bool = false, pending: Bool, stopped: Bool, delivering: Bool) -> Bool {
+        (noSpeech || paused) && pending && stopped && !delivering
     }
     /// What the panel offers to Recover: retained captures with audio, other than the current one. A journal with no
     /// chunks (a start that failed after its manifest was written) has nothing to recover; it is hidden, never deleted.

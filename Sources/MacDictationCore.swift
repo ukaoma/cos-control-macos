@@ -179,7 +179,7 @@ struct LoneModifierTracker: Sendable {
 enum DictationInsertPolicy {
     /// Why nothing was typed. The raw value is what Recent dictations stores.
     enum Refusal: String, Equatable, Sendable, CaseIterable {
-        case notTrusted, secureInput, secureField, ownOverlay, noTextBox, keysHeld, clipboardChanged, clipboardFailed, interrupted
+        case notTrusted, secureInput, secureField, ownOverlay, noTextBox, keysHeld, clipboardChanged, clipboardFailed, interrupted, interruptedClipboardKept
         /// The card's heading (mock 04).
         var title: String {
             switch self {
@@ -191,6 +191,7 @@ enum DictationInsertPolicy {
             case .clipboardChanged: "CLIPBOARD CHANGED · NOT PASTED"
             case .clipboardFailed: "CLIPBOARD UNAVAILABLE"
             case .interrupted: "INTERRUPTED · COPIED"
+            case .interruptedClipboardKept: "INTERRUPTED · NOT COPIED"
             }
         }
         var note: String {
@@ -203,6 +204,7 @@ enum DictationInsertPolicy {
             case .clipboardChanged: "Something else changed the clipboard before COS could paste. Copy it again here."
             case .clipboardFailed: "COS could not put the text on the clipboard. Copy it here."
             case .interrupted: "Dictation was interrupted, so COS copied what you said instead of typing it. Click where you want it and press ⌘V."
+            case .interruptedClipboardKept: "Dictation was interrupted, and you copied something while COS transcribed it, so your clipboard was left alone. Copy it here."
             }
         }
         /// "copied, <this>" in Recent dictations.
@@ -216,6 +218,7 @@ enum DictationInsertPolicy {
             case .clipboardChanged: "clipboard changed"
             case .clipboardFailed: "clipboard unavailable"
             case .interrupted: "interrupted"
+            case .interruptedClipboardKept: "interrupted, clipboard kept"
             }
         }
     }
@@ -839,11 +842,11 @@ enum DictationSoundLibrary {
     }
 
     /// Pet default, then the person's choice; a custom file that is no longer valid falls back to the pet's sound.
-    /// Volume 0 is off, and nothing plays while a Mac recording is capturing (it would be recorded).
+    /// Volume 0 is off, and nothing plays while a COS recording is capturing (it would be recorded).
     static func resolve(_ choice: Choice, edge: DictationSoundEdge, pet: DictationPetKind, volume: Double,
                         macRecording: Bool, customUsable: (String) -> Bool) -> Resolved {
         guard volume > 0 else { return .silent("volume off") }
-        guard !macRecording else { return .silent("a Mac recording is capturing") }
+        guard !macRecording else { return .silent("a COS recording is capturing") }
         switch choice {
         case .library(let id) where sounds.contains(where: { $0.id == id }): return .bundled(fileName(id, edge))
         case .custom(let file) where customUsable(file): return .custom(file)
@@ -1200,7 +1203,7 @@ enum DictationQuiet {
     static let loweredFraction: Float = 0.25
     /// Never during a Mac recording: muting would silence the meeting the person is listening to.
     static func plan(mode: DictationQuietMode, macRecording: Bool, tapPermitted: Bool, volume: Float?, volumeSettable: Bool) -> Plan {
-        if macRecording { return .leave("a Mac recording is capturing") }
+        if macRecording { return .leave("a COS recording is capturing") }
         switch mode {
         case .off: return .leave("off")
         case .mute where tapPermitted: return .muteTap

@@ -369,7 +369,13 @@ struct DictationDelivered: Sendable {
     /// One of COS's own windows (Activity, Settings) has the keyboard: insert through its first responder, and measure
     /// the field editor the same way.
     /// 0.5.313: an interrupted dictation is copied and never typed, since where the person was typing may have changed.
-    static func copyOnly(_ text: String) -> DictationDelivered {
+    /// An interrupted dictation is copied, never typed. If the person copied something while it was transcribing, their
+    /// clipboard wins (QA 0.5.313: the salvage overwrote it): the card holds the text to copy instead.
+    static func copyOnly(_ text: String, clipboardMoved: Bool) -> DictationDelivered {
+        if clipboardMoved {
+            dictationLog.notice("delivery route=interrupted outcome=clipboard kept")
+            return DictationDelivered(outcome: .refused(.interruptedClipboardKept), target: nil)
+        }
         let wrote = SystemDictationPasteboard(NSPasteboard.general).writeTranscript(text, markerTypes: [])
         let outcome: DictationDeliveryOutcome = .refused(wrote ? .interrupted : .clipboardFailed)
         dictationLog.notice("delivery route=interrupted outcome=\(String(describing: outcome), privacy: .public)")
@@ -769,7 +775,7 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
     @Published private(set) var soundNote: String?
     /// Your own file, decoded and measured, waiting for Save.
     @Published private(set) var pendingImport: DictationSoundImport?
-    /// Set by the app: which family the pet is (its default sound), and whether a Mac recording is capturing.
+    /// Set by the app: which family the pet is (its default sound), and whether a COS recording is capturing.
     var petKind: (() -> DictationPetKind)?
     var macRecordingActive: (() -> Bool)?
     /// The screen the floating pill uses, chosen when dictation starts (the focused window's screen).
@@ -823,7 +829,9 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
     var bridge: (@MainActor (Data) async throws -> HelperResponse)?
     var petFrame: (() -> NSRect?)?
     private var capture: DictationMicrophoneCapture?
-    private var pendingAudio: Data? { didSet { if pendingAudio == nil { pendingInterrupted = false } } }
+    private var pendingAudio: Data? { didSet { if pendingAudio == nil { pendingInterrupted = false; interruptedChangeCount = nil } } }
+    /// The clipboard as it stood when listening was interrupted; a copy made since is never overwritten by the salvage.
+    private var interruptedChangeCount: Int?
     /// The held audio is from an interrupted dictation: a retry copies it too, never types it.
     private var pendingInterrupted = false
     /// 0.5.313 (QA): someone clicked while holding the key. No speech then means a modifier-click, not a failed dictation.
@@ -997,13 +1005,16 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
     private func keyEvent(flags: Bool, pointer: Bool, keyCode: UInt16, raw: UInt64, at time: TimeInterval) {
         // A click while the hold key is down: if nothing was said, a slow ⌥-click or ⌘-click must not end in a card.
         if pointer, held { pointerDuringHold = true }
-        func feed(_ tracker: inout LoneModifierTracker?) -> LoneModifierTracker.Output? {
+        // Only the HOLD key talks while the mouse works. A lone-modifier toggle or Fix shortcut acts on a clean tap, so
+        // any click while its key is down is a chord there, as before 0.5.313 (QA: a slow ⌘-click on a Right ⌘
+        // toggle started or stopped dictation).
+        func feed(_ tracker: inout LoneModifierTracker?, clickWindow: Bool = false) -> LoneModifierTracker.Output? {
             guard var current = tracker else { return nil }
             let output = flags ? current.flagsChanged(keyCode: keyCode, flags: raw, at: time)
-                : pointer ? current.pointerDown(at: time) : current.keyDown()
+                : pointer && clickWindow ? current.pointerDown(at: time) : current.keyDown()
             tracker = current; return output
         }
-        switch feed(&holdTracker) {
+        switch feed(&holdTracker, clickWindow: true) {
         case .pressed?: hotKey(1, down: true)
         case .released?: hotKey(1, down: false)
         // Fn+arrow, ⌘C: the press was a chord. Right after the press nothing was said, so it is dropped quietly; after
@@ -1015,16 +1026,22 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
         if feed(&toggleTracker) == .released { hotKey(2, down: true); hotKey(2, down: false) }
         if feed(&fixTracker) == .released { hotKey(3, down: true) }
     }
-    /// A Mac recording started while listening (QA 2026-10-15): other apps' sound comes back at once, or the recording
+    /// A recording (Mac or glasses) started while listening (QA 2026-10-15): other apps' sound comes back at once, or the recording
     /// would capture the mute. Listening itself continues.
     func recordingStarted() {
         guard busy else { return }
-        dictationLog.notice("quiet: a Mac recording started while dictating; other apps' sound restored")
+        dictationLog.notice("quiet: a recording started while dictating; other apps' sound restored")
         quiet.end()
     }
     func hotKey(_ id: UInt32, down: Bool) {
         if id == 1 {
-            if down, !held { held = true; holdPending = true; start() }
+            if down, !held {
+                held = true; holdPending = true; start()
+                // QA 0.5.313: a press while the last dictation is still transcribing is refused. Latching `held` anyway
+                // let a chord on that refused press turn the LAST dictation into copy-only, and a chord's release never
+                // reaches `.released`, so `held` stuck and every later press did nothing.
+                if !["Starting", "Listening"].contains(phase) { held = false; holdPending = false }
+            }
             else if !down { held = false; if holdPending { holdPending = false; stop() } }
         } else if id == 2 {
             if down, !toggleHeld { toggleHeld = true; phase == "Listening" ? stop() : start() }
@@ -1110,7 +1127,11 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
     /// card; less is dropped as before. Quit and turning dictation off still cancel: there is nothing left to show it in.
     func interrupt() {
         // Already transcribing (slept between stop and the answer): finish it, but copy rather than type after wake.
-        if phase == "Transcribing" { pendingInterrupted = pendingAudio != nil; return }
+        if phase == "Transcribing" {
+            pendingInterrupted = pendingAudio != nil
+            if pendingInterrupted { interruptedChangeCount = NSPasteboard.general.changeCount }
+            return
+        }
         guard phase == "Listening", let capture else { cancel(); message = nil; return }
         timer?.cancel(); timer = nil; self.capture = nil
         meterTask?.cancel(); meterTask = nil
@@ -1123,13 +1144,13 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
             cancel(); message = nil; return
         }
         guard MacDictationPolicy.salvages(pcmBytes: pcm.count), let wav = try? MacDictationPolicy.wav(pcm) else {
-            dictationLog.notice("interrupted after \(pcm.count / 32_000) s; under the salvage minimum, dropped")
+            dictationLog.notice("interrupted after \(pcm.count / MacDictationPolicy.salvageMinimumBytes) s; under the salvage minimum, dropped")
             cancel(); message = nil; return
         }
         quiet.end()
-        dictationLog.notice("interrupted after \(pcm.count / 32_000) s; transcribing to copy")
+        dictationLog.notice("interrupted after \(pcm.count / MacDictationPolicy.salvageMinimumBytes) s; transcribing to copy")
         phase = "Transcribing"; pill = .transcribing
-        pendingAudio = wav; pendingInterrupted = true
+        pendingAudio = wav; pendingInterrupted = true; interruptedChangeCount = NSPasteboard.general.changeCount
         transcribe(wav, attempt: attempt)
     }
     func retryTranscription() {
@@ -1156,8 +1177,9 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
                     fail(response.message, card: !(noSpeech && pointerDuringHold), retry: !noSpeech); return
                 }
                 let copyOnly = pendingInterrupted
+                let clipboardMoved = interruptedChangeCount.map { $0 != NSPasteboard.general.changeCount } ?? false
                 pendingAudio = nil; phase = "Ready"; message = nil
-                let delivered = copyOnly ? DictationInsertion.copyOnly(text)
+                let delivered = copyOnly ? DictationInsertion.copyOnly(text, clipboardMoved: clipboardMoved)
                     : await DictationInsertion.deliver(text, restoreClipboard: restoreClipboard)
                 finish(text, outcome: delivered.outcome, target: delivered.target)
             } catch { guard generation == attempt else { return }; let reason = error.localizedDescription; dictationLog.error("transcribe failed: \(reason, privacy: .public)"); fail(reason) }
@@ -1267,7 +1289,7 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
     /// The trimmed sound, played with the current volume and pitch, from a private temporary file.
     func previewImport() {
         guard let pending = pendingImport else { return }
-        if macRecordingActive?() == true { soundNote = "No sound: a Mac recording is capturing."; return }
+        if macRecordingActive?() == true { soundNote = "No sound: a COS recording is capturing."; return }
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("cos-dictation-sound-preview.wav")
         try? FileManager.default.removeItem(at: url)
         guard FileManager.default.createFile(atPath: url.path, contents: pending.trimmedWAV, attributes: [.posixPermissions: 0o600]) else { return }
@@ -2734,7 +2756,7 @@ struct DictationSoundSettings: View {
                 Text(Self.semitones(store.soundPitch)).font(.caption.monospacedDigit())
             }
             if let note = store.soundNote { Text(note).font(.caption2).foregroundStyle(COSPalette.amber) }
-            Text("Unstable saber is mostly bass: use headphones or real speakers, laptop speakers reproduce little of it. Sounds never play while a Mac recording is capturing.")
+            Text("Unstable saber is mostly bass: use headphones or real speakers, laptop speakers reproduce little of it. Sounds never play while a COS recording is capturing.")
                 .font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }
     }

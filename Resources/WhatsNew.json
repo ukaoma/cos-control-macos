@@ -8,10 +8,10 @@
         "items": [
           "Fix a dictation the moment it lands: Fix on the pill for 5 seconds, or ⌃⌥F (set in Settings).",
           "Click, drag and move windows while you hold the dictation key: COS keeps listening, and the text lands where your cursor ends up. A click right after the press is still ⌥-click or ⌘-click.",
-          "If a dictation is cut short (another key while you hold the shortcut, or sleep), COS still transcribes what you said and copies it; a card shows the text with Copy. Under a second is dropped.",
+          "If a dictation is cut short (another key while you hold the shortcut, or sleep), COS still transcribes what you said and copies it; a card shows the text with Copy. If you copied something meanwhile, your clipboard is left alone. Under a second is dropped.",
           "After you fix a word, Replace it in the app puts the corrected text back where COS typed it, when that spot hasn't changed; otherwise COS copies the corrected text.",
           "Fix a word selects the whole misheard phrase and suggests the spelling from your dictionary. Return saves.",
-          "Other apps go quiet while you dictate and come back after (Settings, While dictating: Mute, Lower or Off). Never during a Mac recording."
+          "Other apps go quiet while you dictate and come back after (Settings, While dictating: Mute, Lower or Off). Never while COS is recording, on this Mac or the glasses."
         ]
       },
       {
@@ -20,7 +20,7 @@
           "When Zoom, Teams or Google Meet starts using your microphone, the pet offers Record. One click records all Mac audio with a title like \"Zoom meeting 2:00 PM\". COS never records or stops on its own; for a recording started from that card, it asks before stopping once the meeting app lets go of the mic.",
           "Record on Mac is one click: the first recording shows a short COS notice once, then Record just starts. While recording, COS reminds you to let people know.",
           "Open live meeting now opens the live transcript. With a glasses meeting and a Mac recording live at once, switch between them from the top of the live view.",
-          "Saved Mac recordings now appear in Meetings, and the live view opens them when saving finishes (needs server 6.73.14). The no-sound warning shows only while recording.",
+          "Saved Mac recordings now appear in Meetings, and the live view opens them when saving finishes (needs server 6.73.14). The no-sound warning shows only while recording. If a recording stops on its own (the two-hour limit, sleep), COS tells you so you can start again.",
           "In Settings: Suggest recording when a meeting starts (on or off), which apps to watch, apps you set to Never from the pet's card (remove them here), and Show the recording notice again."
         ]
       },

@@ -19,8 +19,9 @@ CODE="$(grep -v -E '^[[:space:]]*//' "$SRC")"
 [[ $(print -r -- "$CODE" | grep -c -E 'installTap\(|queue: *nil\)|DispatchQueue|OperationQueue\(|DispatchSource|addGlobalMonitorForEvents|addLocalMonitorForEvents') == 5 ]] || { print -u2 "FAIL: a new off-main or event-monitor callback site needs the @Sendable / isolation review, then this count"; exit 1; }
 # The shortcut monitors also take clicks (⌥-click is a chord), and NSEvent raises on a mouse event's keyCode.
 [[ $(print -r -- "$CODE" | grep -c -F 'let key = isKey ? event.keyCode : 0') == 1 && $(print -r -- "$CODE" | grep -c -F 'event.keyCode') == 2 ]] || { print -u2 "FAIL: keyCode must be read only from key events in the shortcut monitors"; exit 1; }
-# 0.5.313: clicks reach the tracker as clicks (time-windowed chord), never as a key down, or any click while talking cancels.
-[[ $(print -r -- "$CODE" | grep -c -F ': pointer ? current.pointerDown(at: time) : current.keyDown()') == 1 && $(print -r -- "$CODE" | grep -c -F 'pointer: !isKey, keyCode: key, raw: raw, at: time') == 1 ]] || { print -u2 "FAIL: shortcut monitors must feed clicks to pointerDown with the event time"; exit 1; }
+# 0.5.313: clicks reach the HOLD tracker as clicks (time-windowed chord), never as a key down, or any click while talking
+# cancels; the toggle and Fix trackers keep every click a chord (QA pass 2), so only the hold feed passes clickWindow.
+[[ $(print -r -- "$CODE" | grep -c -F ': pointer && clickWindow ? current.pointerDown(at: time) : current.keyDown()') == 1 && $(print -r -- "$CODE" | grep -c -F 'clickWindow: true') == 1 && $(print -r -- "$CODE" | grep -c -F 'pointer: !isKey, keyCode: key, raw: raw, at: time') == 1 ]] || { print -u2 "FAIL: shortcut monitors must feed clicks to pointerDown with the event time"; exit 1; }
 print "PASS Mac dictation isolation pins: audio callbacks @Sendable, callback sites reviewed, click-safe keyCode"
 # 0.5.309 Wispr-style dictation: pet pill and lists, the Dock overlay, copy-then-insert-at-focus, private history, the
 # Dictionary route and the helper verb. Text only; the pure rules run in MacDictationChecks above. The overlay's five

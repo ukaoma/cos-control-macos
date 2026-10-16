@@ -2275,7 +2275,9 @@ struct LiveTranscriptPane: View {
             .foregroundStyle(.secondary)
         case .notFoundYet:
             HStack(spacing: 10) {
-                Text("Saved meeting not found yet").foregroundStyle(COSPalette.amber)
+                Text(LiveTranscript.macHandoffNeedsServerUpdate(sessionId: feed.sessionId, serverVersion: model.status.version)
+                     ? "Update the COS server to 6.73.14 to list saved Mac recordings" : "Saved meeting not found yet")
+                    .foregroundStyle(COSPalette.amber)
                 Button("Refresh") { model.refreshLiveTranscriptHandoff(feed.sessionId) }
                     .buttonStyle(COSQuietButtonStyle())
                     .controlSize(.small)

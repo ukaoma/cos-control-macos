@@ -48,15 +48,23 @@ import Darwin
         let received = await consumer.value
         check(received == 512 * 1024 && concurrent.interruption == nil && concurrent.pop() == nil, "concurrent producer and consumer neither lose bytes nor report false overflow")
         for noSpeech in [false, true] {
-            for pending in [false, true] {
-                for stopped in [false, true] {
-                    for delivering in [false, true] {
-                        let permitted = MacRecordingRecoveryPolicy.canKeepForLater(noSpeech: noSpeech, pending: pending, stopped: stopped, delivering: delivering)
-                        check(permitted == (noSpeech && pending && stopped && !delivering), "only confirmed stopped silence with no in-flight delivery may release the composer")
+            for paused in [false, true] {
+                for pending in [false, true] {
+                    for stopped in [false, true] {
+                        for delivering in [false, true] {
+                            let permitted = MacRecordingRecoveryPolicy.canKeepForLater(noSpeech: noSpeech, paused: paused, pending: pending, stopped: stopped, delivering: delivering)
+                            check(permitted == ((noSpeech || paused) && pending && stopped && !delivering),
+                                  "only a stopped capture that is silent or whose delivery paused, with no delivery in flight, may release the composer")
+                        }
                     }
                 }
             }
         }
+        // QA 0.5.313: a stop nobody made says so outside the panel, in the panel's own words.
+        let limitNote = MacRecordingInterruption.notification(MacRecordingInterruption.pilotLimit)
+        check(limitNote.title == "Mac recording stopped" && limitNote.body.hasPrefix(MacRecordingInterruption.line(MacRecordingInterruption.pilotLimit).text)
+              && limitNote.body.hasSuffix("start a new recording."), "the two-hour stop notification reads as kept, and says to start again")
+        check(MacRecordingInterruption.notification("slept").body.hasPrefix("Incomplete recording: slept"), "any other stop names its reason")
         // 2026-10-15: a Vorssaint tap stored 22 chunks of exact zeros and the panel still read "22/22 received".
         func pcm16(_ samples: [Int16]) -> Data { samples.withUnsafeBufferPointer { Data(buffer: $0) } }
         let zeros = Data(repeating: 0, count: MacRecordingWAV.framesPerChunk * 2)

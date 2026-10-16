@@ -64,6 +64,8 @@ final class MacRecordingStore: ObservableObject {
     private let stopGate = MacRecordingStopGate()
     private var observers: [NSObjectProtocol] = []
     var activeChanged: ((Bool) -> Void)?
+    /// A stop the person did not make (limit, sleep, capture failure), with its reason.
+    var stoppedOnItsOwn: ((String) -> Void)?
     var openLiveMeeting: ((String) -> Void)?
     init(spool: MacRecordingSpool = MacRecordingSpool()) { self.spool = spool }
 
@@ -180,7 +182,7 @@ final class MacRecordingStore: ObservableObject {
                     catch {
                         let reason = error.localizedDescription
                         recordingLog.error("append failed: \(reason, privacy: .public)")
-                        self.captureInterruption = reason; self.error = reason; Task { await self.stop() }; break
+                        self.captureInterruption = reason; Task { await self.stop() }; break
                     }
                 }
             }
@@ -190,7 +192,7 @@ final class MacRecordingStore: ObservableObject {
             }, failure: { [weak self] reason in
                 Task { @MainActor in
                     recordingLog.error("capture failed: \(reason, privacy: .public)")
-                    self?.captureInterruption = reason; self?.error = reason; await self?.stop()
+                    self?.captureInterruption = reason; await self?.stop()
                 }
             })
             localCapture = engine; capture = engine
@@ -224,7 +226,7 @@ final class MacRecordingStore: ObservableObject {
             observers.append(NSWorkspace.shared.notificationCenter.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
                 Task { @MainActor in
                     let reason = "Recording stopped because this Mac slept or the user session changed."
-                    self?.captureInterruption = reason; self?.error = reason; await self?.stop()
+                    self?.captureInterruption = reason; await self?.stop()
                 }
             })
         }
@@ -237,7 +239,9 @@ final class MacRecordingStore: ObservableObject {
         startAttempt = nil
         phase = "stopping"
         recordingLog.notice("stop")
-        if let reason = await capture?.stop() { captureInterruption = reason; error = reason }
+        // QA 0.5.313: an interruption is written to the journal and shown once, by MacRecordingInterruption.line (muted for
+        // the two-hour limit). Copying it into `error` too showed the same news again in red, and nothing cleared it.
+        if let reason = await capture?.stop() { captureInterruption = reason }
         capture = nil
         streamContinuation?.finish(); streamContinuation = nil
         await chunksTask?.value; chunksTask = nil
@@ -253,7 +257,10 @@ final class MacRecordingStore: ObservableObject {
                 self.error = reason
             }
         }
-        phase = "pending"; message = "Capture stopped. Audio stays on this Mac until its saved-meeting receipt is verified."
+        phase = "pending"
+        message = manifest?.chunks.isEmpty == true ? "Capture stopped before any audio was stored. There is nothing to save."
+            : "Capture stopped. Audio stays on this Mac until its saved-meeting receipt is verified."
+        if let reason = captureInterruption { stoppedOnItsOwn?(reason) }
         deliverPending()
     }
     /// 0.5.313: Record on the pet's meeting card. Always All Mac audio, the proven source, never a per-app tap.
@@ -267,24 +274,47 @@ final class MacRecordingStore: ObservableObject {
     }
     /// Quit defers only for native teardown and local flush, never network or ASR.
     func prepareToQuit() async { await stop() }
-    func recover(_ value: MacRecordingManifest) async {
-        guard canStart else { return }
+    enum RecoverOutcome: Equatable { case started, busy, failed(String) }
+    /// The spool's retained captures, read now: nil only when the read itself failed (never "absent" on a failed read).
+    func retainedCaptures() async -> [MacRecordingManifest]? {
+        do { return try await spool.recoverable() } catch {
+            recordingLog.error("retained read failed: \(error.localizedDescription, privacy: .public)")
+            return nil
+        }
+    }
+    /// Replays a retained capture. Callers outside the Meetings panel pass the bridge (QA 0.5.313: Save on a stranded
+    /// Mac row before Meetings was opened had no transport and failed with "Recording transport is not connected.").
+    @discardableResult
+    func recover(_ value: MacRecordingManifest, bridge: Bridge? = nil) async -> RecoverOutcome {
+        guard canStart else { recordingLog.notice("recover refused: a capture is live or delivering"); return .busy }
+        if let bridge, self.bridge == nil { self.bridge = bridge }
+        // Occupied before the first await, so Record cannot start in the gap (QA 0.5.313: the interleave ended in a raw
+        // CancellationError and an idle panel while delivery ran).
+        let before = phase
+        phase = "recovering"
         do {
             // A restart never resumes the tap. Pinning refuses replay into a different server instance.
             if !value.stopped { _ = try await spool.interrupt(value.captureId, reason: "The app ended during recording. Unflushed audio may be missing; retained chunks can be recovered.") }
-            manifest = try await spool.markStopped(value.captureId); phase = "pending"; error = nil; noSpeech = false
+            manifest = try await spool.markStopped(value.captureId); phase = "pending"; error = nil; noSpeech = false; deliveryPaused = false
             recordingLog.notice("recover chunks=\(value.chunks.count)")
             deliverPending()
+            return .started
         } catch {
             let reason = error.localizedDescription
             recordingLog.error("recover failed: \(reason, privacy: .public)")
+            phase = before
             self.error = reason
+            return .failed(reason)
         }
+    }
+    var canKeepForLater: Bool {
+        MacRecordingRecoveryPolicy.canKeepForLater(noSpeech: noSpeech, paused: deliveryPaused, pending: phase == "pending", stopped: manifest?.stopped == true, delivering: deliveryTask != nil)
     }
     /// Leaves the immutable journal and WAVs untouched; only releases the current editor.
     /// Offered only after the server positively reported that no speech was saved.
     func keepSilentAudioForLater() async {
-        guard MacRecordingRecoveryPolicy.canKeepForLater(noSpeech: noSpeech, pending: phase == "pending", stopped: manifest?.stopped == true, delivering: deliveryTask != nil) else { return }
+        guard canKeepForLater else { return }
+        recordingLog.notice("keep for later noSpeech=\(self.noSpeech) paused=\(self.deliveryPaused)")
         do {
             let retained = try await spool.recoverable()
             recoverable = retained; manifest = nil; deliveryPaused = false; selectedID = MacAudioSource.allMacAudioID; noSpeech = false; silentChunks = 0; error = nil; phase = "idle"
@@ -419,8 +449,8 @@ struct MacRecordingPanel: View {
                     }
                     if store.phase == "pending", !value.chunks.isEmpty {
                         Text(store.noSpeech ? "No speech was found in this audio. It stays on this Mac." : "Save this retained recording before starting another.").font(COSType.body(11)).foregroundStyle(.secondary)
-                        if store.noSpeech {
-                            Button("Keep audio and record again") { Task { await store.keepSilentAudioForLater() } }
+                        if store.canKeepForLater {
+                            Button(store.noSpeech ? "Keep audio and record again" : "Keep audio for later") { Task { await store.keepSilentAudioForLater() } }
                         }
                         Button("Retry saving retained audio") { store.deliverPending() }
                     }
@@ -620,9 +650,15 @@ struct MeetingCard: Equatable, Identifiable {
         // Titles come from the cache; a read runs off the main actor only when due and feeds the next evaluation.
         let found = MeetingApps.holding(processes, ownPID: ProcessInfo.processInfo.processIdentifier, never: Set(never.keys),
                                         latched: browserLatch) { owner in
-            let cached = titleCache[owner]
-            if MeetingApps.titleReadDue(holdersChanged: holdersChanged, cached: cached != nil, tick: tick) { readTitles(owner) }
-            if let cached { return cached }
+            let due = MeetingApps.titleReadDue(holdersChanged: holdersChanged, cached: titleCache[owner] != nil, tick: tick)
+            // QA 0.5.313: a new set of microphone holders never latches on the last read (a finished Meet call's
+            // "true" named the next Teams web call or voice chat in that browser "Google Meet"). Read again; until the
+            // answer arrives the browser is not a meeting. An already latched pid is unaffected.
+            if holdersChanged { titleCache[owner] = nil }
+            if due { readTitles(owner) }
+            // readTitles answers at once without Accessibility or without the app (so "needs Accessibility" shows on
+            // the first evaluation); a real read answers later and re-evaluates.
+            if let cached = titleCache[owner] { return cached }
             return false
         }
         browserLatch = found.latched

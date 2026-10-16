@@ -97,6 +97,20 @@ final class MeetingAudioNotifier: NSObject, UNUserNotificationCenterDelegate, @u
         }
     }
 
+    /// QA 0.5.313: a Mac recording stopped without the person stopping it (limit, sleep, capture failure).
+    func postRecordingStopped(_ reason: String) {
+        let text = MacRecordingInterruption.notification(reason)
+        let content = UNMutableNotificationContent()
+        content.title = text.title
+        content.body = text.body
+        content.sound = .default
+        let identifier = "mac-recording-stopped-\(UUID().uuidString)"
+        center.add(UNNotificationRequest(identifier: identifier, content: content, trigger: nil)) { error in
+            let detail = error.map { String(describing: $0) } ?? "none"
+            meetingAudioLog.notice("post \(identifier, privacy: .public) error=\(detail, privacy: .public)")
+        }
+    }
+
     /// Audio reached this Mac again: take the out-of-date notification out of Notification Center.
     func removeDelivered(sessionIds: [String]) {
         guard !sessionIds.isEmpty else { return }
@@ -141,7 +155,16 @@ final class ControllerModel: ObservableObject {
     static let managedServerInstallVersion = "latest"
 
     @Published var status = ServerStatus() {
-        didSet { recordingStatusChanged?(recordingCount) }
+        didSet { recordingCountChanged() }
+    }
+    private var lastRecordingCount = 0
+    /// QA 0.5.313: any recording starting (Mac or glasses) while dictation has other apps muted gets their sound back,
+    /// or the recording would capture the mute. Dictation's quiet and sounds already treat both kinds alike.
+    private func recordingCountChanged() {
+        let count = recordingCount
+        if count > 0, lastRecordingCount == 0 { dictation.recordingStarted() }
+        lastRecordingCount = count
+        recordingStatusChanged?(count)
     }
     /// Wired only by the app; headless models never touch the Dock.
     var recordingStatusChanged: ((Int) -> Void)?
@@ -582,14 +605,13 @@ final class ControllerModel: ObservableObject {
         backgroundWorkEnabled = startBackgroundWork
         activityLoadsEnabled = startBackgroundWork || allowActivityLoads
         workActivity = WorkActivityJournal(url: WorkActivityJournal.defaultURL(background: startBackgroundWork))
+        macRecording.stoppedOnItsOwn = { [weak self] reason in self?.meetingAudioNotifier.postRecordingStopped(reason) }
         macRecording.activeChanged = { [weak self] active in
             guard let self else { return }
             self.macRecordingActive = active
-            // 0.5.313 (QA): a Mac recording that starts while dictation has other apps muted would record the mute.
-            if active { self.dictation.recordingStarted() }
             // 0.5.313: a recording that stopped any way at all needs no "Meeting ended? Stop and save".
             if !active { MeetingDetectorStore.shared.recordingStopped() }
-            self.recordingStatusChanged?(self.recordingCount)
+            self.recordingCountChanged()
         }
         guard startBackgroundWork else { return }
         whatsNewSeen = WhatsNewSeenStore(defaults: .standard)
@@ -1908,11 +1930,27 @@ final class ControllerModel: ObservableObject {
         // arrived so far would be partial (2026-10-15: 52 of 1,200). Finish delivering it instead.
         if sessionId.hasPrefix("mac_") {
             if macRecording.manifest?.captureId == sessionId { macRecording.deliverPending(); notice = "Delivering this Mac recording’s retained audio. It saves when every chunk has arrived." }
-            // 0.5.313 (QA): the old copy named a "Set up recording" button that 0.5.313 removed. Recover it directly.
-            else if let retained = macRecording.recoverable.first(where: { $0.captureId == sessionId }) {
-                Task { await macRecording.recover(retained) }
-                notice = "Recovering this Mac recording’s retained audio. It saves when every chunk has arrived."
-            } else { notice = "This Mac recording’s audio is not on this Mac, so COS can’t finish saving it here." }
+            // 0.5.313 (QA): the old copy named a "Set up recording" button that 0.5.313 removed. Recover it directly, from
+            // a fresh read of this Mac's spool (the in-memory list can be stale or unread), with the transport passed in
+            // (Meetings may never have been opened), and the notice says what actually happened.
+            else {
+                notice = "Looking for this Mac recording’s audio…"
+                Task { [weak self] in
+                    guard let self else { return }
+                    guard let retained = await self.macRecording.retainedCaptures() else {
+                        self.notice = "COS couldn’t read this Mac’s recording folder. Try Save again."; return
+                    }
+                    guard let capture = retained.first(where: { $0.captureId == sessionId }) else {
+                        meetingAudioLog.notice("stranded save: \(sessionId, privacy: .public) has no retained audio on this Mac")
+                        self.notice = "This Mac recording’s audio is not on this Mac, so COS can’t finish saving it here."; return
+                    }
+                    switch await self.macRecording.recover(capture, bridge: self.macRecordingBridge) {
+                    case .started: self.notice = "Recovering this Mac recording’s retained audio. It saves when every chunk has arrived."
+                    case .busy: self.notice = "Another Mac recording is recording or saving. Recover this one when it finishes."
+                    case .failed(let reason): self.notice = "Couldn’t recover this Mac recording: \(reason)"
+                    }
+                }
+            }
             return
         }
         orphanBusy = true
@@ -3528,6 +3566,7 @@ final class ControllerModel: ObservableObject {
 
     /// The saved row for a live session, read by day without touching the Meetings list (any month).
     private func findSavedLiveMeeting(sessionId: String, start: Date?, now: Date) async -> LibraryMeeting? {
+        // Nothing here is logged: the live transcript section sends nothing to a log (live-transcript-pins.py).
         for day in LiveTranscript.handoffDays(start: start, now: now) {
             guard case .rows(let rows) = await libraryRows(day: day) else { continue }
             if let row = rows.first(where: { Self.liveTranscriptMatches($0, sessionId: sessionId) }) { return row }

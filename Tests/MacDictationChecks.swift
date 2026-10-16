@@ -190,8 +190,13 @@ final class FakeDictationBoard: DictationPasteboardAccess {
         expect(optClick.pointerDown(at: 50 + window / 2) == .chord, "⌥-click right after the press is a chord")
         expect(optClick.pointerDown(at: 50 + window / 2) == nil && optClick.flagsChanged(keyCode: 58, flags: 0, at: 51) == nil, "that chord never dictates")
         var edge = LoneModifierTracker(keyCode: 63)!
-        _ = edge.flagsChanged(keyCode: 63, flags: fnDown, at: 7)
-        expect(edge.pointerDown(at: 7 + window) == nil, "a click exactly at the window edge is talking, not a chord")
+        // Press at 0 so the click at `window` is exactly the window in Double: 7 + 0.4 - 7 is 0.40000000000000036, which
+        // passes `<` and `<=` alike, so the old edge check could not tell an exclusive window from an inclusive one.
+        _ = edge.flagsChanged(keyCode: 63, flags: fnDown, at: 0)
+        expect(edge.pointerDown(at: window) == nil, "a click exactly at the window edge is talking, not a chord")
+        var inside = LoneModifierTracker(keyCode: 63)!
+        _ = inside.flagsChanged(keyCode: 63, flags: fnDown, at: 0)
+        expect(inside.pointerDown(at: window.nextDown) == .chord, "a click just inside the window is still a chord")
         var idle = LoneModifierTracker(keyCode: 63)!
         expect(idle.pointerDown(at: 1) == nil, "a click with the key up is nothing")
         _ = idle.flagsChanged(keyCode: 63, flags: fnDown, at: 1000)
@@ -247,6 +252,9 @@ final class FakeDictationBoard: DictationPasteboardAccess {
         for silence in [[Double](repeating: -65, count: 40), [Double](repeating: -55, count: 40), [Double](repeating: -200, count: 40)] {
             expect(bars(silence).heights.allSatisfy { $0 == DictationBars.minimum }, "silence (\(silence[0]) dBFS) stays at the floor")
         }
+        // A hum 4 dB over the room (under the 6 dB gate) is not speech; without the gate it would light 20% bars.
+        let hum = bars(room + [Double](repeating: -65 + DictationLevelMeter.gateDB - 2, count: 20))
+        expect(hum.heights.allSatisfy { $0 == DictationBars.minimum }, "noise under the gate above the floor stays at the floor")
         let quieted = bars(room + [Double](repeating: -20, count: 10) + [Double](repeating: -65, count: 40))
         expect(quieted.heights.allSatisfy { $0 < DictationBars.minimum + 0.5 }, "the bars fall back to the floor when speech stops")
         let firstTick = bars([-40])
@@ -411,7 +419,7 @@ final class FakeDictationBoard: DictationPasteboardAccess {
         expect(pick("custom:start-ok.m4a") == .custom("start-ok.m4a") && pick("custom:gone.m4a") == .bundled("unstable-saber-start.wav"),
                "your own file, or the pet's sound once it is gone")
         expect(pick("pet", volume: 0) == .silent("volume off") && pick("custom:start-ok.m4a", volume: 0) == .silent("volume off"), "volume 0 is silent")
-        expect(pick("pet", recording: true) == .silent("a Mac recording is capturing") && pick("library:soft-chime", .stop, recording: true) == .silent("a Mac recording is capturing"),
+        expect(pick("pet", recording: true) == .silent("a COS recording is capturing") && pick("library:soft-chime", .stop, recording: true) == .silent("a COS recording is capturing"),
                "never during a Mac recording (it would be recorded)")
         expect(L.Choice(stored: "garbage") == .pet && L.Choice(stored: L.Choice.custom("a b.wav").stored) == .custom("a b.wav"), "stored choices round-trip")
         expect(L.customRefusal(byteCount: 500_000, duration: 1.2) == nil && L.customRefusal(byteCount: L.maximumSourceBytes + 1, duration: 1) != nil

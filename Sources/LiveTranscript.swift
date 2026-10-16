@@ -284,6 +284,15 @@ enum LiveTranscript {
     /// The save re-transcribes every chunk before the meeting exists (batch HQ, about 0.5 s per 6 s chunk measured on
     /// this Mac), so a long recording gets longer: 180 s plus a twelfth of its length (QA 2026-10-15: a 2 h capture
     /// needs ~600 s and would have said "Saved meeting not found yet" for 7 minutes).
+    /// Mac recordings list in Meetings from server 6.73.14 (they skip the pipeline). On an older server their saved
+    /// meeting can never be found, so the pane says to update rather than "not found yet" forever.
+    static let macRecordingsListedFrom = [6, 73, 14]
+    static func macHandoffNeedsServerUpdate(sessionId: String, serverVersion: String?) -> Bool {
+        guard sessionId.hasPrefix("mac_"), let serverVersion else { return false }
+        let parts = serverVersion.split(separator: ".").map { Int($0.prefix { $0.isNumber }) ?? 0 }
+        for (have, need) in zip(parts + [0, 0, 0], macRecordingsListedFrom) where have != need { return have < need }
+        return false
+    }
     static func finalizingDeadline(recorded: TimeInterval?) -> TimeInterval { finalizingDeadline + max(0, recorded ?? 0) / 12 }
     /// A session the server calls closed or missing this long after its file went is a recording ended without saving.
     static let unsavedGrace: TimeInterval = 20

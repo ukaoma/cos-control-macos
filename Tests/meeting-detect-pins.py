@@ -113,7 +113,9 @@ need("guard let current = card, current.kind == .suggest else { return }" in rec
 need("await record?(current.source)" in body(detector, "    private func startRecording(_ current: MeetingCard) {"), "the pet records through the record closure")
 need(sum(src.count("recordSuggested()") for src in sources.values()) == 2 and 'Button("Record") { store.recordSuggested() }' in recording,
      "recordSuggested runs only from the card's Record button")
-need("guard available, canStart else {" in gate and "recoverable" not in gate.split("guard available, canStart else {")[1].split("}")[0],
+can_start = next(line for line in recording.splitlines() if line.strip().startswith("var canStart: Bool {"))
+need("guard available, canStart else {" in gate and "recoverable" not in gate.split("guard available, canStart else {")[1].split("}")[0]
+     and "recoverable" not in can_start and "!occupied && deliveryTask == nil" in can_start,
      "Record never starts over a pending recording, and a retained (recoverable) capture never blocks it (QA 2026-10-15)")
 need(sum(src.count("MacRecordingNotice.reminder") for src in sources.values()) == 3, "Recording · let people know on the panel, menu and pet-panel rows")
 settings = body(recording, "struct MeetingSuggestSettings: View {")
@@ -171,7 +173,9 @@ need(titles.count("AXUIElementSetMessagingTimeout(") == 2 and "AXUIElementSetMes
      and "Log" not in titles, "every AX element bounded at 0.25 s, 40 windows, about 1 s; matched by the tested rule, never logged")
 evaluate = body(detector, "    private func evaluate(_ ids: [AudioObjectID]) {")
 need("latched: browserLatch) { owner in" in evaluate and "browserLatch = found.latched" in evaluate
-     and "MeetingApps.titleReadDue(holdersChanged: holdersChanged, cached: cached != nil, tick: tick)" in evaluate
+     and "MeetingApps.titleReadDue(holdersChanged: holdersChanged, cached: titleCache[owner] != nil, tick: tick)" in evaluate
+     and evaluate.index("if holdersChanged { titleCache[owner] = nil }") < evaluate.index("if let cached = titleCache[owner] { return cached }")
+     and evaluate.index("if due { readTitles(owner) }") < evaluate.index("if let cached = titleCache[owner] { return cached }")
      and "windowTitlesShowMeet" not in evaluate,
      "a Meet tab latched while on the mic; titles read only when due, never inline on the main actor")
 need(core.count("static let rules: [Rule] = [") == 1 and sum(src.count("us.zoom.") for src in sources.values()) == core.count("us.zoom."),

@@ -139,30 +139,32 @@ need(hosts is not None and terminals is not None and set(re.findall(r'"([^"]+)"'
 
 # ── 3. Store flow: the pill, the flash, the card; text stays private.
 transcribe = body(dictation, "private func transcribe(_ wav: Data, attempt: UUID) {")
-need("let delivered = copyOnly ? DictationInsertion.copyOnly(text)\n                    : await DictationInsertion.deliver(text, restoreClipboard: restoreClipboard)" in transcribe
+need("let delivered = copyOnly ? DictationInsertion.copyOnly(text, clipboardMoved: clipboardMoved)\n                    : await DictationInsertion.deliver(text, restoreClipboard: restoreClipboard)" in transcribe
      and "finish(text, outcome: delivered.outcome, target: delivered.target)" in transcribe,
      "a finished transcript must be delivered and recorded")
 # 0.5.313 (Miles 2026-10-15): an interrupted dictation is transcribed and copied, never thrown away and never typed.
-need("let copyOnly = pendingInterrupted\n                pendingAudio = nil" in transcribe,
-     "the copy-only flag must be read before pendingAudio is cleared (clearing it resets the flag)")
+need("let copyOnly = pendingInterrupted\n                let clipboardMoved = interruptedChangeCount.map { $0 != NSPasteboard.general.changeCount } ?? false\n                pendingAudio = nil" in transcribe,
+     "the copy-only flag and the interrupt's clipboard stamp must be read before pendingAudio is cleared (clearing it resets both)")
 need("if pointer, held { pointerDuringHold = true }" in body(dictation, "    private func keyEvent(")
      and "fail(response.message, card: !(noSpeech && pointerDuringHold), retry: !noSpeech)" in transcribe
      and 'phase = "Starting"; pointerDuringHold = false' in dictation,
      "a slow modifier-click with no speech ends quietly, and the flag resets each dictation (QA 2026-10-15)")
-need("quiet.end()" in body(dictation, "    func recordingStarted() {") and "if active { self.dictation.recordingStarted() }" in model
+need("quiet.end()" in body(dictation, "    func recordingStarted() {") and "if count > 0, lastRecordingCount == 0 { dictation.recordingStarted() }" in model
+     and "didSet { recordingCountChanged() }" in model and "self.recordingCountChanged()" in model
      and "model.dictation.macRecordingActive = { [weak model] in (model?.recordingCount ?? 0) > 0 }" in app,
-     "a recording that starts mid-dictation restores other apps' sound, and any live COS recording counts (QA 2026-10-15)")
+     "a recording (Mac or glasses) that starts mid-dictation restores other apps' sound, and any live COS recording counts (QA 2026-10-15)")
 interrupt = body(dictation, "    func interrupt() {")
 need("MacDictationPolicy.salvages(pcmBytes: pcm.count)" in interrupt and "pendingAudio = wav; pendingInterrupted = true" in interrupt
      and "transcribe(wav, attempt: attempt)" in interrupt and "quiet.end()" in interrupt,
      "interrupt must transcribe a salvageable capture as copy-only and give other apps their sound back")
-need('if phase == "Transcribing" { pendingInterrupted = pendingAudio != nil; return }' in interrupt,
+need('if phase == "Transcribing" {\n            pendingInterrupted = pendingAudio != nil\n' in interrupt
+     and "            if pendingInterrupted { interruptedChangeCount = NSPasteboard.general.changeCount }\n            return\n        }" in interrupt,
      "sleep while transcribing must copy, not type after wake")
 key = body(dictation, "    private func keyEvent(")
 need("case .chord?: if held { interrupt() }" in key and "cancel()" not in key, "a chord while talking must salvage, not cancel")
 need(dictation.count("Task { @MainActor in self?.interrupt() }") == 1 and "Task { @MainActor in self?.cancel() }" not in dictation,
      "sleep and session switch must salvage, not cancel")
-copy_only = body(dictation, "    static func copyOnly(_ text: String) -> DictationDelivered {")
+copy_only = body(dictation, "    static func copyOnly(_ text: String, clipboardMoved: Bool) -> DictationDelivered {")
 need("writeTranscript(text, markerTypes: [])" in copy_only and ".refused(wrote ? .interrupted : .clipboardFailed)" in copy_only
      and "AXUIElement" not in copy_only and "postPaste" not in copy_only and "CGEvent" not in copy_only,
      "copy-only writes a durable clipboard item and never types or pastes")
@@ -462,5 +464,21 @@ need("DictationFixGuess.guess(tokens: tokens, tapped: index, vocabulary: Transcr
      "the first tap guesses the span and the dictionary suggestion")
 need('Button(offer.app.map { "Replace it in \\($0)" } ?? "Copy the corrected text") { store.replaceCorrected() }' in dictation,
      "Fix a word offers Replace it in <App> after Save")
+
+# QA 0.5.313 pass 2: a refused press never latches the hold key; only the hold tracker gets the click window; an
+# interrupted dictation never overwrites a clipboard the person changed while it transcribed.
+hot = body(dictation, "    func hotKey(_ id: UInt32, down: Bool) {")
+need('if !["Starting", "Listening"].contains(phase) { held = false; holdPending = false }' in hot
+     and hot.index("start()") < hot.index('if !["Starting", "Listening"].contains(phase)'),
+     "a press refused while the last dictation transcribes never latches the hold key")
+events = body(dictation, "    private func keyEvent(")
+need("pointer && clickWindow ? current.pointerDown(at: time) : current.keyDown()" in events
+     and events.count("feed(&holdTracker, clickWindow: true)") == 1 and "feed(&toggleTracker)" in events and "feed(&fixTracker)" in events
+     and "clickWindow: true" not in events.split("feed(&holdTracker, clickWindow: true)")[1],
+     "only the hold key keeps listening through a click; a toggle or Fix modifier chords on any click")
+need("if clipboardMoved {" in body(dictation, "    static func copyOnly(_ text: String, clipboardMoved: Bool) -> DictationDelivered {")
+     and "DictationInsertion.copyOnly(text, clipboardMoved: clipboardMoved)" in dictation
+     and dictation.count("interruptedChangeCount = NSPasteboard.general.changeCount") == 2,
+     "a salvage leaves a clipboard changed since the interrupt alone, from either interrupt path")
 
 print(f"PASS dictation-wispr pins: {checks} checks; HUD gone, copy-then-insert-at-focus, private history, overlay focus, pet slot and lists, Dictionary route, helper stdin, quick fix, replace, quiet restore on every exit")

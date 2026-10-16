@@ -17,7 +17,13 @@
   - Dictation: a click while holding with nothing said ends quietly (a slow ⌥-click); Work chat clamps item labels to 200 UTF-16 units and estimates to the server's cap.
   - Hardening: a Mac recording that starts while dictating restores other apps' sound at once (it would have recorded the mute); quiet mode and sounds treat any live COS recording, glasses too, as a recording. The two-hour limit reads as stopped, not "Incomplete". Logged: mute-tap refusals with their status, a missing COS audio object, transcription refusals by reason, and why an interrupted dictation was dropped.
   - Tests: run.sh runs run-work-session-hub.sh; live-meeting-open and idle-CPU pins strip comments; mutate-card-files tracks `var groups`; new deadline mutants.
-- Pair with server 6.73.14 (saved Mac recordings list in Meetings; Work chat cleans planner ids). With 6.73.13 or older, saved Mac recordings still do not appear in Meetings.
+- QA pass 2 (2026-10-16 02:30, four reviewers, fixes to the fixes):
+  - Dictation: a press while the last dictation is still transcribing no longer latches the hold key (a chord on it turned the last dictation into copy-only, and every later press did nothing). Only the hold key keeps listening through a click; a lone-modifier toggle or Fix shortcut chords on any click, as before. An interrupted dictation never overwrites a clipboard you changed while it transcribed (INTERRUPTED · NOT COPIED, with Copy). A glasses recording that starts mid-dictation restores other apps' sound too.
+  - Mac recording: an interruption shows once (the two-hour limit no longer adds a red error under "Stopped at the two-hour limit"); a stop you did not make posts a notification; Keep audio for later is offered whenever delivery paused, not only for silence; Recover is busy from the click (Record cannot slip in) and works from a stranded Save before Meetings was opened, reading this Mac's recordings fresh before saying the audio is gone; a capture stopped before any audio says there is nothing to save.
+  - Meeting detected: a new microphone holder never reuses the last Google Meet title read (a later Teams web call in the same browser was named Google Meet); "needs Accessibility" shows on the first check.
+  - Hand-off: on a server older than 6.73.14 a Mac recording says to update the server instead of "Saved meeting not found yet" (the live transcript code stays unlogged by design).
+  - Tests: the click-window edge and the silence gate are now killable (two surviving mutants); the 2 h deadline is pinned at 780 s.
+- Pair with server 6.73.14 (saved Mac recordings list in Meetings; Work chat cleans planner ids). With 6.73.13 or older, saved Mac recordings do not appear in Meetings and the live pane says to update the server.
 
 ## 0.5.312 (build 365), Work context meter, dictation sounds and history
 
