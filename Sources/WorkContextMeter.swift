@@ -60,6 +60,12 @@ enum WorkContextMeter {
     /// The server takes at most 40 items (6.73.13, WORK_CHAT_MAX_ITEMS). A card with more sends every item.
     static let maxItems = 40
     static let fixedIDs = ["req", "task", "cos"]
+    /// 0.5.317: a PriorInput whose session id starts with this is a reference session, not a working one.
+    static let referencePrefix = "ref:"
+    /// 0.5.317: how a reference session reads in any send, Work chat item or manual handoff alike.
+    static func referenceText(title: String, body: String) -> String {
+        "Reference session \u{201C}\(title)\u{201D} (linked as a reference, read-only): " + String(body.prefix(2500))
+    }
     /// The line every assignment ends with, before the status-line instruction submit adds (WorkProgress.instruction).
     static let cosText = "Preserve other session work. Report changes, checks and questions. This assignment does not authorize external publication, messages to other people, deletion or security changes."
     static let meetingsHeader = "Confirmed source meetings (references; transcript evidence is not included):"
@@ -172,9 +178,12 @@ enum WorkContextMeter {
         for prior in priors where !prior.result.isEmpty {
             let id = itemID("prior", prior.sessionID)
             guard !out.contains(where: { $0.id == id }) else { continue }
-            let text = "Earlier update from \u{201C}\(prior.title)\u{201D} (\(prior.status)): " + String(prior.result.prefix(1500))
-            out.append(WorkContextItem(id: id, kind: .prior, label: "Earlier update from " + String(prior.title.prefix(120)),
-                                       estTokens: textTokens(text), text: text))
+            // 0.5.317: a reference session (read-only) rides as an earlier update, so every server that takes items takes it.
+            let reference = prior.sessionID.hasPrefix(referencePrefix)
+            let text = reference ? referenceText(title: prior.title, body: prior.result)
+                                 : "Earlier update from \u{201C}\(prior.title)\u{201D} (\(prior.status)): " + String(prior.result.prefix(1500))
+            out.append(WorkContextItem(id: id, kind: .prior, label: (reference ? "Reference: " : "Earlier update from ") + String(prior.title.prefix(120)),
+                                       note: reference ? "read-only reference" : nil, estTokens: textTokens(text), text: text))
         }
         out.append(WorkContextItem(id: "cos", kind: .cos, label: "COS instructions", note: "scope, safety and the status line",
                                    estTokens: textTokens(cosText) + (statusInstructionChars + 3) / 4, text: cosText))

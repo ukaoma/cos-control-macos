@@ -1,8 +1,20 @@
 {
-  "version": "0.5.316",
+  "version": "0.5.317",
   "whatsNew": {
-    "summary": "Miles Windu moves more naturally, and while dictating, Mute other apps now actually mutes them. Plus 0.5.314 (a crash fix when a dictation sound finished, and REC on the pet while a meeting records) and everything in 0.5.313: dictation that keeps listening while you click, one-click Mac meeting recording, and a lighter Work tab.",
+    "summary": "Work chat keeps taking ideas while earlier work runs: a send it would hold now queues, or goes in parallel. Plus 0.5.316 (Miles Windu moves more naturally), 0.5.315 (Mute other apps while dictating now mutes them), 0.5.314 (a crash fix when a dictation sound finished, and REC on the pet while a meeting records) and everything in 0.5.313: dictation that keeps listening while you click, one-click Mac meeting recording, and a lighter Work tab.",
     "sections": [
+      {
+        "title": "0.5.317",
+        "items": [
+          "Work chat no longer stops at \"Earlier handoffs need a check first\". COS plans anyway, and when you send, the round queues behind the earlier work and sends by itself once that work is done, reviewed, or answered. The card says what it waits for, with Cancel.",
+          "Settings, Work, When earlier work is still open: Queue it (the default) or Ask each time. Ask each time offers Queue it, Send in parallel (free sessions now; a busy session gets its part after its own work) or Check first.",
+          "Plan and send queues too; it never skips the check. Queued work sends while COS Control is open, and waits while it is closed. Needs server 6.73.15; an older server keeps the check first.",
+          "Fixed: a card could keep saying Earlier handoffs need a check first, with Check again greyed out, while COS wrote its update summary. Check again, Plan and Send now stay available, and a message you send goes right after that summary.",
+          "The Work board has a Complete column again, after QA. Drop a card there to mark it complete (COS asks once), or drag it out to reopen it. The latest completions come first.",
+          "Opening a card with many sessions now says Loading 8 sessions, and Work chat shows its history as soon as it can, instead of looking empty for a few seconds.",
+          "Link a session to other tasks as a reference: in Link existing session, choose Link as reference, even for a session already working on another task. References sit in their own group on the card with Open and Unlink. COS uses their summary, outputs and changes as context there, never sends to them from that task, and they never change its stage."
+        ]
+      },
       {
         "title": "0.5.316",
         "items": [

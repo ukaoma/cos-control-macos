@@ -46,7 +46,7 @@ dialog = chat[chat.index('.confirmationDialog("Send plans without review?"'):]
 assert dialog.index("autoSendAcknowledged = true") < dialog.index("autoSend:true"), "confirming records the acknowledgement"
 assert chat.count("autoSend:true") == 2 and chat.count('Button("Plan and send") { planAndSend() }') == 2, "both Plan and send buttons go through the gate"
 auto = chat[chat.index("            if autoSend, !answer.assignments.isEmpty"):chat.index("        } catch {", chat.index("            if autoSend, !answer.assignments.isEmpty"))]
-assert "await dispatch(roundID: roundID, assignmentIDs: answer.assignments.map(\\.receiptID), source: source, handoff: handoff)" in auto and "submit(" not in auto, "Plan and send uses the guarded send path, never submit directly"
+assert "await dispatch(roundID: roundID, assignmentIDs: answer.assignments.map(\\.receiptID), source: source, handoff: handoff, hold: hold)" in auto and "submit(" not in auto, "Plan and send uses the guarded send path, never submit directly"
 assert '@AppStorage(WorkContextMeter.expandedKey) private var expanded = ""' in meter, "item lists must start collapsed (empty memory)"
 assert 'static let expandedKey = "cos.workContextExpanded"' in meter, "the open state is remembered per Mac"
 assert "private var isOpen: Bool { WorkContextMeter.isExpanded(expanded, assignment.receiptID) }" in meter and "if isOpen {" in meter, "the list shows only when opened"
@@ -57,12 +57,45 @@ assert '.onKeyPress(.space) { onPreview(item); return .handled }' in meter, "Spa
 assert ".onHover { inside in if inside { focusedRow = item.id }" in meter, "hovering a row makes Space reach it"
 dispatch = chat[chat.index("    private func dispatch("):chat.index("    private func sendContext(")]
 assert "WorkContextMeter.prompt(question: round.question, assignment: assignment.prompt, items: items, selected: selected)" in dispatch, "the send builds its prompt from the assignment's items"
-assert "contextFileIDs:fileIDs)" in dispatch and "include: contextFileIDs" in store, "the send lists only the assignment's files"
+assert "contextFileIDs:fileIDs,sessionFence:parallel)" in dispatch and "include: contextFileIDs" in store, "the send lists only the assignment's files"
 assert '"contextItems": body["contextItems"] as? Bool == true' in helper, "the helper passes the server's context-items capability"
 import re
 logged = re.findall(r'workChatLog\.\w+\("((?:[^"\\]|\\.)*)"', chat)
 assert len(logged) >= 8 and not any(re.search(r'\\\((?:prompt|built|question|context|text|assignment\.prompt|round\.question)\b', line) for line in logged), "the work-chat log never carries prompt, question or context text"
 print("PASS Work context meter wiring: collapsed by default and remembered per Mac, Quick Look for files, per-assignment prompt and files")
+PY
+# 0.5.317: the Work chat queue's wiring the hub checks cannot execute: the helper passes the server's queueRounds through,
+# Settings › Work has the switch with Queue it as its default, the app starts the app-wide pump, and an open card pumps its
+# own queue and tells the app-wide pump to leave it alone.
+python3 - "$ROOT/Sources/WorkTaskChat.swift" "$ROOT/HelperSources/main.swift" "$ROOT/Sources/Views.swift" "$ROOT/Sources/ControllerModel.swift" "$ROOT/Sources/WorkChatQueue.swift" "$ROOT/Sources/WorkWorkspaceView.swift" "$ROOT/Sources/WorkReferences.swift" <<'PY'
+import sys
+chat, helper, views, model, queue, workspace, refs = (open(p).read() for p in sys.argv[1:8])
+# 0.5.317 reference links: offered only by a server that takes them, apart from the working sessions, with no send control.
+assert '"references": body["references"] as? Bool == true' in helper, "the helper passes the server's references capability"
+assert "if taskChat.referencesOffered, linked?.workID != task.workSourceID {" in workspace and 'Button("Link as reference")' in workspace, "Link as reference only when the server takes references"
+assert "let references = taskChat.referencesOffered ? handoffStore.referenceRows(workID: task.workSourceID) : []" in workspace, "the References group only when offered"
+assert "submit(" not in refs and 'Button("Send' not in refs and "sendAll(" not in refs, "the References group has no send control"
+assert '"queueRounds": body["queueRounds"] as? Bool == true' in helper, "the helper passes the server's queueRounds capability"
+assert "@AppStorage(WorkChatHold.settingKey) private var workChatWhenHeld = WorkChatHold.settingDefault" in views, "Settings reads the default"
+assert 'COSDropdown("When earlier work is still open", selection: $workChatWhenHeld,' in views, "Settings › Work has the switch"
+assert "    static let settingDefault = queueSetting\n" in queue, "Queue it is the default"
+assert "let pump = WorkChatQueuePump(handoff: store, sources:" in model and "pump.start()" in model, "the app starts the app-wide pump"
+loop = chat[chat.index("WorkChatQueuePump.show(source.id); defer { WorkChatQueuePump.hide(source.id) }"):chat.index('}.confirmationDialog("Check the connected session first"')]
+assert "await chat.pumpQueued(source:source,handoff:handoff)" in loop and "chat.syncFromDisk()" in loop, "an open card pumps its own queue and reads the app-wide pump's writes"
+# 0.5.317: loading states (the same line slot, no layout jump), early history, automatic re-check of shown blockers.
+handoffview = open(sys.argv[1].replace("WorkTaskChat.swift", "WorkHandoffView.swift")).read()
+assert 'Text(handoffStore.sessionsKnown ? "Each session keeps its own progress.' in workspace and '"Loading status\\u{2026}"' in workspace, "Sessions say they are loading until the first read"
+assert 'if store.sessions.isEmpty && !store.sessionsKnown {' in handoffview, "the Agent workspace never reads as no sessions while loading"
+assert 'Text("Loading Work chat history\\u{2026}")' in chat and ".frame(maxWidth: .infinity, minHeight: 72, alignment: .leading)" in chat, "Work chat shows a placeholder until its history opens"
+assert loop.index("chat.open(source:source,handoff:handoff) }") < loop.index("await handoff.refresh()"), "the history opens before the session read when the server is known"
+assert "await chat.recheckBlockers(source:source,handoff:handoff,automatic:true)" in loop, "shown blockers are checked again by themselves"
+# 0.5.317: Complete is a board column (a drop asks, then completes through move; a drag out un-completes through move),
+# Mentioned is the only list above the board, and the Complete column leads with the latest completions.
+assert "ForEach(WorkBoardStage.boardColumns) { stage in boardColumn(stage, pass: pass) }" in workspace, "the board draws boardColumns"
+assert "ForEach([WorkBoardStage.mentioned]) { stage in" in workspace and "WorkBoardStage.mentioned, .complete" not in workspace, "no Complete dropdown above the board"
+assert "if stage == .complete { state.pendingComplete = task } else { move(task, to: stage) }" in workspace, "a drop on Complete completes through the stage path"
+assert "WorkBoardStage.recentFirst(ordered, id: \\.sourceID, moves: model.workActivity.moves)" in workspace and "LazyVStack(alignment: .leading, spacing: 10) {" in workspace, "Complete leads with recent completions, drawn lazily"
+print("PASS Work chat queue and reference wiring: helper capabilities, Settings default Queue it, app-wide pump started, open card pumps itself, references gated and send-free")
 PY
 # 0.5.313: the idle CPU fixes stay in place (text pins; the behaviour is checked in WorkInputChecks).
 /usr/bin/python3 "$ROOT/Tests/idle-cpu-pins.py" "$ROOT"

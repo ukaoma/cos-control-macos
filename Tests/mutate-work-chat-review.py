@@ -16,14 +16,15 @@ C = "Sources/WorkTaskChat.swift"; S = "Sources/WorkHandoffStore.swift"; M = "Sou
 EXPECTED_SURVIVORS = {"sent receipt guard (expected survivor: state guard and submit intent id back it up)"}
 MUTANTS = [
  ("plan dispatches state", C, 'answer.assignments.isEmpty ? "Answered" : "Ready to send"', 'answer.assignments.isEmpty ? "Answered" : "Dispatched"'),
- ("no pre-flight before planning", C, 'guard held.isEmpty else { blockers = held; error = WorkChatPreflight.heading; return }', 'if !held.isEmpty { blockers = held }'),
- ("no pre-flight before a send", C, '                guard held.isEmpty else {\n                    blockers = held; error = WorkChatPreflight.heading\n                    let count = held.count; workChatLog.info("send held by \\(count) earlier handoff(s)"); break sending\n', '                if !held.isEmpty {\n                    blockers = held\n'),
+ ("no pre-flight before planning", C, 'guard held.isEmpty || hold != .stop else { blockers = held; error = WorkChatPreflight.heading; return }', 'if !held.isEmpty { blockers = held }'),
+ # 0.5.317: the held branch is a switch on WorkChatHold; .stop is today's fence.
+ ("no pre-flight before a send", C, '                guard held.isEmpty else {\n                    if wasQueued {', '                guard held.isEmpty || hold == .stop else {\n                    if wasQueued {'),
  ("no revision check (isolated)", C, 'guard source.revision == round.revision else { return nil }', ''),
  ("no revision check (live)", C, 'fresh["workRevision"]?.string == round.revision else { return nil }', 'true else { return nil }'),
  ("no attachment check", C, 'guard attachments.digest == round.attachmentDigest else { return nil }', ''),
  ("no links check", C, 'guard try WorkChatPolicy.linksDigest(handoff.confirmedSessionCards,workID:source.id) == round.linkDigest else { return nil }', ''),
- ("Not now still sends", C, 'let index = record.rounds.firstIndex(where: { $0.id == roundID }), record.rounds[index].state == "Ready to send" else { return }', 'let index = record.rounds.firstIndex(where: { $0.id == roundID }) else { return }'),
- ("sent state guard", C, '                  self.record?.rounds[index].assignments[n].state == "Not sent",\n', ''),
+ ("Not now still sends", C, 'let index = record.rounds.firstIndex(where: { $0.id == roundID }),\n              ["Ready to send", WorkChatHold.queuedState].contains(record.rounds[index].state) else { return }', 'let index = record.rounds.firstIndex(where: { $0.id == roundID }) else { return }'),
+ ("sent state guard", C, 'let current = self.record?.rounds[index].assignments[n], ["Not sent", WorkChatHold.queuedState].contains(current.state),', 'let current = self.record?.rounds[index].assignments[n],'),
  ("sent receipt guard (expected survivor: state guard and submit intent id back it up)", C, '                  !handoff.receipts.contains(where: { $0.id == assignmentID }) else { continue }', '                  true else { continue }'),
  ("edit unvalidated", C, 'guard WorkChatPolicy.validPrompt(text) else {', 'guard true else {'),
  ("edit not trimmed", C, 'let text = prompt.trimmingCharacters(in: .whitespacesAndNewlines)\n        guard WorkChatPolicy.validPrompt', 'let text = prompt\n        guard WorkChatPolicy.validPrompt'),
@@ -49,13 +50,13 @@ MUTANTS = [
  ("gate taken twice", C, '        guard !inFlight else { return false }\n', ''),
  ("gate kept after a plan", C, 'do { response = try await handoff.taskChatCall(["work-chat"],data:data); gate.release() }', 'do { response = try await handoff.taskChatCall(["work-chat"],data:data) }'),
  ("summary skips the gate", C, '                guard gate.tryAcquire() else { return }\n', ''),
- ("discovery failure hidden", C, 'planners = []; efforts = []; contextItemsOffered = false; plannerNotice = WorkChatPolicy.plannerUnavailable', 'planners = []; efforts = []; contextItemsOffered = false; plannerNotice = nil'),
+ ("discovery failure hidden", C, 'handoff.referencesOffered = false; plannerNotice = WorkChatPolicy.plannerUnavailable', 'handoff.referencesOffered = false; plannerNotice = nil'),
  ("effort key always sent", C, 'if let effort { body["effort"] = effort }', 'body["effort"] = effort ?? "high"'),
  ("effort key never sent", C, 'if let effort { body["effort"] = effort }', ''),
  ("effort ignores choice", C, '        if let choice, offered.contains(choice) { return choice }\n        return offered.contains("high") ? "high" : nil', '        return offered.contains("high") ? "high" : nil'),
  ("effort trusts unknown", C, 'let offered = efforts.filter { advertised.contains($0) }', 'let offered = advertised'),
  ("efforts not filtered", C, 'efforts = WorkChatPolicy.efforts.filter { levels.contains($0) }', 'efforts = levels'),
- ("effort not sent with Plan", C, 'mode:"plan",planner:planner,effort:effort,items:chooses ? items : nil)', 'mode:"plan",planner:planner,items:chooses ? items : nil)'),
+ ("effort not sent with Plan", C, 'mode:"plan",planner:planner,effort:effort,items:chooses ? items : nil,open:', 'mode:"plan",planner:planner,items:chooses ? items : nil,open:'),
  ("reported effort not recorded", C, 'self.record?.rounds[index].plannerEffort = handoff.isolated ? nil : answer.effort.flatMap { WorkChatPolicy.efforts.contains($0) ? $0 : nil }', 'self.record?.rounds[index].plannerEffort = nil'),
  ("requested effort claimed", C, 'self.record?.rounds[index].plannerEffort = handoff.isolated ? nil : answer.effort.flatMap { WorkChatPolicy.efforts.contains($0) ? $0 : nil }', 'self.record?.rounds[index].plannerEffort = handoff.isolated ? nil : effort'),
  ("unknown effort shown", C, '        guard let effort, efforts.contains(effort) else { return base }', '        guard let effort else { return base }'),
@@ -90,7 +91,7 @@ MUTANTS = [
  ("edits not persisted", C, '        record?.rounds[r].assignments[n].contextItemIDs = next\n        return persist()', '        record?.rounds[r].assignments[n].contextItemIDs = next\n        return true'),
  ("edits allowed after sending", C, 'let n = record?.rounds[r].assignments.firstIndex(where: { $0.receiptID == assignmentID && $0.state == "Not sent" }),\n              let current = record?.rounds[r].assignments[n].contextItemIDs,', 'let n = record?.rounds[r].assignments.firstIndex(where: { $0.receiptID == assignmentID }),\n              let current = record?.rounds[r].assignments[n].contextItemIDs,'),
  ("send ignores the selection", C, '                    prompt = built.text; fileIDs = built.fileIDs', '                    fileIDs = built.fileIDs'),
- ("send lists every file", C, 'orchestrationRunID:round.id,intentID:assignment.receiptID,contextFileIDs:fileIDs)', 'orchestrationRunID:round.id,intentID:assignment.receiptID,contextFileIDs:nil)'),
+ ("send lists every file", C, 'orchestrationRunID:round.id,intentID:assignment.receiptID,contextFileIDs:fileIDs,sessionFence:parallel)', 'orchestrationRunID:round.id,intentID:assignment.receiptID,contextFileIDs:nil,sessionFence:parallel)'),
  ("stale selection sent", C, '                    guard WorkContextMeter.validSelection(selected, items: items),', '                    guard true,'),
  ("file filter ignored", F, 'files(for: workID).filter { include?.contains($0.id) ?? true }', 'files(for: workID)'),
  ("meeting file filter ignored", F, '        if let include { groups = groups.map', '        if false, let include { groups = groups.map'),
@@ -99,7 +100,7 @@ MUTANTS = [
  ("first Plan and send not confirmed", C, '        if WorkChatPolicy.confirmBeforeAutoSend(acknowledged: autoSendAcknowledged) { confirmAutoSend = true; return }\n', ''),
  ("confirm rule never asks", C, 'static func confirmBeforeAutoSend(acknowledged: Bool) -> Bool { !acknowledged }', 'static func confirmBeforeAutoSend(acknowledged: Bool) -> Bool { false }'),
  ("acknowledgement not remembered", C, '                autoSendAcknowledged = true\n', ''),
- ("Plan and send bypasses the guards", C, 'await dispatch(roundID: roundID, assignmentIDs: answer.assignments.map(\\.receiptID), source: source, handoff: handoff)',
+ ("Plan and send bypasses the guards", C, 'await dispatch(roundID: roundID, assignmentIDs: answer.assignments.map(\\.receiptID), source: source, handoff: handoff, hold: hold)',
   'for a in answer.assignments { if let s = targets(handoff, source: source).first(where: { $0.id == a.sessionID }) { await handoff.submit(source: source, mode: .continueSession, session: s, model: nil, prompt: a.prompt, orchestrationRunID: roundID, intentID: a.receiptID) } }'),
  ("Plan and send never sends", C, '            if autoSend, !answer.assignments.isEmpty, let roundID', '            if false, autoSend, !answer.assignments.isEmpty, let roundID'),
  ("sent without review not recorded", C, '                self.record?.rounds[index].sentWithoutReview = true\n', ''),
@@ -117,12 +118,18 @@ MUTANTS = [
  ("fence: no replacing", C, 'if row.id == replacing && row.status == "delivered" { return false }', ''),
  ("fence: terminal holds", C, '        guard row.blocksNewHandoff else { return false }\n', ''),
  ("blockers other cards", C, 'rows.filter { $0.workID == workID && holds(', 'rows.filter { holds('),
- ("blockers oldest first", C, '.sorted { $0.createdAt > $1.createdAt }\n    }\n    /// "Session title', '.sorted { $0.createdAt < $1.createdAt }\n    }\n    /// "Session title'),
+ ("blockers oldest first", C, '.sorted { $0.createdAt > $1.createdAt }\n    }\n    /// 0.5.317: the handoffs that write', '.sorted { $0.createdAt < $1.createdAt }\n    }\n    /// 0.5.317: the handoffs that write'),
  ("submit bypasses fence", S, 'guard recovery != nil || !receipts(for: source.id).contains(where: { WorkChatPreflight.holds(', 'guard true || !receipts(for: source.id).contains(where: { WorkChatPreflight.holds('),
  ("submit drops continuations", S, '            if orchestrationRunID != nil { continuations = await taskChatContinuations(source: source) }\n', ''),
 ]
 
+def idle():
+    """Never start a compile while any other swift-frontend runs on this Mac (2026-10-07 panics)."""
+    import time
+    while subprocess.run(["pgrep", "-x", "swift-frontend"], capture_output=True).returncode == 0: time.sleep(15)
+
 def run(work: pathlib.Path):
+    idle()
     r = subprocess.run(["/bin/zsh", str(work / "Tests/run-work-session-hub.sh")], cwd=work, capture_output=True, text=True)
     out = r.stdout + r.stderr
     why = next((l.strip() for l in out.splitlines() if "Precondition failed" in l or "Fatal error" in l), "")

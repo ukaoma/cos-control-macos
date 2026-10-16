@@ -1,5 +1,7 @@
 import Foundation
 import AppKit
+import SwiftUI
+import CoreText
 import Combine
 import CryptoKit
 
@@ -418,6 +420,7 @@ private actor WorkChatFixture {
     try await runWorkContinuationChecks(source: source, session: sessions[0], root: root)
     try await runWorkIndependentRecoveryChecks(source: source, sessions: sessions, root: root)
     try await runWorkChatTypingChecks(source: source, handoff: handoff, root: root)
+    try await runWorkChatQueueChecks(ids: ids, sessions: sessions, root: root)
     print("PASS Work orchestration: exact target policy, private CAS/symlinks, plan-then-review (edit, Not now, per-assignment Send, Skip, Send all), shared distinct-target run, duplicate/foreign-run fences and pre-flight, durable history, all-round provenance, navigation/double-send/task-revision drift; zero provider sends")
 }
 
@@ -969,4 +972,504 @@ private actor WorkContinuationFixture {
         } else { precondition(!store.receipts.contains { $0.id == newID }, "Refused handoff cannot create a delivery receipt") }
     }
     print("PASS follow-up delivery: idle exact native reply, active/unknown/refreshed-row fences, duplicate intent, unchanged review status, durable two-turn history")
+}
+
+/// 0.5.317 (Miles 2026-10-16): Queue it, Send in parallel, Check first. A server that advertises queueRounds, the real
+/// store, real submit and a fake transport: an earlier handoff on the first session runs until the check says otherwise.
+private actor WorkQueueFixture {
+    let ids: [String]
+    let queue: Bool
+    let server: String
+    /// 0.5.317 reference links: the server takes `references` (6.73.15).
+    let refs: Bool
+    /// The sessions the planner assigns to (default: the first two fixture sessions).
+    private(set) var assign: [String]
+    private(set) var turn = "pending"
+    private(set) var revision = String(repeating: "e", count: 64)
+    private var sends: [String] = []
+    private var prompts: [String: String] = [:]
+    private var bodies: [[String: Any]] = []
+    func prompt(_ thread: String) -> String { prompts[thread] ?? "" }
+    /// 0.5.317: a summary call takes this long, and at most one Work chat call may be on the wire (as on the server).
+    private(set) var summaryDelay: Duration = .zero
+    private var inFlight = 0
+    private(set) var maxInFlight = 0
+    private(set) var summaries = 0
+    func setSummaryDelay(_ value: Duration) { summaryDelay = value }
+    init(_ ids: [String], server: String, queue: Bool = true, refs: Bool = false) { self.ids = ids; self.server = server; self.queue = queue; self.refs = refs; assign = Array(ids.prefix(2)) }
+    func setAssign(_ value: [String]) { assign = value }
+    func referencesSent() -> [[String]?] { bodies.map { ($0["references"] as? [[String: Any]])?.compactMap { $0["id"] as? String } } }
+    func sessionsSent() -> [[String]] { bodies.map { ($0["sessions"] as? [[String: Any]] ?? []).compactMap { $0["id"] as? String } } }
+    func setTurn(_ state: String) { turn = state }
+    func setRevision(_ value: String) { revision = value }
+    func sent() -> [String] { sends }
+    /// Each plan's sessions as the planner saw them: openWork per session, nil when the key was left out.
+    func openWork() -> [[Bool?]] { bodies.map { ($0["sessions"] as? [[String: Any]] ?? []).map { $0["openWork"] as? Bool } } }
+    func openWorkKeys() -> [Bool] { bodies.map { ($0["sessions"] as? [[String: Any]] ?? []).contains { $0["openWork"] != nil } } }
+    func run(_ args: [String], _ data: Data?) async throws -> HelperResponse {
+        var out: [String: JSONValue] = [:]
+        let thread = args.firstIndex(of: "--thread-id").map { args[$0 + 1] } ?? ""
+        switch args.first ?? "" {
+        case "work-models": out = ["serverInstanceId": .string(server), "models": .array([])]
+        case "claude-sessions": out = ["sessions": .array(ids.prefix(2).map { id in .object([
+            "id": .string(String(id.split(separator: ":")[1])), "provider": .string(String(id.split(separator: ":")[0])),
+            "name": .string("Exact " + id), "workspace": .string("/tmp/fixture"), "state": .string("recent")]) })]
+        case "work-chat-capabilities":
+            out = ["protocolVersion": .number(1), "planners": .array([.string("sonnet"), .string("opus")]), "efforts": .array([.string("high")])]
+            if queue { out["queueRounds"] = .bool(true) }
+            if refs { out["references"] = .bool(true); out["contextItems"] = .bool(true) }
+        case "work-context": out = ["contextText": .string("Fixture task evidence"), "workRevision": .string(revision), "task": .object(["id": .string("aaaaaaaaaaaa"), "workIdentity": .string("aaaaaaaaaaaa"), "domain": .string("quilt"), "title": .string("Launch fixture"), "text": .string("Launch fixture"), "source": .string("Fixture evidence")])]
+        case "work-chat":
+            inFlight += 1; maxInFlight = max(maxInFlight, inFlight); defer { inFlight -= 1 }
+            let body = data.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+            if body?["mode"] as? String == "summary" {
+                summaries += 1
+                try await Task.sleep(for: summaryDelay)
+                out = ["protocolVersion": .number(1), "answer": .string("Summary of observed results."), "assignments": .array([])]
+                return HelperResponse(ok: true, message: "Fixture", details: out)
+            }
+            if let body { bodies.append(body) }
+            out = ["protocolVersion": .number(1), "answer": .string("Two independent checks."),
+                "assignments": .array(assign.map { .object(["sessionID": .string($0), "prompt": .string("Next idea; do not publish.")]) })]
+        // The earlier handoff on the first session: still running until the fixture says its turn completed.
+        case "session-chat-turn": out = ["state": .string(turn)]
+        case "session-chat-attachability": out = ["attachable": .bool(true)]
+        case "session-chat-attach": out = ["state": .string("attached"), "bindingId": .string("queue-fixture"), "epoch": .number(1), "boundTo": .string("exact-target")]
+        case "session-chat-send": sends.append(thread); prompts[thread] = data.map { String(decoding: $0, as: UTF8.self) } ?? ""; out = ["state": .string("completed")]
+        // No reply history: a delivered turn is never proven idle here, so it holds until it is marked reviewed.
+        case "session-recent-replies": throw HelperClientError.commandFailed("Fixture has no session history")
+        default: preconditionFailure("Queue fixture must not reach \(args)")
+        }
+        return HelperResponse(ok: true, message: "Fixture", details: out)
+    }
+}
+
+@MainActor private func runWorkChatQueueChecks(ids: [String], sessions: [WorkSession], root: URL) async throws {
+    struct Journal: Encodable { var version = 2; var receipts: [WorkHandoffReceipt]; var sessions: [WorkSession] }
+    // Settings › Work › When earlier work is still open: Queue it by default, Ask each time on request.
+    precondition(WorkChatHold.settingDefault == WorkChatHold.queueSetting && WorkChatHold.queueSetting == "queue", "Queue it is the default")
+    let fresh = UserDefaults(suiteName: "cos-queue-check-" + UUID().uuidString)!
+    precondition(WorkChatHold.storedSetting(fresh) == "queue", "An unset Mac reads Queue it")
+    fresh.set("ask", forKey: WorkChatHold.settingKey)
+    precondition(WorkChatHold.storedSetting(fresh) == "ask")
+    precondition(WorkChatHold.onHold(setting: "queue", autoSend: false, offered: true) == .queue && WorkChatHold.onHold(setting: "ask", autoSend: false, offered: true) == .ask)
+    precondition(WorkChatHold.onHold(setting: "ask", autoSend: true, offered: true) == .queue && WorkChatHold.onHold(setting: "queue", autoSend: true, offered: true) == .queue, "Plan and send queues; it never asks and never skips the fence")
+    precondition(WorkChatHold.onHold(setting: "queue", autoSend: true, offered: false) == .stop && WorkChatHold.onHold(setting: "ask", autoSend: false, offered: false) == .stop, "An older server keeps the check-first fence")
+    precondition(WorkChatHold.queuedLine(titles: []) == "Queued behind earlier work on this card" && WorkChatHold.queuedLine(titles: ["Copy", "Copy"]) == "Queued behind \u{201C}Copy\u{201D}"
+        && WorkChatHold.queuedLine(titles: ["A", "B"]) == "Queued behind \u{201C}A\u{201D} and \u{201C}B\u{201D}" && WorkChatHold.queuedLine(titles: ["A", "B", "C"]) == "Queued behind \u{201C}A\u{201D} and 2 more")
+    // 0.5.317 (Miles 2026-10-16 14:28): Complete is the last board column again, latest completions first.
+    precondition(WorkBoardStage.boardColumns == [.planned, .draft, .built, .qa, .complete], "Planned, Draft, Built, QA, Complete")
+    let completedAt = ["b": Date(timeIntervalSince1970: 2), "c": Date(timeIntervalSince1970: 5), "e": Date(timeIntervalSince1970: 5)]
+    precondition(WorkBoardStage.recentFirst(["a", "b", "c", "d", "e"], id: { $0 }, moves: completedAt) == ["c", "e", "b", "a", "d"],
+                 "Newest completion first, ties and unknown dates in board order")
+    // The store path below reads this Mac's setting (whenHeld nil); start from an unset Mac.
+    UserDefaults.standard.removeObject(forKey: WorkChatHold.settingKey)
+    defer { UserDefaults.standard.removeObject(forKey: WorkChatHold.settingKey) }
+
+    func earlier(_ card: WorkSource, session: Int = 0) -> WorkHandoffReceipt {
+        var row = WorkHandoffReceipt(id: UUID().uuidString.lowercased(), workID: card.id, workTitle: card.title, sourceRevision: card.revision, mode: .continueSession, provider: sessions[session].provider, modelID: "existing", sessionID: sessions[session].id, sessionTitle: "Copy review", status: "running", detail: "Provider turn accepted.", prompt: "Earlier work", createdAt: Date().timeIntervalSince1970 - 60)
+        row.channel = "turn"; row.bindingID = "earlier-binding"; row.orchestrationRunID = UUID().uuidString.lowercased(); return row
+    }
+    func setup(_ name: String, queue: Bool = true, held: Bool = true) async throws -> (WorkQueueFixture, WorkHandoffStore, WorkTaskChatStore, WorkSource, WorkHandoffReceipt) {
+        let task = TaskRow(.object(["id": .string("aaaaaaaaaaaa"), "workIdentity": .string("aaaaaaaaaaaa"), "domain": .string("quilt"), "title": .string("Launch fixture"), "text": .string("Launch fixture"), "source": .string("Fixture evidence")]))!
+        let card = WorkSource.taskSnapshot(task)
+        let blocker = earlier(card)
+        let file = root.appendingPathComponent("queue-" + name + ".json")
+        try JSONEncoder().encode(Journal(receipts: held ? [blocker] : [], sessions: sessions)).write(to: file)
+        let fixture = WorkQueueFixture(ids, server: "queue-" + name, queue: queue)
+        let store = WorkHandoffStore(storageURL: file, transport: { args, data in try await fixture.run(args, data) })
+        for id in ids.prefix(2) { precondition(store.confirmSessionCard(sessionID: id, source: card)) }
+        await store.refresh()
+        let chat = WorkTaskChatStore(); chat.enabled = true; chat.open(source: card, handoff: store)
+        await chat.loadPlanners(handoff: store, retryDelay: .zero)
+        return (fixture, store, chat, card, blocker)
+    }
+    let firstThread = String(ids[0].split(separator: ":")[1]), secondThread = String(ids[1].split(separator: ":")[1])
+
+    // 1. Queue it (the default). Planning goes ahead while earlier work runs; Send queues; it sends once that work resolves.
+    do {
+        let (fixture, store, chat, card, blocker) = try await setup("queue")
+        precondition(chat.queueOffered && !chat.serverQueueMissing, "A 6.73.15 server offers the queue")
+        chat.setDraft("A new idea while the copy review runs")
+        await chat.send(source: card, handoff: store)
+        let round = chat.record!.rounds.last!
+        precondition(round.state == "Ready to send" && chat.blockers.isEmpty && chat.error == nil, "Earlier open work no longer stops planning: \(round.state) \(chat.error ?? "")")
+        let seen = await fixture.openWork()
+        precondition(seen == [[true, false]], "The planner is told which session has earlier work open: \(seen)")
+        await chat.sendAll(roundID: round.id, source: card, handoff: store)
+        var after = chat.record!.rounds.last!
+        let none = await fixture.sent()
+        precondition(none.isEmpty && after.state == WorkChatHold.queuedState && after.assignments.allSatisfy { $0.state == WorkChatHold.queuedState && $0.waitingOn == [blocker.id] && $0.parallel == false },
+                     "With Queue it, a held Send queues every assignment behind the earlier handoff: \(after.state) \(after.assignments.map(\.state))")
+        precondition(chat.blockers.isEmpty && chat.pendingHold == nil && chat.error == nil, "Queue it never shows the wall or asks")
+        precondition(WorkChatHold.waitingTitles(after, receipts: store.receipts) == ["Copy review", "Copy review"], "The card names the session it waits on")
+        try renderQueueStates(chat: chat, handoff: store, source: card, round: after, name: "queued")
+        let relaunched = WorkTaskChatStore(); relaunched.enabled = true; relaunched.open(source: card, handoff: store)
+        precondition(relaunched.record?.rounds.last?.assignments.allSatisfy { $0.state == WorkChatHold.queuedState && $0.waitingOn == [blocker.id] } == true, "A queued round survives a restart")
+        // Still running: nothing goes. Delivered but not checked: still nothing.
+        await chat.pumpQueued(source: card, handoff: store)
+        await fixture.setTurn("completed")
+        await chat.pumpQueued(source: card, handoff: store)
+        let stillNone = await fixture.sent()
+        precondition(stillNone.isEmpty && store.error == nil && store.receipts.first { $0.id == blocker.id }?.status == "delivered" && chat.record?.rounds.last?.state == WorkChatHold.queuedState,
+                     "A queued round never sends while its earlier handoff is running or delivered and unchecked: \(stillNone)")
+        // The app-wide pump leaves a card a Work chat view has open to that view.
+        store.markReviewed(receiptID: blocker.id)
+        let pump = WorkChatQueuePump(handoff: store, sources: { [card] })
+        WorkChatQueuePump.show(card.id)
+        await pump.pass()
+        let whileShown = await fixture.sent()
+        precondition(whileShown.isEmpty, "The app-wide pump never sends a card that is open in a Work chat view")
+        WorkChatQueuePump.hide(card.id)
+        // Marked reviewed: the app-wide pump sends both, once, with every send check again.
+        await pump.pass()
+        let both = await fixture.sent()
+        chat.syncFromDisk()
+        after = chat.record!.rounds.last!
+        precondition(both.sorted() == [firstThread, secondThread].sorted() && after.state == "Dispatched" && after.assignments.allSatisfy { $0.state == "delivered" && $0.waitingOn == nil },
+                     "Once the earlier handoff resolves, the queue sends each assignment once: \(both) \(after.state)")
+        precondition(after.assignments.allSatisfy { a in store.receipts.contains { $0.id == a.receiptID && $0.orchestrationRunID == round.id } }, "Through the same receipts and run as Send all")
+        await pump.pass(); await chat.pumpQueued(source: card, handoff: store)
+        let again = await fixture.sent()
+        precondition(again.count == 2, "A sent queue never sends twice: \(again)")
+        // Cancel puts waiting assignments back for review; nothing is sent.
+        let blocker2 = earlier(card)
+        try JSONEncoder().encode(Journal(receipts: store.receipts + [blocker2], sessions: sessions)).write(to: root.appendingPathComponent("queue-queue.json"))
+        await fixture.setTurn("pending")
+        chat.setDraft("Another idea"); await chat.send(source: card, handoff: store)
+        let next = chat.record!.rounds.last!
+        let nextSeen = await fixture.openWork()
+        precondition(nextSeen.last == [true, true], "Each session with a delivered reply not yet checked counts as open work: \(nextSeen)")
+        await chat.sendAll(roundID: next.id, source: card, handoff: store)
+        precondition(chat.record!.rounds.last!.state == WorkChatHold.queuedState)
+        chat.cancelQueued(roundID: next.id)
+        let canceled = chat.record!.rounds.last!
+        let afterCancel = await fixture.sent()
+        precondition(canceled.state == "Ready to send" && canceled.assignments.allSatisfy { $0.state == "Not sent" && $0.waitingOn == nil } && afterCancel.count == 2, "Cancel sends nothing and returns the plan for review")
+        print("PASS Work chat Queue it: plans while held, queues on Send, survives restart, never sends while running or unchecked, app-wide pump skips an open card, sends once on resolve, Cancel")
+    }
+
+    // 2. A task changed while queued: at the moment it would dispatch, the round reads Needs a new plan and sends nothing.
+    do {
+        let (fixture, store, chat, card, blocker) = try await setup("stale")
+        chat.setDraft("Queue then change the task"); await chat.send(source: card, handoff: store)
+        let round = chat.record!.rounds.last!
+        await chat.sendAll(roundID: round.id, source: card, handoff: store)
+        precondition(chat.record!.rounds.last!.state == WorkChatHold.queuedState)
+        await fixture.setTurn("completed"); await chat.refresh(source: card, handoff: store)
+        store.markReviewed(receiptID: blocker.id)
+        await fixture.setRevision(String(repeating: "f", count: 64))
+        await chat.pumpQueued(source: card, handoff: store)
+        let after = chat.record!.rounds.last!
+        let sent = await fixture.sent()
+        precondition(sent.isEmpty && after.state == "Needs a new plan" && chat.error == WorkChatPolicy.staleMessage && after.assignments.allSatisfy { $0.state == "Not sent" && $0.waitingOn == nil },
+                     "A task that changed while queued is never sent from the old plan: \(after.state) \(after.assignments.map(\.state)) \(sent)")
+        await chat.pumpQueued(source: card, handoff: store)
+        let later = await fixture.sent()
+        precondition(later.isEmpty, "A stale round stays unsent")
+        print("PASS Work chat queue re-checks: a task changed while queued reads Needs a new plan and sends nothing")
+    }
+
+    // 3. Ask each time: three choices. Send in parallel sends the free session now; the busy one waits for its own session.
+    do {
+        UserDefaults.standard.set(WorkChatHold.askSetting, forKey: WorkChatHold.settingKey)
+        defer { UserDefaults.standard.removeObject(forKey: WorkChatHold.settingKey) }
+        let (fixture, store, chat, card, blocker) = try await setup("parallel")
+        chat.setDraft("Route around the busy session"); await chat.send(source: card, handoff: store)
+        let round = chat.record!.rounds.last!
+        await chat.sendAll(roundID: round.id, source: card, handoff: store)
+        let none = await fixture.sent()
+        precondition(none.isEmpty && chat.pendingHold == PendingHoldCheck.expect(round) && chat.blockers.map(\.id) == [blocker.id]
+            && chat.record!.rounds.last!.assignments.allSatisfy { $0.state == "Not sent" }, "Ask each time asks before anything is sent")
+        try renderQueueStates(chat: chat, handoff: store, source: card, round: chat.record!.rounds.last!, name: "ask")
+        // Check first: today's fence, nothing sent, the plan stays.
+        await chat.resolveHold(.stop, source: card, handoff: store)
+        precondition(chat.pendingHold == nil && chat.error == WorkChatPreflight.heading && chat.blockers.map(\.id) == [blocker.id] && chat.record!.rounds.last!.state == "Ready to send", "Check first is the old check")
+        await chat.sendAll(roundID: round.id, source: card, handoff: store)
+        await chat.resolveHold(.parallel, source: card, handoff: store)
+        var after = chat.record!.rounds.last!
+        let firstSends = await fixture.sent()
+        precondition(firstSends == [secondThread] && after.assignments[1].state == "delivered", "Send in parallel sends the free session now: \(firstSends)")
+        precondition(after.assignments[0].state == WorkChatHold.queuedState && after.assignments[0].parallel == true && after.assignments[0].waitingOn == [blocker.id] && after.state == WorkChatHold.queuedState,
+                     "The busy session's assignment waits behind its own session: \(after.assignments.map(\.state))")
+        try renderQueueStates(chat: chat, handoff: store, source: card, round: after, name: "parallel")
+        // The one rule: a session with an open handoff never gets a second instruction, whichever path tries.
+        await chat.pumpQueued(source: card, handoff: store)
+        let direct = UUID().uuidString.lowercased()
+        await store.submit(source: card, mode: .continueSession, session: store.sessions.first { $0.id == ids[0] }!, model: nil, prompt: "Second writer", orchestrationRunID: UUID().uuidString, intentID: direct, sessionFence: true)
+        let guarded = await fixture.sent()
+        precondition(guarded == [secondThread] && !store.receipts.contains { $0.id == direct }, "Parallel never sends into a session that still has a running handoff: \(guarded)")
+        await fixture.setTurn("completed"); await chat.refresh(source: card, handoff: store)
+        await chat.pumpQueued(source: card, handoff: store)
+        let unchecked = await fixture.sent()
+        precondition(unchecked == [secondThread], "Nor while its delivered reply is unchecked")
+        store.markReviewed(receiptID: blocker.id)
+        await chat.pumpQueued(source: card, handoff: store)
+        after = chat.record!.rounds.last!
+        let all = await fixture.sent()
+        precondition(all.filter { $0 == firstThread }.count == 1 && all.count == 2 && after.state == "Dispatched", "Its own session resolved: it goes, once: \(all)")
+        // A second parallel round: each session now holds its own delivered reply, so both wait, and nothing is sent twice.
+        chat.setDraft("One more idea"); await chat.send(source: card, handoff: store)
+        let third = chat.record!.rounds.last!
+        await chat.sendAll(roundID: third.id, source: card, handoff: store)
+        await chat.resolveHold(.parallel, source: card, handoff: store)
+        let held = await fixture.sent()
+        precondition(held.count == 2 && chat.record!.rounds.last!.assignments.allSatisfy { $0.state == WorkChatHold.queuedState && $0.parallel == true }, "A delivered reply not yet checked holds its session in parallel too: \(held)")
+        print("PASS Work chat parallel: asks first, Check first unchanged, free session now, busy session waits for its own work, never a second instruction into a held session")
+    }
+
+    // 4. Plan and send with earlier work open queues, even with Ask each time: sending without review never skips the fence.
+    do {
+        UserDefaults.standard.set(WorkChatHold.askSetting, forKey: WorkChatHold.settingKey)
+        defer { UserDefaults.standard.removeObject(forKey: WorkChatHold.settingKey) }
+        let (fixture, store, chat, card, blocker) = try await setup("auto")
+        chat.setDraft("Plan and send while earlier work runs")
+        await chat.send(source: card, handoff: store, autoSend: true)
+        let round = chat.record!.rounds.last!
+        let sent = await fixture.sent()
+        precondition(sent.isEmpty && round.sentWithoutReview == true && round.state == WorkChatHold.queuedState && chat.pendingHold == nil
+            && round.assignments.allSatisfy { $0.state == WorkChatHold.queuedState && $0.parallel == false && $0.waitingOn == [blocker.id] }, "Plan and send queues instead of bypassing the fence: \(round.state) \(sent)")
+        print("PASS Work chat Plan and send: queues behind earlier work, never asks, never bypasses")
+    }
+
+    try await runWorkReferenceChecks(ids: ids, sessions: sessions, root: root)
+    try await runWorkChatClearedReceiptChecks(ids: ids, sessions: sessions, root: root)
+
+    // 5. An older server (no queueRounds): today's behaviour, said plainly; never an openWork key.
+    do {
+        let (fixture, store, chat, card, blocker) = try await setup("old", queue: false)
+        precondition(!chat.queueOffered && chat.serverQueueMissing, "An older server offers no queue, and Control knows why")
+        chat.setDraft("Older server, earlier work open"); await chat.send(source: card, handoff: store)
+        precondition(chat.record!.rounds.isEmpty && chat.blockers.map(\.id) == [blocker.id] && chat.error == WorkChatPreflight.heading && chat.record?.draft == "Older server, earlier work open",
+                     "An older server keeps the check-first fence before planning")
+        await fixture.setTurn("completed"); await store.refreshReceipts(); store.markReviewed(receiptID: blocker.id)
+        await chat.recheckBlockers(source: card, handoff: store)
+        await chat.send(source: card, handoff: store)
+        let round = chat.record!.rounds.last!
+        let keys = await fixture.openWorkKeys()
+        precondition(round.state == "Ready to send" && keys == [false], "An older server never receives openWork: \(keys)")
+        try JSONEncoder().encode(Journal(receipts: store.receipts + [earlier(card)], sessions: sessions)).write(to: root.appendingPathComponent("queue-old.json"))
+        await fixture.setTurn("pending")
+        await chat.sendAll(roundID: round.id, source: card, handoff: store)
+        let sent = await fixture.sent()
+        precondition(sent.isEmpty && chat.pendingHold == nil && chat.error == WorkChatPreflight.heading && chat.record!.rounds.last!.assignments.allSatisfy { $0.state == "Not sent" },
+                     "On an older server a held Send shows the fence; nothing queues")
+        print("PASS Work chat older server: check-first fence before planning and sending, no openWork key, nothing queued")
+    }
+}
+
+private enum PendingHoldCheck {
+    @MainActor static func expect(_ round: WorkChatRound) -> WorkTaskChatStore.PendingHold { .init(roundID: round.id, assignmentIDs: round.assignments.map(\.receiptID)) }
+}
+
+/// The queued line and the Ask each time choices, rendered offscreen from the real state above (light and dark).
+@MainActor private func renderQueueStates(chat: WorkTaskChatStore, handoff: WorkHandoffStore, source: WorkSource, round: WorkChatRound, name: String) throws {
+    guard CommandLine.arguments.contains("--render") else { return }
+    let fonts = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("Resources/Fonts")
+    for font in ["Fraunces", "Fraunces-Italic", "DMSans", "JetBrainsMono"] { CTFontManagerRegisterFontsForURL(fonts.appendingPathComponent(font + ".ttf") as CFURL, .process, nil) }
+    NSApplication.shared.setActivationPolicy(.prohibited)
+    let out = URL(fileURLWithPath: CommandLine.arguments.last!)
+    try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+    for appearance in [NSAppearance.Name.aqua, .darkAqua] {
+        let content = VStack(alignment: .leading, spacing: 10) {
+            Text(round.question).font(COSType.body(14, weight: .semibold))
+            ForEach(round.assignments) { a in
+                HStack { Text(handoff.contributors(workID: source.id).first { $0.id == a.sessionID }?.title ?? a.sessionID).font(COSType.body(12)); Spacer(); Text(a.state).font(COSType.mono(10)) }
+                    .padding(10).background(COSPalette.raised, in: RoundedRectangle(cornerRadius: 8))
+            }
+            if chat.pendingHold?.roundID == round.id { WorkChatHoldChoices(chat: chat, handoff: handoff, source: source) }
+            if round.assignments.contains(where: { $0.state == WorkChatHold.queuedState }) { WorkChatQueuedLine(chat: chat, handoff: handoff, source: source, round: round) }
+        }.padding(14).frame(width: 560, alignment: .leading).background(COSPalette.card)
+        let host = NSHostingView(rootView: content)
+        host.frame = NSRect(x: 0, y: 0, width: 560, height: max(200, host.fittingSize.height))
+        let window = NSWindow(contentRect: host.frame.offsetBy(dx: -20000, dy: -20000), styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        host.appearance = NSAppearance(named: appearance); window.appearance = host.appearance; window.contentView = host
+        let until = Date().addingTimeInterval(0.5)
+        while Date() < until { RunLoop.main.run(until: Date().addingTimeInterval(0.05)); host.layoutSubtreeIfNeeded() }
+        guard let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds) else { throw CocoaError(.fileWriteUnknown) }
+        host.cacheDisplay(in: host.bounds, to: rep)
+        try rep.representation(using: .png, properties: [:])!.write(to: out.appendingPathComponent("work-chat-" + name + "-" + (appearance == .aqua ? "light" : "dark") + ".png"))
+        window.close()
+    }
+}
+
+/// 0.5.317 (Miles 2026-10-16 12:16): reference links. A session works on one task, and may be a read-only reference on any
+/// number of others. A reference never receives a send, never holds the fence or the queue, never owns the stage, and its
+/// summary reaches the planner within the bound. An older server: no references anywhere.
+@MainActor private func runWorkReferenceChecks(ids: [String], sessions: [WorkSession], root: URL) async throws {
+    struct Journal: Encodable { var version = 2; var receipts: [WorkHandoffReceipt]; var sessions: [WorkSession] }
+    func card(_ hex: String, _ title: String) -> WorkSource {
+        WorkSource.taskSnapshot(TaskRow(.object(["id": .string(hex), "workIdentity": .string(hex), "domain": .string("quilt"), "title": .string(title), "text": .string(title), "source": .string("Fixture evidence")]))!)
+    }
+    // The file store: the working-link rule is unchanged, references are many, idempotent, and never touch working links.
+    let cards = root.appendingPathComponent("ref-store/handoffs.session-cards.json")
+    let refsURL = WorkSessionLinks.referencesURL(cards: cards)
+    precondition(refsURL.lastPathComponent == "handoffs.session-references.json")
+    let itRetail = WorkSessionCardLink(workID: "task:quilt:111111111111", title: "IT Retail Gen 2 Modules", sourceRevision: "r1", at: 1)
+    let organic = WorkSessionCardLink(workID: "task:quilt:222222222222", title: "Quilt organic cleanup", sourceRevision: "r2", at: 2)
+    try WorkSessionLinks.associate(cards, sessionID: ids[0], link: itRetail, expected: "none")
+    do { try WorkSessionLinks.associate(cards, sessionID: ids[0], link: organic, expected: "none"); preconditionFailure("A session works on one task at a time") } catch {}
+    let workingBefore = try WorkSessionLinks.chatRead(cards)
+    try WorkSessionLinks.addReference(refsURL, sessionID: ids[0], link: organic)
+    try WorkSessionLinks.addReference(refsURL, sessionID: ids[0], link: organic)
+    try WorkSessionLinks.addReference(refsURL, sessionID: ids[0].uppercased().replacingOccurrences(of: "CLAUDE", with: "claude"), link: WorkSessionCardLink(workID: "task:quilt:333333333333", title: "Third", sourceRevision: "r3", at: 3))
+    let refs = try WorkSessionLinks.loadReferences(refsURL)
+    precondition(refs[ids[0]]?.map(\.workID) == ["task:quilt:222222222222", "task:quilt:333333333333"], "A session may reference many tasks, each once: \(refs)")
+    let workingAfter = try WorkSessionLinks.chatRead(cards), working = try WorkSessionLinks.load(cards)
+    precondition(workingAfter == workingBefore && working[ids[0]]?.workID == itRetail.workID, "A reference never changes the working link")
+    try WorkSessionLinks.removeReference(refsURL, sessionID: ids[0], workID: "task:quilt:333333333333")
+    let left = try WorkSessionLinks.loadReferences(refsURL)
+    precondition(left[ids[0]]?.map(\.workID) == ["task:quilt:222222222222"])
+    do { try WorkSessionLinks.removeReference(refsURL, sessionID: ids[0], workID: "task:quilt:333333333333"); preconditionFailure("Removing a missing reference is a conflict") } catch {}
+
+    // The live path. Card A: the IT Retail session works on the Gen 2 card (with a running handoff there); the organic card
+    // links the Codex session as its working session and the IT Retail session as a reference.
+    let organicCard = card("aaaaaaaaaaaa", "Launch fixture"), gen2 = card("cccccccccccc", "IT Retail Gen 2 Modules")
+    var busy = WorkHandoffReceipt(id: UUID().uuidString.lowercased(), workID: gen2.id, workTitle: gen2.title, sourceRevision: gen2.revision, mode: .continueSession, provider: "claude", modelID: "existing", sessionID: ids[0], sessionTitle: "Gen 2 blog cleanup", status: "running", detail: "Provider turn accepted.", prompt: "Gen 2 work", createdAt: Date().timeIntervalSince1970 - 60)
+    busy.channel = "turn"; busy.bindingID = "gen2-binding"
+    let file = root.appendingPathComponent("refs-live.json")
+    try JSONEncoder().encode(Journal(receipts: [busy], sessions: sessions)).write(to: file)
+    let fixture = WorkQueueFixture(ids, server: "refs-live", refs: true)
+    let store = WorkHandoffStore(storageURL: file, transport: { args, data in try await fixture.run(args, data) })
+    precondition(store.confirmSessionCard(sessionID: ids[0], source: gen2) && store.confirmSessionCard(sessionID: ids[1], source: organicCard))
+    precondition(!store.addReference(sessionID: ids[1], source: organicCard), "A session is never a reference on the task it works on")
+    precondition(store.addReference(sessionID: ids[0], source: organicCard), "A session working elsewhere can be a reference here")
+    precondition(store.confirmedSessionCards[ids[0]]?.workID == gen2.id, "Its working link stays with its own task")
+    await store.refresh()
+    let chat = WorkTaskChatStore(); chat.enabled = true; chat.open(source: organicCard, handoff: store)
+    await chat.loadPlanners(handoff: store, retryDelay: .zero)
+    precondition(chat.referencesOffered, "A 6.73.15 server takes references")
+    let referenced = ids[0]
+    chat.referenceFacts = { id, _ in
+        guard id == referenced else { return nil }
+        return (outputs: ["blog-cleanup.md"], changes: "4 files, +120 -30")
+    }
+    precondition(store.referenceRows(workID: organicCard.id).map(\.id) == [ids[0]] && !store.contributorIDs(workID: organicCard.id).contains(ids[0]),
+                 "A reference is listed apart, and never owns the card's stage")
+    // The planner names the reference anyway: the plan is refused before anything is sent.
+    await fixture.setAssign([ids[0]])
+    chat.setDraft("Use the Gen 2 cleanup as the pattern")
+    await chat.send(source: organicCard, handoff: store)
+    let sent0 = await fixture.sent(), told = await fixture.referencesSent(), offered = await fixture.sessionsSent()
+    precondition(told.last == [ids[0]] && offered.last == [ids[1]], "The planner gets the reference as evidence, never as a session: \(told) \(offered)")
+    precondition(sent0.isEmpty && chat.record!.rounds.last!.state == "Needs attention" && store.receipts.allSatisfy { $0.workID != organicCard.id }, "A reference never receives a send, even when the planner names it")
+    // An assignment for the working session goes now: the reference's running work on Gen 2 never holds this card.
+    await fixture.setAssign([ids[1]])
+    chat.setDraft("Now the organic cleanup itself")
+    await chat.send(source: organicCard, handoff: store)
+    let round = chat.record!.rounds.last!
+    let item = round.contextItems?.first { $0.label.hasPrefix("Reference: ") }
+    precondition(item?.text?.contains("blog-cleanup.md") == true && item?.text?.contains("4 files, +120 -30") == true && item?.kind == .prior, "The reference rides as read-only evidence with its outputs and changes")
+    await chat.sendAll(roundID: round.id, source: organicCard, handoff: store)
+    let sent1 = await fixture.sent()
+    precondition(sent1 == [String(ids[1].split(separator: ":")[1])] && chat.record!.rounds.last!.state == "Dispatched" && chat.pendingHold == nil && chat.blockers.isEmpty,
+                 "A reference never holds the fence or the queue: \(sent1) \(chat.record!.rounds.last!.state)")
+    // The bound: seven references, six reach the planner.
+    for n in 0..<7 {
+        let extra = "claude:abcdefab-0000-4000-8000-00000000010\(n)"
+        precondition(store.addReference(sessionID: extra, source: organicCard))
+    }
+    await fixture.setAssign([])
+    chat.setDraft("Summarize what the references did"); await chat.send(source: organicCard, handoff: store)
+    let bounded = await fixture.referencesSent()
+    precondition(bounded.last??.count == WorkChatPolicy.maxReferences && WorkChatPolicy.maxReferences == 6
+        && (chat.record!.rounds.last!.contextItems ?? []).filter { $0.label.hasPrefix("Reference: ") }.count == 6, "At most six references reach the planner: \(String(describing: bounded.last))")
+    // A manual handoff (the Agent workspace) carries the same read-only references, within the same bound.
+    for receipt in store.receipts where receipt.workID == organicCard.id && receipt.status == "delivered" { store.markReviewed(receiptID: receipt.id) }
+    let codex = store.sessions.first { $0.id == ids[1] }!
+    let lastExtra = "claude:abcdefab-0000-4000-8000-000000000106"
+    await sendWorkHandoff(store: store, source: organicCard, plan: WorkSendPlan(mode: .continueSession, session: codex, model: nil, crossPlatform: false, prompt: "Manual follow-up"),
+                          referenceFacts: { id, _ in
+                              guard id == lastExtra else { return nil }
+                              return (outputs: ["extra-notes.md"], changes: "1 file, +3 -0")
+                          })
+    let manual = await fixture.prompt(String(ids[1].split(separator: ":")[1]))
+    precondition(manual.contains("Manual follow-up") && manual.contains("Reference sessions (linked to this task as read-only reference points")
+        && manual.components(separatedBy: "Reference session \u{201C}").count - 1 == WorkChatPolicy.maxReferences && manual.contains("extra-notes.md"),
+                 "A manual handoff carries the card's references, read-only, at most six: \(manual.suffix(400))")
+    // An older server: no references key, no reference items, and nothing offered.
+    let oldFixture = WorkQueueFixture(ids, server: "refs-old", refs: false)
+    let oldFile = root.appendingPathComponent("refs-old.json")
+    try JSONEncoder().encode(Journal(receipts: [], sessions: sessions)).write(to: oldFile)
+    let old = WorkHandoffStore(storageURL: oldFile, transport: { args, data in try await oldFixture.run(args, data) })
+    precondition(old.confirmSessionCard(sessionID: ids[1], source: organicCard) && old.addReference(sessionID: ids[0], source: organicCard))
+    await old.refresh()
+    let oldChat = WorkTaskChatStore(); oldChat.enabled = true; oldChat.open(source: organicCard, handoff: old)
+    await oldChat.loadPlanners(handoff: old, retryDelay: .zero)
+    await oldFixture.setAssign([])
+    oldChat.setDraft("Older server with a saved reference"); await oldChat.send(source: organicCard, handoff: old)
+    let oldTold = await oldFixture.referencesSent()
+    precondition(!oldChat.referencesOffered && oldTold == [nil] && oldChat.record!.rounds.last!.state == "Answered"
+        && !(oldChat.record!.rounds.last!.contextItems ?? []).contains { $0.label.hasPrefix("Reference: ") }, "An older server never receives references: \(oldTold)")
+    await sendWorkHandoff(store: old, source: organicCard, plan: WorkSendPlan(mode: .continueSession, session: old.sessions.first { $0.id == ids[1] }!, model: nil, crossPlatform: false, prompt: "Manual on an older server"))
+    let oldManual = await oldFixture.prompt(String(ids[1].split(separator: ":")[1]))
+    precondition(oldManual.contains("Manual on an older server") && !oldManual.contains("Reference session"), "An older server's manual handoff carries no references")
+    print("PASS Work references: one working link per session kept, many references, never a send target, never holds the fence or queue, never owns the stage, planner evidence and manual handoffs within six, older server untouched")
+}
+
+/// 0.5.317 regression (Miles 2026-10-16 14:2x, IT Retail card): the Codex handoff he cleared after checking ("You checked the
+/// session and cleared this unresolved handoff") and the Claude replies already continued must never hold the card. What
+/// held it was the newest Claude reply, delivered and not yet checked: with the queue, his next message queues behind that
+/// one alone, without asking; with nothing open it sends. A running update summary no longer disables Check again or Plan.
+@MainActor private func runWorkChatClearedReceiptChecks(ids: [String], sessions: [WorkSession], root: URL) async throws {
+    struct Journal: Encodable { var version = 2; var receipts: [WorkHandoffReceipt]; var sessions: [WorkSession] }
+    let card = WorkSource.taskSnapshot(TaskRow(.object(["id": .string("aaaaaaaaaaaa"), "workIdentity": .string("aaaaaaaaaaaa"), "domain": .string("quilt"), "title": .string("Launch fixture"), "text": .string("Launch fixture"), "source": .string("Fixture evidence")]))!)
+    let now = Date().timeIntervalSince1970, runA = UUID().uuidString.lowercased(), runB = UUID().uuidString.lowercased()
+    func row(_ session: Int, _ status: String, run: String, at: Double, detail: String) -> WorkHandoffReceipt {
+        var r = WorkHandoffReceipt(id: UUID().uuidString.lowercased(), workID: card.id, workTitle: card.title, sourceRevision: card.revision, mode: .continueSession, provider: sessions[session].provider, modelID: "existing-session", sessionID: sessions[session].id, sessionTitle: sessions[session].title, status: status, detail: detail, prompt: "Earlier assignment " + run, createdAt: at)
+        r.channel = "turn"; r.bindingID = "binding-" + run; r.orchestrationRunID = run; return r
+    }
+    var codexCleared = row(1, "reviewed", run: runA, at: now - 2_700, detail: "You checked the session and cleared this unresolved handoff. Earlier: Delivery could not be confirmed. Inspect this session before another handoff.")
+    codexCleared.acknowledgedAt = now - 1_800
+    var claudeContinued = row(0, "delivered", run: runA, at: now - 2_700, detail: "Instruction delivered to the session. Inspect the response; this does not mark the task complete.")
+    claudeContinued.continuedBy = UUID().uuidString.lowercased(); claudeContinued.result = "Copy pass done."
+    let claudeOpen = row(0, "delivered", run: runB, at: now - 240, detail: "Instruction delivered to the session. Inspect the response; this does not mark the task complete.")
+    precondition(codexCleared.clearedUnconfirmed && !codexCleared.blocksNewHandoff && !WorkChatPreflight.holds(codexCleared, continuations: [:]), "A cleared handoff never holds the card")
+    precondition(!claudeContinued.blocksNewHandoff && !WorkChatPreflight.holds(claudeContinued, continuations: [:]), "A continued reply never holds the card")
+    precondition(WorkChatPreflight.holds(claudeOpen, continuations: [:]) && WorkChatPreflight.blockers([claudeOpen, codexCleared, claudeContinued], workID: card.id, continuations: [:]).map(\.id) == [claudeOpen.id],
+                 "Only the newest unchecked reply holds it")
+    UserDefaults.standard.removeObject(forKey: WorkChatHold.settingKey)
+    for open in [true, false] {
+        let file = root.appendingPathComponent("cleared-" + (open ? "open" : "resolved") + ".json")
+        try JSONEncoder().encode(Journal(receipts: (open ? [claudeOpen] : []) + [codexCleared, claudeContinued], sessions: sessions)).write(to: file)
+        let fixture = WorkQueueFixture(ids, server: "cleared-" + (open ? "open" : "resolved"))
+        let store = WorkHandoffStore(storageURL: file, transport: { args, data in try await fixture.run(args, data) })
+        precondition(!store.refreshedOnce && !store.sessionsKnown, "Before the first session read, the card says it is loading")
+        for id in ids.prefix(2) { precondition(store.confirmSessionCard(sessionID: id, source: card)) }
+        await store.refresh()
+        precondition(store.refreshedOnce && store.sessionsKnown, "After it, the card renders what it read")
+        let chat = WorkTaskChatStore(); chat.enabled = true; chat.open(source: card, handoff: store)
+        await chat.loadPlanners(handoff: store, retryDelay: .zero)
+        chat.setDraft("I had a question about one area here")
+        await chat.send(source: card, handoff: store)
+        let round = chat.record!.rounds.last!
+        precondition(round.state == "Ready to send" && chat.blockers.isEmpty && chat.error == nil, "His message is planned, not walled: \(round.state) \(chat.error ?? "")")
+        await chat.sendAll(roundID: round.id, source: card, handoff: store)
+        let after = chat.record!.rounds.last!, sent = await fixture.sent()
+        if open {
+            precondition(sent.isEmpty && chat.pendingHold == nil && chat.blockers.isEmpty && after.assignments.allSatisfy { $0.state == WorkChatHold.queuedState && $0.waitingOn == [claudeOpen.id] },
+                         "Genuinely open: it queues behind that reply alone, without asking: \(after.assignments.map { $0.waitingOn ?? [] })")
+            store.markReviewed(receiptID: claudeOpen.id)
+            await chat.pumpQueued(source: card, handoff: store)
+            let later = await fixture.sent()
+            precondition(later.count == 2 && chat.record!.rounds.last!.state == "Dispatched", "Then it sends by itself")
+        } else {
+            precondition(sent.count == 2 && after.state == "Dispatched" && chat.pendingHold == nil, "Nothing open: it just sends: \(sent)")
+            // A summary on the wire keeps neither Check again nor Plan waiting on a disabled button, and never overlaps a plan.
+            await fixture.setSummaryDelay(.milliseconds(600))
+            chat.record?.rounds[chat.record!.rounds.count - 1].assignments[0].result = "QA done; two notes."
+            let refreshing = Task { await chat.refresh(source: card, handoff: store) }
+            var waited = 0
+            while !chat.summarizing && waited < 100 { try await Task.sleep(for: .milliseconds(20)); waited += 1 }
+            precondition(chat.summarizing && !chat.refreshing, "A summary in flight does not hold refreshing (Check again stays enabled)")
+            chat.setDraft("Next while it summarizes")
+            await chat.send(source: card, handoff: store)
+            await refreshing.value
+            let overlap = await fixture.maxInFlight, count = await fixture.summaries
+            precondition(chat.record!.rounds.last!.question == "Next while it summarizes" && chat.record!.rounds.last!.state == "Ready to send" && overlap == 1 && count == 1,
+                         "The plan waits for the one summary on the wire, then runs: \(chat.record!.rounds.last!.state) overlap \(overlap)")
+        }
+    }
+    print("PASS Work chat cleared receipt (Miles 2026-10-16): cleared and continued handoffs never hold; an open reply queues his message without asking; nothing open sends; a running summary never disables Check again or Plan; loading until the first session read")
 }

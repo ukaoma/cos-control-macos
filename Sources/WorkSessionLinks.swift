@@ -81,6 +81,71 @@ enum WorkSessionLinks {
             return links
         }
     }
+    // MARK: 0.5.317 reference links (Miles 2026-10-16 12:16)
+    //
+    // A working link (the map above) is one card per session: it receives handoffs, reports to that card and counts for
+    // the fence and the queue. A REFERENCE is read-only and may name any number of cards: the card's planner and new
+    // assignments may read the session's summary, outputs and change counts, and nothing else. References live in their
+    // own file, so every reader of the working map (the helper, the tracker, the send targets, the links digest) sees
+    // exactly what it saw before.
+    static let maxReferencesPerSession = 50
+    static func referencesURL(cards: URL) -> URL {
+        cards.deletingLastPathComponent().appendingPathComponent(cards.lastPathComponent.replacingOccurrences(of: ".session-cards.json", with: ".session-references.json"))
+    }
+    static func loadReferences(_ url: URL) throws -> [String: [WorkSessionCardLink]] {
+        try withLock(url) { try readReferences(url) }
+    }
+    /// Adds `link` as a reference of `sessionID`. Linking the same card again keeps the first link. Never touches a
+    /// working link; the caller refuses a reference to the card the session already works on.
+    @discardableResult
+    static func addReference(_ url: URL, sessionID: String, link: WorkSessionCardLink) throws -> [String: [WorkSessionCardLink]] {
+        guard validSessionID(sessionID, includeCursor: true), valid(link) else { throw Failure.corrupt }
+        let sessionID = sessionID.lowercased()
+        return try withLock(url) {
+            var refs = try readReferences(url)
+            var rows = refs[sessionID] ?? []
+            if rows.contains(where: { $0.workID == link.workID }) { return refs }
+            rows.append(link)
+            guard rows.count <= maxReferencesPerSession else { throw Failure.corrupt }
+            refs[sessionID] = rows
+            guard refs.count <= 10_000 else { throw Failure.corrupt }
+            let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+            let data = try encoder.encode(refs)
+            guard data.count < limit else { throw Failure.corrupt }
+            try write(data, to: url)
+            return refs
+        }
+    }
+    @discardableResult
+    static func removeReference(_ url: URL, sessionID: String, workID: String) throws -> [String: [WorkSessionCardLink]] {
+        guard validSessionID(sessionID, includeCursor: true), !workID.isEmpty else { throw Failure.corrupt }
+        let sessionID = sessionID.lowercased()
+        return try withLock(url) {
+            var refs = try readReferences(url)
+            guard let rows = refs[sessionID], rows.contains(where: { $0.workID == workID }) else { throw Failure.conflict }
+            let left = rows.filter { $0.workID != workID }
+            refs[sessionID] = left.isEmpty ? nil : left
+            let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+            try write(encoder.encode(refs), to: url)
+            return refs
+        }
+    }
+    private static func valid(_ link: WorkSessionCardLink) -> Bool {
+        !link.workID.isEmpty && link.workID.utf8.count <= 256 && !link.title.isEmpty && link.title.utf8.count <= 32_000
+            && !link.sourceRevision.isEmpty && link.sourceRevision.utf8.count <= 256 && link.at.isFinite
+    }
+    private static func readReferences(_ url: URL) throws -> [String: [WorkSessionCardLink]] {
+        guard let data = try readData(url) else { return [:] }
+        guard let refs = try? JSONDecoder().decode([String: [WorkSessionCardLink]].self, from: data), refs.count <= 10_000,
+              refs.allSatisfy({ validSessionID($0.key, includeCursor: true) && $0.value.count <= maxReferencesPerSession && $0.value.allSatisfy(valid)
+                && Set($0.value.map(\.workID)).count == $0.value.count }) else { throw Failure.corrupt }
+        var normalized: [String: [WorkSessionCardLink]] = [:]
+        for (key, value) in refs {
+            guard normalized[key.lowercased()] == nil else { throw Failure.corrupt }
+            normalized[key.lowercased()] = value
+        }
+        return normalized
+    }
     static func loadNotices(_ url: URL) throws -> [String: WorkNoticeDismissal] {
         try withLock(url) { try readNotices(url) }
     }

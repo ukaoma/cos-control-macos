@@ -34,8 +34,16 @@ extension WorkSource {
 
 /// Sends a resolved plan exactly as the Agent workspace does. Shared with the board's Start work overlay (0.5.244).
 /// `resendAllFiles` (0.5.254): a Continue or Fork carries every file on the card again ("Send all N again").
-@MainActor func sendWorkHandoff(store: WorkHandoffStore, source sendingSource: WorkSource, plan: WorkSendPlan, resendAllFiles: Bool = false, recovery: WorkIndependentRecovery? = nil) async {
-    let sendingSession = plan.session, sendingModel = plan.model, sendingPrompt = plan.prompt
+/// 0.5.317: the card's reference sessions go with it as read-only evidence, bounded as in Work chat (none to Cursor, whose
+/// link has its own length limit, and none when the server does not take references).
+@MainActor func sendWorkHandoff(store: WorkHandoffStore, source sendingSource: WorkSource, plan: WorkSendPlan, resendAllFiles: Bool = false, recovery: WorkIndependentRecovery? = nil,
+                                referenceFacts: WorkReferenceFacts = WorkReferencesGroup.liveFacts) async {
+    let sendingSession = plan.session, sendingModel = plan.model
+    var sendingPrompt = plan.prompt
+    if !plan.opensCursor {
+        // Room left for the card's file list, which submit adds and checks against the same limit.
+        sendingPrompt += store.referenceBlock(workID: sendingSource.id, budget: WorkHandoffStore.draftLimit - sendingPrompt.utf16.count - 4_000, facts: referenceFacts)
+    }
     if plan.crossPlatform, let sendingSession, let sendingModel {
         await store.forkToPlatform(source: sendingSource, session: sendingSession, model: sendingModel, prompt: sendingPrompt, recovery: recovery)
     } else {
@@ -789,7 +797,10 @@ struct WorkHandoffView: View {
     /// The likeliest sessions as rows (Jev's pick, word matches, then recent), plus every session in a menu.
     private var existingDestination: some View {
         VStack(alignment: .leading, spacing: 6) {
-            if store.sessions.isEmpty {
+            if store.sessions.isEmpty && !store.sessionsKnown {
+                // 0.5.317: the first session read has not answered yet; never read as "no sessions".
+                HStack(spacing: 6) { ProgressView().controlSize(.small); Text("Loading sessions\u{2026}").font(COSType.body(11.5)).foregroundStyle(COSPalette.muted) }
+            } else if store.sessions.isEmpty {
                 Text(sessionID.isEmpty ? "No sessions available. Refresh or choose a new session." : "Your saved session is unavailable. Refresh to resolve it or explicitly choose a new destination.")
                     .font(COSType.body(11.5)).foregroundStyle(COSPalette.muted)
             } else {

@@ -17216,9 +17216,12 @@ final class COSControlHelper {
         let planners = (body["planners"] as? [String] ?? []).filter { ["sonnet", "opus"].contains($0) }
         // Server 6.73.12 advertises planner efforts. Only the three COS offers pass; the CLI's xhigh and max never do.
         let efforts = (body["efforts"] as? [String] ?? []).filter { ["low", "medium", "high"].contains($0) }
-        // Server 6.73.13 chooses each assignment's context items (the Work Context Meter).
+        // Server 6.73.13 chooses each assignment's context items (the Work Context Meter). Server 6.73.15 (`queueRounds`)
+        // takes each session's openWork, so Control 0.5.317 may queue a held send or send it in parallel.
         emit(ok: true, message: "Task chat", details: ["protocolVersion": 1, "planners": planners, "efforts": efforts,
-                                                     "contextItems": body["contextItems"] as? Bool == true])
+                                                     "contextItems": body["contextItems"] as? Bool == true,
+                                                     "queueRounds": body["queueRounds"] as? Bool == true,
+                                                     "references": body["references"] as? Bool == true])
     }
 
     private func emitWorkNew() throws {

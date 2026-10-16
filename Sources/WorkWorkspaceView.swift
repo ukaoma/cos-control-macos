@@ -196,6 +196,20 @@ enum WorkBoardStage: String, CaseIterable, Identifiable {
         case .complete: "Task marked complete"
         }
     }
+    /// 0.5.317: the board's columns, left to right. Mentioned is the list above the board.
+    static let boardColumns: [Self] = [.planned, .draft, .built, .qa, .complete]
+    /// Newest stage change first (the moves Control recorded); cards with none keep their order after them.
+    static func recentFirst<T>(_ items: [T], id: (T) -> String, moves: [String: Date]) -> [T] {
+        let indexed = items.enumerated().map { (offset: $0.offset, item: $0.element, at: moves[id($0.element)]) }
+        return indexed.sorted { a, b in
+            switch (a.at, b.at) {
+            case let (x?, y?): return x != y ? x > y : a.offset < b.offset
+            case (.some, nil): return true
+            case (nil, .some): return false
+            case (nil, nil): return a.offset < b.offset
+            }
+        }.map(\.item)
+    }
     static func stage(for task: TaskRow) -> Self {
         if task.checked { return .complete }
         let value = Self(rawValue: task.workStage) ?? .planned
@@ -1863,7 +1877,8 @@ struct WorkWorkspaceView: View {
                 }.padding(.horizontal, 18).padding(.bottom, 10)
             }
             HStack {
-                ForEach([WorkBoardStage.mentioned, .complete]) { stage in
+                // 0.5.317 (Miles 2026-10-16 14:28): Complete is a board column again; Mentioned stays a list above the board.
+                ForEach([WorkBoardStage.mentioned]) { stage in
                     Menu {
                         ForEach(WorkSearch.kept(board.column(stage), pass.search)) { item in Button(item.title) { select(item) } }
                     } label: { COSMenuLabel(title: stage.title + " · \(WorkSearch.kept(board.column(stage), pass.search).count)") }.cosMenu()
@@ -1873,7 +1888,7 @@ struct WorkWorkspaceView: View {
             latestMoveStrip
             ScrollView(.horizontal) {
                 HStack(alignment: .top, spacing: 12) {
-                    ForEach([WorkBoardStage.planned, .draft, .built, .qa]) { stage in boardColumn(stage, pass: pass) }
+                    ForEach(WorkBoardStage.boardColumns) { stage in boardColumn(stage, pass: pass) }
                 }.padding(.horizontal, 18).padding(.bottom, 18)
             }.frame(minHeight: 220)
             Text(handoffStore.isolated ? "Sample stages reset when this preview closes." : "Stages reflect your decisions. Moving a card does not run an agent or publish changes. Start work asks before anything is sent.")
@@ -2266,7 +2281,11 @@ struct WorkWorkspaceView: View {
         let all = board.column(stage)
         // 0.5.259: a search keeps only its matches; Order sorts what is left.
         let kept = WorkSearch.kept(all, pass.search)
-        let cards = WorkCardDating.sorted(kept, id: \.id, order: pass.order, dates: pass.dates)
+        let ordered = WorkCardDating.sorted(kept, id: \.id, order: pass.order, dates: pass.dates)
+        // 0.5.317: on board order the Complete column leads with the latest completions (the column is lazy, so a long
+        // history is reached by scrolling, never drawn at once).
+        let cards = stage == .complete && pass.order == .board
+            ? WorkBoardStage.recentFirst(ordered, id: \.sourceID, moves: model.workActivity.moves) : ordered
         let targeted = columnTarget == stage
         // One decision for the header, the list, and a card face. The list is a scroll view, so a drop on the
         // column behind it never arrived. No size is measured here.
@@ -2768,6 +2787,8 @@ struct WorkWorkspaceView: View {
                             taskChat.sessionWindow = { id in
                                 WorkSessionMeterStore.shared.sessionContextWindow(id).map { WorkSessionWindow(usedTokens: $0.used, windowTokens: $0.window) }
                             }
+                            // 0.5.317: a reference's outputs and change counts since it was linked, as its card shows them.
+                            taskChat.referenceFacts = WorkReferencesGroup.liveFacts
                         }
                 }
             }.frame(maxWidth: .infinity, alignment: .leading).padding(22)
@@ -2878,9 +2899,11 @@ struct WorkWorkspaceView: View {
                 Button(linkingSessions ? "Close linking" : "Link existing session") { linkingSessions.toggle() }
                     .buttonStyle(COSQuietButtonStyle())
             }
-            Text("Each session keeps its own progress. You control the shared task's stage.")
-                .font(COSType.body(11)).foregroundStyle(COSPalette.muted)
-            if contributors.isEmpty { Text("Copy context into Claude, Codex or Cursor, then link its exact session ID.")
+            // 0.5.317: until the first session read answers, the same line says what is loading (no layout jump when it fills).
+            Text(handoffStore.sessionsKnown ? "Each session keeps its own progress. You control the shared task's stage."
+                 : contributors.isEmpty ? "Loading sessions\u{2026}" : "Loading \(contributors.count) session\(contributors.count == 1 ? "" : "s")\u{2026}")
+                .font(COSType.body(11)).foregroundStyle(COSPalette.muted).accessibilityIdentifier("work-sessions-loading-line")
+            if contributors.isEmpty && handoffStore.sessionsKnown { Text("Copy context into Claude, Codex or Cursor, then link its exact session ID.")
                 .font(COSType.body(12)).foregroundStyle(COSPalette.muted) }
             ForEach(contributors) { contributor in
                 VStack(alignment: .leading, spacing: 6) {
@@ -2888,7 +2911,7 @@ struct WorkWorkspaceView: View {
                         Text(contributor.provider.capitalized).font(COSType.body(11)).foregroundStyle(COSPalette.muted)
                         Text(contributor.title).font(COSType.body(13, weight: .semibold)).lineLimit(2)
                         Spacer()
-                        Text(contributor.session.map { WorkBoardSessionCard.ageLabel(status: $0.status, updated: $0.updatedDate) } ?? "Live status unavailable")
+                        Text(contributor.session.map { WorkBoardSessionCard.ageLabel(status: $0.status, updated: $0.updatedDate) } ?? (handoffStore.sessionsKnown ? "Live status unavailable" : "Loading status\u{2026}"))
                             .font(COSType.mono(10)).foregroundStyle(COSPalette.muted)
                     }
                     if let tracking = WorkTracking.latest(workID: task.workSourceID, receipts: handoffStore.receipts, sessionID: contributor.id) {
@@ -2951,6 +2974,9 @@ struct WorkWorkspaceView: View {
                     }
                 }.padding(12).background(COSPalette.raised, in: RoundedRectangle(cornerRadius: 8))
             }
+            // 0.5.317: read-only references, apart from the sessions working on this task. No send controls here.
+            let references = taskChat.referencesOffered ? handoffStore.referenceRows(workID: task.workSourceID) : []
+            if !references.isEmpty { WorkReferencesGroup(rows: references, handoffStore: handoffStore, workID: task.workSourceID, onOpenSession: onOpenSession) }
             if linkingSessions {
                 WorkBoardSearchField(prompt: "Find a session by title, provider or ID", query: $sessionLinkQuery, focusRequest: 0, onKey: { _ in false })
                 let unique = Dictionary((handoffStore.sessions + handoffStore.observedSessions()).map { ($0.id.lowercased(), $0) }, uniquingKeysWith: { _, fresh in fresh })
@@ -2968,13 +2994,27 @@ struct WorkWorkspaceView: View {
                                         .font(COSType.body(10)).foregroundStyle(COSPalette.muted)
                                 }
                                 Spacer()
-                                Button("Link") { _ = handoffStore.confirmSessionCard(sessionID: session.id, source: .taskSnapshot(task)) }
-                                    .buttonStyle(COSQuietButtonStyle()).disabled(linked != nil || handoffStore.busy)
+                                // 0.5.317: a session linked to another task can still be a read-only reference here.
+                                let referenced = handoffStore.referenceLinks[session.id.lowercased()]?.contains { $0.workID == task.workSourceID } == true
+                                if taskChat.referencesOffered, linked?.workID != task.workSourceID {
+                                    if referenced { Text("Reference").font(COSType.body(10)).foregroundStyle(COSPalette.muted) }
+                                    else {
+                                        Button("Link as reference") { _ = handoffStore.addReference(sessionID: session.id, source: .taskSnapshot(task)) }
+                                            .buttonStyle(COSTextButtonStyle()).disabled(handoffStore.busy)
+                                            .help("Read-only: COS may use this session's summary, outputs and changes as context here. It never sends to it from this task.")
+                                            .accessibilityIdentifier("work-link-reference-" + session.id)
+                                    }
+                                }
+                                if linked == nil || !taskChat.referencesOffered {
+                                    Button("Link") { _ = handoffStore.confirmSessionCard(sessionID: session.id, source: .taskSnapshot(task)) }
+                                        .buttonStyle(COSQuietButtonStyle()).disabled(linked != nil || handoffStore.busy)
+                                }
                             }
                         }
                     }
                 }.frame(maxHeight: 190)
-                Text("Linking sends no prompt. Copy context for an exact ID missing from this catalog. Cursor opens Agents; confirm the intended chat there.")
+                Text("Linking sends no prompt. Copy context for an exact ID missing from this catalog. Cursor opens Agents; confirm the intended chat there."
+                     + (taskChat.referencesOffered ? " A reference is read-only: COS uses its summary, outputs and changes as context here and never sends to it from this task." : ""))
                     .font(COSType.body(10)).foregroundStyle(COSPalette.muted)
             }
         }.padding(.vertical, 10)
