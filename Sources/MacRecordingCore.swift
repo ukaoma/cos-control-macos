@@ -515,6 +515,10 @@ struct MeetingDetectionState: Equatable, Sendable {
         case ended(MeetingSource)
     }
     private(set) var tracks: [MeetingSource: Track] = [:]
+    /// The meeting app on the microphone now, for the Record button's automatic title (first by bundle ID).
+    var current: MeetingSource? {
+        tracks.filter { $0.value.holding }.keys.sorted { $0.ownerBundleID < $1.ownerBundleID }.first
+    }
     /// Ticks are needed only while something holds the microphone or a meeting has not ended yet.
     var wantsTicks: Bool { tracks.values.contains { $0.holding || $0.inMeeting } }
 
@@ -561,9 +565,7 @@ enum MeetingSuggestion {
     }
     /// "Zoom meeting 2:05 PM".
     static func title(_ source: MeetingSource, at date: Date, calendar: Calendar = .current) -> String {
-        let f = DateFormatter(); f.calendar = calendar; f.timeZone = calendar.timeZone
-        f.locale = Locale(identifier: "en_US_POSIX"); f.dateFormat = "h:mm a"
-        return source.app.title + " meeting " + f.string(from: date)
+        MacRecordingNotice.autoTitle(meetingApp: source.app.title, at: date, calendar: calendar)
     }
     /// "Meeting ended? Stop and save" only for the recording this card started, while it is still the one running.
     /// COS never stops it on its own.
@@ -574,5 +576,37 @@ enum MeetingSuggestion {
     /// Busy for suggestions: anything a new recording would collide with or bury.
     static func recordingBusy(macOccupied: Bool, macCanStart: Bool, recoverable: Int, liveRecordings: Int) -> Bool {
         macOccupied || !macCanStart || recoverable > 0 || liveRecordings > 0
+    }
+}
+
+/// The one-time recording notice (0.5.313, Miles 22:39: "should be stylized for COS and should be a one-time start.
+/// Granola and all of the like ... shouldn't require this many steps"). Shown the first time a Mac recording starts,
+/// on any path; once acknowledged on this Mac, every Record starts at once. Settings can show it again.
+enum MacRecordingNotice {
+    static let acknowledgedKey = "macRecording.noticeAcknowledged"
+    static let optionsExpandedKey = "macRecording.optionsExpanded"
+    static let title = "Record this Mac's audio"
+    static let lines = [
+        "COS records everything your Mac plays (your microphone stays off) and transcribes it live.",
+        "Let people know you're recording.",
+    ]
+    /// Only while System Audio Recording has not been granted: macOS's own prompt, which COS cannot style.
+    static let permissionFootnote = "macOS will ask once to allow System Audio Recording for COS Control."
+    /// The quiet reminder on a recording row while it runs.
+    static let reminder = "Recording · let people know"
+    enum Step: Equatable, Sendable { case notice, start }
+    /// Every start asks this, and only `start` records.
+    static func step(acknowledged: Bool) -> Step { acknowledged ? .start : .notice }
+    static func footnote(permissionGranted: Bool) -> String? { permissionGranted ? nil : permissionFootnote }
+    /// "Zoom meeting 2:05 PM" while a meeting app is detected, else "Mac recording 2:05 PM".
+    static func autoTitle(meetingApp: String?, at date: Date, calendar: Calendar = .current) -> String {
+        let f = DateFormatter(); f.calendar = calendar; f.timeZone = calendar.timeZone
+        f.locale = Locale(identifier: "en_US_POSIX"); f.dateFormat = "h:mm a"
+        return (meetingApp.map { $0 + " meeting" } ?? "Mac recording") + " " + f.string(from: date)
+    }
+    /// What Record names the recording: what the person typed under Options, else the automatic title.
+    static func title(typed: String, meetingApp: String?, at date: Date, calendar: Calendar = .current) -> String {
+        let trimmed = typed.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? autoTitle(meetingApp: meetingApp, at: date, calendar: calendar) : String(trimmed.prefix(160))
     }
 }

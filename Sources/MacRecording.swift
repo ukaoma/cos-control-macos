@@ -26,7 +26,8 @@ final class MacRecordingStore: ObservableObject {
     typealias Bridge = @MainActor @Sendable (String, [String: JSONValue]) async throws -> HelperResponse
     @Published var sources: [MacAudioSource] = []
     @Published var selectedID: UInt32 = MacAudioSource.allMacAudioID
-    @Published var title = "Mac recording"
+    /// Typed under Options; empty means the automatic title (MacRecordingNotice.title).
+    @Published var title = ""
     @Published private(set) var phase = "idle" {
         didSet { if ["starting", "recording", "stopping"].contains(oldValue) != ["starting", "recording", "stopping"].contains(phase) { activeChanged?(["starting", "recording", "stopping"].contains(phase)) } }
     }
@@ -88,8 +89,32 @@ final class MacRecordingStore: ObservableObject {
         }
         return response.details
     }
-    /// Only the explicit Start button calls this; no initialization, detection, or permission probe records audio.
-    func start() async {
+    /// The one-time notice, acknowledged on this Mac (0.5.313).
+    var noticeAcknowledged: Bool { UserDefaults.standard.bool(forKey: MacRecordingNotice.acknowledgedKey) }
+    /// Only the notice card's Record calls this, in the panel and on the pet.
+    func acknowledgeNotice() { UserDefaults.standard.set(true, forKey: MacRecordingNotice.acknowledgedKey); objectWillChange.send() }
+    /// Settings → Show the recording notice again.
+    func resetNotice() { UserDefaults.standard.set(false, forKey: MacRecordingNotice.acknowledgedKey); objectWillChange.send() }
+
+    /// THE way to start a Mac recording (0.5.313): Meetings' Record and the pet's meeting card both come here, behind
+    /// the same one-time notice. Returns the capture id once recording, or nil with `error` saying why.
+    func record(title chosen: String, sourceID: UInt32, bridge: @escaping Bridge) async -> String? {
+        guard MacRecordingNotice.step(acknowledged: noticeAcknowledged) == .start else { return nil }
+        if !available || self.bridge == nil { await prepare(bridge: bridge) }
+        guard available, canStart, recoverable.isEmpty else {
+            if error == nil { error = "A Mac recording is waiting to be saved. Open Meetings to finish it before recording another." }
+            return nil
+        }
+        let previousTitle = title, previousSource = selectedID
+        selectedID = sourceID; title = chosen
+        await start()
+        title = previousTitle; selectedID = previousSource
+        return isRecording ? manifest?.captureId : nil
+    }
+
+    /// Only `record` calls this; no initialization, detection, or permission probe records audio.
+    private func start() async {
+        guard noticeAcknowledged else { return }
         guard canStart, available, let instance, let source = sources.first(where: { $0.id == selectedID }) else { return }
         guard #available(macOS 14.2, *) else { return }
         phase = "starting"; error = nil; noSpeech = false; captureInterruption = nil; silentChunks = 0; heardSound = false; deliveryPaused = false
@@ -190,20 +215,9 @@ final class MacRecordingStore: ObservableObject {
         phase = "pending"; message = "Capture stopped. Audio stays on this Mac until its saved-meeting receipt is verified."
         deliverPending()
     }
-    /// 0.5.313: Record on the meeting card. The card click is the person's explicit confirmation, so this path skips the
-    /// panel's dialog (which every other start keeps). Always All Mac audio, the proven source, never a per-app tap.
-    /// Returns the capture id once recording, or nil with `error` saying why.
+    /// 0.5.313: Record on the pet's meeting card. Always All Mac audio, the proven source, never a per-app tap.
     func startFromMeetingSuggestion(title meetingTitle: String, bridge: @escaping Bridge) async -> String? {
-        if !available || self.bridge == nil { await prepare(bridge: bridge) }
-        guard available, canStart, recoverable.isEmpty else {
-            if error == nil { error = "A Mac recording is waiting to be saved. Open Meetings to finish it before recording another." }
-            return nil
-        }
-        let previousTitle = title, previousSource = selectedID
-        selectedID = MacAudioSource.allMacAudioID; title = meetingTitle
-        await start()
-        title = previousTitle; selectedID = previousSource
-        return isRecording ? manifest?.captureId : nil
+        await record(title: meetingTitle, sourceID: MacAudioSource.allMacAudioID, bridge: bridge)
     }
     /// The spool's recoverable list, read locally (no helper, no capture), so a meeting suggestion never buries one.
     func refreshRecoverable() async {
@@ -287,33 +301,54 @@ extension MacAudioCapture: MacCaptureSession {}
 struct MacRecordingPanel: View {
     @ObservedObject var store: MacRecordingStore
     let bridge: MacRecordingStore.Bridge
-    @State private var expanded = false
-    @State private var confirmStart = false
+    /// 0.5.313: the detected meeting app names the recording ("Zoom meeting 2:05 PM").
+    @ObservedObject var meetings: MeetingDetectorStore = MeetingDetectorStore.shared
+    /// Title, audio source and Refresh apps live under Options, collapsed until the person opens it (remembered).
+    @AppStorage(MacRecordingNotice.optionsExpandedKey) private var optionsExpanded = false
+    /// The one-time notice, inline (never a system alert; Tests/run.sh keeps confirmations inline).
+    @State private var showingNotice = false
+    private var recordable: Bool { store.canStart && store.available && store.sources.contains { $0.id == store.selectedID } }
+    private var automaticTitle: String { MacRecordingNotice.autoTitle(meetingApp: meetings.current?.app.title, at: Date()) }
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
             HStack {
                 Label(store.isRecording ? "Recording on this Mac" : "Record on Mac · pilot", systemImage: store.isRecording ? "record.circle.fill" : "waveform")
                     .font(COSType.body(12, weight: .semibold)).foregroundStyle(store.isRecording ? COSPalette.danger : COSPalette.ink)
+                if store.isRecording {
+                    Text(MacRecordingNotice.reminder).font(COSType.body(10.5)).foregroundStyle(.secondary)
+                }
                 Spacer()
                 if store.isRecording, let id = store.manifest?.captureId {
                     Button("Open live meeting") { store.openLiveMeeting?(id) }.buttonStyle(COSQuietButtonStyle())
                 }
                 if store.isRecording || store.phase == "starting" { Button("Stop and save") { Task { await store.stop() } }.buttonStyle(COSQuietButtonStyle()) }
-                else { Button(expanded ? "Hide" : "Set up recording") { expanded.toggle() }.buttonStyle(COSQuietButtonStyle()) }
+                else if !store.occupied, !showingNotice {
+                    Button("Record") { record() }.buttonStyle(COSPrimaryButtonStyle()).disabled(!recordable)
+                        .help("Records everything this Mac plays, with a live transcript. Your microphone stays off")
+                }
             }
-            if expanded || store.occupied || store.manifest != nil {
-                Text(store.message).font(COSType.body(11)).foregroundStyle(.secondary)
-                if !store.occupied {
+            if showingNotice {
+                MacRecordingNoticeCard(onRecord: {
+                    store.acknowledgeNotice(); showingNotice = false; record()
+                }, onNotNow: { showingNotice = false })
+            }
+            if !store.occupied {
+                DisclosureGroup("Options", isExpanded: $optionsExpanded) {
                     HStack {
-                        TextField("Recording title", text: $store.title).textFieldStyle(.plain).cosField().frame(maxWidth: 260)
+                        TextField(automaticTitle, text: $store.title).textFieldStyle(.plain).cosField().frame(maxWidth: 260)
+                            .help("Leave empty for the automatic title")
                         COSDropdown("Audio source", selection: $store.selectedID,
                             options: store.sources.map {
                                 COSDropdownOption($0.id, $0.isAllMacAudio ? "All Mac audio (recommended)" : "\($0.name) only (\($0.pid))")
                             }).frame(maxWidth: 320)
                         Button("Refresh apps") { Task { await store.prepare(bridge: bridge) } }
-                        Button("Start recording") { confirmStart = true }.disabled(!store.canStart || !store.available || !store.sources.contains { $0.id == store.selectedID })
                     }
+                    .padding(.top, 4)
                 }
+                .font(COSType.body(11))
+            }
+            if store.occupied || store.manifest != nil {
+                Text(store.message).font(COSType.body(11)).foregroundStyle(.secondary)
                 if let value = store.manifest {
                     Text("\(value.acknowledged)/\(value.chunks.count) audio chunks received · \(store.phase)").font(COSType.body(11)).foregroundStyle(.secondary)
                     if let warning = store.signalWarning {
@@ -330,21 +365,56 @@ struct MacRecordingPanel: View {
                         Button("Retry saving retained audio") { store.deliverPending() }
                     }
                 }
-                if let error = store.error { Text(error).font(COSType.body(11)).foregroundStyle(COSPalette.danger) }
-                ForEach(store.recoverable.filter { $0.captureId != store.manifest?.captureId }) { value in
-                    Button("Recover \(value.title) · \(value.chunks.count) chunks") { Task { await store.recover(value) } }.disabled(!store.canStart)
-                }
+            }
+            if let error = store.error { Text(error).font(COSType.body(11)).foregroundStyle(COSPalette.danger) }
+            ForEach(store.recoverable.filter { $0.captureId != store.manifest?.captureId }) { value in
+                Button("Recover \(value.title) · \(value.chunks.count) chunks") { Task { await store.recover(value) } }.disabled(!store.canStart)
             }
         }
         .padding(.horizontal, 24).padding(.vertical, 12).background(COSPalette.amber.opacity(0.06))
         .overlay(alignment: .bottom) { Divider() }
         .task { await store.prepare(bridge: bridge) }
-        .confirmationDialog("Record this Mac’s audio?", isPresented: $confirmStart, titleVisibility: .visible) {
-            Button("Start recording") { Task { await store.start() } }.keyboardShortcut(.defaultAction)
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("Confirm participants know you are recording. All Mac audio captures every sound this Mac plays, including notifications and media. A single app captures only that app. Your microphone is off. Audio is retained locally; transcription follows your meeting settings. macOS may ask for system audio permission.")
+    }
+    /// Record: the one-time notice first on this Mac, then every Record starts at once.
+    private func record() {
+        guard MacRecordingNotice.step(acknowledged: store.noticeAcknowledged) == .start else { showingNotice = true; return }
+        let title = MacRecordingNotice.title(typed: store.title, meetingApp: meetings.current?.app.title, at: Date())
+        let source = store.selectedID
+        Task {
+            if await store.record(title: title, sourceID: source, bridge: bridge) != nil { store.title = "" }
         }
+    }
+}
+
+/// The one-time recording notice (0.5.313), COS-styled and inline: in Meetings' Record on Mac and in the pet's card
+/// slot. macOS's own System Audio Recording prompt is named in the footnote only while it has not been granted.
+struct MacRecordingNoticeCard: View {
+    var size: PetSize? = nil
+    let onRecord: () -> Void
+    let onNotNow: () -> Void
+    @State private var permitted = DictationQuietController.tapPermitted
+    private func scaled(_ value: CGFloat) -> CGFloat { size.map { $0.typeSize(value) } ?? value }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(MacRecordingNotice.title).font(COSType.body(scaled(12.5), weight: .semibold)).foregroundStyle(COSPalette.ink)
+            ForEach(MacRecordingNotice.lines, id: \.self) { line in
+                Text(line).font(COSType.body(scaled(11))).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+            if let footnote = MacRecordingNotice.footnote(permissionGranted: permitted) {
+                Text(footnote).font(COSType.body(scaled(10))).foregroundStyle(COSPalette.muted).fixedSize(horizontal: false, vertical: true)
+            }
+            HStack(spacing: 8) {
+                Button("Record", action: onRecord).buttonStyle(COSPrimaryButtonStyle())
+                Button("Not now", action: onNotNow).buttonStyle(COSQuietButtonStyle())
+            }
+            .padding(.top, 2)
+        }
+        .padding(12)
+        .frame(maxWidth: 420, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 10).fill(COSPalette.card))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(COSPalette.line, lineWidth: 1))
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(MacRecordingNotice.title)
     }
 }
 
@@ -352,6 +422,8 @@ struct MacRecordingPanel: View {
 
 enum MeetingCardKind: Equatable {
     case suggest
+    /// The one-time recording notice, when Record on the suggestion is this Mac's first recording.
+    case notice
     case ended
 }
 
@@ -387,6 +459,8 @@ struct MeetingCard: Equatable, Identifiable {
     var dictating: (() -> Bool)?
     var petFrame: (() -> NSRect?)?
     var runningCaptureID: (() -> String?)?
+    var noticeAcknowledged: (() -> Bool)?
+    var acknowledgeNotice: (() -> Void)?
     var record: ((MeetingSource) async -> String?)?
     var stopRecording: (() async -> Void)?
 
@@ -438,7 +512,7 @@ struct MeetingCard: Equatable, Identifiable {
         unbindInputs(keeping: [])
         listenersUnavailable = false
         state = MeetingDetectionState()
-        if card?.kind == .suggest { dismiss() }
+        if card?.kind == .suggest || card?.kind == .notice { dismiss() }
     }
 
     private func processesChanged() {
@@ -509,7 +583,7 @@ struct MeetingCard: Equatable, Identifiable {
             recordingLog.notice("meeting detected app=\(source.app.title, privacy: .public)")
             show(MeetingCard(kind: .suggest, source: source))
         case .ended(let source):
-            if card?.kind == .suggest, card?.source == source { dismiss() }
+            if card?.kind != .ended, card?.source == source { dismiss() }
             if MeetingSuggestion.offersEnd(ended: source, startedFrom: startedFrom?.source, startedCaptureID: startedFrom?.captureID,
                                            runningCaptureID: runningCaptureID?()) {
                 recordingLog.notice("meeting ended app=\(source.app.title, privacy: .public); offering stop")
@@ -524,8 +598,8 @@ struct MeetingCard: Equatable, Identifiable {
         note = nil
         card = next
         dismissTask?.cancel(); dismissTask = nil
-        // The suggestion folds away after 60 s; the end offer waits for an answer (COS never stops on its own).
-        guard next.kind == .suggest else { return }
+        // The suggestion (and its notice) fold away after 60 s; the end offer waits for an answer (COS never stops on its own).
+        guard next.kind != .ended else { return }
         let id = next.id
         dismissTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(MeetingSuggestion.dismissSeconds))
@@ -535,9 +609,21 @@ struct MeetingCard: Equatable, Identifiable {
     }
     func dismiss() { dismissTask?.cancel(); dismissTask = nil; card = nil }
 
-    /// Record: one click, the card being the confirmation.
+    /// Record: one click. The first recording on this Mac shows the one-time notice in the card's place first.
     func recordSuggested() {
         guard let current = card, current.kind == .suggest else { return }
+        guard MacRecordingNotice.step(acknowledged: noticeAcknowledged?() ?? false) == .start else {
+            show(MeetingCard(kind: .notice, source: current.source)); return
+        }
+        startRecording(current)
+    }
+    /// The notice's Record: remembered on this Mac, then the recording starts.
+    func recordAfterNotice() {
+        guard let current = card, current.kind == .notice else { return }
+        acknowledgeNotice?()
+        startRecording(current)
+    }
+    private func startRecording(_ current: MeetingCard) {
         dismiss()
         Task {
             guard let captureID = await record?(current.source) else {
@@ -622,6 +708,14 @@ struct MeetingCardView: View {
     let card: MeetingCard
     let size: PetSize
     var body: some View {
+        if card.kind == .notice {
+            MacRecordingNoticeCard(size: size, onRecord: { store.recordAfterNotice() }, onNotNow: { store.notNow() })
+                .frame(width: size.length(300), alignment: .leading)
+        } else {
+            suggestionOrEnd
+        }
+    }
+    private var suggestionOrEnd: some View {
         VStack(alignment: .leading, spacing: size.length(7)) {
             HStack(spacing: size.length(7)) {
                 Circle().fill(card.kind == .suggest ? COSPalette.danger : COSPalette.amber)
@@ -654,6 +748,8 @@ struct MeetingCardView: View {
                     Button(MeetingSuggestion.never(card.source)) { store.neverFor() }
                         .buttonStyle(COSTextButtonStyle())
                         .font(COSType.body(size.typeSize(9)))
+                case .notice:
+                    EmptyView()
                 case .ended:
                     Button("Stop and save") { store.stopAndSave() }
                         .buttonStyle(DictationButtonStyle(primary: true, size: size))
@@ -727,8 +823,14 @@ private final class MeetingCardHostingView<Content: View>: NSHostingView<Content
 /// Settings → Meetings: suggest recording when a meeting starts.
 struct MeetingSuggestSettings: View {
     @ObservedObject var store: MeetingDetectorStore
+    @AppStorage(MacRecordingNotice.acknowledgedKey) private var acknowledged = false
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
+            // 0.5.313: the one-time recording notice can be shown again.
+            Button("Show the recording notice again") { acknowledged = false }
+                .controlSize(.small)
+                .disabled(!acknowledged)
+                .help("The next Mac recording shows what COS records and asks once more before it starts")
             Toggle("Suggest recording when a meeting starts", isOn: $store.suggestEnabled)
                 .toggleStyle(COSSwitchStyle())
                 .help("When Zoom, Microsoft Teams or Google Meet has used the microphone for 10 seconds, the pet offers Record on Mac with live transcript. COS never starts or stops a recording on its own")

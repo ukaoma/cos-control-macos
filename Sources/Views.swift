@@ -1856,6 +1856,10 @@ struct ControlPanel: View {
                         Label(model.recordingLabel, systemImage: "record.circle.fill")
                             .font(COSType.body(13, weight: .semibold))
                             .foregroundStyle(Color.red)
+                        // 0.5.313: the quiet, non-blocking reminder while this Mac records.
+                        if model.macRecordingActive {
+                            Text(MacRecordingNotice.reminder).font(COSType.body(11)).foregroundStyle(.secondary)
+                        }
                         if model.liveTranscriptEnabled {
                             Button("View live transcript") { model.showRecordingTranscript() }
                                 .buttonStyle(COSQuietButtonStyle())

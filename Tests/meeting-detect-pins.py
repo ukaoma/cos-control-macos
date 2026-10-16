@@ -64,27 +64,58 @@ views = read("Sources/Views.swift")
 sources = {p.name: strip_comments(p.read_text(encoding="utf-8")) for p in (root / "Sources").glob("*.swift")}
 detector = body(recording, "@MainActor final class MeetingDetectorStore: ObservableObject {")
 
-# ── 1. Record: one click on the card, All Mac audio, the panel's confirm kept everywhere else.
+# ── 1. Record: every start through ONE gated function; the one-time notice; All Mac audio from the card.
 suggested = body(recording, "    func startFromMeetingSuggestion(title meetingTitle: String, bridge: @escaping Bridge) async -> String? {")
-need(suggested.index("selectedID = MacAudioSource.allMacAudioID") < suggested.index("await start()"),
+need("await record(title: meetingTitle, sourceID: MacAudioSource.allMacAudioID, bridge: bridge)" in suggested,
      "the card records All Mac audio (the proven source), never a per-app tap")
-need("selectedID" not in body(app, "meetings.record = {") and ".pid" not in suggested,
-     "nothing on the card path picks an app's tap")
+need("selectedID" not in body(app, "meetings.record = {"), "nothing on the card path picks an app's tap")
+gate = body(recording, "    func record(title chosen: String, sourceID: UInt32, bridge: @escaping Bridge) async -> String? {")
+need(gate.index("guard MacRecordingNotice.step(acknowledged: noticeAcknowledged) == .start else { return nil }") < gate.index("await start()")
+     and gate.index("selectedID = sourceID; title = chosen") < gate.index("await start()"),
+     "record() refuses until the notice was acknowledged, then starts the chosen source")
+start = body(recording, "    private func start() async {")
+need(start.split("\n")[1].strip() == "guard noticeAcknowledged else { return }", "start() itself refuses an unacknowledged first recording")
 starts = [(name, m.start()) for name, src in sources.items() for m in re.finditer(r"(?:store|macRecording|\bself)\.start\(\)|await start\(\)", src)]
-need(len(starts) == 2, f"Mac recording starts from exactly two places (the panel's confirm and the card), found {starts}")
-panel = body(recording, "struct MacRecordingPanel: View {")
-confirm = panel[panel.index('.confirmationDialog("Record this Mac’s audio?"'):]
-need("Task { await store.start() }" in confirm and panel.count("store.start()") == 1,
-     "the panel starts only from its confirm dialog")
+need(len(starts) == 1, f"Mac recording starts from exactly one place, record(), found {starts}")
+records = [(name, m.group(0)) for name, src in sources.items() for m in re.finditer(r"(?:store\.|await )record\(title:", src)]
+need(len(records) == 2, f"record() is reached from Meetings' Record and the card only, found {records}")
 need(sum(src.count("startFromMeetingSuggestion(") for src in sources.values()) == 2
      and "model.macRecording.startFromMeetingSuggestion(title: MeetingSuggestion.title(source, at: Date()), bridge: model.macRecordingBridge)" in app,
-     "the confirm-free start is called only from the meeting card's record closure")
+     "the card's start is called only from the meeting card's record closure")
+for alert in (".confirmationDialog(", "NSAlert", ".alert(", "Record this Mac’s audio?"):
+    need(alert not in recording, f"no stock alert for a recording start: {alert}")
+need(sum(src.count('"Record this Mac') for src in sources.values()) == 1 and 'static let title = "Record this Mac\'s audio"' in core,
+     "the notice's words live in one place")
+panel = body(recording, "struct MacRecordingPanel: View {")
+need('Button("Record") { record() }.buttonStyle(COSPrimaryButtonStyle())' in panel and "Start recording" not in panel and "Set up recording" not in panel,
+     "Meetings has one primary Record")
+need("@AppStorage(MacRecordingNotice.optionsExpandedKey) private var optionsExpanded = false" in panel, "Options is collapsed until opened, remembered")
+options = panel[panel.index('DisclosureGroup("Options", isExpanded: $optionsExpanded) {'):]
+options = options[:options.index(".font(COSType.body(11))")]
+need("TextField(automaticTitle, text: $store.title)" in options and 'COSDropdown("Audio source"' in options and 'Button("Refresh apps")' in options,
+     "title, audio source and Refresh apps sit under Options")
+panel_record = body(panel, "    private func record() {")
+need(panel_record.index("guard MacRecordingNotice.step(acknowledged: store.noticeAcknowledged) == .start else { showingNotice = true; return }")
+     < panel_record.index("store.record(title:")
+     and "MacRecordingNotice.title(typed: store.title, meetingApp: meetings.current?.app.title, at: Date())" in panel_record,
+     "Meetings' Record shows the notice first time, and titles the recording automatically")
+need(sum(src.count("acknowledgeNotice()") for src in sources.values()) == 3
+     and "store.acknowledgeNotice(); showingNotice = false; record()" in panel
+     and "meetings.acknowledgeNotice = { [weak model] in model?.macRecording.acknowledgeNotice() }" in app,
+     "the notice is acknowledged only by its own Record (panel and pet)")
+need("acknowledgeNotice?()" in body(detector, "    func recordAfterNotice() {") and detector.count("acknowledgeNotice?()") == 1,
+     "the pet acknowledges only from the notice card")
 record_ui = body(detector, "    func recordSuggested() {")
-need("guard let current = card, current.kind == .suggest else { return }" in record_ui and "await record?(current.source)" in record_ui,
-     "Record acts only on a showing suggestion")
+need("guard let current = card, current.kind == .suggest else { return }" in record_ui
+     and "guard MacRecordingNotice.step(acknowledged: noticeAcknowledged?() ?? false) == .start else {" in record_ui
+     and "show(MeetingCard(kind: .notice, source: current.source))" in record_ui,
+     "the pet's Record shows the same one-time notice first")
+need("await record?(current.source)" in body(detector, "    private func startRecording(_ current: MeetingCard) {"), "the pet records through the record closure")
 need(sum(src.count("recordSuggested()") for src in sources.values()) == 2 and 'Button("Record") { store.recordSuggested() }' in recording,
      "recordSuggested runs only from the card's Record button")
-need("guard available, canStart, recoverable.isEmpty else {" in suggested, "the card never starts over a pending or recoverable recording")
+need("guard available, canStart, recoverable.isEmpty else {" in gate, "Record never starts over a pending or recoverable recording")
+need(sum(src.count("MacRecordingNotice.reminder") for src in sources.values()) == 3, "Recording · let people know on the panel, menu and pet-panel rows")
+need('Button("Show the recording notice again") { acknowledged = false }' in recording, "Settings can show the notice again")
 
 # ── 2. Never auto-stop.
 need(detector.count("stopRecording?()") == 1 and "stopRecording?()" in body(detector, "    func stopAndSave() {"),
@@ -93,7 +124,7 @@ need(sum(src.count("stopAndSave()") for src in sources.values()) == 2 and 'Butto
      "Stop and save is the card's button, nothing else")
 need(".stop()" not in detector and "macRecording.stop()" not in body(app, "meetings.record = {"),
      "no detector path calls the recording's stop")
-need("guard next.kind == .suggest else { return }" in body(detector, "    private func show(_ next: MeetingCard) {"),
+need("guard next.kind != .ended else { return }" in body(detector, "    private func show(_ next: MeetingCard) {"),
      "the end offer waits for an answer; only the suggestion folds away")
 need("MeetingSuggestion.offersEnd(" in body(detector, "    private func handle(_ event: MeetingDetectionState.Event) {"),
      "the end offer goes through the tested rule")
@@ -131,4 +162,4 @@ need("MeetingSuggestSettings(store: MeetingDetectorStore.shared)" in views and '
      "Suggest recording when a meeting starts: in Settings, on by default")
 need('Text("Google Meet in a browser needs Accessibility' in recording, "Settings says when browser detection is skipped")
 
-print(f"PASS meeting-detect pins: {checks} checks; card-only confirm-free start on All Mac audio, never auto-stop, listeners and bounded ticks, app-name-only logs, gates")
+print(f"PASS meeting-detect pins: {checks} checks; one gated start behind the one-time inline notice, Options collapsed, All Mac audio from the card, never auto-stop, listeners and bounded ticks, app-name-only logs, gates")
