@@ -118,6 +118,13 @@ struct SectionGlyph: Shape {
             path.move(to: p(7, 6)); path.addLine(to: p(7, 3.8)); path.addLine(to: p(13, 3.8)); path.addLine(to: p(13, 6))
             path.move(to: p(3, 10)); path.addLine(to: p(17, 10))
 
+        case .dictation:
+            // a microphone: capsule head, cradle arc, stem and foot
+            path.addRoundedRect(in: box(7.4, 2.8, 5.2, 9), cornerSize: CGSize(width: 2.6 * s, height: 2.6 * s))
+            path.move(to: p(4.6, 9.4)); path.addQuadCurve(to: p(15.4, 9.4), control: p(10, 18.6))
+            path.move(to: p(10, 14)); path.addLine(to: p(10, 17))
+            path.move(to: p(7, 17)); path.addLine(to: p(13, 17))
+
         case .tasks:
             path.addRoundedRect(in: box(4, 3.2, 12, 13.6), cornerSize: CGSize(width: 1.6 * s, height: 1.6 * s))
             path.move(to: p(6.4, 7.2)); path.addLine(to: p(8.2, 9.2)); path.addLine(to: p(13.4, 5.6))

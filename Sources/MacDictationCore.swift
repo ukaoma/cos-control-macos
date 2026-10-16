@@ -251,6 +251,11 @@ enum KnownApps {
         guard let bundleID else { return false }
         return terminals.contains(bundleID) || bundleID.hasPrefix("dev.warp.")
     }
+    /// Electron and Chromium Embedded apps (Claude, Slack, Spotify), as opposed to a Chromium browser: their editors
+    /// take ⌘V but have not shown COS a readable value yet, so Learn from my edits only measures them (0.5.318).
+    static func isElectron(frameworks: [String]) -> Bool {
+        frameworks.contains { $0 == "Electron Framework.framework" || $0 == "Chromium Embedded Framework.framework" }
+    }
     /// Electron and Chromium apps expose their text fields to Accessibility only after AXManualAccessibility is set.
     static func isChromiumFamily(frameworks: [String]) -> Bool {
         frameworks.contains { name in
@@ -1126,6 +1131,10 @@ enum DictationReplace {
         }
         return .copy(.textMoved)
     }
+    /// The window holds exactly `text` at `offset` (UTF-16). Learn from my edits starts only from that proof.
+    static func holds(_ window: String, at offset: Int, _ text: String) -> Bool {
+        !text.isEmpty && matches(Array(text.utf16), in: Array(window.utf16), at: offset)
+    }
     private static func matches(_ needle: [UInt16], in field: [UInt16], at index: Int) -> Bool {
         guard index >= 0, index + needle.count <= field.count else { return false }
         return field[index..<(index + needle.count)].elementsEqual(needle)
@@ -1410,6 +1419,208 @@ enum DictationListFormat {
         // "call Gina" → "Call Gina"; a word that already has a capital ("iPhone", "COS") is left as written.
         let word = item.prefix { $0.isLetter }
         return word == word.lowercased() ? first.uppercased() + item.dropFirst() : item
+    }
+}
+
+// MARK: - Learn from my edits (0.5.318)
+
+/// Settings → Learn from my edits (Miles, 2026-10-16 13:31): save automatically (his default), suggest only (kept a
+/// week to review in a batch), or off.
+enum DictationLearnMode: String, CaseIterable, Sendable {
+    case automatic, suggest, off
+    static let `default` = DictationLearnMode.automatic
+    var title: String {
+        switch self {
+        case .automatic: "Save automatically"
+        case .suggest: "Suggest only"
+        case .off: "Off"
+        }
+    }
+}
+
+/// After COS types a dictation, it watches that one field until focus leaves it (three minutes at most) and learns a
+/// word or two the person changed into something that sounds like it ("joule 360" → "Jewel360"). Pure, so every rule is
+/// tested and mutated; the app measures, calls these and acts.
+enum DictationEditLearning {
+    static let watchSeconds: TimeInterval = 180
+    static let maximumReads = 20
+    static let debounceSeconds: TimeInterval = 1.5
+    static let pollMilliseconds = 500
+    static let maximumWords = 3
+
+    enum Eligibility: Equatable, Sendable {
+        /// Watch and learn.
+        case learn
+        /// Watch and log only what was readable: Electron editors, and Chromium editors where the Accessibility set did
+        /// nothing at delivery. Never learns until a probe has proved the field.
+        case probe
+        case skip(String)
+    }
+    /// Native apps first (Miles 13:31). `chromium` is any Chromium-family app; a browser's plain field is the one whose
+    /// Accessibility set moved it at delivery (`setterWorked`). Terminals never: the AX text is scrollback.
+    static func eligibility(mode: DictationLearnMode, secure: Bool, terminal: Bool, electron: Bool, chromium: Bool, setterWorked: Bool) -> Eligibility {
+        if mode == .off { return .skip("off") }
+        if secure { return .skip("secure") }
+        if terminal { return .skip("terminal") }
+        if electron { return .probe }
+        if chromium, !setterWorked { return .probe }
+        return .learn
+    }
+
+    enum Stop: String, Sendable { case secure, appGone, cap, reads, focusLeft, emptied, unreadable }
+    /// Why the watch ends now, or nil to keep watching. Secure input is checked first, on every poll.
+    static func stop(elapsed: TimeInterval, reads: Int, appRunning: Bool, secure: Bool, focused: Bool, fieldCharacters: Int?) -> Stop? {
+        if secure { return .secure }
+        if !appRunning { return .appGone }
+        if elapsed >= watchSeconds { return .cap }
+        if reads >= maximumReads { return .reads }
+        if !focused { return .focusLeft }
+        guard let fieldCharacters else { return .unreadable }
+        if fieldCharacters == 0 { return .emptied }
+        return nil
+    }
+    /// How much to read so the window covers the same text as the baseline: its length plus what the field gained.
+    static func readLength(baselineLength: Int, baselineCharacters: Int, currentCharacters: Int, start: Int) -> Int {
+        max(0, min(currentCharacters - start, baselineLength + currentCharacters - baselineCharacters))
+    }
+
+    enum Track: Equatable, Sendable {
+        case unchanged
+        /// The change was outside the dictation; it now sits at `start` with `length` (window units).
+        case moved(start: Int, length: Int)
+        /// The change was inside it, relative to the dictation's own start.
+        case inside(DictationReplace.Edit, length: Int)
+        /// The change crossed the dictation's edge: stop watching.
+        case lost
+    }
+    /// The baseline window against the one read now. `start` and `length` place the dictation in the window.
+    static func track(baseline: String, current: String, start: Int, length: Int) -> Track {
+        guard let edit = DictationReplace.wordEdit(from: baseline, to: current) else { return .unchanged }
+        let delta = edit.replacement.utf16.count - edit.length, end = start + length
+        if edit.location + edit.length <= start, edit.length > 0 || edit.location <= start { return .moved(start: start + delta, length: length) }
+        if edit.location >= end { return .moved(start: start, length: length) }
+        if edit.location >= start, edit.location + edit.length <= end {
+            let relative = DictationReplace.Edit(location: edit.location - start, length: edit.length, original: edit.original, replacement: edit.replacement)
+            return .inside(relative, length: length + delta)
+        }
+        return .lost
+    }
+
+    struct Candidate: Equatable, Sendable {
+        let heard: String
+        let written: String
+    }
+    /// The pair to learn from one edit inside the dictation, or nil. A re-spelling of one to three words that sounds or
+    /// is spelled like what was heard, never a rewording, a punctuation fix, a sentence-start capital, or a swap between
+    /// two plain English words ("their" → "there"). `known` is the system spell checker; `learned` is the dictionary.
+    static func candidate(_ edit: DictationReplace.Edit, known: (String) -> Bool, learned: (String, String) -> Bool) -> Candidate? {
+        let edge = CharacterSet.punctuationCharacters.union(.symbols).union(.whitespacesAndNewlines)
+        let heard = edit.original.trimmingCharacters(in: edge), written = edit.replacement.trimmingCharacters(in: edge)
+        guard !heard.isEmpty, !written.isEmpty, heard != written, !(heard + written).contains(where: \.isNewline) else { return nil }
+        let heardWords = heard.split(whereSeparator: \.isWhitespace).map(String.init), writtenWords = written.split(whereSeparator: \.isWhitespace).map(String.init)
+        guard (1...maximumWords).contains(heardWords.count), (1...maximumWords).contains(writtenWords.count) else { return nil }
+        if DictationFixGuess.normalized(heard) == DictationFixGuess.normalized(written) {
+            // Only a change of capitals counts ("ios" → "iOS", "gina" → "Gina"), and not a sentence's first capital.
+            guard heard.lowercased() == written.lowercased() else { return nil }
+            let innerCapital = written.dropFirst().contains(where: \.isUppercase)
+            guard innerCapital || !heardWords.allSatisfy(known) else { return nil }
+        } else {
+            guard DictationFixGuess.score(heard: heard, term: written) >= DictationFixGuess.threshold else { return nil }
+            if heardWords.allSatisfy(known), writtenWords.allSatisfy(known) { return nil }
+        }
+        guard !learned(heard, written) else { return nil }
+        return Candidate(heard: heard, written: written)
+    }
+}
+
+/// Suggest only: what COS noticed, kept a week for review in a batch (Miles 13:31), and what it learned on its own, so
+/// the Dictation tab can label it and Undo it. A dismissed or undone pair is not offered again for 30 days.
+struct DictationSuggestion: Codable, Equatable, Identifiable, Sendable {
+    let id: UUID
+    let heard: String
+    let written: String
+    let app: String
+    let at: Date
+}
+
+enum DictationSuggestions {
+    static let keepDays = 7
+    static let dismissDays = 30
+    static let learnedDays = 30
+    static let cap = 200
+    struct State: Codable, Equatable, Sendable {
+        var version = 1
+        var suggestions: [DictationSuggestion] = []
+        var learned: [DictationSuggestion] = []
+        var dismissed: [String: Date] = [:]
+    }
+    static func key(_ heard: String, _ written: String) -> String { DictationFixGuess.normalized(heard) + "\u{2192}" + written.lowercased() }
+    private static func fresh(_ date: Date, days: Int, now: Date) -> Bool { now.timeIntervalSince(date) < Double(days) * 86_400 }
+    /// Suggestions older than a week go, learned rows and dismissals after 30 days; never more than `cap` of each.
+    static func pruned(_ state: State, now: Date) -> State {
+        var next = state
+        next.suggestions = Array(state.suggestions.filter { fresh($0.at, days: keepDays, now: now) }.prefix(cap))
+        next.learned = Array(state.learned.filter { fresh($0.at, days: learnedDays, now: now) }.prefix(cap))
+        next.dismissed = state.dismissed.filter { fresh($0.value, days: dismissDays, now: now) }
+        return next
+    }
+    /// Newest first; the same pair again replaces the old row. A pair dismissed in the last 30 days is not offered.
+    static func suggesting(_ item: DictationSuggestion, in state: State, now: Date) -> State {
+        var next = pruned(state, now: now)
+        let k = key(item.heard, item.written)
+        guard !isQuiet(item.heard, item.written, in: next, now: now) else { return next }
+        next.suggestions = [item] + next.suggestions.filter { key($0.heard, $0.written) != k }
+        return pruned(next, now: now)
+    }
+    /// Save automatically: the pair goes on the learned list (the dictionary holds the correction itself).
+    static func learning(_ item: DictationSuggestion, in state: State, now: Date) -> State {
+        var next = pruned(state, now: now)
+        let k = key(item.heard, item.written)
+        next.learned = [item] + next.learned.filter { key($0.heard, $0.written) != k }
+        next.suggestions = next.suggestions.filter { key($0.heard, $0.written) != k }
+        return pruned(next, now: now)
+    }
+    /// Added to the dictionary from the review: off the suggestion list, onto the learned list.
+    static func applying(_ ids: Set<UUID>, in state: State, now: Date) -> State {
+        var next = state
+        for item in state.suggestions where ids.contains(item.id) { next = learning(item, in: next, now: now) }
+        return next
+    }
+    /// Dismissed, or an auto-saved one undone: gone, and not offered again for 30 days.
+    static func dismissing(_ id: UUID, in state: State, now: Date) -> State {
+        var next = state
+        for item in state.suggestions + state.learned where item.id == id { next.dismissed[key(item.heard, item.written)] = now }
+        next.suggestions.removeAll { $0.id == id }
+        next.learned.removeAll { $0.id == id }
+        return pruned(next, now: now)
+    }
+    /// A pair dismissed or undone in the last 30 days: neither suggested nor saved automatically.
+    static func isQuiet(_ heard: String, _ written: String, in state: State, now: Date) -> Bool {
+        state.dismissed[key(heard, written)].map { fresh($0, days: dismissDays, now: now) } ?? false
+    }
+    /// Undo on a learned row reverses the dictionary entry it made: the newest Recent correction with the same pair.
+    static func recentID(for item: DictationSuggestion, in recent: [(id: String, heard: String, written: String)]) -> String? {
+        recent.first { $0.heard == item.heard && $0.written == item.written }?.id
+    }
+    private static func encoder() -> JSONEncoder { let e = JSONEncoder(); e.dateEncodingStrategy = .iso8601; e.outputFormatting = [.sortedKeys]; return e }
+    private static func decoder() -> JSONDecoder { let d = JSONDecoder(); d.dateDecodingStrategy = .iso8601; return d }
+    static func load(from url: URL, now: Date) -> State {
+        guard let data = try? Data(contentsOf: url), let state = try? decoder().decode(State.self, from: data) else { return State() }
+        return pruned(state, now: now)
+    }
+    /// Private like the history: a 0600 temp file in a 0700 folder, then rename(2). Default data protection (class C).
+    static func save(_ state: State, to url: URL) throws {
+        let directory = url.deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let data = try encoder().encode(state)
+        let temp = directory.appendingPathComponent(".\(url.lastPathComponent).\(UUID().uuidString).tmp")
+        guard FileManager.default.createFile(atPath: temp.path, contents: data, attributes: [.posixPermissions: 0o600]) else {
+            throw NSError(domain: "COSDictation", code: 4, userInfo: [NSLocalizedDescriptionKey: "Dictation suggestions could not be saved."])
+        }
+        guard rename(temp.path, url.path) == 0 else {
+            try? FileManager.default.removeItem(at: temp)
+            throw NSError(domain: "COSDictation", code: 4, userInfo: [NSLocalizedDescriptionKey: "Dictation suggestions could not be saved."])
+        }
     }
 }
 

@@ -434,6 +434,14 @@ import Foundation
             let body = ActivityHome.card(card, empty)
             check(body.count == nil && body.footer == nil, "no fake zero", "\(card): \(String(describing: body.count)) \(String(describing: body.footer))")
         }
+        // [dictation card] 0.5.318: dictations kept on this Mac; suggested corrections wait on Miles, a last time does not.
+        var dictated = empty; dictated.dictations = 12; dictated.dictationSuggestions = 2; dictated.lastDictation = now
+        let dictationCard = ActivityHome.card(.dictation, dictated)
+        check(dictationCard.count == "12" && dictationCard.footer == "12 kept" && dictationCard.lead == [ActivityHome.Span(text: "2 suggested corrections", waits: true)],
+              "dictation card", "\(dictationCard.leadText) / \(String(describing: dictationCard.footer))")
+        var lastOnly = dictated; lastOnly.dictationSuggestions = 0
+        check(ActivityHome.card(.dictation, lastOnly).leadText.hasPrefix("Last dictated today ") && !ActivityHome.card(.dictation, lastOnly).lead.contains(where: \.waits),
+              "dictation card", "\(ActivityHome.card(.dictation, lastOnly).leadText)")
         check(ActivityHome.card(.memories, empty).leadText.isEmpty && ActivityHome.card(.threads, empty).leadText.isEmpty,
               "no fake zero", "an unloaded status is not 'Setup needed'")
         var setup = empty; setup.memorySetupNeeded = true; setup.threadSetupNeeded = true

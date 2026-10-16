@@ -539,6 +539,55 @@ need("DictationFixGuess.guess(tokens: tokens, tapped: index, vocabulary: Transcr
 need('Button(offer.app.map { "Replace it in \\($0)" } ?? "Copy the corrected text") { store.replaceCorrected() }' in dictation,
      "Fix a word offers Replace it in <App> after Save")
 
+# ── 9. 0.5.318 Learn from my edits (Miles 13:31): Save automatically by default, native first, never secure, Undo.
+need('UserDefaults.standard.string(forKey: "dictation.learnMode") ?? "") ?? .default' in dictation
+     and 'COSDropdown("Learn from my edits", selection: $store.learnMode,' in dictation, "Learn from my edits is a Setting with the tested default")
+need("Never in terminals or password fields." in dictation and "Electron apps are being measured first" in dictation,
+     "the Settings footnote says terminals and password fields never learn, and Electron is only measured")
+finish = body(dictation, "    private func finish(")
+need("if let target, case .inserted = outcome {\n            editWatcher.start(target, mode: learnMode)" in finish and 'editWatcher.stop("not inserted")' in finish,
+     "only a measured insertion starts a watch; anything else ends the last one")
+need('editWatcher.stop("new dictation")' in body(dictation, "    func start() {") and 'editWatcher.stop("fix a word")' in body(dictation, "    func openFix(_ id: UUID?) {"),
+     "a new dictation or Fix a word (whose Replace edits the field) ends the watch")
+need('if learnMode == .off { editWatcher.stop("learning off") }' in dictation, "turning learning off ends a watch at once")
+watcher = body(dictation, "@MainActor final class DictationEditWatcher {")
+need(watcher.count("DictationEditLearning.eligibility(mode: mode, secure: DictationInsertion.secure(element)") == 1
+     and "if case .skip(let reason) = eligibility {" in watcher and "let learning = eligibility == .learn" in watcher
+     and "let candidate = learning ? Self.candidate(edit) : nil" in watcher,
+     "the tested gate decides learn, probe or skip, and only .learn produces a candidate (Electron is probed only)")
+need("DictationEditLearning.stop(elapsed: Date().timeIntervalSince(started), reads: reads, appRunning: running,\n                                                        secure: DictationInsertion.secure(element)," in watcher,
+     "every poll asks the tested stop rule, secure input and password fields included")
+need("DictationReplace.holds(baseline, at: target.span.location - bounds.location, target.text)" in watcher
+     and "DictationEditLearning.readLength(" in watcher and "DictationEditLearning.track(" in watcher,
+     "a watch starts only from proof of what COS typed, and reads the bounded window it planned")
+need("kAXValueAttribute" not in watcher and "AXObserver" not in watcher and "DictationInsertion.text(element, location: bounds.location" in watcher,
+     "the watch reads only the bounded window, never AXValue")
+learned_fn = body(dictation, "    private func editLearned(")
+need(learned_fn.index("DictationSuggestions.isQuiet(") < learned_fn.index("if learnMode == .suggest {") < learned_fn.index("TranscriptionDictionaryStore.shared.learn(")
+     and "DictationSuggestions.suggesting(item, in: suggestions, now: now)" in learned_fn and "DictationSuggestions.learning(item, in: suggestions, now: Date())" in learned_fn,
+     "a dismissed or undone pair stays quiet; Suggest only suggests; Save automatically saves, then lists it for Undo")
+undo = body(dictation, "    func undoLearned(_ id: UUID) async {")
+need("DictationSuggestions.recentID(for: item, in: rows)" in undo and "await dictionary.undo(entry)" in undo
+     and "DictationSuggestions.dismissing(id, in: suggestions, now: Date())" in undo,
+     "Undo reverses the dictionary entry COS made and keeps the pair from coming back")
+pane = body(dictation, "struct DictationActivityPane: View {")
+need("store.applySuggestions(Set(items.map(\\.id)))" in pane and "store.dismissSuggestion(item.id)" in pane and "store.undoLearned(item.id)" in pane
+     and "DictionaryLearnedRow(" in pane and 'Button("History") { model.openDictationHistory() }' in pane and 'Button("Dictionary") { model.openDictionary() }' in pane,
+     "Activity → Dictation: Add all, Add, Dismiss, Undo, Recent corrections, and the history and dictionary panes")
+need("Picker(" not in pane and ".pickerStyle(.segmented)" not in pane, "no pill-row tabs in the Dictation tab")
+need("case .dictation: DictationActivityPane(model: model)" in activity
+     and re.search(r"else if section == \.dictation, model\.dictionaryRouteActive \{\s*TranscriptionDictionaryPane\(model: model\)", activity) is not None
+     and re.search(r"else if section == \.dictation, model\.dictationHistoryRouteActive \{\s*DictationHistoryPane\(model: model\)", activity) is not None
+     and re.search(r"section == \.dictation, model\.dictionaryRouteActive \{\s*model\.closeDictionary\(\)", body(activity, "private func goBack() {")) is not None
+     and "case .dictation: model.dictionaryRouteActive || model.dictationHistoryRouteActive" in activity,
+     "the Dictation tab mounts its pane and both sub-panes on their own flags, with Back and hasDetail")
+need(launch.index("if let next { select(next) }") < launch.index("if openDictionary, section == .dictation { model.openDictionary() }"),
+     "the pet's Dictionary… opens in the Dictation tab after the section is selected")
+need("openActivity?(.dictation)" in body(model, "func openDictionaryInActivity() {") and "openActivity?(.dictation)" in body(model, "func openDictationInActivity() {"),
+     "the pet's doorways open the Dictation tab")
+need("onReview: { dictation.closeList(); model.openDictationInActivity() }" in pet and "dictation.suggestions.suggestions.isEmpty" in lst,
+     "the pet shows suggestions where Fix a word lives, and a row into Activity → Dictation")
+
 # QA 0.5.313 pass 2: a refused press never latches the hold key; only the hold tracker gets the click window; an
 # interrupted dictation never overwrites a clipboard the person changed while it transcribed.
 hot = body(dictation, "    func hotKey(_ id: UInt32, down: Bool) {")

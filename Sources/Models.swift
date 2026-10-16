@@ -10710,11 +10710,15 @@ enum ActivityHome {
         /// nil: Intake has not loaded (or the server is older than 6.57.0).
         var newToSort: Int?
         var tasks: [TaskRow]?
+        /// nil: no dictations kept on this Mac.
+        var dictations: Int?
+        var dictationSuggestions = 0
+        var lastDictation: Date?
     }
 
     /// The Activity cards, by the same raw values as ActivitySection (Tests/activity-home-pins.py pins the two lists
-    /// equal), so these rules compile with the models alone. Seven show: Work, or Tasks when Work is off.
-    enum Card: String, CaseIterable { case messages, speakers, meetings, memories, threads, sessions, tasks, work }
+    /// equal), so these rules compile with the models alone. Eight show: Work, or Tasks when Work is off, and Dictation.
+    enum Card: String, CaseIterable { case messages, speakers, meetings, memories, threads, sessions, tasks, work, dictation }
 
     static func card(_ section: Card, _ input: CardInputs) -> CardBody {
         func n(_ value: Int) -> String { value.formatted(.number) }
@@ -10822,6 +10826,17 @@ enum ActivityHome {
                 body.footer = "\(n(tasks.count)) open"
                 let flagged = tasks.filter { $0.missed == true || $0.failed == true }.count
                 if flagged > 0 { body.lead = [Span(text: flagged == 1 ? "1 needs attention" : "\(n(flagged)) need attention", waits: true)] }
+            }
+        case .dictation:
+            if let dictations = input.dictations {
+                body.count = n(dictations)
+                body.footer = dictations == 1 ? "1 kept" : "\(n(dictations)) kept"
+            }
+            if input.dictationSuggestions > 0 {
+                let s = input.dictationSuggestions
+                body.lead = [Span(text: s == 1 ? "1 suggested correction" : "\(n(s)) suggested corrections", waits: true)]
+            } else if let last = input.lastDictation {
+                body.lead = [Span(text: "Last dictated " + when(last, now: input.now, calendar: input.calendar))]
             }
         }
         return body

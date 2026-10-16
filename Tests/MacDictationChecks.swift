@@ -651,6 +651,116 @@ final class FakeDictationBoard: DictationPasteboardAccess {
             "I'll take number one, and number two can wait.", "Count with me. One, Mississippi, two, Mississippi, three, Mississippi.", "",
         ]
         for text in prose { expect(DictationListFormat.format(text) == text, "prose stays prose: \(text)") }
+        // 0.5.318 Learn from my edits (Miles 13:31): Save automatically by default; native apps first; never secure.
+        expect(DictationLearnMode.default == .automatic && DictationLearnMode.allCases.map(\.title) == ["Save automatically", "Suggest only", "Off"],
+               "Save automatically is the default; Suggest only and Off are the others")
+        typealias L = DictationEditLearning
+        func eligible(_ mode: DictationLearnMode = .automatic, secure: Bool = false, terminal: Bool = false, electron: Bool = false,
+                      chromium: Bool = false, setter: Bool = true) -> L.Eligibility {
+            L.eligibility(mode: mode, secure: secure, terminal: terminal, electron: electron, chromium: chromium, setterWorked: setter)
+        }
+        expect(eligible() == .learn && eligible(.suggest) == .learn && eligible(setter: false) == .learn, "a native field learns, either mode")
+        expect(eligible(.off) == .skip("off") && eligible(.off, electron: true) == .skip("off"), "Off watches nothing, not even a probe")
+        expect(eligible(secure: true) == .skip("secure") && eligible(secure: true, electron: true) == .skip("secure")
+               && eligible(.suggest, secure: true, chromium: true) == .skip("secure"), "never a password field or secure input, in any app")
+        expect(eligible(terminal: true) == .skip("terminal") && eligible(terminal: true, electron: true) == .skip("terminal"), "never a terminal")
+        expect(eligible(electron: true) == .probe && eligible(electron: true, chromium: true, setter: true) == .probe,
+               "Claude, Slack and other Electron apps are measured, never learned from, until proven")
+        expect(eligible(chromium: true, setter: false) == .probe && eligible(chromium: true, setter: true) == .learn,
+               "a browser's plain field (the set moved it) learns; a web editor where the set did nothing is measured")
+        func stop(_ elapsed: TimeInterval = 10, reads: Int = 0, running: Bool = true, secure: Bool = false, focused: Bool = true, n: Int? = 100) -> L.Stop? {
+            L.stop(elapsed: elapsed, reads: reads, appRunning: running, secure: secure, focused: focused, fieldCharacters: n)
+        }
+        expect(stop() == nil && stop(179.9) == nil && stop(180) == .cap && stop(600) == .cap, "until focus leaves, three minutes at most")
+        expect(stop(reads: 19) == nil && stop(reads: 20) == .reads, "twenty reads at most")
+        expect(stop(focused: false) == .focusLeft && stop(n: 0) == .emptied && stop(n: nil) == .unreadable && stop(running: false) == .appGone,
+               "focus left, the message was sent, the field went unreadable, the app quit")
+        expect(stop(secure: true) == .secure && stop(600, reads: 30, running: false, secure: true, focused: false, n: 0) == .secure,
+               "secure input ends the watch before anything else")
+        expect(L.readLength(baselineLength: 300, baselineCharacters: 1000, currentCharacters: 1010, start: 700) == 310
+               && L.readLength(baselineLength: 300, baselineCharacters: 1000, currentCharacters: 990, start: 700) == 290
+               && L.readLength(baselineLength: 300, baselineCharacters: 1000, currentCharacters: 1010, start: 900) == 110
+               && L.readLength(baselineLength: 300, baselineCharacters: 1000, currentCharacters: 500, start: 700) == 0,
+               "the read covers the baseline's text plus what the field gained, clipped to the field")
+        let page = "Hi. " + said + ". Bye."
+        expect(DictationReplace.holds(page, at: 4, said) && !DictationReplace.holds(page, at: 3, said) && !DictationReplace.holds(page, at: 0, "")
+               && !DictationReplace.holds(page, at: 30, said), "a watch starts only where the window holds exactly what COS typed")
+        expect(L.track(baseline: page, current: page, start: 4, length: 38) == .unchanged, "nothing changed")
+        expect(L.track(baseline: page, current: "Hi. " + fixed + ". Bye.", start: 4, length: 38)
+               == .inside(Edit(location: 22, length: 11, original: "Y joule 360", replacement: "Jewel360"), length: 35),
+               "Miles's fix, inside the dictation, relative to its start")
+        expect(L.track(baseline: page, current: page + " More", start: 4, length: 38) == .moved(start: 4, length: 38), "typing after it")
+        expect(L.track(baseline: page, current: "Hey " + page, start: 4, length: 38) == .moved(start: 8, length: 38)
+               && L.track(baseline: page, current: "Yo. " + said + ". Bye.", start: 4, length: 38) == .moved(start: 4, length: 38),
+               "typing or editing before it moves it")
+        expect(L.track(baseline: page, current: "Hello, redirecting into this uh Y joule 360 page. Bye.", start: 4, length: 38) == .lost,
+               "an edit across its edge loses it")
+        let english: Set<String> = ["redirect", "into", "this", "uh", "joule", "page", "the", "deck", "slides", "complement", "compliment", "its", "it's", "ios"]
+        func learn(_ heard: String, _ written: String, learned: Bool = false) -> L.Candidate? {
+            L.candidate(Edit(location: 0, length: heard.utf16.count, original: heard, replacement: written),
+                        known: { english.contains($0.lowercased()) }, learned: { _, _ in learned })
+        }
+        expect(learn("Y joule 360", "Jewel360") == .init(heard: "Y joule 360", written: "Jewel360")
+               && learn("joule 360,", "Jewel360,") == .init(heard: "joule 360", written: "Jewel360"), "Miles's fix is learned, without punctuation at the edges")
+        expect(learn("yellow fanduna", "yellowfin tuna") != nil && learn("gina", "Gina") != nil && learn("ios", "iOS") != nil,
+               "a sound-alike re-spelling, a name's capital, a capital inside a word")
+        expect(learn("the", "The") == nil, "a sentence's first capital is not a correction")
+        expect(learn("its", "it's") == nil && learn("jewel360", "jewel-360") == nil, "a punctuation fix is not a correction, known word or not")
+        expect(learn("complement", "compliment") == nil, "two plain English words is a homophone or grammar fix")
+        expect(learn("the deck", "the slides") == nil && learn("cat", "dog") == nil, "a rewording is not a mishearing")
+        expect(learn("one two three fore", "one two three four") == nil && learn("", "very") == nil && learn("very", "") == nil,
+               "more than three words, an insertion, a deletion")
+        expect(learn("Y joule\n360", "Jewel360") == nil, "never across a line break")
+        expect(learn("Y joule 360", "Jewel360", learned: true) == nil, "already in the dictionary")
+        // Suggest only keeps a week; dismissed and undone pairs stay quiet for 30 days.
+        typealias S = DictationSuggestions
+        let now = Date(timeIntervalSince1970: 1_760_600_000)
+        func item(_ heard: String, _ written: String, age: TimeInterval = 0) -> DictationSuggestion {
+            DictationSuggestion(id: UUID(), heard: heard, written: written, app: "Notes", at: now.addingTimeInterval(-age))
+        }
+        let week = 7 * 86_400.0
+        let young = item("joule 360", "Jewel360", age: week - 60), old = item("bottle pause", "Bottle POS", age: week)
+        let pruned = S.pruned(S.State(suggestions: [young, old]), now: now)
+        expect(pruned.suggestions == [young], "a suggestion lasts seven days, not one second more")
+        let s1 = item("joule 360", "Jewel360"), s2 = item("Joule 360", "Jewel360")
+        var state = S.suggesting(s1, in: S.State(), now: now)
+        state = S.suggesting(s2, in: state, now: now)
+        expect(state.suggestions == [s2], "the same pair again replaces the older row")
+        let other = item("carrot iq", "CaratIQ")
+        state = S.suggesting(other, in: state, now: now)
+        let applied = S.applying([s2.id], in: state, now: now)
+        expect(applied.suggestions == [other] && applied.learned == [s2], "Add moves a suggestion onto the learned list")
+        let all = S.applying(Set(state.suggestions.map(\.id)), in: state, now: now)
+        expect(all.suggestions.isEmpty && all.learned.count == 2, "Add all applies every suggestion")
+        let dismissed = S.dismissing(other.id, in: state, now: now)
+        expect(dismissed.suggestions == [s2] && dismissed.dismissed[S.key("carrot iq", "CaratIQ")] == now, "Dismiss removes it and remembers the pair")
+        expect(S.suggesting(item("Carrot IQ", "CaratIQ"), in: dismissed, now: now.addingTimeInterval(86_400)).suggestions.map(\.heard) == ["Joule 360"]
+               && S.suggesting(item("Carrot IQ", "CaratIQ"), in: dismissed, now: now.addingTimeInterval(29 * 86_400)).suggestions.isEmpty
+               && S.suggesting(item("Carrot IQ", "CaratIQ"), in: dismissed, now: now.addingTimeInterval(30 * 86_400)).suggestions.map(\.heard) == ["Carrot IQ"],
+               "a dismissed pair is not offered again for 30 days")
+        let auto = S.learning(item("joule 360", "Jewel360"), in: S.State(suggestions: [s1]), now: now)
+        expect(auto.learned.count == 1 && auto.suggestions.isEmpty, "Save automatically puts it on the learned list and clears the same suggestion")
+        let undone = S.dismissing(auto.learned[0].id, in: auto, now: now)
+        expect(undone.learned.isEmpty && undone.dismissed[S.key("joule 360", "Jewel360")] == now
+               && S.isQuiet("Joule 360", "Jewel360", in: undone, now: now) && !S.isQuiet("joule 360", "Jewel360", in: auto, now: now)
+               && !S.isQuiet("joule 360", "Jewel360", in: undone, now: now.addingTimeInterval(30 * 86_400))
+               && S.suggesting(item("joule 360", "Jewel360"), in: undone, now: now).suggestions.isEmpty,
+               "Undo takes it off the learned list and keeps it from being saved or suggested again for 30 days")
+        expect(S.pruned(S.State(learned: [item("a b", "AB", age: 30 * 86_400)]), now: now).learned.isEmpty, "learned rows go after 30 days")
+        let recentRows: [(id: String, heard: String, written: String)] = [("r3", "joule 360", "Jewel 360"), ("r2", "joule 360", "Jewel360"),
+                                                                             ("r1", "joule 360", "Jewel360"), ("r0", "x", "y")]
+        expect(S.recentID(for: auto.learned[0], in: recentRows) == "r2" && S.recentID(for: item("q", "Q"), in: recentRows) == nil,
+               "Undo reverses the newest dictionary entry with that pair, and none other")
+        let folder = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("cos-suggestions-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let file = folder.appendingPathComponent("dictation-suggestions.json")
+        try S.save(applied, to: file)
+        let mode = (try FileManager.default.attributesOfItem(atPath: file.path)[.posixPermissions] as? NSNumber)?.intValue
+        expect(S.load(from: file, now: now) == applied && mode == 0o600, "suggestions round-trip in a private file")
+        expect(S.load(from: file, now: now.addingTimeInterval(week)).suggestions.isEmpty, "a week later the suggestions load expired")
+        expect(KnownApps.isElectron(frameworks: ["Electron Framework.framework"]) && KnownApps.isElectron(frameworks: ["Chromium Embedded Framework.framework"])
+               && !KnownApps.isElectron(frameworks: ["Google Chrome Framework.framework"]) && KnownApps.isChromiumFamily(frameworks: ["Google Chrome Framework.framework"]),
+               "Electron apps are told apart from Chromium browsers")
         // Before the set, the span is selected: 120 characters, 40+14.
         let selected = DictationFieldSnapshot(characters: 120, location: 40, length: 14)
         func verified(_ n: Int?, _ caret: Int?, _ length: Int? = 0, new: Int) -> Bool {

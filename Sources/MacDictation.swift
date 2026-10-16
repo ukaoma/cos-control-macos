@@ -128,6 +128,9 @@ struct DictationInsertTarget: @unchecked Sendable {
     /// there the set reports success and changes nothing, so a replace must paste.
     let setterWorked: Bool
     let bundle: String?
+    /// Learn from my edits (0.5.318): any Chromium-family app, and the Electron or CEF apps among them.
+    var chromium = false
+    var electron = false
 }
 
 /// After Save in Fix a word: the corrected dictation and the app it can go back into (nil: copy only).
@@ -146,6 +149,7 @@ struct DictationDelivered: Sendable {
 @MainActor enum DictationInsertion {
     /// Bundle path → Electron/Chromium. A frontmost app's frameworks do not change while it runs.
     private static var chromium: [String: Bool] = [:]
+    private static var electron: [String: Bool] = [:]
 
     static func deliver(_ raw: String, restoreClipboard: Bool) async -> DictationDelivered {
         let started = Date()
@@ -183,12 +187,13 @@ struct DictationDelivered: Sendable {
         }
 
         var element: AXUIElement?
-        var family = false
+        var family = false, electronApp = false
         if trusted, let app, !own {
             let appElement = AXUIElementCreateApplication(app.processIdentifier)
             AXUIElementSetMessagingTimeout(appElement, 0.25)
             element = focused(appElement)
             family = isChromiumFamily(app)
+            electronApp = isElectron(app)
             // Electron and Chromium build their accessibility tree only when asked (ControllerModel's Claude jump does
             // the same), then focus is read again before anything is refused.
             if family, element.map({ !textCapable($0) }) ?? true {
@@ -227,7 +232,8 @@ struct DictationDelivered: Sendable {
                 case .done(let outcome):
                     facts += " after=\(after.logDescription)"
                     if let app, let span = DictationReplace.span(pid: app.processIdentifier, baseline: baseline, after: after, count: count) {
-                        landed = DictationInsertTarget(element: target, span: span, terminal: terminal, app: name, text: text, setterWorked: true, bundle: bundle)
+                        landed = DictationInsertTarget(element: target, span: span, terminal: terminal, app: name, text: text, setterWorked: true, bundle: bundle,
+                                                       chromium: family, electron: electronApp)
                     }
                     return done(outcome)
                 case .paste: facts += " after=\(after.logDescription)"; break polling
@@ -276,7 +282,8 @@ struct DictationDelivered: Sendable {
             dictationLog.notice("clipboard not restored: \(reason, privacy: .public)")
         }
         if let app, let target, let span = DictationReplace.span(pid: app.processIdentifier, baseline: beforePaste, after: measuredAfterPaste, count: count) {
-            landed = DictationInsertTarget(element: target, span: span, terminal: terminal, app: name, text: text, setterWorked: false, bundle: bundle)
+            landed = DictationInsertTarget(element: target, span: span, terminal: terminal, app: name, text: text, setterWorked: false, bundle: bundle,
+                                           chromium: family, electron: electronApp)
         }
         if case .done(let outcome) = decision { return done(outcome) }
         return done(.unconfirmed(app: name, viaPaste: true))
@@ -325,7 +332,8 @@ struct DictationDelivered: Sendable {
         // Where the dictation sits once the edit lands; nil when only the misheard words were found.
         let next = dictationAt.map { at in
             DictationInsertTarget(element: element, span: DictationInsertedSpan(pid: target.span.pid, location: at, length: corrected.utf16.count),
-                                  terminal: target.terminal, app: target.app, text: corrected, setterWorked: target.setterWorked, bundle: target.bundle)
+                                  terminal: target.terminal, app: target.app, text: corrected, setterWorked: target.setterWorked, bundle: target.bundle,
+                                  chromium: target.chromium, electron: target.electron)
         }
         let route = DictationReplace.route(setterWorked: target.setterWorked)
         facts += " route=\(route)"
@@ -509,6 +517,31 @@ struct DictationDelivered: Sendable {
         return .refused(.noTextBox)
     }
 
+    private static func isElectron(_ app: NSRunningApplication) -> Bool {
+        guard let url = app.bundleURL else { return false }
+        if let known = electron[url.path] { return known }
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: url.appendingPathComponent("Contents/Frameworks").path)) ?? []
+        let result = KnownApps.isElectron(frameworks: names)
+        electron[url.path] = result
+        return result
+    }
+
+    // Learn from my edits (0.5.318) reads through these: counts and the caret, a bounded range, focus, secure fields.
+    static func measure(_ element: AXUIElement) -> DictationFieldSnapshot { snapshot(element) }
+    static func text(_ element: AXUIElement, location: Int, length: Int) -> String? { string(element, location: location, length: length) }
+    /// The app is frontmost and its focused element is this one (or sits in it, for a web editor).
+    static func holdsFocus(_ element: AXUIElement, pid: Int32) -> Bool {
+        guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else { return false }
+        let appElement = AXUIElementCreateApplication(pid)
+        AXUIElementSetMessagingTimeout(appElement, 0.25)
+        guard let now = focused(appElement) else { return false }
+        return CFEqual(now, element) || editableAncestor(now).map { ancestor in CFEqual(ancestor, element) } == true
+    }
+    /// A password field, or any app holding secure keyboard input.
+    static func secure(_ element: AXUIElement) -> Bool {
+        IsSecureEventInputEnabled() || (attribute(element, kAXSubroleAttribute) as? String) == DictationInsertPolicy.secureSubrole
+    }
+
     private static func isChromiumFamily(_ app: NSRunningApplication) -> Bool {
         guard let url = app.bundleURL else { return false }
         if let known = chromium[url.path] { return known }
@@ -554,6 +587,103 @@ struct DictationDelivered: Sendable {
     nonisolated private static func focused(_ application: AXUIElement) -> AXUIElement? {
         guard let value = attribute(application, kAXFocusedUIElementAttribute), CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }
         return (value as! AXUIElement)
+    }
+}
+
+/// Learn from my edits (0.5.318, Miles 2026-10-16 13:31). After a measured insertion COS watches ONLY the field it typed
+/// into, until focus leaves it or three minutes pass (DictationEditLearning.stop). Twice a second it measures the count
+/// and caret, never text; after a 1.5 s pause in a change it reads the same bounded window Replace reads (at most 20
+/// reads), diffs it against the last read, and hands an edit inside the dictation to DictationEditLearning.candidate.
+/// The window lives in memory for the watch only. Electron editors are probed (what was readable is logged, counts and
+/// verdicts only) and never learned from; terminals, secure input and password fields are never watched.
+@MainActor final class DictationEditWatcher {
+    private var task: Task<Void, Never>?
+    private var watching: UUID?
+    func stop(_ why: String) {
+        guard let task else { return }
+        task.cancel(); self.task = nil; watching = nil
+        dictationLog.notice("learn stop=\(why, privacy: .public)")
+    }
+    /// A watch that ended on its own clears only itself, never a newer one.
+    private func ended(_ id: UUID) { if watching == id { task = nil; watching = nil } }
+    func start(_ target: DictationInsertTarget, mode: DictationLearnMode, found: @escaping @MainActor (DictationEditLearning.Candidate) -> Void) {
+        stop("new dictation")
+        let element = target.element
+        let eligibility = DictationEditLearning.eligibility(mode: mode, secure: DictationInsertion.secure(element), terminal: target.terminal,
+                                                            electron: target.electron, chromium: target.chromium, setterWorked: target.setterWorked)
+        let facts = "bundle=\(target.bundle ?? "-") electron=\(target.electron) chromium=\(target.chromium) setterWorked=\(target.setterWorked)"
+        if case .skip(let reason) = eligibility {
+            dictationLog.notice("learn skip=\(reason, privacy: .public) \(facts, privacy: .public)")
+            return
+        }
+        let learning = eligibility == .learn
+        let id = UUID()
+        watching = id
+        task = Task { [weak self] in
+            // From the @unchecked Sendable target, never the outer AXUIElement: nothing non-Sendable crosses into the Task.
+            let element = target.element
+            let started = Date()
+            let first = DictationInsertion.measure(element)
+            guard let n0 = first.characters else {
+                dictationLog.notice("learn start readable=false \(facts, privacy: .public)"); self?.ended(id); return
+            }
+            let bounds = DictationReplace.window(span: target.span, currentLength: target.text.utf16.count, fieldCharacters: n0)
+            // The window must hold exactly what COS typed where it typed it, or there is nothing to learn from.
+            guard var baseline = DictationInsertion.text(element, location: bounds.location, length: bounds.length),
+                  DictationReplace.holds(baseline, at: target.span.location - bounds.location, target.text) else {
+                dictationLog.notice("learn start readable=false \(facts, privacy: .public) learning=\(learning)"); self?.ended(id); return
+            }
+            dictationLog.notice("learn start readable=true \(facts, privacy: .public) learning=\(learning) window=\(bounds.length)")
+            var baseCount = n0, start = target.span.location - bounds.location, length = target.span.length
+            var reads = 1, last = first
+            var changedAt: Date?
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(DictationEditLearning.pollMilliseconds))
+                guard !Task.isCancelled else { return }
+                let now = DictationInsertion.measure(element)
+                let running = NSRunningApplication(processIdentifier: target.span.pid).map { !$0.isTerminated } ?? false
+                if let why = DictationEditLearning.stop(elapsed: Date().timeIntervalSince(started), reads: reads, appRunning: running,
+                                                        secure: DictationInsertion.secure(element),
+                                                        focused: DictationInsertion.holdsFocus(element, pid: target.span.pid), fieldCharacters: now.characters) {
+                    dictationLog.notice("learn stop=\(why.rawValue, privacy: .public) reads=\(reads)"); self?.ended(id); return
+                }
+                if now != last { last = now; changedAt = Date(); continue }
+                guard let changed = changedAt, Date().timeIntervalSince(changed) >= DictationEditLearning.debounceSeconds, let n = now.characters else { continue }
+                changedAt = nil
+                reads += 1
+                let count = DictationEditLearning.readLength(baselineLength: baseline.utf16.count, baselineCharacters: baseCount, currentCharacters: n, start: bounds.location)
+                guard let current = DictationInsertion.text(element, location: bounds.location, length: count) else {
+                    dictationLog.notice("learn stop=unreadable reads=\(reads) \(facts, privacy: .public)"); self?.ended(id); return
+                }
+                let track = DictationEditLearning.track(baseline: baseline, current: current, start: start, length: length)
+                switch track {
+                case .unchanged:
+                    dictationLog.notice("learn read=\(reads) track=unchanged")
+                case .moved(let s, let l):
+                    start = s; length = l
+                    dictationLog.notice("learn read=\(reads) track=moved")
+                case .inside(let edit, let l):
+                    length = l
+                    let candidate = learning ? Self.candidate(edit) : nil
+                    dictationLog.notice("learn read=\(reads) track=inside words=\(edit.original.split(whereSeparator: \.isWhitespace).count)>\(edit.replacement.split(whereSeparator: \.isWhitespace).count) learning=\(learning) candidate=\(candidate != nil)")
+                    if let candidate { found(candidate) }
+                case .lost:
+                    dictationLog.notice("learn stop=lost reads=\(reads)"); self?.ended(id); return
+                }
+                baseline = current; baseCount = n
+            }
+        }
+    }
+    /// The tested rule, with the spell checker asked only about the edit's own words and the dictionary read once.
+    private static func candidate(_ edit: DictationReplace.Edit) -> DictationEditLearning.Candidate? {
+        let edge = CharacterSet.punctuationCharacters.union(.symbols)
+        let tokens = (edit.original + " " + edit.replacement).split(whereSeparator: \.isWhitespace)
+            .flatMap { [String($0), String($0).trimmingCharacters(in: edge)] }
+        let english = Set(tokens.filter { !$0.isEmpty && NSSpellChecker.shared.checkSpelling(of: $0, startingAt: 0).location == NSNotFound })
+        let corrections = TranscriptionDictionaryStore.shared.corrections
+        return DictationEditLearning.candidate(edit, known: { english.contains($0) }, learned: { heard, written in
+            corrections.contains { DictationFixGuess.normalized($0.heard) == DictationFixGuess.normalized(heard) && $0.written == written }
+        })
     }
 }
 
@@ -1044,6 +1174,14 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
     @Published var restoreClipboard: Bool = UserDefaults.standard.object(forKey: "dictation.restoreClipboard") as? Bool ?? true {
         didSet { UserDefaults.standard.set(restoreClipboard, forKey: "dictation.restoreClipboard") }
     }
+    /// 0.5.318 Learn from my edits: Save automatically (Miles's default), Suggest only, or Off. Off stops any watch now.
+    @Published var learnMode: DictationLearnMode = DictationLearnMode(rawValue: UserDefaults.standard.string(forKey: "dictation.learnMode") ?? "") ?? .default {
+        didSet { UserDefaults.standard.set(learnMode.rawValue, forKey: "dictation.learnMode"); if learnMode == .off { editWatcher.stop("learning off") } }
+    }
+    /// What Learn from my edits suggested (kept a week) and saved on its own (kept 30 days, with Undo). On this Mac only.
+    @Published private(set) var suggestions = DictationSuggestions.State()
+    private let editWatcher = DictationEditWatcher()
+    private var suggestionsURL: URL?
     /// 0.5.318: "number one, … number two, …" and "bullet, …" become a numbered or bulleted list (DictationListFormat).
     @Published var formatLists: Bool = UserDefaults.standard.object(forKey: "dictation.formatLists") as? Bool ?? true {
         didSet { UserDefaults.standard.set(formatLists, forKey: "dictation.formatLists") }
@@ -1154,6 +1292,9 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
         retention = keep
         let kept = DictationHistory.pruned(loaded?.records ?? [], retention: keep, now: Date())
         recent = keep.writesToDisk ? kept : []
+        let suggestionFile = history?.deletingLastPathComponent().appendingPathComponent("dictation-suggestions.json")
+        suggestionsURL = suggestionFile
+        suggestions = suggestionFile.map { DictationSuggestions.load(from: $0, now: Date()) } ?? DictationSuggestions.State()
         if let aside = loaded?.movedTo { dictationLog.notice("recent dictations unreadable; moved aside to \(aside.lastPathComponent, privacy: .public)") }
         for name in [NSWorkspace.willSleepNotification, NSWorkspace.sessionDidResignActiveNotification] {
             sessionObservers.append(NSWorkspace.shared.notificationCenter.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
@@ -1319,6 +1460,7 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
         guard MacDictationPolicy.mayStart(enabled: enabled, busy: busy) else { return }
         generation = UUID(); let attempt = generation
         flashTask?.cancel(); flashTask = nil; fixOfferID = nil; dismissCard()
+        editWatcher.stop("new dictation")
         // On the pet only when the pet is on the screen with the focused window; else the pill on that screen.
         let placement = DictationPlacement.choose(petFrame: petFrame?(), focusedWindow: DictationFocusedWindow.frame(),
                                                   screens: NSScreen.screens.map(\.frame), mainScreen: NSScreen.main?.frame)
@@ -1456,6 +1598,12 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
     private func finish(_ text: String, outcome: DictationDeliveryOutcome, target: DictationInsertTarget?) {
         let record = DictationRecord(id: UUID(), text: text, createdAt: Date(), delivery: outcome.delivery)
         if let target { rememberTarget(target, for: record.id) }
+        // 0.5.318: watch the field it went into for the person's own fixes (native apps; Electron is only measured).
+        if let target, case .inserted = outcome {
+            editWatcher.start(target, mode: learnMode) { [weak self] candidate in self?.editLearned(candidate, app: target.app) }
+        } else {
+            editWatcher.stop("not inserted")
+        }
         if let flash = outcome.flash {
             pill = flash
             // 0.5.313: the flash carries Fix for a few seconds, so a mishearing can be fixed the moment it lands.
@@ -1674,6 +1822,8 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
     }
     func openFix(_ id: UUID?) {
         guard let id, record(id) != nil else { return }
+        // Fix a word teaches the dictionary itself, and its Replace edits the field: the watch would read that as an edit.
+        editWatcher.stop("fix a word")
         dismissCard()
         listRoute = .fix(id); resetFix()
     }
@@ -1791,6 +1941,67 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
         let keep = Set(([id] + recent.prefix(DictationHistory.petCount).map(\.id)))
         insertTargets = insertTargets.filter { keep.contains($0.key) }
     }
+    // MARK: Learn from my edits (0.5.318)
+
+    /// A watched edit gave a pair: saved now (with Undo in Recent corrections and the Dictation tab), or suggested.
+    private func editLearned(_ candidate: DictationEditLearning.Candidate, app: String) {
+        let now = Date()
+        guard learnMode != .off, !DictationSuggestions.isQuiet(candidate.heard, candidate.written, in: suggestions, now: now) else {
+            dictationLog.notice("learn quiet mode=\(self.learnMode.rawValue, privacy: .public)"); return
+        }
+        let item = DictationSuggestion(id: UUID(), heard: candidate.heard, written: candidate.written, app: app, at: now)
+        if learnMode == .suggest {
+            suggestions = DictationSuggestions.suggesting(item, in: suggestions, now: now); saveSuggestions()
+            dictationLog.notice("learn suggested")
+            return
+        }
+        Task {
+            guard await TranscriptionDictionaryStore.shared.learn(heard: item.heard, written: item.written, source: "dictation") else {
+                dictationLog.notice("learn save failed"); return
+            }
+            suggestions = DictationSuggestions.learning(item, in: suggestions, now: Date()); saveSuggestions()
+            dictationLog.notice("learn saved")
+            if pill == .hidden, !busy {
+                let flash = DictationPill.flash(label: "✓ LEARNED · " + item.written.uppercased(), confirmed: true)
+                pill = flash
+                flashTask?.cancel()
+                flashTask = Task {
+                    try? await Task.sleep(for: .seconds(DictationQuickFix.offerSeconds))
+                    if !Task.isCancelled, pill == flash { pill = .hidden }
+                }
+            }
+        }
+    }
+    /// Suggest only's review: Add one, or Add all. Only the ones the dictionary took leave the list.
+    func applySuggestions(_ ids: Set<UUID>) async {
+        var added: Set<UUID> = []
+        for item in suggestions.suggestions where ids.contains(item.id) {
+            if await TranscriptionDictionaryStore.shared.learn(heard: item.heard, written: item.written, source: "dictation") { added.insert(item.id) }
+        }
+        suggestions = DictationSuggestions.applying(added, in: suggestions, now: Date()); saveSuggestions()
+    }
+    func dismissSuggestion(_ id: UUID) {
+        suggestions = DictationSuggestions.dismissing(id, in: suggestions, now: Date()); saveSuggestions()
+    }
+    /// Undo on something COS saved on its own: the dictionary entry it made is reversed, and the pair stays quiet.
+    func undoLearned(_ id: UUID) async {
+        guard let item = suggestions.learned.first(where: { $0.id == id }) else { return }
+        let dictionary = TranscriptionDictionaryStore.shared
+        let rows = dictionary.recent.map { (id: $0.id, heard: $0.heard, written: $0.written) }
+        if let entry = DictationSuggestions.recentID(for: item, in: rows) { await dictionary.undo(entry) }
+        else { await dictionary.removeCorrection(item.heard) }
+        suggestions = DictationSuggestions.dismissing(id, in: suggestions, now: Date()); saveSuggestions()
+    }
+    /// Suggestions past their week drop out while COS runs, not only at launch.
+    func pruneSuggestions() {
+        let next = DictationSuggestions.pruned(suggestions, now: Date())
+        if next != suggestions { suggestions = next; saveSuggestions() }
+    }
+    private func saveSuggestions() {
+        guard let suggestionsURL else { return }
+        do { try DictationSuggestions.save(suggestions, to: suggestionsURL) }
+        catch { dictationLog.error("dictation suggestions not saved: \(error.localizedDescription, privacy: .public)") }
+    }
     private func resetFix() { fixSelection = nil; fixDraft = ""; fixNote = nil; fixSaving = false; fixSuggestion = nil; replaceOffer = nil }
 }
 
@@ -1866,6 +2077,10 @@ struct MacDictationSettings: View {
                 DictationQuietSettings(store: store)
                 Toggle("Restore my clipboard after pasting", isOn: $store.restoreClipboard).toggleStyle(COSSwitchStyle())
                     .help("When COS pastes with ⌘V, it puts back whatever you had copied once the app has the text.")
+                COSDropdown("Learn from my edits", selection: $store.learnMode,
+                            options: DictationLearnMode.allCases.map { COSDropdownOption($0, $0.title) })
+                Text("When you fix a word COS just typed, in that same field, COS learns it: until you leave the field, three minutes at most. Suggest only keeps them a week in Activity → Dictation for you to add. Native apps for now; Claude, Slack and other Electron apps are being measured first. Never in terminals or password fields.")
+                    .font(.caption2).foregroundStyle(.secondary)
                 Toggle("Format spoken lists", isOn: $store.formatLists).toggleStyle(COSSwitchStyle())
                     .help("Say “number one, … number two, …” or “bullet, … next bullet, …” and COS writes a numbered or bulleted list, one item per line.")
                 Text("Any shortcut: a modifier plus a key, a function key, or one modifier key by itself such as Fn 🌐 or Right ⌘. Fn and single-key shortcuts use Accessibility. Finished text drops into the text box that has the cursor; with no text box it is copied, and the pet shows it with a Copy button. Some apps, such as terminals and Electron editors, get ⌘V; COS shows Pasted when it can't confirm, then puts your clipboard back. COS never presses Send or Return.")
@@ -2425,6 +2640,8 @@ struct DictationFixEditor: View {
     let size: PetSize
     /// Opens the Dictionary pane in Activity. Nil where Activity is not the next step (the floating editor).
     let onOpenDictionary: (() -> Void)?
+    /// 0.5.318: opens Activity → Dictation to review every suggestion. Nil on the floating editor.
+    var onReview: (() -> Void)? = nil
     @FocusState private var fieldFocused: Bool
 
     private var tokens: [String] { DictationFixText.tokens(record.text) }
@@ -2520,6 +2737,28 @@ struct DictationFixEditor: View {
                     }
                 }
             }
+            // 0.5.318 Suggest only: what COS noticed you fix, here where Fix a word lives (Miles 13:31).
+            if !store.suggestions.suggestions.isEmpty {
+                HStack(spacing: size.length(5)) {
+                    Circle().fill(COSPalette.gold).frame(width: size.length(6), height: size.length(6))
+                    Text("SUGGESTED FROM YOUR EDITS")
+                        .font(COSType.mono(size.typeSize(8), weight: .bold))
+                        .kerning(0.5)
+                        .foregroundStyle(.secondary)
+                    Spacer(minLength: 0)
+                    if let onReview {
+                        Button("Review all…", action: onReview)
+                            .buttonStyle(COSTextButtonStyle())
+                            .font(COSType.body(size.typeSize(9)))
+                            .help("Review every suggestion in COS Activity → Dictation")
+                    }
+                }
+                ForEach(store.suggestions.suggestions.prefix(3)) { item in
+                    DictationSuggestionRow(item: item, fontSize: size.typeSize(10), busy: dictionary.busy || store.fixSaving,
+                                           onAdd: { Task { await store.applySuggestions([item.id]) } },
+                                           onDismiss: { store.dismissSuggestion(item.id) })
+                }
+            }
         }
         .task(id: record.id) { await dictionary.load() }
     }
@@ -2568,6 +2807,176 @@ struct DictionaryLearnedRow: View {
         .font(COSType.body(fontSize))
         .padding(.vertical, 5)
         .overlay(alignment: .top) { Rectangle().fill(COSPalette.line).frame(height: 1) }
+    }
+}
+
+/// One thing Learn from my edits noticed (Suggest only), with Add and Dismiss; or one it saved on its own, with Undo.
+/// Shared by the pet's Fix a word and Activity → Dictation (0.5.318).
+struct DictationSuggestionRow: View {
+    let item: DictationSuggestion
+    let fontSize: CGFloat
+    let busy: Bool
+    /// Suggested: Add and Dismiss. Learned: Undo only (`onAdd` nil).
+    let onAdd: (() -> Void)?
+    let onDismiss: () -> Void
+    var body: some View {
+        HStack(spacing: 7) {
+            Text(item.heard).strikethrough().foregroundStyle(.secondary).lineLimit(1)
+            Text("→").font(COSType.mono(fontSize, weight: .bold)).foregroundStyle(.secondary)
+            Text(item.written).fontWeight(.semibold).lineLimit(1)
+            Spacer(minLength: 4)
+            Text(item.app + " · " + DictionaryLabels.when(item.at, now: Date()))
+                .font(COSType.mono(max(8, fontSize - 1), weight: .medium))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+            if let onAdd {
+                Button("Add", action: onAdd)
+                    .buttonStyle(COSTextButtonStyle())
+                    .disabled(busy)
+                    .help("Save this correction to the dictionary")
+                Button("Dismiss", action: onDismiss)
+                    .buttonStyle(COSTextButtonStyle())
+                    .disabled(busy)
+                    .help("Drop it; COS won't suggest this pair again for 30 days")
+            } else {
+                Button("Undo", action: onDismiss)
+                    .buttonStyle(COSTextButtonStyle())
+                    .disabled(busy)
+                    .help("Take this correction back out of the dictionary; COS won't learn it again for 30 days")
+            }
+        }
+        .font(COSType.body(fontSize))
+        .padding(.vertical, 5)
+        .overlay(alignment: .top) { Rectangle().fill(COSPalette.line).frame(height: 1) }
+    }
+}
+
+/// COS Activity → Dictation (0.5.318, Miles 13:31): what Learn from my edits suggested (review and add in a batch) and
+/// saved on its own (Undo), the dictionary's recent corrections, and the latest dictations. The full history and the
+/// whole dictionary open as their own panes, on their own route flags, from the header.
+struct DictationActivityPane: View {
+    @ObservedObject var model: ControllerModel
+    @ObservedObject private var store: MacDictationStore
+    @ObservedObject private var dictionary: TranscriptionDictionaryStore
+    @State private var applying = false
+
+    init(model: ControllerModel) {
+        self.model = model
+        self.store = model.dictation
+        self.dictionary = model.dictionary
+    }
+
+    var body: some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 14) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text("Dictation").font(COSType.display(15, weight: .semibold))
+                    Spacer()
+                    Button("History") { model.openDictationHistory() }.buttonStyle(COSTextButtonStyle())
+                    Button("Dictionary") { model.openDictionary() }.buttonStyle(COSTextButtonStyle())
+                }
+                Text(modeLine).font(COSType.body(11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                suggested
+                learned
+                corrections
+                latest
+            }
+            .padding(16)
+        }
+        .task {
+            store.pruneSuggestions()
+            await dictionary.load()
+        }
+    }
+
+    private var modeLine: String {
+        switch store.learnMode {
+        case .automatic: "Learn from my edits saves your fixes on its own. Undo any of them below."
+        case .suggest: "Learn from my edits suggests your fixes and keeps them for a week. Add the ones you want."
+        case .off: "Learn from my edits is off. Turn it on in Settings → Dictation."
+        }
+    }
+
+    private func heading(_ title: String) -> some View {
+        Text(title).font(COSType.mono(9, weight: .bold)).kerning(0.6).foregroundStyle(.secondary)
+    }
+
+    @ViewBuilder private var suggested: some View {
+        let items = store.suggestions.suggestions
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                heading("SUGGESTED FROM YOUR EDITS")
+                Spacer()
+                if items.count > 1 {
+                    Button(applying ? "Adding…" : "Add all \(items.count)") {
+                        applying = true
+                        Task { await store.applySuggestions(Set(items.map(\.id))); applying = false }
+                    }
+                    .buttonStyle(COSTextButtonStyle())
+                    .disabled(applying || dictionary.busy)
+                }
+            }
+            if items.isEmpty {
+                Text("Nothing waiting. Each suggestion is kept for seven days.").font(COSType.body(11)).foregroundStyle(.secondary)
+            } else {
+                ForEach(items) { item in
+                    DictationSuggestionRow(item: item, fontSize: 11, busy: applying || dictionary.busy,
+                                           onAdd: { Task { await store.applySuggestions([item.id]) } },
+                                           onDismiss: { store.dismissSuggestion(item.id) })
+                }
+            }
+        }
+    }
+
+    @ViewBuilder private var learned: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            heading("LEARNED FROM YOUR EDITS")
+            if store.suggestions.learned.isEmpty {
+                Text("Nothing learned from your edits yet.").font(COSType.body(11)).foregroundStyle(.secondary)
+            } else {
+                ForEach(store.suggestions.learned.prefix(20)) { item in
+                    DictationSuggestionRow(item: item, fontSize: 11, busy: dictionary.busy, onAdd: nil,
+                                           onDismiss: { Task { await store.undoLearned(item.id) } })
+                }
+            }
+        }
+    }
+
+    @ViewBuilder private var corrections: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            heading("RECENT CORRECTIONS")
+            if dictionary.recent.isEmpty {
+                Text(dictionary.loaded ? "Nothing learned yet." : "Loading…").font(COSType.body(11)).foregroundStyle(.secondary)
+            } else {
+                ForEach(dictionary.recent.prefix(10)) { entry in
+                    DictionaryLearnedRow(entry: entry, fontSize: 11, busy: dictionary.busy) { Task { await dictionary.undo(entry.id) } }
+                }
+            }
+            if let message = dictionary.message {
+                Text(message).font(COSType.body(11)).foregroundStyle(COSPalette.amber).fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    @ViewBuilder private var latest: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            heading("LATEST DICTATIONS")
+            if store.recent.isEmpty {
+                Text("No dictations on this Mac yet.").font(COSType.body(11)).foregroundStyle(.secondary)
+            } else {
+                ForEach(store.recent.prefix(5)) { record in
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(record.firstLine).font(COSType.body(11)).lineLimit(2)
+                        Text(record.metaLine(time: record.createdAt.formatted(date: .omitted, time: .shortened)))
+                            .font(COSType.mono(9, weight: .medium)).foregroundStyle(.secondary)
+                    }
+                    .padding(.vertical, 5)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .overlay(alignment: .top) { Rectangle().fill(COSPalette.line).frame(height: 1) }
+                }
+                Button("All dictations") { model.openDictationHistory() }.buttonStyle(COSTextButtonStyle())
+            }
+        }
     }
 }
 
