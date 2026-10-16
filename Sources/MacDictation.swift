@@ -410,6 +410,48 @@ enum DictationFocusedWindow {
     }
 }
 
+/// A chosen file, decoded to mono, with where its sound begins and ends; `window` is what Save keeps.
+struct DictationSoundImport {
+    let edge: DictationSoundEdge
+    let sourceName: String
+    let samples: [Float]
+    let sampleRate: Double
+    let duration: Double
+    let onset: Double
+    let end: Double
+    /// Stop sounds may use the end of the file (the default for Stop).
+    var useEnd: Bool
+    var window: DictationSoundTrim.Window {
+        useEnd ? DictationSoundTrim.stopWindow(end: end, duration: duration) : DictationSoundTrim.startWindow(onset: onset, duration: duration)
+    }
+    var trimmedWAV: Data {
+        DictationSoundTrim.wav(DictationSoundTrim.apply(samples, sampleRate: sampleRate, window: window), sampleRate: Int(sampleRate.rounded()))
+    }
+    /// "Keeps 0.30-2.30 s (2.00 s of 8.76 s)"
+    var summary: String {
+        String(format: "Keeps %.2f-%.2f s (%.2f s of %.2f s)", window.start, window.end, window.length, duration)
+    }
+}
+
+/// Decodes any audio file AVAudioFile reads (MP3, M4A, WAV, AIFF...) to mono floats at its own sample rate.
+enum DictationAudioDecode {
+    static func mono(_ url: URL) -> (samples: [Float], sampleRate: Double)? {
+        guard let file = try? AVAudioFile(forReading: url), file.length > 0,
+              file.length <= AVAudioFramePosition(file.processingFormat.sampleRate * 600) else { return nil }
+        let format = file.processingFormat
+        guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(file.length)) else { return nil }
+        do { try file.read(into: buffer) } catch { return nil }
+        guard let channels = buffer.floatChannelData, format.channelCount > 0 else { return nil }
+        let count = Int(buffer.frameLength), channelCount = Int(format.channelCount)
+        var out = [Float](repeating: 0, count: count)
+        for channel in 0..<channelCount {
+            let data = channels[channel]
+            for i in 0..<count { out[i] += data[i] / Float(channelCount) }
+        }
+        return (out, format.sampleRate)
+    }
+}
+
 /// A pasteboard behind DictationPasteboardAccess (NSPasteboard.general in the app). Items are read once, on first use.
 /// Not actor-isolated so it can satisfy the plain protocol; DictationInsertion only uses it on the main actor.
 final class SystemDictationPasteboard: DictationPasteboardAccess {
@@ -469,6 +511,8 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
         didSet { UserDefaults.standard.set(soundPitch, forKey: "dictation.sound.pitch") }
     }
     @Published private(set) var soundNote: String?
+    /// Your own file, decoded and measured, waiting for Save.
+    @Published private(set) var pendingImport: DictationSoundImport?
     /// Set by the app: which family the pet is (its default sound), and whether a Mac recording is capturing.
     var petKind: (() -> DictationPetKind)?
     var macRecordingActive: (() -> Bool)?
@@ -819,33 +863,57 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
         if let home = environment["COS_CONTROL_TEST_HOME"] { return URL(fileURLWithPath: home).appendingPathComponent("dictation-sounds", isDirectory: true) }
         return FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/COS Control/dictation-sounds", isDirectory: true)
     }
-    /// Your own file…: an audio file of at most 2 MB and 3 s that decodes, copied in privately (0600).
+    /// Your own file…: any decodable audio file up to 20 MB, trimmed on import (DictationSoundTrim). Nothing is saved
+    /// until the person has seen the resulting length, previewed it if they like, and pressed Save.
     func importCustomSound(_ edge: DictationSoundEdge) {
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.audio]; panel.allowsMultipleSelection = false; panel.canChooseDirectories = false
-        panel.message = "Choose a short sound (3 seconds or less) for when dictation \(edge == .start ? "starts" : "stops")."
+        panel.message = "Choose a sound for when dictation \(edge == .start ? "starts" : "stops"). COS keeps the part that matters, at most a few seconds."
         guard panel.runModal() == .OK, let source = panel.url else { return }
         let bytes = (try? source.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? Int.max
-        let duration = (try? AVAudioPlayer(contentsOf: source)).map(\.duration)
+        let decoded = bytes <= DictationSoundLibrary.maximumSourceBytes ? DictationAudioDecode.mono(source) : nil
+        let duration = decoded.map { Double($0.samples.count) / $0.sampleRate }
         if let refusal = DictationSoundLibrary.customRefusal(byteCount: bytes, duration: duration) { soundNote = refusal; return }
+        guard let decoded, let duration else { return }
+        let levels = DictationSoundTrim.levels(decoded.samples, sampleRate: decoded.sampleRate)
+        guard let onset = DictationSoundTrim.onset(levels), let end = DictationSoundTrim.end(levels) else {
+            soundNote = "That file is silent (never louder than -40 dBFS). Choose another."; return
+        }
+        soundNote = nil
+        pendingImport = DictationSoundImport(edge: edge, sourceName: source.lastPathComponent, samples: decoded.samples,
+                                             sampleRate: decoded.sampleRate, duration: duration, onset: onset, end: end, useEnd: edge == .stop)
+    }
+    func setImportUseEnd(_ value: Bool) { pendingImport?.useEnd = value }
+    func cancelImport() { pendingImport = nil }
+    /// The trimmed sound, played with the current volume and pitch, from a private temporary file.
+    func previewImport() {
+        guard let pending = pendingImport else { return }
+        if macRecordingActive?() == true { soundNote = "No sound: a Mac recording is capturing."; return }
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("cos-dictation-sound-preview.wav")
+        try? FileManager.default.removeItem(at: url)
+        guard FileManager.default.createFile(atPath: url.path, contents: pending.trimmedWAV, attributes: [.posixPermissions: 0o600]) else { return }
+        soundPlayer.play(url, volume: Float(max(soundVolume, 0.2)), semitones: soundPitch)
+    }
+    /// Stores only the trimmed result (at most 3 s, WAV) in the app's dictation-sounds folder, 0600, and selects it.
+    func saveImport() {
+        guard let pending = pendingImport, pending.window.length <= DictationSoundLibrary.maximumStoredSeconds else { return }
         let directory = Self.customSoundDirectory()
-        let name = "\(edge.rawValue)-\(UUID().uuidString.prefix(8)).\(source.pathExtension.lowercased())"
+        let name = "\(pending.edge.rawValue)-\(UUID().uuidString.prefix(8)).wav"
         let target = directory.appendingPathComponent(name)
         do {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-            guard let data = try? Data(contentsOf: source), data.count <= DictationSoundLibrary.maximumCustomBytes,
-                  FileManager.default.createFile(atPath: target.path, contents: data, attributes: [.posixPermissions: 0o600]) else {
-                soundNote = "COS could not copy that sound."; return
-            }
-        } catch { soundNote = "COS could not copy that sound."; return }
+        } catch { soundNote = "COS could not save that sound."; return }
+        guard FileManager.default.createFile(atPath: target.path, contents: pending.trimmedWAV, attributes: [.posixPermissions: 0o600]) else {
+            soundNote = "COS could not save that sound."; return
+        }
         // The previous file for this edge goes; the new one is the choice.
-        if case .custom(let old) = DictationSoundLibrary.Choice(stored: soundChoice(edge)) {
+        if case .custom(let old) = DictationSoundLibrary.Choice(stored: soundChoice(pending.edge)) {
             try? FileManager.default.removeItem(at: directory.appendingPathComponent(old))
         }
         let stored = DictationSoundLibrary.Choice.custom(name).stored
-        if edge == .start { soundStart = stored } else { soundStop = stored }
+        if pending.edge == .start { soundStart = stored } else { soundStop = stored }
+        pendingImport = nil
         soundNote = nil
-        previewSound(edge)
     }
 
     // MARK: Recent dictations (0.5.309)
@@ -1915,6 +1983,24 @@ struct DictationSoundSettings: View {
         list.append(COSDropdownOption("import", "Your own file…"))
         return list
     }
+    /// The trimmed result's length and a Preview before anything is saved.
+    private func importPanel(_ pending: DictationSoundImport) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(pending.sourceName).font(.caption).lineLimit(1).truncationMode(.middle)
+            Text(pending.summary).font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+            if pending.edge == .stop {
+                Toggle("Use the end of this file", isOn: Binding(get: { store.pendingImport?.useEnd ?? false }, set: { store.setImportUseEnd($0) }))
+                    .toggleStyle(COSSwitchStyle()).font(.caption)
+            }
+            HStack {
+                Button("Preview") { store.previewImport() }
+                Button("Save") { store.saveImport() }
+                Button("Cancel") { store.cancelImport() }
+            }.controlSize(.small)
+        }
+        .padding(8)
+        .background(COSPalette.raised, in: RoundedRectangle(cornerRadius: 8))
+    }
     static func semitones(_ value: Double) -> String {
         let n = Int(DictationSoundLibrary.cents(value) / 100)
         return n == 0 ? "0 st" : (n > 0 ? "+\(n) st" : "−\(-n) st")
@@ -1933,6 +2019,7 @@ struct DictationSoundSettings: View {
                     COSDropdown(edge == .start ? "Start" : "Stop", selection: binding(edge), options: options(edge))
                     Button("Preview") { store.previewSound(edge) }.controlSize(.small)
                 }
+                if let pending = store.pendingImport, pending.edge == edge { importPanel(pending) }
             }
             HStack {
                 Text("Volume").font(.caption)

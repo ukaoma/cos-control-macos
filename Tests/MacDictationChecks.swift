@@ -352,9 +352,33 @@ final class FakeDictationBoard: DictationPasteboardAccess {
         expect(pick("pet", recording: true) == .silent("a Mac recording is capturing") && pick("library:soft-chime", .stop, recording: true) == .silent("a Mac recording is capturing"),
                "never during a Mac recording (it would be recorded)")
         expect(L.Choice(stored: "garbage") == .pet && L.Choice(stored: L.Choice.custom("a b.wav").stored) == .custom("a b.wav"), "stored choices round-trip")
-        expect(L.customRefusal(byteCount: 500_000, duration: 1.2) == nil && L.customRefusal(byteCount: L.maximumCustomBytes + 1, duration: 1) != nil
-               && L.customRefusal(byteCount: 10, duration: 3.5) != nil && L.customRefusal(byteCount: 10, duration: nil) != nil
-               && L.customRefusal(byteCount: 10, duration: 3.0) == nil, "your own file: 2 MB, 3 s, and it must decode")
+        expect(L.customRefusal(byteCount: 500_000, duration: 1.2) == nil && L.customRefusal(byteCount: L.maximumSourceBytes + 1, duration: 1) != nil
+               && L.customRefusal(byteCount: 19_000_000, duration: 8.76) == nil && L.customRefusal(byteCount: 10, duration: nil) != nil
+               && L.customRefusal(byteCount: 10, duration: 0) != nil, "your own file: a source up to 20 MB that decodes; long files are trimmed, not refused")
+        // Trim on import, on Miles's test file's shape: 8.76 s at 48 kHz, the ignition at 0.30 s, the sound over at 8.26 s.
+        let rate = 48_000.0
+        var file = [Float](repeating: 0, count: Int(8.76 * rate))
+        for i in 0..<file.count {
+            let t = Double(i) / rate
+            let loud = t >= 0.30 && t < 8.26
+            file[i] = Float(loud ? 0.25 * sin(2 * Double.pi * 82 * t) : 0.0005 * sin(2 * Double.pi * 1_000 * t)) // -15 dBFS sound, -69 dBFS floor
+        }
+        let trimLevels = DictationSoundTrim.levels(file, sampleRate: rate)
+        let onset = DictationSoundTrim.onset(trimLevels)!, soundEnd = DictationSoundTrim.end(trimLevels)!
+        expect(abs(onset - 0.30) < 1e-9 && abs(soundEnd - 8.26) < 1e-9, "the onset and end of the sound at -40 dBFS in 10 ms windows")
+        let startWindow = DictationSoundTrim.startWindow(onset: onset, duration: 8.76), stopWindow = DictationSoundTrim.stopWindow(end: soundEnd, duration: 8.76)
+        expect(abs(startWindow.start - 0.30) < 1e-9 && abs(startWindow.end - 2.30) < 1e-9 && startWindow.fadeIn == 0.005 && startWindow.fadeOut == 0.45,
+               "start window 0.30-2.30 s, 5 ms in, 0.45 s out")
+        expect(abs(stopWindow.start - 7.71) < 1e-9 && abs(stopWindow.end - 8.31) < 1e-9 && stopWindow.fadeIn == 0.030 && stopWindow.fadeOut == 0.070,
+               "stop window 7.71-8.31 s, 30 ms in, 70 ms out")
+        let trimmed = DictationSoundTrim.apply(file, sampleRate: rate, window: startWindow)
+        expect(trimmed.count == Int(2.0 * rate) && trimmed[0] == 0 && trimmed[trimmed.count - 1] == 0 && Double(trimmed.count) / rate <= L.maximumStoredSeconds,
+               "the stored start sound is 2.0 s with silent edges")
+        expect(abs(DictationSoundTrim.startWindow(onset: 7.5, duration: 8.0).length - 0.5) < 1e-9 && DictationSoundTrim.stopWindow(end: 0.3, duration: 0.32).start == 0,
+               "windows stay inside the file")
+        expect(DictationSoundTrim.onset(DictationSoundTrim.levels([Float](repeating: 0.001, count: 48_000), sampleRate: rate)) == nil, "a file that never reaches -40 dBFS is silent")
+        let stored = DictationSoundTrim.wav(trimmed, sampleRate: 48_000)
+        expect(stored.count == 44 + trimmed.count * 2 && String(decoding: stored.prefix(4), as: UTF8.self) == "RIFF" && stored[22] == 1, "stored as mono 16-bit WAV")
         expect(L.cents(0) == 0 && L.cents(-4) == -400 && L.cents(2.4) == 200 && L.cents(-20) == -1_200 && L.cents(9) == 600 && L.cents(.nan) == 0,
                "pitch: whole semitones, -12 to +6, in cents")
         expect(L.name("unstable-saber") == "Unstable saber" && L.name("unstable-saber-bright") == "Unstable saber (bright)", "names")

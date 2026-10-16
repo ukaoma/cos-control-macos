@@ -714,8 +714,9 @@ enum DictationSoundLibrary {
         guard semitones.isFinite else { return 0 }
         return min(pitchRange.upperBound, max(pitchRange.lowerBound, semitones.rounded())) * 100
     }
-    static let maximumCustomBytes = 2 * 1024 * 1024
-    static let maximumCustomSeconds = 3.0
+    /// Your own file: the SOURCE may be up to 20 MB (it is trimmed on import); what is stored is at most 3 s.
+    static let maximumSourceBytes = 20 * 1024 * 1024
+    static let maximumStoredSeconds = 3.0
 
     /// THE pet → default table (Miles: the Jedi's crackling Unstable saber is his favorite).
     static func petDefault(_ kind: DictationPetKind) -> String {
@@ -772,11 +773,11 @@ enum DictationSoundLibrary {
         }
     }
 
-    /// Your own file: at most 2 MB and 3 s, and it must decode (a duration). Nil means accepted.
+    /// Your own file's SOURCE: at most 20 MB and it must decode (a duration). Long files are trimmed, not refused.
+    /// Nil means accepted.
     static func customRefusal(byteCount: Int, duration: Double?) -> String? {
-        guard byteCount <= maximumCustomBytes else { return "That file is over 2 MB. Choose a short sound." }
+        guard byteCount <= maximumSourceBytes else { return "That file is over 20 MB. Choose a shorter file." }
         guard let duration, duration.isFinite, duration > 0 else { return "COS could not play that file. Choose an audio file." }
-        guard duration <= maximumCustomSeconds else { return "That sound is longer than 3 seconds. Choose a short sound." }
         return nil
     }
 }
@@ -799,5 +800,73 @@ enum DictationPlacement: Equatable, Sendable {
     private static func overlap(_ a: CGRect, _ b: CGRect) -> CGFloat {
         let i = a.intersection(b)
         return i.isNull ? 0 : i.width * i.height
+    }
+}
+
+/// Your own sound, trimmed on import (Miles, 2026-10-15). Loudness is RMS over 10 ms windows; the sound begins at the
+/// first window at or above -40 dBFS and ends after the last one. START: up to 2.0 s from the onset, 5 ms fade-in,
+/// 0.45 s fade-out. STOP, "Use the end of this file": the last 0.6 s, ending 50 ms past the final drop so the fade-out
+/// covers it, 30 ms fade-in, 70 ms fade-out. Pure; the app decodes, trims with this, and stores only the result.
+enum DictationSoundTrim {
+    static let thresholdDB = -40.0
+    static let windowSeconds = 0.010
+    struct Window: Equatable, Sendable {
+        let start: Double
+        let end: Double
+        let fadeIn: Double
+        let fadeOut: Double
+        var length: Double { end - start }
+    }
+
+    /// dBFS per 10 ms window of mono samples.
+    static func levels(_ samples: [Float], sampleRate: Double) -> [Double] {
+        let size = max(1, Int((sampleRate * windowSeconds).rounded()))
+        return stride(from: 0, to: samples.count, by: size).map { first in
+            let last = min(samples.count, first + size)
+            var sum = 0.0
+            for i in first..<last { sum += Double(samples[i]) * Double(samples[i]) }
+            let rms = (sum / Double(last - first)).squareRoot()
+            return rms > 0 ? 20 * log10(rms) : -160
+        }
+    }
+    /// Seconds where the sound begins, or nil when the file never reaches -40 dBFS.
+    static func onset(_ levels: [Double]) -> Double? {
+        levels.firstIndex { $0 >= thresholdDB }.map { Double($0) * windowSeconds }
+    }
+    /// Seconds where the sound has ended: just after the last window at or above -40 dBFS.
+    static func end(_ levels: [Double]) -> Double? {
+        levels.lastIndex { $0 >= thresholdDB }.map { Double($0 + 1) * windowSeconds }
+    }
+    static func startWindow(onset: Double, duration: Double) -> Window {
+        Window(start: onset, end: min(duration, onset + 2.0), fadeIn: 0.005, fadeOut: 0.45)
+    }
+    static func stopWindow(end: Double, duration: Double) -> Window {
+        Window(start: max(0, end - 0.55), end: min(duration, end + 0.05), fadeIn: 0.030, fadeOut: 0.070)
+    }
+    /// The window's samples with linear fades (each at most half the window).
+    static func apply(_ samples: [Float], sampleRate: Double, window: Window) -> [Float] {
+        let first = max(0, min(samples.count, Int((window.start * sampleRate).rounded())))
+        let last = max(first, min(samples.count, Int((window.end * sampleRate).rounded())))
+        var out = Array(samples[first..<last])
+        let fadeIn = min(out.count / 2, Int((window.fadeIn * sampleRate).rounded()))
+        let fadeOut = min(out.count / 2, Int((window.fadeOut * sampleRate).rounded()))
+        for i in 0..<fadeIn { out[i] *= Float(i) / Float(fadeIn) }
+        for i in 0..<fadeOut { out[out.count - 1 - i] *= Float(i) / Float(fadeOut) }
+        return out
+    }
+    /// Mono 16-bit PCM WAV of the trimmed sound, which is what gets stored.
+    static func wav(_ samples: [Float], sampleRate: Int) -> Data {
+        var data = Data()
+        func ascii(_ s: String) { data.append(contentsOf: s.utf8) }
+        func u16(_ x: UInt16) { var v = x.littleEndian; withUnsafeBytes(of: &v) { data.append(contentsOf: $0) } }
+        func u32(_ x: UInt32) { var v = x.littleEndian; withUnsafeBytes(of: &v) { data.append(contentsOf: $0) } }
+        let bytes = samples.count * 2
+        ascii("RIFF"); u32(UInt32(36 + bytes)); ascii("WAVEfmt "); u32(16); u16(1); u16(1)
+        u32(UInt32(sampleRate)); u32(UInt32(sampleRate * 2)); u16(2); u16(16); ascii("data"); u32(UInt32(bytes))
+        for sample in samples {
+            var v = Int16(max(-1, min(1, sample)) * 32767).littleEndian
+            withUnsafeBytes(of: &v) { data.append(contentsOf: $0) }
+        }
+        return data
     }
 }

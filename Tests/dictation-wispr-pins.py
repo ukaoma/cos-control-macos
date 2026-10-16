@@ -181,8 +181,15 @@ need('"high-pass' not in (root / "scripts/render-dictation-sounds.py").read_text
      "v2's growl is never high-passed (only its spits are)")
 need('Button("Preview") { store.previewSound(edge) }' in dictation and 'COSDropdownOption("import", "Your own file…")' in dictation
      and "Slider(value: $store.soundVolume, in: 0...1)" in dictation and "DictationSoundSettings(store: store)" in dictation, "Settings: choice, your own file, volume, preview")
-need("attributes: [.posixPermissions: 0o600]" in body(dictation, "    func importCustomSound(_ edge: DictationSoundEdge) {")
-     and "DictationSoundLibrary.customRefusal(byteCount: bytes, duration: duration)" in dictation, "your own file is validated and stored privately")
+save = body(dictation, "    func saveImport() {")
+choose = body(dictation, "    func importCustomSound(_ edge: DictationSoundEdge) {")
+need("attributes: [.posixPermissions: 0o600]" in save and "contents: pending.trimmedWAV" in save
+     and "pending.window.length <= DictationSoundLibrary.maximumStoredSeconds" in save and "createFile" not in choose,
+     "your own file: only the trimmed result is stored, 0600, and only on Save")
+need("DictationSoundLibrary.customRefusal(byteCount: bytes, duration: duration)" in choose and "DictationSoundTrim.onset(levels)" in choose
+     and "useEnd: edge == .stop" in choose, "the source is validated, measured, and Stop offers the end of the file")
+need('Toggle("Use the end of this file"' in dictation and 'Button("Save") { store.saveImport() }' in dictation and "Text(pending.summary)" in dictation
+     and 'Button("Preview") { store.previewImport() }' in dictation, "the resulting length and a Preview before saving")
 ids = re.findall(r'\("([a-z0-9-]+)", "[^"]+"\)', core[core.index("static let sounds:"):core.index("static let defaultVolume")])
 for sound_id in ids:
     for edge in ("start", "stop"):
