@@ -121,6 +121,13 @@ struct DictationInsertTarget: @unchecked Sendable {
     let span: DictationInsertedSpan
     let terminal: Bool
     let app: String
+    /// 0.5.318: what COS believes the field holds at `span` (what it typed, or put there on the last replace), so the
+    /// stored dictation can take Fix a word's correction at Save while this still describes the field.
+    let text: String
+    /// The Accessibility set moved this field at delivery. False where only ⌘V landed (Electron, Chromium, terminals):
+    /// there the set reports success and changes nothing, so a replace must paste.
+    let setterWorked: Bool
+    let bundle: String?
 }
 
 /// After Save in Fix a word: the corrected dictation and the app it can go back into (nil: copy only).
@@ -220,7 +227,7 @@ struct DictationDelivered: Sendable {
                 case .done(let outcome):
                     facts += " after=\(after.logDescription)"
                     if let app, let span = DictationReplace.span(pid: app.processIdentifier, baseline: baseline, after: after, count: count) {
-                        landed = DictationInsertTarget(element: target, span: span, terminal: terminal, app: name)
+                        landed = DictationInsertTarget(element: target, span: span, terminal: terminal, app: name, text: text, setterWorked: true, bundle: bundle)
                     }
                     return done(outcome)
                 case .paste: facts += " after=\(after.logDescription)"; break polling
@@ -269,49 +276,146 @@ struct DictationDelivered: Sendable {
             dictationLog.notice("clipboard not restored: \(reason, privacy: .public)")
         }
         if let app, let target, let span = DictationReplace.span(pid: app.processIdentifier, baseline: beforePaste, after: measuredAfterPaste, count: count) {
-            landed = DictationInsertTarget(element: target, span: span, terminal: terminal, app: name)
+            landed = DictationInsertTarget(element: target, span: span, terminal: terminal, app: name, text: text, setterWorked: false, bundle: bundle)
         }
         if case .done(let outcome) = decision { return done(outcome) }
         return done(.unconfirmed(app: name, viaPaste: true))
     }
 
-    enum ReplaceResult: Equatable { case replaced, copied(DictationReplace.Reason), unverified }
+    enum ReplaceResult: Equatable { case replaced, copied(DictationReplace.Reason), unverified(pasted: Bool) }
+    /// What a replace did, and where the dictation now is (nil: no longer tracked, so a later replace copies).
+    struct Replaced { let result: ReplaceResult; let target: DictationInsertTarget? }
 
-    /// Replace it in <App> (0.5.313). Reads only the inserted span (AXStringForRange; else the selection set to the span),
-    /// never the field's whole value. Replaces only when that span still holds exactly what COS inserted, then measures.
-    /// No key is pressed, so nothing is sent.
-    static func replace(_ target: DictationInsertTarget, inserted: String, corrected: String) async -> ReplaceResult {
+    /// Replace it in <App> (0.5.313; 0.5.318 routes and proof). Reads only a bounded window around where the dictation
+    /// went (AXStringForRange; else the span selected and read), plans the smallest whole-word edit, then takes the route
+    /// delivery proved works in this field: the Accessibility set, or ⌘V over a selection read back as exactly the
+    /// misheard words. Measures after either. The only key it can post is ⌘V, after that proof; never Return.
+    /// One `replace` line per attempt: bundle, route, where the text was found, the selection and focus proof, the
+    /// read-back. Counts and booleans only, never text.
+    static func replace(_ target: DictationInsertTarget, corrected: String, restoreClipboard: Bool) async -> Replaced {
         let element = target.element
         AXUIElementSetMessagingTimeout(element, 0.25)
+        var facts = "bundle=\(target.bundle ?? "-") setterWorked=\(target.setterWorked) terminal=\(target.terminal)"
+        func done(_ result: ReplaceResult, _ next: DictationInsertTarget?) -> Replaced {
+            dictationLog.notice("replace \(facts, privacy: .public) result=\(String(describing: result), privacy: .public)")
+            return Replaced(result: result, target: next)
+        }
         let running = NSRunningApplication(processIdentifier: target.span.pid).map { !$0.isTerminated } ?? false
-        let original = running ? snapshot(element) : DictationFieldSnapshot()
-        var text = running && !target.terminal ? string(element, at: target.span) : nil
-        var selectedToRead = false
-        if running, !target.terminal, text == nil, let n = original.characters, n >= target.span.location + target.span.length,
-           select(element, location: target.span.location, length: target.span.length) {
-            selectedToRead = true
-            text = attribute(element, kAXSelectedTextAttribute) as? String
+        let original = running && !target.terminal ? snapshot(element) : DictationFieldSnapshot()
+        // The window around the span; else the span alone, by AXStringForRange or by selecting it to read.
+        var window: String?, windowStart = target.span.location, read = "none"
+        if let n = original.characters {
+            let bounds = DictationReplace.window(span: target.span, currentLength: target.text.utf16.count, fieldCharacters: n)
+            if let text = string(element, location: bounds.location, length: bounds.length) { window = text; windowStart = bounds.location; read = "window" }
+            else if let text = string(element, location: target.span.location, length: target.span.length) { window = text; read = "span" }
+            else if n >= target.span.location + target.span.length, select(element, location: target.span.location, length: target.span.length) {
+                window = attribute(element, kAXSelectedTextAttribute) as? String; read = window == nil ? "none" : "selection"
+                if let l = original.location, let len = original.length { _ = select(element, location: l, length: len) }
+            }
         }
-        let decision = DictationReplace.decide(span: target.span, terminal: target.terminal, appRunning: running,
-                                               fieldCharacters: original.characters, textAtSpan: text, inserted: inserted)
-        guard case .replace(let location, let length) = decision else {
-            // Put the person's selection back if COS moved it only to read.
-            if selectedToRead, let l = original.location, let n = original.length { _ = select(element, location: l, length: n) }
-            if case .copy(let reason) = decision { return .copied(reason) }
-            return .copied(.notMeasured)
+        let plan = DictationReplace.plan(span: target.span, terminal: target.terminal, appRunning: running, fieldCharacters: original.characters,
+                                         window: window, windowStart: windowStart, current: target.text, corrected: corrected)
+        facts += " n=\(original.characters.map(String.init) ?? "?") read=\(read)"
+        guard case .edit(let edit, let dictationAt) = plan else {
+            if case .copy(let reason) = plan { facts += " found=\(reason.rawValue)"; return done(.copied(reason), target) }
+            return done(.copied(.notMeasured), target)
         }
-        guard selectedToRead || select(element, location: location, length: length) else { return .copied(.fieldGone) }
-        let before = snapshot(element)
-        guard AXUIElementSetAttributeValue(element, kAXSelectedTextAttribute as CFString, corrected as CFString) == .success else {
-            if let l = original.location, let n = original.length { _ = select(element, location: l, length: n) }
-            return .copied(.fieldGone)
+        let found = dictationAt == nil ? "words" : dictationAt == target.span.location ? "exact" : "moved"
+        facts += " found=\(found) edit=\(edit.location)+\(edit.length)>\(edit.replacement.utf16.count)"
+        // Where the dictation sits once the edit lands; nil when only the misheard words were found.
+        let next = dictationAt.map { at in
+            DictationInsertTarget(element: element, span: DictationInsertedSpan(pid: target.span.pid, location: at, length: corrected.utf16.count),
+                                  terminal: target.terminal, app: target.app, text: corrected, setterWorked: target.setterWorked, bundle: target.bundle)
         }
-        var elapsed = 0
-        for ms in DictationDelivery.pollMilliseconds {
-            if ms > elapsed { try? await Task.sleep(for: .milliseconds(ms - elapsed)); elapsed = ms }
-            if DictationReplace.verified(before: before, after: snapshot(element), span: target.span, newLength: corrected.utf16.count) { return .replaced }
+        let route = DictationReplace.route(setterWorked: target.setterWorked)
+        facts += " route=\(route)"
+        func putBack() { if let l = original.location, let len = original.length { _ = select(element, location: l, length: len) } }
+
+        if route == .accessibility {
+            guard select(element, location: edit.location, length: edit.length) else { facts += " select=failed"; return done(.copied(.fieldGone), target) }
+            let before = snapshot(element)
+            let setter = AXUIElementSetAttributeValue(element, kAXSelectedTextAttribute as CFString, edit.replacement as CFString)
+            facts += " setter=\(setter.rawValue)"
+            guard setter == .success else { putBack(); return done(.copied(.fieldGone), target) }
+            var elapsed = 0
+            for ms in DictationDelivery.pollMilliseconds {
+                if ms > elapsed { try? await Task.sleep(for: .milliseconds(ms - elapsed)); elapsed = ms }
+                let after = snapshot(element), back = string(element, location: edit.location, length: edit.replacement.utf16.count)
+                if DictationReplace.confirmed(before: before, after: after, edit: edit, readback: back) {
+                    facts += " after=\(after.logDescription) readback=\(back == nil ? "unreadable" : "match")"
+                    return done(.replaced, next)
+                }
+            }
+            facts += " after=\(snapshot(element).logDescription)"
+            return done(.unverified(pasted: false), target)
         }
-        return .unverified
+
+        // ⌘V. COS's own pet or editor holds the keyboard while Fix a word is open: give it back to the app's window
+        // the way the composer does (out and front again never takes key), bring the app forward, then prove focus.
+        if let key = NSApp.keyWindow, key is PetPanel || key is DictationOverlayPanel { key.orderOut(nil); key.orderFrontRegardless() }
+        if let app = NSRunningApplication(processIdentifier: target.span.pid), NSWorkspace.shared.frontmostApplication?.processIdentifier != app.processIdentifier {
+            app.activate()
+        }
+        try? await Task.sleep(for: .milliseconds(150))
+        let frontmost = NSWorkspace.shared.frontmostApplication?.processIdentifier == target.span.pid
+        let appElement = AXUIElementCreateApplication(target.span.pid)
+        AXUIElementSetMessagingTimeout(appElement, 0.25)
+        let focusedNow = focused(appElement)
+        var focusedIsTarget = false
+        if let focusedNow {
+            focusedIsTarget = CFEqual(focusedNow, element) || editableAncestor(focusedNow).map { ancestor in CFEqual(ancestor, element) } == true
+        }
+        // Chromium applies a selection asynchronously: poll until it reads back as the edit range.
+        var selection = DictationFieldSnapshot()
+        if frontmost, focusedIsTarget, select(element, location: edit.location, length: edit.length) {
+            var elapsed = 0
+            for ms in DictationDelivery.pollMilliseconds {
+                if ms > elapsed { try? await Task.sleep(for: .milliseconds(ms - elapsed)); elapsed = ms }
+                selection = snapshot(element)
+                if selection.location == edit.location, selection.length == edit.length { break }
+            }
+        }
+        let selected = attribute(element, kAXSelectedTextAttribute) as? String
+        let proof = DictationReplace.pasteProof(frontmost: frontmost, ownWindowKey: NSApp.keyWindow != nil, focusedIsTarget: focusedIsTarget,
+                                                selection: selection, selectedText: selected, edit: edit)
+        facts += " frontmost=\(frontmost) ownKey=\(NSApp.keyWindow != nil) focused=\(focusedIsTarget) selection=\(selection.logDescription) selectedMatch=\(selected == edit.original)"
+        if let proof { if frontmost, focusedIsTarget { putBack() }; return done(.copied(proof), target) }
+        let board = SystemDictationPasteboard(NSPasteboard.general)
+        let saved = DictationClipboard.snapshot(board)
+        guard board.writeTranscript(edit.replacement, markerTypes: DictationClipboard.transientTypes) else { putBack(); return done(.copied(.fieldGone), target) }
+        let changeCount = board.changeCount
+        if let refusal = await paste(changeCount: changeCount) {
+            facts += " paste=\(refusal.rawValue)"
+            // Not pasted: the person's clipboard goes back now; the caller copies the corrected dictation.
+            if let saved { _ = DictationClipboard.restore(saved, to: board) }
+            putBack(); return done(.copied(.notFocused), target)
+        }
+        facts += " paste=sent"
+        let postedAt = Date()
+        var landed = false, waited = 0
+        for ms in [80, 200, 400, 700] {
+            try? await Task.sleep(for: .milliseconds(ms - waited)); waited = ms
+            let after = snapshot(element), back = string(element, location: edit.location, length: edit.replacement.utf16.count)
+            if DictationReplace.confirmed(before: selection, after: after, edit: edit, readback: back) {
+                facts += " after=\(after.logDescription) readback=\(back == nil ? "unreadable" : "match")"; landed = true; break
+            }
+            if ms == 700 { facts += " after=\(after.logDescription) readback=\(back == nil ? "unreadable" : back == edit.replacement ? "match" : "mismatch")" }
+        }
+        // Unconfirmed: the caller leaves the corrected dictation on the clipboard. Confirmed: the person's goes back.
+        if landed {
+            let elapsed = Int(Date().timeIntervalSince(postedAt) * 1000)
+            if elapsed < DictationClipboard.restoreAfterMilliseconds { try? await Task.sleep(for: .milliseconds(DictationClipboard.restoreAfterMilliseconds - elapsed)) }
+            if case .restore = DictationClipboard.decision(enabled: restoreClipboard, pasted: true, snapshot: saved, setChangeCount: changeCount,
+                                                           currentChangeCount: board.changeCount), let saved {
+                _ = DictationClipboard.restore(saved, to: board)
+            }
+            return done(.replaced, next)
+        }
+        return done(.unverified(pasted: true), target)
+    }
+    nonisolated private static func string(_ element: AXUIElement, location: Int, length: Int) -> String? {
+        guard location >= 0, length >= 0 else { return nil }
+        return string(element, at: DictationInsertedSpan(pid: 0, location: location, length: length))
     }
     nonisolated private static func string(_ element: AXUIElement, at span: DictationInsertedSpan) -> String? {
         var range = CFRange(location: span.location, length: span.length)
@@ -940,6 +1044,10 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
     @Published var restoreClipboard: Bool = UserDefaults.standard.object(forKey: "dictation.restoreClipboard") as? Bool ?? true {
         didSet { UserDefaults.standard.set(restoreClipboard, forKey: "dictation.restoreClipboard") }
     }
+    /// 0.5.318: "number one, … number two, …" and "bullet, …" become a numbered or bulleted list (DictationListFormat).
+    @Published var formatLists: Bool = UserDefaults.standard.object(forKey: "dictation.formatLists") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(formatLists, forKey: "dictation.formatLists") }
+    }
     @Published private(set) var microphones: [DictationMicrophone] = []
     @Published private(set) var holdTrigger: DictationTrigger?
     @Published private(set) var toggleTrigger: DictationTrigger?
@@ -1324,7 +1432,7 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
                 guard let bridge else { throw NSError(domain: "COSDictation", code: 2, userInfo: [NSLocalizedDescriptionKey: "The transcription server is not connected."]) }
                 let response = try await bridge(wav)
                 guard generation == attempt, !Task.isCancelled else { return }
-                guard response.ok, let text = response.details["text"]?.string, !text.isEmpty,
+                guard response.ok, let heard = response.details["text"]?.string, !heard.isEmpty,
                       response.details["engine"]?.string == "parakeet-ultra" else {
                     // No speech (the server's 204) is an answer, not a failure: retrying the same audio cannot help.
                     let noSpeech = response.details["noSpeech"]?.bool == true
@@ -1334,6 +1442,7 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
                     // A click while holding and nothing said: the person was ⌥-clicking slowly, not dictating. No card.
                     fail(response.message, card: !(noSpeech && pointerDuringHold), retry: !noSpeech); return
                 }
+                let text = formatLists ? DictationListFormat.format(heard) : heard
                 let copyOnly = pendingInterrupted
                 let clipboardMoved = interruptedChangeCount.map { $0 != NSPasteboard.general.changeCount } ?? false
                 pendingAudio = nil; phase = "Ready"; message = nil
@@ -1641,9 +1750,14 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
             if saved {
                 fixSelection = nil; fixDraft = ""; fixSuggestion = nil
                 fixNote = dictionary.message ?? "Saved. COS writes “\(written)” from the next sentence."
-                // 0.5.313: offer the corrected dictation back where it went (or on the clipboard).
                 if let recordID, let selection, let fixed = self.record(recordID),
                    let corrected = DictationReplace.corrected(fixed.text, range: selection, written: written) {
+                    // 0.5.318: the dictation itself now reads the fix (Heard, history, Copy), whether or not it is
+                    // replaced in the app; the insert target still describes what the field holds.
+                    recent = DictationHistory.correcting(recordID, to: corrected, in: recent)
+                    saveRecent()
+                    fixNote = (dictionary.message.map { $0 + " " } ?? "Saved. ") + "This dictation now reads “\(written)”, and COS writes it that way from the next sentence."
+                    // 0.5.313: offer the corrected dictation back where it went (or on the clipboard).
                     replaceOffer = DictationReplaceOffer(recordID: recordID, corrected: corrected, app: insertTargets[recordID]?.app)
                 }
             }
@@ -1653,28 +1767,22 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
     /// Replace it in <App>: only where COS can prove the spot still holds exactly what it inserted; anything else
     /// (a terminal, a paste it could not measure, an edited field) copies the corrected text. Never presses Return.
     func replaceCorrected() {
-        guard let offer = replaceOffer, let record = self.record(offer.recordID) else { return }
+        guard let offer = replaceOffer, record(offer.recordID) != nil else { return }
         replaceOffer = nil
         guard let target = insertTargets[offer.recordID] else {
             copy(offer.corrected); fixNote = "Copied the corrected text."; return
         }
         Task {
-            let result = await DictationInsertion.replace(target, inserted: record.text, corrected: offer.corrected)
-            dictationLog.notice("replace result=\(String(describing: result), privacy: .public)")
-            switch result {
+            // The record already reads the fix (saveFix); this moves the field to match, or says why it could not.
+            let replaced = await DictationInsertion.replace(target, corrected: offer.corrected, restoreClipboard: restoreClipboard)
+            insertTargets[offer.recordID] = replaced.target
+            switch replaced.result {
             case .replaced:
-                let updated = DictationRecord(id: record.id, text: offer.corrected, createdAt: record.createdAt, delivery: record.delivery)
-                recent = recent.map { $0.id == record.id ? updated : $0 }
-                insertTargets[record.id] = DictationInsertTarget(element: target.element,
-                    span: DictationInsertedSpan(pid: target.span.pid, location: target.span.location, length: offer.corrected.utf16.count),
-                    terminal: target.terminal, app: target.app)
-                saveRecent()
                 fixNote = "Replaced it in \(target.app)."
             case .copied(let reason):
                 copy(offer.corrected); fixNote = DictationReplace.copiedNote(reason, app: target.app)
-            case .unverified:
-                copy(offer.corrected)
-                fixNote = "COS set the text in \(target.app) but couldn't confirm it, so the corrected text is on the clipboard too."
+            case .unverified(let pasted):
+                copy(offer.corrected); fixNote = DictationReplace.unverifiedNote(app: target.app, pasted: pasted)
             }
         }
     }
@@ -1758,6 +1866,8 @@ struct MacDictationSettings: View {
                 DictationQuietSettings(store: store)
                 Toggle("Restore my clipboard after pasting", isOn: $store.restoreClipboard).toggleStyle(COSSwitchStyle())
                     .help("When COS pastes with ⌘V, it puts back whatever you had copied once the app has the text.")
+                Toggle("Format spoken lists", isOn: $store.formatLists).toggleStyle(COSSwitchStyle())
+                    .help("Say “number one, … number two, …” or “bullet, … next bullet, …” and COS writes a numbered or bulleted list, one item per line.")
                 Text("Any shortcut: a modifier plus a key, a function key, or one modifier key by itself such as Fn 🌐 or Right ⌘. Fn and single-key shortcuts use Accessibility. Finished text drops into the text box that has the cursor; with no text box it is copied, and the pet shows it with a Copy button. Some apps, such as terminals and Electron editors, get ⌘V; COS shows Pasted when it can't confirm, then puts your clipboard back. COS never presses Send or Return.")
                     .font(.caption2).foregroundStyle(.secondary)
                 if let message = store.message { Text(message).font(.caption2).foregroundStyle(COSPalette.amber) }

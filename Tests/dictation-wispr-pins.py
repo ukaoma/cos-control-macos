@@ -483,12 +483,35 @@ need('forKey: "dictation.quiet") ?? "") ?? .default' in dictation and "Dictation
 media = ("NX_KEYTYPE", "systemDefined", "MRMediaRemote", "MediaRemote.framework", "MPRemoteCommand", "keyCode: 16, keyDown")
 need(not any(m in src for src in sources.values() for m in media),
      "no media key and no MediaRemote: a blind play/pause can START playback (0.5.313 finding)")
-replace = body(dictation, "    static func replace(_ target: DictationInsertTarget, inserted: String, corrected: String) async -> ReplaceResult {")
+replace = body(dictation, "    static func replace(_ target: DictationInsertTarget, corrected: String, restoreClipboard: Bool) async -> Replaced {")
 need("CGEvent" not in replace and ".post(" not in replace and "kAXValueAttribute" not in replace,
-     "Replace presses no key (never Return) and never reads the field's whole value")
-need("DictationReplace.decide(" in replace and "DictationReplace.verified(" in replace and "string(element, at: target.span)" in replace,
-     "Replace goes through the tested decision, reads only the span, and measures")
+     "Replace posts no key of its own (only paste's ⌘V, below) and never reads the field's whole value")
+need("DictationReplace.plan(" in replace and "DictationReplace.route(setterWorked: target.setterWorked)" in replace
+     and replace.count("DictationReplace.confirmed(") == 2 and "DictationReplace.window(span: target.span," in replace,
+     "Replace reads a bounded window, plans through the tested rules, takes the route delivery proved, and measures both routes")
 need("kAXStringForRangeParameterizedAttribute" in dictation, "the span is read with AXStringForRange")
+# 0.5.318 (Miles 13:02, Claude): the Accessibility set is a no-op in Electron, so a replace there pastes, and only after
+# the tested proof that the selection is exactly the misheard words in the app's own focused field.
+need(replace.count("await paste(changeCount: changeCount)") == 1
+     and replace.index("DictationReplace.pasteProof(") < replace.index("if let proof {") < replace.index("await paste(changeCount: changeCount)"),
+     "the replace ⌘V is posted once, only after pasteProof passed")
+need(replace.index("key.orderOut(nil); key.orderFrontRegardless()") < replace.index("DictationReplace.pasteProof("),
+     "COS's own panel gives the keyboard back before focus is proved")
+need("setterWorked: true" in deliver and "setterWorked: false" in deliver and deliver.count("text: text,") == 2,
+     "delivery records which route moved the field and what it typed, for the replace")
+need('dictationLog.notice("replace \\(facts, privacy: .public) result=' in replace and "selectedMatch=" in replace and "focused=" in replace and "readback=" in replace,
+     "one replace log line carries the discriminating facts (route, found, focus, selection, read-back), never text")
+save_fn = body(dictation, "    func saveFix(to dictionary: TranscriptionDictionaryStore) {")
+need(save_fn.index("recent = DictationHistory.correcting(recordID, to: corrected, in: recent)") < save_fn.index("saveRecent()")
+     < save_fn.index("replaceOffer = DictationReplaceOffer("),
+     "Save corrects the stored dictation (Heard, history) before offering Replace (Miles: Heard still read the mishearing)")
+need("recent = recent.map" not in body(dictation, "    func replaceCorrected() {"), "Replace no longer owns the record update; Save does")
+# 0.5.318 spoken lists: on by default, applied once to the transcript before it is delivered and recorded.
+need('forKey: "dictation.formatLists") as? Bool ?? true' in dictation
+     and 'Toggle("Format spoken lists", isOn: $store.formatLists)' in dictation, "Format spoken lists is a setting, on by default")
+need(transcribe.count("DictationListFormat.format(") == 1
+     and transcribe.index("let text = formatLists ? DictationListFormat.format(heard) : heard") < transcribe.index("let delivered = copyOnly"),
+     "the list format runs before delivery, so what is typed and what is kept match")
 replace_ui = body(dictation, "    func replaceCorrected() {")
 need(replace_ui.count("copy(offer.corrected)") == 3 and 'fixNote = "Copied the corrected text."' in replace_ui,
      "every path that does not replace copies the corrected text and says so")

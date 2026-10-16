@@ -530,17 +530,127 @@ final class FakeDictationBoard: DictationPasteboardAccess {
                && DictationReplace.span(pid: 42, baseline: DictationFieldSnapshot(characters: 100, location: nil, length: nil),
                                         after: DictationFieldSnapshot(characters: 112, location: nil, length: nil), count: 12) == nil,
                "a field that moved more than the text, or no caret, records nothing")
-        let inserted = "yellow fanduna"
         let s14 = DictationInsertedSpan(pid: 42, location: 40, length: 14)
-        func decide(_ span: DictationInsertedSpan?, terminal: Bool = false, running: Bool = true, n: Int? = 120, at: String? = "yellow fanduna") -> DictationReplace.Decision {
-            DictationReplace.decide(span: span, terminal: terminal, appRunning: running, fieldCharacters: n, textAtSpan: at, inserted: inserted)
+        // 0.5.318 replace planning (Miles 13:02: "Y joule 360" → "Jewel360" in Claude). Hand-written fields and answers.
+        typealias Edit = DictationReplace.Edit
+        let said = "redirect into this uh Y joule 360 page", fixed = "redirect into this uh Jewel360 page"
+        expect(DictationReplace.wordEdit(from: said, to: fixed) == Edit(location: 22, length: 11, original: "Y joule 360", replacement: "Jewel360"),
+               "only the misheard words change, in UTF-16 units of the dictation")
+        expect(DictationReplace.wordEdit(from: "I caught a yellow fanduna, today.", to: "I caught a yellowfin tuna, today.")
+               == Edit(location: 11, length: 15, original: "yellow fanduna,", replacement: "yellowfin tuna,"), "punctuation stays with its word")
+        expect(DictationReplace.wordEdit(from: "hi there", to: "hi you there") == Edit(location: 3, length: 0, original: "", replacement: "you "),
+               "an added word is an insertion at a word boundary")
+        expect(DictationReplace.wordEdit(from: "1. Call Gina.\n2. Ship it.", to: "1. Call Gina.\n2. Ship COS.")
+               == Edit(location: 22, length: 3, original: "it.", replacement: "COS."), "line breaks are kept as they are")
+        expect(DictationReplace.wordEdit(from: said, to: said) == nil, "nothing changed: no edit")
+        expect(DictationReplace.window(span: DictationInsertedSpan(pid: 1, location: 1000, length: 20), currentLength: 20, fieldCharacters: 5000) == (744, 532)
+               && DictationReplace.window(span: DictationInsertedSpan(pid: 1, location: 10, length: 20), currentLength: 20, fieldCharacters: 5000) == (0, 286)
+               && DictationReplace.window(span: DictationInsertedSpan(pid: 1, location: 1000, length: 20), currentLength: 40, fieldCharacters: 5000) == (744, 552)
+               && DictationReplace.window(span: DictationInsertedSpan(pid: 1, location: 1000, length: 20), currentLength: 20, fieldCharacters: 100) == (0, 100),
+               "the window is 256 either side of the dictation, clipped to the field, never the whole value")
+        let at7 = DictationInsertedSpan(pid: 42, location: 7, length: 38)
+        func plan(_ field: String?, span: DictationInsertedSpan? = at7, terminal: Bool = false, running: Bool = true, start: Int = 0,
+                  current: String = said, corrected: String = fixed) -> DictationReplace.Plan {
+            DictationReplace.plan(span: span, terminal: terminal, appRunning: running, fieldCharacters: field?.utf16.count, window: field,
+                                  windowStart: start, current: current, corrected: corrected)
         }
-        expect(decide(s14) == .replace(location: 40, length: 14), "range still matches: replace")
-        expect(decide(s14, at: "low fanduna to") == .copy(.textMoved), "text moved (typed above it): copy")
-        expect(decide(s14, at: "yellow fandunas") == .copy(.textMoved) && decide(s14, at: nil) == .copy(.textMoved), "edited or unreadable span: copy")
-        expect(decide(s14, n: 30) == .copy(.fieldChanged) && decide(s14, n: nil) == .copy(.fieldGone), "field changed or gone: copy")
-        expect(decide(s14, terminal: true) == .copy(.terminal) && decide(nil) == .copy(.notMeasured) && decide(s14, running: false) == .copy(.appGone),
-               "terminal, unmeasured paste and a quit app: copy")
+        let swap = Edit(location: 29, length: 11, original: "Y joule 360", replacement: "Jewel360")
+        expect(plan("Please " + said + " now.") == .edit(swap, dictationAt: 7), "where COS put it: replace only the misheard words")
+        expect(plan(" " + said + " now.", start: 6) == .edit(swap, dictationAt: 7), "a window that starts before the span is offset")
+        expect(plan("Hi. Please " + said + " now.") == .edit(Edit(location: 33, length: 11, original: "Y joule 360", replacement: "Jewel360"), dictationAt: 11),
+               "text typed above it: found once, moved with it")
+        expect(plan("Please redirect into that uh Y joule 360 page now.") == .edit(swap, dictationAt: nil),
+               "another word of it edited: the misheard words found once, no longer tracked as a whole")
+        expect(plan("Please redirect into that uh Y joule 360 page, Y joule 360 now.") == .copy(.textMoved), "the words twice: copy")
+        expect(plan("x " + said + " " + said, span: DictationInsertedSpan(pid: 42, location: 0, length: 38)) == .copy(.textMoved),
+               "the dictation twice, neither where COS put it: copy")
+        expect(plan("Please " + said + " " + said) == .edit(swap, dictationAt: 7), "the dictation twice, one where COS put it: that one")
+        expect(plan("XY joule 360 page and Y joule 360 page", span: DictationInsertedSpan(pid: 42, location: 30, length: 16),
+                    current: "Y joule 360 page", corrected: "Jewel360 page") == .copy(.textMoved),
+               "two copies of the dictation stay ambiguous even when one copy's words are not on a word boundary")
+        expect(plan("Please redirect into that uh XY joule 360 page now.") == .copy(.textMoved), "the words inside another word are not the words")
+        expect(plan("so uh a b d", span: DictationInsertedSpan(pid: 42, location: 3, length: 8), current: "uh a b c", corrected: "uh a B c") == .copy(.textMoved),
+               "a misheard word shorter than three units is never searched for")
+        expect(plan("Please " + said, terminal: true) == .copy(.terminal) && plan("Please " + said, span: nil) == .copy(.notMeasured)
+               && plan("Please " + said, running: false) == .copy(.appGone) && plan(nil) == .copy(.fieldGone),
+               "terminal, unmeasured paste, a quit app, an unreadable field: copy")
+        expect(plan("Please " + said + " now.", corrected: said) == .copy(.noChange), "nothing to change: say so")
+        expect(plan("Please redirect elsewhere now.") == .copy(.textMoved), "the text is gone: copy")
+        // Route: what delivery proved. Electron's set reports success and changes nothing (Claude 13:02:42 setter=0
+        // after=n=183 r=183+0), so there a replace pastes.
+        expect(DictationReplace.route(setterWorked: true) == .accessibility && DictationReplace.route(setterWorked: false) == .paste,
+               "the setter where it moved the field, else ⌘V")
+        let selectedSwap = DictationFieldSnapshot(characters: 200, location: 29, length: 11)
+        func proof(frontmost: Bool = true, own: Bool = false, focused: Bool = true, selection: DictationFieldSnapshot = selectedSwap,
+                   text: String? = "Y joule 360", edit: Edit = swap) -> DictationReplace.Reason? {
+            DictationReplace.pasteProof(frontmost: frontmost, ownWindowKey: own, focusedIsTarget: focused, selection: selection, selectedText: text, edit: edit)
+        }
+        expect(proof() == nil, "frontmost, focused, and the selection reads back as exactly the words: paste")
+        expect(proof(frontmost: false) == .notFocused && proof(own: true) == .notFocused && proof(focused: false) == .notFocused,
+               "another app in front, COS's own panel holding the keyboard, or another field focused: never paste")
+        expect(proof(selection: DictationFieldSnapshot(characters: 200, location: 30, length: 11)) == .selectionUnproven
+               && proof(selection: DictationFieldSnapshot(characters: 200, location: 29, length: 10)) == .selectionUnproven
+               && proof(selection: DictationFieldSnapshot()) == .selectionUnproven,
+               "a selection that is not exactly the range (or unread) is not proof")
+        expect(proof(text: "Y joule 36") == .selectionUnproven && proof(text: nil) == .selectionUnproven, "the selected text must read back as the words")
+        expect(proof(selection: DictationFieldSnapshot(characters: 200, location: 3, length: 0), text: nil,
+                     edit: Edit(location: 3, length: 0, original: "", replacement: "you ")) == nil, "an insertion needs only the caret")
+        func confirmed(_ after: DictationFieldSnapshot, _ back: String?) -> Bool {
+            DictationReplace.confirmed(before: selectedSwap, after: after, edit: swap, readback: back)
+        }
+        expect(confirmed(DictationFieldSnapshot(characters: 197, location: 37, length: 0), "Jewel360")
+               && confirmed(DictationFieldSnapshot(characters: 197, location: 37, length: 0), nil), "measured, and read back where the field allows")
+        expect(!confirmed(selectedSwap, nil) && !confirmed(selectedSwap, "Jewel360"),
+               "the Electron no-op (nothing moved after a successful set) is never confirmed")
+        expect(!confirmed(DictationFieldSnapshot(characters: 197, location: 37, length: 0), "Y joule"), "a read-back of other words is not the fix")
+        let reasons: [DictationReplace.Reason] = [.notMeasured, .terminal, .appGone, .fieldGone, .textMoved, .notFocused, .selectionUnproven, .noChange]
+        expect(reasons.allSatisfy { !DictationReplace.copiedNote($0, app: "Claude").isEmpty }
+               && DictationReplace.copiedNote(.selectionUnproven, app: "Claude").contains("press ⌘V")
+               && DictationReplace.copiedNote(.notFocused, app: "Claude").contains("press ⌘V")
+               && DictationReplace.unverifiedNote(app: "Claude", pasted: true).hasPrefix("COS pasted")
+               && DictationReplace.unverifiedNote(app: "Claude", pasted: false).hasPrefix("COS set"),
+               "every copy says what to do next; an unconfirmed paste says it pasted")
+        // Save corrects the stored dictation (Miles: Heard still read "Y joule 360").
+        let first = DictationRecord(id: UUID(), text: said, createdAt: t0, delivery: .inserted(app: "Claude"))
+        let second = DictationRecord(id: UUID(), text: "other", createdAt: t0.addingTimeInterval(-5), delivery: .copied(.noTextBox))
+        let corrected = DictationHistory.correcting(first.id, to: fixed, in: [first, second])
+        expect(corrected.map(\.id) == [first.id, second.id] && corrected[0].text == fixed && corrected[0].createdAt == t0
+               && corrected[0].delivery == .inserted(app: "Claude") && corrected[1] == second, "only the text of that dictation changes")
+        expect(DictationHistory.correcting(UUID(), to: "x", in: [first, second]) == [first, second], "an unknown dictation changes nothing")
+        // 0.5.318 spoken lists: a golden table, positives with their exact output and negatives that stay prose.
+        let lists: [(String, String)] = [
+            ("number one, I want to do X, Y or Z. Number two, I want to do Z, E and F. Number three, I want to do C, B and J.",
+             "1. I want to do X, Y or Z.\n2. I want to do Z, E and F.\n3. I want to do C, B and J."),
+            ("Here's the plan for today. Number one, call Gina. Number two, review the deck.", "Here's the plan for today.\n1. Call Gina.\n2. Review the deck."),
+            ("I have three goals, number one, sleep more, number two, ship COS, and number three, call Justin.",
+             "I have three goals:\n1. Sleep more\n2. Ship COS\n3. Call Justin."),
+            ("Number 1: buy milk. Number 2: pick up the kids.", "1. Buy milk.\n2. Pick up the kids."),
+            ("Number one. Fix the replace bug. Number two. Format spoken lists.", "1. Fix the replace bug.\n2. Format spoken lists."),
+            ("First, book the flight. Second, reserve the hotel. Third, tell Queen.", "1. Book the flight.\n2. Reserve the hotel.\n3. Tell Queen."),
+            ("First of all, thank the team. Secondly, send the recap.", "1. Thank the team.\n2. Send the recap."),
+            ("One, call Gina. Two, call Graham. Three, call Ryan.", "1. Call Gina.\n2. Call Graham.\n3. Call Ryan."),
+            ("Bullet, eggs. Bullet, milk. Next bullet, bread.", "- Eggs.\n- Milk.\n- Bread."),
+            ("Bullet point call the vendor. Next bullet point confirm the booth.", "- Call the vendor.\n- Confirm the booth."),
+            ("Groceries. Dash, eggs. Dash, milk.", "Groceries.\n- Eggs.\n- Milk."),
+            ("Number one, update the iPhone app. Number two, iOS release notes.", "1. Update the iPhone app.\n2. iOS release notes."),
+            ("Number one, X. Number three, Y. Number two, Z.", "1. X. Number three, Y.\n2. Z."),
+        ]
+        for (spoken, written) in lists {
+            expect(DictationListFormat.format(spoken) == written, "spoken list: \(spoken)")
+            expect(DictationListFormat.format(written) == written, "a formatted list is left alone: \(spoken)")
+        }
+        expect(DictationListFormat.format("Number one, pack. Number two, drive. First, unpack. Second, rest.") == "1. Pack.\n2. Drive. First, unpack. Second, rest.",
+               "one list per dictation: the kind that starts first wins, later markers stay in the last item")
+        let prose = [
+            "I have two kids.", "Sleep is my number one priority.", "Number one priority is sleep. Number two priority is family.",
+            "Number one, I love this.", "One, two, three, go!", "First, I went home.", "Number one, number two, number three.",
+            "Number one, ... Number two, ...", "Number one, call Gina. Number three, call Ryan.", "Number two, call Gina. Number three, call Ryan.",
+            "One, call Gina. Two, call Graham.", "Bullet points are great. Bullet points are bad.", "Dash to the store. Dash home.",
+            "We have two options, one is cheap and one is fast.", "My first, second and third choices were taken.",
+            "It was the first, then the second, then the third.", "Wait a second. Second, we need the deck.",
+            "I'll take number one, and number two can wait.", "Count with me. One, Mississippi, two, Mississippi, three, Mississippi.", "",
+        ]
+        for text in prose { expect(DictationListFormat.format(text) == text, "prose stays prose: \(text)") }
         // Before the set, the span is selected: 120 characters, 40+14.
         let selected = DictationFieldSnapshot(characters: 120, location: 40, length: 14)
         func verified(_ n: Int?, _ caret: Int?, _ length: Int? = 0, new: Int) -> Bool {
