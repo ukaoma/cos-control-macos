@@ -454,14 +454,37 @@ struct DictationDelivered: Sendable {
 }
 
 /// Quiet while dictating (0.5.313, Miles 22:06: "mute the rest of the sound playing through the speakers when dictation
-/// mode is running ... as soon as you're done it picks back up"). Mute is a global process tap that excludes COS, with
-/// muteBehavior .muted, alive only while listening; process taps die with the process, so a crash cannot leave apps
-/// muted. Without System Audio Recording, COS lowers the default output's volume instead and saves the exact scalar
-/// first, on disk too, so a quit or crash in between is put back at the next launch. `end()` is safe to call any time.
+/// mode is running ... as soon as you're done it picks back up"). Without System Audio Recording, COS lowers the default
+/// output's volume instead and saves the exact scalar first, on disk too, so a quit or crash in between is put back at
+/// the next launch. `end()` is safe to call any time.
+///
+/// Mute (0.5.315): 0.5.313 created a global process tap with muteBehavior .muted and never read it; Miles's Spotify kept
+/// playing at full level while the log said "muted". Apple's headers do not say a tap mutes only while it is read (the
+/// CATapMuted text is "Audio is captured by the tap but no audio is sent from the process to the audio hardware"), so
+/// this is built exactly as Apple's tap sample uses a tap and logs what each step returned, plus the callbacks and the
+/// peak the tap delivered, so one test with music playing settles which it was. The steps (DictationMuteTap, tested):
+/// the tap (COS excluded, so its own start and stop sounds still play), its UID, a PRIVATE aggregate device clocked by
+/// the default output that lists the tap, an IOProc that measures the tapped audio and outputs silence, and the IO
+/// running. Tap auto-start stays off: its header says AudioDeviceStart then "will wait until a tapped process begins
+/// receiving its first audio", and this runs on the main actor. A crash cannot leave apps muted: the tap is private
+/// ("only visible to the client process that created the tap") and so is the aggregate ("private to the process that
+/// created it ... not persistent across launches"), and the HAL drops a client's objects with its connection.
 @MainActor final class DictationQuietController {
     private static let pendingKey = "dictation.quiet.pending"
-    private var tap = AudioObjectID(kAudioObjectUnknown)
+    private struct Mute {
+        let id = UUID()
+        var built = DictationMuteTap.Built()
+        var tap = AudioObjectID(kAudioObjectUnknown)
+        var aggregate = AudioObjectID(kAudioObjectUnknown)
+        var ioProc: AudioDeviceIOProcID?
+        var listener: AudioObjectPropertyListenerBlock?
+        let outputUID: String
+        let meter = DictationMuteMeter()
+    }
+    private var mute: Mute?
     private var lowered: (device: AudioObjectID, pending: DictationQuiet.Pending)?
+    /// One line for Settings when the last Mute could not mute and COS lowered the volume instead; nil once it mutes.
+    private(set) var fallbackNote: String?
 
     func begin(mode: DictationQuietMode, macRecording: Bool) {
         end()
@@ -475,7 +498,7 @@ struct DictationDelivered: Sendable {
         }
         switch plan {
         case .leave(let reason): dictationLog.notice("quiet: left alone (\(reason, privacy: .public))")
-        case .muteTap: dictationLog.notice("quiet: other apps muted")
+        case .muteTap: break  // muteOtherApps logged "other apps muted" once the IO was running
         case .lowerVolume(let target):
             guard let device, let volume, let uid = Self.uid(device) else { return }
             let pending = DictationQuiet.Pending(deviceUID: uid, saved: volume, lowered: target)
@@ -492,10 +515,15 @@ struct DictationDelivered: Sendable {
 
     /// Listening ended (stop, fail, cancel, quit, sleep): unmute and put the volume back.
     func end() {
-        if tap != kAudioObjectUnknown {
-            if #available(macOS 14.2, *) { AudioHardwareDestroyProcessTap(tap) }
-            tap = AudioObjectID(kAudioObjectUnknown)
-            dictationLog.notice("quiet: other apps unmuted")
+        if let session = mute {
+            mute = nil
+            if let listener = session.listener {
+                var address = Self.address(kAudioHardwarePropertyDefaultOutputDevice, scope: kAudioObjectPropertyScopeGlobal)
+                AudioObjectRemovePropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &address, .main, listener)
+            }
+            let report = Self.tearDown(session)
+            let reading = session.meter.reading()
+            dictationLog.notice("quiet: other apps unmuted \(report, privacy: .public) callbacks=\(reading.callbacks, privacy: .public) tapPeak=\(reading.peak, format: .fixed(precision: 4), privacy: .public)")
         }
         if let lowered {
             self.lowered = nil
@@ -531,6 +559,11 @@ struct DictationDelivered: Sendable {
 
     private func muteOtherApps() -> Bool {
         guard #available(macOS 14.2, *) else { return false }
+        guard let output = Self.defaultOutput(), let outputUID = Self.uid(output) else {
+            dictationLog.error("quiet: mute failed step=output (no default output); lowering the volume instead")
+            fallbackNote = Self.note(permission: false); return false
+        }
+        let began = ContinuousClock.now
         let own = Self.ownProcessObject()
         // Without COS's own object the tap would mute the start sound too: say so (QA 2026-10-15).
         if own.isEmpty { dictationLog.notice("quiet: COS's own audio object not found; its sounds may be muted too") }
@@ -538,14 +571,126 @@ struct DictationDelivered: Sendable {
         description.name = "COS dictation quiet"
         description.isPrivate = true
         description.muteBehavior = .muted
-        var id = AudioObjectID(kAudioObjectUnknown)
-        let status = AudioHardwareCreateProcessTap(description, &id)
-        guard status == noErr, id != kAudioObjectUnknown else {
-            dictationLog.error("quiet: mute tap refused status=\(status, privacy: .public); lowering the volume instead")
+        var session = Mute(outputUID: outputUID)
+        var tapUID = ""
+        var statuses: [String] = []
+        let result = DictationMuteTap.build { step in
+            let status: OSStatus
+            switch step {
+            case .tap:
+                status = AudioHardwareCreateProcessTap(description, &session.tap)
+            case .tapUID:
+                let uid = Self.string(session.tap, kAudioTapPropertyUID)
+                tapUID = uid ?? ""
+                status = uid == nil ? kAudioHardwareUnknownPropertyError : noErr
+            case .aggregate:
+                let composition: [String: Any] = [
+                    kAudioAggregateDeviceNameKey: "COS dictation quiet",
+                    kAudioAggregateDeviceUIDKey: "com.gotcos.dictation-quiet.\(session.id.uuidString)",
+                    kAudioAggregateDeviceMainSubDeviceKey: outputUID,
+                    kAudioAggregateDeviceIsPrivateKey: true,
+                    kAudioAggregateDeviceIsStackedKey: false,
+                    kAudioAggregateDeviceTapAutoStartKey: false,
+                    kAudioAggregateDeviceSubDeviceListKey: [[kAudioSubDeviceUIDKey: outputUID]],
+                    kAudioAggregateDeviceTapListKey: [[kAudioSubTapUIDKey: tapUID, kAudioSubTapDriftCompensationKey: true]],
+                ]
+                status = AudioHardwareCreateAggregateDevice(composition as CFDictionary, &session.aggregate)
+            case .ioProc:
+                status = AudioDeviceCreateIOProcIDWithBlock(&session.ioProc, session.aggregate, nil, DictationMuteIO.silence(session.meter))
+            case .start:
+                status = AudioDeviceStart(session.aggregate, session.ioProc)
+            }
+            statuses.append("\(step.rawValue)=\(status)")
+            // A noErr that handed back no object is a failure too, or teardown would act on kAudioObjectUnknown.
+            if status == noErr, step == .tap, session.tap == kAudioObjectUnknown { return kAudioHardwareBadObjectError }
+            if status == noErr, step == .aggregate, session.aggregate == kAudioObjectUnknown { return kAudioHardwareBadObjectError }
+            if status == noErr, step == .ioProc, session.ioProc == nil { return kAudioHardwareIllegalOperationError }
+            return status
+        }
+        session.built = result.built
+        let elapsed = Int((ContinuousClock.now - began) / .milliseconds(1))
+        if let failure = result.failure {
+            let report = Self.tearDown(session)
+            dictationLog.error("quiet: mute failed step=\(failure.step.rawValue, privacy: .public) status=\(failure.status, privacy: .public) [\(statuses.joined(separator: " "), privacy: .public)] teardown [\(report, privacy: .public)] output=\(outputUID, privacy: .public); lowering the volume instead")
+            // Apple: the system asks for System Audio Recording "the first time you start recording from an aggregate
+            // device that contains a tap", so a refused start is the step permission most plausibly blocks.
+            fallbackNote = Self.note(permission: failure.step == .start)
             return false
         }
-        tap = id
+        var address = Self.address(kAudioHardwarePropertyDefaultOutputDevice, scope: kAudioObjectPropertyScopeGlobal)
+        let listener = Self.outputListener(self)
+        if AudioObjectAddPropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &address, .main, listener) == noErr { session.listener = listener }
+        mute = session; fallbackNote = nil
+        let playing = Self.playingProcesses(excluding: own)
+        dictationLog.notice("quiet: other apps muted [\(statuses.joined(separator: " "), privacy: .public)] subTaps=\(Self.subTapCount(session.aggregate), privacy: .public) running=\(Self.isRunning(session.aggregate), privacy: .public) playing=\(playing.count, privacy: .public) \(playing.joined(separator: ","), privacy: .public) output=\(outputUID, privacy: .public) ms=\(elapsed, privacy: .public)")
+        // One second in: did the HAL call the IOProc, and did the tap carry audio? callbacks=0 means the IO never ran;
+        // tapPeak=0 with music playing means the tap is not receiving it.
+        let id = session.id, aggregate = session.aggregate, meter = session.meter
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(1))
+            guard let self, self.mute?.id == id else { return }
+            let reading = meter.reading()
+            dictationLog.notice("quiet: muted 1s callbacks=\(reading.callbacks, privacy: .public) tapPeak=\(reading.peak, format: .fixed(precision: 4), privacy: .public) subTaps=\(Self.subTapCount(aggregate), privacy: .public) running=\(Self.isRunning(aggregate), privacy: .public)")
+        }
         return true
+    }
+    private static func note(permission: Bool) -> String {
+        permission ? "Last time COS couldn't mute other apps, so it lowered the volume instead. Check Screen & System Audio Recording for COS Control."
+                   : "Last time COS couldn't mute other apps, so it lowered the volume instead."
+    }
+    /// The reverse of what was built (DictationMuteTap.teardown, tested), every status logged.
+    private static func tearDown(_ session: Mute) -> String {
+        DictationMuteTap.teardown(session.built).map { step in
+            let status: OSStatus
+            switch step {
+            case .stop: status = AudioDeviceStop(session.aggregate, session.ioProc)
+            case .destroyIOProc: status = session.ioProc.map { AudioDeviceDestroyIOProcID(session.aggregate, $0) } ?? noErr
+            case .destroyAggregate: status = AudioHardwareDestroyAggregateDevice(session.aggregate)
+            case .destroyTap:
+                if #available(macOS 14.2, *) { status = AudioHardwareDestroyProcessTap(session.tap) } else { status = noErr }
+            }
+            return "\(step.rawValue)=\(status)"
+        }.joined(separator: " ")
+    }
+    /// Built outside the actor: the HAL calls it on `.main`, so it asserts that and hops in.
+    nonisolated private static func outputListener(_ controller: DictationQuietController) -> AudioObjectPropertyListenerBlock {
+        { @Sendable [weak controller] _, _ in MainActor.assumeIsolated { controller?.defaultOutputChanged() } }
+    }
+    /// See DictationMuteTap.keepOnOutputChange: a new default output ends the mute (the aggregate is clocked by the old
+    /// one); dictation carries on with other apps audible.
+    private func defaultOutputChanged() {
+        guard let session = mute else { return }
+        let now = Self.defaultOutput().flatMap { Self.uid($0) }
+        guard !DictationMuteTap.keepOnOutputChange(mutedOn: session.outputUID, now: now) else { return }
+        dictationLog.notice("quiet: default output changed from \(session.outputUID, privacy: .public) to \(now ?? "none", privacy: .public); ending the mute")
+        end()
+    }
+    /// Bundle IDs of the other processes playing audio right now: what the global tap should be covering.
+    nonisolated private static func playingProcesses(excluding own: [AudioObjectID]) -> [String] {
+        var address = address(kAudioHardwarePropertyProcessObjectList, scope: kAudioObjectPropertyScopeGlobal)
+        let system = AudioObjectID(kAudioObjectSystemObject)
+        var size = UInt32(0)
+        guard AudioObjectGetPropertyDataSize(system, &address, 0, nil, &size) == noErr, size > 0 else { return [] }
+        var objects = [AudioObjectID](repeating: AudioObjectID(kAudioObjectUnknown), count: Int(size) / MemoryLayout<AudioObjectID>.size)
+        guard AudioObjectGetPropertyData(system, &address, 0, nil, &size, &objects) == noErr else { return [] }
+        return objects.filter { !own.contains($0) }.compactMap { object in
+            var running = UInt32(0); var length = UInt32(MemoryLayout<UInt32>.size)
+            var key = Self.address(kAudioProcessPropertyIsRunningOutput, scope: kAudioObjectPropertyScopeGlobal)
+            guard AudioObjectGetPropertyData(object, &key, 0, nil, &length, &running) == noErr, running != 0 else { return nil }
+            return string(object, kAudioProcessPropertyBundleID) ?? "process-\(object)"
+        }
+    }
+    /// Header: kAudioAggregateDevicePropertySubTapList is "all the active sub-taps in the aggregate device".
+    nonisolated private static func subTapCount(_ aggregate: AudioObjectID) -> Int {
+        var address = address(kAudioAggregateDevicePropertySubTapList, scope: kAudioObjectPropertyScopeGlobal)
+        var size = UInt32(0)
+        guard AudioObjectGetPropertyDataSize(aggregate, &address, 0, nil, &size) == noErr else { return -1 }
+        return Int(size) / MemoryLayout<AudioObjectID>.size
+    }
+    nonisolated private static func isRunning(_ device: AudioObjectID) -> Bool {
+        var address = address(kAudioDevicePropertyDeviceIsRunning, scope: kAudioObjectPropertyScopeGlobal)
+        var running = UInt32(0); var size = UInt32(MemoryLayout<UInt32>.size)
+        return AudioObjectGetPropertyData(device, &address, 0, nil, &size, &running) == noErr && running != 0
     }
     /// COS's own audio object (it exists once the start sound has been scheduled), so its sounds are never muted.
     nonisolated private static func ownProcessObject() -> [AudioObjectID] {
@@ -582,10 +727,11 @@ struct DictationDelivered: Sendable {
         var scalar = Float32(min(1, max(0, value)))
         return AudioObjectSetPropertyData(device, &address, 0, nil, UInt32(MemoryLayout<Float32>.size), &scalar) == noErr
     }
-    nonisolated private static func uid(_ device: AudioObjectID) -> String? {
-        var address = address(kAudioDevicePropertyDeviceUID, scope: kAudioObjectPropertyScopeGlobal)
+    nonisolated private static func uid(_ device: AudioObjectID) -> String? { string(device, kAudioDevicePropertyDeviceUID) }
+    nonisolated private static func string(_ object: AudioObjectID, _ selector: AudioObjectPropertySelector) -> String? {
+        var address = address(selector, scope: kAudioObjectPropertyScopeGlobal)
         var value: Unmanaged<CFString>?; var size = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
-        guard AudioObjectGetPropertyData(device, &address, 0, nil, &size, &value) == noErr else { return nil }
+        guard AudioObjectGetPropertyData(object, &address, 0, nil, &size, &value) == noErr else { return nil }
         return value?.takeRetainedValue() as String?
     }
     nonisolated private static func device(uid: String) -> AudioObjectID? {
@@ -805,6 +951,8 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
     @Published var quietMode: DictationQuietMode = DictationQuietMode(rawValue: UserDefaults.standard.string(forKey: "dictation.quiet") ?? "") ?? .default {
         didSet { UserDefaults.standard.set(quietMode.rawValue, forKey: "dictation.quiet") }
     }
+    /// Settings' one line when the last Mute fell back to lowering the volume (0.5.315); the log has the failed step.
+    @Published private(set) var quietNote: String?
     @Published private(set) var phase = "Off"
     @Published private(set) var message: String?
     /// 0.5.309: the listening pill. It replaces the pet's ledger row only while it is not hidden, then hands it back.
@@ -1074,6 +1222,7 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
         // After the start sound is scheduled (COS is excluded from the mute, so it still plays); never during a Mac
         // recording. Every way listening ends calls quiet.end(): stop (before the stop sound), fail and cancel.
         quiet.begin(mode: quietMode, macRecording: macRecordingActive?() ?? false)
+        quietNote = quiet.fallbackNote
         task = Task {
             let permission: Bool
             switch AVCaptureDevice.authorizationStatus(for: .audio) {
@@ -1656,6 +1805,9 @@ private struct DictationQuietSettings: View {
             Button("Open Screen & System Audio Recording…") {
                 if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") { NSWorkspace.shared.open(url) }
             }.controlSize(.small)
+        }
+        if store.quietMode == .mute, permitted, let note = store.quietNote {
+            Text(note).font(.caption2).foregroundStyle(COSPalette.amber)
         }
         Text("Never during a Mac recording. Music and video stay muted, not paused: COS can't tell what's playing, so it never presses Play/Pause.")
             .font(.caption2).foregroundStyle(.secondary)

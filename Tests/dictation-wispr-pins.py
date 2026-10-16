@@ -422,8 +422,36 @@ begin = body(quiet, "    func begin(mode: DictationQuietMode, macRecording: Bool
 need(begin.index("UserDefaults.standard.set(data, forKey: Self.pendingKey)") < begin.index("Self.setVolume(device, target)"),
      "the volume to put back is on disk before COS lowers it")
 end = body(quiet, "    func end() {")
-need("AudioHardwareDestroyProcessTap(tap)" in end and "DictationQuiet.restoreVolume(" in end and "removeObject(forKey: Self.pendingKey)" in end,
-     "end removes the tap, restores the volume and clears the pending record")
+need("let report = Self.tearDown(session)" in end and "DictationQuiet.restoreVolume(" in end and "removeObject(forKey: Self.pendingKey)" in end,
+     "end tears the mute down, restores the volume and clears the pending record")
+# 0.5.315: 0.5.313 created the muting tap and never read it (Spotify played on while the log said muted). The mute is
+# tap, UID, private aggregate, IOProc, IO running, through the tested DictationMuteTap; "muted" is logged only after.
+mute = body(quiet, "    private func muteOtherApps() -> Bool {")
+teardown = body(quiet, "    private static func tearDown(_ session: Mute) -> String {")
+need(mute.count("DictationMuteTap.build {") == 1 and "if let failure = result.failure {" in mute
+     and mute.index("DictationMuteTap.build {") < mute.index("if let failure = result.failure {") < mute.index('"quiet: other apps muted'),
+     "other apps muted is logged only after every step, including AudioDeviceStart, succeeded")
+need(mute.count("AudioHardwareCreateProcessTap(description, &session.tap)") == 1 and mute.count("AudioHardwareCreateAggregateDevice(composition as CFDictionary, &session.aggregate)") == 1
+     and mute.count("AudioDeviceCreateIOProcIDWithBlock(&session.ioProc, session.aggregate, nil, DictationMuteIO.silence(session.meter))") == 1
+     and mute.count("AudioDeviceStart(session.aggregate, session.ioProc)") == 1, "each Core Audio step runs once, inside the tested build")
+need("kAudioAggregateDeviceIsPrivateKey: true" in mute and "kAudioAggregateDeviceTapAutoStartKey: false" in mute
+     and "kAudioAggregateDeviceMainSubDeviceKey: outputUID" in mute and "kAudioAggregateDeviceTapListKey: [[kAudioSubTapUIDKey: tapUID" in mute,
+     "a private aggregate on the default output lists the tap; no auto-start (AudioDeviceStart would wait on the main actor)")
+_fail = body(mute, "        if let failure = result.failure {")
+need("let report = Self.tearDown(session)" in _fail and "return false" in _fail and "failure.step.rawValue" in _fail and "failure.status" in _fail,
+     "a failed step tears down what exists, logs the step and its status, and falls back to lowering")
+need("DictationMuteTap.teardown(session.built)" in teardown and all(c in teardown for c in (
+     "AudioDeviceStop(session.aggregate, session.ioProc)", "AudioDeviceDestroyIOProcID(session.aggregate, $0)",
+     "AudioHardwareDestroyAggregateDevice(session.aggregate)", "AudioHardwareDestroyProcessTap(session.tap)")),
+     "teardown follows the tested reverse order and covers every object")
+_order = ("mute = nil", "AudioObjectRemovePropertyListenerBlock(", "let report = Self.tearDown(session)")
+need(all(m in end for m in _order) and end.index(_order[0]) < end.index(_order[1]) < end.index(_order[2]),
+     "end forgets the session first (idempotent) and removes the output listener before tearing down")
+need("guard !DictationMuteTap.keepOnOutputChange(mutedOn: session.outputUID, now: now) else { return }" in quiet
+     and "nonisolated private static func outputListener(" in quiet and "MainActor.assumeIsolated { controller?.defaultOutputChanged() }" in quiet,
+     "a new default output ends the mute, through a listener built outside the actor")
+need("quietNote = quiet.fallbackNote" in start_fn and "let note = store.quietNote" in dictation,
+     "a mute that fell back says so in Settings' While dictating")
 need("description.muteBehavior = .muted" in quiet and "let own = Self.ownProcessObject()" in quiet and "stereoGlobalTapButExcludeProcesses: own)" in quiet
      and "description.isPrivate = true" in quiet, "the mute is a private global tap that excludes COS")
 need("DictationQuiet.plan(mode: mode, macRecording: macRecording," in begin, "the tested plan decides mute, lower or leave")

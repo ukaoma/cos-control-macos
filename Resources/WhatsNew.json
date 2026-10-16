@@ -1,8 +1,15 @@
 {
-  "version": "0.5.314",
+  "version": "0.5.315",
   "whatsNew": {
-    "summary": "Fixes a crash when a dictation sound finished, and the pet shows REC while a meeting records. Plus everything in 0.5.313: dictation that keeps listening while you click, one-click Mac meeting recording, and a lighter Work tab.",
+    "summary": "While dictating, Mute other apps now actually mutes them. Plus 0.5.314 (a crash fix when a dictation sound finished, and REC on the pet while a meeting records) and everything in 0.5.313: dictation that keeps listening while you click, one-click Mac meeting recording, and a lighter Work tab.",
     "sections": [
+      {
+        "title": "0.5.315",
+        "items": [
+          "Fixed: While dictating, Mute other apps left music and video playing (0.5.313 and 0.5.314). COS's own start and stop sounds still play.",
+          "If COS can't mute, it lowers the volume instead, and Settings says so under While dictating."
+        ]
+      },
       {
         "title": "0.5.314",
         "items": [

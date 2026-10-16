@@ -1,5 +1,7 @@
+import CoreAudio
 import CoreGraphics
 import Foundation
+import os
 
 /// Desktop dictation is a user gesture, separate from meeting recording and glasses gestures.
 enum MacDictationPolicy {
@@ -1228,6 +1230,83 @@ enum DictationQuiet {
     static func launchRestore(_ pending: Pending?, current: Float?) -> Float? {
         guard let pending else { return nil }
         return restoreVolume(saved: pending.saved, lowered: pending.lowered, current: current)
+    }
+}
+
+/// 0.5.315 (Miles, 2026-10-16 11:20: Spotify kept playing at full level while the log said "other apps muted"): 0.5.313
+/// created the muting tap and nothing ever read it. The mute is now built the way Apple's tap sample uses a tap: the tap,
+/// its UID, a private aggregate device listing it, an IOProc, and the aggregate's IO running. Muted means every step
+/// succeeded; a failed step tears down what exists, in reverse, and COS lowers the volume instead.
+enum DictationMuteTap {
+    enum Step: String, CaseIterable, Sendable { case tap, tapUID, aggregate, ioProc, start }
+    enum Teardown: String, Sendable { case stop, destroyIOProc, destroyAggregate, destroyTap }
+    /// What exists right now. `tapUID` creates nothing, so it has no flag.
+    struct Built: Equatable, Sendable {
+        var tap = false, aggregate = false, ioProc = false, running = false
+        var muting: Bool { tap && aggregate && ioProc && running }
+        mutating func record(_ step: Step) {
+            switch step {
+            case .tap: tap = true
+            case .tapUID: break
+            case .aggregate: aggregate = true
+            case .ioProc: ioProc = true
+            case .start: running = true
+            }
+        }
+    }
+    struct Failure: Equatable, Sendable { let step: Step; let status: Int32 }
+    /// Runs the steps in order and stops at the first one that does not return noErr (0); later steps never run.
+    static func build(_ perform: (Step) -> Int32) -> (built: Built, failure: Failure?) {
+        var built = Built()
+        for step in Step.allCases {
+            let status = perform(step)
+            guard status == 0 else { return (built, Failure(step: step, status: status)) }
+            built.record(step)
+        }
+        return (built, nil)
+    }
+    /// Strictly the reverse of the build: IO stops before its IOProc goes, the IOProc before its aggregate, the
+    /// aggregate before the tap it lists. Nothing built, nothing to do, so a second end() is a no-op.
+    static func teardown(_ built: Built) -> [Teardown] {
+        var steps: [Teardown] = []
+        if built.running { steps.append(.stop) }
+        if built.ioProc { steps.append(.destroyIOProc) }
+        if built.aggregate { steps.append(.destroyAggregate) }
+        if built.tap { steps.append(.destroyTap) }
+        return steps
+    }
+    /// The default output changed while muted (AirPods connected, a display took over): the aggregate is clocked by the
+    /// old device, so the mute ends rather than rebuilding inside a device change. A notice for the same device keeps it.
+    static func keepOnOutputChange(mutedOn: String, now: String?) -> Bool { now == mutedOn }
+}
+
+/// The mute's IOProc and what it saw, outside any actor. The HAL calls the IOProc on its real-time IO thread; a closure
+/// formed inside the @MainActor quiet controller would inherit main-actor isolation and Swift 6 traps on entry (the
+/// 0.5.305 and 0.5.313 crashes). It reads the tapped audio only to measure its peak, writes silence to the output, and
+/// never waits: the meter's lock is only tried here, so a contended callback is simply not counted.
+final class DictationMuteMeter: Sendable {
+    struct Reading: Equatable, Sendable { var callbacks = 0; var peak: Float = 0 }
+    private let state = OSAllocatedUnfairLock(initialState: Reading())
+    func record(peak: Float) { _ = state.withLockIfAvailable { $0.callbacks += 1; $0.peak = max($0.peak, peak) } }
+    func reading() -> Reading { state.withLock { $0 } }
+}
+enum DictationMuteIO {
+    /// AudioDeviceIOBlock, but @Sendable: the type says it runs off every actor.
+    typealias Block = @Sendable (UnsafePointer<AudioTimeStamp>, UnsafePointer<AudioBufferList>, UnsafePointer<AudioTimeStamp>,
+                                 UnsafeMutablePointer<AudioBufferList>, UnsafePointer<AudioTimeStamp>) -> Void
+    static func silence(_ meter: DictationMuteMeter) -> Block {
+        { @Sendable _, input, _, output, _ in
+            var peak: Float = 0
+            for buffer in UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: input)) {
+                guard let data = buffer.mData else { continue }
+                let samples = data.assumingMemoryBound(to: Float.self)
+                for index in 0..<Int(buffer.mDataByteSize) / MemoryLayout<Float>.size { peak = max(peak, abs(samples[index])) }
+            }
+            for buffer in UnsafeMutableAudioBufferListPointer(output) {
+                if let data = buffer.mData { memset(data, 0, Int(buffer.mDataByteSize)) }
+            }
+            meter.record(peak: peak)
+        }
     }
 }
 

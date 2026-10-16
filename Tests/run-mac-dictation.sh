@@ -18,9 +18,31 @@ CODE="$(grep -v -E '^[[:space:]]*//' "$SRC")"
 # any of these kinds changes the count and must get the same isolation review before the count is updated.
 # 0.5.314: scheduleFile/scheduleBuffer joined the census after 0.5.313 shipped an unreviewed scheduleFile completion that
 # trapped on every dictation sound. It is built by a nonisolated static (playedBack), which the runtime check executes.
-[[ $(print -r -- "$CODE" | grep -c -E 'installTap\(|queue: *nil\)|DispatchQueue|OperationQueue\(|DispatchSource|addGlobalMonitorForEvents|addLocalMonitorForEvents|scheduleFile\(|scheduleBuffer\(|scheduleSegment\(') == 6 ]] || { print -u2 "FAIL: a new off-main or event-monitor callback site needs the @Sendable / isolation review, then this count"; exit 1; }
+# 0.5.315: the mute's IOProc (built in MacDictationCore's DictationMuteIO, outside every actor, executed off-main by the
+# checks) and the default-output listener (built by the nonisolated outputListener, delivered on .main) joined it.
+[[ $(print -r -- "$CODE" | grep -c -E 'installTap\(|queue: *nil\)|DispatchQueue|OperationQueue\(|DispatchSource|addGlobalMonitorForEvents|addLocalMonitorForEvents|scheduleFile\(|scheduleBuffer\(|scheduleSegment\(|AudioDeviceCreateIOProcIDWithBlock\(|AudioObjectAddPropertyListenerBlock\(') == 8 ]] || { print -u2 "FAIL: a new off-main or event-monitor callback site needs the @Sendable / isolation review, then this count"; exit 1; }
 [[ $(print -r -- "$CODE" | grep -c -F 'completionCallbackType: .dataPlayedBack, completionHandler: Self.playedBack(self, id: id))') == 1 && $(print -r -- "$CODE" | grep -c -F 'private nonisolated static func playedBack(') == 1 ]] || { print -u2 "FAIL: the sound completion must be built by the nonisolated playedBack (0.5.313 trapped)"; exit 1; }
 zsh "$ROOT/Tests/run-dictation-sound-runtime.sh"
+# 0.5.315: the quiet controller, lifted verbatim, type-checks in Swift 6 strict mode against the core (seconds, not a full
+# Control compile). It cannot RUN here: a real mute would silence this Mac and needs System Audio Recording.
+/usr/bin/python3 - "$SRC" "$DIR/DictationQuiet.swift" <<'PY'
+import sys
+src = open(sys.argv[1], encoding="utf-8").read()
+key = "@MainActor final class DictationQuietController {"
+assert src.count(key) == 1
+start = src.index(key); depth, i = 0, src.index("{", start)
+while True:
+    c = src[i]
+    if c == "{": depth += 1
+    elif c == "}":
+        depth -= 1
+        if depth == 0: break
+    i += 1
+open(sys.argv[2], "w", encoding="utf-8").write('import Foundation\nimport CoreAudio\nimport AudioToolbox\nimport os\n\nlet dictationLog = Logger(subsystem: "com.gotcos.control.tests", category: "dictation")\n\n' + src[start:i + 1] + "\n")
+PY
+"$ROOT/Tests/compile-guard.sh" swiftc -typecheck -target arm64-apple-macosx14.0 -swift-version 6 -strict-concurrency=complete -parse-as-library \
+  "$ROOT/Sources/MacDictationCore.swift" "$DIR/DictationQuiet.swift"
+print "PASS dictation quiet controller type-checks in Swift 6 (lifted verbatim; not executed)"
 # The shortcut monitors also take clicks (⌥-click is a chord), and NSEvent raises on a mouse event's keyCode.
 [[ $(print -r -- "$CODE" | grep -c -F 'let key = isKey ? event.keyCode : 0') == 1 && $(print -r -- "$CODE" | grep -c -F 'event.keyCode') == 2 ]] || { print -u2 "FAIL: keyCode must be read only from key events in the shortcut monitors"; exit 1; }
 # 0.5.313: clicks reach the HOLD tracker as clicks (time-windowed chord), never as a key down, or any click while talking

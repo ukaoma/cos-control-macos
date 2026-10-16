@@ -1,3 +1,4 @@
+import CoreAudio
 import CoreGraphics
 import Foundation
 
@@ -572,6 +573,47 @@ final class FakeDictationBoard: DictationPasteboardAccess {
         let decoded = try JSONDecoder().decode(DictationQuiet.Pending.self, from: try JSONEncoder().encode(pending))
         expect(decoded == pending && DictationQuiet.launchRestore(decoded, current: 0.155) == 0.62 && DictationQuiet.launchRestore(nil, current: 0.1) == nil,
                "interrupted dictation: the next launch puts the volume back")
+        // 0.5.315 mute tap: muted only when every step ran; a failure at any step tears down exactly what exists, in reverse.
+        var ran: [DictationMuteTap.Step] = []
+        let full = DictationMuteTap.build { ran.append($0); return 0 }
+        expect(full.failure == nil && full.built.muting && ran == DictationMuteTap.Step.allCases, "every step runs in order and the result is muting")
+        expect(DictationMuteTap.teardown(full.built) == [.stop, .destroyIOProc, .destroyAggregate, .destroyTap],
+               "teardown: stop the IO, then the IOProc, the aggregate, the tap")
+        let expected: [DictationMuteTap.Step: [DictationMuteTap.Teardown]] = [
+            .tap: [], .tapUID: [.destroyTap], .aggregate: [.destroyTap], .ioProc: [.destroyAggregate, .destroyTap],
+            .start: [.destroyIOProc, .destroyAggregate, .destroyTap],
+        ]
+        for failing in DictationMuteTap.Step.allCases {
+            ran = []
+            let result = DictationMuteTap.build { step in ran.append(step); return step == failing ? -50 : 0 }
+            expect(result.failure == .init(step: failing, status: -50) && !result.built.muting && ran.last == failing,
+                   "a failure at \(failing) is reported with its status, is not muting, and no later step runs")
+            expect(DictationMuteTap.teardown(result.built) == expected[failing], "a failure at \(failing) tears down exactly what exists")
+        }
+        expect(DictationMuteTap.teardown(.init()).isEmpty, "a second end() has nothing to tear down")
+        expect(DictationMuteTap.keepOnOutputChange(mutedOn: "BuiltInSpeakerDevice", now: "BuiltInSpeakerDevice")
+               && !DictationMuteTap.keepOnOutputChange(mutedOn: "BuiltInSpeakerDevice", now: "AirPods")
+               && !DictationMuteTap.keepOnOutputChange(mutedOn: "BuiltInSpeakerDevice", now: nil),
+               "a different (or no) default output ends the mute; the same one keeps it")
+        // The real IOProc, EXECUTED off the main thread the way the HAL calls it: measures the tapped peak, writes silence.
+        let meter = DictationMuteMeter()
+        let io = DictationMuteIO.silence(meter)
+        let tapped = UnsafeMutablePointer<Float>.allocate(capacity: 4), speaker = UnsafeMutablePointer<Float>.allocate(capacity: 4)
+        let inList = AudioBufferList.allocate(maximumBuffers: 1), outList = AudioBufferList.allocate(maximumBuffers: 1)
+        let stamp = UnsafeMutablePointer<AudioTimeStamp>.allocate(capacity: 1)
+        defer { tapped.deallocate(); speaker.deallocate(); free(inList.unsafeMutablePointer); free(outList.unsafeMutablePointer); stamp.deallocate() }
+        for (index, value) in [Float(0.1), -0.7, 0.3, 0.2].enumerated() { tapped[index] = value; speaker[index] = 0.5 }
+        stamp.initialize(to: AudioTimeStamp())
+        inList[0] = AudioBuffer(mNumberChannels: 1, mDataByteSize: 16, mData: tapped)
+        outList[0] = AudioBuffer(mNumberChannels: 1, mDataByteSize: 16, mData: speaker)
+        nonisolated(unsafe) let input = inList.unsafePointer, output = outList.unsafeMutablePointer, time = UnsafePointer(stamp)
+        let ioDone = DispatchSemaphore(value: 0)
+        nonisolated(unsafe) var ranOffMain = false
+        Thread { ranOffMain = !Thread.isMainThread; for _ in 0..<2 { io(time, input, time, output, time) }; ioDone.signal() }.start()
+        ioDone.wait()
+        expect(ranOffMain, "the IOProc check ran off the main thread")
+        expect(meter.reading() == .init(callbacks: 2, peak: 0.7) && (0..<4).allSatisfy { speaker[$0] == 0 },
+               "the IOProc counts each callback, keeps the tapped peak and outputs silence")
         // Media: never a blind play/pause key.
         expect(DictationMedia.decide(playing: nil) == .leave && DictationMedia.decide(playing: false) == .leave && DictationMedia.decide(playing: true) == .pause,
                "pause only a known, playing state; unknown is left alone")
