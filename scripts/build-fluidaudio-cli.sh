@@ -52,7 +52,7 @@ PLIST
 /usr/bin/plutil -lint "$PLIST" >/dev/null
 
 cd "$SOURCE"
-"$ROOT/Tests/compile-guard.sh" /usr/bin/swift build -c release --product fluidaudiocli \
+"$ROOT/Tests/compile-guard.sh" /usr/bin/swift build -c release --product fluidaudiocli --jobs "${COS_FLUIDAUDIO_JOBS:-4}" \
   -Xlinker -sectcreate -Xlinker __TEXT -Xlinker __info_plist -Xlinker "$PLIST"
 BIN="$(/usr/bin/swift build -c release --product fluidaudiocli --show-bin-path)/fluidaudiocli"
 [[ -x "$BIN" ]] || { print -u2 "swift build produced no fluidaudiocli"; exit 66; }
