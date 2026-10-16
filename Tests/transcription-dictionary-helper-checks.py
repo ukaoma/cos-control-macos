@@ -110,7 +110,7 @@ try:
     check(not result['ok'] and 'cannot be a URL' in result['message'] and result['details']['vocabulary'], 'a refusal says why and keeps the dictionary')
     routes['learn'] = (404, {'error': 'Cannot POST'}); routes['recent'] = (404, {'error': 'Cannot GET'})
     result = run({'operation': 'learn', 'payload': {'heard': 'x', 'written': 'y', 'source': 'meeting'}})
-    check(not result['ok'] and '6.73.11' in result['message'] and result['details']['learnAvailable'] is False, 'an older server names the version')
+    check(not result['ok'] and '6.73.12' in result['message'] and result['details']['learnAvailable'] is False, 'an older server names the version it needs (6.73.12, the helper\'s one update line)')
     check(run({'operation': 'get', 'payload': {}})['details']['learnAvailable'] is False, 'no recent log means no Fix a word')
     routes['recent'] = (200, {'entries': [entry]})
 

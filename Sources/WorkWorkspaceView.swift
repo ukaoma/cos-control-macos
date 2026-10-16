@@ -2744,6 +2744,12 @@ struct WorkWorkspaceView: View {
                 if let task = item.task {
                     taskBody(task)
                     WorkTaskChatView(chat:taskChat,handoff:handoffStore,source:.taskSnapshot(task),onOpenSession:onOpenSession)
+                        // 0.5.312: the assignment meter reads each session's context fill from the Connections cards' store.
+                        .onAppear {
+                            taskChat.sessionWindow = { id in
+                                WorkSessionMeterStore.shared.sessionContextWindow(id).map { WorkSessionWindow(usedTokens: $0.used, windowTokens: $0.window) }
+                            }
+                        }
                 }
             }.frame(maxWidth: .infinity, alignment: .leading).padding(22)
           }
