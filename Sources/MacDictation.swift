@@ -930,6 +930,8 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
     @Published private(set) var pendingImport: DictationSoundImport?
     /// Set by the app: which family the pet is (its default sound), and whether a COS recording is capturing.
     var petKind: (() -> DictationPetKind)?
+    /// The shipped pack installed now (DictationSoundLibrary.installedPack), for the Jedi Miles Windu saber.
+    var petPack: (() -> String?)?
     var macRecordingActive: (() -> Bool)?
     /// The screen the floating pill uses, chosen when dictation starts (the focused window's screen).
     @Published private(set) var floatingScreen: CGRect?
@@ -1388,10 +1390,10 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
     // MARK: Sounds (0.5.312)
 
     func soundChoice(_ edge: DictationSoundEdge) -> String { edge == .start ? soundStart : soundStop }
-    var petSoundName: String { DictationSoundLibrary.name(DictationSoundLibrary.petDefault(petKind?() ?? .other)) }
+    var petSoundName: String { DictationSoundLibrary.name(DictationSoundLibrary.petDefault(petKind?() ?? .other, pack: petPack?())) }
 
     private func resolvedSound(_ edge: DictationSoundEdge) -> DictationSoundLibrary.Resolved {
-        DictationSoundLibrary.resolve(DictationSoundLibrary.Choice(stored: soundChoice(edge)), edge: edge, pet: petKind?() ?? .other,
+        DictationSoundLibrary.resolve(DictationSoundLibrary.Choice(stored: soundChoice(edge)), edge: edge, pet: petKind?() ?? .other, pack: petPack?(),
                                       volume: soundVolume, macRecording: macRecordingActive?() ?? false,
                                       customUsable: { [directory = Self.customSoundDirectory()] file in
                                           FileManager.default.isReadableFile(atPath: directory.appendingPathComponent(file).path) })

@@ -71,7 +71,7 @@ MUTANTS = [
     ("sound plays during a Mac recording", "        guard !macRecording else { return .silent(\"a COS recording is capturing\") }\n", ""),
     ("a stale custom file is played", "        case .custom(let file) where customUsable(file): return .custom(file)", "        case .custom(let file): return .custom(file)"),
     ("library choice ignored", "        case .library(let id) where sounds.contains(where: { $0.id == id }): return .bundled(fileName(id, edge))\n", ""),
-    ("Jedi default changed", 'case .jedi: "unstable-saber"', 'case .jedi: "soft-chime"'),
+    ("Jedi default changed", 'case .jedi: pack == winduPackID ? "windu-saber" : "unstable-saber"', 'case .jedi: pack == winduPackID ? "windu-saber" : "soft-chime"'),
     ("source size unchecked", "        guard byteCount <= maximumSourceBytes else {", "        guard byteCount <= Int.max else {"),
     ("trim start ignores the onset", "Window(start: onset, end: min(duration, onset + 2.0), fadeIn: 0.005, fadeOut: 0.45)", "Window(start: 0, end: min(duration, 2.0), fadeIn: 0.005, fadeOut: 0.45)"),
     ("stop window without the tail", "Window(start: max(0, end - 0.55), end: min(duration, end + 0.05), fadeIn: 0.030, fadeOut: 0.070)", "Window(start: max(0, end - 0.6), end: min(duration, end), fadeIn: 0.030, fadeOut: 0.070)"),
@@ -92,6 +92,12 @@ MUTANTS = [
     ("lowered to silence", "            return .lowerVolume(to: volume * loweredFraction)", "            return .lowerVolume(to: 0)"),
     ("Mute not the default", "    static let `default` = DictationQuietMode.mute", "    static let `default` = DictationQuietMode.lower"),
     ("blind media key", "playing == true ? .pause : .leave", "playing == false ? .leave : .pause"),
+    # 0.5.315 Miles Windu saber: his pack only, recognized only when exactly one shipped pack matches.
+    ("Windu back to the Unstable saber", 'case .jedi: pack == winduPackID ? "windu-saber" : "unstable-saber"', 'case .jedi: "unstable-saber"'),
+    ("every Jedi gets the Windu saber", 'case .jedi: pack == winduPackID ? "windu-saber" : "unstable-saber"', 'case .jedi: "windu-saber"'),
+    ("an ambiguous pack is named", "        return matches.count == 1 ? matches[0].id : nil", "        return matches.first?.id"),
+    ("an empty pack matches", "        guard !installed.isEmpty else { return nil }\n", ""),
+    ("the pack is ignored when playing", "        default: return .bundled(fileName(petDefault(pet, pack: pack), edge))", "        default: return .bundled(fileName(petDefault(pet), edge))"),
     # 0.5.315 mute tap: muted only when the IO runs; a failure tears down exactly what exists, in reverse; the IOProc
     # outputs silence and measures the tapped peak.
     ("mute tap: build runs on after a failure", "            guard status == 0 else { return (built, Failure(step: step, status: status)) }\n",

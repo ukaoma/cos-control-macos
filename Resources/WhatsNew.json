@@ -7,7 +7,8 @@
         "title": "0.5.315",
         "items": [
           "Fixed: While dictating, Mute other apps left music and video playing (0.5.313 and 0.5.314). COS's own start and stop sounds still play.",
-          "If COS can't mute, it lowers the volume instead, and Settings says so under While dictating."
+          "If COS can't mute, it lowers the volume instead, and Settings says so under While dictating.",
+          "New dictation sound: Miles Windu saber. It's the default for the Jedi Miles Windu pet."
         ]
       },
       {

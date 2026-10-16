@@ -778,6 +778,9 @@ enum DictationClipboard {
 // Miles approved the library 2026-10-15 21:16-21:32 (design/dictation-sounds-preview.html; "Unstable saber" is v2,
 // matched to his reference; v1 is "Unstable saber (bright)"), rendered offline to
 // Resources/Sounds by scripts/render-dictation-sounds.py. Original synthesis only.
+// 0.5.315: "Miles Windu saber" is NOT rendered: it is Miles's own design (made by him with an AI music tool, his to
+// ship), bundled byte-identical to the files he saved as his custom start and stop sounds (48 kHz mono Int16; the
+// player connects at each file's own format).
 
 enum DictationPetKind: String, Sendable { case jedi, droid, other }
 
@@ -786,6 +789,7 @@ enum DictationSoundEdge: String, Sendable, CaseIterable { case start, stop }
 enum DictationSoundLibrary {
     /// Bundled sounds, in menu order: id (file prefix) and the name Settings shows.
     static let sounds: [(id: String, name: String)] = [
+        ("windu-saber", "Miles Windu saber"),
         ("unstable-saber", "Unstable saber"), ("unstable-saber-bright", "Unstable saber (bright)"), ("dark-saber", "Dark saber"),
         ("saber-full", "Saber, full ignition"), ("saber-ignite", "Saber ignite"),
         ("saber-soft", "Saber, soft"), ("droid-chirp", "Droid chirp"), ("soft-chime", "Soft chime"),
@@ -801,10 +805,13 @@ enum DictationSoundLibrary {
     static let maximumSourceBytes = 20 * 1024 * 1024
     static let maximumStoredSeconds = 3.0
 
-    /// THE pet → default table (Miles: the Jedi's crackling Unstable saber is his favorite).
-    static func petDefault(_ kind: DictationPetKind) -> String {
+    /// The shipped Jedi Miles Windu pack (PetSpriteStore.bundledCharacters).
+    static let winduPackID = "jedi-miles-windu"
+    /// THE pet → default table (Miles: the Jedi's crackling Unstable saber is his favorite). 0.5.315: his own saber
+    /// design is the Jedi Miles Windu pack's default; Nia Solari, Elara Vale and Rowan Vale keep the Unstable saber.
+    static func petDefault(_ kind: DictationPetKind, pack: String? = nil) -> String {
         switch kind {
-        case .jedi: "unstable-saber"
+        case .jedi: pack == winduPackID ? "windu-saber" : "unstable-saber"
         case .droid: "droid-chirp"
         case .other: "soft-chime"
         }
@@ -818,6 +825,14 @@ enum DictationSoundLibrary {
         if hasCombatStories { return .jedi }
         let names = assetNames.map { $0.lowercased() }
         return names.contains { $0.contains("droid") || $0.contains("robot") || $0.contains("astromech") } ? .droid : .other
+    }
+
+    /// Which shipped pack is installed: the ONE pack whose state map names exactly the pose files the installed map
+    /// names. None, or several (Elara and Rowan Vale use the same file names), is nil, which keeps the kind's default.
+    static func installedPack(_ installed: Set<String>, packs: [(id: String, files: Set<String>)]) -> String? {
+        guard !installed.isEmpty else { return nil }
+        let matches = packs.filter { $0.files == installed }
+        return matches.count == 1 ? matches[0].id : nil
     }
 
     /// What Settings stores: "pet", "library:<id>" or "custom:<file name>".
@@ -845,14 +860,14 @@ enum DictationSoundLibrary {
 
     /// Pet default, then the person's choice; a custom file that is no longer valid falls back to the pet's sound.
     /// Volume 0 is off, and nothing plays while a COS recording is capturing (it would be recorded).
-    static func resolve(_ choice: Choice, edge: DictationSoundEdge, pet: DictationPetKind, volume: Double,
+    static func resolve(_ choice: Choice, edge: DictationSoundEdge, pet: DictationPetKind, pack: String? = nil, volume: Double,
                         macRecording: Bool, customUsable: (String) -> Bool) -> Resolved {
         guard volume > 0 else { return .silent("volume off") }
         guard !macRecording else { return .silent("a COS recording is capturing") }
         switch choice {
         case .library(let id) where sounds.contains(where: { $0.id == id }): return .bundled(fileName(id, edge))
         case .custom(let file) where customUsable(file): return .custom(file)
-        default: return .bundled(fileName(petDefault(pet), edge))
+        default: return .bundled(fileName(petDefault(pet, pack: pack), edge))
         }
     }
 

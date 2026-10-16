@@ -39,6 +39,13 @@ struct COSControlApp: App {
             return DictationSoundLibrary.petKind(hasCombatStories: model.petSpriteKit.poses[.duel] != nil && model.petSpriteKit.poses[.swarm] != nil,
                                                  assetNames: names)
         }
+        // 0.5.315: which shipped pack is installed, by the pose files its state map names (bundled sets read once).
+        let shippedPacks = PetSpriteStore.bundledCharacters.compactMap { character in
+            PetSpriteStore.bundledCharacterURL(character).map { (id: character.id, files: Set(PetSpriteStore.loadStateMap(in: $0).values.map(\.file))) }
+        }
+        model.dictation.petPack = {
+            DictationSoundLibrary.installedPack(Set(PetSpriteStore.loadStateMap(in: PetSpriteStore.supportDirectory()).values.map(\.file)), packs: shippedPacks)
+        }
         model.dictionary.bridge = { [weak model] request in
             guard let model else { throw HelperClientError.commandFailed("COS Control is closing.") }
             return try await model.runHelper(["transcription-dictionary"], timeout: 20, stdinData: request)

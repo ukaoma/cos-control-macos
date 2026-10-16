@@ -6,6 +6,8 @@ nor trip it. Tests/MacDictationChecks.swift executes the pure rules (insert-targ
 fix-a-word selection); this pins that the app actually routes through them, and the approved mock's shape (moments
 01-07, Miles picked A/A/A on 2026-10-15).
 """
+import hashlib
+import json
 import re
 import sys
 from pathlib import Path
@@ -248,7 +250,28 @@ for sound_id in ids:
     for edge in ("start", "stop"):
         f = root / "Resources/Sounds" / f"{sound_id}-{edge}.wav"
         need(f.exists() and 1_000 < f.stat().st_size < 200_000, f"{f.name} is rendered and small")
-need(len(ids) == 8 and (root / "scripts/render-dictation-sounds.py").exists(), "every library sound is rendered by the committed script")
+# 0.5.315: Miles Windu saber is Miles's own design, bundled byte-identical to his saved custom sounds; every other
+# library sound is rendered by the committed script.
+recorded = {"windu-saber": {"start": "eb1f22a5ecc3d630c282d395318366a9074d54b5f779a4f871f8248ad31fed8f",
+                            "stop": "47875897bc904fd27f7e529d4c05acd09e410d11634702ffc0f8ea935b91cdd9"}}
+script = (root / "scripts/render-dictation-sounds.py").read_text(encoding="utf-8")
+rendered = set(re.findall(r'^    "([a-z0-9-]+)": \(', script[script.index("SOUNDS = {"):], flags=re.M))
+need(len(ids) == 9 and ids[0] == "windu-saber" and set(ids) == rendered | set(recorded) and not (rendered & set(recorded)),
+     "every library sound is rendered by the committed script, except Miles's recorded saber, which is first")
+for sound_id, edges in recorded.items():
+    for edge, digest in edges.items():
+        need(hashlib.sha256((root / "Resources/Sounds" / f"{sound_id}-{edge}.wav").read_bytes()).hexdigest() == digest,
+             f"{sound_id}-{edge}.wav is Miles's file, byte for byte")
+need('case .jedi: pack == winduPackID ? "windu-saber" : "unstable-saber"' in core and 'static let winduPackID = "jedi-miles-windu"' in core
+     and 'id: "jedi-miles-windu",' in read("Sources/Models.swift"), "the Windu pack id is the shipped one")
+need("DictationSoundLibrary.installedPack(" in app and "PetSpriteStore.bundledCharacters.compactMap" in app and "model.dictation.petPack = {" in app
+     and "pack: petPack?()" in dictation and dictation.count("petPack?()") == 2, "the app tells dictation which pack is installed, for both the sound and its name")
+# The checks' pack file sets must be the shipped state maps', or the Windu test proves nothing about the real packs.
+checks_src = read("Tests/MacDictationChecks.swift")
+for folder, pack_id in (("DefaultPet", "jedi-miles-windu"), ("BundledCharacters/jedi-nia-solari", "jedi-nia-solari"),
+                        ("BundledCharacters/jedi-elara-vale", "jedi-elara-vale"), ("BundledCharacters/jedi-rowan-vale", "jedi-rowan-vale")):
+    shipped = sorted({v["file"] for v in json.loads((root / "Resources" / folder / "session-pet-states.json").read_text())["poses"].values()})
+    need(f'(id: "{pack_id}", files: ["' + '", "'.join(shipped) + '"])' in checks_src, f"the checks list {pack_id}'s shipped pose files")
 need('cp "$ROOT/Resources/Sounds/"*.wav "$APP/Contents/Resources/Sounds/"' in (root / "scripts/build-release.sh").read_text(), "the sounds ship in the app")
 for field in ("pill", "surface", "card", "recent", "listRoute", "fixSelection", "fixNote", "fixSaving"):
     decl = re.search(rf"@Published private\(set\) var {field}\b[^\n]*", dictation)

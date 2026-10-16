@@ -407,6 +407,31 @@ final class FakeDictationBoard: DictationPasteboardAccess {
         // 0.5.312 sounds: pet default → the person's choice → a custom file that must still be usable.
         typealias L = DictationSoundLibrary
         expect(L.petDefault(.jedi) == "unstable-saber" && L.petDefault(.droid) == "droid-chirp" && L.petDefault(.other) == "soft-chime", "one pet table")
+        // 0.5.315: Miles's own saber is the Jedi Miles Windu pack's default; the other three Jedi packs keep Unstable saber.
+        // The file sets are the shipped state maps' pose files (dictation-wispr-pins.py checks they still match).
+        let shippedPacks: [(id: String, files: Set<String>)] = [
+            (id: "jedi-miles-windu", files: ["session-pet-attention.png", "session-pet-done.png", "session-pet-duel-two-droid-v15-2.png", "session-pet-error.png", "session-pet-idle.png", "session-pet-patrol.png", "session-pet-swarm-story-v16.png", "session-pet-trio-story-v17.png", "session-pet-waiting.png", "session-pet-working-one-droid-v15-2.png"]),
+            (id: "jedi-nia-solari", files: ["session-pet-duel-story-v2.png", "session-pet-idle-v2.png", "session-pet-idle.png", "session-pet-patrol-v3.png", "session-pet-swarm-story-v2.png", "session-pet-trio-story-v2.png", "session-pet-waiting-v3.png", "session-pet-working-story-v2.png"]),
+            (id: "jedi-elara-vale", files: ["session-pet-duel-story-v2.png", "session-pet-idle-v2.png", "session-pet-idle.png", "session-pet-patrol-v3.png", "session-pet-swarm-story-v2.png", "session-pet-trio-story-v2.png", "session-pet-working-story-v2.png"]),
+            (id: "jedi-rowan-vale", files: ["session-pet-duel-story-v2.png", "session-pet-idle-v2.png", "session-pet-idle.png", "session-pet-patrol-v3.png", "session-pet-swarm-story-v2.png", "session-pet-trio-story-v2.png", "session-pet-working-story-v2.png"]),
+        ]
+        let packFiles = Dictionary(uniqueKeysWithValues: shippedPacks.map { ($0.id, $0.files) })
+        let installed = { (id: String) in L.installedPack(packFiles[id]!, packs: shippedPacks) }
+        expect(installed("jedi-miles-windu") == L.winduPackID && installed("jedi-nia-solari") == "jedi-nia-solari"
+               && installed("jedi-elara-vale") == nil && installed("jedi-rowan-vale") == nil,
+               "Windu and Nia are recognized; Elara and Rowan share file names, so neither is named")
+        expect(L.installedPack([], packs: shippedPacks) == nil && L.installedPack(["session-pet-idle.png"], packs: shippedPacks) == nil
+               && L.installedPack(packFiles["jedi-miles-windu"]!.union(["custom.png"]), packs: shippedPacks) == nil
+               && L.installedPack([], packs: [(id: "empty", files: [])]) == nil, "an unknown, edited or empty pack is no shipped pack")
+        expect(L.petDefault(.jedi, pack: installed("jedi-miles-windu")) == "windu-saber", "Jedi Miles Windu: Miles Windu saber")
+        for other in ["jedi-nia-solari", "jedi-elara-vale", "jedi-rowan-vale"] {
+            expect(L.petDefault(.jedi, pack: installed(other)) == "unstable-saber", "\(other): Unstable saber")
+        }
+        expect(L.petDefault(.droid, pack: L.winduPackID) == "droid-chirp" && L.petDefault(.other, pack: L.winduPackID) == "soft-chime"
+               && L.petDefault(.droid) == "droid-chirp" && L.petDefault(.other) == "soft-chime", "droid and other are unchanged, pack or not")
+        expect(L.resolve(.pet, edge: .stop, pet: .jedi, pack: L.winduPackID, volume: 0.6, macRecording: false, customUsable: { _ in true }) == .bundled("windu-saber-stop.wav")
+               && L.resolve(.custom("start-229CA5A4.wav"), edge: .start, pet: .jedi, pack: L.winduPackID, volume: 0.6, macRecording: false, customUsable: { _ in true })
+                  == .custom("start-229CA5A4.wav"), "Pet default plays the Windu saber; a saved custom choice still wins")
         expect(L.petKind(hasCombatStories: true, assetNames: ["session-pet-duel-two-droid-v15.png"]) == .jedi
                && L.petKind(hasCombatStories: false, assetNames: ["Astromech-Droid-idle.png"]) == .droid
                && L.petKind(hasCombatStories: false, assetNames: ["cloud-puff-idle.png"]) == .other, "pet kind")
@@ -454,7 +479,8 @@ final class FakeDictationBoard: DictationPasteboardAccess {
         expect(L.cents(0) == 0 && L.cents(-4) == -400 && L.cents(2.4) == 200 && L.cents(-20) == -1_200 && L.cents(9) == 600 && L.cents(.nan) == 0,
                "pitch: whole semitones, -12 to +6, in cents")
         expect(L.name("unstable-saber") == "Unstable saber" && L.name("unstable-saber-bright") == "Unstable saber (bright)"
-               && L.name("dark-saber") == "Dark saber" && L.sounds.count == 8, "names")
+               && L.name("dark-saber") == "Dark saber" && L.name("windu-saber") == "Miles Windu saber" && L.sounds.first?.id == "windu-saber"
+               && L.sounds.count == 9, "names; Miles Windu saber first")
         expect(L.defaultVolume == 0.6 && L.sounds.map(\.id).allSatisfy { !$0.isEmpty } && Set(L.sounds.map(\.id)).count == L.sounds.count, "library")
         }
         do { // own scope: names here must not collide with earlier sections
