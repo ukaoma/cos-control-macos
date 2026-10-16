@@ -113,7 +113,8 @@ need("guard let current = card, current.kind == .suggest else { return }" in rec
 need("await record?(current.source)" in body(detector, "    private func startRecording(_ current: MeetingCard) {"), "the pet records through the record closure")
 need(sum(src.count("recordSuggested()") for src in sources.values()) == 2 and 'Button("Record") { store.recordSuggested() }' in recording,
      "recordSuggested runs only from the card's Record button")
-need("guard available, canStart, recoverable.isEmpty else {" in gate, "Record never starts over a pending or recoverable recording")
+need("guard available, canStart else {" in gate and "recoverable" not in gate.split("guard available, canStart else {")[1].split("}")[0],
+     "Record never starts over a pending recording, and a retained (recoverable) capture never blocks it (QA 2026-10-15)")
 need(sum(src.count("MacRecordingNotice.reminder") for src in sources.values()) == 3, "Recording · let people know on the panel, menu and pet-panel rows")
 need('Button("Show the recording notice again") { acknowledged = false }' in recording, "Settings can show the notice again")
 
@@ -150,8 +151,9 @@ need(core.count("static let rules: [Rule] = [") == 1 and sum(src.count("us.zoom.
 # ── 4. Gates and wiring.
 busy = body(app, "meetings.recordingBusy = {")
 need("MeetingDetectedCard.recordingBusy(macOccupied: model.macRecording.occupied, macCanStart: model.macRecording.canStart," in busy
-     and "recoverable: model.macRecording.recoverable.count, liveRecordings: model.recordingCount)" in busy,
-     "busy covers active, pending, recoverable and live recordings")
+     and "liveRecordings: model.recordingCount)" in busy and "recoverable" not in busy,
+     "busy covers active, pending and live recordings; a retained capture is not busy")
+need("model.openActivity?(.meetings)" in body(app, "meetings.record = {"), "a failed Record from the pet card opens Meetings, so a hidden pet never swallows it")
 need("meetings.dictating = { [weak model] in model?.dictation.busy ?? false }" in app, "dictation defers the card")
 need("await model?.macRecording.refreshRecoverable()" in app and "meetings.activate()" in app, "recoverable is read before the first suggestion")
 need("if meetings.surface == .pet, let card = meetings.card {\n                MeetingCardView(store: meetings, card: card, size: size)" in pet

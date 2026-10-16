@@ -505,7 +505,7 @@ struct MeetingDetectionState: Equatable, Sendable {
     struct Context: Equatable, Sendable {
         var suggestEnabled: Bool
         var allowed: Set<MeetingApp>
-        /// A Mac recording is active, starting, stopping, pending delivery or recoverable; or a COS recording is live.
+        /// A Mac recording is active, starting, stopping or pending delivery; or a COS recording is live.
         var recordingBusy: Bool
         var dictating: Bool
         var cardShowing: Bool
@@ -574,8 +574,9 @@ enum MeetingDetectedCard {
         return startedCaptureID == runningCaptureID
     }
     /// Busy for suggestions: anything a new recording would collide with or bury.
-    static func recordingBusy(macOccupied: Bool, macCanStart: Bool, recoverable: Int, liveRecordings: Int) -> Bool {
-        macOccupied || !macCanStart || recoverable > 0 || liveRecordings > 0
+    /// A retained (recoverable) capture is not busy: it never blocks a new recording (QA 2026-10-15).
+    static func recordingBusy(macOccupied: Bool, macCanStart: Bool, liveRecordings: Int) -> Bool {
+        macOccupied || !macCanStart || liveRecordings > 0
     }
 }
 

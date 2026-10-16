@@ -110,7 +110,9 @@ final class MacRecordingStore: ObservableObject {
     func record(title chosen: String, sourceID: UInt32, bridge: @escaping Bridge) async -> String? {
         guard MacRecordingNotice.step(acknowledged: noticeAcknowledged) == .start else { return nil }
         if !available || self.bridge == nil { await prepare(bridge: bridge) }
-        guard available, canStart, recoverable.isEmpty else {
+        // A retained capture has its own id and spool folder and stays listed with Recover; it never blocks a new one
+        // (0.5.311 recorded beside one; QA 2026-10-15: a recoverable gate here made Record and the meeting card dead).
+        guard available, canStart else {
             if error == nil { error = "A Mac recording is waiting to be saved. Open Meetings to finish it before recording another." }
             return nil
         }
@@ -188,7 +190,10 @@ final class MacRecordingStore: ObservableObject {
                 if let reason = interruption ?? captureInterruption { _ = try? await spool.interrupt(id, reason: reason) }
                 manifest = try? await spool.markStopped(id)
             }
-            phase = "pending"; self.error = error.localizedDescription
+            // Pending only when this attempt left a capture to save; a start that failed before its manifest existed
+            // goes back to where it was, never showing the previous (saved) recording as unsaved.
+            if manifest?.captureId == id { phase = "pending" } else { phase = manifest?.saved == true ? "saved" : "idle" }
+            self.error = error.localizedDescription
         }
     }
     private func installStopObservers() {
@@ -261,6 +266,8 @@ final class MacRecordingStore: ObservableObject {
         deliveryTask = Task { [weak self] in
             guard let self else { return }
             var failed = false
+            // A new attempt replaces the last attempt's "Delivery paused: …" (it stayed red through a later save).
+            if self.deliveryPaused { self.error = nil }
             self.deliveryPaused = false
             defer {
                 self.deliveryTask = nil
@@ -291,6 +298,7 @@ final class MacRecordingStore: ObservableObject {
                             throw MacRecordingError.unavailable("A saved-meeting receipt was not verified. Audio is retained for recovery.")
                         }
                         self.manifest = try await self.spool.markSaved(id)
+                        if self.error?.hasPrefix("Delivery paused:") == true { self.error = nil }
                         self.phase = "saved"; self.message = "Saved Mac recording. Open Meetings to review the transcript."
                         self.recoverable = try await self.spool.recoverable()
                     }
@@ -462,7 +470,6 @@ struct MeetingCard: Equatable, Identifiable {
     @Published private(set) var floatingScreen: CGRect?
     /// A browser held the microphone but its titles could not be read: Google Meet needs Accessibility.
     @Published private(set) var browserNeedsAccessibility = false
-    @Published private(set) var note: String?
 
     var recordingBusy: (() -> Bool)?
     var dictating: (() -> Bool)?
@@ -606,7 +613,6 @@ struct MeetingCard: Equatable, Identifiable {
         let placement = DictationPlacement.choose(petFrame: petFrame?(), focusedWindow: DictationFocusedWindow.frame(),
                                                   screens: NSScreen.screens.map(\.frame), mainScreen: NSScreen.main?.frame)
         if case .floating(let screen)? = placement { surface = .floating; floatingScreen = screen } else { surface = .pet; floatingScreen = nil }
-        note = nil
         card = next
         dismissTask?.cancel(); dismissTask = nil
         // The suggestion (and its notice) fold away after 60 s; the end offer waits for an answer (COS never stops on its own).
@@ -637,10 +643,8 @@ struct MeetingCard: Equatable, Identifiable {
     private func startRecording(_ current: MeetingCard) {
         dismiss()
         Task {
-            guard let captureID = await record?(current.source) else {
-                note = "COS couldn't start recording. Open Meetings → Record on Mac to see why."
-                return
-            }
+            // A failure is shown by the record closure (pet notice, and Meetings opened on Record on Mac).
+            guard let captureID = await record?(current.source) else { return }
             startedFrom = (current.source, captureID)
             recordingLog.notice("recording started from a meeting suggestion app=\(current.source.app.title, privacy: .public)")
         }

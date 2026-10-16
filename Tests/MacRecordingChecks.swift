@@ -275,12 +275,11 @@ import Darwin
                   && !MeetingDetectedCard.offersEnd(ended: zoom, startedFrom: nil, startedCaptureID: nil, runningCaptureID: "mac_1")
                   && !MeetingDetectedCard.offersEnd(ended: chrome, startedFrom: zoom, startedCaptureID: "mac_1", runningCaptureID: "mac_1"),
                   "no end offer for a manual recording, another meeting, or one already stopped")
-            check(!MeetingDetectedCard.recordingBusy(macOccupied: false, macCanStart: true, recoverable: 0, liveRecordings: 0)
-                  && MeetingDetectedCard.recordingBusy(macOccupied: true, macCanStart: true, recoverable: 0, liveRecordings: 0)
-                  && MeetingDetectedCard.recordingBusy(macOccupied: false, macCanStart: false, recoverable: 0, liveRecordings: 0)
-                  && MeetingDetectedCard.recordingBusy(macOccupied: false, macCanStart: true, recoverable: 1, liveRecordings: 0)
-                  && MeetingDetectedCard.recordingBusy(macOccupied: false, macCanStart: true, recoverable: 0, liveRecordings: 1),
-                  "busy: recording, starting, pending, recoverable, or any live COS recording")
+            check(!MeetingDetectedCard.recordingBusy(macOccupied: false, macCanStart: true, liveRecordings: 0)
+                  && MeetingDetectedCard.recordingBusy(macOccupied: true, macCanStart: true, liveRecordings: 0)
+                  && MeetingDetectedCard.recordingBusy(macOccupied: false, macCanStart: false, liveRecordings: 0)
+                  && MeetingDetectedCard.recordingBusy(macOccupied: false, macCanStart: true, liveRecordings: 1),
+                  "busy: recording, starting, pending, or any live COS recording; a retained capture is not busy")
             // The one-time recording notice and the automatic title.
             check(MacRecordingNotice.step(acknowledged: false) == .notice && MacRecordingNotice.step(acknowledged: true) == .start,
                   "the notice the first time, then every Record starts at once")

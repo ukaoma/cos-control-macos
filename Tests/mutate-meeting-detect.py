@@ -37,7 +37,6 @@ MUTANTS = [
     # Words, title, end offer, busy.
     ("end offer for another recording", "        return startedCaptureID == runningCaptureID", "        return true"),
     ("end offer for another meeting", "guard let startedFrom, startedFrom == ended, let startedCaptureID", "guard let startedFrom, let startedCaptureID"),
-    ("busy ignores recoverable", " || recoverable > 0", ""),
     ("busy ignores live recordings", " || liveRecordings > 0", ""),
     ("busy ignores pending", "macOccupied || !macCanStart ||", "macOccupied ||"),
     ("fold-away changed", "    static let dismissSeconds: TimeInterval = 60", "    static let dismissSeconds: TimeInterval = 600"),

@@ -50,7 +50,7 @@ struct COSControlApp: App {
         meetings.recordingBusy = { [weak model] in
             guard let model else { return true }
             return MeetingDetectedCard.recordingBusy(macOccupied: model.macRecording.occupied, macCanStart: model.macRecording.canStart,
-                                                   recoverable: model.macRecording.recoverable.count, liveRecordings: model.recordingCount)
+                                                   liveRecordings: model.recordingCount)
         }
         meetings.runningCaptureID = { [weak model] in
             guard let model, model.macRecording.isRecording else { return nil }
@@ -59,7 +59,12 @@ struct COSControlApp: App {
         meetings.record = { [weak model] source in
             guard let model else { return nil }
             let id = await model.macRecording.startFromMeetingSuggestion(title: MeetingDetectedCard.title(source, at: Date()), bridge: model.macRecordingBridge)
-            if id == nil { model.petNotice = model.macRecording.error ?? "COS couldn't start recording. Open Meetings → Record on Mac to see why." }
+            // The person clicked Record: a failure must be seen even with the pet hidden, so Meetings opens on the panel
+            // that says why (QA 2026-10-15: a hidden pet swallowed it).
+            if id == nil {
+                model.petNotice = model.macRecording.error ?? "COS couldn't start recording. Open Meetings → Record on Mac to see why."
+                model.openActivity?(.meetings)
+            }
             return id
         }
         meetings.stopRecording = { [weak model] in await model?.macRecording.stop() }
