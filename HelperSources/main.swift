@@ -17189,7 +17189,8 @@ final class COSControlHelper {
         let detail = "HTTP \(status)\(code.map { " · \($0)" } ?? "") · \(seconds)"
         switch code {
         case "work_chat_busy":
-            return "The server is already planning another request or is pausing for maintenance (\(detail)). Try again in a moment."
+            // The server's one Work chat slot is taken, most often by the 15 s refresh's update summary.
+            return "COS is still writing the last update (\(detail)). Try Plan again in a moment."
         case "invalid_work_chat":
             return "The server refused this planning request as invalid (\(detail))."
         default:
@@ -17284,7 +17285,7 @@ final class COSControlHelper {
         guard planOK == nil,
               plan404 == "Task chat planning is unavailable on this server (HTTP 404).",
               plan503 == "The planner did not return a usable plan (HTTP 503 · work_chat_unavailable · 10.6 s).",
-              plan409.hasPrefix("The server is already planning another request") && plan409.contains("HTTP 409 · work_chat_busy"),
+              plan409 == "COS is still writing the last update (HTTP 409 · work_chat_busy · 0.0 s). Try Plan again in a moment.",
               plan400 == "The server refused this planning request as invalid (HTTP 400 · invalid_work_chat · 0.0 s).",
               planTimeout == "COS took too long to plan (over 190 s).",
               planDown == "COS could not reach the server to plan (no answer after 0.0 s).",

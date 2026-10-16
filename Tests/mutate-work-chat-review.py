@@ -44,6 +44,11 @@ MUTANTS = [
  ("backoff swallows cancellation", C, 'the planner choice is left as it was")\n                        return\n', 'the planner choice is left as it was")\n'),
  ("Plan never re-reads discovery", C, '        if !handoff.isolated, enabled, discovery != .loaded {', '        if false {'),
  ("discovery never marked loaded", C, '                discovery = .loaded\n                return\n', '                return\n'),
+ # 0.5.316: the server runs one Work chat call at a time (409 work_chat_busy); Plan waits for an in-flight summary.
+ ("Plan ignores the Work chat gate", C, '                guard await gate.acquire(waitingUpTo: busyWait) else {', '                guard true else {'),
+ ("gate taken twice", C, '        guard !inFlight else { return false }\n', ''),
+ ("gate kept after a plan", C, 'do { response = try await handoff.taskChatCall(["work-chat"],data:data); gate.release() }', 'do { response = try await handoff.taskChatCall(["work-chat"],data:data) }'),
+ ("summary skips the gate", C, '                guard gate.tryAcquire() else { return }\n', ''),
  ("discovery failure hidden", C, 'planners = []; efforts = []; contextItemsOffered = false; plannerNotice = WorkChatPolicy.plannerUnavailable', 'planners = []; efforts = []; contextItemsOffered = false; plannerNotice = nil'),
  ("effort key always sent", C, 'if let effort { body["effort"] = effort }', 'body["effort"] = effort ?? "high"'),
  ("effort key never sent", C, 'if let effort { body["effort"] = effort }', ''),

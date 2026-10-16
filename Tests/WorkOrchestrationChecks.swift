@@ -17,6 +17,12 @@ private actor WorkChatFixture {
     var capabilityCancels = 0
     func cancelCapabilities(_ times: Int) { capabilityCancels = times }
     var echoEffort = true
+    /// 0.5.316: Work chat calls in flight at once (the server allows one), and how long each takes here.
+    var chatInFlight = 0
+    var maxChatInFlight = 0
+    var chatDelay: Duration = .milliseconds(100)
+    func setChatDelay(_ delay: Duration) { chatDelay = delay }
+    func chatCalls() -> Int { calls.filter { $0 == "work-chat" }.count }
     func stopEchoingEffort() { echoEffort = false }
     func seen() -> [String] { calls }
     func plannerSent() -> [String?] { chatBodies.map { $0["planner"] as? String } }
@@ -44,7 +50,9 @@ private actor WorkChatFixture {
             var ranEffort: String? = planners == nil ? nil : "high"
             if let data, let body = try? JSONSerialization.jsonObject(with: data) as? [String: Any] { chatBodies.append(body); ranEffort = (body["effort"] as? String) ?? ranEffort }
             // Let a second Send and a navigation change race with planning.
-            try await Task.sleep(for: .milliseconds(100))
+            chatInFlight += 1; maxChatInFlight = max(maxChatInFlight, chatInFlight)
+            defer { chatInFlight -= 1 }
+            try await Task.sleep(for: chatDelay)
             out = ["protocolVersion": .number(1), "answer": .string("Review independent copy and code checks."), "model": .string(model),
                 "assignments": .array(ids.prefix(2).map { .object(["sessionID": .string($0), "prompt": .string("Report checks; do not publish.")]) })]
             if let ranEffort, echoEffort { out["effort"] = .string(ranEffort) }
@@ -342,6 +350,35 @@ private actor WorkChatFixture {
     let unfinishedPlanner = await fixture.plannerSent().last ?? nil
     precondition(unfinished.discovery == .loaded && unfinished.planners == ["sonnet", "opus"] && unfinishedPlanner == "opus"
                  && unfinished.record?.rounds.last?.planner == "opus", "Plan re-reads discovery and plans with the chosen Opus: \(String(describing: unfinishedPlanner)) \(unfinished.error ?? "")")
+    // 0.5.316: the server runs one Work chat call at a time. A Plan pressed while an update summary is being written waits
+    // for it and then plans, never overlapping it; one that would wait too long says so and sends nothing.
+    await fixture.setChatDelay(.milliseconds(700))
+    let summarizing = Task { @MainActor in
+        precondition(WorkChatCallGate.shared.tryAcquire(), "the update summary takes the Work chat slot")
+        defer { WorkChatCallGate.shared.release() }
+        _ = try? await real.taskChatCall(["work-chat"], data: Data("{}".utf8))
+    }
+    try await Task.sleep(for: .milliseconds(50))
+    let duringSummary = WorkTaskChatStore(); duringSummary.enabled = true; duringSummary.open(source: source, handoff: real)
+    await duringSummary.loadPlanners(handoff: real, retryDelay: .zero)
+    duringSummary.setDraft("Plan while an update is being written")
+    await duringSummary.send(source: source, handoff: real, planner: "opus", effort: "high")
+    await summarizing.value
+    let overlap = await fixture.maxChatInFlight
+    precondition(overlap == 1 && duringSummary.record?.rounds.last?.state == "Ready to send" && !WorkChatCallGate.shared.inFlight,
+                 "A Plan during an update summary waits and then plans, never two Work chat calls at once (max in flight \(overlap)): \(duringSummary.error ?? "")")
+    await fixture.setChatDelay(.milliseconds(100))
+    precondition(WorkChatCallGate.shared.tryAcquire(), "the slot is free again")
+    let chatsBefore = await fixture.chatCalls()
+    let tooLong = WorkTaskChatStore(); tooLong.enabled = true; tooLong.busyWait = .milliseconds(300); tooLong.open(source: source, handoff: real)
+    await tooLong.loadPlanners(handoff: real, retryDelay: .zero)
+    tooLong.setDraft("Plan while the slot stays taken")
+    await tooLong.send(source: source, handoff: real, planner: "opus", effort: "high")
+    WorkChatCallGate.shared.release()
+    let chatsAfter = await fixture.chatCalls()
+    precondition(chatsAfter == chatsBefore && tooLong.error == "COS is still writing the last update. Try Plan again in a moment. Nothing was sent."
+                 && tooLong.record?.rounds.last?.state == "Needs attention",
+                 "A Plan that waited out its limit sends nothing and says why: \(tooLong.error ?? "")")
     // A discovery that failed twice is read again at Plan; once the server answers, the notice goes and Opus is used.
     await fixture.failCapabilities(2)
     let failedFirst = WorkTaskChatStore(); failedFirst.enabled = true; failedFirst.open(source: source, handoff: real)

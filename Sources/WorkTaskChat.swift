@@ -217,6 +217,28 @@ enum WorkChatPreflight {
     }
 }
 
+/// 0.5.316: the server runs one Work chat call at a time and answers 409 work_chat_busy to a second. Control's own plan
+/// and update-summary calls take this gate, so a Plan pressed while an update summary is being written waits for it
+/// instead of firing into the 409; an automatic summary that finds it taken waits for the next poll.
+@MainActor final class WorkChatCallGate {
+    static let shared = WorkChatCallGate()
+    private(set) var inFlight = false
+    func tryAcquire() -> Bool {
+        guard !inFlight else { return false }
+        inFlight = true; return true
+    }
+    /// Waits up to `limit`; false when it is still taken then, or the wait was cancelled.
+    func acquire(waitingUpTo limit: Duration) async -> Bool {
+        let deadline = ContinuousClock.now + limit
+        while !tryAcquire() {
+            guard ContinuousClock.now < deadline else { return false }
+            do { try await Task.sleep(for: .milliseconds(100)) } catch { return false }
+        }
+        return true
+    }
+    func release() { inFlight = false }
+}
+
 @MainActor final class WorkTaskChatStore: ObservableObject {
     @Published private var savedRecord: WorkChatRecord?
     let draft = WorkChatDraftState()
@@ -245,6 +267,8 @@ enum WorkChatPreflight {
     /// as they were. Plan re-runs discovery itself when this is not `.loaded`.
     enum PlannerDiscovery: Equatable, Sendable { case unknown, loaded, failed }
     @Published private(set) var discovery: PlannerDiscovery = .unknown
+    /// 0.5.316: how long Plan waits for an update summary already in flight before saying so.
+    var busyWait: Duration = .seconds(60)
     /// Server 6.73.12: the planner efforts it advertises. Empty: no effort picker, and no effort key is sent.
     @Published private(set) var efforts: [String] = []
     /// Server 6.73.13: it takes context items and chooses each assignment's. False: every assignment sends every item.
@@ -445,9 +469,15 @@ enum WorkChatPreflight {
                 let sample = targets(handoff,source:source).filter { $0.provider != "cursor" }
                 answer = WorkChatPlannerAnswer(protocolVersion:1,answer:"Sample plan: ask Claude to review the launch copy and Codex to check the implementation. Their assignments are independent. Cursor's mobile review stays connected and requires sending in its existing app. The shared task stays at its current stage.",assignments:sample.prefix(2).map { WorkChatAssignment(sessionID:$0.id,prompt:$0.provider == "claude" ? "Review the launch copy and report unresolved decisions. Do not publish." : "Check the launch implementation and report checks and outstanding issues. Do not publish.") })
             } else {
-                phase = "Thinking through the request with \(WorkChatPolicy.plannerName(planner))…"
                 let data = try payload(source:source,handoff:handoff,question:question,context:context,revision:revision,mode:"plan",planner:planner,effort:effort,items:chooses ? items : nil)
-                let response = try await handoff.taskChatCall(["work-chat"],data:data)
+                let gate = WorkChatCallGate.shared
+                if gate.inFlight { phase = "Waiting for the last update to finish…" }
+                guard await gate.acquire(waitingUpTo: busyWait) else {
+                    throw HelperClientError.commandFailed("COS is still writing the last update. Try Plan again in a moment.")
+                }
+                phase = "Thinking through the request with \(WorkChatPolicy.plannerName(planner))…"
+                let response: [String: JSONValue]
+                do { response = try await handoff.taskChatCall(["work-chat"],data:data); gate.release() } catch { gate.release(); throw error }
                 answer = try JSONDecoder().decode(WorkChatPlannerAnswer.self,from:JSONEncoder().encode(response))
             }
             if !handoff.isolated { await handoff.refreshActivity() }
@@ -720,6 +750,10 @@ enum WorkChatPreflight {
                 let snapshot = try encoder.encode(record!.rounds[index].assignments)
                 let digest = SHA256.hash(data: snapshot).map { String(format: "%02x", $0) }.joined()
                 guard digest != record!.rounds[index].summaryDigest || !automatic else { continue }
+                // 0.5.316: a plan holds the server's one Work chat slot; this summary waits for a later poll.
+                let gate = WorkChatCallGate.shared
+                guard gate.tryAcquire() else { return }
+                defer { gate.release() }
                 record?.rounds[index].summaryDigest = digest
                 guard persist() else { return }
                 let fresh = try await handoff.taskChatCall(["work-context","--work-id",source.id])

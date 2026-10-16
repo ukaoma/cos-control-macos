@@ -21,6 +21,15 @@ assert "if let failure = Self.workChatPlanFailure(status: response?.status, body
 assert "No assignment was sent." not in chat and chat.count("timeout: 190)") == 1, "no blanket 'unavailable' failure, and the mapping's timeout is the request's"
 print("PASS Work chat plan failures: emitWorkChat maps the server's status, code and elapsed time")
 PY
+# 0.5.316: the update summary takes the same one-call gate as Plan (the execution check holds the gate by hand).
+python3 - "$ROOT/Sources/WorkTaskChat.swift" <<'PY'
+import sys
+chat = open(sys.argv[1]).read()
+refresh = chat[chat.index("    func refresh(source: WorkSource, handoff: WorkHandoffStore, automatic: Bool = false) async {"):]
+refresh = refresh[:refresh.index("\nstruct WorkTaskChatView")]
+assert refresh.index("guard gate.tryAcquire() else { return }") < refresh.index("defer { gate.release() }") < refresh.index('let response = try await handoff.taskChatCall(["work-chat"],data:data)'), "the summary takes the Work chat gate before its call"
+print("PASS Work chat summary takes the one-call gate before calling the server")
+PY
 # 0.5.312: the Work Context Meter's wiring. Item lists start collapsed and their open state is remembered per Mac; a file
 # previews in the native Quick Look panel on its local copy, a text item shows its exact excerpt; the send uses only the
 # assignment's items and files; the helper passes the server's contextItems capability through.
