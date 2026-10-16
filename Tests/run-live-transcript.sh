@@ -78,6 +78,8 @@ fi
 
 if [[ "$LANE" == "all" || "$LANE" == "pins" ]]; then
   OUT="$(/usr/bin/python3 "$ROOT/Tests/live-transcript-pins.py" "$ROOT")" || { print -r -- "$OUT"; exit 1; }
+  OUT2="$(/usr/bin/python3 "$ROOT/Tests/live-meeting-open-pins.py" "$ROOT")" || { print -r -- "$OUT2"; exit 1; }
+  print -r -- "$OUT2"
   print -r -- "$OUT"
   COUNT="${${OUT##*pins: }%% passed*}"
   (( COUNT >= 102 )) || { print -u2 "live transcript pins ran only $COUNT (expected at least 102)"; exit 1; }

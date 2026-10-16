@@ -158,6 +158,9 @@ final class ControllerModel: ObservableObject {
     var activityOpenDictionary = false
     /// 0.5.312: the pet's "All dictations" and Dictation → History… open the history pane after Meetings loads.
     var activityOpenDictationHistory = false
+    /// 0.5.313: a live transcript to open once the Activity window has switched to Meetings. Opening it before the switch
+    /// lost it: the section change clears every detail route (Miles 2026-10-15 22:40, Open live meeting did nothing).
+    var activityOpenLiveTranscriptID: String?
     private var recordingShortcutDeadline: Date?
 
     /// A user gesture only. Open Meetings before asking its visible poll to select a fresh live session.

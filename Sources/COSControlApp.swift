@@ -43,8 +43,9 @@ struct COSControlApp: App {
         }
         model.dictation.registerHotKeys()
         model.macRecording.openLiveMeeting = { [weak model] id in
+            // Handed to the window like Dictionary and History: it opens after the switch to Meetings, never before it.
+            model?.activityOpenLiveTranscriptID = id
             model?.openActivity?(.meetings)
-            model?.openLiveTranscript(id)
         }
         model.openActivity = { section in activityWindow.show(model: model, section: section) }
         model.openSetup = { setupWindow.show(model: model) }

@@ -967,7 +967,10 @@ struct ActivityWindow: View {
         model.activityOpenDictionary = false
         let openDictationHistory = model.activityOpenDictationHistory
         model.activityOpenDictationHistory = false
+        let openLiveTranscript = model.activityOpenLiveTranscriptID
+        model.activityOpenLiveTranscriptID = nil
         if let next { select(next) }
+        if let openLiveTranscript, section == .meetings { model.openLiveTranscript(openLiveTranscript) }
         if openRecording, section == .meetings { model.beginRecordingTranscriptShortcut() }
         if openDictionary, section == .meetings { model.openDictionary() }
         if openDictationHistory, section == .meetings { model.openDictationHistory() }
