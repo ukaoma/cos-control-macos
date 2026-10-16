@@ -1519,12 +1519,13 @@ src = "\n".join(open(path).read() for path in sys.argv[1:])
 m = re.search(r"MenuBarExtra\s*\{(.*?)ControlPanel\(model: model\)", src, re.S)
 assert m is not None, "MenuBarExtra no longer opens ControlPanel"
 before = re.sub(r"//[^\n]*", "", m.group(1))
-# Only the explicit live transcript and recording stop controls may precede the panel; keep this exact
+# Only the explicit live transcript and recording stop controls (and the 0.5.313 notice reminder) may precede the panel; keep this exact
 # whitelist so an unrelated navigation control cannot silently return here.
 expected = '''VStack(spacing: 0) {
     if model.macRecordingActive {
         HStack {
             Label("Mac recording", systemImage: "record.circle.fill").foregroundStyle(COSPalette.danger)
+            Text(MacRecordingNotice.reminder).font(COSType.body(10.5)).foregroundStyle(.secondary)
             Spacer()
             Button("View live transcript") { model.showRecordingTranscript() }.buttonStyle(COSQuietButtonStyle())
             Button("Stop and save") { Task { await model.macRecording.stop() } }.buttonStyle(COSQuietButtonStyle())
