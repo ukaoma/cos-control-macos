@@ -1,0 +1,214 @@
+<title>Dictation Start Sounds</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600&family=Fraunces:opsz,wght@9..144,600&family=JetBrains+Mono:wght@500;700&display=swap">
+<style>
+/* Layout: one column of sound cards, each with Play start / Play stop, a shared volume slider on top, picks at the end. */
+:root { --bg: #efe8dc; --card: #fbf8f2; --line: #ddd2c0; --ink: #1f1712; --plate: #3a2c22; --muted: #7b6d60; --gold: #c9a86e; --violet: #7d4ccf; --green: #2f8a4a;
+  --display: "Fraunces", Georgia, serif; --body: "DM Sans", -apple-system, sans-serif; --mono: "JetBrains Mono", ui-monospace, Menlo, monospace }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg: #17120e; --card: #28211b; --line: #3d3229; --ink: #f2ebdf; --plate: #e4d8c6; --muted: #a8998a; --violet: #a77df0; --green: #5cc27a; color-scheme: dark } }
+:root[data-theme="dark"] { --bg: #17120e; --card: #28211b; --line: #3d3229; --ink: #f2ebdf; --plate: #e4d8c6; --muted: #a8998a; --violet: #a77df0; --green: #5cc27a; color-scheme: dark }
+* { box-sizing: border-box }
+body { background: var(--bg); color: var(--ink); font: 15px/1.5 var(--body); padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 28px 56px }
+.wrap { max-width: 760px; margin: 0 auto; display: grid; gap: 18px }
+h1 { font: 600 30px/1.15 var(--display); margin: 0 }
+.lede { color: var(--muted); margin: 4px 0 0; max-width: 64ch }
+.vol { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 12px; align-items: center; background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 12px 16px }
+.vol label { font-weight: 600 }
+.vol output { font: 600 13px var(--mono); color: var(--muted); min-width: 4ch; text-align: right }
+input[type=range] { width: 100%; accent-color: var(--violet) }
+.cards { display: grid; gap: 12px }
+.snd { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px 14px; align-items: center }
+.snd h2 { font: 600 18px var(--display); margin: 0; display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap }
+.tag { font: 700 10px var(--mono); letter-spacing: .07em; color: var(--muted); border: 1px solid var(--line); border-radius: 6px; padding: 1px 6px }
+.snd p { margin: 0; color: var(--plate); font-size: 13.5px; grid-column: 1 }
+.btns { grid-row: 1 / span 2; grid-column: 2; display: flex; gap: 8px }
+button { font: 600 13px var(--body); border-radius: 9px; padding: 7px 12px; border: 1px solid var(--line); background: var(--card); color: var(--ink); cursor: pointer }
+button.primary { background: var(--ink); color: var(--bg); border-color: transparent }
+button:focus-visible, input:focus-visible { outline: 2px solid var(--gold); outline-offset: 2px }
+@media (max-width: 560px) { .snd { grid-template-columns: minmax(0, 1fr) } .btns { grid-row: auto; grid-column: 1 } }
+.note { color: var(--muted); font-size: 13px; margin: 0 }
+.qs { display: grid; gap: 10px }
+.q { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 13px 16px }
+.q h3 { margin: 0 0 4px; font: 600 16px var(--display) }
+.q p { margin: 0; color: var(--plate); font-size: 14px }
+.opt { display: inline-block; font: 700 11px var(--mono); padding: 1px 7px; border-radius: 6px; background: var(--ink); color: var(--bg); margin-right: 5px }
+.rec { font: 700 10px var(--mono); color: var(--green); margin-left: 4px }
+</style>
+
+<div class="wrap">
+  <header>
+    <h1>Dictation Start Sounds</h1>
+    <p class="lede">Tip: this sound lives below 120 Hz, so use headphones or real speakers; laptop speakers drop most of it. What COS plays when you press your dictation shortcut, and when it stops listening. Each is synthesized here, original to COS, so nothing is borrowed from a film. Set the volume, then play each one.</p>
+  </header>
+
+  <div class="vol"><label for="vol">Volume</label><input type="range" id="vol" min="0" max="100" value="60"><output id="volOut" for="vol">60%</output></div>
+  <div class="vol"><label for="pitch">Pitch</label><input type="range" id="pitch" min="-12" max="6" step="1" value="0"><output id="pitchOut" for="pitch">0 st</output></div>
+
+  <div class="cards">
+    <div class="snd"><h2>Unstable saber v2 <span class="tag">MATCHED TO YOUR REFERENCE</span></h2><p>Rebuilt from measurements of the clip you sent: a 47 Hz growl with beating partials and almost no treble, loudness that swells and flutters, sparse spits, an ignition that drops into the hilt with a bright eject burst, and a retract that flares then cuts. Original synthesis; no reference audio is used.</p><div class="btns"><button class="primary" type="button" data-s="v2">Start</button><button type="button" data-s="v2Off">Stop</button></div></div>
+    <div class="snd"><h2>Unstable saber v1 <span class="tag">EARLIER TAKE</span></h2><p>The crackling, sputtering kind: a violent ignition with vents flaring, then a raw hum that spits and wavers. Stop sputters out. Original synthesis.</p><div class="btns"><button class="primary" type="button" data-s="unstable">Start</button><button type="button" data-s="unstableOff">Stop</button></div></div>
+    <div class="snd"><h2>Saber, full ignition <span class="tag">JEDI PET</span></h2><p>The cinematic shape: a sharp snap-hiss, a heavy distorted hum that swells and settles, about a second. Stop is the falling power-down. Original synthesis, not film audio.</p><div class="btns"><button class="primary" type="button" data-s="cine">Start</button><button type="button" data-s="cineOff">Stop</button></div></div>
+    <div class="snd"><h2>Saber ignite <span class="tag">JEDI PET</span></h2><p>A quick rising buzz that settles into a low hum, about half a second. Stop is a short power-down.</p><div class="btns"><button class="primary" type="button" data-s="saber">Start</button><button type="button" data-s="saberOff">Stop</button></div></div>
+    <div class="snd"><h2>Saber, soft <span class="tag">JEDI PET</span></h2><p>The same idea, rounder and quieter, for open offices and calls.</p><div class="btns"><button class="primary" type="button" data-s="saberSoft">Start</button><button type="button" data-s="saberSoftOff">Stop</button></div></div>
+    <div class="snd"><h2>Droid chirp <span class="tag">DROID PETS</span></h2><p>Two bright blips up for start, two down for stop.</p><div class="btns"><button class="primary" type="button" data-s="chirp">Start</button><button type="button" data-s="chirpOff">Stop</button></div></div>
+    <div class="snd"><h2>Soft chime <span class="tag">ANY PET · DEFAULT</span></h2><p>A gentle two-note chime close to what dictation apps use. The fallback for pets without their own sound.</p><div class="btns"><button class="primary" type="button" data-s="chime">Start</button><button type="button" data-s="chimeOff">Stop</button></div></div>
+  </div>
+  <p class="note">In COS Control these become short audio files bundled with each pet, played at your volume, never while a meeting recording is capturing your Mac's audio. A volume of zero turns the sound off. Pitch shifts any sound, your own files included, without changing its length.</p>
+
+  <section class="qs" aria-label="Questions">
+    <div class="q"><h3>Which sounds</h3><p><span class="opt">A</span>Start and stop.<span class="rec">RECOMMENDED</span> <span class="opt">B</span>Start only.</p></div>
+    <div class="q"><h3>Pet hidden or on another screen</h3><p><span class="opt">A</span>The listening pill appears on the screen you're typing on (full-screen apps and other displays included); the pet stays where it is.<span class="rec">RECOMMENDED</span> <span class="opt">B</span>Opt-in: the pet jumps to that screen while you dictate, then walks back.</p></div>
+  </section>
+</div>
+
+<script>
+(() => {
+  let ctx = null;
+  const vol = document.getElementById('vol'), out = document.getElementById('volOut');
+  const level = () => Number(vol.value) / 100;
+  const pitch = document.getElementById('pitch'), pOut = document.getElementById('pitchOut');
+  const P = () => Math.pow(2, Number(pitch.value) / 12);
+  pitch.addEventListener('input', () => { const v = Number(pitch.value); pOut.textContent = (v > 0 ? '+' : v < 0 ? '−' : '') + Math.abs(v) + ' st' });
+  vol.addEventListener('input', () => { out.textContent = vol.value + '%' });
+  function ac() { if (!ctx) ctx = new (window.AudioContext || window.webkitAudioContext)(); if (ctx.state === 'suspended') ctx.resume(); return ctx }
+  function master(c, gain) { const g = c.createGain(); g.gain.value = gain * level(); const comp = c.createDynamicsCompressor(); g.connect(comp).connect(c.destination); return g }
+  function saber(up, soft) {
+    const c = ac(), t = c.currentTime, out = master(c, soft ? 0.5 : 0.9);
+    const dur = up ? 0.62 : 0.38;
+    const env = c.createGain(); env.connect(out);
+    if (up) { env.gain.setValueAtTime(0.0001, t); env.gain.exponentialRampToValueAtTime(1, t + 0.07); env.gain.setValueAtTime(1, t + 0.25); env.gain.exponentialRampToValueAtTime(0.0001, t + dur) }
+    else { env.gain.setValueAtTime(0.9, t); env.gain.exponentialRampToValueAtTime(0.0001, t + dur) }
+    const lp = c.createBiquadFilter(); lp.type = 'lowpass'; lp.Q.value = soft ? 0.7 : 4; lp.connect(env);
+    lp.frequency.setValueAtTime(up ? 300 : 2400, t); lp.frequency.exponentialRampToValueAtTime(up ? (soft ? 1600 : 3200) : 200, t + (up ? 0.18 : dur));
+    const base = (soft ? 82 : 92) * P();
+    [[base, 'sawtooth', 0.55], [base * 1.5, 'sawtooth', 0.25], [base * 2.01, 'square', soft ? 0.05 : 0.12]].forEach(([f, type, g]) => {
+      const o = c.createOscillator(); o.type = type; const og = c.createGain(); og.gain.value = g; o.connect(og).connect(lp);
+      o.frequency.setValueAtTime(up ? f * 0.55 : f, t); o.frequency.exponentialRampToValueAtTime(up ? f : f * 0.45, t + (up ? 0.16 : dur));
+      const lfo = c.createOscillator(); lfo.frequency.value = 7; const lg = c.createGain(); lg.gain.value = f * 0.012; lfo.connect(lg).connect(o.frequency);
+      o.start(t); lfo.start(t); o.stop(t + dur + 0.05); lfo.stop(t + dur + 0.05);
+    });
+    if (!soft && up) { // ignition crackle
+      const n = c.createBufferSource(), b = c.createBuffer(1, c.sampleRate * 0.12, c.sampleRate), d = b.getChannelData(0);
+      for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / d.length, 2);
+      const hp = c.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 2500; const ng = c.createGain(); ng.gain.value = 0.18;
+      n.buffer = b; n.playbackRate.value = P(); n.connect(hp).connect(ng).connect(out); n.start(t);
+    }
+  }
+  function blips(freqs, gap, type, gain) {
+    const c = ac(), t = c.currentTime, out = master(c, gain);
+    freqs.forEach((f, i) => { const o = c.createOscillator(), g = c.createGain(); o.type = type; o.frequency.value = f * P(); g.gain.setValueAtTime(0.0001, t + i * gap); g.gain.exponentialRampToValueAtTime(0.8, t + i * gap + 0.012); g.gain.exponentialRampToValueAtTime(0.0001, t + i * gap + gap * 0.9); o.connect(g).connect(out); o.start(t + i * gap); o.stop(t + i * gap + gap) });
+  }
+  function chime(up) {
+    const c = ac(), t = c.currentTime, out = master(c, 0.7);
+    const notes = (up ? [659.25, 987.77] : [987.77, 659.25]).map(f => f * P());
+    notes.forEach((f, i) => { [1, 2.01].forEach((h, j) => { const o = c.createOscillator(), g = c.createGain(); o.type = 'sine'; o.frequency.value = f * h; const s = t + i * 0.11; g.gain.setValueAtTime(0.0001, s); g.gain.exponentialRampToValueAtTime(j ? 0.12 : 0.6, s + 0.01); g.gain.exponentialRampToValueAtTime(0.0001, s + 0.45); o.connect(g).connect(out); o.start(s); o.stop(s + 0.5) }) });
+  }
+
+  // Full ignition: projector-style hum (detuned saws through a waveshaper) + a noise snap-hiss swept down, with a short
+  // pitch dip and swell; the power-down reverses it. Everything is generated here.
+  function shaper(c, amt) { const n = 2048, curve = new Float32Array(n); for (let i = 0; i < n; i++) { const x = i * 2 / n - 1; curve[i] = Math.tanh(amt * x) } const w = c.createWaveShaper(); w.curve = curve; w.oversample = '4x'; return w }
+  function cine(up) {
+    const c = ac(), t = c.currentTime, out = master(c, 1.0);
+    const dur = up ? 1.15 : 0.9;
+    const bus = c.createGain(); const ws = shaper(c, 3.2); const tone = c.createBiquadFilter(); tone.type = 'lowpass'; tone.Q.value = 1.2;
+    bus.connect(ws).connect(tone).connect(out);
+    tone.frequency.setValueAtTime((up ? 600 : 3800) * P(), t); tone.frequency.exponentialRampToValueAtTime((up ? 3800 : 300) * P(), t + (up ? 0.22 : dur * 0.85));
+    if (up) { bus.gain.setValueAtTime(0.0001, t); bus.gain.exponentialRampToValueAtTime(0.9, t + 0.05); bus.gain.setValueAtTime(0.9, t + 0.55); bus.gain.exponentialRampToValueAtTime(0.0001, t + dur) }
+    else { bus.gain.setValueAtTime(0.85, t); bus.gain.setValueAtTime(0.85, t + 0.12); bus.gain.exponentialRampToValueAtTime(0.0001, t + dur) }
+    const base = 88 * P();
+    [[base, 0.5], [base * 1.007, 0.45], [base * 2.003, 0.22], [base * 3.01, 0.08]].forEach(([f, g], k) => {
+      const o = c.createOscillator(); o.type = k === 3 ? 'square' : 'sawtooth'; const og = c.createGain(); og.gain.value = g; o.connect(og).connect(bus);
+      if (up) { o.frequency.setValueAtTime(f * 2.6, t); o.frequency.exponentialRampToValueAtTime(f * 0.86, t + 0.16); o.frequency.exponentialRampToValueAtTime(f, t + 0.32) }
+      else { o.frequency.setValueAtTime(f, t); o.frequency.setValueAtTime(f * 1.04, t + 0.08); o.frequency.exponentialRampToValueAtTime(f * 0.32, t + dur) }
+      const lfo = c.createOscillator(); lfo.frequency.value = 6.3 + k * 0.4; const lg = c.createGain(); lg.gain.value = f * 0.018; lfo.connect(lg).connect(o.frequency);
+      o.start(t); lfo.start(t); o.stop(t + dur + 0.05); lfo.stop(t + dur + 0.05);
+    });
+    const len = up ? 0.42 : 0.5, n = c.createBufferSource(), b = c.createBuffer(1, Math.ceil(c.sampleRate * len), c.sampleRate), d = b.getChannelData(0);
+    for (let i = 0; i < d.length; i++) { const k = i / d.length; d[i] = (Math.random() * 2 - 1) * (up ? Math.pow(1 - k, 1.6) : Math.sin(Math.PI * k) * (1 - k)) }
+    const bp = c.createBiquadFilter(); bp.type = 'bandpass'; bp.Q.value = 1.4;
+    bp.frequency.setValueAtTime(up ? 5200 : 1400, t); bp.frequency.exponentialRampToValueAtTime(up ? 700 : 260, t + len);
+    const ng = c.createGain(); ng.gain.value = up ? 0.55 : 0.3; n.buffer = b; n.playbackRate.value = P(); n.connect(bp).connect(ng).connect(out); n.start(t);
+  }
+
+  // Unstable saber: lower, rougher hum (heavier waveshaping, wobbling detune), crackle bursts gated at random, a side-vent
+  // flare on ignition, and a sputtering power-down.
+  function unstable(up) {
+    const c = ac(), t = c.currentTime, out = master(c, 1.0);
+    const dur = up ? 1.35 : 1.0;
+    const bus = c.createGain(); const ws = shaper(c, 6.5); const tone = c.createBiquadFilter(); tone.type = 'lowpass'; tone.Q.value = 0.9;
+    bus.connect(ws).connect(tone).connect(out);
+    tone.frequency.setValueAtTime((up ? 900 : 4200) * P(), t); tone.frequency.exponentialRampToValueAtTime((up ? 4600 : 260) * P(), t + (up ? 0.2 : dur * 0.9));
+    if (up) { bus.gain.setValueAtTime(0.0001, t); bus.gain.exponentialRampToValueAtTime(1, t + 0.035); bus.gain.setValueAtTime(0.95, t + 0.7); bus.gain.exponentialRampToValueAtTime(0.0001, t + dur) }
+    else { bus.gain.setValueAtTime(0.95, t); for (let k = 1; k < 7; k++) { const at = t + k * 0.09; bus.gain.setValueAtTime(k % 2 ? 0.25 : 0.8, at) } bus.gain.exponentialRampToValueAtTime(0.0001, t + dur) }
+    const base = 74 * P();
+    [[base, 0.5], [base * 1.013, 0.45], [base * 0.995, 0.3], [base * 2.02, 0.25], [base * 3.03, 0.1]].forEach(([f, g], k) => {
+      const o = c.createOscillator(); o.type = 'sawtooth'; const og = c.createGain(); og.gain.value = g; o.connect(og).connect(bus);
+      if (up) { o.frequency.setValueAtTime(f * 3.2, t); o.frequency.exponentialRampToValueAtTime(f * 0.8, t + 0.14); o.frequency.exponentialRampToValueAtTime(f, t + 0.3) }
+      else { o.frequency.setValueAtTime(f, t); o.frequency.exponentialRampToValueAtTime(f * 0.28, t + dur) }
+      const lfo = c.createOscillator(); lfo.type = 'triangle'; lfo.frequency.value = 9 + k * 1.7; const lg = c.createGain(); lg.gain.value = f * 0.035; lfo.connect(lg).connect(o.frequency);
+      o.start(t); lfo.start(t); o.stop(t + dur + 0.05); lfo.stop(t + dur + 0.05);
+    });
+    // crackle: sparse sharp pops through a resonant highpass, denser at ignition
+    const len = dur, n = c.createBufferSource(), b = c.createBuffer(1, Math.ceil(c.sampleRate * len), c.sampleRate), d = b.getChannelData(0);
+    let hold = 0, amp = 0;
+    for (let i = 0; i < d.length; i++) {
+      const k = i / d.length;
+      if (hold <= 0) { const dense = up ? (k < 0.25 ? 0.02 : 0.004) : 0.006; if (Math.random() < dense) { hold = 40 + Math.random() * 400; amp = 0.4 + Math.random() * 0.6 } else amp *= 0.995 }
+      else hold--;
+      d[i] = (Math.random() * 2 - 1) * amp * (up ? (k < 0.08 ? 1.6 : 1) : (1 - k));
+    }
+    const hp = c.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 1800; hp.Q.value = 3;
+    const cg = c.createGain(); cg.gain.value = 0.32; n.buffer = b; n.playbackRate.value = P(); n.connect(hp).connect(cg).connect(out); n.start(t);
+    if (up) { // vent flare: two short side bursts
+      [0.0, 0.05].forEach(off => { const v = c.createBufferSource(), vb = c.createBuffer(1, Math.ceil(c.sampleRate * 0.25), c.sampleRate), vd = vb.getChannelData(0); for (let i = 0; i < vd.length; i++) vd[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / vd.length, 2.2); const vbp = c.createBiquadFilter(); vbp.type = 'bandpass'; vbp.Q.value = 1.1; vbp.frequency.setValueAtTime(6000, t + off); vbp.frequency.exponentialRampToValueAtTime(900, t + off + 0.25); const vg = c.createGain(); vg.gain.value = 0.5; v.buffer = vb; v.playbackRate.value = P(); v.connect(vbp).connect(vg).connect(out); v.start(t + off) });
+    }
+  }
+
+  // v2, parameters measured from Miles's reference (2026-10-15): f0 ≈ 47 Hz with partials 56/71/95/142 Hz, 92% of energy
+  // under 120 Hz; loudness swell ~0.65 Hz and flutter ~23 Hz (±4.5 dB); pitch wander; ~1.5 sparse spits/s; ignition drops
+  // from ~1.42×f0 to f0 in 60 ms with a bright burst at 60-250 ms, peak ~0.5 s; retract flares ~+6 dB for 0.3 s then cuts.
+  function v2(up) {
+    const c = ac(), t = c.currentTime, out = master(c, 1.25), p = P();
+    const f0 = 47 * p, dur = up ? 1.35 : 0.34;
+    const bus = c.createGain(), ws = shaper(c, 2.2), lp = c.createBiquadFilter(); lp.type = 'lowpass'; lp.Q.value = 0.8;
+    const lp2 = c.createBiquadFilter(); lp2.type = 'lowpass'; lp2.frequency.value = 2600 * p;
+    bus.connect(ws).connect(lp).connect(lp2).connect(out);
+    // tremolo: slow swell + fast flutter, applied before the shaper so the growl changes colour as it swells
+    const trem = c.createGain(); trem.gain.value = 0.72; trem.connect(bus);
+    [[0.65, 0.22], [23, 0.16], [7.3, 0.07]].forEach(([r, d]) => { const o = c.createOscillator(); o.frequency.value = r; const g = c.createGain(); g.gain.value = d; o.connect(g).connect(trem.gain); o.start(t); o.stop(t + dur + 0.1) });
+    if (up) {
+      lp.frequency.setValueAtTime(500 * p, t); lp.frequency.exponentialRampToValueAtTime(1900 * p, t + 0.09); lp.frequency.exponentialRampToValueAtTime(420 * p, t + 0.3); lp.frequency.setValueAtTime(420 * p, t + dur);
+      bus.gain.setValueAtTime(0.0001, t); bus.gain.exponentialRampToValueAtTime(0.85, t + 0.012); bus.gain.exponentialRampToValueAtTime(0.7, t + 0.2); bus.gain.exponentialRampToValueAtTime(1.0, t + 0.5); bus.gain.exponentialRampToValueAtTime(0.42, t + 1.0); bus.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    } else {
+      lp.frequency.setValueAtTime(420 * p, t); lp.frequency.exponentialRampToValueAtTime(700 * p, t + 0.27);
+      bus.gain.setValueAtTime(0.55, t); bus.gain.exponentialRampToValueAtTime(1.1, t + 0.27); bus.gain.setValueAtTime(1.1, t + 0.3); bus.gain.linearRampToValueAtTime(0.0, t + 0.315);
+    }
+    // partials: fundamental, beating neighbours (growl), octave, fifth-ish, upper harmonic
+    [[1, 'sawtooth', 0.55], [1.19, 'sawtooth', 0.13], [1.5, 'sine', 0.18], [2.03, 'sawtooth', 0.33], [3.02, 'triangle', 0.08]].forEach(([m, type, g]) => {
+      const o = c.createOscillator(); o.type = type; const og = c.createGain(); og.gain.value = g; o.connect(og).connect(trem);
+      const f = f0 * m;
+      if (up) { o.frequency.setValueAtTime(f * 1.42, t); o.frequency.exponentialRampToValueAtTime(f * 0.97, t + 0.06); o.frequency.exponentialRampToValueAtTime(f, t + 0.18) }
+      else { o.frequency.setValueAtTime(f, t); o.frequency.exponentialRampToValueAtTime(f * 1.06, t + 0.28) }
+      const wand = c.createOscillator(); wand.type = 'triangle'; wand.frequency.value = 2.3 + m; const wg = c.createGain(); wg.gain.value = f * 0.045; wand.connect(wg).connect(o.frequency);
+      o.start(t); wand.start(t); o.stop(t + dur + 0.05); wand.stop(t + dur + 0.05);
+    });
+    // eject burst (ignition only): bright band-passed noise 60-250 ms, sweeping down
+    if (up) {
+      const n = c.createBufferSource(), b = c.createBuffer(1, Math.ceil(c.sampleRate * 0.26), c.sampleRate), d = b.getChannelData(0);
+      for (let i = 0; i < d.length; i++) { const k = i / d.length; d[i] = (Math.random() * 2 - 1) * (k < 0.2 ? k / 0.2 : Math.pow(1 - (k - 0.2) / 0.8, 1.5)) }
+      const bp = c.createBiquadFilter(); bp.type = 'bandpass'; bp.Q.value = 1.0; bp.frequency.setValueAtTime(3400 * p, t + 0.05); bp.frequency.exponentialRampToValueAtTime(650 * p, t + 0.3);
+      const g = c.createGain(); g.gain.value = 0.42; n.buffer = b; n.playbackRate.value = p; n.connect(bp).connect(g).connect(out); n.start(t + 0.05);
+    }
+    // sparse spits: ~1.5/s, short sharp clicks through a highpass, quiet
+    const sp = c.createBufferSource(), sb = c.createBuffer(1, Math.ceil(c.sampleRate * dur), c.sampleRate), sd = sb.getChannelData(0);
+    let nextAt = Math.floor(c.sampleRate * (0.15 + Math.random() * 0.3));
+    for (let i = 0; i < sd.length; i++) { if (i === nextAt) { const L = 60 + Math.floor(Math.random() * 220); for (let j = 0; j < L && i + j < sd.length; j++) sd[i + j] = (Math.random() * 2 - 1) * Math.pow(1 - j / L, 2); nextAt = i + Math.floor(c.sampleRate * (0.35 + Math.random() * 0.6)) } }
+    const shp = c.createBiquadFilter(); shp.type = 'highpass'; shp.frequency.value = 2200; const sg = c.createGain(); sg.gain.value = 0.22;
+    sp.buffer = sb; sp.connect(shp).connect(sg).connect(out); sp.start(t);
+  }
+  const S = { v2: () => v2(true), v2Off: () => v2(false), unstable: () => unstable(true), unstableOff: () => unstable(false), cine: () => cine(true), cineOff: () => cine(false), saber: () => saber(true, false), saberOff: () => saber(false, false), saberSoft: () => saber(true, true), saberSoftOff: () => saber(false, true),
+    chirp: () => blips([1320, 1980], 0.07, 'square', 0.25), chirpOff: () => blips([1980, 1320], 0.07, 'square', 0.25), chime: () => chime(true), chimeOff: () => chime(false) };
+  document.querySelectorAll('[data-s]').forEach(b => b.addEventListener('click', () => { try { S[b.dataset.s]() } catch (e) { b.textContent = 'Audio unavailable here' } }));
+})();
+</script>

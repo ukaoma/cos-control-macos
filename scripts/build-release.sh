@@ -86,6 +86,9 @@ if [ -d "$ROOT/Resources/BundledCharacters" ]; then
   mkdir -p "$APP/Contents/Resources/BundledCharacters"
   cp -R "$ROOT/Resources/BundledCharacters/." "$APP/Contents/Resources/BundledCharacters/"
 fi
+# 0.5.312: dictation start/stop sounds, rendered by scripts/render-dictation-sounds.py (original synthesis).
+mkdir -p "$APP/Contents/Resources/Sounds"
+cp "$ROOT/Resources/Sounds/"*.wav "$APP/Contents/Resources/Sounds/"
 python3 "$ROOT/scripts/prepare-node-runtime.py" "$APP/Contents/Resources/BundledNode"
 chmod 700 "$APP/Contents/MacOS/COS Control" "$APP/Contents/Resources/cos-control-helper"
 /usr/bin/xattr -cr "$APP"
