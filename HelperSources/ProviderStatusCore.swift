@@ -742,7 +742,8 @@ enum VoiceAccuracy {
 }
 
 /// POST /api/transcribe/benchmark (server 6.74.0): each engine's result, whitelisted, with its word error rate against
-/// the pinned reference. The server's text is raw (no dictionary), so the score is the engine's own.
+/// the pinned reference. The server applies the COS dictionary on both engines and collapses the text to one line (no
+/// hallucination filter), so both sides are lowercased and stripped of punctuation before scoring (VoiceAccuracy.words).
 enum DictationBenchmark {
     static let route = "/api/transcribe/benchmark?engines=whisper,parakeet-ultra"
     static let skips: Set<String> = ["not_installed", "unavailable", "timeout"]

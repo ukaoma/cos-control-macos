@@ -112,6 +112,8 @@ struct DictationEveryoneChecks {
         let yes: (String) -> Bool = { _ in true }
         check(ParakeetCLIPath.valid("/Applications/COS Control.app/Contents/Helpers/fluidaudiocli", isExecutable: yes), "cli path", "the installed app's copy")
         check(!ParakeetCLIPath.valid("/tmp/fluidaudiocli", isExecutable: yes), "cli path", "anywhere else is refused")
+        check(!ParakeetCLIPath.valid("/Applications/COS Control.app/Contents/Helpers/fluidaudiocli-0.17.4", isExecutable: yes)
+              && !ParakeetCLIPath.valid("/Applications/COS Control.app/Contents/Helpers/xfluidaudiocli", isExecutable: yes), "cli path", "the file name is exactly fluidaudiocli (the server 400s anything else)")
         check(!ParakeetCLIPath.valid("Applications/X.app/Contents/Helpers/fluidaudiocli", isExecutable: yes), "cli path", "relative is refused")
         check(!ParakeetCLIPath.valid("/Applications/X.app/Contents/Helpers/../../../tmp/Contents/Helpers/fluidaudiocli", isExecutable: yes), "cli path", "dot segments are refused")
         check(!ParakeetCLIPath.valid("/Applications/COS Control.app/Contents/Helpers/fluidaudiocli", isExecutable: { _ in false }), "cli path", "a missing or non-executable file is refused")

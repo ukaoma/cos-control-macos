@@ -243,13 +243,17 @@ VERIFY_DIR="$BUILD_DIR/verify"
 /usr/bin/ditto -x -k "$ZIP" "$VERIFY_DIR"
 /usr/bin/codesign --verify --deep --strict "$VERIFY_DIR/COS Control.app"
 python3 "$ROOT/Tests/check-bundled-runtime.py" "$VERIFY_DIR/COS Control.app/Contents/Resources"
-# 0.5.317: in the extracted app, the bundled CLI still carries its Info.plist, bound to a strict, hardened signature
-# with the COS team on a Developer ID release (what the server checks at install and at every run).
+# 0.5.317: the server copies the CLI OUT of the bundle and re-verifies the copy (codesign --verify --strict, team,
+# identifier, the bound Info.plist) at install and at every run, so the check runs on a copy outside the extracted app.
+# A signature that only held inside the app's seal would fail here, as a copied Slack helper did on the server smoke.
 if [ -f "$VERIFY_DIR/COS Control.app/Contents/Helpers/fluidaudiocli" ] && { [ -n "$SIGN_ID" ] || [ -n "$LOCAL_SIGN_ID" ]; }; then
+  CLI_COPY="$BUILD_DIR/cli-outside-bundle"
+  /bin/mkdir -p "$CLI_COPY"
+  /bin/cp "$VERIFY_DIR/COS Control.app/Contents/Helpers/fluidaudiocli" "$CLI_COPY/fluidaudiocli"
   if [ -n "$SIGN_ID" ]; then
-    /usr/bin/python3 -I "$ROOT/Tests/check-fluidaudio-cli.py" "$FLUIDAUDIO_PIN" "$VERIFY_DIR/COS Control.app/Contents/Helpers/fluidaudiocli" --signed --team NV3X46LLCR
+    /usr/bin/python3 -I "$ROOT/Tests/check-fluidaudio-cli.py" "$FLUIDAUDIO_PIN" "$CLI_COPY/fluidaudiocli" --signed --team NV3X46LLCR
   else
-    /usr/bin/python3 -I "$ROOT/Tests/check-fluidaudio-cli.py" "$FLUIDAUDIO_PIN" "$VERIFY_DIR/COS Control.app/Contents/Helpers/fluidaudiocli" --signed
+    /usr/bin/python3 -I "$ROOT/Tests/check-fluidaudio-cli.py" "$FLUIDAUDIO_PIN" "$CLI_COPY/fluidaudiocli" --signed
   fi
 fi
 if [ -n "$SIGN_ID" ]; then

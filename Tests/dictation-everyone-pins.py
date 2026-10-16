@@ -86,8 +86,9 @@ pin(0 < cli_sign < release.find('--entitlements "$APP_ENTITLEMENTS" --sign "$SIG
     "cli signed", "the tool is signed before the main executable and the bundle")
 pin("Refusing to ship a Developer ID release without the pinned fluidaudiocli" in release and "does not match the pinned fluidaudiocli build" in release,
     "cli pinned", "a Developer ID release needs the pinned bytes")
-pin('check-fluidaudio-cli.py" "$FLUIDAUDIO_PIN" "$VERIFY_DIR/COS Control.app/Contents/Helpers/fluidaudiocli" --signed --team NV3X46LLCR' in release,
-    "plist survives", "the extracted app's tool still carries its Info.plist and the team")
+pin('/bin/cp "$VERIFY_DIR/COS Control.app/Contents/Helpers/fluidaudiocli" "$CLI_COPY/fluidaudiocli"' in release
+    and 'check-fluidaudio-cli.py" "$FLUIDAUDIO_PIN" "$CLI_COPY/fluidaudiocli" --signed --team NV3X46LLCR' in release,
+    "plist survives", "a copy outside the extracted app still verifies strictly with its Info.plist and the team (the server re-verifies a copy)")
 pin('cp "$ROOT/Resources/Credits.html" "$APP/Contents/Resources/Credits.html"' in release, "credits", "About shows the FluidAudio and Parakeet credits")
 pin((root / "Resources/ThirdParty/FluidAudio/LICENSE").read_text().lstrip().startswith("Apache License"), "licenses", "FluidAudio's LICENSE ships")
 notices = read("THIRD_PARTY_NOTICES.md")
