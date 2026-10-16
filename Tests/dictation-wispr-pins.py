@@ -73,15 +73,27 @@ need('"COS Dictation"' not in dictation and "DictationHUD" not in dictation and 
 need("styleMask: [.borderless, .nonactivatingPanel]" in dictation and ".titled" not in dictation,
      "the only dictation window is the borderless nonactivating overlay")
 
-# ── 2. Delivery (0.5.310): always copied, then MEASURED. ✓ only for a measured change (Miles 20:07, iTerm2).
-deliver = body(dictation, "static func deliver(_ raw: String) async -> DictationDeliveryOutcome {")
-copy_at = deliver.find("guard pasteboard.setString(text, forType: .string) else { return done(.refused(.clipboardFailed)) }")
-refuse_at = deliver.find("return done(.refused(refusal))")
-need(copy_at >= 0 and refuse_at > copy_at, "the text must be on the clipboard (checked) BEFORE any refusal returns")
-need(deliver.count("pasteboard.setString") == 1 and "pasteboard.clearContents()" in deliver and deliver.count("clearContents") == 1,
-     "deliver sets the clipboard once and never restores it")
-need("let changeCount = pasteboard.changeCount" in deliver and "await paste(changeCount: changeCount)" in deliver,
+# ── 2. Delivery (0.5.310, clipboard 0.5.312): MEASURED. ✓ only for a measured change (Miles 20:07, iTerm2).
+deliver = body(dictation, "static func deliver(_ raw: String, restoreClipboard: Bool) async -> DictationDeliveryOutcome {")
+# 0.5.312 (Miles 21:23): the clipboard is written only for a posted ⌘V (then restored) or for the card. Accessibility
+# insertion never touches it.
+ax_at = deliver.index("if route == .accessibility, let target {")
+write_at = deliver.index("guard board.writeTranscript(text, markerTypes: DictationClipboard.transientTypes) else { return done(.refused(.clipboardFailed)) }")
+need(write_at > ax_at and deliver.count("board.writeTranscript(") == 2 and "NSPasteboard.general.setString" not in deliver
+     and "clearContents" not in deliver, "the transcript is written after the Accessibility attempt, only for ⌘V or the card")
+need(deliver.index("let saved = DictationClipboard.snapshot(board)") < write_at, "the clipboard is snapshotted before COS writes")
+done_fn = deliver[:deliver.index("let ms = Int(")]
+need("if DictationClipboard.use(for: outcome) == .keepForCard, !wroteTranscript, outcome != .refused(.clipboardChanged) {" in done_fn
+     and "board.writeTranscript(text, markerTypes: [])" in done_fn, "a card keeps the transcript on the clipboard")
+need("let changeCount = board.changeCount" in deliver and "await paste(changeCount: changeCount)" in deliver,
      "⌘V must re-check that the clipboard still holds COS's text")
+restore = deliver[deliver.index("let postedAt = Date()"):]
+need("DictationClipboard.keepWaiting(elapsedMilliseconds:" in restore and "DictationClipboard.decision(enabled: restoreClipboard, pasted: true, snapshot: saved, setChangeCount: changeCount," in restore
+     and "currentChangeCount: board.changeCount" in restore and "DictationClipboard.restore($0, to: board)" in restore,
+     "after the ⌘V the clipboard is put back only by the tested decision")
+need('dictationLog.notice("clipboard not restored: \\(reason, privacy: .public)")' in restore, "every skip is logged with its reason")
+need("deliver(text, restoreClipboard: restoreClipboard)" in dictation and 'forKey: "dictation.restoreClipboard") as? Bool ?? true' in dictation
+     and 'Toggle("Restore my clipboard after pasting", isOn: $store.restoreClipboard)' in dictation, "the setting is on by default and reaches delivery")
 need("DictationInsertPolicy.refusal(" in deliver and "DictationDelivery.decide(" in deliver and "DictationDelivery.route(" in deliver,
      "delivery goes through the tested policy, route and decision")
 need("IsSecureEventInputEnabled()" in deliver and "kAXSubroleAttribute" in deliver and "AXIsProcessTrusted()" in deliver,
@@ -127,7 +139,7 @@ need(hosts is not None and terminals is not None and set(re.findall(r'"([^"]+)"'
 
 # ── 3. Store flow: the pill, the flash, the card; text stays private.
 transcribe = body(dictation, "private func transcribe(_ wav: Data, attempt: UUID) {")
-need("let outcome = await DictationInsertion.deliver(text)" in transcribe and "finish(text, outcome: outcome)" in transcribe,
+need("let outcome = await DictationInsertion.deliver(text, restoreClipboard: restoreClipboard)" in transcribe and "finish(text, outcome: outcome)" in transcribe,
      "a finished transcript must be delivered and recorded")
 finish = body(dictation, "private func finish(_ text: String, outcome: DictationDeliveryOutcome) {")
 need("remember(record)" in finish and "showCard(" in finish and "DictationPill.flashSeconds" in finish

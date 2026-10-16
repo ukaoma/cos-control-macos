@@ -116,7 +116,7 @@ private final class DictationConverter: @unchecked Sendable {
     /// Bundle path → Electron/Chromium. A frontmost app's frameworks do not change while it runs.
     private static var chromium: [String: Bool] = [:]
 
-    static func deliver(_ raw: String) async -> DictationDeliveryOutcome {
+    static func deliver(_ raw: String, restoreClipboard: Bool) async -> DictationDeliveryOutcome {
         let started = Date()
         let app = NSWorkspace.shared.frontmostApplication
         let bundle = app?.bundleIdentifier
@@ -125,17 +125,19 @@ private final class DictationConverter: @unchecked Sendable {
         let text = terminal ? DictationDelivery.terminalText(raw) : raw
         let count = text.utf16.count
         var facts = "bundle=\(bundle ?? "-") terminal=\(terminal)"
+        // 0.5.312: the clipboard is written only when COS must: just before a ⌘V it posts, or for the card that asks the
+        // person to paste. Accessibility insertion never touches it (DictationClipboard.use).
+        let board = SystemDictationPasteboard(NSPasteboard.general)
+        var wroteTranscript = false
         // Durable, and never the text: what was focused, what COS measured, what it did (0.5.310).
         func done(_ outcome: DictationDeliveryOutcome) -> DictationDeliveryOutcome {
+            if DictationClipboard.use(for: outcome) == .keepForCard, !wroteTranscript, outcome != .refused(.clipboardChanged) {
+                wroteTranscript = board.writeTranscript(text, markerTypes: [])
+            }
             let ms = Int(Date().timeIntervalSince(started) * 1000)
             dictationLog.notice("delivery \(facts, privacy: .public) outcome=\(String(describing: outcome), privacy: .public) ms=\(ms)")
             return outcome
         }
-
-        let pasteboard = NSPasteboard.general
-        pasteboard.clearContents()
-        guard pasteboard.setString(text, forType: .string) else { return done(.refused(.clipboardFailed)) }
-        let changeCount = pasteboard.changeCount
 
         let trusted = AXIsProcessTrusted()
         let own = app?.processIdentifier == ProcessInfo.processInfo.processIdentifier
@@ -194,9 +196,15 @@ private final class DictationConverter: @unchecked Sendable {
             }
         }
 
-        // ⌘V. Nothing above changed the field, so this cannot double the text.
+        // ⌘V. Nothing above changed the field, so this cannot double the text. The person's clipboard is snapshotted,
+        // the transcript written (marked transient for clipboard managers), and put back after the paste is read.
+        let saved = DictationClipboard.snapshot(board)
+        guard board.writeTranscript(text, markerTypes: DictationClipboard.transientTypes) else { return done(.refused(.clipboardFailed)) }
+        wroteTranscript = true
+        let changeCount = board.changeCount
         let beforePaste = snapshot(target)
         if let refusal = await paste(changeCount: changeCount) { return done(.refused(refusal)) }
+        let postedAt = Date()
         facts += " paste=sent"
         var waited = 0
         var decision = DictationDecision.wait
@@ -208,6 +216,23 @@ private final class DictationConverter: @unchecked Sendable {
             facts += " afterPaste=\(after.logDescription)"
             // Keep watching until the field moves; an app may take the paste late. Never a second paste.
             if case .done(.inserted) = decision { break }
+        }
+        // Put the clipboard back once the target has read it: no sooner than 500 ms, longer while the field still moves.
+        var last = snapshot(target)
+        while true {
+            let elapsed = Int(Date().timeIntervalSince(postedAt) * 1000)
+            try? await Task.sleep(for: .milliseconds(100))
+            let now = snapshot(target)
+            defer { last = now }
+            if !DictationClipboard.keepWaiting(elapsedMilliseconds: elapsed + 100, fieldChanging: now != last) { break }
+        }
+        switch DictationClipboard.decision(enabled: restoreClipboard, pasted: true, snapshot: saved, setChangeCount: changeCount,
+                                           currentChangeCount: board.changeCount) {
+        case .restore:
+            let restored = saved.map { DictationClipboard.restore($0, to: board) } ?? false
+            dictationLog.notice("clipboard \(restored ? "restored" : "restore failed", privacy: .public) items=\(saved?.items.count ?? 0)")
+        case .skip(let reason):
+            dictationLog.notice("clipboard not restored: \(reason, privacy: .public)")
         }
         if case .done(let outcome) = decision { return done(outcome) }
         return done(.unconfirmed(app: name, viaPaste: true))
@@ -326,6 +351,35 @@ private final class DictationConverter: @unchecked Sendable {
     }
 }
 
+/// A pasteboard behind DictationPasteboardAccess (NSPasteboard.general in the app). Items are read once, on first use.
+/// Not actor-isolated so it can satisfy the plain protocol; DictationInsertion only uses it on the main actor.
+final class SystemDictationPasteboard: DictationPasteboardAccess {
+    private let pasteboard: NSPasteboard
+    init(_ pasteboard: NSPasteboard) { self.pasteboard = pasteboard }
+    private lazy var items: [NSPasteboardItem] = pasteboard.pasteboardItems ?? []
+    var changeCount: Int { pasteboard.changeCount }
+    func itemTypes() -> [[String]] { items.map { $0.types.map(\.rawValue) } }
+    func data(item: Int, type: String) -> Data? {
+        items.indices.contains(item) ? items[item].data(forType: NSPasteboard.PasteboardType(type)) : nil
+    }
+    func replace(with saved: [DictationClipboardItem]) -> Bool {
+        let rebuilt = saved.map { item -> NSPasteboardItem in
+            let next = NSPasteboardItem()
+            for entry in item.entries { next.setData(entry.data, forType: NSPasteboard.PasteboardType(entry.type)) }
+            return next
+        }
+        pasteboard.clearContents()
+        return rebuilt.isEmpty || pasteboard.writeObjects(rebuilt)
+    }
+    func writeTranscript(_ text: String, markerTypes: [String]) -> Bool {
+        let item = NSPasteboardItem()
+        guard item.setString(text, forType: .string) else { return false }
+        for type in markerTypes { item.setData(Data(), forType: NSPasteboard.PasteboardType(type)) }
+        pasteboard.clearContents()
+        return pasteboard.writeObjects([item])
+    }
+}
+
 private let dictationHotKeySignature: OSType = 0x434F5344 // COSD, separate from Activity COSH
 private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
     guard let event else { return noErr }
@@ -342,6 +396,10 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
     static let shared = MacDictationStore()
     @Published var enabled: Bool { didSet { UserDefaults.standard.set(enabled, forKey: "dictation.enabled"); if !enabled { cancel() }; registerHotKeys() } }
     @Published var microphoneUID: String { didSet { UserDefaults.standard.set(microphoneUID, forKey: "dictation.microphoneUID") } }
+    /// 0.5.312: put the person's clipboard back after a ⌘V COS posted (Wispr Flow does). On unless turned off.
+    @Published var restoreClipboard: Bool = UserDefaults.standard.object(forKey: "dictation.restoreClipboard") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(restoreClipboard, forKey: "dictation.restoreClipboard") }
+    }
     @Published private(set) var microphones: [DictationMicrophone] = []
     @Published private(set) var holdTrigger: DictationTrigger?
     @Published private(set) var toggleTrigger: DictationTrigger?
@@ -598,7 +656,7 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
                     fail(response.message, retry: !noSpeech); return
                 }
                 pendingAudio = nil; phase = "Ready"; message = nil
-                let outcome = await DictationInsertion.deliver(text)
+                let outcome = await DictationInsertion.deliver(text, restoreClipboard: restoreClipboard)
                 finish(text, outcome: outcome)
             } catch { guard generation == attempt else { return }; let reason = error.localizedDescription; dictationLog.error("transcribe failed: \(reason, privacy: .public)"); fail(reason) }
         }
@@ -809,7 +867,9 @@ struct MacDictationSettings: View {
                 DictationShortcutRow(store: store, hold: true, activityShortcut: activityShortcut)
                 DictationShortcutRow(store: store, hold: false, activityShortcut: activityShortcut)
                 Button("Allow insertion into other apps…") { store.requestInsertionPermission() }.controlSize(.small)
-                Text("Any shortcut: a modifier plus a key, a function key, or one modifier key by itself such as Fn 🌐 or Right ⌘. Fn and single-key shortcuts use Accessibility. Finished text is always copied, then dropped into the text box that has the cursor; with no text box, the pet shows it with a Copy button. Some apps, such as terminals and Electron editors, get ⌘V; COS shows Pasted when it can't confirm. COS never presses Send or Return.")
+                Toggle("Restore my clipboard after pasting", isOn: $store.restoreClipboard).toggleStyle(COSSwitchStyle())
+                    .help("When COS pastes with ⌘V, it puts back whatever you had copied once the app has the text.")
+                Text("Any shortcut: a modifier plus a key, a function key, or one modifier key by itself such as Fn 🌐 or Right ⌘. Fn and single-key shortcuts use Accessibility. Finished text drops into the text box that has the cursor; with no text box it is copied, and the pet shows it with a Copy button. Some apps, such as terminals and Electron editors, get ⌘V; COS shows Pasted when it can't confirm, then puts your clipboard back. COS never presses Send or Return.")
                     .font(.caption2).foregroundStyle(.secondary)
                 if let message = store.message { Text(message).font(.caption2).foregroundStyle(COSPalette.amber) }
             }
