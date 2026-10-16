@@ -205,9 +205,9 @@ private final class DictationConverter: @unchecked Sendable {
             let after = snapshot(target)
             decision = DictationDelivery.decide(route: .paste, baseline: beforePaste, setterSucceeded: false, afterSetter: DictationFieldSnapshot(),
                                                 finalPoll: true, pasted: true, afterPaste: after, count: count, app: name)
-            if case .done(.refused) = decision { facts += " afterPaste=\(after.logDescription)"; continue }
             facts += " afterPaste=\(after.logDescription)"
-            break
+            // Keep watching until the field moves; an app may take the paste late. Never a second paste.
+            if case .done(.inserted) = decision { break }
         }
         if case .done(let outcome) = decision { return done(outcome) }
         return done(.unconfirmed(app: name, viaPaste: true))

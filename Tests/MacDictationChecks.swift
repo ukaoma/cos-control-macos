@@ -28,7 +28,7 @@ import Foundation
             precondition(got == expected, "insert policy: \(name)"); count += 1
         }
         precondition(R.secureInput.title == "SECURE INPUT ON · COPIED" && R.secureField.title == "PASSWORD FIELD · COPIED"
-                     && R.pasteDidNotLand.title == "COPIED · PRESS ⌘V", "distinct card titles"); count += 1
+                     && !R.allCases.contains { $0.title.contains("PRESS ⌘V") }, "distinct card titles; no refusal tells you to press ⌘V"); count += 1
         precondition(Set(R.allCases.map(\.historyLabel)).count == R.allCases.count - 1, "every reason but ownOverlay/noTextBox reads differently"); count += 1
 
         // 0.5.310 measured delivery (Miles 20:07: iTerm2 flashed ✓ INSERTED and nothing landed).
@@ -52,7 +52,10 @@ import Foundation
         precondition(step(.paste, field, after: none, final: true) == .paste, "the paste route pastes"); count += 1
         precondition(step(.paste, field, after: none, final: true, pasted: true, afterPaste: snap(105, 105, 0)) == .done(.inserted(app: "iTerm2", viaPaste: true)), "⌘V verified"); count += 1
         precondition(step(.paste, field, after: none, final: true, pasted: true, afterPaste: none) == .done(.unconfirmed(app: "iTerm2", viaPaste: true)), "⌘V unverifiable"); count += 1
-        precondition(step(.paste, field, after: none, final: true, pasted: true, afterPaste: field) == .done(.refused(.pasteDidNotLand)), "⌘V that changed nothing"); count += 1
+        // A terminal whose counters do not move after ⌘V: the paste may still land, so it reads PASTED, never "press ⌘V".
+        precondition(step(.paste, field, after: none, final: true, pasted: true, afterPaste: field) == .done(.unconfirmed(app: "iTerm2", viaPaste: true)), "⌘V that moved nothing is PASTED"); count += 1
+        precondition(DictationDeliveryOutcome.unconfirmed(app: "iTerm2", viaPaste: true).flash?.label == "PASTED · ⌘V SENT"
+                     && DictationDeliveryOutcome.unconfirmed(app: "iTerm2", viaPaste: true).delivery == .unconfirmed(app: "iTerm2", viaPaste: true), "and history says pasted (unconfirmed)"); count += 1
         precondition(step(.ownWindow, field, after: field, final: true) == .done(.refused(.noTextBox)), "COS's own window that did not take it"); count += 1
         precondition(step(.ownWindow, field, after: snap(105, 105, 0), final: true) == .done(.inserted(app: "iTerm2", viaPaste: false)), "COS's own window measured"); count += 1
         precondition(DictationDelivery.verdict(baseline: snap(100, 10, 5), after: snap(100, 10, 5), count: 5) == .unchanged, "same-length replace with no change is not landed"); count += 1

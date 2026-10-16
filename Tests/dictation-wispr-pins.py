@@ -97,6 +97,9 @@ need('"AXManualAccessibility" as CFString, kCFBooleanTrue' in deliver and "isChr
 need("for (index, ms) in DictationDelivery.pollMilliseconds.enumerated()" in deliver and "try? await Task.sleep(for: .milliseconds(ms - elapsed))" in deliver,
      "the AX result is polled asynchronously, never spun on the main thread")
 need("let beforePaste = snapshot(target)" in deliver and "pasted: true, afterPaste: after" in deliver, "a ⌘V is measured too")
+after_paste = deliver[deliver.index("let beforePaste = snapshot(target)"):]
+need("if case .done(.inserted) = decision { break }" in after_paste and after_paste.count("await paste(") == 1 and "PRESS ⌘V" not in dictation + core,
+     "after ⌘V COS only watches: one paste, and never a press-⌘V card (double paste)")
 need("dictationLog.notice(\"delivery \\(facts, privacy: .public)" in deliver, "every delivery leaves one durable log line")
 snap = body(dictation, "nonisolated private static func snapshot(_ element: AXUIElement?) -> DictationFieldSnapshot {")
 need("kAXNumberOfCharactersAttribute" in snap and "kAXSelectedTextRangeAttribute" in snap and "kAXValueAttribute" not in snap,

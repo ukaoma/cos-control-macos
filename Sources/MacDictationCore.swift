@@ -161,7 +161,7 @@ struct LoneModifierTracker: Sendable {
 enum DictationInsertPolicy {
     /// Why nothing was typed. The raw value is what Recent dictations stores.
     enum Refusal: String, Equatable, Sendable, CaseIterable {
-        case notTrusted, secureInput, secureField, ownOverlay, noTextBox, pasteDidNotLand, keysHeld, clipboardChanged, clipboardFailed
+        case notTrusted, secureInput, secureField, ownOverlay, noTextBox, keysHeld, clipboardChanged, clipboardFailed
         /// The card's heading (mock 04).
         var title: String {
             switch self {
@@ -169,7 +169,6 @@ enum DictationInsertPolicy {
             case .secureInput: "SECURE INPUT ON · COPIED"
             case .secureField: "PASSWORD FIELD · COPIED"
             case .ownOverlay, .noTextBox: "NO TEXT BOX · COPIED"
-            case .pasteDidNotLand: "COPIED · PRESS ⌘V"
             case .keysHeld: "KEYS HELD · COPIED"
             case .clipboardChanged: "CLIPBOARD CHANGED · NOT PASTED"
             case .clipboardFailed: "CLIPBOARD UNAVAILABLE"
@@ -181,7 +180,6 @@ enum DictationInsertPolicy {
             case .secureInput: "Another app is holding secure keyboard input, so COS will not type. Click where you want it and press ⌘V."
             case .secureField: "COS never types into a password field. Press ⌘V yourself if you mean to."
             case .ownOverlay, .noTextBox: "Click where you want it, then press ⌘V."
-            case .pasteDidNotLand: "COS sent ⌘V and nothing changed in the field. Click where you want it and press ⌘V."
             case .keysHeld: "A modifier key was still held, so COS did not paste. Click where you want it and press ⌘V."
             case .clipboardChanged: "Something else changed the clipboard before COS could paste. Copy it again here."
             case .clipboardFailed: "COS could not put the text on the clipboard. Copy it here."
@@ -194,7 +192,6 @@ enum DictationInsertPolicy {
             case .secureInput: "secure input on"
             case .secureField: "password field"
             case .ownOverlay, .noTextBox: "no text box"
-            case .pasteDidNotLand: "paste did not land"
             case .keysHeld: "keys held"
             case .clipboardChanged: "clipboard changed"
             case .clipboardFailed: "clipboard unavailable"
@@ -308,8 +305,9 @@ enum DictationDelivery {
         if pasted {
             switch verdict(baseline: baseline, after: afterPaste, count: count) {
             case .landed, .changed: return .done(.inserted(app: app, viaPaste: true))
-            case .unchanged: return .done(.refused(.pasteDidNotLand))
-            case .unreadable: return .done(.unconfirmed(app: app, viaPaste: true))
+            // Once ⌘V is posted COS never says "press ⌘V": a slow app may still take it, and a second paste would
+            // double the text. Unmeasured or unmoved, it is PASTED · ⌘V SENT, without the ✓.
+            case .unchanged, .unreadable: return .done(.unconfirmed(app: app, viaPaste: true))
             }
         }
         if route == .paste { return .paste }
