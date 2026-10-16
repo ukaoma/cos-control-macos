@@ -3,7 +3,7 @@ set -euo pipefail
 ROOT="${0:A:h:h}"
 DIR="$(mktemp -d /private/tmp/cos-mac-recording-checks.XXXXXX)"
 trap 'rm -rf "$DIR"' EXIT
-COS_COMPILE_PROFILE=bounded "$ROOT/Tests/compile-guard.sh" swiftc -target arm64-apple-macosx14.0 -swift-version 6 -strict-concurrency=complete -parse-as-library \
+COS_COMPILE_PROFILE=bounded /usr/bin/python3 "$ROOT/Tests/kit-compile.py" "$ROOT/Tests/compile-guard.sh" swiftc -target arm64-apple-macosx14.0 -swift-version 6 -strict-concurrency=complete -parse-as-library \
   "$ROOT/Sources/MacRecordingCore.swift" "$ROOT/Tests/MacRecordingChecks.swift" -o "$DIR/checks"
 "$DIR/checks"
 # 0.5.310: the Meetings row reads the store's paused state (the label rule itself is checked above). Source pins only:

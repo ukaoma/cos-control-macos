@@ -10,6 +10,7 @@ behaviour the mutant breaks. A mutant that lands and survives is a finding. One 
 Suite, cheapest first, stopping at the first failure: the two run.sh pin blocks that cover Markdown and Messages
 search (extracted from the copy's own run.sh), the executed parser contract, then the offscreen Markdown UI renders.
 """
+import os
 import pathlib, re, shutil, subprocess, sys, time
 
 P = "Sources/COSMarkdownParser.swift"
@@ -90,7 +91,7 @@ def suite(copy, scratch):
         if code != 0:
             return code, out_all, total
     binary = scratch / "markdown-contract"
-    code, out, seconds = run(["zsh", "Tests/compile-guard.sh", "swiftc", "-target", "arm64-apple-macosx14.0", "-swift-version", "6",
+    code, out, seconds = run(["/usr/bin/python3", "Tests/kit-compile.py", "zsh", "Tests/compile-guard.sh", "swiftc", "-target", "arm64-apple-macosx14.0", "-swift-version", "6",
                               "-strict-concurrency=complete", "-parse-as-library", "Sources/COSMarkdownParser.swift",
                               "Tests/MarkdownContract.swift", "-o", str(binary)], copy)
     out_all += out; total += seconds
@@ -108,6 +109,8 @@ def main():
     src, scratch = pathlib.Path(sys.argv[1]).resolve(), pathlib.Path(sys.argv[2]).resolve()
     only = set(sys.argv[3:])
     copy = scratch / "copy"
+    # Lanes compile against shared builds of Sources (Tests/kit-compile.py): keep them for every mutant of this run.
+    os.environ.setdefault("COS_TEST_KIT_DIR", str(scratch / "kits"))
     if copy.exists():
         shutil.rmtree(copy)
     shutil.copytree(src, copy, ignore=shutil.ignore_patterns(".git", ".build", "build", "dist"))

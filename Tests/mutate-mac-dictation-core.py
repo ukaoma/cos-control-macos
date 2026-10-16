@@ -8,6 +8,7 @@ must make the checks FAIL; a mutant that compiles, runs and passes is a SURVIVOR
 
 Usage: python3 Tests/mutate-mac-dictation-core.py <repo root>
 """
+import os
 import pathlib, shutil, subprocess, sys, tempfile
 
 root = pathlib.Path(sys.argv[1]).resolve()
@@ -172,7 +173,7 @@ def compile_and_run(work: pathlib.Path) -> int:
     out = work / "checks"
     if out.exists():
         out.unlink()
-    build = subprocess.run(["/bin/zsh", str(root / "Tests/compile-guard.sh"), "swiftc", "-target", "arm64-apple-macosx14.0",
+    build = subprocess.run(["/usr/bin/python3", str(root / "Tests/kit-compile.py"), "/bin/zsh", str(root / "Tests/compile-guard.sh"), "swiftc", "-target", "arm64-apple-macosx14.0",
                             "-swift-version", "6", "-strict-concurrency=complete", "-parse-as-library",
                             str(work / CORE), str(work / "Tests/MacDictationChecks.swift"), "-o", str(out)],
                            capture_output=True, text=True)
@@ -182,6 +183,8 @@ def compile_and_run(work: pathlib.Path) -> int:
 
 
 work = pathlib.Path(tempfile.mkdtemp(prefix="cos-dictation-mutants-", dir="/private/tmp"))
+# Lanes compile against shared builds of Sources (Tests/kit-compile.py): keep them for every mutant of this run.
+os.environ.setdefault("COS_TEST_KIT_DIR", str(work / ".kits"))
 try:
     (work / "Sources").mkdir(); (work / "Tests").mkdir()
     shutil.copy(root / CORE, work / CORE)

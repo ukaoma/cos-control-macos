@@ -10,7 +10,7 @@ SOURCES=("${(@)SOURCES:#*/COSControlApp.swift}")
 FILES=()
 for source in $SOURCES; do FILES+=("$source"); done
 print -r -- '@main struct WorkBoardCacheMain { @MainActor static func main() async throws { try await runWorkBoardCacheChecks() } }' > "$TMP/main.swift"
-"$ROOT/Tests/compile-guard.sh" swiftc -target arm64-apple-macosx14.0 -swift-version 6 -strict-concurrency=complete -parse-as-library \
+/usr/bin/python3 "$ROOT/Tests/kit-compile.py" "$ROOT/Tests/compile-guard.sh" swiftc -target arm64-apple-macosx14.0 -swift-version 6 -strict-concurrency=complete -parse-as-library \
   $FILES "$ROOT/Tests/WorkBoardCacheChecks.swift" "$TMP/main.swift" \
   -framework SwiftUI -framework AppKit -framework ServiceManagement -o "$TMP/board-cache"
 "$TMP/board-cache"

@@ -5,7 +5,7 @@ set -euo pipefail
 ROOT="${0:A:h:h}"
 TMP="$(mktemp -d /tmp/cos-work-session-meter.XXXXXX)"
 trap 'rm -rf "$TMP"' EXIT
-COS_COMPILE_PROFILE=bounded "$ROOT/Tests/compile-guard.sh" swiftc -target arm64-apple-macosx14.0 -swift-version 6 -strict-concurrency=complete -parse-as-library \
+COS_COMPILE_PROFILE=bounded /usr/bin/python3 "$ROOT/Tests/kit-compile.py" "$ROOT/Tests/compile-guard.sh" swiftc -target arm64-apple-macosx14.0 -swift-version 6 -strict-concurrency=complete -parse-as-library \
   "$ROOT/Sources/WorkSessionLinks.swift" "$ROOT/Tests/WorkSessionMeterChecks.swift" -o "$TMP/checks"
 "$TMP/checks" "$ROOT"
 /usr/bin/python3 "$ROOT/Tests/work-session-meter-pins.py" "$ROOT"

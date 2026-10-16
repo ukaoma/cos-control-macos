@@ -10,6 +10,7 @@ a check fail, and the failure must name the behaviour the mutant breaks ("check 
 [<behaviour>]"). A mutant that lands and survives is a finding. Lanes: "core" compiles HelperSources/ProviderStatusCore
 with its fixture checks; "model" compiles Sources/ProviderConnectModel.swift with its checks; "pins" runs Python only.
 """
+import os
 import pathlib, shutil, subprocess, sys, tempfile, time
 
 K = "HelperSources/ProviderStatusCore.swift"
@@ -113,7 +114,7 @@ def run(lane, copy):
         cmd = ["/bin/zsh", str(copy / "Tests/run-provider-status.sh")]
     elif lane == "model":
         out = pathlib.Path(tempfile.mkdtemp(prefix="cos-mut-connect-", dir="/tmp"))
-        compile_cmd = ["/bin/zsh", str(copy / "Tests/compile-guard.sh"), "swiftc", "-target", "arm64-apple-macosx14.0", "-swift-version", "6",
+        compile_cmd = ["/usr/bin/python3", str(copy / "Tests/kit-compile.py"), "/bin/zsh", str(copy / "Tests/compile-guard.sh"), "swiftc", "-target", "arm64-apple-macosx14.0", "-swift-version", "6",
                        "-strict-concurrency=complete", "-parse-as-library", str(copy / M), str(copy / "Tests/ProviderConnectChecks.swift"), "-o", str(out / "checks")]
         while True:
             p = subprocess.run(compile_cmd, capture_output=True, text=True)
@@ -148,6 +149,8 @@ def main():
     src, scratch = pathlib.Path(sys.argv[1]).resolve(), pathlib.Path(sys.argv[2]).resolve()
     only = set(sys.argv[3:])
     copy = scratch / "copy"
+    # Lanes compile against shared builds of Sources (Tests/kit-compile.py): keep them for every mutant of this run.
+    os.environ.setdefault("COS_TEST_KIT_DIR", str(scratch / "kits"))
     if copy.exists():
         shutil.rmtree(copy)
     shutil.copytree(src, copy, ignore=shutil.ignore_patterns(".git", "dist", "*.zip"))

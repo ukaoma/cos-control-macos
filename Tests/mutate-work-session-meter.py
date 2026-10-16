@@ -5,6 +5,7 @@ SERIAL: one small two-file compile at a time through Tests/compile-guard.sh, on 
 mutated). A green baseline is required first; each mutant must land exactly once and must make the checks FAIL.
 Usage: python3 Tests/mutate-work-session-meter.py <repo root>
 """
+import os
 import pathlib, shutil, subprocess, sys, tempfile
 
 root = pathlib.Path(sys.argv[1]).resolve()
@@ -41,13 +42,15 @@ MUTANTS = [
 def compile_and_run(work):
     out = work / "checks"
     if out.exists(): out.unlink()
-    build = subprocess.run(["/bin/zsh", str(root / "Tests/compile-guard.sh"), "swiftc", "-target", "arm64-apple-macosx14.0", "-swift-version", "6",
+    build = subprocess.run(["/usr/bin/python3", str(root / "Tests/kit-compile.py"), "/bin/zsh", str(root / "Tests/compile-guard.sh"), "swiftc", "-target", "arm64-apple-macosx14.0", "-swift-version", "6",
                             "-strict-concurrency=complete", "-parse-as-library", str(work / CORE), str(root / "Tests/WorkSessionMeterChecks.swift"),
                             "-o", str(out)], capture_output=True, text=True)
     if build.returncode != 0: return 2
     return subprocess.run([str(out), str(root)], capture_output=True, text=True).returncode
 
 work = pathlib.Path(tempfile.mkdtemp(prefix="cos-work-meter-mutants-", dir="/private/tmp"))
+# Lanes compile against shared builds of Sources (Tests/kit-compile.py): keep them for every mutant of this run.
+os.environ.setdefault("COS_TEST_KIT_DIR", str(work / ".kits"))
 try:
     (work / "Sources").mkdir()
     shutil.copy(root / CORE, work / CORE)

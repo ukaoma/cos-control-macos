@@ -66,7 +66,7 @@ FAKE
 }
 
 app_binary() {
-  "$ROOT/Tests/compile-guard.sh" "${SWIFTC[@]}" -parse-as-library "${SOURCES[@]}" "$ROOT/Tests/RefreshCheckRender.swift" \
+  /usr/bin/python3 "$ROOT/Tests/kit-compile.py" "$ROOT/Tests/compile-guard.sh" "${SWIFTC[@]}" -parse-as-library "${SOURCES[@]}" "$ROOT/Tests/RefreshCheckRender.swift" \
     -framework SwiftUI -framework AppKit -framework ServiceManagement "${PLIST_FLAGS[@]}" -o "$DIR/refresh-check"
 }
 
@@ -84,7 +84,7 @@ if [[ "$LANE" == "all" || "$LANE" == "pins" ]]; then
 fi
 
 if [[ "$LANE" == "all" || "$LANE" == "models" ]]; then
-  "$ROOT/Tests/compile-guard.sh" "${SWIFTC[@]}" -parse-as-library "$ROOT/Sources/Models.swift" "$ROOT/Tests/RefreshCheckChecks.swift" \
+  /usr/bin/python3 "$ROOT/Tests/kit-compile.py" "$ROOT/Tests/compile-guard.sh" "${SWIFTC[@]}" -parse-as-library "$ROOT/Sources/Models.swift" "$ROOT/Tests/RefreshCheckChecks.swift" \
     -framework AppKit -o "$DIR/refresh-check-checks"
   OUT="$(env "${RUN_ENV[@]}" "$DIR/refresh-check-checks")" || { print -r -- "$OUT"; exit 1; }
   print -r -- "$OUT"

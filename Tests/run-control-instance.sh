@@ -3,7 +3,7 @@ set -euo pipefail
 ROOT="${0:A:h:h}"
 TMP="$(mktemp -d /tmp/cos-control-instance.XXXXXX)"
 trap 'rm -rf "$TMP"' EXIT
-"$ROOT/Tests/compile-guard.sh" swiftc -swift-version 6 -strict-concurrency=complete -parse-as-library \
+/usr/bin/python3 "$ROOT/Tests/kit-compile.py" "$ROOT/Tests/compile-guard.sh" swiftc -swift-version 6 -strict-concurrency=complete -parse-as-library \
   "$ROOT/Sources/ControlInstance.swift" "$ROOT/Tests/ControlInstanceChecks.swift" \
   -framework AppKit -framework Security -framework CoreServices -o "$TMP/checks"
 "$TMP/checks"

@@ -25,7 +25,7 @@ RUN_ENV=(CFFIXED_USER_HOME="$DIR/home" HOME="$DIR/home" COS_CONTROL_TEST_HOME="$
 SWIFTC=(swiftc -target arm64-apple-macosx14.0 -swift-version 6 -strict-concurrency=complete)
 
 app_binary() {
-  "$ROOT/Tests/compile-guard.sh" "${SWIFTC[@]}" -parse-as-library "${SOURCES[@]}" "$ROOT/Tests/LiveTranscriptRender.swift" \
+  /usr/bin/python3 "$ROOT/Tests/kit-compile.py" "$ROOT/Tests/compile-guard.sh" "${SWIFTC[@]}" -parse-as-library "${SOURCES[@]}" "$ROOT/Tests/LiveTranscriptRender.swift" \
     -framework SwiftUI -framework AppKit -framework ServiceManagement -framework Vision -o "$DIR/live-transcript-render"
 }
 
@@ -86,7 +86,7 @@ if [[ "$LANE" == "all" || "$LANE" == "pins" ]]; then
 fi
 
 if [[ "$LANE" == "all" || "$LANE" == "models" ]]; then
-  "$ROOT/Tests/compile-guard.sh" "${SWIFTC[@]}" -parse-as-library "$ROOT/Sources/LiveTranscript.swift" "$ROOT/Sources/Models.swift" \
+  /usr/bin/python3 "$ROOT/Tests/kit-compile.py" "$ROOT/Tests/compile-guard.sh" "${SWIFTC[@]}" -parse-as-library "$ROOT/Sources/LiveTranscript.swift" "$ROOT/Sources/Models.swift" \
     "$ROOT/Tests/LiveTranscriptChecks.swift" -framework AppKit -o "$DIR/live-transcript-checks"
   OUT="$(env "${RUN_ENV[@]}" "$DIR/live-transcript-checks")" || { print -r -- "$OUT"; exit 1; }
   print -r -- "$OUT"
@@ -96,7 +96,7 @@ if [[ "$LANE" == "all" || "$LANE" == "models" ]]; then
 fi
 
 if [[ "$LANE" == "all" || "$LANE" == "helper" ]]; then
-  "$ROOT/Tests/compile-guard.sh" "${SWIFTC[@]}" \
+  /usr/bin/python3 "$ROOT/Tests/kit-compile.py" "$ROOT/Tests/compile-guard.sh" "${SWIFTC[@]}" \
     "$ROOT/HelperSources/main.swift" "$ROOT/HelperSources/ProviderStatusCore.swift" "$ROOT/HelperSources/PairingCore.swift" "$ROOT/Sources/WorkSessionLinks.swift" \
     -framework Security -framework AppKit -o "$DIR/cos-control-helper"
   # The helper's own self-test carries the path grammar, the containment, the fixture parse and the cursor rules.

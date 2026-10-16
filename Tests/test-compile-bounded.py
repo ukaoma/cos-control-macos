@@ -49,6 +49,34 @@ class BoundedTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 bounded.validate_plan(plan)
 
+    def test_kit_flags_are_narrow(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / 'a.swift'
+            source.write_text('let a = 1')
+            base = ['swiftc', '-swift-version', '6', str(source), '-o', directory + '/app']
+            ok = ['-Xfrontend', '-testable-import-module', '-Xfrontend', 'COSControlKit']
+            self.assertIn('-testable-import-module', bounded.normalize(base + ok, {}))
+            bounded.normalize(['swiftc', '-enable-testing', '-module-name', 'K', '-emit-module', '-emit-module-path',
+                               directory + '/K.swiftmodule', '-c', str(source)], {})
+            for args in (['-Xfrontend', '-testable-import-module'], ['-Xfrontend', '-testable-import-module', '-Xfrontend', '-num-threads'],
+                         ['-Xfrontend', '-num-threads', '-Xfrontend', '8'], ['-Xfrontend', '-import-module', '-Xfrontend', 'K'],
+                         ['-emit-module-path'], ['-emit-module-path', '@args']):
+                with self.assertRaises(ValueError, msg=args):
+                    bounded.normalize(base + args, {})
+
+    def test_plan_allows_one_module_job_only(self):
+        compile_job = '/sdk/swift-frontend -frontend -c -primary-file a.swift b.swift -num-threads 1\n'
+        module_job = '/sdk/swift-frontend -frontend -emit-module a.swift b.swift -emit-module-path K.swiftmodule\n'
+        self.assertEqual(bounded.validate_plan(compile_job + module_job), 2)
+        self.assertEqual(bounded.validate_plan(compile_job + '/sdk/swift-frontend -frontend -merge-modules -emit-module x.swiftmodule\n'), 2)
+        for plan in (compile_job + module_job + module_job,
+                     compile_job + '/sdk/swift-frontend -frontend -c -emit-module a.swift b.swift\n',
+                     compile_job + '/sdk/swift-frontend -frontend -emit-module a.swift -whole-module-optimization\n',
+                     compile_job + '/sdk/swift-frontend -frontend -emit-module a.swift -num-threads 4\n',
+                     compile_job + '/sdk/swift-frontend -frontend -typecheck a.swift\n'):
+            with self.assertRaises(ValueError, msg=plan):
+                bounded.validate_plan(plan)
+
     def sample(self, available=20*G, rss=0, swap=0):
         return dict(availableBytes=available, rssBytes=rss, swapBytes=swap)
 

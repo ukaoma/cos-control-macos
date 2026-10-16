@@ -9,6 +9,7 @@ make a check fail, and the failure must name the behaviour the mutant breaks ("c
 checks, or "[<behaviour>]" in the pin's words). The copy is restored and compared byte for byte after every mutant. A
 mutant that lands and survives is a finding. One suite at a time.
 """
+import os
 import filecmp, pathlib, shutil, subprocess, sys, time
 
 M = "Sources/Models.swift"
@@ -157,6 +158,8 @@ def main():
     src, scratch = pathlib.Path(sys.argv[1]).resolve(), pathlib.Path(sys.argv[2]).resolve()
     only = set(sys.argv[3:])
     copy = scratch / "copy"
+    # Lanes compile against shared builds of Sources (Tests/kit-compile.py): keep them for every mutant of this run.
+    os.environ.setdefault("COS_TEST_KIT_DIR", str(scratch / "kits"))
     if copy.exists():
         shutil.rmtree(copy)
     for part in ("Sources", "Tests"):

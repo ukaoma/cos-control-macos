@@ -10,6 +10,10 @@ TMP="$(mktemp -d /tmp/cos-control-tests.XXXXXX)"
 trap 'rm -rf "$TMP"' EXIT
 
 mkdir -p "$TMP/home"
+# 0.5.317: the lanes compiled Sources/*.swift again with every harness, about 40 full compiles a suite. Each compile now
+# goes through Tests/kit-compile.py, which builds each set of Sources ONCE per run into the testable module COSControlKit
+# (still through the guard) and compiles only the harness against it. COS_TEST_KIT=0 runs every command as written.
+export COS_TEST_KIT_DIR="${COS_TEST_KIT_DIR:-$TMP/kits}"
 
 # 0.5.252 (Miles, 2026-09-30: focus jumped and his clicks landed in the wrong window while gates ran): before anything
 # runs, no test may activate an app, put a window on screen, add a status item or post a system event unless a person
@@ -44,7 +48,7 @@ node "$ROOT/Tests/MemoryOwnerRaces.cjs"
 node "$ROOT/Tests/MemoriesAppliedCanary.cjs"
 node "$ROOT/Tests/MemoriesQuarantineCanary.cjs"
 
-"$ROOT/Tests/compile-guard.sh" swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete \
+/usr/bin/python3 "$ROOT/Tests/kit-compile.py" "$ROOT/Tests/compile-guard.sh" swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete \
   "$ROOT/HelperSources/main.swift" "$ROOT/HelperSources/ProviderStatusCore.swift" "$ROOT/HelperSources/PairingCore.swift" "$ROOT/Sources/WorkSessionLinks.swift" \
   -framework Security -framework AppKit \
   -o "$TMP/cos-control-helper"
@@ -144,19 +148,19 @@ python3 "$ROOT/Tests/reuse-compile.py" --root "$ROOT" --receipt "$TMP/app-compil
   -framework SwiftUI -framework AppKit -framework ServiceManagement \
   -o "$TMP/COS Control"
 
-"$ROOT/Tests/compile-guard.sh" swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete \
+/usr/bin/python3 "$ROOT/Tests/kit-compile.py" "$ROOT/Tests/compile-guard.sh" swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete \
   "$ROOT/Sources/Models.swift" \
   "$ROOT/Tests/ModelsContract.swift" \
   -framework AppKit \
   -o "$TMP/models-contract"
-"$ROOT/Tests/compile-guard.sh" swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \
+/usr/bin/python3 "$ROOT/Tests/kit-compile.py" "$ROOT/Tests/compile-guard.sh" swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \
   "$ROOT/Sources/Models.swift" "$ROOT/Sources/HelperClient.swift" "$ROOT/Tests/HelperTransportContract.swift" \
   -framework AppKit -o "$TMP/helper-transport-contract"
 "$TMP/helper-transport-contract"
 "$TMP/models-contract"
 # 0.5.316: sprite appearance (holes, edges, cut ownership) over every shipped strip, after its own synthetic
 # self-check. Approved V12.6 exceptions and pre-0.5.316 ceilings: Tests/fixtures/sprite-render/approved-exceptions.json.
-( cd "$ROOT" && "$ROOT/Tests/compile-guard.sh" swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete "$ROOT/Sources/Models.swift" "$ROOT/Tests/SpriteRenderContract.swift" -framework AppKit -o "$TMP/sprite-render" && "$TMP/sprite-render" )
+( cd "$ROOT" && /usr/bin/python3 "$ROOT/Tests/kit-compile.py" "$ROOT/Tests/compile-guard.sh" swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete "$ROOT/Sources/Models.swift" "$ROOT/Tests/SpriteRenderContract.swift" -framework AppKit -o "$TMP/sprite-render" && "$TMP/sprite-render" )
 zsh "$ROOT/Tests/run-simple-pet.sh" "$TMP/simple-pet-proof"
 zsh "$ROOT/Tests/run-session-open-recovery.sh"
 zsh "$ROOT/Tests/run-meeting-task-link.sh"
@@ -165,7 +169,7 @@ zsh "$ROOT/Tests/run-meeting-task-link.sh"
 zsh "$ROOT/Tests/run-work-session-hub.sh"
 # 0.5.232: the Markdown parser is pure Foundation and pinned by an EXECUTED contract
 # (the scribe's meeting, lists, tasks, tables, code, quotes, details, speaker lines).
-"$ROOT/Tests/compile-guard.sh" swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \
+/usr/bin/python3 "$ROOT/Tests/kit-compile.py" "$ROOT/Tests/compile-guard.sh" swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \
   "$ROOT/Sources/COSMarkdownParser.swift" "$ROOT/Tests/MarkdownContract.swift" \
   -o "$TMP/markdown-contract"
 "$TMP/markdown-contract"
@@ -186,19 +190,19 @@ zsh "$ROOT/Tests/run-home-area.sh"
 zsh "$ROOT/Tests/run-transcription-settings.sh"
 # 0.5.233: the live feed reducer is pure Foundation and pinned by an EXECUTED contract
 # over recorded 6.48.2 stream frames (reseed, gap, prompt window, state line, elapsed).
-"$ROOT/Tests/compile-guard.sh" swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \
+/usr/bin/python3 "$ROOT/Tests/kit-compile.py" "$ROOT/Tests/compile-guard.sh" swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \
   "$ROOT/Sources/SessionLiveFeed.swift" "$ROOT/Tests/SessionLiveFeedContract.swift" \
   -o "$TMP/session-live-feed-contract"
 "$TMP/session-live-feed-contract" "$ROOT"
-"$ROOT/Tests/compile-guard.sh" swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \
+/usr/bin/python3 "$ROOT/Tests/kit-compile.py" "$ROOT/Tests/compile-guard.sh" swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \
   "$ROOT/Sources/Models.swift" "$ROOT/Tests/JediUpgradeContract.swift" \
   -framework AppKit -o "$TMP/jedi-upgrade-contract"
 "$TMP/jedi-upgrade-contract" "$ROOT"
-"$ROOT/Tests/compile-guard.sh" swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \
+/usr/bin/python3 "$ROOT/Tests/kit-compile.py" "$ROOT/Tests/compile-guard.sh" swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \
   "$ROOT/Sources/Models.swift" "$ROOT/Tests/JediGalleryContract.swift" \
   -framework AppKit -o "$TMP/jedi-gallery-contract"
 "$TMP/jedi-gallery-contract" "$ROOT/Resources"
-"$ROOT/Tests/compile-guard.sh" swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \
+/usr/bin/python3 "$ROOT/Tests/kit-compile.py" "$ROOT/Tests/compile-guard.sh" swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \
   "$ROOT/Sources/Models.swift" "$ROOT/Sources/HelperClient.swift" "$ROOT/Sources/ControllerModel.swift" \
   "$ROOT/Sources/MacRecordingCore.swift" "$ROOT/Sources/MacAudioCapture.swift" "$ROOT/Sources/MacRecording.swift" "$ROOT/Sources/MacDictationCore.swift" "$ROOT/Sources/MacDictation.swift" \
   "$ROOT/Sources/COSBrand.swift" "$ROOT/Sources/COSMotion.swift" "$ROOT/Sources/COSConfirm.swift" \

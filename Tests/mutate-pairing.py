@@ -7,6 +7,8 @@ once, must fail its suite, and is attributed to the check that names the behavio
 import pathlib, subprocess, sys, os, tempfile
 root = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else pathlib.Path(__file__).resolve().parents[1])
 helper_out = os.path.join(tempfile.mkdtemp(prefix="cos-mutate-pairing-", dir="/tmp"), "cos-control-helper")
+# Lanes compile against shared builds of Sources (Tests/kit-compile.py): keep them for every mutant of this run.
+os.environ.setdefault("COS_TEST_KIT_DIR", os.path.join(os.path.dirname(helper_out), "kits"))
 env = dict(os.environ)
 env.setdefault("COS_COMPILE_MIN_FREE_GB", "20")
 def sh(cmd):
@@ -14,7 +16,7 @@ def sh(cmd):
     return r.returncode, r.stdout
 PURE = "Tests/run-pairing.sh"
 APP = "Tests/run-provider-connect.sh"
-HELPER = (f'Tests/compile-guard.sh swiftc -target arm64-apple-macosx14.0 -swift-version 6 -strict-concurrency=complete '
+HELPER = (f'/usr/bin/python3 Tests/kit-compile.py Tests/compile-guard.sh swiftc -target arm64-apple-macosx14.0 -swift-version 6 -strict-concurrency=complete '
           f'HelperSources/main.swift HelperSources/ProviderStatusCore.swift HelperSources/PairingCore.swift -framework Security -framework AppKit '
           f'-o {helper_out} 2>/dev/null && python3 Tests/pairing-helper-checks.py {helper_out}')
 C, M, V = "HelperSources/PairingCore.swift", "Sources/ProviderConnectModel.swift", "Sources/ProviderConnectViews.swift"
