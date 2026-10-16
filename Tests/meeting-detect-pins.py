@@ -189,7 +189,7 @@ need("if meetings.surface == .pet, let card = meetings.card {\n                M
      and "MeetingDetectorStore.shared.$card.map { $0?.id }.removeDuplicates()" in pet, "the card rides the pet and re-fits it")
 need("guard let store, store.surface == .floating, let card = store.card else {" in recording and "styleMask: [.borderless, .nonactivatingPanel]" in recording,
      "with the pet hidden the card floats, never taking focus")
-need("MeetingSuggestSettings(store: MeetingDetectorStore.shared)" in views and 'forKey: "meetingSuggest.enabled") as? Bool ?? true' in detector,
+need("MeetingSuggestSettings(store: MeetingDetectorStore.shared, recording: model.macRecording)" in views and 'forKey: "meetingSuggest.enabled") as? Bool ?? true' in detector,
      "Suggest recording when a meeting starts: in Settings, on by default")
 need('Text("Google Meet in a browser needs Accessibility' in recording, "Settings says when browser detection is skipped")
 
