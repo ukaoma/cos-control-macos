@@ -68,6 +68,14 @@ MUTANTS = [
  ("reference added twice", "Sources/WorkSessionLinks.swift", '            if rows.contains(where: { $0.workID == link.workID }) { return refs }\n', ''),
  ("helper drops references", H, '"references": body["references"] as? Bool == true])', '"references": false])'),
  ("Link as reference ungated", "Sources/WorkWorkspaceView.swift", 'if taskChat.referencesOffered, linked?.workID != task.workSourceID {', 'if linked?.workID != task.workSourceID {'),
+ # 0.5.317: the cleared-receipt report, the summary that held refreshing, loading states.
+ ("cleared handoff holds the card", S, 'nonisolated static let terminalStatuses: Set<String> = ["completed", "failed", "refused", "canceled", "reviewed"]', 'nonisolated static let terminalStatuses: Set<String> = ["completed", "failed", "refused", "canceled"]'),
+ ("summary holds refreshing", C, '        refreshing = false\n        summarizing = true; defer { summarizing = false }', '        summarizing = true; defer { summarizing = false }'),
+ ("plan overlaps a summary", C, '        while summarizing { try? await Task.sleep(for: .milliseconds(250)) }\n', ''),
+ ("loading flag never set", S, 'defer { busy = false; if !refreshedOnce { refreshedOnce = true } }', 'defer { busy = false }'),
+ ("loading never shown", S, '    var sessionsKnown: Bool { refreshedOnce || activityCheckedAt != nil }', '    var sessionsKnown: Bool { true }'),
+ ("no automatic re-check", C, '                await chat.recheckBlockers(source:source,handoff:handoff,automatic:true)\n', ''),
+ ("history waits for the session read", C, '            if handoff.isolated || handoff.taskChatServerID != nil { chat.open(source:source,handoff:handoff) }\n', ''),
  # Wiring the hub checks cannot execute (pinned in run-work-session-hub.sh).
  ("helper drops queueRounds", H, '"queueRounds": body["queueRounds"] as? Bool == true,', '"queueRounds": false,'),
  ("Settings switch removed", V, 'COSDropdown("When earlier work is still open", selection: $workChatWhenHeld,', 'COSDropdown("When earlier work is open", selection: $workChatWhenHeld,'),

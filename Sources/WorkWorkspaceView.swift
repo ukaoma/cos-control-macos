@@ -2880,9 +2880,11 @@ struct WorkWorkspaceView: View {
                 Button(linkingSessions ? "Close linking" : "Link existing session") { linkingSessions.toggle() }
                     .buttonStyle(COSQuietButtonStyle())
             }
-            Text("Each session keeps its own progress. You control the shared task's stage.")
-                .font(COSType.body(11)).foregroundStyle(COSPalette.muted)
-            if contributors.isEmpty { Text("Copy context into Claude, Codex or Cursor, then link its exact session ID.")
+            // 0.5.317: until the first session read answers, the same line says what is loading (no layout jump when it fills).
+            Text(handoffStore.sessionsKnown ? "Each session keeps its own progress. You control the shared task's stage."
+                 : contributors.isEmpty ? "Loading sessions\u{2026}" : "Loading \(contributors.count) session\(contributors.count == 1 ? "" : "s")\u{2026}")
+                .font(COSType.body(11)).foregroundStyle(COSPalette.muted).accessibilityIdentifier("work-sessions-loading-line")
+            if contributors.isEmpty && handoffStore.sessionsKnown { Text("Copy context into Claude, Codex or Cursor, then link its exact session ID.")
                 .font(COSType.body(12)).foregroundStyle(COSPalette.muted) }
             ForEach(contributors) { contributor in
                 VStack(alignment: .leading, spacing: 6) {
@@ -2890,7 +2892,7 @@ struct WorkWorkspaceView: View {
                         Text(contributor.provider.capitalized).font(COSType.body(11)).foregroundStyle(COSPalette.muted)
                         Text(contributor.title).font(COSType.body(13, weight: .semibold)).lineLimit(2)
                         Spacer()
-                        Text(contributor.session.map { WorkBoardSessionCard.ageLabel(status: $0.status, updated: $0.updatedDate) } ?? "Live status unavailable")
+                        Text(contributor.session.map { WorkBoardSessionCard.ageLabel(status: $0.status, updated: $0.updatedDate) } ?? (handoffStore.sessionsKnown ? "Live status unavailable" : "Loading status\u{2026}"))
                             .font(COSType.mono(10)).foregroundStyle(COSPalette.muted)
                     }
                     if let tracking = WorkTracking.latest(workID: task.workSourceID, receipts: handoffStore.receipts, sessionID: contributor.id) {

@@ -258,6 +258,10 @@ enum WorkChatPreflight {
     @Published var error: String?
     @Published var busy = false
     @Published private(set) var refreshing = false
+    /// 0.5.317 (Miles 2026-10-16, "Check again disabled", his message blocked): the combined update summary is a planner
+    /// call that can run for minutes. It no longer holds `refreshing`, so Check again, Plan and Send stay usable; a Plan
+    /// waits only for the one summary call already on the wire (the server runs one Work chat call at a time).
+    @Published private(set) var summarizing = false
     @Published var phase = ""
     /// 0.5.308: receipts holding this card, found before planning or before a send. Nothing is planned or sent while set.
     @Published private(set) var blockers: [WorkHandoffReceipt] = []
@@ -469,6 +473,8 @@ enum WorkChatPreflight {
               !record.rounds.contains(where: { ["Planning","Executing"].contains($0.state) }) else { return }
         busy = true; error = nil; blockers = []; phase = "Checking earlier handoffs…"
         defer { busy = false; phase = "" }
+        if summarizing { phase = "Finishing the update summary first…" }
+        while summarizing { try? await Task.sleep(for: .milliseconds(250)) }
         // Pre-flight: on the fence (an older server, a sample card), a card held by an earlier handoff is not planned and the
         // request stays in the composer.
         if !handoff.isolated { await handoff.refreshReceipts() }
@@ -806,10 +812,13 @@ enum WorkChatPreflight {
         record?.rounds[r].state = "Ready to send"; _ = persist()
     }
     /// After Miles marks a receipt reviewed or clears it, read the card again. Nothing is planned or sent here.
-    func recheckBlockers(source: WorkSource, handoff: WorkHandoffStore) async {
-        guard !busy, !refreshing, !blockers.isEmpty, record?.workID == source.id else { return }
-        busy = true; defer { busy = false }
-        if !handoff.isolated { await handoff.refreshReceipts(asked: true) }
+    /// 0.5.317: also runs by itself every 15 s while blockers are shown, so a resolved handoff leaves the card without a click.
+    func recheckBlockers(source: WorkSource, handoff: WorkHandoffStore, automatic: Bool = false) async {
+        guard !busy, !blockers.isEmpty, record?.workID == source.id, !(automatic && refreshing) else { return }
+        // By itself it holds `refreshing`, which never disables the composer; Check again holds `busy`.
+        if automatic { refreshing = true } else { busy = true }
+        defer { if automatic { refreshing = false } else { busy = false } }
+        if !handoff.isolated { await handoff.refreshReceipts(asked: !automatic) }
         blockers = await handoff.taskChatBlockers(source: source)
         if blockers.isEmpty, error == WorkChatPreflight.heading { error = nil }
     }
@@ -829,6 +838,8 @@ enum WorkChatPreflight {
                 referencesOffered = caps["references"]?.bool == true; handoff.referencesOffered = referencesOffered
                 return
             } catch {
+                // 0.5.317: leaving the card cancels discovery. That is not a failure: nothing changes and nothing is said.
+                if error is CancellationError || Task.isCancelled { return }
                 let reason = error.localizedDescription
                 workChatLog.error("planner discovery failed (attempt \(attempt + 1)): \(reason, privacy: .public)")
                 if attempt == 0 { try? await Task.sleep(for: retryDelay) }
@@ -844,7 +855,7 @@ enum WorkChatPreflight {
         setDraft(round.question)
     }
     func refresh(source: WorkSource, handoff: WorkHandoffStore, automatic: Bool = false) async {
-        guard !busy, !refreshing, record?.workID == source.id, record?.rounds.isEmpty == false else { return }
+        guard !busy, !refreshing, !summarizing, record?.workID == source.id, record?.rounds.isEmpty == false else { return }
         refreshing = true; defer { refreshing = false }
         if !automatic { error = nil }
         await handoff.refreshActivity(); await handoff.refreshReceipts(asked: !automatic)
@@ -886,9 +897,12 @@ enum WorkChatPreflight {
             if (!automatic || ready) && updated.assignments.contains(where: { !$0.result.isEmpty }) { summaries.append(index) }
         }
         guard persist() else { return }
-        guard enabled, !handoff.isolated, handoff.taskChatServerID == record?.serverID else { return }
+        guard enabled, !handoff.isolated, handoff.taskChatServerID == record?.serverID, !summaries.isEmpty else { return }
+        refreshing = false
+        summarizing = true; defer { summarizing = false }
         // Polls read receipts. Generation occurs only for material new results, never at every poll.
         for index in summaries {
+            guard !busy else { return } // A Plan or Send started: it goes first; the summary waits for the next refresh.
             do {
                 let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
                 let snapshot = try encoder.encode(record!.rounds[index].assignments)
@@ -1013,6 +1027,11 @@ struct WorkTaskChatView: View {
             Text(handoff.isolated ? "Sample orchestration. Assignments are simulated." : "Describe the outcome. COS explains its plan and drafts assignments for linked sessions. You review, edit and send each one, and their updates come back here.")
                 .font(COSType.body(12)).foregroundStyle(COSPalette.muted)
             if !chat.enabled && !handoff.isolated { Text("Orchestration candidate is not enabled. Existing Agent workspace remains available.").font(COSType.body(12)).foregroundStyle(COSPalette.muted) }
+            // 0.5.317: history loads before the first answer from the server; until then a quiet placeholder, never empty.
+            if scopedRecord == nil, chat.error == nil {
+                HStack(spacing: 8) { ProgressView().controlSize(.small); Text("Loading Work chat history\u{2026}").font(COSType.body(12)).foregroundStyle(COSPalette.muted) }
+                    .frame(maxWidth: .infinity, minHeight: 72, alignment: .leading).accessibilityIdentifier("work-chat-loading")
+            }
             ForEach(scopedRecord?.rounds ?? []) { round in roundView(round) }
             if !chat.blockers.isEmpty, chat.pendingHold == nil, scopedRecord != nil { WorkChatBlockersView(chat: chat, handoff: handoff, source: source, onOpenSession: onOpenSession) }
             if let error = chat.error { Text(error).font(COSType.body(12)).foregroundStyle(COSPalette.danger).textSelection(.enabled) }
@@ -1020,11 +1039,15 @@ struct WorkTaskChatView: View {
             WorkChatContextComposer(chat:chat,handoff:handoff,files:handoff.cardFiles,source:source)
             WorkChatSendControls(chat: chat, draft: chat.draft, handoff: handoff, source: source)
         }.task(id:source.id) {
-            chat.enabled = Bundle.main.object(forInfoDictionaryKey: "COSWorkChatEnabled") as? Bool == true
-                || ProcessInfo.processInfo.environment["COS_WORK_ORCHESTRATION_CANDIDATE"] == "1"
-            await handoff.refresh()
             // 0.5.316: while this card is open here, this store sends its queued work; the app-wide pump leaves it alone.
             WorkChatQueuePump.show(source.id); defer { WorkChatQueuePump.hide(source.id) }
+            chat.enabled = Bundle.main.object(forInfoDictionaryKey: "COSWorkChatEnabled") as? Bool == true
+                || ProcessInfo.processInfo.environment["COS_WORK_ORCHESTRATION_CANDIDATE"] == "1"
+            // 0.5.317: when this Mac already knows the server, the saved history shows at once, before the session read.
+            if handoff.isolated || handoff.taskChatServerID != nil { chat.open(source:source,handoff:handoff) }
+            // Wait out a receipt poll in flight, so this refresh actually reads the sessions (as the Start work overlay does).
+            for _ in 0..<50 where handoff.busy { try? await Task.sleep(for: .milliseconds(100)) }
+            await handoff.refresh()
             await chat.loadPlanners(handoff: handoff)
             while !Task.isCancelled {
                 chat.open(source:source,handoff:handoff)
@@ -1032,6 +1055,7 @@ struct WorkTaskChatView: View {
                 do { try await Task.sleep(for:.seconds(15)) } catch { return }
                 guard !Task.isCancelled else { return }
                 await chat.refresh(source:source,handoff:handoff,automatic:true)
+                await chat.recheckBlockers(source:source,handoff:handoff,automatic:true)
                 await chat.pumpQueued(source:source,handoff:handoff)
             }
         }.confirmationDialog("Check the connected session first", isPresented: Binding(get: { recoveryRoundID != nil }, set: { if !$0 { recoveryRoundID = nil } }), presenting: recoveryRoundID) { id in
@@ -1155,7 +1179,7 @@ private struct WorkChatBlockersView: View {
                 }.padding(10).background(COSPalette.raised, in: RoundedRectangle(cornerRadius: 8))
             }
             Button(chat.busy ? "Checking…" : "Check again") { Task { await chat.recheckBlockers(source: source, handoff: handoff) } }
-                .buttonStyle(COSQuietButtonStyle()).disabled(chat.busy || chat.refreshing || handoff.busy)
+                .buttonStyle(COSQuietButtonStyle()).disabled(chat.busy || handoff.busy)
         }.padding(14).background(COSPalette.card, in: RoundedRectangle(cornerRadius: 10)).overlay(RoundedRectangle(cornerRadius: 10).stroke(COSPalette.amber))
     }
 }

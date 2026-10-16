@@ -906,6 +906,12 @@ private actor WorkQueueFixture {
     private var prompts: [String: String] = [:]
     private var bodies: [[String: Any]] = []
     func prompt(_ thread: String) -> String { prompts[thread] ?? "" }
+    /// 0.5.317: a summary call takes this long, and at most one Work chat call may be on the wire (as on the server).
+    private(set) var summaryDelay: Duration = .zero
+    private var inFlight = 0
+    private(set) var maxInFlight = 0
+    private(set) var summaries = 0
+    func setSummaryDelay(_ value: Duration) { summaryDelay = value }
     init(_ ids: [String], server: String, queue: Bool = true, refs: Bool = false) { self.ids = ids; self.server = server; self.queue = queue; self.refs = refs; assign = Array(ids.prefix(2)) }
     func setAssign(_ value: [String]) { assign = value }
     func referencesSent() -> [[String]?] { bodies.map { ($0["references"] as? [[String: Any]])?.compactMap { $0["id"] as? String } } }
@@ -930,7 +936,15 @@ private actor WorkQueueFixture {
             if refs { out["references"] = .bool(true); out["contextItems"] = .bool(true) }
         case "work-context": out = ["contextText": .string("Fixture task evidence"), "workRevision": .string(revision), "task": .object(["id": .string("aaaaaaaaaaaa"), "workIdentity": .string("aaaaaaaaaaaa"), "domain": .string("quilt"), "title": .string("Launch fixture"), "text": .string("Launch fixture"), "source": .string("Fixture evidence")])]
         case "work-chat":
-            if let data, let body = try? JSONSerialization.jsonObject(with: data) as? [String: Any] { bodies.append(body) }
+            inFlight += 1; maxInFlight = max(maxInFlight, inFlight); defer { inFlight -= 1 }
+            let body = data.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+            if body?["mode"] as? String == "summary" {
+                summaries += 1
+                try await Task.sleep(for: summaryDelay)
+                out = ["protocolVersion": .number(1), "answer": .string("Summary of observed results."), "assignments": .array([])]
+                return HelperResponse(ok: true, message: "Fixture", details: out)
+            }
+            if let body { bodies.append(body) }
             out = ["protocolVersion": .number(1), "answer": .string("Two independent checks."),
                 "assignments": .array(assign.map { .object(["sessionID": .string($0), "prompt": .string("Next idea; do not publish.")]) })]
         // The earlier handoff on the first session: still running until the fixture says its turn completed.
@@ -1130,6 +1144,7 @@ private actor WorkQueueFixture {
     }
 
     try await runWorkReferenceChecks(ids: ids, sessions: sessions, root: root)
+    try await runWorkChatClearedReceiptChecks(ids: ids, sessions: sessions, root: root)
 
     // 5. An older server (no queueRounds): today's behaviour, said plainly; never an openWork key.
     do {
@@ -1302,4 +1317,70 @@ private enum PendingHoldCheck {
     let oldManual = await oldFixture.prompt(String(ids[1].split(separator: ":")[1]))
     precondition(oldManual.contains("Manual on an older server") && !oldManual.contains("Reference session"), "An older server's manual handoff carries no references")
     print("PASS Work references: one working link per session kept, many references, never a send target, never holds the fence or queue, never owns the stage, planner evidence and manual handoffs within six, older server untouched")
+}
+
+/// 0.5.317 regression (Miles 2026-10-16 14:2x, IT Retail card): the Codex handoff he cleared after checking ("You checked the
+/// session and cleared this unresolved handoff") and the Claude replies already continued must never hold the card. What
+/// held it was the newest Claude reply, delivered and not yet checked: with the queue, his next message queues behind that
+/// one alone, without asking; with nothing open it sends. A running update summary no longer disables Check again or Plan.
+@MainActor private func runWorkChatClearedReceiptChecks(ids: [String], sessions: [WorkSession], root: URL) async throws {
+    struct Journal: Encodable { var version = 2; var receipts: [WorkHandoffReceipt]; var sessions: [WorkSession] }
+    let card = WorkSource.taskSnapshot(TaskRow(.object(["id": .string("aaaaaaaaaaaa"), "workIdentity": .string("aaaaaaaaaaaa"), "domain": .string("quilt"), "title": .string("Launch fixture"), "text": .string("Launch fixture"), "source": .string("Fixture evidence")]))!)
+    let now = Date().timeIntervalSince1970, runA = UUID().uuidString.lowercased(), runB = UUID().uuidString.lowercased()
+    func row(_ session: Int, _ status: String, run: String, at: Double, detail: String) -> WorkHandoffReceipt {
+        var r = WorkHandoffReceipt(id: UUID().uuidString.lowercased(), workID: card.id, workTitle: card.title, sourceRevision: card.revision, mode: .continueSession, provider: sessions[session].provider, modelID: "existing-session", sessionID: sessions[session].id, sessionTitle: sessions[session].title, status: status, detail: detail, prompt: "Earlier assignment " + run, createdAt: at)
+        r.channel = "turn"; r.bindingID = "binding-" + run; r.orchestrationRunID = run; return r
+    }
+    var codexCleared = row(1, "reviewed", run: runA, at: now - 2_700, detail: "You checked the session and cleared this unresolved handoff. Earlier: Delivery could not be confirmed. Inspect this session before another handoff.")
+    codexCleared.acknowledgedAt = now - 1_800
+    var claudeContinued = row(0, "delivered", run: runA, at: now - 2_700, detail: "Instruction delivered to the session. Inspect the response; this does not mark the task complete.")
+    claudeContinued.continuedBy = UUID().uuidString.lowercased(); claudeContinued.result = "Copy pass done."
+    let claudeOpen = row(0, "delivered", run: runB, at: now - 240, detail: "Instruction delivered to the session. Inspect the response; this does not mark the task complete.")
+    precondition(codexCleared.clearedUnconfirmed && !codexCleared.blocksNewHandoff && !WorkChatPreflight.holds(codexCleared, continuations: [:]), "A cleared handoff never holds the card")
+    precondition(!claudeContinued.blocksNewHandoff && !WorkChatPreflight.holds(claudeContinued, continuations: [:]), "A continued reply never holds the card")
+    precondition(WorkChatPreflight.holds(claudeOpen, continuations: [:]) && WorkChatPreflight.blockers([claudeOpen, codexCleared, claudeContinued], workID: card.id, continuations: [:]).map(\.id) == [claudeOpen.id],
+                 "Only the newest unchecked reply holds it")
+    UserDefaults.standard.removeObject(forKey: WorkChatHold.settingKey)
+    for open in [true, false] {
+        let file = root.appendingPathComponent("cleared-" + (open ? "open" : "resolved") + ".json")
+        try JSONEncoder().encode(Journal(receipts: (open ? [claudeOpen] : []) + [codexCleared, claudeContinued], sessions: sessions)).write(to: file)
+        let fixture = WorkQueueFixture(ids, server: "cleared-" + (open ? "open" : "resolved"))
+        let store = WorkHandoffStore(storageURL: file, transport: { args, data in try await fixture.run(args, data) })
+        precondition(!store.refreshedOnce && !store.sessionsKnown, "Before the first session read, the card says it is loading")
+        for id in ids.prefix(2) { precondition(store.confirmSessionCard(sessionID: id, source: card)) }
+        await store.refresh()
+        precondition(store.refreshedOnce && store.sessionsKnown, "After it, the card renders what it read")
+        let chat = WorkTaskChatStore(); chat.enabled = true; chat.open(source: card, handoff: store)
+        await chat.loadPlanners(handoff: store, retryDelay: .zero)
+        chat.setDraft("I had a question about one area here")
+        await chat.send(source: card, handoff: store)
+        let round = chat.record!.rounds.last!
+        precondition(round.state == "Ready to send" && chat.blockers.isEmpty && chat.error == nil, "His message is planned, not walled: \(round.state) \(chat.error ?? "")")
+        await chat.sendAll(roundID: round.id, source: card, handoff: store)
+        let after = chat.record!.rounds.last!, sent = await fixture.sent()
+        if open {
+            precondition(sent.isEmpty && chat.pendingHold == nil && chat.blockers.isEmpty && after.assignments.allSatisfy { $0.state == WorkChatHold.queuedState && $0.waitingOn == [claudeOpen.id] },
+                         "Genuinely open: it queues behind that reply alone, without asking: \(after.assignments.map { $0.waitingOn ?? [] })")
+            store.markReviewed(receiptID: claudeOpen.id)
+            await chat.pumpQueued(source: card, handoff: store)
+            let later = await fixture.sent()
+            precondition(later.count == 2 && chat.record!.rounds.last!.state == "Dispatched", "Then it sends by itself")
+        } else {
+            precondition(sent.count == 2 && after.state == "Dispatched" && chat.pendingHold == nil, "Nothing open: it just sends: \(sent)")
+            // A summary on the wire keeps neither Check again nor Plan waiting on a disabled button, and never overlaps a plan.
+            await fixture.setSummaryDelay(.milliseconds(600))
+            chat.record?.rounds[chat.record!.rounds.count - 1].assignments[0].result = "QA done; two notes."
+            let refreshing = Task { await chat.refresh(source: card, handoff: store) }
+            var waited = 0
+            while !chat.summarizing && waited < 100 { try await Task.sleep(for: .milliseconds(20)); waited += 1 }
+            precondition(chat.summarizing && !chat.refreshing, "A summary in flight does not hold refreshing (Check again stays enabled)")
+            chat.setDraft("Next while it summarizes")
+            await chat.send(source: card, handoff: store)
+            await refreshing.value
+            let overlap = await fixture.maxInFlight, count = await fixture.summaries
+            precondition(chat.record!.rounds.last!.question == "Next while it summarizes" && chat.record!.rounds.last!.state == "Ready to send" && overlap == 1 && count == 1,
+                         "The plan waits for the one summary on the wire, then runs: \(chat.record!.rounds.last!.state) overlap \(overlap)")
+        }
+    }
+    print("PASS Work chat cleared receipt (Miles 2026-10-16): cleared and continued handoffs never hold; an open reply queues his message without asking; nothing open sends; a running summary never disables Check again or Plan; loading until the first session read")
 }

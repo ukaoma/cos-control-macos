@@ -68,6 +68,13 @@ assert "    static let settingDefault = queueSetting\n" in queue, "Queue it is t
 assert "let pump = WorkChatQueuePump(handoff: store, sources:" in model and "pump.start()" in model, "the app starts the app-wide pump"
 loop = chat[chat.index("WorkChatQueuePump.show(source.id); defer { WorkChatQueuePump.hide(source.id) }"):chat.index('}.confirmationDialog("Check the connected session first"')]
 assert "await chat.pumpQueued(source:source,handoff:handoff)" in loop and "chat.syncFromDisk()" in loop, "an open card pumps its own queue and reads the app-wide pump's writes"
+# 0.5.317: loading states (the same line slot, no layout jump), early history, automatic re-check of shown blockers.
+handoffview = open(sys.argv[1].replace("WorkTaskChat.swift", "WorkHandoffView.swift")).read()
+assert 'Text(handoffStore.sessionsKnown ? "Each session keeps its own progress.' in workspace and '"Loading status\\u{2026}"' in workspace, "Sessions say they are loading until the first read"
+assert 'if store.sessions.isEmpty && !store.sessionsKnown {' in handoffview, "the Agent workspace never reads as no sessions while loading"
+assert 'Text("Loading Work chat history\\u{2026}")' in chat and ".frame(maxWidth: .infinity, minHeight: 72, alignment: .leading)" in chat, "Work chat shows a placeholder until its history opens"
+assert loop.index("chat.open(source:source,handoff:handoff) }") < loop.index("await handoff.refresh()"), "the history opens before the session read when the server is known"
+assert "await chat.recheckBlockers(source:source,handoff:handoff,automatic:true)" in loop, "shown blockers are checked again by themselves"
 print("PASS Work chat queue and reference wiring: helper capabilities, Settings default Queue it, app-wide pump started, open card pumps itself, references gated and send-free")
 PY
 # 0.5.313: the idle CPU fixes stay in place (text pins; the behaviour is checked in WorkInputChecks).

@@ -391,6 +391,11 @@ struct WorkRecommendationKey: Equatable {
     @Published private(set) var referenceLinks: [String: [WorkSessionCardLink]] = [:]
     /// Set by Work chat discovery (server 6.73.15 `references`). Off: no reference reaches any send.
     @Published var referencesOffered = false
+    /// 0.5.317 (Miles 2026-10-16: a card with many sessions read as empty for seconds): false until the first session
+    /// and model read has answered, either way. Until then views show "Loading …", never an empty card.
+    @Published private(set) var refreshedOnce = false
+    /// A session read has answered: the full refresh, or the 15-second activity check.
+    var sessionsKnown: Bool { refreshedOnce || activityCheckedAt != nil }
     private let storageURL: URL
     private let transport: Transport
     private var storageReady = true
@@ -1164,7 +1169,7 @@ struct WorkRecommendationKey: Equatable {
         retryJournalIfUnavailable()
         do { try reloadSessionCards() } catch { self.error = sessionCardsError }
         busy = true; error = sessionCardsError
-        defer { busy = false }
+        defer { busy = false; if !refreshedOnce { refreshedOnce = true } }
         do {
             let catalog = try await call(["work-models"])
             let instance = catalog["serverInstanceId"]?.string

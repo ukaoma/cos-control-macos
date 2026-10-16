@@ -797,7 +797,10 @@ struct WorkHandoffView: View {
     /// The likeliest sessions as rows (Jev's pick, word matches, then recent), plus every session in a menu.
     private var existingDestination: some View {
         VStack(alignment: .leading, spacing: 6) {
-            if store.sessions.isEmpty {
+            if store.sessions.isEmpty && !store.sessionsKnown {
+                // 0.5.317: the first session read has not answered yet; never read as "no sessions".
+                HStack(spacing: 6) { ProgressView().controlSize(.small); Text("Loading sessions\u{2026}").font(COSType.body(11.5)).foregroundStyle(COSPalette.muted) }
+            } else if store.sessions.isEmpty {
                 Text(sessionID.isEmpty ? "No sessions available. Refresh or choose a new session." : "Your saved session is unavailable. Refresh to resolve it or explicitly choose a new destination.")
                     .font(COSType.body(11.5)).foregroundStyle(COSPalette.muted)
             } else {
