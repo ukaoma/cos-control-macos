@@ -1,3 +1,13 @@
+## 0.5.310 (build 363), dictation insertion you can trust
+
+- Field bug (Miles 2026-10-15 20:07): with iTerm2 focused the pet flashed "✓ INSERTED · ITERM2" and nothing landed. An Accessibility set that returns success proves nothing. COS now measures the focused field before and after (AXNumberOfCharacters and AXSelectedTextRange, never its text) and a pure, tested decision (DictationDelivery) sets the outcome. Polls run at 0, 50, 150 and 300 ms without blocking the main thread. Any change counts as landed and is never pasted over; no change goes to ⌘V, which is measured too. ✓ INSERTED only for a measured change. ⌘V that cannot be measured reads "PASTED · ⌘V SENT" without a check; ⌘V that changed nothing shows "COPIED · PRESS ⌘V".
+- Known terminals (iTerm2, Terminal, Warp, Ghostty, kitty, Alacritty, WezTerm) skip Accessibility and get ⌘V, with line breaks turned into spaces. Electron and Chromium apps get AXManualAccessibility before COS decides. A text role alone is no longer a text box: the element must take text (settable AXSelectedText or AXValue) or sit in a web editor. Secure keyboard input held by another app has its own card. COS's own windows insert through their first responder.
+- ⌘V uses the current layout's V (Dvorak, AZERTY), waits up to 600 ms for modifiers to be released, refuses if the clipboard changed, and checks that the clipboard took the text. AX calls time out at 0.25 s. Each delivery writes one log line (app, role, measurements, route, outcome, ms), never the text.
+- Recent dictations record the honest outcome: inserted, pasted or sent unconfirmed, or copied with the reason. 0.5.309 history still loads (its "inserted" reads as unconfirmed). An unreadable history file is moved aside instead of overwritten. Delete a dictation from its row; Settings has Clear recent dictations.
+- Cards: Accessibility off offers Allow…, a denied microphone offers Open Settings, and no speech offers no Retry.
+- Dictionary: single words and corrections use server 6.73.12's atomic routes, so a Fix a word can no longer be lost to a read-then-write. Lengths count UTF-16 units like the server. A save whose read-back fails stays a success. The pet's Fix a word shows dictionary errors and never sticks on Loading…; Save is off when the server cannot learn.
+- Pair with server 6.73.12.
+
 ## 0.5.309 (build 362), dictation Wispr-style and the COS dictionary
 
 - Built to the approved mock (design/dictation-wispr-mock.html, moments 01-07; Miles picked A/A/A, 2026-10-15 18:16). The persistent "COS Dictation" panel is gone.
