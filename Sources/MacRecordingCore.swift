@@ -389,6 +389,29 @@ enum MacRecordingRecoveryPolicy {
     static func canKeepForLater(noSpeech: Bool, pending: Bool, stopped: Bool, delivering: Bool) -> Bool {
         noSpeech && pending && stopped && !delivering
     }
+    /// What the panel offers to Recover: retained captures with audio, other than the current one. A journal with no
+    /// chunks (a start that failed after its manifest was written) has nothing to recover; it is hidden, never deleted.
+    static func listed(_ retained: [MacRecordingManifest], current: String?) -> [MacRecordingManifest] {
+        retained.filter { !$0.chunks.isEmpty && $0.captureId != current }
+    }
+}
+
+/// Why Record did nothing, by cause (QA 0.5.313). `keep` leaves the line alone: a second click while the first start
+/// is still starting must not put a red line under the live recording.
+enum MacRecordingRefusal: Equatable, Sendable {
+    case keep
+    case set(String)
+    static let pending = "A Mac recording is waiting to be saved. Open Meetings to finish it before recording another."
+    static func decide(available: Bool, currentError: String?, live: Bool, pendingCapture: Bool) -> MacRecordingRefusal {
+        if live { return .keep }
+        if !available {
+            // prepare() just ran and said why; keep that reason rather than replacing it.
+            if let currentError, !currentError.isEmpty { return .set(currentError) }
+            return .set("Mac recording isn't available: COS Control couldn't reach its recording helper. Try again in a moment.")
+        }
+        if pendingCapture { return .set(pending) }
+        return .set("Mac recording couldn't start. Try again in a moment.")
+    }
 }
 
 // MARK: - Meeting detection (0.5.313, Miles 2026-10-15 22:39)
@@ -468,17 +491,24 @@ enum MeetingApps {
     }
     /// Who holds the microphone right now, after exclusions. `browserShowsMeet(owner)` is nil when it cannot be read
     /// (no Accessibility): that browser is skipped and `browserUnchecked` says so.
-    static func holding(_ processes: [MeetingAudioProcess], ownPID: Int32, never: Set<String>,
-                        browserShowsMeet: (String) -> Bool?) -> (sources: Set<MeetingSource>, browserUnchecked: Bool) {
+    /// `latched` (QA 0.5.313): browser pids that showed a Meet title while holding the microphone. The title is the
+    /// ACTIVE tab, so a person switching tabs mid-call must not end the meeting: a latched pid counts until its input
+    /// stops, and the returned latch keeps only pids still holding input.
+    static func holding(_ processes: [MeetingAudioProcess], ownPID: Int32, never: Set<String>, latched: Set<Int32> = [],
+                        browserShowsMeet: (String) -> Bool?) -> (sources: Set<MeetingSource>, browserUnchecked: Bool, latched: Set<Int32>) {
         var sources = Set<MeetingSource>()
         var unchecked = false
+        var latch = Set<Int32>()
         var titles: [String: Bool?] = [:]
         for process in processes where process.input && process.pid != ownPID {
             guard let rule = rule(forBundleID: process.bundleID), !never.contains(rule.owner) else { continue }
             if rule.browser {
+                if latched.contains(process.pid) {
+                    sources.insert(rule.source); latch.insert(process.pid); continue
+                }
                 if titles[rule.owner] == nil { titles[rule.owner] = .some(browserShowsMeet(rule.owner)) }
                 switch titles[rule.owner]! {
-                case true?: sources.insert(rule.source)
+                case true?: sources.insert(rule.source); latch.insert(process.pid)
                 case nil: unchecked = true
                 case false?: break
                 }
@@ -486,7 +516,13 @@ enum MeetingApps {
                 sources.insert(rule.source)
             }
         }
-        return (sources, unchecked)
+        return (sources, unchecked, latch)
+    }
+    /// Browser titles are read through Accessibility only when the microphone holders changed, when nothing is cached
+    /// for that browser, or every `every`th 2 s tick; never every tick.
+    static let titleEvery = 5
+    static func titleReadDue(holdersChanged: Bool, cached: Bool, tick: Int, every: Int = titleEvery) -> Bool {
+        holdersChanged || !cached || (every > 0 && tick % every == 0)
     }
 }
 
@@ -513,6 +549,8 @@ struct MeetingDetectionState: Equatable, Sendable {
     enum Event: Equatable, Sendable {
         case suggest(MeetingSource)
         case ended(MeetingSource)
+        /// Not offered this meeting, and why (for the log): "recording busy", "off", "app not allowed".
+        case skipped(MeetingSource, String)
     }
     private(set) var tracks: [MeetingSource: Track] = [:]
     /// The meeting app on the microphone now, for the Record button's automatic title (first by bundle ID).
@@ -542,6 +580,7 @@ struct MeetingDetectionState: Equatable, Sendable {
                 if !context.suggestEnabled || !context.allowed.contains(source.app) || context.recordingBusy {
                     // Off, not allowed, or already recording: not this meeting, even once that changes.
                     t.handled = true
+                    events.append(.skipped(source, context.recordingBusy ? "recording busy" : (!context.suggestEnabled ? "off" : "app not allowed")))
                 } else if !context.dictating, !context.cardShowing {
                     t.handled = true
                     events.append(.suggest(source))
@@ -599,6 +638,8 @@ enum MacRecordingNotice {
     /// Every start asks this, and only `start` records.
     static func step(acknowledged: Bool) -> Step { acknowledged ? .start : .notice }
     static func footnote(permissionGranted: Bool) -> String? { permissionGranted ? nil : permissionFootnote }
+    /// The panel's notice shows only while asked for, not yet acknowledged (here or on the pet), and nothing records.
+    static func panelShowsNotice(requested: Bool, acknowledged: Bool, occupied: Bool) -> Bool { requested && !acknowledged && !occupied }
     /// "Zoom meeting 2:05 PM" while a meeting app is detected, else "Mac recording 2:05 PM".
     static func autoTitle(meetingApp: String?, at date: Date, calendar: Calendar = .current) -> String {
         let f = DateFormatter(); f.calendar = calendar; f.timeZone = calendar.timeZone

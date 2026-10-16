@@ -116,7 +116,26 @@ need(sum(src.count("recordSuggested()") for src in sources.values()) == 2 and 'B
 need("guard available, canStart else {" in gate and "recoverable" not in gate.split("guard available, canStart else {")[1].split("}")[0],
      "Record never starts over a pending recording, and a retained (recoverable) capture never blocks it (QA 2026-10-15)")
 need(sum(src.count("MacRecordingNotice.reminder") for src in sources.values()) == 3, "Recording · let people know on the panel, menu and pet-panel rows")
-need('Button("Show the recording notice again") { acknowledged = false }' in recording, "Settings can show the notice again")
+settings = body(recording, "struct MeetingSuggestSettings: View {")
+need("if let recording { recording.resetNotice() } else { acknowledged = false }" in settings
+     and sum(src.count(".resetNotice()") for src in sources.values()) == 1,
+     "Settings' Show the recording notice again calls the store's resetNotice, so every view reading it updates")
+
+# ── 1b. QA 0.5.313: refusal text by cause, the panel notice follows the acknowledgement, the Recover list, telemetry.
+need("switch MacRecordingRefusal.decide(available: available, currentError: error, live: occupied, pendingCapture: pendingCapture) {" in gate
+     and "case .keep: break" in gate and "case .set(let text): error = text" in gate and 'error = "A Mac recording is waiting' not in gate,
+     "Record's refusal says the real cause and never paints a live recording red")
+need("MacRecordingNotice.panelShowsNotice(requested: showingNotice, acknowledged: acknowledged, occupied: store.occupied)" in panel
+     and "if noticeVisible {" in panel and "if showingNotice {" not in panel,
+     "the panel's notice hides once acknowledged anywhere or once a recording runs")
+need("ForEach(MacRecordingRecoveryPolicy.listed(store.recoverable, current: store.manifest?.captureId)) { value in" in panel
+     and "store.recoverable.filter" not in panel, "a zero-chunk journal is never offered to Recover (and never deleted)")
+for event in ("prepare failed:", "record refused:", "append failed:", "capture failed:", "start ok", "start failed:", '"stop"',
+              "markStopped failed:", "save ok", "recover failed:", "keep for later failed:"):
+    need(event in recording.split("struct MacRecordingPanel: View {")[0], f"recording telemetry: {event}")
+need('recordingLog.error("meeting card start failed app=' in detector
+     and re.search(r'case \.skipped\(let source, let reason\):\s*recordingLog\.notice\("meeting not offered app=', detector) is not None,
+     "the detector logs a failed card start and a suggestion skipped while busy")
 
 # ── 2. Never auto-stop.
 need(detector.count("stopRecording?()") == 1 and "stopRecording?()" in body(detector, "    func stopAndSave() {"),
@@ -140,11 +159,21 @@ need("let needed = state.wantsTicks || listenersUnavailable" in tick and ".secon
 need("MeetingApps.holding(" in detector and "state.step(holding: found.sources" in detector, "detection goes through the tested table and state machine")
 need(all(s not in detector for s in ("CGWindowList", "SCShareableContent", "SCStream", "CGDisplayCreateImage")), "no screen reading")
 for line in re.findall(r"recordingLog\.\w+\(\"[^\n]*", detector):
-    need(re.findall(r"\\\(([^)]*)", line) in ([], ["source.app.title, privacy: .public"], ["current.source.app.title, privacy: .public"]),
+    need(re.findall(r"\\\(([^)]*)", line) in ([], ["source.app.title, privacy: .public"], ["current.source.app.title, privacy: .public"],
+                                                ["source.app.title, privacy: .public", "reason, privacy: .public"]),
          f"detector logs name the app only: {line}")
-browser = body(detector, "    nonisolated private static func browserShowsMeet(_ owner: String) -> Bool? {") if "nonisolated private static func browserShowsMeet" in detector else body(detector, "    private static func browserShowsMeet(_ owner: String) -> Bool? {")
-need("guard AXIsProcessTrusted() else { return nil }" in browser and "MeetingApps.showsMeet(titles)" in browser and "Log" not in browser,
-     "browser titles need Accessibility, are matched by the tested rule, and are never logged")
+reader = body(detector, "    private func readTitles(_ owner: String) {")
+titles = body(detector, "    nonisolated private static func windowTitlesShowMeet(pid: pid_t) async -> Bool {")
+need("guard AXIsProcessTrusted() else { titleCache[owner] = .some(nil); return }" in reader and "guard !titleReads.contains(owner) else { return }" in reader
+     and "await Self.windowTitlesShowMeet(pid: pid)" in reader, "titles need Accessibility, one read per browser at a time, off the main actor")
+need(titles.count("AXUIElementSetMessagingTimeout(") == 2 and "AXUIElementSetMessagingTimeout(window, 0.25)" in titles
+     and "list.prefix(40)" in titles and "Date().timeIntervalSince(started) < 1" in titles and "MeetingApps.showsMeet(titles)" in titles
+     and "Log" not in titles, "every AX element bounded at 0.25 s, 40 windows, about 1 s; matched by the tested rule, never logged")
+evaluate = body(detector, "    private func evaluate(_ ids: [AudioObjectID]) {")
+need("latched: browserLatch) { owner in" in evaluate and "browserLatch = found.latched" in evaluate
+     and "MeetingApps.titleReadDue(holdersChanged: holdersChanged, cached: cached != nil, tick: tick)" in evaluate
+     and "windowTitlesShowMeet" not in evaluate,
+     "a Meet tab latched while on the mic; titles read only when due, never inline on the main actor")
 need(core.count("static let rules: [Rule] = [") == 1 and sum(src.count("us.zoom.") for src in sources.values()) == core.count("us.zoom."),
      "the meeting app table lives in one place")
 

@@ -233,6 +233,7 @@ import Darwin
                         switch event {
                         case .suggest: out.append("suggest@\(Int(at))")
                         case .ended: out.append("ended@\(Int(at))")
+                        case .skipped(_, let reason): out.append("skipped@\(Int(at)):\(reason)")
                         }
                     }
                 }
@@ -245,7 +246,7 @@ import Darwin
                        (90, false, open), (149, false, open), (150, false, open), (160, true, open), (170, true, open)])
                   == ["suggest@10", "ended@150", "suggest@170"], "a release under 60 s is the same meeting; 60 s ends it; the next one is offered again")
             var busy = open; busy.recordingBusy = true
-            check(run([(0, true, open), (10, true, busy), (12, true, open), (40, true, open)]).isEmpty,
+            check(run([(0, true, open), (10, true, busy), (12, true, open), (40, true, open)]) == ["skipped@10:recording busy"],
                   "never while a Mac recording is active, pending or recoverable, and not later in that meeting")
             var dictating = open; dictating.dictating = true
             check(run([(0, true, open), (10, true, dictating), (11, true, dictating), (12, true, open)]) == ["suggest@12"], "dictation defers it")
@@ -253,8 +254,34 @@ import Darwin
             check(run([(0, true, open), (10, true, showing), (14, true, open)]) == ["suggest@14"], "one card at a time")
             var off = open; off.suggestEnabled = false
             var noZoom = open; noZoom.allowed = [.teams, .meet]
-            check(run([(0, true, off), (10, true, off), (12, true, open)]).isEmpty && run([(0, true, noZoom), (12, true, noZoom)]).isEmpty,
+            check(run([(0, true, off), (10, true, off), (12, true, open)]) == ["skipped@10:off"]
+                  && run([(0, true, noZoom), (12, true, noZoom)]) == ["skipped@12:app not allowed"],
                   "the setting and the per-app toggle")
+            // QA 0.5.313: a Meet tab switched away mid-call stays the meeting while the browser holds the mic.
+            let chromeMic = [MeetingAudioProcess(pid: 11, bundleID: "com.google.Chrome.helper", input: true)]
+            let chromeOff = [MeetingAudioProcess(pid: 11, bundleID: "com.google.Chrome.helper", input: false)]
+            var latch = Set<Int32>()
+            var meetTitle = true
+            var browserState = MeetingDetectionState(); var browserEvents: [String] = []
+            for (at, processes, showsMeet) in [(0.0, chromeMic, true), (12, chromeMic, false), (80, chromeMic, false), (100, chromeOff, false),
+                                               (170, chromeOff, false), (180, chromeMic, false), (200, chromeMic, false)] {
+                meetTitle = showsMeet
+                let found = MeetingApps.holding(processes, ownPID: 99, never: [], latched: latch, browserShowsMeet: { _ in meetTitle })
+                latch = found.latched
+                for event in browserState.step(holding: found.sources, now: t0.addingTimeInterval(at), context: open) {
+                    if case .suggest = event { browserEvents.append("suggest@\(Int(at))") }
+                    if case .ended = event { browserEvents.append("ended@\(Int(at))") }
+                }
+            }
+            check(browserEvents == ["suggest@12", "ended@170"],
+                  "a Meet tab switched away stays the meeting until the browser lets go of the mic; the latch drops then")
+            check(MeetingApps.holding(chromeMic, ownPID: 99, never: [], latched: [11], browserShowsMeet: { _ in nil }).sources.count == 1
+                  && MeetingApps.holding(chromeOff, ownPID: 99, never: [], latched: [11], browserShowsMeet: { _ in true }).latched.isEmpty,
+                  "a latched pid needs no title; the latch keeps only pids still on the mic")
+            check(MeetingApps.titleReadDue(holdersChanged: true, cached: true, tick: 1) && MeetingApps.titleReadDue(holdersChanged: false, cached: false, tick: 1)
+                  && !MeetingApps.titleReadDue(holdersChanged: false, cached: true, tick: 1) && MeetingApps.titleReadDue(holdersChanged: false, cached: true, tick: 5)
+                  && !MeetingApps.titleReadDue(holdersChanged: false, cached: true, tick: 4),
+                  "browser titles are read when the holders change, when nothing is cached, or every 5th tick")
             var idle = MeetingDetectionState()
             _ = idle.step(holding: [zoom], now: t0, context: open)
             check(idle.wantsTicks, "ticks while a meeting app holds the mic")
@@ -286,6 +313,29 @@ import Darwin
             check(MacRecordingNotice.title == "Record this Mac's audio" && MacRecordingNotice.lines.count == 2
                   && MacRecordingNotice.lines[1] == "Let people know you're recording."
                   && MacRecordingNotice.reminder == "Recording · let people know", "the notice's words")
+            check(MacRecordingNotice.panelShowsNotice(requested: true, acknowledged: false, occupied: false)
+                  && !MacRecordingNotice.panelShowsNotice(requested: true, acknowledged: true, occupied: false)
+                  && !MacRecordingNotice.panelShowsNotice(requested: true, acknowledged: false, occupied: true)
+                  && !MacRecordingNotice.panelShowsNotice(requested: false, acknowledged: false, occupied: false),
+                  "the panel's notice hides once acknowledged anywhere, or once a recording runs")
+            // Record's refusal, by cause.
+            check(MacRecordingRefusal.decide(available: true, currentError: "Delivery paused: old", live: true, pendingCapture: false) == .keep
+                  && MacRecordingRefusal.decide(available: false, currentError: nil, live: true, pendingCapture: true) == .keep,
+                  "a second click while recording starts leaves the line alone")
+            check(MacRecordingRefusal.decide(available: false, currentError: "Manual Mac recording needs the matched server candidate.", live: false, pendingCapture: false)
+                  == .set("Manual Mac recording needs the matched server candidate."), "unavailable keeps prepare's reason")
+            if case .set(let text) = MacRecordingRefusal.decide(available: false, currentError: nil, live: false, pendingCapture: true) {
+                check(text.hasPrefix("Mac recording isn't available:"), "unavailable with no reason says so")
+            } else { check(false, "unavailable is never silent") }
+            check(MacRecordingRefusal.decide(available: true, currentError: "Recording stopped because this Mac slept", live: false, pendingCapture: true)
+                  == .set(MacRecordingRefusal.pending), "a pending capture says so, replacing a stale unrelated line")
+            // The Recover list hides journals with nothing in them.
+            var withAudio = manifest(7); withAudio.stopped = true
+            withAudio.chunks = [MacRecordingManifest.Chunk(index: 0, filename: "000000.wav", endFrame: 0)]
+            var empty = manifest(8); empty.stopped = true
+            check(MacRecordingRecoveryPolicy.listed([withAudio, empty], current: nil).map(\.captureId) == [withAudio.captureId]
+                  && MacRecordingRecoveryPolicy.listed([withAudio], current: withAudio.captureId).isEmpty,
+                  "Recover never offers a zero-chunk journal or the current capture")
             check(MacRecordingNotice.footnote(permissionGranted: false) == MacRecordingNotice.permissionFootnote
                   && MacRecordingNotice.footnote(permissionGranted: true) == nil, "macOS's prompt is mentioned only while not granted")
             let at = Date(timeIntervalSince1970: 1_760_544_300)
