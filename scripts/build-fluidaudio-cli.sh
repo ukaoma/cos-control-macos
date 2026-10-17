@@ -28,7 +28,7 @@ if [[ ! -d "$SOURCE/.git" ]]; then
   /bin/mkdir -p "$WORK"
   /usr/bin/git clone --quiet --no-checkout "$REPO" "$SOURCE"
 fi
-/usr/bin/git -C "$SOURCE" fetch --quiet origin "refs/tags/v$VERSION:refs/tags/v$VERSION"
+/usr/bin/git -C "$SOURCE" fetch --quiet origin "refs/tags/v${VERSION}:refs/tags/v${VERSION}"
 # The tag must still name the pinned commit, and the tree must be exactly that commit.
 [[ "$(/usr/bin/git -C "$SOURCE" rev-parse "v$VERSION^{commit}")" == "$COMMIT" ]] || { print -u2 "FluidAudio v$VERSION no longer points at $COMMIT"; exit 65; }
 /usr/bin/git -C "$SOURCE" -c advice.detachedHead=false checkout --quiet --force "$COMMIT"
