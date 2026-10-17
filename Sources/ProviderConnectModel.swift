@@ -899,6 +899,9 @@ struct SetupRow: Identifiable, Sendable, Equatable {
     var actionTitle: String?
     /// False for the Glasses rows: shown and live, never part of "Finish setup · N of M" or its "Next:".
     var counted = true
+    /// 0.5.317: not done, but fine as it is (Automatic dictating with Whisper): drawn neutral, never amber. Amber stays
+    /// for real problems.
+    var calm = false
     var handled: Bool { done || skipped }
 }
 
@@ -2234,28 +2237,49 @@ enum DictationEngineAdvice {
             }
             return Advice(engine: "parakeet-ultra", reason: "Recommended for this Mac: Parakeet Ultra is fast on Apple silicon, and the test agrees.")
         }
-        return Advice(engine: "parakeet-ultra", reason: "Recommended for this Mac: Parakeet Ultra is fast on Apple silicon. Test it after the install.")
+        return Advice(engine: "parakeet-ultra", reason: "Recommended for this Mac: Parakeet Ultra is fast on Apple silicon.")
     }
 
-    /// One plain line per engine. Warm-up is a one-time cost, never speed; Whisper's memory is never shown (it is the
-    /// running meeting engine, so a dictation adds nothing).
-    static func line(_ result: EngineTest.Result, seconds: Double) -> String {
-        let name = result.engine == "parakeet-ultra" ? "Parakeet Ultra" : "Whisper"
-        guard result.ran else {
-            return name + (result.skipped == "not_installed" ? ": not installed yet." : result.skipped == "timeout" ? ": did not finish in time." : ": did not run.")
+    static let scopeLine = "A 30-second sample. A quick check of this Mac, not a full accuracy test."
+
+    /// The engine step's results (render review 0.5.317): one row per engine, its cells in separate columns, so they
+    /// can be scanned. `test` is a Parakeet that is installed but not yet tested: the row offers Test.
+    struct ResultRow: Equatable, Sendable { var engine: String; var name: String; var cells: [String]; var test = false }
+    static func rows(test: EngineTest?, whisperRunning: Bool, parakeetInstalled: Bool, parakeetInstalling: Bool, advice: Advice) -> [ResultRow] {
+        func measured(_ result: EngineTest.Result, seconds: Double) -> [String] {
+            guard result.ran else { return [result.skipped == "timeout" ? "Did not finish in time" : "Did not run"] }
+            var cells: [String] = []
+            if let rtf = result.rtf { cells.append(String(format: "%.0f s of speech in %.1f s", seconds, rtf * seconds)) }
+            if let wer = result.wer, let words = result.words {
+                let wrong = Int((wer * Double(words)).rounded())
+                cells.append(wrong == 1 ? "1 word wrong" : "\(wrong) words wrong")
+            }
+            return cells
         }
-        var parts: [String] = []
-        if let rtf = result.rtf { parts.append(String(format: "%.0f s of speech in %.1f s", seconds, rtf * seconds)) }
-        if let wer = result.wer, let words = result.words {
-            let wrong = Int((wer * Double(words)).rounded())
-            parts.append(wrong == 0 ? "no words wrong" : "\(wrong) of \(words) words wrong")
+        let seconds = test?.audioSeconds ?? 30
+        var whisper: [String] = []
+        if let result = test?.result("whisper") { whisper = measured(result, seconds: seconds) }
+        // Whisper is the meeting engine and always running, so a dictation adds no memory: Ready, never a figure.
+        whisper.append(whisperRunning ? "Ready" : "Not running")
+        var parakeet: [String] = []
+        var offersTest = false
+        if parakeetInstalling {
+            parakeet = ["Installing"]
+        } else if !parakeetInstalled {
+            parakeet = ["Not installed"]
+            if advice.engine == "parakeet-ultra" { parakeet.append("Recommended on Apple silicon") }
+        } else if let result = test?.result("parakeet-ultra"), result.ran || result.skipped != "not_installed" {
+            parakeet = measured(result, seconds: seconds)
+            if result.ran, let peak = result.peakRssBytes, peak > 0 { parakeet.append(String(format: "%.1f GB peak memory", Double(peak) / 1_000_000_000)) }
+            // Warm-up is a one-time cost, never speed.
+            if result.ran, let warm = result.warmupMs, warm >= 1000 { parakeet.append(String(format: "First start %.0f s, once", warm / 1000)) }
+        } else {
+            parakeet = ["Installed"]
+            offersTest = true
         }
-        if result.engine == "whisper" { parts.append("already running, so no extra memory") }
-        else if let peak = result.peakRssBytes, peak > 0 { parts.append(String(format: "%.1f GB peak memory", Double(peak) / 1_000_000_000)) }
-        if let warm = result.warmupMs, warm >= 1000 { parts.append(String(format: "first start took %.0f s (once)", warm / 1000)) }
-        return name + ": " + (parts.isEmpty ? "ran." : parts.joined(separator: ", ") + ".")
+        return [ResultRow(engine: "whisper", name: "Whisper", cells: whisper),
+                ResultRow(engine: "parakeet-ultra", name: "Parakeet Ultra", cells: parakeet, test: offersTest)]
     }
-    static let scopeLine = "One 30 second sample: a quick check of this Mac, not a full accuracy test."
 }
 
 extension SetupGuideRules {
@@ -2279,13 +2303,10 @@ extension SetupGuideRules {
         let effective = voice.dictationEffective
         row.status = facts.engineTesting ? "Testing…" : voice.parakeetInstalling ? "Installing Parakeet…"
             : effective == "parakeet-ultra" ? "Using Parakeet Ultra" : effective == "whisper" ? "Using Whisper" : "No engine yet"
-        var lines = [advice.reason]
-        if let test = voice.engineTest {
-            lines += test.results.map { DictationEngineAdvice.line($0, seconds: test.audioSeconds) }
-            lines.append(DictationEngineAdvice.scopeLine)
-        }
-        if voice.parakeetInstalling { lines.append("Dictation uses Whisper until Parakeet Ultra is ready.") }
-        row.detail = lines.joined(separator: " ")
+        // The recommendation only; the test results are their own rows (DictationEngineAdvice.rows).
+        row.detail = advice.reason + (voice.parakeetInstalling ? " Dictation uses Whisper until Parakeet Ultra is ready." : "")
+        // Automatic on Whisper, a pick in place, a test or an install running: normal, not a warning.
+        row.calm = effective == "whisper" || effective == "parakeet-ultra" || facts.engineTesting || voice.parakeetInstalling
         let recommendedInUse = effective == advice.engine && (selected == "auto" || selected == advice.engine)
         row.done = facts.engineChosen || recommendedInUse
         if !row.done {

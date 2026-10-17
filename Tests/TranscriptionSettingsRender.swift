@@ -174,12 +174,26 @@ import SwiftUI
         stepFacts.serverVersion = "6.74.0"
         let step = SetupGuideRules.dictationEngine(stepFacts, skipped: false)
         let engineModel = ControllerModel(startBackgroundWork: false)
+        // The results read Whisper's state from the server's status, as in the app.
+        engineModel.status.running = true; engineModel.status.whisperReady = true; engineModel.status.version = "6.74.0"
         await engineModel.transcriptionSettings.load(answers([reply(200, settings: dictated("auto", effective: "whisper"))]))
         try render(SetupRowView(model: engineModel, guide: guide, row: step), name: "d317-setup-engine-step", out: out)
         engineVoice.engineTest = EngineTest(results: [EngineTest.Result(engine: "whisper", ran: true, rtf: 0.08, peakRssBytes: nil, warmupMs: nil, wer: 0, words: 58, skipped: nil),
                                             EngineTest.Result(engine: "parakeet-ultra", ran: false, rtf: nil, peakRssBytes: nil, warmupMs: nil, wer: nil, words: nil, skipped: "not_installed")])
         stepFacts.voice = engineVoice; guide.voice = engineVoice
         try render(SetupRowView(model: engineModel, guide: guide, row: SetupGuideRules.dictationEngine(stepFacts, skipped: false)), name: "d317-setup-engine-tested", out: out)
+        // Parakeet installed: untested (Installed and Test), then tested (speed, words, memory, its one-time start).
+        var installedVoice = engineVoice
+        installedVoice.adoptTranscription(Data(#"{"preview":{"selected":"turbo","effective":"turbo"},"hq":{"selected":"large-v3","effective":"large-v3"},"parakeet":{"installed":true,"installable":true},"dictation":{"selected":"auto","effective":"parakeet-ultra"}}"#.utf8))
+        installedVoice.engineTest = nil
+        var installedFacts = stepFacts; installedFacts.voice = installedVoice; guide.voice = installedVoice
+        await engineModel.transcriptionSettings.load(answers([reply(200, settings: dictated("auto", effective: "parakeet-ultra", installed: true, state: "installed", done: 654_000_000))]))
+        try render(SetupRowView(model: engineModel, guide: guide, row: SetupGuideRules.dictationEngine(installedFacts, skipped: false)), name: "d317-setup-engine-installed-untested", out: out)
+        installedVoice.engineTest = EngineTest(results: [EngineTest.Result(engine: "whisper", ran: true, rtf: 0.08, peakRssBytes: nil, warmupMs: nil, wer: 0, words: 58, skipped: nil),
+                                                         EngineTest.Result(engine: "parakeet-ultra", ran: true, rtf: 0.02, peakRssBytes: 1_200_000_000, warmupMs: 14_000, wer: 0, words: 58, skipped: nil)])
+        installedFacts.voice = installedVoice; guide.voice = installedVoice
+        try render(SetupRowView(model: engineModel, guide: guide, row: SetupGuideRules.dictationEngine(installedFacts, skipped: false)), name: "d317-setup-engine-parakeet-tested", out: out)
+        guide.voice = engineVoice
         var voiceFacts = stepFacts; voiceFacts.dictationCheckAttempted = nil
         try render(SetupRowView(model: engineModel, guide: guide, row: SetupGuideRules.voice(voiceFacts, skipped: false)), name: "d317-setup-voice-checking", out: out)
         for hold in holds { hold.continuation?.resume() }

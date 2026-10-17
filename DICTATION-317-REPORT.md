@@ -24,11 +24,11 @@ notarized or installed.
 |---|---|
 | run-dictation-everyone.sh (helper core, CLI checker self-test, entitlement self-test, pins) | PASS, 64 checks |
 | run-transcription-settings.sh | PASS, 108 checks |
-| run-provider-connect.sh | PASS, 493 checks + provider-status 101 + pins |
+| run-provider-connect.sh | PASS, 508 checks + provider-status 101 + pins |
 | run-mac-dictation.sh (includes the lane above) | PASS, 418 checks + sound runtime + quiet typecheck + isolation pins + dictation-wispr 282 |
 | Helper (one compile): mac-dictation 43, dictation-everyone 48, transcription-settings 43, self-test 821, provider-status, dictionary 94 | PASS |
-| Render, light and dark (run-transcription-settings-render.sh) | 16 new states, 32 PNGs, reviewed. Four defects found and fixed (see below). |
-| Mutation: Tests/mutate-dictation-everyone.py, 50 mutants, 7 lanes, green baseline first | 50 of 50 killed by the named check (49 in the full run; one was killed by an earlier check that also pins allowDownload, then renamed and re-run alone) |
+| Render, light and dark (run-transcription-settings-render.sh) | 18 new states, 36 PNGs in /Users/ukaoma/cos-release-candidates/control-0.5.317/renders/. Four defects from my review fixed, then the main session's review: engine results as one row per engine in two columns, Test again as a real button, Licenses as an aligned link, Automatic on Whisper neutral. |
+| Mutation: Tests/mutate-dictation-everyone.py, 53 mutants, 7 lanes, green baseline first | 53 of 53 killed by the named check (49 of 50 in the full run; one was killed by an earlier check that also pins allowDownload, then renamed and re-run alone; after the render review the connect lane was re-run: 12 of 12, including 4 new mutants for the result rows and the calm status) |
 | No-compile mutants (pins, release self-tests) | included in the 50 |
 | fluidaudiocli build (step 8) | PASS, 150 s, plist PASS |
 | fluidaudiocli comparison (step 9) | help, usage and exit codes identical to the local 0.17.4 build; the transcript and word timings on an 8 s WAV are identical. Peak RSS: cold 677 MB, warm 86 MB. |
