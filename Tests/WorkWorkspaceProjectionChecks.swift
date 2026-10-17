@@ -118,6 +118,14 @@ import Foundation
     precondition(all.map(\.item.task!.id) == ["run", "wait", "fail", "reply", "queue"],
                  "Running, waiting on you, needs attention, reply ready, queued; reviewed and untouched cards stay off the row")
     precondition(all.map(\.state) == [.running, .waiting, .attention, .replyReady, .queued])
+    // 0.5.317: production passes receipts and sessions (WorkWorkspaceView's two callers); the row reads the same.
+    precondition(WorkBoardSessionsProjection.cards(items, receipts: receipts, sessions: sessions, domain: nil).map(\.state) == [.running, .waiting, .attention, .replyReady, .queued],
+                 "The row reads the same with the journal and the session list passed")
+    // A card's own resolved session is kept only for that card's receipt: another receipt on an unlisted session
+    // (here an older one on the same task) never borrows it.
+    var other = receipt("run", status: "delivered", at: 0.5); other.id = "r-run-other"; other.sessionID = "claude:other"; other.sessionTitle = "Session other"
+    let borrowed = WorkBoardSessionsProjection.cards(items, receipts: receipts + [other], sessions: [], domain: nil).first { $0.activity.receipt.id == other.id }
+    precondition(borrowed?.activity.session == nil && borrowed?.state == .sent, "Another receipt's card never takes this card's session")
     precondition(WorkBoardSessionsProjection.cards(items, domain: "quilt").map(\.item.task!.id) == ["run", "wait", "reply", "queue"], "The row follows the board's domain")
     precondition(WorkBoardSessionsProjection.summary(all) == "1 running · 1 waiting for you · 1 needs attention · 1 reply ready · 1 queued")
     precondition(WorkBoardSessionsProjection.summary([]) == "None right now")
