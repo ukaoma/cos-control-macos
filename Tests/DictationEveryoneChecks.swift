@@ -118,6 +118,29 @@ struct DictationEveryoneChecks {
         check(!ParakeetCLIPath.valid("/Applications/X.app/Contents/Helpers/../../../tmp/Contents/Helpers/fluidaudiocli", isExecutable: yes), "cli path", "dot segments are refused")
         check(!ParakeetCLIPath.valid("/Applications/COS Control.app/Contents/Helpers/fluidaudiocli", isExecutable: { _ in false }), "cli path", "a missing or non-executable file is refused")
 
+        // 0.5.318: the Voice row's check sends ONE 11 s utterance; the server drops the 30 s sample's repeat as a loop.
+        let sampleURL = URL(fileURLWithPath: CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : "")
+            .deletingLastPathComponent().appendingPathComponent("speech-30s.wav")
+        if let wav = try? Data(contentsOf: sampleURL), let one = DictationCheckSample.singleUtterance(wav) {
+            let b = [UInt8](one)
+            func u32(_ i: Int) -> Int { Int(b[i]) | Int(b[i + 1]) << 8 | Int(b[i + 2]) << 16 | Int(b[i + 3]) << 24 }
+            check(one.count == 44 + 352_000, "check sample", "exactly 11 s of 16 kHz mono 16-bit audio after the header")
+            check(u32(4) == 36 + 352_000 && u32(40) == 352_000, "check sample", "the RIFF and data sizes describe the cut, not the 30 s file")
+            check(one.prefix(4) == wav.prefix(4) && one.subdata(in: 8..<36) == wav.subdata(in: 8..<36), "check sample", "format chunk unchanged")
+            check(one.suffix(352_000) == wav.subdata(in: 44..<(44 + 352_000)), "check sample", "the first utterance, from its first sample")
+            check(wav.subdata(in: (44 + 352_000)..<(44 + 704_000)) == one.suffix(352_000), "check sample", "the 30 s sample really repeats it (why one copy)")
+        } else { check(false, "check sample", "the pinned sample cuts to one utterance") }
+        if var stereo = try? Data(contentsOf: sampleURL) {
+            stereo[22] = 2
+            check(DictationCheckSample.singleUtterance(stereo) == nil, "check sample", "any other layout fails closed (stereo)")
+        }
+        check(DictationCheckSample.singleUtterance(Data("RIFF".utf8) + Data(count: 100)) == nil, "check sample", "a short or broken file fails closed")
+        check(DictationCheckSample.reference(reference) == "and so my fellow americans ask not what your country can do for you ask what you can do for your country",
+              "check sample", "the reference is the first copy's 22 words")
+        check(VoiceAccuracy.wordErrorRate(reference: DictationCheckSample.reference(reference),
+              hypothesis: "And so, my fellow Americans, ask not what your country can do for you, ask what you can do for your country.") == 0,
+              "check sample", "a correct single utterance scores 0")
+
         // Copy the card may show: no em dash, arrow or eyebrow-style caps.
         for line in [DictationBridge.refusalLine(reason: "parakeet_unavailable", action: "install_parakeet", detail: nil),
                      DictationBridge.refusalLine(reason: "parakeet_unavailable", action: "retry", detail: nil),

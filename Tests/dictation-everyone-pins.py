@@ -47,7 +47,7 @@ pin("DictationProof.record(engine: engine" in transcribe, "proof recorded", "a t
 pin(helper.count("DictationBridge.route(capabilities.body)") == 1 and "requiredEngine=parakeet-ultra" not in helper and "requiredEngine=local" not in helper,
     "one gate", "mac-dictation and dictation-check share dictate(); the routes live only in DictationBridge")
 pin(between(helper, "private func emitMacDictation() throws {", "private func dictate(").count("try dictate(audio)") == 1, "one gate", "mac-dictation uses dictate()")
-pin("let answer = try dictate(try Data(contentsOf: sample))" in helper, "check is real", "dictation-check posts the pinned sample through the same round trip")
+pin("let answer = try dictate(utterance)" in helper and "DictationCheckSample.singleUtterance(try Data(contentsOf: sample))" in helper, "check is real", "dictation-check posts one utterance of the pinned sample through the same round trip")
 pin('"desktopDictationVersions"' in core and 'capabilities["desktopDictationVersion"] as? Int == 1' in core, "gate compat",
     "version 1 is still required and 2 is read from desktopDictationVersions")
 

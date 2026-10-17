@@ -101,9 +101,15 @@ try:
 
     # dictation-check: the pinned sample through the same round trip; the record keeps results, never text.
     state['capabilities'] = V2
-    state['transcribe'] = (200, {'text': REFERENCE, 'engine': 'whisper'})
+    # 0.5.318: ONE 11 s utterance. The full 30 s repeats it, and the real server drops repeated text as a Whisper loop
+    # (HTTP 204), which this fixture cannot do, so the posted bytes are pinned exactly.
+    take = 11 * 16000 * 2
+    one = bytearray(sample[:44 + take]); struct.pack_into('<I', one, 4, 36 + take); struct.pack_into('<I', one, 40, take)
+    ONE_COPY = 'And so my fellow Americans, ask not what your country can do for you, ask what you can do for your country.'
+    state['transcribe'] = (200, {'text': ONE_COPY, 'engine': 'whisper'})
     got = run('dictation-check')
-    check(seen[-1][1] == '/api/transcribe?mode=fast&requiredEngine=local' and seen[-1][2] == sample, 'the check posts the pinned 30 s sample on the dictation route')
+    check(seen[-1][1] == '/api/transcribe?mode=fast&requiredEngine=local' and seen[-1][2] == bytes(one), 'the check posts one 11 s utterance of the pinned sample on the dictation route')
+    check(len(seen[-1][2]) == 352044 and seen[-1][2][44:] == sample[44:44 + take] and sample[44 + take:44 + 2 * take] == sample[44:44 + take], 'one copy, not the repeat the server drops')
     check(got['ok'] and got['message'] == 'Dictation works on this Mac.' and got['details']['engine'] == 'whisper' and got['details']['wer'] == 0, 'a working round trip, scored')
     record = json.loads((support / 'dictation-check.json').read_text())
     check(record['ok'] and record['serverVersion'] == '6.74.0' and 'text' not in record and 'Americans' not in json.dumps(record), 'the record keeps the version and never the text')

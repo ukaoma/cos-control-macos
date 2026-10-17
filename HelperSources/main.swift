@@ -15520,15 +15520,19 @@ final class COSControlHelper {
         return answer
     }
 
-    /// 0.5.317: the onboarding Voice row's proof. The pinned 30 s sample goes through the same round trip a dictation
+    /// 0.5.317: the onboarding Voice row's proof. One 11 s utterance of the pinned sample (0.5.318, DictationCheckSample)
+    /// goes through the same round trip a dictation
     /// takes (a full decode on the real engine), so it runs only from onboarding or when the person asks, never on a
     /// timer. The result (never the text) is kept in dictation-check.json for voice-status.
     private func emitDictationCheck() throws {
         let sample = voiceResourceRoot.appendingPathComponent("VoiceBenchmark/speech-30s.wav")
         let pin = try whisperRuntimePin()
         guard try sha256(sample) == pin["benchmarkSHA256"] as? String else { throw HelperError.message("The voice test sample is missing or damaged.") }
+        guard let utterance = DictationCheckSample.singleUtterance(try Data(contentsOf: sample)) else {
+            throw HelperError.message("The voice test sample is missing or damaged.")
+        }
         let started = Date()
-        let answer = try dictate(try Data(contentsOf: sample))
+        let answer = try dictate(utterance)
         var record: [String: Any] = ["schemaVersion": 1, "ok": answer.ok, "at": ISO8601DateFormatter().string(from: Date()),
                                      "elapsedSeconds": Date().timeIntervalSince(started),
                                      "engine": answer.details["engine"] ?? NSNull(), "localRoute": answer.details["localRoute"] ?? false,
@@ -15539,7 +15543,7 @@ final class COSControlHelper {
            let reference = try? String(contentsOf: voiceResourceRoot.appendingPathComponent(VoiceAccuracy.referenceFile), encoding: .utf8),
            try sha256(voiceResourceRoot.appendingPathComponent(VoiceAccuracy.referenceFile)) == VoiceAccuracy.referenceSHA256 {
             // Dictation text has the COS dictionary applied; the score is a sanity check, not the engine's own WER.
-            record["wer"] = VoiceAccuracy.wordErrorRate(reference: reference, hypothesis: text).map { $0 as Any } ?? NSNull()
+            record["wer"] = VoiceAccuracy.wordErrorRate(reference: DictationCheckSample.reference(reference), hypothesis: text).map { $0 as Any } ?? NSNull()
         }
         try ensureDirectories()
         try atomicWriteData(try JSONSerialization.data(withJSONObject: record, options: [.sortedKeys]), to: dictationCheckURL, permissions: 0o600)

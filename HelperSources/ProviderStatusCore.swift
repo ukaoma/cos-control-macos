@@ -697,6 +697,40 @@ enum DictationBridge {
 /// Word error rate on the pinned 30 s sample, against Resources/VoiceBenchmark/speech-30s.txt. Lowercase, punctuation
 /// stripped, words split on anything else. (substitutions + deletions + insertions) / reference words. One clip is a
 /// sanity check of a speech engine on this Mac, never an accuracy benchmark.
+/// 0.5.318 (Queen's Mac and Miles's, 2026-10-17): the Voice row's dictation check sends ONE copy of the sample's 11 s
+/// utterance. The 30 s sample repeats it (two copies of jfk.wav plus 8 s, VoiceBenchmark/SOURCE.md), and the server's
+/// dictation path drops repeated text as a Whisper loop (NoSpeechDetectedError, HTTP 204: "DROPPED (hallucination or
+/// empty): 288 chars"), so every check read "No speech detected. Check your selected microphone" while the engine test,
+/// whose benchmark route has no such filter, passed. The benchmark keeps the full 30 s.
+enum DictationCheckSample {
+    static let seconds = 11
+    /// The reference's first copy: "and so my fellow americans ... for your country".
+    static let referenceWords = 22
+    private static let rate = 16_000
+
+    /// The first `seconds` of the pinned 16 kHz mono 16-bit PCM WAV (canonical 44-byte header), its sizes rewritten.
+    /// Any other layout is nil, so a changed sample fails closed instead of sending something unplanned.
+    static func singleUtterance(_ wav: Data) -> Data? {
+        let b = [UInt8](wav)
+        func u16(_ i: Int) -> Int { Int(b[i]) | Int(b[i + 1]) << 8 }
+        func u32(_ i: Int) -> Int { u16(i) | u16(i + 2) << 16 }
+        guard b.count > 44, Array(b[0..<4]) == Array("RIFF".utf8), Array(b[8..<12]) == Array("WAVE".utf8),
+              Array(b[12..<16]) == Array("fmt ".utf8), u32(16) == 16, u16(20) == 1, u16(22) == 1, u32(24) == rate,
+              u16(34) == 16, Array(b[36..<40]) == Array("data".utf8) else { return nil }
+        let take = seconds * rate * 2
+        guard u32(40) >= take, b.count >= 44 + take else { return nil }
+        var out = Array(b[0..<(44 + take)])
+        func put(_ value: Int, at i: Int) { for k in 0..<4 { out[i + k] = UInt8((value >> (8 * k)) & 0xff) } }
+        put(36 + take, at: 4); put(take, at: 40)
+        return Data(out)
+    }
+
+    /// The words the single utterance says, from the pinned reference.
+    static func reference(_ full: String) -> String {
+        VoiceAccuracy.words(full).prefix(referenceWords).joined(separator: " ")
+    }
+}
+
 enum VoiceAccuracy {
     static let referenceFile = "VoiceBenchmark/speech-30s.txt"
     static let referenceSHA256 = "a3726daf65f3b1f41a1e8e3bf9fa6abe0f4022e873589738d8c0339965a782ec"
