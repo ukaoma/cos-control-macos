@@ -693,10 +693,8 @@ struct TranscriptionSettingsCard: View {
                                 cancel: { Task { await store.cancelInstall(Self.run(model)) } },
                                 checkAgain: { Task { await store.checkAgain(Self.run(model)) } },
                                 useWhisper: { Task { await store.set("dictation", .string("whisper"), run: Self.run(model)) } })
-                Button("Licenses") { model.openLicenses() }
-                    .buttonStyle(COSTextButtonStyle())
-                    .font(COSType.body(11))
-                    .help(Transcription.licensesLine)
+                // A small link under the Parakeet note, on the row's left edge (render review 0.5.317).
+                LicensesLink { model.openLicenses() }
             }
         }
     }
@@ -730,6 +728,21 @@ struct PanelParakeetRow: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 12))
         }
+    }
+}
+
+/// "Licenses" as a link: aligned with the text above it (no button padding), accent color, underlined on hover.
+struct LicensesLink: View {
+    let open: () -> Void
+    @State private var hovering = false
+    var body: some View {
+        Button(action: open) {
+            Text("Licenses").font(COSType.body(11)).foregroundStyle(COSPalette.accent).underline(hovering)
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .help(Transcription.licensesLine)
+        .accessibilityLabel("Licenses")
     }
 }
 

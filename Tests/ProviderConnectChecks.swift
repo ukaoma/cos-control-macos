@@ -1268,19 +1268,34 @@ extension ProviderConnectChecks {
         check(SetupGuideRules.voiceProofPending(proofRow), "voice truth", "Test dictation hides them too")
         proofRow.action = .voiceDownload("balanced"); proofRow.status = "Ready to set up voice"
         check(!SetupGuideRules.voiceProofPending(proofRow), "voice truth", "a voice that still needs setup keeps them")
-        let whisperLine = Adv.line(result("whisper", rtf: 0.08, wer: 2.0 / 58.0, peak: 3_000_000_000), seconds: 30)
-        check(whisperLine == "Whisper: 30 s of speech in 2.4 s, 2 of 58 words wrong, already running, so no extra memory.", "advice lines", whisperLine)
-        check(!whisperLine.contains("GB"), "advice lines", "never a memory figure for Whisper")
-        let parakeetLine = Adv.line(result("parakeet-ultra", rtf: 0.02, wer: 0, peak: 1_200_000_000, warm: 14_000), seconds: 30)
-        check(parakeetLine == "Parakeet Ultra: 30 s of speech in 0.6 s, no words wrong, 1.2 GB peak memory, first start took 14 s (once).", "advice lines", parakeetLine)
-        check(Adv.line(result("parakeet-ultra", ran: false, skipped: "not_installed"), seconds: 30) == "Parakeet Ultra: not installed yet.", "advice lines", "not installed")
+        // The results, one row per engine with separate cells (render review 0.5.317).
+        let rec = Adv.Advice(engine: "parakeet-ultra", reason: "")
+        let tested2 = EngineTest(results: [result("whisper", rtf: 0.08, wer: 2.0 / 58.0, peak: 3_000_000_000), result("parakeet-ultra", rtf: 0.02, wer: 0, peak: 1_200_000_000, warm: 14_000)])
+        let both = Adv.rows(test: tested2, whisperRunning: true, parakeetInstalled: true, parakeetInstalling: false, advice: rec)
+        check(both.map(\.name) == ["Whisper", "Parakeet Ultra"], "result rows", "one row per engine: \(both.map(\.name))")
+        check(both[0].cells == ["30 s of speech in 2.4 s", "2 words wrong", "Ready"], "result rows", "Whisper: speed, words wrong, Ready: \(both[0].cells)")
+        check(!both[0].cells.joined().contains("GB"), "result rows", "never a memory figure for Whisper")
+        check(both[1].cells == ["30 s of speech in 0.6 s", "0 words wrong", "1.2 GB peak memory", "First start 14 s, once"] && !both[1].test, "result rows", "Parakeet: speed, words, memory, the one-time start: \(both[1].cells)")
+        let fresh = Adv.rows(test: nil, whisperRunning: true, parakeetInstalled: false, parakeetInstalling: false, advice: rec)
+        check(fresh[0].cells == ["Ready"] && fresh[1].cells == ["Not installed", "Recommended on Apple silicon"], "result rows", "before any test: \(fresh.map(\.cells))")
+        let noRec = Adv.rows(test: nil, whisperRunning: true, parakeetInstalled: false, parakeetInstalling: false, advice: Adv.Advice(engine: "whisper", reason: ""))
+        check(noRec[1].cells == ["Not installed"], "result rows", "no recommendation when COS does not recommend it")
+        let installedOnly = Adv.rows(test: notYet, whisperRunning: true, parakeetInstalled: true, parakeetInstalling: false, advice: rec)
+        check(installedOnly[1].cells == ["Installed"] && installedOnly[1].test, "result rows", "installed but untested: Installed and a Test button")
+        check(Adv.rows(test: nil, whisperRunning: true, parakeetInstalled: false, parakeetInstalling: true, advice: rec)[1].cells == ["Installing"], "result rows", "installing")
+        check(Adv.rows(test: EngineTest(results: [result("whisper", ran: false, rtf: nil, wer: nil, skipped: "timeout")]), whisperRunning: false, parakeetInstalled: false, parakeetInstalling: false, advice: rec)[0].cells
+              == ["Did not finish in time", "Not running"], "result rows", "a Whisper that timed out and is not running")
+        check(Adv.scopeLine == "A 30-second sample. A quick check of this Mac, not a full accuracy test.", "honest scope", "the one line under the rows")
         e.appleSilicon = true; var tested = v2Voice(); tested.engineTest = good; e.voice = tested
-        let detail = SetupGuideRules.rows(e, skipped: []).first { $0.id == .dictationEngine }!.detail ?? ""
-        check(detail.contains(Adv.scopeLine) && detail.contains("Whisper: 30 s of speech"), "honest scope", "the test result says it is one sample: \(detail)")
-        for line in [whisperLine, parakeetLine, Adv.scopeLine, detail, voiceRow(f).detail ?? "", SetupGuideRules.checkingDictation] {
+        let stepRow = SetupGuideRules.rows(e, skipped: []).first { $0.id == .dictationEngine }!
+        let detail = stepRow.detail ?? ""
+        check(detail == "Recommended for this Mac: Parakeet Ultra is fast on Apple silicon, and the test agrees.", "engine step", "the detail is the recommendation only: \(detail)")
+        check(stepRow.calm && !stepRow.done && stepRow.status == "Using Whisper", "calm status", "Automatic on Whisper is normal, not amber")
+        e.voice = v2Voice(selected: "parakeet-ultra", effective: "none")
+        check(!SetupGuideRules.rows(e, skipped: []).first { $0.id == .dictationEngine }!.calm, "calm status", "no engine is a real problem: amber")
+        for line in [Adv.scopeLine, detail, voiceRow(f).detail ?? "", SetupGuideRules.checkingDictation] + (both + fresh).flatMap(\.cells) {
             check(!line.contains("\u{2014}") && !line.contains("\u{2192}") && !line.contains("->"), "copy", "no em dash or arrow: \(line)")
         }
-        check(!detail.lowercased().contains("benchmark") || detail.contains("not a full accuracy test"), "honest scope", "never claims a benchmark")
 
         // The proof store: engine and version only, read back.
         let d = freshDefaults()

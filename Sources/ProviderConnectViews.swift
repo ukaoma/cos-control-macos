@@ -756,10 +756,10 @@ struct SetupRowView: View {
                 Spacer(minLength: 6)
                 HStack(spacing: 5) {
                     if (row.id == .voice && (guide.voiceRunning || guide.dictationChecking)) || (row.id == .dictationEngine && guide.engineTesting) { ProgressView().controlSize(.mini) }
-                    else { Circle().fill(row.done ? COSPalette.green : row.skipped || row.afterSetup || waiting ? COSPalette.muted : COSPalette.amber).frame(width: 7, height: 7) }
+                    else { Circle().fill(row.done ? COSPalette.green : row.skipped || row.afterSetup || waiting || row.calm ? COSPalette.muted : COSPalette.amber).frame(width: 7, height: 7) }
                     Text(row.id == .voice && guide.voiceRunning ? "Downloading…" : row.skipped && !row.done ? "Skipped for now" : row.status)
-                        .font(COSType.body(11, weight: row.done || row.skipped || row.afterSetup || waiting ? .regular : .semibold))
-                        .foregroundStyle(row.done ? COSPalette.green : row.skipped || row.afterSetup || waiting ? COSPalette.muted : COSPalette.amber)
+                        .font(COSType.body(11, weight: row.done || row.skipped || row.afterSetup || waiting || row.calm ? .regular : .semibold))
+                        .foregroundStyle(row.done ? COSPalette.green : row.skipped || row.afterSetup || waiting || row.calm ? COSPalette.muted : COSPalette.amber)
                 }.fixedSize()
             }
             Text(row.unlocks).font(COSType.body(11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
@@ -869,10 +869,25 @@ struct SetupRowView: View {
 /// 0.5.317: the setup guide's engine step controls (decision 6): the Parakeet row (install with progress and Cancel, or
 /// why not), the pick, and the 30 second test. The pick is a dropdown, the same control as Settings; no pill-row tabs.
 struct DictationEngineControls: View {
-    static func drawsRow(_ state: ParakeetRowState) -> Bool { if case .offer = state { return false }; return true }
+    /// Only progress (with Cancel) and why-not: the step's button offers the install, and the result rows say Installed.
+    static func drawsRow(_ state: ParakeetRowState) -> Bool {
+        switch state {
+        case .installing, .blocked: true
+        case .offer, .installed: false
+        }
+    }
     @ObservedObject var model: ControllerModel
     @ObservedObject var guide: SetupGuideState
     @ObservedObject var store: TranscriptionSettingsStore
+    private var resultRows: [DictationEngineAdvice.ResultRow] {
+        // setupFacts joins the server's own whisperReady into the voice facts; guide.voice alone does not carry it.
+        let facts = model.setupFacts(provider: model.providerGuide, guide: guide)
+        let voice = facts.voice
+        let advice = DictationEngineAdvice.recommend(appleSilicon: facts.appleSilicon, memoryBytes: facts.memoryBytes,
+                                                     parakeetAvailable: voice?.parakeetInstalled == true || voice?.parakeetInstallable == true, test: voice?.engineTest)
+        return DictationEngineAdvice.rows(test: voice?.engineTest, whisperRunning: voice?.whisperReady == true, parakeetInstalled: voice?.parakeetInstalled == true,
+                                          parakeetInstalling: voice?.parakeetInstalling == true, advice: advice)
+    }
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             // The step's own button already offers the install; the row adds progress, Cancel or why not.
@@ -893,12 +908,38 @@ struct DictationEngineControls: View {
                     return COSDropdownOption(id, Transcription.dictationTitles[id] ?? id, note: usable ? nil : "Install first", muted: !usable, enabled: usable)
                 }, labelWidth: 112)
                 .font(COSType.body(12))
-            HStack(spacing: 12) {
+            // One row per engine, cells in their own columns (render review 0.5.317), then one quiet line.
+            // Engine names in one fixed column; their cells wrap inside the second (the 390 pt panel cannot hold four).
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(resultRows, id: \.engine) { result in
+                    HStack(alignment: .top, spacing: 12) {
+                        Text(result.name).font(COSType.body(11.5, weight: .semibold))
+                            .frame(width: 96, alignment: .leading)
+                        EngineCellsLayout {
+                            ForEach(result.cells, id: \.self) { cell in
+                                Text(cell).font(COSType.body(11)).foregroundStyle(.secondary)
+                            }
+                            if result.test {
+                                Button("Test") { guide.testEngines() }
+                                    .buttonStyle(COSQuietButtonStyle())
+                                    .controlSize(.small)
+                                    .disabled(guide.engineTesting || model.recordingCount > 0)
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+            }
+            if guide.voice?.engineTest != nil {
+                Text(DictationEngineAdvice.scopeLine).font(COSType.body(10.5)).foregroundStyle(COSPalette.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            // One Test: the Parakeet row's own button when it offers one, otherwise this.
+            if !resultRows.contains(where: \.test) {
                 Button(guide.voice?.engineTest == nil ? "Test on this Mac" : "Test again") { guide.testEngines() }
-                    .buttonStyle(COSTextButtonStyle())
+                    .buttonStyle(COSQuietButtonStyle())
                     .disabled(guide.engineTesting || model.recordingCount > 0)
-                    .help("Dictates COS's 30 second sample with each installed engine. A quick check, not a full accuracy test.")
-                Spacer(minLength: 0)
+                    .help("Dictates COS's 30-second sample with each installed engine. A quick check, not a full accuracy test.")
             }
             if let message = guide.engineMessage {
                 Text(message).font(COSType.body(10.5)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
@@ -907,6 +948,30 @@ struct DictationEngineControls: View {
         .task { await store.load(TranscriptionSettingsCard.run(model)) }
         // An install finished here or anywhere else: the row reads the new state.
         .onChange(of: store.settings?.parakeet.done) { _, _ in Task { await guide.refreshVoice() } }
+    }
+}
+
+/// The engine step's result cells: natural width, 10 pt apart, wrapping onto tight lines (render review 0.5.317).
+struct EngineCellsLayout: Layout {
+    var hGap: CGFloat = 10
+    var vGap: CGFloat = 3
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        arrange(width: proposal.width ?? 280, subviews: subviews).size
+    }
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let result = arrange(width: bounds.width, subviews: subviews)
+        for (index, point) in result.points.enumerated() {
+            subviews[index].place(at: CGPoint(x: bounds.minX + point.x, y: bounds.minY + point.y), proposal: .unspecified)
+        }
+    }
+    private func arrange(width: CGFloat, subviews: Subviews) -> (size: CGSize, points: [CGPoint]) {
+        var x: CGFloat = 0, y: CGFloat = 0, row: CGFloat = 0, widest: CGFloat = 0, points: [CGPoint] = []
+        for view in subviews {
+            let size = view.sizeThatFits(.unspecified)
+            if x > 0, x + size.width > width { x = 0; y += row + vGap; row = 0 }
+            points.append(CGPoint(x: x, y: y)); x += size.width + hGap; row = max(row, size.height); widest = max(widest, x - hGap)
+        }
+        return (CGSize(width: min(width, widest), height: y + row), points)
     }
 }
 
