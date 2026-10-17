@@ -212,6 +212,9 @@ MUTANTS = [
      "        next.learned = Array(state.learned.prefix(cap))"),
     ("dismissals never expire", "        next.dismissed = state.dismissed.filter { fresh($0.value, days: dismissDays, now: now) }", "        next.dismissed = state.dismissed"),
     ("dismissed pairs suggested again", "        guard !isQuiet(item.heard, item.written, in: next, now: now) else { return next }\n", ""),
+    # 0.5.317: the day-29 clause was vacuous while its suggestion was stamped day 0 (pruned for age, so empty either way).
+    # A 29-day dismissal is caught only by that clause, now that its suggestion is stamped day 29.
+    ("dismissal lasts 29 days", "    static let dismissDays = 30", "    static let dismissDays = 29"),
     ("quiet forever", "        state.dismissed[key(heard, written)].map { fresh($0, days: dismissDays, now: now) } ?? false", "        state.dismissed[key(heard, written)] != nil"),
     ("the same pair listed twice", "        next.suggestions = [item] + next.suggestions.filter { key($0.heard, $0.written) != k }", "        next.suggestions = [item] + next.suggestions"),
     ("Add leaves it suggested", "        next.suggestions = next.suggestions.filter { key($0.heard, $0.written) != k }\n        return pruned(next, now: now)\n    }\n    /// Added",

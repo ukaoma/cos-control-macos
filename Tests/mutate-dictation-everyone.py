@@ -109,7 +109,7 @@ MUTANTS = [
     ("helper keeps the Parakeet route", H, "              let route = DictationBridge.route(capabilities.body) else {",
      "              let route = DictationBridge.route(capabilities.body).map({ _ in DictationBridge.parakeetRoute }) else {", "a 6.74.0 server gets requiredEngine=local", "helper"),
     ("helper install forbids the download", H, '            var payload: [String: Any] = call == .installParakeet ? ["allowDownload": true] : [:]',
-     '            var payload: [String: Any] = [:]', "install passes the bundled tool and allows the pinned download", "helper"),
+     '            var payload: [String: Any] = [:]', "install is a POST to the install route, no localSource", "helper"),
     ("helper cancels with a POST", H, '        case .cancelInstall: "DELETE"\n', '        case .cancelInstall: "POST"\n', "Cancel is a DELETE of the install route", "helper"),
 ]
 

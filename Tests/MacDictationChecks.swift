@@ -735,7 +735,8 @@ final class FakeDictationBoard: DictationPasteboardAccess {
         let dismissed = S.dismissing(other.id, in: state, now: now)
         expect(dismissed.suggestions == [s2] && dismissed.dismissed[S.key("carrot iq", "CaratIQ")] == now, "Dismiss removes it and remembers the pair")
         expect(S.suggesting(item("Carrot IQ", "CaratIQ"), in: dismissed, now: now.addingTimeInterval(86_400)).suggestions.map(\.heard) == ["Joule 360"]
-               && S.suggesting(item("Carrot IQ", "CaratIQ"), in: dismissed, now: now.addingTimeInterval(29 * 86_400)).suggestions.isEmpty
+               // Stamped on day 29 too: one stamped day 0 is pruned for age, so empty would hold with dismissal broken.
+               && S.suggesting(item("Carrot IQ", "CaratIQ", age: -29 * 86_400), in: dismissed, now: now.addingTimeInterval(29 * 86_400)).suggestions.isEmpty
                // The day-30 suggestion is made on day 30 (age -30 days); one stamped day 0 would already be past its week.
                && S.suggesting(item("Carrot IQ", "CaratIQ", age: -30 * 86_400), in: dismissed, now: now.addingTimeInterval(30 * 86_400)).suggestions.map(\.heard) == ["Carrot IQ"],
                "a dismissed pair is not offered again for 30 days")
