@@ -182,6 +182,9 @@ zsh "$ROOT/Tests/run-markdown-ui.sh" "$TMP/markdown-ui"
 # fixture (path grammar, --since, the stamp, no text in a failure), then the model against a stand-in helper (the setting
 # off spawns nothing, one read at a time, Wake, the saved hand-off by session id). Serial, every compile through the guard.
 zsh "$ROOT/Tests/run-live-transcript.sh"
+# 0.5.321: Stop and save a glasses meeting. The wiring pins (every button only opens the inline confirmation, the stop runs
+# only from its action, the model asks the glasses and never saves from the Mac), then the pure decisions and words.
+zsh "$ROOT/Tests/run-g2-meeting-stop.sh"
 zsh "$ROOT/Tests/run-meeting-ask.sh"
 zsh "$ROOT/Tests/run-meeting-value-store.sh"
 

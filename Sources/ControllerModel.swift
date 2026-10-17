@@ -2056,6 +2056,61 @@ final class ControllerModel: ObservableObject {
         }
     }
 
+    /// 0.5.321: the glasses meeting stop Control is following (G2MeetingStop in Sources/LiveTranscript.swift). One at a time.
+    @Published var glassesMeetingStop: G2MeetingStopProgress?
+
+    /// The live glasses meeting a row shows, when there is exactly one (the panel's card offers Stop for it).
+    var soleLiveGlassesMeetingID: String? {
+        let live = liveTranscriptRows.filter { $0.phase == .live && G2MeetingStop.isGlassesSession($0.sessionId) }
+        return live.count == 1 ? live[0].sessionId : nil
+    }
+
+    /// The line to show for `sessionId`, if Control has asked about it.
+    func glassesMeetingStopLine(_ sessionId: String?) -> String? {
+        guard let sessionId, let stop = glassesMeetingStop, stop.sessionId == sessionId else { return nil }
+        return stop.phase.line
+    }
+
+    func glassesMeetingStopping(_ sessionId: String?) -> Bool {
+        guard let sessionId, let stop = glassesMeetingStop else { return false }
+        return stop.sessionId == sessionId && stop.phase.isActive
+    }
+
+    /// 0.5.321: after the inline confirmation only. Asks the glasses to stop and save; never saves a live glasses meeting
+    /// from the Mac (that would leave the glasses recording and split the meeting).
+    func stopGlassesMeeting(_ sessionId: String) {
+        guard G2MeetingStop.isGlassesSession(sessionId), glassesMeetingStop?.phase.isActive != true else { return }
+        glassesMeetingStop = G2MeetingStopProgress(sessionId: sessionId, phase: .asking)
+        Task { [weak self] in await self?.followGlassesMeetingStop(sessionId) }
+    }
+
+    private func followGlassesMeetingStop(_ sessionId: String) async {
+        let first = try? await helper.run(["meeting-stop-request", "--session", sessionId], timeout: 20)
+        let asked = G2MeetingStop.afterRequest(first?.details)
+        glassesMeetingStop = G2MeetingStopProgress(sessionId: sessionId, phase: asked.phase)
+        meetingAudioLog.notice("glasses stop: \(sessionId, privacy: .public) \(String(describing: asked.phase), privacy: .public)")
+        guard asked.phase.isActive, let requestId = asked.requestId else {
+            if case .saved = asked.phase { await refresh(quiet: true) }
+            return
+        }
+        let started = Date()
+        var claimed = false
+        var phase = asked.phase
+        while phase.isActive, !Task.isCancelled {
+            try? await Task.sleep(for: .seconds(claimed ? 2 : 1))
+            let polled = try? await helper.run(["meeting-stop-request", "--session", sessionId, "--request", requestId], timeout: 15)
+            let next = G2MeetingStop.afterPoll(polled?.details, elapsed: Date().timeIntervalSince(started),
+                                               claimWindowSeconds: asked.claimWindowSeconds, claimed: claimed)
+            if next == .stopping || next == .finalizing { claimed = true }
+            if next != phase {
+                meetingAudioLog.notice("glasses stop: \(sessionId, privacy: .public) \(String(describing: next), privacy: .public)")
+            }
+            phase = next
+            glassesMeetingStop = G2MeetingStopProgress(sessionId: sessionId, phase: next)
+        }
+        if case .saved = phase { await refresh(quiet: true) }
+    }
+
     func saveAllStranded() {
         guard !busy, !orphanBusy else { return }
         orphanBusy = true

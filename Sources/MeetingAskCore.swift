@@ -159,8 +159,21 @@ struct MeetingAskExchange: Codable, Identifiable, Sendable {
     var files: [MeetingAskFile]
     var error: String?
     var retryOf: String?
+    /// 0.5.321: how long the server took to answer (server 6.76.0 `timings.totalMs`). Older servers omit it.
+    var timings: MeetingAskTimings? = nil
     var id: String { requestId }
     var terminal: Bool { !["pending", "running"].contains(status) }
+}
+/// `timings` as the server sends it. Lenient: anything that is not an object with a finite, non-negative `totalMs`
+/// reads as no timing, so a malformed field never drops the exchange it sits in.
+struct MeetingAskTimings: Codable, Equatable, Sendable {
+    var totalMs: Double?
+    init(totalMs: Double?) { self.totalMs = totalMs }
+    init(from decoder: Decoder) throws {
+        let values = try? decoder.container(keyedBy: CodingKeys.self)
+        let raw = values.flatMap { try? $0.decode(Double.self, forKey: .totalMs) }
+        totalMs = raw.flatMap { $0.isFinite && $0 >= 0 ? $0 : nil }
+    }
 }
 /// One labeled part of an answer (server 6.71.0): "So what", "Decided", "You owe" and so on, with the ids it cites.
 /// Lenient: a missing or wrong-typed field reads as empty, so one bad section can never drop the exchange it sits in.
@@ -433,7 +446,10 @@ enum MeetingAskText {
             var answer = exchange.answer ?? "No answer (\(exchange.status))."
             // Citation IDs are per answer, never global across a meeting.
             for source in exchange.sources { answer = answer.replacingOccurrences(of: "[\(source.id)]", with: "[\(namespace):\(source.id)]") }
-            var part = "## \(namespace) · \(exchange.question)\n\(answer)\nModel: \(exchange.model ?? exchange.selectedModel.label) · through \(exchange.throughMs) ms · \(exchange.status)"
+            // 0.5.321: `throughMs` is where in the meeting the answer reached, not how long it took (Queen read
+            // "through 210666 ms" as a 3.5 minute wait). The meeting position prints as the Ask panel does, "Through 3:30";
+            // the answer's own time prints only when the server measured it.
+            var part = "## \(namespace) · \(exchange.question)\n\(answer)\n" + exportStatusLine(exchange)
             for source in exchange.sources {
                 part += "\n[\(namespace):\(source.id)] \(source.kind): \(source.title)\n\(source.text)"
                 if let url = safeURL(source.url) { part += "\n" + url.absoluteString }
@@ -445,6 +461,13 @@ enum MeetingAskText {
             sections.append("## Files\n" + files.map { "### \($0.name) [\($0.id)@\($0.revision)] · \($0.status)\n" + ($0.status == "ready" ? $0.text : "Text unavailable: " + ($0.notice ?? $0.status)) }.joined(separator: "\n\n"))
         }
         return sections.joined(separator: "\n\n")
+    }
+    /// "Model: Haiku · Through 3:30 · completed · Answer time: 6.4 s" (the answer time only when the server sent it).
+    static func exportStatusLine(_ exchange: MeetingAskExchange) -> String {
+        let through = LiveTranscript.stamp(exchange.throughMs, hours: exchange.throughMs >= 3_600_000)
+        var line = "Model: \(exchange.model ?? exchange.selectedModel.label) · Through \(through) · \(exchange.status)"
+        if let total = exchange.timings?.totalMs { line += " · Answer time: " + String(format: "%.1f s", total / 1000) }
+        return line
     }
     static func safeURL(_ value: String?) -> URL? {
         guard let value, let url = URL(string: value), ["https", "http"].contains(url.scheme?.lowercased() ?? ""),

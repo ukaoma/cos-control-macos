@@ -532,6 +532,8 @@ struct ControlPanel: View {
     @State private var selectedClaudeSessions = false
     @State private var selectedVideoUploadV2 = false
     @State private var confirmClearStrandedVideoUploads = false
+    /// 0.5.321: the glasses meeting the inline Stop and save confirmation is for.
+    @State private var glassesStopTarget: String?
     @State private var confirmResetMessageCount = false
     @State private var confirmRecoverAllOrphans = false
     @State private var confirmSaveAllStranded = false
@@ -780,6 +782,18 @@ struct ControlPanel: View {
             actions: [
                 .normal("Save all") { model.saveAllStranded() },
                 .cancel(),
+            ]
+        )
+        .cosConfirm(
+            G2MeetingStop.confirmTitle,
+            isPresented: Binding(get: { glassesStopTarget != nil }, set: { if !$0 { glassesStopTarget = nil } }),
+            message: G2MeetingStop.confirmMessage,
+            actions: [
+                .destructive(G2MeetingStop.confirmAction) {
+                    if let id = glassesStopTarget { model.stopGlassesMeeting(id) }
+                    glassesStopTarget = nil
+                },
+                .cancel { glassesStopTarget = nil },
             ]
         )
     }
@@ -1863,8 +1877,19 @@ struct ControlPanel: View {
                             Text(MacRecordingNotice.reminder).font(COSType.body(11)).foregroundStyle(.secondary)
                         }
                         if model.liveTranscriptEnabled {
-                            Button("View live transcript") { model.showRecordingTranscript() }
-                                .buttonStyle(COSQuietButtonStyle())
+                            HStack(spacing: 8) {
+                                Button("View live transcript") { model.showRecordingTranscript() }
+                                    .buttonStyle(COSQuietButtonStyle())
+                                // 0.5.321: the one live glasses meeting stops from here too, after the inline confirmation.
+                                if let id = model.soleLiveGlassesMeetingID {
+                                    Button(G2MeetingStop.buttonLabel) { glassesStopTarget = id }
+                                        .buttonStyle(COSQuietButtonStyle())
+                                        .disabled(model.glassesMeetingStopping(id))
+                                }
+                            }
+                            if let line = model.glassesMeetingStopLine(model.glassesMeetingStop?.sessionId) {
+                                Text(line).font(COSType.body(11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                            }
                         } else {
                             Text("Enable live transcripts in Settings to view the recording.")
                                 .font(COSType.body(12)).foregroundStyle(.secondary)

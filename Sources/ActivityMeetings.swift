@@ -2040,6 +2040,8 @@ struct MeetingTaskLinkSheet: View {
 struct LiveNowRows: View {
     @ObservedObject var model: ControllerModel
     @State private var confirmEnd: LiveTranscriptRow?
+    /// 0.5.321: the live glasses meeting the inline Stop and save confirmation is for.
+    @State private var glassesStopTarget: String?
 
     var body: some View {
         let rows = model.liveTranscriptRows
@@ -2057,10 +2059,27 @@ struct LiveNowRows: View {
                                 }
                                 .controlSize(.small)
                                 .disabled(model.busy || model.orphanBusy)
+                            } else if row.phase == .live, G2MeetingStop.isGlassesSession(row.sessionId) {
+                                // 0.5.321: a glasses meeting still receiving audio stops on the glasses, asked from here.
+                                Button(G2MeetingStop.buttonLabel) { glassesStopTarget = row.sessionId }
+                                    .controlSize(.small)
+                                    .disabled(model.glassesMeetingStopping(row.sessionId))
                             }
+                        }
+                        if let line = model.glassesMeetingStopLine(row.sessionId) {
+                            Text(line).font(COSType.body(11)).foregroundStyle(.secondary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
                         }
                     }
                 }
+                .cosConfirm(G2MeetingStop.confirmTitle, isPresented: Binding(get: { glassesStopTarget != nil }, set: { if !$0 { glassesStopTarget = nil } }),
+                            message: G2MeetingStop.confirmMessage, actions: [
+                    .destructive(G2MeetingStop.confirmAction) {
+                        if let id = glassesStopTarget { model.stopGlassesMeeting(id) }
+                        glassesStopTarget = nil
+                    },
+                    .cancel { glassesStopTarget = nil },
+                ])
                 .confirmationDialog("End this recording and save it?", isPresented: Binding(get: { confirmEnd != nil }, set: { if !$0 { confirmEnd = nil } }), presenting: confirmEnd) { row in
                     Button("End and save") { model.saveStranded(row.sessionId); confirmEnd = nil }
                     Button("Keep it open", role: .cancel) { confirmEnd = nil }
@@ -2156,6 +2175,8 @@ struct LiveTranscriptPane: View {
     @State private var askJumpID: Int?
     @AppStorage("meetingAskPanelWidth") private var askWidth = 360.0
     @State private var resizeStart: Double?
+    /// 0.5.321: the inline confirmation for Stop and save on a glasses meeting (COSConfirm, never a sheet).
+    @State private var confirmGlassesStop = false
 
     var body: some View {
         GeometryReader { geometry in
@@ -2179,7 +2200,13 @@ struct LiveTranscriptPane: View {
                 }
             }
         }
-        .onChange(of: model.liveTranscriptOpenID) { _, _ in askJumpID = nil }
+        .onChange(of: model.liveTranscriptOpenID) { _, _ in askJumpID = nil; confirmGlassesStop = false }
+        .cosConfirm(G2MeetingStop.confirmTitle, isPresented: $confirmGlassesStop, message: G2MeetingStop.confirmMessage, actions: [
+            .destructive(G2MeetingStop.confirmAction) {
+                if let id = model.liveTranscriptOpenID { model.stopGlassesMeeting(id) }
+            },
+            .cancel(),
+        ])
     }
 
     private var meetingBody: some View {
@@ -2228,12 +2255,24 @@ struct LiveTranscriptPane: View {
                 if model.macRecording.isRecording, model.macRecording.manifest?.captureId == model.liveTranscriptOpenID {
                     Button("Stop and save") { Task { await model.macRecording.stop() } }.buttonStyle(COSQuietButtonStyle())
                 }
+                // 0.5.321: a live glasses meeting stops on the glasses, asked from here after an inline confirmation.
+                if let id = model.liveTranscriptOpenID, G2MeetingStop.isGlassesSession(id), feed?.ended != true {
+                    Button(G2MeetingStop.buttonLabel) { confirmGlassesStop = true }
+                        .buttonStyle(COSQuietButtonStyle())
+                        .disabled(model.glassesMeetingStopping(id))
+                }
                 Button(showAsk ? "Hide Ask" : "Live COS Ask") { showAsk.toggle() }
                     .buttonStyle(COSQuietButtonStyle())
             }
             Text(LiveTranscript.header)
                 .font(COSType.body(12))
                 .foregroundStyle(.secondary)
+            if let line = model.glassesMeetingStopLine(model.liveTranscriptOpenID) {
+                Text(line)
+                    .font(COSType.body(11.5, weight: .semibold))
+                    .foregroundStyle(model.glassesMeetingStop?.phase.nothingStopped == true ? COSPalette.danger : .secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             if model.liveTranscriptOpenID?.hasPrefix("mac_") == true {
                 Text("Mac playback · microphone off · speaker names only at high confidence").font(COSType.body(11)).foregroundStyle(.secondary)
                 // An empty feed reads the same whether nothing was said or nothing reached COS; say which (2026-10-15).

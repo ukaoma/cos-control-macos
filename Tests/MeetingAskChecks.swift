@@ -84,6 +84,23 @@ import Foundation
         let full = MeetingAskText.fullContext(title: "Meeting", transcript: "Speech", exchanges: [exchange, next], files: [.init(id: "f", revision: "r", name: "Slide", status: "unsupported", text: "must not claim read")])
         check(full.contains("[Q1:T1]") && full.contains("[Q2:T1]"), "answer citations namespaced")
         check(full.contains("Text unavailable") && !full.contains("must not claim read"), "unread files honest")
+        // 0.5.321: the export prints the meeting position as the panel does, never "ms" that reads as a wait, and the
+        // answer time only when the server measured it.
+        var placed = exchange; placed.throughMs = 210_666; placed.model = "Haiku"
+        check(MeetingAskText.exportStatusLine(placed) == "Model: Haiku · Through 3:30 · completed", "the export says where in the meeting, as Through 3:30")
+        check(!full.contains(" ms ") && !full.contains(" ms\n") && full.contains("Through 0:00"), "no bare milliseconds in the export")
+        var timed = placed; timed.timings = MeetingAskTimings(totalMs: 6_400)
+        check(MeetingAskText.exportStatusLine(timed) == "Model: Haiku · Through 3:30 · completed · Answer time: 6.4 s", "the answer time when the server measured it")
+        var long = placed; long.throughMs = 3_725_000
+        check(MeetingAskText.exportStatusLine(long) == "Model: Haiku · Through 1:02:05 · completed", "an hour in prints hours")
+        let timedJSON = #"{"requestId":"a","sessionId":"s","serverInstanceId":"i","action":"ask","question":"Who?","status":"completed","createdAt":"t","updatedAt":"t","selectedModel":{"engine":"claude","model":"haiku"},"sources":[],"notices":[],"throughMs":5000,"files":[],"timings":{"totalMs":6400,"phases":[]}}"#
+        check((try? JSONDecoder().decode(MeetingAskExchange.self, from: Data(timedJSON.utf8)))?.timings?.totalMs == 6_400, "server 6.76.0 timings decode")
+        let oddJSON = timedJSON.replacingOccurrences(of: #"{"totalMs":6400,"phases":[]}"#, with: #""soon""#)
+        let odd = try? JSONDecoder().decode(MeetingAskExchange.self, from: Data(oddJSON.utf8))
+        check(odd != nil && odd?.timings?.totalMs == nil && MeetingAskText.exportStatusLine(odd!).contains("Answer time") == false, "a malformed timing is no timing, and the exchange still reads")
+        let noTiming = timedJSON.replacingOccurrences(of: #","timings":{"totalMs":6400,"phases":[]}"#, with: "")
+        check((try? JSONDecoder().decode(MeetingAskExchange.self, from: Data(noTiming.utf8))).map { !MeetingAskText.exportStatusLine($0).contains("Answer time") } == true,
+              "an older server's answer has no answer time")
         check(LiveTranscript.errorPollingAllowed(serverLive: 0, errorSince: Date(timeIntervalSince1970: 0), now: Date(timeIntervalSince1970: 299)), "error cap permits bounded retry")
         check(!LiveTranscript.errorPollingAllowed(serverLive: 0, errorSince: Date(timeIntervalSince1970: 0), now: Date(timeIntervalSince1970: 300)), "error cap stops at five minutes")
         check(LiveTranscript.errorPollingAllowed(serverLive: 1, errorSince: Date(timeIntervalSince1970: 0), now: Date(timeIntervalSince1970: 600)), "live recording unaffected")

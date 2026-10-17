@@ -560,3 +560,180 @@ struct LiveTranscriptFollow: Equatable, Sendable {
         "\(turns.count):\(turns.last?.id ?? -1):\(turns.last?.lastIndex ?? -1):\(turns.last?.text.utf8.count ?? 0)"
     }
 }
+
+// MARK: - Stop and save a glasses meeting (0.5.321)
+//
+// Kept in this file (not its own) so every lane and scripts/build-release.sh that lists the live meeting sources by name
+// compiles it with them.
+
+/// 0.5.321 (Miles, 2026-10-17): stop and save a G2 glasses meeting from COS Control.
+///
+/// COS Control never saves a live glasses meeting itself. A server-side save closes the session while the phone keeps
+/// its microphone on, the lens keeps showing REC and every later chunk is refused, so the meeting would split in two.
+/// Control ASKS instead: the helper's `meeting-stop-request` posts to the server's stop-request route, the server puts
+/// `meeting_stop_requested` on the display bus, and the glasses companion (6.10.644) claims the request and runs its
+/// own Stop, the same one the lens and the phone run. Control polls the request and says what happened in words.
+///
+/// The glasses can claim only within the server's claim window (10 s, on the server's clock). Control waits a little
+/// past it before it says "Glasses not connected", so after that line nothing can stop the meeting behind the person's
+/// back. Mac recordings are not this path: they stop from Record on Mac, unchanged.
+///
+/// Pure: the model runs the helper and the timers; everything here is decided from the helper's details and the clock,
+/// so Tests/G2MeetingStopChecks.swift runs it.
+enum G2MeetingStop {
+    /// Seconds Control waits past the server's claim window before it gives up on the glasses.
+    static let claimGraceSeconds: TimeInterval = 3
+    /// Used when the server's answer does not carry its window (it always does from server 6.76.0).
+    static let defaultClaimWindowSeconds: TimeInterval = 10
+    /// After the glasses claimed, how long Control follows the save before it stops watching.
+    static let saveWaitSeconds: TimeInterval = 180
+
+    static let buttonLabel = "Stop and save"
+    static let confirmTitle = "Stop and save this glasses meeting?"
+    static let confirmMessage = "COS asks the glasses to stop recording and save the meeting. Nothing stops unless the glasses answer."
+    static let confirmAction = "Stop and save"
+
+    /// A glasses session COS Control may ask about: never a Mac recording (those stop from Record on Mac).
+    static func isGlassesSession(_ sessionId: String) -> Bool {
+        !sessionId.hasPrefix("mac_") && sessionId.range(of: "\\A[A-Za-z0-9:_-]{3,96}\\z", options: .regularExpression) != nil
+    }
+
+    enum Phase: Equatable, Sendable {
+        /// The request is on its way, or the glasses have not answered yet.
+        case asking
+        /// The glasses claimed the request and are stopping; the save follows.
+        case stopping
+        /// The server is already saving this meeting.
+        case finalizing
+        case saved(filename: String?, minutes: Int?)
+        case notConnected
+        case notRecordingHere
+        case otherMeeting
+        case alreadyStopped
+        case serverUnreachable
+        case serverTooOld
+        case unauthorized
+        case stillSaving
+        case serverRestarted
+        case failed(status: Int)
+
+        /// Control keeps polling while this holds.
+        var isActive: Bool {
+            switch self {
+            case .asking, .stopping, .finalizing: true
+            default: false
+            }
+        }
+
+        /// True for the lines that say the meeting was not stopped.
+        var nothingStopped: Bool {
+            switch self {
+            case .notConnected, .notRecordingHere, .otherMeeting, .serverUnreachable, .serverTooOld, .unauthorized, .serverRestarted, .failed: true
+            default: false
+            }
+        }
+
+        var line: String {
+            switch self {
+            case .asking: "Asking the glasses to stop…"
+            case .stopping: "The glasses are stopping. Saving the meeting…"
+            case .finalizing: "Saving the meeting…"
+            case .saved(let filename, let minutes):
+                switch (G2MeetingStop.displayName(filename), minutes) {
+                case (let name?, let m?): "Saved: \(name), \(m) min."
+                case (let name?, nil): "Saved: \(name)."
+                case (nil, let m?): "Saved, \(m) min."
+                case (nil, nil): "Saved."
+                }
+            case .notConnected: "Glasses not connected. Nothing was stopped. Stop it on the glasses (hold menu, Stop Meeting) or on the phone."
+            case .notRecordingHere: "The glasses are not recording this meeting. Nothing was stopped."
+            case .otherMeeting: "The glasses are recording a different meeting. Nothing was stopped."
+            case .alreadyStopped: "This meeting already stopped."
+            case .serverUnreachable: "COS server unreachable. Nothing was stopped."
+            case .serverTooOld: "This COS server cannot stop glasses meetings yet. Update the server, or stop it on the glasses or phone."
+            case .unauthorized: "Reconnect COS Control to the server. Nothing was stopped."
+            case .stillSaving: "The glasses stopped. The save is still running; check Meetings in a minute."
+            case .serverRestarted: "The COS server restarted before the glasses answered. Nothing was stopped."
+            case .failed(let status): "The server could not ask the glasses (HTTP \(status)). Nothing was stopped."
+            }
+        }
+    }
+
+    /// `2026-10-17_G2_Recording_….md` reads without its extension.
+    static func displayName(_ filename: String?) -> String? {
+        guard let filename = filename?.trimmingCharacters(in: .whitespacesAndNewlines), !filename.isEmpty else { return nil }
+        return filename.hasSuffix(".md") ? String(filename.dropLast(3)) : filename
+    }
+
+    struct Request: Equatable, Sendable {
+        let phase: Phase
+        let requestId: String?
+        let claimWindowSeconds: TimeInterval
+    }
+
+    /// The helper's details: `transport` is `answered` with `httpStatus` and `body`, or `unavailable`.
+    private static func answer(_ details: [String: JSONValue]?) -> (status: Int, body: [String: JSONValue])? {
+        guard let details, details["transport"]?.string == "answered", let status = details["httpStatus"]?.int else { return nil }
+        return (status, details["body"]?.object ?? [:])
+    }
+
+    private static func savedPhase(_ body: [String: JSONValue]) -> Phase {
+        let receipt = body["saveReceipt"]?.object
+        return .saved(filename: receipt?["filename"]?.string, minutes: receipt?["durationMin"]?.int)
+    }
+
+    /// What the first answer means. `details` is nil when the helper itself failed.
+    static func afterRequest(_ details: [String: JSONValue]?) -> Request {
+        guard let (status, body) = answer(details) else { return Request(phase: .serverUnreachable, requestId: nil, claimWindowSeconds: 0) }
+        let window = body["claimWindowMs"]?.double.map { $0 / 1000 } ?? defaultClaimWindowSeconds
+        switch status {
+        case 202:
+            guard let requestId = body["requestId"]?.string, !requestId.isEmpty else { return Request(phase: .serverTooOld, requestId: nil, claimWindowSeconds: 0) }
+            return Request(phase: .asking, requestId: requestId, claimWindowSeconds: window)
+        case 200 where body["state"]?.string == "saved": return Request(phase: savedPhase(body), requestId: nil, claimWindowSeconds: 0)
+        // Already saving: there is no request to follow, so this is the line it ends on.
+        case 200 where body["state"]?.string == "finalizing": return Request(phase: .stillSaving, requestId: nil, claimWindowSeconds: 0)
+        case 409 where body["reason"]?.string == "not_live": return Request(phase: .alreadyStopped, requestId: nil, claimWindowSeconds: 0)
+        case 401, 403: return Request(phase: .unauthorized, requestId: nil, claimWindowSeconds: 0)
+        // A server without the route answers 404 with no reason of its own.
+        case 404: return Request(phase: .serverTooOld, requestId: nil, claimWindowSeconds: 0)
+        default: return Request(phase: .failed(status: status), requestId: nil, claimWindowSeconds: 0)
+        }
+    }
+
+    /// One poll. `elapsed` counts from the request; `claimed` is whether an earlier poll saw the glasses claim it.
+    static func afterPoll(_ details: [String: JSONValue]?, elapsed: TimeInterval, claimWindowSeconds: TimeInterval, claimed: Bool) -> Phase {
+        let deadline = claimWindowSeconds + claimGraceSeconds
+        guard let (status, body) = answer(details) else {
+            // The glasses claim through this server, so an unreachable server stopped nothing unless they already had.
+            if claimed { return elapsed > saveWaitSeconds ? .stillSaving : .stopping }
+            return elapsed > deadline ? .serverUnreachable : .asking
+        }
+        if status == 404 { return claimed ? .stillSaving : .serverRestarted }
+        if status == 401 || status == 403 { return claimed ? .stillSaving : .unauthorized }
+        guard (200..<300).contains(status) else { return claimed ? .stopping : (elapsed > deadline ? .failed(status: status) : .asking) }
+        switch body["state"]?.string {
+        case "saved": return savedPhase(body)
+        case "claimed":
+            if elapsed > saveWaitSeconds { return .stillSaving }
+            return body["finalizing"]?.bool == true ? .finalizing : .stopping
+        case "refused":
+            switch body["refusal"]?.string {
+            case "not_recording": return .notRecordingHere
+            case "other_session": return .otherMeeting
+            // Its own Stop is running: follow it to the save.
+            case "stop_in_progress": return elapsed > saveWaitSeconds ? .stillSaving : .finalizing
+            default: return .notConnected
+            }
+        case "expired": return .notConnected
+        case "pending": return elapsed > deadline ? .notConnected : .asking
+        default: return elapsed > deadline ? .notConnected : .asking
+        }
+    }
+}
+
+/// The stop Control is following, and where it got to. One at a time.
+struct G2MeetingStopProgress: Equatable, Sendable {
+    let sessionId: String
+    var phase: G2MeetingStop.Phase
+}

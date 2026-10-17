@@ -637,6 +637,7 @@ final class COSControlHelper {
         case "session-chat-reply": try emitSessionChatReply(args: args)
         case "session-recent-replies": try emitSessionRecentReplies(args: args)
         case "meeting-stranded-save": try emitMeetingStrandedSave(args: args)
+        case "meeting-stop-request": try emitMeetingStopRequest(args: args)
         case "meeting-stranded-save-all": try emitMeetingStrandedSaveAll()
         case "clear-stranded-video-uploads": try clearStrandedVideoUploads()
         case "reset-message-era": try resetMessageEra()
@@ -16216,6 +16217,40 @@ final class COSControlHelper {
         return (response.status, response.body ?? [:])
     }
 
+    /// 0.5.321: ask the glasses to stop a live G2 meeting (server stop-request routes, server 6.76.0). Without
+    /// `--request` it asks; with it, it reads that request. The app words every answer (Sources/G2MeetingStop.swift), so
+    /// this emits the server's status and body as they are: `transport` is `answered`, or `unavailable` when nothing
+    /// answered. A Mac recording is refused here: it stops from Record on Mac.
+    static func meetingStopRequestPath(sessionId: String, requestId: String?) -> String? {
+        guard sessionId.range(of: "\\A[A-Za-z0-9:_-]{3,96}\\z", options: .regularExpression) != nil, !sessionId.hasPrefix("mac_") else { return nil }
+        if let requestId {
+            guard requestId.range(of: "\\A[A-Za-z0-9_-]{3,96}\\z", options: .regularExpression) != nil else { return nil }
+            return "/api/meeting/sessions/\(sessionId)/stop-request/\(requestId)"
+        }
+        return "/api/meeting/sessions/\(sessionId)/stop-request"
+    }
+
+    private func emitMeetingStopRequest(args: [String]) throws {
+        let sessionId = option("--session", in: args)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let requestId = option("--request", in: args)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let path = Self.meetingStopRequestPath(sessionId: sessionId, requestId: requestId) else {
+            throw HelperError.message("Invalid glasses meeting or request id")
+        }
+        let token = try speakerReviewToken()
+        let response = requestId == nil
+            ? request(path, method: "POST", token: token, body: "{\"source\":\"control\"}", timeout: 10)
+            : request(path, token: token, timeout: 8)
+        guard let response else {
+            emit(ok: true, message: "COS server unreachable", details: ["transport": "unavailable"])
+            return
+        }
+        emit(ok: true, message: "Stop request answered (\(response.status))", details: [
+            "transport": "answered",
+            "httpStatus": response.status,
+            "body": response.body ?? [:],
+        ])
+    }
+
     private func emitMeetingStrandedSave(args: [String]) throws {
         guard let sessionId = option("--session", in: args)?.trimmingCharacters(in: .whitespacesAndNewlines),
               !sessionId.isEmpty else {
@@ -21130,6 +21165,17 @@ final class COSControlHelper {
                    "right after the diagnostics file rotates, heartbeats are read from the rotated file")
         try expect(Self.meetingAudioWatch(dataDir: audioDir.appendingPathComponent("missing"), now: audioNow).isEmpty,
                    "no data directory reads as no live meeting")
+        // 0.5.321: meeting-stop-request reaches only the stop-request routes, never for a Mac recording or a bad id.
+        try expect(Self.meetingStopRequestPath(sessionId: "meeting_1791635349988_67d6pj", requestId: nil) == "/api/meeting/sessions/meeting_1791635349988_67d6pj/stop-request",
+                   "meeting-stop-request asks on the stop-request route")
+        try expect(Self.meetingStopRequestPath(sessionId: "g2:abc", requestId: "stop_0a1b-2c") == "/api/meeting/sessions/g2:abc/stop-request/stop_0a1b-2c",
+                   "meeting-stop-request polls one request")
+        for bad in ["mac_0123abcd-0123-4abc-8def-0123456789ab", "a b", "../x", "ab", "", "caf\u{e9}1", String(repeating: "a", count: 97)] {
+            try expect(Self.meetingStopRequestPath(sessionId: bad, requestId: nil) == nil, "meeting-stop-request refuses the session id \(bad.debugDescription)")
+        }
+        for bad in ["../x", "a/b", "ab", "", "stop 1", "stop:1"] {
+            try expect(Self.meetingStopRequestPath(sessionId: "g2:abc", requestId: bad) == nil, "meeting-stop-request refuses the request id \(bad.debugDescription)")
+        }
         // 0.5.278: live-transcript. The path grammar, a fixture in the server 6.67 shape (fake text), --since and the stamp.
         for bad in ["..", "a/b", "abc.tmp", "abc\n", "ab", String(repeating: "a", count: 97), "caf\u{e9}1", "a b", "../active-sessions/x", ""] {
             try expect(!Self.liveTranscriptValidId(bad) && Self.liveTranscriptPath(dataDir: URL(fileURLWithPath: "/tmp/d"), sessionId: bad) == nil,
