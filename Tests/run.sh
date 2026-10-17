@@ -2837,8 +2837,12 @@ need(section_enum is not None, "ActivitySection enum block not found")
 section_cases = re.findall(r"^\s+case \w+", section_enum.group(1), re.M)
 need(len(section_cases) <= 9, f"ActivitySection has {len(section_cases)} cases; keyboard shortcuts only cover 1-9")
 need([case.strip().removeprefix("case ") for case in section_cases] ==
-     ["messages", "speakers", "meetings", "memories", "threads", "sessions", "tasks", "work"],
-     f"ActivitySection should declare seven existing panes and Work, found {section_cases}")
+     ["messages", "speakers", "meetings", "memories", "threads", "sessions", "tasks", "work", "dictation"],
+     f"ActivitySection should declare seven existing panes, Work and Dictation, found {section_cases}")
+# 0.5.317: the Dictation tab follows the seven shared entries (after Work's swap for Tasks) and mounts its own pane.
+need('existing.map { $0 == .tasks ? .work : $0 }) + [.dictation]' in activity,
+     "Dictation must follow the seven shared navigation entries, after Work replaces Tasks")
+need('case .dictation: DictationActivityPane(model: model)' in activity, "Dictation is not mounted")
 need('environment["COS_CONTROL_WORK_DISABLED"] == "1" ? existing : existing.map { $0 == .tasks ? .work : $0 }' in activity,
      "Production Work must replace the Tasks peer, keeping seven shared navigation entries")
 need('case .work: workSurface' in activity, "Work is not mounted on its Tasks/follow-up parent")
