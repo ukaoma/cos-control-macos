@@ -135,8 +135,10 @@ MUTANTS = [
 ]
 
 def idle():
-    """Never start a compile while any other swift-frontend runs on this Mac (2026-10-07 panics)."""
+    """Never start a compile while any other swift-frontend runs on this Mac (2026-10-07 panics). With COS_COMPILE_SLOTS
+    above 1 the shared slot lock in Tests/compile-guard.sh (its slots and memory caps) is the guard, so this waits no more."""
     import time
+    if os.environ.get("COS_COMPILE_SLOTS", "1") not in ("", "1"): return
     while subprocess.run(["pgrep", "-x", "swift-frontend"], capture_output=True).returncode == 0: time.sleep(15)
 
 def run(work: pathlib.Path):
