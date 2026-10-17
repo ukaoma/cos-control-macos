@@ -90,7 +90,8 @@ MUTANTS = [
 """)], None, "[manual check spin]", "wiring"),
     ("manual frees a slot it does not hold", C, "        defer { if holdsSlot { appUpdateSchedule.finish() } }", "        defer { appUpdateSchedule.finish() }", "[", "pins"),
     ("dot on the lens, canvas kept", M, "            let dot = NSRect(x: rect.maxX - dotDiameter, y:", "            let dot = NSRect(x: rect.maxX - dotDiameter - dotRoom - 1, y:", "[icon dot", "checks"),  # [icon dot]: drawn in the corner; [icon dot clear]: that corner is clear of the glyph
-    ("appUpdate does not move the flow", C, "        didSet { appUpdateFlow.offer(appUpdate, currentVersion: Self.currentVersion, currentBuild: Self.currentBuild) }\n", "", "[model wiring]", "pins"),
+    ("appUpdate does not move the flow", C, "            appUpdateFlow.offer(appUpdate, currentVersion: Self.currentVersion, currentBuild: Self.currentBuild)\n            restoreRecentUpdateFailure()\n", "            restoreRecentUpdateFailure()\n", "[model wiring]", "pins"),
+    ("install failure never restored", C, "            appUpdateFlow.offer(appUpdate, currentVersion: Self.currentVersion, currentBuild: Self.currentBuild)\n            restoreRecentUpdateFailure()\n", "            appUpdateFlow.offer(appUpdate, currentVersion: Self.currentVersion, currentBuild: Self.currentBuild)\n", "[failure restored]", "pins"),
     ("label reads the raw result", A, "let variant = MenuBarIcon.variant(for: model.appUpdateFlow.phase)", "let variant: MenuBarIcon.Variant = model.appUpdate.shouldSurface ? .updateReady : .normal", "[icon follows state]", "pins"),
 ]
 

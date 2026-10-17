@@ -4,7 +4,7 @@
 
     python3 Tests/app-update-badge-pins.py <root>
 """
-import pathlib, sys
+import pathlib, re, sys
 
 root = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else ".")
 views = (root / "Sources/Views.swift").read_text(encoding="utf-8")
@@ -42,7 +42,12 @@ for needle, behaviour in (("appUpdateFlow.beginInstall()", "install phases"), ("
                           ("appUpdateFlow.staged()", "install phases"), ("appUpdateFlow.fail(", "install phases"),
                           ('"stage-app-update"', "update path"), ('"apply-app-update"', "update path")):
     pin(needle in install, behaviour, f"installAppUpdate must call {needle}")
-pin("didSet { appUpdateFlow.offer(appUpdate," in model, "model wiring", "every write of appUpdate moves the flow")
+# 0.5.319: the didSet also restores a recent install failure, so it spans lines; the first thing it does is still offer.
+did_set = re.search(r"@Published var appUpdate = AppUpdateInfo\(\) \{\s*didSet \{(.*?)\n        \}\n    \}", code(model), re.S)
+pin(did_set is not None and did_set.group(1).lstrip().startswith("appUpdateFlow.offer(appUpdate,"), "model wiring",
+    "every write of appUpdate moves the flow")
+pin(did_set is not None and "restoreRecentUpdateFailure()" in did_set.group(1), "failure restored",
+    "every check result also shows, once, why the last install did not finish (updates/last-failure.json)")
 manual = code(model[model.index("func checkForAppUpdateManually("):model.index("func completeAppUpdateIfNeeded()")])
 pin("appUpdateSchedule.begin(.manual" in manual and "if holdsSlot { appUpdateSchedule.finish() }" in manual
     and "while " not in manual.split("var holdsSlot", 1)[-1].split("do {", 1)[0], "no overlap",
