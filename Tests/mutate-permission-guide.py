@@ -18,6 +18,10 @@ C = "Sources/ControllerModel.swift"
 V = "Sources/Views.swift"
 F = "Sources/PermissionDragFlow.swift"
 R = "scripts/build-release.sh"
+D = "Sources/MacDictation.swift"
+DC = "Sources/MacDictationCore.swift"
+MR = "Sources/MacRecording.swift"
+A = "Sources/COSControlApp.swift"
 # (name, file, original, mutant, words the killing failure must contain, lane)
 MUTANTS = [
     ("exit 78 not read", M, "if jobs.contains(where: { $0.lastExit == 78 }) { return .needsYou }", "if jobs.contains(where: { $0.lastExit == 77 }) { return .needsYou }", "[job status]", "logic"),
@@ -52,6 +56,42 @@ MUTANTS = [
     ("poll every five seconds", F, "withTimeInterval: 1, repeats: true", "withTimeInterval: 5, repeats: true", "[detection poll]", "pins"),
     ("the API alone says Allowed", F, "AXIsProcessTrusted() && Self.accessibilityReadWorks()", "AXIsProcessTrusted()", "[detection confirm]", "pins"),
     ("license left out of the app", R, 'cp -R "$ROOT/Resources/ThirdParty/." "$APP/Contents/Resources/ThirdParty/"\n', "", "[license]", "pins"),
+    # 0.5.318: a feature's own Allow (the dictation card, System Audio Recording). Logic.
+    ("ask route never uses the guide", M, "return guideLive ? .guide : .promptThenPane", "return .promptThenPane", "[ask route]", "logic"),
+    ("ask route flows when allowed", M, "        if allowed { return .alreadyAllowed }\n", "", "[ask route]", "logic"),
+    ("preflight 1 not denied", M, "case 1: self = .denied", "case 1: self = .notAsked", "[system audio fact]", "logic"),
+    ("preflight 0 not allowed", M, "case 0: self = .allowed\n        case 1: self = .denied", "case 0: self = .notAsked\n        case 1: self = .denied", "[system audio fact]", "logic"),
+    ("a denied app prompted again", M, "if fact == .notAsked, !asked { return .prompt }", "if fact != .allowed, !asked { return .prompt }", "[system audio drag fallback]", "logic"),
+    ("a second prompt after asking", M, "if fact == .notAsked, !asked { return .prompt }", "if fact == .notAsked { return .prompt }", "[system audio drag fallback]", "logic"),
+    ("allowed ignores the pane asked for", M, "if fact == .allowed { return wantsPane ? .openPane : .done }", "if fact == .allowed { return .done }", "[system audio pane wanted]", "logic"),
+    ("no drag fallback", M, "return guideLive ? .guide : .openPane", "return .openPane", "[system audio drag fallback]", "logic"),
+    ("audio anchor on 15", M, "macOSMajor >= 26", "macOSMajor >= 15", "[system audio pane]", "logic"),
+    ("system audio pane takes no drag", M, " || self == .systemAudio }", " }", "[system audio pane]", "logic"),
+    ("system audio resume dropped", M, "        if let resume { resumes[request.rowID, default: []].append(resume) }\n", "", "[system audio drag resume]", "logic"),
+    ("system audio drag holds another copy", M, "source: PermissionDragSource(path: appPath, name: appName), feature: feature)",
+     'source: PermissionDragSource(path: "/Applications/COS Control.app", name: appName), feature: feature)', "[system audio drag]", "logic"),
+    ("system audio bar names nothing", M, "        waitingFeature[request.rowID] = feature\n", "", "[system audio drag]", "logic"),
+    # Wiring.
+    ("card Allow skips the guide", D, "        ask { [weak self] in self?.insertionAllowed() }\n", "        _ = ask\n", "[dictation allow route]", "pins"),
+    ("card stays after the grant", D, "        if case .copied(.notTrusted) = card?.kind { dismissCard() }\n", "", "[dictation allow resume]", "pins"),
+    ("card has no Reset", D, '                        Button("Reset") { store.resetInsertionPermission() }\n', "", "[dictation reset]", "pins"),
+    ("card note says nothing about an ON row", DC, "Already on? Reset and add again. For now", "For now", "[dictation reset]", "pins"),
+    ("card Allow is the bare prompt", C, "            if permissionGuide.need(.accessibility, for: Self.dictationAccessibilityFeature, resume: resume) { resume() }\n",
+     '            _ = AXIsProcessTrustedWithOptions(["AXTrustedCheckOptionPrompt": true] as CFDictionary)\n', "[dictation allow route]", "pins"),
+    ("Reset drops a waiting jump", C, "accessibilityResume = { waiting?(); resume() }", "accessibilityResume = resume", "[dictation reset]", "pins"),
+    ("system audio never prompts", C, "            let granted = await SystemAudioPermission.request()\n", "            let granted = false\n", "[system audio request]", "pins"),
+    ("system audio denied opens a bare link", C, "            permissionGuide.drag(.systemAudio, for: feature, resume: resume)\n",
+     "            NSWorkspace.shared.open(PermissionPane.systemAudio.settingsURL())\n", "[system audio drag fallback]", "pins"),
+    ("system audio request unbounded", D, "try? await Task.sleep(for: timeout)", "try? await Task.sleep(for: .seconds(100_000))", "[system audio request]", "pins"),
+    ("bar never sees the audio grant", F, "case .systemAudio: SystemAudioPermission.fact == .allowed", "case .systemAudio: grantedByCheck", "[system audio detection]", "pins"),
+    ("Mute setting back to a bare link", D, "                Task { permitted = await store.requestSystemAudioPermission() }\n",
+     '                if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") { NSWorkspace.shared.open(url) }\n',
+     "[system audio settings]", "pins"),
+    ("recording never asks", MR, "if !DictationQuietController.tapPermitted, let ask = requestSystemAudio {", "if false, let ask = requestSystemAudio {", "[recording asks]", "pins"),
+    ("recording asks twice at once", MR, "            guard !askingSystemAudio else { return }\n", "", "[recording asks]", "pins"),
+    ("recording not wired", A, '        model.macRecording.requestSystemAudio = { [weak model] in await model?.requestSystemAudio(for: "All Mac audio") ?? false }\n', "",
+     "[feature ask wiring]", "pins"),
+    ("a waiting feature's name kept forever", C, "            accessibilityFeature = nil\n", "", "[pet jump hook]", "pins"),
 ]
 
 

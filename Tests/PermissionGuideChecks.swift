@@ -56,6 +56,7 @@ struct PermissionGuideChecks {
         await justInTime()
         await staleGrant()
         await staleReset()
+        await featureAsks()
         if failures > 0 {
             FileHandle.standardError.write(Data("\(failures) permission guide check(s) failed, \(passes) passed\n".utf8))
             exit(1)
@@ -257,6 +258,62 @@ struct PermissionGuideChecks {
         facts.jobs = [job("com.cos.meeting-sync", "/u/venv/bin/python", exit: 78)]
         let bg = rows(facts).first { $0.kind == .backgroundJobs }!
         check(bg.action == .drag(.fullDiskAccess, PermissionDragSource(path: "/u/venv/bin/python", name: "COS background helper (Python)")), "drag source", "the interpreter the job runs: \(bg.action)")
+    }
+
+    // MARK: Asking from a feature (0.5.318: the dictation card's Allow…, System Audio Recording)
+
+    static func featureAsks() async {
+        // Allow… on the dictation card goes to the guide whenever it can run; the prompt only where it cannot.
+        check(PermissionAskRoute.decide(allowed: false, guideLive: true) == .guide, "ask route", "untrusted in the app: the drag flow")
+        check(PermissionAskRoute.decide(allowed: false, guideLive: false) == .promptThenPane, "ask route", "untrusted with no guide: prompt, then the pane")
+        check(PermissionAskRoute.decide(allowed: true, guideLive: true) == .alreadyAllowed
+              && PermissionAskRoute.decide(allowed: true, guideLive: false) == .alreadyAllowed, "ask route", "allowed: no flow, no prompt")
+
+        // TCCAccessPreflight: 0 allowed, 1 denied, anything else (2, no SPI) not asked.
+        check(SystemAudioFact(preflight: 0) == .allowed, "system audio fact", "0 is allowed")
+        check(SystemAudioFact(preflight: 1) == .denied, "system audio fact", "1 is denied")
+        check(SystemAudioFact(preflight: 2) == .notAsked && SystemAudioFact(preflight: nil) == .notAsked
+              && SystemAudioFact(preflight: -1) == .notAsked, "system audio fact", "2, no SPI and unknown read as not asked")
+
+        // The request: macOS's prompt first, once; then the drag flow, which never re-prompts.
+        for live in [true, false] {
+            check(SystemAudioAsk.step(.notAsked, asked: false, wantsPane: false, guideLive: live) == .prompt, "system audio prompt first", "not asked: macOS asks (live \(live))")
+            check(SystemAudioAsk.step(.notAsked, asked: false, wantsPane: true, guideLive: live) == .prompt, "system audio prompt first", "not asked, pane wanted: still macOS asks first (live \(live))")
+            check(SystemAudioAsk.step(.allowed, asked: false, wantsPane: false, guideLive: live) == .done, "system audio allowed", "allowed: nothing opens (live \(live))")
+            check(SystemAudioAsk.step(.allowed, asked: false, wantsPane: true, guideLive: live) == .openPane, "system audio pane wanted", "allowed, the person asked for the setting: the bare pane (live \(live))")
+        }
+        check(SystemAudioAsk.step(.denied, asked: false, wantsPane: false, guideLive: true) == .guide, "system audio drag fallback", "denied before: no prompt (macOS will not ask again), the drag flow")
+        check(SystemAudioAsk.step(.notAsked, asked: true, wantsPane: false, guideLive: true) == .guide, "system audio drag fallback", "asked and still not allowed: the drag flow, never a second prompt")
+        check(SystemAudioAsk.step(.denied, asked: true, wantsPane: false, guideLive: true) == .guide, "system audio drag fallback", "answered no: the drag flow")
+        check(SystemAudioAsk.step(.denied, asked: false, wantsPane: false, guideLive: false) == .openPane
+              && SystemAudioAsk.step(.notAsked, asked: true, wantsPane: false, guideLive: false) == .openPane, "system audio no guide", "no guide: the bare pane")
+
+        // The pane: macOS 26 has the Privacy_AudioCapture anchor; 14 and 15 open Screen & System Audio Recording.
+        let audio = PermissionPane.systemAudio
+        check(audio.settingsURL(macOSMajor: 26).absoluteString == "x-apple.systempreferences:com.apple.preference.security?Privacy_AudioCapture"
+              && audio.settingsURL(macOSMajor: 27).absoluteString.hasSuffix("?Privacy_AudioCapture"), "system audio pane", "26 and later: the System Audio Recording anchor")
+        check(audio.settingsURL(macOSMajor: 15).absoluteString == "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
+              && audio.settingsURL(macOSMajor: 14).absoluteString.hasSuffix("?Privacy_ScreenCapture"), "system audio pane", "14 and 15: Screen & System Audio Recording")
+        check(audio.takesDrag && audio.title == "System Audio Recording", "system audio pane", "takes the dragged app; named as Settings names it")
+
+        // drag(): the flow for a pane with no row, holding this copy, and the resume once.
+        let g = guide()
+        let rowIDs = g.rows.map(\.id)
+        var requests: [PermissionDragRequest] = []
+        g.startDragFlow = { requests.append($0) }
+        var resumed = 0
+        g.drag(.systemAudio, for: "Mute other apps") { resumed += 1 }
+        check(requests == [PermissionDragRequest(rowID: "systemAudio", pane: .systemAudio, source: PermissionDragSource(path: appPath, name: "COS Control"), feature: "Mute other apps")],
+              "system audio drag", "one flow on the System Audio pane with the running copy: \(requests)")
+        check(g.waitingFeature["systemAudio"] == "Mute other apps" && g.lastDragRequest == requests.first, "system audio drag", "the bar names the feature")
+        check(g.rows.map(\.id) == rowIDs, "system audio drag", "no new guide row")
+        check(resumed == 0, "system audio drag resume", "nothing resumes before the grant")
+        await g.refresh()
+        check(resumed == 0, "system audio drag resume", "a refresh is not a grant")
+        g.granted(rowID: "systemAudio")
+        check(resumed == 1 && g.waitingFeature["systemAudio"] == nil, "system audio drag resume", "the grant resumes the feature once")
+        g.granted(rowID: "systemAudio")
+        check(resumed == 1, "system audio drag resume", "a second grant does not run it again")
     }
 
     // MARK: Just in time

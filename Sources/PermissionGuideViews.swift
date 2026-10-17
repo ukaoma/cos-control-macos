@@ -370,8 +370,13 @@ enum PermissionHelperCopy {
     }
 
     static func trouble(pane: PermissionPane) -> String {
-        pane == .fullDiskAccess
-            ? "Reveal in Finder shows the file to add. After adding it, Check now runs one stopped job to confirm."
-            : "If COS Control is already in the list and switched on, that entry may belong to an older build. Reset and add again removes it so you can add this one."
+        switch pane {
+        case .fullDiskAccess:
+            "Reveal in Finder shows the file to add. After adding it, Check now runs one stopped job to confirm."
+        case .systemAudio:
+            "If COS Control is already in the list, turn its switch off and on. Still stuck? Select it, remove it with the minus button, then drag it in again."
+        default:
+            "If COS Control is already in the list and switched on, that entry may belong to an older build. Reset and add again removes it so you can add this one."
+        }
     }
 }

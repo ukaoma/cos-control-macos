@@ -28,6 +28,9 @@ enum PermissionStatus: String, Sendable, Equatable {
 /// The System Settings panes the guide opens.
 enum PermissionPane: String, Sendable, Equatable {
     case accessibility, fullDiskAccess, automation, notifications
+    /// 0.5.318: System Audio Recording, which Mute other apps and All Mac audio need. It has no row in the guide: only
+    /// the feature that uses it asks (`PermissionGuide.drag`), after macOS's own prompt (SystemAudioAsk).
+    case systemAudio
 
     var title: String {
         switch self {
@@ -35,22 +38,74 @@ enum PermissionPane: String, Sendable, Equatable {
         case .fullDiskAccess: "Full Disk Access"
         case .automation: "Automation"
         case .notifications: "Notifications"
+        case .systemAudio: "System Audio Recording"
         }
     }
 
-    /// The deep link. `bundleID` matters only for Notifications, which opens that app's own page.
-    func settingsURL(bundleID: String = "com.gotcos.control") -> URL {
+    /// The deep link. `bundleID` matters only for Notifications, which opens that app's own page. System Audio
+    /// Recording: macOS 26's Privacy & Security extension carries a Privacy_AudioCapture anchor ("Allow applications
+    /// to record your system audio", read from its PrivacySecurity.searchTerms on 26.6). Older versions are not known
+    /// to have it, so 14 and 15 open Privacy_ScreenCapture, the Screen & System Audio Recording page that holds the
+    /// System Audio Recording Only list on 15.
+    func settingsURL(bundleID: String = "com.gotcos.control",
+                     macOSMajor: Int = ProcessInfo.processInfo.operatingSystemVersion.majorVersion) -> URL {
         let raw: String = switch self {
         case .accessibility: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
         case .fullDiskAccess: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"
         case .automation: "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation"
         case .notifications: "x-apple.systempreferences:com.apple.Notifications-Settings.extension?id=\(bundleID)"
+        case .systemAudio: macOSMajor >= 26
+            ? "x-apple.systempreferences:com.apple.preference.security?Privacy_AudioCapture"
+            : "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
         }
         return URL(string: raw)!
     }
 
     /// Panes whose list takes a dragged app or binary.
-    var takesDrag: Bool { self == .accessibility || self == .fullDiskAccess }
+    var takesDrag: Bool { self == .accessibility || self == .fullDiskAccess || self == .systemAudio }
+}
+
+// MARK: - Asking from a feature (0.5.318)
+
+/// Where a feature's own Allow goes. In the app with background work on, the guide's drag flow (exact pane, floating
+/// bar, poll, resume); anywhere else (a check build, background work off) macOS's prompt and the bare pane.
+enum PermissionAskRoute: Sendable, Equatable {
+    case alreadyAllowed, guide, promptThenPane
+
+    static func decide(allowed: Bool, guideLive: Bool) -> PermissionAskRoute {
+        if allowed { return .alreadyAllowed }
+        return guideLive ? .guide : .promptThenPane
+    }
+}
+
+/// TCC's answer for System Audio Recording (kTCCServiceAudioCapture). TCCAccessPreflight returns 0 for allowed and 1
+/// for denied, as Apple's AudioCap sample reads it; anything else (2, not asked yet, or no answer at all) is not asked.
+enum SystemAudioFact: Sendable, Equatable {
+    case allowed, denied, notAsked
+
+    init(preflight: Int32?) {
+        switch preflight {
+        case 0: self = .allowed
+        case 1: self = .denied
+        default: self = .notAsked
+        }
+    }
+}
+
+/// The one System Audio Recording request (0.5.318), shared by Mute other apps, the mute fallback note and All Mac
+/// audio. macOS lists an app under System Audio Recording Only only after that app asks and the person answers, so
+/// the first step is macOS's own prompt (TCCAccessRequest). Once it has been answered, macOS never asks again: the
+/// drag flow then opens the pane with COS Control on the bar to drag in, or the bare pane where the guide cannot run.
+enum SystemAudioAsk: Sendable, Equatable {
+    case done, prompt, guide, openPane
+
+    /// `asked`: the prompt already ran in this request. `wantsPane`: the person asked to see the setting itself (the
+    /// fallback note's button), so an allowed answer still opens the pane.
+    static func step(_ fact: SystemAudioFact, asked: Bool, wantsPane: Bool, guideLive: Bool) -> SystemAudioAsk {
+        if fact == .allowed { return wantsPane ? .openPane : .done }
+        if fact == .notAsked, !asked { return .prompt }
+        return guideLive ? .guide : .openPane
+    }
 }
 
 /// What the floating bar holds as its drag source.
@@ -803,6 +858,17 @@ final class PermissionGuide: ObservableObject {
                 startDragFlow?(request)
             }
         }
+    }
+
+    /// A permission with no row of its own (System Audio Recording): the drag flow for that pane straight away, holding
+    /// this copy of COS Control, and `resume` once, when the bar sees the grant.
+    func drag(_ pane: PermissionPane, for feature: String, resume: (@MainActor () -> Void)? = nil) {
+        let request = PermissionDragRequest(rowID: pane.rawValue, pane: pane,
+                                            source: PermissionDragSource(path: appPath, name: appName), feature: feature)
+        waitingFeature[request.rowID] = feature
+        if let resume { resumes[request.rowID, default: []].append(resume) }
+        lastDragRequest = request
+        startDragFlow?(request)
     }
 
     /// The drag flow saw the grant (Accessibility), or a fresh run of a stopped job worked (background jobs).

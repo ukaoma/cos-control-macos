@@ -198,7 +198,7 @@ enum DictationInsertPolicy {
         }
         var note: String {
             switch self {
-            case .notTrusted: "Allow COS Control in Accessibility to drop text in for you. For now, click where you want it and press ⌘V."
+            case .notTrusted: "Allow COS Control in Accessibility to drop text in for you. Already on? Reset and add again. For now, click where you want it and press ⌘V."
             case .secureInput: "Another app is holding secure keyboard input, so COS will not type. Click where you want it and press ⌘V."
             case .secureField: "COS never types into a password field. Press ⌘V yourself if you mean to."
             case .ownOverlay, .noTextBox: "Click where you want it, then press ⌘V."

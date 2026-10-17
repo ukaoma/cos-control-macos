@@ -34,6 +34,13 @@ struct COSControlApp: App {
         model.dictation.useWhisper = { [weak model] in await model?.useWhisperForDictation() ?? false }
         model.dictation.openTranscriptionSettings = { [weak model] in model?.showTranscriptionSettings?() }
         model.dictation.serverVersion = { [weak model] in model?.status.version }
+        // 0.5.318: Allow…, Reset and System Audio Recording go through the permission guide, as the pet jump does.
+        model.dictation.requestAccessibility = { [weak model] resume in model?.requestDictationAccessibility(resume: resume) }
+        model.dictation.resetAccessibility = { [weak model] resume in model?.resetDictationAccessibility(resume: resume) }
+        model.dictation.requestSystemAudio = { [weak model] wantsPane in
+            await model?.requestSystemAudio(for: "Mute other apps", wantsPane: wantsPane) ?? false
+        }
+        model.macRecording.requestSystemAudio = { [weak model] in await model?.requestSystemAudio(for: "All Mac audio") ?? false }
         // 0.5.312 sounds: the pet's family picks its default sound; nothing plays while a Mac recording captures.
         // Any live COS recording, Mac or glasses (QA 2026-10-15): muting other apps would silence the call being recorded,
         // and a glasses mic hears the call through the Mac's speakers.

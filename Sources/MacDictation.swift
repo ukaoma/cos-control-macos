@@ -687,6 +687,48 @@ struct DictationDelivered: Sendable {
     }
 }
 
+/// System Audio Recording through TCC, the way Apple's AudioCap sample reads and asks for it (0.5.318). macOS lists an
+/// app under System Audio Recording Only only once that app has asked and the person answered, and Queen's Mac had no
+/// COS Control row at all: nothing ever asked. A tap alone does not ask either (Apple: the prompt comes "the first
+/// time you start recording from an aggregate device that contains a tap"), so the request is TCCAccessRequest, the
+/// call AudioCap makes. The routing around it is SystemAudioAsk; ControllerModel.requestSystemAudio is the one caller.
+enum SystemAudioPermission {
+    private static let path = "/System/Library/PrivateFrameworks/TCC.framework/Versions/A/TCC"
+    private static let service = "kTCCServiceAudioCapture"
+
+    /// TCCAccessPreflight's answer, or nil when the SPI is missing. Never shows anything.
+    nonisolated static var preflight: Int32? {
+        guard let handle = dlopen(path, RTLD_NOW), let symbol = dlsym(handle, "TCCAccessPreflight") else { return nil }
+        typealias Preflight = @convention(c) (CFString, CFDictionary?) -> Int32
+        return unsafeBitCast(symbol, to: Preflight.self)(service as CFString, nil)
+    }
+    nonisolated static var fact: SystemAudioFact { SystemAudioFact(preflight: preflight) }
+
+    /// macOS's own prompt, answered by the person. False when the SPI is missing, when macOS answers no without asking
+    /// (it was answered before), or when no answer comes within `timeout`, so a caller can never hang on it. Asked from
+    /// the main actor, as AudioCap asks from its button.
+    @MainActor static func request(timeout: Duration = .seconds(90)) async -> Bool {
+        guard let handle = dlopen(path, RTLD_NOW), let symbol = dlsym(handle, "TCCAccessRequest") else {
+            dictationLog.error("system audio: TCCAccessRequest not found")
+            return false
+        }
+        typealias Request = @convention(c) (CFString, CFDictionary?, @escaping @convention(block) @Sendable (Bool) -> Void) -> Void
+        let answered = OSAllocatedUnfairLock(initialState: false)
+        let claim: @Sendable () -> Bool = { answered.withLock { done in defer { done = true }; return !done } }
+        let granted = await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+            unsafeBitCast(symbol, to: Request.self)(service as CFString, nil) { granted in
+                if claim() { continuation.resume(returning: granted) }
+            }
+            Task {
+                try? await Task.sleep(for: timeout)
+                if claim() { continuation.resume(returning: false) }
+            }
+        }
+        dictationLog.notice("system audio: asked, granted=\(granted, privacy: .public) preflight=\(preflight ?? -1, privacy: .public)")
+        return granted
+    }
+}
+
 /// Quiet while dictating (0.5.313, Miles 22:06: "mute the rest of the sound playing through the speakers when dictation
 /// mode is running ... as soon as you're done it picks back up"). Without System Audio Recording, COS lowers the default
 /// output's volume instead and saves the exact scalar first, on disk too, so a quit or crash in between is put back at
@@ -784,12 +826,7 @@ struct DictationDelivered: Sendable {
 
     /// System Audio Recording, through TCC's preflight (the check Apple's AudioCap sample uses). Unknown reads as no,
     /// which only means COS lowers the volume instead of muting.
-    nonisolated static var tapPermitted: Bool {
-        guard let handle = dlopen("/System/Library/PrivateFrameworks/TCC.framework/Versions/A/TCC", RTLD_NOW),
-              let symbol = dlsym(handle, "TCCAccessPreflight") else { return false }
-        typealias Preflight = @convention(c) (CFString, CFDictionary?) -> Int32
-        return unsafeBitCast(symbol, to: Preflight.self)("kTCCServiceAudioCapture" as CFString, nil) == 0
-    }
+    nonisolated static var tapPermitted: Bool { SystemAudioPermission.fact == .allowed }
 
     private func muteOtherApps() -> Bool {
         guard #available(macOS 14.2, *) else { return false }
@@ -869,7 +906,7 @@ struct DictationDelivered: Sendable {
         return true
     }
     private static func note(permission: Bool) -> String {
-        permission ? "Last time COS couldn't mute other apps, so it lowered the volume instead. Check Screen & System Audio Recording for COS Control."
+        permission ? "Last time COS couldn't mute other apps, so it lowered the volume instead. Check System Audio Recording for COS Control."
                    : "Last time COS couldn't mute other apps, so it lowered the volume instead."
     }
     /// The reverse of what was built (DictationMuteTap.teardown, tested), every status logged.
@@ -1172,6 +1209,12 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
     var installParakeet: (() -> Void)?
     var useWhisper: (@MainActor () async -> Bool)?
     var openTranscriptionSettings: (() -> Void)?
+    /// 0.5.318: Accessibility and System Audio Recording through the permission guide (ControllerModel, wired in
+    /// COSControlApp). The closure runs once the grant is seen. nil in a check build, which then asks macOS directly.
+    var requestAccessibility: ((@escaping @MainActor () -> Void) -> Void)?
+    var resetAccessibility: ((@escaping @MainActor () -> Void) -> Void)?
+    /// `wantsPane`: the person asked to see the setting itself. True once System Audio Recording is allowed.
+    var requestSystemAudio: (@MainActor (_ wantsPane: Bool) async -> Bool)?
     /// The server version a dictation succeeded on, for the setup guide's Voice row (DictationProof).
     var serverVersion: (() -> String?)?
     /// The screen the floating pill uses, chosen when dictation starts (the focused window's screen).
@@ -1323,8 +1366,36 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
         return FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/COS Control/dictation-history.json")
     }
     func refreshMicrophones() { microphones = DictationAudioDevices.inputs() }
+    /// Allow… (the pet's card and Settings). 0.5.317 only raised macOS's prompt, which shows nothing once COS Control
+    /// has a row in the Accessibility list (Queen: the row read ON, this copy was not trusted, the button did nothing).
+    /// Now it is the guide's drag flow, as the pet jump uses: the exact pane, the bar holding this copy, and the card
+    /// goes once the grant is seen.
     func requestInsertionPermission() {
-        _ = AXIsProcessTrustedWithOptions(["AXTrustedCheckOptionPrompt": true] as CFDictionary)
+        guard let ask = requestAccessibility else {
+            _ = AXIsProcessTrustedWithOptions(["AXTrustedCheckOptionPrompt": true] as CFDictionary)
+            if !AXIsProcessTrusted(), let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
+                NSWorkspace.shared.open(url)
+            }
+            return
+        }
+        ask { [weak self] in self?.insertionAllowed() }
+    }
+    /// Reset (the card), for a row that reads ON while this copy is not trusted: Reset and add again.
+    func resetInsertionPermission() {
+        guard let reset = resetAccessibility else { requestInsertionPermission(); return }
+        reset { [weak self] in self?.insertionAllowed() }
+    }
+    /// The grant landed: the card that asked for it has done its job.
+    private func insertionAllowed() {
+        dictationLog.notice("insertion: Accessibility allowed")
+        if case .copied(.notTrusted) = card?.kind { dismissCard() }
+    }
+    /// Mute other apps' Allow and the fallback note's Check (0.5.318): ControllerModel.requestSystemAudio, which asks
+    /// macOS first and opens the drag flow only when macOS will not ask again.
+    func requestSystemAudioPermission(wantsPane: Bool = false) async -> Bool {
+        if let ask = requestSystemAudio { return await ask(wantsPane) }
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") { NSWorkspace.shared.open(url) }
+        return DictationQuietController.tapPermitted
     }
     func trigger(_ slot: DictationShortcutSlot) -> DictationTrigger? {
         switch slot {
@@ -2169,14 +2240,18 @@ private struct DictationQuietSettings: View {
                     options: DictationQuietMode.allCases.map { COSDropdownOption($0, $0.title) })
             .disabled(store.busy)
         if store.quietMode == .mute, !permitted {
-            Text("Muting other apps needs Screen & System Audio Recording for COS Control. Until it's allowed, COS lowers your Mac's volume while you dictate and puts it back after.")
+            Text("Muting other apps needs System Audio Recording for COS Control. Until it's allowed, COS lowers your Mac's volume while you dictate and puts it back after.")
                 .font(.caption2).foregroundStyle(COSPalette.amber)
-            Button("Open Screen & System Audio Recording…") {
-                if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") { NSWorkspace.shared.open(url) }
+            // 0.5.318: macOS's own prompt first, which is what adds COS Control to the list; then the drag flow.
+            Button("Allow System Audio Recording…") {
+                Task { permitted = await store.requestSystemAudioPermission() }
             }.controlSize(.small)
         }
         if store.quietMode == .mute, permitted, let note = store.quietNote {
             Text(note).font(.caption2).foregroundStyle(COSPalette.amber)
+            Button("Check System Audio Recording…") {
+                Task { permitted = await store.requestSystemAudioPermission(wantsPane: true) }
+            }.controlSize(.small)
         }
         Text("Never during a Mac recording. Music and video stay muted, not paused: COS can't tell what's playing, so it never presses Play/Pause.")
             .font(.caption2).foregroundStyle(.secondary)
@@ -2561,6 +2636,10 @@ struct DictationCardView: View {
                     if refusal == .notTrusted {
                         Button("Allow…") { store.requestInsertionPermission() }
                             .buttonStyle(DictationButtonStyle(size: size))
+                        // 0.5.318: the row can read ON for an older copy; the note says "Already on? Reset and add again."
+                        Button("Reset") { store.resetInsertionPermission() }
+                            .buttonStyle(DictationButtonStyle(size: size))
+                            .help("Already on in System Settings? Removes COS Control's old Accessibility entry so you can add this copy.")
                     }
                     Button("Fix a word") { store.openFix(card.recordID) }
                         .buttonStyle(DictationButtonStyle(size: size))

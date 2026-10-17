@@ -25,24 +25,27 @@ CODE="$(grep -v -E '^[[:space:]]*//' "$SRC")"
 zsh "$ROOT/Tests/run-dictation-sound-runtime.sh"
 # 0.5.315: the quiet controller, lifted verbatim, type-checks in Swift 6 strict mode against the core (seconds, not a full
 # Control compile). It cannot RUN here: a real mute would silence this Mac and needs System Audio Recording.
+# 0.5.318: SystemAudioPermission (TCC's preflight and request) is lifted with it; its SystemAudioFact is in the guide model.
 /usr/bin/python3 - "$SRC" "$DIR/DictationQuiet.swift" <<'PY'
 import sys
 src = open(sys.argv[1], encoding="utf-8").read()
-key = "@MainActor final class DictationQuietController {"
-assert src.count(key) == 1
-start = src.index(key); depth, i = 0, src.index("{", start)
-while True:
-    c = src[i]
-    if c == "{": depth += 1
-    elif c == "}":
-        depth -= 1
-        if depth == 0: break
-    i += 1
-open(sys.argv[2], "w", encoding="utf-8").write('import Foundation\nimport CoreAudio\nimport AudioToolbox\nimport os\n\nlet dictationLog = Logger(subsystem: "com.gotcos.control.tests", category: "dictation")\n\n' + src[start:i + 1] + "\n")
+def lift(key):
+    assert src.count(key) == 1, key
+    start = src.index(key); depth, i = 0, src.index("{", start)
+    while True:
+        c = src[i]
+        if c == "{": depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0: break
+        i += 1
+    return src[start:i + 1]
+lifted = lift("@MainActor final class DictationQuietController {") + "\n\n" + lift("enum SystemAudioPermission {")
+open(sys.argv[2], "w", encoding="utf-8").write('import Foundation\nimport CoreAudio\nimport AudioToolbox\nimport os\n\nlet dictationLog = Logger(subsystem: "com.gotcos.control.tests", category: "dictation")\n\n' + lifted + "\n")
 PY
 /usr/bin/python3 "$ROOT/Tests/kit-compile.py" "$ROOT/Tests/compile-guard.sh" swiftc -typecheck -target arm64-apple-macosx14.0 -swift-version 6 -strict-concurrency=complete -parse-as-library \
-  "$ROOT/Sources/MacDictationCore.swift" "$DIR/DictationQuiet.swift"
-print "PASS dictation quiet controller type-checks in Swift 6 (lifted verbatim; not executed)"
+  "$ROOT/Sources/MacDictationCore.swift" "$ROOT/Sources/PermissionGuideModel.swift" "$DIR/DictationQuiet.swift"
+print "PASS dictation quiet controller and system audio permission type-check in Swift 6 (lifted verbatim; not executed)"
 # The shortcut monitors also take clicks (⌥-click is a chord), and NSEvent raises on a mouse event's keyCode.
 [[ $(print -r -- "$CODE" | grep -c -F 'let key = isKey ? event.keyCode : 0') == 1 && $(print -r -- "$CODE" | grep -c -F 'event.keyCode') == 2 ]] || { print -u2 "FAIL: keyCode must be read only from key events in the shortcut monitors"; exit 1; }
 # 0.5.313: clicks reach the HOLD tracker as clicks (time-windowed chord), never as a key down, or any click while talking

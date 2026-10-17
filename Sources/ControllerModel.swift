@@ -5572,6 +5572,8 @@ final class ControllerModel: ObservableObject {
 
     /// The jump waiting on Accessibility, run again when the guide sees the grant.
     private var accessibilityResume: (@MainActor () -> Void)?
+    /// What the bar names as waiting, when it is not the jump (0.5.318: dictation's Reset). Read once, with the resume.
+    private var accessibilityFeature: String?
     /// The guide's live probes and drag flow exist only in the app, with background work on.
     private var permissionGuideLive: Bool {
         backgroundWorkEnabled && Bundle.main.bundleURL.pathExtension == "app" && Bundle.main.bundleIdentifier != nil
@@ -5618,10 +5620,65 @@ final class ControllerModel: ObservableObject {
         if permissionGuideLive {
             let resume = accessibilityResume
             accessibilityResume = nil
-            if !permissionGuide.need(.accessibility, for: "Jump to your session", resume: resume) { return }
+            let feature = accessibilityFeature ?? "Jump to your session"
+            accessibilityFeature = nil
+            if !permissionGuide.need(.accessibility, for: feature, resume: resume) { return }
         }
         guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") else { return }
         NSWorkspace.shared.open(url)
+    }
+
+    /// What the floating bar says dictation is waiting for.
+    nonisolated static let dictationAccessibilityFeature = "Dictate into Mac apps"
+
+    /// 0.5.318: dictation's Allow… (the pet card, Settings). The same drag flow as the pet jump; `resume` runs once the
+    /// bar sees the grant. Where the guide cannot run, macOS's prompt and then the bare pane.
+    func requestDictationAccessibility(resume: @escaping @MainActor () -> Void) {
+        switch PermissionAskRoute.decide(allowed: AXIsProcessTrusted(), guideLive: permissionGuideLive) {
+        case .alreadyAllowed:
+            resume()
+        case .guide:
+            if permissionGuide.need(.accessibility, for: Self.dictationAccessibilityFeature, resume: resume) { resume() }
+        case .promptThenPane:
+            _ = AXIsProcessTrustedWithOptions(["AXTrustedCheckOptionPrompt": true] as CFDictionary)
+            if AXIsProcessTrusted() { resume(); return }
+            if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") { NSWorkspace.shared.open(url) }
+        }
+    }
+
+    /// 0.5.318: the dictation card's Reset, for a row that reads ON while this copy is not trusted. The 0.5.267 repair,
+    /// which ends in the drag flow; dictation's `resume` waits on it beside any jump already waiting.
+    func resetDictationAccessibility(resume: @escaping @MainActor () -> Void) {
+        let waiting = accessibilityResume
+        accessibilityResume = { waiting?(); resume() }
+        accessibilityFeature = Self.dictationAccessibilityFeature
+        resetAccessibilityAndAddAgain()
+    }
+
+    /// 0.5.318: THE System Audio Recording request, for Mute other apps, the mute fallback note and All Mac audio.
+    /// macOS's own prompt first (SystemAudioPermission.request), since only an app that asked is listed under System
+    /// Audio Recording Only; once that has been answered, the drag flow on the pane with this copy on the bar. Returns
+    /// whether it is allowed now; `resume` runs once it is, now or when the bar sees it.
+    @discardableResult
+    func requestSystemAudio(for feature: String, wantsPane: Bool = false, resume: (@MainActor () -> Void)? = nil) async -> Bool {
+        var fact = SystemAudioPermission.fact
+        var step = SystemAudioAsk.step(fact, asked: false, wantsPane: wantsPane, guideLive: permissionGuideLive)
+        if step == .prompt {
+            let granted = await SystemAudioPermission.request()
+            fact = granted ? .allowed : SystemAudioPermission.fact
+            step = SystemAudioAsk.step(fact, asked: true, wantsPane: false, guideLive: permissionGuideLive)
+        }
+        switch step {
+        case .done:
+            resume?()
+            return true
+        case .guide:
+            permissionGuide.drag(.systemAudio, for: feature, resume: resume)
+        case .openPane, .prompt:
+            NSWorkspace.shared.open(PermissionPane.systemAudio.settingsURL())
+            if fact == .allowed { resume?() }
+        }
+        return fact == .allowed
     }
 
     @discardableResult

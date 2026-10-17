@@ -8,7 +8,8 @@ import SwiftUI
 /// Accessibility: AXIsProcessTrusted() once a second, the com.apple.accessibility.api distributed notification as a
 /// hint to look sooner, and a real cross-process AX read before anything says Allowed (the API can report trusted
 /// while calls still fail). Full Disk Access for a background interpreter cannot be read for another binary, so the bar
-/// offers Check now, which starts one stopped job and reads its fresh exit code.
+/// offers Check now, which starts one stopped job and reads its fresh exit code. System Audio Recording (0.5.318) is
+/// TCC's preflight once a second.
 @MainActor
 final class PermissionDragFlow: ObservableObject {
     @Published private(set) var request: PermissionDragRequest?
@@ -70,7 +71,12 @@ final class PermissionDragFlow: ObservableObject {
     func tick(settingsOpen: Bool? = nil) {
         guard var step, let request else { return }
         let open = settingsOpen ?? !NSRunningApplication.runningApplications(withBundleIdentifier: Self.settingsBundleID).isEmpty
-        let granted = request.pane == .accessibility ? (AXIsProcessTrusted() && Self.accessibilityReadWorks()) : grantedByCheck
+        let granted = switch request.pane {
+        case .accessibility: AXIsProcessTrusted() && Self.accessibilityReadWorks()
+        // TCC's own answer, read fresh each second (0.5.318): the switch in System Audio Recording Only.
+        case .systemAudio: SystemAudioPermission.fact == .allowed
+        default: grantedByCheck
+        }
         let effects = step.observe(granted: granted, settingsOpen: open, now: Date().timeIntervalSince1970)
         self.step = step
         phase = step.phase

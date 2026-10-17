@@ -107,6 +107,12 @@ func pipelineFacts(stopped: Bool) -> PermissionFacts {
                     request: fda, phase: .waiting, sourceURL: URL(fileURLWithPath: "/opt/homebrew/bin/python3"),
                     checkMessage: "Still stopped. Make sure the switch beside it is on, then check again.")).padding(12),
                    width: 520, height: 250, name: "bar-full-disk-access", out: out)
+        // 0.5.318: System Audio Recording, asked by Mute other apps once macOS will not ask again.
+        let audio = PermissionDragRequest(rowID: "systemAudio", pane: .systemAudio, source: app, feature: "Mute other apps")
+        for (name, phase) in [("bar-system-audio", HelperBarStep.Phase.waiting), ("bar-system-audio-trouble", .trouble)] {
+            try render(PermissionHelperBarContent(state: PermissionHelperBarState(request: audio, phase: phase, sourceURL: appURL)).padding(12),
+                       width: 520, height: phase == .trouble ? 300 : 190, name: name, out: out)
+        }
 
         // 5. Repair: a re-signed update (Reset and add again) and the old test builds, one already reset.
         var stale = PermissionFacts(); stale.notifications = .allowed(alertsOn: true); stale.loginItem = .enabled

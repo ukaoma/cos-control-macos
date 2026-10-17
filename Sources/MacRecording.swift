@@ -67,6 +67,9 @@ final class MacRecordingStore: ObservableObject {
     /// A stop the person did not make (limit, sleep, capture failure), with its reason.
     var stoppedOnItsOwn: ((String) -> Void)?
     var openLiveMeeting: ((String) -> Void)?
+    /// 0.5.318: ControllerModel.requestSystemAudio, wired in COSControlApp. Whether System Audio Recording is allowed.
+    var requestSystemAudio: (@MainActor () async -> Bool)?
+    private var askingSystemAudio = false
     init(spool: MacRecordingSpool = MacRecordingSpool()) { self.spool = spool }
 
     func prepare(bridge: @escaping Bridge) async {
@@ -142,6 +145,17 @@ final class MacRecordingStore: ObservableObject {
         guard noticeAcknowledged else { return }
         guard canStart, available, let instance, let source = sources.first(where: { $0.id == selectedID }) else { return }
         guard #available(macOS 14.2, *) else { return }
+        // 0.5.318: every tap needs System Audio Recording, and macOS lists COS Control only once COS has asked. Ask
+        // before the capture starts, so the prompt is answered before the first chunk. A no still records as before:
+        // the drag flow is up, and the silence warning says so if nothing arrives.
+        if !DictationQuietController.tapPermitted, let ask = requestSystemAudio {
+            guard !askingSystemAudio else { return }
+            askingSystemAudio = true
+            let allowed = await ask()
+            askingSystemAudio = false
+            recordingLog.notice("system audio before recording: allowed=\(allowed)")
+            guard noticeAcknowledged, canStart, available else { return }
+        }
         phase = "starting"; error = nil; noSpeech = false; captureInterruption = nil; silentChunks = 0; heardSound = false; deliveryPaused = false
         let attempt = UUID(); startAttempt = attempt
         installStopObservers()
