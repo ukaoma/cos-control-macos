@@ -25,6 +25,8 @@ trap 'rm -rf "$BUILD_DIR"' EXIT
 # never milliseconds).
 "$ROOT/Tests/run-work-board-perf.sh" --gate
 "$ROOT/Tests/run-control-instance.sh"
+# 0.5.318: fail before compiling, by file name, when the hand-listed app compile below has fallen behind Sources/.
+/usr/bin/python3 "$ROOT/Tests/sources-list-check.py" "$ROOT"
 
 rm -rf "$ZIP" "$ZIP.sha256"
 mkdir -p "$BUILD_DIR" "$APP/Contents/MacOS" "$APP/Contents/Resources" "$DIST_DIR"

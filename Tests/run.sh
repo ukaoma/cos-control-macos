@@ -24,6 +24,10 @@ export COS_TEST_KIT_DIR="${COS_TEST_KIT_DIR:-$TMP/kits}"
 # Tests/lanes-outside-run.txt. A lane the suite skips is a decision, never an accident.
 /usr/bin/python3 "$ROOT/Tests/lanes-run-check.py" "$ROOT" --selftest
 /usr/bin/python3 "$ROOT/Tests/lanes-run-check.py" "$ROOT"
+# 0.5.318: compiles that list Sources by hand (the release app compile, lanes with ControllerModel.swift) keep up with
+# Sources/: the signed 0.5.317 build failed on two files they lacked.
+/usr/bin/python3 "$ROOT/Tests/sources-list-check.py" "$ROOT" --selftest
+/usr/bin/python3 "$ROOT/Tests/sources-list-check.py" "$ROOT"
 "$ROOT/Tests/run-onboarding.sh"
 # Onboarding P1, Connect your AI: provider-status against fixtures, the app model alone, and the wiring pins.
 "$ROOT/Tests/run-provider-connect.sh"
