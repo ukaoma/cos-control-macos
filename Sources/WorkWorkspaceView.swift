@@ -148,7 +148,10 @@ enum WorkBoardSessionsProjection {
             }
             if latest.isEmpty, let receipt = item.activity?.receipt { latest[receipt.id] = receipt }
             return latest.values.compactMap { receipt in
-                let activity = WorkActivity(receipt: receipt, session: WorkHandoffStore.listedSession(for: receipt, in: sessions))
+                // 0.5.317: the item's own activity already found its session; a caller that passes no session list (the
+                // Work board checks, from 0.5.244) keeps it instead of reading every card as having no session.
+                let own = receipt.id == item.activity?.receipt.id ? item.activity?.session : nil
+                let activity = WorkActivity(receipt: receipt, session: WorkHandoffStore.listedSession(for: receipt, in: sessions) ?? own)
                 guard activity.inProgress || activity.needsAttention else { return nil }
                 if item.completed && !activity.inProgress { return nil }
                 return WorkBoardSessionCard(item: item, activity: activity,

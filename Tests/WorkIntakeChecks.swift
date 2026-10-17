@@ -273,7 +273,9 @@ import Foundation
     precondition(ControllerModel.claudeRevealNotice("running")?.contains("still running") == true, "a running session says so")
     precondition(ControllerModel.claudeRevealNotice("archived")?.contains("archived") == true, "an archived session says so")
     precondition(ControllerModel.claudeRevealNotice("no_transcript")?.contains("no transcript") == true, "a deleted transcript says so")
-    for fallThrough in ["import", "desktop", "desktop_too_old", "invalid", nil] as [String?] {
+    // a6acd99 (2026-10-07, session-open failures are shown): an incomplete id now says so instead of falling through.
+    precondition(ControllerModel.claudeRevealNotice("invalid")?.contains("incomplete ID") == true, "an incomplete session id says so")
+    for fallThrough in ["import", "desktop", "desktop_too_old", nil] as [String?] {
         precondition(ControllerModel.claudeRevealNotice(fallThrough) == nil, "\(fallThrough ?? "nil") keeps the sidebar press")
     }
     func receipt(_ id: String, session: String?, at: Double, title: String = "Retail Liquor Summit Campaign Launch") -> WorkHandoffReceipt {
