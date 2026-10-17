@@ -32,12 +32,38 @@ RSS_CAP = 8 * GIB
 SWAP_GROWTH = GIB
 TIME_LIMIT = 3600
 SAMPLE_SECONDS = .2
+# 2026-10-16 (Miles: "Yes, 3 slots"): COS_COMPILE_SLOTS=N lets N bounded compiles run at once. Each holds LOCK SHARED and
+# one of LOCK.slot0..N-1 exclusively; every exclusive user (the large profile, SLOTS=1, and any older checkout) keeps
+# taking LOCK EXCLUSIVE, so a 30+ GB compile never runs beside a slotted one. Unset or 1 is exactly the single lock.
+MAX_SLOTS = 8
+SLOT_WAIT = 1800  # a slotted compile waits for a slot like the large profile waits for the lock; SLOTS=1 keeps 120 s
+
+
+def slot_count(environ):
+    raw = environ.get('COS_COMPILE_SLOTS', '1')
+    if not re.fullmatch(r'[1-8]', raw):
+        raise ValueError('COS_COMPILE_SLOTS must be a whole number from 1 to 8')
+    return int(raw)
+
+
+def total_cap_bytes(environ):
+    # The machine-wide kill switch for slotted compiles; the default matches compile-guard.sh's min(60 GB, 85% of RAM).
+    raw = environ.get('COS_COMPILE_MAX_TOTAL_GB')
+    if raw is None:
+        ram = int(subprocess.check_output(['/usr/sbin/sysctl', '-n', 'hw.memsize'], text=True)) // GIB
+        return min(60, ram * 85 // 100) * GIB
+    if not re.fullmatch(r'\d+(\.\d+)?', raw) or float(raw) <= 0:
+        raise ValueError('COS_COMPILE_MAX_TOTAL_GB must be a positive number')
+    return int(float(raw) * GIB)
 
 
 def normalize(command, environ):
     forbidden_env = ('COS_COMPILE_GUARD_HELD', 'COS_COMPILE_LOCK',
                      'COS_COMPILE_MIN_FREE_GB', 'COS_COMPILE_MAX_FRONTEND_GB',
                      'COS_COMPILE_MAX_TOTAL_GB', 'SWIFT_EXEC', 'SWIFT_DRIVER_SWIFT_FRONTEND_EXEC')
+    if slot_count(environ) > 1:
+        # Slotted only: the total cap adds the machine-wide kill switch below; it never relaxes a per-compile ceiling.
+        forbidden_env = tuple(key for key in forbidden_env if key != 'COS_COMPILE_MAX_TOTAL_GB')
     if any(key in environ for key in forbidden_env):
         raise ValueError('inherited guard, lock or compiler/resource override is forbidden')
     if not command or Path(command[0]).name != 'swiftc':
@@ -291,7 +317,7 @@ class OwnedProcess:
             tree = None
             try:
                 process = subprocess.Popen(command, start_new_session=True, stdout=stdout, stderr=stderr,
-                                           pass_fds=(() if lock_fd is None else (lock_fd,)))
+                                           pass_fds=lock_fds(lock_fd))
                 tree = ProcessTree(process.pid)
                 os.write(result_write, (json.dumps({'pid': process.pid}) + '\n').encode())
                 while process.poll() is None:
@@ -323,8 +349,8 @@ class OwnedProcess:
                     tree.cleanup(process)
                 os.close(life_read)
                 os.close(result_write)
-                if lock_fd is not None:
-                    os.close(lock_fd)
+                for fd in lock_fds(lock_fd):
+                    os.close(fd)
                 os._exit(0)
         os.close(life_read)
         os.close(result_write)
@@ -409,7 +435,132 @@ def stop_group(process):
     process.wait()
 
 
-def run_owned(command, measure=telemetry, interval=SAMPLE_SECONDS, timeout=TIME_LIMIT, stdout=None, stderr=None, lock_fd=None):
+def lock_fds(lock_fd):
+    if lock_fd is None:
+        return ()
+    return tuple(lock_fd) if isinstance(lock_fd, (tuple, list)) else (lock_fd,)
+
+
+def acquire(slots, wait=None, poll=.2):
+    """The lock this compile holds: ([fds], slot or None). SLOTS=1 is today's single exclusive lock, 120 s."""
+    def open_lock(path):
+        return os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    base = open_lock(LOCK)
+    if slots == 1:
+        deadline = time.monotonic() + (120 if wait is None else wait)
+        while True:
+            try:
+                fcntl.flock(base, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return [base], None
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    os.close(base)
+                    raise TimeoutError('shared compile lock busy after 120 seconds')
+                time.sleep(poll)
+    # Pass the gate (an exclusive compile waiting holds it, so slotted compiles cannot starve it), take LOCK shared,
+    # leave the gate, then any free slot. Nothing is held while waiting, so no order can deadlock.
+    gate = open_lock(LOCK + '.gate')
+    slot_fds = [open_lock(f'{LOCK}.slot{i}') for i in range(slots)]
+    deadline = time.monotonic() + (SLOT_WAIT if wait is None else wait)
+    try:
+        while True:
+            try:
+                fcntl.flock(gate, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                try:
+                    fcntl.flock(base, fcntl.LOCK_SH | fcntl.LOCK_NB)
+                finally:
+                    fcntl.flock(gate, fcntl.LOCK_UN)
+                for index, fd in enumerate(slot_fds):
+                    try:
+                        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        for other in slot_fds:
+                            if other != fd:
+                                os.close(other)
+                        os.close(gate)
+                        return [base, fd], index
+                    except BlockingIOError:
+                        continue
+                fcntl.flock(base, fcntl.LOCK_UN)
+            except BlockingIOError:
+                pass
+            if time.monotonic() >= deadline:
+                raise TimeoutError(f'no compile slot of {slots} free after {int(SLOT_WAIT if wait is None else wait)} seconds')
+            time.sleep(poll)
+    except BaseException:
+        for fd in (base, gate, *slot_fds):
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        raise
+
+
+def owner_path(index):
+    return f'{LOCK}.slot{index}.owner'
+
+
+def register_owner(index):
+    me = process_info(os.getpid())
+    record = {'pid': os.getpid(), 'birth': list(birth(me)), 'acquiredNs': time.time_ns()}
+    fd, tmp = tempfile.mkstemp(prefix='.owner-', dir=os.path.dirname(LOCK))
+    with os.fdopen(fd, 'w') as stream:
+        json.dump(record, stream)
+    os.replace(tmp, owner_path(index))
+    return record
+
+
+def release_owner(index):
+    try:
+        if json.loads(Path(owner_path(index)).read_text()).get('pid') == os.getpid():
+            os.unlink(owner_path(index))
+    except (OSError, ValueError):
+        pass
+
+
+def live_owners():
+    owners = []
+    for index in range(MAX_SLOTS):
+        try:
+            record = json.loads(Path(owner_path(index)).read_text())
+            info = process_info(int(record['pid']))
+        except (OSError, ValueError, KeyError, TypeError, ProcessIdentityUnavailable):
+            continue
+        if info is not None and list(birth(info)) == list(record['birth']):
+            owners.append(record)
+    return owners
+
+
+def frontend_rss(pgid=None, rows=None):
+    """(all swift-frontends' RSS, the RSS of those in process group pgid), in bytes."""
+    if rows is None:
+        rows = subprocess.check_output(['/bin/ps', '-axo', 'pgid=,rss=,comm='], text=True, timeout=5).splitlines()
+    total = mine = 0
+    for line in rows:
+        parts = line.split(None, 2)
+        if len(parts) == 3 and Path(parts[2].strip()).name == 'swift-frontend':
+            total += int(parts[1]) * 1024
+            if pgid is not None and int(parts[0]) == pgid:
+                mine += int(parts[1]) * 1024
+    return total, mine
+
+
+def total_switch(cap, me, owners=None, rss=None):
+    """The machine-wide kill switch: past the cap, only the NEWEST slotted compile stops, and only when someone else's
+    frontends share the machine (a lone compile answers to its own 8 GiB cap)."""
+    def check(process):
+        total, mine = (rss or frontend_rss)(process.pid)
+        if total <= cap or total - mine <= 0:
+            return None
+        live = (owners or live_owners)()
+        if not live or max(live, key=lambda o: (o['acquiredNs'], o['pid']))['pid'] != me:
+            return None
+        return (f'all swift-frontends passed {cap / GIB:g} GB together ({total / GIB:.1f} GB); '
+                'this was the newest compile, so only it stopped')
+    return check
+
+
+def run_owned(command, measure=telemetry, interval=SAMPLE_SECONDS, timeout=TIME_LIMIT, stdout=None, stderr=None, lock_fd=None,
+              switch=None):
     started = time.monotonic()
     first = measure(None)
     report = {'startAvailableBytes': first['availableBytes'], 'startSwapBytes': first['swapBytes'],
@@ -435,6 +586,8 @@ def run_owned(command, measure=telemetry, interval=SAMPLE_SECONDS, timeout=TIME_
                 reason = 'system swap grew more than 1 GiB'
             elif time.monotonic() - started > timeout:
                 reason = 'bounded command exceeded time limit'
+            elif switch is not None:
+                reason = switch(process)
             if reason:
                 break
             time.sleep(interval)
@@ -490,19 +643,17 @@ def main():
     for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
         signal.signal(sig, interrupted)
     lock = None
+    slot = None
     try:
         normalized = normalize(command, os.environ)
         report['commandSHA256'] = hashlib.sha256('\0'.join(normalized).encode()).hexdigest()
-        lock = os.open(LOCK, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
-        deadline = time.monotonic() + 120
-        while True:
-            try:
-                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                break
-            except BlockingIOError:
-                if time.monotonic() >= deadline:
-                    raise TimeoutError('shared compile lock busy after 120 seconds')
-                time.sleep(.2)
+        slots = slot_count(os.environ)
+        lock, slot = acquire(slots)
+        switch = None
+        if slot is not None:
+            report['slot'] = {'index': slot, 'of': slots}
+            register_owner(slot)
+            switch = total_switch(total_cap_bytes(os.environ), os.getpid())
         # Driver-only planning runs under the same watchdog and lock; it cannot compile.
         with tempfile.TemporaryFile(mode='w+') as plan_out, tempfile.TemporaryFile(mode='w+') as plan_err:
             planning = run_owned([normalized[0], '-driver-print-jobs', *normalized[1:]],
@@ -516,15 +667,19 @@ def main():
             plan = plan_out.read() + plan_err.read()
         report['frontendJobs'] = validate_plan(plan)
         report['planSHA256'] = hashlib.sha256(plan.encode()).hexdigest()
-        report.update(run_owned(normalized, lock_fd=lock))
+        report.update(run_owned(normalized, lock_fd=lock, switch=switch))
         code = report['exitCode']
     except BaseException as error:
         report.update(status='infrastructure-error', reason=str(error), exitCode=70)
         print('compile-bounded: ' + str(error), file=sys.stderr)
     finally:
-        if lock is not None:
-            os.close(lock)
+        if slot is not None:
+            release_owner(slot)
+        for fd in lock or ():
+            os.close(fd)
         write_receipt(args.receipt, report)
+        if slot is not None and report.get('status') == 'stopped':
+            print('compile-bounded: STOPPED (slot ' + str(slot) + '): ' + str(report.get('reason')), file=sys.stderr)
         print('compile-bounded: ' + report['status'] + '; receipt ' + str(args.receipt), file=sys.stderr)
     return code
 

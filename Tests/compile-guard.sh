@@ -38,12 +38,18 @@ case "$PROFILE" in
   large|bounded|auto) ;;
   *) echo "compile-guard: unknown compile profile" >&2; exit 2 ;;
 esac
+# 2026-10-16 (Miles: "Yes, 3 slots"): COS_COMPILE_SLOTS=N (1 to 8, default 1) lets N bounded compiles run at once, each
+# under its own 8 GiB cap and a machine-wide total switch that stops only the newest (compile-bounded.py). With N > 1 a
+# direct swiftc job always takes the bounded lane (16 GiB start floor). The large profile stays exclusive: it holds
+# $LOCK exclusively, which no slotted compile can share, behind a gate so a stream of slotted compiles cannot starve it.
+SLOTS="${COS_COMPILE_SLOTS:-1}"
+[[ "$SLOTS" =~ '^[1-8]$' ]] || { echo "compile-guard: COS_COMPILE_SLOTS must be a whole number from 1 to 8" >&2; exit 2; }
 if [[ "$PROFILE" == bounded && -n "${COS_COMPILE_GUARD_HELD:-}" ]]; then
   echo "compile-guard: bounded profile refuses inherited guard-held state" >&2
   exit 2
 fi
 if [[ -z "${COS_COMPILE_GUARD_HELD:-}" ]] && \
-   { [[ "$PROFILE" == bounded ]] || { [[ "$PROFILE" == auto && "${1:t}" == swiftc ]] && (( $(free_gb) < MIN_FREE_GB )); }; }; then
+   { [[ "$PROFILE" == bounded ]] || { [[ "$PROFILE" == auto && "${1:t}" == swiftc ]] && { (( SLOTS > 1 )) || (( $(free_gb) < MIN_FREE_GB )); }; }; }; then
   RECEIPTS="${COS_COMPILE_RECEIPT_DIR:-/tmp/cos-control-compile-receipts-$UID}"
   mkdir -p "$RECEIPTS" || exit 2
   RECEIPT="$(mktemp "$RECEIPTS/compile.XXXXXX")" || exit 2
@@ -52,7 +58,8 @@ fi
 
 if [[ -z "${COS_COMPILE_GUARD_HELD:-}" ]]; then
   # Re-enter under the lock (lockf holds it for the life of the child).
-  exec /usr/bin/lockf -k -t 1800 "$LOCK" /usr/bin/env COS_COMPILE_GUARD_HELD=1 "$0" "$@"
+  # The gate first: while this waits for $LOCK, no new slotted compile can take $LOCK shared. Uncontended without them.
+  exec /usr/bin/lockf -k -t 1800 "$LOCK.gate" /usr/bin/lockf -k -t 1800 "$LOCK" /usr/bin/env COS_COMPILE_GUARD_HELD=1 "$0" "$@"
 fi
 
 
