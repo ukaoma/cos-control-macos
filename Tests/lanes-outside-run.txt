@@ -1,0 +1,21 @@
+# Tests/run-*.sh lanes the full suite (Tests/run.sh) does not run, one per line: "lane: reason".
+# Tests/lanes-run-check.py fails on any lane neither run nor listed, and on a listing run.sh now covers.
+# Seeded 2026-10-16 (0.5.318 draft) with every lane not run as of 0.5.317. "Review" means no one has decided yet whether
+# it belongs in the suite; it may hide stale checks the way run-control2-foundation-contract.sh did.
+run-connection-candidate.sh: review (not run as of 0.5.317)
+run-control-instance.sh: run by scripts/build-release.sh for every signed build
+run-glasses-pairing-render.sh: render artefacts for review by eye, not a pass/fail check
+run-onboarding-render.sh: render artefacts for review by eye, not a pass/fail check
+run-permission-guide-render.sh: render artefacts for review by eye, not a pass/fail check
+run-permission-guide.sh: review (run only by Tests/mutate-permission-guide.py as of 0.5.317)
+run-pet-composer-ui.sh: review (not run as of 0.5.317)
+run-provider-connect-render.sh: render artefacts for review by eye, not a pass/fail check
+run-speakers-header-render.sh: render artefacts for review by eye, not a pass/fail check
+run-transcription-settings-render.sh: render artefacts for review by eye, not a pass/fail check
+run-work-board-cache.sh: review (run only by Tests/mutate-work-board-cache.py as of 0.5.317)
+run-work-card-files-render.sh: render artefacts for review by eye, not a pass/fail check
+run-work-handoff.sh: review (not run as of 0.5.317; Work handoff contract)
+run-work-roundtrip.sh: review (not run as of 0.5.317)
+run-work-search-render.sh: render artefacts for review by eye, not a pass/fail check
+run-work-task-context.sh: review (not run as of 0.5.317)
+run-work.sh: review (reached only through run-work-board-cache.sh, which the suite does not run)

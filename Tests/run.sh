@@ -20,6 +20,10 @@ export COS_TEST_KIT_DIR="${COS_TEST_KIT_DIR:-$TMP/kits}"
 # opted in by hand. The self-test proves each rule can fail.
 /usr/bin/python3 "$ROOT/Tests/desktop-safety-check.py" "$ROOT"
 /usr/bin/python3 "$ROOT/Tests/desktop-safety-check.py" "$ROOT" --selftest
+# 0.5.318: every Tests/run-*.sh lane is run here (directly or through another lane) or listed, with a reason, in
+# Tests/lanes-outside-run.txt. A lane the suite skips is a decision, never an accident.
+/usr/bin/python3 "$ROOT/Tests/lanes-run-check.py" "$ROOT" --selftest
+/usr/bin/python3 "$ROOT/Tests/lanes-run-check.py" "$ROOT"
 "$ROOT/Tests/run-onboarding.sh"
 # Onboarding P1, Connect your AI: provider-status against fixtures, the app model alone, and the wiring pins.
 "$ROOT/Tests/run-provider-connect.sh"
@@ -168,6 +172,9 @@ zsh "$ROOT/Tests/run-meeting-task-link.sh"
 # 0.5.313 (QA): the Work session hub runner (WorkOrchestrationChecks, context meter, Plan and send, idle CPU pins) ran
 # only inside mutate-work-chat-review.py, never in the full suite. Serial like every runner here (one compile at a time).
 zsh "$ROOT/Tests/run-work-session-hub.sh"
+# 0.5.318: the Work board, workspace, intake and activity contract (WorkWorkspaceProjectionChecks and friends) had never
+# run in a full suite; two of its checks went stale unseen (7d89d8a, a6acd99) until 2026-10-16.
+zsh "$ROOT/Tests/run-control2-foundation-contract.sh"
 # 0.5.232: the Markdown parser is pure Foundation and pinned by an EXECUTED contract
 # (the scribe's meeting, lists, tasks, tables, code, quotes, details, speaker lines).
 /usr/bin/python3 "$ROOT/Tests/kit-compile.py" "$ROOT/Tests/compile-guard.sh" swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \
