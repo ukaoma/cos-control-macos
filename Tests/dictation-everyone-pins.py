@@ -103,13 +103,15 @@ new_copy = [code(between(read("Sources/MeetingAskCore.swift"), "// MARK: Dictati
             code(read("HelperSources/ProviderStatusCore.swift").split("// MARK: - Mac dictation for every engine (0.5.317, server 6.74.0)", 1)[1]),
             code(read("Sources/MacDictationCore.swift").split("// MARK: - Dictation for everyone (0.5.317, server 6.74.0)", 1)[1])]
 whatsnew = json.loads(read("Resources/WhatsNew.json"))
-new_copy += whatsnew["whatsNew"]["sections"][0]["items"][:6]
+# 0.5.318: sections are found by title; a newer release section goes first.
+everyone = next(s for s in whatsnew["whatsNew"]["sections"] if s["title"] == "Dictation for everyone")
+new_copy += everyone["items"][:6] + whatsnew["whatsNew"]["sections"][0]["items"]
 for text in new_copy:
     for literal in re.findall(r'"((?:[^"\\]|\\.)*)"', text) if text in new_copy[:4] else [text]:
         pin("—" not in literal and "→" not in literal and " -> " not in literal, "copy", f"no em dash or arrow: {literal[:80]!r}")
         words = re.findall(r"[A-Za-z]{3,}", literal)
         pin(not (len(words) >= 2 and all(w.isupper() for w in words)), "copy", f"no all-caps kicker: {literal[:80]!r}")
-pin(any("not a full accuracy test" in item for item in whatsnew["whatsNew"]["sections"][0]["items"]), "honest scope", "What's New says the 30 s test is a quick check")
+pin(any("not a full accuracy test" in item for item in everyone["items"]), "honest scope", "What's New says the 30 s test is a quick check")
 pin("not a full accuracy test" in connect, "honest scope", "the engine step says the test is a quick check")
 
 print("PASS dictation-everyone pins: one gate, any local engine, one action per failure, install everywhere, Voice truth, pinned signed tool, credits, copy")
