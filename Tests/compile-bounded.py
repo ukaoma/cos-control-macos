@@ -47,10 +47,10 @@ def normalize(command, environ):
         raise ValueError('swiftc not found')
     # This is deliberately a small compiler option surface, not a shell runner.
     single = {'-typecheck', '-parse-as-library', '-g', '-Onone', '-O', '-Osize',
-              '-warnings-as-errors', '-enable-testing', '-emit-executable', '-c'}
+              '-warnings-as-errors', '-enable-testing', '-emit-executable', '-c', '-emit-module'}
     paired = {'-target', '-swift-version', '-strict-concurrency', '-sdk', '-module-name',
               '-module-cache-path', '-framework', '-weak-framework', '-I', '-F', '-L',
-              '-l', '-D', '-o', '-Xlinker', '-Xcc'}
+              '-l', '-D', '-o', '-Xlinker', '-Xcc', '-emit-module-path'}
     args = command[1:]
     i = 0
     sources = []
@@ -60,6 +60,13 @@ def normalize(command, environ):
             if i + 1 >= len(args) or args[i + 1].startswith('@'):
                 raise ValueError('missing/indirect compiler option value')
             i += 2
+            continue
+        # Tests/kit-compile.py's harness link: an implicit @testable import of the shared kit, and nothing else.
+        if arg == '-Xfrontend':
+            if (args[i + 1:i + 3] != ['-testable-import-module', '-Xfrontend'] or i + 3 >= len(args)
+                    or not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', args[i + 3])):
+                raise ValueError('unsupported bounded compiler argument: -Xfrontend')
+            i += 4
             continue
         if arg in single or arg.startswith('-strict-concurrency='):
             i += 1
@@ -77,6 +84,7 @@ def normalize(command, environ):
 
 def validate_plan(output):
     jobs = []
+    module_jobs = 0
     for line in output.splitlines():
         if not line.strip():
             continue
@@ -85,7 +93,13 @@ def validate_plan(output):
             continue
         if Path(argv[0]).name == 'swift-frontend':
             if argv.count('-primary-file') != 1:
-                raise ValueError('frontend must have exactly one primary file')
+                # -emit-module adds ONE module job with no primary file (Tests/kit-compile.py's shared kit). Any other
+                # frontend without exactly one primary is still refused.
+                module_job = (argv.count('-primary-file') == 0 and '-c' not in argv
+                              and ('-emit-module' in argv or '-merge-modules' in argv))
+                if not module_job or module_jobs:
+                    raise ValueError('frontend must have exactly one primary file')
+                module_jobs += 1
             if '-whole-module-optimization' in argv:
                 raise ValueError('whole-module frontend forbidden')
             if '-num-threads' in argv and argv[argv.index('-num-threads') + 1] != '1':

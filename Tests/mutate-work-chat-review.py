@@ -8,6 +8,7 @@ kernel panics). Works on a scratch copy of Sources/, Tests/ and HelperSources/ (
 A GREEN baseline is required before the first mutant. Each mutant must land exactly once and make the hub checks FAIL.
 Exits non-zero on any MISSING target or any SURVIVOR other than the one documented expected survivor below.
 """
+import os
 import pathlib, shutil, subprocess, sys, tempfile
 root = pathlib.Path(sys.argv[1]).resolve(); only = set(sys.argv[2:])
 C = "Sources/WorkTaskChat.swift"; S = "Sources/WorkHandoffStore.swift"; M = "Sources/WorkContextMeter.swift"; F = "Sources/WorkCardFiles.swift"
@@ -137,6 +138,8 @@ def run(work: pathlib.Path):
     return r.returncode, why, out
 
 work = pathlib.Path(tempfile.mkdtemp(prefix="cos-work-chat-mutants-", dir="/private/tmp"))
+# Lanes compile against shared builds of Sources (Tests/kit-compile.py): keep them for every mutant of this run.
+os.environ.setdefault("COS_TEST_KIT_DIR", str(work / ".kits"))
 try:
     for folder in ("Sources", "Tests", "HelperSources"): shutil.copytree(root / folder, work / folder, ignore=shutil.ignore_patterns("__pycache__"))
     code, why, out = run(work)

@@ -10,6 +10,7 @@ a check fail, and the failure must name the behaviour the mutant breaks ("check 
 Tests/PermissionGuideChecks.swift or "pin failed [<behaviour>]" from Tests/permission-guide-pins.py). A mutant that
 lands and survives is a finding. The "logic" lane compiles the model with its checks (small); "pins" runs Python only.
 """
+import os
 import pathlib, shutil, subprocess, sys, time
 
 M = "Sources/PermissionGuideModel.swift"
@@ -72,6 +73,8 @@ def main():
     src, scratch = pathlib.Path(sys.argv[1]).resolve(), pathlib.Path(sys.argv[2]).resolve()
     only = set(sys.argv[3:])
     copy = scratch / "copy"
+    # Lanes compile against shared builds of Sources (Tests/kit-compile.py): keep them for every mutant of this run.
+    os.environ.setdefault("COS_TEST_KIT_DIR", str(scratch / "kits"))
     if copy.exists():
         shutil.rmtree(copy)
     shutil.copytree(src, copy, ignore=shutil.ignore_patterns(".git", "dist", "*.zip"))

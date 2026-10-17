@@ -20,6 +20,6 @@ while True:
     i += 1
 open(sys.argv[2], "w", encoding="utf-8").write("import Foundation\nimport AVFoundation\nimport os\n\n" + src[start:i + 1] + "\n")
 PY
-"$ROOT/Tests/compile-guard.sh" swiftc -target arm64-apple-macosx14.0 -swift-version 6 -strict-concurrency=complete -parse-as-library \
+/usr/bin/python3 "$ROOT/Tests/kit-compile.py" "$ROOT/Tests/compile-guard.sh" swiftc -target arm64-apple-macosx14.0 -swift-version 6 -strict-concurrency=complete -parse-as-library \
   "$ROOT/Sources/MacDictationCore.swift" "$DIR/DictationSoundPlayer.swift" "$ROOT/Tests/DictationSoundRuntimeCheck.swift" -o "$DIR/check"
 "$DIR/check"

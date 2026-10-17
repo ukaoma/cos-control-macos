@@ -9,7 +9,7 @@ DIR="$(mktemp -d /tmp/cos-home-render.XXXXXX)"
 trap 'rm -rf "$DIR"' EXIT
 SOURCES=("$ROOT"/Sources/*.swift)
 SOURCES=("${(@)SOURCES:#*/COSControlApp.swift}")
-"$ROOT/Tests/compile-guard.sh" swiftc -target arm64-apple-macosx14.0 -swift-version 6 -strict-concurrency=complete -parse-as-library \
+/usr/bin/python3 "$ROOT/Tests/kit-compile.py" "$ROOT/Tests/compile-guard.sh" swiftc -target arm64-apple-macosx14.0 -swift-version 6 -strict-concurrency=complete -parse-as-library \
   "${SOURCES[@]}" "$ROOT/Tests/GlassesPairingRender.swift" \
   -framework SwiftUI -framework AppKit -framework ServiceManagement -framework WebKit -o "$DIR/glasses-render"
 HOME_DIR="$DIR/cos-home-render home.ü"

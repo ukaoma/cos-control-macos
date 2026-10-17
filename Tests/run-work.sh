@@ -8,7 +8,7 @@ SOURCES=("$ROOT"/Sources/*.swift)
 SOURCES=("${(@)SOURCES:#*/COSControlApp.swift}")
 FILES=()
 for source in $SOURCES; do FILES+=("$source"); done
-"$ROOT/Tests/compile-guard.sh" swiftc -target arm64-apple-macosx14.0 -swift-version 6 -strict-concurrency=complete -parse-as-library \
+/usr/bin/python3 "$ROOT/Tests/kit-compile.py" "$ROOT/Tests/compile-guard.sh" swiftc -target arm64-apple-macosx14.0 -swift-version 6 -strict-concurrency=complete -parse-as-library \
   $FILES "$ROOT/Tests/Control2FoundationContract.swift" "$ROOT/Tests/Control2ActivityIntegrationChecks.swift" \
   "$ROOT/Tests/WorkWorkspaceProjectionChecks.swift" "$ROOT/Tests/WorkReviewStoreChecks.swift" "$ROOT/Tests/WorkActivityChecks.swift" "$ROOT/Tests/WorkMeetingConnectionsChecks.swift" "$ROOT/Tests/WorkIntakeChecks.swift" "$ROOT/Tests/WorkBoardCacheChecks.swift" \
   -framework SwiftUI -framework AppKit -framework ServiceManagement -o "$TMP/work-contracts"
@@ -23,7 +23,7 @@ s=(root/'baseline.swift').read_text()
 s=s[s.index('@MainActor final class WorkHandoffStore'):].replace('class WorkHandoffStore:', 'class LegacyWorkHandoffStore:', 1)
 (root/'LegacyWorkHandoffStore.swift').write_text('import Foundation\nimport SwiftUI\nimport Darwin\n'+s)
 PY
-"$ROOT/Tests/compile-guard.sh" swiftc -target arm64-apple-macosx14.0 -swift-version 6 -strict-concurrency=complete -parse-as-library \
+/usr/bin/python3 "$ROOT/Tests/kit-compile.py" "$ROOT/Tests/compile-guard.sh" swiftc -target arm64-apple-macosx14.0 -swift-version 6 -strict-concurrency=complete -parse-as-library \
   $FILES "$ROOT/Tests/WorkHandoffTests.swift" "$TMP/LegacyWorkHandoffStore.swift" \
   -framework SwiftUI -framework AppKit -framework ServiceManagement -o "$TMP/work-handoffs"
 "$TMP/work-handoffs"

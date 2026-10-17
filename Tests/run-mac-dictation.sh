@@ -3,7 +3,7 @@ set -euo pipefail
 ROOT="${0:A:h:h}"
 DIR="$(mktemp -d /private/tmp/cos-mac-dictation-checks.XXXXXX)"
 trap 'rm -rf "$DIR"' EXIT
-"$ROOT/Tests/compile-guard.sh" swiftc -target arm64-apple-macosx14.0 -swift-version 6 -strict-concurrency=complete -parse-as-library \
+/usr/bin/python3 "$ROOT/Tests/kit-compile.py" "$ROOT/Tests/compile-guard.sh" swiftc -target arm64-apple-macosx14.0 -swift-version 6 -strict-concurrency=complete -parse-as-library \
   "$ROOT/Sources/MacDictationCore.swift" "$ROOT/Tests/MacDictationChecks.swift" -o "$DIR/checks"
 "$DIR/checks"
 # 0.5.305 crashed on the first microphone buffer: closures formed in the @MainActor capture class inherit main-actor
@@ -40,7 +40,7 @@ while True:
     i += 1
 open(sys.argv[2], "w", encoding="utf-8").write('import Foundation\nimport CoreAudio\nimport AudioToolbox\nimport os\n\nlet dictationLog = Logger(subsystem: "com.gotcos.control.tests", category: "dictation")\n\n' + src[start:i + 1] + "\n")
 PY
-"$ROOT/Tests/compile-guard.sh" swiftc -typecheck -target arm64-apple-macosx14.0 -swift-version 6 -strict-concurrency=complete -parse-as-library \
+/usr/bin/python3 "$ROOT/Tests/kit-compile.py" "$ROOT/Tests/compile-guard.sh" swiftc -typecheck -target arm64-apple-macosx14.0 -swift-version 6 -strict-concurrency=complete -parse-as-library \
   "$ROOT/Sources/MacDictationCore.swift" "$DIR/DictationQuiet.swift"
 print "PASS dictation quiet controller type-checks in Swift 6 (lifted verbatim; not executed)"
 # The shortcut monitors also take clicks (⌥-click is a chord), and NSEvent raises on a mouse event's keyCode.

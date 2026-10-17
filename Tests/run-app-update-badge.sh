@@ -31,12 +31,12 @@ SOURCES=("${(@)SOURCES:#*/COSControlApp.swift}")
 RUN_ENV=(CFFIXED_USER_HOME="$DIR/home" HOME="$DIR/home" COS_CONTROL_TEST_HOME="$DIR/home")
 
 if [[ "$MODE" == "check" ]]; then
-  "$ROOT/Tests/compile-guard.sh" swiftc -target arm64-apple-macosx14.0 -swift-version 6 -strict-concurrency=complete -parse-as-library \
+  /usr/bin/python3 "$ROOT/Tests/kit-compile.py" "$ROOT/Tests/compile-guard.sh" swiftc -target arm64-apple-macosx14.0 -swift-version 6 -strict-concurrency=complete -parse-as-library \
     "$ROOT/Sources/Models.swift" "$ROOT/Tests/AppUpdateBadgeChecks.swift" -framework AppKit -o "$DIR/badge-checks"
   env "${RUN_ENV[@]}" "$DIR/badge-checks"
   [[ "${COS_UPDATE_BADGE_SKIP_WIRING:-}" == "1" ]] && exit 0
 fi
-"$ROOT/Tests/compile-guard.sh" swiftc -target arm64-apple-macosx14.0 -swift-version 6 -strict-concurrency=complete -parse-as-library \
+/usr/bin/python3 "$ROOT/Tests/kit-compile.py" "$ROOT/Tests/compile-guard.sh" swiftc -target arm64-apple-macosx14.0 -swift-version 6 -strict-concurrency=complete -parse-as-library \
   "${SOURCES[@]}" "$ROOT/Tests/AppUpdateBadgeRender.swift" \
   -framework SwiftUI -framework AppKit -framework ServiceManagement "${PLIST_FLAGS[@]}" -o "$DIR/badge-render"
 if [[ "$MODE" == "check" || "$MODE" == "wiring" ]]; then

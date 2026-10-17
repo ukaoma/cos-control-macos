@@ -14,6 +14,7 @@ failure must name the behaviour the mutant breaks ("check failed [<behaviour>]" 
 words, or the failing assertion of the helper check). A mutant that lands and survives is a finding; one killed by
 another check, or by the compiler, is reported as such. Each mutant runs only the lane that owns its file.
 """
+import os
 import pathlib, shutil, subprocess, sys, time
 from concurrent.futures import ThreadPoolExecutor
 
@@ -194,7 +195,7 @@ def run(cmd, cwd, timeout=1800):
 
 def helper_lane(copy):
     out = copy / "helper-bin"
-    code, text, s1 = run(["zsh", "Tests/compile-guard.sh", "swiftc", "-target", "arm64-apple-macosx14.0", "-swift-version", "6", "-strict-concurrency=complete",
+    code, text, s1 = run(["/usr/bin/python3", "Tests/kit-compile.py", "zsh", "Tests/compile-guard.sh", "swiftc", "-target", "arm64-apple-macosx14.0", "-swift-version", "6", "-strict-concurrency=complete",
                           "HelperSources/main.swift", "HelperSources/ProviderStatusCore.swift", "HelperSources/PairingCore.swift", "-framework", "Security", "-framework", "AppKit", "-o", str(out)], copy)
     if code != 0:
         return code, text, s1
@@ -266,6 +267,8 @@ def main():
     only = set(args[2:])
     chosen = [m for m in MUTANTS if not only or m[0] in only]
     scratch.mkdir(parents=True, exist_ok=True)
+    # Lanes compile against shared builds of Sources (Tests/kit-compile.py): keep them for every mutant of this run.
+    os.environ.setdefault("COS_TEST_KIT_DIR", str(scratch / "kits"))
     # Group by lane so each worker proves only the lanes it runs; spread the slow Swift lane across every worker.
     groups = [[] for _ in range(workers)]
     for index, m in enumerate(sorted(chosen, key=lambda m: m[5] != "swift")):

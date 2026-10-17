@@ -8,6 +8,7 @@ and Tests/work-card-files-pins.py), then applies one mutant at a time: the targe
 mutant must make a check fail, and the failure must name the behaviour the mutant breaks ("check failed [<behaviour>]"
 from the Swift checks, or the pin's own words). A mutant that lands and survives is a finding. One suite at a time.
 """
+import os
 import pathlib, shutil, subprocess, sys, time
 
 # (name, file, original, mutant, words the killing failure must contain)
@@ -182,6 +183,8 @@ def main():
     src, scratch = pathlib.Path(sys.argv[1]).resolve(), pathlib.Path(sys.argv[2]).resolve()
     only = set(sys.argv[3:])
     copy = scratch / "copy"
+    # Lanes compile against shared builds of Sources (Tests/kit-compile.py): keep them for every mutant of this run.
+    os.environ.setdefault("COS_TEST_KIT_DIR", str(scratch / "kits"))
     if copy.exists():
         shutil.rmtree(copy)
     for part in ("Sources", "Tests", "Resources", "scripts"):

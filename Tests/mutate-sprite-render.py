@@ -5,6 +5,7 @@ Tests/compile-guard.sh (Models.swift + SpriteRenderContract.swift), on a scratch
 
 Usage: python3 Tests/mutate-sprite-render.py <repo root>
 """
+import os
 import pathlib, shutil, subprocess, sys, tempfile
 root = pathlib.Path(sys.argv[1]).resolve()
 C = "Tests/SpriteRenderContract.swift"; F = "Tests/fixtures/sprite-render/approved-exceptions.json"
@@ -24,10 +25,12 @@ MUTANTS = [
      "        let holesCap = maxHolesPercent"),
 ]
 work = pathlib.Path(tempfile.mkdtemp(prefix="cos-sprite-mutants-", dir="/private/tmp"))
+# Lanes compile against shared builds of Sources (Tests/kit-compile.py): keep them for every mutant of this run.
+os.environ.setdefault("COS_TEST_KIT_DIR", str(work / ".kits"))
 def run():
     out = work / "sprite-render"
     if out.exists(): out.unlink()
-    b = subprocess.run(["/bin/zsh", str(root / "Tests/compile-guard.sh"), "swiftc", "-target", "arm64-apple-macosx14.0", "-swift-version", "6",
+    b = subprocess.run(["/usr/bin/python3", str(root / "Tests/kit-compile.py"), "/bin/zsh", str(root / "Tests/compile-guard.sh"), "swiftc", "-target", "arm64-apple-macosx14.0", "-swift-version", "6",
                         "-strict-concurrency=complete", str(work / "Sources/Models.swift"), str(work / C), "-framework", "AppKit", "-o", str(out)],
                        capture_output=True, text=True)
     if b.returncode != 0: return 2, b.stderr[-400:]

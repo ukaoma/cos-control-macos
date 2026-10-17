@@ -10,6 +10,7 @@ check fail, and the failure must name the behaviour the mutant breaks. A mutant 
 Lanes: "store" Tests/run-transcription-settings.sh (MeetingAskCore.swift against a stand-in helper); "helper" the
 compiled helper against Tests/transcription-settings-helper-checks.py and the contract fixture.
 """
+import os
 import pathlib, shutil, subprocess, sys
 
 CORE = "Sources/MeetingAskCore.swift"
@@ -66,7 +67,7 @@ def lane(copy, name):
     if name == "store":
         return subprocess.run(["zsh", str(copy / "Tests/run-transcription-settings.sh")], capture_output=True, text=True)
     out = copy / "build"; out.mkdir(exist_ok=True)
-    build = subprocess.run([str(copy / "Tests/compile-guard.sh"), "swiftc", "-target", "arm64-apple-macosx14.0", "-swift-version", "6",
+    build = subprocess.run(["/usr/bin/python3", str(copy / "Tests/kit-compile.py"), str(copy / "Tests/compile-guard.sh"), "swiftc", "-target", "arm64-apple-macosx14.0", "-swift-version", "6",
                             "-strict-concurrency=complete", str(copy / H), str(copy / "HelperSources/ProviderStatusCore.swift"),
                             str(copy / "HelperSources/PairingCore.swift"), "-framework", "Security", "-framework", "AppKit",
                             "-o", str(out / "cos-control-helper")], capture_output=True, text=True)
@@ -79,6 +80,8 @@ def main():
     root, scratch = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
     wanted = set(sys.argv[3:])
     copy = scratch / "copy"
+    # Lanes compile against shared builds of Sources (Tests/kit-compile.py): keep them for every mutant of this run.
+    os.environ.setdefault("COS_TEST_KIT_DIR", str(scratch / "kits"))
     shutil.rmtree(copy, ignore_errors=True)
     shutil.copytree(root, copy, ignore=shutil.ignore_patterns(".git"))
     chosen = [m for m in MUTANTS if not wanted or m[0] in wanted]

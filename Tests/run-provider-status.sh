@@ -6,7 +6,7 @@ set -euo pipefail
 ROOT="${0:A:h:h}"
 DIR="$(mktemp -d /tmp/cos-provider-status.XXXXXX)"
 trap 'rm -rf "$DIR"' EXIT
-"$ROOT/Tests/compile-guard.sh" swiftc -target arm64-apple-macosx14.0 -swift-version 6 -strict-concurrency=complete -parse-as-library \
+/usr/bin/python3 "$ROOT/Tests/kit-compile.py" "$ROOT/Tests/compile-guard.sh" swiftc -target arm64-apple-macosx14.0 -swift-version 6 -strict-concurrency=complete -parse-as-library \
   "$ROOT/HelperSources/ProviderStatusCore.swift" "$ROOT/Tests/ProviderStatusChecks.swift" -o "$DIR/provider-status-checks"
 OUT="$("$DIR/provider-status-checks")" || { print -r -- "$OUT"; exit 1; }
 print -r -- "$OUT"

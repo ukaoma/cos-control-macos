@@ -10,6 +10,7 @@ must replace its target exactly once and must make ModelsContract FAIL.
 
 Usage: python3 Tests/mutate-pet-refresh.py <repo root>
 """
+import os
 import pathlib, shutil, subprocess, sys, tempfile
 
 root = pathlib.Path(sys.argv[1]).resolve()
@@ -39,7 +40,7 @@ def compile_and_run(work: pathlib.Path) -> int:
     out = work / "models-contract"
     if out.exists():
         out.unlink()
-    build = subprocess.run(["/bin/zsh", str(root / "Tests/compile-guard.sh"), "swiftc", "-target", "arm64-apple-macosx14.0",
+    build = subprocess.run(["/usr/bin/python3", str(root / "Tests/kit-compile.py"), "/bin/zsh", str(root / "Tests/compile-guard.sh"), "swiftc", "-target", "arm64-apple-macosx14.0",
                             "-swift-version", "6", "-strict-concurrency=complete",
                             str(work / MODELS), str(work / "Tests/ModelsContract.swift"), "-framework", "AppKit", "-o", str(out)],
                            capture_output=True, text=True)
@@ -50,6 +51,8 @@ def compile_and_run(work: pathlib.Path) -> int:
 
 
 work = pathlib.Path(tempfile.mkdtemp(prefix="cos-pet-refresh-mutants-", dir="/private/tmp"))
+# Lanes compile against shared builds of Sources (Tests/kit-compile.py): keep them for every mutant of this run.
+os.environ.setdefault("COS_TEST_KIT_DIR", str(work / ".kits"))
 try:
     for folder in ("Sources", "Tests", "Resources"):
         shutil.copytree(root / folder, work / folder)
