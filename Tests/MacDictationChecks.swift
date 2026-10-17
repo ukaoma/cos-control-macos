@@ -695,10 +695,10 @@ final class FakeDictationBoard: DictationPasteboardAccess {
                "typing or editing before it moves it")
         expect(L.track(baseline: page, current: "Hello, redirecting into this uh Y joule 360 page. Bye.", start: 4, length: 38) == .lost,
                "an edit across its edge loses it")
-        let english: Set<String> = ["redirect", "into", "this", "uh", "joule", "page", "the", "deck", "slides", "complement", "compliment", "its", "it's", "ios"]
+        let editEnglish: Set<String> = ["redirect", "into", "this", "uh", "joule", "page", "the", "deck", "slides", "complement", "compliment", "its", "it's", "ios"]
         func learn(_ heard: String, _ written: String, learned: Bool = false) -> L.Candidate? {
             L.candidate(Edit(location: 0, length: heard.utf16.count, original: heard, replacement: written),
-                        known: { english.contains($0.lowercased()) }, learned: { _, _ in learned })
+                        known: { editEnglish.contains($0.lowercased()) }, learned: { _, _ in learned })
         }
         expect(learn("Y joule 360", "Jewel360") == .init(heard: "Y joule 360", written: "Jewel360")
                && learn("joule 360,", "Jewel360,") == .init(heard: "joule 360", written: "Jewel360"), "Miles's fix is learned, without punctuation at the edges")
@@ -736,7 +736,8 @@ final class FakeDictationBoard: DictationPasteboardAccess {
         expect(dismissed.suggestions == [s2] && dismissed.dismissed[S.key("carrot iq", "CaratIQ")] == now, "Dismiss removes it and remembers the pair")
         expect(S.suggesting(item("Carrot IQ", "CaratIQ"), in: dismissed, now: now.addingTimeInterval(86_400)).suggestions.map(\.heard) == ["Joule 360"]
                && S.suggesting(item("Carrot IQ", "CaratIQ"), in: dismissed, now: now.addingTimeInterval(29 * 86_400)).suggestions.isEmpty
-               && S.suggesting(item("Carrot IQ", "CaratIQ"), in: dismissed, now: now.addingTimeInterval(30 * 86_400)).suggestions.map(\.heard) == ["Carrot IQ"],
+               // The day-30 suggestion is made on day 30 (age -30 days); one stamped day 0 would already be past its week.
+               && S.suggesting(item("Carrot IQ", "CaratIQ", age: -30 * 86_400), in: dismissed, now: now.addingTimeInterval(30 * 86_400)).suggestions.map(\.heard) == ["Carrot IQ"],
                "a dismissed pair is not offered again for 30 days")
         let auto = S.learning(item("joule 360", "Jewel360"), in: S.State(suggestions: [s1]), now: now)
         expect(auto.learned.count == 1 && auto.suggestions.isEmpty, "Save automatically puts it on the learned list and clears the same suggestion")
@@ -892,8 +893,8 @@ final class FakeDictationBoard: DictationPasteboardAccess {
                                            engine: "whisper", fallbackReason: "parakeet_busy")
         let roundTrip = try JSONDecoder().decode(DictationRecord.self, from: JSONEncoder().encode(engineRecord))
         expect(roundTrip == engineRecord && roundTrip.engine == "whisper" && roundTrip.fallbackReason == "parakeet_busy", "the engine is saved with the dictation")
-        let legacy = try JSONDecoder().decode(DictationRecord.self, from: Data(#"{"id":"5A0C2A3C-6A7B-4C8D-9E0F-1A2B3C4D5E6F","text":"old","createdAt":0,"kind":"inserted","app":"Notes"}"#.utf8))
-        expect(legacy.engine == nil && legacy.text == "old", "a record from before 0.5.317 loads without an engine")
+        let legacyRecord = try JSONDecoder().decode(DictationRecord.self, from: Data(#"{"id":"5A0C2A3C-6A7B-4C8D-9E0F-1A2B3C4D5E6F","text":"old","createdAt":0,"kind":"inserted","app":"Notes"}"#.utf8))
+        expect(legacyRecord.engine == nil && legacyRecord.text == "old", "a record from before 0.5.317 loads without an engine")
         expect(DictationHistory.correcting(engineRecord.id, to: "ask now", in: [engineRecord]).first?.engine == "whisper", "Fix a word keeps the engine")
         print("PASS Mac dictation: \(count) policy checks; insert-target table, measured delivery, terminals, layout ⌘V, listening bars end to end, clipboard restore, sounds, pill placement, recent dictations file, card countdown, fix-a-word selection, quick fix, replace, span guess, quiet and restore, bounded audio, PCM16 WAV, device failure, any-key triggers")
     }

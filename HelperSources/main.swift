@@ -4809,8 +4809,9 @@ final class COSControlHelper {
             let object = input.isEmpty ? [:] : (try? JSONSerialization.jsonObject(with: input)) as? [String: Any]
             guard input.count <= 2_048, let object else { emit(ok: false, message: "The Parakeet request was not readable."); return }
             var payload: [String: Any] = call == .installParakeet ? ["allowDownload": true] : [:]
-            if let path = object["cliPath"] as? String {
-                guard ParakeetCLIPath.valid(path, isExecutable: { fm.isExecutableFile(atPath: $0) }) else {
+            if let raw = object["cliPath"] {
+                // Present means it must be a bundled tool's path; a wrong type is refused, never silently dropped.
+                guard let path = raw as? String, ParakeetCLIPath.valid(path, isExecutable: { fm.isExecutableFile(atPath: $0) }) else {
                     emit(ok: false, message: "COS Control's speech tool is missing from the app. Download COS Control again."); return
                 }
                 payload["cliPath"] = path

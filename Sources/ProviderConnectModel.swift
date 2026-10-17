@@ -1027,9 +1027,9 @@ enum SetupGuideRules {
         var row = voiceEngines(facts, skipped: skipped)
         guard row.done else { return row }
         switch DictationTruth.of(facts) {
-        case .proven(let engine):
-            let line = "Dictation tested with \(engine == "whisper" ? "Whisper" : VoiceFacts.engineTitle(engine))."
-            row.detail = row.detail.map { $0 + ". " + line } ?? line
+        case .proven:
+            // Proven: the row stays exactly what the panel's Local Whisper and Transcription rows say.
+            break
         case .checking:
             row.done = false
             row.status = checkingDictation

@@ -1200,7 +1200,7 @@ extension ProviderConnectChecks {
         var checked = v2Voice(); checked.dictationCheck = DictationCheck(ok: true, engine: "whisper", serverVersion: "6.74.0")
         f.voice = checked
         row = voiceRow(f)
-        check(row.done && row.detail?.contains("Dictation tested with Whisper.") == true, "voice truth", "a successful check on this version is proof: \(row.detail ?? "")")
+        check(row.done && row.status.hasPrefix("Ready") && row.detail?.contains("Checking") != true, "voice truth", "a successful check on this version is proof: \(row.status)")
         checked.dictationCheck = DictationCheck(ok: false, engine: nil, serverVersion: "6.74.0", message: "No speech engine is set up on this Mac. Set one up in Transcription settings.")
         f.voice = checked
         row = voiceRow(f)

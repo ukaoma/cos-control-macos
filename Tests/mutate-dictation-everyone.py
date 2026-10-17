@@ -115,7 +115,7 @@ MUTANTS = [
 
 
 def swiftc(copy, sources, out, frameworks=()):
-    cmd = [str(copy / "Tests/compile-guard.sh"), "swiftc", "-target", "arm64-apple-macosx14.0", "-swift-version", "6", "-strict-concurrency=complete", "-parse-as-library"]
+    cmd = ["/usr/bin/python3", str(copy / "Tests/kit-compile.py"), str(copy / "Tests/compile-guard.sh"), "swiftc", "-target", "arm64-apple-macosx14.0", "-swift-version", "6", "-strict-concurrency=complete", "-parse-as-library"]
     cmd += [str(copy / s) for s in sources]
     for f in frameworks: cmd += ["-framework", f]
     return subprocess.run(cmd + ["-o", str(out)], capture_output=True, text=True)
@@ -148,7 +148,7 @@ def lane(copy, name):
         b = swiftc(copy, [MDC, "Tests/MacDictationChecks.swift"], build / "dictation")
         return b if b.returncode else subprocess.run([str(build / "dictation")], capture_output=True, text=True)
     if name == "helper":
-        b = subprocess.run([str(copy / "Tests/compile-guard.sh"), "swiftc", "-target", "arm64-apple-macosx14.0", "-swift-version", "6", "-strict-concurrency=complete",
+        b = subprocess.run(["/usr/bin/python3", str(copy / "Tests/kit-compile.py"), str(copy / "Tests/compile-guard.sh"), "swiftc", "-target", "arm64-apple-macosx14.0", "-swift-version", "6", "-strict-concurrency=complete",
                             str(copy / H), str(copy / PSC), str(copy / "HelperSources/PairingCore.swift"), str(copy / "Sources/WorkSessionLinks.swift"),
                             "-framework", "Security", "-framework", "AppKit", "-o", str(build / "cos-control-helper")], capture_output=True, text=True)
         if b.returncode: return b
@@ -165,6 +165,8 @@ def main():
     root, scratch = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
     wanted = set(sys.argv[3:])
     copy = scratch / "copy"
+    # Lanes compile against shared builds of Sources (Tests/kit-compile.py): keep them for every mutant of this run.
+    os.environ.setdefault("COS_TEST_KIT_DIR", str(scratch / "kits"))
     shutil.rmtree(copy, ignore_errors=True)
     shutil.copytree(root, copy, ignore=shutil.ignore_patterns(".git", "dist"))
     chosen = [m for m in MUTANTS if not wanted or m[0] in wanted or m[5] in wanted]

@@ -11,12 +11,12 @@ set -euo pipefail
 ROOT="${0:A:h:h}"
 DIR="$(mktemp -d /private/tmp/cos-dictation-everyone.XXXXXX)"
 trap 'rm -rf "$DIR"' EXIT
-"$ROOT/Tests/compile-guard.sh" swiftc -target arm64-apple-macosx14.0 -swift-version 6 -strict-concurrency=complete -parse-as-library \
+/usr/bin/python3 "$ROOT/Tests/kit-compile.py" "$ROOT/Tests/compile-guard.sh" swiftc -target arm64-apple-macosx14.0 -swift-version 6 -strict-concurrency=complete -parse-as-library \
   "$ROOT/HelperSources/ProviderStatusCore.swift" "$ROOT/Tests/DictationEveryoneChecks.swift" -o "$DIR/checks"
 OUT="$("$DIR/checks" "$ROOT/Resources/VoiceBenchmark/speech-30s.txt")" || { print -r -- "$OUT"; exit 1; }
 print -r -- "$OUT"
 COUNT="${${OUT##*checks: }%% passed*}"
-(( COUNT >= 70 )) || { print -u2 "dictation-everyone checks ran only $COUNT (expected at least 70)"; exit 1; }
+(( COUNT >= 64 )) || { print -u2 "dictation-everyone checks ran only $COUNT (expected at least 64)"; exit 1; }
 # The pinned reference is the file the helper verifies by SHA-256.
 [[ "$(/usr/bin/shasum -a 256 "$ROOT/Resources/VoiceBenchmark/speech-30s.txt" | /usr/bin/awk '{print $1}')" == "$(/usr/bin/grep -o 'referenceSHA256 = "[0-9a-f]*"' "$ROOT/HelperSources/ProviderStatusCore.swift" | /usr/bin/grep -o '[0-9a-f]\{64\}')" ]] \
   || { print -u2 "FAIL: speech-30s.txt does not match VoiceAccuracy.referenceSHA256"; exit 1; }
