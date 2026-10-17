@@ -134,7 +134,7 @@ python3 "$ROOT/Tests/reuse-compile.py" --root "$ROOT" --receipt "$TMP/app-compil
   "$ROOT/Sources/Models.swift" \
   "$ROOT/Sources/HelperClient.swift" \
   "$ROOT/Sources/ControllerModel.swift" \
-  "$ROOT/Sources/MacRecordingCore.swift" "$ROOT/Sources/MacAudioCapture.swift" "$ROOT/Sources/MacRecording.swift" "$ROOT/Sources/MacDictationCore.swift" "$ROOT/Sources/MacDictation.swift" \
+  "$ROOT/Sources/AppQuit.swift" "$ROOT/Sources/MacRecordingCore.swift" "$ROOT/Sources/MacAudioCapture.swift" "$ROOT/Sources/MacRecording.swift" "$ROOT/Sources/MacDictationCore.swift" "$ROOT/Sources/MacDictation.swift" \
   "$ROOT/Sources/COSBrand.swift" \
   "$ROOT/Sources/COSMotion.swift" \
   "$ROOT/Sources/COSConfirm.swift" \
@@ -205,7 +205,7 @@ zsh "$ROOT/Tests/run-transcription-settings.sh"
 "$TMP/jedi-gallery-contract" "$ROOT/Resources"
 /usr/bin/python3 "$ROOT/Tests/kit-compile.py" "$ROOT/Tests/compile-guard.sh" swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \
   "$ROOT/Sources/Models.swift" "$ROOT/Sources/HelperClient.swift" "$ROOT/Sources/ControllerModel.swift" \
-  "$ROOT/Sources/MacRecordingCore.swift" "$ROOT/Sources/MacAudioCapture.swift" "$ROOT/Sources/MacRecording.swift" "$ROOT/Sources/MacDictationCore.swift" "$ROOT/Sources/MacDictation.swift" \
+  "$ROOT/Sources/AppQuit.swift" "$ROOT/Sources/MacRecordingCore.swift" "$ROOT/Sources/MacAudioCapture.swift" "$ROOT/Sources/MacRecording.swift" "$ROOT/Sources/MacDictationCore.swift" "$ROOT/Sources/MacDictation.swift" \
   "$ROOT/Sources/COSBrand.swift" "$ROOT/Sources/COSMotion.swift" "$ROOT/Sources/COSConfirm.swift" \
   "$ROOT/Sources/Views.swift" "$ROOT/Sources/Control2Foundation.swift" "$ROOT/Sources/WorkHandoffStore.swift" "$ROOT/Sources/WorkSessionLinks.swift" "$ROOT/Sources/WorkProgress.swift" "$ROOT/Sources/WorkCardFiles.swift" "$ROOT/Sources/WorkProgressTracker.swift" "$ROOT/Sources/WorkTrackingViews.swift" "$ROOT/Sources/WorkHandoffView.swift" "$ROOT/Sources/WorkReviewStore.swift" "$ROOT/Sources/WorkWorkspaceView.swift" "$ROOT/Sources/WorkTaskChat.swift" "$ROOT/Sources/WorkChatQueue.swift" "$ROOT/Sources/WorkReferences.swift" "$ROOT/Sources/WorkTaskContext.swift" "$ROOT/Sources/WorkContextMeter.swift" "$ROOT/Sources/PermissionGuideModel.swift" "$ROOT/Sources/PermissionGuideSystem.swift" "$ROOT/Sources/PermissionFlowVendored.swift" "$ROOT/Sources/PermissionDragFlow.swift" "$ROOT/Sources/PermissionGuideViews.swift" "$ROOT/Sources/ProviderConnectModel.swift" "$ROOT/Sources/ProviderConnectViews.swift" "$ROOT/Sources/ActivityWindow.swift" "$ROOT/Sources/ActivityMeetings.swift" "$ROOT/Sources/MeetingSpeakerPolicy.swift" "$ROOT/Sources/MeetingAskCore.swift" "$ROOT/Sources/MeetingAsk.swift" \
   "$ROOT/Sources/COSMarkdownParser.swift" "$ROOT/Sources/COSMarkdown.swift" \
@@ -1551,6 +1551,8 @@ PY
 # panel open, never two at once), the banner's phases and the gold glasses, executed; then the model wiring with the app.
 "$ROOT/Tests/run-app-update-badge.sh"
 /usr/bin/python3 "$ROOT/Tests/app-update-badge-pins.py" "$ROOT"
+# 0.5.320 (Queen's Mac): the update never quit Control. A real NSApplication proves the scheduled quit, then the pins.
+"$ROOT/Tests/run-app-quit.sh"
 # 2026-10-09: the What's New window (Update opens it; Download and install is the confirmation). Pins, the pure pieces,
 # the compiled helper's whatsNew against fixtures, and the window and install path against a stand-in helper.
 "$ROOT/Tests/run-whats-new.sh"
@@ -2600,6 +2602,10 @@ if [ -f "$AU_HOME/Library/Application Support/COS Control/updates/pending.json" 
   exit 1
 fi
 
+# 0.5.320 (Queen's Mac: 1.4 GB across five abandoned builds): a stage removes other build folders, nothing else.
+AU_UPD="$AU_HOME/Library/Application Support/COS Control/updates"
+/bin/mkdir -p "$AU_UPD/150/extract/COS Control.app" "$AU_UPD/171" "$AU_UPD/previous/COS Control.app" "$AU_UPD/notes"
+/usr/bin/touch "$AU_UPD/150/download.zip" "$AU_UPD/172"
 GOOD_STAGE="$(COS_CONTROL_TEST_HOME="$AU_HOME" "$TMP/cos-control-helper" stage-app-update \
     --current-version 0.5.50 --current-build 88 \
     --appcast-url "file://$AC_DIR/apply-good.json" \
@@ -2611,6 +2617,11 @@ assert d.get("ok") is True, d
 assert d.get("details",{}).get("reason")=="staged", d
 PY
 test -f "$AU_HOME/Library/Application Support/COS Control/updates/pending.json"
+if [ -e "$AU_UPD/150" ] || [ -e "$AU_UPD/171" ]; then echo "check failed [stage prune]: an abandoned build folder survived a new stage" >&2; exit 1; fi
+if [ ! -d "$AU_UPD/199" ] || [ ! -d "$AU_UPD/previous/COS Control.app" ] || [ ! -d "$AU_UPD/notes" ] || [ ! -f "$AU_UPD/172" ]; then
+  echo "check failed [stage prune keeps the rest]: a stage removed its own build, previous/, a non-build folder or a file" >&2; exit 1
+fi
+/bin/rm -rf "$AU_UPD/previous" "$AU_UPD/notes" "$AU_UPD/172"
 
 COS_CONTROL_TEST_HOME="$AU_HOME" "$TMP/cos-control-helper" apply-app-update \
     --swap --live-bundle "$AU_LIVE/COS Control.app" >/dev/null
@@ -2656,7 +2667,7 @@ python3 "$ROOT/Tests/reuse-compile.py" --root "$ROOT" --receipt "$TMP/app-compil
   "$ROOT/Sources/Models.swift" \
   "$ROOT/Sources/HelperClient.swift" \
   "$ROOT/Sources/ControllerModel.swift" \
-  "$ROOT/Sources/MacRecordingCore.swift" "$ROOT/Sources/MacAudioCapture.swift" "$ROOT/Sources/MacRecording.swift" "$ROOT/Sources/MacDictationCore.swift" "$ROOT/Sources/MacDictation.swift" \
+  "$ROOT/Sources/AppQuit.swift" "$ROOT/Sources/MacRecordingCore.swift" "$ROOT/Sources/MacAudioCapture.swift" "$ROOT/Sources/MacRecording.swift" "$ROOT/Sources/MacDictationCore.swift" "$ROOT/Sources/MacDictation.swift" \
   "$ROOT/Sources/COSBrand.swift" \
   "$ROOT/Sources/COSMotion.swift" \
   "$ROOT/Sources/COSConfirm.swift" \

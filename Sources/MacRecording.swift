@@ -8,6 +8,9 @@ private let recordingLog = Logger(subsystem: "com.gotcos.control", category: "ma
 
 @MainActor enum MacRecordingTermination {
     static var prepare: (@MainActor () async -> Void)?
+    /// 0.5.320: whether a quit has anything to finish first (a Mac recording starting, recording or stopping). Without
+    /// one, a quit is immediate, so no quit can wait on a Task (see AppQuit). Nil keeps the old always-defer behaviour.
+    static var needsPrepare: (@MainActor () -> Bool)?
     static var pending = false
     /// 0.5.319: bumped by every quit request and by a cancel, so a save that finishes after its quit was cancelled
     /// (the update's 75 s deadline) never quits the app later on its own.
@@ -24,7 +27,8 @@ private let recordingLog = Logger(subsystem: "com.gotcos.control", category: "ma
 
 @MainActor extension COSAppDelegate {
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        guard let prepare = MacRecordingTermination.prepare else { return .terminateNow }
+        guard let prepare = MacRecordingTermination.prepare,
+              MacRecordingTermination.pending || MacRecordingTermination.needsPrepare?() ?? true else { return .terminateNow }
         guard !MacRecordingTermination.pending else { return .terminateLater }
         MacRecordingTermination.pending = true
         MacRecordingTermination.generation += 1
@@ -67,6 +71,8 @@ final class MacRecordingStore: ObservableObject {
         return MacRecordingSignal.warning(silentChunks: silentChunks, source: manifest?.sourceName ?? "the selected source")
     }
     var isRecording: Bool { phase == "recording" }
+    /// 0.5.320: prepareToQuit (stop) has work to do only in these phases; any other phase quits at once.
+    var needsQuitTeardown: Bool { ["starting", "recording", "stopping"].contains(phase) }
     var occupied: Bool { !["idle", "saved", "pending"].contains(phase) }
     var canStart: Bool { !occupied && deliveryTask == nil && (manifest == nil || manifest!.saved || manifest!.chunks.isEmpty) }
     private var bridge: Bridge?

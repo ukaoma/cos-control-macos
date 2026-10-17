@@ -2907,7 +2907,7 @@ struct ControlPanel: View {
                 // and every 6 hours, so a long-running Control can sit two builds
                 // behind with no banner and no way to ask (2026-08-24): the ask
                 // still exists, at the top of the panel, not here.
-                Button("Quit", systemImage: "power") { NSApplication.shared.terminate(nil) }
+                Button("Quit", systemImage: "power") { AppQuit.request() }
                     .buttonStyle(COSQuietButtonStyle())
             }
         }.font(COSType.mono(10)).foregroundStyle(.secondary)

@@ -1231,9 +1231,10 @@ final class ControllerModel: ObservableObject {
                 if let stagedBuild = staged.details["latestBuild"]?.int { apply += ["--expected-build", String(stagedBuild)] }
                 _ = try await helper.run(apply, preferStable: true)
                 notice = "Installing. Control will reopen."
-                // 0.5.319: watch BEFORE asking to quit. terminate(nil) does not return while the Mac recording saves.
+                // 0.5.319: watch BEFORE asking to quit. 0.5.320: never terminate(nil) here, inside this Task: with a
+                // deferred quit it deadlocked (AppQuit), so Control never quit and the window sat on Installing.
                 watchAppUpdateApply(since: applyStarted)
-                NSApplication.shared.terminate(nil)
+                AppQuit.request()
             } catch {
                 appUpdateFlow.fail(error.localizedDescription)
                 busy = false

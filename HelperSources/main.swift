@@ -9228,6 +9228,7 @@ final class COSControlHelper {
         }
 
         try ensureAppUpdateDirectories()
+        pruneAbandonedStages(keeping: latestBuild)
         let stageDir = updatesRoot.appendingPathComponent(String(latestBuild), isDirectory: true)
         if fm.fileExists(atPath: stageDir.path) { try fm.removeItem(at: stageDir) }
         try ensurePrivateDirectory(stageDir)
@@ -9266,6 +9267,19 @@ final class COSControlHelper {
         details["reason"] = "staged"
         details["stagedAppPath"] = stagedApp.path
         emit(ok: true, message: "Update \(latestVersion) verified and staged", details: details)
+    }
+
+    /// 0.5.320 (Queen's Mac, 2026-10-17: 1.4 GB across five builds): every stage that never installed left its download
+    /// and unpacked app in updates/<build>/. A new stage keeps only the build it is about to stage; previous/ (the
+    /// rollback copy), pending.json and the records are not build folders and stay.
+    private func pruneAbandonedStages(keeping build: Int) {
+        guard let entries = try? fm.contentsOfDirectory(at: updatesRoot, includingPropertiesForKeys: [.isDirectoryKey]) else { return }
+        for entry in entries {
+            let name = entry.lastPathComponent
+            guard !name.isEmpty, name.allSatisfy({ $0.isASCII && $0.isNumber }), name != String(build),
+                  (try? entry.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true else { continue }
+            try? fm.removeItem(at: entry)
+        }
     }
 
     /// Up to 60 s for the Control that asked for the swap to finish quitting.

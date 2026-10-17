@@ -1,3 +1,14 @@
+## 0.5.320 (build 373), Download and install finishes: the quit that stalled every in-app update is fixed
+
+Field report from Queen's Mac (2026-10-17): 0.5.318 and 0.5.319 both sat on Installing. The helper logged "COS Control did not quit in time" while a normal quit took 0.2 s, and updates/ held five abandoned staged builds (1.4 GB). Pair with server 6.74.0 or 6.75.0.
+
+- Root cause: installAppUpdate called NSApplication.terminate(nil) inside its main-actor Task. applicationShouldTerminate answered .terminateLater (always, whenever MacRecordingTermination.prepare was set) and replied from a new Task, which could not start until the first Task's job returned; AppKit waited inside that job, so neither ran. Proved with a probe on a real NSApplication: terminate from a Task stays alive past 10 s, a run-loop-scheduled terminate quits at once. 0.5.319's 75 s watchdog was a main-actor Task too and was starved by the same deadlock, so its "never hangs" did not hold.
+- AppQuit.request() (Sources/AppQuit.swift) runs terminate from a zero-delay perform, outside any job. The updater and the panel's Quit use it; a pin forbids terminate( anywhere else in Sources.
+- applicationShouldTerminate defers only while a quit is pending or a Mac recording is starting, recording or stopping (needsQuitTeardown), the only phases prepareToQuit acts on. Any other quit is immediate.
+- stage-app-update removes other updates/<build> folders before staging (previous/, records and non-build entries stay).
+- The hop to 0.5.320 runs the old version's install, so it can still stall once. Force Quit during the helper's 60 s wait lets the swap finish and reopen the new build (What's New says so).
+- Tests: Tests/run-app-quit.sh runs a real NSApplication both ways (the scheduled quit must exit, a direct terminate in a Task must hang) plus wiring pins; eight pin mutants and the runtime mutant are killed. The real-helper stage test plants abandoned build folders and checks only those go.
+
 ## 0.5.319 (build 372), updates say how long they take, and never hang on Installing
 
 Field fix (2026-10-17): a 0.5.318 install sat on Installing for five minutes. Pair with server 6.74.0 (unchanged).
