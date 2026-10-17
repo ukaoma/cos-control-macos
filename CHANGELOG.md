@@ -2,6 +2,8 @@
 
 Field fix (2026-10-17): a 0.5.318 install sat on Installing for five minutes. Pair with server 6.74.0 (unchanged).
 
+Bundled fluidaudiocli is rebuilt by scripts/build-fluidaudio-cli.sh from the same pinned FluidAudio v0.17.4 source (21493f8). Today's toolchain did not reproduce the 0.5.318 bytes, so Resources/fluidaudio-cli.json records the new build's SHA-256 (same size, same system libraries, macOS 14 minimum).
+
 - Download and install shows real progress: "Downloading 30.0 of 137.2 MB, about 55 s left". The helper reports bytes every half second, and the estimate starts after 2 seconds of data.
 - Installing says how long it usually takes ("COS Control closes and reopens, usually within a minute"), and "Saving the Mac recording first" while a Mac recording finishes before Control can close.
 - Never stuck on "Installing" (2026-10-17: it sat there for five minutes). The helper waits 60 s for Control to close, then gives up and records why; Control never read that record. Now, 75 s after installing starts, a quit still waiting is cancelled and the window shows the reason with Try again: "COS Control could not close for the update…", or "Finish your meeting first, then install." The same reason shows once on the reopened old build when the helper refused after Control had closed.
