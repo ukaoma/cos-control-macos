@@ -807,7 +807,7 @@ enum DictationSoundEdge: String, Sendable, CaseIterable { case start, stop }
 enum DictationSoundLibrary {
     /// Bundled sounds, in menu order: id (file prefix) and the name Settings shows.
     static let sounds: [(id: String, name: String)] = [
-        ("windu-saber", "Miles Windu saber"),
+        ("windu-saber", "Miles Windu lightsaber"),
         ("unstable-saber", "Unstable saber"), ("unstable-saber-bright", "Unstable saber (bright)"), ("dark-saber", "Dark saber"),
         ("saber-full", "Saber, full ignition"), ("saber-ignite", "Saber ignite"),
         ("saber-soft", "Saber, soft"), ("droid-chirp", "Droid chirp"), ("soft-chime", "Soft chime"),
@@ -825,11 +825,13 @@ enum DictationSoundLibrary {
 
     /// The shipped Jedi Miles Windu pack (PetSpriteStore.bundledCharacters).
     static let winduPackID = "jedi-miles-windu"
-    /// THE pet → default table (Miles: the Jedi's crackling Unstable saber is his favorite). 0.5.315: his own saber
-    /// design is the Jedi Miles Windu pack's default; Nia Solari, Elara Vale and Rowan Vale keep the Unstable saber.
+    /// THE pet to default table (Miles: the Jedi's crackling Unstable saber is his favorite). 0.5.315: his own saber
+    /// design was the Jedi Miles Windu pack's default. 0.5.318 (Miles 2026-10-17, "my saber should be default but keep
+    /// it named Miles Windu lightsaber"): every Jedi pack plays it, Nia Solari, Elara Vale and Rowan Vale too.
+    /// `pack` stays for the sound's name and future per-pack sounds.
     static func petDefault(_ kind: DictationPetKind, pack: String? = nil) -> String {
         switch kind {
-        case .jedi: pack == winduPackID ? "windu-saber" : "unstable-saber"
+        case .jedi: "windu-saber"
         case .droid: "droid-chirp"
         case .other: "soft-chime"
         }

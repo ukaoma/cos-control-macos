@@ -267,7 +267,7 @@ for sound_id, edges in recorded.items():
     for edge, digest in edges.items():
         need(hashlib.sha256((root / "Resources/Sounds" / f"{sound_id}-{edge}.wav").read_bytes()).hexdigest() == digest,
              f"{sound_id}-{edge}.wav is Miles's file, byte for byte")
-need('case .jedi: pack == winduPackID ? "windu-saber" : "unstable-saber"' in core and 'static let winduPackID = "jedi-miles-windu"' in core
+need('case .jedi: "windu-saber"' in core and 'static let winduPackID = "jedi-miles-windu"' in core
      and 'id: "jedi-miles-windu",' in read("Sources/Models.swift"), "the Windu pack id is the shipped one")
 need("DictationSoundLibrary.installedPack(" in app and "PetSpriteStore.bundledCharacters.compactMap" in app and "model.dictation.petPack = {" in app
      and "pack: petPack?()" in dictation and dictation.count("petPack?()") == 2, "the app tells dictation which pack is installed, for both the sound and its name")

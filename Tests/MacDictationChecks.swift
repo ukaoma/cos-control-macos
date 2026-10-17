@@ -406,7 +406,7 @@ final class FakeDictationBoard: DictationPasteboardAccess {
                "restore no sooner than 500 ms, later while the field moves, never past 1.5 s")
         // 0.5.312 sounds: pet default → the person's choice → a custom file that must still be usable.
         typealias L = DictationSoundLibrary
-        expect(L.petDefault(.jedi) == "unstable-saber" && L.petDefault(.droid) == "droid-chirp" && L.petDefault(.other) == "soft-chime", "one pet table")
+        expect(L.petDefault(.jedi) == "windu-saber" && L.petDefault(.droid) == "droid-chirp" && L.petDefault(.other) == "soft-chime", "one pet table")
         // 0.5.315: Miles's own saber is the Jedi Miles Windu pack's default; the other three Jedi packs keep Unstable saber.
         // The file sets are the shipped state maps' pose files (dictation-wispr-pins.py checks they still match).
         let shippedPacks: [(id: String, files: Set<String>)] = [
@@ -423,9 +423,9 @@ final class FakeDictationBoard: DictationPasteboardAccess {
         expect(L.installedPack([], packs: shippedPacks) == nil && L.installedPack(["session-pet-idle.png"], packs: shippedPacks) == nil
                && L.installedPack(packFiles["jedi-miles-windu"]!.union(["custom.png"]), packs: shippedPacks) == nil
                && L.installedPack([], packs: [(id: "empty", files: [])]) == nil, "an unknown, edited or empty pack is no shipped pack")
-        expect(L.petDefault(.jedi, pack: installed("jedi-miles-windu")) == "windu-saber", "Jedi Miles Windu: Miles Windu saber")
-        for other in ["jedi-nia-solari", "jedi-elara-vale", "jedi-rowan-vale"] {
-            expect(L.petDefault(.jedi, pack: installed(other)) == "unstable-saber", "\(other): Unstable saber")
+        // 0.5.318: Miles's saber is every Jedi's default (Miles 2026-10-17).
+        for pack in ["jedi-miles-windu", "jedi-nia-solari", "jedi-elara-vale", "jedi-rowan-vale"] {
+            expect(L.petDefault(.jedi, pack: installed(pack)) == "windu-saber", "\(pack): Miles Windu lightsaber")
         }
         expect(L.petDefault(.droid, pack: L.winduPackID) == "droid-chirp" && L.petDefault(.other, pack: L.winduPackID) == "soft-chime"
                && L.petDefault(.droid) == "droid-chirp" && L.petDefault(.other) == "soft-chime", "droid and other are unchanged, pack or not")
@@ -439,10 +439,10 @@ final class FakeDictationBoard: DictationPasteboardAccess {
         func pick(_ stored: String, _ edge: DictationSoundEdge = .start, pet: DictationPetKind = .jedi, volume: Double = 0.6, recording: Bool = false) -> L.Resolved {
             L.resolve(L.Choice(stored: stored), edge: edge, pet: pet, volume: volume, macRecording: recording, customUsable: usable)
         }
-        expect(pick("pet") == .bundled("unstable-saber-start.wav") && pick("pet", .stop, pet: .other) == .bundled("soft-chime-stop.wav"), "the pet's sound by default")
+        expect(pick("pet") == .bundled("windu-saber-start.wav") && pick("pet", .stop, pet: .other) == .bundled("soft-chime-stop.wav"), "the pet's sound by default")
         expect(pick("library:droid-chirp", pet: .jedi) == .bundled("droid-chirp-start.wav"), "a library choice overrides the pet")
-        expect(pick("library:not-a-sound") == .bundled("unstable-saber-start.wav"), "an unknown library id falls back to the pet")
-        expect(pick("custom:start-ok.m4a") == .custom("start-ok.m4a") && pick("custom:gone.m4a") == .bundled("unstable-saber-start.wav"),
+        expect(pick("library:not-a-sound") == .bundled("windu-saber-start.wav"), "an unknown library id falls back to the pet")
+        expect(pick("custom:start-ok.m4a") == .custom("start-ok.m4a") && pick("custom:gone.m4a") == .bundled("windu-saber-start.wav"),
                "your own file, or the pet's sound once it is gone")
         expect(pick("pet", volume: 0) == .silent("volume off") && pick("custom:start-ok.m4a", volume: 0) == .silent("volume off"), "volume 0 is silent")
         expect(pick("pet", recording: true) == .silent("a COS recording is capturing") && pick("library:soft-chime", .stop, recording: true) == .silent("a COS recording is capturing"),
@@ -479,8 +479,8 @@ final class FakeDictationBoard: DictationPasteboardAccess {
         expect(L.cents(0) == 0 && L.cents(-4) == -400 && L.cents(2.4) == 200 && L.cents(-20) == -1_200 && L.cents(9) == 600 && L.cents(.nan) == 0,
                "pitch: whole semitones, -12 to +6, in cents")
         expect(L.name("unstable-saber") == "Unstable saber" && L.name("unstable-saber-bright") == "Unstable saber (bright)"
-               && L.name("dark-saber") == "Dark saber" && L.name("windu-saber") == "Miles Windu saber" && L.sounds.first?.id == "windu-saber"
-               && L.sounds.count == 9, "names; Miles Windu saber first")
+               && L.name("dark-saber") == "Dark saber" && L.name("windu-saber") == "Miles Windu lightsaber" && L.sounds.first?.id == "windu-saber"
+               && L.sounds.count == 9, "names; Miles Windu lightsaber first")
         expect(L.defaultVolume == 0.6 && L.sounds.map(\.id).allSatisfy { !$0.isEmpty } && Set(L.sounds.map(\.id)).count == L.sounds.count, "library")
         }
         do { // own scope: names here must not collide with earlier sections
