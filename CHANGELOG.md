@@ -1,4 +1,6 @@
-## Unreleased (0.5.319 candidate) - Updates say how long they take, and never hang on "Installing"
+## 0.5.319 (build 372), updates say how long they take, and never hang on Installing
+
+Field fix (2026-10-17): a 0.5.318 install sat on Installing for five minutes. Pair with server 6.74.0 (unchanged).
 
 - Download and install shows real progress: "Downloading 30.0 of 137.2 MB, about 55 s left". The helper reports bytes every half second, and the estimate starts after 2 seconds of data.
 - Installing says how long it usually takes ("COS Control closes and reopens, usually within a minute"), and "Saving the Mac recording first" while a Mac recording finishes before Control can close.
