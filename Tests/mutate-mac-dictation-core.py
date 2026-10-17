@@ -280,7 +280,33 @@ MUTANTS = [
 ]
 
 
-CHECK_FAILURE = re.compile(r"MacDictationChecks\.swift:\d+: Fatal error: (.+)|Fatal error: (.+?): file [^\n]*MacDictationChecks\.swift, line \d+")
+# A failed check, in either wording Swift uses for precondition (0.5.317 field run: this toolchain prints
+# "checks/MacDictationChecks.swift:108: Precondition failed: <name>"; the first version of this gate matched only
+# "Fatal error:", so every real kill read as CRASHED). A trap anywhere else names another file and stays CRASHED.
+CHECK_FAILURE = re.compile(r"MacDictationChecks\.swift:\d+: (?:Fatal error|Precondition failed): (.+)"
+                           r"|(?:Fatal error|Precondition failed): (.+?): file [^\n]*MacDictationChecks\.swift, line \d+")
+
+
+def failed_check(output: str) -> "str | None":
+    """The message of the named check that failed, or None when the run trapped outside the checks."""
+    found = CHECK_FAILURE.search(output)
+    return (found.group(1) or found.group(2)).strip() if found else None
+
+
+def classifier_self_test() -> None:
+    """Runs before the baseline, so the classifier cannot regress quietly in either direction."""
+    cases = [
+        ("checks/MacDictationChecks.swift:108: Precondition failed: left/right held blocks the paste", "left/right held blocks the paste"),
+        ("/w/Tests/MacDictationChecks.swift:137: Fatal error: an added word is an insertion", "an added word is an insertion"),
+        ("Precondition failed: spoken list: x: file /w/Tests/MacDictationChecks.swift, line 9", "spoken list: x"),
+        ("checks/MacDictationCore.swift:88: Precondition failed: a trap in the core", None),
+        ("Swift/ContiguousArrayBuffer.swift:600: Fatal error: Index out of range", None),
+    ]
+    for text, want in cases:
+        got = failed_check(text)
+        if got != want:
+            sys.exit(f"classifier self-test failed: {text!r} read as {got!r}, expected {want!r}")
+    print(f"classifier self-test: {len(cases)} cases (named check failures read as kills; core and stdlib traps stay CRASHED)")
 
 
 def compile_checks(work: pathlib.Path) -> tuple[bool, str]:
@@ -306,13 +332,14 @@ def classify(work: pathlib.Path) -> tuple[str, str]:
         return "INVALID", "timed out"
     if run.returncode == 0:
         return "SURVIVED", ""
-    found = CHECK_FAILURE.search(run.stderr + run.stdout)
-    if found:
-        return "KILLED", (found.group(1) or found.group(2)).strip()
+    message = failed_check(run.stderr + run.stdout)
+    if message:
+        return "KILLED", message
     tail = (run.stderr + run.stdout).strip().splitlines()
     return "CRASHED", tail[-1] if tail else f"exit {run.returncode}"
 
 
+classifier_self_test()
 work = pathlib.Path(tempfile.mkdtemp(prefix="cos-dictation-mutants-", dir="/private/tmp"))
 # Lanes compile against shared builds of Sources (Tests/kit-compile.py): keep them for every mutant of this run.
 os.environ.setdefault("COS_TEST_KIT_DIR", str(work / ".kits"))
