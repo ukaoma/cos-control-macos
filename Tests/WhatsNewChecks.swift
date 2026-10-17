@@ -216,7 +216,7 @@ import Foundation
 
         flow.staged()
         let applying = WhatsNewFooter(flow.phase, busy: true)
-        check(applying.status == "Installing, COS Control will reopen" && applying.working, "footer applying", "installing words")
+        check(applying.status == WhatsNewFooter.installingWords && applying.working, "footer applying", "installing words say how long")
         check(!applying.primaryEnabled, "footer applying", "no second install while applying")
         check(applying.cancelEnabled && applying.cancelTitle == "Close", "footer applying", "Close, enabled, while applying")
 

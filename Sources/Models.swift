@@ -4090,6 +4090,17 @@ struct AppUpdateFlow: Equatable, Sendable {
     /// The offer the banner names. Kept while an install runs, even if a later check changes the appcast.
     private(set) var version: String?
     private(set) var build: Int?
+    /// 0.5.319 (Miles 2026-10-17: "Can we at least get a view of how long the install and download is going to take?"):
+    /// when the download began reporting bytes, and how many it had then, so the line can say how long is left.
+    private(set) var downloadFirstAt: Date?
+    private(set) var downloadFirstBytes: Double = 0
+    /// When apply-app-update started. Control should be gone within `applyDeadline`; still here means the helper gave
+    /// up (it waits 60 s for Control to quit) and the window must say so instead of "Installing" forever.
+    private(set) var applyingStartedAt: Date?
+    /// What Control is finishing before it can quit (the Mac recording's save), shown while installing.
+    private(set) var quitWaitingOn: String?
+    /// The helper waits 60 s for Control to quit, then gives up; 15 s of margin.
+    static let applyDeadline: TimeInterval = 75
 
     /// Every new check result. While an install runs it owns the banner, so an offer change waits. A failure stays on
     /// screen while the offer stands, and goes when the appcast no longer offers an update.
@@ -4120,21 +4131,49 @@ struct AppUpdateFlow: Equatable, Sendable {
         switch phase {
         case .ready, .failed:
             phase = .staging(nil)
+            downloadFirstAt = nil; downloadFirstBytes = 0; applyingStartedAt = nil; quitWaitingOn = nil
             return true
         default:
             return false
         }
     }
 
-    mutating func progress(_ line: String) {
+    mutating func progress(_ line: String, now: Date = Date()) {
         guard case .staging = phase else { return }
         let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmed.isEmpty { phase = .staging(trimmed) }
+        guard !trimmed.isEmpty else { return }
+        if let bytes = AppUpdateDownloadLine.parse(trimmed) {
+            if downloadFirstAt == nil { downloadFirstAt = now; downloadFirstBytes = bytes.received }
+            phase = .staging(AppUpdateDownloadLine.words(bytes, since: downloadFirstAt, firstBytes: downloadFirstBytes, now: now))
+        } else {
+            phase = .staging(trimmed)
+        }
     }
 
-    mutating func staged() {
+    mutating func staged(now: Date = Date()) {
         guard case .staging = phase else { return }
         phase = .applying
+        applyingStartedAt = now
+    }
+
+    /// While installing: what Control is finishing before it can quit, or nil.
+    mutating func waitingToQuit(on what: String?) {
+        guard case .applying = phase else { return }
+        quitWaitingOn = what
+    }
+
+    /// Still installing after `applyDeadline`: Control did not quit, so the helper gave up and nothing was installed.
+    func applyOverdue(now: Date = Date()) -> Bool {
+        guard case .applying = phase, let started = applyingStartedAt else { return false }
+        return now.timeIntervalSince(started) >= Self.applyDeadline
+    }
+
+    /// A refusal the helper recorded after this launch's Control had already quit (it reopened the old build): shown on
+    /// the offer, so the person learns why nothing changed. Only while the offer stands.
+    mutating func restoreFailure(_ message: String) {
+        guard phase == .ready else { return }
+        let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty { phase = .failed(trimmed) }
     }
 
     mutating func fail(_ message: String) {
@@ -4142,6 +4181,7 @@ struct AppUpdateFlow: Equatable, Sendable {
         case .staging, .applying:
             let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines)
             phase = .failed(trimmed.isEmpty ? "The update did not install." : trimmed)
+            applyingStartedAt = nil; quitWaitingOn = nil
         default:
             return
         }
@@ -4292,6 +4332,67 @@ struct WhatsNewContent: Equatable, Sendable {
     var summaryText: String { summary ?? "No release notes were published with this update." }
 }
 
+/// 0.5.319: the helper's download line with bytes ("Downloading COS Control update… 12.4 MB of 137.2 MB") and the words the
+/// window shows for it ("Downloading 12.4 of 137.2 MB, about 40 s left"). The estimate uses the average rate since the
+/// first byte line, after 2 s of data, so one slow second does not swing it.
+enum AppUpdateDownloadLine {
+    struct Bytes: Equatable, Sendable { let received: Double; let total: Double? }
+
+    static func parse(_ line: String) -> Bytes? {
+        guard line.hasPrefix("Downloading"), let mb = line.range(of: #"([0-9]+(?:\.[0-9]+)?) MB(?: of ([0-9]+(?:\.[0-9]+)?) MB)?"#, options: .regularExpression) else { return nil }
+        let numbers = line[mb].split(whereSeparator: { !"0123456789.".contains($0) }).compactMap { Double($0) }
+        guard let received = numbers.first else { return nil }
+        return Bytes(received: received, total: numbers.count > 1 ? numbers[1] : nil)
+    }
+
+    static func words(_ b: Bytes, since first: Date?, firstBytes: Double, now: Date) -> String {
+        let got = String(format: "%.1f", b.received)
+        guard let total = b.total, total > 0 else { return "Downloading \(got) MB" }
+        let head = "Downloading \(got) of \(String(format: "%.1f", total)) MB"
+        guard let first, now.timeIntervalSince(first) >= 2, b.received > firstBytes else { return head }
+        let rate = (b.received - firstBytes) / now.timeIntervalSince(first)
+        guard rate > 0 else { return head }
+        return "\(head), \(timeLeft((total - b.received) / rate))"
+    }
+
+    static func timeLeft(_ seconds: Double) -> String {
+        if seconds < 10 { return "a few seconds left" }
+        if seconds < 60 { return "about \(Int((seconds / 5).rounded()) * 5) s left" }
+        let minutes = Int((seconds / 60).rounded())
+        return minutes <= 1 ? "about a minute left" : "about \(minutes) min left"
+    }
+}
+
+/// 0.5.319: the helper's `updates/last-failure.json` ({"reason":"busy","blockers":[...]}, {"reason":"quitTimeout"},
+/// {"reason":"notStaged","message":...}, each with "at"). Before 0.5.319 nothing in Control read it, so a refused or timed
+/// out install left "Installing, COS Control will reopen" on screen forever.
+struct AppUpdateFailureRecord: Equatable, Sendable {
+    let reason: String
+    let blockers: [String]
+    let at: Date?
+
+    static func parse(_ data: Data) -> AppUpdateFailureRecord? {
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any], let reason = object["reason"] as? String else { return nil }
+        let at = (object["at"] as? String).flatMap { ISO8601DateFormatter().date(from: $0) }
+        return AppUpdateFailureRecord(reason: reason, blockers: (object["blockers"] as? [String]) ?? [], at: at)
+    }
+
+    var words: String {
+        switch reason {
+        case "busy":
+            return WhatsNewFooter.words("Finish this first, then install: \(blockers.joined(separator: ", ")). The glasses server was not touched.")
+        case "quitTimeout":
+            return AppUpdateFailureRecord.quitTimeoutWords
+        case "notStaged":
+            return "The downloaded update could not be checked, so nothing was installed. Choose Try again."
+        default:
+            return "The update did not install. Choose Try again."
+        }
+    }
+
+    static let quitTimeoutWords = "COS Control could not close for the update, so nothing was installed. Choose Try again. If it happens again, quit COS Control from the menu bar, reopen it, and try once more."
+}
+
 /// The What's New footer for each phase of AppUpdateFlow, and after an update. Download and install runs
 /// installAppUpdate, the existing path (busy refusal, the helper's meeting and drain refusals, the SHA-256 check, and
 /// AppUpdateStageCheck); the window only reflects it.
@@ -4343,7 +4444,9 @@ struct WhatsNewFooter: Equatable, Sendable {
                                           status: nil, failed: false, working: false, showsReassurance: false)
 
     /// `reason` and `minMacOS` are the last check's (AppUpdateInfo), for the words when nothing is offered.
-    init(_ phase: AppUpdatePhase, busy: Bool, reason: String? = nil, minMacOS: String? = nil) {
+    static let installingWords = "Installing. COS Control closes and reopens, usually within a minute."
+
+    init(_ phase: AppUpdatePhase, busy: Bool, reason: String? = nil, minMacOS: String? = nil, quitWaitingOn: String? = nil) {
         let waiting = "COS Control is finishing another task. Download and install is available when it is done."
         switch phase {
         case .none:
@@ -4358,7 +4461,8 @@ struct WhatsNewFooter: Equatable, Sendable {
                       status: Self.progressWord(line), failed: false, working: true, showsReassurance: true)
         case .applying:
             self.init(primary: .install, primaryEnabled: false, cancelTitle: "Close", cancelEnabled: true,
-                      status: "Installing, COS Control will reopen", failed: false, working: true, showsReassurance: true)
+                      status: quitWaitingOn.map { "Saving \($0) first, then COS Control closes and installs." } ?? Self.installingWords,
+                      failed: false, working: true, showsReassurance: true)
         case .failed(let message):
             self.init(primary: .tryAgain, primaryEnabled: !busy, cancelTitle: "Cancel", cancelEnabled: true,
                       status: Self.words(message), failed: true, working: false, showsReassurance: true)
@@ -4380,6 +4484,7 @@ struct WhatsNewFooter: Equatable, Sendable {
     /// short word each; any other line as itself.
     static func progressWord(_ line: String?) -> String {
         guard let line, !line.isEmpty else { return "Downloading…" }
+        if line.hasPrefix("Downloading ") && line.contains(" MB") { return line }   // the flow's byte line, with time left
         if line.contains("Downloading") { return "Downloading…" }
         if line.contains("SHA-256") || line.hasPrefix("Checking") { return "Checking…" }
         if line.contains("Unpacking") { return "Unpacking…" }
@@ -4440,7 +4545,7 @@ struct WhatsNewPresentation: Equatable, Sendable {
     static func offer(_ info: AppUpdateInfo, flow: AppUpdateFlow, frozen: WhatsNewContent?, busy: Bool) -> WhatsNewPresentation {
         let content = flow.installing ? (frozen ?? WhatsNewContent(info)) : WhatsNewContent(info)
         return WhatsNewPresentation(title: title(flow.version), byline: flow.build.map { "Build \($0)" }, content: content,
-                                    footer: WhatsNewFooter(flow.phase, busy: busy, reason: info.reason, minMacOS: info.minMacOS))
+                                    footer: WhatsNewFooter(flow.phase, busy: busy, reason: info.reason, minMacOS: info.minMacOS, quitWaitingOn: flow.quitWaitingOn))
     }
 
     static func present(_ mode: WhatsNewMode, info: AppUpdateInfo, flow: AppUpdateFlow, frozen: WhatsNewContent?, busy: Bool) -> WhatsNewPresentation {

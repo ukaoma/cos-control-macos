@@ -9089,7 +9089,10 @@ final class COSControlHelper {
         return blockers
     }
 
-    private func downloadUpdate(from url: URL, to destination: URL, timeout: Int = 120) throws {
+    /// 0.5.319: the download reports bytes ("Downloading COS Control update… 12.4 MB of 137.2 MB", at most every 0.5 s) so
+    /// Control can say how long is left, and fails on a STALL (no bytes for `stallSeconds`) or after `maxSeconds`, not
+    /// after a flat 125 s: the 0.5.318 zip is 137 MB, which a flat 125 s refuses below about 9 Mbps.
+    private func downloadUpdate(from url: URL, to destination: URL, stallSeconds: TimeInterval = 60, maxSeconds: TimeInterval = 1800) throws {
         try? fm.removeItem(at: destination)
         if url.isFileURL {
             try fm.copyItem(at: url, to: destination)
@@ -9099,24 +9102,30 @@ final class COSControlHelper {
             throw HelperError.message("Updates must be downloaded over HTTPS.")
         }
         progress("Downloading COS Control update…")
-        var request = URLRequest(url: url, timeoutInterval: TimeInterval(timeout))
+        var request = URLRequest(url: url, timeoutInterval: stallSeconds)
         request.cachePolicy = .reloadIgnoringLocalCacheData
-        let done = DispatchSemaphore(value: 0)
-        let box = HTTPResultBox()
-        let task = URLSession.shared.downloadTask(with: request) { temp, response, _ in
-            if let temp {
-                try? FileManager.default.copyItem(at: temp, to: destination)
+        // The same stderr line protocol as progress(_:), written from URLSession's queue without the helper object.
+        let watcher = UpdateDownloadWatcher(destination: destination) { written, expected in
+            if let data = (UpdateDownloadWatcher.line(written: written, expected: expected) + "\n").data(using: .utf8) {
+                try? FileHandle.standardError.write(contentsOf: data)
             }
-            box.store(data: nil, response: response)
-            done.signal()
         }
+        let session = URLSession(configuration: .ephemeral, delegate: watcher, delegateQueue: nil)
+        defer { session.invalidateAndCancel() }
+        let task = session.downloadTask(with: request)
         task.resume()
-        if done.wait(timeout: .now() + .seconds(timeout + 5)) != .success {
-            task.cancel()
-            throw HelperError.message("Download timed out.")
+        let started = Date()
+        while watcher.done.wait(timeout: .now() + 1) == .timedOut {
+            if Date().timeIntervalSince(watcher.lastByteAt) > stallSeconds {
+                task.cancel()
+                throw HelperError.message("The download stopped receiving data for \(Int(stallSeconds)) seconds. Check the connection and try again.")
+            }
+            if Date().timeIntervalSince(started) > maxSeconds {
+                task.cancel()
+                throw HelperError.message("Download timed out.")
+            }
         }
-        let (_, response) = box.load()
-        guard let http = response as? HTTPURLResponse, http.statusCode == 200,
+        guard let http = watcher.response as? HTTPURLResponse, http.statusCode == 200, watcher.saved,
               fm.fileExists(atPath: destination.path) else {
             throw HelperError.message("Could not download the update.")
         }
@@ -22888,4 +22897,53 @@ do {
     let data = try! JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
     print(String(decoding: data, as: UTF8.self))
     exit(1)
+}
+
+/// 0.5.319: URLSession download delegate for the update. Thread-safe state behind a lock; `done` signals completion.
+final class UpdateDownloadWatcher: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
+    private let lock = NSLock()
+    private let destination: URL
+    private let report: @Sendable (Int64, Int64) -> Void
+    private var _lastByteAt = Date()
+    private var _lastReport = Date.distantPast
+    private var _response: URLResponse?
+    private var _saved = false
+    let done = DispatchSemaphore(value: 0)
+
+    init(destination: URL, report: @escaping @Sendable (Int64, Int64) -> Void) {
+        self.destination = destination
+        self.report = report
+    }
+
+    var lastByteAt: Date { lock.lock(); defer { lock.unlock() }; return _lastByteAt }
+    var response: URLResponse? { lock.lock(); defer { lock.unlock() }; return _response }
+    var saved: Bool { lock.lock(); defer { lock.unlock() }; return _saved }
+
+    /// "Downloading COS Control update… 12.4 MB of 137.2 MB" (or without "of" when the size is unknown).
+    static func line(written: Int64, expected: Int64) -> String {
+        let got = String(format: "%.1f", Double(written) / 1_000_000)
+        guard expected > 0 else { return "Downloading COS Control update… \(got) MB" }
+        return "Downloading COS Control update… \(got) MB of \(String(format: "%.1f", Double(expected) / 1_000_000)) MB"
+    }
+
+    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didWriteData bytesWritten: Int64,
+                    totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
+        lock.lock()
+        let now = Date()
+        _lastByteAt = now
+        let due = now.timeIntervalSince(_lastReport) >= 0.5
+        if due { _lastReport = now }
+        lock.unlock()
+        if due { report(totalBytesWritten, totalBytesExpectedToWrite) }
+    }
+
+    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
+        let ok = (try? FileManager.default.copyItem(at: location, to: destination)) != nil
+        lock.lock(); _response = downloadTask.response; _saved = ok; lock.unlock()
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        lock.lock(); if _response == nil { _response = task.response }; lock.unlock()
+        done.signal()
+    }
 }

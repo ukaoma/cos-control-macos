@@ -9,6 +9,17 @@ private let recordingLog = Logger(subsystem: "com.gotcos.control", category: "ma
 @MainActor enum MacRecordingTermination {
     static var prepare: (@MainActor () async -> Void)?
     static var pending = false
+    /// 0.5.319: bumped by every quit request and by a cancel, so a save that finishes after its quit was cancelled
+    /// (the update's 75 s deadline) never quits the app later on its own.
+    static var generation = 0
+
+    /// Cancels a quit that is still waiting on the recording save. Control stays open and its window can say why.
+    static func cancelPendingQuit() {
+        guard pending else { return }
+        pending = false
+        generation += 1
+        NSApp.reply(toApplicationShouldTerminate: false)
+    }
 }
 
 @MainActor extension COSAppDelegate {
@@ -16,7 +27,14 @@ private let recordingLog = Logger(subsystem: "com.gotcos.control", category: "ma
         guard let prepare = MacRecordingTermination.prepare else { return .terminateNow }
         guard !MacRecordingTermination.pending else { return .terminateLater }
         MacRecordingTermination.pending = true
-        Task { await prepare(); sender.reply(toApplicationShouldTerminate: true) }
+        MacRecordingTermination.generation += 1
+        let mine = MacRecordingTermination.generation
+        Task {
+            await prepare()
+            guard MacRecordingTermination.generation == mine else { return }   // cancelled meanwhile
+            MacRecordingTermination.pending = false
+            sender.reply(toApplicationShouldTerminate: true)
+        }
         return .terminateLater
     }
 }

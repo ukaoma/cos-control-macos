@@ -1,3 +1,12 @@
+## Unreleased (0.5.319 candidate) - Updates say how long they take, and never hang on "Installing"
+
+- Download and install shows real progress: "Downloading 30.0 of 137.2 MB, about 55 s left". The helper reports bytes every half second, and the estimate starts after 2 seconds of data.
+- Installing says how long it usually takes ("COS Control closes and reopens, usually within a minute"), and "Saving the Mac recording first" while a Mac recording finishes before Control can close.
+- Never stuck on "Installing" (2026-10-17: it sat there for five minutes). The helper waits 60 s for Control to close, then gives up and records why; Control never read that record. Now, 75 s after installing starts, a quit still waiting is cancelled and the window shows the reason with Try again: "COS Control could not close for the update…", or "Finish your meeting first, then install." The same reason shows once on the reopened old build when the helper refused after Control had closed.
+- The update download no longer fails just for being slow: the 0.5.318 zip is 137 MB, which the old flat 125 s limit refused below about 9 Mbps. It now fails only when no data arrives for 60 s, or after 30 minutes.
+- Checks: AppUpdateBadgeChecks 135 (7 new guards mutation-tested, each killed); What's New lane passes on the full compile; the new helper staged the real 0.5.318 release in an isolated test home (137.2 MB, progress every 0.5 s, SHA-256 verified).
+- These improvements apply to updates FROM this version on: the window that runs an update belongs to the build being replaced.
+
 ## 0.5.318 (build 371), permissions that ask, a truthful Voice check, the lightsaber for every Jedi
 
 Field fixes from Queen's Mac on 0.5.317 (2026-10-17). Pair with server 6.74.0 (unchanged).

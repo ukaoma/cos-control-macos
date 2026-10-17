@@ -233,7 +233,10 @@ final class ControllerModel: ObservableObject {
     @Published var recentGlassesDate: String?
     /// Every writer of the check result goes through here, so the banner and the icon (appUpdateFlow) follow each one.
     @Published var appUpdate = AppUpdateInfo() {
-        didSet { appUpdateFlow.offer(appUpdate, currentVersion: Self.currentVersion, currentBuild: Self.currentBuild) }
+        didSet {
+            appUpdateFlow.offer(appUpdate, currentVersion: Self.currentVersion, currentBuild: Self.currentBuild)
+            restoreRecentUpdateFailure()
+        }
     }
     /// 2026-10-09 (Miles, like Vorssant): none, ready, staging, applying or failed. The panel's top banner and the
     /// menu-bar glasses read this, never `appUpdate` directly.
@@ -289,6 +292,10 @@ final class ControllerModel: ObservableObject {
     /// The updater's success record (the swap writes it; complete-app-update keeps it). A check may point it elsewhere.
     var updateSuccessRecord = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent("Library/Application Support/COS Control/updates/success.json")
+    /// 0.5.319: the helper's refusal record (busy, quitTimeout, notStaged). A check may point it elsewhere.
+    var updateFailureRecord = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent("Library/Application Support/COS Control/updates/last-failure.json")
+    private var restoredUpdateFailureAt: Date?
     /// This launch's after-update decision (WhatsNewAfterUpdate.launch), made by beginPostUpdateWhatsNew.
     private(set) var postUpdateLaunch: WhatsNewAfterUpdate.Launch = .seen
     /// A check this launch reached the feed (not unreachable or malformed), so the after-update window can show.
@@ -1212,6 +1219,7 @@ final class ControllerModel: ObservableObject {
                 }
                 operationProgress = "Installing…"
                 appUpdateFlow.staged()
+                let applyStarted = Date()
                 var apply = [
                     "apply-app-update",
                     "--detach",
@@ -1223,6 +1231,8 @@ final class ControllerModel: ObservableObject {
                 if let stagedBuild = staged.details["latestBuild"]?.int { apply += ["--expected-build", String(stagedBuild)] }
                 _ = try await helper.run(apply, preferStable: true)
                 notice = "Installing. Control will reopen."
+                // 0.5.319: watch BEFORE asking to quit. terminate(nil) does not return while the Mac recording saves.
+                watchAppUpdateApply(since: applyStarted)
                 NSApplication.shared.terminate(nil)
             } catch {
                 appUpdateFlow.fail(error.localizedDescription)
@@ -1230,6 +1240,46 @@ final class ControllerModel: ObservableObject {
                 operationProgress = nil
             }
         }
+    }
+
+    /// 0.5.319: while installing, say what Control is finishing before it can quit; at the deadline (the helper waits 60 s
+    /// for Control to quit, then gives up), cancel a quit still waiting and show the helper's reason with Try again,
+    /// instead of "Installing" forever (Miles 2026-10-17: it hung there for five minutes).
+    private func watchAppUpdateApply(since started: Date) {
+        Task { @MainActor [weak self] in
+            while let self, case .applying = self.appUpdateFlow.phase {
+                self.appUpdateFlow.waitingToQuit(on: MacRecordingTermination.pending ? "the Mac recording" : nil)
+                if self.appUpdateFlow.applyOverdue() {
+                    MacRecordingTermination.cancelPendingQuit()
+                    let record = self.readUpdateFailure(since: started)
+                    self.appUpdateFlow.fail(record?.words ?? AppUpdateFailureRecord.quitTimeoutWords)
+                    self.busy = false
+                    self.operationProgress = nil
+                    self.notice = nil
+                    return
+                }
+                try? await Task.sleep(for: .seconds(1))
+            }
+        }
+    }
+
+    /// The helper's last refusal, only when it was written at or after `since`.
+    private func readUpdateFailure(since: Date) -> AppUpdateFailureRecord? {
+        guard let data = try? Data(contentsOf: updateFailureRecord), let record = AppUpdateFailureRecord.parse(data),
+              let at = record.at, at >= since.addingTimeInterval(-2) else { return nil }
+        return record
+    }
+
+    /// After the helper refused and reopened this (old) build, show its reason once on the standing offer: a refusal
+    /// from the last 15 minutes, newer than the last successful install.
+    private func restoreRecentUpdateFailure() {
+        guard appUpdateFlow.phase == .ready, let record = readUpdateFailure(since: Date().addingTimeInterval(-15 * 60)),
+              let at = record.at, restoredUpdateFailureAt != at else { return }
+        if let success = try? Data(contentsOf: updateSuccessRecord),
+           let object = try? JSONSerialization.jsonObject(with: success) as? [String: Any],
+           let doneAt = (object["appliedAt"] as? String).flatMap({ ISO8601DateFormatter().date(from: $0) }), doneAt >= at { return }
+        restoredUpdateFailureAt = at
+        appUpdateFlow.restoreFailure(record.words)
     }
 
     func openUpdatePage() {

@@ -22,6 +22,7 @@ import Foundation
         schedule()
         flow()
         icon()
+        progressAndDeadline()
         print("PASS: update-ready badge, \(passed) checks (version rule, schedule, phases, menu-bar icon)")
     }
 
@@ -107,6 +108,56 @@ import Foundation
         check(AppUpdateCheckSchedule.panelOpenStaleAfter == 15 * 60, "schedule panel open", "15 minutes")
         check(AppUpdateCheckSchedule.helperTimeout > 8 && AppUpdateCheckSchedule.helperTimeout <= 30, "schedule timeout",
               "bounded, and longer than the helper's own 8 s fetch")
+    }
+
+    // MARK: 0.5.319 progress, time left, the install deadline and the helper's failure record
+
+    static func progressAndDeadline() {
+        let v = "0.5.318", b = 371
+        let t0 = Date(timeIntervalSince1970: 1_800_000_000)
+        var f = AppUpdateFlow()
+        f.offer(info(true, "0.5.319", 372), currentVersion: v, currentBuild: b)
+        _ = f.beginInstall()
+        // The helper's byte line becomes "Downloading X of Y MB", and after 2 s of data the time left.
+        f.progress("Downloading COS Control update…", now: t0)
+        check(WhatsNewFooter(f.phase, busy: false).status == "Downloading…", "progress plain", "a line without bytes stays one word")
+        f.progress("Downloading COS Control update… 10.0 MB of 137.2 MB", now: t0)
+        check(WhatsNewFooter(f.phase, busy: false).status == "Downloading 10.0 of 137.2 MB", "progress bytes", "no estimate before 2 s: \(WhatsNewFooter(f.phase, busy: false).status ?? "nil")")
+        f.progress("Downloading COS Control update… 14.0 MB of 137.2 MB", now: t0.addingTimeInterval(1))
+        check(WhatsNewFooter(f.phase, busy: false).status == "Downloading 14.0 of 137.2 MB", "progress bytes", "one second of data is too little for an estimate")
+        f.progress("Downloading COS Control update… 30.0 MB of 137.2 MB", now: t0.addingTimeInterval(10))   // 2 MB/s
+        let line = WhatsNewFooter(f.phase, busy: false).status ?? ""
+        check(line == "Downloading 30.0 of 137.2 MB, about 55 s left", "progress time left", "107.2 MB at 2 MB/s is 53.6 s, rounded to 5: \(line)")
+        f.progress("Downloading COS Control update… 130.0 MB of 137.2 MB", now: t0.addingTimeInterval(60))
+        check((WhatsNewFooter(f.phase, busy: false).status ?? "").hasSuffix("a few seconds left"), "progress time left", "the tail says a few seconds")
+        check(AppUpdateDownloadLine.timeLeft(40) == "about 40 s left" && AppUpdateDownloadLine.timeLeft(200) == "about 3 min left", "progress time left", "seconds and minutes")
+        check(AppUpdateDownloadLine.parse("Checking SHA-256…") == nil && AppUpdateDownloadLine.parse("Downloading 5.0 MB") == .init(received: 5, total: nil), "progress parse", "only download lines with bytes parse")
+        // Installing says how long it usually takes; while the Mac recording saves, it says that instead.
+        f.staged(now: t0.addingTimeInterval(70))
+        check(WhatsNewFooter(f.phase, busy: false).status == WhatsNewFooter.installingWords, "installing words", "how long installing takes")
+        f.waitingToQuit(on: "the Mac recording")
+        check(WhatsNewPresentation.offer(info(true, "0.5.319", 372), flow: f, frozen: nil, busy: true).footer.status == "Saving the Mac recording first, then COS Control closes and installs.", "installing waits", "names what Control is finishing")
+        // The deadline: still installing 75 s after apply started means the helper gave up.
+        check(!f.applyOverdue(now: t0.addingTimeInterval(70 + AppUpdateFlow.applyDeadline - 1)), "apply deadline", "not before the deadline")
+        check(f.applyOverdue(now: t0.addingTimeInterval(70 + AppUpdateFlow.applyDeadline)), "apply deadline", "overdue at the deadline")
+        check(AppUpdateFlow.applyDeadline > 60, "apply deadline", "longer than the helper's 60 s quit wait")
+        f.fail(AppUpdateFailureRecord.quitTimeoutWords)
+        check(f.phase == .failed(AppUpdateFailureRecord.quitTimeoutWords) && f.quitWaitingOn == nil && !f.applyOverdue(now: t0.addingTimeInterval(10_000)), "apply deadline", "fails with words, Try again, and clears the wait")
+        check(WhatsNewFooter(f.phase, busy: false).primaryTitle == WhatsNewFooter.retryTitle, "apply deadline", "Try again is offered")
+        // The helper's failure record in words.
+        let busy = AppUpdateFailureRecord.parse(Data(#"{"reason":"busy","blockers":["meeting=1","video upload"],"at":"2026-10-17T18:30:00Z"}"#.utf8))
+        check(busy?.words == "Finish your meeting and the video upload first, then install. The glasses server was not touched.", "failure record", "busy: \(busy?.words ?? "nil")")
+        check(busy?.at == ISO8601DateFormatter().date(from: "2026-10-17T18:30:00Z"), "failure record", "its time is read")
+        check(AppUpdateFailureRecord.parse(Data(#"{"reason":"quitTimeout"}"#.utf8))?.words == AppUpdateFailureRecord.quitTimeoutWords, "failure record", "quit timeout")
+        check(AppUpdateFailureRecord.parse(Data("not json".utf8)) == nil, "failure record", "junk is nil")
+        // A refusal recorded after the old Control quit is restored on the offer, only while it stands.
+        var g = AppUpdateFlow()
+        g.offer(info(true, "0.5.319", 372), currentVersion: v, currentBuild: b)
+        g.restoreFailure("Finish your meeting first, then install.")
+        check(g.phase == .failed("Finish your meeting first, then install."), "restore failure", "shown on a standing offer")
+        var h = AppUpdateFlow()
+        h.restoreFailure("x")
+        check(h.phase == .none, "restore failure", "never without an offer")
     }
 
     // MARK: phases
