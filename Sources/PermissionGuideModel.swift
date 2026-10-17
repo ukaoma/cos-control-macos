@@ -254,7 +254,7 @@ enum PermissionGuideRules {
         let source = PermissionDragSource(path: appPath, name: appName)
         var row = PermissionRow(
             id: "accessibility", kind: .accessibility, title: "Accessibility",
-            unlocks: "Lets COS jump straight to your Claude or Cursor session and bring its window forward.",
+            unlocks: "Lets dictation type into the app you are using, and lets COS jump straight to your Claude or Cursor session and bring its window forward.",
             status: .allowed, detail: nil, action: .none)
         guard !facts.accessibilityTrusted else { return row }
         row.status = facts.accessibilityWanted || facts.staleGrantSuspected ? .needsYou : .notNeededYet

@@ -52,6 +52,6 @@
 		</dict>
 	</array>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>When you use your dictation shortcut, COS records your selected microphone and transcribes locally with Parakeet and your COS dictionary to enter text into your chosen app.</string>
+	<string>When you use your dictation shortcut, COS records your selected microphone and transcribes it on this Mac with Parakeet Ultra or Whisper and your COS dictionary to enter text into your chosen app.</string>
 </dict>
 </plist>

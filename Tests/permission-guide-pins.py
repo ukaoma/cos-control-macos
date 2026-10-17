@@ -33,6 +33,7 @@ def body(src, start, end):
 # The drag source is the running bundle.
 make = body(model, "    private func makePermissionGuide() -> PermissionGuide {", "\n    }\n")
 pin("let bundleURL = Bundle.main.bundleURL.standardizedFileURL" in make and "appPath: bundleURL.path" in make, "drag source", "the guide is given the RUNNING bundle")
+pin("return self.petEnabled || self.dictation.enabled" in make, "accessibility wanted", "dictation wants Accessibility as much as the pet does (0.5.318: Queen saw Not needed yet while dictation only copied)")
 pin("probes: inApp ? .live() : .inert" in make and "&& backgroundWorkEnabled" in make, "live probes", "a model built by a check reads nothing from macOS")
 pin("guide.startDragFlow = { [weak self] request in self?.permissionDragFlow.start(request) }" in make, "drag flow wiring", "rows start the drag flow")
 pin("permissionDragFlow.guide = guide" in make, "drag flow wiring", "the flow reports grants to the guide")

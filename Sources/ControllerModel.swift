@@ -810,7 +810,9 @@ final class ControllerModel: ObservableObject {
         let guide = PermissionGuide(
             probes: inApp ? .live() : .inert, appName: "COS Control", appPath: bundleURL.path,
             bundleID: Bundle.main.bundleIdentifier ?? "com.gotcos.control", currentBuild: Self.currentBuild)
-        guide.accessibilityWanted = { [weak self] in self?.petEnabled ?? false }
+        // 0.5.318: dictation needs Accessibility too (Queen's Mac, 2026-10-17). With the pet off the row read "Not needed
+        // yet" while every dictation fell back to Copy.
+        guide.accessibilityWanted = { [weak self] in guard let self else { return false }; return self.petEnabled || self.dictation.enabled }
         guide.turnOnLoginItem = { [weak self] in self?.setLaunchAtLogin(true) }
         guide.openLoginItems = { SMAppService.openSystemSettingsLoginItems() }
         guide.openURL = { url in NSWorkspace.shared.open(url) }
