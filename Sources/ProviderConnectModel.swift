@@ -1050,6 +1050,8 @@ enum SetupGuideRules {
 
     /// A row that is waiting on COS's own check, not on the person: drawn muted, never amber.
     static func voiceWaiting(_ row: SetupRow) -> Bool { row.id == .voice && !row.done && row.status == checkingDictation }
+    /// The engines are ready and only dictation's proof is missing: the tier controls stay hidden (nothing to set up).
+    static func voiceProofPending(_ row: SetupRow) -> Bool { row.id == .voice && !row.done && (row.status == checkingDictation || row.action == .testDictation) }
     static let checkingDictation = "Checking dictation…"
 
     /// The engine facts alone (the rule before 0.5.317): is a transcription engine installed and running.
@@ -2221,7 +2223,8 @@ enum DictationEngineAdvice {
             return Advice(engine: "whisper", reason: "This Mac has less than 8 GB of memory, and Whisper is already running for meetings.")
         }
         guard parakeetAvailable else { return Advice(engine: "whisper", reason: "Parakeet Ultra cannot be installed from this server, so Whisper it is.") }
-        if let parakeet = test?.result("parakeet-ultra") {
+        // A Parakeet that is not installed yet was not tested: the chip decides, as before any test.
+        if let parakeet = test?.result("parakeet-ultra"), parakeet.ran || parakeet.skipped != "not_installed" {
             guard parakeet.ran else { return Advice(engine: "whisper", reason: "Parakeet Ultra did not run in the test. Whisper until it does.") }
             if let rtf = parakeet.rtf, rtf > slowestParakeetRTF {
                 return Advice(engine: "whisper", reason: "Parakeet Ultra ran slower than speech on this Mac in the test.")

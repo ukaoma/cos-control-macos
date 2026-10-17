@@ -1260,6 +1260,14 @@ extension ProviderConnectChecks {
         check(Adv.recommend(appleSilicon: true, memoryBytes: mem16, parakeetAvailable: true, test: slow).engine == "whisper", "advice", "slower than speech: Whisper")
         let skipped = EngineTest(results: [result("whisper"), result("parakeet-ultra", ran: false, rtf: nil, wer: nil, skipped: "unavailable")])
         check(Adv.recommend(appleSilicon: true, memoryBytes: mem16, parakeetAvailable: true, test: skipped).engine == "whisper", "advice", "did not run: Whisper until it does")
+        let notYet = EngineTest(results: [result("whisper"), result("parakeet-ultra", ran: false, rtf: nil, wer: nil, skipped: "not_installed")])
+        check(Adv.recommend(appleSilicon: true, memoryBytes: mem16, parakeetAvailable: true, test: notYet).engine == "parakeet-ultra", "advice", "a Parakeet not installed yet was not tested: still recommended (render, 0.5.317)")
+        var proofRow = SetupRow(id: .voice, title: "", status: SetupGuideRules.checkingDictation, unlocks: "", detail: nil, done: false)
+        check(SetupGuideRules.voiceProofPending(proofRow), "voice truth", "Checking hides the tier controls")
+        proofRow.status = "Not tested yet"; proofRow.action = .testDictation
+        check(SetupGuideRules.voiceProofPending(proofRow), "voice truth", "Test dictation hides them too")
+        proofRow.action = .voiceDownload("balanced"); proofRow.status = "Ready to set up voice"
+        check(!SetupGuideRules.voiceProofPending(proofRow), "voice truth", "a voice that still needs setup keeps them")
         let whisperLine = Adv.line(result("whisper", rtf: 0.08, wer: 2.0 / 58.0, peak: 3_000_000_000), seconds: 30)
         check(whisperLine == "Whisper: 30 s of speech in 2.4 s, 2 of 58 words wrong, already running, so no extra memory.", "advice lines", whisperLine)
         check(!whisperLine.contains("GB"), "advice lines", "never a memory figure for Whisper")

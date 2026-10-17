@@ -672,7 +672,7 @@ struct TranscriptionSettingsCard: View {
                 set: { id in
                     guard id != choice.selected else { return }
                     Task { await store.set("dictation", .string(id), run: Self.run(model)) }
-                }), options: Transcription.dictationRows(choice).map { row in
+                }), options: Transcription.dictationRows(choice, compact: true).map { row in
                     COSDropdownOption(row.id, row.title, note: row.note, muted: !row.enabled, enabled: row.enabled)
                 }, labelWidth: 112)
                 .font(COSType.body(12))

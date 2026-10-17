@@ -809,7 +809,7 @@ struct SetupRowView: View {
         if row.done && !guide.voiceRunning && guide.voice?.usesParakeet != true {
             Button("Test this Mac again") { guide.startVoiceSetup() }.buttonStyle(COSTextButtonStyle())
         }
-        if !row.done && !row.afterSetup, !guide.voiceRunning && guide.voice?.usesParakeet != true {
+        if !row.done && !row.afterSetup, !SetupGuideRules.voiceProofPending(row), !guide.voiceRunning && guide.voice?.usesParakeet != true {
             VStack(alignment: .leading, spacing: 6) {
                 COSViewSwitch("Voice", selection: $guide.voiceTier,
                               options: [COSViewOption("auto", "Automatic"), COSViewOption("balanced", "Balanced"), COSViewOption("max", "Max")], showsLabel: false)
@@ -869,17 +869,21 @@ struct SetupRowView: View {
 /// 0.5.317: the setup guide's engine step controls (decision 6): the Parakeet row (install with progress and Cancel, or
 /// why not), the pick, and the 30 second test. The pick is a dropdown, the same control as Settings; no pill-row tabs.
 struct DictationEngineControls: View {
+    static func drawsRow(_ state: ParakeetRowState) -> Bool { if case .offer = state { return false }; return true }
     @ObservedObject var model: ControllerModel
     @ObservedObject var guide: SetupGuideState
     @ObservedObject var store: TranscriptionSettingsStore
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            if let state = store.rowState(recording: model.recordingCount > 0) {
+            // The step's own button already offers the install; the row adds progress, Cancel or why not.
+            if let state = store.rowState(recording: model.recordingCount > 0), Self.drawsRow(state) {
                 ParakeetRowView(state: state, offersCancel: store.offersCancel, compact: true,
                                 install: { model.installParakeet() },
                                 cancel: { Task { await store.cancelInstall(TranscriptionSettingsCard.run(model)) } },
                                 checkAgain: { Task { await store.checkAgain(TranscriptionSettingsCard.run(model)); await guide.refreshVoice() } },
                                 useWhisper: { guide.useEngine("whisper", installParakeetToo: false) })
+            } else if case .offer(_, let line?)? = store.rowState(recording: model.recordingCount > 0) {
+                Text(line).font(COSType.body(10.5)).foregroundStyle(COSPalette.amber).fixedSize(horizontal: false, vertical: true)
             }
             COSDropdown("Dictation engine", selection: Binding(
                 get: { guide.voice?.dictationSelected ?? "auto" },

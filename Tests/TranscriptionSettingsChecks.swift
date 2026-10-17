@@ -227,6 +227,7 @@ extension SttSettings {
         check(Transcription.dictationLine(SttSettings(settings())!) == Transcription.dictationOldServer, "an older server says dictation is Parakeet only")
         let rows = Transcription.dictationRows(v2.dictation!)
         check(rows.map(\.title) == ["Automatic (recommended)", "Parakeet Ultra", "Whisper"], "engine picker names: Automatic (recommended), Parakeet Ultra, Whisper")
+        check(Transcription.dictationRows(v2.dictation!, compact: true).map(\.title) == ["Automatic", "Parakeet Ultra", "Whisper"], "Settings' face fits: Automatic")
         check(rows[1].enabled == false && rows[1].note == "Install Parakeet first.", "an uninstalled Parakeet is not choosable and says why")
         check(Transcription.dictationLine(v2) == "Dictation uses Whisper until Parakeet Ultra is installed.", "Automatic on Whisper says why")
         check(Transcription.dictationLine(SttSettings(dictated("auto", effective: "whisper", note: "Parakeet Ultra is warming up. Whisper takes dictation meanwhile."))!)

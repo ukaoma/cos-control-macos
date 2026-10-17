@@ -950,10 +950,12 @@ enum Transcription {
     static let dictationTitles = ["auto": "Automatic (recommended)", "parakeet-ultra": "Parakeet Ultra", "whisper": "Whisper"]
 
     /// The Dictation engine picker's rows: the server's options in its order, with COS's names for the three ids.
-    static func dictationRows(_ choice: SttDictationChoice) -> [SttPickerRow] {
+    /// `compact`: Settings' 390 pt dropdown face truncated "Automatic (recommended)" (render, 0.5.317), so there it is
+    /// "Automatic" and the line under it says what Automatic does.
+    static func dictationRows(_ choice: SttDictationChoice, compact: Bool = false) -> [SttPickerRow] {
         let options = choice.options.isEmpty ? ["auto", "parakeet-ultra", "whisper"].map { SttOption(id: $0, label: nil, available: true, experimental: false, note: nil) } : choice.options
         var rows = options.map { option in
-            let title = dictationTitles[option.id] ?? option.label.flatMap { $0.isEmpty ? nil : $0 } ?? option.id
+            let title = compact && option.id == "auto" ? "Automatic" : dictationTitles[option.id] ?? option.label.flatMap { $0.isEmpty ? nil : $0 } ?? option.id
             return SttPickerRow(id: option.id, title: title, note: option.available ? nil : (option.note.flatMap { $0.isEmpty ? nil : $0 } ?? "Not available"), enabled: option.available)
         }
         if !rows.contains(where: { $0.id == choice.selected }) {
