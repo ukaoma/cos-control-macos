@@ -9,8 +9,19 @@ kernel panics). Works on a scratch copy of Sources/, Tests/ and HelperSources/, 
 checkout mutated. A GREEN baseline is required before the first mutant. Each mutant must land exactly once and make the
 hub checks FAIL. Exits non-zero on any MISSING target or any SURVIVOR.
 """
+import os
 import pathlib, shutil, subprocess, sys, tempfile
 root = pathlib.Path(sys.argv[1]).resolve(); only = set(sys.argv[2:])
+# --only <names-file>: run only the mutants named there, one per line (# comments and blank lines ignored). One file
+# may serve both Work chat gates; Tests/work-mutation-scope.py checks that every listed name is in exactly one of them,
+# and each gate prints how many it ran, so a stale list cannot quietly run nothing.
+if sys.argv[2:3] == ["--only"]:
+    if len(sys.argv) != 4: sys.exit("usage: --only <names-file>")
+    only = {l.strip() for l in pathlib.Path(sys.argv[3]).read_text().splitlines() if l.strip() and not l.lstrip().startswith("#")}
+    if not only: sys.exit("--only: the names file lists no mutants")
+    ONLY_FILE = True
+else:
+    ONLY_FILE = False
 C = "Sources/WorkTaskChat.swift"; S = "Sources/WorkHandoffStore.swift"; Q = "Sources/WorkChatQueue.swift"; H = "HelperSources/main.swift"; V = "Sources/Views.swift"
 EXPECTED_SURVIVORS = set()
 MUTANTS = [
@@ -100,12 +111,18 @@ def run(work: pathlib.Path):
     return r.returncode, why, out
 
 work = pathlib.Path(tempfile.mkdtemp(prefix="cos-work-queue-mutants-", dir="/private/tmp"))
+# Lanes compile against shared builds of Sources (Tests/kit-compile.py): keep them for every mutant of this run.
+os.environ.setdefault("COS_TEST_KIT_DIR", str(work / ".kits"))
 try:
     for folder in ("Sources", "Tests", "HelperSources"): shutil.copytree(root / folder, work / folder, ignore=shutil.ignore_patterns("__pycache__"))
     code, why, out = run(work)
     if code != 0: sys.exit("baseline is not green; refusing to mutate:\n" + out[-3000:])
     print("baseline green")
     missing, survivors = [], []
+    if ONLY_FILE:
+        # In a names file shared by both gates, this gate runs the names it has and reports how many.
+        known = {m[0] for m in MUTANTS}
+        print(f"--only: {len(only & known)} of {len(only)} listed names are in this gate")
     for name, f, a, b in MUTANTS:
         if only and name not in only: continue
         p = work / f; src = p.read_text()

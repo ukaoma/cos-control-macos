@@ -1,0 +1,88 @@
+# 0.5.317 Work chat mutation run set (87), from Tests/work-mutation-scope.py. Use with --only.
+queued sends while held
+queue never sends
+queue does not hold the round
+queue does not survive restart
+queue skips its waiting list
+cancel keeps it queued
+pump ignores an open card
+open card never reads the pump
+queued skips the revision check
+stale plan keeps it queued
+parallel ignores its own session
+parallel waits for the whole card
+session blockers are the whole card
+submit session fence open
+parallel not sent with the session fence
+parallel choice queues instead
+Check first queues
+onSession misses the session
+default is Ask each time
+Queue it shows the wall
+Ask each time never asks
+the store ignores the setting
+held send planned anyway on the fence
+Plan and send asks
+Plan and send goes parallel
+old server offered the queue
+old server not named
+openWork sent to an older server
+openWork never true
+queue on a sample card
+reference becomes a send target
+references unbounded
+references sent to an older server
+reference evidence ungated
+manual handoff drops references
+manual handoff never told the capability
+reference capability ignored
+references left out of the items
+reference outputs dropped
+reference on its own working card
+working link rule open
+reference added twice
+helper drops references
+Link as reference ungated
+cleared handoff holds the card
+summary holds refreshing
+plan overlaps a summary
+loading flag never set
+loading never shown
+no automatic re-check
+history waits for the session read
+Complete column missing
+completions not newest first
+Complete dropdown back
+Complete column in board order
+helper drops queueRounds
+Settings switch removed
+open card never pumps
+no pre-flight before planning
+no pre-flight before a send
+no revision check (isolated)
+no revision check (live)
+no attachment check
+no links check
+Not now still sends
+sent state guard
+sent receipt guard (expected survivor: state guard and submit intent id back it up)
+refusal stops the rest
+refusal reason dropped
+discovery not retried
+cancelled discovery reads as a failure
+backoff swallows cancellation
+Plan never re-reads discovery
+discovery never marked loaded
+Plan ignores the Work chat gate
+gate taken twice
+gate kept after a plan
+summary skips the gate
+discovery failure hidden
+effort not sent with Plan
+send ignores the selection
+send lists every file
+stale selection sent
+Plan and send bypasses the guards
+blockers oldest first
+submit bypasses fence
+submit drops continuations

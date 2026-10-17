@@ -11,6 +11,16 @@ Exits non-zero on any MISSING target or any SURVIVOR other than the one document
 import os
 import pathlib, shutil, subprocess, sys, tempfile
 root = pathlib.Path(sys.argv[1]).resolve(); only = set(sys.argv[2:])
+# --only <names-file>: run only the mutants named there, one per line (# comments and blank lines ignored). One file
+# may serve both Work chat gates; Tests/work-mutation-scope.py checks that every listed name is in exactly one of them,
+# and each gate prints how many it ran, so a stale list cannot quietly run nothing.
+if sys.argv[2:3] == ["--only"]:
+    if len(sys.argv) != 4: sys.exit("usage: --only <names-file>")
+    only = {l.strip() for l in pathlib.Path(sys.argv[3]).read_text().splitlines() if l.strip() and not l.lstrip().startswith("#")}
+    if not only: sys.exit("--only: the names file lists no mutants")
+    ONLY_FILE = True
+else:
+    ONLY_FILE = False
 C = "Sources/WorkTaskChat.swift"; S = "Sources/WorkHandoffStore.swift"; M = "Sources/WorkContextMeter.swift"; F = "Sources/WorkCardFiles.swift"
 # Defense in depth: the "Not sent" state guard and submit's intent-id refusal both stop a resend, so removing this one
 # guard alone cannot change behaviour. Any other survivor fails the gate.
@@ -146,6 +156,10 @@ try:
     if code != 0: sys.exit("baseline is not green; refusing to mutate:\n" + out[-3000:])
     print("baseline green")
     missing, survivors = [], []
+    if ONLY_FILE:
+        # In a names file shared by both gates, this gate runs the names it has and reports how many.
+        known = {m[0] for m in MUTANTS}
+        print(f"--only: {len(only & known)} of {len(only)} listed names are in this gate")
     for name, f, a, b in MUTANTS:
         if only and name not in only: continue
         p = work / f; src = p.read_text()
