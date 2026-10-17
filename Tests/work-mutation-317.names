@@ -1,4 +1,4 @@
-# 0.5.317 Work chat mutation run set (87), from Tests/work-mutation-scope.py. Use with --only.
+# 0.5.317 Work chat mutation run set (95), from Tests/work-mutation-scope.py. Use with --only.
 queued sends while held
 queue never sends
 queue does not hold the round
@@ -83,6 +83,14 @@ send ignores the selection
 send lists every file
 stale selection sent
 Plan and send bypasses the guards
+fence: no run exemption
+fence: same session exempt
+fence: unknown exempt in run
+fence: no continuation
+fence: stale continuation accepted
+fence: no replacing
+fence: terminal holds
+blockers other cards
 blockers oldest first
 submit bypasses fence
 submit drops continuations
