@@ -1,5 +1,7 @@
 ## 0.5.321 (build 374), stop and save a glasses meeting from COS Control
 
+Bundled fluidaudiocli rebuilt from the same pinned FluidAudio v0.17.4 source (21493f8); the build is not byte-reproducible, so Resources/fluidaudio-cli.json records this build's SHA-256 (4567ddbdb6ec..., same size).
+
 Miles, 2026-10-17: stopping a glasses meeting was a phone job; he asked to stop it from COS Control. Pair with server 6.76.1 (the stop-request routes) and COS Glasses 6.10.644.
 
 - Stop and save on a live glasses meeting, in three places it already shows: the live meeting pane's header, its Live now row in Meetings (while audio still arrives; a quiet capture keeps its End and save), and the panel's recording card (when one glasses meeting is live). Both take the inline confirmation (COSConfirm, never a sheet): "Stop and save this glasses meeting?" and "COS asks the glasses to stop recording and save the meeting. Nothing stops unless the glasses answer."
