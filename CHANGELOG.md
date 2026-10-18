@@ -1,4 +1,4 @@
-## 0.5.325 (build 378), AI polish for dictation
+## 0.5.325 (build 378), AI polish for dictation, and Miles Windu joins the shuffled combat casts
 
 Miles, 2026-10-18: Claude cleans a dictation before COS pastes it. Off by default.
 
@@ -52,10 +52,21 @@ native QA on 0.5.322) replaces V12.6 as the bundled Jedi Miles Windu pack, as 0.
   with another speed, scale, frame count or an added cast are the person's pack and stay. A custom pack is untouched.
   V14 already installed, under flat names or Miles's hand-installed rotation/v14-timing-v2/ names, is current and
   nothing is written. The V12.6 strips stay in Resources/DefaultPet so old installs are still recognized.
-- Pet overwrite fix (Miles, 2026-10-18: his V14 went back to the shipped pack twice). A "Use Jedi Miles Windu?" confirm
-  (or any shipped character's) left pending could be accepted by a stray Return and replace the installed pet with the
-  shipped map. Use on a shipped character now runs only on a click (COSConfirmAction.clickOnly, never the default action), and a pending confirm is
-  withdrawn when the panel closes. Every other confirm keeps Return.
+- Pet overwrite fix (Miles, 2026-10-18: his V14 went back to the shipped pack twice). Evidence on his Mac after the
+  17:24 relaunch: the four V14-only strips (duel, trio, swarm and working -v13) were deleted while the shared V12
+  strips and rotation/ stayed, and the map came back as the bundle copy with the bundle file's date. That is the
+  signature of useBundledCharacter (removeAll, then installDefault's copy), the only code in 0.5.324 that copies the
+  shipped map. Launch (loadPetSprite), quit and the update install never clear or copy pet files. We did not reproduce
+  the stray Return itself; this closes the one path that could do it: a "Use Jedi Miles Windu?" confirm (or any
+  shipped character's) left pending could be accepted by a stray Return. Use on a shipped character now runs only on a
+  click (COSConfirmAction.clickOnly, never the default action), and a pending confirm is withdrawn when the panel
+  closes. Every other confirm keeps Return.
+- Launch proof: Tests/run.sh pins that loadPetSprite calls none of removeAll, installDefault, installBundledCharacter,
+  useBundledCharacter, replaceContents or resetPetSprite, and that useBundledCharacter has one caller.
+  Tests/SimplePetDefault.swift proves an installed V14 (subfolder names, flat names, and subfolder names with a tuned
+  speed) survives a first launch of a new build (no generation), a launch after 0.5.324 (generation 21) and a repeat
+  launch with every byte and file date unchanged and three casts playing. It also renders Miles's duel, trio and swarm
+  tails through the production SessionPetSprite with held cast continuity, like Nia, Elara and Rowan.
 - Tests: Tests/pet-animation-source-contract.py pins the V14 map, the sha256 and RGBA size of every strip and all 27
   cast layers, three casts on duel, trio and swarm only, flat names that exist in Resources/DefaultPet, and the stock
   history holding the shipped V12.6 map (sha256 37b7f0ec...). The new Tests/windu-v14-pack-pins.py pins each of the 31
