@@ -32,6 +32,38 @@ Miles, 2026-10-18: Claude cleans a dictation before COS pastes it. Off by defaul
   DictationEveryoneChecks, the compiled helper against a loopback finalize fixture (Tests/dictation-polish-helper-checks.py)
   and the wiring pins (Tests/dictation-polish-pins.py), each new guard mutation tested.
 
+### Miles Windu joins the shuffled combat casts
+
+Miles, 2026-10-17: V14 timing-v2 (operations/personal/wk42_2026/miles-windu-refinement/installation-v14-timing-v2,
+native QA on 0.5.322) replaces V12.6 as the bundled Jedi Miles Windu pack, as 0.5.324 did for Nia, Elara and Rowan.
+
+- One (working) is the approved V13 slower sprint (46 frames, renderScale 0.75). Two (duel, 37 frames), Three (trio, 43
+  frames, one more than V12.6) and Four (swarm, 64 frames) are the V13 strips plus three shuffled opponent casts each,
+  handing off at frames 28, 31 and 55, with no immediate repeat. Attention, Success, Waiting, Error, idle and patrol
+  are unchanged from V12.6.
+- The map is his approved candidate-pack/session-pet-states.json (sha256 8016a0c9...) with each cast layer renamed flat
+  (rotation/v14-timing-v2/duel-a-full.png became session-pet-windu-v14-timing-v2-duel-a-full.png), because the release
+  copies DefaultPet without subfolders. The 27 layers (full, body and entry for nine casts) are the bytes and sizes
+  installation-receipt.json lists, and every strip is byte-identical to the candidate pack.
+- Existing installs upgrade at launch (art generation 22). Stock is the EXACT V12.6 map that 0.5.316 to 0.5.324
+  shipped (Resources/DefaultPet/stock-state-history.json), or any earlier recognized stock Miles pack: it takes the
+  whole V14 pack with its casts. Every cast layer is read and checked against its strip's size before anything is
+  written, and one missing or wrong-sized layer refuses the upgrade, leaving the pack as it was. The same V12.6 files
+  with another speed, scale, frame count or an added cast are the person's pack and stay. A custom pack is untouched.
+  V14 already installed, under flat names or Miles's hand-installed rotation/v14-timing-v2/ names, is current and
+  nothing is written. The V12.6 strips stay in Resources/DefaultPet so old installs are still recognized.
+- Pet overwrite fix (Miles, 2026-10-18: his V14 went back to the shipped pack twice). A "Use Jedi Miles Windu?" confirm
+  (or any shipped character's) left pending could be accepted by a stray Return and replace the installed pet with the
+  shipped map. Use on a shipped character now runs only on a click (COSConfirmAction.clickOnly, never the default action), and a pending confirm is
+  withdrawn when the panel closes. Every other confirm keeps Return.
+- Tests: Tests/pet-animation-source-contract.py pins the V14 map, the sha256 and RGBA size of every strip and all 27
+  cast layers, three casts on duel, trio and swarm only, flat names that exist in Resources/DefaultPet, and the stock
+  history holding the shipped V12.6 map (sha256 37b7f0ec...). The new Tests/windu-v14-pack-pins.py pins each of the 31
+  V14 files by sha256, width, height and byte count, the handoff frames, exactly three casts in order, and that the
+  map names only flat files present in Resources/DefaultPet that the release copies, with no unnamed V14 layer
+  shipped; 15 in-memory mutants of the real tree must each fail it. Tests/mutate-pet-refresh.py gains six mutants for
+  the cast checks and the exact-map gate, and a kill now counts only when a named ModelsContract check catches it.
+
 ## 0.5.324 (build 377), Jedi combat refinement
 
 Nia V5.1, Elara V4 and Rowan V3: blade-contact-led attacks, registered muzzle-to-blade defense, drawn recovery and guard transitions, three shuffled casts with no immediate repeats. Native rotation runtime and up to 128 authored frames. Exact-stock migrations copy and validate every encounter layer before the atomic manifest replacement; custom artwork and timing remain untouched.
