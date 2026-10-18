@@ -1,22 +1,292 @@
 {
-  "README": "Read by Tests/SpriteRenderContract.swift and Tests/ModelsContract.swift (0.5.316). edgeFrames: 1-based frames of the approved Miles Windu V12.6 pack that may come within 6 px of a cell edge because a droid, wreck, jump or saber arc enters or leaves off canvas (independent check motion-v12/reviews/v12-6-holes-and-cuts-check.json). smear: the one documented translucency that is not a uniform fade. preExisting: strips that exceeded a gate before 0.5.316, at their measured ceiling, so they cannot get worse; they are not approvals.",
+  "README": "Read by Tests/SpriteRenderContract.swift and Tests/ModelsContract.swift (0.5.316). edgeFrames: 1-based frames of the approved Miles Windu V12.6 pack that may come within 6 px of a cell edge because a droid, wreck, jump or saber arc enters or leaves off canvas (independent check motion-v12/reviews/v12-6-holes-and-cuts-check.json). smear: the one documented translucency that is not a uniform fade. preExisting: strips that exceeded a gate before 0.5.316, at their measured ceiling, so they cannot get worse; they are not approvals. 0.5.324: edgeFades document only the 22 px smoothstep entrance mask during each rotation handoff. No Jedi interior-opacity ceiling exemptions remain.",
   "edgeFrames": {
-    "DefaultPet/working": [15, 16, 17, 39, 40, 41, 42],
-    "DefaultPet/duel": [10, 11, 13, 14, 15, 16, 17, 28, 29, 30, 31, 32],
-    "DefaultPet/trio": [15, 16, 17, 23, 24, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37],
-    "DefaultPet/swarm": [55, 56, 57, 58, 59, 60, 61, 62]
+    "DefaultPet/working": [
+      15,
+      16,
+      17,
+      39,
+      40,
+      41,
+      42
+    ],
+    "DefaultPet/duel": [
+      10,
+      11,
+      13,
+      14,
+      15,
+      16,
+      17,
+      28,
+      29,
+      30,
+      31,
+      32
+    ],
+    "DefaultPet/trio": [
+      15,
+      16,
+      17,
+      23,
+      24,
+      27,
+      28,
+      29,
+      30,
+      31,
+      32,
+      33,
+      34,
+      35,
+      36,
+      37
+    ],
+    "DefaultPet/swarm": [
+      55,
+      56,
+      57,
+      58,
+      59,
+      60,
+      61,
+      62
+    ]
   },
   "smear": [
-    {"strip": "DefaultPet/duel", "frames": [29, 30, 31], "maxMedianAlpha": 90, "minX": 220}
+    {
+      "strip": "DefaultPet/duel",
+      "frames": [
+        29,
+        30,
+        31
+      ],
+      "maxMedianAlpha": 90,
+      "minX": 220
+    }
   ],
   "preExisting": {
-    "DefaultPet/waiting": {"holesCeiling": 1.05, "note": "1.04% after the aura-release fade; the remaining holes are in the V10/V11 Waiting base art (0.5.314 shipped it at 1.28%), not V12"},
-    "jedi-elara-vale/swarm": {"holesCeiling": 1.07, "note": "1.06% since before 0.5.316"},
-    "jedi-elara-vale/trio": {"holesCeiling": 5.89, "note": "5.88% since before 0.5.316"},
-    "jedi-nia-solari/swarm": {"holesCeiling": 1.54, "edgeFrames": [11, 12], "note": "1.53%, frames 11-12 at 4 px, since before 0.5.316"},
-    "jedi-nia-solari/trio": {"holesCeiling": 1.2, "note": "1.19% since before 0.5.316"},
-    "jedi-nia-solari/waiting": {"holesCeiling": 2.26, "note": "2.25% since before 0.5.316"},
-    "jedi-nia-solari/working": {"holesCeiling": 1.03, "note": "1.02% since before 0.5.316"},
-    "jedi-rowan-vale/swarm": {"holesCeiling": 1.15, "note": "1.14% since before 0.5.316"}
-  }
+    "DefaultPet/waiting": {
+      "holesCeiling": 1.05,
+      "note": "1.04% after the aura-release fade; the remaining holes are in the V10/V11 Waiting base art (0.5.314 shipped it at 1.28%), not V12"
+    }
+  },
+  "edgeFades": [
+    {
+      "strip": "jedi-nia-solari/duel",
+      "frames": [
+        43,
+        44,
+        45,
+        46,
+        47,
+        48,
+        49,
+        50,
+        51,
+        52,
+        53,
+        54,
+        55,
+        56,
+        57,
+        58,
+        59,
+        60
+      ],
+      "width": 22
+    },
+    {
+      "strip": "jedi-nia-solari/swarm",
+      "frames": [
+        65,
+        66,
+        67,
+        68,
+        69,
+        70,
+        71,
+        72,
+        73,
+        74,
+        75,
+        76,
+        77,
+        78,
+        79,
+        80,
+        81,
+        82
+      ],
+      "width": 22
+    },
+    {
+      "strip": "jedi-nia-solari/trio",
+      "frames": [
+        61,
+        62,
+        63,
+        64,
+        65,
+        66,
+        67,
+        68,
+        69,
+        70,
+        71,
+        72,
+        73,
+        74,
+        75,
+        76,
+        77,
+        78
+      ],
+      "width": 22
+    },
+    {
+      "strip": "jedi-elara-vale/duel",
+      "frames": [
+        51,
+        52,
+        53,
+        54,
+        55,
+        56,
+        57,
+        58,
+        59,
+        60,
+        61,
+        62,
+        63,
+        64,
+        65,
+        66,
+        67,
+        68
+      ],
+      "width": 22
+    },
+    {
+      "strip": "jedi-elara-vale/swarm",
+      "frames": [
+        73,
+        74,
+        75,
+        76,
+        77,
+        78,
+        79,
+        80,
+        81,
+        82,
+        83,
+        84,
+        85,
+        86,
+        87,
+        88,
+        89,
+        90
+      ],
+      "width": 22
+    },
+    {
+      "strip": "jedi-elara-vale/trio",
+      "frames": [
+        67,
+        68,
+        69,
+        70,
+        71,
+        72,
+        73,
+        74,
+        75,
+        76,
+        77,
+        78,
+        79,
+        80,
+        81,
+        82,
+        83,
+        84
+      ],
+      "width": 22
+    },
+    {
+      "strip": "jedi-rowan-vale/duel",
+      "frames": [
+        49,
+        50,
+        51,
+        52,
+        53,
+        54,
+        55,
+        56,
+        57,
+        58,
+        59,
+        60,
+        61,
+        62,
+        63,
+        64,
+        65,
+        66
+      ],
+      "width": 22
+    },
+    {
+      "strip": "jedi-rowan-vale/swarm",
+      "frames": [
+        71,
+        72,
+        73,
+        74,
+        75,
+        76,
+        77,
+        78,
+        79,
+        80,
+        81,
+        82,
+        83,
+        84,
+        85,
+        86,
+        87,
+        88
+      ],
+      "width": 22
+    },
+    {
+      "strip": "jedi-rowan-vale/trio",
+      "frames": [
+        65,
+        66,
+        67,
+        68,
+        69,
+        70,
+        71,
+        72,
+        73,
+        74,
+        75,
+        76,
+        77,
+        78,
+        79,
+        80,
+        81,
+        82
+      ],
+      "width": 22
+    }
+  ]
 }

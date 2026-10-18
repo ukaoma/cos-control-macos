@@ -80,10 +80,17 @@ enum SpriteRenderContract {
         let note: String
     }
 
+    struct EdgeFade: Decodable {
+        let strip: String
+        let frames: [Int]
+        let width: Int
+    }
+
     struct Fixture: Decodable {
         let edgeFrames: [String: [Int]]
         let smear: [Smear]
         let preExisting: [String: KnownViolation]
+        var edgeFades: [EdgeFade]? = nil
     }
 
     static let maxHolesPercent = 1.0
@@ -171,6 +178,7 @@ enum SpriteRenderContract {
         let cells = PetSpriteStrip.slice(image, frames: frames).compactMap { PetSpriteStrip.raster($0) }.map(plane)
         guard !cells.isEmpty else { return nil }
         let smear = fixture.smear.first { $0.strip == label }
+        let edgeFade = fixture.edgeFades?.first { $0.strip == label }
 
         var holed = 0, opaque = 0, faded = 0, smeared = 0
         var minMargin = Int.max
@@ -195,6 +203,33 @@ enum SpriteRenderContract {
                 if margin < minEdgeMargin { edgeFrames.append(index + 1) }
             }
 
+            // A 1–3 px antialiased fringe/glow can have four inked neighbours.
+            // It is still an outside edge, not a hole in a garment. Only exempt
+            // pixels connected to clear space through non-solid alpha AND within
+            // three pixels of that clear space (including arm/hair gaps). Enclosed
+            // semi-transparent patches without clear space, or deep damage
+            // remains gated, including the eaten-cloth self-tests below.
+            var outside = [Bool](repeating: false, count: w * h)
+            var pending: [Int] = []
+            for i in 0..<(w*h) where p.alpha[i] <= 25 {
+                outside[i] = true; pending.append(i)
+            }
+            var cursor = 0
+            while cursor < pending.count {
+                let i = pending[cursor]; cursor += 1
+                let x = i % w, y = i / w
+                for (nx,ny) in [(x-1,y),(x+1,y),(x,y-1),(x,y+1)] where nx >= 0 && nx < w && ny >= 0 && ny < h {
+                    let n = ny*w+nx
+                    if !outside[n] && p.alpha[n] <= 235 { outside[n] = true; pending.append(n) }
+                }
+            }
+            func isExteriorFringe(_ x: Int, _ y: Int) -> Bool {
+                guard outside[y*w+x] else { return false }
+                for ny in max(0,y-3)...min(h-1,y+3) {
+                    for nx in max(0,x-3)...min(w-1,x+3) where outside[ny*w+nx] && p.a(nx,ny) <= 25 { return true }
+                }
+                return false
+            }
             var isHole = [Bool](repeating: false, count: w * h)
             for y in 1..<(h - 1) {
                 for x in 1..<(w - 1) {
@@ -204,9 +239,12 @@ enum SpriteRenderContract {
                     // has an empty neighbour and is legitimate antialiasing.
                     if a > 25, a < 205,
                        p.a(x - 1, y) > 25, p.a(x + 1, y) > 25,
-                       p.a(x, y - 1) > 25, p.a(x, y + 1) > 25 {
+                       p.a(x, y - 1) > 25, p.a(x, y + 1) > 25, !isExteriorFringe(x, y) {
                         holed += 1
-                        isHole[y * w + x] = true
+                        if let edgeFade, edgeFade.frames.contains(index + 1),
+                           x < min(22, edgeFade.width) || x >= w - min(22, edgeFade.width) {
+                            faded += 1 // Authored 22 px canvas-edge entrance gradient only.
+                        } else { isHole[y * w + x] = true }
                     }
                 }
             }
@@ -348,6 +386,28 @@ enum SpriteRenderContract {
         let pm = measure(image: patch, frames: 2, label: "synthetic/patch", fixture: none)!
         expect(!violations(pm, label: "synthetic/patch", fixture: none).isEmpty && pm.fadeHolesPercent == 0,
                "a small uniform patch eaten into the garment must still fail the hole gate")
+        let fringe = strip(cells: 2, width: W, height: H) { ctx in
+            for cell in 0..<2 {
+                fill(ctx, height: H, x: cell * W + 10, y: 10, w: 40, h: 40, alpha: 0.5)
+                fill(ctx, height: H, x: cell * W + 13, y: 13, w: 34, h: 34, alpha: 1, copy: true)
+            }
+        }
+        let fringeM = measure(image: fringe, frames: 2, label: "synthetic/fringe", fixture: none)!
+        expect(violations(fringeM, label: "synthetic/fringe", fixture: none).isEmpty,
+               "three-pixel antialias/glow fringe is not interior garment damage")
+        let entranceFade = strip(cells: 2, width: W, height: H) { ctx in
+            for cell in 0..<2 { for x in 6..<22 {
+                fill(ctx, height: H, x: cell * W + x, y: 10, w: 1, h: 40,
+                     alpha: CGFloat(x)/24, copy: true)
+            } }
+        }
+        let gradientFixture = Fixture(edgeFrames: [:], smear: [], preExisting: [:],
+            edgeFades: [.init(strip: "synthetic/gradient", frames: [1,2], width: 22)])
+        let gradientM = measure(image: entranceFade, frames: 2, label: "synthetic/gradient", fixture: gradientFixture)!
+        expect(gradientM.gatedHolesPercent == 0, "documented entrance gradient excluded only at canvas edge")
+        let protectedPatch = measure(image: patch, frames: 2, label: "synthetic/gradient", fixture: gradientFixture)!
+        expect(!violations(protectedPatch, label: "synthetic/gradient", fixture: gradientFixture).isEmpty,
+               "entrance gradient cannot excuse damage in the character's central garment")
         // A figure at the cell edge: cropped unless its frame is a listed entrance.
         let edge = strip(cells: 2, width: W, height: H) { ctx in
             fill(ctx, height: H, x: 20, y: 10, w: 20, h: 40, alpha: 1)

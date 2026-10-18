@@ -38,6 +38,44 @@ import SwiftUI
             precondition(try! Data(contentsOf: stateURL) == before)
             precondition(!model.petSpriteKit.frames(for: .idle).isEmpty)
             print("PASS: missing seed preference preserves chosen \(character.displayName)")
+            if character.id != PetSpriteStore.legacyDefaultCharacterID {
+                let proof = URL(fileURLWithPath: CommandLine.arguments[1], isDirectory: true)
+                try FileManager.default.createDirectory(at: proof, withIntermediateDirectories: true)
+                for pose in [PetSpritePose.duel, .trio, .swarm] {
+                    let rotation = model.petSpriteKit.rotations[pose]!
+                    precondition(rotation.variants.count == 3)
+                    let clock = PetEncounterPlayback(seed: 17)
+                    let now = ProcessInfo.processInfo.systemUptime
+                    _ = clock.sample(pose: pose, rotation: rotation, now: now, speed: 1, interval: 0.06, paused: false)
+                    var end: PetEncounterPlayback.Snapshot?
+                    for f in 1..<rotation.frames {
+                        end = clock.sample(pose: pose, rotation: rotation, now: now + Double(f)*0.06, speed: 1, interval: 0.06, paused: false)
+                    }
+                    precondition(end!.frame == rotation.frames - 1)
+                    let incoming = end!.incoming
+                    let view = SessionPetSprite(working: true, reduceMotion: true,
+                        frames: model.petSpriteKit.frames(for: pose), pose: pose,
+                        frameInterval: 0.06, size: 120, characterScale: 2,
+                        rotation: rotation, encounterPlayback: clock)
+                        .frame(width: 440, height: 280).background(Color(nsColor: .windowBackgroundColor))
+                    let host = NSHostingView(rootView: view)
+                    let window = NSWindow(contentRect: NSRect(x: -20000, y: -20000, width: 440, height: 280),
+                        styleMask: [.borderless], backing: .buffered, defer: false)
+                    window.isReleasedWhenClosed = false
+                    window.appearance = NSAppearance(named: .darkAqua)
+                    window.contentView = host; host.frame = NSRect(x: 0, y: 0, width: 440, height: 280)
+                    for _ in 0..<3 { RunLoop.main.run(until: Date().addingTimeInterval(0.05)); host.layoutSubtreeIfNeeded() }
+                    host.displayIfNeeded()
+                    let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds)!
+                    host.cacheDisplay(in: host.bounds, to: rep)
+                    try rep.representation(using: .png, properties: [:])!.write(to: proof.appendingPathComponent("\(character.id)-\(pose.rawValue)-native-tail.png"))
+                    window.close()
+                    // Reduced-motion drawing must not silently advance the reserved cast.
+                    let held = clock.sample(pose: pose, rotation: rotation, now: now + 20, speed: 1, interval: 0.06, paused: true)!
+                    precondition(held.frame == end!.frame && held.incoming == incoming)
+                    print("PASS: production SessionPetSprite rendered \(character.id)/\(pose.rawValue), \(rotation.frames) frames, held cast continuity")
+                }
+            }
             model.resetPetSprite()
         }
 
