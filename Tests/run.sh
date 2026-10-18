@@ -3135,49 +3135,60 @@ for bundled_id in bundled_ids:
     poses = json.loads(states.read_text()).get("poses", {})
     need(set(poses) == {"idle", "patrol", "waiting", "working", "done", "error", "attention", "duel", "trio", "swarm"},
          f"{bundled_id} must map all ten deployable pet states")
-    # 0.5.151 idle/combat retained; 0.5.154 adds three walks and Nia meditation.
+    # 0.5.324 approved combat counts and exact artifact hashes; older files remain rollback evidence.
+    prefix = "combat-20261018-"
     stories = {
-        "jedi-nia-solari": {"idle": (8,348,.24), "working": (12,348,.14), "duel": (16,440,.14), "trio": (14,440,.14), "swarm": (19,440,.14)},
-        "jedi-elara-vale": {"idle": (8,256,.24), "working": (16,358,.14), "duel": (16,544,.16), "trio": (16,544,.18), "swarm": (24,704,.18)},
-        "jedi-rowan-vale": {"idle": (8,320,.24), "working": (12,340,.16), "duel": (12,372,.17), "trio": (18,372,.17), "swarm": (24,396,.16)},
+        "jedi-nia-solari": {"idle": (8,348,.24), "working": (28,440,.08), "duel": (60,440,.05), "trio": (78,440,.05), "swarm": (82,440,.05)},
+        "jedi-elara-vale": {"idle": (8,256,.24), "working": (67,440,.06), "duel": (68,440,.06), "trio": (84,440,.06), "swarm": (90,440,.06)},
+        "jedi-rowan-vale": {"idle": (8,320,.24), "working": (56,440,.06), "duel": (66,440,.06), "trio": (82,440,.06), "swarm": (88,440,.06)},
     }[bundled_id]
+    approved = json.loads((pack / "approved-combat-20261018.json").read_text())["files"]
+    referenced = set()
     for pose, row in poses.items():
+        referenced.add(row["file"])
         if pose == "patrol" or (pose == "waiting" and bundled_id == "jedi-nia-solari"):
             expected_interval = .14 if pose == "patrol" else .24
-            need(row == {"file": f"session-pet-{pose}-v3.png", "frames": 8,
+            need(row == {"file": prefix + f"session-pet-{pose}-v3.png", "frames": 8,
                          "interval": expected_interval, "renderScale": 1},
                  f"{bundled_id}/{pose} must use its authored ambient strip")
-            manifest = json.loads((pack / "approved-ambient-v3.json").read_text())
-            record = next(r for r in manifest["scenes"] if r["role"] == pose)
-            need(hashlib.sha256((pack / row["file"]).read_bytes()).hexdigest() == record["sha256"],
-                 f"{bundled_id}/{pose} ambient pixels drifted from native canary")
         elif pose == "waiting":
             need(row == poses["idle"], f"{bundled_id}/waiting keeps the authored idle")
         elif pose in stories:
             expected_frames, _, expected_interval = stories[pose]
-            expected_file = "session-pet-idle-v2.png" if pose == "idle" else f"session-pet-{pose}-story-v2.png"
-            need(row.get("file") == expected_file and row.get("frames") == expected_frames
+            suffix = "session-pet-idle-v2.png" if pose == "idle" else (
+                ("working-a-full.png" if bundled_id == "jedi-nia-solari" else "working-motion-full.png")
+                if pose == "working" else f"{pose}-a-full.png")
+            need(row.get("file") == prefix + suffix and row.get("frames") == expected_frames
                  and abs(row.get("interval", 0) - expected_interval) < 0.000001,
-                 f"{bundled_id}/{pose} must map to its complete story, got {row}")
-            strip = pack / expected_file
-            need(strip.is_file(), f"{bundled_id} declares {pose} but ships no {strip.name}")
+                 f"{bundled_id}/{pose} must map to its approved story, got {row}")
+            if pose in ("duel", "trio", "swarm"):
+                rotation = row.get("rotation", {})
+                variants = rotation.get("variants", [])
+                need(len(variants) == 3 and len({v["id"] for v in variants}) == 3,
+                     f"{bundled_id}/{pose} must retain three distinct casts")
+                for v in variants:
+                    referenced.update(v[k] for k in ("file", "bodyFile", "entryFile"))
         else:
-            need(row.get("file") == "session-pet-idle.png" and row.get("frames") == 1,
+            need(row.get("file") == prefix + "session-pet-idle.png" and row.get("frames") == 1,
                  f"{bundled_id}/{pose} is a still state and must map to the one canonical frame")
-    # Geometry is asserted, not assumed. A correct frame count against the
-    # wrong width still slices every pose mid-cell.
+    need(referenced == set(approved), f"{bundled_id}: approved files differ from the runtime manifest")
+    for file in referenced:
+        need((pack / file).is_file() and hashlib.sha256((pack / file).read_bytes()).hexdigest() == approved[file],
+             f"{bundled_id}/{file}: approved pixels changed or missing")
+    # Geometry is asserted, not assumed: every rotation layer has the same complete frame grid.
     for pose, (frames, cell_width, _) in sorted(stories.items()):
-        strip = pack / ("session-pet-idle-v2.png" if pose == "idle" else f"session-pet-{pose}-story-v2.png")
-        dims = subprocess.run(["sips", "-g", "pixelWidth", "-g", "pixelHeight", str(strip)],
-                              capture_output=True, text=True).stdout
-        w = re.search(r"pixelWidth: (\d+)", dims)
-        h = re.search(r"pixelHeight: (\d+)", dims)
-        need(w is not None and h is not None, f"{bundled_id}/{pose}: sips could not read {strip.name}")
-        need(int(w.group(1)) == frames * cell_width and int(h.group(1)) == 256,
-             f"{bundled_id}/{pose} is {w.group(1)}x{h.group(1)}, must be "
-             f"{frames * cell_width}x256 ({frames} {cell_width}px cells)")
-        need(int(w.group(1)) % frames == 0,
-             f"{bundled_id}/{pose} width does not divide into {frames} cells")
+        row = poses[pose]
+        files = {row["file"]}
+        for v in row.get("rotation", {}).get("variants", []):
+            files.update(v[k] for k in ("file", "bodyFile", "entryFile"))
+        for file in files:
+            dims = subprocess.run(["sips", "-g", "pixelWidth", "-g", "pixelHeight", str(pack / file)],
+                                  capture_output=True, text=True).stdout
+            w = re.search(r"pixelWidth: (\d+)", dims)
+            h = re.search(r"pixelHeight: (\d+)", dims)
+            need(w is not None and h is not None, f"{bundled_id}/{pose}: sips could not read {file}")
+            need(int(w.group(1)) == frames * cell_width and int(h.group(1)) == 256,
+                 f"{bundled_id}/{file}: expected {frames} complete {cell_width}x256 cells")
     if bundled_id == "jedi-elara-vale":
         approved_elara = {
             "session-pet-working-story-v1-1.png": "4ab1596d89d4e553ee837cb0f920e9aafc696deca49756796359e28cde190239",
