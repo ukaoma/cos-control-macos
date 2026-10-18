@@ -179,6 +179,27 @@ try:
     before = len(seen)
     check(not run(None, raw=b'{' + b' ' * 5000 + b'}')['ok'] and len(seen) == before, 'oversized stdin refused before network')
     check(not run(None, raw=b'not json')['ok'] and len(seen) == before, 'non-JSON refused before network')
-    print(f'PASS dictionary helper: {checks} checks; stdin only, fixed glossary routes, bounded words, version-aware refusals, no credential output')
+    # 0.5.323 seam: dictionary suggestions from the server (6.77.0) answer dormant and send nothing, valid or not.
+    def suggestions(envelope, raw=None):
+        data = raw if raw is not None else json.dumps(envelope).encode()
+        proc = subprocess.run([helper, 'dictionary-suggestions'], input=data, capture_output=True, env=env, timeout=15)
+        check(proc.returncode == 0 and not proc.stderr and token.encode() not in proc.stdout, 'suggestions: JSON only, no credential')
+        return json.loads(proc.stdout)
+    for envelope in [{'operation': 'list', 'payload': {}}, {'operation': 'list'}, {'operation': 'accept', 'payload': {'id': 'sug_0123456789abcdef'}},
+                     {'operation': 'dismiss', 'payload': {'id': 'sug_fedcba9876543210'}}]:
+        before = len(seen)
+        result = suggestions(envelope)
+        check(not result['ok'] and result['details'].get('dormant') is True and '6.77.0' in result['message'] and len(seen) == before,
+              f'the suggestions seam is dormant and sends nothing: {envelope}')
+    for envelope in [{'operation': 'accept', 'payload': {'id': 'sug_../../../x/abcde'}}, {'operation': 'accept', 'payload': {}},
+                     {'operation': 'dismiss', 'payload': {'id': 'sug_0123456789ABCDEF'}}, {'operation': 'dismiss', 'payload': {'id': 'sug_0123'}},
+                     {'operation': 'accept', 'payload': {'id': 'abc_0123456789abcdef'}}, {'operation': 'list', 'payload': {'status': 'all'}},
+                     {'operation': 'purge', 'payload': {}}]:
+        before = len(seen)
+        result = suggestions(envelope)
+        check(not result['ok'] and 'dormant' not in result.get('details', {}) and result['message'] == 'Dictionary suggestion request is invalid.'
+              and len(seen) == before, f'an invalid suggestions request is refused: {envelope}')
+    check(not suggestions(None, raw=b'{' + b' ' * 2000 + b'}')['ok'], 'oversized suggestions stdin refused')
+    print(f'PASS dictionary helper: {checks} checks; stdin only, fixed glossary routes, bounded words, version-aware refusals, no credential output, dormant suggestions seam')
 finally:
     server.shutdown(); shutil.rmtree(root)

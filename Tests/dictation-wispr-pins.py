@@ -76,7 +76,7 @@ need("styleMask: [.borderless, .nonactivatingPanel]" in dictation and ".titled" 
      "the only dictation window is the borderless nonactivating overlay")
 
 # ── 2. Delivery (0.5.310, clipboard 0.5.312): MEASURED. ✓ only for a measured change (Miles 20:07, iTerm2).
-deliver = body(dictation, "static func deliver(_ raw: String, restoreClipboard: Bool) async -> DictationDelivered {")
+deliver = body(dictation, "static func deliver(_ raw: String, restoreClipboard: Bool, fieldContext: Bool = false) async -> DictationDelivered {")
 # 0.5.312 (Miles 21:23): the clipboard is written only for a posted ⌘V (then restored) or for the card. Accessibility
 # insertion never touches it.
 ax_at = deliver.index("if route == .accessibility, let target {")
@@ -94,7 +94,7 @@ need("DictationClipboard.keepWaiting(elapsedMilliseconds:" in restore and "Dicta
      and "currentChangeCount: board.changeCount" in restore and "DictationClipboard.restore($0, to: board)" in restore,
      "after the ⌘V the clipboard is put back only by the tested decision")
 need('dictationLog.notice("clipboard not restored: \\(reason, privacy: .public)")' in restore, "every skip is logged with its reason")
-need("deliver(text, restoreClipboard: restoreClipboard)" in dictation and 'forKey: "dictation.restoreClipboard") as? Bool ?? true' in dictation
+need("deliver(text, restoreClipboard: restoreClipboard, fieldContext: useFieldContext)" in dictation and 'forKey: "dictation.restoreClipboard") as? Bool ?? true' in dictation
      and 'Toggle("Restore my clipboard after pasting", isOn: $store.restoreClipboard)' in dictation, "the setting is on by default and reaches delivery")
 need("DictationInsertPolicy.refusal(" in deliver and "DictationDelivery.decide(" in deliver and "DictationDelivery.route(" in deliver,
      "delivery goes through the tested policy, route and decision")
@@ -141,8 +141,8 @@ need(hosts is not None and terminals is not None and set(re.findall(r'"([^"]+)"'
 
 # ── 3. Store flow: the pill, the flash, the card; text stays private.
 transcribe = body(dictation, "private func transcribe(_ wav: Data, attempt: UUID) {")
-need("let delivered = copyOnly ? DictationInsertion.copyOnly(text, clipboardMoved: clipboardMoved)\n                    : await DictationInsertion.deliver(text, restoreClipboard: restoreClipboard)" in transcribe
-     and "finish(text, outcome: delivered.outcome, target: delivered.target)" in transcribe,
+need("let delivered = copyOnly ? DictationInsertion.copyOnly(text, clipboardMoved: clipboardMoved)\n                    : await DictationInsertion.deliver(text, restoreClipboard: restoreClipboard, fieldContext: useFieldContext)" in transcribe
+     and "finish(delivered.context?.text ?? text, outcome: delivered.outcome, target: delivered.target, context: delivered.context)" in transcribe,
      "a finished transcript must be delivered and recorded")
 # 0.5.313 (Miles 2026-10-15): an interrupted dictation is transcribed and copied, never thrown away and never typed.
 need("let copyOnly = pendingInterrupted\n                let clipboardMoved = interruptedChangeCount.map { $0 != NSPasteboard.general.changeCount } ?? false\n                pendingAudio = nil" in transcribe,
@@ -170,7 +170,7 @@ copy_only = body(dictation, "    static func copyOnly(_ text: String, clipboardM
 need("writeTranscript(text, markerTypes: [])" in copy_only and ".refused(wrote ? .interrupted : .clipboardFailed)" in copy_only
      and "AXUIElement" not in copy_only and "postPaste" not in copy_only and "CGEvent" not in copy_only,
      "copy-only writes a durable clipboard item and never types or pastes")
-finish = body(dictation, "private func finish(_ text: String, outcome: DictationDeliveryOutcome, target: DictationInsertTarget?) {")
+finish = body(dictation, "private func finish(_ text: String, outcome: DictationDeliveryOutcome, target: DictationInsertTarget?, context: DictationFieldContext.Applied? = nil) {")
 need("remember(record)" in finish and "showCard(" in finish and "DictationPill.flashSeconds" in finish
      and "delivery: outcome.delivery" in finish and "outcome.flash" in finish,
      "finish must record the honest outcome, flash only what the outcome allows, and card when refused")
@@ -525,7 +525,7 @@ need(replace_ui.count("copy(offer.corrected)") == 3 and 'fixNote = "Copied the c
 need("DictationReplace.span(pid: app.processIdentifier, baseline: baseline, after: after, count: count)" in deliver
      and "baseline: beforePaste, after: measuredAfterPaste, count: count)" in deliver,
      "the inserted range is recorded from the measurement, on the Accessibility and ⌘V routes")
-need("if case .inserted = outcome { return DictationDelivered(outcome: outcome, target: landed) }" in deliver,
+need("if case .inserted = outcome { return DictationDelivered(outcome: outcome, target: landed, context: context) }" in deliver,
      "only a measured insertion carries a target")
 finish = body(dictation, "    private func finish(")
 need("fixOfferID = offer ? record.id : nil" in finish and "DictationQuickFix.offerSeconds" in finish, "the flash carries Fix for 5 s")
@@ -552,7 +552,7 @@ need('UserDefaults.standard.string(forKey: "dictation.learnMode") ?? "") ?? .def
 need("Never in terminals or password fields." in dictation and "Electron apps are being measured first" in dictation,
      "the Settings footnote says terminals and password fields never learn, and Electron is only measured")
 finish = body(dictation, "    private func finish(")
-need("if let target, case .inserted = outcome {\n            editWatcher.start(target, mode: learnMode)" in finish and 'editWatcher.stop("not inserted")' in finish,
+need("if let target, case .inserted = outcome {\n            editWatcher.start(target, mode: learnMode, context: context)" in finish and 'editWatcher.stop("not inserted")' in finish,
      "only a measured insertion starts a watch; anything else ends the last one")
 need('editWatcher.stop("new dictation")' in body(dictation, "    func start() {") and 'editWatcher.stop("fix a word")' in body(dictation, "    func openFix(_ id: UUID?) {"),
      "a new dictation or Fix a word (whose Replace edits the field) ends the watch")
@@ -560,7 +560,7 @@ need('if learnMode == .off { editWatcher.stop("learning off") }' in dictation, "
 watcher = body(dictation, "@MainActor final class DictationEditWatcher {")
 need(watcher.count("DictationEditLearning.eligibility(mode: mode, secure: DictationInsertion.secure(element)") == 1
      and "if case .skip(let reason) = eligibility {" in watcher and "let learning = eligibility == .learn" in watcher
-     and "let candidate = learning ? Self.candidate(edit) : nil" in watcher,
+     and "var candidate = learning ? Self.candidate(edit, outside: outside) : nil" in watcher,
      "the tested gate decides learn, probe or skip, and only .learn produces a candidate (Electron is probed only)")
 need("DictationEditLearning.stop(elapsed: Date().timeIntervalSince(started), reads: reads, appRunning: running,\n                                                        secure: DictationInsertion.secure(element)," in watcher,
      "every poll asks the tested stop rule, secure input and password fields included")
@@ -610,5 +610,61 @@ need("if clipboardMoved {" in body(dictation, "    static func copyOnly(_ text: 
      and "DictationInsertion.copyOnly(text, clipboardMoved: clipboardMoved)" in dictation
      and dictation.count("interruptedChangeCount = NSPasteboard.general.changeCount") == 2,
      "a salvage leaves a clipboard changed since the interrupt alone, from either interrupt path")
+
+# ── 10. 0.5.323 (Miles 2026-10-17): the text around a dictation. Read before typing, bounded, memory only; evidence for
+# Learn from my edits; a reverted context fix is never learned. The pure rules run in MacDictationChecks.
+read_ctx = body(dictation, "    private static func readContext(_ target: AXUIElement, enabled: Bool, terminal: Bool, baseline: DictationFieldSnapshot, dictation: String,")
+steps = ("let baseline = snapshot(target)", "context = readContext(target, enabled: fieldContext, terminal: terminal, baseline: baseline, dictation: text, facts: &facts)",
+         "if let context { text = context.text; count = text.utf16.count }", "if route == .accessibility, let target {")
+need(deliver.count("readContext(") == 1 and all(step in deliver for step in steps)
+     and deliver.index("let baseline = snapshot(target)") < deliver.index("context = readContext(target, enabled: fieldContext, terminal: terminal, baseline: baseline, dictation: text, facts: &facts)")
+     < deliver.index("if let context { text = context.text; count = text.utf16.count }") < deliver.index("if route == .accessibility, let target {"),
+     "the field is read after it is measured and before anything is typed, and what is typed (and counted) is the respelled text")
+need("var text = terminal ? DictationDelivery.terminalText(raw) : raw" in deliver and "var count = text.utf16.count" in deliver
+     and deliver.index("var context: DictationFieldContext.Applied?") < deliver.index("func done(_ outcome: DictationDeliveryOutcome) -> DictationDelivered {")
+     and "return DictationDelivered(outcome: outcome, target: nil, context: context)" in deliver,
+     "every outcome after the read carries it, so the record keeps what was typed")
+need("DictationFieldContext.plan(enabled: enabled, secure: secure(target), terminal: terminal," in read_ctx
+     and "guard case .read(let before, let after) = plan else {" in read_ctx,
+     "the tested plan decides the read, password fields, secure input and terminals included")
+need("string(target, location: before.location, length: before.length)" in read_ctx and "string(target, location: after.location, length: after.length)" in read_ctx
+     and read_ctx.count("string(target, location:") == 2 and "kAXValueAttribute" not in read_ctx and "kAXSelectedTextAttribute" not in read_ctx,
+     "two bounded AXStringForRange reads, never the field's whole value")
+need("AXUIElementSetMessagingTimeout(target, DictationFieldContext.readTimeoutSeconds)" in read_ctx and "defer { AXUIElementSetMessagingTimeout(target, 0.25) }" in read_ctx
+     and read_ctx.count("DictationFieldContext.inBudget(elapsed: Date().timeIntervalSince(started))") == 2,
+     "each read has a short timeout, the second runs only inside the budget, and a slow read is dropped")
+need("DictationFieldContext.terms(in: read, known: known)" in read_ctx and "DictationFieldContext.corrected(dictation, terms: terms, known: known)" in read_ctx
+     and "NSSpellChecker.shared.checkSpelling(of: word, startingAt: 0).location == NSNotFound" in read_ctx,
+     "the tested terms and corrections, with the system spell checker as the English test")
+facts_lines = [line for line in read_ctx.splitlines() if "facts +=" in line]
+need(len(facts_lines) == 4 and not any(bad in line for line in facts_lines for bad in ("read.before", "read.after", "result.text", "dictation", "\\(terms)", "terms.map", "fixes)"))
+     and "dictationLog" not in read_ctx and "FileManager" not in read_ctx and "UserDefaults" not in read_ctx and "request(" not in read_ctx,
+     "the read logs counts only and writes nothing: the field's text stays in memory")
+need(dictation.count("DictationFieldContext.Applied(") == 1 and dictation.count("context?.outside") == 1 and dictation.count("context?.fixes") == 1,
+     "the field's text reaches only the watch that follows")
+need('forKey: "dictation.fieldContext") as? Bool ?? true' in dictation
+     and 'Toggle("Spell words the way the text box has them", isOn: $store.useFieldContext)' in dictation
+     and "never saves or sends it" in dictation and "Never in terminals or password fields." in dictation,
+     "a setting, on by default, says what is read and that it is kept for that dictation only")
+need("editWatcher.start(target, mode: learnMode, context: context)" in finish, "the watch gets the read")
+need("let outside = DictationEditLearning.outside(window: current, start: start, length: l) + (context?.outside ?? [])" in watcher
+     and "DictationEditLearning.undoesContextFix($0, fixes: context?.fixes ?? [])" in watcher
+     and "if reverted { candidate = nil }" in watcher and watcher.index("if reverted { candidate = nil }") < watcher.index("if let candidate { found(candidate) }")
+     and "evidence=\\(candidate?.evidence != nil) revert=\\(reverted)" in watcher,
+     "the window around the dictation and the read before it are evidence; putting back what was heard is never learned")
+need("}, outside: outside)" in body(dictation, "    private static func candidate(_ edit: DictationReplace.Edit, outside: [String]) -> DictationEditLearning.Candidate? {"),
+     "the tested candidate rule sees the evidence")
+need("evidence: candidate.evidence)" in learned_fn, "the suggestion carries the evidence")
+row = body(dictation, "struct DictationSuggestionRow: View {")
+need("if let evidence = item.evidence {" in row and "Text(evidence.words)" in row and row.index("pair") < row.index("Text(evidence.words)"),
+     "the evidence line sits under the pair, in the Dictation tab and in Fix a word")
+need("DictationSuggestionRow(item: item, fontSize: 11, busy: applying || dictionary.busy," in pane, "the Dictation tab lists suggestions with that row")
+# The server's dictionary suggestions (6.77.0): a dormant seam. Nothing in Control calls it, and it sends nothing.
+need(helper.count('case "dictionary-suggestions": try emitDictionarySuggestions()') == 1, "the seam verb is dispatched once")
+seam = body(helper, "private func emitDictionarySuggestions() throws {")
+need("FileHandle.standardInput" in seam and "request(" not in seam and "/api/" not in seam and "speakerReviewToken" not in seam
+     and '"dormant": true' in seam, "the seam reads stdin, reads no token and sends nothing")
+need(not any('"dictionary-suggestions"' in src for src in sources.values()) and "transcript-cleanup" not in "".join(sources.values()).replace(core, ""),
+     "Control does not call the seam or the server's routes yet")
 
 print(f"PASS dictation-wispr pins: {checks} checks; HUD gone, copy-then-insert-at-focus, private history, overlay focus, pet slot and lists, Dictionary route, helper stdin, quick fix, replace, quiet restore on every exit")

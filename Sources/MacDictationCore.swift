@@ -1457,6 +1457,9 @@ enum DictationEditLearning {
     static let debounceSeconds: TimeInterval = 1.5
     static let pollMilliseconds = 500
     static let maximumWords = 3
+    /// 0.5.323: below the sound-alike threshold, a spelling the field also has outside the dictation still counts down
+    /// to this score, so an unrelated rewrite never does.
+    static let contextFloor = 0.6
 
     enum Eligibility: Equatable, Sendable {
         /// Watch and learn.
@@ -1519,27 +1522,90 @@ enum DictationEditLearning {
     struct Candidate: Equatable, Sendable {
         let heard: String
         let written: String
+        /// 0.5.323: the written form is also in the same field outside the dictation.
+        var evidence: DictationLearnEvidence? = nil
     }
     /// The pair to learn from one edit inside the dictation, or nil. A re-spelling of one to three words that sounds or
     /// is spelled like what was heard, never a rewording, a punctuation fix, a sentence-start capital, or a swap between
     /// two plain English words ("their" → "there"). `known` is the system spell checker; `learned` is the dictionary.
-    static func candidate(_ edit: DictationReplace.Edit, known: (String) -> Bool, learned: (String, String) -> Bool) -> Candidate? {
+    /// `outside` is the field's text around the dictation (0.5.323, Miles 2026-10-17: a prompt he dropped in, then a
+    /// dictated word fixed to a spelling that prompt already has). That evidence lets a spelling below the sound-alike
+    /// threshold count, down to `contextFloor`, when it is not plain English and the heard side is not one plain word.
+    static func candidate(_ edit: DictationReplace.Edit, known: (String) -> Bool, learned: (String, String) -> Bool,
+                          outside: [String] = []) -> Candidate? {
         let edge = CharacterSet.punctuationCharacters.union(.symbols).union(.whitespacesAndNewlines)
         let heard = edit.original.trimmingCharacters(in: edge), written = edit.replacement.trimmingCharacters(in: edge)
         guard !heard.isEmpty, !written.isEmpty, heard != written, !(heard + written).contains(where: \.isNewline) else { return nil }
         let heardWords = heard.split(whereSeparator: \.isWhitespace).map(String.init), writtenWords = written.split(whereSeparator: \.isWhitespace).map(String.init)
         guard (1...maximumWords).contains(heardWords.count), (1...maximumWords).contains(writtenWords.count) else { return nil }
+        let evidence = evidence(written: written, outside: outside)
         if DictationFixGuess.normalized(heard) == DictationFixGuess.normalized(written) {
             // Only a change of capitals counts ("ios" → "iOS", "gina" → "Gina"), and not a sentence's first capital.
             guard heard.lowercased() == written.lowercased() else { return nil }
             let innerCapital = written.dropFirst().contains(where: \.isUppercase)
             guard innerCapital || !heardWords.allSatisfy(known) else { return nil }
         } else {
-            guard DictationFixGuess.score(heard: heard, term: written) >= DictationFixGuess.threshold else { return nil }
             if heardWords.allSatisfy(known), writtenWords.allSatisfy(known) { return nil }
+            let score = DictationFixGuess.score(heard: heard, term: written)
+            if score < DictationFixGuess.threshold {
+                guard evidence != nil else { return nil }
+                guard score >= contextFloor else { return nil }
+                guard !writtenWords.allSatisfy(known) else { return nil }
+                guard heardWords.count > 1 || !heardWords.allSatisfy(known) else { return nil }
+            }
         }
         guard !learned(heard, written) else { return nil }
-        return Candidate(heard: heard, written: written)
+        return Candidate(heard: heard, written: written, evidence: evidence)
+    }
+
+    /// The field's text outside the dictation in one read: before `start` and after `start + length` (UTF-16 units).
+    static func outside(window: String, start: Int, length: Int) -> [String] {
+        let ns = window as NSString
+        let lower = min(max(0, start), ns.length), upper = min(ns.length, max(lower, start + max(0, length)))
+        return [ns.substring(to: lower), ns.substring(from: upper)].filter { !$0.isEmpty }
+    }
+    /// The exact written form (case and all) in any of `outside`, on word boundaries: "Jewel360" in "Jewel360's site"
+    /// counts, in "Jewel3600" it does not.
+    static func evidence(written: String, outside: [String]) -> DictationLearnEvidence? {
+        guard !written.isEmpty else { return nil }
+        for text in outside {
+            let ns = text as NSString
+            var from = 0
+            while from < ns.length {
+                let found = ns.range(of: written, options: [.literal], range: NSRange(location: from, length: ns.length - from))
+                guard found.location != NSNotFound else { break }
+                func wordUnit(_ i: Int) -> Bool {
+                    guard let scalar = Unicode.Scalar(ns.character(at: i)) else { return true }
+                    return CharacterSet.alphanumerics.contains(scalar)
+                }
+                let before = found.location == 0 || !wordUnit(found.location - 1)
+                let after = NSMaxRange(found) == ns.length || !wordUnit(NSMaxRange(found))
+                if before && after { return .nearbyText }
+                from = found.location + 1
+            }
+        }
+        return nil
+    }
+    /// The edit changes words COS spelled from the field (DictationFieldContext), not words the engine heard: putting
+    /// back what was heard, or fixing COS's spelling to another. Neither is a pair to learn, since its "heard" side is
+    /// COS's own guess.
+    static func undoesContextFix(_ candidate: Candidate, fixes: [DictationFieldContext.Fix]) -> Bool {
+        let heard = DictationFixGuess.normalized(candidate.heard)
+        return fixes.contains { fix in
+            let spelled = DictationFixGuess.normalized(fix.written)
+            return !spelled.isEmpty && heard.contains(spelled)
+        }
+    }
+}
+
+/// Why a learned pair is more than a sound-alike (0.5.323). Shown under the suggestion in Activity, Dictation.
+enum DictationLearnEvidence: String, Codable, Sendable {
+    /// The same spelling is in the field outside the dictation: text the person typed, pasted or dropped there.
+    case nearbyText
+    var words: String {
+        switch self {
+        case .nearbyText: "Also in the text around your dictation"
+        }
     }
 }
 
@@ -1551,6 +1617,26 @@ struct DictationSuggestion: Codable, Equatable, Identifiable, Sendable {
     let written: String
     let app: String
     let at: Date
+    /// 0.5.323. A 0.5.318 file has no key, and a kind this build does not know reads as none.
+    var evidence: DictationLearnEvidence? = nil
+
+    init(id: UUID, heard: String, written: String, app: String, at: Date, evidence: DictationLearnEvidence? = nil) {
+        self.id = id; self.heard = heard; self.written = written; self.app = app; self.at = at; self.evidence = evidence
+    }
+    private enum CodingKeys: String, CodingKey { case id, heard, written, app, at, evidence }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        heard = try c.decode(String.self, forKey: .heard)
+        written = try c.decode(String.self, forKey: .written)
+        app = try c.decode(String.self, forKey: .app)
+        at = try c.decode(Date.self, forKey: .at)
+        evidence = (try? c.decodeIfPresent(String.self, forKey: .evidence)).flatMap { $0 }.flatMap(DictationLearnEvidence.init(rawValue:))
+    }
+    /// The same pair again keeps the evidence an earlier sighting had.
+    func keeping(_ earlier: DictationSuggestion?) -> DictationSuggestion {
+        DictationSuggestion(id: id, heard: heard, written: written, app: app, at: at, evidence: evidence ?? earlier?.evidence)
+    }
 }
 
 enum DictationSuggestions {
@@ -1579,14 +1665,16 @@ enum DictationSuggestions {
         var next = pruned(state, now: now)
         let k = key(item.heard, item.written)
         guard !isQuiet(item.heard, item.written, in: next, now: now) else { return next }
-        next.suggestions = [item] + next.suggestions.filter { key($0.heard, $0.written) != k }
+        let earlier = next.suggestions.first { key($0.heard, $0.written) == k }
+        next.suggestions = [item.keeping(earlier)] + next.suggestions.filter { key($0.heard, $0.written) != k }
         return pruned(next, now: now)
     }
     /// Save automatically: the pair goes on the learned list (the dictionary holds the correction itself).
     static func learning(_ item: DictationSuggestion, in state: State, now: Date) -> State {
         var next = pruned(state, now: now)
         let k = key(item.heard, item.written)
-        next.learned = [item] + next.learned.filter { key($0.heard, $0.written) != k }
+        let earlier = next.learned.first { key($0.heard, $0.written) == k } ?? next.suggestions.first { key($0.heard, $0.written) == k }
+        next.learned = [item.keeping(earlier)] + next.learned.filter { key($0.heard, $0.written) != k }
         next.suggestions = next.suggestions.filter { key($0.heard, $0.written) != k }
         return pruned(next, now: now)
     }
@@ -1631,6 +1719,298 @@ enum DictationSuggestions {
             try? FileManager.default.removeItem(at: temp)
             throw NSError(domain: "COSDictation", code: 4, userInfo: [NSLocalizedDescriptionKey: "Dictation suggestions could not be saved."])
         }
+    }
+}
+
+// MARK: - The text around a dictation (0.5.323)
+
+/// 0.5.323 (Miles, 2026-10-17): the words already in the text box are context. Before COS types a dictation it reads a
+/// bounded part of the focused field (AXStringForRange, never AXValue) and spells a misheard name or term the way the
+/// field already has it: "Ukoma" becomes "Ukaoma" when the field holds "Ukaoma". The same read is evidence for Learn
+/// from my edits. The text stays in memory on this Mac for that one dictation and its watch: never logged, never written
+/// to disk, never sent to the server. Never a password field, secure input or a terminal (whose text is scrollback).
+/// Pure, so every rule is tested and mutated; the app reads the field, calls these and types the result.
+enum DictationFieldContext {
+    /// The most COS reads, in UTF-16 units: up to `beforeLimit` before the caret, the rest after the selection.
+    static let maximumCharacters = 4_000
+    static let beforeLimit = 3_000
+    /// Each Accessibility read gives up after this; all of them together must finish inside `readBudgetSeconds`, or
+    /// the dictation is typed as heard.
+    static let readTimeoutSeconds: Float = 0.15
+    static let readBudgetSeconds: TimeInterval = 0.3
+    /// The field's distinctive words kept for one dictation, most frequent first.
+    static let maximumTerms = 64
+    /// A dictation longer than this many words is typed as heard (the comparison grows with words times terms).
+    static let maximumWords = 800
+    /// A context word is two to forty characters.
+    static let maximumTermLength = 40
+
+    struct Piece: Equatable, Sendable {
+        let location: Int
+        let length: Int
+    }
+    enum Plan: Equatable, Sendable {
+        case read(before: Piece, after: Piece)
+        case skip(String)
+    }
+    /// What to read: the text before the caret and after the selection (selected text is about to be replaced), at most
+    /// `maximumCharacters` in all. Nothing from a password field, secure input, a terminal, or a field COS cannot measure.
+    static func plan(enabled: Bool, secure: Bool, terminal: Bool, fieldCharacters: Int?, location: Int?, length: Int?) -> Plan {
+        if !enabled { return .skip("off") }
+        if secure { return .skip("password field or secure input") }
+        if terminal { return .skip("terminal scrollback") }
+        guard let n = fieldCharacters, let location else { return .skip("unmeasured") }
+        guard n > 0 else { return .skip("empty") }
+        let caret = min(max(0, location), n), end = min(n, caret + max(0, length ?? 0))
+        let before = min(caret, beforeLimit)
+        let after = min(n - end, maximumCharacters - before)
+        guard before + after > 0 else { return .skip("empty") }
+        return .read(before: Piece(location: caret - before, length: before), after: Piece(location: end, length: after))
+    }
+    static func inBudget(elapsed: TimeInterval) -> Bool { elapsed <= readBudgetSeconds }
+
+    /// What was read. A piece that does not reach the field's edge was cut mid-word, so its outer word is dropped.
+    struct Read: Equatable, Sendable {
+        var before = ""
+        var after = ""
+        var beforeCut = false
+        var afterCut = false
+    }
+    struct Term: Equatable, Sendable {
+        let text: String
+        /// A capital inside a word ("iOS", "HubSpot") or letters with digits ("Jewel360"): spelled on purpose. A plain
+        /// English word that was heard may become one of these (and of nothing else).
+        let strong: Bool
+    }
+    /// The field's distinctive words: a capital inside the word, letters with digits, a capitalized word in mid-sentence
+    /// or one the spell checker does not know, an acronym. Never a plain lowercase word, which is more often a typo
+    /// than a term, nor anything with a slash, @, colon or underscore (paths, links, addresses, code).
+    static func terms(in read: Read, known: (String) -> Bool) -> [Term] {
+        var counts: [String: (count: Int, first: Int, strong: Bool)] = [:]
+        var index = 0
+        // A caret inside a word splits it: neither half is a word of the field.
+        let midWord = (read.before.last.map { $0.isLetter || $0.isNumber } ?? false) && (read.after.first.map { $0.isLetter || $0.isNumber } ?? false)
+        for (text, dropFirst, dropLast) in [(read.before, read.beforeCut, midWord), (read.after, midWord, read.afterCut)] {
+            let words = tokens(text)
+            for (i, word) in words.enumerated() {
+                defer { index += 1 }
+                if i == 0, dropFirst { continue }
+                if i == words.count - 1, dropLast { continue }
+                // The after piece follows the dictation, so its first word is read as a sentence start (the strict case).
+                let startsSentence = i == 0 || words[i - 1].endsSentence || word.breakBefore
+                guard let term = classify(word.trimmed, startsSentence: startsSentence, known: known) else { continue }
+                if let seen = counts[term.text] { counts[term.text] = (seen.count + 1, seen.first, seen.strong) }
+                else { counts[term.text] = (1, index, term.strong) }
+            }
+        }
+        return counts.sorted { $0.value.count != $1.value.count ? $0.value.count > $1.value.count : $0.value.first < $1.value.first }
+            .prefix(maximumTerms).map { Term(text: $0.key, strong: $0.value.strong) }
+    }
+    static func classify(_ raw: String, startsSentence: Bool, known: (String) -> Bool) -> Term? {
+        // "Ukaoma's" is the word "Ukaoma".
+        let word = raw.count > 3 && (raw.hasSuffix("'s") || raw.hasSuffix("\u{2019}s")) ? String(raw.dropLast(2)) : raw
+        guard (2...maximumTermLength).contains(word.count) else { return nil }
+        let inner: Set<Character> = ["-", "'", "\u{2019}", ".", "&", "+"]
+        guard word.allSatisfy({ $0.isLetter || $0.isNumber || inner.contains($0) }) else { return nil }
+        let letters = word.filter(\.isLetter).count, digits = word.filter(\.isNumber).count
+        guard letters >= 1, let first = word.first else { return nil }
+        let lower = word.contains(where: \.isLowercase)
+        if lower, word.dropFirst().contains(where: \.isUppercase) { return Term(text: word, strong: true) }
+        // "Jewel360", "4BIS"; not "3pm" or "2nd".
+        if digits > 0, letters >= 2, first.isLetter || letters >= 3 { return Term(text: word, strong: true) }
+        guard digits == 0 else { return nil }
+        if !lower, (2...6).contains(letters), letters == word.count { return Term(text: word, strong: false) }  // COS, SBU
+        guard first.isUppercase, lower, letters >= 3 else { return nil }
+        if !startsSentence || !known(word) { return Term(text: word, strong: false) }
+        return nil
+    }
+
+    struct Fix: Equatable, Sendable {
+        let heard: String
+        let written: String
+    }
+    /// What `deliver` typed after reading the field: the text, the fixes it made, and the field's text outside the
+    /// dictation, for Learn from my edits. Memory only.
+    struct Applied: Equatable, Sendable {
+        let text: String
+        let fixes: [Fix]
+        let outside: [String]
+    }
+    /// The dictation with words the field already spells differently fixed. One to three words that score at the Fix a
+    /// word threshold against a field term become that term, best match first, never overlapping, never across a line
+    /// break, punctuation at either end kept. Guards, because a wrong fix is worse than none:
+    /// - words the field already has exactly stay as they are;
+    /// - plain English words become only a spelled-on-purpose term ("joule 360" to "Jewel360", "hub spot" to "HubSpot"),
+    ///   and one plain word only when the letters are the same, so "cloud" never becomes "iCloud" nor "and" "Andy";
+    /// - a change of capitals alone needs a spelled-on-purpose term or a word the spell checker does not know.
+    static func corrected(_ text: String, terms: [Term], known: (String) -> Bool) -> (text: String, fixes: [Fix]) {
+        let words = tokens(text)
+        guard !terms.isEmpty, !words.isEmpty, words.count <= maximumWords else { return (text, []) }
+        let exact = Set(terms.map(\.text))
+        let keyed = terms.map { (term: $0, normal: DictationFixGuess.normalized($0.text), sound: DictationFixGuess.skeleton($0.text)) }
+        var cache: [String: Bool] = [:]
+        func plain(_ word: String) -> Bool {
+            if let k = cache[word] { return k }
+            let k = known(word); cache[word] = k; return k
+        }
+        var found: [(start: Int, end: Int, score: Double, term: String, heard: String)] = []
+        for start in words.indices {
+            for width in 1...DictationFixGuess.maximumWords where start + width <= words.count {
+                let end = start + width - 1
+                // One span never crosses a line break or a mark between words ("joule, 360" stays two).
+                if width > 1, words[end].breakBefore || words[end].leadMark || words[end - 1].trailMark { break }
+                let heard = words[start...end].map(\.trimmed).joined(separator: " ")
+                let h = DictationFixGuess.normalized(heard)
+                guard h.count >= 3, !exact.contains(heard) else { continue }
+                let hs = DictationFixGuess.skeleton(heard)
+                var allPlain: Bool?
+                for key in keyed where !key.normal.isEmpty {
+                    let same = key.normal == h
+                    let score: Double
+                    if same { score = 1 } else {
+                        let spelled = DictationFixGuess.similarity(h, key.normal)
+                        let sounded = hs.count >= 3 && key.sound.count >= 3 ? DictationFixGuess.similarity(hs, key.sound) * 0.95 : 0
+                        score = max(spelled, sounded)
+                        guard score >= DictationFixGuess.threshold else { continue }
+                    }
+                    if allPlain == nil { allPlain = words[start...end].allSatisfy { $0.trimmed.allSatisfy(\.isNumber) || plain($0.trimmed) } }
+                    if allPlain == true {
+                        guard key.term.strong else { continue }
+                        guard width > 1 || same else { continue }
+                    }
+                    found.append((start, end, score, key.term.text, heard))
+                }
+            }
+        }
+        found.sort { a, b in
+            if a.score != b.score { return a.score > b.score }
+            if a.end - a.start != b.end - b.start { return a.end - a.start < b.end - b.start }
+            return a.start < b.start
+        }
+        var taken = Set<Int>(), chosen: [(start: Int, end: Int, term: String, heard: String)] = []
+        for f in found where (f.start...f.end).allSatisfy({ !taken.contains($0) }) {
+            chosen.append((f.start, f.end, f.term, f.heard)); for i in f.start...f.end { taken.insert(i) }
+        }
+        guard !chosen.isEmpty else { return (text, []) }
+        chosen.sort { $0.start < $1.start }
+        // Built from slices of the original, in order, so an index always belongs to the string it reads.
+        var out = "", cursor = text.startIndex, fixes: [Fix] = []
+        let edge = CharacterSet.punctuationCharacters.union(.symbols)
+        func isEdge(_ ch: Character) -> Bool { ch.unicodeScalars.allSatisfy { edge.contains($0) } }
+        for c in chosen {
+            let range = words[c.start].range.lowerBound..<words[c.end].range.upperBound
+            guard range.lowerBound >= cursor else { continue }
+            let phrase = Array(text[range])
+            let lead = phrase.prefix(while: isEdge).count
+            let trail = lead == phrase.count ? 0 : phrase.reversed().prefix(while: isEdge).count
+            out += text[cursor..<range.lowerBound] + String(phrase.prefix(lead)) + c.term + String(phrase.suffix(trail))
+            cursor = range.upperBound
+            fixes.append(Fix(heard: c.heard, written: c.term))
+        }
+        return (out + text[cursor...], fixes)
+    }
+
+    struct Word {
+        let range: Range<String.Index>
+        let trimmed: String
+        /// A line break, or a mark standing alone ("—"), sits between this word and the one before.
+        let breakBefore: Bool
+        /// Punctuation hugs the word's start or end ("(Jewel360", "joule,").
+        let leadMark: Bool
+        let trailMark: Bool
+        let endsSentence: Bool
+    }
+    /// Words split on white space, each without the punctuation hugging it, where it sits, and what separates it from
+    /// its neighbours.
+    static func tokens(_ text: String) -> [Word] {
+        var out: [Word] = []
+        var start: String.Index?, sawBreak = false
+        let edge = CharacterSet.punctuationCharacters.union(.symbols)
+        func close(_ s: String.Index, _ e: String.Index) {
+            let raw = String(text[s..<e])
+            let trimmed = raw.trimmingCharacters(in: edge)
+            let tail = raw.trimmingCharacters(in: CharacterSet(charactersIn: "\"')]}\u{201D}\u{2019}"))
+            let ends = tail.last.map { ".!?:;".contains($0) } ?? false
+            if !trimmed.isEmpty {
+                out.append(Word(range: s..<e, trimmed: trimmed, breakBefore: sawBreak, leadMark: !raw.hasPrefix(trimmed),
+                                trailMark: !raw.hasSuffix(trimmed), endsSentence: ends))
+                sawBreak = false
+            } else {
+                sawBreak = true
+                if ends, let last = out.popLast() {
+                    out.append(Word(range: last.range, trimmed: last.trimmed, breakBefore: last.breakBefore, leadMark: last.leadMark,
+                                    trailMark: true, endsSentence: true))
+                }
+            }
+        }
+        var i = text.startIndex
+        while i < text.endIndex {
+            let c = text[i]
+            if c.isWhitespace || c.isNewline {
+                if let s = start { close(s, i); start = nil }
+                if c.isNewline { sawBreak = true }
+            } else if start == nil { start = i }
+            i = text.index(after: i)
+        }
+        if let s = start { close(s, text.endIndex) }
+        return out
+    }
+}
+
+// MARK: - Dictionary suggestions from the server (0.5.323 seam, server 6.77.0)
+
+/// The glasses server's transcript cleanup (server 6.77.0, unpublished when this was written) proposes dictionary
+/// spellings with evidence. This is the seam only: the model the list decodes into and the capability that says the
+/// server has it. Nothing in COS Control calls the server for these yet, and the helper's `dictionary-suggestions` verb
+/// answers dormant without a request, until 6.77.0 is published and its routes are proven:
+///   GET  /api/transcript-cleanup/suggestions?status=pending|all  200 {"protocol": 1, "suggestions": [Suggestion]}
+///   POST /api/transcript-cleanup/suggestions/:id/accept   {} adds the spelling; {"correction": true} learns heard[0]
+///   POST /api/transcript-cleanup/suggestions/:id/dismiss  {}
+/// advertised by "transcriptCleanup": {"protocol": 1, "suggestions": 1} in GET /api/transcribe/capabilities.
+struct DictationServerSuggestion: Decodable, Equatable, Identifiable, Sendable {
+    struct Evidence: Decodable, Equatable, Sendable {
+        let source: String
+        let sessionId: String?
+        let heard: String?
+        let at: String?
+        /// A file name, memory id or app name. Never transcript or screen text.
+        let detail: String?
+    }
+    let id: String
+    let written: String
+    let heard: [String]
+    let status: String
+    let count: Int
+    let inVocabulary: Bool
+    let evidence: [Evidence]
+}
+
+enum DictationServerSuggestions {
+    static let protocolVersion = 1
+    /// `sug_` and 16 lowercase hex digits, the only id the helper will put in a path.
+    static func validID(_ id: String) -> Bool {
+        id.count == 20 && id.hasPrefix("sug_") && id.dropFirst(4).allSatisfy { "0123456789abcdef".contains($0) }
+    }
+    /// GET /api/transcribe/capabilities says this server lists suggestions. Absent on an older server.
+    static func available(capabilities: Data) -> Bool {
+        guard let body = try? JSONSerialization.jsonObject(with: capabilities) as? [String: Any],
+              let cleanup = body["transcriptCleanup"] as? [String: Any] else { return false }
+        return (cleanup["protocol"] as? Int) == protocolVersion && (cleanup["suggestions"] as? Int) == 1
+    }
+    /// The list answer: rows with a valid id and a spelling, pending first as the server sends them. A row that does
+    /// not decode is dropped, not the list.
+    static func list(_ body: Data) -> [DictationServerSuggestion] {
+        struct Envelope: Decodable {
+            let version: Int
+            let suggestions: [Lenient]
+            enum CodingKeys: String, CodingKey { case version = "protocol", suggestions }
+        }
+        struct Lenient: Decodable {
+            let value: DictationServerSuggestion?
+            init(from decoder: Decoder) throws { value = try? DictationServerSuggestion(from: decoder) }
+        }
+        guard let envelope = try? JSONDecoder().decode(Envelope.self, from: body), envelope.version == protocolVersion else { return [] }
+        return envelope.suggestions.compactMap(\.value).filter { validID($0.id) && !$0.written.isEmpty && $0.written.utf16.count <= 100 }
     }
 }
 
