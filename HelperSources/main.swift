@@ -9480,6 +9480,24 @@ final class COSControlHelper {
         return .forced(signals: signals, pids: victims.map { Int($0.pid) })
     }
 
+    /// The swap gave up with Control still open: record why (Control reads the record and shows the reason; nothing is
+    /// reopened). If Control finishes quitting by itself within the linger, return, so the swap installs rather than
+    /// leave it closed.
+    private func giveUpQuitForSwap(_ reason: String, live: URL, timings: AppUpdateQuitTimings) throws {
+        try writeAppUpdateJSON(updatesFailureURL, [
+            "reason": reason,
+            "at": ISO8601DateFormatter().string(from: Date()),
+        ])
+        let lingerUntil = Date().addingTimeInterval(timings.linger)
+        while bundleHasRunningProcess(live), Date() < lingerUntil { Thread.sleep(forTimeInterval: 0.2) }
+        if bundleHasRunningProcess(live) {
+            throw HelperError.message(reason == "recording"
+                ? "A Mac recording is running, so COS Control was not closed. The update was not installed."
+                : "COS Control did not quit in time. The update was not installed.")
+        }
+        progress("app update: COS Control quit by itself after the swap gave up; installing")
+    }
+
     private func spawnDetached(executable: URL, arguments: [String]) throws -> pid_t {
         try ensurePrivateDirectory(logs)
         if !fm.fileExists(atPath: helperLog.path) {
@@ -9603,25 +9621,9 @@ final class COSControlHelper {
         let timings = Self.appUpdateQuitTimings(environment: ProcessInfo.processInfo.environment)
         var forced: (signals: [String], pids: [Int])?
         switch quitLiveForSwap(live, timings: timings) {
-        case .quit:
-            break
-        case let .forced(signals, pids):
-            forced = (signals, pids)
-        case let .gaveUp(reason):
-            try writeAppUpdateJSON(updatesFailureURL, [
-                "reason": reason,
-                "at": ISO8601DateFormatter().string(from: Date()),
-            ])
-            // Control is still open and shows the reason (it reads this record). Nothing is reopened. If it finishes
-            // quitting by itself meanwhile, install now rather than leave it closed.
-            let lingerUntil = Date().addingTimeInterval(timings.linger)
-            while bundleHasRunningProcess(live), Date() < lingerUntil { Thread.sleep(forTimeInterval: 0.2) }
-            if bundleHasRunningProcess(live) {
-                throw HelperError.message(reason == "recording"
-                    ? "A Mac recording is running, so COS Control was not closed. The update was not installed."
-                    : "COS Control did not quit in time. The update was not installed.")
-            }
-            progress("app update: COS Control quit by itself after the swap gave up; installing")
+        case .quit: break
+        case let .forced(signals, pids): forced = (signals, pids)
+        case let .gaveUp(reason): try giveUpQuitForSwap(reason, live: live, timings: timings)
         }
 
         try ensurePrivateDirectory(updatesPrevious)

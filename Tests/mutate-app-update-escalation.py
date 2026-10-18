@@ -53,7 +53,7 @@ MUTANTS = [
      ["[sigterm grace]", "[sigterm is enough]"], "escalation"),
     ("unknown waits nothing", H, "            if elapsed() >= timings.unknown { return .gaveUp(\"quitTimeout\") }", "            return .gaveUp(\"quitTimeout\")",
      ["[unknown waits the minute]"], "escalation"),
-    ("no linger", H, "            while bundleHasRunningProcess(live), Date() < lingerUntil { Thread.sleep(forTimeInterval: 0.2) }\n", "",
+    ("no linger", H, "        while bundleHasRunningProcess(live), Date() < lingerUntil { Thread.sleep(forTimeInterval: 0.2) }\n", "",
      ["[recording reason]", "[linger installs]"], "escalation"),
     ("forcedQuit not recorded", H, '            "forcedQuit": forced != nil,\n        ]\n        if let forced {',
      '            "forcedQuit": false,\n        ]\n        if let forced {', ["[success records forced quit]"], "escalation"),
