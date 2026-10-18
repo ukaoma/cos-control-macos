@@ -122,7 +122,9 @@ check(re.search(r"<key>CFBundleShortVersionString</key>\s*<string>0\.5\.322</str
 check(re.search(r"<key>CFBundleVersion</key>\s*<string>375</string>", plist) is not None, "Info.plist build 375")
 whats = json.loads(read("Resources/WhatsNew.json"))
 check(whats["version"] == "0.5.322" and whats["whatsNew"]["sections"][0]["title"] == "0.5.322", "What's New 0.5.322 first")
-check(whats["whatsNew"]["summary"].startswith("A Live cues switch in Settings"), "the summary leads with the new switch")
+# 0.5.322 also carries the installer fix, which leads the summary; the switch must still be named in it.
+check("a live cues switch in settings" in whats["whatsNew"]["summary"].lower(), "the summary names the new switch")
+check(any("Live cues switch" in item for item in whats["whatsNew"]["sections"][0]["items"]), "the 0.5.322 items describe the switch")
 changelog = read("CHANGELOG.md")
 first = changelog.split("\n## ", 1)[0] if not changelog.startswith("## ") else "## " + changelog[3:].split("\n## ", 1)[0]
 check(first.startswith("## 0.5.322 (build 375)") and "6.76.2" in first and "6.10.644" in first, "CHANGELOG 0.5.322 pairs with server 6.76.2 and glasses 6.10.644")
