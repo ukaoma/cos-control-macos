@@ -72,8 +72,8 @@ except ValueError:
 if not value.get("ok"):
     sys.exit("helper self-test FAILED: " + str(value.get("message") or value)[:2000])
 count = value.get("details", {}).get("tests", 0)
-if count < 820:
-    sys.exit(f"helper self-test ran only {count} checks; expected at least 820 (820 at 0.5.278: the live transcript path grammar, fixture parse, --since and stamp; 784 at 0.5.268: Codex inside the ChatGPT app; 774 at 0.5.250: the Work session name, transcript titles and named rows that are never warm-ups; 727 at 0.5.238)")
+if count < 856:
+    sys.exit(f"helper self-test ran only {count} checks; expected at least 856 (856 at 0.5.322: live-cues-settings grammar and whitelist; 836 at 0.5.321; 820 at 0.5.278: the live transcript path grammar, fixture parse, --since and stamp; 784 at 0.5.268: Codex inside the ChatGPT app; 774 at 0.5.250: the Work session name, transcript titles and named rows that are never warm-ups; 727 at 0.5.238)")
 ' "$SELF_TEST"
 # The Work contract self-test (the model catalog, admission, and from 0.5.249 the Cursor chat finder) is its own command,
 # and nothing ran it: a mutation of the tab folder rules survived because of it (2026-09-29).
@@ -119,6 +119,9 @@ python3 "$ROOT/Tests/live-cos-ask-helper-checks.py" "$TMP/cos-control-helper"
 python3 "$ROOT/Tests/meeting-ask-helper-checks.py" "$TMP/cos-control-helper"
 # Home city (server 6.71.13): home-area and set-home-area through the compiled helper against a loopback fixture.
 python3 "$ROOT/Tests/home-area-helper-checks.py" "$TMP/cos-control-helper"
+# 0.5.322 Live cues (server 6.76.2): live-cues-settings through the compiled helper against a loopback fixture (GET, --set on
+# and off post exactly {"enabled": ...}, every status an answer, only the contract's keys, unreachable and no token).
+python3 "$ROOT/Tests/live-cues-helper-checks.py" "$TMP/cos-control-helper"
 # Transcription switcher (server 6.72.0): stt-settings, set-stt-settings, install-parakeet against the contract fixture.
 python3 "$ROOT/Tests/transcription-settings-helper-checks.py" "$TMP/cos-control-helper" "$ROOT/Tests/fixtures/stt-settings-6.72.0.json"
 python3 "$ROOT/Tests/HeldNamingGuardMutations.py"
@@ -190,6 +193,9 @@ zsh "$ROOT/Tests/run-meeting-value-store.sh"
 
 # Home city: the store against a stand-in helper (404 hides, 400 shows the server sentence, PUT with homeCity, blank clears).
 zsh "$ROOT/Tests/run-home-area.sh"
+# 0.5.322: the Live cues switch. The wiring pins (the row in the Meeting assistant card, the switch only for a server that
+# answered, the key button opening Decision models, inline only, the helper bridge), then every state's words and the store.
+zsh "$ROOT/Tests/run-live-cues.sh"
 # Transcription switcher: the store against a stand-in helper (404 hides, 400 shows, one partial PUT, install polls).
 zsh "$ROOT/Tests/run-transcription-settings.sh"
 # 0.5.233: the live feed reducer is pure Foundation and pinned by an EXECUTED contract

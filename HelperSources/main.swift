@@ -638,6 +638,7 @@ final class COSControlHelper {
         case "session-recent-replies": try emitSessionRecentReplies(args: args)
         case "meeting-stranded-save": try emitMeetingStrandedSave(args: args)
         case "meeting-stop-request": try emitMeetingStopRequest(args: args)
+        case "live-cues-settings": try emitLiveCuesSettings(args: args)
         case "meeting-stranded-save-all": try emitMeetingStrandedSaveAll()
         case "clear-stranded-video-uploads": try clearStrandedVideoUploads()
         case "reset-message-era": try resetMessageEra()
@@ -16217,6 +16218,71 @@ final class COSControlHelper {
         return (response.status, response.body ?? [:])
     }
 
+    /// 0.5.322: live cues v2 on or off (server 6.76.2, GET and POST /api/live-cues/v2/settings). No `--set` reads;
+    /// `--set on` or `--set off` posts {"enabled": true|false}, and nothing else crosses. The app words every answer
+    /// (LiveCues in Sources/MeetingAskCore.swift), so this emits ok with `transport` (`answered`, `unavailable` when
+    /// nothing answered, `no_token` without a pairing token), `httpStatus`, and only the contract's keys from the body.
+    static let liveCuesSettingsPath = "/api/live-cues/v2/settings"
+
+    /// The request for `--set`'s value: nil (no `--set`) reads, "on" and "off" post; anything else is refused (nil).
+    static func liveCuesSettingsRequest(hasSet: Bool, value: String?) -> (method: String, body: String?)? {
+        guard hasSet else { return ("GET", nil) }
+        switch value {
+        case "on": return ("POST", #"{"enabled":true}"#)
+        case "off": return ("POST", #"{"enabled":false}"#)
+        default: return nil
+        }
+    }
+
+    /// The body's contract keys only: enabled, source, capability {available, reason, protocol, model, memory,
+    /// decisionProvider}, and a refusal's error code. Codes and the model id must look like codes; anything else is
+    /// dropped, never passed on.
+    static func liveCuesSettingsAnswer(_ body: [String: Any]?) -> [String: Any] {
+        func flag(_ value: Any?) -> Bool? {
+            guard let number = value as? NSNumber, CFGetTypeID(number) == CFBooleanGetTypeID() else { return nil }
+            return number.boolValue
+        }
+        func code(_ value: Any?, _ pattern: String) -> String? {
+            guard let text = value as? String, text.range(of: pattern, options: .regularExpression) != nil else { return nil }
+            return text
+        }
+        var out: [String: Any] = [:]
+        guard let body else { return out }
+        if let enabled = flag(body["enabled"]) { out["enabled"] = enabled }
+        if let source = body["source"] as? String, ["env", "setting", "default"].contains(source) { out["source"] = source }
+        if let error = code(body["error"], "\\A[a-z_]{1,64}\\z") { out["error"] = error }
+        if let raw = body["capability"] as? [String: Any], let available = flag(raw["available"]) {
+            var capability: [String: Any] = ["available": available]
+            if let reason = code(raw["reason"], "\\A[a-z_]{1,64}\\z") { capability["reason"] = reason }
+            if let model = code(raw["model"], "\\A[a-z0-9.-]{1,64}\\z") { capability["model"] = model }
+            if let memory = raw["memory"] as? String, ["cue_memory", "notes", "none"].contains(memory) { capability["memory"] = memory }
+            if let provider = raw["decisionProvider"] as? String, ["jev", "subq"].contains(provider) { capability["decisionProvider"] = provider }
+            if let number = raw["protocol"] as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(),
+               let proto = Int(exactly: number.doubleValue), (0...1_000).contains(proto) { capability["protocol"] = proto }
+            out["capability"] = capability
+        }
+        return out
+    }
+
+    private func emitLiveCuesSettings(args: [String]) throws {
+        guard let plan = Self.liveCuesSettingsRequest(hasSet: args.contains("--set"), value: option("--set", in: args)) else {
+            throw HelperError.message("Use --set on or --set off")
+        }
+        guard let token = try? readToken() else {
+            emit(ok: true, message: "No pairing token", details: ["transport": "no_token"])
+            return
+        }
+        guard let response = request(Self.liveCuesSettingsPath, method: plan.method, token: token, body: plan.body,
+                                     timeout: plan.method == "GET" ? 8 : 10) else {
+            emit(ok: true, message: "COS server unreachable", details: ["transport": "unavailable"])
+            return
+        }
+        var details = Self.liveCuesSettingsAnswer(response.body)
+        details["transport"] = "answered"
+        details["httpStatus"] = response.status
+        emit(ok: true, message: "Live cues settings answered (\(response.status))", details: details)
+    }
+
     /// 0.5.321: ask the glasses to stop a live G2 meeting (server stop-request routes, server 6.76.0). Without
     /// `--request` it asks; with it, it reads that request. The app words every answer (Sources/G2MeetingStop.swift), so
     /// this emits the server's status and body as they are: `transport` is `answered`, or `unavailable` when nothing
@@ -21165,6 +21231,43 @@ final class COSControlHelper {
                    "right after the diagnostics file rotates, heartbeats are read from the rotated file")
         try expect(Self.meetingAudioWatch(dataDir: audioDir.appendingPathComponent("missing"), now: audioNow).isEmpty,
                    "no data directory reads as no live meeting")
+        // 0.5.322: live-cues-settings. Only GET, or POST with exactly {"enabled": true|false}; a refused --set never reaches
+        // the server; the answer carries the contract's keys only.
+        try expect(Self.liveCuesSettingsPath == "/api/live-cues/v2/settings", "live-cues-settings reaches only the v2 settings route")
+        try expect(Self.liveCuesSettingsRequest(hasSet: false, value: nil).map { $0.method == "GET" && $0.body == nil } == true,
+                   "live-cues-settings without --set reads")
+        try expect(Self.liveCuesSettingsRequest(hasSet: true, value: "on").map { $0.method == "POST" && $0.body == #"{"enabled":true}"# } == true,
+                   "live-cues-settings --set on posts enabled true")
+        try expect(Self.liveCuesSettingsRequest(hasSet: true, value: "off").map { $0.method == "POST" && $0.body == #"{"enabled":false}"# } == true,
+                   "live-cues-settings --set off posts enabled false")
+        for bad in [nil, "", "true", "false", "1", "0", "ON", "On", "on ", " off", "yes", "on;off", "{\"enabled\":true}"] as [String?] {
+            try expect(Self.liveCuesSettingsRequest(hasSet: true, value: bad) == nil, "live-cues-settings refuses --set \(String(describing: bad))")
+        }
+        let cuesAnswer = Self.liveCuesSettingsAnswer([
+            "enabled": true, "source": "setting", "extra": "SECRET",
+            "capability": ["available": false, "reason": "decision_not_configured", "protocol": 2, "model": "claude-sonnet-5-5", "memory": "notes",
+                           "decisionProvider": "subq", "token": "SECRET"],
+        ])
+        let cuesCapability = cuesAnswer["capability"] as? [String: Any]
+        try expect(cuesAnswer["enabled"] as? Bool == true && cuesAnswer["source"] as? String == "setting" && cuesAnswer["extra"] == nil
+                   && cuesCapability?["available"] as? Bool == false && cuesCapability?["reason"] as? String == "decision_not_configured"
+                   && cuesCapability?["decisionProvider"] as? String == "subq"
+                   && cuesCapability?["protocol"] as? Int == 2 && cuesCapability?["model"] as? String == "claude-sonnet-5-5"
+                   && cuesCapability?["memory"] as? String == "notes" && cuesCapability?["token"] == nil,
+                   "live-cues-settings passes the contract's keys and drops the rest")
+        let cuesOdd = Self.liveCuesSettingsAnswer([
+            "enabled": 1, "source": "admin", "error": "Env Forced <b>",
+            "capability": ["available": true, "reason": "SECRET reason", "model": "claude sonnet; rm", "memory": "everything", "protocol": true,
+                           "decisionProvider": "openai"],
+        ])
+        let cuesOddCapability = cuesOdd["capability"] as? [String: Any]
+        try expect(cuesOdd["enabled"] == nil && cuesOdd["source"] == nil && cuesOdd["error"] == nil && cuesOddCapability?["available"] as? Bool == true
+                   && cuesOddCapability?["reason"] == nil && cuesOddCapability?["model"] == nil && cuesOddCapability?["memory"] == nil
+                   && cuesOddCapability?["protocol"] == nil && cuesOddCapability?["decisionProvider"] == nil,
+                   "live-cues-settings drops values outside the contract (a number is not a bool)")
+        try expect(Self.liveCuesSettingsAnswer(["error": "env_forced"])["error"] as? String == "env_forced"
+                   && Self.liveCuesSettingsAnswer(["capability": ["reason": "x"]])["capability"] == nil && Self.liveCuesSettingsAnswer(nil).isEmpty,
+                   "live-cues-settings keeps a refusal's code; a capability without available is not one")
         // 0.5.321: meeting-stop-request reaches only the stop-request routes, never for a Mac recording or a bad id.
         try expect(Self.meetingStopRequestPath(sessionId: "meeting_1791635349988_67d6pj", requestId: nil) == "/api/meeting/sessions/meeting_1791635349988_67d6pj/stop-request",
                    "meeting-stop-request asks on the stop-request route")

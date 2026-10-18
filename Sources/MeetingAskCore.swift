@@ -722,6 +722,248 @@ final class HomeAreaStore: ObservableObject {
     }
 }
 
+// MARK: Live cues (server 6.76.2)
+//
+// 0.5.322 (Miles, 2026-10-17): live cues v2 on or off from Settings, so nobody edits ~/.cos-glasses/.env by hand. The
+// server owns the switch, where it came from and whether cues can run (GET and POST /api/live-cues/v2/settings through
+// the helper's `live-cues-settings`, `--set on|off` to change it); this store only words what the server answered. The
+// helper emits every answer as ok with `transport` (`answered`, `unavailable` when nothing answered, `no_token`) and
+// `httpStatus`, so each failure has its own words here. A 404 is a server from before the route ("Needs server 6.76.2"),
+// a 409 `env_forced` is the server's environment holding it on. Nothing is shown as current that the last read did not
+// say: every read starts at Checking, and an unreachable server replaces whatever was shown before.
+struct LiveCuesCapability: Equatable, Sendable {
+    var available: Bool
+    var reason: String?
+    var model: String?
+    var memory: String?
+    /// Which decision model gates and judges the cues: `jev` or `subq` (server 6.76.2). nil from a server that does not say.
+    var decisionProvider: String? = nil
+}
+
+struct LiveCuesSettings: Equatable, Sendable {
+    var enabled: Bool
+    /// `env` (the server's environment decides; Control cannot change it), `setting` or `default`.
+    var source: String
+    var capability: LiveCuesCapability
+    var locked: Bool { source == "env" }
+}
+
+enum LiveCues {
+    enum State: Equatable, Sendable {
+        case checking
+        case loaded(LiveCuesSettings)
+        /// 404: a server from before the route.
+        case olderServer
+        /// Nothing answered.
+        case unreachable
+        /// 401 or 403, or no pairing token on this Mac.
+        case reconnect
+        /// The helper itself failed (it never says why the server did not answer; its own error is not the server's).
+        case notChecked
+        /// A 200 without the contract's shape.
+        case unreadable
+        case failed(status: Int)
+    }
+    enum Action: Equatable, Sendable { case none, addDecisionKey, checkAgain }
+
+    static let title = "Live cues"
+    static let minimumServer = "6.76.2"
+    /// The panel scrolls here and opens the Decision models disclosure, where the Jev and SubQ key fields are (ControlPanel).
+    static let decisionKeysAnchor = "decision-models"
+    static let addKeyLabel = "Add a Jev or SubQ key"
+    static let checkAgainLabel = "Check again"
+    static let glassesLine = "Cues also need Live Cues on in the glasses app."
+    static let envOnPrefix = "Turned on in the server's environment."
+    static let envForcedNote = "Turned on in the server's environment, so it cannot be turned off here."
+    static let offLine = "Off. Turn it on to see cues on the glasses during a meeting."
+
+    /// The helper's details to a state. nil (the helper failed) is `notChecked`.
+    static func state(_ details: [String: JSONValue]?) -> State {
+        guard let details else { return .notChecked }
+        switch details["transport"]?.string {
+        case "unavailable": return .unreachable
+        case "no_token": return .reconnect
+        case "answered": break
+        default: return .notChecked
+        }
+        switch details["httpStatus"]?.int {
+        case 200: return settings(details).map(State.loaded) ?? .unreadable
+        case 404: return .olderServer
+        case 401, 403: return .reconnect
+        case let status?: return .failed(status: status)
+        case nil: return .notChecked
+        }
+    }
+
+    /// The contract's shape, or nil. `memory` and `reason` are read when sent and never required.
+    static func settings(_ details: [String: JSONValue]) -> LiveCuesSettings? {
+        guard let enabled = details["enabled"]?.bool, let source = details["source"]?.string,
+              ["env", "setting", "default"].contains(source),
+              let capability = details["capability"]?.object, let available = capability["available"]?.bool else { return nil }
+        return LiveCuesSettings(enabled: enabled, source: source,
+                                capability: LiveCuesCapability(available: available, reason: capability["reason"]?.string,
+                                                               model: capability["model"]?.string, memory: capability["memory"]?.string,
+                                                               decisionProvider: capability["decisionProvider"]?.string))
+    }
+
+    /// True for the 409 the server sends when its environment holds live cues on and the request turned them off.
+    static func envForced(_ details: [String: JSONValue]?) -> Bool {
+        details?["transport"]?.string == "answered" && details?["httpStatus"]?.int == 409 && details?["error"]?.string == "env_forced"
+    }
+
+    /// "claude-sonnet-5-5" reads "Sonnet 5.5"; an id in another shape reads as sent; nil when there is none.
+    static func modelName(_ id: String?) -> String? {
+        guard let id = id?.trimmingCharacters(in: .whitespaces), !id.isEmpty else { return nil }
+        let parts = id.split(separator: "-").map(String.init)
+        guard parts.count >= 2, parts[0] == "claude", let first = parts[1].first, first.isLetter else { return id }
+        let family = first.uppercased() + parts[1].dropFirst()
+        let version = parts.dropFirst(2).prefix { $0.count <= 2 && $0.allSatisfy(\.isNumber) }
+        return version.isEmpty ? family : family + " " + version.joined(separator: ".")
+    }
+
+    /// The decision model by name, or nil when the server did not say (or said something else).
+    static func providerName(_ provider: String?) -> String? {
+        switch provider {
+        case "jev": return "Jev"
+        case "subq": return "SubQ"
+        default: return nil
+        }
+    }
+
+    /// What cues are built from, in words: "Cues use Claude Sonnet 5.5, SubQ, and your notes."
+    static func usesLine(_ capability: LiveCuesCapability) -> String {
+        var parts = [modelName(capability.model).map { "Claude " + $0 } ?? "Claude"]
+        if let provider = providerName(capability.decisionProvider) { parts.append(provider) }
+        switch capability.memory {
+        case "notes": parts.append("your notes")
+        case "cue_memory": parts.append("your meetings")
+        case "none": parts.append("the conversation only")
+        default: break
+        }
+        let list = parts.count < 3 ? parts.joined(separator: " and ") : parts.dropLast().joined(separator: ", ") + ", and " + parts[parts.count - 1]
+        return "Cues use \(list)."
+    }
+
+    /// The jev_ reasons name Jev; the decision_ reasons name the provider the server reports.
+    private static func decisionName(_ reason: String?, _ provider: String?) -> String? {
+        reason?.hasPrefix("jev_") == true ? "Jev" : providerName(provider)
+    }
+
+    /// Why cues cannot run, in words that say what to do. The server's `reason` codes (server 6.76.2). The decision-model
+    /// reasons come in two spellings: `jev_` from 6.76.1 and older, provider-neutral `decision_` from 6.76.2.
+    static func reasonLine(_ reason: String?, provider: String? = nil) -> String {
+        switch reason {
+        case "master_flag_off": return offLine
+        case "api_key_in_env": return "An Anthropic API key is set in the server's environment; live cues stay off while it is there."
+        case "jev_not_configured", "decision_not_configured": return "Needs a Jev or SubQ key."
+        case "claude_not_found": return "Install the Claude command-line tool, then check again."
+        case "budget_exhausted": return "This week's live cues limit is used up. Cues start again next week."
+        case "jev_cap_reached", "decision_cap_reached":
+            switch decisionName(reason, provider) {
+            case "Jev": return "Today's Jev limit for live cues is used up. Cues start again tomorrow."
+            case let name?: return "The \(name) limit for live cues is used up. Cues start again by themselves."
+            case nil: return "The decision model's limit for live cues is used up. Cues start again by themselves."
+            }
+        case "jev_breaker_open", "decision_breaker_open":
+            switch decisionName(reason, provider) {
+            case "Jev": return "Jev failed several times in a row, so cues are paused for up to an hour. They start again by themselves."
+            case let name?: return "\(name) failed several times in a row, so cues are paused for a while. They start again by themselves."
+            case nil: return "The decision model failed several times in a row, so cues are paused for a while. They start again by themselves."
+            }
+        case "unavailable", nil: return "The server could not tell whether cues can run. Check again."
+        default: return "Cues cannot run right now. Check again in a minute."
+        }
+    }
+
+    /// The one status line under the switch.
+    static func line(_ state: State, pending: Bool? = nil) -> String {
+        if let pending { return pending ? "Turning live cues on…" : "Turning live cues off…" }
+        switch state {
+        case .checking: return "Checking live cues…"
+        case .loaded(let settings):
+            if !settings.enabled { return settings.locked ? "Turned off in the server's environment." : offLine }
+            let capability = settings.capability
+            if capability.reason == "master_flag_off", !capability.available { return offLine }
+            let status = capability.available ? usesLine(capability) : reasonLine(capability.reason, provider: capability.decisionProvider)
+            return settings.locked ? envOnPrefix + " " + status : (capability.available ? "On. " + status : status)
+        case .olderServer: return "Needs server \(minimumServer). Update the server in Settings."
+        case .unreachable: return "COS server unreachable. Live cues show here once it answers."
+        case .reconnect: return "Reconnect COS Control to the server to change live cues."
+        case .notChecked: return "COS Control could not check live cues. Check again."
+        case .unreadable: return "The server's answer about live cues was not readable. Update the server in Settings."
+        case .failed(let status): return "The server could not answer about live cues (HTTP \(status)). Check again."
+        }
+    }
+
+    /// The one control a line asks for, if any: the Jev key field, or another read.
+    static func action(_ state: State) -> Action {
+        switch state {
+        case .loaded(let settings):
+            guard settings.enabled, !settings.capability.available else { return .none }
+            switch settings.capability.reason {
+            case "jev_not_configured", "decision_not_configured": return .addDecisionKey
+            case "master_flag_off", "api_key_in_env", "budget_exhausted", "jev_cap_reached", "decision_cap_reached",
+                 "jev_breaker_open", "decision_breaker_open": return .none
+            default: return .checkAgain
+            }
+        case .unreachable, .notChecked, .failed: return .checkAgain
+        case .checking, .olderServer, .reconnect, .unreadable: return .none
+        }
+    }
+
+    /// Amber, not grey: the line says something stops cues.
+    static func isProblem(_ state: State) -> Bool {
+        switch state {
+        case .loaded(let settings): return settings.enabled && !settings.capability.available && settings.capability.reason != "master_flag_off"
+        case .checking: return false
+        default: return true
+        }
+    }
+}
+
+@MainActor
+final class LiveCuesStore: ObservableObject {
+    /// The helper call: (arguments, stdin) to its JSON answer. ControllerModel.runHelper in the app, a fake in checks.
+    typealias Run = @MainActor ([String], Data?) async throws -> HelperResponse
+    @Published private(set) var state = LiveCues.State.checking
+    /// The value a change is asking the server for, while it asks.
+    @Published private(set) var pending: Bool?
+    /// The 409 env_forced sentence; cleared by the next change.
+    @Published private(set) var note: String?
+    /// One call at a time: a read and a change never cross.
+    @Published private(set) var busy = false
+
+    var settings: LiveCuesSettings? { if case .loaded(let settings) = state { settings } else { nil } }
+    var line: String { LiveCues.line(state, pending: pending) }
+    var action: LiveCues.Action { pending == nil ? LiveCues.action(state) : .none }
+    /// The switch moves only on a server that answered, set from Control's own setting, with nothing in flight.
+    var switchEnabled: Bool { settings.map { !$0.locked } == true && !busy }
+
+    func load(_ run: Run) async {
+        guard !busy else { return }
+        busy = true
+        defer { busy = false }
+        state = .checking
+        state = LiveCues.state(try? await run(["live-cues-settings"], nil).details)
+    }
+
+    func set(_ enabled: Bool, run: Run) async {
+        guard !busy, let current = settings, !current.locked, current.enabled != enabled else { return }
+        busy = true
+        pending = enabled
+        note = nil
+        let answer = try? await run(["live-cues-settings", "--set", enabled ? "on" : "off"], nil)
+        pending = nil
+        busy = false
+        if LiveCues.envForced(answer?.details) {
+            note = LiveCues.envForcedNote
+            await load(run)
+            return
+        }
+        state = LiveCues.state(answer?.details)
+    }
+}
+
 // MARK: Transcription switcher (server 6.72.0)
 //
 // Which speech-to-text engines the glasses server runs: the Preview model for live chunks, the HQ model for a saved

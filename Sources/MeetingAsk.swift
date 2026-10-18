@@ -27,6 +27,8 @@ final class MeetingAskStore: ObservableObject {
     @Published private(set) var attachNotes: [String: String] = [:]
     /// Home city for fact checks (server 6.71.13). Its own store: the server owns it, not the meeting config.
     let homeArea = HomeAreaStore()
+    /// 0.5.322: live cues v2 on or off (server 6.76.2). Its own store, like the home city: the server owns the switch.
+    let liveCues = LiveCuesStore()
     private var attaching: Set<String> = []
     private var fileObserver: AnyCancellable?
     private var publishedFiles: [String: [MeetingAskFile]] = [:]
@@ -529,6 +531,7 @@ struct MeetingAskSettings: View {
                 Task { await store.refreshConfig(model: model); await store.homeArea.load(HomeCitySettings.run(model)) }
             }.buttonStyle(COSQuietButtonStyle())
             HomeCitySettings(store: store.homeArea, model: model)
+            LiveCuesSettingsRow(store: store.liveCues, model: model)
         }.padding(12).background(COSPalette.card, in: RoundedRectangle(cornerRadius: 12))
         .task { await store.refreshConfig(model: model); await store.homeArea.load(HomeCitySettings.run(model)) }
     }
@@ -573,6 +576,58 @@ struct HomeCitySettings: View {
     private func save() {
         guard store.changed, !store.saving else { return }
         Task { await store.save(Self.run(model)) }
+    }
+}
+
+/// 0.5.322 (Miles, 2026-10-17): Live cues on or off, inside the Meeting assistant card, so nobody edits the server's
+/// .env by hand. A switch and one line in words (LiveCues in Sources/MeetingAskCore.swift) for every state the server
+/// can be in. The switch is drawn only for a server that answered; set in the server's environment it shows and cannot
+/// move. "Add a Jev or SubQ key" opens Decision models below, where the Jev and SubQ key fields are. Read on appear and
+/// whenever the server starts, stops or changes version, so a stopped or updated server never leaves the last answer.
+struct LiveCuesSettingsRow: View {
+    @ObservedObject var store: LiveCuesStore
+    @ObservedObject var model: ControllerModel
+    static func run(_ model: ControllerModel) -> LiveCuesStore.Run {
+        { arguments, input in try await model.runHelper(arguments, timeout: 20, stdinData: input) }
+    }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if let settings = store.settings {
+                Toggle(LiveCues.title, isOn: Binding(get: { store.pending ?? settings.enabled },
+                                                     set: { on in Task { await store.set(on, run: Self.run(model)) } }))
+                    .toggleStyle(COSSwitchStyle())
+                    .font(COSType.body(12, weight: .semibold))
+                    .disabled(!store.switchEnabled)
+                    .accessibilityIdentifier("settings-live-cues")
+            } else {
+                HStack(spacing: 8) {
+                    Text(LiveCues.title).font(COSType.body(12, weight: .semibold))
+                    Spacer(minLength: 8)
+                    if store.busy { ProgressView().controlSize(.small) }
+                }
+            }
+            Text(store.line).font(COSType.body(11))
+                .foregroundStyle(LiveCues.isProblem(store.state) && store.pending == nil ? AnyShapeStyle(COSPalette.amber) : AnyShapeStyle(.secondary))
+                .fixedSize(horizontal: false, vertical: true)
+            if let note = store.note {
+                Text(note).font(COSType.body(11)).foregroundStyle(COSPalette.amber).fixedSize(horizontal: false, vertical: true)
+            }
+            switch store.action {
+            case .addDecisionKey:
+                Button(LiveCues.addKeyLabel) { model.panelScrollTarget = LiveCues.decisionKeysAnchor }
+                    .buttonStyle(COSTextButtonStyle())
+            case .checkAgain:
+                Button(LiveCues.checkAgainLabel) { Task { await store.load(Self.run(model)) } }
+                    .buttonStyle(COSQuietButtonStyle())
+                    .disabled(store.busy)
+            case .none:
+                EmptyView()
+            }
+            Text(LiveCues.glassesLine).font(COSType.body(11)).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.top, 4)
+        .task(id: "\(model.status.running) \(model.status.version ?? "")") { await store.load(Self.run(model)) }
     }
 }
 

@@ -1956,6 +1956,8 @@ struct ControlPanel: View {
 
     private func scrollToTarget(_ reader: ScrollViewProxy) {
         guard let target = model.panelScrollTarget else { return }
+        // 0.5.322: Live cues' "Add a Jev or SubQ key" lands on Decision models, opened, where both key fields are.
+        if target == LiveCues.decisionKeysAnchor { jevExpanded = true }
         DispatchQueue.main.async {
             reader.scrollTo(target, anchor: .top)
             model.panelScrollTarget = nil
@@ -2813,6 +2815,7 @@ struct ControlPanel: View {
             Divider()
             sessionPetSettings
             jevSettings
+                .id(LiveCues.decisionKeysAnchor)
             workExpirySettings
             // 0.5.247: Work tracking notifications (a session received a task, finished it, or needs you).
             Toggle("Work notifications", isOn: Binding(get: { model.workNotificationsEnabled }, set: { model.workNotificationsEnabled = $0 }))
