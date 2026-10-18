@@ -1946,7 +1946,8 @@ struct ModelsContract {
                         && PetSpriteStrip.clampFrames(25) == 25
                         && PetSpriteStrip.clampFrames(52) == 52
                         && PetSpriteStrip.clampFrames(64) == 64
-                        && PetSpriteStrip.clampFrames(99) == 64,
+                        && PetSpriteStrip.clampFrames(99) == 99
+                        && PetSpriteStrip.clampFrames(129) == 128,
                      "authored counts above 16 must survive the bounded frame contract")
         // 0.5.316: Miles Windu V12.6, approved 2026-10-16 13:07 (review-candidate-v12.6).
         let authoredStories: [(pose: PetSpritePose, file: String, frames: Int)] = [

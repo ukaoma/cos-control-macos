@@ -47,7 +47,7 @@ def validate(root: pathlib.Path, models: str, controller: str, motion: str, pet:
         need(state.get(pose) == row, f"{pose} does not point at the approved V12.6 strip, count, cadence and scale")
     need(set(state) == set(approved_state), "the shipped Miles map has a pose V12.6 does not declare")
     frame_cap = int(re.search(r"static let maxFrames = (\d+)", models).group(1))
-    need(frame_cap == 64, "runtime frame limit must preserve the 64-cell authored swarm")
+    need(frame_cap == 128, "runtime frame limit must preserve complete Jedi recovery and entrance frames")
     cell_widths = {"attention": 121, "done": 99, "duel": 304, "error": 224, "idle": 83, "patrol": 128,
                    "swarm": 311, "trio": 286, "waiting": 97, "working": 304}
     for pose, cell_width in cell_widths.items():
@@ -195,7 +195,7 @@ def main() -> None:
 
     must_fail(
         "sixteen-frame cap truncates longer stories",
-        root, models.replace("static let maxFrames = 64", "static let maxFrames = 32"),
+        root, models.replace("static let maxFrames = 128", "static let maxFrames = 32"),
         controller, motion, pet,
     )
 

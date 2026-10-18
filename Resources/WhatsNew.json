@@ -1,290 +1,298 @@
 {
- "version": "0.5.323",
- "whatsNew": {
-  "summary": "Dictation reads the text box it types into: a name or term already written there comes out spelled the same way, and when you fix a word to a spelling that text has, COS learns it. Plus everything in 0.5.322: updates can no longer get stuck on Installing. If COS Control does not close by itself, the update closes it for you and reopens the new version, except while a Mac recording runs: then it says so, and you choose Try again when the recording is done. If an update was interrupted, COS Control offers to finish installing it, with nothing to download again. Also new: a Live cues switch in Settings, in the Meeting assistant card: turn live cues on or off without editing the server's files. One line under it says what cues use, or what stops them and what to do, such as Needs a Jev or SubQ key with a button to the key fields. Cues also need Live Cues on in the glasses app. Plus everything in 0.5.321: stop and save a glasses meeting from COS Control: in the live meeting and the panel, confirm, and the glasses stop and save it themselves. If the glasses do not answer, COS says so and nothing stops. Plus everything in 0.5.320: download and install now finishes: COS Control closes, installs and reopens by itself. Before, its own quit could stall, so the window sat on Installing. Updating to this version from an older one can still stall once: if Installing has not finished after a minute, Force Quit COS Control (Option-Command-Escape) and the update installs and reopens it. Old update downloads are now cleaned up. Plus everything in 0.5.319: updates say how long they take: Download and install shows the megabytes and the time left, installing says it usually takes under a minute, and the window can no longer sit on Installing forever. If COS Control cannot close for the update, you see why and can try again. Plus everything in 0.5.318: fixes from the first Macs on 0.5.317: Allow in a dictation card now opens the drag-in helper, with Reset and add again when Accessibility already reads on; COS asks macOS for System Audio Recording, so it can appear in that list; the setup guide no longer says no speech was detected when dictation works; and the Miles Windu lightsaber is every Jedi pet's dictation sound. Plus everything in 0.5.317: dictation for everyone: dictate with Whisper or Parakeet Ultra, and install Parakeet right from COS. Work chat keeps taking ideas while earlier work runs: a send it would hold now queues, or goes in parallel. Dictation fixes a word right where you typed it, writes spoken lists and learns from your edits, with a new Dictation tab in Activity. Plus 0.5.316 (Miles Windu moves more naturally), 0.5.315 (Mute other apps while dictating now mutes them), 0.5.314 (a crash fix when a dictation sound finished, and REC on the pet while a meeting records) and everything in 0.5.313: dictation that keeps listening while you click, one-click Mac meeting recording, and a lighter Work tab.",
-  "sections": [
-   {
-    "title": "0.5.323",
-    "items": [
-     "Before COS types a dictation, it reads the words already in the text box, so a name or term written there comes out spelled the same way. If the box says Ukaoma, a dictated Ukoma is typed as Ukaoma.",
-     "When you fix a dictated word to a spelling the same text box already has, such as a name in a prompt you pasted, Learn from my edits takes it even when it sounds less alike. Its suggestion says why: Also in the text around your dictation.",
-     "COS keeps that text only for the one dictation and never saves or sends it. Never in terminals or password fields. Turn it off in Settings, Dictation: Spell words the way the text box has them."
+  "version": "0.5.324",
+  "whatsNew": {
+    "summary": "Nia, Elara and Rowan have refined Jedi combat: readable saber strikes, blaster deflections, smoother recovery and varied opponents that change between encounters. Dictation reads the text box it types into: a name or term already written there comes out spelled the same way, and when you fix a word to a spelling that text has, COS learns it. Plus everything in 0.5.322: updates can no longer get stuck on Installing. If COS Control does not close by itself, the update closes it for you and reopens the new version, except while a Mac recording runs: then it says so, and you choose Try again when the recording is done. If an update was interrupted, COS Control offers to finish installing it, with nothing to download again. Also new: a Live cues switch in Settings, in the Meeting assistant card: turn live cues on or off without editing the server's files. One line under it says what cues use, or what stops them and what to do, such as Needs a Jev or SubQ key with a button to the key fields. Cues also need Live Cues on in the glasses app. Plus everything in 0.5.321: stop and save a glasses meeting from COS Control: in the live meeting and the panel, confirm, and the glasses stop and save it themselves. If the glasses do not answer, COS says so and nothing stops. Plus everything in 0.5.320: download and install now finishes: COS Control closes, installs and reopens by itself. Before, its own quit could stall, so the window sat on Installing. Updating to this version from an older one can still stall once: if Installing has not finished after a minute, Force Quit COS Control (Option-Command-Escape) and the update installs and reopens it. Old update downloads are now cleaned up. Plus everything in 0.5.319: updates say how long they take: Download and install shows the megabytes and the time left, installing says it usually takes under a minute, and the window can no longer sit on Installing forever. If COS Control cannot close for the update, you see why and can try again. Plus everything in 0.5.318: fixes from the first Macs on 0.5.317: Allow in a dictation card now opens the drag-in helper, with Reset and add again when Accessibility already reads on; COS asks macOS for System Audio Recording, so it can appear in that list; the setup guide no longer says no speech was detected when dictation works; and the Miles Windu lightsaber is every Jedi pet's dictation sound. Plus everything in 0.5.317: dictation for everyone: dictate with Whisper or Parakeet Ultra, and install Parakeet right from COS. Work chat keeps taking ideas while earlier work runs: a send it would hold now queues, or goes in parallel. Dictation fixes a word right where you typed it, writes spoken lists and learns from your edits, with a new Dictation tab in Activity. Plus 0.5.316 (Miles Windu moves more naturally), 0.5.315 (Mute other apps while dictating now mutes them), 0.5.314 (a crash fix when a dictation sound finished, and REC on the pet while a meeting records) and everything in 0.5.313: dictation that keeps listening while you click, one-click Mac meeting recording, and a lighter Work tab.",
+    "sections": [
+      {
+        "title": "0.5.324",
+        "items": [
+          "Nia, Elara and Rowan defend with their sabers before striking. Opponents react after contact, with clearer follow-through and a smoother return to guard.",
+          "Two-, three- and four-session encounters shuffle three opponent casts without an immediate repeat. The cast approaching at the end stays for the next encounter.",
+          "Grounded opponents stay on the floor; flight-capable droids make the aerial approaches. Existing custom artwork and timing remain yours."
+        ]
+      },
+      {
+        "title": "0.5.323",
+        "items": [
+          "Before COS types a dictation, it reads the words already in the text box, so a name or term written there comes out spelled the same way. If the box says Ukaoma, a dictated Ukoma is typed as Ukaoma.",
+          "When you fix a dictated word to a spelling the same text box already has, such as a name in a prompt you pasted, Learn from my edits takes it even when it sounds less alike. Its suggestion says why: Also in the text around your dictation.",
+          "COS keeps that text only for the one dictation and never saves or sends it. Never in terminals or password fields. Turn it off in Settings, Dictation: Spell words the way the text box has them."
+        ]
+      },
+      {
+        "title": "0.5.322",
+        "items": [
+          "If COS Control does not close for an update within 20 seconds, the update closes it and reopens the new version. You no longer need Force Quit.",
+          "A Mac recording is never cut off: the update stops, says \"Finish the Mac recording, then choose Try again\", and installs nothing until you do.",
+          "While it installs, the window says \"Closing COS Control\u2026\", then the new version opens.",
+          "If an update could not close COS Control, the next launch offers Finish installing, with nothing to download again.",
+          "A Live cues switch in Settings, in the Meeting assistant card under Home city. Turn live cues on or off here; nobody edits the server's files by hand.",
+          "The line under the switch says what cues use, like On. Cues use Claude Sonnet 5.5, SubQ, and your notes. Or what stops them, in words, and what to do.",
+          "Needs a Jev or SubQ key comes with Add a Jev or SubQ key, which opens Decision models where the key fields are.",
+          "Turned on in the server's environment shows the switch on and held. An older server says Needs server 6.76.2, and an unreachable server says so instead of showing the last answer.",
+          "Cues also need Live Cues on in the glasses app. Needs server 6.76.2 and COS Glasses 6.10.644."
+        ]
+      },
+      {
+        "title": "0.5.321",
+        "items": [
+          "Stop and save a glasses meeting from COS Control. It is in the live meeting header, and in the panel when one glasses meeting is recording. Confirm, and COS asks the glasses to stop.",
+          "The glasses stop and save the meeting themselves, so the lens shows Saving and Saved and no audio is split into a second meeting.",
+          "COS says what happened: Saving the meeting, then Saved with its name. If the glasses are not connected, the server is unreachable or the meeting already stopped, it says so and nothing stops.",
+          "Meeting Ask\u2019s copied context shows where in the meeting each answer reached, as Through 3:30, and how long the answer took when the server measured it, as Answer time: 6.4 s. It no longer prints a meeting position in milliseconds that read like a wait.",
+          "Needs COS Glasses 6.10.644 and server 6.76.1."
+        ]
+      },
+      {
+        "title": "0.5.320",
+        "items": [
+          "Download and install finishes on its own. COS Control asked itself to quit in a way that could stall forever, so the window sat on Installing while a normal quit worked. It now quits, installs and reopens.",
+          "Updating to 0.5.320 from an older version can still stall once, because the old version runs the install. If Installing has not finished after a minute, Force Quit COS Control (Option-Command-Escape): the update then installs and reopens it.",
+          "Quit in the menu bar panel uses the same reliable path.",
+          "Old update downloads are removed when a new one starts, so the updates folder keeps only the one being installed."
+        ]
+      },
+      {
+        "title": "0.5.319",
+        "items": [
+          "Download and install shows real progress, for example Downloading 30.0 of 137.2 MB, about 55 s left.",
+          "Installing says it usually takes under a minute. If a Mac recording is still saving, it says COS Control is saving it first.",
+          "Installing can no longer hang. If COS Control has not closed after 75 seconds, the window says why nothing was installed (for example, finish your meeting first) and offers Try again. The same reason shows once if COS Control reopens on the old version.",
+          "The update download no longer fails on slower connections. It stops only if no data arrives for a minute.",
+          "These improvements apply to updates after this one: the window that installs an update belongs to the version being replaced."
+        ]
+      },
+      {
+        "title": "0.5.318",
+        "items": [
+          "Allow in a dictation card opens the exact Accessibility page with the COS bar to drag COS Control in, and the card closes once it works. Already on but not working? Reset and add again removes the old entry and asks macOS again.",
+          "Mute other apps, Mac recording and the quiet-mode note ask macOS for System Audio Recording, so COS Control appears in that list. If it was refused before, the COS bar opens the page to drag it in. Until it is allowed, COS lowers the volume instead and recording carries on.",
+          "The setup guide's Voice check no longer reports \"No speech detected\" on a working Mac. Its test clip repeated one sentence, which the server discards as a loop; it now sends one sentence.",
+          "Miles Windu lightsaber is the dictation sound for every Jedi pet, not only Jedi Miles Windu. A sound you picked yourself stays as it is."
+        ]
+      },
+      {
+        "title": "Dictation for everyone",
+        "items": [
+          "Dictation works with Whisper too. Settings, Transcription, Dictation engine: Automatic (recommended), Parakeet Ultra or Whisper. Automatic uses Parakeet Ultra when it is installed and ready, and Whisper on this Mac otherwise. Dictation never uses the cloud.",
+          "Install Parakeet (654 MB) from Settings, the menu bar or a dictation card. COS Control now includes the speech tool Parakeet needs, so there is no Terminal step. Progress and Cancel show while it downloads, every file is checked, and dictation keeps working with Whisper meanwhile.",
+          "When a dictation cannot be transcribed, the card says why and offers the one thing that fixes it: Install Parakeet, Use Whisper, Retry, or Open Transcription settings. Retry appears only when it can work.",
+          "The setup guide has a Dictation engine step after Voice. Test on this Mac dictates a 30 second sample with each installed engine and shows its speed and how many words it got wrong. It is a quick check, not a full accuracy test. Voice turns green only once a real test dictation works.",
+          "Dictation history shows which engine transcribed each dictation.",
+          "Whisper dictation and the Parakeet install need server 6.74.0. An older server keeps Parakeet-only dictation, as before."
+        ]
+      },
+      {
+        "title": "0.5.317",
+        "items": [
+          "Work chat no longer stops at \"Earlier handoffs need a check first\". COS plans anyway, and when you send, the round queues behind the earlier work and sends by itself once that work is done, reviewed, or answered. The card says what it waits for, with Cancel.",
+          "Settings, Work, When earlier work is still open: Queue it (the default) or Ask each time. Ask each time offers Queue it, Send in parallel (free sessions now; a busy session gets its part after its own work) or Check first.",
+          "Plan and send queues too; it never skips the check. Queued work sends while COS Control is open, and waits while it is closed. Needs server 6.73.15; an older server keeps the check first.",
+          "Fixed: a card could keep saying Earlier handoffs need a check first, with Check again greyed out, while COS wrote its update summary. Check again, Plan and Send now stay available, and a message you send goes right after that summary.",
+          "The Work board has a Complete column again, after QA. Drop a card there to mark it complete (COS asks once), or drag it out to reopen it. The latest completions come first.",
+          "Opening a card with many sessions now says Loading 8 sessions, and Work chat shows its history as soon as it can, instead of looking empty for a few seconds.",
+          "Link a session to other tasks as a reference: in Link existing session, choose Link as reference, even for a session already working on another task. References sit in their own group on the card with Open and Unlink. COS uses their summary, outputs and changes as context there, never sends to them from that task, and they never change its stage.",
+          "Fix a word now fixes the dictation itself: Heard shows your spelling as soon as you save. Replace it in now works in Claude, Slack and other Electron apps, by pasting the corrected words over exactly the text COS typed. When COS can't prove that text is still there, it copies the fix and tells you what to do.",
+          "Format spoken lists (Settings, Dictation, on by default): say \"number one, number two\" or \"bullet, next bullet\" and COS writes a numbered or bulleted list, one item per line. Ordinary sentences with numbers in them stay as they are.",
+          "Learn from my edits (Settings, Dictation): when you fix a word COS just typed, in that same field, COS learns it. Save automatically is the default, with Undo in Recent corrections. Suggest only keeps suggestions for a week so you can add them in a batch. Native apps for now; Claude, Slack and other Electron apps are measured first. Never in terminals or password fields.",
+          "COS Activity has a new Dictation tab: suggested and learned corrections with Undo, recent corrections, your latest dictations, the full history and the dictionary."
+        ]
+      },
+      {
+        "title": "0.5.316",
+        "items": [
+          "Miles Windu moves more naturally: faster droid entrances, no frozen stance, smoother deflections."
+        ]
+      },
+      {
+        "title": "0.5.315",
+        "items": [
+          "Fixed: While dictating, Mute other apps left music and video playing (0.5.313 and 0.5.314). COS's own start and stop sounds still play.",
+          "If COS can't mute, it lowers the volume instead, and Settings says so under While dictating.",
+          "New dictation sound: Miles Windu saber. It's the default for the Jedi Miles Windu pet."
+        ]
+      },
+      {
+        "title": "0.5.314",
+        "items": [
+          "Fixed: COS Control quit as soon as a dictation start or stop sound finished playing (0.5.313).",
+          "While a meeting records, on this Mac or the glasses, the pet shows a REC pill. Click it to open the live meeting."
+        ]
+      },
+      {
+        "title": "Fix dictation faster",
+        "items": [
+          "Fix a dictation the moment it lands: Fix on the pill for 5 seconds, or \u2303\u2325F (set in Settings).",
+          "Click, drag and move windows while you hold the dictation key: COS keeps listening, and the text lands where your cursor ends up. A click right after the press is still \u2325-click or \u2318-click.",
+          "If a dictation is cut short (another key while you hold the shortcut, or sleep), COS still transcribes what you said and copies it; a card shows the text with Copy. If you copied something meanwhile, your clipboard is left alone. Under a second is dropped.",
+          "After you fix a word, Replace it in the app puts the corrected text back where COS typed it, when that spot hasn't changed; otherwise COS copies the corrected text.",
+          "Fix a word selects the whole misheard phrase and suggests the spelling from your dictionary. Return saves.",
+          "Other apps go quiet while you dictate and come back after (Settings, While dictating: Mute, Lower or Off). Never while COS is recording, on this Mac or the glasses."
+        ]
+      },
+      {
+        "title": "Meetings on the Mac",
+        "items": [
+          "When Zoom, Teams or Google Meet starts using your microphone, the pet offers Record. One click records all Mac audio with a title like \"Zoom meeting 2:00 PM\". COS never records or stops on its own; for a recording started from that card, it asks before stopping once the meeting app lets go of the mic.",
+          "Record on Mac is one click: the first recording shows a short COS notice once, then Record just starts. While recording, COS reminds you to let people know.",
+          "Open live meeting now opens the live transcript. With a glasses meeting and a Mac recording live at once, switch between them from the top of the live view.",
+          "Saved Mac recordings now appear in Meetings, and the live view opens them when saving finishes (needs server 6.73.14). The no-sound warning shows only while recording. If a recording stops on its own (the two-hour limit, sleep), COS tells you so you can start again.",
+          "In Settings: Suggest recording when a meeting starts (on or off), which apps to watch, apps you set to Never from the pet's card (remove them here), and Show the recording notice again."
+        ]
+      },
+      {
+        "title": "Smoother",
+        "items": [
+          "COS Control uses much less CPU while the Work tab is open, so the pet animates smoothly."
+        ]
+      },
+      {
+        "title": "Work context meter",
+        "items": [
+          "Each Work chat assignment shows what it will send, split by source, before you click Send. Open it to preview any item (Space opens Quick Look), remove it or add one that was left out.",
+          "The planner (server 6.73.13 or later) picks only what each assignment needs, and the round shows how much it sends of everything linked to the card.",
+          "Prefer not to review? Plan and send sends every assignment as soon as it is planned, through the same checks. Review stays the default; Send plans without review in Settings changes that.",
+          "Connections shows how full each linked session's context is, the files it wrote since your handoff, and its code changes, with Review changes."
+        ]
+      },
+      {
+        "title": "Dictation sounds and history",
+        "items": [
+          "Start and stop sounds per pet: Unstable saber for the Jedi, chirps for droids, a chime for the rest, or any of eight original sounds or your own file (trimmed for you). Set pitch and volume in Settings.",
+          "After COS pastes, your clipboard comes back exactly as it was.",
+          "The listening waveform reads quiet USB microphones properly, and the pill appears on whichever screen you're typing on.",
+          "The DICTATIONS pill shows your latest 10; All dictations opens a searchable history. Keep dictations for 7, 30 (default) or 90 days, or forever; Clear dictation history asks first."
+        ]
+      },
+      {
+        "title": "Dictation, Wispr-style",
+        "items": [
+          "Hold your shortcut and the bar under your pet becomes a listening pill with a live waveform that moves for quiet speech too. No window opens, and nothing takes focus from the app you are typing in. With the pet hidden, the same pill sits above the Dock.",
+          "Release and COS transcribes, copies the text, and drops it into whatever text box has your cursor when it finishes, so you can click somewhere else while it works. The pill flashes \u2713 Inserted with the app's name only when COS sees the text land. The text stays on the clipboard, so \u2318V works again anywhere.",
+          "Some apps, such as terminals and Electron editors, get \u2318V; COS shows Pasted when it can't confirm. COS sends \u2318V once and never asks you to paste again; the text stays on the clipboard and in Recent dictations with Copy.",
+          "No text box selected? A card pops over the pet with the text and a Copy button. It folds away after 20 seconds; hover to keep it.",
+          "The DICTATIONS pill on the pet opens Recent dictations, kept on this Mac, each with where it went and a Copy button.",
+          "Still refused: password fields, and secure keyboard input held by another app (its own card). COS never presses Send or Return, and line breaks become spaces in a terminal.",
+          "Delete a dictation from its row, or clear them all in Settings.",
+          "Recent dictations on the pet shows only your dictations, without the running sessions under it."
+        ]
+      },
+      {
+        "title": "Dictionary",
+        "items": [
+          "Open a dictation and choose Fix a word: tap what COS got wrong, type the right spelling, Save. It joins the one COS dictionary your G2 meetings, Mac recordings and dictation already use, from the next sentence on.",
+          "Recent corrections show what COS learned, from where and when, and each one can be undone.",
+          "Meetings \u2192 Dictionary in COS Activity shows the whole dictionary: recent corrections, vocabulary and every correction, searchable, with add and remove. Fix a word, Undo and single-word edits need server 6.73.12; on an older server the dictionary still reads and takes hand-added corrections."
+        ]
+      },
+      {
+        "title": "Dictate into any Mac app",
+        "items": [
+          "Turn on Dictate into Mac apps in Settings, choose a microphone, and set Push to talk and Start / stop shortcuts. Speech runs through Parakeet Ultra on this Mac with your COS dictionary.",
+          "Any key can be the shortcut: a modifier plus a key, a function key, or one modifier key by itself such as Fn \ud83c\udf10 or Right \u2318. Fn+arrow and other chords never start dictation.",
+          "To use Fn, set System Settings \u2192 Keyboard \u2192 Press \ud83c\udf10 key to Do Nothing, and move Wispr Flow off Fn. Fn and single-key shortcuts use Accessibility, which insertion already needs.",
+          "A click right after you press your shortcut modifier (\u2325-click, \u2318-click) counts as a chord and never starts dictation; later clicks keep dictating."
+        ]
+      },
+      {
+        "title": "Manual Mac recording",
+        "items": [
+          "Choose Record on Mac in Meetings and press Record (a short notice the first time). All Mac audio is the default: it records whatever app plays the call, without picking one. Your microphone is not recorded; glasses are optional.",
+          "Open live meeting shows the transcript as it arrives, with COS Ask and meeting files, the same view as a glasses recording.",
+          "Live COS Ask opens Mac recordings, with server 6.73.9.",
+          "The panel checks every chunk for sound. If nothing reaches COS for 12 seconds it says so, instead of only counting chunks received.",
+          "A red menu bar indicator and Stop control stay available while recording. Local audio is retained for explicit recovery if delivery is interrupted; a silent capture can be kept while you record again.",
+          "Work requests blocked before sending can be reviewed and sent to another connected session, or a new or forked session, after confirmation.",
+          "A Mac recording that stopped while its audio still uploads reads \"Capture stopped \u00b7 saving N/M\" on Meetings, with Finish saving, instead of Live now."
+        ]
+      },
+      {
+        "title": "A focused welcome",
+        "items": [
+          "Start with Just my Mac, or add Even G2 glasses as an optional setup step. The existing COS design and setup components stay familiar.",
+          "Resume unfinished setup after relaunch. Provider and Mac readiness checks remain in place, and existing installations keep their settings."
+        ]
+      },
+      {
+        "title": "Choose your decision provider",
+        "items": [
+          "Choose Jev or optional SubQ Snap Preview in Settings, with separate overrides for session recommendations, completion suggestions and work search. Jev stays the default.",
+          "Save your SubQ key securely in the local server configuration. Responses identify their actual provider; a provider failure does not silently switch accounts.",
+          "SubQ is a public preview. Enabling it sends the selected workflow context to SubQ under its retention policy."
+        ]
+      },
+      {
+        "title": "Selected local transcription",
+        "items": [
+          "Voice setup shows your selected and available transcription engines. A selected Parakeet configuration keeps its choices and does not offer the legacy Whisper tier installer.",
+          "Manual Mac recordings use the selected saved-meeting engine for canonical text. When Parakeet is selected and unavailable, captured audio stays available for retry."
+        ]
+      },
+      {
+        "title": "Continue the conversation",
+        "items": [
+          "A completed native turn can accept a follow-up after an exact reply and fresh idle evidence are checked. User review and shared task completion remain separate.",
+          "Uncertain deliveries and active sessions keep their protection against duplicate sends.",
+          "A request refused before sending is labeled Not sent. Use this request again restores its text without dispatching it. Historical missing receipts require a session check.",
+          "Send explains when receipt refresh is in progress."
+        ]
+      },
+      {
+        "title": "One Control at a time",
+        "items": [
+          "Opening another signed copy brings the running Control forward. The installed app can close an old rollback copy with a normal quit.",
+          "Updates keep rollback copies outside Applications and register the installed app for future launches. Server state and model choices stay unchanged."
+        ]
+      },
+      {
+        "title": "Responsive typing",
+        "items": [
+          "Typing updates only the composer. Chat history and file lists stay separate.",
+          "Drafts save after a short pause and immediately when you send or leave the view.",
+          "Background receipt refreshes keep the editor available.",
+          "Context to send, Add task, replies and review titles keep typing local to their editors."
+        ]
+      },
+      {
+        "title": "Tasks from meetings",
+        "items": [
+          "Create a task from a saved meeting, choose its domain, then open it in Work.",
+          "The task keeps its source meeting and saved meeting files. Existing task linking remains available."
+        ]
+      },
+      {
+        "title": "Work chat",
+        "items": [
+          "Describe an outcome and COS drafts assignments for linked sessions. Nothing is sent until you review it: send each one, edit its prompt, skip it, or Send all. Not now keeps them as drafts.",
+          "Choose Opus or Sonnet to plan, beside the composer. Opus is the default; the choice stays on this Mac. Needs server 6.73.10; older servers plan with Sonnet.",
+          "If an earlier handoff on the card is still unresolved, COS lists it first, with Mark reviewed, Acknowledge or Check status, instead of refusing partway through a plan.",
+          "A refused assignment shows its reason and the others stay sendable. If the task, its files or its sessions change after planning, COS asks you to plan again.",
+          "Read each session\u2019s delivery status and results together in the task conversation. Shared task completion remains your decision; Cursor and app-owned sessions keep manual continuation.",
+          "Choose how hard the planner thinks: Low, Medium or High (default). Each round names the model and effort that planned it, and says Dispatched only when a session received an assignment."
+        ]
+      },
+      {
+        "title": "Rich task context",
+        "items": [
+          "Format Work chat with bold, italic, headings and lists. Drafts keep their formatting when you return.",
+          "Drop or paste images and media into task attachments. Native assignments carry the saved files and readable companions."
+        ]
+      },
+      {
+        "title": "Close a live recording",
+        "items": [
+          "A Live now row that has had no audio for two minutes offers End and save. It saves everything the server received; audio the glasses or phone still hold is not added after that.",
+          "A stopped recording whose upload paused says so, with Finish saving."
+        ]
+      },
+      {
+        "title": "Known limitations (field test)",
+        "items": [
+          "Mac recording stops at two hours in this pilot.",
+          "The meeting-to-Work intake job still uses Jev on its schedule; the SubQ choice covers Work search, session suggestions and completion checks.",
+          "The dictation crash fix and Ask on Mac recordings are confirmed in the field test, not yet in this build."
+        ]
+      }
     ]
-   },
-   {
-    "title": "0.5.322",
-    "items": [
-     "If COS Control does not close for an update within 20 seconds, the update closes it and reopens the new version. You no longer need Force Quit.",
-     "A Mac recording is never cut off: the update stops, says \"Finish the Mac recording, then choose Try again\", and installs nothing until you do.",
-     "While it installs, the window says \"Closing COS Control…\", then the new version opens.",
-     "If an update could not close COS Control, the next launch offers Finish installing, with nothing to download again.",
-     "A Live cues switch in Settings, in the Meeting assistant card under Home city. Turn live cues on or off here; nobody edits the server's files by hand.",
-     "The line under the switch says what cues use, like On. Cues use Claude Sonnet 5.5, SubQ, and your notes. Or what stops them, in words, and what to do.",
-     "Needs a Jev or SubQ key comes with Add a Jev or SubQ key, which opens Decision models where the key fields are.",
-     "Turned on in the server's environment shows the switch on and held. An older server says Needs server 6.76.2, and an unreachable server says so instead of showing the last answer.",
-     "Cues also need Live Cues on in the glasses app. Needs server 6.76.2 and COS Glasses 6.10.644."
-    ]
-   },
-   {
-    "title": "0.5.321",
-    "items": [
-     "Stop and save a glasses meeting from COS Control. It is in the live meeting header, and in the panel when one glasses meeting is recording. Confirm, and COS asks the glasses to stop.",
-     "The glasses stop and save the meeting themselves, so the lens shows Saving and Saved and no audio is split into a second meeting.",
-     "COS says what happened: Saving the meeting, then Saved with its name. If the glasses are not connected, the server is unreachable or the meeting already stopped, it says so and nothing stops.",
-     "Meeting Ask’s copied context shows where in the meeting each answer reached, as Through 3:30, and how long the answer took when the server measured it, as Answer time: 6.4 s. It no longer prints a meeting position in milliseconds that read like a wait.",
-     "Needs COS Glasses 6.10.644 and server 6.76.1."
-    ]
-   },
-   {
-    "title": "0.5.320",
-    "items": [
-     "Download and install finishes on its own. COS Control asked itself to quit in a way that could stall forever, so the window sat on Installing while a normal quit worked. It now quits, installs and reopens.",
-     "Updating to 0.5.320 from an older version can still stall once, because the old version runs the install. If Installing has not finished after a minute, Force Quit COS Control (Option-Command-Escape): the update then installs and reopens it.",
-     "Quit in the menu bar panel uses the same reliable path.",
-     "Old update downloads are removed when a new one starts, so the updates folder keeps only the one being installed."
-    ]
-   },
-   {
-    "title": "0.5.319",
-    "items": [
-     "Download and install shows real progress, for example Downloading 30.0 of 137.2 MB, about 55 s left.",
-     "Installing says it usually takes under a minute. If a Mac recording is still saving, it says COS Control is saving it first.",
-     "Installing can no longer hang. If COS Control has not closed after 75 seconds, the window says why nothing was installed (for example, finish your meeting first) and offers Try again. The same reason shows once if COS Control reopens on the old version.",
-     "The update download no longer fails on slower connections. It stops only if no data arrives for a minute.",
-     "These improvements apply to updates after this one: the window that installs an update belongs to the version being replaced."
-    ]
-   },
-   {
-    "title": "0.5.318",
-    "items": [
-     "Allow in a dictation card opens the exact Accessibility page with the COS bar to drag COS Control in, and the card closes once it works. Already on but not working? Reset and add again removes the old entry and asks macOS again.",
-     "Mute other apps, Mac recording and the quiet-mode note ask macOS for System Audio Recording, so COS Control appears in that list. If it was refused before, the COS bar opens the page to drag it in. Until it is allowed, COS lowers the volume instead and recording carries on.",
-     "The setup guide's Voice check no longer reports \"No speech detected\" on a working Mac. Its test clip repeated one sentence, which the server discards as a loop; it now sends one sentence.",
-     "Miles Windu lightsaber is the dictation sound for every Jedi pet, not only Jedi Miles Windu. A sound you picked yourself stays as it is."
-    ]
-   },
-   {
-    "title": "Dictation for everyone",
-    "items": [
-     "Dictation works with Whisper too. Settings, Transcription, Dictation engine: Automatic (recommended), Parakeet Ultra or Whisper. Automatic uses Parakeet Ultra when it is installed and ready, and Whisper on this Mac otherwise. Dictation never uses the cloud.",
-     "Install Parakeet (654 MB) from Settings, the menu bar or a dictation card. COS Control now includes the speech tool Parakeet needs, so there is no Terminal step. Progress and Cancel show while it downloads, every file is checked, and dictation keeps working with Whisper meanwhile.",
-     "When a dictation cannot be transcribed, the card says why and offers the one thing that fixes it: Install Parakeet, Use Whisper, Retry, or Open Transcription settings. Retry appears only when it can work.",
-     "The setup guide has a Dictation engine step after Voice. Test on this Mac dictates a 30 second sample with each installed engine and shows its speed and how many words it got wrong. It is a quick check, not a full accuracy test. Voice turns green only once a real test dictation works.",
-     "Dictation history shows which engine transcribed each dictation.",
-     "Whisper dictation and the Parakeet install need server 6.74.0. An older server keeps Parakeet-only dictation, as before."
-    ]
-   },
-   {
-    "title": "0.5.317",
-    "items": [
-     "Work chat no longer stops at \"Earlier handoffs need a check first\". COS plans anyway, and when you send, the round queues behind the earlier work and sends by itself once that work is done, reviewed, or answered. The card says what it waits for, with Cancel.",
-     "Settings, Work, When earlier work is still open: Queue it (the default) or Ask each time. Ask each time offers Queue it, Send in parallel (free sessions now; a busy session gets its part after its own work) or Check first.",
-     "Plan and send queues too; it never skips the check. Queued work sends while COS Control is open, and waits while it is closed. Needs server 6.73.15; an older server keeps the check first.",
-     "Fixed: a card could keep saying Earlier handoffs need a check first, with Check again greyed out, while COS wrote its update summary. Check again, Plan and Send now stay available, and a message you send goes right after that summary.",
-     "The Work board has a Complete column again, after QA. Drop a card there to mark it complete (COS asks once), or drag it out to reopen it. The latest completions come first.",
-     "Opening a card with many sessions now says Loading 8 sessions, and Work chat shows its history as soon as it can, instead of looking empty for a few seconds.",
-     "Link a session to other tasks as a reference: in Link existing session, choose Link as reference, even for a session already working on another task. References sit in their own group on the card with Open and Unlink. COS uses their summary, outputs and changes as context there, never sends to them from that task, and they never change its stage.",
-     "Fix a word now fixes the dictation itself: Heard shows your spelling as soon as you save. Replace it in now works in Claude, Slack and other Electron apps, by pasting the corrected words over exactly the text COS typed. When COS can't prove that text is still there, it copies the fix and tells you what to do.",
-     "Format spoken lists (Settings, Dictation, on by default): say \"number one, number two\" or \"bullet, next bullet\" and COS writes a numbered or bulleted list, one item per line. Ordinary sentences with numbers in them stay as they are.",
-     "Learn from my edits (Settings, Dictation): when you fix a word COS just typed, in that same field, COS learns it. Save automatically is the default, with Undo in Recent corrections. Suggest only keeps suggestions for a week so you can add them in a batch. Native apps for now; Claude, Slack and other Electron apps are measured first. Never in terminals or password fields.",
-     "COS Activity has a new Dictation tab: suggested and learned corrections with Undo, recent corrections, your latest dictations, the full history and the dictionary."
-    ]
-   },
-   {
-    "title": "0.5.316",
-    "items": [
-     "Miles Windu moves more naturally: faster droid entrances, no frozen stance, smoother deflections."
-    ]
-   },
-   {
-    "title": "0.5.315",
-    "items": [
-     "Fixed: While dictating, Mute other apps left music and video playing (0.5.313 and 0.5.314). COS's own start and stop sounds still play.",
-     "If COS can't mute, it lowers the volume instead, and Settings says so under While dictating.",
-     "New dictation sound: Miles Windu saber. It's the default for the Jedi Miles Windu pet."
-    ]
-   },
-   {
-    "title": "0.5.314",
-    "items": [
-     "Fixed: COS Control quit as soon as a dictation start or stop sound finished playing (0.5.313).",
-     "While a meeting records, on this Mac or the glasses, the pet shows a REC pill. Click it to open the live meeting."
-    ]
-   },
-   {
-    "title": "Fix dictation faster",
-    "items": [
-     "Fix a dictation the moment it lands: Fix on the pill for 5 seconds, or ⌃⌥F (set in Settings).",
-     "Click, drag and move windows while you hold the dictation key: COS keeps listening, and the text lands where your cursor ends up. A click right after the press is still ⌥-click or ⌘-click.",
-     "If a dictation is cut short (another key while you hold the shortcut, or sleep), COS still transcribes what you said and copies it; a card shows the text with Copy. If you copied something meanwhile, your clipboard is left alone. Under a second is dropped.",
-     "After you fix a word, Replace it in the app puts the corrected text back where COS typed it, when that spot hasn't changed; otherwise COS copies the corrected text.",
-     "Fix a word selects the whole misheard phrase and suggests the spelling from your dictionary. Return saves.",
-     "Other apps go quiet while you dictate and come back after (Settings, While dictating: Mute, Lower or Off). Never while COS is recording, on this Mac or the glasses."
-    ]
-   },
-   {
-    "title": "Meetings on the Mac",
-    "items": [
-     "When Zoom, Teams or Google Meet starts using your microphone, the pet offers Record. One click records all Mac audio with a title like \"Zoom meeting 2:00 PM\". COS never records or stops on its own; for a recording started from that card, it asks before stopping once the meeting app lets go of the mic.",
-     "Record on Mac is one click: the first recording shows a short COS notice once, then Record just starts. While recording, COS reminds you to let people know.",
-     "Open live meeting now opens the live transcript. With a glasses meeting and a Mac recording live at once, switch between them from the top of the live view.",
-     "Saved Mac recordings now appear in Meetings, and the live view opens them when saving finishes (needs server 6.73.14). The no-sound warning shows only while recording. If a recording stops on its own (the two-hour limit, sleep), COS tells you so you can start again.",
-     "In Settings: Suggest recording when a meeting starts (on or off), which apps to watch, apps you set to Never from the pet's card (remove them here), and Show the recording notice again."
-    ]
-   },
-   {
-    "title": "Smoother",
-    "items": [
-     "COS Control uses much less CPU while the Work tab is open, so the pet animates smoothly."
-    ]
-   },
-   {
-    "title": "Work context meter",
-    "items": [
-     "Each Work chat assignment shows what it will send, split by source, before you click Send. Open it to preview any item (Space opens Quick Look), remove it or add one that was left out.",
-     "The planner (server 6.73.13 or later) picks only what each assignment needs, and the round shows how much it sends of everything linked to the card.",
-     "Prefer not to review? Plan and send sends every assignment as soon as it is planned, through the same checks. Review stays the default; Send plans without review in Settings changes that.",
-     "Connections shows how full each linked session's context is, the files it wrote since your handoff, and its code changes, with Review changes."
-    ]
-   },
-   {
-    "title": "Dictation sounds and history",
-    "items": [
-     "Start and stop sounds per pet: Unstable saber for the Jedi, chirps for droids, a chime for the rest, or any of eight original sounds or your own file (trimmed for you). Set pitch and volume in Settings.",
-     "After COS pastes, your clipboard comes back exactly as it was.",
-     "The listening waveform reads quiet USB microphones properly, and the pill appears on whichever screen you're typing on.",
-     "The DICTATIONS pill shows your latest 10; All dictations opens a searchable history. Keep dictations for 7, 30 (default) or 90 days, or forever; Clear dictation history asks first."
-    ]
-   },
-   {
-    "title": "Dictation, Wispr-style",
-    "items": [
-     "Hold your shortcut and the bar under your pet becomes a listening pill with a live waveform that moves for quiet speech too. No window opens, and nothing takes focus from the app you are typing in. With the pet hidden, the same pill sits above the Dock.",
-     "Release and COS transcribes, copies the text, and drops it into whatever text box has your cursor when it finishes, so you can click somewhere else while it works. The pill flashes ✓ Inserted with the app's name only when COS sees the text land. The text stays on the clipboard, so ⌘V works again anywhere.",
-     "Some apps, such as terminals and Electron editors, get ⌘V; COS shows Pasted when it can't confirm. COS sends ⌘V once and never asks you to paste again; the text stays on the clipboard and in Recent dictations with Copy.",
-     "No text box selected? A card pops over the pet with the text and a Copy button. It folds away after 20 seconds; hover to keep it.",
-     "The DICTATIONS pill on the pet opens Recent dictations, kept on this Mac, each with where it went and a Copy button.",
-     "Still refused: password fields, and secure keyboard input held by another app (its own card). COS never presses Send or Return, and line breaks become spaces in a terminal.",
-     "Delete a dictation from its row, or clear them all in Settings.",
-     "Recent dictations on the pet shows only your dictations, without the running sessions under it."
-    ]
-   },
-   {
-    "title": "Dictionary",
-    "items": [
-     "Open a dictation and choose Fix a word: tap what COS got wrong, type the right spelling, Save. It joins the one COS dictionary your G2 meetings, Mac recordings and dictation already use, from the next sentence on.",
-     "Recent corrections show what COS learned, from where and when, and each one can be undone.",
-     "Meetings → Dictionary in COS Activity shows the whole dictionary: recent corrections, vocabulary and every correction, searchable, with add and remove. Fix a word, Undo and single-word edits need server 6.73.12; on an older server the dictionary still reads and takes hand-added corrections."
-    ]
-   },
-   {
-    "title": "Dictate into any Mac app",
-    "items": [
-     "Turn on Dictate into Mac apps in Settings, choose a microphone, and set Push to talk and Start / stop shortcuts. Speech runs through Parakeet Ultra on this Mac with your COS dictionary.",
-     "Any key can be the shortcut: a modifier plus a key, a function key, or one modifier key by itself such as Fn 🌐 or Right ⌘. Fn+arrow and other chords never start dictation.",
-     "To use Fn, set System Settings → Keyboard → Press 🌐 key to Do Nothing, and move Wispr Flow off Fn. Fn and single-key shortcuts use Accessibility, which insertion already needs.",
-     "A click right after you press your shortcut modifier (⌥-click, ⌘-click) counts as a chord and never starts dictation; later clicks keep dictating."
-    ]
-   },
-   {
-    "title": "Manual Mac recording",
-    "items": [
-     "Choose Record on Mac in Meetings and press Record (a short notice the first time). All Mac audio is the default: it records whatever app plays the call, without picking one. Your microphone is not recorded; glasses are optional.",
-     "Open live meeting shows the transcript as it arrives, with COS Ask and meeting files, the same view as a glasses recording.",
-     "Live COS Ask opens Mac recordings, with server 6.73.9.",
-     "The panel checks every chunk for sound. If nothing reaches COS for 12 seconds it says so, instead of only counting chunks received.",
-     "A red menu bar indicator and Stop control stay available while recording. Local audio is retained for explicit recovery if delivery is interrupted; a silent capture can be kept while you record again.",
-     "Work requests blocked before sending can be reviewed and sent to another connected session, or a new or forked session, after confirmation.",
-     "A Mac recording that stopped while its audio still uploads reads \"Capture stopped · saving N/M\" on Meetings, with Finish saving, instead of Live now."
-    ]
-   },
-   {
-    "title": "A focused welcome",
-    "items": [
-     "Start with Just my Mac, or add Even G2 glasses as an optional setup step. The existing COS design and setup components stay familiar.",
-     "Resume unfinished setup after relaunch. Provider and Mac readiness checks remain in place, and existing installations keep their settings."
-    ]
-   },
-   {
-    "title": "Choose your decision provider",
-    "items": [
-     "Choose Jev or optional SubQ Snap Preview in Settings, with separate overrides for session recommendations, completion suggestions and work search. Jev stays the default.",
-     "Save your SubQ key securely in the local server configuration. Responses identify their actual provider; a provider failure does not silently switch accounts.",
-     "SubQ is a public preview. Enabling it sends the selected workflow context to SubQ under its retention policy."
-    ]
-   },
-   {
-    "title": "Selected local transcription",
-    "items": [
-     "Voice setup shows your selected and available transcription engines. A selected Parakeet configuration keeps its choices and does not offer the legacy Whisper tier installer.",
-     "Manual Mac recordings use the selected saved-meeting engine for canonical text. When Parakeet is selected and unavailable, captured audio stays available for retry."
-    ]
-   },
-   {
-    "title": "Continue the conversation",
-    "items": [
-     "A completed native turn can accept a follow-up after an exact reply and fresh idle evidence are checked. User review and shared task completion remain separate.",
-     "Uncertain deliveries and active sessions keep their protection against duplicate sends.",
-     "A request refused before sending is labeled Not sent. Use this request again restores its text without dispatching it. Historical missing receipts require a session check.",
-     "Send explains when receipt refresh is in progress."
-    ]
-   },
-   {
-    "title": "One Control at a time",
-    "items": [
-     "Opening another signed copy brings the running Control forward. The installed app can close an old rollback copy with a normal quit.",
-     "Updates keep rollback copies outside Applications and register the installed app for future launches. Server state and model choices stay unchanged."
-    ]
-   },
-   {
-    "title": "Responsive typing",
-    "items": [
-     "Typing updates only the composer. Chat history and file lists stay separate.",
-     "Drafts save after a short pause and immediately when you send or leave the view.",
-     "Background receipt refreshes keep the editor available.",
-     "Context to send, Add task, replies and review titles keep typing local to their editors."
-    ]
-   },
-   {
-    "title": "Tasks from meetings",
-    "items": [
-     "Create a task from a saved meeting, choose its domain, then open it in Work.",
-     "The task keeps its source meeting and saved meeting files. Existing task linking remains available."
-    ]
-   },
-   {
-    "title": "Work chat",
-    "items": [
-     "Describe an outcome and COS drafts assignments for linked sessions. Nothing is sent until you review it: send each one, edit its prompt, skip it, or Send all. Not now keeps them as drafts.",
-     "Choose Opus or Sonnet to plan, beside the composer. Opus is the default; the choice stays on this Mac. Needs server 6.73.10; older servers plan with Sonnet.",
-     "If an earlier handoff on the card is still unresolved, COS lists it first, with Mark reviewed, Acknowledge or Check status, instead of refusing partway through a plan.",
-     "A refused assignment shows its reason and the others stay sendable. If the task, its files or its sessions change after planning, COS asks you to plan again.",
-     "Read each session’s delivery status and results together in the task conversation. Shared task completion remains your decision; Cursor and app-owned sessions keep manual continuation.",
-     "Choose how hard the planner thinks: Low, Medium or High (default). Each round names the model and effort that planned it, and says Dispatched only when a session received an assignment."
-    ]
-   },
-   {
-    "title": "Rich task context",
-    "items": [
-     "Format Work chat with bold, italic, headings and lists. Drafts keep their formatting when you return.",
-     "Drop or paste images and media into task attachments. Native assignments carry the saved files and readable companions."
-    ]
-   },
-   {
-    "title": "Close a live recording",
-    "items": [
-     "A Live now row that has had no audio for two minutes offers End and save. It saves everything the server received; audio the glasses or phone still hold is not added after that.",
-     "A stopped recording whose upload paused says so, with Finish saving."
-    ]
-   },
-   {
-    "title": "Known limitations (field test)",
-    "items": [
-     "Mac recording stops at two hours in this pilot.",
-     "The meeting-to-Work intake job still uses Jev on its schedule; the SubQ choice covers Work search, session suggestions and completion checks.",
-     "The dictation crash fix and Ask on Mac recordings are confirmed in the field test, not yet in this build."
-    ]
-   }
-  ]
- }
+  }
 }

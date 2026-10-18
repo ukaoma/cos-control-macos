@@ -7827,8 +7827,8 @@ enum PetSpriteStrip {
     static let maxHeight = 256
     static let minFrames = 1
     // Longer authored stories need their exact count for cell slicing. Keep a
-    // bounded import limit without silently truncating the 17/23-frame stories.
-    static let maxFrames = 64
+    // bounded import limit without truncating the longer recovery/entrance stories.
+    static let maxFrames = 128
 
     static func clampFrames(_ value: Int) -> Int {
         min(max(value, minFrames), maxFrames)
@@ -7862,6 +7862,36 @@ enum PetSpriteStrip {
             out.append(NSImage(cgImage: cropped, size: NSSize(width: frameWidth, height: cg.height)))
         }
         return out.isEmpty ? [image] : out
+    }
+
+    /// Rotation layers repeat guard poses and whole body frames. Cropped CGImages
+    /// otherwise retain every decoded atlas, including duplicate and blank cells.
+    /// Copy each unique cell once; cache identity is exact premultiplied pixels.
+    static func sliceCompact(_ cg: CGImage, frames: Int, cache: inout [String: NSImage]) -> [NSImage] {
+        let count = clampFrames(frames), w = cg.width / count, h = cg.height
+        guard w > 0, let context = CGContext(data: nil, width: cg.width, height: h,
+            bitsPerComponent: 8, bytesPerRow: cg.width * 4, space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue), let pixels = context.data else { return [] }
+        context.draw(cg, in: CGRect(x: 0, y: 0, width: cg.width, height: h))
+        return (0..<count).compactMap { frame in
+            var bytes = Data(count: w * h * 4)
+            bytes.withUnsafeMutableBytes { dst in
+                for y in 0..<h {
+                    dst.baseAddress!.advanced(by: y * w * 4).copyMemory(
+                        from: pixels.advanced(by: (y * cg.width + frame * w) * 4), byteCount: w * 4)
+                }
+            }
+            let key = "\(w):\(h):" + SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+            if let image = cache[key] { return image }
+            guard let provider = CGDataProvider(data: bytes as CFData),
+                let cell = CGImage(width: w, height: h, bitsPerComponent: 8, bitsPerPixel: 32,
+                    bytesPerRow: w * 4, space: CGColorSpaceCreateDeviceRGB(),
+                    bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+                    provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent) else { return nil }
+            let image = NSImage(cgImage: cell, size: NSSize(width: w, height: h))
+            cache[key] = image
+            return image
+        }
     }
 
     static func sliceGrid(_ image: NSImage, columns: Int, rows: Int) -> [NSImage] {
@@ -8714,6 +8744,7 @@ enum PetSpriteStore {
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let poses = json["poses"] as? [String: [String: Any]] else { return [:] }
         var result: [PetSpritePose: PetEncounterRotation] = [:]
+        var frameCache: [String: NSImage] = [:]
         let root = directory.resolvingSymlinksInPath().standardizedFileURL.path + "/"
         for pose in [PetSpritePose.duel, .trio, .swarm] {
             guard let row = poses[pose.rawValue], let rotationJSON = row["rotation"] as? [String: Any],
@@ -8737,7 +8768,7 @@ enum PetSpriteStore {
                           let bytes = try? Data(contentsOf: url), let image = NSImage(data: bytes),
                           let cg = PetSpriteStrip.raster(image), cg.width == width, cg.height == height else { break }
                     hasher.update(data: bytes)
-                    strips.append(PetSpriteStrip.slice(image, frames: frames))
+                    strips.append(PetSpriteStrip.sliceCompact(cg, frames: frames, cache: &frameCache))
                 }
                 guard strips.count == 3, strips.allSatisfy({ $0.count == frames }) else { break }
                 variants.append(.init(id: variant.id, full: strips[0], body: strips[1], entry: strips[2]))
@@ -9259,6 +9290,27 @@ enum PetSpriteStore {
                     return .failed
                 }
                 replacements[row.file] = data
+            }
+
+            // Rotation layers are part of the atomic stock upgrade, not optional
+            // decoration. Refuse a partial cast before writing the active map.
+            guard let sourceJSON = try? JSONSerialization.jsonObject(with: sourceState) as? [String: Any],
+                  let sourceRows = sourceJSON["poses"] as? [String: [String: Any]]
+            else { return .failed }
+            let rotations = loadRotations(in: source, fileManager: fileManager)
+            for (poseName, row) in sourceRows where row["rotation"] != nil {
+                guard let pose = PetSpritePose(rawValue: poseName),
+                      let rotation = rotations[pose]
+                else { return .failed }
+                for variant in rotation.manifest.variants {
+                    for file in [variant.file, variant.bodyFile, variant.entryFile] {
+                        guard file == URL(fileURLWithPath: file).lastPathComponent,
+                              let data = try? Data(contentsOf: source.appendingPathComponent(file)),
+                              !oldFiles.contains(file) || (try? Data(contentsOf: directory.appendingPathComponent(file))) == data
+                        else { return .failed }
+                        replacements[file] = data
+                    }
+                }
             }
 
             do {

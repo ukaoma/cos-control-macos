@@ -12,6 +12,7 @@ struct JediUpgradeContract {
         defer { try? fm.removeItem(at: scratch) }
         var migrations = 0
         var frames = 0
+        var rotationLayers = 0
         for character in PetSpriteStore.bundledCharacters where character.id != PetSpriteStore.legacyDefaultCharacterID {
             let source = bundles.appendingPathComponent(character.id)
             let expected = PetSpriteStore.loadStateMap(in: source)
@@ -28,6 +29,19 @@ struct JediUpgradeContract {
                 precondition(slices.count == row.frames)
                 frames += slices.count
             }
+            let rotations = PetSpriteStore.loadRotations(in: fresh)
+            precondition(rotations.count == 3, "all three combat states must load rotations")
+            let layers = rotations.values.flatMap { rotation in
+                precondition(rotation.frames == expected.first(where: { $0.value.frames == rotation.frames })?.value.frames)
+                precondition(rotation.variants.count == 3)
+                precondition(rotation.variants.allSatisfy { $0.full.count == rotation.frames && $0.body.count == rotation.frames && $0.entry.count == rotation.frames })
+                return rotation.manifest.variants.flatMap { [$0.file, $0.bodyFile, $0.entryFile] }
+            }
+            precondition(layers.count == 27)
+            for file in layers {
+                precondition(try! Data(contentsOf: fresh.appendingPathComponent(file)) == Data(contentsOf: source.appendingPathComponent(file)))
+            }
+            rotationLayers += layers.count
             for entry in maps {
                 let version = entry["version"] as! String
                 let state = entry["state"] as! [String: Any]
@@ -74,6 +88,9 @@ struct JediUpgradeContract {
 
                 precondition(PetSpriteStore.refreshRecognizedBundledCharacter(into: dest, sourceRootOverride: bundles) == .refreshed(character.id))
                 precondition(try! Data(contentsOf: stateURL) == sourceState)
+                for file in layers {
+                    precondition(try! Data(contentsOf: dest.appendingPathComponent(file)) == Data(contentsOf: source.appendingPathComponent(file)), "migration omitted a rotation layer")
+                }
                 for row in expected.values {
                     precondition(try! Data(contentsOf: dest.appendingPathComponent(row.file)) == Data(contentsOf: source.appendingPathComponent(row.file)))
                 }
@@ -86,7 +103,8 @@ struct JediUpgradeContract {
             try fm.createDirectory(at: badRoot, withIntermediateDirectories: true)
             let bad = badRoot.appendingPathComponent(character.id)
             try fm.copyItem(at: source, to: bad)
-            try fm.removeItem(at: bad.appendingPathComponent(expected[.swarm]!.file))
+            // Missing entry layer must fail before activating the new map.
+            try fm.removeItem(at: bad.appendingPathComponent(rotations[.swarm]!.manifest.variants[1].entryFile))
             let oldState = maps.first!["state"] as! [String: Any]
             let oldRows = oldState["poses"] as! [String: [String: Any]]
             let dest = scratch.appendingPathComponent("missing-\(character.id)")
@@ -100,7 +118,7 @@ struct JediUpgradeContract {
             precondition(PetSpriteStore.refreshRecognizedBundledCharacter(into: dest, sourceRootOverride: badRoot) == .failed)
             precondition(try! Data(contentsOf: stateURL) == original)
         }
-        precondition(migrations == 16 && frames == 271)
-        print("Jedi upgrade contracts PASS: 16 stock histories, 271 native frames, custom preservation, interrupted new-file writes, missing-source failure, retry and idempotence")
+        precondition(migrations == 19 && frames == 921 && rotationLayers == 81)
+        print("Jedi upgrade contracts PASS: 19 stock histories, 921 native frames, 81 rotation layers, custom preservation, interrupted new-file writes, missing-source failure, retry and idempotence")
     }
 }

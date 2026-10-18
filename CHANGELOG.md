@@ -1,3 +1,7 @@
+## 0.5.324 (build 377), Jedi combat refinement
+
+Nia V5, Elara V4 and Rowan V3: blade-contact-led attacks, registered muzzle-to-blade defense, drawn recovery and guard transitions, three shuffled casts with no immediate repeats. Native rotation runtime and up to 128 authored frames. Exact-stock migrations copy and validate every encounter layer before the atomic manifest replacement; custom artwork and timing remain untouched.
+
 ## 0.5.323 (build 376), dictation spells words the way the text box has them
 
 Pair with server 6.77.0 (or 6.76.1 and later; the Live cues switch needs 6.76.2 or later).

@@ -18,12 +18,13 @@ struct PetRotationChecks {
                   .init(id: "cast-\(i)", full: (0..<frames).map { _ in NSImage(size: NSSize(width: 4, height: 4)) },
                         body: (0..<frames).map { _ in NSImage(size: NSSize(width: 4, height: 4)) },
                         entry: (0..<frames).map { _ in NSImage(size: NSSize(width: 4, height: 4)) })
+              })
     }
     static func sample(_ bank: PetEncounterPlayback, _ art: PetEncounterRotation, _ time: Double, speed: Double = 1, paused: Bool = false, pose: PetSpritePose = .duel) -> PetEncounterPlayback.Snapshot {
         bank.sample(pose: pose, rotation: art, now: time, speed: speed, interval: 0.08, paused: paused)!
     }
     static func main() throws {
-        for (frames, handoff) in [(37,28),(43,31),(64,55)] {
+        for (frames, handoff) in [(37,28),(43,31),(64,55),(78,61),(82,65),(88,71),(128,111)] {
             for seed in UInt64(0)..<10 {
                 var a = PetEncounterSequence(count: 3, frames: frames, handoffFrame: handoff, seed: seed)
                 var b = a
@@ -82,8 +83,34 @@ struct PetRotationChecks {
         let reserved = snapshot.incoming
         snapshot = sample(transitionBank, pack, 37 * 0.08)
         check(snapshot.current == reserved && snapshot.frame == 0 && snapshot.cycle == 1, "native clock commits reserved cast at wrap")
+        let ctx = CGContext(data: nil, width: 12, height: 6, bitsPerComponent: 8, bytesPerRow: 48,
+            space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+        for f in 0..<3 {
+            ctx.setFillColor(CGColor(red: f == 1 ? 0 : 1, green: 0.3, blue: 0.6, alpha: 0.6))
+            ctx.fill(CGRect(x: f * 4, y: 1, width: 3, height: 2))
+            ctx.setFillColor(CGColor(red: 0.1, green: 0.9, blue: 0.2, alpha: 1))
+            ctx.fill(CGRect(x: f * 4 + 2, y: 4, width: 1, height: 1))
+        }
+        let cg = ctx.makeImage()!
+        var cache: [String: NSImage] = [:]
+        let compact = PetSpriteStrip.sliceCompact(cg, frames: 3, cache: &cache)
+        let legacy = PetSpriteStrip.slice(NSImage(cgImage: cg, size: NSSize(width: 12, height: 6)), frames: 3)
+        func pixels(_ image: NSImage) -> Data {
+            let raster = PetSpriteStrip.raster(image)!
+            let c = CGContext(data: nil, width: 4, height: 6, bitsPerComponent: 8, bytesPerRow: 16,
+                space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+            c.draw(raster, in: CGRect(x: 0, y: 0, width: 4, height: 6))
+            return Data(bytes: c.data!, count: 96)
+        }
+        for i in 0..<3 {
+            check(pixels(compact[i]) == pixels(legacy[i]),
+                  "compact slicing preserves orientation, color, alpha and transparent margins")
+        }
+        check(cache.count == 2 && compact[0] === compact[2] && compact[0] !== compact[1], "equal cells share storage; different cells remain distinct")
+        let again = PetSpriteStrip.sliceCompact(cg, frames: 3, cache: &cache)
+        check(again[1] === compact[1], "identical body/full cells across layers share storage")
         try loader()
-        print("PASS: PetRotationChecks \(checks) assertions; 9000 loops; real scheduler, clock, layer selector, loader and legacy fallback")
+        print("PASS: PetRotationChecks \(checks) assertions; 21000 loops; real scheduler, clock, layer selector, loader and legacy fallback")
     }
     static func loader() throws {
         let fm = FileManager.default
