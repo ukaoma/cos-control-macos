@@ -118,17 +118,17 @@ check(all(f'"$ROOT/Sources/{name}"' in release for name in sources), "every Sour
 
 # The version.
 plist = read("Resources/Info.plist")
-check(re.search(r"<key>CFBundleShortVersionString</key>\s*<string>0\.5\.322</string>", plist) is not None, "Info.plist 0.5.322")
-check(re.search(r"<key>CFBundleVersion</key>\s*<string>375</string>", plist) is not None, "Info.plist build 375")
+# 0.5.323 on: the switch shipped in 0.5.322; pin its history, not the current version (run.sh pins Info.plist to the CHANGELOG).
 whats = json.loads(read("Resources/WhatsNew.json"))
-check(whats["version"] == "0.5.322" and whats["whatsNew"]["sections"][0]["title"] == "0.5.322", "What's New 0.5.322 first")
-# 0.5.322 also carries the installer fix, which leads the summary; the switch must still be named in it.
+sec322 = next((s for s in whats["whatsNew"]["sections"] if s["title"] == "0.5.322"), None)
+check(sec322 is not None, "What's New keeps the 0.5.322 section")
 check("a live cues switch in settings" in whats["whatsNew"]["summary"].lower(), "the summary names the new switch")
-check(any("Live cues switch" in item for item in whats["whatsNew"]["sections"][0]["items"]), "the 0.5.322 items describe the switch")
+check(sec322 is not None and any("Live cues switch" in item for item in sec322["items"]), "the 0.5.322 items describe the switch")
 changelog = read("CHANGELOG.md")
-first = changelog.split("\n## ", 1)[0] if not changelog.startswith("## ") else "## " + changelog[3:].split("\n## ", 1)[0]
-check(first.startswith("## 0.5.322 (build 375)") and "6.76.2" in first and "6.10.644" in first, "CHANGELOG 0.5.322 pairs with server 6.76.2 and glasses 6.10.644")
-for text in [first] + whats["whatsNew"]["sections"][0]["items"] + [whats["whatsNew"]["summary"].split(" Plus everything in 0.5.321")[0]]:
+entry = changelog[changelog.index("## 0.5.322 (build 375)"):] if "## 0.5.322 (build 375)" in changelog else ""
+entry = entry.split("\n## 0.5.321", 1)[0]
+check(bool(entry) and "6.76.2" in entry and "6.10.644" in entry, "CHANGELOG 0.5.322 pairs with server 6.76.2 and glasses 6.10.644")
+for text in [entry] + (sec322["items"] if sec322 else []) + whats["whatsNew"]["sections"][0]["items"] + [whats["whatsNew"]["summary"].split(" Plus everything in 0.5.321")[0]]:
     check("—" not in text and "→" not in text, "no em dash or arrow in the release words")
 
 print(f"live cues pins: {passed} passed")
