@@ -110,7 +110,7 @@ import Vision
             answer(nil)
             await store.load(run)
         }
-        try jump(model, out: out)
+        try await jump(model, out: out)
         print("live cues render: \(passed) passed")
         exit(0)
     }
@@ -140,7 +140,7 @@ import Vision
     }
 
     /// The whole panel at 390 x 640: the key button's jump opens Decision models with both key fields on screen.
-    static func jump(_ model: ControllerModel, out: URL) throws {
+    static func jump(_ model: ControllerModel, out: URL) async throws {
         let host = NSHostingView(rootView: ControlPanel(model: model, openActivity: { _ in }))
         let window = NSWindow(contentRect: NSRect(x: -20000, y: -20000, width: 390, height: 640), styleMask: [.borderless], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
@@ -152,7 +152,11 @@ import Vision
         let before = flat(ocr(snapshot(host)))
         expect(!before.contains(flat("Jev key")), "before the jump, Decision models is closed or off screen")
         model.panelScrollTarget = LiveCues.decisionKeysAnchor
-        settle(host, 1.5)
+        // The panel scrolls in a DispatchQueue.main.async block. This harness runs inside a main-actor job (async main),
+        // where a nested run loop cannot drain the main queue, so suspend once to let the block run, as it does in the app.
+        settle(host, 0.5)
+        try await Task.sleep(nanoseconds: 400_000_000)
+        settle(host, 1.0)
         let rep = snapshot(host)
         try rep.representation(using: .png, properties: [:])!.write(to: out.appendingPathComponent("panel-after-key-jump-light.png"))
         let after = ocr(rep)
