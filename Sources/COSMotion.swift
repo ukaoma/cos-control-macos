@@ -247,6 +247,8 @@ struct SessionPetSprite: View {
     var animationSpeed: Double = 1
     /// Exact secondary clips an ambient action rotates through between bursts.
     var restClips: [PetSpriteClip] = []
+    var rotation: PetEncounterRotation? = nil
+    var encounterPlayback: PetEncounterPlayback? = nil
 
     /// Patrol is an ambient action rather than a state. Authored running and
     /// duel story strips bypass this scheduler and play in order.
@@ -280,11 +282,20 @@ struct SessionPetSprite: View {
         // adjacent cells double-exposes two different fight poses and reads as
         // a washed-out ghost, so every authored animation advances frame-clean.
         TimelineView(.animation(minimumInterval: interval, paused: reduceMotion && frames.count <= 1)) { timeline in
+            let encounter = encounterPlayback?.sample(pose: pose, rotation: rotation, now: ProcessInfo.processInfo.systemUptime,
+                                                       speed: resolvedAnimationSpeed, interval: primaryFrameInterval, paused: reduceMotion)
             let elapsed = timeline.date.timeIntervalSinceReferenceDate * resolvedAnimationSpeed
             let phase = reduceMotion ? 0.0 : sin(elapsed * (working ? 6.2 : 2.4))
-            let bounce = working && !reduceMotion ? CGFloat(phase) * max(1, size * 0.022) : 0
+            // Encounter strips already author their landing and ground contact.
+            let bounce = working && !reduceMotion && encounter == nil ? CGFloat(phase) * max(1, size * 0.022) : 0
             Group {
-                if playlists, let frame = playlistFrame(elapsed: elapsed) {
+                if let rotation, let encounter {
+                    ZStack {
+                        ForEach(Array(rotation.layers(for: encounter).enumerated()), id: \.offset) { _, image in
+                            frameImage(image)
+                        }
+                    }
+                } else if playlists, let frame = playlistFrame(elapsed: elapsed) {
                     frameImage(frame)
                 } else if let frame = playbackFrame(elapsed: elapsed) {
                     frameImage(frame)

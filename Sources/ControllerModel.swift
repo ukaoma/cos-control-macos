@@ -2473,6 +2473,7 @@ final class ControllerModel: ObservableObject {
     )
     @Published var petCustomSprite: NSImage?
     @Published var petSpriteKit = PetSpriteKit()
+    let petEncounterPlayback = PetEncounterPlayback()
     @Published var petFrameIntervals: [PetSpritePose: Double] = [:]
     private var petStateMap: [PetSpritePose: (file: String, frames: Int)] = [:]
     @Published var petRenderScales: [PetSpritePose: CGFloat] = [:]
@@ -4914,7 +4915,8 @@ final class ControllerModel: ObservableObject {
                 ?? PetSpriteStrip.clampFrames(max(2, cg.width / max(cg.height, 1)))
             cinematic = PetSpriteStrip.slice(image, frames: frames)
         }
-        petSpriteKit = PetSpriteKit(fallback: petCustomSprite, poses: poses, cinematic: cinematic)
+        petSpriteKit = PetSpriteKit(fallback: petCustomSprite, poses: poses, cinematic: cinematic,
+                                    rotations: PetSpriteStore.loadRotations(in: directory))
     }
 
     var petLedger: PetLedger {

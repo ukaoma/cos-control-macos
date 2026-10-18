@@ -180,6 +180,7 @@ final class SessionPetPresenter: NSObject, ObservableObject, NSWindowDelegate {
         // indicator. With no sessions, PetSpritePose.resolve selects `.idle`.
         let show = model.petEnabled
         if !show {
+            model.petEncounterPlayback.pause()
             panel?.orderOut(nil)
             // Assigning false when it is already false still fires @Published
             // and this sink, which would spin syncPanel on the main actor.
@@ -522,7 +523,9 @@ private struct SessionPetRoot: View {
                 size: CGFloat(size.pixels),
                 characterScale: characterScale * model.petRenderScale(for: pose),
                 animationSpeed: model.petAnimationSpeedFactor,
-                restClips: model.petRestClips(for: pose)
+                restClips: model.petRestClips(for: pose),
+                rotation: model.petSpriteKit.rotations[pose],
+                encounterPlayback: model.petEncounterPlayback
             )
             .contentShape(Rectangle())
             // Declared before the single tap so SwiftUI resolves the double

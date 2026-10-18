@@ -1,5 +1,7 @@
 import AppKit
 import Foundation
+import CryptoKit
+import OSLog
 
 enum JSONValue: Codable, Sendable {
     case string(String)
@@ -7534,10 +7536,164 @@ enum PetSpritePose: String, CaseIterable, Hashable, Sendable {
     ]
 }
 
+/// Optional versioned encounter art. The legacy pose strip remains the fallback.
+struct PetRotationManifest: Codable, Equatable {
+    struct Variant: Codable, Equatable {
+        var id: String
+        var file: String
+        var bodyFile: String
+        var entryFile: String
+    }
+    var version: Int
+    var handoffFrame: Int // one-based, inclusive
+    var seed: UInt64?
+    var variants: [Variant]
+
+    func isValid(frames: Int) -> Bool {
+        version == 1 && frames > 1 && frames <= PetSpriteStrip.maxFrames
+            && (2...frames).contains(handoffFrame) && (2...8).contains(variants.count)
+            && Set(variants.map(\.id)).count == variants.count
+            && variants.allSatisfy { !$0.id.isEmpty && [$0.file, $0.bodyFile, $0.entryFile].allSatisfy(Self.isRelativePath) }
+    }
+
+    static func isRelativePath(_ path: String) -> Bool {
+        !path.isEmpty && !path.hasPrefix("/") && !path.contains("\\")
+            && !path.split(separator: "/", omittingEmptySubsequences: false).contains(where: { $0 == ".." || $0.isEmpty })
+            && path.lowercased().hasSuffix(".png")
+    }
+}
+
+struct PetEncounterRotation {
+    struct Variant {
+        var id: String
+        var full: [NSImage]
+        var body: [NSImage]
+        var entry: [NSImage]
+    }
+    var fingerprint: String
+    var manifest: PetRotationManifest
+    var frames: Int
+    var variants: [Variant]
+
+    func layers(for snapshot: PetEncounterPlayback.Snapshot) -> [NSImage] {
+        if snapshot.inTail {
+            return [variants[snapshot.incoming].entry[snapshot.frame], variants[snapshot.current].body[snapshot.frame]]
+        }
+        return [variants[snapshot.current].full[snapshot.frame]]
+    }
+}
+
+/// Pure state machine shared by native playback and its tests. Randomness is
+/// consumed only when reserving a cast, never while rendering or scrubbing.
+struct PetEncounterSequence {
+    private var rng: UInt64
+    private var bag: [Int] = []
+    private var previous: Int?
+    let count: Int
+    let frames: Int
+    let handoffFrame: Int
+    private(set) var current = 0
+    private(set) var incoming = 0
+    private(set) var frame = 0
+    private(set) var cycle = 0
+    var inTail: Bool { frame + 1 >= handoffFrame }
+
+    init(count: Int, frames: Int, handoffFrame: Int, seed: UInt64) {
+        precondition(count >= 2 && frames > 1 && (2...frames).contains(handoffFrame))
+        self.count = count; self.frames = frames; self.handoffFrame = handoffFrame; rng = seed
+        current = pick(); incoming = pick()
+    }
+    private mutating func random() -> UInt64 {
+        rng &+= 0x9e3779b97f4a7c15
+        var z = rng
+        z = (z ^ (z >> 30)) &* 0xbf58476d1ce4e5b9
+        z = (z ^ (z >> 27)) &* 0x94d049bb133111eb
+        return z ^ (z >> 31)
+    }
+    private mutating func pick() -> Int {
+        if bag.isEmpty {
+            bag = Array(0..<count)
+            for i in stride(from: count - 1, through: 1, by: -1) { bag.swapAt(i, Int(random() % UInt64(i + 1))) }
+            if bag[0] == previous { bag.swapAt(0, 1 + Int(random() % UInt64(count - 1))) }
+        }
+        let next = bag.removeFirst(); previous = next; return next
+    }
+    mutating func advance() {
+        frame += 1
+        if frame == frames { frame = 0; cycle += 1; current = incoming; incoming = pick() }
+    }
+}
+
+/// Owned by ControllerModel, whose lifetime outlasts the hosting root's 20s
+/// refresh. Inactive poses pause in place; returning resumes the same encounter.
+/// Content fingerprints replace state only when the actual pack changes.
+@MainActor
+final class PetEncounterPlayback {
+    struct Snapshot: Equatable {
+        let current: Int
+        let incoming: Int
+        let frame: Int
+        let cycle: Int
+        let inTail: Bool
+    }
+    private struct Playback {
+        var fingerprint: String
+        var sequence: PetEncounterSequence
+        var fraction = 0.0
+        var last: Double?
+        var speed = 1.0
+        var interval = 0.08
+        var paused = false
+    }
+    private var states: [PetSpritePose: Playback] = [:]
+    private var active: PetSpritePose?
+    private let seed: UInt64
+    /// Opt-in console only. No files or unbounded event retention.
+    private let diagnostics: Bool
+    private let logger = Logger(subsystem: "com.gotcos.control", category: "pet-rotation")
+    init(seed: UInt64 = UInt64.random(in: UInt64.min...UInt64.max), diagnostics: Bool = ProcessInfo.processInfo.environment["COS_PET_ROTATION_DIAGNOSTICS"] == "1") {
+        self.seed = seed; self.diagnostics = diagnostics
+    }
+    func pause() {
+        if let active { states[active]?.last = nil }
+        active = nil
+    }
+    func sample(pose: PetSpritePose, rotation: PetEncounterRotation?, now: Double, speed: Double, interval: Double, paused: Bool) -> Snapshot? {
+        guard let rotation, now.isFinite else { pause(); return nil }
+        if active != pose { self.pause(); active = pose; states[pose]?.last = nil }
+        if states[pose]?.fingerprint != rotation.fingerprint {
+            let salt = pose.rawValue.utf8.reduce(UInt64(14695981039346656037)) { ($0 ^ UInt64($1)) &* 1099511628211 }
+            states[pose] = Playback(fingerprint: rotation.fingerprint, sequence: PetEncounterSequence(count: rotation.variants.count, frames: rotation.frames, handoffFrame: rotation.manifest.handoffFrame, seed: (rotation.manifest.seed ?? seed) ^ salt))
+        }
+        guard var state = states[pose] else { return nil }
+        let firstSample = state.last == nil
+        let oldCycle = state.sequence.cycle
+        if let last = state.last, !state.paused {
+            let delta = now - last
+            // A sleeping/hidden window resumes its held pose, not a skipped fight.
+            let longestTick = max(1, state.interval / state.speed * 2.5)
+            if delta >= 0 && delta <= longestTick {
+                state.fraction += delta * state.speed / state.interval
+                while state.fraction + 1e-9 >= 1 { state.sequence.advance(); state.fraction = max(0, state.fraction - 1) }
+            }
+        }
+        state.last = now
+        state.speed = speed.isFinite ? min(max(speed, 0.25), 2) : 1
+        state.interval = interval.isFinite ? max(interval, 0.016) : 0.08
+        state.paused = paused
+        states[pose] = state
+        if diagnostics && (oldCycle != state.sequence.cycle || firstSample) {
+            logger.notice("COSPetRotation pose=\(pose.rawValue, privacy: .public) cycle=\(state.sequence.cycle) current=\(rotation.variants[state.sequence.current].id, privacy: .public) incoming=\(rotation.variants[state.sequence.incoming].id, privacy: .public) frame=\(state.sequence.frame + 1) handoff=\(rotation.manifest.handoffFrame)")
+        }
+        return Snapshot(current: state.sequence.current, incoming: state.sequence.incoming, frame: state.sequence.frame, cycle: state.sequence.cycle, inTail: state.sequence.inTail)
+    }
+}
+
 struct PetSpriteKit {
     var fallback: NSImage?
     var poses: [PetSpritePose: [NSImage]] = [:]
     var cinematic: [NSImage] = []
+    var rotations: [PetSpritePose: PetEncounterRotation] = [:]
 
     /// The escalation strip is a ladder: patrol, duel, trio, swarm. Playing all
     /// of it for BOTH trio and swarm made three sessions and five look
@@ -8551,6 +8707,49 @@ enum PetSpriteStore {
         else { return nil }
         return PetSpriteStrip.clampFrames(frames)
     }
+    /// Strict all-or-nothing loading per pose. Bad or absent optional metadata
+    /// falls back to the legacy strip without changing other poses.
+    static func loadRotations(in directory: URL, fileManager: FileManager = .default) -> [PetSpritePose: PetEncounterRotation] {
+        guard let data = try? Data(contentsOf: directory.appendingPathComponent(stateFileName)),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let poses = json["poses"] as? [String: [String: Any]] else { return [:] }
+        var result: [PetSpritePose: PetEncounterRotation] = [:]
+        let root = directory.resolvingSymlinksInPath().standardizedFileURL.path + "/"
+        for pose in [PetSpritePose.duel, .trio, .swarm] {
+            guard let row = poses[pose.rawValue], let rotationJSON = row["rotation"] as? [String: Any],
+                  let rotationData = try? JSONSerialization.data(withJSONObject: rotationJSON, options: [.sortedKeys]),
+                  let manifest = try? JSONDecoder().decode(PetRotationManifest.self, from: rotationData),
+                  let frames = row["frames"] as? Int, manifest.isValid(frames: frames),
+                  let fallbackFile = row["file"] as? String, PetRotationManifest.isRelativePath(fallbackFile),
+                  let fallback = NSImage(contentsOf: directory.appendingPathComponent(fallbackFile)),
+                  let raster = PetSpriteStrip.raster(fallback), raster.width % frames == 0 else { continue }
+            let width = raster.width, height = raster.height
+            guard height > 0, height <= 1024, width / frames > 0, width / frames <= 1024,
+                  width * height <= 16_777_216 else { continue }
+            var hasher = SHA256(); hasher.update(data: rotationData)
+            var variants: [PetEncounterRotation.Variant] = []
+            for variant in manifest.variants {
+                var strips: [[NSImage]] = []
+                for file in [variant.file, variant.bodyFile, variant.entryFile] {
+                    let url = directory.appendingPathComponent(file).resolvingSymlinksInPath().standardizedFileURL
+                    guard url.path.hasPrefix(root),
+                          let size = (try? fileManager.attributesOfItem(atPath: url.path)[.size]) as? Int, size > 0, size <= 32 * 1024 * 1024,
+                          let bytes = try? Data(contentsOf: url), let image = NSImage(data: bytes),
+                          let cg = PetSpriteStrip.raster(image), cg.width == width, cg.height == height else { break }
+                    hasher.update(data: bytes)
+                    strips.append(PetSpriteStrip.slice(image, frames: frames))
+                }
+                guard strips.count == 3, strips.allSatisfy({ $0.count == frames }) else { break }
+                variants.append(.init(id: variant.id, full: strips[0], body: strips[1], entry: strips[2]))
+            }
+            guard variants.count == manifest.variants.count else { continue }
+            hasher.update(data: Data("\(frames):\(width):\(height)".utf8))
+            let fingerprint = hasher.finalize().map { String(format: "%02x", $0) }.joined()
+            result[pose] = PetEncounterRotation(fingerprint: fingerprint, manifest: manifest, frames: frames, variants: variants)
+        }
+        return result
+    }
+
     static let maxBytes = 8 * 1024 * 1024
     static let allowedExtensions: Set<String> = ["png", "gif", "jpg", "jpeg", "tiff", "tif", "webp"]
 
@@ -8674,7 +8873,7 @@ enum PetSpriteStore {
         }
         var map = loadStateMap(in: directory, fileManager: fileManager)
         map[pose] = (poseFileName(pose), prepared.frames)
-        try saveStateMap(map, in: directory, fileManager: fileManager)
+        try saveStateMap(map, clearRotations: [pose], in: directory, fileManager: fileManager)
         return dest
     }
 
@@ -8735,7 +8934,7 @@ enum PetSpriteStore {
                 try meta.write(to: directory.appendingPathComponent(cinematicMetaFileName), options: .atomic)
             }
         }
-        try saveStateMap(map, in: directory, fileManager: fileManager)
+        try saveStateMap(map, clearRotations: Set(preparedPoses.keys), in: directory, fileManager: fileManager)
     }
 
     static func setFrames(
@@ -9265,6 +9464,7 @@ enum PetSpriteStore {
                 frameIntervalOverrides: intervalOverrides,
                 renderScaleDefaults: loadRenderScales(in: source, fileManager: fileManager),
                 renderScaleOverrides: scaleOverrides,
+                clearRotations: Set(stories.map(\.pose)),
                 in: directory,
                 fileManager: fileManager
             )
@@ -9352,6 +9552,7 @@ enum PetSpriteStore {
         frameIntervalOverrides: [PetSpritePose: Double] = [:],
         renderScaleDefaults: [PetSpritePose: CGFloat] = [:],
         renderScaleOverrides: [PetSpritePose: CGFloat] = [:],
+        clearRotations: Set<PetSpritePose> = [],
         in directory: URL,
         fileManager: FileManager
     ) throws {
@@ -9373,12 +9574,20 @@ enum PetSpriteStore {
         for (pose, scale) in renderScaleOverrides {
             retainedScales[pose] = scale
         }
+        let previousData = try? Data(contentsOf: directory.appendingPathComponent(stateFileName))
+        let previousJSON = previousData.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+        let previousPoses = previousJSON?["poses"] as? [String: [String: Any]] ?? [:]
         var poses: [String: [String: Any]] = [:]
         for pose in PetSpritePose.allCases {
             guard let row = map[pose] else { continue }
             var payload: [String: Any] = ["file": row.file, "frames": row.frames]
             if let interval = retainedIntervals[pose] { payload["interval"] = interval }
             if let scale = retainedScales[pose] { payload["renderScale"] = scale }
+            // Unrelated pose/settings changes retain valid optional metadata.
+            // New art and frame-count changes retire its old choreography.
+            if !clearRotations.contains(pose), let old = previousPoses[pose.rawValue],
+               old["file"] as? String == row.file, old["frames"] as? Int == row.frames,
+               let rotation = old["rotation"] { payload["rotation"] = rotation }
             poses[pose.rawValue] = payload
         }
         let data = try JSONSerialization.data(withJSONObject: ["poses": poses], options: [.prettyPrinted, .sortedKeys])
