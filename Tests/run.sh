@@ -1559,6 +1559,9 @@ PY
 # 2026-10-09: the What's New window (Update opens it; Download and install is the confirmation). Pins, the pure pieces,
 # the compiled helper's whatsNew against fixtures, and the window and install path against a stand-in helper.
 "$ROOT/Tests/run-whats-new.sh"
+# 0.5.322: Finish installing at launch, one click with no download, the install ending at once on the swap's give-up,
+# and the Mac recording state this app writes, read by the real helper for the running process.
+"$ROOT/Tests/run-app-update-finish.sh" "$TMP/cos-control-helper"
 /usr/bin/grep -q 'case "openpets-catalog"' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'case "openpets-thumb"' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'static func isAllowedThumbURL' "$ROOT/HelperSources/main.swift"
@@ -2651,6 +2654,12 @@ if [ -f "$AU_HOME/Library/Application Support/COS Control/updates/pending.json" 
   exit 1
 fi
 echo "click-to-update SHA refuse, stage, swap, and complete passed"
+# 0.5.322: the swap can no longer strand Control on Installing. A live stand-in that never quits: SIGTERM after 20 s
+# (short test timings), SIGKILL 10 s later, only the live bundle's own process by PID; a Mac recording that is starting,
+# recording or stopping is never signalled (reason recording); an unreadable state signals nothing; success.json says
+# forcedQuit; and staged-app-update, the launch offer's read-only facts.
+/usr/bin/cc -O1 -Wall -o "$TMP/live-app" "$ROOT/Tests/fixtures/app-update/live-app.c"
+/usr/bin/python3 "$ROOT/Tests/app-update-escalation-checks.py" "$TMP/cos-control-helper" "$TMP/live-app"
 
 /usr/bin/grep -q 'com.cos.glasses-control-recovery' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q '"StartInterval": 60' "$ROOT/HelperSources/main.swift"

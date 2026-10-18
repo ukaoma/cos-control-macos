@@ -23,7 +23,8 @@ import Foundation
         flow()
         icon()
         progressAndDeadline()
-        print("PASS: update-ready badge, \(passed) checks (version rule, schedule, phases, menu-bar icon)")
+        finishAndEscalation()
+        print("PASS: update-ready badge, \(passed) checks (version rule, schedule, phases, menu-bar icon, finish installing)")
     }
 
     static func info(_ available: Bool, _ version: String?, _ build: Int?, reason: String? = nil) -> AppUpdateInfo {
@@ -158,6 +159,118 @@ import Foundation
         var h = AppUpdateFlow()
         h.restoreFailure("x")
         check(h.phase == .none, "restore failure", "never without an offer")
+    }
+
+    // MARK: 0.5.322 Finish installing, the words while applying, and the swap's give-up records
+
+    static func finishAndEscalation() {
+        let v = "0.5.321", b = 374
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let iso = ISO8601DateFormatter()
+        func at(_ seconds: TimeInterval) -> JSONValue { .string(iso.string(from: now.addingTimeInterval(seconds))) }
+        func staged(_ change: [String: JSONValue?] = [:]) -> [String: JSONValue] {
+            var d: [String: JSONValue] = ["reason": .string("staged"), "version": .string("0.5.322"), "build": .number(375),
+                                          "failureReason": .string("quitTimeout"), "failureAt": at(-60)]
+            for (key, value) in change { d[key] = value }
+            return d
+        }
+        func offered(_ d: [String: JSONValue], current: Int = b) -> Bool { AppUpdateFinishOffer.offer(d, currentBuild: current, now: now) != nil }
+        // The launch offer: a checked stage, newer, after a quit that could not happen, in the last 30 minutes.
+        let good = AppUpdateFinishOffer.offer(staged(), currentBuild: b, now: now)
+        check(good?.version == "0.5.322" && good?.build == 375, "finish offer", "a checked stage after a quit timeout is offered")
+        check(offered(staged(["failureReason": .string("recording")])), "finish offer", "and after the swap refused for a Mac recording")
+        for reason in ["busy", "notStaged", "", "quittimeout"] {
+            check(!offered(staged(["failureReason": .string(reason)])), "finish offer reasons", "\(reason.debugDescription) is not a quit that could not happen")
+        }
+        check(!offered(staged(["failureReason": nil])), "finish offer reasons", "no failure record, no offer")
+        for reason in ["unverified", "missing", "noFailedQuit", "notNewer", "none"] {
+            check(!offered(staged(["reason": .string(reason)])), "finish offer verified", "the helper's \(reason) is never offered")
+        }
+        check(!offered(staged(), current: 375) && !offered(staged(), current: 376), "finish offer newer", "only a build newer than the running one")
+        check(offered(staged(["failureAt": at(-AppUpdateFinishOffer.window)])), "finish offer window", "30 minutes ago still counts")
+        check(!offered(staged(["failureAt": at(-AppUpdateFinishOffer.window - 1)])), "finish offer window", "older than 30 minutes is not offered")
+        check(offered(staged(["failureAt": at(60)])) && !offered(staged(["failureAt": at(AppUpdateFinishOffer.skew + 1)])),
+              "finish offer window", "a little clock skew is allowed, a record far in the future is not")
+        check(!offered(staged(["failureAt": nil])) && !offered(staged(["failureAt": .string("yesterday")])), "finish offer window", "no time, no offer")
+        check(!offered(staged(["successAt": at(-30)])) && !offered(staged(["successAt": at(-60)])), "finish offer success",
+              "an install that succeeded since (or at) the failure is not offered again")
+        check(offered(staged(["successAt": at(-3600)])), "finish offer success", "an older success does not hide the offer")
+        check(!offered(staged(["version": .string("0.5.x")])) && !offered(staged(["build": nil])), "finish offer verified", "a malformed stage is never offered")
+        check(AppUpdateFinishOffer.window == 30 * 60, "finish offer window", "the window is 30 minutes")
+
+        // The flow: offerFinish, the banner and footer words, one click to applying, and what a check may change.
+        var f = AppUpdateFlow()
+        f.offerFinish(version: "0.5.322", build: 375, currentBuild: b)
+        check(f.phase == .ready && f.finishesStaged && f.versionLine == "Version 0.5.322 (build 375)", "finish flow", "a staged offer is ready")
+        let banner = AppUpdateBannerWords(f)
+        check(banner.title == "Finish installing 0.5.322" && banner.action == "Install" && banner.detail == WhatsNewFooter.finishWords,
+              "finish words", "the banner: \(banner.title) / \(banner.action ?? "nil") / \(banner.detail)")
+        let footer = WhatsNewFooter(f.phase, busy: false, finishesStaged: f.finishesStaged)
+        check(footer.primaryTitle == WhatsNewFooter.finishTitle && footer.primaryEnabled && footer.status == WhatsNewFooter.finishWords,
+              "finish words", "the What's New footer offers Finish installing")
+        check(WhatsNewPresentation.offer(info(false, nil, nil, reason: "unreachable"), flow: f, frozen: nil, busy: false).footer.primaryTitle == WhatsNewFooter.finishTitle,
+              "finish words", "the presentation passes the staged offer to the footer")
+        check(!WhatsNewFooter(f.phase, busy: true, finishesStaged: true).primaryEnabled, "finish words", "busy waits")
+        var restored = f
+        restored.restoreFailure(AppUpdateFailureRecord.quitTimeoutWords)
+        check(restored.phase == .ready && restored.finishesStaged, "finish flow", "the restored failure never replaces Finish installing")
+        var g = f
+        g.offer(info(false, nil, nil, reason: "unreachable"), currentVersion: v, currentBuild: b)
+        check(g.finishesStaged && g.phase == .ready, "finish flow", "an unreachable feed keeps the staged offer (no download needed)")
+        g.offer(info(false, nil, nil, reason: "malformed"), currentVersion: v, currentBuild: b)
+        check(g.finishesStaged, "finish flow", "a malformed feed keeps it")
+        g.offer(info(true, "0.5.322", 375), currentVersion: v, currentBuild: b)
+        check(g.finishesStaged && g.phase == .ready, "finish flow", "the feed still offering the staged build keeps it")
+        var newer = f
+        newer.offer(info(true, "0.5.323", 376), currentVersion: v, currentBuild: b)
+        check(!newer.finishesStaged && newer.phase == .ready && newer.build == 376, "finish flow", "a newer build replaces the staged one (it downloads)")
+        var upToDate = f
+        upToDate.offer(info(false, "0.5.321", b, reason: "upToDate"), currentVersion: v, currentBuild: b)
+        check(!upToDate.finishesStaged && upToDate.phase == .none, "finish flow", "no update any more: the staged offer goes")
+        var paused = f
+        paused.offer(info(false, nil, nil, reason: "killSwitch"), currentVersion: v, currentBuild: b)
+        check(!paused.finishesStaged && paused.phase == .none, "finish flow", "paused updates drop the staged offer")
+        var notNewer = AppUpdateFlow()
+        notNewer.offerFinish(version: "0.5.321", build: b, currentBuild: b)
+        notNewer.offerFinish(version: "0.5.x", build: 999, currentBuild: b)
+        check(notNewer.phase == .none && !notNewer.finishesStaged, "finish flow", "never a build that is not newer, never a malformed version")
+        var plain = AppUpdateFlow()
+        plain.offer(info(true, "0.5.322", 375), currentVersion: v, currentBuild: b)
+        check(!plain.beginFinish(), "finish flow", "an ordinary offer never applies without its download")
+        var h = f
+        let t0 = now
+        check(h.beginFinish(now: t0) && h.phase == .applying && !h.finishesStaged, "finish one click", "Finish installing goes straight to applying")
+        check(!h.beginFinish(now: t0) && !h.beginInstall(), "finish one click", "a second press starts nothing")
+        check(!h.applyOverdue(now: t0.addingTimeInterval(AppUpdateFlow.applyDeadline - 1)) && h.applyOverdue(now: t0.addingTimeInterval(AppUpdateFlow.applyDeadline)),
+              "finish one click", "the same 75 s deadline as Download and install")
+        var during = h
+        during.offerFinish(version: "0.5.399", build: 450, currentBuild: b)
+        check(during.phase == .applying && during.version == "0.5.322", "finish flow", "never during an install")
+        var install = f
+        check(install.beginInstall() && !install.finishesStaged, "finish flow", "a full install clears the staged offer")
+        // Words while applying: Closing COS Control…, or what Control saves first.
+        check(WhatsNewFooter.installingWords == "Closing COS Control\u{2026}", "applying words", "the footer says Closing COS Control…")
+        check(AppUpdateBannerWords(h).detail == "Closing COS Control\u{2026}" && AppUpdateBannerWords(h).action == nil, "applying words",
+              "the banner says it too, with no button: \(AppUpdateBannerWords(h).detail)")
+        h.waitingToQuit(on: "the Mac recording")
+        check(AppUpdateBannerWords(h).detail == "Saving the Mac recording first, then COS Control closes and installs."
+              && WhatsNewFooter(h.phase, busy: true, quitWaitingOn: h.quitWaitingOn).status == AppUpdateBannerWords(h).detail,
+              "applying words", "banner and footer name what Control saves first, in the same words")
+        for words in [AppUpdateFailureRecord.recordingWords, WhatsNewFooter.finishWords, WhatsNewFooter.installingWords, AppUpdateBannerWords(f).title] {
+            check(!words.contains("\u{2014}") && !words.contains("\u{2192}") && !words.contains("->"), "no dashes", "no em dash or arrow: \(words)")
+        }
+        // The swap's records: which end an install at once, and in what words.
+        let recording = AppUpdateFailureRecord.parse(Data(#"{"reason":"recording","at":"2026-10-17T22:00:00Z"}"#.utf8))
+        check(recording?.words == AppUpdateFailureRecord.recordingWords && recording?.endsApply == true, "failure record recording",
+              "recording: \(recording?.words ?? "nil")")
+        check(AppUpdateFailureRecord.recordingWords.hasSuffix("Finish the Mac recording, then choose Try again."), "failure record recording", "the words end with what to do")
+        check(AppUpdateFailureRecord.parse(Data(#"{"reason":"quitTimeout"}"#.utf8))?.endsApply == true, "ends apply", "quitTimeout ends the install at once")
+        for reason in ["busy", "notStaged", "other"] {
+            check(AppUpdateFailureRecord.parse(Data("{\"reason\":\"\(reason)\"}".utf8))?.endsApply == false, "ends apply",
+                  "\(reason): the swap waits for Control to quit and reopens it, so the install does not end early")
+        }
+        check(AppUpdateFlow.applyDeadline >= 20 + 10 + 5 + 30 && AppUpdateFlow.applyDeadline >= 60 + 10, "apply deadline",
+              "longer than the swap's forced quit and its unknown-state wait plus linger")
     }
 
     // MARK: phases

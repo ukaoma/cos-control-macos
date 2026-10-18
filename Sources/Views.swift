@@ -167,27 +167,10 @@ struct AppUpdateBanner: View {
         .overlay(RoundedRectangle(cornerRadius: 12).stroke(failed == nil ? Color.clear : COSPalette.danger.opacity(0.55), lineWidth: 1))
     }
 
-    private var title: String {
-        switch flow.phase {
-        case .none, .ready: return "Update available"
-        case .staging: return "Downloading update"
-        case .applying: return "Installing update"
-        case .failed: return "Update did not install"
-        }
-    }
-
-    private var detail: String {
-        switch flow.phase {
-        case .none, .ready:
-            return flow.versionLine
-        case .staging(let line):
-            return line ?? "\(flow.versionLine). Checking the download as it arrives."
-        case .applying:
-            return "\(flow.versionLine). Control quits and reopens by itself. The glasses server keeps running."
-        case .failed(let message):
-            return message
-        }
-    }
+    /// 0.5.322: the words are AppUpdateBannerWords (Models.swift), so Tests/AppUpdateBadgeChecks.swift reads them.
+    private var words: AppUpdateBannerWords { AppUpdateBannerWords(flow) }
+    private var title: String { words.title }
+    private var detail: String { words.detail }
 
     @ViewBuilder private var icon: some View {
         switch flow.phase {
@@ -207,6 +190,12 @@ struct AppUpdateBanner: View {
 
     @ViewBuilder private var action: some View {
         switch flow.phase {
+        case .ready where flow.finishesStaged:
+            // One click: the build is already downloaded and checked (ControllerModel.finishStagedAppUpdate).
+            Button(words.action ?? "Install", action: onUpdate)
+                .buttonStyle(AppUpdateBannerButtonStyle())
+                .disabled(disabled)
+                .help("Install the update that is already downloaded and checked. COS Control closes and reopens.")
         case .none, .ready:
             Button("Update", action: onUpdate)
                 .buttonStyle(AppUpdateBannerButtonStyle())
@@ -2907,7 +2896,8 @@ struct ControlPanel: View {
     @ViewBuilder private var updateBanner: some View {
         if model.appUpdateFlow.showsBanner {
             AppUpdateBanner(flow: model.appUpdateFlow, disabled: model.busy) {
-                model.presentWhatsNew()
+                // 0.5.322: a build already downloaded and checked installs in one click; any other offer opens What's New.
+                if model.appUpdateFlow.finishesStaged { model.finishStagedAppUpdate() } else { model.presentWhatsNew() }
             }
         }
     }

@@ -359,6 +359,36 @@ import Darwin
                   && MacRecordingNotice.title(typed: String(repeating: "x", count: 200), meetingApp: nil, at: at, calendar: utc).count == 160,
                   "a typed title wins, trimmed and bounded; empty means automatic")
         }
+        // 0.5.322: the Mac recording state the update swap reads before it may force a quit (MacCaptureStateFile).
+        do {
+            check(MacCaptureStateFile.url(environment: ["COS_CONTROL_TEST_HOME": "/tmp/h"]).path == "/tmp/h/Library/Application Support/COS Control/mac-capture-state.json",
+                  "capture state: a /tmp/ test home, the helper's own rule")
+            let real = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/COS Control/mac-capture-state.json")
+            check(MacCaptureStateFile.url(environment: ["COS_CONTROL_TEST_HOME": "/Users/x/h"]) == real && MacCaptureStateFile.url(environment: [:]) == real,
+                  "capture state: a home outside /tmp/ is ignored, as the helper ignores it")
+            check(MacCaptureStateFile.activePhases == ["starting", "recording", "stopping"], "capture state: the phases a quit finishes first")
+            let url = scratch.appendingPathComponent("state/Library/Application Support/COS Control/mac-capture-state.json")
+            let when = Date(timeIntervalSince1970: 1_792_300_000)
+            try MacCaptureStateFile.write(phase: "recording", pid: 4242, at: when, to: url)
+            let first = try Data(contentsOf: url)
+            check(MacCaptureStateFile.decode(first)?.phase == "recording" && MacCaptureStateFile.decode(first)?.pid == 4242, "capture state: written and read back")
+            let object = try JSONSerialization.jsonObject(with: first) as? [String: Any]
+            check(object?["schema"] as? Int == 1 && object?["at"] as? String == "2026-10-18T05:06:40Z" && object?.count == 4,
+                  "capture state: schema, phase, pid and time, nothing else")
+            let attributes = try fm.attributesOfItem(atPath: url.path)
+            check((attributes[.posixPermissions] as? NSNumber)?.intValue == 0o600, "capture state: owner only")
+            let folder = try fm.attributesOfItem(atPath: url.deletingLastPathComponent().path)
+            check((folder[.posixPermissions] as? NSNumber)?.intValue == 0o700, "capture state: a folder it makes is owner only")
+            let protection = try url.resourceValues(forKeys: [.fileProtectionKey]).fileProtection
+            check(protection != .complete && protection != .completeUnlessOpen, "capture state: never class A or B (a locked Mac must still write it)")
+            let inode = (attributes[.systemFileNumber] as? NSNumber)?.intValue
+            try MacCaptureStateFile.write(phase: "idle", to: url)
+            let second = try fm.attributesOfItem(atPath: url.path)
+            let rewritten = MacCaptureStateFile.decode(try Data(contentsOf: url))
+            check(rewritten?.phase == "idle" && rewritten?.pid == getpid(), "capture state: a rewrite names this process")
+            check((second[.systemFileNumber] as? NSNumber)?.intValue != inode, "capture state: replaced atomically (a new file), never written in place")
+            check(MacCaptureStateFile.decode(Data("{}".utf8)) == nil && MacCaptureStateFile.decode(Data("x".utf8)) == nil, "capture state: junk reads as nothing")
+        }
         print("Mac recording core checks: \(checks) passed (fixture bytes only)")
     }
 }

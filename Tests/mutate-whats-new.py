@@ -101,7 +101,7 @@ MUTANTS = [
     ("a new window each open", V, "        if let window = controller?.window { return window }\n", "", "[single window]", "wiring"),
     ("presentWhatsNew does nothing", C, "        whatsNewMode = .offer\n        showWhatsNew?()\n", "        whatsNewMode = .offer\n", "[check for updates opens]", "wiring"),
     # Wiring the gate cannot execute (a person clicks it), pinned.
-    ("banner installs without the window", V, "                model.presentWhatsNew()\n", "                model.installAppUpdate()\n", "[banner opens]", "pins"),
+    ("banner installs without the window", V, "} else { model.presentWhatsNew() }\n", "} else { model.installAppUpdate() }\n", "[banner opens]", "pins"),
     ("Download and install does nothing", V, "onInstall: { model.installAppUpdate() }", "onInstall: {}", "[install path]", "pins"),
     ("app never wires the window", A, "        model.showWhatsNew = { whatsNewWindow.show(model: model) }\n", "", "[app wires window]", "pins"),
     ("eyebrow heading", V, "                .font(COSType.display(18, weight: .semibold))\n", "                .font(COSType.display(18, weight: .semibold)).textCase(.uppercase).tracking(1.2)\n", "[no eyebrow kickers]", "pins"),
