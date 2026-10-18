@@ -897,6 +897,157 @@ final class FakeDictationBoard: DictationPasteboardAccess {
         let legacyRecord = try JSONDecoder().decode(DictationRecord.self, from: Data(#"{"id":"5A0C2A3C-6A7B-4C8D-9E0F-1A2B3C4D5E6F","text":"old","createdAt":0,"kind":"inserted","app":"Notes"}"#.utf8))
         expect(legacyRecord.engine == nil && legacyRecord.text == "old", "a record from before 0.5.317 loads without an engine")
         expect(DictationHistory.correcting(engineRecord.id, to: "ask now", in: [engineRecord]).first?.engine == "whisper", "Fix a word keeps the engine")
-        print("PASS Mac dictation: \(count) policy checks; insert-target table, measured delivery, terminals, layout ⌘V, listening bars end to end, clipboard restore, sounds, pill placement, recent dictations file, card countdown, fix-a-word selection, quick fix, replace, span guess, quiet and restore, bounded audio, PCM16 WAV, device failure, any-key triggers")
+        do {
+            typealias EL = DictationEditLearning
+            typealias DS = DictationSuggestions
+            let at0 = Date(timeIntervalSince1970: 1_760_600_000)
+            // 0.5.323 (Miles, 2026-10-17): the text around a dictation is evidence for Learn from my edits. A spelling that is
+            // also in the same field outside the dictation counts below the sound-alike threshold, down to the floor.
+            let plainWords: Set<String> = ["graph", "ton", "nile", "a", "ah", "the", "budget", "bottle", "market", "comma", "joule", "email", "about"]
+            func edited(_ heard: String, _ written: String, outside: [String] = []) -> EL.Candidate? {
+                EL.candidate(DictationReplace.Edit(location: 0, length: heard.utf16.count, original: heard, replacement: written),
+                            known: { plainWords.contains($0.lowercased()) }, learned: { _, _ in false }, outside: outside)
+            }
+            let prompt = ["Prompt: email Nicole Grafton about the referral, and Niala, Marktpos and Bottle POS. Mention Ukaoma."]
+            expect(DictationLearnEvidence.nearbyText.words == "Also in the text around your dictation", "the evidence reads as words")
+            expect(edited("graph ton", "Grafton", outside: prompt) == .init(heard: "graph ton", written: "Grafton", evidence: .nearbyText)
+                   && edited("graph ton", "Grafton") == nil,
+                   "a spelling in the text you dropped in qualifies below the sound-alike threshold, and only with that evidence")
+            expect(edited("Nile a", "Niala", outside: prompt) == .init(heard: "Nile a", written: "Niala", evidence: .nearbyText)
+                   && edited("Nile ah", "Niala", outside: prompt) == nil, "the floor is 0.6 and includes 0.6 (\"Nile a\" scores exactly 0.6, \"Nile ah\" 0.5)")
+            expect(edited("the budget", "Bottle POS", outside: prompt) == nil, "an unrelated rewrite never qualifies, evidence or not")
+            expect(edited("Ukomma", "comma", outside: ["a comma here"]) == nil, "a plain English spelling is not a dictionary term, evidence or not")
+            expect(edited("market", "Marktpos", outside: prompt) == nil, "one plain word never learns a below-threshold spelling: it would rewrite every \"market\"")
+            expect(edited("Ukoma", "Ukaoma", outside: prompt) == .init(heard: "Ukoma", written: "Ukaoma", evidence: .nearbyText)
+                   && edited("Ukoma", "Ukaoma") == .init(heard: "Ukoma", written: "Ukaoma"), "a sound-alike that qualifies anyway carries the evidence when there is some")
+            expect(EL.evidence(written: "Jewel360", outside: ["see Jewel360's site"]) == .nearbyText && EL.evidence(written: "Jewel360", outside: ["(Jewel360)"]) == .nearbyText
+                   && EL.evidence(written: "Jewel360", outside: ["Jewel3600 and xJewel360"]) == nil && EL.evidence(written: "Jewel360", outside: ["jewel360"]) == nil
+                   && EL.evidence(written: "Jewel360", outside: []) == nil && EL.evidence(written: "", outside: ["x"]) == nil,
+                   "evidence is the exact spelling on word boundaries")
+            let around = "Draft for Jewel360: uh Jewel360 page"
+            expect(EL.outside(window: around, start: 20, length: 16) == ["Draft for Jewel360: "] && EL.outside(window: around, start: 0, length: 36).isEmpty
+                   && EL.outside(window: "abc DICT xyz", start: 4, length: 4) == ["abc ", " xyz"] && EL.outside(window: "abc", start: 9, length: 4) == ["abc"],
+                   "outside is the window before and after the dictation, clipped")
+            expect(EL.evidence(written: "Jewel360", outside: EL.outside(window: "uh Jewel360 page", start: 0, length: 16)) == nil,
+                   "the dictation itself is never its own evidence")
+            expect(EL.eligibility(mode: .automatic, secure: true, terminal: false, electron: false, chromium: false, setterWorked: true) == .skip("secure")
+                   && EL.eligibility(mode: .suggest, secure: false, terminal: true, electron: false, chromium: false, setterWorked: true) == .skip("terminal")
+                   && DictationFieldContext.plan(enabled: true, secure: true, terminal: false, fieldCharacters: 500, location: 10, length: 0) == .skip("password field or secure input")
+                   && DictationFieldContext.plan(enabled: true, secure: false, terminal: true, fieldCharacters: 500, location: 10, length: 0) == .skip("terminal scrollback"),
+                   "secure fields and terminals give no evidence: no watch, and no context read")
+            let fix = DictationFieldContext.Fix(heard: "Ukoma", written: "Ukaoma")
+            expect(EL.undoesContextFix(.init(heard: "Ukaoma", written: "Ukoma"), fixes: [fix]) && EL.undoesContextFix(.init(heard: "ukaoma", written: "ukoma"), fixes: [fix])
+                   && EL.undoesContextFix(.init(heard: "Ukaoma", written: "Okoma"), fixes: [fix]) && EL.undoesContextFix(.init(heard: "Ukaoma Smith", written: "UkaomaSmith"), fixes: [fix])
+                   && !EL.undoesContextFix(.init(heard: "Ukoma", written: "Ukaoma"), fixes: [fix]) && !EL.undoesContextFix(.init(heard: "graph ton", written: "Grafton"), fixes: [fix])
+                   && !EL.undoesContextFix(.init(heard: "Ukaoma", written: "Ukoma"), fixes: []),
+                   "an edit of words COS spelled from the field, back or onward, is never learned: its heard side is COS's guess")
+            // The suggestion keeps its evidence: on disk, from an older file, and when the same pair comes back without it.
+            let evidenced = DictationSuggestion(id: UUID(), heard: "graph ton", written: "Grafton", app: "Claude", at: at0, evidence: .nearbyText)
+            let iso = JSONEncoder(); iso.dateEncodingStrategy = .iso8601
+            let isoIn = JSONDecoder(); isoIn.dateDecodingStrategy = .iso8601
+            expect(try isoIn.decode(DictationSuggestion.self, from: iso.encode(evidenced)) == evidenced, "evidence is saved with the suggestion")
+            let older = try isoIn.decode(DictationSuggestion.self, from: Data(#"{"id":"5A0C2A3C-6A7B-4C8D-9E0F-1A2B3C4D5E6F","heard":"a","written":"A1","app":"Notes","at":"2026-10-16T10:00:00Z"}"#.utf8))
+            let future = try? isoIn.decode(DictationSuggestion.self, from: Data(#"{"id":"5A0C2A3C-6A7B-4C8D-9E0F-1A2B3C4D5E6F","heard":"a","written":"A1","app":"Notes","at":"2026-10-16T10:00:00Z","evidence":"screen"}"#.utf8))
+            expect(older.evidence == nil && older.written == "A1" && future?.evidence == nil && future?.written == "A1",
+                   "a 0.5.318 suggestion loads without evidence, and an evidence kind this build does not know reads as none")
+            let again = DictationSuggestion(id: UUID(), heard: "graph ton", written: "Grafton", app: "Notes", at: at0)
+            let twice = DS.suggesting(again, in: DS.suggesting(evidenced, in: DS.State(), now: at0), now: at0)
+            expect(twice.suggestions.count == 1 && twice.suggestions[0].id == again.id && twice.suggestions[0].evidence == .nearbyText,
+                   "the same pair again keeps the evidence an earlier sighting had")
+            let relearned = DS.learning(again, in: DS.learning(evidenced, in: DS.State(), now: at0), now: at0)
+            expect(relearned.learned.count == 1 && relearned.learned[0].evidence == .nearbyText, "a pair saved again keeps its evidence")
+            expect(DS.applying([evidenced.id], in: DS.suggesting(evidenced, in: DS.State(), now: at0), now: at0).learned.first?.evidence == .nearbyText,
+                   "Add moves the evidence with the suggestion")
+            // Insert-time context (0.5.323): read a bounded part of the field, never a password field or a terminal.
+            typealias FC = DictationFieldContext
+            func contextPlan(_ n: Int?, _ at: Int?, _ selected: Int? = 0, enabled: Bool = true) -> FC.Plan {
+                FC.plan(enabled: enabled, secure: false, terminal: false, fieldCharacters: n, location: at, length: selected)
+            }
+            expect(contextPlan(500, 10, enabled: false) == .skip("off") && contextPlan(nil, 3) == .skip("unmeasured") && contextPlan(500, nil) == .skip("unmeasured")
+                   && contextPlan(0, 0) == .skip("empty"), "off, unmeasured and empty fields are typed as heard")
+            expect(FC.plan(enabled: true, secure: true, terminal: true, fieldCharacters: 500, location: 10, length: 0) == .skip("password field or secure input"),
+                   "secure is checked first")
+            expect(contextPlan(100, 40) == .read(before: .init(location: 0, length: 40), after: .init(location: 40, length: 60)), "a short field is read whole")
+            expect(contextPlan(100, 40, 10) == .read(before: .init(location: 0, length: 40), after: .init(location: 50, length: 50)),
+                   "selected text is about to be replaced, so it is not context")
+            expect(contextPlan(100_000, 50_000, 10) == .read(before: .init(location: 47_000, length: 3_000), after: .init(location: 50_010, length: 1_000))
+                   && contextPlan(10_000, 0) == .read(before: .init(location: 0, length: 0), after: .init(location: 0, length: 4_000))
+                   && contextPlan(10_000, 10_000) == .read(before: .init(location: 7_000, length: 3_000), after: .init(location: 10_000, length: 0))
+                   && contextPlan(100, 90, 50) == .read(before: .init(location: 0, length: 90), after: .init(location: 100, length: 0)),
+                   "at most 3,000 before the caret and 4,000 in all, clipped to the field")
+            for (n, at, selected) in [(5_000, 2_000, 0), (9_999, 9_000, 500), (3_000, 3_000, 0), (40_000, 1_000, 30_000), (4_001, 4_000, 1)] {
+                if case .read(let b, let a) = contextPlan(n, at, selected) {
+                    expect(b.length + a.length <= FC.maximumCharacters && b.location >= 0 && a.location + a.length <= n, "the read stays bounded: \(n) \(at) \(selected)")
+                } else { expect(false, "a measured field is read: \(n) \(at) \(selected)") }
+            }
+            expect(FC.inBudget(elapsed: 0.3) && !FC.inBudget(elapsed: 0.301), "a read slower than 0.3 s is dropped and the dictation typed as heard")
+            let englishWords: Set<String> = ["thanks", "ping", "please", "and", "cloud", "apple", "receive", "joule", "hub", "spot", "a", "the", "see", "you",
+                                             "to", "save", "it", "my", "phone", "call", "y", "we", "met", "today", "smith", "international", "team"]
+            let known: (String) -> Bool = { englishWords.contains($0.lowercased()) }
+            let field = FC.Read(before: "Thanks, this is Miles Ukaoma from Quilt. Ping Jewel360 and HubSpot about the COS rollout.\nRecieve the recieve file at Docs/HubSpot",
+                               after: " or https://Quilt.com/x, a@b.com, 3pm, 2nd, 4BIS, Ukaoma's notes", beforeCut: false, afterCut: false)
+            let found = FC.terms(in: field, known: known)
+            expect(found.map(\.text) == ["Ukaoma", "Miles", "Quilt", "Jewel360", "HubSpot", "COS", "Recieve", "4BIS"],
+                   "distinctive words, most frequent first: names mid-sentence, unknown names, capitals inside, letters with digits, acronyms; got \(found.map(\.text))")
+            expect(found.filter(\.strong).map(\.text) == ["Jewel360", "HubSpot", "4BIS"], "only a capital inside or letters with digits is spelled on purpose")
+            expect(FC.terms(in: FC.Read(before: "met recieve ukaoma", after: ""), known: known).isEmpty, "a lowercase word is never a term, known or not")
+            expect(FC.terms(in: FC.Read(before: "Kaoma Sokolic said", after: " and Nia", beforeCut: true, afterCut: true), known: known).map(\.text) == ["Sokolic"],
+                   "a word cut by the bounded read is not a word of the field")
+            expect(FC.terms(in: FC.Read(before: "we met Ukao", after: "ma today"), known: known).isEmpty, "a caret inside a word splits it: neither half counts")
+            let many = (0..<70).map { "Term\($0)X" }
+            let ranked = FC.terms(in: FC.Read(before: many.joined(separator: " ") + " Term69X Term69X Term5X", after: ""), known: known)
+            expect(ranked.count == FC.maximumTerms && ranked.prefix(2).map(\.text) == ["Term69X", "Term5X"] && ranked[2].text == "Term0X",
+                   "at most 64 terms, the most frequent first, then in order")
+            // Corrections at insert time: the field's terms spell what was misheard, and nothing else.
+            let terms = [FC.Term(text: "Ukaoma", strong: false), FC.Term(text: "Jewel360", strong: true), FC.Term(text: "HubSpot", strong: true),
+                         FC.Term(text: "iCloud", strong: true), FC.Term(text: "Andy", strong: false), FC.Term(text: "Claude", strong: false),
+                         FC.Term(text: "Recieve", strong: false), FC.Term(text: "Apple", strong: false), FC.Term(text: "Niala", strong: false),
+                         FC.Term(text: "Nyala", strong: false), FC.Term(text: "COS", strong: false), FC.Term(text: "UkomaSmith", strong: true)]
+            func fixes(_ text: String, _ with: [FC.Term]? = nil) -> (text: String, fixes: [FC.Fix]) { FC.corrected(text, terms: with ?? terms, known: known) }
+            expect(fixes("Thanks Ukoma, see you.") == ("Thanks Ukaoma, see you.", [FC.Fix(heard: "Ukoma", written: "Ukaoma")]),
+                   "Ukoma becomes Ukaoma when the field has Ukaoma")
+            expect(fixes("Thanks Ukoma, see you.", terms.filter { $0.text != "Ukaoma" }) == ("Thanks Ukoma, see you.", []), "and stays Ukoma when it does not")
+            expect(fixes("Thanks Ukoma.", []) == ("Thanks Ukoma.", []), "no terms, no change")
+            expect(fixes("Y joule 360 page") == ("Y Jewel360 page", [FC.Fix(heard: "joule 360", written: "Jewel360")])
+                   && fixes("ping hub spot today").text == "ping HubSpot today", "plain words become a term spelled on purpose, best match first")
+            expect(fixes("save it to the cloud").fixes.isEmpty && fixes("call my phone and see").fixes.isEmpty && fixes("receive Apple and apple").fixes.isEmpty,
+                   "one plain word never becomes iCloud, Andy, Claude, Recieve or Apple")
+            expect(fixes("ukaoma said").text == "Ukaoma said" && fixes("cos said").text == "COS said", "a change of capitals for a word the spell checker does not know")
+            expect(fixes("Ukaoma and Nyala").fixes.isEmpty && fixes("Ukaoma and Nyala").text == "Ukaoma and Nyala", "a word the field already has exactly stays as it is")
+            expect(fixes("the international 5 team", [FC.Term(text: "Internationale", strong: false)]).fixes.isEmpty
+                   && fixes("the international 5 team", [FC.Term(text: "International5", strong: true)]).text == "the International5 team",
+                   "a number is a plain word: plain words and a number become only a term spelled on purpose (\"international 5\" scores 0.93)")
+            expect(fixes("Nyalla came", [FC.Term(text: "Niala", strong: false)]).fixes.isEmpty, "below the threshold nothing changes (\"Nyalla\" scores 0.67 against \"Niala\")")
+            expect(fixes("joule\n360").fixes.isEmpty && fixes("joule, 360").fixes.isEmpty && fixes("joule - 360").fixes.isEmpty,
+                   "never across a line break or a mark between words")
+            expect(fixes("(Ukoma). and \"Ukoma\"").text == "(Ukaoma). and \"Ukaoma\"", "punctuation at either end stays")
+            expect(fixes("a Ukoma here").text == "a Ukaoma here", "a tie goes to the narrower span, so a neighbour is never swallowed")
+            expect(fixes("Ukoma Smith wrote").text == "UkomaSmith wrote", "the better match wins over a narrower weaker one")
+            let long = Array(repeating: "Ukoma", count: FC.maximumWords + 1).joined(separator: " ")
+            expect(fixes(long).fixes.isEmpty && fixes(Array(repeating: "Ukoma", count: FC.maximumWords).joined(separator: " ")).fixes.count == FC.maximumWords,
+                   "a dictation over 800 words is typed as heard; up to 800, every word is checked")
+            // Server dictionary suggestions (server 6.77.0): the seam decodes the contract and checks the capability only.
+            typealias SV = DictationServerSuggestions
+            expect(SV.validID("sug_0123456789abcdef") && !SV.validID("sug_0123456789ABCDEF") && !SV.validID("sug_0123456789abcde")
+                   && !SV.validID("sug_../../../x/abcde") && !SV.validID("xyz_0123456789abcdef"), "only sug_ and 16 hex digits")
+            expect(SV.available(capabilities: Data(#"{"transcriptCleanup":{"protocol":1,"suggestions":1,"screenContext":1}}"#.utf8))
+                   && !SV.available(capabilities: Data(#"{"engines":[]}"#.utf8)) && !SV.available(capabilities: Data(#"{"transcriptCleanup":{"protocol":2,"suggestions":1}}"#.utf8))
+                   && !SV.available(capabilities: Data("not json".utf8)), "suggestions only from a server that advertises protocol 1")
+            let listed = SV.list(Data(#"""
+            {"protocol":1,"suggestions":[
+              {"id":"sug_0123456789abcdef","written":"Ukaoma","heard":["Ukoma","Yukoma"],"status":"pending","count":3,"createdAt":"2026-10-17T10:00:00Z",
+               "updatedAt":"2026-10-17T11:00:00Z","inVocabulary":false,"evidence":[{"source":"screen","sessionId":"s1","heard":"Ukoma","at":"2026-10-17T11:00:00Z","detail":"Zoom"}]},
+              {"id":"bad","written":"X","heard":[],"status":"pending","count":1,"inVocabulary":false,"evidence":[]},
+              {"id":"sug_fedcba9876543210","written":"Broken"}
+            ]}
+            """#.utf8))
+            expect(listed.count == 1 && listed[0].written == "Ukaoma" && listed[0].heard == ["Ukoma", "Yukoma"] && listed[0].count == 3
+                   && listed[0].evidence.first?.source == "screen" && listed[0].evidence.first?.detail == "Zoom",
+                   "the list decodes the contract and drops a bad id or a malformed row, not the list")
+            let protocol2 = #"{"protocol":2,"suggestions":[{"id":"sug_0123456789abcdef","written":"Ukaoma","heard":["Ukoma"],"status":"pending","count":1,"inVocabulary":false,"evidence":[]}]}"#
+            expect(SV.list(Data(protocol2.utf8)).isEmpty && SV.list(Data(protocol2.replacingOccurrences(of: #""protocol":2"#, with: #""protocol":1"#).utf8)).count == 1
+                   && SV.list(Data("{}".utf8)).isEmpty, "another protocol reads as nothing, even with rows that would decode")
+        }
+        print("PASS Mac dictation: \(count) policy checks; insert-target table, measured delivery, terminals, layout ⌘V, listening bars end to end, clipboard restore, sounds, pill placement, recent dictations file, card countdown, fix-a-word selection, quick fix, replace, span guess, quiet and restore, bounded audio, PCM16 WAV, device failure, any-key triggers, field context and its evidence")
     }
 }

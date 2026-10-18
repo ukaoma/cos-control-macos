@@ -12,12 +12,17 @@ out: rewrite the mutant so it compiles and runs), CRASHED (a trap outside the ch
 rewrite the mutant, or add the check that names that behaviour). 0.5.318: before this, a mutant that did not compile
 was counted as killed, which proves nothing about the checks.
 
-Usage: python3 Tests/mutate-mac-dictation-core.py <repo root>
+Usage: python3 Tests/mutate-mac-dictation-core.py <repo root> [--only <name prefix>]
+
+--only runs the mutants whose names start with the prefix, or any of several joined by | (0.5.323: "context: " is
+the field-context set). Every mutant's
+target is still checked to land exactly once, and the green baseline still runs first.
 """
 import os
 import pathlib, re, shutil, subprocess, sys, tempfile
 
 root = pathlib.Path(sys.argv[1]).resolve()
+only = sys.argv[sys.argv.index("--only") + 1] if "--only" in sys.argv else ""
 CORE = "Sources/MacDictationCore.swift"
 MUTANTS = [
     # 0.5.310 measured delivery: each of these is a way to show ✓ when nothing landed, or to paste twice.
@@ -197,7 +202,8 @@ MUTANTS = [
     ("four-word edits learned", "    static let pollMilliseconds = 500\n    static let maximumWords = 3", "    static let pollMilliseconds = 500\n    static let maximumWords = 4"),
     ("punctuation fixes learned", "            guard heard.lowercased() == written.lowercased() else { return nil }\n", ""),
     ("sentence capitals learned", "            guard innerCapital || !heardWords.allSatisfy(known) else { return nil }\n", ""),
-    ("rewordings learned", "            guard DictationFixGuess.score(heard: heard, term: written) >= DictationFixGuess.threshold else { return nil }\n", ""),
+    # 0.5.323: the threshold is one `if` now (below it only context evidence can qualify); removing it learns rewordings.
+    ("rewordings learned", "            if score < DictationFixGuess.threshold {", "            if false {"),
     ("homophones learned", "            if heardWords.allSatisfy(known), writtenWords.allSatisfy(known) { return nil }\n", ""),
     ("already learned learned again", "        guard !learned(heard, written) else { return nil }\n", ""),
     ("learned across a line break", ", !(heard + written).contains(where: \\.isNewline) else { return nil }", " else { return nil }"),
@@ -215,7 +221,8 @@ MUTANTS = [
     # A 29-day dismissal is caught only by that clause, now that its suggestion is stamped day 29.
     ("dismissal lasts 29 days", "    static let dismissDays = 30", "    static let dismissDays = 29"),
     ("quiet forever", "        state.dismissed[key(heard, written)].map { fresh($0, days: dismissDays, now: now) } ?? false", "        state.dismissed[key(heard, written)] != nil"),
-    ("the same pair listed twice", "        next.suggestions = [item] + next.suggestions.filter { key($0.heard, $0.written) != k }", "        next.suggestions = [item] + next.suggestions"),
+    ("the same pair listed twice", "        next.suggestions = [item.keeping(earlier)] + next.suggestions.filter { key($0.heard, $0.written) != k }",
+     "        next.suggestions = [item.keeping(earlier)] + next.suggestions"),
     ("Add leaves it suggested", "        next.suggestions = next.suggestions.filter { key($0.heard, $0.written) != k }\n        return pruned(next, now: now)\n    }\n    /// Added",
      "        return pruned(next, now: now)\n    }\n    /// Added"),
     ("Add does nothing", "        for item in state.suggestions where ids.contains(item.id) { next = learning(item, in: next, now: now) }\n", ""),
@@ -276,6 +283,81 @@ MUTANTS = [
     ("tap never clears", "        if current == index...index { return nil }\n", ""),
     ("pill never hands the ledger back", "var replacesLedger: Bool { self != .hidden }", "var replacesLedger: Bool { true }"),
     ("RMS becomes peak", "return (sum / Double(samples)).squareRoot()", "return sum > 0 ? 1 : 0"),
+    # 0.5.323 the text around a dictation (Miles 2026-10-17): evidence for Learn from my edits.
+    ("context: evidence ignored below the threshold", "                guard evidence != nil else { return nil }\n", ""),
+    ("context: no floor", "                guard score >= contextFloor else { return nil }\n", ""),
+    ("context: floor at 0.5", "    static let contextFloor = 0.6", "    static let contextFloor = 0.5"),
+    ("context: floor at 0.65", "    static let contextFloor = 0.6", "    static let contextFloor = 0.65"),
+    ("context: floor exclusive", "                guard score >= contextFloor else { return nil }", "                guard score > contextFloor else { return nil }"),
+    ("context: plain English spelling learned from context", "                guard !writtenWords.allSatisfy(known) else { return nil }\n", ""),
+    ("context: one plain word learned from context", "                guard heardWords.count > 1 || !heardWords.allSatisfy(known) else { return nil }\n", ""),
+    ("context: evidence in any case", "ns.range(of: written, options: [.literal], range:", "ns.range(of: written, options: [.literal, .caseInsensitive], range:"),
+    ("context: evidence inside a word", "                if before && after { return .nearbyText }", "                if before || after { return .nearbyText }"),
+    ("context: evidence on the left edge only", "                let after = NSMaxRange(found) == ns.length || !wordUnit(NSMaxRange(found))", "                let after = true"),
+    ("context: the dictation is its own evidence", "        return [ns.substring(to: lower), ns.substring(from: upper)].filter { !$0.isEmpty }", "        return [window]"),
+    ("context: evidence not carried", "        return Candidate(heard: heard, written: written, evidence: evidence)", "        return Candidate(heard: heard, written: written)"),
+    ("context: an edit of a context fix is learned", "            return !spelled.isEmpty && heard.contains(spelled)", "            return false"),
+    ("context: only an exact revert is caught", "            return !spelled.isEmpty && heard.contains(spelled)", "            return !spelled.isEmpty && heard == spelled"),
+    ("context: the written side checked instead", "        let heard = DictationFixGuess.normalized(candidate.heard)\n        return fixes.contains { fix in",
+     "        let heard = DictationFixGuess.normalized(candidate.written)\n        return fixes.contains { fix in"),
+    ("context: evidence dropped when the pair is suggested again", "        next.suggestions = [item.keeping(earlier)] + next.suggestions.filter", "        next.suggestions = [item] + next.suggestions.filter"),
+    ("context: evidence dropped when the pair is saved again", "        next.learned = [item.keeping(earlier)] + next.learned.filter", "        next.learned = [item] + next.learned.filter"),
+    ("context: an unknown evidence kind fails the file",
+     "        evidence = (try? c.decodeIfPresent(String.self, forKey: .evidence)).flatMap { $0 }.flatMap(DictationLearnEvidence.init(rawValue:))",
+     "        evidence = try c.decodeIfPresent(DictationLearnEvidence.self, forKey: .evidence)"),
+    ("context: evidence words changed", 'case .nearbyText: "Also in the text around your dictation"', 'case .nearbyText: "Also in the text you pasted"'),
+    # Insert-time context: the bounded read.
+    ("context: Off still reads", '        if !enabled { return .skip("off") }\n', ""),
+    ("context: password fields read", '        if secure { return .skip("password field or secure input") }\n', ""),
+    ("context: terminals read", '        if terminal { return .skip("terminal scrollback") }\n', ""),
+    ("context: unbounded before the caret", "        let before = min(caret, beforeLimit)", "        let before = caret"),
+    ("context: unbounded after the selection", "        let after = min(n - end, maximumCharacters - before)", "        let after = n - end"),
+    ("context: selected text read as context", "end = min(n, caret + max(0, length ?? 0))", "end = caret"),
+    ("context: read budget ignored", "    static func inBudget(elapsed: TimeInterval) -> Bool { elapsed <= readBudgetSeconds }", "    static func inBudget(elapsed: TimeInterval) -> Bool { true }"),
+    ("context: budget at 0.5 s", "    static let readBudgetSeconds: TimeInterval = 0.3", "    static let readBudgetSeconds: TimeInterval = 0.5"),
+    # Which words of the field are terms.
+    ("context: lowercase words are terms", "        guard first.isUppercase, lower, letters >= 3 else { return nil }", "        guard lower, letters >= 3 else { return nil }"),
+    ("context: sentence-start capitals are terms", "        if !startsSentence || !known(word) { return Term(text: word, strong: false) }", "        if true { return Term(text: word, strong: false) }"),
+    ("context: paths and links are terms", "        guard word.allSatisfy({ $0.isLetter || $0.isNumber || inner.contains($0) }) else { return nil }\n", ""),
+    ("context: 3pm is a term", "        if digits > 0, letters >= 2, first.isLetter || letters >= 3 { return Term(text: word, strong: true) }",
+     "        if digits > 0, letters >= 2 { return Term(text: word, strong: true) }"),
+    ("context: CamelCase not spelled on purpose", "        if lower, word.dropFirst().contains(where: \\.isUppercase) { return Term(text: word, strong: true) }",
+     "        if lower, word.dropFirst().contains(where: \\.isUppercase) { return Term(text: word, strong: false) }"),
+    ("context: a cut word is kept", "                if i == 0, dropFirst { continue }\n", ""),
+    ("context: the last cut word is kept", "                if i == words.count - 1, dropLast { continue }\n", ""),
+    ("context: a caret inside a word is ignored",
+     "        let midWord = (read.before.last.map { $0.isLetter || $0.isNumber } ?? false) && (read.after.first.map { $0.isLetter || $0.isNumber } ?? false)",
+     "        let midWord = false"),
+    ("context: terms not ranked by frequency", "        return counts.sorted { $0.value.count != $1.value.count ? $0.value.count > $1.value.count : $0.value.first < $1.value.first }",
+     "        return counts.sorted { $0.value.first < $1.value.first }"),
+    ("context: no term cap", "            .prefix(maximumTerms).map { Term(text: $0.key, strong: $0.value.strong) }", "            .map { Term(text: $0.key, strong: $0.value.strong) }"),
+    ("context: possessive kept", 'let word = raw.count > 3 && (raw.hasSuffix("\'s") || raw.hasSuffix("\\u{2019}s")) ? String(raw.dropLast(2)) : raw', "let word = raw"),
+    # Corrections at insert time.
+    ("context: plain words become any term", "                        guard key.term.strong else { continue }\n", ""),
+    ("context: one plain word becomes a spelled term", "                        guard width > 1 || same else { continue }\n", ""),
+    ("context: words the field has exactly are rewritten", "                guard h.count >= 3, !exact.contains(heard) else { continue }", "                guard h.count >= 3 else { continue }"),
+    ("context: no threshold", "                        guard score >= DictationFixGuess.threshold else { continue }\n", ""),
+    ("context: spans join across a line break", "                if width > 1, words[end].breakBefore || words[end].leadMark || words[end - 1].trailMark { break }",
+     "                if width > 1, words[end].leadMark || words[end - 1].trailMark { break }"),
+    ("context: spans join across a mark", "                if width > 1, words[end].breakBefore || words[end].leadMark || words[end - 1].trailMark { break }",
+     "                if width > 1, words[end].breakBefore { break }"),
+    ("context: the wider span wins a tie", "            if a.end - a.start != b.end - b.start { return a.end - a.start < b.end - b.start }",
+     "            if a.end - a.start != b.end - b.start { return a.end - a.start > b.end - b.start }"),
+    ("context: the first match wins, not the best", "            if a.score != b.score { return a.score > b.score }\n", ""),
+    ("context: overlapping fixes", "        for f in found where (f.start...f.end).allSatisfy({ !taken.contains($0) }) {", "        for f in found {"),
+    ("context: punctuation lost", "+ String(phrase.prefix(lead)) + c.term + String(phrase.suffix(trail))", "+ c.term"),
+    ("context: text after the last fix dropped", "        return (out + text[cursor...], fixes)", "        return (out, fixes)"),
+    ("context: text between fixes dropped", "            out += text[cursor..<range.lowerBound] + String(phrase.prefix(lead))", "            out += String(phrase.prefix(lead))"),
+    ("context: a long dictation still corrected", "        guard !terms.isEmpty, !words.isEmpty, words.count <= maximumWords else { return (text, []) }",
+     "        guard !terms.isEmpty, !words.isEmpty else { return (text, []) }"),
+    ("context: numbers count as unknown words", "allSatisfy { $0.trimmed.allSatisfy(\\.isNumber) || plain($0.trimmed) }", "allSatisfy { plain($0.trimmed) }"),
+    # The server seam.
+    ("context: any id goes in a path", 'id.count == 20 && id.hasPrefix("sug_") && id.dropFirst(4).allSatisfy', 'id.hasPrefix("sug_") || id.dropFirst(4).allSatisfy'),
+    ("context: capability without its protocol", '(cleanup["protocol"] as? Int) == protocolVersion && (cleanup["suggestions"] as? Int) == 1', '(cleanup["suggestions"] as? Int) == 1'),
+    ("context: list keeps rows with a bad id", ".filter { validID($0.id) && !$0.written.isEmpty && $0.written.utf16.count <= 100 }", ".filter { !$0.written.isEmpty }"),
+    ("context: one bad row drops the list", "            init(from decoder: Decoder) throws { value = try? DictationServerSuggestion(from: decoder) }",
+     "            init(from decoder: Decoder) throws { value = try DictationServerSuggestion(from: decoder) }"),
+    ("context: any protocol listed", "envelope.version == protocolVersion else { return [] }", "envelope.version > 0 else { return [] }"),
 ]
 
 
@@ -309,6 +391,17 @@ def classifier_self_test() -> None:
 
 
 def compile_checks(work: pathlib.Path) -> tuple[bool, str]:
+    # 0.5.323: the bounded compile profile waits 120 s for the shared lock, then stops with an infrastructure error that
+    # is not a compile failure. Retry that, and only that, a bounded number of times (never a loop without end).
+    for attempt in range(4):
+        built, error, output = compile_once(work)
+        if built or "shared compile lock busy" not in output:
+            return built, error
+        print(f"  compile lock busy, attempt {attempt + 1} of 4", flush=True)
+    return built, error
+
+
+def compile_once(work: pathlib.Path) -> tuple[bool, str, str]:
     out = work / "checks"
     if out.exists():
         out.unlink()
@@ -316,8 +409,14 @@ def compile_checks(work: pathlib.Path) -> tuple[bool, str]:
                             "-swift-version", "6", "-strict-concurrency=complete", "-parse-as-library",
                             str(work / CORE), str(work / "Tests/MacDictationChecks.swift"), "-o", str(out)],
                            capture_output=True, text=True)
-    first_error = next((line for line in (build.stderr + build.stdout).splitlines() if "error:" in line), "")
-    return build.returncode == 0, first_error.strip()
+    output = build.stderr + build.stdout
+    lines = output.splitlines()
+    first_error = next((line for line in lines if "error:" in line), "")
+    if build.returncode != 0 and not first_error:
+        # Name an infrastructure stop (lock, memory, deadline) instead of an empty reason.
+        first_error = next((line for line in lines if line.startswith("compile-bounded: ") and "receipt" not in line),
+                           next((line for line in reversed(lines) if line.strip()), f"exit {build.returncode}"))
+    return build.returncode == 0, first_error.strip(), output
 
 
 def classify(work: pathlib.Path) -> tuple[str, str]:
@@ -354,7 +453,10 @@ try:
         if original.count(old) != 1:
             sys.exit(f"mutant '{name}' targets {original.count(old)} sites; it must land exactly once")
     results: dict[str, list[str]] = {"KILLED": [], "SURVIVED": [], "INVALID": [], "CRASHED": []}
-    for name, old, new in MUTANTS:
+    selected = [m for m in MUTANTS if any(m[0].startswith(prefix) for prefix in only.split("|"))]
+    if not selected:
+        sys.exit(f"no mutant name starts with {only!r}")
+    for name, old, new in selected:
         (work / CORE).write_text(original.replace(old, new))
         verdict, detail = classify(work)
         results[verdict].append(name)
@@ -365,6 +467,7 @@ try:
     failing = {k: v for k, v in results.items() if k != "KILLED" and v}
     if failing:
         sys.exit("mutation gate FAILED: " + "; ".join(f"{k.lower()}: {v}" for k, v in failing.items()))
-    print(f"PASS dictation core mutation gate: {len(MUTANTS)} mutants, each killed by a named check, green baseline")
+    print(f"PASS dictation core mutation gate: {len(selected)} mutants" + (f" (of {len(MUTANTS)}, named {only!r})" if only else "")
+          + ", each killed by a named check, green baseline")
 finally:
     shutil.rmtree(work, ignore_errors=True)

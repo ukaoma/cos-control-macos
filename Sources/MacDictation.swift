@@ -144,6 +144,9 @@ struct DictationReplaceOffer: Equatable {
 struct DictationDelivered: Sendable {
     let outcome: DictationDeliveryOutcome
     let target: DictationInsertTarget?
+    /// 0.5.323: the field was read before typing. What was typed (it may differ from what was heard), the fixes, and
+    /// the field's text outside the dictation for Learn from my edits. Memory only; never logged, saved or sent.
+    var context: DictationFieldContext.Applied? = nil
 }
 
 @MainActor enum DictationInsertion {
@@ -151,14 +154,15 @@ struct DictationDelivered: Sendable {
     private static var chromium: [String: Bool] = [:]
     private static var electron: [String: Bool] = [:]
 
-    static func deliver(_ raw: String, restoreClipboard: Bool) async -> DictationDelivered {
+    static func deliver(_ raw: String, restoreClipboard: Bool, fieldContext: Bool = false) async -> DictationDelivered {
         let started = Date()
         let app = NSWorkspace.shared.frontmostApplication
         let bundle = app?.bundleIdentifier
         let name = app?.localizedName ?? "the app"
         let terminal = KnownApps.isTerminal(bundle)
-        let text = terminal ? DictationDelivery.terminalText(raw) : raw
-        let count = text.utf16.count
+        // 0.5.323: the field's own words may respell it before it is typed (DictationFieldContext, below).
+        var text = terminal ? DictationDelivery.terminalText(raw) : raw
+        var count = text.utf16.count
         var facts = "bundle=\(bundle ?? "-") terminal=\(terminal)"
         // 0.5.312: the clipboard is written only when COS must: just before a ⌘V it posts, or for the card that asks the
         // person to paste. Accessibility insertion never touches it (DictationClipboard.use).
@@ -166,6 +170,7 @@ struct DictationDelivered: Sendable {
         var wroteTranscript = false
         // 0.5.313: set only when a measurement proved exactly where the text landed.
         var landed: DictationInsertTarget?
+        var context: DictationFieldContext.Applied?
         // Durable, and never the text: what was focused, what COS measured, what it did (0.5.310).
         func done(_ outcome: DictationDeliveryOutcome) -> DictationDelivered {
             if DictationClipboard.use(for: outcome) == .keepForCard, !wroteTranscript, outcome != .refused(.clipboardChanged) {
@@ -173,8 +178,8 @@ struct DictationDelivered: Sendable {
             }
             let ms = Int(Date().timeIntervalSince(started) * 1000), span = landed != nil ? "measured" : "none"
             dictationLog.notice("delivery \(facts, privacy: .public) outcome=\(String(describing: outcome), privacy: .public) ms=\(ms) span=\(span, privacy: .public)")
-            if case .inserted = outcome { return DictationDelivered(outcome: outcome, target: landed) }
-            return DictationDelivered(outcome: outcome, target: nil)
+            if case .inserted = outcome { return DictationDelivered(outcome: outcome, target: landed, context: context) }
+            return DictationDelivered(outcome: outcome, target: nil, context: context)
         }
 
         let trusted = AXIsProcessTrusted()
@@ -217,6 +222,11 @@ struct DictationDelivered: Sendable {
         let baseline = snapshot(target)
         let route = DictationDelivery.route(isOwnApp: false, terminal: terminal, baselineReadable: baseline.readable)
         facts += " route=\(route.rawValue) before=\(baseline.logDescription)"
+        // 0.5.323: the words already in this field spell a misheard name the way the field has it. Counts only in the log.
+        if let target {
+            context = readContext(target, enabled: fieldContext, terminal: terminal, baseline: baseline, dictation: text, facts: &facts)
+            if let context { text = context.text; count = text.utf16.count }
+        }
 
         if route == .accessibility, let target {
             let setter = AXUIElementSetAttributeValue(target, kAXSelectedTextAttribute as CFString, text as CFString)
@@ -526,6 +536,42 @@ struct DictationDelivered: Sendable {
         return result
     }
 
+    /// 0.5.323: the field's text before the caret and after the selection, bounded (DictationFieldContext.plan), read
+    /// with AXStringForRange under a short timeout, then the dictation respelled from its terms. nil when there is
+    /// nothing to read, the read is too slow, or the field is a password field, secure input or a terminal. The text
+    /// stays in this value and the watch that follows: never logged, never written, never sent.
+    private static func readContext(_ target: AXUIElement, enabled: Bool, terminal: Bool, baseline: DictationFieldSnapshot, dictation: String,
+                                    facts: inout String) -> DictationFieldContext.Applied? {
+        let plan = DictationFieldContext.plan(enabled: enabled, secure: secure(target), terminal: terminal,
+                                              fieldCharacters: baseline.characters, location: baseline.location, length: baseline.length)
+        guard case .read(let before, let after) = plan else {
+            if case .skip(let why) = plan { facts += " context=\(why.replacingOccurrences(of: " ", with: "_"))" }
+            return nil
+        }
+        let started = Date()
+        AXUIElementSetMessagingTimeout(target, DictationFieldContext.readTimeoutSeconds)
+        defer { AXUIElementSetMessagingTimeout(target, 0.25) }
+        let n = baseline.characters ?? 0
+        var read = DictationFieldContext.Read(beforeCut: before.location > 0, afterCut: after.location + after.length < n)
+        var readable = false
+        if before.length > 0, let piece = string(target, location: before.location, length: before.length) { read.before = piece; readable = true }
+        if after.length > 0, DictationFieldContext.inBudget(elapsed: Date().timeIntervalSince(started)),
+           let piece = string(target, location: after.location, length: after.length) { read.after = piece; readable = true }
+        let readMs = Int(Date().timeIntervalSince(started) * 1000)
+        guard readable else { facts += " context=unreadable ms=\(readMs)"; return nil }
+        guard DictationFieldContext.inBudget(elapsed: Date().timeIntervalSince(started)) else { facts += " context=slow ms=\(readMs)"; return nil }
+        var spelled: [String: Bool] = [:]
+        func known(_ word: String) -> Bool {
+            if let k = spelled[word] { return k }
+            let k = NSSpellChecker.shared.checkSpelling(of: word, startingAt: 0).location == NSNotFound
+            spelled[word] = k; return k
+        }
+        let terms = DictationFieldContext.terms(in: read, known: known)
+        let result = DictationFieldContext.corrected(dictation, terms: terms, known: known)
+        facts += " context=read terms=\(terms.count) fixes=\(result.fixes.count) ms=\(Int(Date().timeIntervalSince(started) * 1000))"
+        return DictationFieldContext.Applied(text: result.text, fixes: result.fixes, outside: [read.before, read.after].filter { !$0.isEmpty })
+    }
+
     // Learn from my edits (0.5.318) reads through these: counts and the caret, a bounded range, focus, secure fields.
     static func measure(_ element: AXUIElement) -> DictationFieldSnapshot { snapshot(element) }
     static func text(_ element: AXUIElement, location: Int, length: Int) -> String? { string(element, location: location, length: length) }
@@ -606,7 +652,8 @@ struct DictationDelivered: Sendable {
     }
     /// A watch that ended on its own clears only itself, never a newer one.
     private func ended(_ id: UUID) { if watching == id { task = nil; watching = nil } }
-    func start(_ target: DictationInsertTarget, mode: DictationLearnMode, found: @escaping @MainActor (DictationEditLearning.Candidate) -> Void) {
+    func start(_ target: DictationInsertTarget, mode: DictationLearnMode, context: DictationFieldContext.Applied? = nil,
+               found: @escaping @MainActor (DictationEditLearning.Candidate) -> Void) {
         stop("new dictation")
         let element = target.element
         let eligibility = DictationEditLearning.eligibility(mode: mode, secure: DictationInsertion.secure(element), terminal: target.terminal,
@@ -664,8 +711,12 @@ struct DictationDelivered: Sendable {
                     dictationLog.notice("learn read=\(reads) track=moved")
                 case .inside(let edit, let l):
                     length = l
-                    let candidate = learning ? Self.candidate(edit) : nil
-                    dictationLog.notice("learn read=\(reads) track=inside words=\(edit.original.split(whereSeparator: \.isWhitespace).count)>\(edit.replacement.split(whereSeparator: \.isWhitespace).count) learning=\(learning) candidate=\(candidate != nil)")
+                    // 0.5.323: the field outside the dictation, in this read and in the one before typing, is evidence.
+                    let outside = DictationEditLearning.outside(window: current, start: start, length: l) + (context?.outside ?? [])
+                    var candidate = learning ? Self.candidate(edit, outside: outside) : nil
+                    let reverted = candidate.map { DictationEditLearning.undoesContextFix($0, fixes: context?.fixes ?? []) } ?? false
+                    if reverted { candidate = nil }
+                    dictationLog.notice("learn read=\(reads) track=inside words=\(edit.original.split(whereSeparator: \.isWhitespace).count)>\(edit.replacement.split(whereSeparator: \.isWhitespace).count) learning=\(learning) candidate=\(candidate != nil) evidence=\(candidate?.evidence != nil) revert=\(reverted)")
                     if let candidate { found(candidate) }
                 case .lost:
                     dictationLog.notice("learn stop=lost reads=\(reads)"); self?.ended(id); return
@@ -675,7 +726,7 @@ struct DictationDelivered: Sendable {
         }
     }
     /// The tested rule, with the spell checker asked only about the edit's own words and the dictionary read once.
-    private static func candidate(_ edit: DictationReplace.Edit) -> DictationEditLearning.Candidate? {
+    private static func candidate(_ edit: DictationReplace.Edit, outside: [String]) -> DictationEditLearning.Candidate? {
         let edge = CharacterSet.punctuationCharacters.union(.symbols)
         let tokens = (edit.original + " " + edit.replacement).split(whereSeparator: \.isWhitespace)
             .flatMap { [String($0), String($0).trimmingCharacters(in: edge)] }
@@ -683,7 +734,7 @@ struct DictationDelivered: Sendable {
         let corrections = TranscriptionDictionaryStore.shared.corrections
         return DictationEditLearning.candidate(edit, known: { english.contains($0) }, learned: { heard, written in
             corrections.contains { DictationFixGuess.normalized($0.heard) == DictationFixGuess.normalized(heard) && $0.written == written }
-        })
+        }, outside: outside)
     }
 }
 
@@ -1236,6 +1287,10 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
     @Published var formatLists: Bool = UserDefaults.standard.object(forKey: "dictation.formatLists") as? Bool ?? true {
         didSet { UserDefaults.standard.set(formatLists, forKey: "dictation.formatLists") }
     }
+    /// 0.5.323: read the words already in the text box before typing, to spell names and terms the way it has them.
+    @Published var useFieldContext: Bool = UserDefaults.standard.object(forKey: "dictation.fieldContext") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(useFieldContext, forKey: "dictation.fieldContext") }
+    }
     @Published private(set) var microphones: [DictationMicrophone] = []
     @Published private(set) var holdTrigger: DictationTrigger?
     @Published private(set) var toggleTrigger: DictationTrigger?
@@ -1677,8 +1732,9 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
                 let clipboardMoved = interruptedChangeCount.map { $0 != NSPasteboard.general.changeCount } ?? false
                 pendingAudio = nil; phase = "Ready"; message = nil
                 let delivered = copyOnly ? DictationInsertion.copyOnly(text, clipboardMoved: clipboardMoved)
-                    : await DictationInsertion.deliver(text, restoreClipboard: restoreClipboard)
-                finish(text, outcome: delivered.outcome, target: delivered.target)
+                    : await DictationInsertion.deliver(text, restoreClipboard: restoreClipboard, fieldContext: useFieldContext)
+                // What was typed, after the field's own words respelled it (0.5.323), is what is kept and watched.
+                finish(delivered.context?.text ?? text, outcome: delivered.outcome, target: delivered.target, context: delivered.context)
             } catch {
                 guard generation == attempt else { return }; let reason = error.localizedDescription; dictationLog.error("transcribe failed: \(reason, privacy: .public)")
                 fail(reason, action: DictationFailureAction.resolve(action: nil, retryable: nil, noSpeech: false, audioHeld: pendingAudio != nil))
@@ -1686,14 +1742,14 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
         }
     }
     /// The text is on the clipboard already. Measured or sent: flash the pill. Refused: the card, which never takes focus.
-    private func finish(_ text: String, outcome: DictationDeliveryOutcome, target: DictationInsertTarget?) {
+    private func finish(_ text: String, outcome: DictationDeliveryOutcome, target: DictationInsertTarget?, context: DictationFieldContext.Applied? = nil) {
         let record = DictationRecord(id: UUID(), text: text, createdAt: Date(), delivery: outcome.delivery,
                                      engine: lastEngine?.engine, fallbackReason: lastEngine?.fallback)
         lastEngine = nil
         if let target { rememberTarget(target, for: record.id) }
         // 0.5.318: watch the field it went into for the person's own fixes (native apps; Electron is only measured).
         if let target, case .inserted = outcome {
-            editWatcher.start(target, mode: learnMode) { [weak self] candidate in self?.editLearned(candidate, app: target.app) }
+            editWatcher.start(target, mode: learnMode, context: context) { [weak self] candidate in self?.editLearned(candidate, app: target.app) }
         } else {
             editWatcher.stop("not inserted")
         }
@@ -2062,7 +2118,7 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
         guard learnMode != .off, !DictationSuggestions.isQuiet(candidate.heard, candidate.written, in: suggestions, now: now) else {
             dictationLog.notice("learn quiet mode=\(self.learnMode.rawValue, privacy: .public)"); return
         }
-        let item = DictationSuggestion(id: UUID(), heard: candidate.heard, written: candidate.written, app: app, at: now)
+        let item = DictationSuggestion(id: UUID(), heard: candidate.heard, written: candidate.written, app: app, at: now, evidence: candidate.evidence)
         if learnMode == .suggest {
             suggestions = DictationSuggestions.suggesting(item, in: suggestions, now: now); saveSuggestions()
             dictationLog.notice("learn suggested")
@@ -2193,6 +2249,10 @@ struct MacDictationSettings: View {
                 COSDropdown("Learn from my edits", selection: $store.learnMode,
                             options: DictationLearnMode.allCases.map { COSDropdownOption($0, $0.title) })
                 Text("When you fix a word COS just typed, in that same field, COS learns it: until you leave the field, three minutes at most. Suggest only keeps them a week in Activity → Dictation for you to add. Native apps for now; Claude, Slack and other Electron apps are being measured first. Never in terminals or password fields.")
+                    .font(.caption2).foregroundStyle(.secondary)
+                Toggle("Spell words the way the text box has them", isOn: $store.useFieldContext).toggleStyle(COSSwitchStyle())
+                    .help("Before COS types, it reads the words already in the text box, on this Mac only, so a name or term written there comes out spelled the same way.")
+                Text("COS reads the text around the cursor before it types, keeps it only for that dictation and never saves or sends it. When you fix a word to a spelling that text already has, Learn from my edits takes it even if it sounds less alike. Never in terminals or password fields.")
                     .font(.caption2).foregroundStyle(.secondary)
                 Toggle("Format spoken lists", isOn: $store.formatLists).toggleStyle(COSSwitchStyle())
                     .help("Say “number one, … number two, …” or “bullet, … next bullet, …” and COS writes a numbered or bulleted list, one item per line.")
@@ -2946,6 +3006,22 @@ struct DictationSuggestionRow: View {
     let onAdd: (() -> Void)?
     let onDismiss: () -> Void
     var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            pair
+            // 0.5.323: why COS thinks this is a term, under the pair, in words.
+            if let evidence = item.evidence {
+                Text(evidence.words)
+                    .font(COSType.body(max(8, fontSize - 1)))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .font(COSType.body(fontSize))
+        .padding(.vertical, 5)
+        .overlay(alignment: .top) { Rectangle().fill(COSPalette.line).frame(height: 1) }
+    }
+    private var pair: some View {
         HStack(spacing: 7) {
             Text(item.heard).strikethrough().foregroundStyle(.secondary).lineLimit(1)
             Text("→").font(COSType.mono(fontSize, weight: .bold)).foregroundStyle(.secondary)
@@ -2971,9 +3047,6 @@ struct DictationSuggestionRow: View {
                     .help("Take this correction back out of the dictionary; COS won't learn it again for 30 days")
             }
         }
-        .font(COSType.body(fontSize))
-        .padding(.vertical, 5)
-        .overlay(alignment: .top) { Rectangle().fill(COSPalette.line).frame(height: 1) }
     }
 }
 

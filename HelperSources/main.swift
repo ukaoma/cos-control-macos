@@ -654,6 +654,7 @@ final class COSControlHelper {
         case "dictation-check": try emitDictationCheck()
         case "dictation-benchmark": try emitDictationBenchmark()
         case "transcription-dictionary": try emitTranscriptionDictionary()
+        case "dictionary-suggestions": try emitDictionarySuggestions()
         case "live-transcript": try emitLiveTranscript(args: args)
         case "live-transcript-status": try emitLiveTranscriptStatus(args: args)
         case "meeting-orphan-recover": try emitMeetingOrphanRecover(args: args)
@@ -16019,6 +16020,34 @@ final class COSControlHelper {
             "vocabulary": vocabulary, "corrections": corrections, "recent": recent,
             "learnAvailable": recentResponse?.status == 200, "unchanged": unchanged,
         ])
+    }
+
+    /// 0.5.323 seam for the server's dictionary suggestions (server 6.77.0 transcript cleanup, unpublished when this was
+    /// written). Validates the request Control will send (list, or accept/dismiss one `sug_` id; words on stdin, never
+    /// argv) and answers dormant: no token is read and nothing is sent. Control does not call it yet. When 6.77.0 is
+    /// published and proven, this verb gains the three routes (MacDictationCore's DictationServerSuggestions names them)
+    /// behind the transcriptCleanup capability, and its helper check moves from "dormant, no request" to the fixture.
+    private func emitDictionarySuggestions() throws {
+        var input = Data()
+        while input.count <= 1024 {
+            let chunk = try FileHandle.standardInput.read(upToCount: min(512, 1025 - input.count)) ?? Data()
+            if chunk.isEmpty { break }; input.append(chunk)
+        }
+        let allowed: [String: Set<String>] = ["list": [], "accept": ["id"], "dismiss": ["id"]]
+        func suggestionID(_ value: Any?) -> Bool {
+            guard let id = value as? String, id.count == 20, id.hasPrefix("sug_") else { return false }
+            return id.dropFirst(4).allSatisfy { "0123456789abcdef".contains($0) }
+        }
+        guard input.count <= 1024,
+              let envelope = try? JSONSerialization.jsonObject(with: input) as? [String: Any],
+              Set(envelope.keys).isSubset(of: ["operation", "payload"]),
+              let operation = envelope["operation"] as? String, let keys = allowed[operation],
+              let payload = (envelope["payload"] ?? [String: Any]()) as? [String: Any],
+              Set(payload.keys) == keys, keys.isEmpty || suggestionID(payload["id"]) else {
+            emit(ok: false, message: "Dictionary suggestion request is invalid."); return
+        }
+        emit(ok: false, message: "Dictionary suggestions from meetings arrive with COS server 6.77.0. Nothing was sent.",
+             details: ["dormant": true, "operation": operation])
     }
 
     /// Manual Mac capture: bounded stdin and allowlisted routes. Never creates a tap or prompts for permission.
