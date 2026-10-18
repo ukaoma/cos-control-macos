@@ -651,6 +651,7 @@ final class COSControlHelper {
         case "meeting-ask": try emitMeetingAsk()
         case "mac-recording": try emitMacRecording()
         case "mac-dictation": try emitMacDictation()
+        case "dictation-polish": try emitDictationPolish()
         case "dictation-check": try emitDictationCheck()
         case "dictation-benchmark": try emitDictationBenchmark()
         case "transcription-dictionary": try emitTranscriptionDictionary()
@@ -15798,6 +15799,33 @@ final class COSControlHelper {
             emit(ok: false, message: "Dictation audio is invalid or exceeds two minutes."); return
         }
         let answer = try dictate(audio)
+        emit(ok: answer.ok, message: answer.message, details: answer.details)
+    }
+
+    /// 0.5.325 AI polish (DictationPolishBridge): the heard text arrives only on stdin and leaves only in this answer.
+    /// One request to the fixed finalize route, ending at the model's deadline. Never logged, never written.
+    private func emitDictationPolish() throws {
+        let limit = DictationPolishBridge.inputLimit
+        var input = Data()
+        while input.count <= limit {
+            let chunk = try FileHandle.standardInput.read(upToCount: min(16_384, limit + 1 - input.count)) ?? Data()
+            if chunk.isEmpty { break }; input.append(chunk)
+        }
+        guard let polish = DictationPolishBridge.parse(input), let seconds = DictationPolishBridge.requestSeconds(polish.model) else {
+            emit(ok: false, message: "AI polish takes text up to 8,000 characters and Haiku or Sonnet.", details: ["reason": "invalid_request"]); return
+        }
+        let started = ProcessInfo.processInfo.systemUptime
+        // The token file alone, without speakerReviewToken's health probe: that probe could spend the whole budget.
+        guard let token = try? readToken() else {
+            emit(ok: false, message: "AI polish needs the COS server on this Mac. COS pastes what it heard.",
+                 details: ["reason": "no_token", "model": polish.model, "elapsedMs": 0]); return
+        }
+        let deadline = started + seconds
+        let response = request(DictationPolishBridge.route, method: "POST", token: token, body: DictationPolishBridge.body(polish),
+                               timeout: Int(seconds.rounded(.up)), deadlineUptime: deadline)
+        let now = ProcessInfo.processInfo.systemUptime
+        let answer = DictationPolishBridge.answer(status: response?.status, body: response?.body, model: polish.model,
+                                                  elapsedMs: Int((now - started) * 1000), timedOut: response == nil && now >= deadline - 0.05)
         emit(ok: answer.ok, message: answer.message, details: answer.details)
     }
 

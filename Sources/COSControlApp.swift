@@ -28,6 +28,11 @@ struct COSControlApp: App {
             guard let model else { throw HelperClientError.commandFailed("COS Control is closing.") }
             return try await model.runHelper(["mac-dictation"], timeout: 40, stdinData: audio)
         }
+        // 0.5.325 AI polish: the heard text on stdin, never argv; the helper process gets the whole budget and no more.
+        model.dictation.polishBridge = { [weak model] request, budget in
+            guard let model else { throw HelperClientError.commandFailed("COS Control is closing.") }
+            return try await model.runHelper(["dictation-polish"], timeout: budget, stdinData: request)
+        }
         model.dictation.petFrame = { [weak sessionPet] in sessionPet?.visibleFrame }
         // 0.5.317: a failure card's one action, and the server version a dictation succeeded on (the Voice row's proof).
         model.dictation.installParakeet = { [weak model] in model?.installParakeet() }

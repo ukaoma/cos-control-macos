@@ -442,10 +442,16 @@ struct DictationRecord: Codable, Equatable, Identifiable, Sendable {
     /// wanted Parakeet. nil in records from before 0.5.317, which were all Parakeet Ultra.
     let engine: String?
     let fallbackReason: String?
+    /// 0.5.325 AI polish: what the engine heard, kept only when Claude's polish changed it, and which model polished
+    /// it (haiku or sonnet). Both nil in older records and whenever polish was off, failed or changed nothing.
+    let heard: String?
+    let polishModel: String?
 
-    init(id: UUID, text: String, createdAt: Date, delivery: Delivery, engine: String? = nil, fallbackReason: String? = nil) {
+    init(id: UUID, text: String, createdAt: Date, delivery: Delivery, engine: String? = nil, fallbackReason: String? = nil,
+         heard: String? = nil, polishModel: String? = nil) {
         self.id = id; self.text = text; self.createdAt = createdAt; self.delivery = delivery
         self.engine = engine; self.fallbackReason = fallbackReason
+        self.heard = heard; self.polishModel = polishModel
     }
 
     var wordCount: Int { text.split(whereSeparator: { $0.isWhitespace || $0.isNewline }).count }
@@ -461,12 +467,17 @@ struct DictationRecord: Codable, Equatable, Identifiable, Sendable {
         case .copied(let refusal): "copied, " + refusal.historyLabel
         }
     }
+    /// "Polished · Haiku" when Claude's polish changed this dictation; nil otherwise (or for a model this build does not know).
+    var polishLabel: String? {
+        guard heard != nil, let name = polishModel.flatMap(DictationPolishModel.init(rawValue:))?.shortName else { return nil }
+        return "Polished · " + name
+    }
     func metaLine(time: String) -> String {
-        "\(time) · \(wordCount) \(wordCount == 1 ? "word" : "words") · \(outcomeLabel)"
+        "\(time) · \(wordCount) \(wordCount == 1 ? "word" : "words") · \(outcomeLabel)" + (polishLabel.map { " · " + $0 } ?? "")
     }
 
     // Stored as kind/app/reason. 0.5.309 files carry insertedApp/pasted instead and still load.
-    private enum Keys: String, CodingKey { case id, text, createdAt, kind, app, reason, viaPaste, insertedApp, pasted, engine, fallbackReason }
+    private enum Keys: String, CodingKey { case id, text, createdAt, kind, app, reason, viaPaste, insertedApp, pasted, engine, fallbackReason, heard, polishModel }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: Keys.self)
         id = try c.decode(UUID.self, forKey: .id)
@@ -474,6 +485,9 @@ struct DictationRecord: Codable, Equatable, Identifiable, Sendable {
         createdAt = try c.decode(Date.self, forKey: .createdAt)
         engine = try c.decodeIfPresent(String.self, forKey: .engine)
         fallbackReason = try c.decodeIfPresent(String.self, forKey: .fallbackReason)
+        // 0.5.325: absent before AI polish. A value of the wrong type reads as none rather than dropping the file.
+        heard = (try? c.decodeIfPresent(String.self, forKey: .heard)) ?? nil
+        polishModel = (try? c.decodeIfPresent(String.self, forKey: .polishModel)) ?? nil
         if let kind = try c.decodeIfPresent(String.self, forKey: .kind) {
             let app = try c.decodeIfPresent(String.self, forKey: .app) ?? "the app"
             switch kind {
@@ -492,6 +506,7 @@ struct DictationRecord: Codable, Equatable, Identifiable, Sendable {
         var c = encoder.container(keyedBy: Keys.self)
         try c.encode(id, forKey: .id); try c.encode(text, forKey: .text); try c.encode(createdAt, forKey: .createdAt)
         try c.encodeIfPresent(engine, forKey: .engine); try c.encodeIfPresent(fallbackReason, forKey: .fallbackReason)
+        try c.encodeIfPresent(heard, forKey: .heard); try c.encodeIfPresent(polishModel, forKey: .polishModel)
         switch delivery {
         case .inserted(let app): try c.encode("inserted", forKey: .kind); try c.encode(app, forKey: .app)
         case .unconfirmed(let app, let viaPaste):
@@ -569,7 +584,8 @@ enum DictationHistory {
     /// Fix a word's Save corrects the dictation itself (0.5.318, Miles: Heard still read "Y joule 360" after he saved
     /// "Jewel360"): same id, time, place and order; only the text changes.
     static func correcting(_ id: UUID, to text: String, in list: [DictationRecord]) -> [DictationRecord] {
-        list.map { $0.id == id ? DictationRecord(id: $0.id, text: text, createdAt: $0.createdAt, delivery: $0.delivery, engine: $0.engine, fallbackReason: $0.fallbackReason) : $0 }
+        list.map { $0.id == id ? DictationRecord(id: $0.id, text: text, createdAt: $0.createdAt, delivery: $0.delivery, engine: $0.engine, fallbackReason: $0.fallbackReason,
+                                                 heard: $0.heard, polishModel: $0.polishModel) : $0 }
     }
     /// A file that exists but does not read is moved aside to `<name>.corrupt-<UTC stamp>` before anything is saved
     /// over it, so a bad build can never silently erase someone's history. `writable` is false when it could not move.
@@ -679,6 +695,8 @@ enum DictationPill: Equatable, Sendable {
     case hidden
     case listening(since: Date)
     case transcribing
+    /// 0.5.325: Claude is polishing the heard text (AI polish), at most its budget.
+    case polishing
     /// About 1.5 seconds after delivery. `confirmed` (green, ✓) only when a measured change proved the text landed.
     case flash(label: String, confirmed: Bool)
     static let flashSeconds: TimeInterval = 1.5
@@ -688,6 +706,7 @@ enum DictationPill: Equatable, Sendable {
         case .hidden: ""
         case .listening: "LISTENING"
         case .transcribing: "TRANSCRIBING"
+        case .polishing: "POLISHING"
         case .flash(let label, _): label
         }
     }
@@ -1445,6 +1464,115 @@ enum DictationLearnMode: String, CaseIterable, Sendable {
         case .suggest: "Suggest only"
         case .off: "Off"
         }
+    }
+}
+
+// MARK: - AI polish (0.5.325)
+//
+// Miles, 2026-10-18: Claude cleans a dictation before COS pastes it, through the server's POST /api/dictation/finalize
+// (the glasses' dictation polish: dictionary fixes, then Claude Haiku or Sonnet through the CLI, with the server's own
+// daily cap and breaker). Measured that night: it fixes filler ("Um"), punctuation, doubled words and dictionary
+// spellings; it does NOT reliably fix a sound-alike mishearing, and Sonnet sometimes guesses wrong. So it is off by
+// default and the setting says only what it does. Most dictations go into iTerm2 and Claude (Electron), where replacing
+// text after the paste cannot be trusted, so polish runs BEFORE the paste and never longer than its budget: then COS
+// pastes what it heard. A finalize call took 2.3 to 3.4 s with either model; a direct Sonnet call up to 7.6 s.
+
+/// Settings, Dictation: AI polish. Off (default), Claude Haiku or Claude Sonnet. UserDefaults `dictation.polishModel`.
+enum DictationPolishModel: String, CaseIterable, Sendable {
+    case off, haiku, sonnet
+    static let `default` = DictationPolishModel.off
+    static let defaultsKey = "dictation.polishModel"
+    /// A missing or unknown stored value is Off: polish runs only when the person chose a model.
+    static func stored(_ value: String?) -> DictationPolishModel { value.flatMap(Self.init(rawValue:)) ?? .default }
+    var title: String {
+        switch self {
+        case .off: "Off"
+        case .haiku: "Claude Haiku"
+        case .sonnet: "Claude Sonnet"
+        }
+    }
+    /// The history's "Polished · Haiku". nil for Off.
+    var shortName: String? {
+        switch self {
+        case .off: nil
+        case .haiku: "Haiku"
+        case .sonnet: "Sonnet"
+        }
+    }
+}
+
+/// The pure half of AI polish: when it runs, how long COS waits, what it sends, and which text is pasted. The app asks
+/// these and acts; the helper's `dictation-polish` does the round trip (DictationPolishBridge in ProviderStatusCore).
+enum DictationPolish {
+    /// The server answers 413 above 8,000 characters (a JavaScript string length: UTF-16 units).
+    static let maximumCharacters = 8_000
+    /// An answer this much longer than what was heard is not a cleanup (a reply, or the model talking): paste the heard.
+    static let maximumGrowth = 1.5
+    static let growthAllowance = 40
+    /// The app's whole wait, process start to answer. The helper's request ends half a second sooner
+    /// (DictationPolishBridge.requestSeconds), so a slow model reads as a timeout from the helper, not a killed process.
+    static func budget(for model: DictationPolishModel) -> TimeInterval? {
+        switch model {
+        case .off: nil
+        case .haiku: 5
+        case .sonnet: 9
+        }
+    }
+    static func shouldPolish(text: String, model: DictationPolishModel) -> Bool {
+        guard model != .off else { return false }
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+        return text.utf16.count <= maximumCharacters
+    }
+    /// The helper's stdin: {text, model, app?}. The app is the frontmost app's name, one line, at most 64 characters,
+    /// or left out. nil when polish is off.
+    static func request(text: String, model: DictationPolishModel, app: String?) -> Data? {
+        guard model != .off else { return nil }
+        var body: [String: String] = ["text": text, "model": model.rawValue]
+        if let app = app?.trimmingCharacters(in: .whitespacesAndNewlines), !app.isEmpty,
+           app.count <= 64, !app.contains(where: \.isNewline) {
+            body["app"] = app
+        }
+        return try? JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])
+    }
+    enum Outcome: Equatable, Sendable {
+        case applied(String)
+        case unchanged
+        case timeout
+        case failed(String)
+        /// The log's outcome word: applied, unchanged, timeout, or failed:<reason>. Never text.
+        var logName: String {
+            switch self {
+            case .applied: "applied"
+            case .unchanged: "unchanged"
+            case .timeout: "timeout"
+            case .failed(let reason): "failed:" + reason
+            }
+        }
+        /// What COS pastes: the polished text when it was applied, otherwise what it heard.
+        func text(heard: String) -> String {
+            if case .applied(let polished) = self { return polished }
+            return heard
+        }
+    }
+    /// The helper's answer, read. `ok` false (no server, an HTTP error, a bad answer, the helper's own timeout): the
+    /// heard text. `polished` must be true: the server answers false with only the dictionary pass when Claude failed,
+    /// which is not what the history would claim. An empty or runaway answer is never pasted.
+    static func choose(heard: String, ok: Bool, text: String?, polished: Bool?, reason: String?) -> Outcome {
+        guard ok else {
+            let why = reason.flatMap { $0.range(of: "^[a-z0-9_]{1,40}$", options: .regularExpression) != nil ? $0 : nil } ?? "refused"
+            return why == "timeout" ? .timeout : .failed(why)
+        }
+        guard polished == true else { return .failed("not_polished") }
+        guard let text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return .failed("empty") }
+        guard Double(text.count) <= Double(heard.count) * maximumGrowth + Double(growthAllowance) else { return .failed("grew") }
+        return text == heard ? .unchanged : .applied(text)
+    }
+    /// Settings' one line under AI polish.
+    static func settingNote(_ model: DictationPolishModel) -> String {
+        guard let budget = budget(for: model) else {
+            return "Off: COS pastes what it heard. Haiku or Sonnet sends each dictation to Claude to clean up first."
+        }
+        return "Claude cleans filler, punctuation and dictionary spellings before COS pastes. It does not reliably fix misheard words. Uses your Claude plan. If it takes longer than \(Int(budget)) seconds, COS pastes what it heard."
     }
 }
 

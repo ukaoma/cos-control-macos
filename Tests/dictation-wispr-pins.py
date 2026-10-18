@@ -513,11 +513,12 @@ need(save_fn.index("recent = DictationHistory.correcting(recordID, to: corrected
      < save_fn.index("replaceOffer = DictationReplaceOffer("),
      "Save corrects the stored dictation (Heard, history) before offering Replace (Miles: Heard still read the mishearing)")
 need("recent = recent.map" not in body(dictation, "    func replaceCorrected() {"), "Replace no longer owns the record update; Save does")
-# 0.5.318 spoken lists: on by default, applied once to the transcript before it is delivered and recorded.
+# 0.5.318 spoken lists: on by default, applied once to the transcript before it is delivered and recorded. 0.5.325: to
+# what AI polish answered, or what was heard (`said`).
 need('forKey: "dictation.formatLists") as? Bool ?? true' in dictation
      and 'Toggle("Format spoken lists", isOn: $store.formatLists)' in dictation, "Format spoken lists is a setting, on by default")
 need(transcribe.count("DictationListFormat.format(") == 1
-     and transcribe.index("let text = formatLists ? DictationListFormat.format(heard) : heard") < transcribe.index("let delivered = copyOnly"),
+     and transcribe.index("let text = formatLists ? DictationListFormat.format(said) : said") < transcribe.index("let delivered = copyOnly"),
      "the list format runs before delivery, so what is typed and what is kept match")
 replace_ui = body(dictation, "    func replaceCorrected() {")
 need(replace_ui.count("copy(offer.corrected)") == 3 and 'fixNote = "Copied the corrected text."' in replace_ui,

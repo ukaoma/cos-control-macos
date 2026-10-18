@@ -1048,6 +1048,102 @@ final class FakeDictationBoard: DictationPasteboardAccess {
             expect(SV.list(Data(protocol2.utf8)).isEmpty && SV.list(Data(protocol2.replacingOccurrences(of: #""protocol":2"#, with: #""protocol":1"#).utf8)).count == 1
                    && SV.list(Data("{}".utf8)).isEmpty, "another protocol reads as nothing, even with rows that would decode")
         }
-        print("PASS Mac dictation: \(count) policy checks; insert-target table, measured delivery, terminals, layout ⌘V, listening bars end to end, clipboard restore, sounds, pill placement, recent dictations file, card countdown, fix-a-word selection, quick fix, replace, span guess, quiet and restore, bounded audio, PCM16 WAV, device failure, any-key triggers, field context and its evidence")
+        do {
+            // 0.5.325 AI polish (Miles, 2026-10-18). Off by default; Claude's cleanup only within its budget; every failure
+            // pastes what was heard; the history keeps what was heard only when polish changed it.
+            typealias PM = DictationPolishModel
+            typealias P = DictationPolish
+            expect(PM.default == .off && PM.stored(nil) == .off && PM.stored("") == .off && PM.stored("opus") == .off,
+                   "polish: off by default, and an unknown stored value is off")
+            expect(PM.stored("haiku") == .haiku && PM.stored("sonnet") == .sonnet && PM.defaultsKey == "dictation.polishModel",
+                   "polish: the chosen model is kept under dictation.polishModel")
+            expect(PM.allCases.map(\.title) == ["Off", "Claude Haiku", "Claude Sonnet"] && PM.off.shortName == nil
+                   && PM.haiku.shortName == "Haiku" && PM.sonnet.shortName == "Sonnet", "polish: the setting's choices and the history's names")
+            expect(P.budget(for: .off) == nil && P.budget(for: .haiku) == 5 && P.budget(for: .sonnet) == 9,
+                   "polish: COS waits 5 s for Haiku and 9 s for Sonnet (measured 2.3 to 3.4 s, a direct Sonnet call up to 7.6 s)")
+            expect(!P.shouldPolish(text: "um so the thing", model: .off), "polish: off never polishes")
+            expect(P.shouldPolish(text: "um so the thing", model: .haiku) && P.shouldPolish(text: "x", model: .sonnet), "polish: a chosen model polishes")
+            expect(!P.shouldPolish(text: " \n ", model: .haiku) && !P.shouldPolish(text: "", model: .sonnet), "polish: nothing to polish in blank text")
+            let atLimit = String(repeating: "a", count: 8_000), overLimit = String(repeating: "a", count: 8_001)
+            expect(P.shouldPolish(text: atLimit, model: .haiku) && !P.shouldPolish(text: overLimit, model: .haiku),
+                   "polish: up to 8,000 characters (the server's 413 limit), never over")
+            // The server counts a JavaScript string: an emoji is two units, so 4,001 of them is over 8,000.
+            expect(!P.shouldPolish(text: String(repeating: "😀", count: 4_001), model: .haiku) && P.shouldPolish(text: String(repeating: "😀", count: 4_000), model: .haiku),
+                   "polish: the limit is counted in UTF-16 units, as the server counts")
+            func decoded(_ data: Data?) -> [String: String]? { data.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: String] } }
+            expect(decoded(P.request(text: "um hi", model: .haiku, app: " iTerm2 ")) == ["text": "um hi", "model": "haiku", "app": "iTerm2"],
+                   "polish: the request is the text, the model and the app's name")
+            expect(decoded(P.request(text: "um hi", model: .sonnet, app: nil)) == ["text": "um hi", "model": "sonnet"]
+                   && decoded(P.request(text: "um hi", model: .sonnet, app: String(repeating: "A", count: 65))) == ["text": "um hi", "model": "sonnet"]
+                   && decoded(P.request(text: "um hi", model: .sonnet, app: "Two\nlines")) == ["text": "um hi", "model": "sonnet"]
+                   && decoded(P.request(text: "um hi", model: .sonnet, app: "  ")) == ["text": "um hi", "model": "sonnet"],
+                   "polish: no app, a long app name, one with a line break or a blank one is left out")
+            expect(P.request(text: "um hi", model: .off, app: "Notes") == nil, "polish: off sends nothing")
+            let heard = "Um so the the plan is ready"
+            expect(P.choose(heard: heard, ok: true, text: "So the plan is ready.", polished: true, reason: nil) == .applied("So the plan is ready."),
+                   "polish: a polished answer is applied")
+            expect(P.choose(heard: heard, ok: true, text: heard, polished: true, reason: nil) == .unchanged, "polish: the same text is unchanged")
+            expect(P.choose(heard: heard, ok: true, text: "So the plan is ready.", polished: false, reason: nil) == .failed("not_polished")
+                   && P.choose(heard: heard, ok: true, text: "So the plan is ready.", polished: nil, reason: nil) == .failed("not_polished"),
+                   "polish: the server's dictionary-only fallback is not called polished")
+            expect(P.choose(heard: heard, ok: true, text: "  \n", polished: true, reason: nil) == .failed("empty")
+                   && P.choose(heard: heard, ok: true, text: nil, polished: true, reason: nil) == .failed("empty"), "polish: an empty answer is never pasted")
+            // 27 characters heard: 27 x 1.5 + 40 = 80.5. 80 is a cleanup at the edge; 81 is a reply.
+            expect(P.choose(heard: heard, ok: true, text: String(repeating: "b", count: 80), polished: true, reason: nil) == .applied(String(repeating: "b", count: 80))
+                   && P.choose(heard: heard, ok: true, text: String(repeating: "b", count: 81), polished: true, reason: nil) == .failed("grew"),
+                   "polish: an answer much longer than what was heard is pasted as heard")
+            expect(P.choose(heard: heard, ok: false, text: "leaked text", polished: true, reason: "timeout") == .timeout,
+                   "polish: the helper's timeout reads as a timeout")
+            expect(P.choose(heard: heard, ok: false, text: "leaked text", polished: true, reason: "needs_server_update") == .failed("needs_server_update")
+                   && P.choose(heard: heard, ok: false, text: "So it.", polished: true, reason: nil) == .failed("refused")
+                   && P.choose(heard: heard, ok: false, text: "So it.", polished: true, reason: "Bad Reason; rm -rf") == .failed("refused"),
+                   "polish: a refusal never applies its text, and only a short identifier reaches the log")
+            for outcome in [P.Outcome.unchanged, .timeout, .failed("unreachable")] {
+                expect(outcome.text(heard: heard) == heard, "polish: every outcome but applied pastes what was heard (\(outcome.logName))")
+            }
+            expect(P.Outcome.applied("So.").text(heard: heard) == "So." && P.Outcome.applied("Secret words").logName == "applied"
+                   && P.Outcome.failed("grew").logName == "failed:grew" && P.Outcome.timeout.logName == "timeout",
+                   "polish: the log names the outcome and never the text")
+            for model in PM.allCases {
+                let note = P.settingNote(model)
+                expect(!note.contains("\u{2014}") && !note.contains("\u{2192}") && !note.contains("->"), "polish: the setting line has no em dash or arrow")
+            }
+            expect(P.settingNote(.haiku).contains("longer than 5 seconds") && P.settingNote(.sonnet).contains("longer than 9 seconds")
+                   && P.settingNote(.haiku).contains("does not reliably fix misheard words") && P.settingNote(.haiku).contains("Uses your Claude plan"),
+                   "polish: the setting says what it fixes, what it does not, and the wait")
+            expect(DictationPill.polishing.label == "POLISHING" && DictationPill.polishing.replacesLedger, "polish: the pill says POLISHING")
+            // The record: what was heard and the model survive the history file; older files still load.
+            let polishedRecord = DictationRecord(id: UUID(), text: "So the plan is ready.", createdAt: Date(timeIntervalSince1970: 1_760_800_000),
+                                                 delivery: .unconfirmed(app: "iTerm2", viaPaste: true), engine: "parakeet-ultra",
+                                                 heard: heard, polishModel: "haiku")
+            let polishedTrip = try JSONDecoder().decode(DictationRecord.self, from: JSONEncoder().encode(polishedRecord))
+            expect(polishedTrip == polishedRecord && polishedTrip.heard == heard && polishedTrip.polishModel == "haiku",
+                   "polish: what was heard and the model are saved with the dictation")
+            let plainJSON = try JSONSerialization.jsonObject(with: JSONEncoder().encode(engineRecord)) as? [String: Any] ?? [:]
+            expect(plainJSON["heard"] == nil && plainJSON["polishModel"] == nil, "polish: an unpolished dictation stores neither")
+            let oldFile = #"{"id":"5A0C2A3C-6A7B-4C8D-9E0F-1A2B3C4D5E6F","text":"old","createdAt":0,"kind":"inserted","app":"Notes","engine":"whisper"}"#
+            let oldRecord = try JSONDecoder().decode(DictationRecord.self, from: Data(oldFile.utf8))
+            expect(oldRecord.heard == nil && oldRecord.polishModel == nil && oldRecord.engine == "whisper" && oldRecord.polishLabel == nil,
+                   "polish: a 0.5.324 record loads without polish")
+            let oddFile = #"{"id":"5A0C2A3C-6A7B-4C8D-9E0F-1A2B3C4D5E6F","text":"odd","createdAt":0,"kind":"inserted","app":"Notes","heard":7,"polishModel":["haiku"]}"#
+            let oddRecord = try? JSONDecoder().decode(DictationRecord.self, from: Data(oddFile.utf8))
+            expect(oddRecord?.text == "odd" && oddRecord?.heard == nil && oddRecord?.polishModel == nil,
+                   "polish: a polish field of the wrong type reads as none, never dropping the file")
+            expect(polishedRecord.polishLabel == "Polished · Haiku"
+                   && polishedRecord.metaLine(time: "9:41 AM") == "9:41 AM · 5 words · pasted (unconfirmed) · iTerm2 · Polished · Haiku",
+                   "polish: the history row says Polished and the model")
+            let sonnetRecord = DictationRecord(id: UUID(), text: "x", createdAt: Date(), delivery: .inserted(app: "Notes"), heard: "um x", polishModel: "sonnet")
+            expect(sonnetRecord.polishLabel == "Polished · Sonnet", "polish: Sonnet is named")
+            expect(engineRecord.metaLine(time: "9:41 AM") == "9:41 AM · 2 words · inserted · Notes"
+                   && DictationRecord(id: UUID(), text: "x", createdAt: Date(), delivery: .inserted(app: "Notes"), polishModel: "haiku").polishLabel == nil
+                   && DictationRecord(id: UUID(), text: "x", createdAt: Date(), delivery: .inserted(app: "Notes"), heard: "y", polishModel: "opus").polishLabel == nil,
+                   "polish: no label without what was heard, or for a model this build does not know")
+            let corrected: DictationRecord? = DictationHistory.correcting(polishedRecord.id, to: "So the plan is done.", in: [polishedRecord]).first
+            let correctedHeard: String? = corrected?.heard
+            let correctedModel: String? = corrected?.polishModel
+            expect(correctedHeard == heard && correctedModel == "haiku" && corrected?.text == "So the plan is done.",
+                   "polish: Fix a word keeps what was heard and the model")
+        }
+        print("PASS Mac dictation: \(count) policy checks; insert-target table, measured delivery, terminals, layout ⌘V, listening bars end to end, clipboard restore, sounds, pill placement, recent dictations file, card countdown, fix-a-word selection, quick fix, replace, span guess, quiet and restore, bounded audio, PCM16 WAV, device failure, any-key triggers, field context and its evidence, AI polish")
     }
 }

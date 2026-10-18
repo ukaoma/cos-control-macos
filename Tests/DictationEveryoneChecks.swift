@@ -141,6 +141,56 @@ struct DictationEveryoneChecks {
               hypothesis: "And so, my fellow Americans, ask not what your country can do for you, ask what you can do for your country.") == 0,
               "check sample", "a correct single utterance scores 0")
 
+        // 0.5.325 AI polish: the helper's dictation-polish, pure half. The request it accepts, the body it posts, and
+        // what each finalize answer means. A failure never carries text.
+        typealias PB = DictationPolishBridge
+        func json(_ object: [String: Any]) -> Data { (try? JSONSerialization.data(withJSONObject: object)) ?? Data() }
+        check(PB.parse(json(["text": "um hi", "model": "haiku", "app": " iTerm2 "])) == .init(text: "um hi", model: "haiku", app: "iTerm2"), "polish parse", "text, model and a trimmed app")
+        check(PB.parse(json(["text": "um hi", "model": "sonnet"])) == .init(text: "um hi", model: "sonnet", app: nil), "polish parse", "app is optional")
+        check(PB.parse(json(["text": "um hi", "model": "haiku", "app": String(repeating: "A", count: 65)]))?.app == nil
+              && PB.parse(json(["text": "um hi", "model": "haiku", "app": "a\nb"]))?.app == nil
+              && PB.parse(json(["text": "um hi", "model": "haiku", "app": 7]))?.app == nil, "polish app dropped", "an unusable app name is dropped, the polish still runs")
+        for model in ["opus", "", "Haiku", "off"] {
+            check(PB.parse(json(["text": "um hi", "model": model])) == nil, "polish model", "only haiku or sonnet: \(model)")
+        }
+        check(PB.parse(json(["text": "  \n", "model": "haiku"])) == nil && PB.parse(json(["model": "haiku"])) == nil
+              && PB.parse(json(["text": 5, "model": "haiku"])) == nil, "polish text", "blank, missing or non-string text is refused")
+        check(PB.parse(json(["text": String(repeating: "a", count: 8_000), "model": "haiku"])) != nil
+              && PB.parse(json(["text": String(repeating: "a", count: 8_001), "model": "haiku"])) == nil
+              && PB.parse(json(["text": String(repeating: "😀", count: 4_001), "model": "haiku"])) == nil, "polish limit", "8,000 UTF-16 units, the server's 413 limit")
+        check(PB.parse(json(["text": "um hi", "model": "haiku", "surface": "email"])) == nil, "polish keys", "only text, model and app")
+        check(PB.parse(Data("not json".utf8)) == nil && PB.parse(Data(count: PB.inputLimit + 1)) == nil, "polish parse", "not JSON or too large")
+        check(PB.requestSeconds("haiku") == 4.5 && PB.requestSeconds("sonnet") == 8.5 && PB.requestSeconds("opus") == nil,
+              "polish deadline", "half a second inside Control's 5 s and 9 s")
+        let sent = (try? JSONSerialization.jsonObject(with: Data(PB.body(.init(text: "um hi", model: "sonnet", app: "Claude")).utf8))) as? [String: Any] ?? [:]
+        check(sent["text"] as? String == "um hi" && sent["surface"] as? String == "message" && sent["autocleanModel"] as? String == "sonnet"
+              && (sent["context"] as? [String: String]) == ["app": "Claude"] && sent.count == 4, "polish body", "the finalize contract, with the app as context")
+        let bare = (try? JSONSerialization.jsonObject(with: Data(PB.body(.init(text: "x", model: "haiku", app: nil)).utf8))) as? [String: Any] ?? [:]
+        check(bare.count == 3 && bare["context"] == nil, "polish body", "no context without an app")
+        let good = PB.answer(status: 200, body: ["text": "So hi.", "surface": "message", "polished": true], model: "haiku", elapsedMs: 2300, timedOut: false)
+        check(good.ok && good.details["text"] as? String == "So hi." && good.details["polished"] as? Bool == true
+              && good.details["model"] as? String == "haiku" && good.details["elapsedMs"] as? Int == 2300, "polish answer", "a polished answer passes with its time")
+        let fallback = PB.answer(status: 200, body: ["text": "um hi", "polished": false], model: "haiku", elapsedMs: 900, timedOut: false)
+        check(fallback.ok && fallback.details["polished"] as? Bool == false, "polish answer", "the server's dictionary-only answer says polished false")
+        for body: [String: Any]? in [nil, [:], ["text": "", "polished": true], ["text": "x"], ["text": "x", "polished": 1], ["text": "x", "polished": "true"],
+                                     ["text": String(repeating: "a", count: 16_001), "polished": true], ["text": 4, "polished": true]] {
+            let answer = PB.answer(status: 200, body: body, model: "haiku", elapsedMs: 1, timedOut: false)
+            check(!answer.ok && answer.details["reason"] as? String == "bad_answer" && answer.details["text"] == nil, "polish bad answer", "\(String(describing: body))")
+        }
+        let late = PB.answer(status: nil, body: nil, model: "sonnet", elapsedMs: 8_500, timedOut: true)
+        check(!late.ok && late.details["reason"] as? String == "timeout", "polish timeout", "no answer by the deadline is a timeout")
+        let polishGone = PB.answer(status: nil, body: nil, model: "sonnet", elapsedMs: 3, timedOut: false)
+        check(!polishGone.ok && polishGone.details["reason"] as? String == "unreachable", "polish unreachable", "no answer before the deadline is an unreachable server")
+        for (status, reason) in [(404, "needs_server_update"), (413, "too_long"), (401, "unauthorized"), (403, "unauthorized"), (429, "busy"), (500, "http_500"), (400, "http_400")] {
+            let answer = PB.answer(status: status, body: ["text": "private words", "polished": true], model: "haiku", elapsedMs: 5, timedOut: false)
+            check(!answer.ok && answer.details["reason"] as? String == reason && answer.details["httpStatus"] as? Int == status
+                  && answer.details["text"] == nil && !answer.message.contains("private words"), "polish http", "\(status) is \(reason), with no text")
+        }
+        for answer in [late, polishGone, PB.answer(status: 404, body: nil, model: "haiku", elapsedMs: 1, timedOut: false)] {
+            check(!answer.message.contains("\u{2014}") && !answer.message.contains("\u{2192}") && answer.message.hasSuffix("COS pastes what it heard."),
+                  "polish copy", answer.message)
+        }
+
         // Copy the card may show: no em dash, arrow or eyebrow-style caps.
         for line in [DictationBridge.refusalLine(reason: "parakeet_unavailable", action: "install_parakeet", detail: nil),
                      DictationBridge.refusalLine(reason: "parakeet_unavailable", action: "retry", detail: nil),

@@ -1291,6 +1291,10 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
     @Published var useFieldContext: Bool = UserDefaults.standard.object(forKey: "dictation.fieldContext") as? Bool ?? true {
         didSet { UserDefaults.standard.set(useFieldContext, forKey: "dictation.fieldContext") }
     }
+    /// 0.5.325 AI polish: Claude cleans the heard text before COS pastes it (DictationPolish). Off unless chosen.
+    @Published var polishModel: DictationPolishModel = DictationPolishModel.stored(UserDefaults.standard.string(forKey: DictationPolishModel.defaultsKey)) {
+        didSet { UserDefaults.standard.set(polishModel.rawValue, forKey: DictationPolishModel.defaultsKey) }
+    }
     @Published private(set) var microphones: [DictationMicrophone] = []
     @Published private(set) var holdTrigger: DictationTrigger?
     @Published private(set) var toggleTrigger: DictationTrigger?
@@ -1335,6 +1339,8 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
     /// Levels for the bars. Its own object, so a 20 Hz meter redraws the pill and never the whole pet.
     let meter = DictationMeterFeed()
     var bridge: (@MainActor (Data) async throws -> HelperResponse)?
+    /// 0.5.325: the helper's `dictation-polish`, given the request and the whole wait (DictationPolish.budget).
+    var polishBridge: (@MainActor (Data, TimeInterval) async throws -> HelperResponse)?
     var petFrame: (() -> NSRect?)?
     private var capture: DictationMicrophoneCapture?
     private var pendingAudio: Data? { didSet { if pendingAudio == nil { pendingInterrupted = false; interruptedChangeCount = nil } } }
@@ -1347,6 +1353,8 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
     var canRetry: Bool { pendingAudio != nil && !busy }
     /// The engine the latest answer named, kept until finish() stores it with the record.
     private var lastEngine: (engine: String, fallback: String?)?
+    /// 0.5.325: what was heard and which model polished it, only when AI polish changed the text; kept until finish().
+    private var lastPolish: (heard: String, model: DictationPolishModel)?
     private var task: Task<Void, Never>?
     private var timer: Task<Void, Never>?
     private var meterTask: Task<Void, Never>?
@@ -1727,7 +1735,12 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
                 lastEngine = (engine, fallback)
                 dictationLog.notice("transcribed engine=\(engine, privacy: .public) fallback=\(fallback ?? "none", privacy: .public)")
                 DictationProof.record(engine: engine, serverVersion: serverVersion?())
-                let text = formatLists ? DictationListFormat.format(heard) : heard
+                // 0.5.325 AI polish, before lists and delivery: Claude's cleanup within its budget, or what was heard.
+                let polished = await polish(heard)
+                guard generation == attempt, !Task.isCancelled else { return }
+                let said = polished?.outcome.text(heard: heard) ?? heard
+                if case .applied? = polished?.outcome, let model = polished?.model { lastPolish = (heard, model) } else { lastPolish = nil }
+                let text = formatLists ? DictationListFormat.format(said) : said
                 let copyOnly = pendingInterrupted
                 let clipboardMoved = interruptedChangeCount.map { $0 != NSPasteboard.general.changeCount } ?? false
                 pendingAudio = nil; phase = "Ready"; message = nil
@@ -1741,11 +1754,35 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
             }
         }
     }
+    /// 0.5.325 AI polish. nil when it does not run (Off, empty, over 8,000 characters, no helper). Otherwise one helper
+    /// round trip bounded by the model's budget; every failure is an outcome that pastes what was heard, never a card and
+    /// never a failed dictation. The log line has the model, the outcome and the time, never the text.
+    private func polish(_ heard: String) async -> (outcome: DictationPolish.Outcome, model: DictationPolishModel)? {
+        let model = polishModel
+        guard DictationPolish.shouldPolish(text: heard, model: model), let budget = DictationPolish.budget(for: model), let polishBridge,
+              let request = DictationPolish.request(text: heard, model: model, app: NSWorkspace.shared.frontmostApplication?.localizedName) else { return nil }
+        pill = .polishing
+        let started = Date()
+        let outcome: DictationPolish.Outcome
+        do {
+            let response = try await polishBridge(request, budget)
+            outcome = DictationPolish.choose(heard: heard, ok: response.ok, text: response.details["text"]?.string,
+                                             polished: response.details["polished"]?.bool, reason: response.details["reason"]?.string)
+        } catch HelperClientError.timedOut {
+            outcome = .timeout
+        } catch {
+            outcome = .failed(error is CancellationError ? "canceled" : "helper")
+        }
+        let elapsed = Int(Date().timeIntervalSince(started) * 1000)
+        dictationLog.notice("polish model=\(model.rawValue, privacy: .public) outcome=\(outcome.logName, privacy: .public) ms=\(elapsed)")
+        return (outcome, model)
+    }
     /// The text is on the clipboard already. Measured or sent: flash the pill. Refused: the card, which never takes focus.
     private func finish(_ text: String, outcome: DictationDeliveryOutcome, target: DictationInsertTarget?, context: DictationFieldContext.Applied? = nil) {
         let record = DictationRecord(id: UUID(), text: text, createdAt: Date(), delivery: outcome.delivery,
-                                     engine: lastEngine?.engine, fallbackReason: lastEngine?.fallback)
-        lastEngine = nil
+                                     engine: lastEngine?.engine, fallbackReason: lastEngine?.fallback,
+                                     heard: lastPolish?.heard, polishModel: lastPolish?.model.rawValue)
+        lastEngine = nil; lastPolish = nil
         if let target { rememberTarget(target, for: record.id) }
         // 0.5.318: watch the field it went into for the person's own fixes (native apps; Electron is only measured).
         if let target, case .inserted = outcome {
@@ -2256,6 +2293,11 @@ struct MacDictationSettings: View {
                     .font(.caption2).foregroundStyle(.secondary)
                 Toggle("Format spoken lists", isOn: $store.formatLists).toggleStyle(COSSwitchStyle())
                     .help("Say “number one, … number two, …” or “bullet, … next bullet, …” and COS writes a numbered or bulleted list, one item per line.")
+                // 0.5.325 AI polish: Off by default; the line says what it fixes, what it does not, and how long COS waits.
+                COSDropdown("AI polish", selection: $store.polishModel,
+                            options: DictationPolishModel.allCases.map { COSDropdownOption($0, $0.title) })
+                Text(DictationPolish.settingNote(store.polishModel))
+                    .font(.caption2).foregroundStyle(.secondary)
                 Text("Any shortcut: a modifier plus a key, a function key, or one modifier key by itself such as Fn 🌐 or Right ⌘. Fn and single-key shortcuts use Accessibility. Finished text drops into the text box that has the cursor; with no text box it is copied, and the pet shows it with a Copy button. Some apps, such as terminals and Electron editors, get ⌘V; COS shows Pasted when it can't confirm, then puts your clipboard back. COS never presses Send or Return.")
                     .font(.caption2).foregroundStyle(.secondary)
                 if let message = store.message { Text(message).font(.caption2).foregroundStyle(COSPalette.amber) }
@@ -2520,7 +2562,7 @@ struct DictationListeningPill: View {
                         Text("LISTENING " + DictationPill.clock(context.date.timeIntervalSince(since))).monospacedDigit()
                     }
                 }
-            case .transcribing:
+            case .transcribing, .polishing:
                 DictationWorkingBars(size: size, reduceMotion: reduceMotion)
                 Text(pill.label)
             case .flash:
@@ -2553,6 +2595,7 @@ struct DictationListeningPill: View {
         .accessibilityLabel({ () -> String in
             switch pill {
             case .transcribing: return "Transcribing dictation"
+            case .polishing: return "Polishing dictation"
             case .flash(let label, _): return label
             default: return "Dictation listening"
             }
@@ -2796,6 +2839,21 @@ struct DictationRecordDetail: View {
                     .font(COSType.body(size.typeSize(9)))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+            }
+            // 0.5.325: AI polish changed it. What the engine heard stays one click away.
+            if let heard = record.heard {
+                HStack(alignment: .firstTextBaseline, spacing: size.length(7)) {
+                    Text("What was heard: " + heard)
+                        .font(COSType.body(size.typeSize(9)))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(3)
+                        .truncationMode(.tail)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    Button("Copy") { store.copy(heard) }
+                        .buttonStyle(DictationButtonStyle(size: size))
+                        .help("Copy what was heard, before AI polish")
+                }
             }
             HStack(spacing: size.length(7)) {
                 Button("Copy") { store.copy(record.text) }
@@ -3370,12 +3428,16 @@ private struct DictationHistoryRow: View {
                     .lineLimit(2)
                     .truncationMode(.tail)
                     .textSelection(.enabled)
-                Text("\(record.wordCount) \(record.wordCount == 1 ? "word" : "words") · \(record.outcomeLabel)")
+                Text("\(record.wordCount) \(record.wordCount == 1 ? "word" : "words") · \(record.outcomeLabel)" + (record.polishLabel.map { " · " + $0 } ?? ""))
                     .font(COSType.mono(9, weight: .medium))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                 if let engine = DictationEngineName.detailLine(engine: record.engine, fallbackReason: record.fallbackReason) {
                     Text(engine).font(COSType.body(10)).foregroundStyle(.secondary).lineLimit(2)
+                }
+                // 0.5.325: what the engine heard before AI polish, selectable to copy.
+                if let heard = record.heard {
+                    Text("What was heard: " + heard).font(COSType.body(10)).foregroundStyle(.secondary).lineLimit(3).textSelection(.enabled)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)

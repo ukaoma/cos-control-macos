@@ -694,6 +694,86 @@ enum DictationBridge {
     }
 }
 
+// MARK: - AI polish for Mac dictation (0.5.325)
+//
+// The pure half of the helper's `dictation-polish`. Control sends {text, model, app?} on stdin (never argv: dictated
+// text is private); the helper posts it to the server's POST /api/dictation/finalize, the glasses' dictation polish,
+// and answers {text, polished, model, elapsedMs}. Every failure (no token, no server, an HTTP error, a bad answer, the
+// deadline) is ok:false with a short reason and NO text, so Control pastes what it heard. Nothing here logs or keeps
+// the text. The server ignores extra fields today; `context.app` is for a later server that uses it.
+enum DictationPolishBridge {
+    static let route = "/api/dictation/finalize"
+    /// stdin: 8,000 characters at up to 4 UTF-8 bytes each, plus the JSON around them.
+    static let inputLimit = 40_000
+    /// The server answers 413 above this (UTF-16 units, a JavaScript string length).
+    static let maximumCharacters = 8_000
+    static let answerLimit = 16_000
+    static let models: Set<String> = ["haiku", "sonnet"]
+
+    /// The request's deadline: Control's whole wait (DictationPolish.budget: 5 s Haiku, 9 s Sonnet) less half a second
+    /// for the helper to start and answer, so a slow model ends as this helper's timeout, not a killed process.
+    static func requestSeconds(_ model: String) -> TimeInterval? {
+        switch model {
+        case "haiku": 4.5
+        case "sonnet": 8.5
+        default: nil
+        }
+    }
+
+    struct Request: Equatable { let text: String; let model: String; let app: String? }
+
+    /// Only text, model and app. Text: not blank, at most 8,000 UTF-16 units. Model: haiku or sonnet. App: one line, at
+    /// most 64 characters, or left out (an unusable app name is dropped, never a reason to refuse the polish).
+    static func parse(_ data: Data) -> Request? {
+        guard data.count <= inputLimit, let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              Set(object.keys).isSubset(of: ["text", "model", "app"]),
+              let text = object["text"] as? String, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              text.utf16.count <= maximumCharacters,
+              let model = object["model"] as? String, models.contains(model) else { return nil }
+        let app = (object["app"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let usable = app.flatMap { !$0.isEmpty && $0.count <= 64 && !$0.contains(where: \.isNewline) ? $0 : nil }
+        return Request(text: text, model: model, app: usable)
+    }
+
+    /// The finalize body: the text, the message surface (a dictation is typed into a message box), the model.
+    static func body(_ request: Request) -> String {
+        var object: [String: Any] = ["text": request.text, "surface": "message", "autocleanModel": request.model]
+        if let app = request.app { object["context"] = ["app": app] }
+        let data = (try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])) ?? Data("{}".utf8)
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    /// What one finalize answer means. `status` nil: no answer (`timedOut` says whether the deadline passed).
+    static func answer(status: Int?, body: [String: Any]?, model: String, elapsedMs: Int, timedOut: Bool) -> DictationBridge.Answer {
+        let base: [String: Any] = ["model": model, "elapsedMs": elapsedMs]
+        func refused(_ reason: String, _ message: String, status: Int? = nil) -> DictationBridge.Answer {
+            var details = base.merging(["reason": reason]) { a, _ in a }
+            if let status { details["httpStatus"] = status }
+            return DictationBridge.Answer(ok: false, message: message, details: details)
+        }
+        guard let status else {
+            return timedOut ? refused("timeout", "AI polish took too long. COS pastes what it heard.")
+                : refused("unreachable", "The COS server did not answer. COS pastes what it heard.")
+        }
+        switch status {
+        case 200:
+            guard let body, let text = body["text"] as? String, !text.isEmpty, text.utf16.count <= answerLimit,
+                  let flag = body["polished"] as? NSNumber, CFGetTypeID(flag) == CFBooleanGetTypeID() else {
+                return refused("bad_answer", "The server's polish answer was not readable. COS pastes what it heard.", status: 200)
+            }
+            // A JSON boolean only: 1 or "true" is not the server saying Claude polished it.
+            let polished = flag.boolValue
+            return DictationBridge.Answer(ok: true, message: polished ? "Polished" : "Not polished",
+                                          details: base.merging(["text": text, "polished": polished]) { a, _ in a })
+        case 404: return refused("needs_server_update", "This COS server has no dictation polish. COS pastes what it heard.", status: 404)
+        case 413: return refused("too_long", "Too long for AI polish. COS pastes what it heard.", status: 413)
+        case 401, 403: return refused("unauthorized", "The COS server refused the token. COS pastes what it heard.", status: status)
+        case 429: return refused("busy", "AI polish is busy. COS pastes what it heard.", status: 429)
+        default: return refused("http_\(status)", "AI polish did not finish (HTTP \(status)). COS pastes what it heard.", status: status)
+        }
+    }
+}
+
 /// Word error rate on the pinned 30 s sample, against Resources/VoiceBenchmark/speech-30s.txt. Lowercase, punctuation
 /// stripped, words split on anything else. (substitutions + deletions + insertions) / reference words. One clip is a
 /// sanity check of a speech engine on this Mac, never an accuracy benchmark.

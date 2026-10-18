@@ -1,3 +1,37 @@
+## 0.5.325 (build 378), AI polish for dictation
+
+Miles, 2026-10-18: Claude cleans a dictation before COS pastes it. Off by default.
+
+- Settings, Dictation, AI polish: Off (default), Claude Haiku or Claude Sonnet (UserDefaults `dictation.polishModel`).
+  One line under it says what it does: "Claude cleans filler, punctuation and dictionary spellings before COS pastes. It
+  does not reliably fix misheard words. Uses your Claude plan. If it takes longer than 5 seconds, COS pastes what it
+  heard." (9 seconds for Sonnet.)
+- With a model chosen, the heard text goes to the server's POST /api/dictation/finalize (the glasses' dictation polish:
+  dictionary fixes, then Claude through the CLI, under the server's own daily cap and breaker) through the new helper
+  command `dictation-polish`, after the engine answers and before spoken lists, the text box's own spellings and the
+  paste. Polish runs before the paste because most dictations go into iTerm2 and Claude, where replacing text after
+  the paste cannot be trusted.
+- What it fixes, measured on 2026-10-18: filler ("Um"), punctuation, doubled words and dictionary spellings (EHPK,
+  Even Hub). What it does not: a sound-alike mishearing is not reliably fixed, and Sonnet sometimes guesses wrong.
+- The wait is bounded: 5 s for Haiku and 9 s for Sonnet (a finalize call measured 2.3 to 3.4 s with either; a direct
+  Sonnet call up to 7.6 s). The helper's request ends half a second sooner, so a slow model ends as its timeout. Any
+  failure (no server, an HTTP error, an unreadable answer, the server's dictionary-only answer, an empty answer, an
+  answer much longer than what was heard, the timeout) pastes what was heard: never an error card, never a failed
+  dictation. Blank text or text over 8,000 characters (the server's limit) is not sent.
+- While Claude works the pill says POLISHING with the working bars. Stopping, cancelling or an interruption during
+  polish behaves as during transcribing: the dictation re-checks it is still current after the wait.
+- Dictation history: a record keeps what was heard and the model only when polish changed the text. The row says
+  "Polished · Haiku" (or Sonnet), and the detail shows "What was heard" with Copy (in Activity, Dictation history, the
+  row shows it as selectable text). Records from 0.5.324 and earlier load unchanged; a polish field of the wrong type
+  reads as none.
+- Privacy: the text rides on stdin to the helper, never argv; the helper never logs or writes it; a failure answer
+  carries a reason and no text. The log has one line per polish: model, outcome (applied, unchanged, timeout,
+  failed:<reason>) and milliseconds. The frontmost app's name goes along as `context.app` for a later server; today's
+  server ignores it.
+- Tests: DictationPolish and DictationPolishModel in MacDictationChecks, DictationPolishBridge in
+  DictationEveryoneChecks, the compiled helper against a loopback finalize fixture (Tests/dictation-polish-helper-checks.py)
+  and the wiring pins (Tests/dictation-polish-pins.py), each new guard mutation tested.
+
 ## 0.5.324 (build 377), Jedi combat refinement
 
 Nia V5.1, Elara V4 and Rowan V3: blade-contact-led attacks, registered muzzle-to-blade defense, drawn recovery and guard transitions, three shuffled casts with no immediate repeats. Native rotation runtime and up to 128 authored frames. Exact-stock migrations copy and validate every encounter layer before the atomic manifest replacement; custom artwork and timing remain untouched.

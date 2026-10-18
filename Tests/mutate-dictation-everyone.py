@@ -11,7 +11,8 @@ check fail, and the failure must name the behaviour the mutant breaks. A mutant 
 Lanes: core (ProviderStatusCore + DictationEveryoneChecks), store (run-transcription-settings.sh), connect
 (ProviderConnectModel + ProviderConnectChecks), dictation (MacDictationCore + MacDictationChecks), pins
 (dictation-everyone-pins.py, no compile), release (the CLI and entitlements self-tests, no Swift), helper (the full
-helper, then the three helper check scripts; one large compile per mutant, so few mutants use it).
+helper, then the helper check scripts, 0.5.325's dictation-polish among them; one large compile per mutant, so few
+mutants use it), polishpins (0.5.325 dictation-polish-pins.py, no compile).
 """
 import os, pathlib, shutil, subprocess, sys, tempfile
 
@@ -115,6 +116,45 @@ MUTANTS = [
     ("helper install forbids the download", H, '            var payload: [String: Any] = call == .installParakeet ? ["allowDownload": true] : [:]',
      '            var payload: [String: Any] = [:]', "install is a POST to the install route, no localSource", "helper"),
     ("helper cancels with a POST", H, '        case .cancelInstall: "DELETE"\n', '        case .cancelInstall: "POST"\n', "Cancel is a DELETE of the install route", "helper"),
+    # 0.5.325 AI polish: the helper core (DictationPolishBridge), the wiring pins and the compiled helper.
+    ("polish takes any model", PSC, '              let model = object["model"] as? String, models.contains(model) else { return nil }',
+     '              let model = object["model"] as? String else { return nil }', "polish model", "core"),
+    ("polish takes blank text", PSC, '              let text = object["text"] as? String, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,',
+     '              let text = object["text"] as? String,', "polish text", "core"),
+    ("polish over the limit", PSC, "              text.utf16.count <= maximumCharacters,", "              true,", "polish limit", "core"),
+    ("polish limit counts characters", PSC, "              text.utf16.count <= maximumCharacters,", "              text.count <= maximumCharacters,", "polish limit", "core"),
+    ("polish takes extra keys", PSC, '              Set(object.keys).isSubset(of: ["text", "model", "app"]),', "              true,", "polish keys", "core"),
+    ("polish keeps a long app", PSC, "!$0.isEmpty && $0.count <= 64 && !$0.contains(where: \\.isNewline)", "!$0.isEmpty", "polish app dropped", "core"),
+    ("polish deadline is the budget", PSC, '        case "haiku": 4.5', '        case "haiku": 5', "polish deadline", "core"),
+    ("polish posts another surface", PSC, '["text": request.text, "surface": "message", "autocleanModel": request.model]',
+     '["text": request.text, "surface": "email", "autocleanModel": request.model]', "polish body", "core"),
+    ("polish drops the app", PSC, '        if let app = request.app { object["context"] = ["app": app] }\n', "", "polish body", "core"),
+    ("polish takes a numeric polished", PSC, 'let flag = body["polished"] as? NSNumber, CFGetTypeID(flag) == CFBooleanGetTypeID() else {',
+     'let flag = body["polished"] as? NSNumber else {', "polish bad answer", "core"),
+    ("polish answer unbounded", PSC, "!text.isEmpty, text.utf16.count <= answerLimit,", "!text.isEmpty,", "polish bad answer", "core"),
+    ("polish answer may be empty", PSC, '            guard let body, let text = body["text"] as? String, !text.isEmpty, text.utf16.count <= answerLimit,',
+     '            guard let body, let text = body["text"] as? String, text.utf16.count <= answerLimit,', "polish bad answer", "core"),
+    ("polish timeout reads as unreachable", PSC, '            return timedOut ? refused("timeout",', '            return false ? refused("timeout",', "polish timeout", "core"),
+    ("polish failure carries text", PSC, '            var details = base.merging(["reason": reason]) { a, _ in a }',
+     '            var details = base.merging(["reason": reason, "text": "private words"]) { a, _ in a }', "polish http", "core"),
+    ("polish 404 is a plain HTTP error", PSC, '        case 404: return refused("needs_server_update"', '        case 404: return refused("http_404"', "polish http", "core"),
+    ("polish pins: no re-check after the await", MD, "let polished = await polish(heard)\n                guard generation == attempt, !Task.isCancelled else { return }",
+     "let polished = await polish(heard)", "current after polish", "polishpins"),
+    ("polish pins: a timeout is a failure", MD, "        } catch HelperClientError.timedOut {\n            outcome = .timeout\n        } catch {", "        } catch {", "timeout", "polishpins"),
+    ("polish pins: the text is logged", MD, "outcome=\\(outcome.logName, privacy: .public) ms=\\(elapsed)\")",
+     "outcome=\\(outcome.logName, privacy: .public) ms=\\(elapsed) \\(heard, privacy: .private)\")", "no text logged", "polishpins"),
+    ("polish pins: a failure shows a card", MD, "        let elapsed = Int(Date().timeIntervalSince(started) * 1000)\n",
+     "        let elapsed = Int(Date().timeIntervalSince(started) * 1000)\n        if case .failed(let why) = outcome { fail(why) }\n", "never a failure", "polishpins"),
+    ("polish pins: what was heard kept when unchanged", MD, "if case .applied? = polished?.outcome, let model = polished?.model { lastPolish",
+     "if let model = polished?.model { lastPolish", "heard only when applied", "polishpins"),
+    ("polish pins: no budget on the helper", APP, 'runHelper(["dictation-polish"], timeout: budget, stdinData: request)',
+     'runHelper(["dictation-polish"], timeout: 40, stdinData: request)', "bridge", "polishpins"),
+    ("polish pins: the deadline equals the budget", PSC, '        case "sonnet": 8.5', '        case "sonnet": 9', "deadline inside budget", "polishpins"),
+    ("polish helper probes health first", H, "could spend the whole budget.\n        guard let token = try? readToken() else {",
+     "could spend the whole budget.\n        guard let token = try? speakerReviewToken() else {",
+     "no health probe spends the budget", "helper"),
+    ("polish helper has no deadline", H, "                               timeout: Int(seconds.rounded(.up)), deadlineUptime: deadline)", "                               timeout: 9)",
+     "a slow model is a timeout", "helper"),
 ]
 
 
@@ -131,6 +171,8 @@ def lane(copy, name):
         return subprocess.run(["zsh", str(copy / "Tests/run-transcription-settings.sh")], capture_output=True, text=True)
     if name == "pins":
         return subprocess.run(["python3", str(copy / "Tests/dictation-everyone-pins.py"), str(copy)], capture_output=True, text=True)
+    if name == "polishpins":
+        return subprocess.run(["python3", str(copy / "Tests/dictation-polish-pins.py"), str(copy)], capture_output=True, text=True)
     if name == "release":
         scratch = pathlib.Path(tempfile.mkdtemp(dir="/private/tmp", prefix="cos-mut-release-"))
         try:
@@ -158,7 +200,8 @@ def lane(copy, name):
         if b.returncode: return b
         out, err, code = "", "", 0
         for script, extra in [("Tests/mac-dictation-helper-checks.py", []), ("Tests/dictation-everyone-helper-checks.py", [str(copy)]),
-                              ("Tests/transcription-settings-helper-checks.py", [str(copy / "Tests/fixtures/stt-settings-6.72.0.json")])]:
+                              ("Tests/transcription-settings-helper-checks.py", [str(copy / "Tests/fixtures/stt-settings-6.72.0.json")]),
+                              ("Tests/dictation-polish-helper-checks.py", [])]:
             r = subprocess.run(["python3", str(copy / script), str(build / "cos-control-helper")] + extra, capture_output=True, text=True)
             out += r.stdout; err += r.stderr; code = code or r.returncode
         return subprocess.CompletedProcess([], code, out, err)

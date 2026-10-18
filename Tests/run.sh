@@ -100,6 +100,8 @@ python3 "$ROOT/Tests/hardening-helper-checks.py" "$TMP/cos-control-helper"
 python3 "$ROOT/Tests/speaker-policy-helper-checks.py" "$TMP/cos-control-helper"
 python3 "$ROOT/Tests/mac-recording-helper-checks.py" "$TMP/cos-control-helper"
 python3 "$ROOT/Tests/mac-dictation-helper-checks.py" "$TMP/cos-control-helper"
+# 0.5.325 AI polish: dictation-polish against a loopback finalize fixture (stdin only, deadline inside the budget, no text on failure).
+python3 "$ROOT/Tests/dictation-polish-helper-checks.py" "$TMP/cos-control-helper"
 python3 "$ROOT/Tests/dictation-everyone-helper-checks.py" "$TMP/cos-control-helper" "$ROOT"
 python3 "$ROOT/Tests/transcription-dictionary-helper-checks.py" "$TMP/cos-control-helper"
 python3 "$ROOT/Tests/work-intake-helper-checks.py" "$TMP/cos-control-helper"
