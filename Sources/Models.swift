@@ -4099,7 +4099,12 @@ struct AppUpdateFlow: Equatable, Sendable {
     private(set) var applyingStartedAt: Date?
     /// What Control is finishing before it can quit (the Mac recording's save), shown while installing.
     private(set) var quitWaitingOn: String?
-    /// The helper waits 60 s for Control to quit, then gives up; 15 s of margin.
+    /// 0.5.322: the ready offer is a build already downloaded and checked (updates/pending.json) whose install could not
+    /// close Control last time (AppUpdateFinishOffer). Finish installing applies it with no download.
+    private(set) var finishesStaged = false
+    /// The detached swap gives Control 20 s to quit, then (no Mac recording in flight) SIGTERM, 10 s, SIGKILL, 5 s; it
+    /// waits up to 60 s without a signal when the recording state cannot be read, and 10 s more in case Control quits
+    /// after all. 75 s covers all of it: still here then means nothing was installed.
     static let applyDeadline: TimeInterval = 75
 
     /// Every new check result. While an install runs it owns the banner, so an offer change waits. A failure stays on
@@ -4112,6 +4117,13 @@ struct AppUpdateFlow: Equatable, Sendable {
         case .staging, .applying:
             return
         case .none, .ready:
+            // 0.5.322: a staged build stays on offer while the feed cannot be read or still offers that build. A newer
+            // build, or no update at all (up to date, paused, needs a newer macOS), replaces it.
+            if finishesStaged {
+                if info.reason == "unreachable" || info.reason == "malformed" { return }
+                if available, let offered = info.latestBuild, offered == build { return }
+                finishesStaged = false
+            }
             phase = available ? .ready : .none
         case .failed:
             if !available { phase = .none }
@@ -4132,10 +4144,38 @@ struct AppUpdateFlow: Equatable, Sendable {
         case .ready, .failed:
             phase = .staging(nil)
             downloadFirstAt = nil; downloadFirstBytes = 0; applyingStartedAt = nil; quitWaitingOn = nil
+            finishesStaged = false
             return true
         default:
             return false
         }
+    }
+
+    /// 0.5.322: at launch, a verified staged build whose install could not close Control (AppUpdateFinishOffer): the
+    /// banner offers Finish installing it. Never during an install, never for a build that is not newer.
+    mutating func offerFinish(version: String, build: Int, currentBuild: Int) {
+        guard build > currentBuild, AppUpdateVersion.components(version) != nil else { return }
+        switch phase {
+        case .none, .ready, .failed:
+            phase = .ready
+            self.version = version
+            self.build = build
+            finishesStaged = true
+        case .staging, .applying:
+            return
+        }
+    }
+
+    /// Finish installing: straight to applying (the build is already staged, so no download). False unless the offer
+    /// is a staged build, so a second press never starts a second apply.
+    mutating func beginFinish(now: Date = Date()) -> Bool {
+        guard phase == .ready, finishesStaged else { return false }
+        phase = .applying
+        applyingStartedAt = now
+        quitWaitingOn = nil
+        downloadFirstAt = nil; downloadFirstBytes = 0
+        finishesStaged = false
+        return true
     }
 
     mutating func progress(_ line: String, now: Date = Date()) {
@@ -4171,7 +4211,8 @@ struct AppUpdateFlow: Equatable, Sendable {
     /// A refusal the helper recorded after this launch's Control had already quit (it reopened the old build): shown on
     /// the offer, so the person learns why nothing changed. Only while the offer stands.
     mutating func restoreFailure(_ message: String) {
-        guard phase == .ready else { return }
+        // 0.5.322: Finish installing already answers that failure, with a button that fixes it.
+        guard phase == .ready, !finishesStaged else { return }
         let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmed.isEmpty { phase = .failed(trimmed) }
     }
@@ -4195,10 +4236,51 @@ struct AppUpdateFlow: Equatable, Sendable {
         }
     }
 
+    /// 0.5.322: the words while applying, the same in the banner and the What's New footer: what Control is finishing
+    /// first, else "Closing COS Control…" (then nothing: Control is gone, and the new build opens).
+    var applyingWords: String {
+        quitWaitingOn.map { "Saving \($0) first, then COS Control closes and installs." } ?? WhatsNewFooter.installingWords
+    }
+
     /// "Version 0.5.274 (build 330)"; the build only when the appcast names one.
     var versionLine: String {
         guard let version else { return "" }
         return build.map { "Version \(version) (build \($0))" } ?? "Version \(version)"
+    }
+}
+
+/// The update banner's words for each phase (Views.swift AppUpdateBanner draws them). 0.5.322: pure, so the checks read
+/// the staged offer ("Finish installing <version>") and the words while applying ("Closing COS Control…").
+struct AppUpdateBannerWords: Equatable, Sendable {
+    let title: String
+    let detail: String
+    /// The button: Update, Install (a staged build), Try again; nil while an install runs.
+    let action: String?
+
+    init(_ flow: AppUpdateFlow) {
+        switch flow.phase {
+        case .ready where flow.finishesStaged:
+            title = "Finish installing \(flow.version ?? "the update")"
+            detail = WhatsNewFooter.finishWords
+            action = "Install"
+        case .none, .ready:
+            title = "Update available"
+            detail = flow.versionLine
+            action = "Update"
+        case .staging(let line):
+            title = "Downloading update"
+            detail = line ?? "\(flow.versionLine). Checking the download as it arrives."
+            action = nil
+        case .applying:
+            title = "Installing update"
+            // In words, as the What's New footer says it; then Control is gone and the new build opens.
+            detail = flow.applyingWords
+            action = nil
+        case .failed(let message):
+            title = "Update did not install"
+            detail = message
+            action = "Try again"
+        }
     }
 }
 
@@ -4383,6 +4465,8 @@ struct AppUpdateFailureRecord: Equatable, Sendable {
             return WhatsNewFooter.words("Finish this first, then install: \(blockers.joined(separator: ", ")). The glasses server was not touched.")
         case "quitTimeout":
             return AppUpdateFailureRecord.quitTimeoutWords
+        case "recording":
+            return AppUpdateFailureRecord.recordingWords
         case "notStaged":
             return "The downloaded update could not be checked, so nothing was installed. Choose Try again."
         default:
@@ -4391,6 +4475,35 @@ struct AppUpdateFailureRecord: Equatable, Sendable {
     }
 
     static let quitTimeoutWords = "COS Control could not close for the update, so nothing was installed. Choose Try again. If it happens again, quit COS Control from the menu bar, reopen it, and try once more."
+    /// 0.5.322: the swap never closes Control while a Mac recording is starting, recording or stopping.
+    static let recordingWords = "A Mac recording is running, so nothing was installed. Finish the Mac recording, then choose Try again."
+
+    /// 0.5.322: the swap gave up with Control still open (it reopens nothing): the install ends at once, in these words,
+    /// instead of at the 75 s deadline. busy and notStaged are not here: the swap waits for Control to quit and reopens it.
+    static let endsApply: Set<String> = ["quitTimeout", "recording"]
+    var endsApply: Bool { Self.endsApply.contains(reason) }
+}
+
+/// 0.5.322: the launch offer "Finish installing <version>". The helper's `staged-app-update` reports the pending stage
+/// and the swap's last records; the offer stands only for a stage it checked (signature, bundle id, version, build),
+/// newer than the running build, whose last install stopped on a quit that could not happen (quitTimeout or recording)
+/// in the last 30 minutes, with no successful install since.
+enum AppUpdateFinishOffer {
+    static let window: TimeInterval = 30 * 60
+    /// The helper and the app clocks may differ a little; a record this far in the future still counts.
+    static let skew: TimeInterval = 120
+
+    static func offer(_ details: [String: JSONValue], currentBuild: Int, now: Date = Date()) -> (version: String, build: Int)? {
+        guard details["reason"]?.string == "staged", let version = details["version"]?.string,
+              AppUpdateVersion.components(version) != nil,
+              let raw = details["build"]?.int, raw > currentBuild,
+              let reason = details["failureReason"]?.string, AppUpdateFailureRecord.endsApply.contains(reason),
+              let at = details["failureAt"]?.string.flatMap({ ISO8601DateFormatter().date(from: $0) }) else { return nil }
+        let age = now.timeIntervalSince(at)
+        guard age <= window, age >= -skew else { return nil }
+        if let success = details["successAt"]?.string.flatMap({ ISO8601DateFormatter().date(from: $0) }), success >= at { return nil }
+        return (version, raw)
+    }
 }
 
 /// The What's New footer for each phase of AppUpdateFlow, and after an update. Download and install runs
@@ -4402,12 +4515,17 @@ struct WhatsNewFooter: Equatable, Sendable {
         case install
         /// The install failed: Try again (the same path again).
         case tryAgain
+        /// 0.5.322: a staged build is ready: Finish installing (no download).
+        case finish
         /// Nothing to install: the offer went away, or this is the window after an update.
         case hidden
     }
 
     static let installTitle = "Download and install"
     static let retryTitle = "Try again"
+    static let finishTitle = "Finish installing"
+    /// 0.5.322: under the staged offer.
+    static let finishWords = "Already downloaded and checked. COS Control could not close last time, so it was not installed."
     /// Under the buttons while there is something to install: what an install does to Control and to the server.
     static let reassurance = "COS Control quits and reopens by itself. The glasses server keeps running."
     /// While an install runs: closing the window is allowed and stops nothing.
@@ -4428,6 +4546,7 @@ struct WhatsNewFooter: Equatable, Sendable {
         switch primary {
         case .install: return Self.installTitle
         case .tryAgain: return Self.retryTitle
+        case .finish: return Self.finishTitle
         case .hidden: return nil
         }
     }
@@ -4444,14 +4563,19 @@ struct WhatsNewFooter: Equatable, Sendable {
                                           status: nil, failed: false, working: false, showsReassurance: false)
 
     /// `reason` and `minMacOS` are the last check's (AppUpdateInfo), for the words when nothing is offered.
-    static let installingWords = "Installing. COS Control closes and reopens, usually within a minute."
+    /// 0.5.322: while applying, until Control is gone (the swap reopens the new build).
+    static let installingWords = "Closing COS Control\u{2026}"
 
-    init(_ phase: AppUpdatePhase, busy: Bool, reason: String? = nil, minMacOS: String? = nil, quitWaitingOn: String? = nil) {
+    init(_ phase: AppUpdatePhase, busy: Bool, reason: String? = nil, minMacOS: String? = nil, quitWaitingOn: String? = nil,
+         finishesStaged: Bool = false) {
         let waiting = "COS Control is finishing another task. Download and install is available when it is done."
         switch phase {
         case .none:
             self.init(primary: .hidden, primaryEnabled: false, cancelTitle: "Close", cancelEnabled: true,
                       status: Self.noOfferWords(reason: reason, minMacOS: minMacOS), failed: false, working: false, showsReassurance: false)
+        case .ready where finishesStaged:
+            self.init(primary: .finish, primaryEnabled: !busy, cancelTitle: "Cancel", cancelEnabled: true,
+                      status: busy ? waiting : Self.finishWords, failed: false, working: false, showsReassurance: true)
         case .ready:
             self.init(primary: .install, primaryEnabled: !busy, cancelTitle: "Cancel", cancelEnabled: true,
                       status: busy ? waiting : nil, failed: false, working: false, showsReassurance: true)
@@ -4545,7 +4669,8 @@ struct WhatsNewPresentation: Equatable, Sendable {
     static func offer(_ info: AppUpdateInfo, flow: AppUpdateFlow, frozen: WhatsNewContent?, busy: Bool) -> WhatsNewPresentation {
         let content = flow.installing ? (frozen ?? WhatsNewContent(info)) : WhatsNewContent(info)
         return WhatsNewPresentation(title: title(flow.version), byline: flow.build.map { "Build \($0)" }, content: content,
-                                    footer: WhatsNewFooter(flow.phase, busy: busy, reason: info.reason, minMacOS: info.minMacOS, quitWaitingOn: flow.quitWaitingOn))
+                                    footer: WhatsNewFooter(flow.phase, busy: busy, reason: info.reason, minMacOS: info.minMacOS, quitWaitingOn: flow.quitWaitingOn,
+                                                           finishesStaged: flow.finishesStaged))
     }
 
     static func present(_ mode: WhatsNewMode, info: AppUpdateInfo, flow: AppUpdateFlow, frozen: WhatsNewContent?, busy: Bool) -> WhatsNewPresentation {

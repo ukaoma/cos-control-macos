@@ -402,6 +402,9 @@ final class COSControlHelper {
     private lazy var updatesPendingURL = updatesRoot.appendingPathComponent("pending.json")
     private lazy var updatesSuccessURL = updatesRoot.appendingPathComponent("success.json")
     private lazy var updatesFailureURL = updatesRoot.appendingPathComponent("last-failure.json")
+    /// 0.5.322: the Mac recording's phase and Control's PID, written by Control on every phase change
+    /// (Sources/MacRecordingCore.swift, MacCaptureStateFile). The detached swap reads it before it may force a quit.
+    private lazy var macCaptureStateURL = support.appendingPathComponent("mac-capture-state.json")
     private lazy var logs = home.appendingPathComponent("Library/Logs/COS Glasses", isDirectory: true)
     private lazy var helperLog = logs.appendingPathComponent("control.log")
     private lazy var serverLog = logs.appendingPathComponent("server.log")
@@ -752,6 +755,8 @@ final class COSControlHelper {
         case "stage-app-update": try emitStageAppUpdate(args: args)
         case "apply-app-update": try emitApplyAppUpdate(args: args)
         case "complete-app-update": try emitCompleteAppUpdate(args: args)
+        case "staged-app-update": try emitStagedAppUpdate(args: args)
+        case "app-update-quit-safety": try emitAppUpdateQuitSafety(args: args)
         case "run-server": try runServer()
         default: throw HelperError.message("unknown command: \(command)")
         }
@@ -9142,6 +9147,13 @@ final class COSControlHelper {
     }
 
     private func verifyStagedControlApp(_ app: URL, version: String, build: Int) throws {
+        try checkStagedControlApp(app, version: version, build: build)
+        _ = try execute("/usr/bin/xattr", ["-cr", app.path], timeout: 20)
+    }
+
+    /// The staged app's signature, bundle id, version and build, read only (0.5.322: the launch's Finish installing check
+    /// runs this without changing anything; the stage and the swap also clear extended attributes).
+    private func checkStagedControlApp(_ app: URL, version: String, build: Int) throws {
         let verify = try execute("/usr/bin/codesign", ["--verify", "--deep", "--strict", app.path], timeout: 30)
         guard verify.code == 0 else {
             throw HelperError.message("The downloaded app failed its signature check.")
@@ -9160,7 +9172,6 @@ final class COSControlHelper {
         guard listedBuild == String(build) else {
             throw HelperError.message("The downloaded app build does not match the update listing.")
         }
-        _ = try execute("/usr/bin/xattr", ["-cr", app.path], timeout: 20)
     }
 
     private func findStagedControlApp(in extract: URL) throws -> URL {
@@ -9284,7 +9295,7 @@ final class COSControlHelper {
         }
     }
 
-    /// Up to 60 s for the Control that asked for the swap to finish quitting.
+    /// Up to 60 s for the Control that asked for the swap to finish quitting (the refusal paths, which reopen it).
     private func waitForLiveToQuit(_ live: URL) {
         let deadline = Date().addingTimeInterval(60)
         while bundleHasRunningProcess(live), Date() < deadline {
@@ -9293,12 +9304,199 @@ final class COSControlHelper {
     }
 
     private func bundleHasRunningProcess(_ bundle: URL) -> Bool {
+        let processes = liveBundleProcesses(bundle)
+        return !processes.running.isEmpty || processes.unidentified > 0
+    }
+
+    // MARK: 0.5.322 the swap never strands on Installing
+    //
+    // 0.5.320 fixed the quit that deadlocked, but any future quit blocker would strand people again: the swap waited 60 s,
+    // wrote quitTimeout and gave up, and the window sat on Installing or the person had to Force Quit. Now the swap waits
+    // 20 s for a normal quit; then, unless a Mac recording is starting, recording or stopping (never killed) or the
+    // recording state cannot be read (nothing is signalled), it sends SIGTERM to exactly the live bundle's processes,
+    // SIGKILL to any still there 10 s later, then swaps and reopens as before.
+
+    /// The detached swap's timings in seconds. A /tmp/ test home may shorten them (COS_CONTROL_TEST_QUIT_TIMINGS, five
+    /// comma-separated values from 0.2 to 120: quit, term, kill, unknown, linger); production always uses these.
+    struct AppUpdateQuitTimings: Equatable {
+        /// A normal quit (AppQuit.request() runs in Control before the swap starts waiting).
+        var quit: TimeInterval = 20
+        /// After SIGTERM, before SIGKILL.
+        var term: TimeInterval = 10
+        /// After SIGKILL, for the exit to finish.
+        var kill: TimeInterval = 5
+        /// Since the wait began, while the recording state cannot be read: no signal, the 0.5.321 minute, then quitTimeout.
+        var unknown: TimeInterval = 60
+        /// After giving up: Control may still finish quitting by itself; then it is installed, never left closed.
+        var linger: TimeInterval = 10
+    }
+
+    static func appUpdateQuitTimings(environment: [String: String]) -> AppUpdateQuitTimings {
+        guard let home = environment["COS_CONTROL_TEST_HOME"], home.hasPrefix("/tmp/"),
+              let raw = environment["COS_CONTROL_TEST_QUIT_TIMINGS"] else { return AppUpdateQuitTimings() }
+        let values = raw.split(separator: ",", omittingEmptySubsequences: false)
+            .map { TimeInterval($0.trimmingCharacters(in: .whitespaces)) }
+        guard values.count == 5, values.allSatisfy({ ($0 ?? 0) >= 0.2 && ($0 ?? 0) <= 120 }) else { return AppUpdateQuitTimings() }
+        return AppUpdateQuitTimings(quit: values[0]!, term: values[1]!, kill: values[2]!, unknown: values[3]!, linger: values[4]!)
+    }
+
+    /// The Mac recording phases Control finishes before it quits (MacRecordingStore.needsQuitTeardown): never signalled.
+    static let macCaptureActivePhases: Set<String> = ["starting", "recording", "stopping"]
+    /// The phases with nothing in flight that a quit would lose (pending and recovering deliver from the durable spool).
+    static let macCaptureQuietPhases: Set<String> = ["idle", "saved", "pending", "recovering"]
+
+    /// Whether the swap may force Control to quit, from the state file Control writes. "safe" only when the record names
+    /// the one live process and a quiet phase; "recording" when it names that process in an active phase; "unknown" for
+    /// anything else (no file, unreadable, another or an older PID, more than one live process, a phase this build does
+    /// not know), and unknown never signals anything.
+    static func macCaptureQuitSafety(stateData: Data?, livePIDs: [Int32]) -> (verdict: String, phase: String?) {
+        guard let stateData, let object = try? JSONSerialization.jsonObject(with: stateData) as? [String: Any],
+              let phase = object["phase"] as? String else { return ("unknown", nil) }
+        guard livePIDs.count == 1, let pid = jsonInt(object["pid"]), pid == Int(livePIDs[0]) else { return ("unknown", phase) }
+        if macCaptureActivePhases.contains(phase) { return ("recording", phase) }
+        return (macCaptureQuietPhases.contains(phase) ? "safe" : "unknown", phase)
+    }
+
+    /// One process running the live bundle: its PID and start time (microseconds), so a reused PID is never signalled.
+    struct LiveBundleProcess: Equatable {
+        let pid: Int32
+        let started: UInt64
+    }
+
+    enum ProcessIdentity: Equatable {
+        case gone
+        case unidentified
+        case running(path: String, started: UInt64)
+    }
+
+    static func processIdentity(_ pid: Int32) -> ProcessIdentity {
+        var buffer = [CChar](repeating: 0, count: 4 * Int(MAXPATHLEN))
+        let length = proc_pidpath(pid, &buffer, UInt32(buffer.count))
+        guard length > 0 else { return errno == ESRCH ? .gone : .unidentified }
+        var info = proc_bsdinfo()
+        let size = Int32(MemoryLayout<proc_bsdinfo>.stride)
+        guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, size) == size else { return errno == ESRCH ? .gone : .unidentified }
+        if info.pbi_status == UInt32(SZOMB) { return .gone }
+        let path = String(decoding: buffer.prefix(Int(length)).map { UInt8(bitPattern: $0) }, as: UTF8.self)
+        return .running(path: path, started: UInt64(info.pbi_start_tvsec) * 1_000_000 + UInt64(info.pbi_start_tvusec))
+    }
+
+    /// The processes RUNNING the bundle's executable. `lsof -t` lists every process that has the file open (QA round 2:
+    /// only its success, exit 0 with one PID per line, is a process); each is kept only when its own executable is that
+    /// file (proc_pidpath, same device and inode). A process that merely has the file open (a scan, a signature check)
+    /// is neither waited for nor signalled. One that cannot be identified counts as running and is never signalled.
+    private func liveBundleProcesses(_ bundle: URL) -> (running: [LiveBundleProcess], unidentified: Int) {
         let exe = bundle.appendingPathComponent("Contents/MacOS/COS Control")
-        // QA round 2: lsof's own error (no such file) is not a running process. Only its success (exit 0, one PID per
-        // line) is, or the quit wait spins its full minute.
-        guard fm.fileExists(atPath: exe.path),
-              let result = try? execute("/usr/sbin/lsof", ["-t", exe.path], timeout: 5), result.code == 0 else { return false }
-        return result.output.split(whereSeparator: \.isNewline).contains { Int($0.trimmingCharacters(in: .whitespaces)) != nil }
+        var target = stat()
+        guard stat(exe.path, &target) == 0,
+              let result = try? execute("/usr/sbin/lsof", ["-t", exe.path], timeout: 5), result.code == 0 else { return ([], 0) }
+        var running: [LiveBundleProcess] = []
+        var unidentified = 0
+        for line in result.output.split(whereSeparator: \.isNewline) {
+            guard let pid = Int32(line.trimmingCharacters(in: .whitespaces)), pid > 0 else { continue }
+            switch Self.processIdentity(pid) {
+            case .gone:
+                continue
+            case .unidentified:
+                unidentified += 1
+            case let .running(path, started):
+                if Self.sameFile(path, as: target) { running.append(LiveBundleProcess(pid: pid, started: started)) }
+            }
+        }
+        return (running, unidentified)
+    }
+
+    static func sameFile(_ path: String, as target: stat) -> Bool {
+        var seen = stat()
+        return stat(path, &seen) == 0 && seen.st_dev == target.st_dev && seen.st_ino == target.st_ino
+    }
+
+    /// Sends `signal` only while the PID is still that process (same start time) running the same file.
+    private func signalLiveProcess(_ process: LiveBundleProcess, _ signal: Int32, executable target: stat) -> Bool {
+        guard case let .running(path, started) = Self.processIdentity(process.pid), started == process.started,
+              Self.sameFile(path, as: target) else { return false }
+        return Darwin.kill(process.pid, signal) == 0
+    }
+
+    enum LiveQuit: Equatable {
+        /// Control quit by itself.
+        case quit
+        /// Control was made to quit: the signals sent, and to which PIDs.
+        case forced(signals: [String], pids: [Int])
+        /// Nothing was signalled, or a process outlived SIGKILL: the reason last-failure.json records.
+        case gaveUp(String)
+    }
+
+    private func quitLiveForSwap(_ live: URL, timings: AppUpdateQuitTimings) -> LiveQuit {
+        let started = Date()
+        func elapsed() -> TimeInterval { Date().timeIntervalSince(started) }
+        while elapsed() < timings.quit {
+            if !bundleHasRunningProcess(live) { return .quit }
+            Thread.sleep(forTimeInterval: 0.2)
+        }
+        var target = stat()
+        guard stat(live.appendingPathComponent("Contents/MacOS/COS Control").path, &target) == 0 else { return .quit }
+        var victims: [LiveBundleProcess] = []
+        var saidUnknown = false
+        while true {
+            let now = liveBundleProcesses(live)
+            if now.running.isEmpty && now.unidentified == 0 { return .quit }
+            let safety = now.unidentified == 0
+                ? Self.macCaptureQuitSafety(stateData: try? Data(contentsOf: macCaptureStateURL), livePIDs: now.running.map(\.pid))
+                : (verdict: "unknown", phase: nil)
+            if safety.verdict == "recording" {
+                progress("app update: COS Control did not quit in \(Int(timings.quit)) s and a Mac recording is \(safety.phase ?? "active"); nothing was signalled")
+                return .gaveUp("recording")
+            }
+            if safety.verdict == "safe" {
+                victims = now.running
+                break
+            }
+            if !saidUnknown {
+                saidUnknown = true
+                progress("app update: COS Control did not quit in \(Int(timings.quit)) s and its recording state cannot be read; waiting without a signal")
+            }
+            if elapsed() >= timings.unknown { return .gaveUp("quitTimeout") }
+            Thread.sleep(forTimeInterval: 0.2)
+        }
+        var signals = ["SIGTERM"]
+        let termed = victims.filter { signalLiveProcess($0, SIGTERM, executable: target) }
+        progress("app update: COS Control did not quit in \(Int(timings.quit)) s; sent SIGTERM to \(termed.map(\.pid))")
+        var survivors = victims
+        let termDeadline = Date().addingTimeInterval(timings.term)
+        while true {
+            let now = liveBundleProcesses(live).running
+            survivors = victims.filter { now.contains($0) }
+            if survivors.isEmpty || Date() >= termDeadline { break }
+            Thread.sleep(forTimeInterval: 0.2)
+        }
+        if !survivors.isEmpty {
+            signals.append("SIGKILL")
+            let killed = survivors.filter { signalLiveProcess($0, SIGKILL, executable: target) }
+            progress("app update: still running \(Int(timings.term)) s after SIGTERM; sent SIGKILL to \(killed.map(\.pid))")
+            let killDeadline = Date().addingTimeInterval(timings.kill)
+            while bundleHasRunningProcess(live), Date() < killDeadline { Thread.sleep(forTimeInterval: 0.2) }
+        }
+        if bundleHasRunningProcess(live) { return .gaveUp("quitTimeout") }
+        return .forced(signals: signals, pids: victims.map { Int($0.pid) })
+    }
+
+    /// The swap gave up with Control still open: record why (Control reads the record and shows the reason; nothing is
+    /// reopened). If Control finishes quitting by itself within the linger, return, so the swap installs rather than
+    /// leave it closed.
+    private func giveUpQuitForSwap(_ reason: String, live: URL, timings: AppUpdateQuitTimings) throws {
+        try writeAppUpdateJSON(updatesFailureURL, [
+            "reason": reason,
+            "at": ISO8601DateFormatter().string(from: Date()),
+        ])
+        let lingerUntil = Date().addingTimeInterval(timings.linger)
+        while bundleHasRunningProcess(live), Date() < lingerUntil { Thread.sleep(forTimeInterval: 0.2) }
+        if bundleHasRunningProcess(live) {
+            throw HelperError.message(reason == "recording"
+                ? "A Mac recording is running, so COS Control was not closed. The update was not installed."
+                : "COS Control did not quit in time. The update was not installed.")
+        }
+        progress("app update: COS Control quit by itself after the swap gave up; installing")
     }
 
     private func spawnDetached(executable: URL, arguments: [String]) throws -> pid_t {
@@ -9420,13 +9618,13 @@ final class COSControlHelper {
             throw HelperError.message("Finish this first, then install: \(blockers.joined(separator: ", ")).")
         }
 
-        waitForLiveToQuit(live)
-        if bundleHasRunningProcess(live) {
-            try writeAppUpdateJSON(updatesFailureURL, [
-                "reason": "quitTimeout",
-                "at": ISO8601DateFormatter().string(from: Date()),
-            ])
-            throw HelperError.message("COS Control did not quit in time. The update was not installed.")
+        // 0.5.322: a normal quit, else a forced one when no Mac recording is in flight (quitLiveForSwap).
+        let timings = Self.appUpdateQuitTimings(environment: ProcessInfo.processInfo.environment)
+        var forced: (signals: [String], pids: [Int])?
+        switch quitLiveForSwap(live, timings: timings) {
+        case .quit: break
+        case let .forced(signals, pids): forced = (signals, pids)
+        case let .gaveUp(reason): try giveUpQuitForSwap(reason, live: live, timings: timings)
         }
 
         try ensurePrivateDirectory(updatesPrevious)
@@ -9458,11 +9656,17 @@ final class COSControlHelper {
         if ProcessInfo.processInfo.environment["COS_CONTROL_TEST_HOME"] == nil {
             _ = try? execute(Self.launchServicesRegister, ["-f", live.path], timeout: 20)
         }
-        try writeAppUpdateJSON(updatesSuccessURL, [
+        var success: [String: Any] = [
             "version": version,
             "build": build,
             "appliedAt": ISO8601DateFormatter().string(from: Date()),
-        ])
+            "forcedQuit": forced != nil,
+        ]
+        if let forced {
+            success["forcedSignals"] = forced.signals
+            success["forcedPids"] = forced.pids
+        }
+        try writeAppUpdateJSON(updatesSuccessURL, success)
         if ProcessInfo.processInfo.environment["COS_CONTROL_TEST_HOME"] == nil {
             _ = try? execute("/usr/bin/open", [live.path], timeout: 10)
         }
@@ -9470,6 +9674,7 @@ final class COSControlHelper {
             "version": version,
             "build": build,
             "liveBundle": live.path,
+            "forcedQuit": forced != nil,
         ])
     }
 
@@ -9501,6 +9706,72 @@ final class COSControlHelper {
             "reason": "complete",
             "build": currentBuild,
         ])
+    }
+
+    /// 0.5.322: read only. The pending stage and the swap's last records, for the launch offer "Finish installing" (the
+    /// app decides with AppUpdateFinishOffer): staged, newer than the running build, the last failure a quit that could
+    /// not happen (quitTimeout or recording) inside --failure-window seconds, and the staged app passes the swap's own
+    /// checks (signature, bundle id, version, build). The signature runs only when everything else qualifies, so an
+    /// ordinary launch never runs codesign. Nothing is written, removed or downloaded.
+    private func emitStagedAppUpdate(args: [String]) throws {
+        let currentBuild = Int(option("--current-build", in: args) ?? "") ?? 0
+        let window = TimeInterval(option("--failure-window", in: args) ?? "").map { min(max($0, 0), 86_400) } ?? 1800
+        func object(_ url: URL) -> [String: Any]? {
+            (try? Data(contentsOf: url)).flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+        }
+        var details: [String: Any] = ["currentBuild": currentBuild]
+        let failure = object(updatesFailureURL)
+        let failureReason = failure?["reason"] as? String
+        let failureAt = (failure?["at"] as? String).flatMap { ISO8601DateFormatter().date(from: $0) }
+        if let failureReason { details["failureReason"] = failureReason }
+        if let at = failure?["at"] as? String { details["failureAt"] = at }
+        let successAt = (object(updatesSuccessURL)?["appliedAt"] as? String)
+        if let successAt { details["successAt"] = successAt }
+        func answer(_ reason: String, _ message: String) {
+            details["reason"] = reason
+            emit(ok: true, message: message, details: details)
+        }
+        guard let pending = appUpdatePending(), let version = pending["version"] as? String, !version.isEmpty,
+              let build = Self.jsonInt(pending["build"]), let stagedPath = pending["stagedAppPath"] as? String else {
+            return answer("none", "No staged Control update")
+        }
+        details["version"] = version
+        details["build"] = build
+        guard build > currentBuild else { return answer("notNewer", "The staged update is not newer than this build") }
+        let successDate = successAt.flatMap { ISO8601DateFormatter().date(from: $0) }
+        guard let failureReason, ["quitTimeout", "recording"].contains(failureReason), let failureAt,
+              abs(Date().timeIntervalSince(failureAt)) <= window,
+              successDate.map({ $0 < failureAt }) ?? true else {
+            return answer("noFailedQuit", "The last install did not stop on a quit")
+        }
+        let staged = URL(fileURLWithPath: stagedPath)
+        guard fm.fileExists(atPath: staged.path) else { return answer("missing", "The staged update is missing.") }
+        do {
+            try checkStagedControlApp(staged, version: version, build: build)
+        } catch {
+            details["message"] = "\(error)"
+            return answer("unverified", "The staged update did not pass its checks.")
+        }
+        answer("staged", "Update \(version) is downloaded and checked")
+    }
+
+    /// 0.5.322: read only. What the detached swap would decide now for --live-bundle: the processes running it and the
+    /// recording state's verdict (safe, recording or unknown). Signals nothing.
+    private func emitAppUpdateQuitSafety(args: [String]) throws {
+        guard let livePath = option("--live-bundle", in: args), !livePath.isEmpty else {
+            throw HelperError.message("app-update-quit-safety requires --live-bundle")
+        }
+        let processes = liveBundleProcesses(URL(fileURLWithPath: livePath).standardizedFileURL)
+        let safety = processes.unidentified == 0
+            ? Self.macCaptureQuitSafety(stateData: try? Data(contentsOf: macCaptureStateURL), livePIDs: processes.running.map(\.pid))
+            : (verdict: "unknown", phase: nil)
+        var details: [String: Any] = [
+            "verdict": safety.verdict,
+            "pids": processes.running.map { Int($0.pid) },
+            "unidentified": processes.unidentified,
+        ]
+        if let phase = safety.phase { details["phase"] = phase }
+        emit(ok: true, message: "Quit safety: \(safety.verdict)", details: details)
     }
 
     /// Read-only Memory and Threads browsing on the desktop.
@@ -21278,6 +21549,76 @@ final class COSControlHelper {
         }
         for bad in ["../x", "a/b", "ab", "", "stop 1", "stop:1"] {
             try expect(Self.meetingStopRequestPath(sessionId: "g2:abc", requestId: bad) == nil, "meeting-stop-request refuses the request id \(bad.debugDescription)")
+        }
+        // 0.5.322: the detached swap's timings (only a /tmp/ test home may shorten them) and the recording state that
+        // decides whether it may force Control to quit.
+        let defaultQuit = AppUpdateQuitTimings(quit: 20, term: 10, kill: 5, unknown: 60, linger: 10)
+        try expect(Self.appUpdateQuitTimings(environment: [:]) == defaultQuit && AppUpdateQuitTimings() == defaultQuit,
+                   "app update quit timings: 20 s for a normal quit, 10 s after SIGTERM, 5 s after SIGKILL, 60 s unknown, 10 s linger")
+        try expect(Self.appUpdateQuitTimings(environment: ["COS_CONTROL_TEST_QUIT_TIMINGS": "1,1,1,1,1"]) == defaultQuit,
+                   "app update quit timings: production ignores the test timings")
+        try expect(Self.appUpdateQuitTimings(environment: ["COS_CONTROL_TEST_HOME": "/Users/x/home", "COS_CONTROL_TEST_QUIT_TIMINGS": "1,1,1,1,1"]) == defaultQuit,
+                   "app update quit timings: a test home outside /tmp/ ignores them")
+        try expect(Self.appUpdateQuitTimings(environment: ["COS_CONTROL_TEST_HOME": "/tmp/h", "COS_CONTROL_TEST_QUIT_TIMINGS": "1, 2,3,4,5.5"])
+                   == AppUpdateQuitTimings(quit: 1, term: 2, kill: 3, unknown: 4, linger: 5.5), "app update quit timings: a /tmp/ test home may shorten them")
+        for bad in ["1,2,3,4", "1,2,3,4,5,6", "0,1,1,1,1", "1,1,1,1,121", "a,1,1,1,1", "", "1,,1,1,1"] {
+            try expect(Self.appUpdateQuitTimings(environment: ["COS_CONTROL_TEST_HOME": "/tmp/h", "COS_CONTROL_TEST_QUIT_TIMINGS": bad]) == defaultQuit,
+                       "app update quit timings: \(bad.debugDescription) is refused")
+        }
+        func captureState(_ phase: String, _ pid: Int) -> Data { Data("{\"schema\":1,\"phase\":\"\(phase)\",\"pid\":\(pid),\"at\":\"2026-10-17T22:00:00Z\"}".utf8) }
+        for phase in ["starting", "recording", "stopping"] {
+            try expect(Self.macCaptureQuitSafety(stateData: captureState(phase, 4242), livePIDs: [4242]) == ("recording", phase),
+                       "quit safety: a Mac recording that is \(phase) is never signalled")
+        }
+        for phase in ["idle", "saved", "pending", "recovering"] {
+            try expect(Self.macCaptureQuitSafety(stateData: captureState(phase, 4242), livePIDs: [4242]) == ("safe", phase),
+                       "quit safety: \(phase) may be forced")
+        }
+        try expect(Self.macCaptureQuitSafety(stateData: captureState("calibrating", 4242), livePIDs: [4242]).verdict == "unknown",
+                   "quit safety: a phase this build does not know is unknown")
+        try expect(Self.macCaptureQuitSafety(stateData: captureState("idle", 4241), livePIDs: [4242]).verdict == "unknown",
+                   "quit safety: a record from another process (an older launch) is unknown")
+        try expect(Self.macCaptureQuitSafety(stateData: captureState("idle", 4242), livePIDs: [4242, 4243]).verdict == "unknown",
+                   "quit safety: two live processes and one record is unknown")
+        try expect(Self.macCaptureQuitSafety(stateData: captureState("idle", 4242), livePIDs: []).verdict == "unknown",
+                   "quit safety: no live process named is unknown")
+        try expect(Self.macCaptureQuitSafety(stateData: nil, livePIDs: [4242]).verdict == "unknown"
+                   && Self.macCaptureQuitSafety(stateData: Data("not json".utf8), livePIDs: [4242]).verdict == "unknown"
+                   && Self.macCaptureQuitSafety(stateData: Data("{\"phase\":\"idle\"}".utf8), livePIDs: [4242]).verdict == "unknown",
+                   "quit safety: no record, junk, or no PID is unknown")
+        if case let .running(path, started) = Self.processIdentity(getpid()) {
+            var me = stat()
+            try expect(stat(CommandLine.arguments[0], &me) == 0 && Self.sameFile(path, as: me) && started > 0,
+                       "process identity: this helper runs its own executable, with a start time")
+        } else {
+            try expect(false, "process identity: this helper must identify itself")
+        }
+        let exited = Process()
+        exited.executableURL = URL(fileURLWithPath: "/usr/bin/true")
+        try exited.run()
+        exited.waitUntilExit()
+        try expect(Self.processIdentity(exited.processIdentifier) == .gone, "process identity: a process that exited is gone")
+        // The signal re-checks the process first: a stale start time (a reused PID) or another executable is never signalled.
+        do {
+            let sleeper = Process()
+            sleeper.executableURL = URL(fileURLWithPath: "/bin/sleep")
+            sleeper.arguments = ["30"]
+            try sleeper.run()
+            defer { if sleeper.isRunning { sleeper.terminate(); sleeper.waitUntilExit() } }
+            var sleepFile = stat(), trueFile = stat()
+            try expect(stat("/bin/sleep", &sleepFile) == 0 && stat("/usr/bin/true", &trueFile) == 0, "process identity: stat the fixtures")
+            guard case let .running(_, sleepStarted) = Self.processIdentity(sleeper.processIdentifier) else {
+                throw HelperError.message("process identity: a running sleep must be identified")
+            }
+            let pid = sleeper.processIdentifier
+            try expect(!signalLiveProcess(LiveBundleProcess(pid: pid, started: sleepStarted &- 1), SIGTERM, executable: sleepFile) && sleeper.isRunning,
+                       "quit signal: a PID with another start time (reused) is never signalled")
+            try expect(!signalLiveProcess(LiveBundleProcess(pid: pid, started: sleepStarted), SIGTERM, executable: trueFile) && sleeper.isRunning,
+                       "quit signal: a process running another executable is never signalled")
+            try expect(signalLiveProcess(LiveBundleProcess(pid: pid, started: sleepStarted), SIGTERM, executable: sleepFile),
+                       "quit signal: the same process is signalled")
+            sleeper.waitUntilExit()
+            try expect(sleeper.terminationReason == .uncaughtSignal && sleeper.terminationStatus == SIGTERM, "quit signal: it was SIGTERM")
         }
         // 0.5.278: live-transcript. The path grammar, a fixture in the server 6.67 shape (fake text), --since and the stamp.
         for bad in ["..", "a/b", "abc.tmp", "abc\n", "ab", String(repeating: "a", count: 97), "caf\u{e9}1", "a b", "../active-sessions/x", ""] {

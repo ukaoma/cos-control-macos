@@ -625,6 +625,8 @@ final class ControllerModel: ObservableObject {
             self.recordingCountChanged()
         }
         guard startBackgroundWork else { return }
+        // 0.5.322: the detached swap reads the Mac recording's phase before it may force a quit.
+        recordMacCaptureState(to: MacCaptureStateFile.url())
         whatsNewSeen = WhatsNewSeenStore(defaults: .standard)
         beginPostUpdateWhatsNew()
         try? Self.pruneMediaHandoffs()
@@ -641,6 +643,7 @@ final class ControllerModel: ObservableObject {
         // and a Mac that slept through the 6-hour mark checks soon after it wakes.
         updateCheckTask = Task { [weak self] in
             await self?.completeAppUpdateIfNeeded()
+            await self?.checkStagedAppUpdate()
             await self?.runScheduledAppUpdateCheck(.launch)
             while !Task.isCancelled {
                 guard let nap = self?.appUpdateSchedule.nextNap(now: Date()) else { return }
@@ -1159,6 +1162,31 @@ final class ControllerModel: ObservableObject {
         }
     }
 
+    /// 0.5.322: Control writes the Mac recording's phase and its own PID (MacCaptureStateFile) now and on every phase
+    /// change. The detached swap never forces a quit while that phase is starting, recording or stopping, and signals
+    /// nothing when the record is missing or names another process.
+    func recordMacCaptureState(to url: URL) {
+        let write: (String) -> Void = { phase in
+            do { try MacCaptureStateFile.write(phase: phase, to: url) } catch {
+                appUpdateLog.error("Mac recording state not written: \(error.localizedDescription, privacy: .public)")
+            }
+        }
+        macRecording.phaseRecorder = write
+        write(macRecording.phase)
+    }
+
+    /// 0.5.322: at launch, before the first check: a build already downloaded and checked whose install could not close
+    /// Control (quitTimeout or recording, in the last 30 minutes) is offered as Finish installing (AppUpdateFinishOffer).
+    func checkStagedAppUpdate() async {
+        guard let response = try? await helper.run([
+            "staged-app-update",
+            "--current-version", Self.currentVersion,
+            "--current-build", String(Self.currentBuild),
+            "--failure-window", String(Int(AppUpdateFinishOffer.window)),
+        ], timeout: 90), let offer = AppUpdateFinishOffer.offer(response.details, currentBuild: Self.currentBuild) else { return }
+        appUpdateFlow.offerFinish(version: offer.version, build: offer.build, currentBuild: Self.currentBuild)
+    }
+
     /// Close the handshake after a swap. Does not touch the glasses server.
     func completeAppUpdateIfNeeded() async {
         do {
@@ -1187,6 +1215,8 @@ final class ControllerModel: ObservableObject {
     /// as well: the banner already says it, where the Update button was. The What's New window's footer follows the
     /// same flow, so closing that window never stops an install that is already running.
     func installAppUpdate() {
+        // 0.5.322: on a staged offer, What's New's Finish installing applies that build (no download).
+        if appUpdateFlow.finishesStaged { finishStagedAppUpdate(); return }
         guard !busy, appUpdateFlow.beginInstall() else { return }
         busy = true
         operationProgress = "Downloading update…"
@@ -1219,22 +1249,7 @@ final class ControllerModel: ObservableObject {
                 }
                 operationProgress = "Installing…"
                 appUpdateFlow.staged()
-                let applyStarted = Date()
-                var apply = [
-                    "apply-app-update",
-                    "--detach",
-                    "--live-bundle", live,
-                    "--current-version", Self.currentVersion,
-                    "--current-build", String(Self.currentBuild),
-                ]
-                // The helper refuses a pending stage of any other build (a stale pending.json never installs).
-                if let stagedBuild = staged.details["latestBuild"]?.int { apply += ["--expected-build", String(stagedBuild)] }
-                _ = try await helper.run(apply, preferStable: true)
-                notice = "Installing. Control will reopen."
-                // 0.5.319: watch BEFORE asking to quit. 0.5.320: never terminate(nil) here, inside this Task: with a
-                // deferred quit it deadlocked (AppQuit), so Control never quit and the window sat on Installing.
-                watchAppUpdateApply(since: applyStarted)
-                AppQuit.request()
+                try await applyStagedAppUpdate(stagedBuild: staged.details["latestBuild"]?.int, live: live)
             } catch {
                 appUpdateFlow.fail(error.localizedDescription)
                 busy = false
@@ -1243,16 +1258,60 @@ final class ControllerModel: ObservableObject {
         }
     }
 
-    /// 0.5.319: while installing, say what Control is finishing before it can quit; at the deadline (the helper waits 60 s
-    /// for Control to quit, then gives up), cancel a quit still waiting and show the helper's reason with Try again,
-    /// instead of "Installing" forever (Miles 2026-10-17: it hung there for five minutes).
+    /// 0.5.322: Finish installing (the launch offer after an install that could not close Control). The build named in
+    /// updates/pending.json is already downloaded and checked, so it is applied at once, through the same path as
+    /// Download and install; the swap checks its signature and build again before it installs anything.
+    func finishStagedAppUpdate() {
+        guard !busy, let build = appUpdateFlow.build, appUpdateFlow.beginFinish() else { return }
+        busy = true
+        operationProgress = "Installing…"
+        notice = nil
+        error = nil
+        whatsNewMode = .offer
+        whatsNewFrozen = WhatsNewContent(appUpdate)
+        let live = Bundle.main.bundleURL.path
+        Task {
+            do {
+                try await applyStagedAppUpdate(stagedBuild: build, live: live)
+            } catch {
+                appUpdateFlow.fail(error.localizedDescription)
+                busy = false
+                operationProgress = nil
+            }
+        }
+    }
+
+    /// apply-app-update --detach, then quit: the detached swap installs the staged build and reopens Control.
+    private func applyStagedAppUpdate(stagedBuild: Int?, live: String) async throws {
+        let applyStarted = Date()
+        var apply = [
+            "apply-app-update",
+            "--detach",
+            "--live-bundle", live,
+            "--current-version", Self.currentVersion,
+            "--current-build", String(Self.currentBuild),
+        ]
+        // The helper refuses a pending stage of any other build (a stale pending.json never installs).
+        if let stagedBuild { apply += ["--expected-build", String(stagedBuild)] }
+        _ = try await helper.run(apply, preferStable: true)
+        notice = "Installing. Control will reopen."
+        // 0.5.319: watch BEFORE asking to quit. 0.5.320: never terminate(nil) here, inside this Task: with a
+        // deferred quit it deadlocked (AppQuit), so Control never quit and the window sat on Installing.
+        watchAppUpdateApply(since: applyStarted)
+        AppQuit.request()
+    }
+
+    /// 0.5.319: while installing, say what Control is finishing before it can quit; at the deadline (AppUpdateFlow
+    /// .applyDeadline), cancel a quit still waiting and show the helper's reason with Try again, instead of "Installing"
+    /// forever (Miles 2026-10-17: it hung there for five minutes). 0.5.322: as soon as the swap records that it gave up
+    /// with Control still open (a Mac recording, or a quit it could not force), the same, without waiting for the deadline.
     private func watchAppUpdateApply(since started: Date) {
         Task { @MainActor [weak self] in
             while let self, case .applying = self.appUpdateFlow.phase {
                 self.appUpdateFlow.waitingToQuit(on: MacRecordingTermination.pending ? "the Mac recording" : nil)
-                if self.appUpdateFlow.applyOverdue() {
+                let record = self.readUpdateFailure(since: started)
+                if record?.endsApply == true || self.appUpdateFlow.applyOverdue() {
                     MacRecordingTermination.cancelPendingQuit()
-                    let record = self.readUpdateFailure(since: started)
                     self.appUpdateFlow.fail(record?.words ?? AppUpdateFailureRecord.quitTimeoutWords)
                     self.busy = false
                     self.operationProgress = nil

@@ -51,7 +51,12 @@ final class MacRecordingStore: ObservableObject {
     /// Typed under Options; empty means the automatic title (MacRecordingNotice.title).
     @Published var title = ""
     @Published private(set) var phase = "idle" {
-        didSet { if ["starting", "recording", "stopping"].contains(oldValue) != ["starting", "recording", "stopping"].contains(phase) { activeChanged?(["starting", "recording", "stopping"].contains(phase)) } }
+        didSet {
+            // 0.5.322: every change reaches the update swap's state file first (MacCaptureStateFile), so the swap never
+            // forces a quit on a recording that has just started.
+            if oldValue != phase { phaseRecorder?(phase) }
+            if ["starting", "recording", "stopping"].contains(oldValue) != ["starting", "recording", "stopping"].contains(phase) { activeChanged?(["starting", "recording", "stopping"].contains(phase)) }
+        }
     }
     @Published private(set) var message = "Record what this Mac plays: every app, or one you pick. Your microphone is not recorded. Glasses are optional."
     @Published private(set) var error: String?
@@ -88,6 +93,8 @@ final class MacRecordingStore: ObservableObject {
     private let stopGate = MacRecordingStopGate()
     private var observers: [NSObjectProtocol] = []
     var activeChanged: ((Bool) -> Void)?
+    /// 0.5.322: every phase change, for MacCaptureStateFile (ControllerModel.recordMacCaptureState). Nil in a test model.
+    var phaseRecorder: ((String) -> Void)?
     /// A stop the person did not make (limit, sleep, capture failure), with its reason.
     var stoppedOnItsOwn: ((String) -> Void)?
     var openLiveMeeting: ((String) -> Void)?

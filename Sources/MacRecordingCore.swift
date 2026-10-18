@@ -669,3 +669,45 @@ enum MacRecordingNotice {
         return trimmed.isEmpty ? autoTitle(meetingApp: meetingApp, at: date, calendar: calendar) : String(trimmed.prefix(160))
     }
 }
+
+/// 0.5.322: the Mac recording's phase on disk, for the detached update swap (HelperSources/main.swift,
+/// macCaptureQuitSafety). When Control does not quit within 20 s the swap may force it, but never while a recording is
+/// starting, recording or stopping, and never when this record is missing or names another process. Control writes it
+/// at launch and on every phase change (MacRecordingStore.phaseRecorder): `{"schema":1,"phase":…,"pid":…,"at":…}`,
+/// atomically, owner only, default (class C) file protection so a locked Mac can still write it.
+enum MacCaptureStateFile {
+    static let name = "mac-capture-state.json"
+    /// The phases MacRecordingStore.needsQuitTeardown finishes before a quit; the swap never signals during them.
+    static let activePhases: Set<String> = ["starting", "recording", "stopping"]
+
+    /// The helper's own rule for its home: a /tmp/ COS_CONTROL_TEST_HOME, else this user's home.
+    static func url(environment: [String: String] = ProcessInfo.processInfo.environment) -> URL {
+        let home: URL
+        if let test = environment["COS_CONTROL_TEST_HOME"], test.hasPrefix("/tmp/") {
+            home = URL(fileURLWithPath: test, isDirectory: true).standardizedFileURL
+        } else {
+            home = FileManager.default.homeDirectoryForCurrentUser
+        }
+        return home.appendingPathComponent("Library/Application Support/COS Control", isDirectory: true).appendingPathComponent(name)
+    }
+
+    static func encode(phase: String, pid: Int32, at date: Date) -> Data {
+        let object: [String: Any] = ["schema": 1, "phase": phase, "pid": Int(pid), "at": ISO8601DateFormatter().string(from: date)]
+        return (try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])) ?? Data()
+    }
+
+    static func decode(_ data: Data) -> (phase: String, pid: Int32)? {
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let phase = object["phase"] as? String, let pid = (object["pid"] as? NSNumber)?.int32Value else { return nil }
+        return (phase, pid)
+    }
+
+    static func write(phase: String, pid: Int32 = getpid(), at date: Date = Date(), to url: URL) throws {
+        let directory = url.deletingLastPathComponent()
+        if !FileManager.default.fileExists(atPath: directory.path) {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        }
+        try encode(phase: phase, pid: pid, at: date).write(to: url, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+    }
+}
