@@ -908,7 +908,12 @@ enum ParakeetCLIPath {
 // key only ever arrives on stdin, never in argv or the environment (so `ps` never shows it), and nothing this returns
 // carries it: the server never sends a secret, and the answer is dropped whole if one ever appeared in it.
 enum KeyLanesHelperCore {
-    static let usage = "key-lanes takes status, enable, disable, save-key, set-cap --ref R --cap USD, remove-key --ref R [--force], remove-all [--export-ledger], catalog, save-profile, delete-profile --id ID"
+    static let usage = "key-lanes takes status, enable, disable, save-key, set-cap --ref R --cap USD, remove-key --ref R [--force], remove-all [--export-ledger], remove-saved-keys, catalog, save-profile, delete-profile --id ID, reset-breaker --ref R"
+    /// What `remove-saved-keys` deletes from the server's data dir when the server cannot (an older server, or lanes off:
+    /// neither reads these files). keyed-sessions.json stays on purpose (plan 12: Continue and Fork stay refused).
+    /// The key store moved into a 0700 `key-secrets` dir at server 99c5ce7; both places are covered.
+    static let savedKeyFiles = ["key-secrets/provider-keys.json", "provider-keys.json", "provider-profiles.json", "key-ledger.jsonl"]
+    static let savedKeyDirectories = ["codex-homes"]
     /// The P1 grammars (server/lib/key-relay-contract.ts KEY_REF_RE, shared/key-preference.ts KEY_PROFILE_ID_RE).
     static let refPattern = "\\Akey_[0-9a-f]{12}\\z"
     static let profilePattern = "\\A[a-z0-9][a-z0-9-]{0,31}\\z"
@@ -968,6 +973,14 @@ enum KeyLanesHelperCore {
         case "remove-all":
             guard rest.isEmpty || rest == ["--export-ledger"] else { return nil }
             return p("POST", "/remove-all", ["exportLedger": rest.isEmpty ? "false" : "true"], .none, 20)
+        // Remove all keys through the server when it can; the helper deletes the files itself when the server answers
+        // today's 404 (HelperSources/main.swift emitKeyLanes).
+        case "remove-saved-keys":
+            return rest.isEmpty ? p("POST", "/remove-all", ["exportLedger": "false"], .none, 20) : nil
+        // QA U6: a topped-up key leaves its pause now (server route POST /api/key-lanes/breaker/reset).
+        case "reset-breaker":
+            guard rest.count == 2, let ref = option("--ref", rest), matches(ref, refPattern) else { return nil }
+            return p("POST", "/breaker/reset", ["ref": ref])
         case "delete-profile":
             guard rest.count == 2, let id = option("--id", rest), matches(id, profilePattern) else { return nil }
             return p("DELETE", "/profiles/" + id)
@@ -1031,6 +1044,18 @@ enum KeyLanesHelperCore {
             }
             return (body, nil)
         }
+    }
+
+    /// Why the helper must NOT delete saved key files itself right now, or nil when it may (QA U7). Only after the
+    /// server answered remove-all with today's 404 (an older server, or lanes off: neither reads the files), and only
+    /// while the server reports no work in flight: no job, no transcription session, nothing in activeByKind.
+    static func diskRemovalBlocker(maintenance: [String: Any]?) -> String? {
+        guard let maintenance else { return "COS did not report what it is doing, so the saved keys were left alone. Try again in a moment." }
+        func count(_ value: Any?) -> Int { (value as? NSNumber).map { CFGetTypeID($0) == CFBooleanGetTypeID() ? 0 : $0.intValue } ?? 0 }
+        let lifecycle = maintenance["lifecycle"] as? [String: Any] ?? [:]
+        let busy = count(maintenance["activeJobs"]) + count(maintenance["activeTranscriptionSessions"])
+            + (lifecycle["activeByKind"] as? [String: Any] ?? [:]).values.reduce(0) { $0 + count($1) }
+        return busy > 0 ? "COS is recording or answering right now. Remove saved keys when it finishes." : nil
     }
 
     /// `answered`, or `unsupported` for a 404 that is not JSON (lanes off on this server, or a server from before them:
@@ -1109,7 +1134,12 @@ enum KeyLanesHelperCore {
             }
         case "remove-key":
             out["disabledProfiles"] = (body["disabledProfiles"] as? [Any] ?? []).compactMap { text($0, max: 32, pattern: profilePattern) }
-        case "remove-all":
+        case "reset-breaker":
+            if let reset = bool(body["reset"]) { out["reset"] = reset }
+            if let b = body["breaker"] as? [String: Any] {
+                out["breaker"] = ["open": bool(b["open"]) ?? false, "failures": Int(number(b["failures"]) ?? 0)]
+            }
+        case "remove-all", "remove-saved-keys":
             if let removed = body["removed"] as? [Any] {
                 out["removed"] = removed.compactMap { ($0 as? String).flatMap { ["keys", "profiles", "codexHomes", "ledger"].contains($0) ? $0 : nil } }
             }

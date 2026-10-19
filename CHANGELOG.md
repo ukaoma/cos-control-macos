@@ -1,3 +1,29 @@
+## 0.5.330 (build 383), answer with your own key
+
+### Answer with your own key (COS server 6.80.0, key lanes K1)
+
+- Settings has one new row, "Answer with your own key", Off by default, shown only for a COS server 6.80.0 or later (or
+  while this Mac still holds keys Control saw saved). Turning it on calls the server's enable door
+  (`POST /api/key-lanes/enable`), then the key setup opens in place.
+- Key entry is paste only: Paste key reads the clipboard, clears it when it still holds that key, and holds the key
+  until Save key. The key goes to the helper on stdin (never in arguments), the helper posts it to the server, and no
+  answer that repeats it is printed. Control shows a key as its kind and last four characters.
+- Setup offers only key kinds a model can run on with the CLIs on this Mac: OpenRouter and Anthropic for the curated
+  Claude Sonnet 5.5 and Claude Haiku 5.5 (Claude Code needed); OpenAI only once the server lists an OpenAI model.
+- Each key: model choice from the server's curated list, daily cap (default $1), Reset pause when its breaker is open,
+  Use for answers (the key's profile on or off), Remove. Remove all keys exports the spend ledger first if asked.
+  Every remove is an inline confirmation. After the first save Control says where to pick the key on the glasses.
+- The same-Mac line from the server catalog and, for Anthropic and OpenAI keys, that the cap here is the only stop.
+- Downgrade: "Remove your keys first. Older COS cannot see them." While keys Control saw saved remain and the server
+  cannot manage them (lanes off, or older than 6.80.0), "Remove saved keys" asks the server first and, only after its
+  404 and while nothing is recording or answering, deletes the key files itself (keyed-sessions.json stays).
+- Sessions that ran on a key are refused on Continue and Fork (Work and Activity chat) and are not opened in their app,
+  with the server's line "This session ran on your key. Continue it from COS."
+- New installs (first run on a Mac that never finished setup) see an optional "Add your own key" step at the end of
+  setup; Skip is the default and sends nothing. Existing installs see it only after turning the row on.
+- With no key-lane answer from the server, Control draws and behaves as 0.5.328: the K0 golden replays identical at
+  6.79.0, and at 6.80.0 with lanes off the panel is the 6.79.0 panel plus exactly one Settings row.
+
 ## 0.5.328 (build 381), the pet keeps moving while dictation starts
 
 ### The pet keeps moving while dictation starts

@@ -197,6 +197,19 @@ import Foundation
             check(helper.calls.filter { $0.args[1] != "save-key" }.allSatisfy { $0.input.map { !String(decoding: $0, as: UTF8.self).contains(secret) } ?? true },
                   "no other call carries the key")
             check(!"\(store.state as Any) \(store.line as Any) \(store.catalog)".contains(secret), "the store keeps no copy of the key")
+            check(store.justSaved == "Sonnet 5.5" && KeyLanes.glassesHint("Sonnet 5.5") == "On the glasses: Model, then Key: Sonnet 5.5.",
+                  "after the first save Control says where to pick the key on the lens (QA U8)")
+            check(store.savedKeys == 1 && d.integer(forKey: KeyLanesStore.savedKeysKey) == 1, "a lanes-on status records how many keys are saved (QA U7)")
+
+            helper.calls = []
+            helper.answers["reset-breaker"] = answered(200, #""reset":true,"breaker":{"open":false,"failures":0}"#)
+            await store.resetBreaker(keyRef, run: helper.run)
+            check(helper.calls.first?.args == ["key-lanes", "reset-breaker", "--ref", keyRef] && store.line == nil, "Reset pause resets the key's breaker (QA U6)")
+            helper.calls = []
+            await store.setProfileEnabled(store.state!.profiles[0], false, run: helper.run)
+            let off = helper.calls.first?.input.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+            check(helper.calls.first?.args == ["key-lanes", "save-profile"] && off?["enabled"] as? Bool == false && off?["model"] as? String == "anthropic/claude-sonnet-5.5"
+                  && off?["timeoutTier"] as? String == "sonnet", "Use for answers off turns the key's profile off, nothing else changed (QA U6)")
 
             helper.calls = []
             await store.chooseModel("anthropic/claude-haiku-5.5", keyRef: keyRef, kind: "openrouter", run: helper.run)
@@ -226,6 +239,7 @@ import Foundation
             await store.removeAll(exportLedger: true, run: helper.run)
             check(helper.calls.first?.args == ["key-lanes", "remove-all", "--export-ledger"], "Remove all keys with the ledger export")
             check(store.state == .off && !store.enabled, "after Remove all keys lanes read off")
+            check(store.savedKeys == 0 && d.object(forKey: KeyLanesStore.savedKeysKey) == nil, "after Remove all keys no saved keys are remembered")
             check(store.line == "Spend ledger saved to /Users/you/Downloads/cos-key-ledger-2026-10-19.jsonl.", "the export path is shown")
             check(store.refusal(sessionID: "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0") == KeyLanes.keyedSessionRefusal,
                   "a keyed session stays refused after Remove all keys")
@@ -247,6 +261,59 @@ import Foundation
             check(store.line == KeyLanes.cannotEnable && !store.enabled, "a server that would not turn on says so")
             store.skipSetup()
             check(store.setupSkipped, "Skip is remembered")
+        }
+
+        // ── QA U5 and U10: setup never saves a key into a dead end.
+        let curated = (catalog["curated"]?.array ?? []).compactMap(KeyLanesModel.init)
+        check(KeyLanes.offeredKinds(curated, claudeInstalled: true, codexInstalled: true) == ["openrouter", "anthropic"],
+              "with Claude models only, OpenAI keys are not offered (QA U5)")
+        check(KeyLanes.offeredKinds(curated, claudeInstalled: false, codexInstalled: true).isEmpty,
+              "without Claude Code no Claude-engine profile is offered (QA U10)")
+        let gpt = KeyLanesModel(JSONValue.object(["id": .string("openai/gpt-5.5"), "name": .string("GPT-5.5"), "inUsdPerM": .number(1), "outUsdPerM": .number(8)]))!
+        check(KeyLanes.offeredKinds(curated + [gpt], claudeInstalled: true, codexInstalled: true) == ["openrouter", "anthropic", "openai"],
+              "an OpenAI key is offered once the server lists a model it can run")
+        check(KeyLanes.profileModel(slug: "openai/gpt-5.5", kind: "openai") == "gpt-5.5" && KeyLanes.engine("openai/gpt-5.5") == "codex",
+              "an OpenAI key runs the bare id in Codex")
+        check(KeyLanes.usableModels(curated + [gpt], kind: "openrouter", claudeInstalled: false, codexInstalled: true).map(\.id) == ["openai/gpt-5.5"],
+              "only models whose CLI is on this Mac are offered")
+        check(KeyLanes.setupDetail(kinds: ["openrouter", "anthropic"]) == "Answers can run on your OpenRouter or Anthropic key, with a daily cap.",
+              "setup names only the offered kinds")
+        check(KeyLanes.providerLimitApplies("anthropic") && KeyLanes.providerLimitApplies("openai") && !KeyLanes.providerLimitApplies("openrouter"),
+              "the no-provider-limit line is for Anthropic and OpenAI keys")
+
+        // ── QA U7: saved keys outlive a downgrade or lanes off, until removed.
+        check(KeyLanes.rowVisible(serverVersion: "6.79.1", enabled: false, savedKeys: 1), "an older server still shows the row while keys are saved")
+        check(!KeyLanes.rowVisible(serverVersion: "6.79.1", enabled: false, savedKeys: 0), "an older server with no saved keys shows nothing")
+        check(KeyLanes.savedKeysRowVisible(enabled: false, savedKeys: 2) && !KeyLanes.savedKeysRowVisible(enabled: true, savedKeys: 2)
+              && !KeyLanes.savedKeysRowVisible(enabled: false, savedKeys: 0), "Remove saved keys shows only when lanes cannot manage them")
+        check(KeyLanes.savedKeysLine(serverVersion: "6.79.1") == KeyLanes.savedKeysOlderServerLine && KeyLanes.savedKeysLine(serverVersion: "6.80.0") == KeyLanes.savedKeysOffLine,
+              "the saved-keys line says why")
+        do {
+            let d = freshDefaults()
+            d.set(2, forKey: KeyLanesStore.savedKeysKey)
+            let store = KeyLanesStore(defaults: d)
+            check(store.savedKeys == 2, "saved keys are remembered across a relaunch")
+            let helper = Helper()
+            helper.answers["status"] = details(#"{"transport":"unsupported","httpStatus":404}"#)
+            await store.refresh(run: helper.run)
+            check(store.savedKeys == 2, "a lanes-off status does not forget saved keys")
+            helper.answers["remove-saved-keys"] = details(#"{"transport":"answered","httpStatus":409,"error":"busy","message":"COS is recording or answering right now. Remove saved keys when it finishes."}"#)
+            await store.removeSavedKeys(run: helper.run)
+            check(store.savedKeys == 2 && store.line == "COS is recording or answering right now. Remove saved keys when it finishes.", "a busy server keeps the keys and says why")
+            helper.answers["remove-saved-keys"] = details(#"{"transport":"answered","httpStatus":200,"removed":["provider-keys.json"],"via":"disk"}"#)
+            await store.removeSavedKeys(run: helper.run)
+            check(store.savedKeys == 0 && d.object(forKey: KeyLanesStore.savedKeysKey) == nil && store.line == KeyLanes.savedKeysRemovedLine,
+                  "Remove saved keys forgets them and says so")
+        }
+        do {
+            let store = KeyLanesStore(defaults: freshDefaults())
+            let helper = Helper()
+            helper.answers["catalog"] = catalog
+            helper.answers["save-key"] = answered(200, #""key":{"ref":"key_0123456789ab","kind":"openrouter","last4":"9f3c","capUsd":1}"#)
+            helper.answers["status"] = statusOn
+            await store.saveKey(kind: "openrouter", secret: secret, capUsd: 1, claudeInstalled: false, codexInstalled: false, run: helper.run)
+            check(!helper.calls.contains { $0.args == ["key-lanes", "save-profile"] } && store.justSaved == nil,
+                  "without Claude Code a saved key gets no Claude profile (QA U10)")
         }
 
         print("key lanes checks: \(passed) passed")

@@ -15,13 +15,16 @@ with tempfile.TemporaryDirectory(prefix='cos-key-lanes-', dir='/tmp') as tmp:
     home = pathlib.Path(tmp); (home / '.cos-glasses').mkdir()
     token = 'f' * 64
     env_file = home / '.cos-glasses/.env'; env_file.write_text('COS_API_TOKEN=' + token + '\n'); env_file.chmod(0o600)
-    state = {'status': 200, 'body': {}}
+    state = {'status': 200, 'body': {}, 'maintenance': {'activeJobs': 0, 'activeTranscriptionSessions': 0, 'lifecycle': {'activeByKind': {}}}}
     requests = []
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args): pass
         def answer(self):
             data = self.rfile.read(int(self.headers.get('Content-Length', '0')))
+            if self.path == '/api/maintenance/status':
+                raw = json.dumps(state['maintenance']).encode(); self.send_response(200); self.send_header('Content-Type', 'application/json')
+                self.send_header('Content-Length', str(len(raw))); self.end_headers(); self.wfile.write(raw); return
             requests.append((self.command, self.path, self.headers.get('X-COS-Token') == token, self.headers.get('Origin'),
                              data.decode() if data else None))
             if state['body'] is None:
@@ -123,6 +126,45 @@ with tempfile.TemporaryDirectory(prefix='cos-key-lanes-', dir='/tmp') as tmp:
         state['body'] = {'curated': [{'id': 'anthropic/claude-sonnet-5.5', 'name': 'Claude Sonnet 5.5', 'inUsdPerM': 2, 'outUsdPerM': 10, 'role': 'default'}], 'pricesFrom': 'built-in'}
         got = run('catalog')
         check(requests[-1][:2] == ('GET', '/api/key-lanes/catalog') and got['details']['curated'][0]['role'] == 'default', 'catalog')
+
+        # QA U6: Reset pause.
+        state['status'] = 200; state['body'] = {'reset': True, 'breaker': {'open': False, 'failures': 0}}
+        got = run('reset-breaker', '--ref', REF)
+        check(requests[-1][:2] == ('POST', '/api/key-lanes/breaker/reset') and json.loads(requests[-1][4]) == {'ref': REF}, 'Reset pause posts the ref')
+        check(got['details'] == {'transport': 'answered', 'httpStatus': 200, 'reset': True, 'breaker': {'open': False, 'failures': 0}}, 'Reset pause answer')
+
+        # QA U7: Remove saved keys. Through the server when it can; from disk only after today's 404, and never while busy.
+        data = home / '.cos-glasses/data'
+        def plant():
+            (data / 'key-secrets').mkdir(parents=True, exist_ok=True)
+            for name in ('key-secrets/provider-keys.json', 'provider-keys.json', 'provider-profiles.json', 'key-ledger.jsonl', 'keyed-sessions.json'):
+                (data / name).write_text('{"secret":"' + SECRET + '"}')
+            (data / 'codex-homes/p1').mkdir(parents=True, exist_ok=True); (data / 'codex-homes/p1/config.toml').write_text('x')
+        plant()
+        state['status'] = 200; state['body'] = {'removed': ['keys', 'profiles'], 'enabled': False, 'active': False}
+        got = run('remove-saved-keys')
+        check(requests[-1][:2] == ('POST', '/api/key-lanes/remove-all') and json.loads(requests[-1][4]) == {'exportLedger': False}
+              and got['details']['removed'] == ['keys', 'profiles'] and (data / 'provider-keys.json').exists(), 'a server that can remove keys does it; the helper deletes nothing')
+        state['status'] = 404; state['body'] = None
+        state['maintenance'] = {'activeJobs': 0, 'activeTranscriptionSessions': 0, 'lifecycle': {'activeByKind': {'recording_session': 1}}}
+        got = run('remove-saved-keys')
+        check(got['details']['error'] == 'busy' and (data / 'provider-keys.json').exists() and (data / 'key-secrets/provider-keys.json').exists(),
+              'a recording blocks the disk path and nothing is deleted')
+        state['maintenance'] = {'activeJobs': 1, 'activeTranscriptionSessions': 0, 'lifecycle': {'activeByKind': {}}}
+        check(run('remove-saved-keys')['details']['error'] == 'busy' and (data / 'provider-keys.json').exists(), 'a running answer blocks the disk path')
+        state['maintenance'] = {'activeJobs': 0, 'activeTranscriptionSessions': 0, 'lifecycle': {'activeByKind': {}}}
+        outside = home / 'outside'; outside.mkdir(); (outside / 'provider-keys.json').write_text('keep')
+        import shutil; shutil.rmtree(data / 'key-secrets'); (data / 'key-secrets').symlink_to(outside)
+        got = run('remove-saved-keys')
+        check(got['details']['via'] == 'disk' and got['details']['httpStatus'] == 200, 'after a 404 page the helper removes the files itself')
+        check(not (data / 'provider-keys.json').exists() and not (data / 'provider-profiles.json').exists() and not (data / 'key-ledger.jsonl').exists()
+              and not (data / 'codex-homes').exists(), 'the key store, profiles, ledger and Codex homes are gone')
+        check((data / 'keyed-sessions.json').exists(), 'keyed-sessions.json stays (Continue and Fork stay refused)')
+        check((outside / 'provider-keys.json').read_text() == 'keep' and (data / 'key-secrets').is_symlink(), 'a linked key-secrets dir is never followed')
+        (data / 'key-secrets').unlink(); plant()
+        got = run('remove-saved-keys')
+        check(not (data / 'key-secrets/provider-keys.json').exists() and 'key-secrets/provider-keys.json' in got['details']['removed'],
+              'the 0700 key-secrets store is removed too')
 
         state['status'] = 404; state['body'] = None
         got = run('status')

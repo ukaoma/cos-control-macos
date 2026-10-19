@@ -3,10 +3,17 @@ import SwiftUI
 
 // Key lanes in COS Control (K1 P10): the Settings row, the key setup it opens, and the optional setup step. The words
 // and every decision are in Sources/KeyLanes.swift. None of these views draws anything for a server before 6.80.0 that
-// has not said lanes are on (plan 3, the K0 golden replay).
+// has not said lanes are on, on a Mac that never saved a key (plan 3, the K0 golden replay).
 
 private func keyLanesRun(_ model: ControllerModel) -> KeyLanesStore.Run {
     { arguments, input in try await model.runHelper(arguments, timeout: 40, stdinData: input) }
+}
+
+/// The CLIs a key profile runs in (QA U10): Connect your AI's report, or the server's own readiness.
+@MainActor private func installed(_ model: ControllerModel) -> (claude: Bool, codex: Bool) {
+    let report = model.providerGuide.report
+    return (report?.status(.claude)?.installed == true || model.status.claudeCliReady == true,
+            report?.status(.codex)?.installed == true || model.status.codexCliReady == true)
 }
 
 /// Settings: "Answer with your own key". Off by default; turning it on calls the server's enable door, then the key
@@ -14,28 +21,45 @@ private func keyLanesRun(_ model: ControllerModel) -> KeyLanesStore.Run {
 struct KeyLanesSettingsRow: View {
     @ObservedObject var model: ControllerModel
     @ObservedObject var store: KeyLanesStore = .shared
+    @State private var removingSaved = false
 
     var body: some View {
-        if KeyLanes.rowVisible(serverVersion: model.status.version, enabled: store.enabled) {
+        if KeyLanes.rowVisible(serverVersion: model.status.version, enabled: store.enabled, savedKeys: store.savedKeys) {
             card
         }
     }
 
     private var card: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Toggle(KeyLanes.rowTitle, isOn: Binding(
-                get: { store.enabled },
-                set: { on in Task { if on { await store.enable(run: keyLanesRun(model)) } else { await store.disable(run: keyLanesRun(model)) } } }))
-                .toggleStyle(COSSwitchStyle())
-                .font(COSType.body(13, weight: .semibold))
-                .disabled(store.busy)
-                .accessibilityIdentifier("settings-key-lanes")
-            Text(store.enabled ? KeyLanes.onLine : KeyLanes.offLine).font(COSType.body(11)).foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+            if store.enabled || KeyLanes.serverSupports(model.status.version) {
+                Toggle(KeyLanes.rowTitle, isOn: Binding(
+                    get: { store.enabled },
+                    set: { on in Task { if on { await store.enable(run: keyLanesRun(model)) } else { await store.disable(run: keyLanesRun(model)) } } }))
+                    .toggleStyle(COSSwitchStyle())
+                    .font(COSType.body(13, weight: .semibold))
+                    .disabled(store.busy)
+                    .accessibilityIdentifier("settings-key-lanes")
+                Text(store.enabled ? KeyLanes.onLine : KeyLanes.offLine).font(COSType.body(11)).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                Text(KeyLanes.rowTitle).font(COSType.body(13, weight: .semibold))
+            }
             if store.enabled {
                 KeyLanesSetupPanel(model: model, store: store)
-            } else if let line = store.line {
-                Text(line).font(COSType.body(11)).foregroundStyle(COSPalette.amber).fixedSize(horizontal: false, vertical: true)
+            } else {
+                if KeyLanes.savedKeysRowVisible(enabled: store.enabled, savedKeys: store.savedKeys) {
+                    Text(KeyLanes.savedKeysLine(serverVersion: model.status.version)).font(COSType.body(11)).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Button(KeyLanes.removeSavedLabel) { removingSaved = true }
+                        .buttonStyle(COSQuietButtonStyle(tone: .destructive)).disabled(store.busy)
+                        .cosConfirm("\(KeyLanes.removeSavedLabel)?", isPresented: $removingSaved, message: KeyLanes.removeSavedMessage, actions: [
+                            .destructive(KeyLanes.removeSavedLabel) { Task { await store.removeSavedKeys(run: keyLanesRun(model)) } },
+                            .cancel(),
+                        ])
+                }
+                if let line = store.line {
+                    Text(line).font(COSType.body(11)).foregroundStyle(COSPalette.amber).fixedSize(horizontal: false, vertical: true)
+                }
             }
         }
         .padding(12)
@@ -43,6 +67,8 @@ struct KeyLanesSettingsRow: View {
         .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 12))
         .id("key-lanes")
         .task(id: "\(model.status.running) \(model.status.version ?? "")") {
+            // Fixtures and previews read nothing; an older server has no key-lane routes to read.
+            guard model.backgroundWorkEnabled, store.enabled || KeyLanes.serverSupports(model.status.version) else { return }
             store.observe(model.status)
             await store.refresh(run: keyLanesRun(model))
             if store.enabled, store.catalog.isEmpty { await store.loadCatalog(run: keyLanesRun(model)) }
@@ -50,19 +76,25 @@ struct KeyLanesSettingsRow: View {
     }
 }
 
-/// Keys, the model, the cap, Remove and Remove all keys. Every recovery is a button (plan 10.1): no terminal.
+/// Keys, the model, the cap, Reset pause, Use for answers, Remove and Remove all keys. Every recovery is a button
+/// (plan 10.1): no terminal.
 struct KeyLanesSetupPanel: View {
     @ObservedObject var model: ControllerModel
     @ObservedObject var store: KeyLanesStore
-    @State private var kind = "openrouter"
+    @State private var chosenKind: String?
     /// The pasted key, held only until Save key; never drawn (KeyLanes.pendingLine shows kind and last four).
     @State private var pending: String?
     @State private var capText = KeyLanes.capArgument(KeyLanes.defaultCapUsd)
-    @State private var baseURL = ""
     @State private var removing: String?
     @State private var removingAll = false
     @State private var exportLedger = true
     @State private var capEdits: [String: String] = [:]
+
+    private var kinds: [String] {
+        let cli = installed(model)
+        return KeyLanes.offeredKinds(store.catalog, claudeInstalled: cli.claude, codexInstalled: cli.codex)
+    }
+    private var kind: String { chosenKind.flatMap { kinds.contains($0) ? $0 : nil } ?? kinds.first ?? "openrouter" }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -71,7 +103,14 @@ struct KeyLanesSetupPanel: View {
                 Text(local).font(COSType.body(11)).foregroundStyle(.secondary)
             }
             ForEach(store.state?.keys ?? []) { key in keyRow(key) }
-            addKey
+            if let label = store.justSaved {
+                Text(KeyLanes.glassesHint(label)).font(COSType.body(11, weight: .medium)).fixedSize(horizontal: false, vertical: true)
+            }
+            if !store.catalog.isEmpty && kinds.isEmpty {
+                Text(KeyLanes.noEngineLine).font(COSType.body(11)).foregroundStyle(COSPalette.amber).fixedSize(horizontal: false, vertical: true)
+            } else if !kinds.isEmpty {
+                addKey
+            }
             if let line = store.line {
                 Text(line).font(COSType.body(11)).foregroundStyle(COSPalette.amber).fixedSize(horizontal: false, vertical: true)
             }
@@ -94,18 +133,34 @@ struct KeyLanesSetupPanel: View {
 
     private func keyRow(_ key: KeyLanesKey) -> some View {
         let profile = store.state?.profiles.first { $0.id == KeyLanes.profileID(forKey: key.ref) }
+        let cli = installed(model)
+        let usable = KeyLanes.usableModels(store.catalog, kind: key.kind, claudeInstalled: cli.claude, codexInstalled: cli.codex)
         return VStack(alignment: .leading, spacing: 6) {
             Text(KeyLanes.keyLine(kind: key.kind, last4: key.last4)).font(COSType.body(12, weight: .semibold))
             Text(KeyLanes.capLine(key)).font(COSType.body(11)).foregroundStyle(.secondary)
-            if key.breakerOpen { Text(KeyLanes.breakerLine).font(COSType.body(11)).foregroundStyle(COSPalette.amber) }
-            if !store.catalog.isEmpty, KeyLanes.profileModel(slug: store.catalog[0].id, kind: key.kind) != nil {
+            if KeyLanes.providerLimitApplies(key.kind) {
+                Text(KeyLanes.noProviderLimitLine).font(COSType.body(11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+            if key.breakerOpen {
+                HStack(spacing: 8) {
+                    Text(KeyLanes.breakerLine).font(COSType.body(11)).foregroundStyle(COSPalette.amber)
+                    Button(KeyLanes.resetBreakerLabel) { Task { await store.resetBreaker(key.ref, run: keyLanesRun(model)) } }
+                        .buttonStyle(COSQuietButtonStyle()).disabled(store.busy)
+                }
+            }
+            if !usable.isEmpty {
                 COSDropdown(KeyLanes.modelLabelTitle, selection: Binding(
-                    get: { store.catalog.first { KeyLanes.profileModel(slug: $0.id, kind: key.kind) == profile?.model }?.id ?? "" },
+                    get: { usable.first { KeyLanes.profileModel(slug: $0.id, kind: key.kind) == profile?.model }?.id ?? "" },
                     set: { slug in Task { await store.chooseModel(slug, keyRef: key.ref, kind: key.kind, run: keyLanesRun(model)) } }),
-                    options: [COSDropdownOption("", "Choose a model", placeholder: true)]
-                        + store.catalog.map { COSDropdownOption($0.id, KeyLanes.priceLine($0)) })
-            } else if store.catalog.isEmpty || profile == nil {
-                Text(KeyLanes.noModelsLine).font(COSType.body(11)).foregroundStyle(.secondary)
+                    options: [COSDropdownOption("", "Choose a model", placeholder: true)] + usable.map { COSDropdownOption($0.id, KeyLanes.priceLine($0)) })
+            } else {
+                Text(store.catalog.isEmpty ? KeyLanes.noModelsLine : KeyLanes.noEngineLine).font(COSType.body(11)).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if let profile {
+                Toggle(KeyLanes.profileToggleLabel, isOn: Binding(get: { profile.enabled },
+                                                                  set: { on in Task { await store.setProfileEnabled(profile, on, run: keyLanesRun(model)) } }))
+                    .toggleStyle(COSSwitchStyle()).font(COSType.body(11)).disabled(store.busy)
             }
             HStack(spacing: 8) {
                 TextField(KeyLanes.capLabel, text: Binding(get: { capEdits[key.ref] ?? KeyLanes.capArgument(key.capUsd) },
@@ -134,14 +189,16 @@ struct KeyLanesSetupPanel: View {
 
     private var addKey: some View {
         VStack(alignment: .leading, spacing: 6) {
-            COSDropdown("Key from", selection: $kind, options: KeyLanes.kindOrder.map { COSDropdownOption($0, KeyLanes.kindTitles[$0] ?? $0) })
-            if kind == "openai-compatible" {
-                TextField(KeyLanes.customURLLabel, text: $baseURL)
-            }
+            COSDropdown("Key from", selection: Binding(get: { kind }, set: { chosenKind = $0 }),
+                        options: kinds.map { COSDropdownOption($0, KeyLanes.kindTitles[$0] ?? $0) })
             HStack(spacing: 8) {
                 Button(KeyLanes.pasteLabel) {
-                    let text = NSPasteboard.general.string(forType: .string)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                    if text.isEmpty { pending = nil; store.line = KeyLanes.emptyPaste } else { pending = text; store.line = nil }
+                    let board = NSPasteboard.general
+                    let text = board.string(forType: .string)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                    if text.isEmpty { pending = nil; store.line = KeyLanes.emptyPaste; return }
+                    pending = text; store.line = nil
+                    // QA N9: the clipboard keeps no copy, unless something else replaced it meanwhile.
+                    if board.string(forType: .string)?.trimmingCharacters(in: .whitespacesAndNewlines) == text { board.clearContents() }
                 }
                 .buttonStyle(COSQuietButtonStyle())
                 Text("Cap $").font(COSType.body(11)).foregroundStyle(.secondary)
@@ -150,12 +207,17 @@ struct KeyLanesSetupPanel: View {
                     guard let secret = pending else { return }
                     guard let cap = KeyLanes.parseCap(capText) else { store.line = "A daily cap is between $0.01 and $1000."; return }
                     pending = nil
-                    Task { await store.saveKey(kind: kind, secret: secret, capUsd: cap, baseURL: kind == "openai-compatible" ? baseURL : nil, run: keyLanesRun(model)) }
+                    let cli = installed(model), chosen = kind
+                    Task { await store.saveKey(kind: chosen, secret: secret, capUsd: cap, claudeInstalled: cli.claude, codexInstalled: cli.codex, run: keyLanesRun(model)) }
                 }
                 .buttonStyle(COSPrimaryButtonStyle()).disabled(pending == nil || store.busy)
             }
             Text(pending.map { KeyLanes.pendingLine(kind: kind, secret: $0) } ?? KeyLanes.pasteHint)
                 .font(COSType.body(11)).foregroundStyle(.secondary)
+            Text(KeyLanes.sameMacLine).font(COSType.body(11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            if KeyLanes.providerLimitApplies(kind) {
+                Text(KeyLanes.noProviderLimitLine).font(COSType.body(11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 }
@@ -172,7 +234,7 @@ struct KeyLanesSetupStep: View {
                                      skipped: store.setupSkipped, hasKey: store.hasKey) || adding {
             VStack(alignment: .leading, spacing: 10) {
                 Text(KeyLanes.setupTitle).font(COSType.body(15, weight: .semibold))
-                Text(KeyLanes.setupDetail).font(COSType.body(13)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                Text(KeyLanes.setupDetail(kinds: offered)).font(COSType.body(13)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 if let local = KeyLanes.localFirstLine(claudeReady: model.status.claudeCliReady, codexReady: model.status.codexCliReady,
                                                        ollamaReady: model.status.ollamaReady == true) {
                     Text(local).font(COSType.body(13)).foregroundStyle(.secondary)
@@ -192,6 +254,13 @@ struct KeyLanesSetupStep: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 10))
         }
+    }
+
+    /// Before lanes are on the catalog is unknown: the curated K1 models are Claude models (OpenRouter or Anthropic).
+    private var offered: [String] {
+        let cli = installed(model)
+        let kinds = KeyLanes.offeredKinds(store.catalog, claudeInstalled: cli.claude, codexInstalled: cli.codex)
+        return store.catalog.isEmpty ? ["openrouter", "anthropic"] : kinds
     }
 }
 

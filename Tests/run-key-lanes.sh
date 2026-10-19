@@ -4,7 +4,8 @@
 #                                                     the app's decisions and store against a stand-in helper, compiled with
 #                                                     KeyLanes.swift and Models.swift alone (Tests/KeyLanesChecks.swift), then
 #                                                     the helper's grammar and whitelist alone (Tests/KeyLanesHelperChecks.swift)
-#   COS_KEY_LANES_LANE=pins|models|core|helper run-key-lanes.sh   one lane alone (Tests/mutate-key-lanes.py); helper only by name
+#   COS_KEY_LANES_LANE=pins|models|core|onerow|helper run-key-lanes.sh   one lane alone (Tests/mutate-key-lanes.py); helper
+#                                                     only by name; onerow (QA G2) is one full app compile
 #   run-key-lanes.sh golden <out.json>               the K0 G-control replay against this checkout (lanes off, 6.79.0 status):
 #                                                     Tests/KeyLanesSnapshot.run.sh --compare Tests/KeyLanesSnapshot.golden-5cdb833.json
 # The compiled helper's key-lanes verb runs in Tests/run.sh (Tests/key-lanes-helper-checks.py). Fixtures only: no helper
@@ -22,6 +23,7 @@ if [[ "$MODE" == "render" ]]; then
   SOURCES=("$ROOT"/Sources/*.swift); SOURCES=("${(@)SOURCES:#*/COSControlApp.swift}")
   /usr/bin/python3 "$ROOT/Tests/kit-compile.py" "$ROOT/Tests/compile-guard.sh" swiftc -target arm64-apple-macosx14.0 -swift-version 6 -strict-concurrency=complete -parse-as-library \
     "${SOURCES[@]}" "$ROOT/Tests/KeyLanesRender.swift" -framework SwiftUI -framework AppKit -framework ServiceManagement -framework WebKit -o "$RDIR/key-lanes-render"
+  mkdir -p "$RDIR/Fonts"; cp "$ROOT/Resources/Fonts/"*.ttf "$RDIR/Fonts/"; cp "$ROOT/Resources/"*.svg "$RDIR/"
   H="$RDIR/cos-key-lanes-home"; CFFIXED_USER_HOME="$H" HOME="$H" COS_CONTROL_TEST_HOME="$H" "$RDIR/key-lanes-render" "${OUT:A}"
   exit 0
 fi
@@ -55,6 +57,19 @@ if [[ "$LANE" == "all" || "$LANE" == "core" ]]; then
   print -r -- "$OUT"
   COUNT="${${OUT##*checks: }%% passed*}"
   (( COUNT >= 38 )) || { print -u2 "key lanes helper core checks ran only $COUNT (expected at least 38)"; exit 1; }
+fi
+
+# QA G2: the shipping case, 6.80.0 with lanes off and no key, is the 6.79.0 panel plus exactly one Settings row. One full
+# app compile through the guard.
+if [[ "$LANE" == "all" || "$LANE" == "onerow" ]]; then
+  ORDIR="$DIR/cos-key-lanes-onerow"; mkdir -p "$ORDIR"
+  SOURCES=("$ROOT"/Sources/*.swift); SOURCES=("${(@)SOURCES:#*/COSControlApp.swift}")
+  /usr/bin/python3 "$ROOT/Tests/kit-compile.py" "$ROOT/Tests/compile-guard.sh" "${SWIFTC[@]}" -parse-as-library \
+    "${SOURCES[@]}" "$ROOT/Tests/KeyLanesOneRowRender.swift" -framework SwiftUI -framework AppKit -framework ServiceManagement -framework WebKit \
+    -o "$DIR/key-lanes-onerow"
+  mkdir -p "$DIR/Fonts"; cp "$ROOT/Resources/Fonts/"*.ttf "$DIR/Fonts/"; cp "$ROOT/Resources/"*.svg "$DIR/"
+  OUT="$(CFFIXED_USER_HOME="$ORDIR" HOME="$ORDIR" COS_CONTROL_TEST_HOME="$ORDIR" "$DIR/key-lanes-onerow")" || { print -r -- "$OUT"; exit 1; }
+  print -r -- "$OUT"
 fi
 
 # By hand and for the mutation gate only (Tests/run.sh already builds the helper and runs this script against it).

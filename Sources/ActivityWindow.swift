@@ -6255,9 +6255,12 @@ struct ClaudeSessionDetailPane: View {
                 Divider()
                 HStack(spacing: 10) {
                     // 0.5.250: not while the COS server is still running a Work New session's first turn (two writers).
-                    Button("Open in platform") { model.openSessionInPlatform(row) }
-                        .disabled(row.heldByServer || model.platformOpening)
-                        .help(row.heldByServer ? "Still running on the COS server. It opens in the app when the first reply is done." : "")
+                    // K1 P10 (QA C9): a session that ran on a key never opens in its app, where it would resume on the plan.
+                    if KeyLanes.refusal(sessionID: row.sessionId) == nil {
+                        Button("Open in platform") { model.openSessionInPlatform(row) }
+                            .disabled(row.heldByServer || model.platformOpening)
+                            .help(row.heldByServer ? "Still running on the COS server. It opens in the app when the first reply is done." : "")
+                    }
                     if let detail = model.claudeSessionDetail {
                         Button("Copy session") { model.copyClaudeSession() }
                             .disabled(detail.copyText.isEmpty)

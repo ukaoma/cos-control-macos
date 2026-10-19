@@ -5431,6 +5431,7 @@ final class ControllerModel: ObservableObject {
             openPetSessionInControl(session)
             return
         }
+        if let line = KeyLanes.refusal(sessionID: session.sessionId) { platformOpenNotice = line; return }
         guard !platformOpening else { return }
         platformOpenSessionID = session.id
         platformOpenNotice = "Opening session in its app…"

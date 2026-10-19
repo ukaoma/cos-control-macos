@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """K1 P10 key lanes: the wiring pins and the copy parity, over source. What each pin protects is in its name.
 
-- Copy parity: every key-lane string Control shows that the lens also shows comes from P8's catalog
-  (server/lib/key-notices.ts at 8385336, vendored at Tests/fixtures/key-lanes/key-notices-8385336.ts with its SHA-256
-  pinned here). When the P8 worktree is on this Mac, the vendored copy is also compared with the commit itself.
+- Copy parity (QA G8): every key-lane string Control shows that the lens or server also shows comes from the server's
+  one catalog, server/lib/key-notices.ts. Checked against the INTEGRATION TIP (claude/key-lanes-k1-int, read with git
+  from ~/cos-worktrees/kl-k1-int or COS_KEY_LANES_SERVER) whenever it is on this Mac, so later server drift fails here;
+  and always against the vendored copy (Tests/fixtures/key-lanes/key-notices-99c5ce7.ts, SHA-256 pinned).
 - Hooks: exactly one Settings row in the panel, exactly one optional step (in the Ready stage) and one install latch in
   the setup window, and the keyed-session guard at the top of each Continue and Fork entry point.
 - The key: never drawn, never in argv (the helper reads it from stdin only), no sheet or dialog.
@@ -24,33 +25,38 @@ model, work, helper, status = read('Sources/ControllerModel.swift'), read('Sourc
 guide = read('Sources/ProviderConnectModel.swift')
 
 # ── Copy parity with P8.
-FIXTURE = 'Tests/fixtures/key-lanes/key-notices-8385336.ts'
-ts = read(FIXTURE)
-check(hashlib.sha256(ts.encode()).hexdigest() == 'f4ffe178361e2cb463bcd0f6f0f1593fe7e8152e3094b4dbec4d685f091e35fb', 'the vendored P8 catalog is the 8385336 blob')
-p8 = pathlib.Path.home() / 'cos-worktrees/kl-k1-p8'
-if p8.exists():
-    live = subprocess.run(['git', '-C', str(p8), 'show', '8385336:server/lib/key-notices.ts'], capture_output=True, text=True)
-    if live.returncode == 0:
-        check(live.stdout == ts, 'the vendored P8 catalog equals P8 at 8385336')
+import os
+FIXTURE = 'Tests/fixtures/key-lanes/key-notices-99c5ce7.ts'
+vendored = read(FIXTURE)
+check(hashlib.sha256(vendored.encode()).hexdigest() == 'ea5ec0fad0d97764ac99833f2d5d2bbe331c1af19c1574d1e4b598ef5c0c1443', 'the vendored catalog is the 99c5ce7 blob')
+server = pathlib.Path(os.environ.get('COS_KEY_LANES_SERVER', str(pathlib.Path.home() / 'cos-worktrees/kl-k1-int')))
+sources = [('vendored 99c5ce7', vendored)]
+if server.exists():
+    tip = subprocess.run(['git', '-C', str(server), 'show', 'claude/key-lanes-k1-int:server/lib/key-notices.ts'], capture_output=True, text=True)
+    if tip.returncode == 0:
+        sources.append(('integration tip', tip.stdout))
+print('key lanes copy parity against: ' + ', '.join(name for name, _ in sources))
 
 def swift_string(name):
     m = re.search(r'static let ' + re.escape(name) + r' = "((?:[^"\\]|\\.)*)"', core)
     check(m is not None, f'KeyLanes.{name} is a literal')
     return m.group(1)
 
-for name, ts_text in (('keyedSessionRefusal', "keyed_session: () => 'This session ran on your key. Continue it from COS.'"),
-                      ('downgradeLine', "downgrade: () => 'Remove your keys first. Older COS cannot see them.'"),
-                      ('noCreditLimitLine', "no_credit_limit: () => 'Set a credit limit on this key at openrouter.ai first.'")):
-    check(ts_text in ts, f'P8 still says {name}')
-    check(f"'{swift_string(name)}'" in ts_text, f'{name} matches P8 byte for byte')
-# The breaker line is a template in P8 over BREAKER_LIMITS (3 failures, 1 hour in the frozen P1 contract).
-check("breaker_open: () => `Key paused ${hours} hour${hours === 1 ? '' : 's'} after ${BREAKER_LIMITS.failures} failures.`" in ts, 'P8 breaker template')
-check(swift_string('breakerLine') == 'Key paused 1 hour after 3 failures.', 'the breaker line is P8 at 3 failures, 1 hour')
-check("key_rejected: p => put('Your {f} was rejected. Fix it in COS Control.', providerCopy(p.keyKind).key)" in ts, 'P8 key rejected template')
-check('"Your \\(keyName(kind)) was rejected. Fix it in COS Control."' in core, 'the key rejected line is P8 with the provider key name')
-for kind, key in (('openrouter', 'OpenRouter key'), ('anthropic', 'Anthropic key'), ('openai', 'OpenAI key'), ("'openai-compatible'", 'endpoint key')):
-    check(re.search(re.escape(kind) + r": \{ key: '" + re.escape(key) + "'", ts) is not None, f'P8 names the {kind} key "{key}"')
-    check(f'"{kind.strip(chr(39))}": "{key}"' in core, f'Control names the {kind} key "{key}"')
+for source, ts in sources:
+    for name, ts_text in (('keyedSessionRefusal', "keyed_session: () => 'This session ran on your key. Continue it from COS.'"),
+                          ('downgradeLine', "downgrade: () => 'Remove your keys first. Older COS cannot see them.'"),
+                          ('noCreditLimitLine', "no_credit_limit: () => 'Set a credit limit on this key at openrouter.ai first.'")):
+        check(ts_text in ts, f'{source} still says {name}')
+        check(f"'{swift_string(name)}'" in ts_text, f'{name} matches {source} byte for byte')
+    # The breaker line is a template in P8 over BREAKER_LIMITS (3 failures, 1 hour in the frozen P1 contract).
+    check("breaker_open: () => `Key paused ${hours} hour${hours === 1 ? '' : 's'} after ${BREAKER_LIMITS.failures} failures.`" in ts, f'{source}: breaker template')
+    check(swift_string('breakerLine') == 'Key paused 1 hour after 3 failures.', 'the breaker line is P8 at 3 failures, 1 hour')
+    check("key_rejected: p => put('Your {f} was rejected. Fix it in COS Control.', providerCopy(p.keyKind).key)" in ts, f'{source}: key rejected template')
+    check('"Your \\(keyName(kind)) was rejected. Fix it in COS Control."' in core, 'the key rejected line is P8 with the provider key name')
+    for kind, key in (('openrouter', 'OpenRouter key'), ('anthropic', 'Anthropic key'), ('openai', 'OpenAI key'), ("'openai-compatible'", 'endpoint key')):
+        check(re.search(re.escape(kind) + r": \{ key: '" + re.escape(key) + "'", ts) is not None, f'{source} names the {kind} key "{key}"')
+        check(f'"{kind.strip(chr(39))}": "{key}"' in core, f'Control names the {kind} key "{key}"')
+    check('export const KEY_LANE_SAME_MAC_COPY = "' + swift_string('sameMacLine') + '"' in ts, f'the same-Mac line matches {source} (KEY_LANE_SAME_MAC_COPY)')
 
 # ── Setup guide keys the install decision reads.
 for key in ('cos.setupGuide.journeyFinished', 'cos.setupGuide.glassesHandled', 'cos.setupGuide.hidden'):
@@ -80,7 +86,12 @@ for signature, src, guard in (
     check(guard in b, f'the keyed-session refusal is displayed by {signature.strip()}')
     head = b[b.index(') async {\n') if ') async {\n' in b[:600] else b.index('() {\n'):]
     check(guard in '\n'.join(head.splitlines()[:4]), f'the refusal comes before anything runs in {signature.strip()}')
-check(model.count('KeyLanes.refusal(') == 2 and work.count('KeyLanes.refusal(') == 2, 'four guards, no more')
+check('if let line = KeyLanes.refusal(sessionID: session.sessionId) { platformOpenNotice = line; return }' in body(model, '    func openSessionInPlatform(_ session: ClaudeSession) {'),
+      'a keyed session never opens in its app (QA C9)')
+window = read('Sources/ActivityWindow.swift')
+check('if KeyLanes.refusal(sessionID: row.sessionId) == nil {\n                        Button("Open in platform")' in window, 'Open in platform is hidden for a keyed session (QA C9)')
+check('if let line = KeyLanes.refusal(sessionID: native) { error = line; return }\n        appOpening.insert(row.id)' in work, 'Work never opens a keyed session in its app (QA C9)')
+check(model.count('KeyLanes.refusal(') == 3 and work.count('KeyLanes.refusal(') == 3 and window.count('KeyLanes') == 1, 'seven guards, no more')
 
 # ── The helper verb.
 check(helper.count('case "key-lanes": try emitKeyLanes(args: args)') == 1, 'one key-lanes verb in the helper')
@@ -95,7 +106,7 @@ check('enum KeyLanesHelperCore' in status, 'the grammar and whitelist live in Pr
 # ── The app: the key is pasted, held only until Save, never drawn and never put in arguments.
 check('static func keyInput(' in core and '["save-key"], input, run: run' in core, 'the app sends the key as stdin input, not arguments')
 check(re.search(r'\["key-lanes"[^\]]*secret', core) is None and re.search(r'\[[^\]]*"save-key"[^\]]*secret', core) is None, 'the key is never put in argv')
-check('NSPasteboard.general.string(forType: .string)' in views and 'SecureField' not in views, 'the key comes by paste only')
+check('let board = NSPasteboard.general' in views and 'board.string(forType: .string)' in views and 'SecureField' not in views, 'the key comes by paste only')
 check(re.search(r'Text\(\s*(pending|secret)\s*[)?!]', views) is None and '\\(pending' not in views and '\\(secret' not in views
       and '$pending' not in views and 'Text(pending.map { KeyLanes.pendingLine(kind: kind, secret: $0) }' in views,
       'the pasted key is drawn only as its kind and last four')
@@ -103,8 +114,15 @@ check('pending = nil' in views.split('Button(KeyLanes.saveLabel)')[1].split('Tas
 for name, src in (('KeyLanes.swift', core), ('KeyLanesViews.swift', views)):
     check('.sheet(' not in src and '.confirmationDialog(' not in src and '.alert(' not in src, f'{name}: inline confirmations only (COSConfirm)')
     check(not any(ch in src for ch in '—–→'), f'{name}: no em dash, en dash or arrow')
-check(views.count('.cosConfirm(') == 2, 'Remove and Remove all keys each confirm first')
-for action, button in (('store.removeAll(', 'Button(KeyLanes.removeAllLabel) { removingAll = true }'), ('store.removeKey(', 'Button(KeyLanes.removeLabel) { removing = key.ref }')):
+check(views.count('.cosConfirm(') == 3, 'Remove, Remove all keys and Remove saved keys each confirm first')
+check("if board.string(forType: .string)?.trimmingCharacters(in: .whitespacesAndNewlines) == text { board.clearContents() }" in views,
+      'the pasteboard is cleared after a paste when it still holds that key (QA N9)')
+add = views[views.index('    private var addKey: some View {'):]
+check('Text(KeyLanes.sameMacLine)' in add and 'KeyLanes.noProviderLimitLine' in add, 'the same-Mac line and the provider-limit line sit by the cap')
+check('KeyLanes.glassesHint(label)' in views and 'Use this key for the glasses' not in views, 'after a save Control says where to pick the key on the lens, and sets nothing (QA U8)')
+check('KeyLanes.offeredKinds(store.catalog' in views and 'openai-compatible' not in core.split('static let kindOrder')[1].split('\n')[0], 'setup offers only kinds a model can run on (QA U5)')
+for action, button in (('store.removeAll(', 'Button(KeyLanes.removeAllLabel) { removingAll = true }'), ('store.removeKey(', 'Button(KeyLanes.removeLabel) { removing = key.ref }'),
+                       ('store.removeSavedKeys(', 'Button(KeyLanes.removeSavedLabel) { removingSaved = true }')):
     runs = [l for l in views.splitlines() if action in l]
     check(len(runs) == 1 and '.destructive(' in runs[0], f'{action} runs only from its confirmation')
     check(button in views, f'the button only opens the confirmation ({button.split("{")[0].strip()})')

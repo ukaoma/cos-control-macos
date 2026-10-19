@@ -5791,8 +5791,36 @@ final class COSControlHelper {
         guard let response = request(plan.path, method: plan.method, token: token, body: text, timeout: plan.timeout) else {
             emit(ok: true, message: "COS server unreachable", details: ["transport": "unavailable"]); return
         }
+        if plan.action == "remove-saved-keys", KeyLanesHelperCore.transport(status: response.status, body: response.body) == "unsupported" {
+            try removeSavedKeyFiles(); return
+        }
         emit(ok: true, message: "Key lanes answered (\(response.status))",
              details: KeyLanesHelperCore.answer(plan.action, status: response.status, body: response.body, secret: secret))
+    }
+
+    /// QA U7: the server answered remove-all with today's 404 (older than 6.80, or lanes off), so it reads none of these
+    /// files. Delete them from its data dir, never following a link, keeping keyed-sessions.json, and only while the
+    /// server reports no work in flight.
+    private func removeSavedKeyFiles() throws {
+        if let blocker = KeyLanesHelperCore.diskRemovalBlocker(maintenance: maintenanceStatus()) {
+            emit(ok: true, message: blocker, details: ["transport": "answered", "httpStatus": 409, "error": "busy", "message": blocker]); return
+        }
+        let dir = glassesDataDir()
+        var removed: [String] = []
+        for name in KeyLanesHelperCore.savedKeyFiles + KeyLanesHelperCore.savedKeyDirectories {
+            let url = dir.appendingPathComponent(name, isDirectory: false)
+            // A file inside a subdir (key-secrets/): never through a linked parent.
+            if name.contains("/") {
+                let parent = url.deletingLastPathComponent().path
+                guard let type = (try? fm.attributesOfItem(atPath: parent))?[.type] as? FileAttributeType, type == .typeDirectory else { continue }
+            }
+            // attributesOfItem does not follow a final symlink and removeItem removes a link, never its target.
+            guard (try? fm.attributesOfItem(atPath: url.path)) != nil else { continue }
+            try fm.removeItem(at: url)
+            removed.append(name)
+        }
+        emit(ok: true, message: removed.isEmpty ? "No saved keys were left" : "Saved keys removed from this Mac",
+             details: ["transport": "answered", "httpStatus": 200, "removed": removed, "via": "disk", "enabled": false, "active": false])
     }
 
     private func emitPairingDecision(args: [String]) throws {

@@ -1857,6 +1857,7 @@ struct WorkRecommendationKey: Equatable {
             return
         }
         guard !appOpening.contains(row.id), let sessionID = row.sessionID, let native = Self.nativeID(sessionID) else { return }
+        if let line = KeyLanes.refusal(sessionID: native) { error = line; return }
         appOpening.insert(row.id)
         defer { appOpening.remove(row.id) }
         let note = row.channel == "app" ? row.prompt : nil

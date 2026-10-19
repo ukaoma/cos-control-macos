@@ -18,6 +18,9 @@ enum KeyLanes {
     // Tests/key-lanes-pins.py checks each against Tests/fixtures/key-lanes/key-notices-8385336.ts byte for byte.
     static let keyedSessionRefusal = "This session ran on your key. Continue it from COS."
     static let downgradeLine = "Remove your keys first. Older COS cannot see them."
+    /// KEY_LANE_SAME_MAC_COPY (server key-notices.ts; PENDING the server commit, Tests/key-lanes-pins.py says so until
+    /// the integration tip carries it).
+    static let sameMacLine = "Your key is saved on this Mac. Apps and agents that run on this Mac as you can read it. Your provider's spending limit is the real stop."
     static let noCreditLimitLine = "Set a credit limit on this key at openrouter.ai first."
     static let breakerLine = "Key paused 1 hour after 3 failures."
     static let providerKey: [String: String] = [
@@ -31,7 +34,25 @@ enum KeyLanes {
     static let offLine = "Off. Answers use the AI you connected and its plan."
     static let onLine = "On. Answers you send to a key profile run on your key, under its daily cap."
     static let setupTitle = "Add your own key (optional)"
-    static let setupDetail = "Answers can run on an OpenRouter, Anthropic or OpenAI key, with a daily cap. COS keeps the key on this Mac."
+    /// QA U5: only the kinds this server's models can answer on are named (KeyLanes.offeredKinds).
+    static func setupDetail(kinds: [String]) -> String {
+        let names = kinds.compactMap { kindTitles[$0] }
+        let list = names.count <= 1 ? (names.first ?? "OpenRouter") : names.dropLast().joined(separator: ", ") + " or " + names.last!
+        return "Answers can run on your \(list) key, with a daily cap."
+    }
+    /// QA U10: a key answers through Claude Code (or Codex) on this Mac; without it there is nothing to run.
+    static let noEngineLine = "Answering on your own key runs Claude Code on this Mac. Install it in Connect your AI first."
+    static let noProviderLimitLine = "Anthropic and OpenAI keys have no provider-side limit; the cap here is the only stop."
+    /// QA U8: where the key is picked on the lens. The choice lives on the phone; Control only says where.
+    static func glassesHint(_ label: String) -> String { "On the glasses: Model, then Key: \(label)." }
+    static let resetBreakerLabel = "Reset pause"
+    static let profileToggleLabel = "Use for answers"
+    // QA U7: saved keys the server can no longer manage (an older server, or lanes off).
+    static let removeSavedLabel = "Remove saved keys"
+    static let savedKeysOlderServerLine = "Keys saved for COS 6.80 or later are still on this Mac. This COS cannot use them."
+    static let savedKeysOffLine = "Key lanes are off. Your saved keys are still on this Mac."
+    static let removeSavedMessage = "COS deletes the saved keys, key profiles and spend ledger from this Mac. Sessions that ran on a key stay refused for Continue and Fork."
+    static let savedKeysRemovedLine = "Saved keys removed from this Mac."
     static let skipLabel = "Skip"
     static let addLabel = "Add a key"
     static let pasteLabel = "Paste key"
@@ -50,7 +71,8 @@ enum KeyLanes {
     static let modelLabelTitle = "Model"
     static let noModelsLine = "Pick a model for this key in a later COS. The key is saved."
     static let defaultCapUsd = 1.0
-    static let kindOrder = ["openrouter", "anthropic", "openai", "openai-compatible"]
+    /// K1 setup offers only kinds a model can answer on (QA U5); a custom endpoint has none yet (K2).
+    static let kindOrder = ["openrouter", "anthropic", "openai"]
     static let kindTitles: [String: String] = [
         "openrouter": "OpenRouter", "anthropic": "Anthropic", "openai": "OpenAI", "openai-compatible": "Custom endpoint",
     ]
@@ -69,10 +91,13 @@ enum KeyLanes {
         return true
     }
 
-    /// The Settings row: drawn for a server that can turn lanes on, or one that says they are on. Never otherwise.
-    static func rowVisible(serverVersion: String?, enabled: Bool) -> Bool {
-        enabled || serverSupports(serverVersion)
+    /// The Settings row: drawn for a server that can turn lanes on, one that says they are on, or while this Mac still
+    /// holds keys Control saw saved (QA U7, a downgrade). Never otherwise.
+    static func rowVisible(serverVersion: String?, enabled: Bool, savedKeys: Int = 0) -> Bool {
+        enabled || serverSupports(serverVersion) || savedKeys > 0
     }
+    /// "Remove saved keys": keys Control saw saved, and nothing that can manage them (lanes off or an older server).
+    static func savedKeysRowVisible(enabled: Bool, savedKeys: Int) -> Bool { !enabled && savedKeys > 0 }
 
     enum Install: String, Equatable { case new, existing }
 
@@ -134,16 +159,33 @@ enum KeyLanes {
         }
         return last
     }
-    /// The model a profile on this key carries for a curated slug, or nil when this kind has no curated model in K1.
+    /// The model a profile on this key carries for a curated slug, or nil when this kind cannot run it.
     static func profileModel(slug: String, kind: String) -> String? {
-        guard slug.hasPrefix("anthropic/") else { return nil }
-        switch kind {
-        case "openrouter": return slug
-        case "anthropic": return String(slug.dropFirst("anthropic/".count)).replacingOccurrences(of: ".", with: "-")
+        switch (kind, engine(slug)) {
+        case ("openrouter", "claude"), ("openrouter", "codex"): return slug
+        case ("anthropic", "claude"): return String(slug.dropFirst("anthropic/".count)).replacingOccurrences(of: ".", with: "-")
+        case ("openai", "codex"): return String(slug.dropFirst("openai/".count))
         default: return nil
         }
     }
+    /// The harness a slug runs in: Claude Code for anthropic/, Codex for openai/ (P1 engineModelProblem).
+    static func engine(_ slug: String) -> String? {
+        slug.hasPrefix("anthropic/") ? "claude" : slug.hasPrefix("openai/") ? "codex" : nil
+    }
+    /// QA U10: models this key kind can run with the CLIs installed on this Mac.
+    static func usableModels(_ catalog: [KeyLanesModel], kind: String, claudeInstalled: Bool, codexInstalled: Bool) -> [KeyLanesModel] {
+        catalog.filter { m in
+            guard profileModel(slug: m.id, kind: kind) != nil else { return false }
+            return engine(m.id) == "claude" ? claudeInstalled : codexInstalled
+        }
+    }
+    /// QA U5: the kinds setup offers, so a key never saves into a dead end.
+    static func offeredKinds(_ catalog: [KeyLanesModel], claudeInstalled: Bool, codexInstalled: Bool) -> [String] {
+        kindOrder.filter { !usableModels(catalog, kind: $0, claudeInstalled: claudeInstalled, codexInstalled: codexInstalled).isEmpty }
+    }
+    static func providerLimitApplies(_ kind: String) -> Bool { kind == "anthropic" || kind == "openai" }
     static func timeoutTier(_ slug: String) -> String { slug.contains("haiku") ? "haiku" : "sonnet" }
+    static func savedKeysLine(serverVersion: String?) -> String { serverSupports(serverVersion) ? savedKeysOffLine : savedKeysOlderServerLine }
     static func priceLine(_ model: KeyLanesModel) -> String {
         "\(modelLabel(model.id)), \(String(format: "$%g", model.inUsdPerM)) in, \(String(format: "$%g", model.outUsdPerM)) out per M"
     }
@@ -191,11 +233,13 @@ struct KeyLanesProfile: Equatable, Identifiable {
     let engine: String
     let model: String
     let enabled: Bool
+    let timeoutTier: String
 
     init?(_ value: JSONValue) {
         guard let o = value.object, let id = o["id"]?.string, let label = o["label"]?.string, let ref = o["keyRef"]?.string,
               let engine = o["engine"]?.string, let model = o["model"]?.string, let enabled = o["enabled"]?.bool else { return nil }
         self.id = id; self.label = label; keyRef = ref; self.engine = engine; self.model = model; self.enabled = enabled
+        timeoutTier = o["timeoutTier"]?.string ?? KeyLanes.timeoutTier(model)
     }
 }
 
@@ -245,6 +289,8 @@ final class KeyLanesStore: ObservableObject {
 
     static let skippedKey = "cos.keyLanes.setupSkipped"
     static let keyedSessionsKey = "cos.keyLanes.keyedSessionIds"
+    /// QA U7: how many keys the last status that had lanes on reported. Written only from such a status.
+    static let savedKeysKey = "cos.keyLanes.savedKeys"
 
     @Published private(set) var state: KeyLanesState?
     @Published private(set) var catalog: [KeyLanesModel] = []
@@ -253,6 +299,10 @@ final class KeyLanesStore: ObservableObject {
     @Published var line: String?
     @Published private(set) var install: KeyLanes.Install?
     @Published private(set) var setupSkipped: Bool
+    /// QA U7: keys this Mac still holds, as Control last saw them (0 on a Mac that never used a key).
+    @Published private(set) var savedKeys: Int
+    /// QA U8: the profile label of the key just saved, for the "pick it on the glasses" line.
+    @Published private(set) var justSaved: String?
     /// Sessions that ran on a key, from every status this Mac has read. Kept after Remove all keys and after lanes turn
     /// off, so Continue and Fork stay refused (plan 12). Empty, and never written, on a Mac that never used a key.
     private(set) var keyedSessionIds: Set<String>
@@ -263,6 +313,7 @@ final class KeyLanesStore: ObservableObject {
         install = defaults.string(forKey: KeyLanes.installKey).flatMap(KeyLanes.Install.init(rawValue:))
         setupSkipped = defaults.bool(forKey: Self.skippedKey)
         keyedSessionIds = Set(defaults.stringArray(forKey: Self.keyedSessionsKey) ?? [])
+        savedKeys = defaults.integer(forKey: Self.savedKeysKey)
     }
 
     var enabled: Bool { state?.enabled == true }
@@ -297,10 +348,16 @@ final class KeyLanesStore: ObservableObject {
 
     private func apply(_ next: KeyLanesState) {
         if state != next { state = next }
+        if next.enabled, savedKeys != next.keys.count { setSavedKeys(next.keys.count) }
         let fresh = Set(next.keyedSessionIds).subtracting(keyedSessionIds)
         guard !fresh.isEmpty else { return }
         keyedSessionIds.formUnion(fresh)
         defaults.set(Array(Array(keyedSessionIds).sorted().suffix(20_000)), forKey: Self.keyedSessionsKey)
+    }
+
+    private func setSavedKeys(_ count: Int) {
+        savedKeys = count
+        if count > 0 { defaults.set(count, forKey: Self.savedKeysKey) } else { defaults.removeObject(forKey: Self.savedKeysKey) }
     }
 
     func refresh(run: Run) async {
@@ -336,15 +393,18 @@ final class KeyLanesStore: ObservableObject {
     /// Save a pasted key: on stdin to the helper, which posts it to the server. True when saved. The caller drops its
     /// copy of the secret either way. Then a profile for the default model, so answers can use it.
     @discardableResult
-    func saveKey(kind: String, secret: String, capUsd: Double, baseURL: String? = nil, run: Run) async -> Bool {
+    func saveKey(kind: String, secret: String, capUsd: Double, baseURL: String? = nil, claudeInstalled: Bool = true,
+                 codexInstalled: Bool = true, run: Run) async -> Bool {
         guard let input = Self.keyInput(kind: kind, secret: secret, capUsd: capUsd, baseURL: baseURL) else { return false }
         let details = await call(["save-key"], input, run: run)
         if let problem = KeyLanes.problem(details) { line = problem; return false }
         line = nil
         if catalog.isEmpty { await loadCatalog(run: run) }
+        let usable = KeyLanes.usableModels(catalog, kind: kind, claudeInstalled: claudeInstalled, codexInstalled: codexInstalled)
         if let ref = details?["key"]?.object?["ref"]?.string,
-           let model = catalog.first(where: { $0.role == "default" }) ?? catalog.first {
+           let model = usable.first(where: { $0.role == "default" }) ?? usable.first {
             await chooseModel(model.id, keyRef: ref, kind: kind, run: run)
+            if line == nil { justSaved = KeyLanes.modelLabel(model.id) }
         } else {
             await refresh(run: run)
         }
@@ -355,7 +415,7 @@ final class KeyLanesStore: ObservableObject {
     func chooseModel(_ slug: String, keyRef: String, kind: String, run: Run) async {
         guard let model = KeyLanes.profileModel(slug: slug, kind: kind) else { line = KeyLanes.noModelsLine; await refresh(run: run); return }
         let body: [String: Any] = ["id": KeyLanes.profileID(forKey: keyRef), "label": KeyLanes.modelLabel(slug), "keyRef": keyRef,
-                                   "engine": "claude", "model": model, "enabled": true, "timeoutTier": KeyLanes.timeoutTier(slug)]
+                                   "engine": KeyLanes.engine(slug) ?? "claude", "model": model, "enabled": true, "timeoutTier": KeyLanes.timeoutTier(slug)]
         let input = try? JSONSerialization.data(withJSONObject: body, options: [.sortedKeys, .withoutEscapingSlashes])
         line = KeyLanes.problem(await call(["save-profile"], input, run: run))
         await refresh(run: run)
@@ -380,6 +440,30 @@ final class KeyLanesStore: ObservableObject {
         let details = await call(exportLedger ? ["remove-all", "--export-ledger"] : ["remove-all"], run: run)
         line = KeyLanes.problem(details)
         if line == nil, let path = details?["ledgerExportedTo"]?.string { line = "Spend ledger saved to \(path)." }
+        if KeyLanes.problem(details) == nil { setSavedKeys(0); justSaved = nil }
+        await refresh(run: run)
+    }
+
+    /// QA U7: remove keys the server can no longer manage. The helper asks the server first and deletes the files itself
+    /// only after today's 404 and only while nothing is recording or answering.
+    func removeSavedKeys(run: Run) async {
+        let details = await call(["remove-saved-keys"], run: run)
+        line = KeyLanes.problem(details)
+        if line == nil { setSavedKeys(0); line = KeyLanes.savedKeysRemovedLine }
+    }
+
+    /// QA U6: a topped-up or fixed key leaves its 1 hour pause.
+    func resetBreaker(_ keyRef: String, run: Run) async {
+        line = KeyLanes.problem(await call(["reset-breaker", "--ref", keyRef], run: run))
+        await refresh(run: run)
+    }
+
+    /// QA U6: turn a key's profile off or back on (the same upsert, with `enabled`).
+    func setProfileEnabled(_ profile: KeyLanesProfile, _ enabled: Bool, run: Run) async {
+        let body: [String: Any] = ["id": profile.id, "label": profile.label, "keyRef": profile.keyRef, "engine": profile.engine,
+                                   "model": profile.model, "enabled": enabled, "timeoutTier": profile.timeoutTier]
+        let input = try? JSONSerialization.data(withJSONObject: body, options: [.sortedKeys, .withoutEscapingSlashes])
+        line = KeyLanes.problem(await call(["save-profile"], input, run: run))
         await refresh(run: run)
     }
 }

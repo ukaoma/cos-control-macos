@@ -83,6 +83,22 @@ import Foundation
         check((catalog["curated"] as? [[String: Any]])?.first?["role"] as? String == "default" && catalog["search"] == nil, "catalog: the curated two, no search")
         let disable = C.answer("disable", status: 200, body: json(#"{"enabled":true,"active":false,"forcedOnBy":"COS_KEY_LANES"}"#))
         check(disable["forcedOnBy"] as? String == "COS_KEY_LANES", "disable says when the env forces lanes on")
+        // ── QA U6, U7.
+        check(C.plan(["reset-breaker", "--ref", ref]) == .init(action: "reset-breaker", method: "POST", path: "/api/key-lanes/breaker/reset", body: ["ref": ref], stdin: .none, timeout: 10),
+              "Reset pause posts the ref to the breaker route")
+        check(C.plan(["reset-breaker", "--ref", "x"]) == nil && C.plan(["reset-breaker"]) == nil, "Reset pause refuses a bad ref")
+        let reset = C.answer("reset-breaker", status: 200, body: json(#"{"reset":true,"breaker":{"open":false,"failures":0,"why":"x"}}"#))
+        check(reset["reset"] as? Bool == true && (reset["breaker"] as? [String: Any])?["why"] == nil, "a reset answers with the closed breaker only")
+        check(C.plan(["remove-saved-keys"])?.path == "/api/key-lanes/remove-all" && C.plan(["remove-saved-keys"])?.body == ["exportLedger": "false"]
+              && C.plan(["remove-saved-keys", "--all"]) == nil, "Remove saved keys asks the server first")
+        check(C.savedKeyFiles == ["key-secrets/provider-keys.json", "provider-keys.json", "provider-profiles.json", "key-ledger.jsonl"]
+              && C.savedKeyDirectories == ["codex-homes"] && !(C.savedKeyFiles + C.savedKeyDirectories).contains("keyed-sessions.json"),
+              "the disk path deletes both key store places, profiles, ledger and Codex homes, and keeps keyed sessions")
+        check(C.diskRemovalBlocker(maintenance: nil) != nil, "no work report: nothing is deleted")
+        check(C.diskRemovalBlocker(maintenance: ["activeJobs": 1]) != nil && C.diskRemovalBlocker(maintenance: ["activeTranscriptionSessions": 2]) != nil
+              && C.diskRemovalBlocker(maintenance: ["lifecycle": ["activeByKind": ["recording_session": 1]]]) != nil,
+              "a job, a transcription or a recording blocks the disk path")
+        check(C.diskRemovalBlocker(maintenance: ["activeJobs": 0, "lifecycle": ["activeByKind": [String: Any]()]]) == nil, "an idle server allows it")
         print("key lanes helper core checks: \(passed) passed")
     }
 }

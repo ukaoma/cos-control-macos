@@ -5,7 +5,7 @@ Runs the unmutated lanes first and refuses on any failure (a red baseline would 
 match its target EXACTLY ONCE, and is killed only when its lane fails with a named check ("... FAILED: ..."); a compile
 failure or any other exit is an infrastructure error, not a kill. Compiles go through the lane, so through
 Tests/compile-guard.sh, one at a time, never in parallel.
-Usage: python3 Tests/mutate-key-lanes.py [--lane pins|models|core|helper]
+Usage: python3 Tests/mutate-key-lanes.py [--lane pins|models|core|onerow|helper]
 """
 import os
 import subprocess
@@ -21,6 +21,7 @@ PANEL = "Sources/Views.swift"
 SETUP = "Sources/ControlSetup.swift"
 MODEL = "Sources/ControllerModel.swift"
 WORK = "Sources/WorkHandoffStore.swift"
+WINDOW = "Sources/ActivityWindow.swift"
 RELEASE = "scripts/build-release.sh"
 HCORE = "HelperSources/ProviderStatusCore.swift"
 HELPER = "HelperSources/main.swift"
@@ -28,7 +29,7 @@ HELPER = "HelperSources/main.swift"
 MUTANTS = [
     # The decisions and the store (Tests/KeyLanesChecks.swift).
     ("M1 step shown on existing install", "models", CORE, "        return install == .new || enabled\n", "        return true\n"),
-    ("M2 Settings row hidden when on", "models", CORE, "        enabled || serverSupports(serverVersion)\n", "        serverSupports(serverVersion)\n"),
+    ("M2 Settings row hidden when on", "models", CORE, "        enabled || serverSupports(serverVersion) || savedKeys > 0\n", "        serverSupports(serverVersion) || savedKeys > 0\n"),
     ("M3 the row shows on 6.79", "models", CORE, "    static let minimumServer = [6, 80, 0]\n", "    static let minimumServer = [6, 79, 0]\n"),
     ("M4 key echoed in UI", "models", CORE,
      '"Ready to save: " + keyLine(kind: kind, last4: last4(secret))', '"Ready to save: " + keyLine(kind: kind, last4: secret)'),
@@ -44,6 +45,15 @@ MUTANTS = [
      '            line = KeyLanes.problem(await call(["delete-profile", "--id", KeyLanes.profileID(forKey: keyRef)], run: run))\n', ""),
     ("M12 the default cap is not $1", "models", CORE, "    static let defaultCapUsd = 1.0\n", "    static let defaultCapUsd = 5.0\n"),
     ("M13 a lanes-off server writes keyed sessions", "models", CORE, "        guard !fresh.isEmpty else { return }\n", ""),
+    ("M14 a lanes-off status forgets saved keys", "models", CORE, "        if next.enabled, savedKeys != next.keys.count {", "        if savedKeys != next.keys.count {"),
+    ("M15 Claude profiles offered without Claude Code", "models", CORE,
+     '            return engine(m.id) == "claude" ? claudeInstalled : codexInstalled\n', "            return true\n"),
+    ("M16 OpenAI keys offered with no model to run", "models", CORE,
+     "        kindOrder.filter { !usableModels(catalog, kind: $0, claudeInstalled: claudeInstalled, codexInstalled: codexInstalled).isEmpty }\n",
+     "        kindOrder\n"),
+    ("M17 Reset pause calls another verb", "models", CORE, 'await call(["reset-breaker", "--ref", keyRef], run: run)', 'await call(["status"], run: run)'),
+    ("M18 Use for answers ignores the switch", "models", CORE, '"enabled": enabled, "timeoutTier": profile.timeoutTier]', '"enabled": true, "timeoutTier": profile.timeoutTier]'),
+    ("M19 no lens hint after the first save", "models", CORE, "            if line == nil { justSaved = KeyLanes.modelLabel(model.id) }\n", ""),
     # The wiring and the copy (Tests/key-lanes-pins.py).
     ("P1 no Settings row", "pins", PANEL, "                KeyLanesSettingsRow(model: model)\n", ""),
     ("P2 the step leaves the Ready stage", "pins", SETUP, "            KeyLanesSetupStep(model: model)\n            PetIntroLine(model: model)\n            Button(\"Finish setup\")",
@@ -64,6 +74,12 @@ MUTANTS = [
      "Text(pending ?? KeyLanes.pasteHint)"),
     ("P10 Remove all keys without a confirmation", "pins", VIEWS, "                Button(KeyLanes.removeAllLabel) { removingAll = true }",
      "                Button(KeyLanes.removeAllLabel) { Task { await store.removeAll(exportLedger: exportLedger, run: keyLanesRun(model)) } }"),
+    ("P11 a keyed session opens in its app", "pins", MODEL,
+     "        if let line = KeyLanes.refusal(sessionID: session.sessionId) { platformOpenNotice = line; return }\n", ""),
+    ("P12 Open in platform shown for a keyed session", "pins", WINDOW, "if KeyLanes.refusal(sessionID: row.sessionId) == nil {", "if true {"),
+    ("P13 the pasteboard keeps the key", "pins", VIEWS,
+     "                    if board.string(forType: .string)?.trimmingCharacters(in: .whitespacesAndNewlines) == text { board.clearContents() }\n", ""),
+    ("P14 the same-Mac line drifts from the server", "pins", CORE, "Your provider's spending limit is the real stop.", "Your cap is the real stop."),
     # The helper's grammar and whitelist (Tests/KeyLanesHelperChecks.swift).
     ("C1 the helper takes a key in argv", "core", HCORE, '        case "save-key": return rest.isEmpty ? p("POST", "/keys", nil, .key, 25) : nil\n',
      '        case "save-key": return p("POST", "/keys", nil, .key, 25)\n'),
@@ -76,10 +92,21 @@ MUTANTS = [
     ("C6 a profile body can carry a key", "core", HCORE,
      '            guard Set(object.keys).isSubset(of: ["id", "label", "keyRef", "engine", "model", "enabled", "timeoutTier"]),\n',
      '            guard Set(object.keys).isSubset(of: ["id", "label", "keyRef", "engine", "model", "enabled", "timeoutTier", "key"]),\n'),
-    # The compiled helper (Tests/key-lanes-helper-checks.py); a full helper compile each, so two.
+    ("C7 the disk path runs while COS is busy", "core", HCORE,
+     '        return busy > 0 ? "COS is recording or answering right now. Remove saved keys when it finishes." : nil\n', "        return nil\n"),
+    ("C8 the disk path deletes keyed sessions", "core", HCORE,
+     '"provider-profiles.json", "key-ledger.jsonl"]\n', '"provider-profiles.json", "key-ledger.jsonl", "keyed-sessions.json"]\n'),
+    # QA G2: the shipping case (one full app compile).
+    ("O1 6.80.0 with lanes off draws no row", "onerow", CORE, "        enabled || serverSupports(serverVersion) || savedKeys > 0\n", "        enabled || savedKeys > 0\n"),
+    # The compiled helper (Tests/key-lanes-helper-checks.py); a full helper compile each.
     ("H1 the helper drops the answer check", "helper", HELPER, "            body = parsed.body; secret = parsed.secret\n", "            body = parsed.body; secret = nil\n"),
     ("H2 the helper sends no token", "helper", HELPER, "request(plan.path, method: plan.method, token: token, body: text,",
      "request(plan.path, method: plan.method, token: nil, body: text,"),
+    ("H3 the helper deletes keys the server could remove", "helper", HELPER,
+     'if plan.action == "remove-saved-keys", KeyLanesHelperCore.transport(status: response.status, body: response.body) == "unsupported" {',
+     'if plan.action == "remove-saved-keys" {'),
+    ("H4 a linked key-secrets dir is followed", "helper", HELPER,
+     "                guard let type = (try? fm.attributesOfItem(atPath: parent))?[.type] as? FileAttributeType, type == .typeDirectory else { continue }\n", ""),
 ]
 
 
@@ -96,7 +123,7 @@ def run(lane):
 
 
 only = sys.argv[sys.argv.index("--lane") + 1] if "--lane" in sys.argv else None
-lanes = [lane for lane in ("pins", "models", "core", "helper") if only in (None, lane)]
+lanes = [lane for lane in ("pins", "models", "core", "onerow", "helper") if only in (None, lane)]
 mutants = [m for m in MUTANTS if m[1] in lanes]
 for lane in lanes:
     base = run(lane)
