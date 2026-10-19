@@ -286,6 +286,7 @@ final class SessionPetPresenter: NSObject, ObservableObject, NSWindowDelegate {
         panel.setFrame(placed, display: false)
         restingAnchor = CGPoint(x: placed.minX, y: placed.minY)
         self.panel = panel
+        model.setPetDisplayScale(panel.backingScaleFactor)
         return panel
     }
 
@@ -324,6 +325,16 @@ final class SessionPetPresenter: NSObject, ObservableObject, NSWindowDelegate {
 
     /// A drag re-parks the pet. Our own setFrame also posts this, so the
     /// applyingFrame guard is what keeps a clamped slide out of the anchor.
+    // 0.5.328 (Version 15): retina strips play on a 2x screen, 1x strips on a 1x screen; moving the pet between
+    // them re-picks. Both notifications can fire for one move; the model reloads only when the set changes.
+    func windowDidChangeBackingProperties(_ notification: Notification) {
+        if let panel { model?.setPetDisplayScale(panel.backingScaleFactor) }
+    }
+
+    func windowDidChangeScreen(_ notification: Notification) {
+        if let panel { model?.setPetDisplayScale(panel.backingScaleFactor) }
+    }
+
     func windowDidMove(_ notification: Notification) {
         guard !applyingFrame, let panel else { return }
         restingAnchor = CGPoint(x: panel.frame.minX, y: panel.frame.minY)

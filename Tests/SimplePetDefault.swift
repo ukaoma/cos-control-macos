@@ -38,7 +38,7 @@ import SwiftUI
             precondition(try! Data(contentsOf: stateURL) == before)
             precondition(!model.petSpriteKit.frames(for: .idle).isEmpty)
             print("PASS: missing seed preference preserves chosen \(character.displayName)")
-            // 0.5.328: Miles ships Jedi V1.5, four casts on Session 1 and three on Sessions 2 to 4; the other Jedi rotate
+            // 0.5.328: Miles ships Version 15, four casts on Session 1 and three on Sessions 2 to 4; the other Jedi rotate
             // three casts on Sessions 2 to 4. Every cast-rotating pose renders here through the production view.
             do {
                 let proof = URL(fileURLWithPath: CommandLine.arguments[1], isDirectory: true)
@@ -136,15 +136,17 @@ import SwiftUI
         print("PASS: bundled Cloud Puff rendered in light and dark")
 
         // 0.5.328: an installed stock V14 (both exact forms the stock history names: flat as 0.5.325 to 0.5.327 shipped it,
-        // and with its layers under rotation/v14-timing-v2/ as Miles installed it) moves to Jedi V1.5 on the first launch
+        // and with its layers under rotation/v14-timing-v2/ as Miles installed it) moves to Version 15 on the first launch
         // of this build after any earlier one (no art generation, 21 or 22). Nothing is deleted: every V14 file stays with
-        // its bytes. A V14 with its own speed is the person's pack and stays untouched, and an installed V1.5 is current.
+        // its bytes. A V14 with its own speed is the person's pack and stays untouched, and an installed V15 is current.
         let fm = FileManager.default
         let miles = PetSpriteStore.bundledDefaultURL()!
         let bundledMap = PetSpriteStore.loadStateMap(in: miles)
+        let bundledRows = (try JSONSerialization.jsonObject(with: Data(contentsOf: miles.appendingPathComponent(PetSpriteStore.stateFileName))) as! [String: Any])["poses"] as! [String: [String: Any]]
+        let retinaFiles = Set(bundledRows.values.compactMap { PetRetinaRow($0["retina"]) }.flatMap(\.files))
         let v15Files = Set(bundledMap.values.map(\.file)).union(PetSpriteStore.loadRotations(in: miles).values.flatMap {
-            $0.manifest.variants.flatMap { [$0.file, $0.bodyFile, $0.entryFile] } })
-        precondition(v15Files.count == 45, "the bundled V1.5 names 45 files (39 cast layers, 3 signals, 3 ambient)")
+            $0.manifest.variants.flatMap { [$0.file, $0.bodyFile, $0.entryFile] } }).union(retinaFiles)
+        precondition(v15Files.count == 96, "the bundled Version 15 names 96 files (45 at 1x, 51 retina)")
         let history = (try JSONSerialization.jsonObject(with: Data(contentsOf: miles.appendingPathComponent("stock-state-history.json"))) as! [String: Any])["maps"] as! [[String: Any]]
         precondition(history.count == 3, "V12.6 plus both V14 forms")
         func state() -> [String: (Data, Date)] {
@@ -198,13 +200,13 @@ import SwiftUI
                     let installedMap = PetSpriteStore.loadStateMap(in: directory)
                     precondition(installedMap.count == bundledMap.count && bundledMap.allSatisfy { pose, row in
                         installedMap[pose]?.file == row.file && installedMap[pose]?.frames == row.frames
-                    }, "\(what) did not move to the V1.5 map")
+                    }, "\(what) did not move to the V15 map")
                     precondition(v15Files.allSatisfy { file in
                         (try? Data(contentsOf: directory.appendingPathComponent(file))) == (try? Data(contentsOf: miles.appendingPathComponent(file)))
-                    }, "\(what): a V1.5 file did not land byte for byte")
+                    }, "\(what): a V15 file did not land byte for byte")
                     precondition(PetSpriteStore.loadFrameIntervals(in: directory) == PetSpriteStore.loadFrameIntervals(in: miles)
                                  && PetSpriteStore.loadRenderScales(in: directory) == PetSpriteStore.loadRenderScales(in: miles),
-                                 "\(what): V1.5 cadence and pack scales")
+                                 "\(what): V15 cadence and pack scales")
                     precondition(model.petSpriteKit.rotations.mapValues(\.variants.count) == [.working: 4, .duel: 3, .trio: 3, .swarm: 3],
                                  "\(what) plays four Session 1 casts and three on Sessions 2 to 4")
                     let upgraded = state()
@@ -215,12 +217,12 @@ import SwiftUI
                     let repeated = state()
                     precondition(repeated.count == upgraded.count && repeated.allSatisfy { path, entry in
                         upgraded[path].map { $0.0 == entry.0 && $0.1 == entry.1 } ?? false
-                    }, "a later launch rewrote the upgraded V1.5 (\(what))")
+                    }, "a later launch rewrote the upgraded V15 (\(what))")
                 }
-                print("PASS: installed V14 (\(label)\(tuned ? ", tuned: left alone" : "")) \(tuned ? "" : "moves to Jedi V1.5 with no file deleted, ")on a first, a post-0.5.324 and a post-0.5.327 launch")
+                print("PASS: installed V14 (\(label)\(tuned ? ", tuned: left alone" : "")) \(tuned ? "" : "moves to Version 15 with no file deleted, ")on a first, a post-0.5.324 and a post-0.5.327 launch")
             }
         }
-        // An installed V1.5 is current on every launch path: nothing written.
+        // An installed Version 15 is current on every launch path: nothing written.
         try fresh()
         for file in v15Files.union([PetSpriteStore.stateFileName]) {
             try fm.copyItem(at: miles.appendingPathComponent(file), to: directory.appendingPathComponent(file))
@@ -232,10 +234,31 @@ import SwiftUI
             let after = state()
             precondition(after.count == installedV15.count && after.allSatisfy { path, entry in
                 installedV15[path].map { $0.0 == entry.0 && $0.1 == entry.1 } ?? false
-            }, "a launch rewrote the installed V1.5 (generation \(String(describing: generation)))")
+            }, "a launch rewrote the installed V15 (generation \(String(describing: generation)))")
             precondition(model.petSpriteKit.rotations.mapValues(\.variants.count) == [.working: 4, .duel: 3, .trio: 3, .swarm: 3])
         }
-        print("PASS: installed Jedi V1.5 survives first, post-0.5.324, post-0.5.327 and repeat launches untouched")
+        print("PASS: installed Version 15 survives first, post-0.5.324, post-0.5.327 and repeat launches untouched")
+        // Retina vs 1x display: the same pack, the same point sizes, twice the pixels. A 1x-to-2x screen move re-picks.
+        func cellPixels(_ image: NSImage) -> Int {
+            var rect = CGRect(origin: .zero, size: image.size)
+            return image.cgImage(forProposedRect: &rect, context: nil, hints: nil)!.width
+        }
+        var seen: [CGFloat: (sizes: [NSSize], pixels: [Int])] = [:]
+        for scale in [CGFloat(1), 2, 1] {
+            model.setPetDisplayScale(scale)
+            // Cast poses play their casts (checked here); their plain strip stays 1x and only sizes the view.
+            let poses: [PetSpritePose] = [.attention, .done, .error]
+            let rotationCells = [PetSpritePose.working, .duel, .trio, .swarm].map { model.petSpriteKit.rotations[$0]!.variants[0].full[0] }
+            let poseCells = poses.map { model.petSpriteKit.frames(for: $0).first! }
+            seen[scale] = ((rotationCells + poseCells).map(\.size), (rotationCells + poseCells).map(cellPixels))
+        }
+        precondition(seen[1]!.sizes == seen[2]!.sizes, "retina and 1x cells have identical point sizes (the figure does not change size)")
+        precondition(zip(seen[1]!.pixels, seen[2]!.pixels).allSatisfy { $1 == 2 * $0 }, "retina cells carry twice the pixels")
+        precondition(zip(seen[1]!.sizes, seen[1]!.pixels).allSatisfy { Int($0.width) == $1 }, "1x cells are one pixel per point")
+        precondition([PetSpritePose.working, .duel, .trio, .swarm].allSatisfy { pose in
+            model.petSpriteKit.frames(for: pose).first.map { cellPixels($0) == Int($0.size.width) } ?? false
+        }, "cast poses keep the 1x strip they size the view with")
+        print("PASS: Version 15 plays 2x cells on a retina display and 1x cells on a 1x display, at identical point sizes, and re-picks on a screen change")
         model.resetPetSprite()
     }
 }

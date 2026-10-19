@@ -28,26 +28,27 @@ def png_header(path: pathlib.Path) -> tuple[int, int, int]:
 
 
 def validate(root: pathlib.Path, models: str, controller: str, motion: str, pet: str) -> None:
-    # 0.5.328: Miles approved Jedi V1.5 (2026-10-19, installation-v1-5 in the COS repo, map sha256 279622b1...) as the
-    # bundled pack: four shuffled casts on Session 1 (working) and three on duel, trio and swarm, the 18-frame attention and
-    # 14-frame done bridges and the re-baked error, all flat names (the release copies DefaultPet without subfolders).
-    # V14 timing-v2 (0.5.325 to 0.5.327) is the rollback; its four strips stay as retained stock. 0.5.316 to 0.5.324: V12.6.
+    # 0.5.328: Miles approved Version 15 (V15, 2026-10-19; installation-v1-5/bake_v15.py in the COS repo, map sha256
+    # af4fc61d...) as the bundled pack: 1x strips here plus retina blocks (Tests/jedi-v15-pack-pins.py), four shuffled casts
+    # on Session 1 (working) and three on duel, trio and swarm, the 18-frame attention and 14-frame done bridges (done in a
+    # 171 pt cell so the saber is not cut) and the re-baked error, all flat names (the release copies DefaultPet without
+    # subfolders). V14 timing-v2 (0.5.325 to 0.5.327) is the rollback; its four strips stay as retained stock.
     approved_state = {
-        "attention": {"file": "session-pet-windu-v1-5-attention.png", "frames": 18, "interval": 0.12},
-        "done": {"file": "session-pet-windu-v1-5-done.png", "frames": 14, "interval": 0.14},
-        "duel": {"file": "session-pet-windu-v1-5-duel-a-full.png", "frames": 37, "interval": 0.08},
-        "error": {"file": "session-pet-windu-v1-5-error.png", "frames": 8, "interval": 0.14},
+        "attention": {"file": "windu-pack15-attention-1x.png", "frames": 18, "interval": 0.12},
+        "done": {"file": "windu-pack15-done-1x.png", "frames": 14, "interval": 0.14},
+        "duel": {"file": "windu-pack15-duel-a-full-1x.png", "frames": 37, "interval": 0.08},
+        "error": {"file": "windu-pack15-error-1x.png", "frames": 8, "interval": 0.14},
         "idle": {"file": "session-pet-idle-cutouts-v2.png", "frames": 8, "renderScale": 1.0},
         "patrol": {"file": "session-pet-patrol-polish-v3.png", "frames": 8, "interval": 0.14},
-        "swarm": {"file": "session-pet-windu-v1-5-swarm-a-full.png", "frames": 64, "interval": 0.08},
-        "trio": {"file": "session-pet-windu-v1-5-trio-a-full.png", "frames": 43, "interval": 0.08},
+        "swarm": {"file": "windu-pack15-swarm-a-full-1x.png", "frames": 64, "interval": 0.08},
+        "trio": {"file": "windu-pack15-trio-a-full-1x.png", "frames": 43, "interval": 0.08},
         "waiting": {"file": "session-pet-waiting-release-v1.png", "frames": 11, "interval": 0.18},
-        "working": {"file": "session-pet-windu-v1-5-working-a-full.png", "frames": 46, "interval": 0.08, "renderScale": 0.75},
+        "working": {"file": "windu-pack15-working-a-full-1x.png", "frames": 46, "interval": 0.08, "renderScale": 0.75},
     }
     raw_rows = json.loads((root / "Resources/DefaultPet/session-pet-states.json").read_text())["poses"]
-    state = {pose: {k: v for k, v in row.items() if k != "rotation"} for pose, row in raw_rows.items()}
+    state = {pose: {k: v for k, v in row.items() if k not in ("rotation", "retina")} for pose, row in raw_rows.items()}
     need(sorted(p for p, row in raw_rows.items() if "rotation" in row) == ["duel", "swarm", "trio", "working"],
-         "V1.5 rotates casts on working, duel, trio and swarm, and nowhere else")
+         "V15 rotates casts on working, duel, trio and swarm, and nowhere else")
     handoffs = {"working": (37, "abcd"), "duel": (28, "abc"), "trio": (31, "abc"), "swarm": (55, "abc")}
     layers = []
     for pose, (handoff, casts) in handoffs.items():
@@ -58,18 +59,19 @@ def validate(root: pathlib.Path, models: str, controller: str, motion: str, pet:
         for variant in rotation["variants"]:
             for key, kind in (("file", "full"), ("bodyFile", "body"), ("entryFile", "entry")):
                 name = variant[key]
-                need(name == f"session-pet-windu-v1-5-{variant['id']}-{kind}.png" and "/" not in name,
+                need(name == f"windu-pack15-{variant['id']}-{kind}-1x.png" and "/" not in name,
                      f"{pose} layer {name} must be flat (the release copies DefaultPet without subfolders)")
                 w, h, ct = png_header(root / "Resources/DefaultPet" / name)
                 need((w, h, ct) == (strip_w, strip_h, 6), f"{name} must be an RGBA layer the size of its {pose} strip")
                 layers.append(name)
     need(len(set(layers)) == 39, "39 distinct cast layers (Session 1: 4 casts; Sessions 2 to 4: 3 each)")
     for pose, row in approved_state.items():
-        need(state.get(pose) == row, f"{pose} does not point at the approved V1.5 strip, count, cadence and scale")
-    need(set(state) == set(approved_state), "the shipped Miles map has a pose V1.5 does not declare")
+        need(state.get(pose) == row, f"{pose} does not point at the approved V15 strip, count, cadence and scale")
+    need(set(state) == set(approved_state), "the shipped Miles map has a pose V15 does not declare")
     frame_cap = int(re.search(r"static let maxFrames = (\d+)", models).group(1))
     need(frame_cap == 128, "runtime frame limit must preserve complete Jedi recovery and entrance frames")
-    cell_widths = {"attention": 121, "done": 99, "duel": 304, "error": 224, "idle": 83, "patrol": 128,
+    # V15 widens done from 99 to 171: the A1 to A3 bridge sabers were cut at the 99 px edge (figure the same size).
+    cell_widths = {"attention": 121, "done": 171, "duel": 304, "error": 224, "idle": 83, "patrol": 128,
                    "swarm": 311, "trio": 286, "waiting": 97, "working": 304}
     for pose, cell_width in cell_widths.items():
         row = state[pose]
@@ -89,7 +91,7 @@ def validate(root: pathlib.Path, models: str, controller: str, motion: str, pet:
         "session-pet-swarm-story-v16.png": "80415ed66aa649763b42c3a934df40511e0ff258185b82b39a73fb8aca3211f3",
         # V12.6, the version-manifest.json sha256 of each reviewed file (retained V15/V16 stock above stays for
         # recognition: the refresh compares installed bytes against these retained files).
-        "session-pet-states.json": "279622b17494fa31ad88cdcc1055ef820351929cc0a61d653eb8b1a1d0fe104a",
+        "session-pet-states.json": "af4fc61df77344d955633563cef7b0c55fd7dc39a02753c443d26d9f16f4d134",
         "session-pet-attention-retime-v12-v1.png": "50edef0550ac04f8f388545ef072c125bafe75cccb1b3110b0f687440b8661ea",
         "session-pet-done-retime-v12-v1.png": "baf49d90057f7a44ef348f25a2dd7273b7bedaea80fdaee3ed53d5623f39dac1",
         "session-pet-duel-tail-tighter-v12-5.png": "074efb1f0ec6bbb489caaa31b803ec316e4bea1f783b33c7a97283358b5c3a61",
@@ -101,7 +103,7 @@ def validate(root: pathlib.Path, models: str, controller: str, motion: str, pet:
         "session-pet-waiting-release-v1.png": "e885beb423f2e8febd348d0a8fc566ed2e20da6c1b78bbe33efc3a9aa6b765f3",
         "session-pet-working-run-slowed-v12-1.png": "b48d1eba464629eb393dcdc9be1c7f7bdb8d553339a53f542b758ee3cd98693b",
         # V14 timing-v2's four V13 strips, retained so the upgrade can recognize an installed V14 by its bytes. Its 27
-        # cast layers no longer ship. Every V1.5 file is pinned by Tests/jedi-v1-5-pack-pins.py. The V12.6 map is the stock
+        # cast layers no longer ship. Every V15 file, 1x and retina, is pinned by Tests/jedi-v15-pack-pins.py. The V12.6 map is the stock
         # history entry the upgrade recognizes; its V12.6 strips stay pinned above.
         "stock-state-history.json": "9623b2c1ed420bfcbc295631ca6aa0bebd97a9b4d4acbbb6444a448ac969d69e",
         "session-pet-working-v13.png": "4df56c59db80b8041de5a6f24a56eeadbaa26afca23be4af1c93b702ff5c2c52",
@@ -112,7 +114,7 @@ def validate(root: pathlib.Path, models: str, controller: str, motion: str, pet:
     for file, expected_hash in approved_hashes.items():
         actual_hash = hashlib.sha256((root / "Resources/DefaultPet" / file).read_bytes()).hexdigest()
         need(actual_hash == expected_hash, f"approved or retained Miles story drifted: {file}")
-    need(all((root / "Resources/DefaultPet" / name).is_file() for name in layers), "every V1.5 cast layer ships")
+    need(all((root / "Resources/DefaultPet" / name).is_file() for name in layers), "every V15 cast layer ships")
     # The stock maps the upgrade recognizes, byte for byte in content: V12.6 as 0.5.316 to 0.5.324 shipped it, and V14 in
     # both of its exact forms (0.5.328): flat as 0.5.325 to 0.5.327 shipped it, and as Miles installed it by hand.
     history = json.loads((root / "Resources/DefaultPet/stock-state-history.json").read_text())["maps"]
@@ -180,7 +182,7 @@ def validate(root: pathlib.Path, models: str, controller: str, motion: str, pet:
         and "            return .current\n" in models
         and int(re.search(r"petDefaultArtGeneration = (\d+)", controller).group(1)) >= 23
         and "if refresh != .failed" in controller,
-        "installed stock Miles packs will not receive the whole V1.5 pack",
+        "installed stock Miles packs will not receive the whole V15 pack",
     )
     # The BODY of handleSpriteClick: toggleSessionMenu now sits between it and
     # handleSpriteDrop and legitimately names petExpanded. Two toggle sites are
@@ -277,7 +279,7 @@ def main() -> None:
         1,
     )
     must_fail("character click expands sessions", root, models, controller, motion, click_mutation)
-    print("COS Control: approved Jedi V1.5 Miles pack, 39 cast layers on four sessions, whole-pack refresh and chevron-only expansion passed")
+    print("COS Control: approved Version 15 Miles pack, 39 cast layers on four sessions, whole-pack refresh and chevron-only expansion passed")
 
 
 if __name__ == "__main__":

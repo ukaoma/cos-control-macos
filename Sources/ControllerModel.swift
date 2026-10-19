@@ -2473,6 +2473,18 @@ final class ControllerModel: ObservableObject {
     )
     @Published var petCustomSprite: NSImage?
     @Published var petSpriteKit = PetSpriteKit()
+    /// 0.5.328 (Version 15): the pet window's backingScaleFactor. At 2 or more the pack's retina strips play (same size
+    /// on screen, every 2x pixel drawn); below it the 1x strips. The presenter reports it whenever the window changes
+    /// screen or backing; until then, the main screen's.
+    private(set) var petDisplayScale: CGFloat = NSScreen.main?.backingScaleFactor ?? 1
+
+    /// Reloads the art only when the choice of strip set changes (1x on one side of 2, retina on the other).
+    func setPetDisplayScale(_ scale: CGFloat) {
+        guard scale.isFinite, scale > 0 else { return }
+        let changesSet = (scale >= 2) != (petDisplayScale >= 2)
+        petDisplayScale = scale
+        if changesSet { loadPetSprite() }
+    }
     let petEncounterPlayback = PetEncounterPlayback()
     @Published var petFrameIntervals: [PetSpritePose: Double] = [:]
     private var petStateMap: [PetSpritePose: (file: String, frames: Int)] = [:]
@@ -4920,13 +4932,10 @@ final class ControllerModel: ObservableObject {
         } else {
             petCustomSprite = nil
         }
-        var poses: [PetSpritePose: [NSImage]] = [:]
         petStateMap = PetSpriteStore.loadStateMap(in: directory)
-        for (pose, record) in petStateMap {
-            let url = directory.appendingPathComponent(record.file)
-            guard let image = NSImage(contentsOf: url) else { continue }
-            poses[pose] = PetSpriteStrip.slice(image, frames: record.frames)
-        }
+        let rotations = PetSpriteStore.loadRotations(in: directory, displayScale: petDisplayScale)
+        let poses = PetSpriteStore.loadPoseFrames(in: directory, stateMap: petStateMap, displayScale: petDisplayScale,
+                                                  castPoses: Set(rotations.keys))
         petFrameIntervals = PetSpriteStore.loadFrameIntervals(in: directory)
         petRenderScales = PetSpriteStore.loadRenderScales(in: directory)
         var cinematic: [NSImage] = []
@@ -4940,7 +4949,7 @@ final class ControllerModel: ObservableObject {
             cinematic = PetSpriteStrip.slice(image, frames: frames)
         }
         petSpriteKit = PetSpriteKit(fallback: petCustomSprite, poses: poses, cinematic: cinematic,
-                                    rotations: PetSpriteStore.loadRotations(in: directory))
+                                    rotations: rotations)
     }
 
     var petLedger: PetLedger {
