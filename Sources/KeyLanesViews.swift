@@ -24,7 +24,7 @@ struct KeyLanesSettingsRow: View {
     @State private var removingSaved = false
 
     var body: some View {
-        if KeyLanes.rowVisible(serverVersion: model.status.version, enabled: store.enabled, savedKeys: store.savedKeys) {
+        if KeyLanes.rowVisible(serverVersion: model.status.version, enabled: store.enabled, savedKeys: store.savedKeys) || store.blockedInstall != nil {
             card
         }
     }
@@ -44,18 +44,21 @@ struct KeyLanesSettingsRow: View {
             } else {
                 Text(KeyLanes.rowTitle).font(COSType.body(13, weight: .semibold))
             }
+            if store.blockedInstall != nil {
+                // The server downgrade journey: an install below 6.80.0 waits for the keys to go.
+                Text(KeyLanes.downgradeBlockedLine + " " + KeyLanes.downgradeLine).font(COSType.body(11, weight: .medium))
+                    .foregroundStyle(COSPalette.amber).fixedSize(horizontal: false, vertical: true)
+                Button(KeyLanes.removeAndContinueLabel) { removingSaved = true }
+                    .buttonStyle(COSQuietButtonStyle(tone: .destructive)).disabled(store.busy || model.busy)
+            }
             if store.enabled {
                 KeyLanesSetupPanel(model: model, store: store)
             } else {
-                if KeyLanes.savedKeysRowVisible(enabled: store.enabled, savedKeys: store.savedKeys) {
+                if KeyLanes.savedKeysRowVisible(enabled: store.enabled, savedKeys: store.savedKeys) && store.blockedInstall == nil {
                     Text(KeyLanes.savedKeysLine(serverVersion: model.status.version)).font(COSType.body(11)).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                     Button(KeyLanes.removeSavedLabel) { removingSaved = true }
                         .buttonStyle(COSQuietButtonStyle(tone: .destructive)).disabled(store.busy)
-                        .cosConfirm("\(KeyLanes.removeSavedLabel)?", isPresented: $removingSaved, message: KeyLanes.removeSavedMessage, actions: [
-                            .destructive(KeyLanes.removeSavedLabel) { Task { await store.removeSavedKeys(run: keyLanesRun(model)) } },
-                            .cancel(),
-                        ])
                 }
                 if let line = store.line {
                     Text(line).font(COSType.body(11)).foregroundStyle(COSPalette.amber).fixedSize(horizontal: false, vertical: true)
@@ -65,6 +68,15 @@ struct KeyLanesSettingsRow: View {
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 12))
+        .cosConfirm("\(KeyLanes.removeSavedLabel)?", isPresented: $removingSaved, message: KeyLanes.removeSavedMessage, actions: [
+            .destructive(KeyLanes.removeSavedLabel) {
+                Task {
+                    await store.removeSavedKeys(run: keyLanesRun(model))
+                    if let install = store.takeBlockedInstall() { model.perform(install[0], arguments: Array(install.dropFirst())) }
+                }
+            },
+            .cancel(),
+        ])
         .id("key-lanes")
         .task(id: "\(model.status.running) \(model.status.version ?? "")") {
             // Fixtures and previews read nothing; an older server has no key-lane routes to read.

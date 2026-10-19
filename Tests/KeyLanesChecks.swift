@@ -316,6 +316,23 @@ import Foundation
                   "without Claude Code a saved key gets no Claude profile (QA U10)")
         }
 
+        // ── Server downgrade journey: a refused install waits for the keys, then runs again once.
+        do {
+            let d = freshDefaults()
+            let store = KeyLanesStore(defaults: d)
+            store.noteInstallRefusal("Downgrade refused: Reliable video uploads still hold 1 draft(s).", command: "rollback", arguments: [])
+            check(store.blockedInstall == nil && store.savedKeys == 0, "another refusal is not a key refusal")
+            store.noteInstallRefusal("Remove your saved keys first. COS 6.79.1 cannot see them.", command: "rollback", arguments: [])
+            check(store.blockedInstall == ["rollback"] && store.savedKeys == 1, "a refused rollback waits for the saved keys and shows the row")
+            check(store.takeBlockedInstall() == nil, "the install does not run again while keys are saved")
+            let helper = Helper()
+            helper.answers["remove-saved-keys"] = details(#"{"transport":"answered","httpStatus":200,"removed":["provider-keys.json"],"via":"disk"}"#)
+            await store.removeSavedKeys(run: helper.run)
+            check(store.takeBlockedInstall() == ["rollback"] && store.takeBlockedInstall() == nil, "after removal the refused install runs again, once")
+            store.noteInstallRefusal("Remove your saved keys first. COS 6.79.1 cannot see them.", command: "install", arguments: ["--version", "6.79.1"])
+            check(store.blockedInstall == ["install", "--version", "6.79.1"], "an install keeps its version")
+        }
+
         print("key lanes checks: \(passed) passed")
     }
 }

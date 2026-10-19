@@ -99,6 +99,14 @@ import Foundation
               && C.diskRemovalBlocker(maintenance: ["lifecycle": ["activeByKind": ["recording_session": 1]]]) != nil,
               "a job, a transcription or a recording blocks the disk path")
         check(C.diskRemovalBlocker(maintenance: ["activeJobs": 0, "lifecycle": ["activeByKind": [String: Any]()]]) == nil, "an idle server allows it")
+        // ── Server downgrade journey.
+        check(C.belowKeyLanes("6.79.1") && C.belowKeyLanes("5.99.0") && C.belowKeyLanes("garbage"), "6.79.1 and unreadable versions are below key lanes")
+        check(!C.belowKeyLanes("6.80.0") && !C.belowKeyLanes("6.80.0-next.4") && !C.belowKeyLanes("6.81.0") && !C.belowKeyLanes("7.0.0"), "6.80.0 and later are not")
+        check(C.downgradeRefusal(targetVersion: "6.79.1", savedKeysPresent: true)?.hasPrefix("Remove your saved keys first.") == true,
+              "installing 6.79.1 with keys saved is refused")
+        check(C.downgradeRefusal(targetVersion: "6.79.1", savedKeysPresent: false) == nil && C.downgradeRefusal(targetVersion: "6.80.1", savedKeysPresent: true) == nil,
+              "no keys, or a server with key lanes, installs as before")
+        check(C.keyStoreFiles == ["key-secrets/provider-keys.json", "provider-keys.json"], "both key store places count as saved keys")
         print("key lanes helper core checks: \(passed) passed")
     }
 }

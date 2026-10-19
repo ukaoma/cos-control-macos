@@ -54,6 +54,9 @@ MUTANTS = [
     ("M17 Reset pause calls another verb", "models", CORE, 'await call(["reset-breaker", "--ref", keyRef], run: run)', 'await call(["status"], run: run)'),
     ("M18 Use for answers ignores the switch", "models", CORE, '"enabled": enabled, "timeoutTier": profile.timeoutTier]', '"enabled": true, "timeoutTier": profile.timeoutTier]'),
     ("M19 no lens hint after the first save", "models", CORE, "            if line == nil { justSaved = KeyLanes.modelLabel(model.id) }\n", ""),
+    ("M20 a refused install is not remembered", "models", CORE, "        guard message.hasPrefix(KeyLanes.downgradeBlockedLine) else { return }\n", "        return\n"),
+    ("M21 the install runs again while keys are saved", "models", CORE, "        guard savedKeys == 0, let install = blockedInstall else { return nil }\n",
+     "        guard let install = blockedInstall else { return nil }\n"),
     # The wiring and the copy (Tests/key-lanes-pins.py).
     ("P1 no Settings row", "pins", PANEL, "                KeyLanesSettingsRow(model: model)\n", ""),
     ("P2 the step leaves the Ready stage", "pins", SETUP, "            KeyLanesSetupStep(model: model)\n            PetIntroLine(model: model)\n            Button(\"Finish setup\")",
@@ -80,6 +83,11 @@ MUTANTS = [
     ("P13 the pasteboard keeps the key", "pins", VIEWS,
      "                    if board.string(forType: .string)?.trimmingCharacters(in: .whitespacesAndNewlines) == text { board.clearContents() }\n", ""),
     ("P14 the same-Mac line drifts from the server", "pins", CORE, "Your provider's spending limit is the real stop.", "Your cap is the real stop."),
+    ("P15 rollback ignores saved keys", "pins", HELPER, "        try requireKeyLanesDowngradeSafe(targetVersion: prior.version)\n", ""),
+    ("P16 a refused install never reaches the key row", "pins", MODEL,
+     "                KeyLanesStore.shared.noteInstallRefusal(error.localizedDescription, command: command, arguments: arguments)\n", ""),
+    ("P17 the install does not run again after removal", "pins", VIEWS,
+     "                    if let install = store.takeBlockedInstall() { model.perform(install[0], arguments: Array(install.dropFirst())) }\n", ""),
     # The helper's grammar and whitelist (Tests/KeyLanesHelperChecks.swift).
     ("C1 the helper takes a key in argv", "core", HCORE, '        case "save-key": return rest.isEmpty ? p("POST", "/keys", nil, .key, 25) : nil\n',
      '        case "save-key": return p("POST", "/keys", nil, .key, 25)\n'),
@@ -96,6 +104,8 @@ MUTANTS = [
      '        return busy > 0 ? "COS is recording or answering right now. Remove saved keys when it finishes." : nil\n', "        return nil\n"),
     ("C8 the disk path deletes keyed sessions", "core", HCORE,
      '"provider-profiles.json", "key-ledger.jsonl"]\n', '"provider-profiles.json", "key-ledger.jsonl", "keyed-sessions.json"]\n'),
+    ("C9 a downgrade installs with keys saved", "core", HCORE, "        guard savedKeysPresent, belowKeyLanes(targetVersion) else { return nil }\n",
+     "        guard savedKeysPresent, !belowKeyLanes(targetVersion) else { return nil }\n"),
     # QA G2: the shipping case (one full app compile).
     ("O1 6.80.0 with lanes off draws no row", "onerow", CORE, "        enabled || serverSupports(serverVersion) || savedKeys > 0\n", "        enabled || savedKeys > 0\n"),
     # The compiled helper (Tests/key-lanes-helper-checks.py); a full helper compile each.

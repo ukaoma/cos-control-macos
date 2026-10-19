@@ -53,6 +53,10 @@ enum KeyLanes {
     static let savedKeysOffLine = "Key lanes are off. Your saved keys are still on this Mac."
     static let removeSavedMessage = "COS deletes the saved keys, key profiles and spend ledger from this Mac. Sessions that ran on a key stay refused for Continue and Fork."
     static let savedKeysRemovedLine = "Saved keys removed from this Mac."
+    /// The helper's refusal to install COS older than 6.80.0 while keys are saved starts with this (ProviderStatusCore
+    /// KeyLanesHelperCore.downgradeBlocked; Tests/key-lanes-pins.py keeps them equal).
+    static let downgradeBlockedLine = "Remove your saved keys first."
+    static let removeAndContinueLabel = "Remove saved keys and continue"
     static let skipLabel = "Skip"
     static let addLabel = "Add a key"
     static let pasteLabel = "Paste key"
@@ -301,6 +305,8 @@ final class KeyLanesStore: ObservableObject {
     @Published private(set) var setupSkipped: Bool
     /// QA U7: keys this Mac still holds, as Control last saw them (0 on a Mac that never used a key).
     @Published private(set) var savedKeys: Int
+    /// The install the helper refused because keys are saved (server downgrade journey): run again after removal.
+    @Published private(set) var blockedInstall: [String]?
     /// QA U8: the profile label of the key just saved, for the "pick it on the glasses" line.
     @Published private(set) var justSaved: String?
     /// Sessions that ran on a key, from every status this Mac has read. Kept after Remove all keys and after lanes turn
@@ -440,7 +446,7 @@ final class KeyLanesStore: ObservableObject {
         let details = await call(exportLedger ? ["remove-all", "--export-ledger"] : ["remove-all"], run: run)
         line = KeyLanes.problem(details)
         if line == nil, let path = details?["ledgerExportedTo"]?.string { line = "Spend ledger saved to \(path)." }
-        if KeyLanes.problem(details) == nil { setSavedKeys(0); justSaved = nil }
+        if KeyLanes.problem(details) == nil { setSavedKeys(0); justSaved = nil; blockedInstall = nil }
         await refresh(run: run)
     }
 
@@ -450,6 +456,21 @@ final class KeyLanesStore: ObservableObject {
         let details = await call(["remove-saved-keys"], run: run)
         line = KeyLanes.problem(details)
         if line == nil { setSavedKeys(0); line = KeyLanes.savedKeysRemovedLine }
+    }
+
+    /// ControllerModel.perform's failure path: an install or rollback refused for saved keys is remembered, and the
+    /// Settings row offers Remove saved keys and continue. Any other failure is ignored.
+    func noteInstallRefusal(_ message: String, command: String, arguments: [String]) {
+        guard message.hasPrefix(KeyLanes.downgradeBlockedLine) else { return }
+        blockedInstall = [command] + arguments
+        if savedKeys == 0 { setSavedKeys(1) }
+    }
+
+    /// After the keys are removed: the refused install, once, to run again.
+    func takeBlockedInstall() -> [String]? {
+        guard savedKeys == 0, let install = blockedInstall else { return nil }
+        blockedInstall = nil
+        return install
     }
 
     /// QA U6: a topped-up or fixed key leaves its 1 hour pause.

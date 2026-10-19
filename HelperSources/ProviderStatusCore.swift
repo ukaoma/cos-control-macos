@@ -914,6 +914,25 @@ enum KeyLanesHelperCore {
     /// The key store moved into a 0700 `key-secrets` dir at server 99c5ce7; both places are covered.
     static let savedKeyFiles = ["key-secrets/provider-keys.json", "provider-keys.json", "provider-profiles.json", "key-ledger.jsonl"]
     static let savedKeyDirectories = ["codex-homes"]
+    /// Where a saved key lives (either place means keys are saved).
+    static let keyStoreFiles = ["key-secrets/provider-keys.json", "provider-keys.json"]
+    /// The words Control matches to offer Remove saved keys inline (Sources/KeyLanes.swift downgradeBlockedLine).
+    static let downgradeBlocked = "Remove your saved keys first."
+
+    /// True for a version older than 6.80.0 (a prerelease of 6.80.0 counts as 6.80.0), or one that cannot be read.
+    static func belowKeyLanes(_ version: String) -> Bool {
+        let core = version.split(separator: "-", maxSplits: 1).first.map(String.init) ?? ""
+        let parts = core.split(separator: ".", omittingEmptySubsequences: false).map { Int($0) }
+        guard parts.count == 3, parts.allSatisfy({ $0 != nil }) else { return true }
+        let n = parts.map { $0! }
+        return (n[0], n[1], n[2]) < (6, 80, 0)
+    }
+
+    /// The refusal for installing `targetVersion` while keys are saved, or nil.
+    static func downgradeRefusal(targetVersion: String, savedKeysPresent: Bool) -> String? {
+        guard savedKeysPresent, belowKeyLanes(targetVersion) else { return nil }
+        return downgradeBlocked + " COS \(targetVersion) cannot see them and would answer sessions that used a key on your plan. Remove them in Settings, Answer with your own key, then install again."
+    }
     /// The P1 grammars (server/lib/key-relay-contract.ts KEY_REF_RE, shared/key-preference.ts KEY_PROFILE_ID_RE).
     static let refPattern = "\\Akey_[0-9a-f]{12}\\z"
     static let profilePattern = "\\A[a-z0-9][a-z0-9-]{0,31}\\z"

@@ -1838,6 +1838,7 @@ final class ControllerModel: ObservableObject {
                 } else {
                     self.error = error.localizedDescription
                 }
+                KeyLanesStore.shared.noteInstallRefusal(error.localizedDescription, command: command, arguments: arguments)
                 await refresh(quiet: true)
             }
         }

@@ -121,11 +121,30 @@ add = views[views.index('    private var addKey: some View {'):]
 check('Text(KeyLanes.sameMacLine)' in add and 'KeyLanes.noProviderLimitLine' in add, 'the same-Mac line and the provider-limit line sit by the cap')
 check('KeyLanes.glassesHint(label)' in views and 'Use this key for the glasses' not in views, 'after a save Control says where to pick the key on the lens, and sets nothing (QA U8)')
 check('KeyLanes.offeredKinds(store.catalog' in views and 'openai-compatible' not in core.split('static let kindOrder')[1].split('\n')[0], 'setup offers only kinds a model can run on (QA U5)')
-for action, button in (('store.removeAll(', 'Button(KeyLanes.removeAllLabel) { removingAll = true }'), ('store.removeKey(', 'Button(KeyLanes.removeLabel) { removing = key.ref }'),
-                       ('store.removeSavedKeys(', 'Button(KeyLanes.removeSavedLabel) { removingSaved = true }')):
+for action, button in (('store.removeAll(', 'Button(KeyLanes.removeAllLabel) { removingAll = true }'), ('store.removeKey(', 'Button(KeyLanes.removeLabel) { removing = key.ref }')):
     runs = [l for l in views.splitlines() if action in l]
     check(len(runs) == 1 and '.destructive(' in runs[0], f'{action} runs only from its confirmation')
     check(button in views, f'the button only opens the confirmation ({button.split("{")[0].strip()})')
+confirm_saved = views[views.index('.destructive(KeyLanes.removeSavedLabel) {'):]
+confirm_saved = confirm_saved[:confirm_saved.index('.cancel()')]
+check(views.count('store.removeSavedKeys(') == 1 and 'await store.removeSavedKeys(run: keyLanesRun(model))' in confirm_saved,
+      'store.removeSavedKeys( runs only from its confirmation')
+check('Button(KeyLanes.removeSavedLabel) { removingSaved = true }' in views and 'Button(KeyLanes.removeAndContinueLabel) { removingSaved = true }' in views,
+      'Remove saved keys (and continue) only opens the confirmation')
+
+# ── Server downgrade journey: no install below 6.80.0 while keys are saved.
+check(helper.count('try requireKeyLanesDowngradeSafe(targetVersion: release.version)') == 1
+      and helper.index('try requireKeyLanesDowngradeSafe(targetVersion: release.version)') < helper.index('let generation = try stageGeneration(version: release.version'),
+      'install and update refuse a server below 6.80.0 while keys are saved, before anything is staged')
+check(helper.count('try requireKeyLanesDowngradeSafe(targetVersion: prior.version)') == 1
+      and helper.index('try requireKeyLanesDowngradeSafe(targetVersion: prior.version)') < helper.index('let verified = try verifyGeneration(\n            at: prior.path'),
+      'rollback refuses a server below 6.80.0 while keys are saved, before anything changes')
+check('static let downgradeBlocked = "Remove your saved keys first."' in status and 'static let downgradeBlockedLine = "Remove your saved keys first."' in core,
+      'Control matches the helper refusal by the same words')
+check('KeyLanesStore.shared.noteInstallRefusal(error.localizedDescription, command: command, arguments: arguments)' in model[model.index('    func perform(_ command: String, arguments: [String] = []) {'):model.index('    func installCurrentRelease() {')]
+      .split('} catch {')[1], 'a refused install is handed to the key row')
+check('if let install = store.takeBlockedInstall() { model.perform(install[0], arguments: Array(install.dropFirst())) }' in confirm_saved,
+      'after removal the refused install runs again')
 
 # ── Build lists.
 run_sh, release = read('Tests/run.sh'), read('scripts/build-release.sh')

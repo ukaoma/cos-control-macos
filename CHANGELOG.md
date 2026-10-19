@@ -17,6 +17,10 @@
 - Downgrade: "Remove your keys first. Older COS cannot see them." While keys Control saw saved remain and the server
   cannot manage them (lanes off, or older than 6.80.0), "Remove saved keys" asks the server first and, only after its
   404 and while nothing is recording or answering, deletes the key files itself (keyed-sessions.json stays).
+- No install, update or rollback to a COS server older than 6.80.0 runs while a key store is on this Mac (such a
+  server cannot see the keys and would answer key sessions on the plan). The helper refuses before anything is staged
+  with "Remove your saved keys first."; the Settings row offers Remove saved keys and continue, and the refused install
+  runs again after the keys are gone.
 - Sessions that ran on a key are refused on Continue and Fork (Work and Activity chat) and are not opened in their app,
   with the server's line "This session ran on your key. Continue it from COS."
 - New installs (first run on a Mac that never finished setup) see an optional "Add your own key" step at the end of

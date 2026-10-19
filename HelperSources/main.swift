@@ -1449,6 +1449,7 @@ final class COSControlHelper {
         progress("Resolving npm release…")
         let release = try resolveVersion(requestedVersion)
         try requireVideoUploadDowngradeSafe(targetVersion: release.version)
+        try requireKeyLanesDowngradeSafe(targetVersion: release.version)
         let generation = try stageGeneration(version: release.version, integrity: release.integrity)
         // Populate the stable cert store AND the API token now, before the legacy
         // LaunchAgent is unloaded/overwritten, so the exact HTTPS certificate and
@@ -4136,6 +4137,7 @@ final class COSControlHelper {
         }
         guard let prior = retained.first else { throw HelperError.message("No retained server generation is available.") }
         try requireVideoUploadDowngradeSafe(targetVersion: prior.version)
+        try requireKeyLanesDowngradeSafe(targetVersion: prior.version)
         let verified = try verifyGeneration(
             at: prior.path,
             expectedVersion: prior.version,
@@ -6946,6 +6948,16 @@ final class COSControlHelper {
             let receipts = videoUploads["unacknowledgedPublished"] as? Int ?? 0
             throw HelperError.message("Downgrade refused: Reliable video uploads still hold \(receiving) draft(s), \(finalizing) finalizing upload(s), and \(receipts) unacknowledged receipt(s). Finish or cancel them before installing a server older than 6.27.3.")
         }
+    }
+
+    /// Key lanes (K1 P10): a server older than 6.80.0 cannot see saved keys and would answer key-bound sessions on the
+    /// plan, so no install or rollback below 6.80.0 runs while a key store is on disk. Control shows the line with
+    /// Remove saved keys inline and runs the install again after it.
+    private func requireKeyLanesDowngradeSafe(targetVersion: String) throws {
+        guard KeyLanesHelperCore.belowKeyLanes(targetVersion) else { return }
+        let dir = glassesDataDir()
+        let present = KeyLanesHelperCore.keyStoreFiles.contains { (try? fm.attributesOfItem(atPath: dir.appendingPathComponent($0).path)) != nil }
+        if let refusal = KeyLanesHelperCore.downgradeRefusal(targetVersion: targetVersion, savedKeysPresent: present) { throw HelperError.message(refusal) }
     }
 
     /// Idle Metal HQ is intentionally a two-key policy. Enabling clears the
