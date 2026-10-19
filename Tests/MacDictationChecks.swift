@@ -1098,6 +1098,26 @@ final class FakeDictationBoard: DictationPasteboardAccess {
                    && P.choose(heard: heard, ok: false, text: "So it.", polished: true, reason: nil) == .failed("refused")
                    && P.choose(heard: heard, ok: false, text: "So it.", polished: true, reason: "Bad Reason; rm -rf") == .failed("refused"),
                    "polish: a refusal never applies its text, and only a short identifier reaches the log")
+            // 0.5.328 (server 6.79.1 polishSkipped): skipped, fillers only, and only the five codes.
+            expect(P.skipReasons == ["daily_cap", "breaker_open", "too_long", "disabled", "failed"], "polish: five skip codes")
+            for code in ["daily_cap", "breaker_open", "too_long", "disabled", "failed"] {
+                let skipped = P.choose(heard: heard, ok: true, text: heard, polished: false, reason: nil, skipped: code)
+                expect(skipped == .skipped(code) && skipped.logName == "skipped:" + code && skipped.text(heard: heard) == heard,
+                       "polish: polished false with \(code) is skipped:\(code) and pastes what was heard")
+            }
+            let fillers = P.choose(heard: heard, ok: true, text: "So the the plan is ready", polished: true, reason: nil, skipped: "daily_cap")
+            expect(fillers == .fillersOnly("daily_cap", text: "So the the plan is ready") && fillers.logName == "fillers_only:daily_cap"
+                   && fillers.text(heard: heard) == "So the the plan is ready",
+                   "polish: polished true with a skip code is fillers_only:<code>, and the filler-cleaned text is pasted")
+            expect(P.choose(heard: heard, ok: true, text: heard, polished: true, reason: nil, skipped: "disabled") == .skipped("disabled"),
+                   "polish: a filler pass that changed nothing is still skipped:<code>")
+            expect(P.choose(heard: heard, ok: true, text: String(repeating: "b", count: 81), polished: true, reason: nil, skipped: "daily_cap") == .failed("grew")
+                   && P.choose(heard: heard, ok: true, text: " ", polished: true, reason: nil, skipped: "daily_cap") == .failed("empty"),
+                   "polish: a filler-only answer is held to the same empty and growth guards")
+            expect(P.choose(heard: heard, ok: true, text: heard, polished: false, reason: nil, skipped: "quota; rm -rf") == .failed("not_polished")
+                   && P.choose(heard: heard, ok: true, text: "So the plan is ready.", polished: true, reason: nil, skipped: "Daily_Cap") == .applied("So the plan is ready.")
+                   && P.choose(heard: heard, ok: false, text: nil, polished: nil, reason: "busy", skipped: "daily_cap") == .failed("busy"),
+                   "polish: an unknown skip word is ignored, and a refusal stays a refusal")
             for outcome in [P.Outcome.unchanged, .timeout, .failed("unreachable")] {
                 expect(outcome.text(heard: heard) == heard, "polish: every outcome but applied pastes what was heard (\(outcome.logName))")
             }

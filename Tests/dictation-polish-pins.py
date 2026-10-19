@@ -65,7 +65,10 @@ pin(dictation.count('"What was heard: " + heard') == 2 and "store.copy(heard)" i
 pin(dictation.count('record.polishLabel.map { " · " + $0 }') == 1, "history label", "the Activity history row says Polished and the model")
 
 # 4. The bridge: the helper verb, stdin only, the budget as the process timeout.
-pin(app.count('runHelper(["dictation-polish"], timeout: budget, stdinData: request)') == 1, "bridge", "Control runs dictation-polish with the budget")
+pin(app.count('runHelper(["dictation-polish"], timeout: budget, stdinData: request, answers: true)') == 1, "bridge",
+    "Control runs dictation-polish with the budget, and reads its refusals whole (0.5.328)")
+pin('skipped: response.details["polishSkipped"]?.string)' in dictation, "skip reason",
+    "the server's polishSkipped reaches DictationPolish.choose (0.5.328, server 6.79.1)")
 pin(helper.count('case "dictation-polish": try emitDictationPolish()') == 1, "helper verb", "the helper dispatches dictation-polish")
 emit = between(helper, "private func emitDictationPolish() throws {", "private func dictate(")
 pin("FileHandle.standardInput" in emit and "args" not in emit, "stdin only", "the text arrives on stdin, never argv")

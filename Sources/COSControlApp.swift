@@ -35,7 +35,9 @@ struct COSControlApp: App {
         // 0.5.325 AI polish: the heard text on stdin, never argv; the helper process gets the whole budget and no more.
         model.dictation.polishBridge = { [weak model] request, budget in
             guard let model else { throw HelperClientError.commandFailed("COS Control is closing.") }
-            return try await model.runHelper(["dictation-polish"], timeout: budget, stdinData: request)
+            // 0.5.328: the helper's refusal (timeout, unreachable, too_long, busy...) comes back with its reason, so the
+            // timing line names it instead of failed:helper. The heard text is pasted either way.
+            return try await model.runHelper(["dictation-polish"], timeout: budget, stdinData: request, answers: true)
         }
         model.dictation.petFrame = { [weak sessionPet] in sessionPet?.visibleFrame }
         // 0.5.317: a failure card's one action, and the server version a dictation succeeded on (the Voice row's proof).

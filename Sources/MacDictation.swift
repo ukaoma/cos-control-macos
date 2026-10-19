@@ -2179,7 +2179,8 @@ enum DictationSpareBuild: Sendable {
         do {
             let response = try await polishBridge(request, budget)
             outcome = DictationPolish.choose(heard: heard, ok: response.ok, text: response.details["text"]?.string,
-                                             polished: response.details["polished"]?.bool, reason: response.details["reason"]?.string)
+                                             polished: response.details["polished"]?.bool, reason: response.details["reason"]?.string,
+                                             skipped: response.details["polishSkipped"]?.string)
         } catch HelperClientError.timedOut {
             outcome = .timeout
         } catch {

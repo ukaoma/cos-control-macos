@@ -1868,32 +1868,49 @@ enum DictationPolish {
         case unchanged
         case timeout
         case failed(String)
-        /// The log's outcome word: applied, unchanged, timeout, or failed:<reason>. Never text.
+        /// 0.5.328 (server 6.79.1): the model did not polish, and the server said why (one of `skipReasons`).
+        case skipped(String)
+        /// The server's filler pass changed the text but the model did not run (`polished` true with a skip reason): the
+        /// text is pasted, and the history does not call it Claude's polish.
+        case fillersOnly(String, text: String)
+        /// The log's outcome word: applied, unchanged, timeout, failed:<reason>, skipped:<code> or fillers_only:<code>.
+        /// Never text.
         var logName: String {
             switch self {
             case .applied: "applied"
             case .unchanged: "unchanged"
             case .timeout: "timeout"
             case .failed(let reason): "failed:" + reason
+            case .skipped(let code): "skipped:" + code
+            case .fillersOnly(let code, _): "fillers_only:" + code
             }
         }
-        /// What COS pastes: the polished text when it was applied, otherwise what it heard.
+        /// What COS pastes: the polished (or filler-cleaned) text when there is one, otherwise what it heard.
         func text(heard: String) -> String {
             if case .applied(let polished) = self { return polished }
+            if case .fillersOnly(_, let cleaned) = self { return cleaned }
             return heard
         }
     }
+    /// Why the server's model did not polish (server 6.79.1 `polishSkipped`). Control checks the code again: the helper is
+    /// one process away, and only these words may reach the timing line.
+    static let skipReasons: Set<String> = ["daily_cap", "breaker_open", "too_long", "disabled", "failed"]
     /// The helper's answer, read. `ok` false (no server, an HTTP error, a bad answer, the helper's own timeout): the
     /// heard text. `polished` must be true: the server answers false with only the dictionary pass when Claude failed,
     /// which is not what the history would claim. An empty or runaway answer is never pasted.
-    static func choose(heard: String, ok: Bool, text: String?, polished: Bool?, reason: String?) -> Outcome {
+    /// 0.5.328: `skipped`, the server's polishSkipped, read only when it is one of `skipReasons`. Polished false with one:
+    /// skipped:<code>. Polished true with one: only the filler pass changed the text, fillers_only:<code> (pasted, under
+    /// the same empty and growth guards). Without one, as before.
+    static func choose(heard: String, ok: Bool, text: String?, polished: Bool?, reason: String?, skipped: String? = nil) -> Outcome {
         guard ok else {
             let why = reason.flatMap { $0.range(of: "^[a-z0-9_]{1,40}$", options: .regularExpression) != nil ? $0 : nil } ?? "refused"
             return why == "timeout" ? .timeout : .failed(why)
         }
-        guard polished == true else { return .failed("not_polished") }
+        let skip = skipped.flatMap { skipReasons.contains($0) ? $0 : nil }
+        guard polished == true else { return skip.map { .skipped($0) } ?? .failed("not_polished") }
         guard let text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return .failed("empty") }
         guard Double(text.count) <= Double(heard.count) * maximumGrowth + Double(growthAllowance) else { return .failed("grew") }
+        if let skip { return text == heard ? .skipped(skip) : .fillersOnly(skip, text: text) }
         return text == heard ? .unchanged : .applied(text)
     }
     /// Settings' one line under AI polish.

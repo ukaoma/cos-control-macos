@@ -59,6 +59,19 @@ Miles, 2026-10-19 19:02:06 UTC: a 4.1 s dictation failed with failReason helper_
   non-zero exit (always thrown); 3 mutants of the guard each killed by a named check. Two pin mutants (the bridge, the
   forwarding) are killed by Tests/dictation-smooth-pins.py.
 
+### AI polish says why it did not polish
+
+- The polish helper call asks for refusals too (`answers: true`): a timeout, an unreachable server, too_long or busy is
+  now recorded as failed:<reason> or timeout instead of failed:helper. What was heard is still pasted.
+- Server 6.79.1 says why the model did not polish (`polishSkipped`: daily_cap, breaker_open, too_long, disabled,
+  failed). The helper passes only those five codes on, and Control checks them again. polishOutcome is now `applied`,
+  `skipped:<code>` (the model did not run; what was heard is pasted), `fillers_only:<code>` (polished true with a skip
+  code: only the server's filler pass changed the text; that text is pasted under the same empty and growth guards, and
+  the history does not call it Claude's polish), or `failed:<reason>` / `timeout`. Without a code, as before.
+- Tests: helper core (the five codes pass, unknown words and wrong types are dropped, polished true keeps both), Control
+  core (skipped, fillers only, guards, unknown codes ignored), pins on both bridges and the skip read; 5 core and 4 pin
+  or helper-core mutants killed, plus 2 earlier polish mutants retargeted to the new lines.
+
 ## What's New sentence
 
 Your pet keeps moving while dictation starts: COS now sets up the microphone, the start sound and Mute other apps in

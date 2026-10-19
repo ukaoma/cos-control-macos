@@ -709,6 +709,10 @@ enum DictationPolishBridge {
     static let maximumCharacters = 8_000
     static let answerLimit = 16_000
     static let models: Set<String> = ["haiku", "sonnet"]
+    /// 0.5.328 (server 6.79.1): why the model did not polish, on a 200 from finalize. Only these five codes cross into
+    /// Control; anything else the server says there is dropped. `polished: true` with one of them means only the
+    /// server's filler pass changed the text.
+    static let skipReasons: Set<String> = ["daily_cap", "breaker_open", "too_long", "disabled", "failed"]
 
     /// The request's deadline: Control's whole wait (DictationPolish.budget: 5 s Haiku, 9 s Sonnet) less half a second
     /// for the helper to start and answer, so a slow model ends as this helper's timeout, not a killed process.
@@ -763,8 +767,9 @@ enum DictationPolishBridge {
             }
             // A JSON boolean only: 1 or "true" is not the server saying Claude polished it.
             let polished = flag.boolValue
-            return DictationBridge.Answer(ok: true, message: polished ? "Polished" : "Not polished",
-                                          details: base.merging(["text": text, "polished": polished]) { a, _ in a })
+            var details = base.merging(["text": text, "polished": polished]) { a, _ in a }
+            if let skipped = body["polishSkipped"] as? String, skipReasons.contains(skipped) { details["polishSkipped"] = skipped }
+            return DictationBridge.Answer(ok: true, message: polished ? "Polished" : "Not polished", details: details)
         case 404: return refused("needs_server_update", "This COS server has no dictation polish. COS pastes what it heard.", status: 404)
         case 413: return refused("too_long", "Too long for AI polish. COS pastes what it heard.", status: 413)
         case 401, 403: return refused("unauthorized", "The COS server refused the token. COS pastes what it heard.", status: status)
