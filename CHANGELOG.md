@@ -72,8 +72,14 @@ native QA on 0.5.322) replaces V12.6 as the bundled Jedi Miles Windu pack, as 0.
   history holding the shipped V12.6 map (sha256 37b7f0ec...). The new Tests/windu-v14-pack-pins.py pins each of the 31
   V14 files by sha256, width, height and byte count, the handoff frames, exactly three casts in order, and that the
   map names only flat files present in Resources/DefaultPet that the release copies, with no unnamed V14 layer
-  shipped; 15 in-memory mutants of the real tree must each fail it. Tests/mutate-pet-refresh.py gains six mutants for
-  the cast checks and the exact-map gate, and a kill now counts only when a named ModelsContract check catches it.
+  shipped; 15 in-memory mutants of the real tree must each fail it. Tests/mutate-pet-refresh.py: 13 mutants (7 kept
+  from 0.5.316, 6 new: casts ignored by current, a cast layer judged by name not bytes, a tuned V12.6 promoted, strips
+  landed without casts, a wrong-size layer accepted, a missing layer skipped), all 13 killed by a named ModelsContract
+  check on a green baseline. A kill now counts only when a named check catches it, and a mutant that does not compile
+  is INVALID, not a kill. The two kept "current" mutants are killed by new checks: an edited V14 strip, or V14 files
+  with another frame count, are neither current nor stock and stay untouched. The overwrite guards (click-only Use,
+  the withdraw on close, Return skipping a click-only action, launch never clearing or copying, one caller) were each
+  mutation tested: 6 of 6 caught.
 
 ## 0.5.324 (build 377), Jedi combat refinement
 
