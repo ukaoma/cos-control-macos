@@ -1,5 +1,5 @@
 {
-  "README": "Read by Tests/SpriteRenderContract.swift and Tests/ModelsContract.swift (0.5.316). edgeFrames: 1-based frames of the approved Miles Windu V12.6 pack that may come within 6 px of a cell edge because a droid, wreck, jump or saber arc enters or leaves off canvas (independent check motion-v12/reviews/v12-6-holes-and-cuts-check.json). smear: the one documented translucency that is not a uniform fade. preExisting: strips that exceeded a gate before 0.5.316, at their measured ceiling, so they cannot get worse; they are not approvals. 0.5.324: edgeFades document only the 22 px smoothstep entrance mask during each rotation handoff. No Jedi interior-opacity ceiling exemptions remain.",
+  "README": "Read by Tests/SpriteRenderContract.swift and Tests/ModelsContract.swift (0.5.316). edgeFrames: 1-based frames of the approved Miles Windu pack (V12.6, and from 0.5.325 V14 timing-v2, whose V13 strips keep the same list plus trio 25, the strike's spark burst at 5 px) that may come within 6 px of a cell edge because a droid, wreck, jump or saber arc enters or leaves off canvas (independent check motion-v12/reviews/v12-6-holes-and-cuts-check.json). smear: the one documented translucency that is not a uniform fade. preExisting: strips that exceeded a gate before 0.5.316, at their measured ceiling, so they cannot get worse; they are not approvals. 0.5.324: edgeFades document only the 22 px smoothstep entrance mask during each rotation handoff. No Jedi interior-opacity ceiling exemptions remain.",
   "edgeFrames": {
     "DefaultPet/working": [
       15,
@@ -30,6 +30,7 @@
       17,
       23,
       24,
+      25,
       27,
       28,
       29,

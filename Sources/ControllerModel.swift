@@ -357,7 +357,7 @@ final class ControllerModel: ObservableObject {
     private static let petDefaultSeededKey = "cos.sessionPetDefaultSeeded"
     private static let petDismissedKey = "cos.sessionPetDismissed"
     private static let petDefaultArtGenerationKey = "cos.sessionPetDefaultArtGeneration"
-    private static let petDefaultArtGeneration = 21
+    private static let petDefaultArtGeneration = 22
 
     private static func loadPetCharacterPercent(defaults: UserDefaults = .standard) -> Int {
         PetCharacterScale.loadPersistedPercent(
@@ -4878,6 +4878,9 @@ final class ControllerModel: ObservableObject {
             // Generation 20 (0.5.316) promotes any recognized stock Miles pack
             // to the whole V12.6 pack (all ten poses); an install that already
             // IS V12.6 reports .current and is left untouched.
+            // Generation 22 (0.5.325) promotes the EXACT stock V12.6 map (or any earlier recognized stock Miles pack)
+            // to V14 timing-v2 with its three shuffled casts per combat state, every rotation layer copied and checked
+            // before the map changes. V14 already installed, under flat or rotation/ subfolder names, is .current.
             let bundledRefresh = PetSpriteStore.refreshRecognizedBundledCharacter(
                 into: directory
             )

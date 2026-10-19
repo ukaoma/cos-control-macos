@@ -34,10 +34,18 @@ struct COSConfirmAction: Identifiable {
     let id = UUID()
     let label: String
     let kind: Kind
+    /// 0.5.325: false for an action that replaces something the person made (Use a shipped character over their own
+    /// pack). Return never runs it; only a click does, so a confirm left open cannot be accepted by a stray key.
+    var takesReturn = true
     let run: @MainActor () -> Void
 
     static func normal(_ label: String, _ run: @escaping @MainActor () -> Void) -> COSConfirmAction {
         COSConfirmAction(label: label, kind: .normal, run: run)
+    }
+
+    /// A normal action only a click runs (no Return shortcut).
+    static func clickOnly(_ label: String, _ run: @escaping @MainActor () -> Void) -> COSConfirmAction {
+        COSConfirmAction(label: label, kind: .normal, takesReturn: false, run: run)
     }
 
     static func destructive(_ label: String, _ run: @escaping @MainActor () -> Void) -> COSConfirmAction {
@@ -56,8 +64,8 @@ private struct COSConfirmModifier: ViewModifier {
     let actions: [COSConfirmAction]
 
     private var defaultActionID: UUID? {
-        actions.first(where: { $0.kind == .normal })?.id
-            ?? actions.first(where: { $0.kind == .destructive })?.id
+        actions.first(where: { $0.kind == .normal && $0.takesReturn })?.id
+            ?? actions.first(where: { $0.kind == .destructive && $0.takesReturn })?.id
     }
 
     func body(content: Content) -> some View {

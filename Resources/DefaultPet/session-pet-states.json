@@ -11,9 +11,33 @@
       "interval": 0.16
     },
     "duel": {
-      "file": "session-pet-duel-tail-tighter-v12-5.png",
+      "file": "session-pet-duel-v13.png",
       "frames": 37,
-      "interval": 0.08
+      "interval": 0.08,
+      "rotation": {
+        "handoffFrame": 28,
+        "variants": [
+          {
+            "bodyFile": "session-pet-windu-v14-timing-v2-duel-a-body.png",
+            "entryFile": "session-pet-windu-v14-timing-v2-duel-a-entry.png",
+            "file": "session-pet-windu-v14-timing-v2-duel-a-full.png",
+            "id": "duel-a"
+          },
+          {
+            "bodyFile": "session-pet-windu-v14-timing-v2-duel-b-body.png",
+            "entryFile": "session-pet-windu-v14-timing-v2-duel-b-entry.png",
+            "file": "session-pet-windu-v14-timing-v2-duel-b-full.png",
+            "id": "duel-b"
+          },
+          {
+            "bodyFile": "session-pet-windu-v14-timing-v2-duel-c-body.png",
+            "entryFile": "session-pet-windu-v14-timing-v2-duel-c-entry.png",
+            "file": "session-pet-windu-v14-timing-v2-duel-c-full.png",
+            "id": "duel-c"
+          }
+        ],
+        "version": 1
+      }
     },
     "error": {
       "file": "session-pet-error-reassembled-v12-v5.png",
@@ -31,14 +55,62 @@
       "interval": 0.14
     },
     "swarm": {
-      "file": "session-pet-swarm-alpha-v11-r2.png",
+      "file": "session-pet-swarm-v13.png",
       "frames": 64,
-      "interval": 0.08
+      "interval": 0.08,
+      "rotation": {
+        "handoffFrame": 55,
+        "variants": [
+          {
+            "bodyFile": "session-pet-windu-v14-timing-v2-swarm-a-body.png",
+            "entryFile": "session-pet-windu-v14-timing-v2-swarm-a-entry.png",
+            "file": "session-pet-windu-v14-timing-v2-swarm-a-full.png",
+            "id": "swarm-a"
+          },
+          {
+            "bodyFile": "session-pet-windu-v14-timing-v2-swarm-b-body.png",
+            "entryFile": "session-pet-windu-v14-timing-v2-swarm-b-entry.png",
+            "file": "session-pet-windu-v14-timing-v2-swarm-b-full.png",
+            "id": "swarm-b"
+          },
+          {
+            "bodyFile": "session-pet-windu-v14-timing-v2-swarm-c-body.png",
+            "entryFile": "session-pet-windu-v14-timing-v2-swarm-c-entry.png",
+            "file": "session-pet-windu-v14-timing-v2-swarm-c-full.png",
+            "id": "swarm-c"
+          }
+        ],
+        "version": 1
+      }
     },
     "trio": {
-      "file": "session-pet-trio-deflect-eased-v12-6.png",
-      "frames": 42,
-      "interval": 0.08
+      "file": "session-pet-trio-v13.png",
+      "frames": 43,
+      "interval": 0.08,
+      "rotation": {
+        "handoffFrame": 31,
+        "variants": [
+          {
+            "bodyFile": "session-pet-windu-v14-timing-v2-trio-a-body.png",
+            "entryFile": "session-pet-windu-v14-timing-v2-trio-a-entry.png",
+            "file": "session-pet-windu-v14-timing-v2-trio-a-full.png",
+            "id": "trio-a"
+          },
+          {
+            "bodyFile": "session-pet-windu-v14-timing-v2-trio-b-body.png",
+            "entryFile": "session-pet-windu-v14-timing-v2-trio-b-entry.png",
+            "file": "session-pet-windu-v14-timing-v2-trio-b-full.png",
+            "id": "trio-b"
+          },
+          {
+            "bodyFile": "session-pet-windu-v14-timing-v2-trio-c-body.png",
+            "entryFile": "session-pet-windu-v14-timing-v2-trio-c-entry.png",
+            "file": "session-pet-windu-v14-timing-v2-trio-c-full.png",
+            "id": "trio-c"
+          }
+        ],
+        "version": 1
+      }
     },
     "waiting": {
       "file": "session-pet-waiting-release-v1.png",
@@ -46,7 +118,7 @@
       "interval": 0.18
     },
     "working": {
-      "file": "session-pet-working-run-slowed-v12-1.png",
+      "file": "session-pet-working-v13.png",
       "frames": 46,
       "interval": 0.08,
       "renderScale": 0.75

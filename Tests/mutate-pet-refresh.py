@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """0.5.316 mutation gate for the Miles stock-pack refresh (PetSpriteStore.refreshRecognizedBundledDefault), executed by
-Tests/ModelsContract.swift: stock promoted to the whole V12.6 pack, a customised pack untouched, an install that already
-is V12.6 a no-op.
+Tests/ModelsContract.swift: stock promoted to the whole bundled pack, a customised pack untouched, an install that already
+is the bundled pack a no-op. 0.5.325: the bundled pack is V14 timing-v2 with its casts; the exact stock V12.6 map is
+promoted with every cast layer, any other V12.6 is the person's, and V14 under flat or subfolder names is current.
 
 SERIAL by design, each compile through Tests/compile-guard.sh (Models.swift + ModelsContract.swift, never parallel; see
 the 2026-10-07 kernel panics). Works on a scratch copy of Sources, Tests and Resources (ModelsContract finds the art
@@ -19,8 +20,8 @@ MUTANTS = [
     ("an install that already is V12.6 is rewritten (no .current)",
      "           }) {\n            return .current\n", "           }) {\n            return .notApplicable\n"),
     ("current ignores the bytes (an edited V12.6 strip counts as current)",
-     "               return installedData == bundledData\n           }) {\n            return .current",
-     "               return true\n           }) {\n            return .current"),
+     "               return installedData == bundledData && sameRotation(pose)\n           }) {\n            return .current",
+     "               return sameRotation(pose)\n           }) {\n            return .current"),
     ("current ignores the declared frame counts",
      "guard let mine = installed[pose], mine.file == row.file, mine.frames == row.frames,",
      "guard let mine = installed[pose], mine.file == row.file,"),
@@ -33,6 +34,22 @@ MUTANTS = [
      "            return true\n        }) else { return .notApplicable }"),
     ("a replaced pose keeps the old interval",
      "                    intervalOverrides[story.pose] = interval\n", ""),
+    # 0.5.325 (generation 22, V14 timing-v2 with three casts on duel, trio and swarm).
+    ("current ignores the casts (V13 without casts reads as V14)",
+     "               return installedData == bundledData && sameRotation(pose)\n",
+     "               return installedData == bundledData\n"),
+    ("a cast layer counts as current by name, not bytes",
+     "                    return mineData == wantedData\n", "                    return true\n"),
+    ("a tuned V12.6 is promoted (exact-map gate gone)",
+     "                guard installedCanonical != nil, installedCanonical == canonical(state) else { return .notApplicable }\n", ""),
+    ("the upgrade lands the strips without their casts",
+     "            rotationRows[story.pose] = rotationJSON\n", ""),
+    ("a cast layer the wrong size is accepted",
+     "                          layer.width == strip.width, layer.height == strip.height\n",
+     "                          layer.width > 0\n"),
+    ("a missing cast layer is skipped instead of refusing the upgrade",
+     "                        return .failed\n                    }\n                    layers[file] = data",
+     "                        continue\n                    }\n                    layers[file] = data"),
 ]
 
 
@@ -47,7 +64,11 @@ def compile_and_run(work: pathlib.Path) -> int:
     if build.returncode != 0:
         print(build.stderr[-2000:], file=sys.stderr)
         return 2
-    return subprocess.run([str(out)], capture_output=True, text=True, cwd=work).returncode
+    run = subprocess.run([str(out)], capture_output=True, text=True, cwd=work)
+    # 0.5.325: name the check that caught it (a precondition message from ModelsContract), so a kill is attributed.
+    found = [l for l in (run.stderr + run.stdout).splitlines() if "ModelsContract.swift" in l and "Precondition failed" in l]
+    compile_and_run.caught = found[-1].split("Precondition failed: ", 1)[1].strip() if found else ""
+    return run.returncode
 
 
 work = pathlib.Path(tempfile.mkdtemp(prefix="cos-pet-refresh-mutants-", dir="/private/tmp"))
@@ -66,13 +87,16 @@ try:
             sys.exit(f"mutant '{name}' targets {original.count(old)} sites; it must land exactly once")
         (work / MODELS).write_text(original.replace(old, new))
         code = compile_and_run(work)
-        verdict = "KILLED (did not compile)" if code == 2 else ("KILLED" if code != 0 else "SURVIVED")
-        print(f"{verdict:24} {name}", flush=True)
-        if code == 0:
+        # 0.5.325: a mutant that does not compile proves nothing about the checks (INVALID, fails the gate), and a crash
+        # outside a named check is not a kill either.
+        caught = getattr(compile_and_run, "caught", "") if code not in (0, 2) else ""
+        verdict = "INVALID (no compile)" if code == 2 else ("SURVIVED" if code == 0 else ("KILLED" if caught else "CRASHED"))
+        print(f"{verdict:24} {name}" + (f"  <- {caught}" if caught else ""), flush=True)
+        if verdict != "KILLED":
             survivors.append(name)
         (work / MODELS).write_text(original)
     if survivors:
-        sys.exit(f"{len(survivors)} survivor(s): {survivors}")
-    print(f"PASS pet refresh mutation gate: {len(MUTANTS)} mutants, all killed, green baseline")
+        sys.exit(f"{len(survivors)} mutant(s) not killed by a named check: {survivors}")
+    print(f"PASS pet refresh mutation gate: {len(MUTANTS)} mutants, each killed by a named ModelsContract check, green baseline")
 finally:
     shutil.rmtree(work, ignore_errors=True)

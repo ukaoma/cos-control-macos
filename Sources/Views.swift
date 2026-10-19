@@ -812,7 +812,10 @@ struct ControlPanel: View {
                 + "stitched strip and the state map — with this character pack. "
                 + "A pack you installed yourself would have to be installed again.",
             actions: [
-                .normal("Use") {
+                // 0.5.325 (Miles's V14 reverted to the shipped pack twice on 2026-10-18, the map copied out of the
+                // bundle): this is the only path that copies a shipped map over the person's pack, so only a click
+                // runs it, never Return, and a confirm still pending when the panel goes away is withdrawn.
+                .clickOnly("Use") {
                     if let character = pendingBundledCharacter {
                         model.useBundledCharacter(character)
                     }
@@ -821,6 +824,10 @@ struct ControlPanel: View {
                 .cancel() { pendingBundledCharacter = nil },
             ]
         )
+        .onDisappear {
+            confirmBundledCharacter = false
+            pendingBundledCharacter = nil
+        }
     }
 
     private var visibleBundledCharacters: [BundledPetCharacter] {

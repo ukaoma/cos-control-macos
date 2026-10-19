@@ -165,7 +165,7 @@ python3 "$ROOT/Tests/reuse-compile.py" --root "$ROOT" --receipt "$TMP/app-compil
 "$TMP/helper-transport-contract"
 "$TMP/models-contract"
 # 0.5.316: sprite appearance (holes, edges, cut ownership) over every shipped strip, after its own synthetic
-# self-check. Approved V12.6 exceptions and pre-0.5.316 ceilings: Tests/fixtures/sprite-render/approved-exceptions.json.
+# self-check. Approved V12.6 and (0.5.325) V14 timing-v2 exceptions and pre-0.5.316 ceilings: Tests/fixtures/sprite-render/approved-exceptions.json.
 ( cd "$ROOT" && /usr/bin/python3 "$ROOT/Tests/kit-compile.py" "$ROOT/Tests/compile-guard.sh" swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete "$ROOT/Sources/Models.swift" "$ROOT/Tests/SpriteRenderContract.swift" -framework AppKit -o "$TMP/sprite-render" && "$TMP/sprite-render" )
 zsh "$ROOT/Tests/run-simple-pet.sh" "$TMP/simple-pet-proof"
 zsh "$ROOT/Tests/run-session-open-recovery.sh"
@@ -2719,6 +2719,8 @@ done
 /usr/bin/python3 "$ROOT/Tests/pet-layout-source-contract.py" "$ROOT"
 /usr/bin/python3 "$ROOT/Tests/pet-settings-source-contract.py" "$ROOT"
 /usr/bin/python3 "$ROOT/Tests/pet-animation-source-contract.py" "$ROOT"
+# 0.5.325: every Miles Windu V14 timing-v2 file by sha256, size and bytes, its three casts and flat names (pet-pins-helper).
+/usr/bin/python3 "$ROOT/Tests/windu-v14-pack-pins.py" "$ROOT"
 
 # --- Every route a click can enter must actually render -----------------------
 # The 0.5.17 Review Memories / Review Threads buttons did NOTHING when clicked. The
@@ -3272,6 +3274,27 @@ need('pendingBundledCharacter = character' in views and 'confirmBundledCharacter
      "selecting a shipped character bypasses the destructive replacement confirmation")
 need('model.useBundledCharacter(character)' in views,
      "the bundled-character confirmation has no install action")
+# 0.5.325 (Miles's V14 reverted to the shipped map twice on 2026-10-18, copied out of the bundle with its mtime): the one
+# path that copies a shipped map over the person's pack runs only on a click, never Return, and a confirm still pending
+# when the panel goes away is withdrawn.
+bundled_confirm = views.split('pendingBundledCharacter.map { "Use \\($0.displayName)?" }', 1)[1].split('private var visibleBundledCharacters', 1)[0]
+need('.clickOnly("Use") {' in bundled_confirm and '.normal("Use")' not in bundled_confirm,
+     "Use a shipped character must be click-only: Return could accept a stale confirm")
+need('.onDisappear {\n            confirmBundledCharacter = false\n            pendingBundledCharacter = nil' in bundled_confirm,
+     "a pending Use-a-character confirm must be withdrawn when the panel goes away")
+confirm_src = (root / "Sources/COSConfirm.swift").read_text()
+need('$0.kind == .normal && $0.takesReturn' in confirm_src and '$0.kind == .destructive && $0.takesReturn' in confirm_src
+     and 'COSConfirmAction(label: label, kind: .normal, takesReturn: false, run: run)' in confirm_src,
+     "a click-only action must never become the confirm's Return default")
+load_fn = model.split("    func loadPetSprite() {", 1)[1].split("\n    }\n", 1)[0]
+need(not any(call in load_fn for call in ("removeAll(", "installBundledCharacter(", "installBundledDefault(", "installDefault(",
+                                          "useBundledCharacter(", "replaceContents(", "resetPetSprite(")),
+     "launch (loadPetSprite) must never clear the pet folder or copy shipped files over it")
+need(model.count("useBundledCharacter(") == 1 and views.count("model.useBundledCharacter(") == 1,
+     "useBundledCharacter has exactly one caller: the click on the Use confirm")
+need(models_src.count('try fileManager.copyItem(at: file, to: dest)') == 2 and 'installBundledCharacter(id: character.id, into: directory)' in model
+     and model.count('installBundledCharacter(') == 1,
+     "a new path copies shipped pet files into the support folder; it must be reviewed against the person's pack")
 need('DefaultPet' in (root / "scripts/build-release.sh").read_text(),
      "the release does not bundle the shipped character")
 need('Resources/BundledCharacters' in (root / "scripts/build-release.sh").read_text(),

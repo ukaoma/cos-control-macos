@@ -38,7 +38,8 @@ import SwiftUI
             precondition(try! Data(contentsOf: stateURL) == before)
             precondition(!model.petSpriteKit.frames(for: .idle).isEmpty)
             print("PASS: missing seed preference preserves chosen \(character.displayName)")
-            if character.id != PetSpriteStore.legacyDefaultCharacterID {
+            // 0.5.325: Miles ships V14 timing-v2 with three casts on Sessions 2 to 4, so he renders here too.
+            do {
                 let proof = URL(fileURLWithPath: CommandLine.arguments[1], isDirectory: true)
                 try FileManager.default.createDirectory(at: proof, withIntermediateDirectories: true)
                 for pose in [PetSpritePose.duel, .trio, .swarm] {
@@ -129,5 +130,61 @@ import SwiftUI
             window.close()
         }
         print("PASS: bundled Cloud Puff rendered in light and dark")
+
+        // 0.5.325 (Miles's V14 reverted to the shipped pack twice on 2026-10-18): an installed V14, in the flat form this
+        // release ships and in the rotation/v14-timing-v2/ form on Miles's Mac, survives every launch path this model
+        // runs: a first launch of a new build (no art generation), a launch after 0.5.324 (generation 21), and repeat
+        // launches. Nothing in the folder is written: same bytes, same modification dates.
+        let fm = FileManager.default
+        let miles = PetSpriteStore.bundledDefaultURL()!
+        let layers = Set(PetSpriteStore.loadRotations(in: miles).values.flatMap { $0.manifest.variants.flatMap { [$0.file, $0.bodyFile, $0.entryFile] } })
+        precondition(layers.count == 27, "the bundled V14 declares 27 cast layers")
+        let prefix = "session-pet-windu-v14-timing-v2-"
+        func install(subfolder: Bool, tuned: Bool) throws {
+            model.resetPetSprite()
+            for file in Set(PetSpriteStore.loadStateMap(in: miles).values.map(\.file)) {
+                try fm.copyItem(at: miles.appendingPathComponent(file), to: directory.appendingPathComponent(file))
+            }
+            var text = try String(contentsOf: miles.appendingPathComponent(PetSpriteStore.stateFileName), encoding: .utf8)
+            if subfolder {
+                try fm.createDirectory(at: directory.appendingPathComponent("rotation/v14-timing-v2"), withIntermediateDirectories: true)
+                for file in layers {
+                    try fm.copyItem(at: miles.appendingPathComponent(file),
+                                    to: directory.appendingPathComponent("rotation/v14-timing-v2/" + file.dropFirst(prefix.count)))
+                }
+                text = text.replacingOccurrences(of: "\"" + prefix, with: "\"rotation/v14-timing-v2/")
+            } else {
+                for file in layers { try fm.copyItem(at: miles.appendingPathComponent(file), to: directory.appendingPathComponent(file)) }
+            }
+            if tuned { text = text.replacingOccurrences(of: "\"interval\": 0.18", with: "\"interval\": 0.2") }
+            try Data(text.utf8).write(to: directory.appendingPathComponent(PetSpriteStore.stateFileName))
+        }
+        func state() -> [String: (Data, Date)] {
+            var out: [String: (Data, Date)] = [:]
+            for url in fm.enumerator(at: directory, includingPropertiesForKeys: [.contentModificationDateKey, .isRegularFileKey])!.compactMap({ $0 as? URL })
+            where (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true {
+                out[url.path] = (try! Data(contentsOf: url), try! url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate!)
+            }
+            return out
+        }
+        for (subfolder, tuned) in [(true, false), (false, false), (true, true)] {
+            try install(subfolder: subfolder, tuned: tuned)
+            let before = state()
+            Thread.sleep(forTimeInterval: 1.1) // a rewrite would carry a later modification date
+            for generation in [nil, 21, 22] as [Int?] {
+                if let generation { UserDefaults.standard.set(generation, forKey: "cos.sessionPetDefaultArtGeneration") }
+                else { UserDefaults.standard.removeObject(forKey: "cos.sessionPetDefaultArtGeneration") }
+                UserDefaults.standard.removeObject(forKey: "cos.sessionPetDefaultSeeded")
+                model.loadPetSprite()
+                let after = state()
+                precondition(after.count == before.count && after.allSatisfy { path, entry in
+                    before[path].map { $0.0 == entry.0 && $0.1 == entry.1 } ?? false
+                }, "a launch rewrote the installed V14 (subfolder \(subfolder), tuned \(tuned), generation \(String(describing: generation)))")
+                precondition(model.petSpriteKit.rotations.count == 3 && model.petSpriteKit.rotations.values.allSatisfy { $0.variants.count == 3 },
+                             "the installed V14 plays its three casts")
+            }
+            print("PASS: installed V14 (\(subfolder ? "rotation/ subfolder" : "flat")\(tuned ? ", tuned" : "")) survives first launch, a 0.5.324 launch and a repeat launch untouched")
+        }
+        model.resetPetSprite()
     }
 }

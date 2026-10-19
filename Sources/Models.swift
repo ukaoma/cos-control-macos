@@ -9392,6 +9392,36 @@ enum PetSpriteStore {
         guard let source = sourceOverride ?? bundledDefaultURL(bundle: bundle) else { return .failed }
         let installed = loadStateMap(in: directory, fileManager: fileManager)
         let bundled = loadStateMap(in: source, fileManager: fileManager)
+        // 0.5.325: the raw rows, for the rotation blocks (V14 timing-v2: duel, trio and swarm each shuffle three casts).
+        func rawPoses(_ folder: URL) -> [String: [String: Any]] {
+            guard let data = try? Data(contentsOf: folder.appendingPathComponent(stateFileName)),
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return [:] }
+            return json["poses"] as? [String: [String: Any]] ?? [:]
+        }
+        let installedRows = rawPoses(directory)
+        let bundledRows = rawPoses(source)
+        // The installed rotation is the bundled one when every variant's three layers are the bundled bytes, in the
+        // same order, at the same handoff. File NAMES may differ: Miles's Mac holds V14 as installed by hand, under
+        // rotation/v14-timing-v2/, and the bundle carries the same bytes under flat names.
+        func sameRotation(_ pose: PetSpritePose) -> Bool {
+            guard let wanted = bundledRows[pose.rawValue]?["rotation"] as? [String: Any] else { return true }
+            guard let mine = installedRows[pose.rawValue]?["rotation"] as? [String: Any],
+                  (mine["version"] as? Int) == (wanted["version"] as? Int),
+                  (mine["handoffFrame"] as? Int) == (wanted["handoffFrame"] as? Int),
+                  let mineVariants = mine["variants"] as? [[String: Any]],
+                  let wantedVariants = wanted["variants"] as? [[String: Any]],
+                  mineVariants.count == wantedVariants.count else { return false }
+            return zip(mineVariants, wantedVariants).allSatisfy { m, w in
+                (m["id"] as? String) == (w["id"] as? String) && ["file", "bodyFile", "entryFile"].allSatisfy { key in
+                    guard let mineFile = m[key] as? String, PetRotationManifest.isRelativePath(mineFile),
+                          let wantedFile = w[key] as? String,
+                          let mineData = try? Data(contentsOf: directory.appendingPathComponent(mineFile)),
+                          let wantedData = try? Data(contentsOf: source.appendingPathComponent(wantedFile))
+                    else { return false }
+                    return mineData == wantedData
+                }
+            }
+        }
         // Already the bundled pack: a clean no-op, never a rewrite or a downgrade.
         if !bundled.isEmpty, installed.count == bundled.count,
            bundled.allSatisfy({ pose, row in
@@ -9399,14 +9429,37 @@ enum PetSpriteStore {
                      let installedData = try? Data(contentsOf: directory.appendingPathComponent(row.file)),
                      let bundledData = try? Data(contentsOf: source.appendingPathComponent(row.file))
                else { return false }
-               return installedData == bundledData
+               return installedData == bundledData && sameRotation(pose)
            }) {
             return .current
         }
+        // 0.5.325: a pack the earlier releases shipped WHOLE (V12.6, 0.5.316 to 0.5.324) is stock only as its exact
+        // map. Same files with another speed, scale, count or an added rotation is the person's pack: left alone.
+        if let historyData = try? Data(contentsOf: source.appendingPathComponent("stock-state-history.json")),
+           let history = try? JSONSerialization.jsonObject(with: historyData) as? [String: Any],
+           let maps = history["maps"] as? [[String: Any]] {
+            func canonical(_ object: Any) -> Data? {
+                guard let data = try? JSONSerialization.data(withJSONObject: object),
+                      let value = try? JSONDecoder().decode(JSONValue.self, from: data) else { return nil }
+                let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+                return try? encoder.encode(value)
+            }
+            let installedCanonical = (try? Data(contentsOf: directory.appendingPathComponent(stateFileName)))
+                .flatMap { try? JSONSerialization.jsonObject(with: $0) }.flatMap(canonical)
+            for map in maps {
+                guard let state = map["state"] as? [String: Any], let poses = state["poses"] as? [String: [String: Any]],
+                      poses.count == installedRows.count,
+                      poses.allSatisfy({ name, row in
+                          (installedRows[name]?["file"] as? String) == (row["file"] as? String)
+                      })
+                else { continue }
+                guard installedCanonical != nil, installedCanonical == canonical(state) else { return .notApplicable }
+            }
+        }
         let retainedStock: [PetSpritePose: [(file: String, frames: Int)]] = [
-            .idle: [(poseFileName(.idle), 8)],
-            .patrol: [(poseFileName(.patrol), 8)],
-            .waiting: [(poseFileName(.waiting), 8)],
+            .idle: [(poseFileName(.idle), 8), ("session-pet-idle-cutouts-v2.png", 8)],
+            .patrol: [(poseFileName(.patrol), 8), ("session-pet-patrol-polish-v3.png", 8)],
+            .waiting: [(poseFileName(.waiting), 8), ("session-pet-waiting-release-v1.png", 11)],
             .working: [
                 (poseFileName(.working), 8),
                 ("session-pet-working-error-story.png", 16),
@@ -9414,10 +9467,11 @@ enum PetSpriteStore {
                 ("session-pet-working-one-droid-v15.png", 16),
                 ("session-pet-working-one-droid-v15-1.png", 16),
                 ("session-pet-working-one-droid-v15-2.png", 16),
+                ("session-pet-working-run-slowed-v12-1.png", 46),
             ],
-            .done: [(poseFileName(.done), 8)],
-            .error: [(poseFileName(.error), 8)],
-            .attention: [(poseFileName(.attention), 6)],
+            .done: [(poseFileName(.done), 8), ("session-pet-done-retime-v12-v1.png", 10)],
+            .error: [(poseFileName(.error), 8), ("session-pet-error-reassembled-v12-v5.png", 8)],
+            .attention: [(poseFileName(.attention), 6), ("session-pet-attention-retime-v12-v1.png", 13)],
             .duel: [
                 (poseFileName(.duel), 8),
                 ("session-pet-duel-two-droid-v5.png", 13),
@@ -9425,6 +9479,7 @@ enum PetSpriteStore {
                 ("session-pet-duel-two-droid-v15.png", 13),
                 ("session-pet-duel-two-droid-v15-1.png", 12),
                 ("session-pet-duel-two-droid-v15-2.png", 17),
+                ("session-pet-duel-tail-tighter-v12-5.png", 37),
             ],
             .trio: [
                 (poseFileName(.trio), 6),
@@ -9434,6 +9489,7 @@ enum PetSpriteStore {
                 ("session-pet-trio-story-v15-2.png", 13),
                 ("session-pet-trio-story-v16.png", 26),
                 ("session-pet-trio-story-v17.png", 26),
+                ("session-pet-trio-deflect-eased-v12-6.png", 42),
             ],
             .swarm: [
                 (poseFileName(.swarm), 6),
@@ -9444,6 +9500,7 @@ enum PetSpriteStore {
                 ("session-pet-swarm-story-v15-3.png", 25),
                 ("session-pet-swarm-story-v15-4.png", 26),
                 ("session-pet-swarm-story-v16.png", 52),
+                ("session-pet-swarm-alpha-v11-r2.png", 64),
             ],
         ]
         guard installed.count == retainedStock.count,
@@ -9474,6 +9531,34 @@ enum PetSpriteStore {
             else { return .failed }
             stories.append((pose, row.file, row.frames, data))
         }
+        // 0.5.325: every rotation layer the bundled pack declares is part of the upgrade, never optional decoration
+        // (the 0.5.324 Jedi rule). Each one is checked, as the runtime reads it, before anything is written: a flat
+        // name, a readable image the size of its pose strip. One bad layer refuses the whole upgrade.
+        var layers: [String: Data] = [:]
+        var rotationRows: [PetSpritePose: Any] = [:]
+        for story in stories {
+            guard let rotation = bundledRows[story.pose.rawValue]?["rotation"] else { continue }
+            guard let rotationJSON = rotation as? [String: Any],
+                  let rotationData = try? JSONSerialization.data(withJSONObject: rotationJSON, options: [.sortedKeys]),
+                  let manifest = try? JSONDecoder().decode(PetRotationManifest.self, from: rotationData),
+                  manifest.isValid(frames: story.frames),
+                  let strip = NSImage(data: story.data).flatMap(PetSpriteStrip.raster)
+            else { return .failed }
+            for variant in manifest.variants {
+                for file in [variant.file, variant.bodyFile, variant.entryFile] {
+                    guard file == URL(fileURLWithPath: file).lastPathComponent,
+                          let data = try? Data(contentsOf: source.appendingPathComponent(file)),
+                          let layer = NSImage(data: data).flatMap(PetSpriteStrip.raster),
+                          layer.width == strip.width, layer.height == strip.height
+                    else {
+                        NSLog("COSControl Miles upgrade rejected an incomplete rotation layer: %@", file)
+                        return .failed
+                    }
+                    layers[file] = data
+                }
+            }
+            rotationRows[story.pose] = rotationJSON
+        }
 
         do {
             try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -9482,8 +9567,13 @@ enum PetSpriteStore {
                     to: directory.appendingPathComponent(story.file), options: .atomic
                 )
             }
+            for (file, data) in layers {
+                try data.write(to: directory.appendingPathComponent(file), options: .atomic)
+            }
             guard stories.allSatisfy({ story in
                 (try? Data(contentsOf: directory.appendingPathComponent(story.file))) == story.data
+            }), layers.allSatisfy({ file, data in
+                (try? Data(contentsOf: directory.appendingPathComponent(file))) == data
             })
             else { return .failed }
             var updated = installed
@@ -9517,6 +9607,7 @@ enum PetSpriteStore {
                 renderScaleDefaults: loadRenderScales(in: source, fileManager: fileManager),
                 renderScaleOverrides: scaleOverrides,
                 clearRotations: Set(stories.map(\.pose)),
+                rotations: rotationRows,
                 in: directory,
                 fileManager: fileManager
             )
@@ -9605,6 +9696,7 @@ enum PetSpriteStore {
         renderScaleDefaults: [PetSpritePose: CGFloat] = [:],
         renderScaleOverrides: [PetSpritePose: CGFloat] = [:],
         clearRotations: Set<PetSpritePose> = [],
+        rotations: [PetSpritePose: Any] = [:],
         in directory: URL,
         fileManager: FileManager
     ) throws {
@@ -9640,6 +9732,8 @@ enum PetSpriteStore {
             if !clearRotations.contains(pose), let old = previousPoses[pose.rawValue],
                old["file"] as? String == row.file, old["frames"] as? Int == row.frames,
                let rotation = old["rotation"] { payload["rotation"] = rotation }
+            // A stock upgrade lands the bundled cast with the new art (its layers are already written and checked).
+            if let rotation = rotations[pose] { payload["rotation"] = rotation }
             poses[pose.rawValue] = payload
         }
         let data = try JSONSerialization.data(withJSONObject: ["poses": poses], options: [.prettyPrinted, .sortedKeys])

@@ -1,0 +1,62 @@
+{
+  "maps": [
+    {
+      "state": {
+        "poses": {
+          "attention": {
+            "file": "session-pet-attention-retime-v12-v1.png",
+            "frames": 13,
+            "interval": 0.14
+          },
+          "done": {
+            "file": "session-pet-done-retime-v12-v1.png",
+            "frames": 10,
+            "interval": 0.16
+          },
+          "duel": {
+            "file": "session-pet-duel-tail-tighter-v12-5.png",
+            "frames": 37,
+            "interval": 0.08
+          },
+          "error": {
+            "file": "session-pet-error-reassembled-v12-v5.png",
+            "frames": 8,
+            "interval": 0.14
+          },
+          "idle": {
+            "file": "session-pet-idle-cutouts-v2.png",
+            "frames": 8,
+            "renderScale": 1.0
+          },
+          "patrol": {
+            "file": "session-pet-patrol-polish-v3.png",
+            "frames": 8,
+            "interval": 0.14
+          },
+          "swarm": {
+            "file": "session-pet-swarm-alpha-v11-r2.png",
+            "frames": 64,
+            "interval": 0.08
+          },
+          "trio": {
+            "file": "session-pet-trio-deflect-eased-v12-6.png",
+            "frames": 42,
+            "interval": 0.08
+          },
+          "waiting": {
+            "file": "session-pet-waiting-release-v1.png",
+            "frames": 11,
+            "interval": 0.18
+          },
+          "working": {
+            "file": "session-pet-working-run-slowed-v12-1.png",
+            "frames": 46,
+            "interval": 0.08,
+            "renderScale": 0.75
+          }
+        }
+      },
+      "version": "V12.6 (0.5.316 to 0.5.324)"
+    }
+  ]
+}
