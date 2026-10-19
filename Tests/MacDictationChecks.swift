@@ -1201,6 +1201,101 @@ final class FakeDictationBoard: DictationPasteboardAccess {
             expect(size <= DictationTimingLog.maximumBytes && rotated > 0 && rotated <= DictationTimingLog.maximumBytes,
                    "tail: the timing file is bounded: it rotates to .1 past 256 KB, two files at most")
         }
-        print("PASS Mac dictation: \(count) policy checks; insert-target table, measured delivery, terminals, layout ⌘V, listening bars end to end, clipboard restore, sounds, pill placement, recent dictations file, card countdown, fix-a-word selection, quick fix, replace, span guess, quiet and restore, bounded audio, PCM16 WAV, device failure, any-key triggers, field context and its evidence, AI polish, release tail and timing")
+        do {
+            // 0.5.327 truthful start (Miles, 2026-10-19: the sound came on the press, the pet listened a second later).
+            typealias S = DictationStart
+            var reads = 0, lists = 0
+            let none = S.resolve(selectedUID: "", cached: ["usb": 7], uidOf: { _ in reads += 1; return "usb" }, enumerate: { lists += 1; return ["usb": 7] })
+            expect(none.device == .systemDefault && !none.listRead && reads == 0 && lists == 0,
+                   "start: no microphone chosen opens the system default and never reads the microphone list on the press")
+            let cached = S.resolve(selectedUID: "usb", cached: ["usb": 7], uidOf: { id in reads += 1; return id == 7 ? "usb" : nil }, enumerate: { lists += 1; return [:] })
+            expect(cached.device == .device(7) && !cached.listRead && reads == 1 && lists == 0,
+                   "start: a chosen microphone opens its cached id after one UID read, without the list")
+            let moved = S.resolve(selectedUID: "usb", cached: ["usb": 7], uidOf: { _ in "other" }, enumerate: { lists += 1; return ["usb": 9] })
+            expect(moved.device == .device(9) && moved.listRead && lists == 1,
+                   "start: a cached id that no longer reports the chosen UID reads the list once and opens the new id")
+            let uncached = S.resolve(selectedUID: "usb", cached: [:], uidOf: { _ in "usb" }, enumerate: { lists += 1; return ["usb": 11] })
+            expect(uncached.device == .device(11) && uncached.listRead && lists == 2, "start: a chosen microphone not yet cached reads the list once")
+            let gone = S.resolve(selectedUID: "usb", cached: ["usb": 7], uidOf: { _ in nil }, enumerate: { [:] })
+            expect(gone.device == .missing && gone.listRead, "start: a chosen microphone that is unplugged is missing, not the default")
+            expect(S.firstBufferTimeoutMs == 3_000 && S.pollMs == 5, "start: STARTING waits at most 3 s for the first buffer, looking every 5 ms")
+
+            // The first buffer is the moment listening began: stamped by the audio side, once, and only for real audio.
+            let first = DictationPCMBuffer()
+            expect(first.firstAudioUptime() == nil, "start: no first-audio time before any audio")
+            first.append(Data())
+            expect(first.firstAudioUptime() == nil, "start: an empty conversion is not audio")
+            let before = ProcessInfo.processInfo.systemUptime
+            first.append(Data([1, 2, 3, 4]))
+            let stamped = first.firstAudioUptime()
+            expect(stamped.map { $0 >= before && $0 <= ProcessInfo.processInfo.systemUptime } == true, "start: the first audio is stamped as it is appended")
+            first.append(Data([5, 6]))
+            expect(first.firstAudioUptime() == stamped, "start: later audio never moves the first-audio time")
+
+            // STARTING is its own pill: it owns the ledger, says STARTING, and is not LISTENING.
+            expect(DictationPill.starting.label == "STARTING" && DictationPill.starting.replacesLedger
+                   && DictationPill.starting != .listening(since: Date(timeIntervalSince1970: 0)), "start: the pill says STARTING until the first buffer")
+
+            // The spare engine: used only while nothing it was built against has changed.
+            typealias W = DictationSpare
+            let warmed = W.Warmed(device: 145, selectedUID: "", sampleRate: 48_000, at: 1_000)
+            expect(W.maximumAgeSeconds == 1_800 && W.check(warmed, selectedUID: "", device: 145, sampleRate: 48_000, bluetooth: false, now: 1_010) == .use, "spare: an unchanged spare is used")
+            expect(W.check(warmed, selectedUID: "", device: 146, sampleRate: 48_000, bluetooth: false, now: 1_010) == .discard("device")
+                   && W.check(warmed, selectedUID: "", device: nil, sampleRate: 48_000, bluetooth: false, now: 1_010) == .discard("device"),
+                   "spare: a different (or unknown) input device discards it")
+            expect(W.check(warmed, selectedUID: "", device: 145, sampleRate: 44_100, bluetooth: false, now: 1_010) == .discard("rate")
+                   && W.check(warmed, selectedUID: "", device: 145, sampleRate: nil, bluetooth: false, now: 1_010) == .discard("rate"),
+                   "spare: a changed (or unreadable) sample rate discards it, so a tap never meets a stale format")
+            expect(W.check(warmed, selectedUID: "usb", device: 145, sampleRate: 48_000, bluetooth: false, now: 1_010) == .discard("selection"),
+                   "spare: a changed microphone choice discards it")
+            expect(W.check(warmed, selectedUID: "", device: 145, sampleRate: 48_000, bluetooth: true, now: 1_010) == .discard("bluetooth"),
+                   "spare: never used for a Bluetooth input")
+            expect(W.check(warmed, selectedUID: "", device: 145, sampleRate: 48_000, bluetooth: false, now: 1_000 + W.maximumAgeSeconds + 1) == .discard("age")
+                   && W.check(warmed, selectedUID: "", device: 145, sampleRate: 48_000, bluetooth: false, now: 999) == .discard("age")
+                   && W.check(warmed, selectedUID: "", device: 145, sampleRate: 48_000, bluetooth: false, now: 1_000 + W.maximumAgeSeconds) == .use,
+                   "spare: older than half an hour (or from a clock that went back) is not used")
+            expect(W.mayWarm(enabled: true, authorized: true, bluetooth: false) && !W.mayWarm(enabled: false, authorized: true, bluetooth: false)
+                   && !W.mayWarm(enabled: true, authorized: false, bluetooth: false) && !W.mayWarm(enabled: true, authorized: true, bluetooth: true),
+                   "spare: built only with dictation on, the microphone allowed, and a non-Bluetooth input")
+
+            // Failure codes: codes only, a detail only when it is itself a code.
+            typealias F = DictationFailReason
+            expect(Set(F.allCases.map(\.rawValue)).count == F.allCases.count
+                   && F.allCases.allSatisfy { $0.rawValue.unicodeScalars.allSatisfy { ("a"..."z").contains($0) || $0 == "_" } },
+                   "fail reason: every code is distinct, lowercase and underscores")
+            expect(F.refused.code("engine_unavailable") == "refused:engine_unavailable" && F.helperTimeout.code() == "helper_timeout",
+                   "fail reason: a code-shaped detail rides along")
+            expect(F.refused.code("Parakeet is not installed") == "refused" && F.refused.code("ABC") == "refused"
+                   && F.refused.code(String(repeating: "a", count: 41)) == "refused" && F.refused.code("") == "refused" && F.refused.code(nil) == "refused",
+                   "fail reason: words, capitals, over 40 characters or nothing never ride along")
+
+            // The timing line: the start numbers and the fail code, numbers and codes only.
+            var marks = DictationStartMarks(pressed: 100)
+            expect(DictationStartMarks.ms(1.0, 1.2346) == 235 && DictationStartMarks.ms(2, 1) == 0 && marks.since(100.25) == 250,
+                   "start: milliseconds round and never go negative")
+            marks.pressToTaskMs = 2; marks.quietMs = 41; marks.permissionMs = 0; marks.refreshMicsMs = 0; marks.micListRead = false
+            marks.warmEngine = true; marks.engineStartMs = 120; marks.pressToFirstBufferMs = 228; marks.pressToSoundMs = 231
+            var withStart = DictationTiming.measure(pcm: Data(count: 64_000), releaseBytes: 60_000, tailMs: 300, releaseToClosedMs: 330, at: Date(timeIntervalSince1970: 1_760_000_000))
+            withStart.include(marks)
+            let startLine = DictationTimingLog.line(withStart).flatMap { String(data: $0, encoding: .utf8) } ?? ""
+            let startKeys = (try? JSONSerialization.jsonObject(with: Data(startLine.utf8)) as? [String: Any]) ?? [:]
+            expect(startKeys["pressToTaskMs"] as? Int == 2 && startKeys["permissionMs"] as? Int == 0 && startKeys["refreshMicsMs"] as? Int == 0
+                   && startKeys["engineStartMs"] as? Int == 120 && startKeys["pressToFirstBufferMs"] as? Int == 228 && startKeys["pressToSoundMs"] as? Int == 231
+                   && startKeys["quietMs"] as? Int == 41 && startKeys["warmEngine"] as? Bool == true && startKeys["micListRead"] as? Bool == false
+                   && startKeys["tailMs"] as? Int == 300 && startKeys["failReason"] == nil,
+                   "start: the timing line carries every start number beside the release numbers")
+            withStart.include(nil)
+            expect(withStart.pressToFirstBufferMs == 228, "start: no marks leaves the line as it was")
+            var early = DictationStartMarks(pressed: 5); early.pressToTaskMs = 1; early.permissionMs = 3
+            var failed = DictationTiming.startFailure(early, at: Date(timeIntervalSince1970: 1_760_000_000))
+            failed.failReason = F.noFirstBuffer.code(); failed.outcome = "failed"
+            let failedLine = DictationTimingLog.line(failed).flatMap { String(data: $0, encoding: .utf8) } ?? ""
+            let failedKeys = (try? JSONSerialization.jsonObject(with: Data(failedLine.utf8)) as? [String: Any]) ?? [:]
+            expect(failedKeys["failReason"] as? String == "no_first_buffer" && failedKeys["capturedSeconds"] as? Double == 0
+                   && failedKeys["permissionMs"] as? Int == 3 && failedKeys["pressToFirstBufferMs"] == nil && failedKeys["outcome"] as? String == "failed"
+                   && Set(failedKeys.keys) == ["at", "releaseToClosedMs", "tailMs", "capturedSeconds", "outcome", "pressToTaskMs", "permissionMs", "failReason"],
+                   "start: a start that failed writes its own line: the steps that ran, nothing captured, and why")
+        }
+        print("PASS Mac dictation: \(count) policy checks; insert-target table, measured delivery, terminals, layout ⌘V, listening bars end to end, clipboard restore, sounds, pill placement, recent dictations file, card countdown, fix-a-word selection, quick fix, replace, span guess, quiet and restore, bounded audio, PCM16 WAV, device failure, any-key triggers, field context and its evidence, AI polish, release tail and timing, truthful start")
     }
 }

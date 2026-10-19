@@ -60,5 +60,8 @@ print "PASS Mac dictation isolation pins: audio callbacks @Sendable, callback si
 /usr/bin/python3 "$ROOT/Tests/dictation-polish-pins.py" "$ROOT"
 # 0.5.326 release tail: where DictationReleaseTail and DictationTiming are wired (the rules run in MacDictationChecks).
 /usr/bin/python3 "$ROOT/Tests/dictation-tail-pins.py" "$ROOT"
+# 0.5.327 truthful start: STARTING until the first buffer, then LISTENING, the sound and the mute; no microphone list on
+# the press; the spare engine never started; start numbers and failure codes on the timing line (rules in the checks).
+/usr/bin/python3 "$ROOT/Tests/dictation-start-pins.py" "$ROOT"
 # 0.5.317: dictation for everyone (the helper core, the CLI checks, the pins).
 zsh "$ROOT/Tests/run-dictation-everyone.sh"

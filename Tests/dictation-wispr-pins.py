@@ -148,7 +148,7 @@ need("let delivered = copyOnly ? DictationInsertion.copyOnly(text, clipboardMove
 need("let copyOnly = pendingInterrupted\n                let clipboardMoved = interruptedChangeCount.map { $0 != NSPasteboard.general.changeCount } ?? false\n                pendingAudio = nil" in transcribe,
      "the copy-only flag and the interrupt's clipboard stamp must be read before pendingAudio is cleared (clearing it resets both)")
 need("if pointer, held { pointerDuringHold = true }" in body(dictation, "    private func keyEvent(")
-     and "fail(response.message, card: !(noSpeech && pointerDuringHold), action: action)" in transcribe
+     and "card: !(noSpeech && pointerDuringHold), action: action); return" in transcribe
      and 'phase = "Starting"; pointerDuringHold = false' in dictation,
      "a slow modifier-click with no speech ends quietly, and the flag resets each dictation (QA 2026-10-15)")
 need("quiet.end()" in body(dictation, "    func recordingStarted() {") and "if count > 0, lastRecordingCount == 0 { dictation.recordingStarted() }" in model
@@ -182,7 +182,7 @@ need('let noSpeech = response.details["noSpeech"]?.bool == true' in transcribe
 card = body(dictation, "struct DictationCardView: View {")
 need('Button("Allow…") { store.requestInsertionPermission() }' in card and "if refusal == .notTrusted {" in card,
      "the Accessibility card carries Allow…")
-need('fail("Allow Microphone for COS Control in System Settings → Privacy & Security.", action: .openMicrophoneSettings)' in dictation
+need('fail("Allow Microphone for COS Control in System Settings → Privacy & Security.", code: DictationFailReason.microphoneDenied.code(), action: .openMicrophoneSettings)' in dictation
      and "if let title = action.title, action != .retry || store.canRetry {" in card and "store.performFailureAction(action)" in card
      and "case .openMicrophoneSettings: openMicrophoneSettings()" in dictation,
      "the microphone card opens Settings; Retry only when worth it")
@@ -434,8 +434,8 @@ need('model.runHelper(["transcription-dictionary"], timeout: 20, stdinData: requ
 sources = {path.name: strip_comments(path.read_text(encoding="utf-8")) for path in (root / "Sources").glob("*.swift")}
 start_fn = body(dictation, "    func start() {")
 stop_fn = body(dictation, "    private func closeMicrophone() {")
-need(start_fn.index("playSound(.start)") < start_fn.index("quiet.begin(mode: quietMode, macRecording: macRecordingActive?() ?? false)")
-     < start_fn.index("task = Task {"),
+# 0.5.327: both now wait for the microphone's first buffer, inside the start task (Tests/dictation-start-pins.py).
+need(start_fn.index("task = Task {") < start_fn.index("playSound(.start)") < start_fn.index("quiet.begin(mode: quietMode, macRecording: macRecordingActive?() ?? false)"),
      "quiet begins after the start sound is scheduled and knows about a Mac recording")
 need(stop_fn.index("let pcm = try capture.stop()") < stop_fn.index("quiet.end()") < stop_fn.index("playSound(.stop)"),
      "other apps come back after the microphone closes and before the stop sound")
