@@ -35,7 +35,7 @@ if [[ "$LANE" == "all" || "$LANE" == "pins" ]]; then
   OUT="$(/usr/bin/python3 "$ROOT/Tests/live-cues-pins.py" "$ROOT")" || { print -r -- "$OUT"; exit 1; }
   print -r -- "$OUT"
   COUNT="${${OUT##*pins: }%% passed*}"
-  (( COUNT >= 57 )) || { print -u2 "live cues pins ran only $COUNT (expected at least 57)"; exit 1; }
+  (( COUNT >= 80 )) || { print -u2 "live cues pins ran only $COUNT (expected at least 80)"; exit 1; }
 fi
 
 if [[ "$LANE" == "all" || "$LANE" == "models" ]]; then
@@ -45,7 +45,7 @@ if [[ "$LANE" == "all" || "$LANE" == "models" ]]; then
   OUT="$(env "${RUN_ENV[@]}" "$DIR/live-cues-checks")" || { print -r -- "$OUT"; exit 1; }
   print -r -- "$OUT"
   COUNT="${${OUT##*checks: }%% passed*}"
-  (( COUNT >= 108 )) || { print -u2 "live cues checks ran only $COUNT (expected at least 108)"; exit 1; }
+  (( COUNT >= 146 )) || { print -u2 "live cues checks ran only $COUNT (expected at least 146)"; exit 1; }
 fi
 # By hand and for the mutation gate only (Tests/run.sh already builds the helper and runs both): the helper's self-test,
 # which carries the --set grammar and the key whitelist, then the compiled helper against a loopback fixture.

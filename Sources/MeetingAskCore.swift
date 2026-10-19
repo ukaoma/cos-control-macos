@@ -746,6 +746,45 @@ struct LiveCuesSettings: Equatable, Sendable {
     var source: String
     var capability: LiveCuesCapability
     var locked: Bool { source == "env" }
+    /// 0.5.329: the spend limits and today's usage (server 6.79.2); nil from an older server, which shows the switch alone.
+    var limits: LiveCuesLimits? = nil
+}
+
+/// One spend limit as the server reports it (server 6.79.2): its value, where it came from, whether the server's
+/// environment holds it (then Control shows it and cannot change it), and the bounds the server accepts.
+struct LiveCuesLimit: Equatable, Sendable {
+    var value: Double
+    var source: String?
+    var locked: Bool
+    var min: Double?
+    var max: Double?
+    var step: Double?
+}
+
+/// Today's live cue spend on the server.
+struct LiveCuesUsage: Equatable, Sendable {
+    var cues: Int
+    var writerCalls: Int
+    var writerTokensIn: Int
+    var writerTokensOut: Int
+    var jevTokens: Int
+}
+
+struct LiveCuesLimits: Equatable, Sendable {
+    enum Key: String, CaseIterable, Sendable {
+        case gate, maxCuesPerMeeting, cooldownSeconds, dailyWriterCalls
+        /// The helper's flag for this limit (`live-cues-settings --gate 0.75`).
+        var flag: String {
+            switch self {
+            case .gate: return "--gate"
+            case .maxCuesPerMeeting: return "--max-cues"
+            case .cooldownSeconds: return "--cooldown-seconds"
+            case .dailyWriterCalls: return "--daily-writer-calls"
+            }
+        }
+    }
+    var values: [Key: LiveCuesLimit] = [:]
+    var usage: LiveCuesUsage?
 }
 
 enum LiveCues {
@@ -803,7 +842,134 @@ enum LiveCues {
         return LiveCuesSettings(enabled: enabled, source: source,
                                 capability: LiveCuesCapability(available: available, reason: capability["reason"]?.string,
                                                                model: capability["model"]?.string, memory: capability["memory"]?.string,
-                                                               decisionProvider: capability["decisionProvider"]?.string))
+                                                               decisionProvider: capability["decisionProvider"]?.string),
+                                limits: limits(details))
+    }
+
+    /// The limits in the answer, or nil when it has none (a server before 6.79.2).
+    static func limits(_ details: [String: JSONValue]) -> LiveCuesLimits? {
+        var out = LiveCuesLimits()
+        for key in LiveCuesLimits.Key.allCases {
+            guard let raw = details[key.rawValue]?.object, let value = raw["value"]?.double else { continue }
+            let bounds = raw["bounds"]?.object
+            out.values[key] = LiveCuesLimit(value: value, source: raw["source"]?.string, locked: raw["locked"]?.bool ?? (raw["source"]?.string == "env"),
+                                            min: bounds?["min"]?.double, max: bounds?["max"]?.double, step: bounds?["step"]?.double)
+        }
+        if let usage = details["usage"]?.object {
+            out.usage = LiveCuesUsage(cues: usage["cues"]?.int ?? 0, writerCalls: usage["writerCalls"]?.int ?? 0,
+                                      writerTokensIn: usage["writerTokensIn"]?.int ?? 0, writerTokensOut: usage["writerTokensOut"]?.int ?? 0,
+                                      jevTokens: usage["jevTokens"]?.int ?? 0)
+        }
+        return out.values.isEmpty && out.usage == nil ? nil : out
+    }
+
+    // ── The limits' words and values (0.5.329, server 6.79.2).
+    static let barTitle = "Bar"
+    static let moreCues = "More cues"
+    static let fewerCues = "Fewer cues"
+    static let maxCuesTitle = "Max cues per meeting"
+    static let gapTitle = "Minimum gap between cues"
+    static let dailyTitle = "Daily writer limit"
+    static let envNote = "Set in .env"
+    static let savingLine = "Saving…"
+    /// How long the controls wait for a person to stop moving before one change goes to the server.
+    static let limitsDebounce: Duration = .milliseconds(600)
+
+    /// A limit's range: the server's bounds, else the one Control assumes for a server that sends none.
+    static func range(_ key: LiveCuesLimits.Key, _ limit: LiveCuesLimit) -> ClosedRange<Double> {
+        let fallback: ClosedRange<Double> = switch key {
+        case .gate: 0.5...0.95
+        case .maxCuesPerMeeting: 1...25
+        case .cooldownSeconds: 0...600
+        case .dailyWriterCalls: 0...1_000
+        }
+        let low = limit.min ?? fallback.lowerBound, high = limit.max ?? fallback.upperBound
+        return low <= high ? low...high : fallback
+    }
+
+    /// The bar on the slider's 0.05 grid, inside the server's bounds.
+    static func gateSteps(_ limit: LiveCuesLimit) -> [Double] {
+        let r = range(.gate, limit), step = limit.step ?? 0.05
+        var out: [Double] = []
+        var n = (r.lowerBound / step).rounded(.up)
+        while n * step <= r.upperBound + 1e-9 { out.append((n * step * 100).rounded() / 100); n += 1 }
+        return out.isEmpty ? [limit.value] : out
+    }
+
+    static func gateText(_ value: Double) -> String { String(format: "%.2f", value) }
+
+    /// The stepper's ladder for a whole-number limit: whole cues one at a time; the gap in seconds by sensible stops (so
+    /// 45 s and 1.5 min are both reachable); the daily writer calls by round numbers. Inside the server's bounds, and the
+    /// server's current value is always on it.
+    static func ladder(_ key: LiveCuesLimits.Key, _ limit: LiveCuesLimit) -> [Int] {
+        let r = range(key, limit)
+        let low = Int(r.lowerBound.rounded(.up)), high = Int(r.upperBound.rounded(.down))
+        guard low <= high else { return [Int(limit.value)] }
+        let stops: [Int] = switch key {
+        case .maxCuesPerMeeting, .gate: Array(low...high)
+        case .cooldownSeconds: [0, 15, 30, 45, 60, 90, 120, 180, 240, 300, 420, 600, 900, 1_200, 1_800, 3_600]
+        case .dailyWriterCalls: [0, 10, 25, 50, 75, 100, 150, 200, 300, 400, 500, 750, 1_000, 1_500, 2_000, 3_000, 5_000, 10_000]
+        }
+        var out = stops.filter { (low...high).contains($0) }
+        if !out.contains(low) { out.insert(low, at: 0) }
+        if !out.contains(high) { out.append(high) }
+        let current = Int(limit.value.rounded())
+        if (low...high).contains(current), !out.contains(current) { out.append(current) }
+        return out.sorted()
+    }
+
+    /// "45 s", "1 min", "1.5 min"; "None" for no gap.
+    static func gapText(_ seconds: Int) -> String {
+        if seconds == 0 { return "None" }
+        if seconds < 60 { return "\(seconds) s" }
+        let minutes = Double(seconds) / 60
+        return minutes == minutes.rounded() ? "\(Int(minutes)) min" : String(format: "%.1f min", minutes)
+    }
+
+    static func countText(_ key: LiveCuesLimits.Key, _ value: Int) -> String {
+        switch key {
+        case .cooldownSeconds: return gapText(value)
+        case .dailyWriterCalls: return value == 0 ? "Off" : "\(value)"
+        default: return "\(value)"
+        }
+    }
+
+    /// "Today: 7 cues, 12 writer calls, ~44K tokens" (the writer's tokens in and out; Jev's are not Claude spend).
+    static func usageLine(_ usage: LiveCuesUsage) -> String {
+        let tokens = usage.writerTokensIn + usage.writerTokensOut
+        let tokenText = tokens < 1_000 ? "\(tokens) tokens" : "~\(Int((Double(tokens) / 1_000).rounded()))K tokens"
+        return "Today: \(usage.cues) \(usage.cues == 1 ? "cue" : "cues"), \(usage.writerCalls) writer \(usage.writerCalls == 1 ? "call" : "calls"), " + tokenText
+    }
+
+    /// The helper call for the changes waiting: one POST with each limit's flag, in a fixed order.
+    static func limitsArguments(_ pending: [LiveCuesLimits.Key: Double]) -> [String]? {
+        guard !pending.isEmpty else { return nil }
+        var arguments = ["live-cues-settings"]
+        for key in LiveCuesLimits.Key.allCases {
+            guard let value = pending[key] else { continue }
+            arguments += [key.flag, key == .gate ? gateText(value) : String(Int(value.rounded()))]
+        }
+        return arguments
+    }
+
+    /// Why a limits change did not take, in words, or nil when the server answered with its settings.
+    static func limitsRefusal(_ details: [String: JSONValue]?) -> String? {
+        guard let details else { return "COS Control could not save the limit. Try again." }
+        switch details["transport"]?.string {
+        case "unavailable": return "COS server unreachable. The limit was not saved."
+        case "no_token": return "Reconnect COS Control to the server to change limits."
+        case "answered": break
+        default: return "COS Control could not save the limit. Try again."
+        }
+        switch details["httpStatus"]?.int {
+        case 200: return settings(details)?.limits == nil ? "The server did not confirm the limit. Check again." : nil
+        case 409: return "That limit is set in the server's .env, so it cannot be changed here."
+        case 400: return "The server did not accept that value."
+        case 404: return "Limits need server 6.79.2. Update the server in Settings."
+        case 401, 403: return "Reconnect COS Control to the server to change limits."
+        case let status?: return "The limit was not saved (HTTP \(status)). Try again."
+        case nil: return "COS Control could not save the limit. Try again."
+        }
     }
 
     /// True for the 409 the server sends when its environment holds live cues on and the request turned them off.
@@ -945,6 +1111,50 @@ final class LiveCuesStore: ObservableObject {
         defer { busy = false }
         state = .checking
         state = LiveCues.state(try? await run(["live-cues-settings"], nil).details)
+    }
+
+    /// 0.5.329: limit values a person moved to and the server has not confirmed yet; the row shows them as Saving.
+    @Published private(set) var pendingLimits: [LiveCuesLimits.Key: Double] = [:]
+    /// Why the last limits change did not take; cleared by the next one.
+    @Published private(set) var limitsNote: String?
+    private var limitsFlush: Task<Void, Never>?
+    var limitsDebounce = LiveCues.limitsDebounce
+
+    /// What a limit control shows: the change waiting, else the server's value.
+    func limitValue(_ key: LiveCuesLimits.Key) -> Double? { pendingLimits[key] ?? settings?.limits?.values[key]?.value }
+
+    /// A person moved a limit. Nothing is sent until they stop for `limitsDebounce`; then every waiting change goes in
+    /// one call. A locked (env) limit, or one the server did not report, never moves.
+    func propose(_ key: LiveCuesLimits.Key, _ value: Double, run: @escaping Run) {
+        guard let limit = settings?.limits?.values[key], !limit.locked else { return }
+        if value == limit.value { pendingLimits[key] = nil } else { pendingLimits[key] = value }
+        limitsNote = nil
+        limitsFlush?.cancel()
+        guard !pendingLimits.isEmpty else { return }
+        let wait = limitsDebounce
+        limitsFlush = Task { [weak self] in
+            try? await Task.sleep(for: wait)
+            guard !Task.isCancelled else { return }
+            await self?.flushLimits(run)
+        }
+    }
+
+    /// Send the waiting changes now. The shown values change only from the server's answer (its echo of every limit),
+    /// never ahead of it; a refusal says why and shows the server's values again. One call at a time with the switch.
+    func flushLimits(_ run: Run) async {
+        while busy { try? await Task.sleep(for: .milliseconds(50)) }
+        guard let arguments = LiveCues.limitsArguments(pendingLimits) else { return }
+        busy = true
+        let asked = pendingLimits
+        let answer = try? await run(arguments, nil)
+        busy = false
+        // A change made while this one was out stays waiting for its own call.
+        for (key, value) in asked where pendingLimits[key] == value { pendingLimits[key] = nil }
+        if let refusal = LiveCues.limitsRefusal(answer?.details) {
+            limitsNote = refusal
+            return
+        }
+        state = LiveCues.state(answer?.details)
     }
 
     func set(_ enabled: Bool, run: Run) async {

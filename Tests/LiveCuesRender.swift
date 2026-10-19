@@ -66,6 +66,12 @@ import Vision
                 .font(COSType.body(12, weight: .semibold)).fixedSize()).fittingSize.width),
             (LiveCues.addKeyLabel, NSHostingView(rootView: Button(LiveCues.addKeyLabel) {}.buttonStyle(COSTextButtonStyle()).fixedSize()).fittingSize.width),
             (LiveCues.checkAgainLabel, NSHostingView(rootView: Button(LiveCues.checkAgainLabel) {}.buttonStyle(COSQuietButtonStyle()).fixedSize()).fittingSize.width),
+            // 0.5.329: the widest limit row, a stepper with the longest title and value.
+            (LiveCues.gapTitle, NSHostingView(rootView: COSStepper(LiveCues.gapTitle, value: .constant(3), in: 0...10, valueText: "1.5 min")
+                .font(COSType.body(12)).fixedSize()).fittingSize.width),
+            (LiveCues.dailyTitle + " locked", NSHostingView(rootView: HStack(spacing: 8) {
+                Text(LiveCues.dailyTitle); Text("5000").font(COSType.mono(11.5)); Text(LiveCues.envNote).font(COSType.body(11))
+            }.font(COSType.body(12)).fixedSize()).fittingSize.width),
         ]
         for (what, width) in controls {
             expect(width > 20 && width <= inside, "\(what) fits the card at 390 pt", "\(width) of \(inside) pt")
@@ -91,6 +97,9 @@ import Vision
             ("failed-500", status(500)),
             ("helper-failed", nil),
         ]
+        // 0.5.329: the limits under the switch (server 6.79.2), one set from .env.
+        let limitsJSON = #","gate":{"value":0.8,"source":"default","locked":false,"bounds":{"min":0.5,"max":0.95,"step":0.05}},"maxCuesPerMeeting":{"value":25,"source":"setting","locked":false,"bounds":{"min":1,"max":25}},"cooldownSeconds":{"value":45,"source":"default","locked":false,"bounds":{"min":0,"max":600}},"dailyWriterCalls":{"value":300,"source":"env","locked":true,"bounds":{"min":0,"max":5000}},"usage":{"writerCalls":12,"writerTokensIn":41200,"writerTokensOut":2900,"cues":7,"jevTokens":9100}}}"#
+        let withLimits = String(shape(enabled: true, available: true).dropLast(2)) + limitsJSON
         for appearance in [NSAppearance.Name.aqua, .darkAqua] {
             let theme = appearance == .darkAqua ? "dark" : "light"
             for (name, text) in states {
@@ -100,6 +109,12 @@ import Vision
                 try card(model, appearance: appearance, name: "\(name)-\(theme)", out: out, words: [line, LiveCues.glassesLine]
                          + (store.action == .addDecisionKey ? [LiveCues.addKeyLabel] : store.action == .checkAgain ? [LiveCues.checkAgainLabel] : []))
             }
+            answer(withLimits)
+            await store.load(run)
+            expect(store.settings?.limits?.values.count == 4, "the limits fixture reads", store.line)
+            try card(model, appearance: appearance, name: "limits-\(theme)", out: out,
+                     words: [LiveCues.barTitle, LiveCues.moreCues, LiveCues.fewerCues, "0.80", LiveCues.maxCuesTitle, LiveCues.gapTitle, "45",
+                             LiveCues.dailyTitle, LiveCues.envNote, "Today: 7 cues, 12 writer calls, ~44K tokens", LiveCues.glassesLine])
             // The 409: the server's environment holds it on, the row says so and shows the switch held.
             answer(shape(enabled: true, available: true))
             await store.load(run)

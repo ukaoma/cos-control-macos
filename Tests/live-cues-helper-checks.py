@@ -86,6 +86,30 @@ with tempfile.TemporaryDirectory(prefix='cos-live-cues-', dir='/tmp') as tmp:
         check(got['ok'] and got['details']['httpStatus'] == 500 and 'SECRET' not in json.dumps(got) and 'enabled' not in got['details'],
               'a 500 carries no server text')
 
+        # 0.5.329 (server 6.79.2): the limits post on the same route as the validated literals; the answer's limits and
+        # today's usage cross with only their contract keys.
+        limit = lambda v, src='setting', locked=False, lo=0, hi=600: {'value': v, 'source': src, 'locked': locked, 'bounds': {'min': lo, 'max': hi}, 'x': 'SECRET'}
+        state['status'] = 200
+        state['body'] = dict(shape, enabled=True, source='setting', gate=dict(limit(0.75, lo=0.5, hi=0.95), bounds={'min': 0.5, 'max': 0.95, 'step': 0.05}),
+                             maxCuesPerMeeting=limit(12, lo=1, hi=25), cooldownSeconds=limit(45), dailyWriterCalls=limit(300, 'env', True, 0, 5000),
+                             usage={'writerCalls': 12, 'writerTokensIn': 41200, 'writerTokensOut': 2900, 'cues': 7, 'jevTokens': 9100, 'usd': 'SECRET'})
+        got = run('--gate', '0.75', '--max-cues', '12')
+        check(requests[-1] == ('POST', '/api/live-cues/v2/settings', True, '{"gate":0.75,"maxCuesPerMeeting":12}'), 'the limits post exactly the validated values')
+        d = got['details']
+        check(d['gate'] == {'value': 0.75, 'source': 'setting', 'locked': False, 'bounds': {'min': 0.5, 'max': 0.95, 'step': 0.05}}
+              and d['dailyWriterCalls']['locked'] is True and 'SECRET' not in json.dumps(got), 'the limits cross with only their keys')
+        check(d['usage'] == {'writerCalls': 12, 'writerTokensIn': 41200, 'writerTokensOut': 2900, 'cues': 7, 'jevTokens': 9100}, "today's usage crosses")
+        run('--cooldown-seconds', '90', '--daily-writer-calls', '0')
+        check(requests[-1][3] == '{"cooldownSeconds":90,"dailyWriterCalls":0}', 'the gap and the daily limit post')
+        prior = len(requests)
+        for bad in (['--gate', '2'], ['--gate', '0.5e1'], ['--max-cues', '-1'], ['--max-cues', '1.5'], ['--max-cues'], ['--set', 'on', '--gate', '0.8'],
+                    ['--cooldown-seconds', '1e3']):
+            check(not run(*bad)['ok'], f'the limits refuse {bad}')
+        check(len(requests) == prior, 'a refused limit never reaches the server')
+        state['status'] = 409; state['body'] = {'error': 'env_locked', 'message': 'SECRET'}
+        got = run('--gate', '0.6')
+        check(got['ok'] and got['details'] == {'transport': 'answered', 'httpStatus': 409, 'error': 'env_locked'}, 'a 409 crosses by its code')
+
         with socket.socket() as s:
             s.bind(('127.0.0.1', 0)); closed = s.getsockname()[1]
         prior = len(requests)

@@ -16591,12 +16591,65 @@ final class COSControlHelper {
                let proto = Int(exactly: number.doubleValue), (0...1_000).contains(proto) { capability["protocol"] = proto }
             out["capability"] = capability
         }
+        // 0.5.329 (server 6.79.2): the four limits ({value, source, locked, bounds {min, max, step?}}) and today's usage.
+        for key in Self.liveCuesLimitKeys {
+            guard let raw = body[key] as? [String: Any], let value = Self.liveCueNumber(raw["value"]), value >= 0 else { continue }
+            var limit: [String: Any] = ["value": value]
+            if let source = raw["source"] as? String, ["env", "setting", "default"].contains(source) { limit["source"] = source }
+            if let locked = flag(raw["locked"]) { limit["locked"] = locked }
+            if let bounds = raw["bounds"] as? [String: Any], let low = Self.liveCueNumber(bounds["min"]), let high = Self.liveCueNumber(bounds["max"]),
+               low >= 0, low <= high {
+                var kept: [String: Any] = ["min": low, "max": high]
+                if let step = Self.liveCueNumber(bounds["step"]), step > 0 { kept["step"] = step }
+                limit["bounds"] = kept
+            }
+            out[key] = limit
+        }
+        if let raw = body["usage"] as? [String: Any] {
+            var usage: [String: Any] = [:]
+            for key in ["writerCalls", "writerTokensIn", "writerTokensOut", "cues", "jevTokens"] {
+                if let n = Self.liveCueCount(raw[key]) { usage[key] = n }
+            }
+            out["usage"] = usage
+        }
         return out
     }
 
+    /// 0.5.329: the limits Control may set (server 6.79.2), each a flag of `live-cues-settings`, posted to the same route.
+    static let liveCuesLimitKeys = ["gate", "maxCuesPerMeeting", "cooldownSeconds", "dailyWriterCalls"]
+    static let liveCuesLimitFlags: [(flag: String, key: String)] = [
+        ("--gate", "gate"), ("--max-cues", "maxCuesPerMeeting"), ("--cooldown-seconds", "cooldownSeconds"), ("--daily-writer-calls", "dailyWriterCalls"),
+    ]
+
+    /// The POST body for the limit flags given, or nil when one is malformed. The gate is a probability (0 to 1, at most
+    /// three decimals); the others whole numbers up to six digits. The server owns the real bounds and answers out of
+    /// range itself. Each value is copied as the validated literal, so a JSON number is never re-printed as 0.55000000001.
+    static func liveCuesLimitsBody(_ values: [String: String]) -> String? {
+        guard !values.isEmpty, Set(values.keys).isSubset(of: Set(liveCuesLimitKeys)) else { return nil }
+        var pairs: [String] = []
+        for key in values.keys.sorted() {
+            let text = values[key] ?? ""
+            let pattern = key == "gate" ? "\\A(0(\\.[0-9]{1,3})?|1(\\.0{1,3})?)\\z" : "\\A(0|[1-9][0-9]{0,5})\\z"
+            guard text.range(of: pattern, options: .regularExpression) != nil else { return nil }
+            pairs.append("\"\(key)\":\(text)")
+        }
+        return "{" + pairs.joined(separator: ",") + "}"
+    }
+
     private func emitLiveCuesSettings(args: [String]) throws {
-        guard let plan = Self.liveCuesSettingsRequest(hasSet: args.contains("--set"), value: option("--set", in: args)) else {
-            throw HelperError.message("Use --set on or --set off")
+        var limits: [String: String] = [:]
+        for (flag, key) in Self.liveCuesLimitFlags where args.contains(flag) { limits[key] = option(flag, in: args) ?? "" }
+        let plan: (method: String, body: String?)
+        if limits.isEmpty {
+            guard let read = Self.liveCuesSettingsRequest(hasSet: args.contains("--set"), value: option("--set", in: args)) else {
+                throw HelperError.message("Use --set on or --set off")
+            }
+            plan = read
+        } else {
+            guard !args.contains("--set"), let body = Self.liveCuesLimitsBody(limits) else {
+                throw HelperError.message("Use --gate 0 to 1, --max-cues, --cooldown-seconds or --daily-writer-calls as whole numbers, without --set")
+            }
+            plan = ("POST", body)
         }
         guard let token = try? readToken() else {
             emit(ok: true, message: "No pairing token", details: ["transport": "no_token"])
@@ -21819,6 +21872,35 @@ final class COSControlHelper {
         try expect(Self.liveCuesSettingsAnswer(["error": "env_forced"])["error"] as? String == "env_forced"
                    && Self.liveCuesSettingsAnswer(["capability": ["reason": "x"]])["capability"] == nil && Self.liveCuesSettingsAnswer(nil).isEmpty,
                    "live-cues-settings keeps a refusal's code; a capability without available is not one")
+        // 0.5.329: the limits through live-cues-settings (server 6.79.2).
+        try expect(Self.liveCuesLimitsBody(["gate": "0.75", "maxCuesPerMeeting": "12"]) == #"{"gate":0.75,"maxCuesPerMeeting":12}"#,
+                   "the limits post as the validated literals, keys sorted")
+        try expect(Self.liveCuesLimitsBody(["cooldownSeconds": "0", "dailyWriterCalls": "300"]) == #"{"cooldownSeconds":0,"dailyWriterCalls":300}"#,
+                   "zero and whole numbers post")
+        for bad in [["gate": "1.5"], ["gate": "0.12345"], ["gate": ".5"], ["gate": "-0.1"], ["gate": "0.5e1"], ["maxCuesPerMeeting": "1.5"],
+                    ["maxCuesPerMeeting": "-1"], ["maxCuesPerMeeting": "01"], ["maxCuesPerMeeting": "1000000"], ["cooldownSeconds": ""],
+                    ["enabled": "true"], [String: String]()] {
+            try expect(Self.liveCuesLimitsBody(bad) == nil, "the limits refuse \(bad)")
+        }
+        let limitsAnswer = Self.liveCuesSettingsAnswer([
+            "enabled": true, "source": "setting", "capability": ["available": true],
+            "gate": ["value": 0.8, "source": "default", "locked": false, "bounds": ["min": 0.5, "max": 0.95, "step": 0.05], "x": "SECRET"],
+            "maxCuesPerMeeting": ["value": 25, "source": "env", "locked": true, "bounds": ["min": 1, "max": 25]],
+            "cooldownSeconds": ["value": "45", "source": "default"],
+            "dailyWriterCalls": ["value": 200, "source": "admin", "locked": "yes", "bounds": ["min": 9, "max": 1]],
+            "usage": ["writerCalls": 12, "writerTokensIn": 41_000, "writerTokensOut": 3_000, "cues": 7, "jevTokens": 9_000, "cost": "SECRET"],
+        ])
+        let gateLimit = limitsAnswer["gate"] as? [String: Any]
+        let capLimit = limitsAnswer["maxCuesPerMeeting"] as? [String: Any]
+        let dailyLimit = limitsAnswer["dailyWriterCalls"] as? [String: Any]
+        try expect(gateLimit?["value"] as? Double == 0.8 && gateLimit?["x"] == nil && (gateLimit?["bounds"] as? [String: Any])?["step"] as? Double == 0.05
+                   && capLimit?["locked"] as? Bool == true && capLimit?["source"] as? String == "env",
+                   "the limits pass value, source, locked and bounds")
+        try expect(limitsAnswer["cooldownSeconds"] == nil && dailyLimit?["value"] as? Double == 200 && dailyLimit?["source"] == nil
+                   && dailyLimit?["locked"] == nil && dailyLimit?["bounds"] == nil,
+                   "a value that is not a number drops the limit; a bad source, flag or bounds is dropped")
+        try expect((limitsAnswer["usage"] as? [String: Any])?.count == 5 && (limitsAnswer["usage"] as? [String: Any])?["cost"] == nil,
+                   "today's usage passes its five counts, nothing else")
         // 0.5.327: live-cues-history and live-cues-rate. The grammar is refused before anything is sent; only the contract
         // crosses back.
         try expect(Self.liveCuesHistoryPath(days: nil, session: nil, unrated: false) == "/api/live-cues/history?days=7&limit=200",
