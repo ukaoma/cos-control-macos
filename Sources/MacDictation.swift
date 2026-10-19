@@ -32,6 +32,9 @@ enum DictationAudioDevices {
             return DictationMicrophone(id: uid, deviceID: id, name: name)
         }.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
+    /// 0.5.327: the list read off the main actor (a nonisolated async function runs on the global executor), for the
+    /// refresh after listening began; the result comes back to the caller's actor.
+    static func inputsOffMain() async -> [DictationMicrophone] { inputs() }
     /// 0.5.327: single property reads for the press (DictationStart.resolve, DictationSpare.check): no enumeration.
     static func uid(of id: AudioDeviceID) -> String? { string(id, kAudioDevicePropertyDeviceUID) }
     static func defaultInput() -> AudioDeviceID? {
@@ -1761,7 +1764,9 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
         startMarks = DictationStartMarks(pressed: pressed)
         spareTask?.cancel(); spareTask = nil
         task = Task {
-            startMarks?.pressToTaskMs = startMarks?.since(ProcessInfo.processInfo.systemUptime)
+            // A local first: reading and writing startMarks in one statement is an overlapping access (Swift 6 exclusivity).
+            let toTask = startMarks?.since(ProcessInfo.processInfo.systemUptime)
+            startMarks?.pressToTaskMs = toTask
             let asking = ProcessInfo.processInfo.systemUptime
             let permission: Bool
             switch AVCaptureDevice.authorizationStatus(for: .audio) {
@@ -1817,7 +1822,8 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
             // not trimmed from the recording.
             phase = "Listening"; pill = .listening(since: Date())
             playSound(.start)
-            startMarks?.pressToSoundMs = startMarks?.since(ProcessInfo.processInfo.systemUptime)
+            let toSound = startMarks?.since(ProcessInfo.processInfo.systemUptime)
+            startMarks?.pressToSoundMs = toSound
             // After the start sound is scheduled (COS is excluded from the mute, so it still plays); never during a Mac
             // recording. Every way listening ends calls quiet.end(): stop (before the stop sound), fail and cancel. Built
             // after the microphone opened, so building it never delays the first words (0.5.327; on Miles's Mac the
@@ -1844,9 +1850,9 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
             timer = Task { try? await Task.sleep(for: .seconds(MacDictationPolicy.maximumSeconds)); if !Task.isCancelled { stop(ending: .maximum) } }
             // A chosen microphone: the list follows device changes for the next press, read off this one.
             if !microphoneUID.isEmpty {
-                Task.detached { [weak self] in
-                    let list = DictationAudioDevices.inputs()
-                    await MainActor.run { self?.microphones = list }
+                Task { [weak self] in
+                    let list = await DictationAudioDevices.inputsOffMain()
+                    self?.microphones = list
                 }
             }
         }

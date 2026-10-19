@@ -87,9 +87,10 @@ pin(start.count("refreshMicrophones()") == 1 and "enumerate: { refreshMicrophone
     "no list on press", "the press reads the microphone list only inside DictationStart.resolve's enumerate")
 pin("DictationStart.resolve(selectedUID: microphoneUID, cached: microphoneIDs, uidOf: { DictationAudioDevices.uid(of: $0) }," in start,
     "no list on press", "the press resolves the device from the cache and one UID read")
-detached = at(start, "            if !microphoneUID.isEmpty {\n                Task.detached { [weak self] in\n                    let list = DictationAudioDevices.inputs()", "list after start")
-pin(start.count("DictationAudioDevices.inputs()") == 1 and detached > quiet, "list after start",
-    "the list is refreshed off the main actor, after listening began, and only for a chosen microphone")
+detached = at(start, "            if !microphoneUID.isEmpty {\n                Task { [weak self] in\n                    let list = await DictationAudioDevices.inputsOffMain()", "list after start")
+pin("DictationAudioDevices.inputs()" not in start and detached > quiet
+    and "    static func inputsOffMain() async -> [DictationMicrophone] { inputs() }" in body(d, "enum DictationAudioDevices {"), "list after start",
+    "the list is refreshed off the main actor (a nonisolated async read), after listening began, and only for a chosen microphone")
 core = code(read("Sources/MacDictationCore.swift"))
 pin('guard !selectedUID.isEmpty else { return (.systemDefault, false) }' in body(core, "    static func resolve(selectedUID: String, cached: [String: AudioDeviceID], uidOf: (AudioDeviceID) -> String?,"), "no list on press",
     "no selection is the system default before any closure runs")
