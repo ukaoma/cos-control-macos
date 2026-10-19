@@ -1092,7 +1092,8 @@ enum KeyLanesHelperCore {
             out["keyedSessionIds"] = (body["keyedSessionIds"] as? [Any] ?? []).prefix(maxKeyedSessions)
                 .compactMap { text($0, max: 128, pattern: sessionPattern) }
         case "disable":
-            if body["forcedOnBy"] as? String == "COS_KEY_LANES" { out["forcedOnBy"] = "COS_KEY_LANES" }
+            // The env switch that keeps lanes on (P1 says which; only an env name crosses).
+            if let by = text(body["forcedOnBy"], max: 40, pattern: "\\A[A-Z][A-Z0-9_]*\\z") { out["forcedOnBy"] = by }
         case "save-key", "set-cap":
             if let key = keyRecord(body["key"]) { out["key"] = key }
             if let credit = body["credit"] as? [String: Any] {
