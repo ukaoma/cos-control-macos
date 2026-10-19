@@ -30,6 +30,104 @@ enum MacDictationPolicy {
     }
 }
 
+// MARK: - Release tail (0.5.326)
+//
+// Miles, 2026-10-18 21:21: "It keeps happening now": the last word or two of a dictation went missing unless he held the
+// key about a second longer. 0.5.325 closed the microphone the instant the key came up, so the speech still in flight
+// (the input device's latency plus the tap's 2,048-frame buffer, roughly 50 to 150 ms) and the resampler's last
+// samples were dropped. Now a person's stop keeps listening for a short tail, then closes the microphone and drains
+// the converter.
+
+enum DictationReleaseTail {
+    /// The tail after a person's stop. Long enough for in-flight audio and a trailing consonant; short enough that the
+    /// wait before transcription is not felt.
+    static let milliseconds = 300
+    /// How listening ends. Only the person's own stop (the hold key released, the toggle pressed again) takes the tail:
+    /// the two-minute limit, a microphone failure and an interruption (a chord, sleep, a session switch) close at once,
+    /// and cancel, quit and turning dictation off never transcribe at all.
+    enum Ending: Sendable { case released, maximum, failure, interrupted }
+    static func tail(for ending: Ending) -> Int { ending == .released ? milliseconds : 0 }
+    /// A press while the tail runs: the microphone is still open and nothing has been sent, so the same dictation goes on
+    /// (the release came early). It is never a second dictation, so no audio is lost and none is shared between two.
+    enum PressDuringTail: Equatable, Sendable { case extend, normal }
+    static func press(tailing: Bool, phase: String) -> PressDuringTail { tailing && phase == "Listening" ? .extend : .normal }
+    /// 16 kHz mono Int16: 32 bytes a millisecond.
+    static func bytes(milliseconds: Int) -> Int { max(0, milliseconds) * 32 }
+    /// RMS level of a PCM16 byte range in dBFS, nil when the range is empty. Numbers only, for the timing line.
+    static func dBFS(_ pcm: Data, from: Int, to: Int) -> Double? {
+        let lower = max(0, min(from, pcm.count)) / 2 * 2, upper = max(0, min(to, pcm.count)) / 2 * 2
+        guard upper > lower else { return nil }
+        var sum = 0.0
+        pcm.withUnsafeBytes { raw in
+            for offset in stride(from: lower, to: upper, by: 2) {
+                let x = Double(Int16(littleEndian: raw.loadUnaligned(fromByteOffset: offset, as: Int16.self))) / 32768
+                sum += x * x
+            }
+        }
+        let rms = (sum / Double((upper - lower) / 2)).squareRoot()
+        return rms > 0 ? (20 * log10(rms) * 10).rounded() / 10 : -120
+    }
+}
+
+/// One dictation's timing: numbers and identifiers only, never text or audio. One JSON line each in
+/// ~/Library/Application Support/COS Control/dictation-timing.jsonl, and the same numbers in the dictation log.
+struct DictationTiming: Codable, Equatable, Sendable {
+    var at: String
+    /// Key up (or toggle) to the microphone closed: the tail plus the close itself.
+    var releaseToClosedMs: Int
+    var tailMs: Int
+    var capturedSeconds: Double
+    /// Speech level of the 250 ms before the release and of the tail after it. A loud tail is speech the tail saved.
+    var finalDBFS: Double?
+    var tailDBFS: Double?
+    var engine: String?
+    var transcribeMs: Int?
+    var polishMs: Int?
+    /// typed, copied, no_speech, failed, canceled.
+    var outcome: String
+    static let finalWindowMilliseconds = 250
+    /// The release-side numbers from the captured PCM and the byte count at the release.
+    static func measure(pcm: Data, releaseBytes: Int, tailMs: Int, releaseToClosedMs: Int, at: Date) -> DictationTiming {
+        let release = min(max(0, releaseBytes), pcm.count)
+        let f = ISO8601DateFormatter(); f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return DictationTiming(at: f.string(from: at), releaseToClosedMs: releaseToClosedMs, tailMs: tailMs,
+                               capturedSeconds: (Double(pcm.count) / 32_000 * 100).rounded() / 100,
+                               finalDBFS: DictationReleaseTail.dBFS(pcm, from: release - DictationReleaseTail.bytes(milliseconds: finalWindowMilliseconds), to: release),
+                               tailDBFS: DictationReleaseTail.dBFS(pcm, from: release, to: pcm.count),
+                               engine: nil, transcribeMs: nil, polishMs: nil, outcome: "pending")
+    }
+}
+
+/// The timing file: append one line, keep it bounded. Past `maximumBytes` the file moves to `.1` (replacing the old one)
+/// and a new one starts, so at most two files of 256 KB each exist. Private (0600). A failure to write is ignored.
+enum DictationTimingLog {
+    static let fileName = "dictation-timing.jsonl"
+    static let maximumBytes = 256 * 1024
+    static func line(_ timing: DictationTiming) -> Data? {
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        guard var data = try? encoder.encode(timing) else { return nil }
+        data.append(0x0A)
+        return data
+    }
+    static func append(_ timing: DictationTiming, to url: URL, fileManager: FileManager = .default) {
+        guard let line = line(timing) else { return }
+        let size = (try? fileManager.attributesOfItem(atPath: url.path)[.size] as? Int) ?? 0
+        if size + line.count > maximumBytes, size > 0 {
+            let rotated = url.appendingPathExtension("1")
+            try? fileManager.removeItem(at: rotated)
+            try? fileManager.moveItem(at: url, to: rotated)
+        }
+        if !fileManager.fileExists(atPath: url.path) {
+            try? fileManager.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            _ = fileManager.createFile(atPath: url.path, contents: nil, attributes: [.posixPermissions: 0o600])
+        }
+        guard let handle = try? FileHandle(forWritingTo: url) else { return }
+        defer { try? handle.close() }
+        _ = try? handle.seekToEnd()
+        try? handle.write(contentsOf: line)
+    }
+}
+
 /// Serial microphone callback owns conversion; this lock protects its bounded result from Stop.
 final class DictationPCMBuffer: @unchecked Sendable {
     private let lock = NSLock()
@@ -62,6 +160,8 @@ final class DictationPCMBuffer: @unchecked Sendable {
         return data
     }
     func snapshot(maximumBytes: Int) -> Data { lock.lock(); defer { lock.unlock() }; return Data(data.suffix(max(0, maximumBytes / 2 * 2))) }
+    /// 0.5.326: how much is captured so far (the release mark the timing line splits on).
+    func byteCount() -> Int { lock.lock(); defer { lock.unlock() }; return data.count }
     func failureMessage() -> String? { lock.lock(); defer { lock.unlock() }; return failure }
     func currentLevel() -> Double { lock.lock(); defer { lock.unlock() }; return level }
 }

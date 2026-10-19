@@ -1,3 +1,37 @@
+## 0.5.326 (build 379), dictation keeps your last word
+
+Miles, 2026-10-18 21:21: "It keeps happening now": the last word or two of a Mac dictation went missing unless he held
+the key about a second longer.
+
+- Cause: 0.5.325 closed the microphone the instant the key came up. The speech still in flight (the input device's
+  latency plus the tap's 2,048-frame buffer, roughly 50 to 150 ms) and the resampler's last samples were dropped, and a
+  person usually lets go while finishing the last word.
+- Release tail: the person's stop (the hold key released, or Start / stop pressed again) keeps listening for 300 ms
+  (DictationReleaseTail.milliseconds), then closes the microphone. The pill stays LISTENING through the tail; other
+  apps come back and the stop sound plays only after the microphone has closed, so the sound is never recorded.
+- The converter is drained when the microphone closes: the resampler's held samples are kept, and a buffer that
+  arrives after the drain is ignored.
+- What closes at once, as before: Cancel, quit and turning dictation off (nothing is transcribed), the two-minute limit
+  and a microphone failure (even in the middle of a tail), and an interruption (a chord, sleep, a session switch). An
+  interruption during the tail closes at once and copies, like any interruption.
+- A press during the tail (hold or Start / stop): the microphone is still open and nothing has been sent, so the same
+  dictation carries on. It is never a second dictation, so no audio is lost and none is shared between two.
+- Timing, numbers only: one line per dictation in the log (subsystem com.gotcos.control, category dictation, public
+  numbers) and in ~/Library/Application Support/COS Control/dictation-timing.jsonl (private, 0600; past 256 KB it moves
+  to dictation-timing.jsonl.1, so at most two files). Fields: at, releaseToClosedMs, tailMs, capturedSeconds, finalDBFS
+  (the 250 ms before the release), tailDBFS (the tail), engine, transcribeMs, polishMs, outcome (typed, copied,
+  no_speech, failed). Never text or audio. The log lines were readable all along with
+  `log show --last 1h --predicate 'subsystem == "com.gotcos.control" AND category == "dictation"'`; the per-second
+  listening levels are debug and are not kept.
+- Canary against the real engine (Tests/dictation-tail-canary.py, run by hand with a local server): the pinned voice
+  sample ends on "...for your country", whose last word ends at 10,180 ms. Through the helper's real dictation route to
+  Parakeet Ultra: released at the end of the word without a tail, the capture (minus 120 ms in flight) heard "can do
+  for your"; released 120 ms early, "can do for yourself". With the 300 ms tail both heard "do for your country". The
+  whole utterance (positive control) kept the word too. With the tail set to 0 the canary fails, so it can fail.
+  Evidence: tail-canary.json. It cuts a recorded sample to model a release; it does not drive a live microphone.
+- Tests: the policy, the dBFS split, the timing line and the bounded file in MacDictationChecks (14 mutants, each
+  killed by a named check), the wiring in Tests/dictation-tail-pins.py (9 mutants, each caught).
+
 ## 0.5.325 (build 378), AI polish for dictation, and Miles Windu joins the shuffled combat casts
 
 Miles, 2026-10-18: Claude cleans a dictation before COS pastes it. Off by default.

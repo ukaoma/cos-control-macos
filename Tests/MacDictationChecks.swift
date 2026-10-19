@@ -1144,6 +1144,54 @@ final class FakeDictationBoard: DictationPasteboardAccess {
             expect(correctedHeard == heard && correctedModel == "haiku" && corrected?.text == "So the plan is done.",
                    "polish: Fix a word keeps what was heard and the model")
         }
-        print("PASS Mac dictation: \(count) policy checks; insert-target table, measured delivery, terminals, layout ⌘V, listening bars end to end, clipboard restore, sounds, pill placement, recent dictations file, card countdown, fix-a-word selection, quick fix, replace, span guess, quiet and restore, bounded audio, PCM16 WAV, device failure, any-key triggers, field context and its evidence, AI polish")
+        do {
+            // 0.5.326 release tail (Miles, 2026-10-18 21:21: the last word or two went missing on release).
+            typealias T = DictationReleaseTail
+            expect(T.milliseconds == 300 && T.tail(for: .released) == 300, "tail: the person's stop keeps listening 300 ms")
+            expect(T.tail(for: .maximum) == 0 && T.tail(for: .failure) == 0 && T.tail(for: .interrupted) == 0,
+                   "tail: the two-minute limit, a microphone failure and an interruption close at once")
+            expect(T.press(tailing: true, phase: "Listening") == .extend, "tail: a press during the tail continues the same dictation")
+            expect(T.press(tailing: false, phase: "Listening") == .normal && T.press(tailing: true, phase: "Transcribing") == .normal
+                   && T.press(tailing: false, phase: "Ready") == .normal, "tail: outside the tail a press is an ordinary press")
+            expect(T.bytes(milliseconds: 250) == 8_000 && T.bytes(milliseconds: -5) == 0, "tail: 32 bytes a millisecond at 16 kHz PCM16")
+            func tone(_ amplitude: Int16, ms: Int) -> Data {
+                var d = Data(); for i in 0..<(ms * 16) { let v = (i % 2 == 0 ? amplitude : -amplitude).littleEndian; withUnsafeBytes(of: v) { d.append(contentsOf: $0) } }; return d
+            }
+            let loud = tone(16_384, ms: 500), quiet = tone(164, ms: 300)
+            expect(T.dBFS(loud, from: 0, to: loud.count) == -6.0 && T.dBFS(quiet, from: 0, to: quiet.count) == -46.0,
+                   "tail: dBFS is RMS (half scale reads -6.0, a hundredth -46.0)")
+            expect(T.dBFS(loud, from: 10, to: 10) == nil && T.dBFS(Data(count: 64), from: 0, to: 64) == -120
+                   && T.dBFS(loud, from: -100, to: 99_999) == -6.0, "tail: an empty range is nil, silence -120, a range is clamped")
+            // Quiet, then 250 ms of speech right up to the release, then a quiet tail: the final window is that speech alone.
+            let speech = tone(16_384, ms: 250)
+            let pcm = quiet + speech + quiet
+            let timing = DictationTiming.measure(pcm: pcm, releaseBytes: quiet.count + speech.count, tailMs: 300, releaseToClosedMs: 312,
+                                                 at: Date(timeIntervalSince1970: 1_760_000_000))
+            expect(timing.finalDBFS == -6.0 && timing.tailDBFS == -46.0 && timing.capturedSeconds == 0.85 && timing.tailMs == 300
+                   && timing.releaseToClosedMs == 312 && timing.outcome == "pending",
+                   "tail: the timing line splits the 250 ms before the release from the tail after it")
+            expect(DictationTiming.measure(pcm: pcm, releaseBytes: 99_999_999, tailMs: 0, releaseToClosedMs: 3, at: Date()).tailDBFS == nil,
+                   "tail: no tail, no tail level")
+            let line = DictationTimingLog.line(timing).flatMap { String(data: $0, encoding: .utf8) } ?? ""
+            let keys = (try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any]).map { Set($0.keys) } ?? []
+            expect(line.hasSuffix("\n") && line.filter({ $0 == "\n" }).count == 1
+                   && keys == ["at", "releaseToClosedMs", "tailMs", "capturedSeconds", "finalDBFS", "tailDBFS", "outcome"],
+                   "tail: one JSON line, numbers and identifiers only (nil fields left out)")
+            let folder = FileManager.default.temporaryDirectory.appendingPathComponent("cos-timing-\(UUID().uuidString)")
+            let url = folder.appendingPathComponent(DictationTimingLog.fileName)
+            defer { try? FileManager.default.removeItem(at: folder) }
+            DictationTimingLog.append(timing, to: url)
+            DictationTimingLog.append(timing, to: url)
+            let perms = (try? FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions] as? Int) ?? 0
+            expect(((try? String(contentsOf: url, encoding: .utf8)) ?? "").split(separator: "\n").count == 2 && perms == 0o600,
+                   "tail: the timing file appends one line each and is private")
+            let lineBytes = DictationTimingLog.line(timing)!.count
+            for _ in 0..<(2 * (DictationTimingLog.maximumBytes / lineBytes) + 5) { DictationTimingLog.append(timing, to: url) }
+            let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int) ?? .max
+            let rotated = (try? FileManager.default.attributesOfItem(atPath: url.appendingPathExtension("1").path)[.size] as? Int) ?? 0
+            expect(size <= DictationTimingLog.maximumBytes && rotated > 0 && rotated <= DictationTimingLog.maximumBytes,
+                   "tail: the timing file is bounded: it rotates to .1 past 256 KB, two files at most")
+        }
+        print("PASS Mac dictation: \(count) policy checks; insert-target table, measured delivery, terminals, layout ⌘V, listening bars end to end, clipboard restore, sounds, pill placement, recent dictations file, card countdown, fix-a-word selection, quick fix, replace, span guess, quiet and restore, bounded audio, PCM16 WAV, device failure, any-key triggers, field context and its evidence, AI polish, release tail and timing")
     }
 }

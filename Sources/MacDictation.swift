@@ -47,7 +47,10 @@ enum DictationAudioDevices {
     private let pcm = DictationPCMBuffer()
     private var tapped = false
     private var observer: NSObjectProtocol?
+    private var converter: DictationConverter?
     func snapshot() -> Data { pcm.snapshot(maximumBytes: 320_000) }
+    /// 0.5.326: bytes captured so far (the release mark for the timing line).
+    var capturedBytes: Int { pcm.byteCount() }
     var level: Double { pcm.currentLevel() }
     var failure: String? { pcm.failureMessage() }
     func start(deviceID: AudioDeviceID?) throws {
@@ -65,6 +68,7 @@ enum DictationAudioDevices {
               let converter = AVAudioConverter(from: format, to: target) else { throw error("The microphone format is unavailable.") }
         let accumulator = pcm
         let converterBox = DictationConverter(converter: converter, target: target, pcm: accumulator)
+        self.converter = converterBox
         // @Sendable on both: a closure formed inside this @MainActor class otherwise inherits main-actor isolation,
         // Swift 6 checks it on entry, and AVAudioEngine calls from its own queue. 0.5.305 trapped on the first buffer.
         input.installTap(onBus: 0, bufferSize: 2048, format: format) { @Sendable buffer, _ in converterBox.consume(buffer) }
@@ -79,18 +83,36 @@ enum DictationAudioDevices {
         engine.stop()
         if tapped { engine.inputNode.removeTap(onBus: 0); tapped = false }
         if let observer { NotificationCenter.default.removeObserver(observer); self.observer = nil }
+        // 0.5.326: the resampler holds its last few milliseconds until it is told the stream ended. Keep them.
+        converter?.finish(); converter = nil
         return try pcm.result()
     }
     private func error(_ text: String) -> NSError { NSError(domain: "COSDictation", code: 1, userInfo: [NSLocalizedDescriptionKey: text]) }
 }
 
-/// AVAudioEngine calls a tap serially. No UI, network or file IO runs in this callback.
+/// AVAudioEngine calls a tap serially. No UI, network or file IO runs in this callback. 0.5.326: `finish` runs on the main
+/// actor after the tap is removed; the lock keeps it from ever overlapping a late callback.
 private final class DictationConverter: @unchecked Sendable {
     let converter: AVAudioConverter
     let target: AVAudioFormat
     let pcm: DictationPCMBuffer
+    private let lock = NSLock()
+    private var finished = false
     init(converter: AVAudioConverter, target: AVAudioFormat, pcm: DictationPCMBuffer) { self.converter = converter; self.target = target; self.pcm = pcm }
+    /// Drain: the converter's held samples come out once it is told the input ended. Called once, at stop.
+    func finish() {
+        lock.lock(); defer { lock.unlock() }
+        guard !finished else { return }
+        finished = true
+        guard let output = AVAudioPCMBuffer(pcmFormat: target, frameCapacity: 4096) else { return }
+        var failure: NSError?
+        let status = converter.convert(to: output, error: &failure) { _, state in state.pointee = .endOfStream; return nil }
+        guard status != .error, failure == nil, output.frameLength > 0, let data = output.int16ChannelData?[0] else { return }
+        pcm.append(Data(bytes: data, count: Int(output.frameLength) * 2))
+    }
     func consume(_ input: AVAudioPCMBuffer) {
+        lock.lock(); defer { lock.unlock() }
+        guard !finished else { return }
         let capacity = AVAudioFrameCount(ceil(Double(input.frameLength) * 16_000 / input.format.sampleRate) + 32)
         guard let output = AVAudioPCMBuffer(pcmFormat: target, frameCapacity: capacity) else { pcm.fail("Microphone conversion failed."); return }
         var supplied = false
@@ -1375,6 +1397,13 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
     private var toggleHeld = false
     private var holdPending = false
     private var generation = UUID()
+    /// 0.5.326 release tail: listening continues for DictationReleaseTail.milliseconds after the person's stop.
+    private var tailing = false
+    private var tailTask: Task<Void, Never>?
+    /// When and where (bytes captured) the person stopped, and the tail it took. Cleared when the microphone closes.
+    private var releaseMark: (uptime: TimeInterval, bytes: Int, tailMs: Int)?
+    /// This dictation's numbers (DictationTiming), written once it is typed, copied or fails.
+    private var timing: DictationTiming?
     var busy: Bool { ["Listening", "Starting", "Transcribing"].contains(phase) }
     private init() {
         let d = UserDefaults.standard
@@ -1584,7 +1613,9 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
     }
     func hotKey(_ id: UInt32, down: Bool) {
         if id == 1 {
-            if down, !held {
+            if down, !held, DictationReleaseTail.press(tailing: tailing, phase: phase) == .extend {
+                held = true; holdPending = true; extendTail()
+            } else if down, !held {
                 held = true; holdPending = true; start()
                 // QA 0.5.313: a press while the last dictation is still transcribing is refused. Latching `held` anyway
                 // let a chord on that refused press turn the LAST dictation into copy-only, and a chord's release never
@@ -1593,7 +1624,11 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
             }
             else if !down { held = false; if holdPending { holdPending = false; stop() } }
         } else if id == 2 {
-            if down, !toggleHeld { toggleHeld = true; phase == "Listening" ? stop() : start() }
+            if down, !toggleHeld {
+                toggleHeld = true
+                if DictationReleaseTail.press(tailing: tailing, phase: phase) == .extend { extendTail() }
+                else { phase == "Listening" ? stop() : start() }
+            }
             else if !down { toggleHeld = false }
         } else if id == 3, down {
             quickFix()
@@ -1637,7 +1672,7 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
                 meterTask = Task {
                     var tick = 0
                     while !Task.isCancelled, phase == "Listening", generation == attempt {
-                        if next.failure != nil { stop(); break }
+                        if next.failure != nil { stop(ending: .failure); break }
                         let rms = next.level
                         meter.push(levelMeter.update(rms: rms))
                         // Levels only, never audio: once a second, to confirm the meter's range on a real microphone.
@@ -1648,18 +1683,47 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
                         try? await Task.sleep(for: .milliseconds(50))
                     }
                 }
-                timer = Task { try? await Task.sleep(for: .seconds(MacDictationPolicy.maximumSeconds)); if !Task.isCancelled { stop() } }
+                timer = Task { try? await Task.sleep(for: .seconds(MacDictationPolicy.maximumSeconds)); if !Task.isCancelled { stop(ending: .maximum) } }
             } catch { let reason = error.localizedDescription; dictationLog.error("start failed: \(reason, privacy: .public)"); fail(reason) }
         }
     }
-    func stop() {
+    /// The person's stop: the hold key released, or the toggle pressed again.
+    func stop() { stop(ending: .released) }
+    /// 0.5.326: the person's stop keeps listening for the release tail (the pill stays LISTENING), then closes the
+    /// microphone; the two-minute limit and a microphone failure close at once, even mid-tail.
+    func stop(ending: DictationReleaseTail.Ending) {
         if phase == "Starting" { cancel(); return }
         guard phase == "Listening", let capture else { return }
+        let tail = DictationReleaseTail.tail(for: ending)
+        if tailing { if tail == 0 { closeMicrophone() }; return }
+        releaseMark = (ProcessInfo.processInfo.systemUptime, capture.capturedBytes, tail)
+        guard tail > 0 else { closeMicrophone(); return }
+        tailing = true
+        let attempt = generation
+        tailTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(tail))
+            guard let self, !Task.isCancelled, self.generation == attempt, self.tailing else { return }
+            self.closeMicrophone()
+        }
+    }
+    /// A press during the tail: the release came early. The same dictation goes on; nothing was closed or sent.
+    private func extendTail() {
+        tailing = false; tailTask?.cancel(); tailTask = nil; releaseMark = nil
+        dictationLog.notice("tail: pressed again during the tail; the same dictation continues")
+    }
+    private func closeMicrophone() {
+        guard phase == "Listening", let capture else { return }
+        tailing = false; tailTask?.cancel(); tailTask = nil
         timer?.cancel(); timer = nil; self.capture = nil
         meterTask?.cancel(); meterTask = nil
         let attempt = generation
         do {
             let pcm = try capture.stop()
+            if let mark = releaseMark {
+                timing = DictationTiming.measure(pcm: pcm, releaseBytes: mark.bytes, tailMs: mark.tailMs,
+                                                 releaseToClosedMs: Int(((ProcessInfo.processInfo.systemUptime - mark.uptime) * 1000).rounded()), at: Date())
+            }
+            releaseMark = nil
             // The microphone is closed: other apps come back before the stop sound plays.
             quiet.end()
             // A stray tap of the shortcut is not worth a card: the pill just goes away.
@@ -1684,6 +1748,8 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
             return
         }
         guard phase == "Listening", let capture else { cancel(); message = nil; return }
+        // 0.5.326: sleep or a session switch inside the release tail closes now and copies, as any interruption does.
+        tailing = false; tailTask?.cancel(); tailTask = nil; releaseMark = nil; timing = nil
         timer?.cancel(); timer = nil; self.capture = nil
         meterTask?.cancel(); meterTask = nil
         held = false; toggleHeld = false; holdPending = false
@@ -1715,7 +1781,10 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
             guard generation == attempt, !Task.isCancelled else { return }
             do {
                 guard let bridge else { throw NSError(domain: "COSDictation", code: 2, userInfo: [NSLocalizedDescriptionKey: "The transcription server is not connected."]) }
+                let asked = ProcessInfo.processInfo.systemUptime
                 let response = try await bridge(wav)
+                timing?.transcribeMs = Int(((ProcessInfo.processInfo.systemUptime - asked) * 1000).rounded())
+                timing?.engine = response.details["engine"]?.string
                 guard generation == attempt, !Task.isCancelled else { return }
                 // 0.5.317: any local engine the helper accepted (Parakeet Ultra, or Whisper on a 6.74.0 server). The
                 // helper refuses every other engine, and on an older server everything but Parakeet Ultra.
@@ -1723,7 +1792,7 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
                       let engine = response.details["engine"]?.string, DictationEngineName.title(engine) != nil else {
                     // No speech (the server's 204) is an answer, not a failure: retrying the same audio cannot help.
                     let noSpeech = response.details["noSpeech"]?.bool == true
-                    if noSpeech { pendingAudio = nil }
+                    if noSpeech { pendingAudio = nil; timing?.outcome = "no_speech" }
                     let reason = response.details["reason"]?.string ?? (noSpeech ? "no_speech" : "unknown")
                     let action = DictationFailureAction.resolve(action: response.details["action"]?.string, retryable: response.details["retryable"]?.bool,
                                                                 noSpeech: noSpeech, audioHeld: pendingAudio != nil)
@@ -1774,6 +1843,7 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
             outcome = .failed(error is CancellationError ? "canceled" : "helper")
         }
         let elapsed = Int(Date().timeIntervalSince(started) * 1000)
+        timing?.polishMs = elapsed
         dictationLog.notice("polish model=\(model.rawValue, privacy: .public) outcome=\(outcome.logName, privacy: .public) ms=\(elapsed)")
         return (outcome, model)
     }
@@ -1783,6 +1853,7 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
                                      engine: lastEngine?.engine, fallbackReason: lastEngine?.fallback,
                                      heard: lastPolish?.heard, polishModel: lastPolish?.model.rawValue)
         lastEngine = nil; lastPolish = nil
+        if case .refused = outcome { recordTiming("copied") } else { recordTiming("typed") }
         if let target { rememberTarget(target, for: record.id) }
         // 0.5.318: watch the field it went into for the person's own fixes (native apps; Electron is only measured).
         if let target, case .inserted = outcome {
@@ -1808,7 +1879,19 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
     /// A dictation that did not finish: the reason on the card, with its one action (0.5.317): Retry while the audio is
     /// held and a retry can succeed, Install Parakeet, Use Whisper, Open Transcription settings, or Open Settings when
     /// the microphone is not allowed. A failure COS raised itself retries the held audio (DictationFailureAction).
+    /// 0.5.326: one timing line per dictation, numbers only: the log (public, notice) and dictation-timing.jsonl.
+    private func recordTiming(_ outcome: String) {
+        guard var finished = timing else { return }
+        timing = nil
+        if finished.outcome == "pending" { finished.outcome = outcome }
+        func n(_ value: Double?) -> String { value.map { String(format: "%.1f", $0) } ?? "-" }
+        dictationLog.notice("timing release_to_closed_ms=\(finished.releaseToClosedMs) tail_ms=\(finished.tailMs) captured_s=\(n(finished.capturedSeconds), privacy: .public) final_dbfs=\(n(finished.finalDBFS), privacy: .public) tail_dbfs=\(n(finished.tailDBFS), privacy: .public) engine=\(finished.engine ?? "-", privacy: .public) transcribe_ms=\(finished.transcribeMs ?? -1) polish_ms=\(finished.polishMs ?? -1) outcome=\(finished.outcome, privacy: .public)")
+        if let url = Self.defaultHistoryURL()?.deletingLastPathComponent().appendingPathComponent(DictationTimingLog.fileName) {
+            DictationTimingLog.append(finished, to: url)
+        }
+    }
     private func fail(_ reason: String, card: Bool = true, action: DictationFailureAction? = nil) {
+        recordTiming("failed")
         let action = action ?? DictationFailureAction.resolve(action: nil, retryable: nil, noSpeech: false, audioHeld: pendingAudio != nil)
         quiet.end()
         phase = enabled ? "Ready" : "Off"; message = reason; pill = .hidden; meter.reset()
@@ -1843,6 +1926,7 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
     func cancel() {
         quiet.end()
         generation = UUID(); pendingAudio = nil; task?.cancel(); task = nil; timer?.cancel(); timer = nil
+        tailing = false; tailTask?.cancel(); tailTask = nil; releaseMark = nil; timing = nil
         meterTask?.cancel(); meterTask = nil; flashTask?.cancel(); flashTask = nil
         _ = try? capture?.stop(); capture = nil; held = false; toggleHeld = false; holdPending = false
         holdTracker?.reset(); toggleTracker?.reset()

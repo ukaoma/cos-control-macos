@@ -12,7 +12,8 @@ Lanes: core (ProviderStatusCore + DictationEveryoneChecks), store (run-transcrip
 (ProviderConnectModel + ProviderConnectChecks), dictation (MacDictationCore + MacDictationChecks), pins
 (dictation-everyone-pins.py, no compile), release (the CLI and entitlements self-tests, no Swift), helper (the full
 helper, then the helper check scripts, 0.5.325's dictation-polish among them; one large compile per mutant, so few
-mutants use it), polishpins (0.5.325 dictation-polish-pins.py, no compile).
+mutants use it), polishpins (0.5.325 dictation-polish-pins.py, no compile), tailpins (0.5.326 dictation-tail-pins.py, no
+compile).
 """
 import os, pathlib, shutil, subprocess, sys, tempfile
 
@@ -155,6 +156,21 @@ MUTANTS = [
      "no health probe spends the budget", "helper"),
     ("polish helper has no deadline", H, "                               timeout: Int(seconds.rounded(.up)), deadlineUptime: deadline)", "                               timeout: 9)",
      "a slow model is a timeout", "helper"),
+    # 0.5.326 release tail wiring (Tests/dictation-tail-pins.py, no compile).
+    ("tail pins: the hold release closes at once", MD, "    func stop() { stop(ending: .released) }", "    func stop() { stop(ending: .maximum) }", "person's stop", "tailpins"),
+    ("tail pins: the limit tails", MD, "if !Task.isCancelled { stop(ending: .maximum) }", "if !Task.isCancelled { stop() }", "limit", "tailpins"),
+    ("tail pins: a stale tail closes a newer dictation", MD, "guard let self, !Task.isCancelled, self.generation == attempt, self.tailing else { return }",
+     "guard let self else { return }", "tail current", "tailpins"),
+    ("tail pins: the release shows TRANSCRIBING early", MD, "        tailing = true\n        let attempt = generation\n        tailTask = Task",
+     "        tailing = true; pill = .transcribing\n        let attempt = generation\n        tailTask = Task", "pill stays listening", "tailpins"),
+    ("tail pins: a press during the tail starts a second dictation", MD, "                held = true; holdPending = true; extendTail()",
+     "                held = true; holdPending = true; start()", "press during tail", "tailpins"),
+    ("tail pins: cancel leaves the tail running", MD, "        generation = UUID(); pendingAudio = nil; task?.cancel(); task = nil; timer?.cancel(); timer = nil\n        tailing = false; tailTask?.cancel(); tailTask = nil; releaseMark = nil; timing = nil\n",
+     "        generation = UUID(); pendingAudio = nil; task?.cancel(); task = nil; timer?.cancel(); timer = nil\n", "cancel", "tailpins"),
+    ("tail pins: the converter is not drained", MD, "        converter?.finish(); converter = nil\n", "        converter = nil\n", "drain", "tailpins"),
+    ("tail pins: a late buffer converts after the drain", MD, "        lock.lock(); defer { lock.unlock() }\n        guard !finished else { return }\n        let capacity",
+     "        lock.lock(); defer { lock.unlock() }\n        let capacity", "drain lock", "tailpins"),
+    ("tail pins: a failed dictation writes no timing", MD, '        recordTiming("failed")\n', "", "every outcome", "tailpins"),
 ]
 
 
@@ -171,6 +187,8 @@ def lane(copy, name):
         return subprocess.run(["zsh", str(copy / "Tests/run-transcription-settings.sh")], capture_output=True, text=True)
     if name == "pins":
         return subprocess.run(["python3", str(copy / "Tests/dictation-everyone-pins.py"), str(copy)], capture_output=True, text=True)
+    if name == "tailpins":
+        return subprocess.run(["python3", str(copy / "Tests/dictation-tail-pins.py"), str(copy)], capture_output=True, text=True)
     if name == "polishpins":
         return subprocess.run(["python3", str(copy / "Tests/dictation-polish-pins.py"), str(copy)], capture_output=True, text=True)
     if name == "release":

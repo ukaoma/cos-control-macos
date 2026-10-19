@@ -217,15 +217,16 @@ save = body(dictation, "    private func saveRecent() {")
 need(save.index("guard retention.writesToDisk else {") < save.index("DictationHistory.save(recent, to: historyURL)")
      and "removeItem(at: historyURL)" in save,
      "Don't keep writes nothing and removes the file")
-need("pill = .transcribing" in body(dictation, "    func stop() {"), "release must show TRANSCRIBING")
+# 0.5.326: the stop that closes the microphone (after the release tail) is closeMicrophone; stop() starts the tail.
+need("pill = .transcribing" in body(dictation, "    private func closeMicrophone() {"), "release must show TRANSCRIBING")
 need("pill = .listening(since: Date())" in body(dictation, "    func start() {"), "the shortcut must show the listening pill")
 start_fn = body(dictation, "    func start() {")
 need("DictationPlacement.choose(petFrame: petFrame?(), focusedWindow: DictationFocusedWindow.frame()," in start_fn
      and "if case .floating(let screen)? = placement { surface = .floating; floatingScreen = screen } else { surface = .pet; floatingScreen = nil }" in start_fn,
      "the pill goes on the pet only when the pet is on the focused screen; else on that screen (0.5.312)")
-need("playSound(.start)" in start_fn and "playSound(.stop)" in body(dictation, "    func stop() {")
+need("playSound(.start)" in start_fn and "playSound(.stop)" in body(dictation, "    private func closeMicrophone() {")
      and start_fn.index("pill = .listening(since: Date())") < start_fn.index("playSound(.start)"), "start and stop sounds")
-stop_fn = body(dictation, "    func stop() {")
+stop_fn = body(dictation, "    private func closeMicrophone() {")
 need(stop_fn.index("let pcm = try capture.stop()") < stop_fn.index("playSound(.stop)"), "the stop sound plays only after the microphone closed")
 need("playSound(" not in body(dictation, "    func cancel() {"), "a cancel (a chord) is silent")
 need('forKey: "dictation.sound.start") ?? "pet"' in dictation and 'forKey: "dictation.sound.stop") ?? "pet"' in dictation
@@ -432,7 +433,7 @@ need('model.runHelper(["transcription-dictionary"], timeout: 20, stdinData: requ
 # ── 8. 0.5.313: fix from the moment it lands, replace the pasted text, quiet while dictating.
 sources = {path.name: strip_comments(path.read_text(encoding="utf-8")) for path in (root / "Sources").glob("*.swift")}
 start_fn = body(dictation, "    func start() {")
-stop_fn = body(dictation, "    func stop() {")
+stop_fn = body(dictation, "    private func closeMicrophone() {")
 need(start_fn.index("playSound(.start)") < start_fn.index("quiet.begin(mode: quietMode, macRecording: macRecordingActive?() ?? false)")
      < start_fn.index("task = Task {"),
      "quiet begins after the start sound is scheduled and knows about a Mac recording")
