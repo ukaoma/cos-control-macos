@@ -105,6 +105,20 @@ struct DictationTiming: Codable, Equatable, Sendable {
     var pressToSoundMs: Int? = nil
     /// A failed dictation's DictationFailReason code: which step failed, never what was said.
     var failReason: String? = nil
+    /// 0.5.328 smooth start (DictationStallMeter): the longest the main thread went without its 16 ms heartbeat from
+    /// the press until three seconds after LISTENING (or the microphone closed, if sooner). 16 to 17 is smooth.
+    var mainThreadStallMs: Int? = nil
+    /// The mute's build (tap, aggregate device, IO proc) and its start (AudioDeviceStart), on the output queue.
+    var quietBuildMs: Int? = nil
+    var quietStartMs: Int? = nil
+    /// The focused window's frame for the pill's placement (Accessibility, off the main thread since 0.5.328).
+    var placementMs: Int? = nil
+    /// How long the start sound took to start playing, on the output queue.
+    var soundMs: Int? = nil
+    /// An edit watch (Learn from my edits) was reading the last dictation's field when this one was pressed.
+    var editWatchAtPress: Bool? = nil
+    /// Typing or copying the text into the other app (Accessibility, the clipboard, ⌘V), on the main actor.
+    var deliverMs: Int? = nil
     static let finalWindowMilliseconds = 250
     /// The release-side numbers from the captured PCM and the byte count at the release.
     static func measure(pcm: Data, releaseBytes: Int, tailMs: Int, releaseToClosedMs: Int, at: Date) -> DictationTiming {
@@ -191,6 +205,12 @@ struct DictationStartMarks: Equatable, Sendable {
     var engineStartMs: Int?
     var pressToFirstBufferMs: Int?
     var pressToSoundMs: Int?
+    var mainThreadStallMs: Int?
+    var quietBuildMs: Int?
+    var quietStartMs: Int?
+    var placementMs: Int?
+    var soundMs: Int?
+    var editWatchAtPress: Bool?
     init(pressed: TimeInterval) { self.pressed = pressed }
     /// Whole milliseconds from one uptime to another, never negative.
     static func ms(_ from: TimeInterval, _ to: TimeInterval) -> Int { max(0, Int(((to - from) * 1000).rounded())) }
@@ -203,6 +223,8 @@ extension DictationTiming {
         pressToTaskMs = start.pressToTaskMs; quietMs = start.quietMs; permissionMs = start.permissionMs
         refreshMicsMs = start.refreshMicsMs; micListRead = start.micListRead; warmEngine = start.warmEngine
         engineStartMs = start.engineStartMs; pressToFirstBufferMs = start.pressToFirstBufferMs; pressToSoundMs = start.pressToSoundMs
+        mainThreadStallMs = start.mainThreadStallMs; quietBuildMs = start.quietBuildMs; quietStartMs = start.quietStartMs
+        placementMs = start.placementMs; soundMs = start.soundMs; editWatchAtPress = start.editWatchAtPress
     }
     /// A dictation that failed before the microphone captured anything: the start's numbers and nothing captured.
     static func startFailure(_ start: DictationStartMarks, at: Date) -> DictationTiming {
@@ -269,6 +291,63 @@ enum DictationSpare {
     /// Only with the microphone already allowed (building an input node is not a moment to ask) and never for a
     /// Bluetooth input (opening a headset's input can switch it to its call profile; only a dictation may do that).
     static func mayWarm(enabled: Bool, authorized: Bool, bluetooth: Bool) -> Bool { enabled && authorized && !bluetooth }
+}
+
+// MARK: - Smooth start (0.5.328)
+//
+// Miles, 2026-10-19 on 0.5.327: "the animation stops as the new listening pill comes in." His timing lines: quietMs
+// 1,103 to 2,173 ms, the start sound 44 to 258 ms after the first buffer, and once 1,052 ms before the press's own task
+// ran. All of it ran on the main actor, which also draws the pet (a TimelineView) and the pill, so both froze. CoreAudio
+// and AVAudioEngine work now runs on two serial queues; the main actor only publishes state.
+
+/// Where dictation's audio work runs, never the main thread. Each is serial, so work runs in the order it was asked.
+enum DictationAudioQueues {
+    /// Microphone engines: building a spare, and starting one. Stopping stays on the caller (DictationMicrophoneCapture
+    /// serialises its own engine calls), so the 0.5.326 release tail closes exactly when it did.
+    /// User-interactive: the press waits on it, as it used to wait on the main thread.
+    static let input = DispatchQueue(label: "com.gotcos.control.dictation.input", qos: .userInteractive)
+    /// Other apps' quiet (mute or lower volume) and COS's own start and stop sounds. The start sound is queued before the
+    /// mute, so COS's own audio object exists when the mute excludes it, and every end follows its begin.
+    static let output = DispatchQueue(label: "com.gotcos.control.dictation.output", qos: .userInitiated)
+    /// `work` on `queue`; the caller (the main actor) is free until it returns.
+    static func perform<T: Sendable>(on queue: DispatchQueue, _ work: @escaping @Sendable () throws -> T) async throws -> T {
+        try await withCheckedThrowingContinuation { (done: CheckedContinuation<T, Error>) in
+            queue.async { done.resume(with: Result { try work() }) }
+        }
+    }
+}
+
+/// The mute's two costs, measured where they run.
+struct DictationQuietTimes: Equatable, Sendable {
+    var buildMs: Int?
+    var startMs: Int?
+}
+
+/// The main thread's heartbeat: a 16 ms timer on the main run loop calls `tick`. The longest gap between beats (or from
+/// the press to the first beat) is how long the pet and the pill could not move. Ticks after `end` are ignored.
+final class DictationStallMeter: @unchecked Sendable {
+    static let tickMilliseconds = 16
+    /// After LISTENING, how long the heartbeat keeps measuring.
+    static let afterListeningSeconds: TimeInterval = 3
+    private let lock = NSLock()
+    private var last: TimeInterval
+    private var worst: TimeInterval = 0
+    private var beats = 0
+    private var endsAt: TimeInterval?
+    init(start: TimeInterval) { last = start }
+    /// One beat at `now`. False once `now` is past the end: the caller stops its timer.
+    @discardableResult func tick(_ now: TimeInterval) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        if let endsAt, now > endsAt { return false }
+        worst = max(worst, now - last); last = now; beats += 1
+        return true
+    }
+    func end(at uptime: TimeInterval) { lock.lock(); endsAt = uptime; lock.unlock() }
+    /// The longest gap in whole milliseconds, nil before the first beat.
+    var maxGapMs: Int? {
+        lock.lock(); defer { lock.unlock() }
+        return beats > 0 ? Int((worst * 1000).rounded()) : nil
+    }
 }
 
 /// Serial microphone callback owns conversion; this lock protects its bounded result from Stop.

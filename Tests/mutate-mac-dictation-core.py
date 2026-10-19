@@ -430,6 +430,17 @@ MUTANTS = [
     ("start: the line drops the first-buffer time", "engineStartMs = start.engineStartMs; pressToFirstBufferMs = start.pressToFirstBufferMs; pressToSoundMs = start.pressToSoundMs",
      "engineStartMs = start.engineStartMs; pressToSoundMs = start.pressToSoundMs"),
     ("start: a start failure claims captured audio", "releaseToClosedMs: 0, tailMs: 0, capturedSeconds: 0,", "releaseToClosedMs: 0, tailMs: 0, capturedSeconds: 1,"),
+    # 0.5.328 smooth start: the stall meter, the queues and the line.
+    ("smooth: the latest gap replaces the longest", "        worst = max(worst, now - last); last = now; beats += 1", "        worst = now - last; last = now; beats += 1"),
+    ("smooth: the press to the first beat is not counted", "        worst = max(worst, now - last); last = now; beats += 1",
+     "        worst = beats == 0 ? worst : max(worst, now - last); last = now; beats += 1"),
+    ("smooth: beats after the end still count", "        if let endsAt, now > endsAt { return false }\n", ""),
+    ("smooth: a slower heartbeat", "    static let tickMilliseconds = 16", "    static let tickMilliseconds = 50"),
+    ("smooth: perform runs on the caller", "            queue.async { done.resume(with: Result { try work() }) }", "            done.resume(with: Result { try work() })"),
+    ("smooth: one queue for microphones and sounds", '    static let output = DispatchQueue(label: "com.gotcos.control.dictation.output", qos: .userInitiated)',
+     "    static let output = input"),
+    ("smooth: the line drops the stall", "        mainThreadStallMs = start.mainThreadStallMs; quietBuildMs = start.quietBuildMs; quietStartMs = start.quietStartMs",
+     "        quietBuildMs = start.quietBuildMs; quietStartMs = start.quietStartMs"),
     ("start: milliseconds go negative", "    static func ms(_ from: TimeInterval, _ to: TimeInterval) -> Int { max(0, Int(((to - from) * 1000).rounded())) }",
      "    static func ms(_ from: TimeInterval, _ to: TimeInterval) -> Int { Int(((to - from) * 1000).rounded()) }"),
 ]

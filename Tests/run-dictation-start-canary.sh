@@ -23,7 +23,7 @@ def lift(key):
         i += 1
     return src[start:i + 1]
 parts = [lift("struct DictationMicrophone: Identifiable, Equatable {"), lift("enum DictationAudioDevices {"),
-         lift("@MainActor final class DictationMicrophoneCapture {"), lift("private final class DictationConverter: @unchecked Sendable {")]
+         lift("final class DictationMicrophoneCapture: @unchecked Sendable {"), lift("private final class DictationConverter: @unchecked Sendable {")]
 open(sys.argv[2], "w", encoding="utf-8").write("import Foundation\nimport AVFoundation\nimport CoreAudio\n\n" + "\n\n".join(parts) + "\n")
 PY
 /usr/bin/python3 "$ROOT/Tests/kit-compile.py" "$ROOT/Tests/compile-guard.sh" swiftc -target arm64-apple-macosx14.2 -swift-version 6 -strict-concurrency=complete -parse-as-library \

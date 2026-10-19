@@ -128,7 +128,7 @@ struct COSControlApp: App {
         COSAppDelegate.onSettings = { model.showSettings?() }
         COSAppDelegate.recordingAvailable = { model.recordingCount > 0 && model.liveTranscriptEnabled }
         COSAppDelegate.onOpenRecording = { model.showRecordingTranscript() }
-        COSAppDelegate.onTerminate = { model.dictation.cancel(); model.meetingAsk.flushAll() }
+        COSAppDelegate.onTerminate = { model.dictation.cancel(); model.dictation.flushAudio(); model.meetingAsk.flushAll() }
         MacRecordingTermination.prepare = { await model.macRecording.prepareToQuit() }
         MacRecordingTermination.needsPrepare = { model.macRecording.needsQuitTeardown }
         model.recordingStatusChanged = { [weak model] _ in NSApp.dockTile.badgeLabel = model?.recordingDockBadge }
