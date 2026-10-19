@@ -1,3 +1,36 @@
+## 0.5.327 (build 380), rate every live cue
+
+Miles, 2026-10-19: rate every live cue this week, so Friday's tuning (the bar, the spacing and the repeat rules) reads
+real verdicts. Needs COS server 6.79.0, which keeps a log of every cue it shows (30 days) and its verdicts. The lens's up
+and down vote keeps working and is kept beside a verdict, never replaced by it.
+
+- Memories, Cues to rate: this week's unrated cues, oldest first, one card at a time: the meeting, the local time and
+  how many minutes into the meeting, the kind, the score, the cue, its sources ("none, from the room only" when it drew
+  on nothing), what was said just before it, five verdicts (Useful, Late, Repeat, Wrong, Obvious), an optional note and
+  Skip. Keys 1 to 5 rate, N goes to the note and S skips, only while the card has focus; Return or Escape in the note
+  gives the keys back. Skip moves a cue to the end and sends nothing. "Ratings this week: X of Y" under the views.
+- Memories, Rated cues: this week's rated cues, newest first, each with its verdict and note; pick another verdict to
+  change it, or Clear to send it back to Cues to rate.
+- The two entries sit in the Memories page's own row, after To review, with the unrated count. They open a native view
+  (its own route, so Back and a tab switch close it) whose rail goes back to To review or Recent learning.
+- Meetings: beside Live COS Ask (and Meeting Ask on a saved glasses recording), a Cues view: the meeting's cues, newest
+  first, "N of 25 used", each with the five verdicts inline; a rated cue shows its verdict and note, with Change. A tap
+  on a cue shows what was said just before it. While the meeting runs the list reads again every 15 seconds, and only
+  while Cues is showing. Hide Ask still hides the whole panel. A saved meeting shows the cues of each original glasses
+  recording it holds (by its G2 session id), within the server's 30 days; a Mac recording has no live cues and no Cues
+  view.
+- An older server (no cue history, a 404): the Memories entries do not show, the meeting panel is Live COS Ask alone,
+  and an open cue view says "Rating cues needs server 6.79.0" in one line. Unreachable, reconnect and other failures each
+  have their own line and Check again; a rating that did not save says so on its card and changes nothing.
+- Helper: `live-cues-history [--days N] [--session ID] [--unrated]` (GET /api/live-cues/history, 200 at most) and
+  `live-cues-rate --session ID --cue ID --verdict useful|late|repeat|wrong|obvious|clear [--note TEXT]` (POST
+  /api/live-cues/feedback; the note whitespace-collapsed and cut to 200). Arguments outside the grammar never reach the
+  server; only the contract's keys cross back.
+- Tests: Tests/run-cue-verdicts.sh (wiring pins, the words, keys, 15-second floor and store against a stand-in helper,
+  the page's entries), Tests/cue-verdicts-helper-checks.py (the helper against a loopback fixture), the helper
+  self-test, and Tests/mutate-cue-verdicts.py over the new guards. `run-cue-verdicts.sh render <dir>` draws both
+  surfaces light and dark and reads them with Vision.
+
 ## 0.5.326 (build 379), dictation keeps your last word
 
 Miles, 2026-10-18 21:21: "It keeps happening now": the last word or two of a Mac dictation went missing unless he held

@@ -29,6 +29,8 @@ final class MeetingAskStore: ObservableObject {
     let homeArea = HomeAreaStore()
     /// 0.5.322: live cues v2 on or off (server 6.76.2). Its own store, like the home city: the server owns the switch.
     let liveCues = LiveCuesStore()
+    /// 0.5.327: rating live cues (server 6.79.0): Memories' cue review and the Cues view beside Live COS Ask read this one store.
+    let cueVerdicts = CueVerdictsStore()
     private var attaching: Set<String> = []
     private var fileObserver: AnyCancellable?
     private var publishedFiles: [String: [MeetingAskFile]] = [:]
@@ -1324,5 +1326,476 @@ final class MeetingAskComposerTextView: NSTextView {
         layout.ensureLayout(for: container)
         let used = ceil(layout.usedRect(for: container).height)
         return min(max(line, used), line * CGFloat(maxLines))
+    }
+}
+
+// MARK: Live cue verdicts (0.5.327, server 6.79.0)
+
+/// The five verdicts as one row of buttons: the stored one filled, the rest quiet. `showsKeys` prints each key (the cue
+/// card in Memories, where 1 to 5 rate).
+struct CueVerdictButtons: View {
+    let selected: CueVerdict?
+    var showsKeys = false
+    var disabled = false
+    let pick: (CueVerdict) -> Void
+    var body: some View {
+        MeetingAskActionsLayout {
+            ForEach(CueVerdict.allCases, id: \.self) { verdict in
+                let label = HStack(spacing: 6) {
+                    if showsKeys { Text(verdict.key).font(COSType.mono(10.5)).opacity(0.7) }
+                    Text(verdict.label)
+                }
+                if verdict == selected {
+                    Button { pick(verdict) } label: { label }.buttonStyle(COSPrimaryButtonStyle())
+                        .accessibilityValue("Selected")
+                } else {
+                    Button { pick(verdict) } label: { label }.buttonStyle(COSQuietButtonStyle())
+                }
+            }
+        }
+        .disabled(disabled)
+    }
+}
+
+/// COS Activity → Memories → Cues to rate and Rated cues (mock A, approved 2026-10-19). Mounted on
+/// `model.cueReviewRouteActive`, which only `openCueReview(_:)` and `closeCueReview()` write; the Memories page's two
+/// entries open it. The rail's To review and Recent learning go back to the page on that view.
+struct CueReviewPane: View {
+    @ObservedObject var model: ControllerModel
+    @ObservedObject var store: CueVerdictsStore
+    var openMemories: (String) -> Void
+    static func run(_ model: ControllerModel) -> CueVerdictsStore.Run { LiveCuesSettingsRow.run(model) }
+
+    private var view: CueVerdicts.Review { model.cueReview ?? .toRate }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 0) {
+            rail.frame(width: 210, alignment: .topLeading)
+            Rectangle().fill(COSPalette.line).frame(width: 1)
+            Group {
+                switch view {
+                case .toRate: queueView
+                case .rated: ratedView
+                }
+            }
+            .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity, alignment: .topLeading)
+        }
+        .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity, alignment: .top)
+        .background(COSPalette.panel)
+        .task(id: view) { await load(view) }
+    }
+
+    private func load(_ view: CueVerdicts.Review) async {
+        switch view {
+        case .toRate: await store.loadWeek(Self.run(model))
+        case .rated: await store.loadRated(Self.run(model))
+        }
+    }
+
+    private var rail: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            railLink("To review", active: false) { openMemories("review") }
+            railLink("Recent learning", active: false) { openMemories("recent") }
+            railLink("Cues to rate", count: store.counts?.unrated, active: view == .toRate) { model.openCueReview(.toRate) }
+            railLink("Rated cues", active: view == .rated) { model.openCueReview(.rated) }
+            if let counts = store.counts {
+                Text(CueVerdicts.ratingsLine(counts))
+                    .font(COSType.body(11.5))
+                    .foregroundStyle(COSPalette.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, 20)
+            }
+        }
+        .padding(.top, 22)
+        .padding(.leading, 22)
+        .padding(.trailing, 14)
+    }
+
+    private func railLink(_ title: String, count: Int? = nil, active: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                Text(title).font(COSType.body(13, weight: active ? .semibold : .regular))
+                    .foregroundStyle(active ? Color.primary : COSPalette.muted)
+                if let count { Text("\(count)").font(COSType.body(12.5)).foregroundStyle(COSPalette.accent).monospacedDigit() }
+                Spacer(minLength: 0)
+            }
+            .padding(.vertical, 7)
+            .padding(.leading, active ? 10 : 0)
+            .overlay(alignment: .leading) { if active { Rectangle().fill(COSPalette.gold).frame(width: 2) } }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(active ? .isSelected : [])
+    }
+
+    private func heading(_ title: String, _ detail: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 14) {
+            Text(title).font(COSType.display(24, weight: .medium))
+            Text(detail).font(COSType.body(12)).foregroundStyle(COSPalette.muted)
+            Spacer(minLength: 8)
+            Button { Task { await load(view) } } label: { Image(systemName: "arrow.clockwise") }
+                .buttonStyle(COSTextButtonStyle()).help("Check again")
+        }
+        .padding(.horizontal, 28)
+        .padding(.top, 22)
+        .padding(.bottom, 14)
+    }
+
+    /// The one line in place of cues, with Check again when another read can help.
+    @ViewBuilder
+    private func stateLine(_ state: CueVerdicts.State) -> some View {
+        if let line = CueVerdicts.line(state) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(line).font(COSType.body(12.5))
+                    .foregroundStyle(state == .checking ? AnyShapeStyle(.secondary) : AnyShapeStyle(COSPalette.amber))
+                    .fixedSize(horizontal: false, vertical: true)
+                if state != .checking && state != .olderServer {
+                    Button("Check again") { Task { await load(view) } }.buttonStyle(COSQuietButtonStyle())
+                }
+            }
+        }
+    }
+
+    private var queueView: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            heading("Cues to rate", CueVerdicts.keysLine)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    if store.weekState != .loaded {
+                        stateLine(store.weekState)
+                    } else if let cue = store.queue.first {
+                        CueRateCard(cue: cue, when: CueVerdicts.when(cue, now: Date(), style: model.clockStyle),
+                                    left: max(store.queue.count, store.counts?.unrated ?? 0), saving: store.saving.contains(cue.id), error: store.rateErrors[cue.id],
+                                    rate: { verdict, note in Task { await store.rate(cue, verdict: verdict, note: note, run: Self.run(model)) } },
+                                    skip: { store.skip(cue) })
+                            .id(cue.id)
+                        if store.queue.count > 1 {
+                            Text(CueVerdicts.nextLine(store.queue[1], style: model.clockStyle))
+                                .font(COSType.body(12)).foregroundStyle(COSPalette.muted).lineLimit(1)
+                        }
+                    } else {
+                        Text(CueVerdicts.doneLine(store.counts)).font(COSType.body(13)).foregroundStyle(.secondary)
+                    }
+                }
+                .padding(.horizontal, 28)
+                .padding(.bottom, 28)
+                .frame(maxWidth: 820, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(minHeight: 0, maxHeight: .infinity)
+        }
+    }
+
+    private var ratedView: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            heading("Rated cues", "Newest first. Pick another verdict to change one.")
+            if store.ratedState != .loaded {
+                stateLine(store.ratedState).padding(.horizontal, 28)
+                Spacer(minLength: 0)
+            } else if store.rated.isEmpty {
+                Text("No rated cues in the last 7 days.").font(COSType.body(13)).foregroundStyle(.secondary).padding(.horizontal, 28)
+                Spacer(minLength: 0)
+            } else {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 10) {
+                        ForEach(store.rated) { cue in
+                            CueRatedRow(cue: cue, when: CueVerdicts.when(cue, now: Date(), style: model.clockStyle),
+                                        saving: store.saving.contains(cue.id), error: store.rateErrors[cue.id]) { verdict in
+                                Task { await store.rate(cue, verdict: verdict, note: verdict == nil ? nil : cue.rating?.note, run: Self.run(model)) }
+                            }
+                        }
+                    }
+                    .padding(.horizontal, 28)
+                    .padding(.bottom, 28)
+                    .frame(maxWidth: 820, alignment: .leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(minHeight: 0, maxHeight: .infinity)
+            }
+        }
+    }
+}
+
+/// One cue to rate. Keys 1 to 5, N and S act only while the card itself has focus (CueVerdicts.key), never while the
+/// note field or anything else has it. The note lives here, so typing in it redraws this card and nothing above it.
+struct CueRateCard: View {
+    let cue: LiveCueRecord
+    let when: String
+    let left: Int
+    let saving: Bool
+    let error: String?
+    let rate: (CueVerdict, String) -> Void
+    let skip: () -> Void
+    private enum Focus: Hashable { case card, note }
+    @FocusState private var focus: Focus?
+    @State private var note = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(alignment: .firstTextBaseline, spacing: 10) {
+                    Text(cue.meetingTitle.isEmpty ? "Glasses meeting" : cue.meetingTitle).font(COSType.body(12.5, weight: .semibold)).lineLimit(1)
+                    Text(when)
+                    Text(CueVerdicts.kindLabel(cue.kind))
+                    if let score = CueVerdicts.score(cue.gate) { Text("score " + score).font(COSType.mono(11)) }
+                    Spacer(minLength: 8)
+                    Text(CueVerdicts.leftLine(left))
+                }
+                .font(COSType.body(12))
+                .foregroundStyle(COSPalette.muted)
+                Text(cue.detail)
+                    .font(COSType.body(17))
+                    .lineSpacing(4)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+                Text(CueVerdicts.sourcesLine(cue.sources)).font(COSType.body(11.5)).foregroundStyle(COSPalette.muted)
+                if !cue.before.isEmpty {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("What was said just before").font(COSType.body(11)).foregroundStyle(COSPalette.muted)
+                        Text(cue.before).font(COSType.body(12.5)).fixedSize(horizontal: false, vertical: true)
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(COSPalette.raised)
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                }
+                if let vote = CueVerdicts.voteLine(cue.rating) { Text(vote).font(COSType.body(11.5)).foregroundStyle(COSPalette.muted) }
+                CueVerdictButtons(selected: nil, showsKeys: true, disabled: saving) { verdict in rate(verdict, note) }
+            }
+            .contentShape(Rectangle())
+            .focusable(interactions: .edit)
+            .focused($focus, equals: .card)
+            .focusEffectDisabled()
+            .onTapGesture { focus = .card }
+            .onKeyPress(phases: .down) { press in
+                let modified = !press.modifiers.isDisjoint(with: [.command, .option, .control])
+                guard let key = CueVerdicts.key(press.characters, modified: modified, cardFocused: focus == .card) else { return .ignored }
+                switch key {
+                case .rate(let verdict): if !saving { rate(verdict, note) }
+                case .note: focus = .note
+                case .skip: skip()
+                }
+                return .handled
+            }
+            .accessibilityElement(children: .contain)
+            .accessibilityHint("Keys 1 to 5 rate this cue, N adds a note, S skips")
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Note (optional)").font(COSType.body(11.5)).foregroundStyle(COSPalette.muted)
+                TextField(CueVerdicts.notePlaceholder, text: $note)
+                    .textFieldStyle(.plain)
+                    .cosField()
+                    .focused($focus, equals: .note)
+                    .onSubmit { focus = .card }
+                    .onExitCommand { focus = .card }
+            }
+            HStack(spacing: 10) {
+                Button("Skip") { skip() }.buttonStyle(COSQuietButtonStyle())
+                if saving { ProgressView().controlSize(.small) }
+                if let error { Text(error).font(COSType.body(11.5)).foregroundStyle(COSPalette.amber).fixedSize(horizontal: false, vertical: true) }
+            }
+        }
+        .padding(22)
+        .background(COSPalette.card)
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(focus == .card ? COSPalette.accent : COSPalette.line, lineWidth: 1))
+        .onAppear { focus = .card }
+    }
+}
+
+/// A rated cue in Memories → Rated cues: its verdict and note, the five verdicts to change it, and Clear.
+struct CueRatedRow: View {
+    let cue: LiveCueRecord
+    let when: String
+    let saving: Bool
+    let error: String?
+    let rate: (CueVerdict?) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 10) {
+                Text(cue.meetingTitle.isEmpty ? "Glasses meeting" : cue.meetingTitle).font(COSType.body(12, weight: .semibold)).lineLimit(1)
+                Text(when)
+                Text(CueVerdicts.kindLabel(cue.kind))
+                if let score = CueVerdicts.score(cue.gate) { Text(score).font(COSType.mono(10.5)) }
+            }
+            .font(COSType.body(11.5))
+            .foregroundStyle(COSPalette.muted)
+            Text(cue.detail).font(COSType.body(13.5)).fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+            if let rated = CueVerdicts.ratedLine(cue.rating) { Text(rated).font(COSType.body(11.5, weight: .medium)).foregroundStyle(COSPalette.accent) }
+            HStack(alignment: .top, spacing: 10) {
+                CueVerdictButtons(selected: cue.verdict, disabled: saving) { verdict in if verdict != cue.verdict { rate(verdict) } }
+                Button("Clear") { rate(nil) }.buttonStyle(COSTextButtonStyle()).disabled(saving).help("Back to Cues to rate")
+            }
+            if let error { Text(error).font(COSType.body(11)).foregroundStyle(COSPalette.amber).fixedSize(horizontal: false, vertical: true) }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(COSPalette.card)
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(COSPalette.line, lineWidth: 1))
+    }
+}
+
+/// The panel beside a meeting (mock B): Live COS Ask and, for a glasses meeting on a server with the cue history, its
+/// Cues. The switch shows only once a history read has answered in the contract (`store.available == true`); on an
+/// older server the panel is the Ask panel alone, as before. Hide Ask still hides the whole panel.
+struct MeetingSidePanel<Ask: View>: View {
+    @ObservedObject var store: CueVerdictsStore
+    let model: ControllerModel
+    let session: String
+    /// The live meeting is still running: its Cues list polls (MeetingCuesPanel).
+    let live: Bool
+    let askTitle: String
+    let ask: () -> Ask
+    private enum Shown: Hashable { case ask, cues }
+    @State private var shown: Shown
+
+    /// `showsCues` opens on Cues (the render harness); the app always opens on Ask.
+    init(store: CueVerdictsStore, model: ControllerModel, session: String, live: Bool = false, askTitle: String = "Live COS Ask",
+         showsCues: Bool = false, @ViewBuilder ask: @escaping () -> Ask) {
+        _store = ObservedObject(wrappedValue: store)
+        self.model = model
+        self.session = session
+        self.live = live
+        self.askTitle = askTitle
+        self.ask = ask
+        _shown = State(initialValue: showsCues ? .cues : .ask)
+    }
+
+    private var cuesOffered: Bool { store.available == true && G2MeetingStop.isGlassesSession(session) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if cuesOffered {
+                COSViewSwitch("Meeting panel", selection: $shown, options: [
+                    COSViewOption(Shown.ask, askTitle),
+                    COSViewOption(Shown.cues, "Cues \(store.meetings[session]?.cues.count ?? 0)"),
+                ])
+                .padding(.horizontal, 16)
+                .padding(.top, 12)
+            }
+            if cuesOffered && shown == .cues {
+                MeetingCuesPanel(store: store, session: session, polls: live, days: live ? CueVerdicts.liveDays : CueVerdicts.savedDays,
+                                 clock: model.clockStyle, run: CueReviewPane.run(model))
+            } else {
+                ask()
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(COSPalette.panel)
+        // One read when the panel shows a meeting: it is the capability check and the count on the switch.
+        .task(id: session) {
+            guard G2MeetingStop.isGlassesSession(session) else { return }
+            await store.loadMeeting(session, days: live ? CueVerdicts.liveDays : CueVerdicts.savedDays, force: true, run: CueReviewPane.run(model))
+        }
+    }
+}
+
+/// One meeting's cues, newest first, each with the five verdicts inline; a rated cue shows its verdict. While the
+/// meeting runs it reads again every 15 seconds, and only while this view shows (the task ends with it).
+struct MeetingCuesPanel: View {
+    @ObservedObject var store: CueVerdictsStore
+    let session: String
+    let polls: Bool
+    let days: Int
+    let clock: ClockStyle
+    let run: CueVerdictsStore.Run
+
+    var body: some View {
+        let meeting = store.meetings[session]
+        let cues = (meeting?.cues ?? []).sorted { $0.createdAt > $1.createdAt }
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Text(CueVerdicts.usedLine(cues.count)).font(COSType.body(11.5)).foregroundStyle(COSPalette.muted)
+                Spacer(minLength: 8)
+                Button { Task { await store.loadMeeting(session, days: days, force: true, run: run) } } label: { Image(systemName: "arrow.clockwise") }
+                    .buttonStyle(COSTextButtonStyle()).help("Check again")
+            }
+            if let state = meeting?.state, state != .loaded, let line = CueVerdicts.line(state) {
+                Text(line).font(COSType.body(11.5))
+                    .foregroundStyle(state == .checking ? AnyShapeStyle(.secondary) : AnyShapeStyle(COSPalette.amber))
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if cues.isEmpty {
+                Text(polls ? "No cues yet in this meeting." : "No cues were shown in this meeting.")
+                    .font(COSType.body(12)).foregroundStyle(.secondary)
+            }
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 10) {
+                    ForEach(cues) { cue in
+                        MeetingCueCard(cue: cue, line: CueVerdicts.cardLine(cue, style: clock), saving: store.saving.contains(cue.id),
+                                       error: store.rateErrors[cue.id]) { verdict in
+                            Task { await store.rate(cue, verdict: verdict, note: cue.rating?.note, run: run) }
+                        }
+                    }
+                }
+            }
+            .frame(minHeight: 0, maxHeight: .infinity)
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .task(id: "\(session) \(polls)") {
+            guard polls else { return }
+            // A read as Cues opens (skipped by the store's floor when the panel read in the last 15 seconds), then every 15.
+            while !Task.isCancelled {
+                await store.loadMeeting(session, days: days, run: run)
+                try? await Task.sleep(for: .seconds(CueVerdicts.pollSeconds))
+            }
+        }
+    }
+}
+
+/// One cue beside a meeting: time, kind and score, the cue, and the verdicts (or the verdict it has, with Change). A
+/// tap on the cue shows what was said just before it.
+struct MeetingCueCard: View {
+    let cue: LiveCueRecord
+    let line: String
+    let saving: Bool
+    let error: String?
+    let rate: (CueVerdict) -> Void
+    @State private var changing = false
+    @State private var showsBefore = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(line).font(COSType.body(11.5)).foregroundStyle(COSPalette.muted)
+            Button { showsBefore.toggle() } label: {
+                Text(cue.detail).font(COSType.body(13.5)).multilineTextAlignment(.leading).fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(showsBefore ? "Hide what was said" : "Show what was said just before")
+            if showsBefore {
+                VStack(alignment: .leading, spacing: 4) {
+                    if !cue.before.isEmpty { Text(cue.before).font(COSType.body(12)).fixedSize(horizontal: false, vertical: true) }
+                    Text(CueVerdicts.sourcesLine(cue.sources)).font(COSType.body(11)).foregroundStyle(COSPalette.muted)
+                }
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(COSPalette.raised)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+            }
+            if let rated = CueVerdicts.ratedLine(cue.rating), !changing {
+                HStack(spacing: 8) {
+                    Text(rated).font(COSType.body(11.5, weight: .medium)).foregroundStyle(COSPalette.accent)
+                    Button("Change") { changing = true }.buttonStyle(COSTextButtonStyle())
+                }
+            } else {
+                CueVerdictButtons(selected: cue.verdict, disabled: saving) { verdict in
+                    changing = false
+                    if verdict != cue.verdict { rate(verdict) }
+                }
+                if cue.verdict == nil, !showsBefore {
+                    Text("Not rated · tap the cue to see what was said").font(COSType.body(11)).foregroundStyle(COSPalette.muted)
+                }
+            }
+            if let vote = CueVerdicts.voteLine(cue.rating) { Text(vote).font(COSType.body(11)).foregroundStyle(COSPalette.muted) }
+            if let error { Text(error).font(COSType.body(11)).foregroundStyle(COSPalette.amber).fixedSize(horizontal: false, vertical: true) }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(COSPalette.card)
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(COSPalette.line, lineWidth: 1))
     }
 }

@@ -697,7 +697,7 @@ struct ActivityWindow: View {
         case .meetings:
             selectedLibraryRecordID != nil || model.meetingImportRouteActive || model.meetingSuggestionsRouteActive
                 || model.liveTranscriptRouteActive || model.dictionaryRouteActive || model.dictationHistoryRouteActive
-        case .memories: selectedContextID != nil || selectedLearningID != nil || selectedGraphEntityID != nil
+        case .memories: selectedContextID != nil || selectedLearningID != nil || selectedGraphEntityID != nil || model.cueReviewRouteActive
         case .threads: selectedContextID != nil
         case .sessions: selectedSessionID != nil
         case .tasks: taskDetail != nil
@@ -761,6 +761,9 @@ struct ActivityWindow: View {
                     } else {
                         centeredProgress("Loading meeting…")
                     }
+                // 0.5.327: Cues to rate and Rated cues, on their own flag (written by openCueReview and closeCueReview).
+                } else if section == .memories, model.cueReviewRouteActive {
+                    CueReviewPane(model: model, store: model.meetingAsk.cueVerdicts, openMemories: openMemoriesView)
                 } else if section == .memories, selectedLearningID != nil {
                     if model.learningRouteActive {
                         LearningDetailPane(
@@ -1266,6 +1269,8 @@ struct ActivityWindow: View {
                 voiceParentName = nil
             }
             Task { await model.peekReviewableMeetings() }
+        } else if section == .memories, model.cueReviewRouteActive {
+            model.closeCueReview()
         } else if section == .memories, selectedLearningID != nil {
             selectedLearningID = nil
             model.closeLearningDetail()
@@ -1348,6 +1353,13 @@ struct ActivityWindow: View {
         // 0.5.318: the Dictionary and history panes are reached from two tabs; a tab switch closes them like any detail.
         model.closeDictionary()
         model.closeDictationHistory()
+        model.closeCueReview()
+    }
+
+    /// From the cue review rail back to the Memories page, open on one of its own views ("review", "recent").
+    private func openMemoriesView(_ view: String) {
+        memoriesOpenView = view
+        model.closeCueReview()
     }
 
     private func withOptionalAnimation(_ changes: () -> Void) {
@@ -4177,6 +4189,10 @@ struct ActivityWindow: View {
                     Task { await loadMemoriesSubview(next) }
                 }
                 Spacer()
+                // 0.5.327: the fallback's way to the cue review (the page has its own two entries).
+                if model.meetingAsk.cueVerdicts.available != false {
+                    Button("Cues to rate") { model.openCueReview(.toRate) }.buttonStyle(COSQuietButtonStyle())
+                }
             }
             .padding(.horizontal, 24)
             .padding(.vertical, 8)
@@ -7068,6 +7084,20 @@ struct MemoriesWebView: NSViewRepresentable {
                     reply(id, ok: true, message: "Opened", details: [:])
                 } else {
                     reply(id, ok: false, message: "Unknown section.", details: [:])
+                }
+            // 0.5.327: the page's Cues to rate and Rated cues entries. The summary is the native store's own week read, so the
+            // page and the pane never count differently; the page shows the entries only when `available` is true (a server
+            // with the cue history). Opening one is the native route, never a page view.
+            case "cues.summary":
+                let store = model.meetingAsk.cueVerdicts
+                await store.loadWeek(CueReviewPane.run(model))
+                reply(id, ok: true, message: "Cues", details: CueVerdicts.summary(available: store.available, counts: store.counts))
+            case "cues.open":
+                if let view = (args["view"] as? String).flatMap(CueVerdicts.Review.init(rawValue:)) {
+                    model.openCueReview(view)
+                    reply(id, ok: true, message: "Opened", details: [:])
+                } else {
+                    reply(id, ok: false, message: "Unknown cue view.", details: [:])
                 }
             case "pick.folder":
                 // The one native affordance the setup path needs: a real folder

@@ -41,6 +41,7 @@
     status: null, learningStatus: null, graphStatus: null,
     recent: [], recentTotal: null, recentCursor: null, review: [], reviewCount: null, memories: [], memoriesTotal: null,
     memoryQuery: '', memoryHits: null, memoryCursor:null, memorySearchCursor:null, memoryPageCapable:false, coverage: {},
+    cues: null,
     applied: [], appliedTotal: null, appliedCursor: null, appliedDays: 7, appliedCoverage: {}, appliedLoaded: false, appliedLoading: false,
     detail: {}, memoryDetail: {}, passages: {}, loading: {}, errors: {},
     graphFocus: null, graphFocusChosen: false, ingesting: null, ingestLimit: 10, ingestWatch: null, graphQuery: '',
@@ -55,8 +56,15 @@
     loadReview(false);
     loadMemoryPage(false);
     loadApplied(false);
+    loadCues();
 
     loadGraphStatus();
+  }
+  // 0.5.327: Cues to rate and Rated cues. The app answers from its own cue store; the two entries show only when it says
+  // the server keeps a cue history (`available`), and either opens the app's native cue review, never a page view.
+  function loadCues() {
+    call('cues.summary').then(function (d) { state.cues = d && d.available === true ? d : null; render(); },
+      function () { state.cues = null; render(); });
   }
   var memoryRequestSerial=0,learningRequestSerial=0,policyRequestSerial=0;
   function loadMemoryPage(more) {
@@ -315,7 +323,9 @@
     document.querySelector('#memoryNav').innerHTML = [['recent', 'Recent learning'], ['applied', 'Applied this week'], ['memories', 'All memories'], ['review', 'To review' + (review ? ' (' + fmt(review) + ')' : '')]].map(function (p) {
       var on = state.view !== 'knowledge' && state.filter === p[0];
       return '<button class="' + (on ? 'active' : '') + '" aria-pressed="' + on + '" onclick="cosApp.setFilter(\'' + p[0] + '\')">' + p[1] + '</button>';
-    }).join('') + '<button class="' + (state.view === 'knowledge' ? 'active' : '') + '" aria-pressed="' + (state.view === 'knowledge') + '" onclick="cosApp.openKnowledge()">Knowledge</button>';
+    }).join('') + (state.cues ? '<button onclick="cosApp.openCues(\'rate\')">Cues to rate' + (state.cues.unrated ? ' (' + fmt(state.cues.unrated) + ')' : '') + '</button>' +
+      '<button onclick="cosApp.openCues(\'rated\')">Rated cues</button>' : '') +
+      '<button class="' + (state.view === 'knowledge' ? 'active' : '') + '" aria-pressed="' + (state.view === 'knowledge') + '" onclick="cosApp.openKnowledge()">Knowledge</button>';
   }
   function summary() {
     var review = needsYouCount();
@@ -1315,6 +1325,7 @@
     selectMemory: function (id) { state.selectedMemory = id; render(); },
     setFilter: function (f) { state.view = 'learning'; state.filter = f; if (f === 'applied' && !state.appliedLoaded && !state.appliedLoading) loadApplied(false); render(); },
     appliedDays: setAppliedDays, loadMoreApplied: function () { loadApplied(true); }, retryApplied: function () { state.errors.applied = null; state.appliedLoaded = false; loadApplied(false); render(); },
+    openCues: function (view) { call('cues.open', { view: view === 'rated' ? 'rated' : 'rate' }).catch(function (e) { toast(e.message); }); },
     openKnowledge: function (id) { state.view = 'knowledge'; state.knowledgeTab = id ? 'sources' : 'graph'; state.knowledgeFocus = id || null; render(); },
     setKnowledgeTab: function (t) { state.knowledgeTab = t; state.knowledgeTabChosen = true; render(); },
     openSourceRecords: openSourceRecords,

@@ -2819,6 +2819,9 @@ final class ControllerModel: ObservableObject {
     /// True while the Dictation history pane (0.5.312) should be the Meetings route.
     /// Written by `openDictationHistory()` / `closeDictationHistory()`, and by nothing else.
     @Published var dictationHistoryOpen = false
+    /// 0.5.327: which cue review view is the Memories route (CueReviewPane), or nil while the Memories page shows.
+    /// Written by `openCueReview(_:)` / `closeCueReview()`, and by nothing else.
+    @Published private(set) var cueReview: CueVerdicts.Review?
 
     /// True while the Suggested merges pane should be the Meetings route.
     @Published var meetingSuggestionsOpen = false
@@ -2950,6 +2953,21 @@ final class ControllerModel: ObservableObject {
 
     func closeDictationHistory() {
         dictationHistoryOpen = false
+    }
+
+    /// Mounted while a cue review view is open. Its load errors show inside the pane, so the flag alone is the route.
+    var cueReviewRouteActive: Bool {
+        cueReview != nil
+    }
+
+    /// COS Activity → Memories → Cues to rate or Rated cues (0.5.327): from the Memories page's two entries, the
+    /// fallback pane's button, and the pane's own rail. The pane loads what its view shows when it appears.
+    func openCueReview(_ view: CueVerdicts.Review) {
+        cueReview = view
+    }
+
+    func closeCueReview() {
+        cueReview = nil
     }
 
     /// From the pet's "All dictations" and Dictation → History…: Activity opens on Meetings, then the pane.

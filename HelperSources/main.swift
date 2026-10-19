@@ -642,6 +642,8 @@ final class COSControlHelper {
         case "meeting-stranded-save": try emitMeetingStrandedSave(args: args)
         case "meeting-stop-request": try emitMeetingStopRequest(args: args)
         case "live-cues-settings": try emitLiveCuesSettings(args: args)
+        case "live-cues-history": try emitLiveCuesHistory(args: args)
+        case "live-cues-rate": try emitLiveCuesRate(args: args)
         case "meeting-stranded-save-all": try emitMeetingStrandedSaveAll()
         case "clear-stranded-video-uploads": try clearStrandedVideoUploads()
         case "reset-message-era": try resetMessageEra()
@@ -16611,6 +16613,194 @@ final class COSControlHelper {
         emit(ok: true, message: "Live cues settings answered (\(response.status))", details: details)
     }
 
+    /// 0.5.327: rating live cues (server 6.79.0). `live-cues-history [--days N] [--session ID] [--unrated]` reads GET
+    /// /api/live-cues/history (oldest first, at most 200 a read); `live-cues-rate --session ID --cue ID --verdict V
+    /// [--note TEXT]` posts one verdict to POST /api/live-cues/feedback, the same route the lens votes on. Like
+    /// live-cues-settings, every answer is ok with `transport` and `httpStatus`, and only the contract's keys cross (the
+    /// app words each state in CueVerdicts, Sources/MeetingAskCore.swift). A 404 is a server from before the routes, or
+    /// on a rate an `unknown_cue`.
+    static let liveCuesHistoryRoute = "/api/live-cues/history"
+    static let liveCuesFeedbackPath = "/api/live-cues/feedback"
+    static let liveCueVerdicts = ["useful", "late", "repeat", "wrong", "obvious"]
+    /// The server's CUE_FEEDBACK_REASON_MAX (shared/live-cues-v2.ts), in UTF-16 units as the server counts.
+    static let liveCueNoteMax = 200
+
+    static func liveCueSessionValid(_ value: String) -> Bool {
+        value.range(of: "\\A[A-Za-z0-9:_-]{3,96}\\z", options: .regularExpression) != nil
+    }
+
+    static func liveCueIdValid(_ value: String) -> Bool {
+        value.range(of: "\\A[A-Za-z0-9-]{8,64}\\z", options: .regularExpression) != nil
+    }
+
+    /// The history path, or nil for an argument outside the grammar: days 1 to 30 (7 when not given), a session id in the
+    /// server's grammar. The limit is always 200, the server's own ceiling.
+    static func liveCuesHistoryPath(days: String?, session: String?, unrated: Bool) -> String? {
+        let window = days ?? "7"
+        guard window.range(of: "\\A[0-9]{1,2}\\z", options: .regularExpression) != nil, let count = Int(window), (1...30).contains(count) else { return nil }
+        var path = Self.liveCuesHistoryRoute + "?days=\(count)&limit=200"
+        if let session {
+            guard Self.liveCueSessionValid(session) else { return nil }
+            path += "&sessionId=" + session
+        }
+        if unrated { path += "&unrated=1" }
+        return path
+    }
+
+    /// A note as the server stores it: whitespace collapsed, trimmed, at most CUE_FEEDBACK_REASON_MAX UTF-16 units
+    /// (cut on a character, never inside one). Empty is no note.
+    static func liveCueNote(_ raw: String) -> String {
+        let collapsed = raw.split(whereSeparator: { $0.isWhitespace || $0.isNewline }).joined(separator: " ")
+        var out = ""
+        for character in collapsed {
+            guard out.utf16.count + String(character).utf16.count <= Self.liveCueNoteMax else { break }
+            out.append(character)
+        }
+        return out.trimmingCharacters(in: .whitespaces)
+    }
+
+    /// The feedback body for one verdict, or nil when an argument is outside the grammar. `clear` takes no note.
+    static func liveCuesRateBody(session: String, cue: String, verdict: String, note: String?) -> String? {
+        guard Self.liveCueSessionValid(session), Self.liveCueIdValid(cue),
+              Self.liveCueVerdicts.contains(verdict) || verdict == "clear" else { return nil }
+        var body: [String: Any] = ["sessionId": session, "cueId": cue, "verdict": verdict]
+        if let note {
+            guard verdict != "clear" else { return nil }
+            let cleaned = Self.liveCueNote(note)
+            if !cleaned.isEmpty { body["note"] = cleaned }
+        }
+        guard let data = try? JSONSerialization.data(withJSONObject: body, options: [.sortedKeys]) else { return nil }
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    private static func liveCueText(_ value: Any?, _ limit: Int) -> String? {
+        (value as? String).map { String($0.prefix(limit)) }
+    }
+
+    private static func liveCueNumber(_ value: Any?) -> Double? {
+        guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(), number.doubleValue.isFinite else { return nil }
+        return number.doubleValue
+    }
+
+    private static func liveCueCount(_ value: Any?) -> Int? {
+        guard let number = liveCueNumber(value), let count = Int(exactly: number), count >= 0 else { return nil }
+        return count
+    }
+
+    /// A refusal's code (`unknown_cue`, `invalid_request`): `reason` when it looks like a code, else `error`.
+    private static func liveCueErrorCode(_ body: [String: Any]?) -> String? {
+        for key in ["reason", "error"] {
+            if let text = body?[key] as? String, text.range(of: "\\A[a-z_]{1,64}\\z", options: .regularExpression) != nil { return text }
+        }
+        return nil
+    }
+
+    /// A stored verdict as the contract has it ({verdict, note?, vote?, at}), or nil for anything else.
+    private static func liveCueRating(_ value: Any?) -> [String: Any]? {
+        guard let raw = value as? [String: Any] else { return nil }
+        var out: [String: Any] = [:]
+        if let verdict = raw["verdict"] as? String, Self.liveCueVerdicts.contains(verdict) { out["verdict"] = verdict }
+        if let note = Self.liveCueText(raw["note"], 400), !note.isEmpty { out["note"] = note }
+        if let vote = raw["vote"] as? String, ["up", "down"].contains(vote) { out["vote"] = vote }
+        if let at = Self.liveCueNumber(raw["at"]), at > 0 { out["at"] = at }
+        return out["verdict"] == nil && out["vote"] == nil ? nil : out
+    }
+
+    /// One cue row of the history, or nil without the fields a card needs (cueId, sessionId, createdAt, kind, detail).
+    static func liveCueRow(_ value: Any?) -> [String: Any]? {
+        guard let raw = value as? [String: Any],
+              let cueId = raw["cueId"] as? String, Self.liveCueIdValid(cueId),
+              let sessionId = raw["sessionId"] as? String, Self.liveCueSessionValid(sessionId),
+              let createdAt = Self.liveCueNumber(raw["createdAt"]), createdAt > 0,
+              let kind = raw["kind"] as? String, ["reinforce", "challenge"].contains(kind),
+              let detail = Self.liveCueText(raw["detail"], 440), !detail.isEmpty else { return nil }
+        var out: [String: Any] = ["cueId": cueId, "sessionId": sessionId, "createdAt": createdAt, "kind": kind, "detail": detail]
+        if let headline = Self.liveCueText(raw["headline"], 128) { out["headline"] = headline }
+        if let title = Self.liveCueText(raw["meetingTitle"], 200) { out["meetingTitle"] = title }
+        if let gate = Self.liveCueNumber(raw["gate"]), (0...1).contains(gate) { out["gate"] = gate }
+        if let model = raw["model"] as? String, model.range(of: "\\A[A-Za-z0-9._:-]{1,80}\\z", options: .regularExpression) != nil { out["model"] = model }
+        if let before = Self.liveCueText(raw["before"], 800) { out["before"] = before }
+        if let sources = raw["sources"] as? [Any] {
+            out["sources"] = sources.prefix(4).compactMap { item -> [String: Any]? in
+                guard let source = item as? [String: Any], let title = Self.liveCueText(source["title"], 200) else { return nil }
+                return ["id": Self.liveCueText(source["id"], 200) ?? "", "date": Self.liveCueText(source["date"], 40) ?? "", "title": title]
+            }
+        }
+        out["verdict"] = Self.liveCueRating(raw["verdict"]) ?? NSNull()
+        return out
+    }
+
+    /// The history's contract keys: v, at most 200 cue rows, counts, and a refusal's code. Rows and counts only from a 200.
+    static func liveCuesHistoryAnswer(status: Int, body: [String: Any]?) -> [String: Any] {
+        var out: [String: Any] = [:]
+        guard let body else { return out }
+        if let code = Self.liveCueErrorCode(body) { out["error"] = code }
+        guard status == 200 else { return out }
+        if let version = Self.liveCueCount(body["v"]), (1...1_000).contains(version) { out["v"] = version }
+        if let rows = body["cues"] as? [Any] { out["cues"] = rows.prefix(200).compactMap { Self.liveCueRow($0) } }
+        if let counts = body["counts"] as? [String: Any], let total = Self.liveCueCount(counts["total"]),
+           let rated = Self.liveCueCount(counts["rated"]), let unrated = Self.liveCueCount(counts["unrated"]) {
+            var by: [String: Any] = [:]
+            if let raw = counts["byVerdict"] as? [String: Any] {
+                for verdict in Self.liveCueVerdicts { if let n = Self.liveCueCount(raw[verdict]) { by[verdict] = n } }
+            }
+            out["counts"] = ["total": total, "rated": rated, "unrated": unrated, "byVerdict": by]
+        }
+        return out
+    }
+
+    /// The rate answer's contract keys: ok, the verdict now stored (null when cleared), the lens vote, a refusal's code.
+    static func liveCuesRateAnswer(status: Int, body: [String: Any]?) -> [String: Any] {
+        var out: [String: Any] = [:]
+        guard let body else { return out }
+        if let code = Self.liveCueErrorCode(body) { out["error"] = code }
+        guard status == 200 else { return out }
+        if let ok = body["ok"] as? NSNumber, CFGetTypeID(ok) == CFBooleanGetTypeID() { out["ok"] = ok.boolValue }
+        if let cueId = body["cueId"] as? String, Self.liveCueIdValid(cueId) { out["cueId"] = cueId }
+        if let verdict = body["verdict"] as? String, Self.liveCueVerdicts.contains(verdict) { out["verdict"] = verdict }
+        else if body["verdict"] is NSNull { out["verdict"] = NSNull() }
+        if let vote = body["vote"] as? String, ["up", "down"].contains(vote) { out["vote"] = vote }
+        return out
+    }
+
+    private func emitLiveCuesHistory(args: [String]) throws {
+        guard let path = Self.liveCuesHistoryPath(days: option("--days", in: args), session: option("--session", in: args),
+                                                  unrated: args.contains("--unrated")) else {
+            throw HelperError.message("Use --days 1 to 30 and a meeting session id")
+        }
+        guard let token = try? readToken() else {
+            emit(ok: true, message: "No pairing token", details: ["transport": "no_token"])
+            return
+        }
+        guard let response = request(path, token: token, timeout: 10) else {
+            emit(ok: true, message: "COS server unreachable", details: ["transport": "unavailable"])
+            return
+        }
+        var details = Self.liveCuesHistoryAnswer(status: response.status, body: response.body)
+        details["transport"] = "answered"
+        details["httpStatus"] = response.status
+        emit(ok: true, message: "Live cues history answered (\(response.status))", details: details)
+    }
+
+    private func emitLiveCuesRate(args: [String]) throws {
+        guard let session = option("--session", in: args), let cue = option("--cue", in: args), let verdict = option("--verdict", in: args),
+              let body = Self.liveCuesRateBody(session: session, cue: cue, verdict: verdict, note: option("--note", in: args)) else {
+            throw HelperError.message("Use --session, --cue and --verdict useful, late, repeat, wrong, obvious or clear (clear takes no --note)")
+        }
+        guard let token = try? readToken() else {
+            emit(ok: true, message: "No pairing token", details: ["transport": "no_token"])
+            return
+        }
+        guard let response = request(Self.liveCuesFeedbackPath, method: "POST", token: token, body: body, timeout: 10) else {
+            emit(ok: true, message: "COS server unreachable", details: ["transport": "unavailable"])
+            return
+        }
+        var details = Self.liveCuesRateAnswer(status: response.status, body: response.body)
+        details["transport"] = "answered"
+        details["httpStatus"] = response.status
+        emit(ok: true, message: "Live cue rating answered (\(response.status))", details: details)
+    }
+
     /// 0.5.321: ask the glasses to stop a live G2 meeting (server stop-request routes, server 6.76.0). Without
     /// `--request` it asks; with it, it reads that request. The app words every answer (Sources/G2MeetingStop.swift), so
     /// this emits the server's status and body as they are: `transport` is `answered`, or `unavailable` when nothing
@@ -21596,6 +21786,71 @@ final class COSControlHelper {
         try expect(Self.liveCuesSettingsAnswer(["error": "env_forced"])["error"] as? String == "env_forced"
                    && Self.liveCuesSettingsAnswer(["capability": ["reason": "x"]])["capability"] == nil && Self.liveCuesSettingsAnswer(nil).isEmpty,
                    "live-cues-settings keeps a refusal's code; a capability without available is not one")
+        // 0.5.327: live-cues-history and live-cues-rate. The grammar is refused before anything is sent; only the contract
+        // crosses back.
+        try expect(Self.liveCuesHistoryPath(days: nil, session: nil, unrated: false) == "/api/live-cues/history?days=7&limit=200",
+                   "live-cues-history reads seven days, 200 at most, by default")
+        try expect(Self.liveCuesHistoryPath(days: "30", session: "meeting_1791635349988_67d6pj", unrated: true)
+                   == "/api/live-cues/history?days=30&limit=200&sessionId=meeting_1791635349988_67d6pj&unrated=1",
+                   "live-cues-history carries days, the meeting and unrated")
+        for bad in ["0", "31", "-1", "7d", " 7", "", "007", "1.5"] {
+            try expect(Self.liveCuesHistoryPath(days: bad, session: nil, unrated: false) == nil, "live-cues-history refuses --days \(bad.debugDescription)")
+        }
+        for bad in ["a b", "x&y=1", "../x", "ab", "", String(repeating: "a", count: 97)] {
+            try expect(Self.liveCuesHistoryPath(days: nil, session: bad, unrated: false) == nil, "live-cues-history refuses --session \(bad.debugDescription)")
+        }
+        let cueID = "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d"
+        try expect(Self.liveCuesRateBody(session: "meeting_1", cue: cueID, verdict: "useful", note: "  more\n than\tthat  ")
+                   == #"{"cueId":"0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d","note":"more than that","sessionId":"meeting_1","verdict":"useful"}"#,
+                   "live-cues-rate posts the verdict and a whitespace-collapsed note")
+        try expect(Self.liveCuesRateBody(session: "meeting_1", cue: cueID, verdict: "clear", note: nil)
+                   == #"{"cueId":"0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d","sessionId":"meeting_1","verdict":"clear"}"#,
+                   "live-cues-rate clears with no note")
+        try expect(Self.liveCuesRateBody(session: "meeting_1", cue: cueID, verdict: "late", note: "   ")?.contains("note") == false,
+                   "a blank note is no note")
+        try expect(Self.liveCuesRateBody(session: "meeting_1", cue: cueID, verdict: "clear", note: "x") == nil, "clear takes no note")
+        for bad in ["up", "down", "Useful", "", "useful ", "great"] {
+            try expect(Self.liveCuesRateBody(session: "meeting_1", cue: cueID, verdict: bad, note: nil) == nil, "live-cues-rate refuses --verdict \(bad.debugDescription)")
+        }
+        try expect(Self.liveCuesRateBody(session: "a b", cue: cueID, verdict: "useful", note: nil) == nil
+                   && Self.liveCuesRateBody(session: "meeting_1", cue: "short", verdict: "useful", note: nil) == nil
+                   && Self.liveCuesRateBody(session: "meeting_1", cue: "x\"y-0000000", verdict: "useful", note: nil) == nil,
+                   "live-cues-rate refuses a session or cue id outside the server's grammar")
+        let longNote = Self.liveCueNote(String(repeating: "\u{1F600}", count: 150))
+        try expect(longNote.utf16.count <= Self.liveCueNoteMax && longNote.utf16.count >= Self.liveCueNoteMax - 1 && longNote.unicodeScalars.allSatisfy { $0 == "\u{1F600}" },
+                   "a long note is cut to the server's 200 units on a character")
+        let historyAnswer = Self.liveCuesHistoryAnswer(status: 200, body: [
+            "v": 1, "extra": "SECRET",
+            "cues": [
+                ["cueId": cueID, "sessionId": "meeting_1", "createdAt": 1_790_000_000_000, "kind": "challenge", "headline": "H", "detail": "D",
+                 "gate": 0.97, "model": "claude-sonnet-5-5", "before": "said", "meetingTitle": "Standup", "token": "SECRET",
+                 "sources": [["id": "s1", "date": "2026-10-01", "title": "Earlier"]], "verdict": ["verdict": "late", "note": "n", "vote": "up", "at": 1, "x": "SECRET"]],
+                ["cueId": "bad id", "sessionId": "meeting_1", "createdAt": 1, "kind": "challenge", "detail": "D"],
+                ["cueId": cueID, "sessionId": "meeting_1", "createdAt": 1, "kind": "advice", "detail": "D"],
+                ["cueId": cueID, "sessionId": "meeting_1", "createdAt": 1, "kind": "reinforce", "detail": "D", "gate": 4, "verdict": ["verdict": "great"]],
+            ],
+            "counts": ["total": 3, "rated": 1, "unrated": 2, "byVerdict": ["late": 1, "useful": 0, "bogus": 9]],
+        ])
+        let historyRows = historyAnswer["cues"] as? [[String: Any]]
+        let firstRating = historyRows?.first?["verdict"] as? [String: Any]
+        try expect(historyAnswer["v"] as? Int == 1 && historyAnswer["extra"] == nil && historyRows?.count == 2
+                   && historyRows?.first?["token"] == nil && historyRows?.first?["gate"] as? Double == 0.97
+                   && (historyRows?.first?["sources"] as? [[String: Any]])?.first?["title"] as? String == "Earlier"
+                   && firstRating?["verdict"] as? String == "late" && firstRating?["vote"] as? String == "up" && firstRating?["x"] == nil,
+                   "live-cues-history passes the contract's rows and drops a row without its required fields")
+        try expect(historyRows?.last?["gate"] == nil && historyRows?.last?["verdict"] is NSNull,
+                   "a gate outside 0 to 1 and a verdict outside the five are dropped")
+        let historyCounts = historyAnswer["counts"] as? [String: Any]
+        try expect(historyCounts?["unrated"] as? Int == 2 && (historyCounts?["byVerdict"] as? [String: Any])?["bogus"] == nil,
+                   "live-cues-history passes the counts and only the five verdicts")
+        try expect(Self.liveCuesHistoryAnswer(status: 500, body: ["cues": [["cueId": cueID]], "error": "SECRET text"]).isEmpty
+                   && Self.liveCuesHistoryAnswer(status: 404, body: ["error": "Not found"]).isEmpty,
+                   "a refusal carries no rows and no server text")
+        try expect(Self.liveCuesRateAnswer(status: 404, body: ["error": "Unknown cue", "reason": "unknown_cue"])["error"] as? String == "unknown_cue",
+                   "live-cues-rate keeps unknown_cue")
+        let rateAnswer = Self.liveCuesRateAnswer(status: 200, body: ["ok": true, "cueId": cueID, "verdict": NSNull(), "vote": "down", "extra": "SECRET"])
+        try expect(rateAnswer["ok"] as? Bool == true && rateAnswer["verdict"] is NSNull && rateAnswer["vote"] as? String == "down" && rateAnswer["extra"] == nil,
+                   "live-cues-rate passes ok, a cleared verdict and the lens vote, nothing else")
         // 0.5.321: meeting-stop-request reaches only the stop-request routes, never for a Mac recording or a bad id.
         try expect(Self.meetingStopRequestPath(sessionId: "meeting_1791635349988_67d6pj", requestId: nil) == "/api/meeting/sessions/meeting_1791635349988_67d6pj/stop-request",
                    "meeting-stop-request asks on the stop-request route")

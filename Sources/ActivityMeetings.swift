@@ -587,8 +587,11 @@ struct MeetingLibraryDetailPane: View {
                             let keys = detail.contextKeys.isEmpty ? row.contextKeys : detail.contextKeys
                             if row.sourceSessionId != nil { Text("Ask history covers the whole original capture, including its other split pieces.").font(COSType.body(12)).foregroundStyle(.secondary) }
                             ForEach(Array(row.meetingAskSessions(keys: keys).enumerated()), id: \.element) { captureIndex, session in
-                                LiveAskPanel(state: model.meetingAsk, model: model, session: session, saved: true, captureLabel: "Original recording \(captureIndex + 1). Questions use its saved cutoff; each recording keeps its own history.", meeting: row)
-                                    .frame(minHeight: 300, idealHeight: 500, maxHeight: 600)
+                                // 0.5.327: a saved glasses recording shows its cues beside Meeting Ask (the server keeps them 30 days).
+                                MeetingSidePanel(store: model.meetingAsk.cueVerdicts, model: model, session: session, askTitle: "Meeting Ask") {
+                                    LiveAskPanel(state: model.meetingAsk, model: model, session: session, saved: true, captureLabel: "Original recording \(captureIndex + 1). Questions use its saved cutoff; each recording keeps its own history.", meeting: row)
+                                }
+                                .frame(minHeight: 300, idealHeight: 500, maxHeight: 600)
                             }
                         }
                         if let workConnections { relatedWork(workConnections) }
@@ -2194,8 +2197,12 @@ struct LiveTranscriptPane: View {
                         .accessibilityAdjustableAction { direction in
                             askWidth = min(max(280, askWidth + (direction == .increment ? 40 : -40)), max(280, geometry.size.width - 440))
                         }
-                    LiveAskPanel(state: model.meetingAsk, model: model, session: session, feed: model.openLiveTranscriptFeed) { id in
-                        follow.selectionBegan(); askJumpID = id
+                    // 0.5.327: the panel's Cues view sits beside Live COS Ask on a server with the cue history.
+                    MeetingSidePanel(store: model.meetingAsk.cueVerdicts, model: model, session: session,
+                                     live: model.openLiveTranscriptFeed?.ended != true) {
+                        LiveAskPanel(state: model.meetingAsk, model: model, session: session, feed: model.openLiveTranscriptFeed) { id in
+                            follow.selectionBegan(); askJumpID = id
+                        }
                     }.frame(width: width)
                 }
             }
