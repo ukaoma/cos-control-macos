@@ -160,7 +160,7 @@ with tempfile.TemporaryDirectory(prefix='cos-key-lanes-', dir='/tmp') as tmp:
         check(not (data / 'provider-keys.json').exists() and not (data / 'provider-profiles.json').exists() and not (data / 'key-ledger.jsonl').exists()
               and not (data / 'codex-homes').exists(), 'the key store, profiles, ledger and Codex homes are gone')
         check((data / 'keyed-sessions.json').exists(), 'keyed-sessions.json stays (Continue and Fork stay refused)')
-        check((outside / 'provider-keys.json').read_text() == 'keep' and (data / 'key-secrets').is_symlink(), 'a linked key-secrets dir is never followed')
+        check((outside / 'provider-keys.json').exists() and (outside / 'provider-keys.json').read_text() == 'keep' and (data / 'key-secrets').is_symlink(), 'a linked key-secrets dir is never followed')
         (data / 'key-secrets').unlink(); plant()
         got = run('remove-saved-keys')
         check(not (data / 'key-secrets/provider-keys.json').exists() and 'key-secrets/provider-keys.json' in got['details']['removed'],
