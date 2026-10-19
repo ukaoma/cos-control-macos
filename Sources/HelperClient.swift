@@ -154,11 +154,17 @@ actor HelperClient {
         return stable
     }
 
+    /// Whether a decoded answer is returned (else commandFailed): a clean exit, and ok, or a refusal the caller asked for.
+    nonisolated static func returns(status: Int32, ok: Bool, answers: Bool) -> Bool { status == 0 && (ok || answers) }
+    /// `answers`: the helper's own refusal (exit 0, ok false) comes back as a response with its details instead of
+    /// throwing commandFailed with only its message. For callers that read the refusal (mac-dictation's noSpeech, reason
+    /// and action, 0.5.328). A helper that exited non-zero, or printed no answer, still throws.
     func run(
         _ arguments: [String],
         timeout: TimeInterval? = nil,
         preferStable: Bool = false,
         stdinData: Data? = nil,
+        answers: Bool = false,
         progress: @escaping @Sendable (String) -> Void = { _ in }
     ) async throws -> HelperResponse {
         let executable = try helperURL(preferStable: preferStable)
@@ -263,7 +269,7 @@ actor HelperClient {
                 guard let response = try? JSONDecoder().decode(HelperResponse.self, from: data) else {
                     throw HelperClientError.invalidResponse(String(decoding: data.prefix(2048), as: UTF8.self))
                 }
-                guard process.terminationStatus == 0, response.ok else {
+                guard Self.returns(status: process.terminationStatus, ok: response.ok, answers: answers) else {
                     throw HelperClientError.commandFailed(response.message)
                 }
                 return response

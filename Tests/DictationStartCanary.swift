@@ -41,6 +41,62 @@ func ownInputRunning() -> Bool? {
     return nil
 }
 
+// 0.5.328: the main thread's longest stall while a dictation starts, the 0.5.327 way (engine start and a mute-like
+// private aggregate device built and started on the main thread) and the 0.5.328 way (both on DictationAudioQueues).
+// The aggregate is the mute without its tap (the tap needs System Audio Recording and would silence this Mac): a private
+// aggregate on the default output with a silent IO proc, started and torn down. The heartbeat is a 16 ms main-queue timer
+// feeding the shipped DictationStallMeter.
+
+final class CanaryAggregate: @unchecked Sendable {
+    private var device = AudioObjectID(kAudioObjectUnknown)
+    private var proc: AudioDeviceIOProcID?
+    func up() {
+        var address = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDefaultOutputDevice, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+        var output = AudioObjectID(kAudioObjectUnknown); var size = UInt32(MemoryLayout<AudioObjectID>.size)
+        guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &output) == noErr,
+              let uid = DictationAudioDevices.uid(of: output) else { return }
+        let composition: [String: Any] = [kAudioAggregateDeviceNameKey: "COS start canary", kAudioAggregateDeviceUIDKey: "com.gotcos.start-canary.\(UUID().uuidString)",
+                                          kAudioAggregateDeviceMainSubDeviceKey: uid, kAudioAggregateDeviceIsPrivateKey: true, kAudioAggregateDeviceIsStackedKey: false,
+                                          kAudioAggregateDeviceSubDeviceListKey: [[kAudioSubDeviceUIDKey: uid]]]
+        guard AudioHardwareCreateAggregateDevice(composition as CFDictionary, &device) == noErr else { return }
+        _ = AudioDeviceCreateIOProcIDWithBlock(&proc, device, nil) { @Sendable _, _, _, _, _ in }
+        _ = AudioDeviceStart(device, proc)
+    }
+    func down() {
+        guard device != kAudioObjectUnknown else { return }
+        _ = AudioDeviceStop(device, proc); if let proc { _ = AudioDeviceDestroyIOProcID(device, proc) }
+        _ = AudioHardwareDestroyAggregateDevice(device); device = AudioObjectID(kAudioObjectUnknown)
+    }
+}
+
+@MainActor func stallRound(offMain: Bool) async -> (stallMs: Int, firstBufferMs: Int)? {
+    let pressed = ProcessInfo.processInfo.systemUptime
+    let meter = DictationStallMeter(start: pressed)
+    let beat = DispatchSource.makeTimerSource(queue: .main)
+    beat.schedule(deadline: .now(), repeating: .milliseconds(DictationStallMeter.tickMilliseconds))
+    beat.setEventHandler { _ = meter.tick(ProcessInfo.processInfo.systemUptime) }
+    beat.resume()
+    defer { beat.cancel() }
+    let aggregate = CanaryAggregate()
+    let capture: DictationMicrophoneCapture
+    if offMain {
+        guard let opened = try? await DictationAudioQueues.perform(on: DictationAudioQueues.input, { () throws -> DictationMicrophoneCapture in
+            let c = DictationMicrophoneCapture(); try c.start(deviceID: nil); return c
+        }) else { return nil }
+        capture = opened
+    } else {
+        capture = DictationMicrophoneCapture()
+        guard (try? capture.start(deviceID: nil)) != nil else { return nil }
+    }
+    guard let at = await firstBuffer(capture) else { _ = try? capture.stop(); return nil }
+    if offMain { DictationAudioQueues.output.async { aggregate.up() } } else { aggregate.up() }
+    meter.end(at: ProcessInfo.processInfo.systemUptime + 1)
+    try? await Task.sleep(for: .milliseconds(1_100))
+    _ = try? capture.stop()
+    if offMain { DictationAudioQueues.output.sync { aggregate.down() } } else { aggregate.down() }
+    return (meter.maxGapMs ?? -1, Int((at - pressed * 1000).rounded()))  // firstBuffer returns milliseconds
+}
+
 @main struct DictationStartCanary {
     @MainActor static func main() async {
         let arguments = CommandLine.arguments
@@ -121,6 +177,21 @@ func ownInputRunning() -> Bool? {
             print(row.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: " "))
             try? await Task.sleep(for: .milliseconds(500))
         }
+        // Main-thread stall: the 0.5.327 way and the 0.5.328 way, alternating.
+        var stalls: [[String: Any]] = []
+        for round in 1...rounds {
+            var row: [String: Any] = ["round": round]
+            if let old = await stallRound(offMain: false) { row["stall_onMainMs"] = old.stallMs; row["stall_onMain_firstBufferMs"] = old.firstBufferMs }
+            else { problems.append("round \(round): no first buffer (on main)") }
+            try? await Task.sleep(for: .milliseconds(400))
+            if let new = await stallRound(offMain: true) { row["stall_offMainMs"] = new.stallMs; row["stall_offMain_firstBufferMs"] = new.firstBufferMs }
+            else { problems.append("round \(round): no first buffer (off main)") }
+            if ownInputRunning() == true { problems.append("round \(round): the microphone was still running after the stall rounds") }
+            stalls.append(row)
+            print(row.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: " "))
+            try? await Task.sleep(for: .milliseconds(400))
+        }
+        rows += stalls
         func median(_ key: String) -> Int? {
             let values = rows.compactMap { $0[key] as? Int }.sorted()
             return values.isEmpty ? nil : values[values.count / 2]
@@ -131,6 +202,9 @@ func ownInputRunning() -> Bool? {
             "median_fresh_pressToFirstBufferMs": median("fresh_pressToFirstBufferMs") ?? -1,
             "median_spare_pressToFirstBufferMs": median("spare_pressToFirstBufferMs") ?? -1,
             "median_old_listMs": median("old_listMs") ?? -1, "median_spare_warmMs": median("spare_warmMs") ?? -1,
+            "median_stall_onMainMs": median("stall_onMainMs") ?? -1, "median_stall_offMainMs": median("stall_offMainMs") ?? -1,
+            "max_stall_offMainMs": rows.compactMap { $0["stall_offMainMs"] as? Int }.max() ?? -1,
+            "max_stall_onMainMs": rows.compactMap { $0["stall_onMainMs"] as? Int }.max() ?? -1,
         ]
         if let evidence {
             try? FileManager.default.createDirectory(at: evidence, withIntermediateDirectories: true)
@@ -139,8 +213,12 @@ func ownInputRunning() -> Bool? {
             }
         }
         print("medians (press to first buffer, ms): 0.5.326 order \(summary["median_old_pressToFirstBufferMs"]!), fresh \(summary["median_fresh_pressToFirstBufferMs"]!), spare \(summary["median_spare_pressToFirstBufferMs"]!); list read \(summary["median_old_listMs"]!) ms, spare warm \(summary["median_spare_warmMs"]!) ms (off the press)")
+        if let on = summary["median_stall_onMainMs"] as? Int, let off = summary["median_stall_offMainMs"] as? Int, on > 0, off >= on {
+            problems.append("moving the work off the main thread did not shorten the main thread's stall (\(off) ms vs \(on) ms)")
+        }
+        print("main-thread stall (ms, 16 is smooth): 0.5.327 way median \(summary["median_stall_onMainMs"]!) max \(summary["max_stall_onMainMs"]!); 0.5.328 way median \(summary["median_stall_offMainMs"]!) max \(summary["max_stall_offMainMs"]!)")
         if problems.isEmpty {
-            print("PASS dictation start canary: \(rows.count) rounds, a first buffer every time, the microphone off while a spare waits and after every stop")
+            print("PASS dictation start canary: \(rounds) start rounds and \(rounds) stall pairs, a first buffer every time, the microphone off while a spare waits and after every stop")
         } else {
             print("FAIL dictation start canary: " + problems.joined(separator: "; "))
             exit(1)

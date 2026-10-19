@@ -68,7 +68,12 @@ enum DictationAudioDevices {
 }
 
 /// No system input/output device is changed. Only this engine's input AudioUnit is selected.
-@MainActor final class DictationMicrophoneCapture {
+/// 0.5.328: not on the main actor. `warm` and `start` run on DictationAudioQueues.input (building and starting an
+/// engine took 132 to 326 ms on Miles's Mac, about 3 s cold); `stop` runs where the store closes the microphone, as in
+/// 0.5.326. One lock serialises every engine call, so a stop can never overlap a start. The readers below read the
+/// lock-protected PCM buffer and are safe anywhere.
+final class DictationMicrophoneCapture: @unchecked Sendable {
+    private let engineLock = NSRecursiveLock()
     private let engine = AVAudioEngine()
     private let pcm = DictationPCMBuffer()
     private var tapped = false
@@ -84,6 +89,7 @@ enum DictationAudioDevices {
     /// 0.5.327 spare (DictationSpare): builds the engine's input node and selects the device, the slow part of opening.
     /// Never prepares or starts: the microphone stays off until `start`.
     func warm(deviceID: AudioDeviceID?) throws {
+        engineLock.lock(); defer { engineLock.unlock() }
         try select(deviceID)
         _ = engine.inputNode.outputFormat(forBus: 0)
     }
@@ -98,6 +104,7 @@ enum DictationAudioDevices {
         }
     }
     func start(deviceID: AudioDeviceID?) throws {
+        engineLock.lock(); defer { engineLock.unlock() }
         let input = engine.inputNode
         try select(deviceID)
         let format = input.outputFormat(forBus: 0)
@@ -107,8 +114,9 @@ enum DictationAudioDevices {
         let accumulator = pcm
         let converterBox = DictationConverter(converter: converter, target: target, pcm: accumulator)
         self.converter = converterBox
-        // @Sendable on both: a closure formed inside this @MainActor class otherwise inherits main-actor isolation,
-        // Swift 6 checks it on entry, and AVAudioEngine calls from its own queue. 0.5.305 trapped on the first buffer.
+        // @Sendable on both: a closure formed inside a @MainActor class otherwise inherits main-actor isolation, Swift 6
+        // checks it on entry, and AVAudioEngine calls from its own queue. 0.5.305 trapped on the first buffer. Kept
+        // explicit since 0.5.328 moved this class off the main actor, so moving it back can never reintroduce the trap.
         input.installTap(onBus: 0, bufferSize: 2048, format: format) { @Sendable buffer, _ in converterBox.consume(buffer) }
         tapped = true
         observer = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine, queue: nil) { @Sendable _ in
@@ -118,6 +126,7 @@ enum DictationAudioDevices {
         catch { _ = try? stop(); throw error }
     }
     func stop() throws -> Data {
+        engineLock.lock(); defer { engineLock.unlock() }
         engine.stop()
         if tapped { engine.inputNode.removeTap(onBus: 0); tapped = false }
         if let observer { NotificationCenter.default.removeObserver(observer); self.observer = nil }
@@ -633,10 +642,10 @@ struct DictationDelivered: Sendable {
     }
 
     // Learn from my edits (0.5.318) reads through these: counts and the caret, a bounded range, focus, secure fields.
-    static func measure(_ element: AXUIElement) -> DictationFieldSnapshot { snapshot(element) }
-    static func text(_ element: AXUIElement, location: Int, length: Int) -> String? { string(element, location: location, length: length) }
+    nonisolated static func measure(_ element: AXUIElement) -> DictationFieldSnapshot { snapshot(element) }
+    nonisolated static func text(_ element: AXUIElement, location: Int, length: Int) -> String? { string(element, location: location, length: length) }
     /// The app is frontmost and its focused element is this one (or sits in it, for a web editor).
-    static func holdsFocus(_ element: AXUIElement, pid: Int32) -> Bool {
+    nonisolated static func holdsFocus(_ element: AXUIElement, pid: Int32) -> Bool {
         guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else { return false }
         let appElement = AXUIElementCreateApplication(pid)
         AXUIElementSetMessagingTimeout(appElement, 0.25)
@@ -644,7 +653,7 @@ struct DictationDelivered: Sendable {
         return CFEqual(now, element) || editableAncestor(now).map { ancestor in CFEqual(ancestor, element) } == true
     }
     /// A password field, or any app holding secure keyboard input.
-    static func secure(_ element: AXUIElement) -> Bool {
+    nonisolated static func secure(_ element: AXUIElement) -> Bool {
         IsSecureEventInputEnabled() || (attribute(element, kAXSubroleAttribute) as? String) == DictationInsertPolicy.secureSubrole
     }
 
@@ -705,6 +714,8 @@ struct DictationDelivered: Sendable {
 @MainActor final class DictationEditWatcher {
     private var task: Task<Void, Never>?
     private var watching: UUID?
+    /// 0.5.328: a watch is reading a field now (for the timing line's editWatchAtPress).
+    var isWatching: Bool { task != nil }
     func stop(_ why: String) {
         guard let task else { return }
         task.cancel(); self.task = nil; watching = nil
@@ -713,7 +724,7 @@ struct DictationDelivered: Sendable {
     /// A watch that ended on its own clears only itself, never a newer one.
     private func ended(_ id: UUID) { if watching == id { task = nil; watching = nil } }
     func start(_ target: DictationInsertTarget, mode: DictationLearnMode, context: DictationFieldContext.Applied? = nil,
-               found: @escaping @MainActor (DictationEditLearning.Candidate) -> Void) {
+               found: @escaping @MainActor @Sendable (DictationEditLearning.Candidate) -> Void) {
         stop("new dictation")
         let element = target.element
         let eligibility = DictationEditLearning.eligibility(mode: mode, secure: DictationInsertion.secure(element), terminal: target.terminal,
@@ -726,19 +737,23 @@ struct DictationDelivered: Sendable {
         let learning = eligibility == .learn
         let id = UUID()
         watching = id
-        task = Task { [weak self] in
+        // 0.5.328: off the main actor. Each read is several Accessibility calls into the other app (0.25 s each at most
+        // when it is busy), every 500 ms for up to three minutes; on the main actor they froze the pet, and a press that
+        // landed during one waited for it (Miles: 1,052 ms from press to the dictation's own task, 2026-10-19). Only an
+        // ending, a learned candidate and the spell check hop to the main actor.
+        task = Task.detached(priority: .utility) { [weak self] in
             // From the @unchecked Sendable target, never the outer AXUIElement: nothing non-Sendable crosses into the Task.
             let element = target.element
             let started = Date()
             let first = DictationInsertion.measure(element)
             guard let n0 = first.characters else {
-                dictationLog.notice("learn start readable=false \(facts, privacy: .public)"); self?.ended(id); return
+                dictationLog.notice("learn start readable=false \(facts, privacy: .public)"); await self?.ended(id); return
             }
             let bounds = DictationReplace.window(span: target.span, currentLength: target.text.utf16.count, fieldCharacters: n0)
             // The window must hold exactly what COS typed where it typed it, or there is nothing to learn from.
             guard var baseline = DictationInsertion.text(element, location: bounds.location, length: bounds.length),
                   DictationReplace.holds(baseline, at: target.span.location - bounds.location, target.text) else {
-                dictationLog.notice("learn start readable=false \(facts, privacy: .public) learning=\(learning)"); self?.ended(id); return
+                dictationLog.notice("learn start readable=false \(facts, privacy: .public) learning=\(learning)"); await self?.ended(id); return
             }
             dictationLog.notice("learn start readable=true \(facts, privacy: .public) learning=\(learning) window=\(bounds.length)")
             var baseCount = n0, start = target.span.location - bounds.location, length = target.span.length
@@ -752,7 +767,7 @@ struct DictationDelivered: Sendable {
                 if let why = DictationEditLearning.stop(elapsed: Date().timeIntervalSince(started), reads: reads, appRunning: running,
                                                         secure: DictationInsertion.secure(element),
                                                         focused: DictationInsertion.holdsFocus(element, pid: target.span.pid), fieldCharacters: now.characters) {
-                    dictationLog.notice("learn stop=\(why.rawValue, privacy: .public) reads=\(reads)"); self?.ended(id); return
+                    dictationLog.notice("learn stop=\(why.rawValue, privacy: .public) reads=\(reads)"); await self?.ended(id); return
                 }
                 if now != last { last = now; changedAt = Date(); continue }
                 guard let changed = changedAt, Date().timeIntervalSince(changed) >= DictationEditLearning.debounceSeconds, let n = now.characters else { continue }
@@ -760,7 +775,7 @@ struct DictationDelivered: Sendable {
                 reads += 1
                 let count = DictationEditLearning.readLength(baselineLength: baseline.utf16.count, baselineCharacters: baseCount, currentCharacters: n, start: bounds.location)
                 guard let current = DictationInsertion.text(element, location: bounds.location, length: count) else {
-                    dictationLog.notice("learn stop=unreadable reads=\(reads) \(facts, privacy: .public)"); self?.ended(id); return
+                    dictationLog.notice("learn stop=unreadable reads=\(reads) \(facts, privacy: .public)"); await self?.ended(id); return
                 }
                 let track = DictationEditLearning.track(baseline: baseline, current: current, start: start, length: length)
                 switch track {
@@ -773,13 +788,13 @@ struct DictationDelivered: Sendable {
                     length = l
                     // 0.5.323: the field outside the dictation, in this read and in the one before typing, is evidence.
                     let outside = DictationEditLearning.outside(window: current, start: start, length: l) + (context?.outside ?? [])
-                    var candidate = learning ? Self.candidate(edit, outside: outside) : nil
+                    var candidate = learning ? await MainActor.run { Self.candidate(edit, outside: outside) } : nil
                     let reverted = candidate.map { DictationEditLearning.undoesContextFix($0, fixes: context?.fixes ?? []) } ?? false
                     if reverted { candidate = nil }
                     dictationLog.notice("learn read=\(reads) track=inside words=\(edit.original.split(whereSeparator: \.isWhitespace).count)>\(edit.replacement.split(whereSeparator: \.isWhitespace).count) learning=\(learning) candidate=\(candidate != nil) evidence=\(candidate?.evidence != nil) revert=\(reverted)")
-                    if let candidate { found(candidate) }
+                    if let candidate { await found(candidate) }
                 case .lost:
-                    dictationLog.notice("learn stop=lost reads=\(reads)"); self?.ended(id); return
+                    dictationLog.notice("learn stop=lost reads=\(reads)"); await self?.ended(id); return
                 }
                 baseline = current; baseCount = n
             }
@@ -856,7 +871,11 @@ enum SystemAudioPermission {
 /// receiving its first audio", and this runs on the main actor. A crash cannot leave apps muted: the tap is private
 /// ("only visible to the client process that created the tap") and so is the aggregate ("private to the process that
 /// created it ... not persistent across launches"), and the HAL drops a client's objects with its connection.
-@MainActor final class DictationQuietController {
+///
+/// 0.5.328: not on the main actor. Every call arrives on DictationAudioQueues.output, in the order the store made it
+/// (DictationQuietHandle): building and starting the mute took 1.1 to 2.2 s on Miles's Mac, and on the main actor that
+/// froze the pet and the pill just as LISTENING appeared. `lastTimes` splits that cost for the timing line.
+final class DictationQuietController: @unchecked Sendable {
     private static let pendingKey = "dictation.quiet.pending"
     private struct Mute {
         let id = UUID()
@@ -872,9 +891,12 @@ enum SystemAudioPermission {
     private var lowered: (device: AudioObjectID, pending: DictationQuiet.Pending)?
     /// One line for Settings when the last Mute could not mute and COS lowered the volume instead; nil once it mutes.
     private(set) var fallbackNote: String?
+    /// The last begin's build and start, in milliseconds.
+    private(set) var lastTimes = DictationQuietTimes()
 
     func begin(mode: DictationQuietMode, macRecording: Bool) {
         end()
+        lastTimes = DictationQuietTimes()
         let device = Self.defaultOutput()
         let volume = device.flatMap { Self.volume($0) }
         let settable = device.map { Self.volumeSettable($0) } ?? false
@@ -906,7 +928,7 @@ enum SystemAudioPermission {
             mute = nil
             if let listener = session.listener {
                 var address = Self.address(kAudioHardwarePropertyDefaultOutputDevice, scope: kAudioObjectPropertyScopeGlobal)
-                AudioObjectRemovePropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &address, .main, listener)
+                AudioObjectRemovePropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &address, DictationAudioQueues.output, listener)
             }
             let report = Self.tearDown(session)
             let reading = session.meter.reading()
@@ -980,7 +1002,10 @@ enum SystemAudioPermission {
             case .ioProc:
                 status = AudioDeviceCreateIOProcIDWithBlock(&session.ioProc, session.aggregate, nil, DictationMuteIO.silence(session.meter))
             case .start:
+                let starting = ContinuousClock.now
                 status = AudioDeviceStart(session.aggregate, session.ioProc)
+                lastTimes = DictationQuietTimes(buildMs: Int((starting - began) / .milliseconds(1)),
+                                                startMs: Int((ContinuousClock.now - starting) / .milliseconds(1)))
             }
             statuses.append("\(step.rawValue)=\(status)")
             // A noErr that handed back no object is a failure too, or teardown would act on kAudioObjectUnknown.
@@ -1001,15 +1026,14 @@ enum SystemAudioPermission {
         }
         var address = Self.address(kAudioHardwarePropertyDefaultOutputDevice, scope: kAudioObjectPropertyScopeGlobal)
         let listener = Self.outputListener(self)
-        if AudioObjectAddPropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &address, .main, listener) == noErr { session.listener = listener }
+        if AudioObjectAddPropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &address, DictationAudioQueues.output, listener) == noErr { session.listener = listener }
         mute = session; fallbackNote = nil
         let playing = Self.playingProcesses(excluding: own)
         dictationLog.notice("quiet: other apps muted [\(statuses.joined(separator: " "), privacy: .public)] subTaps=\(Self.subTapCount(session.aggregate), privacy: .public) running=\(Self.isRunning(session.aggregate), privacy: .public) playing=\(playing.count, privacy: .public) \(playing.joined(separator: ","), privacy: .public) output=\(outputUID, privacy: .public) ms=\(elapsed, privacy: .public)")
         // One second in: did the HAL call the IOProc, and did the tap carry audio? callbacks=0 means the IO never ran;
         // tapPeak=0 with music playing means the tap is not receiving it.
         let id = session.id, aggregate = session.aggregate, meter = session.meter
-        Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .seconds(1))
+        DictationAudioQueues.output.asyncAfter(deadline: .now() + 1) { [weak self] in
             guard let self, self.mute?.id == id else { return }
             let reading = meter.reading()
             dictationLog.notice("quiet: muted 1s callbacks=\(reading.callbacks, privacy: .public) tapPeak=\(reading.peak, format: .fixed(precision: 4), privacy: .public) subTaps=\(Self.subTapCount(aggregate), privacy: .public) running=\(Self.isRunning(aggregate), privacy: .public)")
@@ -1034,9 +1058,13 @@ enum SystemAudioPermission {
             return "\(step.rawValue)=\(status)"
         }.joined(separator: " ")
     }
-    /// Built outside the actor: the HAL calls it on `.main`, so it asserts that and hops in.
+    /// Built outside any actor: the HAL calls it on DictationAudioQueues.output (0.5.328; it was `.main`), the queue the
+    /// controller lives on, so it calls straight in.
     nonisolated private static func outputListener(_ controller: DictationQuietController) -> AudioObjectPropertyListenerBlock {
-        { @Sendable [weak controller] _, _ in MainActor.assumeIsolated { controller?.defaultOutputChanged() } }
+        { @Sendable [weak controller] _, _ in
+            dispatchPrecondition(condition: .onQueue(DictationAudioQueues.output))
+            controller?.defaultOutputChanged()
+        }
     }
     /// See DictationMuteTap.keepOnOutputChange: a new default output ends the mute (the aggregate is clocked by the old
     /// one); dictation carries on with other apps audible.
@@ -1128,11 +1156,48 @@ enum SystemAudioPermission {
 }
 
 /// The focused window's frame in Cocoa screen coordinates, read through Accessibility (nil without it).
+/// 0.5.328: the store's handle on DictationQuietController. Each call is queued, in order, on
+/// DictationAudioQueues.output and returns at once; `begin`'s `done` comes back on the main actor with the fallback
+/// note and the times. The main actor never waits on the mute, except `flush` at quit, so the volume a lowered dictation
+/// saved is put back before COS Control exits.
+@MainActor final class DictationQuietHandle {
+    private let controller = DictationQuietController()
+    func begin(mode: DictationQuietMode, macRecording: Bool,
+               done: (@MainActor @Sendable (_ note: String?, _ totalMs: Int, _ times: DictationQuietTimes) -> Void)? = nil) {
+        let controller = controller
+        DictationAudioQueues.output.async {
+            let began = ProcessInfo.processInfo.systemUptime
+            controller.begin(mode: mode, macRecording: macRecording)
+            let total = DictationStartMarks.ms(began, ProcessInfo.processInfo.systemUptime)
+            let note = controller.fallbackNote, times = controller.lastTimes
+            if let done { Task { @MainActor in done(note, total, times) } }
+        }
+    }
+    func end() {
+        let controller = controller
+        DictationAudioQueues.output.async { controller.end() }
+    }
+    func restoreAfterInterruptedRun() {
+        let controller = controller
+        DictationAudioQueues.output.async { controller.restoreAfterInterruptedRun() }
+    }
+    /// Quit: wait for every queued begin and end (and the sounds) to finish.
+    func flush() { DictationAudioQueues.output.sync {} }
+}
+
 enum DictationFocusedWindow {
-    @MainActor static func frame() -> CGRect? {
+    /// What the lookup needs from AppKit, read on the main actor: the frontmost app and the primary screen's top.
+    struct Lookup: Sendable { let pid: pid_t; let primaryMaxY: CGFloat }
+    @MainActor static func lookup() -> Lookup? {
         guard AXIsProcessTrusted(), let app = NSWorkspace.shared.frontmostApplication,
               let primary = NSScreen.screens.first?.frame else { return nil }
-        let element = AXUIElementCreateApplication(app.processIdentifier)
+        return Lookup(pid: app.processIdentifier, primaryMaxY: primary.maxY)
+    }
+    @MainActor static func frame() -> CGRect? { lookup().flatMap { frame($0) } }
+    /// Accessibility only (three calls, 0.25 s each at most when the app is busy), so dictation runs it off the main
+    /// thread (0.5.328).
+    static func frame(_ lookup: Lookup) -> CGRect? {
+        let element = AXUIElementCreateApplication(lookup.pid)
         AXUIElementSetMessagingTimeout(element, 0.25)
         var value: CFTypeRef?
         guard AXUIElementCopyAttributeValue(element, kAXFocusedWindowAttribute as CFString, &value) == .success,
@@ -1146,7 +1211,7 @@ enum DictationFocusedWindow {
         guard AXUIElementCopyAttributeValue(ax, kAXSizeAttribute as CFString, &raw) == .success, let z = raw,
               CFGetTypeID(z) == AXValueGetTypeID(), AXValueGetValue(z as! AXValue, .cgSize, &size) else { return nil }
         // Accessibility measures from the top-left of the primary screen; Cocoa from its bottom-left.
-        return CGRect(x: position.x, y: primary.maxY - position.y - size.height, width: size.width, height: size.height)
+        return CGRect(x: position.x, y: lookup.primaryMaxY - position.y - size.height, width: size.width, height: size.height)
     }
 }
 
@@ -1161,7 +1226,10 @@ enum DictationFocusedWindow {
 /// to a second before COS could hear), so it now tells the truth and sits at the very start of the recording, before
 /// the speech it invites. Tests/dictation-start-canary.py sends the pinned speech sample with the start sound mixed in
 /// at its front through the real engine and requires the same words as without it.
-@MainActor final class DictationSoundPlayer {
+///
+/// 0.5.328: not on the main actor. Every call arrives on DictationAudioQueues.output (opening the file and starting the
+/// output engine took up to about 250 ms on Miles's Mac, during which the pet could not move).
+final class DictationSoundPlayer: @unchecked Sendable {
     private let engine = AVAudioEngine()
     private let node = AVAudioPlayerNode()
     private let pitch = AVAudioUnitTimePitch()
@@ -1195,10 +1263,13 @@ enum DictationFocusedWindow {
     }
     /// 0.5.314: AVAudioPlayerNode calls this on its own completion queue. A closure written inside this @MainActor
     /// class inherits main-actor isolation, and Swift 6 checks that on entry: 0.5.313 trapped (EXC_BREAKPOINT in
-    /// dispatch_assert_queue) the moment a start or stop sound finished. Built here, outside the actor, the closure
-    /// carries no isolation and only hops to the main actor.
+    /// dispatch_assert_queue) the moment a start or stop sound finished. Built here, outside any actor, the closure
+    /// carries no isolation and only hops to the output queue the player lives on (0.5.328; it hopped to the main actor).
     private nonisolated static func playedBack(_ owner: DictationSoundPlayer, id: Int) -> @Sendable (AVAudioPlayerNodeCompletionCallbackType) -> Void {
-        { [weak owner] _ in Task { @MainActor in owner?.finished(id) } }
+        { [weak owner] _ in
+            guard let owner else { return }
+            DictationAudioQueues.output.async { owner.finished(id) }
+        }
     }
     /// For the runtime check (run-dictation-sound-runtime.sh): true while a sound plays, false once its end stopped it.
     var isRunning: Bool { engine.isRunning }
@@ -1291,6 +1362,37 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
     let key = id.id
     Task { @MainActor in MacDictationStore.shared.hotKey(key, down: kind == UInt32(kEventHotKeyPressed)) }
     return noErr
+}
+
+/// What a spare build on DictationAudioQueues.input came back with (0.5.328), and the microphone list when it read one.
+enum DictationSpareBuild: Sendable {
+    case none([DictationMicrophone]?)
+    case keep([DictationMicrophone]?)
+    case built(DictationMicrophoneCapture, DictationSpare.Warmed, [DictationMicrophone]?)
+}
+
+/// 0.5.328: the main thread's heartbeat while a dictation starts (DictationStallMeter): a 16 ms timer on the main run
+/// loop in the common modes, from the press until three seconds after LISTENING or until the microphone closes.
+@MainActor final class DictationMainHeartbeat {
+    private var timer: Timer?
+    private var meter: DictationStallMeter?
+    func begin(at pressed: TimeInterval) {
+        timer?.invalidate()
+        let meter = DictationStallMeter(start: pressed)
+        self.meter = meter
+        let timer = Timer(timeInterval: Double(DictationStallMeter.tickMilliseconds) / 1000, repeats: true) { timer in
+            if !meter.tick(ProcessInfo.processInfo.systemUptime) { timer.invalidate() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        self.timer = timer
+    }
+    func listening(at uptime: TimeInterval) { meter?.end(at: uptime + DictationStallMeter.afterListeningSeconds) }
+    /// Stops the beat; the longest gap in ms, nil when none was running.
+    func finish() -> Int? {
+        timer?.invalidate(); timer = nil
+        defer { meter = nil }
+        return meter?.maxGapMs
+    }
 }
 
 @MainActor final class MacDictationStore: ObservableObject {
@@ -1400,7 +1502,7 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
     private var fixSuggestion: String?
     /// Where the latest dictations landed, measured, for Replace it in <App>. Memory only; the newest few.
     private var insertTargets: [UUID: DictationInsertTarget] = [:]
-    private let quiet = DictationQuietController()
+    private let quiet = DictationQuietHandle()
     /// Levels for the bars. Its own object, so a 20 Hz meter redraws the pill and never the whole pet.
     let meter = DictationMeterFeed()
     var bridge: (@MainActor (Data) async throws -> HelperResponse)?
@@ -1452,6 +1554,9 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
     /// 0.5.327: the next dictation's engine, built off the press and never started (DictationSpare), and what it was built against.
     private var spare: (capture: DictationMicrophoneCapture, warmed: DictationSpare.Warmed)?
     private var spareTask: Task<Void, Never>?
+    /// 0.5.328: the pill's placement (Accessibility off the main thread) and the main thread's heartbeat.
+    private var placing: Task<Void, Never>?
+    private let heartbeat = DictationMainHeartbeat()
     var busy: Bool { ["Listening", "Starting", "Transcribing"].contains(phase) }
     private init() {
         let d = UserDefaults.standard
@@ -1516,34 +1621,45 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
         spareTask = Task { [weak self] in
             try? await Task.sleep(for: delay)
             guard let self, !Task.isCancelled, self.capture == nil, !self.busy else { return }
-            self.warmSpare()
+            await self.warmSpare()
         }
     }
-    private func warmSpare() {
-        let selected = microphoneUID
-        var deviceID: AudioDeviceID?
-        if !selected.isEmpty {
-            // Off the press, so reading the list here costs the person nothing.
-            refreshMicrophones()
-            guard let id = microphoneIDs[selected] else { spare = nil; return }
-            deviceID = id
-        }
-        guard let device = deviceID ?? DictationAudioDevices.defaultInput(),
-              DictationSpare.mayWarm(enabled: enabled, authorized: AVCaptureDevice.authorizationStatus(for: .audio) == .authorized,
-                                     bluetooth: DictationAudioDevices.isBluetooth(device)) else { spare = nil; return }
-        let now = ProcessInfo.processInfo.systemUptime
-        if let held = spare, DictationSpare.check(held.warmed, selectedUID: selected, device: device,
-                                                  sampleRate: DictationAudioDevices.nominalSampleRate(device), bluetooth: false, now: now) == .use { return }
-        spare = nil
-        // The device's own rate, compared again at the press (the input node's format can differ from it and still work:
-        // measured 2026-10-19, an AT2020USB+ at 16 kHz with the node reporting 48 kHz).
-        guard let rate = DictationAudioDevices.nominalSampleRate(device) else { return }
-        let next = DictationMicrophoneCapture()
+    /// 0.5.328: the list read (a chosen microphone) and the engine build run on DictationAudioQueues.input; the main
+    /// actor only reads three settings before and stores the result after.
+    private func warmSpare() async {
+        let selected = microphoneUID, enabled = enabled
+        let authorized = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
+        let held = spare?.warmed
+        let built: DictationSpareBuild
         do {
-            try next.warm(deviceID: deviceID)
-            spare = (next, DictationSpare.Warmed(device: device, selectedUID: selected, sampleRate: rate, at: now))
+            built = try await DictationAudioQueues.perform(on: DictationAudioQueues.input) { () throws -> DictationSpareBuild in
+                var list: [DictationMicrophone]?
+                var deviceID: AudioDeviceID?
+                if !selected.isEmpty {
+                    list = DictationAudioDevices.inputs()
+                    guard let id = list?.first(where: { $0.id == selected })?.deviceID else { return .none(list) }
+                    deviceID = id
+                }
+                guard let device = deviceID ?? DictationAudioDevices.defaultInput(),
+                      DictationSpare.mayWarm(enabled: enabled, authorized: authorized, bluetooth: DictationAudioDevices.isBluetooth(device)) else { return .none(list) }
+                let now = ProcessInfo.processInfo.systemUptime
+                if let held, DictationSpare.check(held, selectedUID: selected, device: device,
+                                                  sampleRate: DictationAudioDevices.nominalSampleRate(device), bluetooth: false, now: now) == .use { return .keep(list) }
+                // The device's own rate, compared again at the press (the input node's format can differ from it and still
+                // work: measured 2026-10-19, an AT2020USB+ at 16 kHz with the node reporting 48 kHz).
+                guard let rate = DictationAudioDevices.nominalSampleRate(device) else { return .none(list) }
+                let next = DictationMicrophoneCapture()
+                try next.warm(deviceID: deviceID)
+                return .built(next, DictationSpare.Warmed(device: device, selectedUID: selected, sampleRate: rate, at: now), list)
+            }
         } catch {
-            dictationLog.notice("spare engine not built: \(error.localizedDescription, privacy: .public)")
+            spare = nil
+            dictationLog.notice("spare engine not built: \(error.localizedDescription, privacy: .public)"); return
+        }
+        switch built {
+        case .none(let list): spare = nil; if let list { microphones = list }
+        case .keep(let list): if let list { microphones = list }
+        case .built(let next, let warmed, let list): spare = (next, warmed); if let list { microphones = list }
         }
     }
     /// The press: the spare, only while nothing it was built against has changed (DictationSpare.check). Taken once.
@@ -1556,6 +1672,19 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
                                            now: ProcessInfo.processInfo.systemUptime)
         if case .discard(let why) = verdict { dictationLog.notice("spare engine discarded: \(why, privacy: .public)"); return nil }
         return held.capture
+    }
+    /// 0.5.328: a start number measured after the fact on the output queue: onto the press's marks while they are held,
+    /// else onto this dictation's open timing line; dropped once the line is written or a newer dictation began.
+    private func lateMarks(_ attempt: UUID, _ apply: (inout DictationStartMarks) -> Void) {
+        guard generation == attempt else { return }
+        if startMarks != nil { apply(&startMarks!); return }
+        guard timing != nil else { return }
+        var late = DictationStartMarks(pressed: 0)
+        apply(&late)
+        if let v = late.soundMs { timing?.soundMs = v }
+        if let v = late.quietMs { timing?.quietMs = v }
+        if let v = late.quietBuildMs { timing?.quietBuildMs = v }
+        if let v = late.quietStartMs { timing?.quietStartMs = v }
     }
     /// 0.5.327: STARTING waits here for the microphone's first buffer, the moment COS can truly hear the person.
     private func awaitFirstAudio(_ capture: DictationMicrophoneCapture, attempt: UUID) async -> DictationStart.FirstAudio {
@@ -1749,20 +1878,34 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
         guard MacDictationPolicy.mayStart(enabled: enabled, busy: busy) else { return }
         // 0.5.327: the press's own time; every start number on the timing line counts from it.
         let pressed = ProcessInfo.processInfo.systemUptime
+        // 0.5.328: the main thread's heartbeat from the press (mainThreadStallMs on the timing line).
+        heartbeat.begin(at: pressed)
         generation = UUID(); let attempt = generation
         flashTask?.cancel(); flashTask = nil; fixOfferID = nil; dismissCard()
+        let watching = editWatcher.isWatching
         editWatcher.stop("new dictation")
-        // On the pet only when the pet is on the screen with the focused window; else the pill on that screen.
-        let placement = DictationPlacement.choose(petFrame: petFrame?(), focusedWindow: DictationFocusedWindow.frame(),
-                                                  screens: NSScreen.screens.map(\.frame), mainScreen: NSScreen.main?.frame)
-        if case .floating(let screen)? = placement { surface = .floating; floatingScreen = screen } else { surface = .pet; floatingScreen = nil }
         pendingAudio = nil; message = nil; phase = "Starting"; pointerDuringHold = false
         levelMeter = DictationLevelMeter(); meter.reset()
+        startMarks = DictationStartMarks(pressed: pressed); startMarks?.editWatchAtPress = watching
+        spareTask?.cancel(); spareTask = nil
+        // On the pet only when the pet is on the screen with the focused window; else the pill on that screen. 0.5.328:
+        // the focused window comes from Accessibility off the main thread (three calls of up to 0.25 s each when that app
+        // is busy); the pill appears as soon as it is back, and the microphone starts opening meanwhile.
         // 0.5.327 (Miles 2026-10-19): STARTING until the microphone's first buffer. LISTENING, the start sound and the
         // mute all wait for it, so nothing tells the person to talk before COS can hear them.
-        pill = .starting
-        startMarks = DictationStartMarks(pressed: pressed)
-        spareTask?.cancel(); spareTask = nil
+        let petNow = petFrame?(), screens = NSScreen.screens.map(\.frame), mainScreen = NSScreen.main?.frame
+        let lookup = DictationFocusedWindow.lookup()
+        placing = Task { [weak self] in
+            let asked = ProcessInfo.processInfo.systemUptime
+            let window: CGRect? = if let lookup {
+                (try? await DictationAudioQueues.perform(on: .global(qos: .userInitiated)) { DictationFocusedWindow.frame(lookup) }) ?? nil
+            } else { nil }
+            guard let self, self.generation == attempt else { return }
+            self.startMarks?.placementMs = DictationStartMarks.ms(asked, ProcessInfo.processInfo.systemUptime)
+            let placement = DictationPlacement.choose(petFrame: petNow, focusedWindow: window, screens: screens, mainScreen: mainScreen)
+            if case .floating(let screen)? = placement { self.surface = .floating; self.floatingScreen = screen } else { self.surface = .pet; self.floatingScreen = nil }
+            if self.phase == "Starting" { self.pill = .starting }
+        }
         task = Task {
             // A local first: reading and writing startMarks in one statement is an overlapping access (Swift 6 exclusivity).
             let toTask = startMarks?.since(ProcessInfo.processInfo.systemUptime)
@@ -1794,16 +1937,28 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
             let next: DictationMicrophoneCapture
             do {
                 let opening = ProcessInfo.processInfo.systemUptime
-                // The spare when it still fits; a spare that will not start gives way to a fresh engine at once.
-                if let warm = takeSpare(device: deviceID ?? DictationAudioDevices.defaultInput()), (try? warm.start(deviceID: deviceID)) != nil {
-                    next = warm; startMarks?.warmEngine = true
-                } else {
-                    next = DictationMicrophoneCapture()
-                    try next.start(deviceID: deviceID); startMarks?.warmEngine = false
+                // 0.5.328: the engine opens on DictationAudioQueues.input; the main actor (the pet, the pill) never waits on
+                // it. The spare when it still fits; a spare that will not start gives way to a fresh engine at once.
+                let warm = takeSpare(device: deviceID ?? DictationAudioDevices.defaultInput())
+                let opened = try await DictationAudioQueues.perform(on: DictationAudioQueues.input) { () throws -> (DictationMicrophoneCapture, Bool) in
+                    if let warm, (try? warm.start(deviceID: deviceID)) != nil { return (warm, true) }
+                    let fresh = DictationMicrophoneCapture()
+                    try fresh.start(deviceID: deviceID)
+                    return (fresh, false)
                 }
+                // Released or canceled while it opened: cancel() had no microphone to close, so close this one here.
+                guard generation == attempt, !Task.isCancelled else {
+                    let orphan = opened.0
+                    DictationAudioQueues.input.async { _ = try? orphan.stop() }
+                    return
+                }
+                next = opened.0; startMarks?.warmEngine = opened.1
                 capture = next
                 startMarks?.engineStartMs = DictationStartMarks.ms(opening, ProcessInfo.processInfo.systemUptime)
-            } catch { let reason = error.localizedDescription; dictationLog.error("start failed: \(reason, privacy: .public)"); fail(reason, code: DictationFailReason.engineStart.code()); return }
+            } catch {
+                guard generation == attempt else { return }
+                let reason = error.localizedDescription; dictationLog.error("start failed: \(reason, privacy: .public)"); fail(reason, code: DictationFailReason.engineStart.code()); return
+            }
             switch await awaitFirstAudio(next, attempt: attempt) {
             case .superseded: return  // cancel() closed the microphone
             case .failed, .timedOut:
@@ -1818,20 +1973,26 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
             case .arrived(let at):
                 startMarks?.pressToFirstBufferMs = DictationStartMarks.ms(pressed, at)
             }
+            // The pill's placement is known before LISTENING shows (it is almost always back long before the first buffer).
+            await placing?.value
+            guard generation == attempt, !Task.isCancelled else { return }
             // The microphone is hearing: now LISTENING, and the start sound. See DictationSoundPlayer for why the sound is
             // not trimmed from the recording.
             phase = "Listening"; pill = .listening(since: Date())
-            playSound(.start)
+            heartbeat.listening(at: ProcessInfo.processInfo.systemUptime)
+            // 0.5.328: the sound and the mute are queued, in that order, on DictationAudioQueues.output; their times come
+            // back later (lateMarks). pressToSoundMs is now when the sound was queued; soundMs is how long it took to start.
+            playSound(.start) { [weak self] took in self?.lateMarks(attempt) { $0.soundMs = took } }
             let toSound = startMarks?.since(ProcessInfo.processInfo.systemUptime)
             startMarks?.pressToSoundMs = toSound
             // After the start sound is scheduled (COS is excluded from the mute, so it still plays); never during a Mac
             // recording. Every way listening ends calls quiet.end(): stop (before the stop sound), fail and cancel. Built
             // after the microphone opened, so building it never delays the first words (0.5.327; on Miles's Mac the
             // mute's aggregate device took 38 to 630 ms, and starting it under a running microphone changed nothing).
-            let quieting = ProcessInfo.processInfo.systemUptime
-            quiet.begin(mode: quietMode, macRecording: macRecordingActive?() ?? false)
-            quietNote = quiet.fallbackNote
-            startMarks?.quietMs = DictationStartMarks.ms(quieting, ProcessInfo.processInfo.systemUptime)
+            quiet.begin(mode: quietMode, macRecording: macRecordingActive?() ?? false) { [weak self] note, total, times in
+                self?.quietNote = note
+                self?.lateMarks(attempt) { $0.quietMs = total; $0.quietBuildMs = times.buildMs; $0.quietStartMs = times.startMs }
+            }
             // 50 ms ticks: the meter's fast rise and slow fall are tuned to this cadence.
             meterTask = Task {
                 var tick = 0
@@ -1892,6 +2053,7 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
             if let mark = releaseMark {
                 timing = DictationTiming.measure(pcm: pcm, releaseBytes: mark.bytes, tailMs: mark.tailMs,
                                                  releaseToClosedMs: Int(((ProcessInfo.processInfo.systemUptime - mark.uptime) * 1000).rounded()), at: Date())
+                startMarks?.mainThreadStallMs = heartbeat.finish()
                 timing?.include(startMarks)
             }
             releaseMark = nil; startMarks = nil
@@ -1922,7 +2084,7 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
         guard phase == "Listening", let capture else { cancel(); message = nil; return }
         // 0.5.326: sleep or a session switch inside the release tail closes now and copies, as any interruption does.
         tailing = false; tailTask?.cancel(); tailTask = nil; releaseMark = nil; timing = nil
-        timer?.cancel(); timer = nil; self.capture = nil; startMarks = nil
+        timer?.cancel(); timer = nil; self.capture = nil; startMarks = nil; _ = heartbeat.finish()
         meterTask?.cancel(); meterTask = nil
         held = false; toggleHeld = false; holdPending = false
         holdTracker?.reset(); toggleTracker?.reset()
@@ -1988,8 +2150,12 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
                 let copyOnly = pendingInterrupted
                 let clipboardMoved = interruptedChangeCount.map { $0 != NSPasteboard.general.changeCount } ?? false
                 pendingAudio = nil; phase = "Ready"; message = nil
+                // 0.5.328: delivery still runs on the main actor (Accessibility into the target app, the clipboard, ⌘V);
+                // deliverMs says how long, so a stutter at the end of a dictation can be told from one at its start.
+                let delivering = ProcessInfo.processInfo.systemUptime
                 let delivered = copyOnly ? DictationInsertion.copyOnly(text, clipboardMoved: clipboardMoved)
                     : await DictationInsertion.deliver(text, restoreClipboard: restoreClipboard, fieldContext: useFieldContext)
+                timing?.deliverMs = DictationStartMarks.ms(delivering, ProcessInfo.processInfo.systemUptime)
                 // What was typed, after the field's own words respelled it (0.5.323), is what is kept and watched.
                 finish(delivered.context?.text ?? text, outcome: delivered.outcome, target: delivered.target, context: delivered.context)
             } catch {
@@ -2013,7 +2179,8 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
         do {
             let response = try await polishBridge(request, budget)
             outcome = DictationPolish.choose(heard: heard, ok: response.ok, text: response.details["text"]?.string,
-                                             polished: response.details["polished"]?.bool, reason: response.details["reason"]?.string)
+                                             polished: response.details["polished"]?.bool, reason: response.details["reason"]?.string,
+                                             skipped: response.details["polishSkipped"]?.string)
         } catch HelperClientError.timedOut {
             outcome = .timeout
         } catch {
@@ -2070,6 +2237,8 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
     /// `code` (DictationFailReason) names the failed step on the timing line; `reason` is the card's words and never logged there.
     private func fail(_ reason: String, code: String, card: Bool = true, action: DictationFailureAction? = nil) {
         // 0.5.327: a failure before the microphone captured anything writes its own line, with the start's numbers.
+        let stall = heartbeat.finish()
+        if startMarks != nil { startMarks?.mainThreadStallMs = stall }
         if timing == nil, let marks = startMarks { timing = DictationTiming.startFailure(marks, at: Date()) }
         startMarks = nil
         timing?.failReason = code
@@ -2118,6 +2287,8 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
     func openMicrophoneSettings() {
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone") { NSWorkspace.shared.open(url) }
     }
+    /// 0.5.328 quit (COSAppDelegate.onTerminate, after cancel): the queued unmute or volume restore runs before exit.
+    func flushAudio() { quiet.flush() }
     /// Also the quit path (COSAppDelegate.onTerminate) and turning dictation off; sleep and a session switch reach
     /// interrupt(), which falls back here. Other apps' sound always comes back.
     func cancel() {
@@ -2126,7 +2297,7 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
         tailing = false; tailTask?.cancel(); tailTask = nil; releaseMark = nil; timing = nil
         meterTask?.cancel(); meterTask = nil; flashTask?.cancel(); flashTask = nil
         _ = try? capture?.stop(); capture = nil; held = false; toggleHeld = false; holdPending = false
-        holdTracker?.reset(); toggleTracker?.reset(); startMarks = nil
+        holdTracker?.reset(); toggleTracker?.reset(); startMarks = nil; _ = heartbeat.finish(); placing?.cancel(); placing = nil
         phase = enabled ? "Ready" : "Off"; message = "Dictation canceled. No text was inserted."
         pill = .hidden; fixOfferID = nil; meter.reset()
         prepareSpare()
@@ -2150,11 +2321,21 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
         case .custom(let file): Self.customSoundDirectory().appendingPathComponent(file)
         }
     }
-    func playSound(_ edge: DictationSoundEdge) {
+    /// 0.5.328: queued on DictationAudioQueues.output; `played` (the main actor) gets how long it took to start.
+    func playSound(_ edge: DictationSoundEdge, played: (@MainActor @Sendable (Int) -> Void)? = nil) {
         let resolved = resolvedSound(edge)
         if case .silent(let why) = resolved { dictationLog.debug("sound \(edge.rawValue, privacy: .public) silent: \(why, privacy: .public)"); return }
         guard let url = soundURL(resolved) else { return }
-        soundPlayer.play(url, volume: Float(soundVolume), semitones: soundPitch)
+        play(url, volume: Float(soundVolume), played: played)
+    }
+    private func play(_ url: URL, volume: Float, played: (@MainActor @Sendable (Int) -> Void)? = nil) {
+        let player = soundPlayer, pitch = soundPitch
+        DictationAudioQueues.output.async {
+            let began = ProcessInfo.processInfo.systemUptime
+            player.play(url, volume: volume, semitones: pitch)
+            let took = DictationStartMarks.ms(began, ProcessInfo.processInfo.systemUptime)
+            if let played { Task { @MainActor in played(took) } }
+        }
     }
     /// Settings' Preview. Same rules as dictation, so a preview during a Mac recording says why it is silent.
     func previewSound(_ edge: DictationSoundEdge) {
@@ -2196,7 +2377,7 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("cos-dictation-sound-preview.wav")
         try? FileManager.default.removeItem(at: url)
         guard FileManager.default.createFile(atPath: url.path, contents: pending.trimmedWAV, attributes: [.posixPermissions: 0o600]) else { return }
-        soundPlayer.play(url, volume: Float(max(soundVolume, 0.2)), semitones: soundPitch)
+        play(url, volume: Float(max(soundVolume, 0.2)))
     }
     /// Stores only the trimmed result (at most 3 s, WAV) in the app's dictation-sounds folder, 0600, and selects it.
     func saveImport() {
