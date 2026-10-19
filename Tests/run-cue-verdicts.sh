@@ -36,7 +36,7 @@ if [[ "$LANE" == "all" || "$LANE" == "pins" ]]; then
   OUT="$(/usr/bin/python3 "$ROOT/Tests/cue-verdicts-pins.py" "$ROOT")" || { print -r -- "$OUT"; exit 1; }
   print -r -- "$OUT"
   COUNT="${${OUT##*pins: }%% passed*}"
-  (( COUNT >= 70 )) || { print -u2 "cue verdicts pins ran only $COUNT (expected at least 70)"; exit 1; }
+  (( COUNT >= 73 )) || { print -u2 "cue verdicts pins ran only $COUNT (expected at least 73)"; exit 1; }
 fi
 
 if [[ "$LANE" == "all" || "$LANE" == "models" ]]; then
@@ -46,14 +46,14 @@ if [[ "$LANE" == "all" || "$LANE" == "models" ]]; then
   OUT="$(env "${RUN_ENV[@]}" "$DIR/cue-verdicts-checks")" || { print -r -- "$OUT"; exit 1; }
   print -r -- "$OUT"
   COUNT="${${OUT##*checks: }%% passed*}"
-  (( COUNT >= 137 )) || { print -u2 "cue verdicts checks ran only $COUNT (expected at least 137)"; exit 1; }
+  (( COUNT >= 156 )) || { print -u2 "cue verdicts checks ran only $COUNT (expected at least 156)"; exit 1; }
 fi
 
 if [[ "$LANE" == "all" || "$LANE" == "page" ]]; then
   OUT="$(node "$ROOT/Tests/MemoriesCuesCanary.cjs")" || { print -r -- "$OUT"; exit 1; }
   print -r -- "$OUT"
   COUNT="${${OUT##*canary: }%% passed*}"
-  (( COUNT >= 16 )) || { print -u2 "memories cues canary ran only $COUNT (expected at least 16)"; exit 1; }
+  (( COUNT >= 17 )) || { print -u2 "memories cues canary ran only $COUNT (expected at least 17)"; exit 1; }
 fi
 # By hand and for the mutation gate only (Tests/run.sh already builds the helper and runs both): the helper's self-test,
 # which carries the two verbs' grammar and whitelists, then the compiled helper against a loopback fixture.

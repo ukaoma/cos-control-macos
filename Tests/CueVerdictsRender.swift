@@ -24,10 +24,10 @@ import Vision
     static let session = "meeting_1792400000000_abc123"
     static func row(_ id: String, minutes: Double, detail: String, verdict: String = "null", before: String = "") -> String {
         let at = 1_792_400_000_000.0 + minutes * 60_000
-        return #"{"cueId":"\#(id)","sessionId":"\#(session)","meetingTitle":"Northwind weekly","createdAt":\#(at),"kind":"challenge","headline":"\#(detail.prefix(40))","detail":"\#(detail)","gate":0.94,"sources":[],"model":"claude-sonnet-5-5","before":"\#(before)","verdict":\#(verdict)}"#
+        return #"{"cueId":"\#(id)","sessionId":"\#(session)","meetingTitle":"Northwind weekly","createdAt":\#(at),"kind":"challenge","headline":"\#(detail.prefix(40))","detail":"\#(detail)","gate":0.94,"sources":[],"model":"claude-sonnet-5-5","before":"\#(before)","rating":\#(verdict)}"#
     }
     static func history(_ rows: [String], total: Int, rated: Int) -> String {
-        #"{"ok":true,"message":"x","details":{"transport":"answered","httpStatus":200,"v":1,"cues":[\#(rows.joined(separator: ","))],"counts":{"total":\#(total),"rated":\#(rated),"unrated":\#(total - rated),"byVerdict":{"useful":\#(rated)}}}}"#
+        #"{"ok":true,"message":"x","details":{"transport":"answered","httpStatus":200,"v":1,"cues":[\#(rows.joined(separator: ","))],"counts":{"total":\#(total),"rated":\#(rated),"unrated":\#(total - rated),"byVerdict":{"useful":\#(rated)}},"maxCuesPerMeeting":25}}"#
     }
 
     static func main() async throws {
@@ -70,7 +70,7 @@ import Vision
             expect(store.queue.first?.id == "cue-0001-aaaa", "the queue's first cue is the oldest unrated")
             try draw(CueReviewPane(model: model, store: store, openMemories: { _ in }), size: CGSize(width: 980, height: 680), appearance: appearance,
                      name: "memories-cues-to-rate-\(theme)", out: out,
-                     words: ["Cues to rate", "Rated cues", "To review", "Recent learning", "Ratings this week: 3 of 31.", "Northwind weekly", "7 min in",
+                     words: ["Cues to rate", "Rated cues", "To review", "Recent learning", "Rated in the last 7 days: 3 of 31.", "Northwind weekly", "7 min in",
                              "Challenge", "score 0.94", "Settle the date and what the archive keeps", "Sources: none, from the room only",
                              "What was said just before", "1 Useful", "2 Late", "3 Repeat", "4 Wrong", "5 Obvious", "Note (optional)", "Skip",
                              "Next up", CueVerdicts.keysLine])

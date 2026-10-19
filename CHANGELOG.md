@@ -4,28 +4,36 @@ Miles, 2026-10-19: rate every live cue this week, so Friday's tuning (the bar, t
 real verdicts. Needs COS server 6.79.0, which keeps a log of every cue it shows (30 days) and its verdicts. The lens's up
 and down vote keeps working and is kept beside a verdict, never replaced by it.
 
-- Memories, Cues to rate: this week's unrated cues, oldest first, one card at a time: the meeting, the local time and
+- Memories, Cues to rate: the last 7 days' unrated cues, oldest first, one card at a time: the meeting, the local time and
   how many minutes into the meeting, the kind, the score, the cue, its sources ("none, from the room only" when it drew
-  on nothing), what was said just before it, five verdicts (Useful, Late, Repeat, Wrong, Obvious), an optional note and
+  on nothing), what was said just before it (no box when the server has no excerpt), five verdicts (Useful, Late, Repeat, Wrong, Obvious), an optional note and
   Skip. Keys 1 to 5 rate, N goes to the note and S skips, only while the card has focus; Return or Escape in the note
-  gives the keys back. Skip moves a cue to the end and sends nothing. "Ratings this week: X of Y" under the views.
-- Memories, Rated cues: this week's rated cues, newest first, each with its verdict and note; pick another verdict to
+  gives the keys back. Skip moves a cue to the end and sends nothing. "Rated in the last 7 days: X of Y" under the views. The meeting is named
+  by its saved title: the meeting this Mac's library holds for that glasses session, else the title the server resolved,
+  else the generic "G2 Recording ..." name the cue was written under.
+- Memories, Rated cues: the last 7 days' rated cues, newest first, each with its verdict and note; pick another verdict to
   change it, or Clear to send it back to Cues to rate.
 - The two entries sit in the Memories page's own row, after To review, with the unrated count. They open a native view
   (its own route, so Back and a tab switch close it) whose rail goes back to To review or Recent learning.
 - Meetings: beside Live COS Ask (and Meeting Ask on a saved glasses recording), a Cues view: the meeting's cues, newest
-  first, "N of 25 used", each with the five verdicts inline; a rated cue shows its verdict and note, with Change. A tap
+  first, "N of M used" with the server's own count and cap, each with the five verdicts inline; a rated cue shows its verdict and note, with Change. A tap
   on a cue shows what was said just before it. While the meeting runs the list reads again every 15 seconds, and only
-  while Cues is showing. Hide Ask still hides the whole panel. A saved meeting shows the cues of each original glasses
+  while Cues is showing; one failed read keeps the last good list, the second in a row says why, and a read that
+  changes nothing redraws nothing. Hide Ask still hides the whole panel. A saved meeting shows the cues of each original glasses
   recording it holds (by its G2 session id), within the server's 30 days; a Mac recording has no live cues and no Cues
   view.
 - An older server (no cue history, a 404): the Memories entries do not show, the meeting panel is Live COS Ask alone,
   and an open cue view says "Rating cues needs server 6.79.0" in one line. Unreachable, reconnect and other failures each
-  have their own line and Check again; a rating that did not save says so on its card and changes nothing.
+  have their own line and Check again. A rating shows as saving until the server answers (never ahead of it); one that
+  did not save says why on its card and changes nothing: "Server is updating. Rating not saved, try again." (a 503 or
+  no answer), "This cue is older than 30 days and was removed." (unknown_cue), or the ratings file being unreadable
+  (verdicts_unreadable). The server's code decides, not the status.
 - Helper: `live-cues-history [--days N] [--session ID] [--unrated]` (GET /api/live-cues/history, 200 at most) and
-  `live-cues-rate --session ID --cue ID --verdict useful|late|repeat|wrong|obvious|clear [--note TEXT]` (POST
-  /api/live-cues/feedback; the note whitespace-collapsed and cut to 200). Arguments outside the grammar never reach the
-  server; only the contract's keys cross back.
+  `live-cues-rate --session ID --cue ID --verdict useful|late|repeat|wrong|obvious|clear [--note-stdin]` (POST
+  /api/live-cues/feedback; the note read from stdin as {"note": ...}, never argv, whitespace-collapsed and cut to 200).
+  `transport` is answered, unsupported (a 404 that is not JSON: a server from before the routes), unavailable or
+  no_token. Arguments outside the grammar never reach the server; only the contract's keys cross back, a refusal by its
+  code.
 - Tests: Tests/run-cue-verdicts.sh (wiring pins, the words, keys, 15-second floor and store against a stand-in helper,
   the page's entries), Tests/cue-verdicts-helper-checks.py (the helper against a loopback fixture), the helper
   self-test, and Tests/mutate-cue-verdicts.py over the new guards. `run-cue-verdicts.sh render <dir>` draws both

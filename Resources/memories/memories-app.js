@@ -323,7 +323,7 @@
     document.querySelector('#memoryNav').innerHTML = [['recent', 'Recent learning'], ['applied', 'Applied this week'], ['memories', 'All memories'], ['review', 'To review' + (review ? ' (' + fmt(review) + ')' : '')]].map(function (p) {
       var on = state.view !== 'knowledge' && state.filter === p[0];
       return '<button class="' + (on ? 'active' : '') + '" aria-pressed="' + on + '" onclick="cosApp.setFilter(\'' + p[0] + '\')">' + p[1] + '</button>';
-    }).join('') + (state.cues ? '<button onclick="cosApp.openCues(\'rate\')">Cues to rate' + (state.cues.unrated ? ' (' + fmt(state.cues.unrated) + ')' : '') + '</button>' +
+    }).join('') + (state.cues ? '<button onclick="cosApp.openCues(\'rate\')">Cues to rate' + (typeof state.cues.unrated === 'number' && state.cues.unrated > 0 ? ' (' + fmt(state.cues.unrated) + ')' : '') + '</button>' +
       '<button onclick="cosApp.openCues(\'rated\')">Rated cues</button>' : '') +
       '<button class="' + (state.view === 'knowledge' ? 'active' : '') + '" aria-pressed="' + (state.view === 'knowledge') + '" onclick="cosApp.openKnowledge()">Knowledge</button>';
   }

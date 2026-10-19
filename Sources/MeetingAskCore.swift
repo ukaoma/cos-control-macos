@@ -998,8 +998,13 @@ struct LiveCueRating: Equatable, Sendable {
 struct LiveCueRecord: Identifiable, Equatable, Sendable {
     var id: String
     var sessionId: String
+    /// The title at cue time ("G2 Recording 2026-10-19 0741").
     var meetingTitle: String
+    /// The saved meeting's title when the server knows it (`titleSource` saved or library), else empty.
+    var savedTitle: String = ""
     var createdAt: Date
+    /// When live cues were armed for the meeting; absent on hand-seeded rows.
+    var armedAt: Date?
     /// `reinforce` or `challenge`.
     var kind: String
     var headline: String
@@ -1030,7 +1035,9 @@ struct LiveCueRecord: Identifiable, Equatable, Sendable {
                       item.object.flatMap { s in s["title"]?.string.map { LiveCueSource(id: s["id"]?.string ?? "", date: s["date"]?.string ?? "", title: $0) } }
                   },
                   before: row["before"]?.string ?? "")
-        if let stored = row["verdict"]?.object {
+        if ["saved", "library"].contains(row["titleSource"]?.string ?? ""), let title = row["title"]?.string { savedTitle = title }
+        armedAt = row["armedAt"]?.double.map { Date(timeIntervalSince1970: $0 / 1000) }
+        if let stored = (row["rating"] ?? row["verdict"])?.object {
             let rating = LiveCueRating(verdict: stored["verdict"]?.string.flatMap(CueVerdict.init(rawValue:)), note: stored["note"]?.string,
                                        vote: stored["vote"]?.string, at: stored["at"]?.double.map { Date(timeIntervalSince1970: $0 / 1000) })
             self.rating = rating.verdict == nil && rating.vote == nil ? nil : rating
@@ -1070,12 +1077,23 @@ enum CueVerdicts {
         case notChecked
         /// A 200 without the contract's shape.
         case unreadable
+        /// 503 verdicts_unreadable: the server's ratings file cannot be read.
+        case storageUnreadable
         case failed(status: Int)
     }
 
     struct History: Equatable, Sendable {
         var cues: [LiveCueRecord]
         var counts: LiveCueCounts
+        /// The server's per-meeting cap (never assumed here).
+        var cap: Int? = nil
+        /// With a session filter: each meeting's cue count and cap, from the server's own counters.
+        var meetings: [String: MeetingCount] = [:]
+    }
+
+    struct MeetingCount: Equatable, Sendable {
+        var cues: Int
+        var cap: Int?
     }
 
     /// Memories' two views, the route the Memories page and the rail write (ControllerModel.cueReview).
@@ -1085,8 +1103,12 @@ enum CueVerdicts {
         /// The verdict the server now holds (nil when cleared) and the lens vote beside it.
         case saved(CueVerdict?, vote: String?)
         case unknownCue
+        /// 409 cue_session_mismatch.
+        case otherMeeting
         case olderServer
+        /// Nothing answered, or a 503: the server is likely restarting for an update.
         case unreachable
+        case storageUnreadable
         case reconnect
         case refused
         case failed(status: Int)
@@ -1096,8 +1118,6 @@ enum CueVerdicts {
     enum Key: Equatable, Sendable { case rate(CueVerdict), note, skip }
 
     static let minimumServer = "6.79.0"
-    /// Cues a meeting may get (server 6.78.2).
-    static let meetingCap = 25
     /// A meeting's list is read again no sooner than this while it shows (CueVerdictsStore.loadMeeting).
     static let pollSeconds: TimeInterval = 15
     static let weekDays = 7
@@ -1116,6 +1136,7 @@ enum CueVerdicts {
         switch details["transport"]?.string {
         case "unavailable": return (.unreachable, nil)
         case "no_token": return (.reconnect, nil)
+        case "unsupported": return (.olderServer, nil)
         case "answered": break
         default: return (.notChecked, nil)
         }
@@ -1125,7 +1146,13 @@ enum CueVerdicts {
                   let total = counts["total"]?.int, let rated = counts["rated"]?.int, let unrated = counts["unrated"]?.int else { return (.unreadable, nil) }
             var by: [CueVerdict: Int] = [:]
             for verdict in CueVerdict.allCases { if let n = counts["byVerdict"]?.object?[verdict.rawValue]?.int { by[verdict] = n } }
-            return (.loaded, History(cues: rows.compactMap(LiveCueRecord.init), counts: LiveCueCounts(total: total, rated: rated, unrated: unrated, byVerdict: by)))
+            var meetings: [String: MeetingCount] = [:]
+            for (id, value) in details["meetings"]?.object ?? [:] {
+                if let cues = value.object?["cues"]?.int { meetings[id] = MeetingCount(cues: cues, cap: value.object?["cap"]?.int) }
+            }
+            return (.loaded, History(cues: rows.compactMap(LiveCueRecord.init), counts: LiveCueCounts(total: total, rated: rated, unrated: unrated, byVerdict: by),
+                                     cap: details["maxCuesPerMeeting"]?.int, meetings: meetings))
+        case 503 where details["error"]?.string == "verdicts_unreadable": return (.storageUnreadable, nil)
         case 404: return (.olderServer, nil)
         case 401, 403: return (.reconnect, nil)
         case let status?: return (.failed(status: status), nil)
@@ -1143,6 +1170,7 @@ enum CueVerdicts {
         case .reconnect: return "Reconnect COS Control to the server to see cues."
         case .notChecked: return "COS Control could not read cues. Check again."
         case .unreadable: return "The server's answer about cues was not readable. Update the server in Settings."
+        case .storageUnreadable: return "The server's ratings file cannot be read, so cues cannot be listed. Check again after the server restarts."
         case .failed(let status): return "The server could not list cues (HTTP \(status)). Check again."
         }
     }
@@ -1165,11 +1193,14 @@ enum CueVerdicts {
         return out.trimmingCharacters(in: .whitespaces)
     }
 
-    /// One verdict for one cue; nil clears it (and carries no note).
-    static func rateArguments(_ cue: LiveCueRecord, verdict: CueVerdict?, note raw: String?) -> [String] {
+    /// One verdict for one cue; nil clears it (and carries no note). The note goes on stdin as {"note": ...}, never in
+    /// the arguments, where any process on the Mac could read it.
+    static func rateCall(_ cue: LiveCueRecord, verdict: CueVerdict?, note raw: String?) -> (arguments: [String], stdin: Data?) {
         var arguments = ["live-cues-rate", "--session", cue.sessionId, "--cue", cue.id, "--verdict", verdict?.rawValue ?? "clear"]
-        if verdict != nil, let text = raw.map(note), !text.isEmpty { arguments += ["--note", text] }
-        return arguments
+        guard verdict != nil, let text = raw.map(note), !text.isEmpty,
+              let data = try? JSONSerialization.data(withJSONObject: ["note": text]) else { return (arguments, nil) }
+        arguments.append("--note-stdin")
+        return (arguments, data)
     }
 
     static func rateOutcome(_ details: [String: JSONValue]?) -> RateOutcome {
@@ -1177,14 +1208,23 @@ enum CueVerdicts {
         switch details["transport"]?.string {
         case "unavailable": return .unreachable
         case "no_token": return .reconnect
+        case "unsupported": return .olderServer
         case "answered": break
         default: return .notChecked
+        }
+        // The server's code decides first; the status only where there is none.
+        switch details["error"]?.string {
+        case "unknown_cue": return .unknownCue
+        case "cue_session_mismatch": return .otherMeeting
+        case "verdicts_unreadable": return .storageUnreadable
+        default: break
         }
         switch details["httpStatus"]?.int {
         case 200:
             guard details["ok"]?.bool == true else { return .failed(status: 200) }
             return .saved(details["verdict"]?.string.flatMap(CueVerdict.init(rawValue:)), vote: details["vote"]?.string)
-        case 404: return details["error"]?.string == "unknown_cue" ? .unknownCue : .olderServer
+        case 404: return .olderServer
+        case 503: return .unreachable
         case 400: return .refused
         case 401, 403: return .reconnect
         case let status?: return .failed(status: status)
@@ -1196,9 +1236,11 @@ enum CueVerdicts {
     static func rateLine(_ outcome: RateOutcome) -> String? {
         switch outcome {
         case .saved: return nil
-        case .unknownCue: return "The server no longer has this cue. Cues are kept 30 days."
+        case .unknownCue: return "This cue is older than 30 days and was removed."
+        case .otherMeeting: return "The server files this cue under another meeting. The rating was not saved."
         case .olderServer: return "Rating cues needs server \(minimumServer). Update the server in Settings."
-        case .unreachable: return "COS server unreachable. The rating was not saved."
+        case .unreachable: return "Server is updating. Rating not saved, try again."
+        case .storageUnreadable: return "The server's ratings file cannot be read. The rating was not saved."
         case .reconnect: return "Reconnect COS Control to the server to rate cues."
         case .refused: return "The server did not accept this rating."
         case .failed(let status): return "The rating was not saved (HTTP \(status)). Try again."
@@ -1231,9 +1273,10 @@ enum CueVerdicts {
         return Date(timeIntervalSince1970: ms / 1000)
     }
 
-    /// Minutes into the meeting when the cue came, when that can be told (0 to 12 hours).
+    /// Minutes into the meeting when the cue came, when that can be told (0 to 12 hours): from when cues were armed, else
+    /// from the session id.
     static func minutesIn(_ cue: LiveCueRecord) -> Int? {
-        guard let start = meetingStart(cue.sessionId) else { return nil }
+        guard let start = cue.armedAt ?? meetingStart(cue.sessionId) else { return nil }
         let seconds = cue.createdAt.timeIntervalSince(start)
         guard seconds >= 0, seconds < 12 * 3600 else { return nil }
         return Int(seconds / 60)
@@ -1297,8 +1340,20 @@ enum CueVerdicts {
         }
     }
 
-    static func ratingsLine(_ counts: LiveCueCounts) -> String { "Ratings this week: \(counts.rated) of \(counts.total)." }
-    static func usedLine(_ count: Int) -> String { "\(count) of \(meetingCap) used" }
+    /// The meeting's title: the saved meeting this Mac knows for the session (its library row), else the server's saved
+    /// title, else the title at cue time. The title at cue time is the generic "G2 Recording ..." name.
+    static func title(_ cue: LiveCueRecord, library: [LibraryMeeting]) -> String {
+        let row = library.first { $0.sessionId == cue.sessionId } ?? library.first { $0.g2SessionIds.contains(cue.sessionId) }
+            ?? library.first { $0.sourceSessionId == cue.sessionId }
+        for title in [row?.title ?? "", cue.savedTitle, cue.meetingTitle] where !title.trimmingCharacters(in: .whitespaces).isEmpty { return title }
+        return "Glasses meeting"
+    }
+
+    static func ratingsLine(_ counts: LiveCueCounts) -> String { "Rated in the last 7 days: \(counts.rated) of \(counts.total)." }
+    /// "10 of 25 used" with the server's own count and cap; just the count when the server named no cap.
+    static func usedLine(_ count: MeetingCount) -> String {
+        count.cap.map { "\(count.cues) of \($0) used" } ?? (count.cues == 1 ? "1 cue" : "\(count.cues) cues")
+    }
     static func leftLine(_ count: Int) -> String { count == 1 ? "1 left" : "\(count) left" }
     static func doneLine(_ counts: LiveCueCounts?) -> String {
         (counts?.total ?? 0) == 0 ? "No cues in the last 7 days." : "Every cue from the last 7 days is rated."
@@ -1326,7 +1381,8 @@ final class CueVerdictsStore: ObservableObject {
         var state = CueVerdicts.State.checking
         /// Oldest first, as the server sends them.
         var cues: [LiveCueRecord] = []
-        var readAt: Date?
+        /// The server's own count and cap for the meeting.
+        var count: CueVerdicts.MeetingCount?
     }
 
     /// nil until a history read answers; true from a 200 in the contract, false from a 404 (both surfaces hide).
@@ -1346,10 +1402,15 @@ final class CueVerdictsStore: ObservableObject {
     @Published private(set) var rateErrors: [String: String] = [:]
     private var skipped: [String] = []
     private var reading: Set<String> = []
+    /// When each meeting was last read, and how many reads in a row failed; never published, so a poll that changes
+    /// nothing redraws nothing.
+    private var readAt: [String: Date] = [:]
+    private var misses: [String: Int] = [:]
     var now: @MainActor () -> Date = { Date() }
 
     private func learn(_ state: CueVerdicts.State) {
-        if state == .loaded { available = true } else if state == .olderServer { available = false }
+        let next: Bool? = state == .loaded ? true : state == .olderServer ? false : available
+        if available != next { available = next }
     }
 
     /// This week's queue and counts (the unrated read; counts cover the whole week).
@@ -1358,9 +1419,10 @@ final class CueVerdictsStore: ObservableObject {
         defer { reading.remove("week") }
         let (state, history) = CueVerdicts.read(try? await run(CueVerdicts.historyArguments(days: CueVerdicts.weekDays, session: nil, unrated: true), nil).details)
         learn(state)
-        weekState = state
-        queue = CueVerdicts.queueOrder((history?.cues ?? []).filter { $0.verdict == nil }, skipped: skipped)
-        if let history { counts = history.counts }
+        if weekState != state { weekState = state }
+        let next = CueVerdicts.queueOrder((history?.cues ?? []).filter { $0.verdict == nil }, skipped: skipped)
+        if queue != next { queue = next }
+        if let history, counts != history.counts { counts = history.counts }
     }
 
     /// This week's rated cues (the whole week's read, rated ones kept).
@@ -1376,15 +1438,27 @@ final class CueVerdictsStore: ObservableObject {
 
     /// One meeting's cues. Never read again sooner than `pollSeconds` after the last read unless forced (Refresh), and
     /// one read per meeting at a time, so the live list polls no faster than every 15 seconds however often it asks.
+    /// A read that fails once keeps the last good list (a Mac waking, a server restarting for an update); the second
+    /// failure in a row says why. A server without the routes says so at once. Published only when something changed.
     func loadMeeting(_ session: String, days: Int, force: Bool = false, run: Run) async {
-        if !force, let last = meetings[session]?.readAt, now().timeIntervalSince(last) < CueVerdicts.pollSeconds { return }
+        if !force, let last = readAt[session], now().timeIntervalSince(last) < CueVerdicts.pollSeconds { return }
         guard reading.insert(session).inserted else { return }
         defer { reading.remove(session) }
-        meetings[session, default: Meeting()].readAt = now()
+        readAt[session] = now()
         let (state, history) = CueVerdicts.read(try? await run(CueVerdicts.historyArguments(days: days, session: session, unrated: false), nil).details)
         learn(state)
-        meetings[session]?.state = state
-        meetings[session]?.cues = history?.cues.filter { $0.sessionId == session } ?? []
+        var next = meetings[session] ?? Meeting()
+        if let history {
+            misses[session] = 0
+            let cues = history.cues.filter { $0.sessionId == session }
+            next = Meeting(state: .loaded, cues: cues,
+                           count: history.meetings[session] ?? CueVerdicts.MeetingCount(cues: cues.count, cap: history.cap))
+        } else {
+            let missed = (misses[session] ?? 0) + 1
+            misses[session] = missed
+            if next.state != .loaded || missed >= 2 || state == .olderServer { next = Meeting(state: state) }
+        }
+        if meetings[session] != next { meetings[session] = next }
     }
 
     /// The cue moves to the end of the queue; nothing is sent.
@@ -1399,7 +1473,8 @@ final class CueVerdictsStore: ObservableObject {
         guard !saving.contains(cue.id) else { return }
         saving.insert(cue.id)
         rateErrors[cue.id] = nil
-        let outcome = CueVerdicts.rateOutcome(try? await run(CueVerdicts.rateArguments(cue, verdict: verdict, note: note), nil).details)
+        let call = CueVerdicts.rateCall(cue, verdict: verdict, note: note)
+        let outcome = CueVerdicts.rateOutcome(try? await run(call.arguments, call.stdin).details)
         saving.remove(cue.id)
         guard case .saved(let stored, let vote) = outcome else {
             if outcome == .olderServer { available = false }

@@ -66,6 +66,10 @@ async function main() {
   await flush();
   ok(/>Cues to rate</.test(b.nav()) && !/Cues to rate \(/.test(b.nav()), 'nothing left to rate: no count');
 
+  b = boot({ available: true, unrated: '<img src=x onerror=alert(1)>', rated: 0, total: 1 });
+  await flush();
+  ok(!/<img/.test(b.nav()) && />Cues to rate</.test(b.nav()), 'a count that is not a number is never drawn (no markup reaches the nav)');
+
   for (const [summary, label] of [[{ available: false }, 'available false (an older server)'], ['refuse', 'a refusal (an app without the op)'],
     [null, 'no answer'], [{ available: 'yes', unrated: 4 }, 'available that is not true']]) {
     b = boot(summary);

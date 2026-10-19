@@ -105,6 +105,10 @@ check(not re.search(r"@Published[^\n]*(draft|noteText|typing)", store), "no publ
 check(".id(cue.id)" in body(ask, "private var queueView: some View {", "private var ratedView: some View {"), "each cue gets a fresh card (note and focus)")
 check(".onExitCommand { focus = .card }" in card and ".onSubmit { focus = .card }" in card, "Return and Escape in the note give the keys back to the card")
 
+check(ask.count("title: CueVerdicts.title(cue, library: model.libraryMeetings)") == 2,
+      "both Memories views name a cue's meeting by this Mac's saved title first")
+check(ask.count("if !cue.before.isEmpty {") == 2, "no empty box when the server has no excerpt")
+
 # ── Beside the meeting: Cues only once the server answered with the history; Ask stays.
 side = body(ask, "struct MeetingSidePanel<Ask: View>: View {", "struct MeetingCuesPanel: View {")
 check("private var cuesOffered: Bool { store.available == true && G2MeetingStop.isGlassesSession(session) }" in side,

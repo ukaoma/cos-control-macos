@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 
 /// 0.5.327: rating live cues (CueVerdicts and CueVerdictsStore in Sources/MeetingAskCore.swift), executed. Compiled against
@@ -23,10 +24,10 @@ import Foundation
     static let monday = 1_792_400_400_000.0
     static func row(_ id: String, session: String = "meeting_1792400000000_abc123", at ms: Double = monday, kind: String = "challenge",
                     detail: String = "Settle the date.", verdict: String = "null") -> String {
-        #"{"cueId":"\#(id)","sessionId":"\#(session)","meetingTitle":"HC Monday standup","createdAt":\#(ms),"kind":"\#(kind)","headline":"Settle it","detail":"\#(detail)","gate":0.97,"sources":[],"model":"claude-sonnet-5-5","before":"MU: we move them.","verdict":\#(verdict)}"#
+        #"{"cueId":"\#(id)","sessionId":"\#(session)","meetingTitle":"HC Monday standup","createdAt":\#(ms),"kind":"\#(kind)","headline":"Settle it","detail":"\#(detail)","gate":0.97,"sources":[],"model":"claude-sonnet-5-5","before":"MU: we move them.","rating":\#(verdict)}"#
     }
-    static func history(_ rows: [String], total: Int, rated: Int, unrated: Int, by: String = "{}") -> [String: JSONValue] {
-        answered(200, #""v":1,"cues":[\#(rows.joined(separator: ","))],"counts":{"total":\#(total),"rated":\#(rated),"unrated":\#(unrated),"byVerdict":\#(by)}"#)
+    static func history(_ rows: [String], total: Int, rated: Int, unrated: Int, by: String = "{}", extra: String = "") -> [String: JSONValue] {
+        answered(200, #""v":1,"cues":[\#(rows.joined(separator: ","))],"counts":{"total":\#(total),"rated":\#(rated),"unrated":\#(unrated),"byVerdict":\#(by)}"# + extra)
     }
 
     @MainActor static func main() async {
@@ -37,7 +38,10 @@ import Foundation
         check(CueVerdicts.read(nil).0 == .notChecked, "a helper that failed is not checked")
         check(CueVerdicts.read(details(#"{"transport":"unavailable"}"#)).0 == .unreachable, "nothing answered: unreachable")
         check(CueVerdicts.read(details(#"{"transport":"no_token"}"#)).0 == .reconnect, "no pairing token: reconnect")
-        check(CueVerdicts.read(answered(404)).0 == .olderServer, "404: a server from before the routes")
+        check(CueVerdicts.read(answered(404)).0 == .olderServer && CueVerdicts.read(details(#"{"transport":"unsupported","httpStatus":404}"#)).0 == .olderServer,
+              "404, and a 404 page that is not JSON: a server from before the routes")
+        check(CueVerdicts.read(answered(503, #""error":"verdicts_unreadable""#)).0 == .storageUnreadable && CueVerdicts.read(answered(503)).0 == .failed(status: 503),
+              "503 verdicts_unreadable by its code")
         check(CueVerdicts.read(answered(401)).0 == .reconnect && CueVerdicts.read(answered(403)).0 == .reconnect, "401 and 403: reconnect")
         check(CueVerdicts.read(answered(502)).0 == .failed(status: 502), "a 502 names its status")
         check(CueVerdicts.read(answered(200, #""cues":[],"counts":{"total":0,"rated":0,"unrated":0}"#)).0 == .unreadable, "200 without v is not readable")
@@ -68,6 +72,7 @@ import Foundation
             (.reconnect, "Reconnect COS Control to the server to see cues."),
             (.notChecked, "COS Control could not read cues. Check again."),
             (.unreadable, "The server's answer about cues was not readable. Update the server in Settings."),
+            (.storageUnreadable, "The server's ratings file cannot be read, so cues cannot be listed. Check again after the server restarts."),
             (.failed(status: 500), "The server could not list cues (HTTP 500). Check again."),
         ]
         for (state, words) in lines { check(CueVerdicts.line(state) == words, "\(state): \(words ?? "no line")") }
@@ -83,11 +88,13 @@ import Foundation
               "days stay 1 to 30")
         let cue = LiveCueRecord(id: "cue-0001-aaaa", sessionId: "meeting_1792400000000_abc123", createdAt: Date(timeIntervalSince1970: monday / 1000),
                                 kind: "challenge", detail: "Settle the date.")
-        check(CueVerdicts.rateArguments(cue, verdict: .useful, note: "  more\n than  that ")
-              == ["live-cues-rate", "--session", cue.sessionId, "--cue", cue.id, "--verdict", "useful", "--note", "more than that"], "a verdict with its note")
-        check(CueVerdicts.rateArguments(cue, verdict: .late, note: "   ") == ["live-cues-rate", "--session", cue.sessionId, "--cue", cue.id, "--verdict", "late"],
-              "a blank note is no note")
-        check(CueVerdicts.rateArguments(cue, verdict: nil, note: "kept?") == ["live-cues-rate", "--session", cue.sessionId, "--cue", cue.id, "--verdict", "clear"],
+        let noted = CueVerdicts.rateCall(cue, verdict: .useful, note: "  more\n than  that ")
+        check(noted.arguments == ["live-cues-rate", "--session", cue.sessionId, "--cue", cue.id, "--verdict", "useful", "--note-stdin"]
+              && noted.stdin.flatMap { String(data: $0, encoding: .utf8) } == #"{"note":"more than that"}"#, "a verdict, its note on stdin, never in the arguments")
+        let blank = CueVerdicts.rateCall(cue, verdict: .late, note: "   ")
+        check(blank.arguments == ["live-cues-rate", "--session", cue.sessionId, "--cue", cue.id, "--verdict", "late"] && blank.stdin == nil, "a blank note is no note")
+        let cleared = CueVerdicts.rateCall(cue, verdict: nil, note: "kept?")
+        check(cleared.arguments == ["live-cues-rate", "--session", cue.sessionId, "--cue", cue.id, "--verdict", "clear"] && cleared.stdin == nil,
               "clearing carries no note")
         let cut = CueVerdicts.note(String(repeating: "\u{1F600}", count: 150))
         check(cut.utf16.count == 200 && cut.unicodeScalars.allSatisfy { $0 == "\u{1F600}" }, "a note stops at 200 UTF-16 units, on a character")
@@ -97,19 +104,24 @@ import Foundation
         check(CueVerdicts.rateOutcome(answered(200, #""ok":true,"verdict":null"#)) == .saved(nil, vote: nil), "cleared")
         check(CueVerdicts.rateOutcome(answered(200)) == .failed(status: 200), "a 200 without ok is not a save")
         check(CueVerdicts.rateOutcome(answered(404, #""error":"unknown_cue""#)) == .unknownCue, "404 unknown_cue")
-        check(CueVerdicts.rateOutcome(answered(404)) == .olderServer, "a bare 404 is an older server")
+        check(CueVerdicts.rateOutcome(answered(404)) == .olderServer && CueVerdicts.rateOutcome(details(#"{"transport":"unsupported","httpStatus":404}"#)) == .olderServer,
+              "a bare 404 is an older server")
+        check(CueVerdicts.rateOutcome(answered(409, #""error":"cue_session_mismatch""#)) == .otherMeeting, "409 cue_session_mismatch by its code")
+        check(CueVerdicts.rateOutcome(answered(503, #""error":"verdicts_unreadable""#)) == .storageUnreadable
+              && CueVerdicts.rateOutcome(answered(503)) == .unreachable, "503: the ratings file by its code, else the server is updating")
         check(CueVerdicts.rateOutcome(answered(400)) == .refused && CueVerdicts.rateOutcome(answered(401)) == .reconnect
-              && CueVerdicts.rateOutcome(answered(503)) == .failed(status: 503), "400, 401 and 503")
+              && CueVerdicts.rateOutcome(answered(500)) == .failed(status: 500), "400, 401 and 500")
         check(CueVerdicts.rateOutcome(nil) == .notChecked && CueVerdicts.rateOutcome(details(#"{"transport":"unavailable"}"#)) == .unreachable
               && CueVerdicts.rateOutcome(details(#"{"transport":"no_token"}"#)) == .reconnect, "the helper and transport failures")
         check(CueVerdicts.rateLine(.saved(.useful, vote: nil)) == nil, "a save has no line")
-        check(CueVerdicts.rateLine(.unknownCue) == "The server no longer has this cue. Cues are kept 30 days."
-              && CueVerdicts.rateLine(.unreachable) == "COS server unreachable. The rating was not saved."
+        check(CueVerdicts.rateLine(.unknownCue) == "This cue is older than 30 days and was removed."
+              && CueVerdicts.rateLine(.unreachable) == "Server is updating. Rating not saved, try again."
+              && CueVerdicts.rateLine(.storageUnreadable) == "The server's ratings file cannot be read. The rating was not saved."
               && CueVerdicts.rateLine(.failed(status: 500)) == "The rating was not saved (HTTP 500). Try again.", "a failed rating says it was not saved")
-        let outcomes: [CueVerdicts.RateOutcome] = [.unknownCue, .olderServer, .unreachable, .reconnect, .refused, .failed(status: 500), .notChecked]
+        let outcomes: [CueVerdicts.RateOutcome] = [.unknownCue, .otherMeeting, .olderServer, .unreachable, .storageUnreadable, .reconnect, .refused, .failed(status: 500), .notChecked]
         var words = outcomes.compactMap(CueVerdicts.rateLine) + lines.compactMap { $0.1 }
         words += [CueVerdicts.keysLine, CueVerdicts.notePlaceholder, CueVerdicts.doneLine(nil), CueVerdicts.doneLine(LiveCueCounts(total: 3, rated: 3, unrated: 0))]
-        check(words.count == outcomes.count + 7 + 4, "every failure has words")
+        check(words.count == outcomes.count + 8 + 4, "every failure has words")
         for text in words {
             check(!text.contains("\u{2014}") && !text.contains("\u{2192}") && !text.contains("->") && !text.contains("_"), "plain words, no em dash, arrow or code: \(text)")
         }
@@ -163,14 +175,31 @@ import Foundation
               && CueVerdicts.ratedLine(nil) == nil, "the rated line")
         check(CueVerdicts.voteLine(LiveCueRating(vote: "down")) == "Voted down on the glasses" && CueVerdicts.voteLine(LiveCueRating(verdict: .useful)) == nil,
               "the lens vote line")
-        check(CueVerdicts.ratingsLine(LiveCueCounts(total: 31, rated: 3, unrated: 28)) == "Ratings this week: 3 of 31.", "the week's count line")
-        check(CueVerdicts.usedLine(10) == "10 of 25 used" && CueVerdicts.meetingCap == 25, "the meeting's count against the cap")
+        check(CueVerdicts.ratingsLine(LiveCueCounts(total: 31, rated: 3, unrated: 28)) == "Rated in the last 7 days: 3 of 31.", "the last 7 days' count line")
+        check(CueVerdicts.usedLine(.init(cues: 10, cap: 25)) == "10 of 25 used" && CueVerdicts.usedLine(.init(cues: 3, cap: 40)) == "3 of 40 used"
+              && CueVerdicts.usedLine(.init(cues: 3, cap: nil)) == "3 cues" && CueVerdicts.usedLine(.init(cues: 1, cap: nil)) == "1 cue",
+              "the meeting's count against the server's own cap, never an assumed one")
         check(CueVerdicts.leftLine(1) == "1 left" && CueVerdicts.leftLine(28) == "28 left", "left")
         check(CueVerdicts.doneLine(nil) == "No cues in the last 7 days." && CueVerdicts.doneLine(LiveCueCounts(total: 4, rated: 4, unrated: 0)) == "Every cue from the last 7 days is rated.",
               "the empty queue says why")
         var headed = cue; headed.headline = "LMS pages went to the 1517 team with no deadline"
         check(CueVerdicts.nextLine(headed, style: .twelveHour, calendar: utc) == "Next up: 9:00 AM · LMS pages went to the 1517 team with no deadline", "next up")
         check(CueVerdicts.pollSeconds == 15 && CueVerdicts.liveDays == 2 && CueVerdicts.savedDays == 30 && CueVerdicts.weekDays == 7, "the windows")
+
+        // ── Titles: this Mac's saved meeting, else the server's saved title, else the title at cue time.
+        let titled = CueVerdicts.read(history([
+            #"{"cueId":"cue-t-000001","sessionId":"meeting_1792400000000_abc123","meetingTitle":"G2 Recording 2026-10-19 0741","title":"Archive search logs (G2)","titleSource":"saved","createdAt":1792400400000,"armedAt":1792400100000,"kind":"challenge","detail":"D","before":"","rating":null}"#,
+            #"{"cueId":"cue-t-000002","sessionId":"meeting_1792400000000_abc123","meetingTitle":"G2 Recording 2026-10-19 0741","title":"G2 Recording 2026-10-19 0741","titleSource":"capture","createdAt":1792400400000,"kind":"challenge","detail":"D","before":"","rating":null}"#,
+        ], total: 2, rated: 0, unrated: 2)).1!.cues
+        check(titled[0].savedTitle == "Archive search logs (G2)" && titled[1].savedTitle.isEmpty, "the server's title only when it is a saved one")
+        check(CueVerdicts.title(titled[0], library: []) == "Archive search logs (G2)" && CueVerdicts.title(titled[1], library: []) == "G2 Recording 2026-10-19 0741",
+              "with no library row: the saved title, else the title at cue time")
+        let libraryRow = LibraryMeeting(.object(["filename": .string("x.md"), "month": .string("2026-10"), "title": .string("Archive 1517 Search Logs, Chase Feedback (G2)"),
+                                                  "sessionId": .string("meeting_1792399999999_zzz"), "g2SessionIds": .array([.string("meeting_1792400000000_abc123")])]))!
+        check(CueVerdicts.title(titled[1], library: [libraryRow]) == "Archive 1517 Search Logs, Chase Feedback (G2)"
+              && CueVerdicts.title(titled[0], library: [libraryRow]) == "Archive 1517 Search Logs, Chase Feedback (G2)", "this Mac's saved meeting wins, found by any capture it holds")
+        check(CueVerdicts.minutesIn(titled[0]) == 5 && CueVerdicts.minutesIn(titled[1]) == 6, "minutes from when cues were armed, else from the session id")
+        check(titled[0].before.isEmpty, "an empty before stays empty (the card draws no box)")
 
         // ── What the Memories page is told.
         func json(_ value: [String: JSONValue]) -> String {
@@ -192,12 +221,12 @@ import Foundation
         check(counts.moving(from: .useful, to: .useful) == counts, "the same verdict again changes nothing")
 
         // ── The store against a stand-in helper.
-        final class Calls { var log: [[String]] = [] }
+        final class Calls { var log: [[String]] = []; var stdin: [Data?] = [] }
         final class Clock { var now: Date; init(_ now: Date) { self.now = now } }
         func fake(_ calls: Calls, _ answers: [[String: JSONValue]?]) -> CueVerdictsStore.Run {
             var queue = answers
-            return { args, _ in
-                calls.log.append(args)
+            return { args, input in
+                calls.log.append(args); calls.stdin.append(input)
                 guard !queue.isEmpty, let next = queue.removeFirst() else {
                     throw NSError(domain: "helper", code: 1, userInfo: [NSLocalizedDescriptionKey: "helper failed"])
                 }
@@ -228,7 +257,8 @@ import Foundation
               "Rated cues: the week's read, rated ones only, newest first")
         let target = store.queue[0]
         await store.rate(target, verdict: .late, note: " too\nlate ", run: fake(calls, [answered(200, #""ok":true,"verdict":"late","vote":"down""#)]))
-        check(calls.log.last == ["live-cues-rate", "--session", target.sessionId, "--cue", target.id, "--verdict", "late", "--note", "too late"], "the rating's arguments")
+        check(calls.log.last == ["live-cues-rate", "--session", target.sessionId, "--cue", target.id, "--verdict", "late", "--note-stdin"]
+              && (calls.stdin.last ?? nil).map { String(decoding: $0, as: UTF8.self) } == #"{"note":"too late"}"#, "the rating's arguments, the note on stdin")
         check(!store.queue.contains { $0.id == target.id } && store.queue.first?.id == "cue-c-000003", "a rated cue leaves the queue and the next one shows")
         check(store.counts == LiveCueCounts(total: 5, rated: 3, unrated: 2, byVerdict: [.useful: 2, .late: 1]), "the counts move with it")
         let saved = store.rated.first { $0.id == target.id }
@@ -252,7 +282,7 @@ import Foundation
         check(store.queue == before.0 && store.counts == before.1 && store.rated == before.2, "a refused rating changes nothing")
         check(store.rateErrors[waiting.id] == CueVerdicts.rateLine(.unknownCue) && store.available == true, "unknown_cue says so, the server keeps its routes")
         await store.rate(waiting, verdict: .useful, run: fake(calls, [details(#"{"transport":"unavailable"}"#)]))
-        check(store.rateErrors[waiting.id] == "COS server unreachable. The rating was not saved." && store.queue == before.0, "unreachable: not saved")
+        check(store.rateErrors[waiting.id] == "Server is updating. Rating not saved, try again." && store.queue == before.0, "unreachable: not saved")
         await store.rate(waiting, verdict: .useful, run: fake(calls, [nil]))
         check(store.rateErrors[waiting.id] == "COS Control could not save the rating. Try again.", "a helper failure: not saved")
         await store.rate(waiting, verdict: .useful, run: fake(calls, [answered(200, #""ok":true,"verdict":"useful""#)]))
@@ -298,7 +328,7 @@ import Foundation
         await fresh.loadWeek(fake(Calls(), [details(#"{"transport":"unavailable"}"#)]))
         check(fresh.available == nil && fresh.weekState == .unreachable, "unreachable says nothing about the routes")
         await fresh.loadWeek(fake(Calls(), [week]))
-        await fresh.rate(fresh.queue[0], verdict: .late, run: fake(Calls(), [answered(404)]))
+        await fresh.rate(fresh.queue[0], verdict: .late, run: fake(Calls(), [details(#"{"transport":"unsupported","httpStatus":404}"#)]))
         check(fresh.available == false, "a bare 404 on a rating is a server without the routes")
         await store.loadWeek(fake(calls, [details(#"{"transport":"unavailable"}"#)]))
         check(store.weekState == .unreachable && store.queue.isEmpty && store.available == true, "an unreachable read never leaves the last queue on screen")
@@ -308,22 +338,45 @@ import Foundation
         let meetingStore = CueVerdictsStore(); meetingStore.now = { clock.now }
         let meetingCalls = Calls()
         let list = history([row("cue-m-000001", session: meeting, at: monday + 60_000), row("cue-o-000001", session: "meeting_1792400000001_zzz", at: monday)],
-                           total: 2, rated: 0, unrated: 2)
+                           total: 2, rated: 0, unrated: 2, extra: #","maxCuesPerMeeting":25,"meetings":{"\#(meeting)":{"cues":7,"cap":30}}"#)
         await meetingStore.loadMeeting(meeting, days: CueVerdicts.liveDays, force: true, run: fake(meetingCalls, [list]))
         check(meetingCalls.log == [["live-cues-history", "--days", "2", "--session", meeting]], "a meeting's read names the meeting")
         check(meetingStore.meetings[meeting]?.state == .loaded && meetingStore.meetings[meeting]?.cues.map(\.id) == ["cue-m-000001"],
               "only that meeting's cues are kept")
+        check(meetingStore.meetings[meeting]?.count == CueVerdicts.MeetingCount(cues: 7, cap: 30), "the meeting's count and cap are the server's own")
         clock.now += 14
         await meetingStore.loadMeeting(meeting, days: CueVerdicts.liveDays, run: fake(meetingCalls, [list]))
         check(meetingCalls.log.count == 1, "asked again within 15 seconds: no read")
         clock.now += 1
         await meetingStore.loadMeeting(meeting, days: CueVerdicts.liveDays, run: fake(meetingCalls, [list]))
         check(meetingCalls.log.count == 2, "at 15 seconds it reads again")
+        var changes = 0
+        let watch = meetingStore.objectWillChange.sink { changes += 1 }
         await meetingStore.loadMeeting(meeting, days: CueVerdicts.liveDays, force: true, run: fake(meetingCalls, [list]))
         check(meetingCalls.log.count == 3, "Refresh reads at once")
-        await meetingStore.loadMeeting("meeting_other_1", days: CueVerdicts.savedDays, run: fake(meetingCalls, [answered(404)]))
-        check(meetingCalls.log.count == 4 && meetingStore.meetings["meeting_other_1"]?.state == .olderServer && meetingStore.available == false,
-              "each meeting keeps its own clock; a 404 hides the Cues view")
+        check(changes == 0, "a read that changes nothing redraws nothing")
+        await meetingStore.loadMeeting(meeting, days: CueVerdicts.liveDays, force: true, run: fake(meetingCalls, [details(#"{"transport":"unavailable"}"#)]))
+        check(meetingStore.meetings[meeting]?.state == .loaded && meetingStore.meetings[meeting]?.cues.count == 1 && changes == 0,
+              "one failed read keeps the last good list (a wake, an update's restart)")
+        await meetingStore.loadMeeting(meeting, days: CueVerdicts.liveDays, force: true, run: fake(meetingCalls, [details(#"{"transport":"unavailable"}"#)]))
+        check(meetingStore.meetings[meeting]?.state == .unreachable && meetingStore.meetings[meeting]?.cues.isEmpty == true, "the second in a row says unreachable")
+        await meetingStore.loadMeeting(meeting, days: CueVerdicts.liveDays, force: true, run: fake(meetingCalls, [list]))
+        check(meetingStore.meetings[meeting]?.state == .loaded, "a good read brings the list back")
+        await meetingStore.loadMeeting(meeting, days: CueVerdicts.liveDays, force: true, run: fake(meetingCalls, [details(#"{"transport":"unavailable"}"#)]))
+        await meetingStore.loadMeeting(meeting, days: CueVerdicts.liveDays, force: true, run: fake(meetingCalls, [list]))
+        await meetingStore.loadMeeting(meeting, days: CueVerdicts.liveDays, force: true, run: fake(meetingCalls, [details(#"{"transport":"unavailable"}"#)]))
+        check(meetingStore.meetings[meeting]?.state == .loaded, "a good read resets the count of failures")
+        await meetingStore.loadMeeting(meeting, days: CueVerdicts.liveDays, force: true, run: fake(meetingCalls, [list]))
+        await meetingStore.loadMeeting(meeting, days: CueVerdicts.liveDays, force: true, run: fake(meetingCalls, [details(#"{"transport":"unsupported","httpStatus":404}"#)]))
+        check(meetingStore.meetings[meeting]?.state == .olderServer && meetingStore.meetings[meeting]?.cues.isEmpty == true,
+              "a server without the routes says so at once, even over a good list")
+        watch.cancel()
+        meetingCalls.log.removeAll()
+        await meetingStore.loadMeeting(meeting, days: CueVerdicts.liveDays, force: true, run: fake(meetingCalls, [list]))
+        let readsBefore = meetingCalls.log.count
+        await meetingStore.loadMeeting("meeting_other_1", days: CueVerdicts.savedDays, run: fake(meetingCalls, [details(#"{"transport":"unsupported","httpStatus":404}"#)]))
+        check(meetingCalls.log.count == readsBefore + 1 && meetingStore.meetings["meeting_other_1"]?.state == .olderServer && meetingStore.available == false,
+              "each meeting keeps its own clock; an older server hides the Cues view at once")
         await meetingStore.rate(meetingStore.meetings[meeting]!.cues[0], verdict: .useful, run: fake(meetingCalls, [answered(200, #""ok":true,"verdict":"useful""#)]))
         check(meetingStore.meetings[meeting]?.cues[0].verdict == .useful, "a rating shows on the meeting's card")
         check(meetingStore.counts == nil && meetingStore.queue.isEmpty, "a meeting's rating never invents a week")

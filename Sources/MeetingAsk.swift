@@ -1364,7 +1364,10 @@ struct CueReviewPane: View {
     @ObservedObject var model: ControllerModel
     @ObservedObject var store: CueVerdictsStore
     var openMemories: (String) -> Void
-    static func run(_ model: ControllerModel) -> CueVerdictsStore.Run { LiveCuesSettingsRow.run(model) }
+    /// The helper bridge. The helper gives the server 10 seconds; this is the process's own limit around that.
+    static func run(_ model: ControllerModel) -> CueVerdictsStore.Run {
+        { arguments, input in try await model.runHelper(arguments, timeout: 15, stdinData: input) }
+    }
 
     private var view: CueVerdicts.Review { model.cueReview ?? .toRate }
 
@@ -1464,7 +1467,7 @@ struct CueReviewPane: View {
                     if store.weekState != .loaded {
                         stateLine(store.weekState)
                     } else if let cue = store.queue.first {
-                        CueRateCard(cue: cue, when: CueVerdicts.when(cue, now: Date(), style: model.clockStyle),
+                        CueRateCard(cue: cue, title: CueVerdicts.title(cue, library: model.libraryMeetings), when: CueVerdicts.when(cue, now: Date(), style: model.clockStyle),
                                     left: max(store.queue.count, store.counts?.unrated ?? 0), saving: store.saving.contains(cue.id), error: store.rateErrors[cue.id],
                                     rate: { verdict, note in Task { await store.rate(cue, verdict: verdict, note: note, run: Self.run(model)) } },
                                     skip: { store.skip(cue) })
@@ -1499,7 +1502,7 @@ struct CueReviewPane: View {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 10) {
                         ForEach(store.rated) { cue in
-                            CueRatedRow(cue: cue, when: CueVerdicts.when(cue, now: Date(), style: model.clockStyle),
+                            CueRatedRow(cue: cue, title: CueVerdicts.title(cue, library: model.libraryMeetings), when: CueVerdicts.when(cue, now: Date(), style: model.clockStyle),
                                         saving: store.saving.contains(cue.id), error: store.rateErrors[cue.id]) { verdict in
                                 Task { await store.rate(cue, verdict: verdict, note: verdict == nil ? nil : cue.rating?.note, run: Self.run(model)) }
                             }
@@ -1520,6 +1523,7 @@ struct CueReviewPane: View {
 /// note field or anything else has it. The note lives here, so typing in it redraws this card and nothing above it.
 struct CueRateCard: View {
     let cue: LiveCueRecord
+    let title: String
     let when: String
     let left: Int
     let saving: Bool
@@ -1534,7 +1538,7 @@ struct CueRateCard: View {
         VStack(alignment: .leading, spacing: 14) {
             VStack(alignment: .leading, spacing: 12) {
                 HStack(alignment: .firstTextBaseline, spacing: 10) {
-                    Text(cue.meetingTitle.isEmpty ? "Glasses meeting" : cue.meetingTitle).font(COSType.body(12.5, weight: .semibold)).lineLimit(1)
+                    Text(title).font(COSType.body(12.5, weight: .semibold)).lineLimit(1)
                     Text(when)
                     Text(CueVerdicts.kindLabel(cue.kind))
                     if let score = CueVerdicts.score(cue.gate) { Text("score " + score).font(COSType.mono(11)) }
@@ -1606,6 +1610,7 @@ struct CueRateCard: View {
 /// A rated cue in Memories → Rated cues: its verdict and note, the five verdicts to change it, and Clear.
 struct CueRatedRow: View {
     let cue: LiveCueRecord
+    let title: String
     let when: String
     let saving: Bool
     let error: String?
@@ -1614,7 +1619,7 @@ struct CueRatedRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 10) {
-                Text(cue.meetingTitle.isEmpty ? "Glasses meeting" : cue.meetingTitle).font(COSType.body(12, weight: .semibold)).lineLimit(1)
+                Text(title).font(COSType.body(12, weight: .semibold)).lineLimit(1)
                 Text(when)
                 Text(CueVerdicts.kindLabel(cue.kind))
                 if let score = CueVerdicts.score(cue.gate) { Text(score).font(COSType.mono(10.5)) }
@@ -1707,7 +1712,8 @@ struct MeetingCuesPanel: View {
         let cues = (meeting?.cues ?? []).sorted { $0.createdAt > $1.createdAt }
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
-                Text(CueVerdicts.usedLine(cues.count)).font(COSType.body(11.5)).foregroundStyle(COSPalette.muted)
+                Text(CueVerdicts.usedLine(meeting?.count ?? CueVerdicts.MeetingCount(cues: cues.count, cap: nil)))
+                    .font(COSType.body(11.5)).foregroundStyle(COSPalette.muted)
                 Spacer(minLength: 8)
                 Button { Task { await store.loadMeeting(session, days: days, force: true, run: run) } } label: { Image(systemName: "arrow.clockwise") }
                     .buttonStyle(COSTextButtonStyle()).help("Check again")
@@ -1786,7 +1792,7 @@ struct MeetingCueCard: View {
                     if verdict != cue.verdict { rate(verdict) }
                 }
                 if cue.verdict == nil, !showsBefore {
-                    Text("Not rated · tap the cue to see what was said").font(COSType.body(11)).foregroundStyle(COSPalette.muted)
+                    Text(cue.before.isEmpty ? "Not rated" : "Not rated · tap the cue to see what was said").font(COSType.body(11)).foregroundStyle(COSPalette.muted)
                 }
             }
             if let vote = CueVerdicts.voteLine(cue.rating) { Text(vote).font(COSType.body(11)).foregroundStyle(COSPalette.muted) }
