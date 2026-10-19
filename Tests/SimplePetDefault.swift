@@ -38,13 +38,17 @@ import SwiftUI
             precondition(try! Data(contentsOf: stateURL) == before)
             precondition(!model.petSpriteKit.frames(for: .idle).isEmpty)
             print("PASS: missing seed preference preserves chosen \(character.displayName)")
-            // 0.5.325: Miles ships V14 timing-v2 with three casts on Sessions 2 to 4, so he renders here too.
+            // 0.5.328: Miles ships Jedi V1.5, four casts on Session 1 and three on Sessions 2 to 4; the other Jedi rotate
+            // three casts on Sessions 2 to 4. Every cast-rotating pose renders here through the production view.
             do {
                 let proof = URL(fileURLWithPath: CommandLine.arguments[1], isDirectory: true)
                 try FileManager.default.createDirectory(at: proof, withIntermediateDirectories: true)
-                for pose in [PetSpritePose.duel, .trio, .swarm] {
+                let casts: [PetSpritePose: Int] = character.id == PetSpriteStore.legacyDefaultCharacterID
+                    ? [.working: 4, .duel: 3, .trio: 3, .swarm: 3] : [.duel: 3, .trio: 3, .swarm: 3]
+                precondition(model.petSpriteKit.rotations.mapValues(\.variants.count) == casts,
+                             "\(character.id) rotates \(casts), loaded \(model.petSpriteKit.rotations.mapValues(\.variants.count))")
+                for pose in [PetSpritePose.working, .duel, .trio, .swarm] where casts[pose] != nil {
                     let rotation = model.petSpriteKit.rotations[pose]!
-                    precondition(rotation.variants.count == 3)
                     let clock = PetEncounterPlayback(seed: 17)
                     let now = ProcessInfo.processInfo.systemUptime
                     _ = clock.sample(pose: pose, rotation: rotation, now: now, speed: 1, interval: 0.06, paused: false)
@@ -131,39 +135,18 @@ import SwiftUI
         }
         print("PASS: bundled Cloud Puff rendered in light and dark")
 
-        // 0.5.325 (Miles's V14 reverted to the shipped pack twice on 2026-10-18): an installed V14, in the flat form this
-        // release ships and in the rotation/v14-timing-v2/ form on Miles's Mac, survives every launch path this model
-        // runs: a first launch of a new build (no art generation), a launch after 0.5.324 (generation 21), and repeat
-        // launches. Nothing in the folder is written: same bytes, same modification dates.
+        // 0.5.328: an installed stock V14 (both exact forms the stock history names: flat as 0.5.325 to 0.5.327 shipped it,
+        // and with its layers under rotation/v14-timing-v2/ as Miles installed it) moves to Jedi V1.5 on the first launch
+        // of this build after any earlier one (no art generation, 21 or 22). Nothing is deleted: every V14 file stays with
+        // its bytes. A V14 with its own speed is the person's pack and stays untouched, and an installed V1.5 is current.
         let fm = FileManager.default
         let miles = PetSpriteStore.bundledDefaultURL()!
-        let layers = Set(PetSpriteStore.loadRotations(in: miles).values.flatMap { $0.manifest.variants.flatMap { [$0.file, $0.bodyFile, $0.entryFile] } })
-        precondition(layers.count == 27, "the bundled V14 declares 27 cast layers")
-        let prefix = "session-pet-windu-v14-timing-v2-"
-        func install(subfolder: Bool, tuned: Bool) throws {
-            model.resetPetSprite()
-            // Start from an empty folder: removeAll clears the files a map names, not the cast layers an earlier
-            // character left (the Miles install above copied all of DefaultPet), and installDefault replaces those
-            // itself (Sources/Models.swift, removeItem before copyItem). This test copies by hand, so it clears first.
-            try? fm.removeItem(at: directory)
-            try fm.createDirectory(at: directory, withIntermediateDirectories: true)
-            for file in Set(PetSpriteStore.loadStateMap(in: miles).values.map(\.file)) {
-                try fm.copyItem(at: miles.appendingPathComponent(file), to: directory.appendingPathComponent(file))
-            }
-            var text = try String(contentsOf: miles.appendingPathComponent(PetSpriteStore.stateFileName), encoding: .utf8)
-            if subfolder {
-                try fm.createDirectory(at: directory.appendingPathComponent("rotation/v14-timing-v2"), withIntermediateDirectories: true)
-                for file in layers {
-                    try fm.copyItem(at: miles.appendingPathComponent(file),
-                                    to: directory.appendingPathComponent("rotation/v14-timing-v2/" + file.dropFirst(prefix.count)))
-                }
-                text = text.replacingOccurrences(of: "\"" + prefix, with: "\"rotation/v14-timing-v2/")
-            } else {
-                for file in layers { try fm.copyItem(at: miles.appendingPathComponent(file), to: directory.appendingPathComponent(file)) }
-            }
-            if tuned { text = text.replacingOccurrences(of: "\"interval\": 0.18", with: "\"interval\": 0.2") }
-            try Data(text.utf8).write(to: directory.appendingPathComponent(PetSpriteStore.stateFileName))
-        }
+        let bundledMap = PetSpriteStore.loadStateMap(in: miles)
+        let v15Files = Set(bundledMap.values.map(\.file)).union(PetSpriteStore.loadRotations(in: miles).values.flatMap {
+            $0.manifest.variants.flatMap { [$0.file, $0.bodyFile, $0.entryFile] } })
+        precondition(v15Files.count == 45, "the bundled V1.5 names 45 files (39 cast layers, 3 signals, 3 ambient)")
+        let history = (try JSONSerialization.jsonObject(with: Data(contentsOf: miles.appendingPathComponent("stock-state-history.json"))) as! [String: Any])["maps"] as! [[String: Any]]
+        precondition(history.count == 3, "V12.6 plus both V14 forms")
         func state() -> [String: (Data, Date)] {
             var out: [String: (Data, Date)] = [:]
             for url in fm.enumerator(at: directory, includingPropertiesForKeys: [.contentModificationDateKey, .isRegularFileKey])!.compactMap({ $0 as? URL })
@@ -172,24 +155,87 @@ import SwiftUI
             }
             return out
         }
-        for (subfolder, tuned) in [(true, false), (false, false), (true, true)] {
-            try install(subfolder: subfolder, tuned: tuned)
-            let before = state()
-            Thread.sleep(forTimeInterval: 1.1) // a rewrite would carry a later modification date
-            for generation in [nil, 21, 22] as [Int?] {
-                if let generation { UserDefaults.standard.set(generation, forKey: "cos.sessionPetDefaultArtGeneration") }
-                else { UserDefaults.standard.removeObject(forKey: "cos.sessionPetDefaultArtGeneration") }
-                UserDefaults.standard.removeObject(forKey: "cos.sessionPetDefaultSeeded")
-                model.loadPetSprite()
-                let after = state()
-                precondition(after.count == before.count && after.allSatisfy { path, entry in
-                    before[path].map { $0.0 == entry.0 && $0.1 == entry.1 } ?? false
-                }, "a launch rewrote the installed V14 (subfolder \(subfolder), tuned \(tuned), generation \(String(describing: generation)))")
-                precondition(model.petSpriteKit.rotations.count == 3 && model.petSpriteKit.rotations.values.allSatisfy { $0.variants.count == 3 },
-                             "the installed V14 plays its three casts")
-            }
-            print("PASS: installed V14 (\(subfolder ? "rotation/ subfolder" : "flat")\(tuned ? ", tuned" : "")) survives first launch, a 0.5.324 launch and a repeat launch untouched")
+        func fresh() throws {
+            model.resetPetSprite()
+            try? fm.removeItem(at: directory)
+            try fm.createDirectory(at: directory, withIntermediateDirectories: true)
         }
+        func launch(_ generation: Int?) {
+            if let generation { UserDefaults.standard.set(generation, forKey: "cos.sessionPetDefaultArtGeneration") }
+            else { UserDefaults.standard.removeObject(forKey: "cos.sessionPetDefaultArtGeneration") }
+            UserDefaults.standard.removeObject(forKey: "cos.sessionPetDefaultSeeded")
+            model.loadPetSprite()
+        }
+        for (form, label) in [(1, "flat"), (2, "rotation/ subfolder")] {
+            for tuned in [false, true] {
+                for generation in [nil, 21, 22] as [Int?] {
+                    try fresh()
+                    var v14 = history[form]["state"] as! [String: Any]
+                    var poses = v14["poses"] as! [String: [String: Any]]
+                    // The four V13 strips and the V12/V14 signal and ambient strips are retained in DefaultPet. V14's cast
+                    // layers are not (they no longer ship); the upgrade compares only the pose strips' bytes.
+                    for row in poses.values {
+                        let file = row["file"] as! String
+                        try fm.copyItem(at: miles.appendingPathComponent(file), to: directory.appendingPathComponent(file))
+                    }
+                    if tuned { poses["waiting"]!["interval"] = 0.2; v14["poses"] = poses }
+                    try JSONSerialization.data(withJSONObject: v14, options: [.prettyPrinted, .sortedKeys])
+                        .write(to: directory.appendingPathComponent(PetSpriteStore.stateFileName))
+                    let before = state()
+                    Thread.sleep(forTimeInterval: 1.1) // a rewrite would carry a later modification date
+                    launch(generation)
+                    let after = state()
+                    let what = "V14 \(label)\(tuned ? ", tuned" : ""), generation \(String(describing: generation))"
+                    if tuned {
+                        precondition(after.count == before.count && after.allSatisfy { path, entry in
+                            before[path].map { $0.0 == entry.0 && $0.1 == entry.1 } ?? false
+                        }, "a launch rewrote the person's tuned \(what)")
+                        continue
+                    }
+                    precondition(before.allSatisfy { path, entry in
+                        path.hasSuffix(PetSpriteStore.stateFileName) || after[path]?.0 == entry.0
+                    }, "the upgrade deleted or changed a V14 file (\(what))")
+                    let installedMap = PetSpriteStore.loadStateMap(in: directory)
+                    precondition(installedMap.count == bundledMap.count && bundledMap.allSatisfy { pose, row in
+                        installedMap[pose]?.file == row.file && installedMap[pose]?.frames == row.frames
+                    }, "\(what) did not move to the V1.5 map")
+                    precondition(v15Files.allSatisfy { file in
+                        (try? Data(contentsOf: directory.appendingPathComponent(file))) == (try? Data(contentsOf: miles.appendingPathComponent(file)))
+                    }, "\(what): a V1.5 file did not land byte for byte")
+                    precondition(PetSpriteStore.loadFrameIntervals(in: directory) == PetSpriteStore.loadFrameIntervals(in: miles)
+                                 && PetSpriteStore.loadRenderScales(in: directory) == PetSpriteStore.loadRenderScales(in: miles),
+                                 "\(what): V1.5 cadence and pack scales")
+                    precondition(model.petSpriteKit.rotations.mapValues(\.variants.count) == [.working: 4, .duel: 3, .trio: 3, .swarm: 3],
+                                 "\(what) plays four Session 1 casts and three on Sessions 2 to 4")
+                    let upgraded = state()
+                    Thread.sleep(forTimeInterval: 1.1)
+                    launch(nil)
+                    launch(22)
+                    model.loadPetSprite()
+                    let repeated = state()
+                    precondition(repeated.count == upgraded.count && repeated.allSatisfy { path, entry in
+                        upgraded[path].map { $0.0 == entry.0 && $0.1 == entry.1 } ?? false
+                    }, "a later launch rewrote the upgraded V1.5 (\(what))")
+                }
+                print("PASS: installed V14 (\(label)\(tuned ? ", tuned: left alone" : "")) \(tuned ? "" : "moves to Jedi V1.5 with no file deleted, ")on a first, a post-0.5.324 and a post-0.5.327 launch")
+            }
+        }
+        // An installed V1.5 is current on every launch path: nothing written.
+        try fresh()
+        for file in v15Files.union([PetSpriteStore.stateFileName]) {
+            try fm.copyItem(at: miles.appendingPathComponent(file), to: directory.appendingPathComponent(file))
+        }
+        let installedV15 = state()
+        Thread.sleep(forTimeInterval: 1.1)
+        for generation in [nil, 21, 22, 23] as [Int?] {
+            launch(generation)
+            let after = state()
+            precondition(after.count == installedV15.count && after.allSatisfy { path, entry in
+                installedV15[path].map { $0.0 == entry.0 && $0.1 == entry.1 } ?? false
+            }, "a launch rewrote the installed V1.5 (generation \(String(describing: generation)))")
+            precondition(model.petSpriteKit.rotations.mapValues(\.variants.count) == [.working: 4, .duel: 3, .trio: 3, .swarm: 3])
+        }
+        print("PASS: installed Jedi V1.5 survives first, post-0.5.324, post-0.5.327 and repeat launches untouched")
         model.resetPetSprite()
     }
 }

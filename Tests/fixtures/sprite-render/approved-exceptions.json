@@ -1,57 +1,27 @@
 {
-  "README": "Read by Tests/SpriteRenderContract.swift and Tests/ModelsContract.swift (0.5.316). edgeFrames: 1-based frames of the approved Miles Windu pack (V12.6, and from 0.5.325 V14 timing-v2, whose V13 strips keep the same list plus trio 25, the strike's spark burst at 5 px) that may come within 6 px of a cell edge because a droid, wreck, jump or saber arc enters or leaves off canvas (independent check motion-v12/reviews/v12-6-holes-and-cuts-check.json). smear: the one documented translucency that is not a uniform fade. preExisting: strips that exceeded a gate before 0.5.316, at their measured ceiling, so they cannot get worse; they are not approvals. 0.5.324: edgeFades document only the 22 px smoothstep entrance mask during each rotation handoff. No Jedi interior-opacity ceiling exemptions remain.",
+  "README": "Read by Tests/SpriteRenderContract.swift and Tests/ModelsContract.swift (0.5.316). edgeFrames: 1-based frames of the approved Miles Windu pack (V12.6, and from 0.5.325 V14 timing-v2, whose V13 strips keep the same list plus trio 25, the strike's spark burst at 5 px) that may come within 6 px of a cell edge because a droid, wreck, jump or saber arc enters or leaves off canvas (independent check motion-v12/reviews/v12-6-holes-and-cuts-check.json). smear: the one documented translucency that is not a uniform fade. preExisting: strips that exceeded a gate before 0.5.316, at their measured ceiling, so they cannot get worse; they are not approvals. 0.5.324: edgeFades document only the 22 px smoothstep entrance mask during each rotation handoff. No Jedi interior-opacity ceiling exemptions remain. 0.5.328 (Jedi V1.5): each DefaultPet session pose now points at its first cast's full strip, so the casts are gated here for the first time. edgeFrames for trio and swarm are the flyers and wrecks within 6 px of the top or side, the same frames V14's casts had (measured, installation-v1-5/qa); working and duel have none. preExisting holds V1.5's measured ceilings, which are flags, not approvals: the duel, trio and swarm casts fade a heavy-droid wreck under Windu (V14's casts measured more raw holes there, 4.89% vs 4.15% on duel-a), and V1.5's 18 and 14 frame bridges put the done saber tip at the right cell edge in frames 9 to 11.",
   "edgeFrames": {
-    "DefaultPet/working": [
-      15,
-      16,
-      17,
-      39,
-      40,
-      41,
-      42
-    ],
-    "DefaultPet/duel": [
-      10,
-      11,
-      13,
-      14,
-      15,
-      16,
-      17,
-      28,
-      29,
-      30,
-      31,
-      32
-    ],
+    "DefaultPet/working": [],
+    "DefaultPet/duel": [],
     "DefaultPet/trio": [
+      12,
       15,
-      16,
-      17,
-      23,
       24,
       25,
-      27,
-      28,
-      29,
-      30,
-      31,
-      32,
-      33,
-      34,
-      35,
-      36,
-      37
+      37,
+      38
     ],
     "DefaultPet/swarm": [
-      55,
-      56,
-      57,
-      58,
-      59,
-      60,
+      6,
+      7,
+      8,
+      15,
+      16,
+      17,
+      24,
       61,
-      62
+      62,
+      63
     ]
   },
   "smear": [
@@ -70,6 +40,26 @@
     "DefaultPet/waiting": {
       "holesCeiling": 1.05,
       "note": "1.04% after the aura-release fade; the remaining holes are in the V10/V11 Waiting base art (0.5.314 shipped it at 1.28%), not V12"
+    },
+    "DefaultPet/duel": {
+      "holesCeiling": 2.77,
+      "note": "V1.5 duel-a 2.76%: the heavy droid wreck fades out (F25 to F28) under Windu; V1.5 tints that fade violet (flagged to Miles 2026-10-19)"
+    },
+    "DefaultPet/trio": {
+      "holesCeiling": 1.74,
+      "note": "V1.5 trio-a 1.73%: the heavy droid wreck fade (F33 to F34), violet-tinted in V1.5 (flagged)"
+    },
+    "DefaultPet/swarm": {
+      "holesCeiling": 1.9,
+      "note": "V1.5 swarm-a 1.89%: the heavy droid wreck fade (F57 to F60), violet-tinted in V1.5 (flagged)"
+    },
+    "DefaultPet/done": {
+      "edgeFrames": [
+        9,
+        10,
+        11
+      ],
+      "note": "V1.5 done bridges A1 to A3: the saber tip reaches the right edge of the 99 px cell (0 to 1 px); flagged to Miles, not an approved crop"
     }
   },
   "edgeFades": [

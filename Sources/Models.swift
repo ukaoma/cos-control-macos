@@ -8746,7 +8746,9 @@ enum PetSpriteStore {
         var result: [PetSpritePose: PetEncounterRotation] = [:]
         var frameCache: [String: NSImage] = [:]
         let root = directory.resolvingSymlinksInPath().standardizedFileURL.path + "/"
-        for pose in [PetSpritePose.duel, .trio, .swarm] {
+        // 0.5.328: Session 1 (working) rotates casts too (Jedi V1.5: four casts for Miles Windu). The renderer was
+        // already pose-generic; only this loader limited rotation to duel, trio and swarm.
+        for pose in [PetSpritePose.working, .duel, .trio, .swarm] {
             guard let row = poses[pose.rawValue], let rotationJSON = row["rotation"] as? [String: Any],
                   let rotationData = try? JSONSerialization.data(withJSONObject: rotationJSON, options: [.sortedKeys]),
                   let manifest = try? JSONDecoder().decode(PetRotationManifest.self, from: rotationData),
@@ -9435,6 +9437,9 @@ enum PetSpriteStore {
         }
         // 0.5.325: a pack the earlier releases shipped WHOLE (V12.6, 0.5.316 to 0.5.324) is stock only as its exact
         // map. Same files with another speed, scale, count or an added rotation is the person's pack: left alone.
+        // 0.5.328: V14 has two exact stock maps with the same pose files (flat as 0.5.325 to 0.5.327 shipped it, and
+        // its layers under rotation/v14-timing-v2/ as Miles installed it), so the pack is stock when ANY map with its
+        // files matches exactly, and the person's only when maps share its files and none matches.
         if let historyData = try? Data(contentsOf: source.appendingPathComponent("stock-state-history.json")),
            let history = try? JSONSerialization.jsonObject(with: historyData) as? [String: Any],
            let maps = history["maps"] as? [[String: Any]] {
@@ -9446,6 +9451,8 @@ enum PetSpriteStore {
             }
             let installedCanonical = (try? Data(contentsOf: directory.appendingPathComponent(stateFileName)))
                 .flatMap { try? JSONSerialization.jsonObject(with: $0) }.flatMap(canonical)
+            var sharesFiles = false
+            var exactStock = false
             for map in maps {
                 guard let state = map["state"] as? [String: Any], let poses = state["poses"] as? [String: [String: Any]],
                       poses.count == installedRows.count,
@@ -9453,8 +9460,10 @@ enum PetSpriteStore {
                           (installedRows[name]?["file"] as? String) == (row["file"] as? String)
                       })
                 else { continue }
-                guard installedCanonical != nil, installedCanonical == canonical(state) else { return .notApplicable }
+                sharesFiles = true
+                if installedCanonical != nil, installedCanonical == canonical(state) { exactStock = true }
             }
+            if sharesFiles && !exactStock { return .notApplicable }
         }
         let retainedStock: [PetSpritePose: [(file: String, frames: Int)]] = [
             .idle: [(poseFileName(.idle), 8), ("session-pet-idle-cutouts-v2.png", 8)],
@@ -9468,6 +9477,8 @@ enum PetSpriteStore {
                 ("session-pet-working-one-droid-v15-1.png", 16),
                 ("session-pet-working-one-droid-v15-2.png", 16),
                 ("session-pet-working-run-slowed-v12-1.png", 46),
+                // 0.5.325 to 0.5.327 shipped V14 timing-v2: these four strips are its Sessions 1 to 4.
+                ("session-pet-working-v13.png", 46),
             ],
             .done: [(poseFileName(.done), 8), ("session-pet-done-retime-v12-v1.png", 10)],
             .error: [(poseFileName(.error), 8), ("session-pet-error-reassembled-v12-v5.png", 8)],
@@ -9480,6 +9491,7 @@ enum PetSpriteStore {
                 ("session-pet-duel-two-droid-v15-1.png", 12),
                 ("session-pet-duel-two-droid-v15-2.png", 17),
                 ("session-pet-duel-tail-tighter-v12-5.png", 37),
+                ("session-pet-duel-v13.png", 37),
             ],
             .trio: [
                 (poseFileName(.trio), 6),
@@ -9490,6 +9502,7 @@ enum PetSpriteStore {
                 ("session-pet-trio-story-v16.png", 26),
                 ("session-pet-trio-story-v17.png", 26),
                 ("session-pet-trio-deflect-eased-v12-6.png", 42),
+                ("session-pet-trio-v13.png", 43),
             ],
             .swarm: [
                 (poseFileName(.swarm), 6),
@@ -9501,6 +9514,7 @@ enum PetSpriteStore {
                 ("session-pet-swarm-story-v15-4.png", 26),
                 ("session-pet-swarm-story-v16.png", 52),
                 ("session-pet-swarm-alpha-v11-r2.png", 64),
+                ("session-pet-swarm-v13.png", 64),
             ],
         ]
         guard installed.count == retainedStock.count,

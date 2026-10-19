@@ -357,7 +357,7 @@ final class ControllerModel: ObservableObject {
     private static let petDefaultSeededKey = "cos.sessionPetDefaultSeeded"
     private static let petDismissedKey = "cos.sessionPetDismissed"
     private static let petDefaultArtGenerationKey = "cos.sessionPetDefaultArtGeneration"
-    private static let petDefaultArtGeneration = 22
+    private static let petDefaultArtGeneration = 23
 
     private static func loadPetCharacterPercent(defaults: UserDefaults = .standard) -> Int {
         PetCharacterScale.loadPersistedPercent(
@@ -4899,6 +4899,9 @@ final class ControllerModel: ObservableObject {
             // Generation 22 (0.5.325) promotes the EXACT stock V12.6 map (or any earlier recognized stock Miles pack)
             // to V14 timing-v2 with its three shuffled casts per combat state, every rotation layer copied and checked
             // before the map changes. V14 already installed, under flat or rotation/ subfolder names, is .current.
+            // Generation 23 (0.5.328, Miles 2026-10-19) promotes a stock V14 (its four strips byte-identical to the retained
+            // ones, layers flat or under rotation/) or V12.6 to Jedi V1.5: four Session 1 casts, traveling bolts and the
+            // 18/14-frame signal bridges. Nothing is deleted; V14's files stay on disk. V1.5 already installed is .current.
             let bundledRefresh = PetSpriteStore.refreshRecognizedBundledCharacter(
                 into: directory
             )

@@ -132,6 +132,15 @@ struct PetRotationChecks {
         let loaded = PetSpriteStore.loadRotations(in: root)
         check(loaded[.duel]?.variants.count == 3 && loaded[.duel]?.frames == 4, "valid optional rotation loaded")
         check(loaded[.duel]?.fingerprint == PetSpriteStore.loadRotations(in: root)[.duel]?.fingerprint, "reload fingerprint stable")
+        // 0.5.328 (Jedi V1.5): Session 1 rotates casts. The same rows under working, idle and duel: working and duel load,
+        // idle never does (only the four session poses carry casts).
+        try JSONSerialization.data(withJSONObject: ["poses": ["working": ["file": "duel.png", "frames": 4, "rotation": rotation],
+                                                              "idle": ["file": "duel.png", "frames": 4, "rotation": rotation]]])
+            .write(to: root.appendingPathComponent(PetSpriteStore.stateFileName))
+        let session1 = PetSpriteStore.loadRotations(in: root)
+        check(session1[.working]?.variants.count == 3 && session1[.working]?.frames == 4 && session1[.idle] == nil && session1.count == 1,
+              "Session 1 (working) casts load; idle casts do not")
+        try write(rotation)
         PetSpriteStore.setFrames(.duel, frames: 4, in: root)
         check(PetSpriteStore.loadRotations(in: root)[.duel] != nil, "unchanged frame setting preserves rotation")
         PetSpriteStore.setFrames(.duel, frames: 2, in: root)
