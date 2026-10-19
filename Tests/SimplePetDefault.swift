@@ -1,4 +1,5 @@
 import AppKit
+import CryptoKit
 import SwiftUI
 
 // Runs only in a disposable home. Never shows a window or starts background work.
@@ -17,6 +18,22 @@ import SwiftUI
         UserDefaults.standard.removeObject(forKey: "cos.sessionPetDefaultSeeded")
         UserDefaults.standard.removeObject(forKey: "cos.sessionPetDefaultArtGeneration")
         let model = ControllerModel(startBackgroundWork: false)
+        // 0.5.328 memory gate: casts decode for the pose on screen only. Walk the cast poses one at a time (each inside its
+        // own autorelease pool, so a released pose's bitmaps really go) and report what each one loaded; at most one pose
+        // is ever held.
+        func castCounts(_ poses: [PetSpritePose] = [.working, .duel, .trio, .swarm]) -> [PetSpritePose: Int] {
+            var out: [PetSpritePose: Int] = [:]
+            for pose in poses {
+                autoreleasepool {
+                    model.ensurePetRotation(for: pose, synchronously: true)
+                    precondition(model.petSpriteKit.rotations.count <= 1, "more than one pose's casts held at once")
+                    if let rotation = model.petSpriteKit.rotations[pose] { out[pose] = rotation.variants.count }
+                }
+            }
+            autoreleasepool { model.ensurePetRotation(for: .idle, synchronously: true) }
+            precondition(model.petSpriteKit.rotations.isEmpty, "a pose without casts holds none")
+            return out
+        }
         model.loadPetSprite() // the no-background initializer intentionally skips startup work
         precondition(model.petCustomSprite != nil && (try! Data(contentsOf: installed)) == expected,
                      "fresh setup must install the bundled Cloud Puff without a network request")
@@ -45,9 +62,10 @@ import SwiftUI
                 try FileManager.default.createDirectory(at: proof, withIntermediateDirectories: true)
                 let casts: [PetSpritePose: Int] = character.id == PetSpriteStore.legacyDefaultCharacterID
                     ? [.working: 4, .duel: 3, .trio: 3, .swarm: 3] : [.duel: 3, .trio: 3, .swarm: 3]
-                precondition(model.petSpriteKit.rotations.mapValues(\.variants.count) == casts,
-                             "\(character.id) rotates \(casts), loaded \(model.petSpriteKit.rotations.mapValues(\.variants.count))")
+                let loaded = castCounts()
+                precondition(loaded == casts, "\(character.id) rotates \(casts), loaded \(loaded)")
                 for pose in [PetSpritePose.working, .duel, .trio, .swarm] where casts[pose] != nil {
+                    model.ensurePetRotation(for: pose, synchronously: true)
                     let rotation = model.petSpriteKit.rotations[pose]!
                     let clock = PetEncounterPlayback(seed: 17)
                     let now = ProcessInfo.processInfo.systemUptime
@@ -153,7 +171,9 @@ import SwiftUI
             var out: [String: (Data, Date)] = [:]
             for url in fm.enumerator(at: directory, includingPropertiesForKeys: [.contentModificationDateKey, .isRegularFileKey])!.compactMap({ $0 as? URL })
             where (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true {
-                out[url.path] = (try! Data(contentsOf: url), try! url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate!)
+                // A digest, not the bytes: holding four copies of a 184 MB pack is what a test must not do.
+                let digest = autoreleasepool { Data(SHA256.hash(data: try! Data(contentsOf: url))) }
+                out[url.path] = (digest, try! url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate!)
             }
             return out
         }
@@ -166,7 +186,7 @@ import SwiftUI
             if let generation { UserDefaults.standard.set(generation, forKey: "cos.sessionPetDefaultArtGeneration") }
             else { UserDefaults.standard.removeObject(forKey: "cos.sessionPetDefaultArtGeneration") }
             UserDefaults.standard.removeObject(forKey: "cos.sessionPetDefaultSeeded")
-            model.loadPetSprite()
+            autoreleasepool { model.loadPetSprite() }
         }
         for (form, label) in [(1, "flat"), (2, "rotation/ subfolder")] {
             for tuned in [false, true] {
@@ -207,7 +227,7 @@ import SwiftUI
                     precondition(PetSpriteStore.loadFrameIntervals(in: directory) == PetSpriteStore.loadFrameIntervals(in: miles)
                                  && PetSpriteStore.loadRenderScales(in: directory) == PetSpriteStore.loadRenderScales(in: miles),
                                  "\(what): V15 cadence and pack scales")
-                    precondition(model.petSpriteKit.rotations.mapValues(\.variants.count) == [.working: 4, .duel: 3, .trio: 3, .swarm: 3],
+                    precondition(castCounts() == [.working: 4, .duel: 3, .trio: 3, .swarm: 3],
                                  "\(what) plays four Session 1 casts and three on Sessions 2 to 4")
                     let upgraded = state()
                     Thread.sleep(forTimeInterval: 1.1)
@@ -235,7 +255,7 @@ import SwiftUI
             precondition(after.count == installedV15.count && after.allSatisfy { path, entry in
                 installedV15[path].map { $0.0 == entry.0 && $0.1 == entry.1 } ?? false
             }, "a launch rewrote the installed V15 (generation \(String(describing: generation)))")
-            precondition(model.petSpriteKit.rotations.mapValues(\.variants.count) == [.working: 4, .duel: 3, .trio: 3, .swarm: 3])
+            precondition(castCounts() == [.working: 4, .duel: 3, .trio: 3, .swarm: 3])
         }
         print("PASS: installed Version 15 survives first, post-0.5.324, post-0.5.327 and repeat launches untouched")
         // Retina vs 1x display: the same pack, the same point sizes, twice the pixels. A 1x-to-2x screen move re-picks.
@@ -248,7 +268,12 @@ import SwiftUI
             model.setPetDisplayScale(scale)
             // Cast poses play their casts (checked here); their plain strip stays 1x and only sizes the view.
             let poses: [PetSpritePose] = [.attention, .done, .error]
-            let rotationCells = [PetSpritePose.working, .duel, .trio, .swarm].map { model.petSpriteKit.rotations[$0]!.variants[0].full[0] }
+            let rotationCells = [PetSpritePose.working, .duel, .trio, .swarm].map { pose in
+                autoreleasepool { () -> NSImage in
+                    model.ensurePetRotation(for: pose, synchronously: true)
+                    return model.petSpriteKit.rotations[pose]!.variants[0].full[0]
+                }
+            }
             let poseCells = poses.map { model.petSpriteKit.frames(for: $0).first! }
             seen[scale] = ((rotationCells + poseCells).map(\.size), (rotationCells + poseCells).map(cellPixels))
         }

@@ -179,6 +179,8 @@ final class SessionPetPresenter: NSObject, ObservableObject, NSWindowDelegate {
         // An enabled pet is a persistent companion, not only a live-session
         // indicator. With no sessions, PetSpritePose.resolve selects `.idle`.
         let show = model.petEnabled
+        // 0.5.328: decode the casts of the pose about to show and release the last pose's; a hidden pet holds none.
+        model.ensurePetRotation(for: show ? model.petSpritePose : .idle)
         if !show {
             model.petEncounterPlayback.pause()
             panel?.orderOut(nil)

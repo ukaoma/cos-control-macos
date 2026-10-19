@@ -111,6 +111,7 @@ struct PetRotationChecks {
         check(again[1] === compact[1], "identical body/full cells across layers share storage")
         try loader()
         try retina()
+        try memoryRelease()
         print("PASS: PetRotationChecks \(checks) assertions; 21000 loops; real scheduler, clock, layer selector, loader and legacy fallback")
     }
     static func loader() throws {
@@ -141,6 +142,15 @@ struct PetRotationChecks {
         let session1 = PetSpriteStore.loadRotations(in: root)
         check(session1[.working]?.variants.count == 3 && session1[.working]?.frames == 4 && session1[.idle] == nil && session1.count == 1,
               "Session 1 (working) casts load; idle casts do not")
+        // The live pet asks for one pose at a time (0.5.328 memory gate): `only` decodes that pose and nothing else.
+        try JSONSerialization.data(withJSONObject: ["poses": ["working": ["file": "duel.png", "frames": 4, "rotation": rotation],
+                                                              "duel": ["file": "duel.png", "frames": 4, "rotation": rotation]]])
+            .write(to: root.appendingPathComponent(PetSpriteStore.stateFileName))
+        check(PetSpriteStore.loadRotations(in: root).count == 2
+                && Array(PetSpriteStore.loadRotations(in: root, only: [.working]).keys) == [.working]
+                && PetSpriteStore.loadRotations(in: root, only: [.idle]).isEmpty,
+              "only: decodes the asked pose alone")
+        check(PetSpriteStore.castPoses(in: root) == [.working, .duel], "cast poses are read from the map without decoding")
         try write(rotation)
         PetSpriteStore.setFrames(.duel, frames: 4, in: root)
         check(PetSpriteStore.loadRotations(in: root)[.duel] != nil, "unchanged frame setting preserves rotation")
@@ -192,6 +202,62 @@ struct PetRotationChecks {
         ctx.draw(cg, in: CGRect(x: 0, y: 0, width: cg.width, height: cg.height))
         let px = ctx.data!.assumingMemoryBound(to: UInt8.self)
         return (Int(px[(cg.height / 2 * cg.width + cg.width / 2) * 4]), cg.width)
+    }
+
+    static func footprintMB() -> Double {
+        var info = rusage_info_v4()
+        let ok = withUnsafeMutablePointer(to: &info) { ptr in
+            ptr.withMemoryRebound(to: rusage_info_t?.self, capacity: 1) { proc_pid_rusage(getpid(), RUSAGE_INFO_V4, $0) }
+        }
+        precondition(ok == 0)
+        return Double(info.ri_phys_footprint) / 1_048_576
+    }
+
+    /// 0.5.328 memory gate: the live pet decodes one state's casts at a time and drops them on a state change, so a
+    /// dropped cast must give its memory back. Cells were malloc'd and freed into malloc's small region, which stayed
+    /// resident (Version 15 swarm at 2x: 303 MB loaded, still 303 MB after the release). 54 distinct 600x512 cells
+    /// (about 63 MB) are loaded and dropped three times; the process must end within 12 MB of where it began.
+    static func memoryRelease() throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent("pet-release-test-\(UUID().uuidString)")
+        try fm.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: root) }
+        let (w, h, frames) = (600, 512, 6)
+        func strip(_ seed: Int) -> Data {
+            let ctx = CGContext(data: nil, width: w * frames, height: h, bitsPerComponent: 8, bytesPerRow: w * frames * 4,
+                                space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+            for f in 0..<frames {
+                ctx.setFillColor(red: CGFloat((seed * 7 + f * 13) % 255) / 255, green: CGFloat((seed * 3 + f) % 255) / 255, blue: 0.4, alpha: 1)
+                ctx.fill(CGRect(x: f * w, y: 0, width: w, height: h))
+            }
+            return NSBitmapImageRep(cgImage: ctx.makeImage()!).representation(using: .png, properties: [:])!
+        }
+        var variants: [[String: String]] = []
+        for v in 0..<3 {
+            var row = ["id": "duel-\(v)"]
+            for (k, key) in ["file", "bodyFile", "entryFile"].enumerated() {
+                let name = "c\(v)-\(key).png"
+                try strip(v * 3 + k + 1).write(to: root.appendingPathComponent(name))
+                row[key] = name
+            }
+            variants.append(row)
+        }
+        try strip(0).write(to: root.appendingPathComponent("pose.png"))
+        let map: [String: Any] = ["poses": ["duel": ["file": "pose.png", "frames": frames, "rotation": ["version": 1, "handoffFrame": 4, "variants": variants]]]]
+        try JSONSerialization.data(withJSONObject: map).write(to: root.appendingPathComponent(PetSpriteStore.stateFileName))
+        let before = footprintMB()
+        autoreleasepool { _ = PetSpriteStore.loadRotations(in: root, only: [.duel]) } // first load: one-time framework setup counts too
+        var loadedPeak = 0.0
+        for _ in 0..<3 {
+            autoreleasepool {
+                let loaded = PetSpriteStore.loadRotations(in: root, only: [.duel])
+                check(loaded[.duel]?.variants.count == 3, "the release test's casts load")
+                loadedPeak = max(loadedPeak, footprintMB() - before)
+            }
+        }
+        let after = footprintMB() - before
+        check(loadedPeak > 40, "the release test holds its casts while loaded (\(Int(loadedPeak)) MB)")
+        check(after < 12, "dropped casts give their memory back (\(Int(after)) MB still held after three loads)")
     }
 
     /// 0.5.328 (Version 15): retina strips. A 4-frame pose of 4x4 px cells at 1x carries 8x8 px cells at 2x, split into

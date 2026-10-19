@@ -7581,6 +7581,13 @@ struct PetRetinaRow: Equatable {
     }
 }
 
+/// Carries decoded cast art from a background decode to the main actor. The images are never touched off the main
+/// actor once handed over.
+final class PetRotationBox: @unchecked Sendable {
+    let value: [PetSpritePose: PetEncounterRotation]
+    init(_ value: [PetSpritePose: PetEncounterRotation]) { self.value = value }
+}
+
 /// Optional versioned encounter art. The legacy pose strip remains the fallback.
 struct PetRotationManifest: Codable, Equatable {
     struct Variant: Codable, Equatable {
@@ -7920,18 +7927,28 @@ enum PetSpriteStrip {
             bitsPerComponent: 8, bytesPerRow: cg.width * 4, space: CGColorSpaceCreateDeviceRGB(),
             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue), let pixels = context.data else { return [] }
         context.draw(cg, in: CGRect(x: 0, y: 0, width: cg.width, height: h))
+        let cellBytes = w * h * 4
+        var scratch = Data(count: cellBytes)
         return (0..<count).compactMap { frame in
-            var bytes = Data(count: w * h * 4)
-            bytes.withUnsafeMutableBytes { dst in
+            scratch.withUnsafeMutableBytes { dst in
                 for y in 0..<h {
                     dst.baseAddress!.advanced(by: y * w * 4).copyMemory(
                         from: pixels.advanced(by: (y * cg.width + frame * w) * 4), byteCount: w * 4)
                 }
             }
-            let key = "\(w):\(h):\(scale):" + SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+            let key = "\(w):\(h):\(scale):" + SHA256.hash(data: scratch).map { String(format: "%02x", $0) }.joined()
             if let image = cache[key] { return image }
-            guard let provider = CGDataProvider(data: bytes as CFData),
-                let cell = CGImage(width: w, height: h, bitsPerComponent: 8, bitsPerPixel: 32,
+            // 0.5.328 memory gate: a kept cell lives in its own anonymous mapping, unmapped when the image goes. A malloc'd
+            // cell of 600x512 px (1.2 MB) was freed into malloc's small region, which kept the pages dirty: releasing one
+            // state's casts returned nothing (measured: footprint stayed at its peak, 434 MB of empty-but-resident small
+            // regions after the release).
+            guard let mapped = mmap(nil, cellBytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0),
+                  mapped != MAP_FAILED else { return nil }
+            scratch.withUnsafeBytes { mapped.copyMemory(from: $0.baseAddress!, byteCount: cellBytes) }
+            guard let provider = CGDataProvider(dataInfo: nil, data: mapped, size: cellBytes, releaseData: { _, data, size in
+                munmap(UnsafeMutableRawPointer(mutating: data), size)
+            }) else { munmap(mapped, cellBytes); return nil }
+            guard let cell = CGImage(width: w, height: h, bitsPerComponent: 8, bitsPerPixel: 32,
                     bytesPerRow: w * 4, space: CGColorSpaceCreateDeviceRGB(),
                     bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
                     provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent) else { return nil }
@@ -7940,6 +7957,7 @@ enum PetSpriteStrip {
             return image
         }
     }
+
 
     static func sliceGrid(_ image: NSImage, columns: Int, rows: Int) -> [NSImage] {
         let cols = max(1, columns)
@@ -8816,10 +8834,13 @@ enum PetSpriteStore {
     }
     /// Strict all-or-nothing loading per pose. Bad or absent optional metadata
     /// falls back to the legacy strip without changing other poses.
+    /// `only` (0.5.328): decode just these poses. The live pet asks for the pose on screen alone: Version 15's 2x casts
+    /// measured 798 MB decoded together against V14's 219 MB, and one state at a time peaks near 282 MB (swarm).
     static func loadRotations(
         in directory: URL,
         fileManager: FileManager = .default,
-        displayScale: CGFloat = 1
+        displayScale: CGFloat = 1,
+        only: Set<PetSpritePose>? = nil
     ) -> [PetSpritePose: PetEncounterRotation] {
         guard let data = try? Data(contentsOf: directory.appendingPathComponent(stateFileName)),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -8829,7 +8850,7 @@ enum PetSpriteStore {
         let root = directory.resolvingSymlinksInPath().standardizedFileURL.path + "/"
         // 0.5.328: Session 1 (working) rotates casts too (Jedi Version 15: four casts for Miles Windu). The renderer was
         // already pose-generic; only this loader limited rotation to duel, trio and swarm.
-        for pose in [PetSpritePose.working, .duel, .trio, .swarm] {
+        for pose in [PetSpritePose.working, .duel, .trio, .swarm] where only?.contains(pose) ?? true {
             guard let row = poses[pose.rawValue], let rotationJSON = row["rotation"] as? [String: Any],
                   let rotationData = try? JSONSerialization.data(withJSONObject: rotationJSON, options: [.sortedKeys]),
                   let manifest = try? JSONDecoder().decode(PetRotationManifest.self, from: rotationData),
@@ -8886,6 +8907,14 @@ enum PetSpriteStore {
             result[pose] = PetEncounterRotation(fingerprint: fingerprint, manifest: manifest, frames: frames, variants: variants)
         }
         return result
+    }
+
+    /// Poses whose map row declares a cast rotation, read without decoding any art.
+    static func castPoses(in directory: URL) -> Set<PetSpritePose> {
+        guard let data = try? Data(contentsOf: directory.appendingPathComponent(stateFileName)),
+              let poses = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["poses"] as? [String: [String: Any]]
+        else { return [] }
+        return Set(poses.compactMap { name, row in row["rotation"] == nil ? nil : PetSpritePose(rawValue: name) })
     }
 
     /// Every pose's frames as the live pet plays them (0.5.328). On a display of scale 2 or more a pose whose map row

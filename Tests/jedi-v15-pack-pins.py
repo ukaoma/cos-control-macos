@@ -234,11 +234,23 @@ def validate(map_bytes: bytes, read: Callable[[str], bytes | None], listing: set
         data = read(name)
         need(data is not None and hashlib.sha256(data).hexdigest() == digest, f"retained V14 strip {name} drifted or is missing")
         need(f'("{name}", {frames}),' in models, f"the upgrade does not recognize an installed V14 {name} at {frames} frames")
-    need("for pose in [PetSpritePose.working, .duel, .trio, .swarm] {" in models, "Session 1 casts load (loadRotations covers working)")
+    need("for pose in [PetSpritePose.working, .duel, .trio, .swarm] where only?.contains(pose) ?? true {" in models,
+         "Session 1 casts load (loadRotations covers working)")
     need(int(re.search(r"petDefaultArtGeneration = (\d+)", controller).group(1)) >= 23, "art generation 23 runs the V15 upgrade once")
     need("PetSpriteStore.loadPoseFrames(in: directory, stateMap: petStateMap, displayScale: petDisplayScale," in controller
-         and "PetSpriteStore.loadRotations(in: directory, displayScale: petDisplayScale)" in controller,
+         and controller.count("PetSpriteStore.loadRotations(in: directory, displayScale: scale, only: [want])") == 2
+         and "let scale = petDisplayScale" in controller,
          "the live pet picks its strips by the pet window's display scale")
+    # Memory gate (0.5.328): casts decode for the pose on screen only, the old pose's are released first, a hidden pet
+    # holds none, and loadPetSprite itself decodes no cast.
+    ensure = controller.split("func ensurePetRotation(for pose: PetSpritePose", 1)[1].split("\n    }\n", 1)[0]
+    need("if !petSpriteKit.rotations.isEmpty { petSpriteKit.rotations = [:] }" in ensure
+         and ensure.index("petSpriteKit.rotations = [:]") < ensure.index("loadRotations("),
+         "the previous pose's casts are released before the next pose decodes")
+    load = controller.split("    func loadPetSprite() {", 1)[1].split("\n    }\n", 1)[0]
+    need("loadRotations(" not in load and "rotations: [:])" in load and "ensurePetRotation(for: petSpritePose)" in load,
+         "loading the pet decodes no casts beyond the pose on screen")
+    need("model.ensurePetRotation(for: show ? model.petSpritePose : .idle)" in pet, "the presenter keeps the casts on the pose on screen")
     need(pet.count("model?.setPetDisplayScale(panel.backingScaleFactor)") == 2 and "func windowDidChangeBackingProperties(" in pet
          and "func windowDidChangeScreen(" in pet, "moving the pet between a 1x and a 2x screen re-picks its strips")
     need("guard let row = PetRetinaRow(value), displayScale >= CGFloat(row.scale) else { return nil }" in models,
@@ -319,10 +331,19 @@ def main() -> None:
         ("a retained V14 strip changes", with_(read=flip("session-pet-trio-v13.png"))),
         ("the upgrade forgets V14 Session 1", with_(models=models.replace('("session-pet-working-v13.png", 46),', "", 1))),
         ("the loader drops Session 1 casts", with_(models=models.replace(
-            "for pose in [PetSpritePose.working, .duel, .trio, .swarm] {", "for pose in [PetSpritePose.duel, .trio, .swarm] {", 1))),
+            "for pose in [PetSpritePose.working, .duel, .trio, .swarm] where", "for pose in [PetSpritePose.duel, .trio, .swarm] where", 1))),
+        ("every cast decodes at once", with_(controller=controller.replace(
+            "PetSpriteStore.loadRotations(in: directory, displayScale: scale, only: [want])",
+            "PetSpriteStore.loadRotations(in: directory, displayScale: scale)", 1))),
+        ("the old pose is kept while the next decodes", with_(controller=controller.replace(
+            "        if !petSpriteKit.rotations.isEmpty { petSpriteKit.rotations = [:] }\n", "", 1))),
+        ("loading the pet decodes every cast again", with_(controller=controller.replace(
+            "cinematic: cinematic, rotations: [:])", "cinematic: cinematic, rotations: PetSpriteStore.loadRotations(in: directory))", 1))),
+        ("a hidden pet keeps its casts", with_(pet=pet.replace(
+            "model.ensurePetRotation(for: show ? model.petSpritePose : .idle)", "model.ensurePetRotation(for: model.petSpritePose)", 1))),
         ("the art generation stays at 22", with_(controller=re.sub(r"petDefaultArtGeneration = \d+", "petDefaultArtGeneration = 22", controller))),
         ("the live pet ignores the display scale", with_(controller=controller.replace(
-            "PetSpriteStore.loadRotations(in: directory, displayScale: petDisplayScale)", "PetSpriteStore.loadRotations(in: directory, displayScale: 1)", 1))),
+            "let scale = petDisplayScale", "let scale: CGFloat = 1", 1))),
         ("retina chosen on a 1x display", with_(models=models.replace(
             "displayScale >= CGFloat(row.scale) else { return nil }", "displayScale >= 1 else { return nil }", 1))),
         ("a screen change does not re-pick", with_(pet=pet.replace("func windowDidChangeScreen(", "func windowDidChangeScreenIgnored(", 1))),

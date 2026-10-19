@@ -2485,6 +2485,42 @@ final class ControllerModel: ObservableObject {
         petDisplayScale = scale
         if changesSet { loadPetSprite() }
     }
+
+    /// 0.5.328 memory gate: cast art is decoded for the pose on screen only, and released when the pose changes. Every
+    /// cast decoded at once measured 798 MB at 2x (V14: 219 MB); one state at a time peaks near 282 MB (swarm, 2x).
+    private var petCastPoses: Set<PetSpritePose> = []
+    private(set) var petRotationPose: PetSpritePose?
+    private var petRotationLoad: Task<Void, Never>?
+    private var petRotationGeneration = 0
+
+    /// Called whenever the pet may have changed pose. The old pose's casts are released BEFORE the new ones decode, so two
+    /// states are never held together; until the decode lands the pose plays its 1x strip. `synchronously` is for tests.
+    func ensurePetRotation(for pose: PetSpritePose, synchronously: Bool = false) {
+        let want: PetSpritePose? = petCastPoses.contains(pose) ? pose : nil
+        guard want != petRotationPose else { return }
+        petRotationLoad?.cancel()
+        petRotationGeneration += 1
+        petRotationPose = want
+        if !petSpriteKit.rotations.isEmpty { petSpriteKit.rotations = [:] }
+        guard let want else { return }
+        let directory = PetSpriteStore.supportDirectory()
+        let scale = petDisplayScale
+        if synchronously {
+            petSpriteKit.rotations = PetSpriteStore.loadRotations(in: directory, displayScale: scale, only: [want])
+            return
+        }
+        let generation = petRotationGeneration
+        petRotationLoad = Task.detached(priority: .userInitiated) { [weak self] in
+            let loaded = PetRotationBox(PetSpriteStore.loadRotations(in: directory, displayScale: scale, only: [want]))
+            await self?.applyPetRotation(loaded, generation: generation)
+        }
+    }
+
+    /// Lands a background decode only if the pet is still on that pose (no newer request since).
+    private func applyPetRotation(_ loaded: PetRotationBox, generation: Int) {
+        guard !Task.isCancelled, petRotationGeneration == generation else { return }
+        petSpriteKit.rotations = loaded.value
+    }
     let petEncounterPlayback = PetEncounterPlayback()
     @Published var petFrameIntervals: [PetSpritePose: Double] = [:]
     private var petStateMap: [PetSpritePose: (file: String, frames: Int)] = [:]
@@ -4933,9 +4969,9 @@ final class ControllerModel: ObservableObject {
             petCustomSprite = nil
         }
         petStateMap = PetSpriteStore.loadStateMap(in: directory)
-        let rotations = PetSpriteStore.loadRotations(in: directory, displayScale: petDisplayScale)
+        petCastPoses = PetSpriteStore.castPoses(in: directory)
         let poses = PetSpriteStore.loadPoseFrames(in: directory, stateMap: petStateMap, displayScale: petDisplayScale,
-                                                  castPoses: Set(rotations.keys))
+                                                  castPoses: petCastPoses)
         petFrameIntervals = PetSpriteStore.loadFrameIntervals(in: directory)
         petRenderScales = PetSpriteStore.loadRenderScales(in: directory)
         var cinematic: [NSImage] = []
@@ -4948,8 +4984,12 @@ final class ControllerModel: ObservableObject {
                 ?? PetSpriteStrip.clampFrames(max(2, cg.width / max(cg.height, 1)))
             cinematic = PetSpriteStrip.slice(image, frames: frames)
         }
-        petSpriteKit = PetSpriteKit(fallback: petCustomSprite, poses: poses, cinematic: cinematic,
-                                    rotations: rotations)
+        // New art (or a new display scale): the casts reload for the pose on screen only.
+        petRotationLoad?.cancel()
+        petRotationGeneration += 1
+        petRotationPose = nil
+        petSpriteKit = PetSpriteKit(fallback: petCustomSprite, poses: poses, cinematic: cinematic, rotations: [:])
+        ensurePetRotation(for: petSpritePose)
     }
 
     var petLedger: PetLedger {
