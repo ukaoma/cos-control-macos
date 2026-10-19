@@ -99,7 +99,7 @@ pin('guard !selectedUID.isEmpty else { return (.systemDefault, false) }' in body
 warm = body(d, "    func warm(deviceID: AudioDeviceID?) throws {")
 pin("start()" not in warm and "prepare()" not in warm and "installTap" not in warm, "spare never started",
     "warming builds the input node only; the microphone stays off")
-pin(d.count(".warm(deviceID:") == 1 and ".warm(deviceID:" in body(d, "    private func warmSpare() {"), "spare never started",
+pin(d.count(".warm(deviceID:") == 1 and ".warm(deviceID:" in body(d, "    private func warmSpare() async {"), "spare never started",
     "only warmSpare warms an engine")
 prep = body(d, "    func prepareSpare(after delay: Duration = .seconds(1)) {")
 pin("guard let self, !Task.isCancelled, self.capture == nil, !self.busy else { return }" in prep, "spare only when idle",
@@ -107,18 +107,21 @@ pin("guard let self, !Task.isCancelled, self.capture == nil, !self.busy else { r
 take = body(d, "    private func takeSpare(device: AudioDeviceID?) -> DictationMicrophoneCapture? {")
 order(take, ["spare = nil", "DictationSpare.check(", "if case .discard"], "spare taken once",
       "the press takes the spare once and uses it only when the check passes")
-pin(d.count("takeSpare(") == 2 and "(try? warm.start(deviceID: deviceID)) != nil" in start and "next = DictationMicrophoneCapture()" in start,
+pin(d.count("takeSpare(") == 2 and "(try? warm.start(deviceID: deviceID)) != nil" in start and "let fresh = DictationMicrophoneCapture()" in start,
     "spare falls back", "a spare that will not start gives way to a fresh engine on the same press")
-pin("guard let device = deviceID ?? DictationAudioDevices.defaultInput(),\n              DictationSpare.mayWarm(" in body(d, "    private func warmSpare() {"),
+pin("guard let device = deviceID ?? DictationAudioDevices.defaultInput(),\n                      DictationSpare.mayWarm(" in body(d, "    private func warmSpare() async {"),
     "spare rules", "warming asks DictationSpare.mayWarm (allowed, enabled, not Bluetooth)")
 
 # 5. The timing line: each start number is stamped where its step ends, and every failure names its code.
 for field, after in [("pressToTaskMs", "task = Task {"), ("permissionMs", "default: permission = false"),
                      ("refreshMicsMs", "DictationStart.resolve("), ("engineStartMs", "capture = next"),
-                     ("pressToFirstBufferMs", "case .arrived(let at):"), ("pressToSoundMs", "playSound(.start)"),
-                     ("quietMs", "quiet.begin(")]:
+                     ("pressToFirstBufferMs", "case .arrived(let at):"), ("pressToSoundMs", "playSound(.start)")]:
     stamp = at(start, f"startMarks?.{field} = ", "timing fields")
     order(start, [after, f"startMarks?.{field} = "], "timing fields", f"{field} is stamped after its step ({after!r})")
+# 0.5.328: the mute's and the sound's times are measured on the output queue and come back through lateMarks.
+pin("self?.lateMarks(attempt) { $0.quietMs = total; $0.quietBuildMs = times.buildMs; $0.quietStartMs = times.startMs }" in start
+    and "playSound(.start) { [weak self] took in self?.lateMarks(attempt) { $0.soundMs = took } }" in start, "timing fields",
+    "the mute's total, build and start times and the sound's start time reach the line")
 pin("startMarks?.pressToFirstBufferMs = DictationStartMarks.ms(pressed, at)" in start, "timing fields",
     "the first-buffer time is the audio side's own stamp, not the moment the pill noticed")
 close = body(d, "    private func closeMicrophone() {")

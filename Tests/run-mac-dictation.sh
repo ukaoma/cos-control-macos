@@ -40,7 +40,7 @@ def lift(key):
             if depth == 0: break
         i += 1
     return src[start:i + 1]
-lifted = lift("@MainActor final class DictationQuietController {") + "\n\n" + lift("enum SystemAudioPermission {")
+lifted = lift("final class DictationQuietController: @unchecked Sendable {") + "\n\n" + lift("enum SystemAudioPermission {")
 open(sys.argv[2], "w", encoding="utf-8").write('import Foundation\nimport CoreAudio\nimport AudioToolbox\nimport os\n\nlet dictationLog = Logger(subsystem: "com.gotcos.control.tests", category: "dictation")\n\n' + lifted + "\n")
 PY
 /usr/bin/python3 "$ROOT/Tests/kit-compile.py" "$ROOT/Tests/compile-guard.sh" swiftc -typecheck -target arm64-apple-macosx14.0 -swift-version 6 -strict-concurrency=complete -parse-as-library \
@@ -63,5 +63,7 @@ print "PASS Mac dictation isolation pins: audio callbacks @Sendable, callback si
 # 0.5.327 truthful start: STARTING until the first buffer, then LISTENING, the sound and the mute; no microphone list on
 # the press; the spare engine never started; start numbers and failure codes on the timing line (rules in the checks).
 /usr/bin/python3 "$ROOT/Tests/dictation-start-pins.py" "$ROOT"
+# 0.5.328 smooth start: no Core Audio, engine or other-app Accessibility work on the main actor while a dictation starts.
+/usr/bin/python3 "$ROOT/Tests/dictation-smooth-pins.py" "$ROOT"
 # 0.5.317: dictation for everyone (the helper core, the CLI checks, the pins).
 zsh "$ROOT/Tests/run-dictation-everyone.sh"

@@ -13,7 +13,8 @@ Lanes: core (ProviderStatusCore + DictationEveryoneChecks), store (run-transcrip
 (dictation-everyone-pins.py, no compile), release (the CLI and entitlements self-tests, no Swift), helper (the full
 helper, then the helper check scripts, 0.5.325's dictation-polish among them; one large compile per mutant, so few
 mutants use it), polishpins (0.5.325 dictation-polish-pins.py, no compile), tailpins (0.5.326 dictation-tail-pins.py, no
-compile), startpins (0.5.327 dictation-start-pins.py, no compile).
+compile), startpins (0.5.327 dictation-start-pins.py, no compile), smoothpins (0.5.328 dictation-smooth-pins.py, no
+compile).
 """
 import os, pathlib, shutil, subprocess, sys, tempfile
 
@@ -148,8 +149,17 @@ MUTANTS = [
      "        let elapsed = Int(Date().timeIntervalSince(started) * 1000)\n        if case .failed(let why) = outcome { fail(why) }\n", "never a failure", "polishpins"),
     ("polish pins: what was heard kept when unchanged", MD, "if case .applied? = polished?.outcome, let model = polished?.model { lastPolish",
      "if let model = polished?.model { lastPolish", "heard only when applied", "polishpins"),
-    ("polish pins: no budget on the helper", APP, 'runHelper(["dictation-polish"], timeout: budget, stdinData: request)',
-     'runHelper(["dictation-polish"], timeout: 40, stdinData: request)', "bridge", "polishpins"),
+    ("polish pins: no budget on the helper", APP, 'runHelper(["dictation-polish"], timeout: budget, stdinData: request, answers: true)',
+     'runHelper(["dictation-polish"], timeout: 40, stdinData: request, answers: true)', "bridge", "polishpins"),
+    # 0.5.328: the polish twin of the dictation refusal fix, and the server's skip reason.
+    ("polish pins: refusals thrown as failed:helper", APP, 'runHelper(["dictation-polish"], timeout: budget, stdinData: request, answers: true)',
+     'runHelper(["dictation-polish"], timeout: budget, stdinData: request)', "bridge", "polishpins"),
+    ("polish pins: the skip reason not read", MD, '                                             skipped: response.details["polishSkipped"]?.string)',
+     '                                             skipped: nil)', "skip reason", "polishpins"),
+    ("polish core: any skip word passes", PSC, 'if let skipped = body["polishSkipped"] as? String, skipReasons.contains(skipped) { details["polishSkipped"] = skipped }',
+     'if let skipped = body["polishSkipped"] as? String { details["polishSkipped"] = skipped }', "polish skipped whitelist", "core"),
+    ("polish core: the skip reason dropped", PSC, 'if let skipped = body["polishSkipped"] as? String, skipReasons.contains(skipped) { details["polishSkipped"] = skipped }',
+     '', "polish skipped", "core"),
     ("polish pins: the deadline equals the budget", PSC, '        case "sonnet": 8.5', '        case "sonnet": 9', "deadline inside budget", "polishpins"),
     ("polish helper probes health first", H, "could spend the whole budget.\n        guard let token = try? readToken() else {",
      "could spend the whole budget.\n        guard let token = try? speakerReviewToken() else {",
@@ -172,10 +182,12 @@ MUTANTS = [
      "        lock.lock(); defer { lock.unlock() }\n        let capacity", "drain lock", "tailpins"),
     ("tail pins: a failed dictation writes no timing", MD, '        recordTiming("failed")\n', "", "every outcome", "tailpins"),
     # 0.5.327 truthful start wiring (Tests/dictation-start-pins.py, no compile).
-    ("start pins: the sound plays on the press", MD, "        pill = .starting\n", "        pill = .starting\n        playSound(.start)\n", "nothing on press", "startpins"),
-    ("start pins: LISTENING on the press", MD, "        pill = .starting\n", "        pill = .listening(since: Date())\n", "starting on press", "startpins"),
-    ("start pins: the mute before the microphone", MD, "        startMarks = DictationStartMarks(pressed: pressed)\n",
-     "        startMarks = DictationStartMarks(pressed: pressed)\n        quiet.begin(mode: quietMode, macRecording: false)\n", "nothing on press", "startpins"),
+    ("start pins: the sound plays on the press", MD, "            if self.phase == \"Starting\" { self.pill = .starting }\n",
+     "            if self.phase == \"Starting\" { self.pill = .starting; self.playSound(.start) }\n", "nothing on press", "startpins"),
+    ("start pins: LISTENING on the press", MD, "            if self.phase == \"Starting\" { self.pill = .starting }\n",
+     "            if self.phase == \"Starting\" { self.pill = .listening(since: Date()) }\n", "starting on press", "startpins"),
+    ("start pins: the mute before the microphone", MD, "        startMarks = DictationStartMarks(pressed: pressed); startMarks?.editWatchAtPress = watching\n",
+     "        startMarks = DictationStartMarks(pressed: pressed); startMarks?.editWatchAtPress = watching\n        quiet.begin(mode: quietMode, macRecording: false)\n", "nothing on press", "startpins"),
     ("start pins: Listening before the first buffer", MD, "            switch await awaitFirstAudio(next, attempt: attempt) {",
      '            phase = "Listening"\n            switch await awaitFirstAudio(next, attempt: attempt) {', "one way to listen", "startpins"),
     ("start pins: the list read on every press", MD, "            let chosen = DictationStart.resolve(selectedUID: microphoneUID,",
@@ -193,6 +205,35 @@ MUTANTS = [
     ("start pins: a failure's code not written", MD, "        timing?.failReason = code\n", "", "fail reason", "startpins"),
     ("start pins: a start failure writes no line", MD, "        if timing == nil, let marks = startMarks { timing = DictationTiming.startFailure(marks, at: Date()) }\n", "",
      "fail reason", "startpins"),
+    # 0.5.328 smooth start wiring (Tests/dictation-smooth-pins.py, no compile).
+    ("smooth pins: the mute back on the main actor", MD, "final class DictationQuietController: @unchecked Sendable {",
+     "@MainActor final class DictationQuietController: @unchecked Sendable {", "audio off main", "smoothpins"),
+    ("smooth pins: the mute built where the store asks", MD, "        DictationAudioQueues.output.async {\n            let began = ProcessInfo.processInfo.systemUptime\n            controller.begin(",
+     "        do {\n            let began = ProcessInfo.processInfo.systemUptime\n            controller.begin(", "quiet queued", "smoothpins"),
+    ("smooth pins: the sound played on the main actor", MD, "        DictationAudioQueues.output.async {\n            let began = ProcessInfo.processInfo.systemUptime\n            player.play(",
+     "        do {\n            let began = ProcessInfo.processInfo.systemUptime\n            player.play(", "sound queued", "smoothpins"),
+    ("smooth pins: the engine opened on the main queue", MD, "let opened = try await DictationAudioQueues.perform(on: DictationAudioQueues.input) {",
+     "let opened = try await DictationAudioQueues.perform(on: .main) {", "engine off main", "smoothpins"),
+    ("smooth pins: an engine opened after a release keeps running", MD, "                    DictationAudioQueues.input.async { _ = try? orphan.stop() }\n", "", "orphan closed", "smoothpins"),
+    ("smooth pins: LISTENING reads the mute's note", MD, '            phase = "Listening"; pill = .listening(since: Date())\n',
+     '            phase = "Listening"; pill = .listening(since: Date())\n            quietNote = quiet.fallbackNote\n', "pill first", "smoothpins"),
+    ("smooth pins: placement on the main thread", MD, "(try? await DictationAudioQueues.perform(on: .global(qos: .userInitiated)) { DictationFocusedWindow.frame(lookup) }) ?? nil",
+     "DictationFocusedWindow.frame(lookup)", "placement off main", "smoothpins"),
+    ("smooth pins: LISTENING before the placement", MD, "            await placing?.value\n", "", "placement off main", "smoothpins"),
+    ("smooth pins: the edit watch on the main actor", MD, "task = Task.detached(priority: .utility) { [weak self] in", "task = Task { [weak self] in",
+     "edit watch off main", "smoothpins"),
+    ("smooth pins: the heartbeat paused by tracking", MD, "RunLoop.main.add(timer, forMode: .common)", "RunLoop.main.add(timer, forMode: .default)", "heartbeat", "smoothpins"),
+    ("smooth pins: cancel leaves the heartbeat running", MD, "startMarks = nil; _ = heartbeat.finish(); placing?.cancel(); placing = nil",
+     "startMarks = nil; placing?.cancel(); placing = nil", "heartbeat", "smoothpins"),
+    ("smooth pins: the stall left off the line", MD, "                startMarks?.mainThreadStallMs = heartbeat.finish()\n", "", "heartbeat", "smoothpins"),
+    ("smooth pins: quit does not wait for the unmute", APP, "model.dictation.cancel(); model.dictation.flushAudio();", "model.dictation.cancel();", "quit restores", "smoothpins"),
+    ("smooth pins: the pet resizes for the pill", "Sources/SessionPet.swift", "        let dictation = model.dictation\n",
+     "        let dictation = model.dictation\n        observers.append(dictation.$pill.sink { _ in })\n", "no resize", "smoothpins"),
+    ("smooth pins: an unreviewed detached task", MD, "        spareTask = Task { [weak self] in", "        spareTask = Task.detached { [weak self] in", "census", "smoothpins"),
+    ("smooth pins: dictation refusals thrown as command_failed", APP, 'runHelper(["mac-dictation"], timeout: 40, stdinData: audio, answers: true)',
+     'runHelper(["mac-dictation"], timeout: 40, stdinData: audio)', "refusal reaches dictation", "smoothpins"),
+    ("smooth pins: runHelper drops answers", "Sources/ControllerModel.swift", "try await helper.run(arguments, timeout: timeout, stdinData: stdinData, answers: answers)",
+     "try await helper.run(arguments, timeout: timeout, stdinData: stdinData)", "refusal reaches dictation", "smoothpins"),
     ("start pins: STARTING shows level bars", MD, "                Text(pill.label)\n            case .listening(let since):",
      "                liveBars\n                Text(pill.label)\n            case .listening(let since):", "starting pill", "startpins"),
 ]
@@ -213,6 +254,8 @@ def lane(copy, name):
         return subprocess.run(["python3", str(copy / "Tests/dictation-everyone-pins.py"), str(copy)], capture_output=True, text=True)
     if name == "tailpins":
         return subprocess.run(["python3", str(copy / "Tests/dictation-tail-pins.py"), str(copy)], capture_output=True, text=True)
+    if name == "smoothpins":
+        return subprocess.run(["python3", str(copy / "Tests/dictation-smooth-pins.py"), str(copy)], capture_output=True, text=True)
     if name == "startpins":
         return subprocess.run(["python3", str(copy / "Tests/dictation-start-pins.py"), str(copy)], capture_output=True, text=True)
     if name == "polishpins":

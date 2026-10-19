@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""0.5.327: print the start numbers from the dictation timing file after Miles dictates. Numbers and codes only; the
+"""0.5.327 (0.5.328 adds the stall, the mute split, placement, sound and delivery): print the start numbers from the dictation timing file after Miles dictates. Numbers and codes only; the
 file never holds words. Read-only.
 
     python3 Tests/dictation-start-timing.py [count] [timing file]
@@ -18,8 +18,9 @@ for source in (path.with_name(path.name + ".1"), path):
         lines += [l for l in source.read_text(encoding="utf-8").splitlines() if l.strip()]
 if not lines:
     sys.exit(f"no timing lines in {path}")
-fields = ["pressToTaskMs", "permissionMs", "refreshMicsMs", "micListRead", "warmEngine", "engineStartMs",
-          "pressToFirstBufferMs", "pressToSoundMs", "quietMs", "capturedSeconds", "transcribeMs", "outcome", "failReason"]
+fields = ["pressToTaskMs", "placementMs", "editWatchAtPress", "warmEngine", "engineStartMs", "pressToFirstBufferMs",
+          "pressToSoundMs", "soundMs", "quietMs", "quietBuildMs", "quietStartMs", "mainThreadStallMs",
+          "capturedSeconds", "transcribeMs", "deliverMs", "outcome", "failReason"]
 print("at (UTC)                  " + "  ".join(fields))
 for line in lines[-count:]:
     try:

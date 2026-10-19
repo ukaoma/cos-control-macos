@@ -172,6 +172,19 @@ struct DictationEveryoneChecks {
               && good.details["model"] as? String == "haiku" && good.details["elapsedMs"] as? Int == 2300, "polish answer", "a polished answer passes with its time")
         let fallback = PB.answer(status: 200, body: ["text": "um hi", "polished": false], model: "haiku", elapsedMs: 900, timedOut: false)
         check(fallback.ok && fallback.details["polished"] as? Bool == false, "polish answer", "the server's dictionary-only answer says polished false")
+        check(good.details["polishSkipped"] == nil && fallback.details["polishSkipped"] == nil, "polish skipped", "no polishSkipped from the server, none passed on")
+        // 0.5.328 (server 6.79.1): why the model did not polish, passed on only as one of five codes.
+        for code in ["daily_cap", "breaker_open", "too_long", "disabled", "failed"] {
+            let skipped = PB.answer(status: 200, body: ["text": "um hi", "polished": false, "polishSkipped": code], model: "haiku", elapsedMs: 4, timedOut: false)
+            check(skipped.ok && skipped.details["polishSkipped"] as? String == code && skipped.details["polished"] as? Bool == false, "polish skipped", "\(code) is passed on")
+        }
+        let fillers = PB.answer(status: 200, body: ["text": "So hi.", "polished": true, "polishSkipped": "daily_cap"], model: "sonnet", elapsedMs: 4, timedOut: false)
+        check(fillers.ok && fillers.details["polished"] as? Bool == true && fillers.details["polishSkipped"] as? String == "daily_cap",
+              "polish skipped", "polished true with a skip code (only the filler pass ran) keeps both")
+        for odd: Any in ["Daily Cap", "quota_exceeded", "daily_cap; rm", 1, true, ["daily_cap"]] {
+            let answer = PB.answer(status: 200, body: ["text": "um hi", "polished": false, "polishSkipped": odd], model: "haiku", elapsedMs: 4, timedOut: false)
+            check(answer.ok && answer.details["polishSkipped"] == nil, "polish skipped whitelist", "\(odd) is not one of the five codes and is dropped")
+        }
         for body: [String: Any]? in [nil, [:], ["text": "", "polished": true], ["text": "x"], ["text": "x", "polished": 1], ["text": "x", "polished": "true"],
                                      ["text": String(repeating: "a", count: 16_001), "polished": true], ["text": 4, "polished": true]] {
             let answer = PB.answer(status: 200, body: body, model: "haiku", elapsedMs: 1, timedOut: false)

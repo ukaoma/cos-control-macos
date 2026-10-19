@@ -26,12 +26,18 @@ struct COSControlApp: App {
         HotKeyCenter.shared.register(model.activityHotKey)
         model.dictation.bridge = { [weak model] audio in
             guard let model else { throw HelperClientError.commandFailed("COS Control is closing.") }
-            return try await model.runHelper(["mac-dictation"], timeout: 40, stdinData: audio)
+            // 0.5.328: the helper's refusal (no speech, an engine missing, the server busy) comes back with its details, so
+            // the dictation reads noSpeech, reason and action instead of a bare helper_failed:command_failed (Miles
+            // 2026-10-19 19:02:06: the server dropped a near-silent 4.1 s capture as empty; Control offered a Retry that
+            // re-sent the same audio).
+            return try await model.runHelper(["mac-dictation"], timeout: 40, stdinData: audio, answers: true)
         }
         // 0.5.325 AI polish: the heard text on stdin, never argv; the helper process gets the whole budget and no more.
         model.dictation.polishBridge = { [weak model] request, budget in
             guard let model else { throw HelperClientError.commandFailed("COS Control is closing.") }
-            return try await model.runHelper(["dictation-polish"], timeout: budget, stdinData: request)
+            // 0.5.328: the helper's refusal (timeout, unreachable, too_long, busy...) comes back with its reason, so the
+            // timing line names it instead of failed:helper. The heard text is pasted either way.
+            return try await model.runHelper(["dictation-polish"], timeout: budget, stdinData: request, answers: true)
         }
         model.dictation.petFrame = { [weak sessionPet] in sessionPet?.visibleFrame }
         // 0.5.317: a failure card's one action, and the server version a dictation succeeded on (the Voice row's proof).
@@ -128,7 +134,7 @@ struct COSControlApp: App {
         COSAppDelegate.onSettings = { model.showSettings?() }
         COSAppDelegate.recordingAvailable = { model.recordingCount > 0 && model.liveTranscriptEnabled }
         COSAppDelegate.onOpenRecording = { model.showRecordingTranscript() }
-        COSAppDelegate.onTerminate = { model.dictation.cancel(); model.meetingAsk.flushAll() }
+        COSAppDelegate.onTerminate = { model.dictation.cancel(); model.dictation.flushAudio(); model.meetingAsk.flushAll() }
         MacRecordingTermination.prepare = { await model.macRecording.prepareToQuit() }
         MacRecordingTermination.needsPrepare = { model.macRecording.needsQuitTeardown }
         model.recordingStatusChanged = { [weak model] _ in NSApp.dockTile.badgeLabel = model?.recordingDockBadge }

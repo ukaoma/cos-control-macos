@@ -1098,6 +1098,26 @@ final class FakeDictationBoard: DictationPasteboardAccess {
                    && P.choose(heard: heard, ok: false, text: "So it.", polished: true, reason: nil) == .failed("refused")
                    && P.choose(heard: heard, ok: false, text: "So it.", polished: true, reason: "Bad Reason; rm -rf") == .failed("refused"),
                    "polish: a refusal never applies its text, and only a short identifier reaches the log")
+            // 0.5.328 (server 6.79.1 polishSkipped): skipped, fillers only, and only the five codes.
+            expect(P.skipReasons == ["daily_cap", "breaker_open", "too_long", "disabled", "failed"], "polish: five skip codes")
+            for code in ["daily_cap", "breaker_open", "too_long", "disabled", "failed"] {
+                let skipped = P.choose(heard: heard, ok: true, text: heard, polished: false, reason: nil, skipped: code)
+                expect(skipped == .skipped(code) && skipped.logName == "skipped:" + code && skipped.text(heard: heard) == heard,
+                       "polish: polished false with \(code) is skipped:\(code) and pastes what was heard")
+            }
+            let fillers = P.choose(heard: heard, ok: true, text: "So the the plan is ready", polished: true, reason: nil, skipped: "daily_cap")
+            expect(fillers == .fillersOnly("daily_cap", text: "So the the plan is ready") && fillers.logName == "fillers_only:daily_cap"
+                   && fillers.text(heard: heard) == "So the the plan is ready",
+                   "polish: polished true with a skip code is fillers_only:<code>, and the filler-cleaned text is pasted")
+            expect(P.choose(heard: heard, ok: true, text: heard, polished: true, reason: nil, skipped: "disabled") == .skipped("disabled"),
+                   "polish: a filler pass that changed nothing is still skipped:<code>")
+            expect(P.choose(heard: heard, ok: true, text: String(repeating: "b", count: 81), polished: true, reason: nil, skipped: "daily_cap") == .failed("grew")
+                   && P.choose(heard: heard, ok: true, text: " ", polished: true, reason: nil, skipped: "daily_cap") == .failed("empty"),
+                   "polish: a filler-only answer is held to the same empty and growth guards")
+            expect(P.choose(heard: heard, ok: true, text: heard, polished: false, reason: nil, skipped: "quota; rm -rf") == .failed("not_polished")
+                   && P.choose(heard: heard, ok: true, text: "So the plan is ready.", polished: true, reason: nil, skipped: "Daily_Cap") == .applied("So the plan is ready.")
+                   && P.choose(heard: heard, ok: false, text: nil, polished: nil, reason: "busy", skipped: "daily_cap") == .failed("busy"),
+                   "polish: an unknown skip word is ignored, and a refusal stays a refusal")
             for outcome in [P.Outcome.unchanged, .timeout, .failed("unreachable")] {
                 expect(outcome.text(heard: heard) == heard, "polish: every outcome but applied pastes what was heard (\(outcome.logName))")
             }
@@ -1296,6 +1316,60 @@ final class FakeDictationBoard: DictationPasteboardAccess {
                    && Set(failedKeys.keys) == ["at", "releaseToClosedMs", "tailMs", "capturedSeconds", "outcome", "pressToTaskMs", "permissionMs", "failReason"],
                    "start: a start that failed writes its own line: the steps that ran, nothing captured, and why")
         }
-        print("PASS Mac dictation: \(count) policy checks; insert-target table, measured delivery, terminals, layout ⌘V, listening bars end to end, clipboard restore, sounds, pill placement, recent dictations file, card countdown, fix-a-word selection, quick fix, replace, span guess, quiet and restore, bounded audio, PCM16 WAV, device failure, any-key triggers, field context and its evidence, AI polish, release tail and timing, truthful start")
+        do {
+            // 0.5.328 smooth start (Miles 2026-10-19 on 0.5.327: "the animation stops as the new listening pill comes in").
+            let meter = DictationStallMeter(start: 10)
+            expect(meter.maxGapMs == nil, "smooth: no beat, no stall number")
+            expect(meter.tick(10.016) && meter.tick(10.032) && meter.maxGapMs == 16, "smooth: steady 16 ms beats read 16")
+            meter.tick(11.132)
+            expect(meter.maxGapMs == 1_100, "smooth: a main thread held 1.1 s reads 1,100 ms")
+            meter.tick(11.148)
+            expect(meter.maxGapMs == 1_100, "smooth: the longest gap is kept, not the latest")
+            let late = DictationStallMeter(start: 0)
+            expect(late.tick(0.75) && late.maxGapMs == 750, "smooth: the press to the first beat counts (a press that landed on a busy main thread)")
+            late.end(at: 1)
+            expect(late.tick(1.0) && !late.tick(2.5) && late.maxGapMs == 750, "smooth: beats past the end are not counted, and stop the timer")
+            expect(DictationStallMeter.tickMilliseconds == 16 && DictationStallMeter.afterListeningSeconds == 3,
+                   "smooth: a 16 ms beat, measured until three seconds after LISTENING")
+
+            // The audio queues: two, serial, and never the main thread; perform runs its work there and returns its value.
+            let inputKey = DispatchSpecificKey<String>(), outputKey = DispatchSpecificKey<String>()
+            DictationAudioQueues.input.setSpecific(key: inputKey, value: "input")
+            DictationAudioQueues.output.setSpecific(key: outputKey, value: "output")
+            expect(DictationAudioQueues.input !== DictationAudioQueues.output
+                   && DictationAudioQueues.input.label == "com.gotcos.control.dictation.input" && DictationAudioQueues.output.label == "com.gotcos.control.dictation.output",
+                   "smooth: microphones and sounds/quiet have their own queues")
+            final class Box: @unchecked Sendable { var value: String?; var onMain = true; var failed = false }
+            let box = Box()
+            let done = DispatchSemaphore(value: 0)
+            Task.detached {
+                box.value = try? await DictationAudioQueues.perform(on: DictationAudioQueues.input) { () -> String in
+                    box.onMain = Thread.isMainThread
+                    return DispatchQueue.getSpecific(key: inputKey) ?? "elsewhere"
+                }
+                do { _ = try await DictationAudioQueues.perform(on: DictationAudioQueues.output) { () throws -> Int in throw CancellationError() } }
+                catch { box.failed = error is CancellationError }
+                done.signal()
+            }
+            expect(done.wait(timeout: .now() + 5) == .success && box.value == "input" && !box.onMain,
+                   "smooth: perform runs its work on the queue it names, off the main thread, and returns the result")
+            expect(box.failed, "smooth: perform hands an error back to the caller")
+            let order = Box(); order.value = ""
+            for n in 0..<20 { DictationAudioQueues.output.async { order.value! += "\(n)," } }
+            DictationAudioQueues.output.sync {}
+            expect(order.value == (0..<20).map { "\($0)," }.joined(), "smooth: the output queue runs work in the order it was asked (a mute's end never overtakes its begin)")
+
+            // The new numbers ride on the timing line, numbers only.
+            var marks = DictationStartMarks(pressed: 0)
+            marks.mainThreadStallMs = 17; marks.quietBuildMs = 1_090; marks.quietStartMs = 64; marks.placementMs = 3; marks.soundMs = 120; marks.editWatchAtPress = true
+            var line = DictationTiming.startFailure(marks, at: Date(timeIntervalSince1970: 1_760_000_000))
+            let json = DictationTimingLog.line(line).flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] } ?? [:]
+            expect(json["mainThreadStallMs"] as? Int == 17 && json["quietBuildMs"] as? Int == 1_090 && json["quietStartMs"] as? Int == 64
+                   && json["placementMs"] as? Int == 3 && json["soundMs"] as? Int == 120 && json["editWatchAtPress"] as? Bool == true,
+                   "smooth: the line carries the stall, the mute's build and start, placement, the sound and an edit watch at the press")
+            line.include(nil)
+            expect(line.mainThreadStallMs == 17, "smooth: no marks leaves the line as it was")
+        }
+        print("PASS Mac dictation: \(count) policy checks; insert-target table, measured delivery, terminals, layout ⌘V, listening bars end to end, clipboard restore, sounds, pill placement, recent dictations file, card countdown, fix-a-word selection, quick fix, replace, span guess, quiet and restore, bounded audio, PCM16 WAV, device failure, any-key triggers, field context and its evidence, AI polish, release tail and timing, truthful start, smooth start")
     }
 }

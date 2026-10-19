@@ -221,8 +221,9 @@ need(save.index("guard retention.writesToDisk else {") < save.index("DictationHi
 need("pill = .transcribing" in body(dictation, "    private func closeMicrophone() {"), "release must show TRANSCRIBING")
 need("pill = .listening(since: Date())" in body(dictation, "    func start() {"), "the shortcut must show the listening pill")
 start_fn = body(dictation, "    func start() {")
-need("DictationPlacement.choose(petFrame: petFrame?(), focusedWindow: DictationFocusedWindow.frame()," in start_fn
-     and "if case .floating(let screen)? = placement { surface = .floating; floatingScreen = screen } else { surface = .pet; floatingScreen = nil }" in start_fn,
+# 0.5.328: the focused window is read off the main thread (Tests/dictation-smooth-pins.py); the rule is the same.
+need("let placement = DictationPlacement.choose(petFrame: petNow, focusedWindow: window, screens: screens, mainScreen: mainScreen)" in start_fn
+     and "if case .floating(let screen)? = placement { self.surface = .floating; self.floatingScreen = screen } else { self.surface = .pet; self.floatingScreen = nil }" in start_fn,
      "the pill goes on the pet only when the pet is on the focused screen; else on that screen (0.5.312)")
 need("playSound(.start)" in start_fn and "playSound(.stop)" in body(dictation, "    private func closeMicrophone() {")
      and start_fn.index("pill = .listening(since: Date())") < start_fn.index("playSound(.start)"), "start and stop sounds")
@@ -235,7 +236,8 @@ need('forKey: "dictation.sound.start") ?? "pet"' in dictation and 'forKey: "dict
 need("macRecording: macRecordingActive?() ?? false" in dictation and "model.dictation.macRecordingActive = { [weak model] in (model?.recordingCount ?? 0) > 0 }" in read("Sources/COSControlApp.swift"),
      "sounds and quiet know about any live COS recording (Mac or glasses)")
 need('forKey: "dictation.sound.pitch") as? Double ?? 0' in dictation and "Slider(value: $store.soundPitch, in: DictationSoundLibrary.pitchRange, step: 1)" in dictation
-     and "semitones: soundPitch" in dictation and "AVAudioUnitTimePitch()" in dictation and "pitch.pitch = Float(DictationSoundLibrary.cents(semitones))" in dictation
+     and "let player = soundPlayer, pitch = soundPitch" in dictation and "player.play(url, volume: volume, semitones: pitch)" in dictation
+     and "AVAudioUnitTimePitch()" in dictation and "pitch.pitch = Float(DictationSoundLibrary.cents(semitones))" in dictation
      and "static let pitchRange = -12.0...6.0" in core, "Pitch: -12 to +6 st, default 0, applied at playback to every sound")
 need("laptop speakers reproduce little of it" in dictation, "the caption says the saber is mostly bass")
 need('"high-pass' not in (root / "scripts/render-dictation-sounds.py").read_text() and '"highpass"' not in (root / "scripts/render-dictation-sounds.py").read_text().split("def unstable_v2(")[1].split("def master(")[0].split("# sparse spits")[0],
@@ -441,14 +443,15 @@ need(stop_fn.index("let pcm = try capture.stop()") < stop_fn.index("quiet.end()"
      "other apps come back after the microphone closes and before the stop sound")
 need(body(dictation, "    private func fail(").count("quiet.end()") == 1 and body(dictation, "    func cancel() {").count("quiet.end()") == 1,
      "every other way listening ends restores: fail and cancel")
-need("COSAppDelegate.onTerminate = { model.dictation.cancel();" in app and "Task { @MainActor in self?.interrupt() }" in dictation,
+need("COSAppDelegate.onTerminate = { model.dictation.cancel(); model.dictation.flushAudio();" in app and "Task { @MainActor in self?.interrupt() }" in dictation,
      "quit reaches cancel; sleep and a session switch reach interrupt, so they restore too")
 # interrupt restores on every branch: its cancel fallbacks (cancel restores) and the salvage, which restores itself.
 _int = body(dictation, "    func interrupt() {")
 need(_int.count("cancel(); message = nil; return") == 3 and _int.count("quiet.end()") == 1,
      "every interrupt branch that was listening gives other apps their sound back")
 need("quiet.restoreAfterInterruptedRun()" in dictation, "a volume lowered before a crash goes back at the next launch")
-quiet = body(dictation, "@MainActor final class DictationQuietController {")
+# 0.5.328: the controller lives on DictationAudioQueues.output (Tests/dictation-smooth-pins.py).
+quiet = body(dictation, "final class DictationQuietController: @unchecked Sendable {")
 begin = body(quiet, "    func begin(mode: DictationQuietMode, macRecording: Bool) {")
 need(begin.index("UserDefaults.standard.set(data, forKey: Self.pendingKey)") < begin.index("Self.setVolume(device, target)"),
      "the volume to put back is on disk before COS lowers it")
@@ -467,7 +470,7 @@ need(mute.count("AudioHardwareCreateProcessTap(description, &session.tap)") == 1
      and mute.count("AudioDeviceStart(session.aggregate, session.ioProc)") == 1, "each Core Audio step runs once, inside the tested build")
 need("kAudioAggregateDeviceIsPrivateKey: true" in mute and "kAudioAggregateDeviceTapAutoStartKey: false" in mute
      and "kAudioAggregateDeviceMainSubDeviceKey: outputUID" in mute and "kAudioAggregateDeviceTapListKey: [[kAudioSubTapUIDKey: tapUID" in mute,
-     "a private aggregate on the default output lists the tap; no auto-start (AudioDeviceStart would wait on the main actor)")
+     "a private aggregate on the default output lists the tap; no auto-start (AudioDeviceStart would wait for a tapped process)")
 _fail = body(mute, "        if let failure = result.failure {")
 need("let report = Self.tearDown(session)" in _fail and "return false" in _fail and "failure.step.rawValue" in _fail and "failure.status" in _fail,
      "a failed step tears down what exists, logs the step and its status, and falls back to lowering")
@@ -479,9 +482,9 @@ _order = ("mute = nil", "AudioObjectRemovePropertyListenerBlock(", "let report =
 need(all(m in end for m in _order) and end.index(_order[0]) < end.index(_order[1]) < end.index(_order[2]),
      "end forgets the session first (idempotent) and removes the output listener before tearing down")
 need("guard !DictationMuteTap.keepOnOutputChange(mutedOn: session.outputUID, now: now) else { return }" in quiet
-     and "nonisolated private static func outputListener(" in quiet and "MainActor.assumeIsolated { controller?.defaultOutputChanged() }" in quiet,
-     "a new default output ends the mute, through a listener built outside the actor")
-need("quietNote = quiet.fallbackNote" in start_fn and "let note = store.quietNote" in dictation,
+     and "nonisolated private static func outputListener(" in quiet and "dispatchPrecondition(condition: .onQueue(DictationAudioQueues.output))\n            controller?.defaultOutputChanged()" in quiet,
+     "a new default output ends the mute, through a listener built outside any actor, on the controller's own queue")
+need("self?.quietNote = note" in start_fn and "let note = controller.fallbackNote, times = controller.lastTimes" in dictation and "let note = store.quietNote" in dictation,
      "a mute that fell back says so in Settings' While dictating")
 need("description.muteBehavior = .muted" in quiet and "let own = Self.ownProcessObject()" in quiet and "stereoGlobalTapButExcludeProcesses: own)" in quiet
      and "description.isPrivate = true" in quiet, "the mute is a private global tap that excludes COS")
@@ -562,7 +565,7 @@ need('if learnMode == .off { editWatcher.stop("learning off") }' in dictation, "
 watcher = body(dictation, "@MainActor final class DictationEditWatcher {")
 need(watcher.count("DictationEditLearning.eligibility(mode: mode, secure: DictationInsertion.secure(element)") == 1
      and "if case .skip(let reason) = eligibility {" in watcher and "let learning = eligibility == .learn" in watcher
-     and "var candidate = learning ? Self.candidate(edit, outside: outside) : nil" in watcher,
+     and "var candidate = learning ? await MainActor.run { Self.candidate(edit, outside: outside) } : nil" in watcher,
      "the tested gate decides learn, probe or skip, and only .learn produces a candidate (Electron is probed only)")
 need("DictationEditLearning.stop(elapsed: Date().timeIntervalSince(started), reads: reads, appRunning: running,\n                                                        secure: DictationInsertion.secure(element)," in watcher,
      "every poll asks the tested stop rule, secure input and password fields included")
@@ -651,7 +654,7 @@ need('forKey: "dictation.fieldContext") as? Bool ?? true' in dictation
 need("editWatcher.start(target, mode: learnMode, context: context)" in finish, "the watch gets the read")
 need("let outside = DictationEditLearning.outside(window: current, start: start, length: l) + (context?.outside ?? [])" in watcher
      and "DictationEditLearning.undoesContextFix($0, fixes: context?.fixes ?? [])" in watcher
-     and "if reverted { candidate = nil }" in watcher and watcher.index("if reverted { candidate = nil }") < watcher.index("if let candidate { found(candidate) }")
+     and "if reverted { candidate = nil }" in watcher and watcher.index("if reverted { candidate = nil }") < watcher.index("if let candidate { await found(candidate) }")
      and "evidence=\\(candidate?.evidence != nil) revert=\\(reverted)" in watcher,
      "the window around the dictation and the read before it are evidence; putting back what was heard is never learned")
 need("}, outside: outside)" in body(dictation, "    private static func candidate(_ edit: DictationReplace.Edit, outside: [String]) -> DictationEditLearning.Candidate? {"),

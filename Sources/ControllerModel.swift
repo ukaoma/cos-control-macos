@@ -550,8 +550,8 @@ final class ControllerModel: ObservableObject {
             return try await self.runHelper(["mac-recording"], timeout: 90, stdinData: data)
         }
     }
-    func runHelper(_ arguments: [String], timeout: TimeInterval, stdinData: Data? = nil) async throws -> HelperResponse {
-        try await helper.run(arguments, timeout: timeout, stdinData: stdinData)
+    func runHelper(_ arguments: [String], timeout: TimeInterval, stdinData: Data? = nil, answers: Bool = false) async throws -> HelperResponse {
+        try await helper.run(arguments, timeout: timeout, stdinData: stdinData, answers: answers)
     }
     private let mediaFetchGate = MediaFetchGate()
     private var refreshTask: Task<Void, Never>?

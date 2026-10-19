@@ -8,8 +8,8 @@ trap 'rm -rf "$DIR"' EXIT
 /usr/bin/python3 - "$ROOT/Sources/MacDictation.swift" "$DIR/DictationSoundPlayer.swift" <<'PY'
 import sys
 src = open(sys.argv[1], encoding="utf-8").read()
-start = src.index("@MainActor final class DictationSoundPlayer {")
-assert src.count("@MainActor final class DictationSoundPlayer {") == 1
+start = src.index("final class DictationSoundPlayer: @unchecked Sendable {")
+assert src.count("final class DictationSoundPlayer: @unchecked Sendable {") == 1
 depth, i = 0, src.index("{", start)
 while True:
     c = src[i]
