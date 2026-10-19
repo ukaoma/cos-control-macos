@@ -90,6 +90,21 @@ struct DictationTiming: Codable, Equatable, Sendable {
     var polishOutcome: String? = nil
     /// typed, copied, no_speech, failed, canceled.
     var outcome: String
+    /// 0.5.327 truthful start (DictationStartMarks): the press to the microphone's first buffer, step by step, in ms.
+    /// Each is nil when that step did not run (a failed permission has no engine time).
+    var pressToTaskMs: Int? = nil
+    var quietMs: Int? = nil
+    var permissionMs: Int? = nil
+    var refreshMicsMs: Int? = nil
+    /// True when the press read the microphone list (a selected microphone its cached id could not vouch for).
+    var micListRead: Bool? = nil
+    /// True when a warmed engine (DictationSpare) opened the microphone, false when a fresh one did.
+    var warmEngine: Bool? = nil
+    var engineStartMs: Int? = nil
+    var pressToFirstBufferMs: Int? = nil
+    var pressToSoundMs: Int? = nil
+    /// A failed dictation's DictationFailReason code: which step failed, never what was said.
+    var failReason: String? = nil
     static let finalWindowMilliseconds = 250
     /// The release-side numbers from the captured PCM and the byte count at the release.
     static func measure(pcm: Data, releaseBytes: Int, tailMs: Int, releaseToClosedMs: Int, at: Date) -> DictationTiming {
@@ -133,15 +148,141 @@ enum DictationTimingLog {
     }
 }
 
+// MARK: - Truthful start (0.5.327)
+//
+// Miles, 2026-10-19: "when I click the dictation, the sound immediately happens, which makes me think it's starting to
+// record at that time. But if I look at the pet, it doesn't really start listening until like a second or so in." The
+// start sound and LISTENING came on the press; the microphone's first buffer came later, after the mute was built, the
+// microphone list read and a new engine opened (measured on his Mac: 0.3 to 0.9 s for the engine alone, about 3 s on a
+// cold start). Now the pill says STARTING until the first buffer arrives, and only then do LISTENING and the start sound
+// come, so both are true. The press no longer reads the microphone list or builds the mute before the microphone opens.
+
+enum DictationStart {
+    /// After the engine starts, how long COS waits for the microphone's first buffer before it says none came.
+    static let firstBufferTimeoutMs = 3_000
+    /// How often STARTING looks for the first buffer. The buffer's own time is exact; this is only the pill's lag.
+    static let pollMs = 5
+    enum Device: Equatable, Sendable { case systemDefault, device(AudioDeviceID), missing }
+    /// What STARTING ends in: the first audio (its systemUptime), the microphone failing or sending nothing in time, or a
+    /// newer press, cancel or release having replaced this dictation (which closed the microphone itself).
+    enum FirstAudio: Equatable, Sendable { case arrived(TimeInterval), failed, timedOut, superseded }
+    /// Which microphone to open. No selection: the system default, without reading the device list. A selection: its
+    /// cached id while the device behind that id still reports the UID (one property read); only otherwise is the list
+    /// read, once.
+    static func resolve(selectedUID: String, cached: [String: AudioDeviceID], uidOf: (AudioDeviceID) -> String?,
+                        enumerate: () -> [String: AudioDeviceID]) -> (device: Device, listRead: Bool) {
+        guard !selectedUID.isEmpty else { return (.systemDefault, false) }
+        if let id = cached[selectedUID], uidOf(id) == selectedUID { return (.device(id), false) }
+        if let id = enumerate()[selectedUID] { return (.device(id), true) }
+        return (.missing, true)
+    }
+}
+
+/// The press's timeline, kept until the dictation's timing line takes it (or a start failure writes its own line).
+struct DictationStartMarks: Equatable, Sendable {
+    /// systemUptime of the press.
+    let pressed: TimeInterval
+    var pressToTaskMs: Int?
+    var quietMs: Int?
+    var permissionMs: Int?
+    var refreshMicsMs: Int?
+    var micListRead: Bool?
+    var warmEngine: Bool?
+    var engineStartMs: Int?
+    var pressToFirstBufferMs: Int?
+    var pressToSoundMs: Int?
+    init(pressed: TimeInterval) { self.pressed = pressed }
+    /// Whole milliseconds from one uptime to another, never negative.
+    static func ms(_ from: TimeInterval, _ to: TimeInterval) -> Int { max(0, Int(((to - from) * 1000).rounded())) }
+    func since(_ now: TimeInterval) -> Int { Self.ms(pressed, now) }
+}
+
+extension DictationTiming {
+    mutating func include(_ start: DictationStartMarks?) {
+        guard let start else { return }
+        pressToTaskMs = start.pressToTaskMs; quietMs = start.quietMs; permissionMs = start.permissionMs
+        refreshMicsMs = start.refreshMicsMs; micListRead = start.micListRead; warmEngine = start.warmEngine
+        engineStartMs = start.engineStartMs; pressToFirstBufferMs = start.pressToFirstBufferMs; pressToSoundMs = start.pressToSoundMs
+    }
+    /// A dictation that failed before the microphone captured anything: the start's numbers and nothing captured.
+    static func startFailure(_ start: DictationStartMarks, at: Date) -> DictationTiming {
+        let f = ISO8601DateFormatter(); f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        var timing = DictationTiming(at: f.string(from: at), releaseToClosedMs: 0, tailMs: 0, capturedSeconds: 0,
+                                     finalDBFS: nil, tailDBFS: nil, engine: nil, transcribeMs: nil, polishMs: nil, outcome: "pending")
+        timing.include(start)
+        return timing
+    }
+}
+
+/// Which step a failed dictation failed at. A code, never words: it goes on the timing line (0.5.327: a 10.7 s
+/// dictation at 9:19 on 2026-10-19 failed with no engine and no transcription time, and nothing said why).
+enum DictationFailReason: String, Sendable, CaseIterable {
+    case microphoneDenied = "mic_denied"
+    case microphoneMissing = "mic_missing"
+    case engineStart = "engine_start"
+    case noFirstBuffer = "no_first_buffer"
+    case microphoneFailed = "mic_failed"
+    case tooShort = "too_short"
+    case notConnected = "not_connected"
+    case helperTimeout = "helper_timeout"
+    case helperFailed = "helper_failed"
+    case refused = "refused"
+    case noSpeech = "no_speech"
+    case engineSwitch = "engine_switch"
+    /// The code with a detail (the server's refusal reason, the helper error's kind) when the detail is itself a code:
+    /// lowercase letters, digits and _ only, at most 40 characters. Anything else is dropped, so no words can ride along.
+    func code(_ detail: String? = nil) -> String {
+        guard let detail, !detail.isEmpty, detail.count <= 40,
+              detail.unicodeScalars.allSatisfy({ ("a"..."z").contains($0) || ("0"..."9").contains($0) || $0 == "_" }) else { return rawValue }
+        return rawValue + ":" + detail
+    }
+}
+
+/// 0.5.327: an engine opened ahead of the press (AVAudioEngine and its input node built, never started), so the press
+/// only installs the tap and starts it. Measured on Miles's Mac: building the engine and its input node took 88 to
+/// 693 ms of the press-to-first-buffer time. The microphone is never running while a spare waits (the canary reads
+/// the process's own input-running flag). A spare is used only while nothing it was built against has changed.
+enum DictationSpare {
+    /// A spare older than this is not trusted; the press opens a fresh engine. Half an hour: the checks below are the
+    /// safety, the age only bounds what they cannot see. The first spare (built at launch) also takes the first-in-process
+    /// cost of loading the audio components (about 0.7 to 3 s measured), whether or not it is ever used.
+    static let maximumAgeSeconds: TimeInterval = 1_800
+    /// What the spare was built against: the device its input node opened, the selection, and that device's nominal rate.
+    struct Warmed: Equatable, Sendable {
+        let device: AudioDeviceID
+        let selectedUID: String
+        let sampleRate: Double
+        let at: TimeInterval
+    }
+    enum Verdict: Equatable, Sendable { case use, discard(String) }
+    /// At the press: `device` is the device this dictation would open now, `sampleRate` its nominal rate now. A changed
+    /// device, selection or rate means the spare's input format may be stale (a tap in a stale format is an exception
+    /// AVAudioEngine raises, not an error COS can catch), so it is discarded and a fresh engine opens.
+    static func check(_ warmed: Warmed, selectedUID: String, device: AudioDeviceID?, sampleRate: Double?, bluetooth: Bool, now: TimeInterval) -> Verdict {
+        if bluetooth { return .discard("bluetooth") }
+        if warmed.selectedUID != selectedUID { return .discard("selection") }
+        guard let device, device == warmed.device else { return .discard("device") }
+        guard let sampleRate, sampleRate > 0, sampleRate == warmed.sampleRate else { return .discard("rate") }
+        guard now >= warmed.at, now - warmed.at <= maximumAgeSeconds else { return .discard("age") }
+        return .use
+    }
+    /// Only with the microphone already allowed (building an input node is not a moment to ask) and never for a
+    /// Bluetooth input (opening a headset's input can switch it to its call profile; only a dictation may do that).
+    static func mayWarm(enabled: Bool, authorized: Bool, bluetooth: Bool) -> Bool { enabled && authorized && !bluetooth }
+}
+
 /// Serial microphone callback owns conversion; this lock protects its bounded result from Stop.
 final class DictationPCMBuffer: @unchecked Sendable {
     private let lock = NSLock()
     private var data = Data()
     private var failure: String?
     private var level: Double = 0
+    /// 0.5.327: systemUptime of the first audio appended: the moment the microphone truly started listening.
+    private var firstAudio: TimeInterval?
     func append(_ bytes: Data) {
         lock.lock(); defer { lock.unlock() }
         guard failure == nil else { return }
+        if firstAudio == nil, !bytes.isEmpty { firstAudio = ProcessInfo.processInfo.systemUptime }
         // A callback may straddle the deadline. Keep the completed clip, rather than
         // turning a valid two-minute recording into an unrecoverable overflow error.
         let remaining = MacDictationPolicy.maximumPCMBytes - data.count
@@ -168,6 +309,7 @@ final class DictationPCMBuffer: @unchecked Sendable {
     /// 0.5.326: how much is captured so far (the release mark the timing line splits on).
     func byteCount() -> Int { lock.lock(); defer { lock.unlock() }; return data.count }
     func failureMessage() -> String? { lock.lock(); defer { lock.unlock() }; return failure }
+    func firstAudioUptime() -> TimeInterval? { lock.lock(); defer { lock.unlock() }; return firstAudio }
     func currentLevel() -> Double { lock.lock(); defer { lock.unlock() }; return level }
 }
 
@@ -798,6 +940,8 @@ enum DictionaryLabels {
 /// What the listening pill shows. It replaces the pet's ledger row only while it is not hidden (Miles picked A).
 enum DictationPill: Equatable, Sendable {
     case hidden
+    /// 0.5.327: pressed, the microphone not yet delivering audio. LISTENING (and the start sound) wait for its first buffer.
+    case starting
     case listening(since: Date)
     case transcribing
     /// 0.5.325: Claude is polishing the heard text (AI polish), at most its budget.
@@ -809,6 +953,7 @@ enum DictationPill: Equatable, Sendable {
     var label: String {
         switch self {
         case .hidden: ""
+        case .starting: "STARTING"
         case .listening: "LISTENING"
         case .transcribing: "TRANSCRIBING"
         case .polishing: "POLISHING"

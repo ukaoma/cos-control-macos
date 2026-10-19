@@ -13,7 +13,7 @@ Lanes: core (ProviderStatusCore + DictationEveryoneChecks), store (run-transcrip
 (dictation-everyone-pins.py, no compile), release (the CLI and entitlements self-tests, no Swift), helper (the full
 helper, then the helper check scripts, 0.5.325's dictation-polish among them; one large compile per mutant, so few
 mutants use it), polishpins (0.5.325 dictation-polish-pins.py, no compile), tailpins (0.5.326 dictation-tail-pins.py, no
-compile).
+compile), startpins (0.5.327 dictation-start-pins.py, no compile).
 """
 import os, pathlib, shutil, subprocess, sys, tempfile
 
@@ -171,6 +171,30 @@ MUTANTS = [
     ("tail pins: a late buffer converts after the drain", MD, "        lock.lock(); defer { lock.unlock() }\n        guard !finished else { return }\n        let capacity",
      "        lock.lock(); defer { lock.unlock() }\n        let capacity", "drain lock", "tailpins"),
     ("tail pins: a failed dictation writes no timing", MD, '        recordTiming("failed")\n', "", "every outcome", "tailpins"),
+    # 0.5.327 truthful start wiring (Tests/dictation-start-pins.py, no compile).
+    ("start pins: the sound plays on the press", MD, "        pill = .starting\n", "        pill = .starting\n        playSound(.start)\n", "nothing on press", "startpins"),
+    ("start pins: LISTENING on the press", MD, "        pill = .starting\n", "        pill = .listening(since: Date())\n", "starting on press", "startpins"),
+    ("start pins: the mute before the microphone", MD, "        startMarks = DictationStartMarks(pressed: pressed)\n",
+     "        startMarks = DictationStartMarks(pressed: pressed)\n        quiet.begin(mode: quietMode, macRecording: false)\n", "nothing on press", "startpins"),
+    ("start pins: Listening before the first buffer", MD, "            switch await awaitFirstAudio(next, attempt: attempt) {",
+     '            phase = "Listening"\n            switch await awaitFirstAudio(next, attempt: attempt) {', "one way to listen", "startpins"),
+    ("start pins: the list read on every press", MD, "            let chosen = DictationStart.resolve(selectedUID: microphoneUID,",
+     "            refreshMicrophones()\n            let chosen = DictationStart.resolve(selectedUID: microphoneUID,", "no list on press", "startpins"),
+    ("start pins: a silent microphone left open", MD, "                capture = nil; _ = try? next.stop()\n", "                capture = nil\n", "mic closed on start failure", "startpins"),
+    ("start pins: the spare starts while it waits", MD, "        try select(deviceID)\n        _ = engine.inputNode",
+     "        try select(deviceID)\n        engine.prepare(); try engine.start()\n        _ = engine.inputNode", "spare never started", "startpins"),
+    ("start pins: a spare built while dictating", MD, "guard let self, !Task.isCancelled, self.capture == nil, !self.busy else { return }",
+     "guard let self, !Task.isCancelled else { return }", "spare only when idle", "startpins"),
+    ("start pins: a stale spare used", MD, 'if case .discard(let why) = verdict { dictationLog.notice("spare engine discarded: \\(why, privacy: .public)"); return nil }',
+     "_ = verdict", "spare taken once", "startpins"),
+    ("start pins: start numbers left off the line", MD, "                timing?.include(startMarks)\n", "", "timing fields", "startpins"),
+    ("start pins: the first-buffer time from the pill", MD, "startMarks?.pressToFirstBufferMs = DictationStartMarks.ms(pressed, at)",
+     "startMarks?.pressToFirstBufferMs = startMarks?.since(ProcessInfo.processInfo.systemUptime)", "timing fields", "startpins"),
+    ("start pins: a failure's code not written", MD, "        timing?.failReason = code\n", "", "fail reason", "startpins"),
+    ("start pins: a start failure writes no line", MD, "        if timing == nil, let marks = startMarks { timing = DictationTiming.startFailure(marks, at: Date()) }\n", "",
+     "fail reason", "startpins"),
+    ("start pins: STARTING shows level bars", MD, "                Text(pill.label)\n            case .listening(let since):",
+     "                liveBars\n                Text(pill.label)\n            case .listening(let since):", "starting pill", "startpins"),
 ]
 
 
@@ -189,6 +213,8 @@ def lane(copy, name):
         return subprocess.run(["python3", str(copy / "Tests/dictation-everyone-pins.py"), str(copy)], capture_output=True, text=True)
     if name == "tailpins":
         return subprocess.run(["python3", str(copy / "Tests/dictation-tail-pins.py"), str(copy)], capture_output=True, text=True)
+    if name == "startpins":
+        return subprocess.run(["python3", str(copy / "Tests/dictation-start-pins.py"), str(copy)], capture_output=True, text=True)
     if name == "polishpins":
         return subprocess.run(["python3", str(copy / "Tests/dictation-polish-pins.py"), str(copy)], capture_output=True, text=True)
     if name == "release":
