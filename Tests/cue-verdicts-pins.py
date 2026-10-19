@@ -161,17 +161,20 @@ check(suite.count('node "$ROOT/Tests/MemoriesCuesCanary.cjs"') == 1, "the full s
 release = read("scripts/build-release.sh")
 check(all(f'"$ROOT/Sources/{name}"' in release for name in sources), "every Sources file is in scripts/build-release.sh (no new file)")
 
-# ── The version.
+# ── The version. 0.5.327 introduced cue ratings; later releases keep its history entries intact.
 plist = read("Resources/Info.plist")
-check("<key>CFBundleShortVersionString</key>\n\t<string>0.5.327</string>" in plist, "Info.plist is 0.5.327")
+shipped = re.search(r"<key>CFBundleShortVersionString</key>\s*<string>0\.5\.(\d+)</string>", plist)
+check(shipped is not None and int(shipped.group(1)) >= 327, "Info.plist is 0.5.327 or later")
 whats = json.loads(read("Resources/WhatsNew.json"))
-check(whats["version"] == "0.5.327" and whats["whatsNew"]["sections"][0]["title"] == "0.5.327", "What's New leads with 0.5.327")
-check("rate" in whats["whatsNew"]["summary"].split(" Plus everything in 0.5.326")[0].lower(), "the summary names rating cues")
+section = next((s for s in whats["whatsNew"]["sections"] if s["title"] == "0.5.327"), None)
+check(section is not None, "What's New keeps its 0.5.327 section")
+summary327 = whats["whatsNew"]["summary"].split("Plus everything in 0.5.327: ", 1)[-1].split(" Plus everything in 0.5.326")[0]
+check("rate" in summary327.lower(), "the 0.5.327 summary names rating cues")
 changelog = read("CHANGELOG.md")
-check(changelog.startswith("## 0.5.327 (build "), "CHANGELOG leads with 0.5.327")
-entry = changelog.split("\n## 0.5.326", 1)[0]
+check("\n## 0.5.327 (build " in "\n" + changelog, "CHANGELOG keeps its 0.5.327 entry")
+entry = ("\n" + changelog).split("\n## 0.5.327 (build ", 1)[-1].split("\n## 0.5.326", 1)[0]
 check("6.79.0" in entry, "CHANGELOG 0.5.327 names server 6.79.0")
-for text in [entry] + whats["whatsNew"]["sections"][0]["items"] + [whats["whatsNew"]["summary"].split(" Plus everything in 0.5.326")[0]]:
+for text in [entry] + (section["items"] if section else []) + [summary327]:
     check("—" not in text and "→" not in text, "no em dash or arrow in the release words")
 
 print(f"cue verdicts pins: {passed} passed")
