@@ -47,7 +47,7 @@ if [[ "$LANE" == "all" || "$LANE" == "models" ]]; then
   OUT="$(env "${RUN_ENV[@]}" "$DIR/key-lanes-checks")" || { print -r -- "$OUT"; exit 1; }
   print -r -- "$OUT"
   COUNT="${${OUT##*checks: }%% passed*}"
-  (( COUNT >= 79 )) || { print -u2 "key lanes checks ran only $COUNT (expected at least 79)"; exit 1; }
+  (( COUNT >= 101 )) || { print -u2 "key lanes checks ran only $COUNT (expected at least 101)"; exit 1; }
 fi
 
 if [[ "$LANE" == "all" || "$LANE" == "core" ]]; then
@@ -56,7 +56,7 @@ if [[ "$LANE" == "all" || "$LANE" == "core" ]]; then
   OUT="$("$DIR/key-lanes-helper-core")" || { print -r -- "$OUT"; exit 1; }
   print -r -- "$OUT"
   COUNT="${${OUT##*checks: }%% passed*}"
-  (( COUNT >= 38 )) || { print -u2 "key lanes helper core checks ran only $COUNT (expected at least 38)"; exit 1; }
+  (( COUNT >= 46 )) || { print -u2 "key lanes helper core checks ran only $COUNT (expected at least 46)"; exit 1; }
 fi
 
 # QA G2: the shipping case, 6.80.0 with lanes off and no key, is the 6.79.0 panel plus exactly one Settings row. One full
