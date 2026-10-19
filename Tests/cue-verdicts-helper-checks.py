@@ -135,6 +135,29 @@ with tempfile.TemporaryDirectory(prefix='cos-cue-verdicts-', dir='/tmp') as tmp:
         state['status'] = 404; state['body'] = {'error': 'Unknown cue', 'reason': 'unknown_cue'}
         got = run('live-cues-rate', '--session', SESSION, '--cue', CUE, '--verdict', 'wrong')
         check(got['ok'] and got['details'] == {'transport': 'answered', 'httpStatus': 404, 'error': 'unknown_cue'}, '404 unknown_cue keeps its code')
+        # Every refusal the 6.79.0 route sends, by its reason, and its HTML 404 on an older server.
+        for status, body, code in ((400, {'error': 'sessionId, cueId and verdict required, without vote', 'reason': 'invalid_request'}, 'invalid_request'),
+                                   (409, {'error': 'this cue belongs to another meeting', 'reason': 'cue_session_mismatch'}, 'cue_session_mismatch'),
+                                   (503, {'error': 'the verdicts file is unreadable', 'reason': 'verdicts_unreadable'}, 'verdicts_unreadable')):
+            state['status'] = status; state['body'] = body
+            got = run('live-cues-rate', '--session', SESSION, '--cue', CUE, '--verdict', 'wrong')
+            check(got['ok'] and got['details'] == {'transport': 'answered', 'httpStatus': status, 'error': code}, f'{status} {code} crosses by its code only')
+        state['status'] = 404; state['body'] = None
+        got = run('live-cues-rate', '--session', SESSION, '--cue', CUE, '--verdict', 'wrong')
+        check(got['ok'] and got['details'] == {'transport': 'unsupported', 'httpStatus': 404}, 'a rate on a server without the route: unsupported')
+        state['status'] = 200; state['body'] = {'ok': True, 'cueId': CUE, 'verdict': 'late', 'vote': None}
+        got = run('live-cues-rate', '--session', SESSION, '--cue', CUE, '--verdict', 'late')
+        check(got['details'] == {'transport': 'answered', 'httpStatus': 200, 'ok': True, 'cueId': CUE, 'verdict': 'late'}, 'the 6.79.0 echo with vote null')
+        # The history with a meeting filter: each meeting's cues and cap cross, writerCalls and writerCap do not; a lens vote
+        # alone is a rating with a null verdict.
+        state['body'] = dict(history, cues=[dict(row, rating={'verdict': None, 'vote': 'up', 'at': 1791636100000})],
+                             meetings={SESSION: {'cues': 7, 'cap': 25, 'writerCalls': None, 'writerCap': 50}})
+        got = run('live-cues-history', '--session', SESSION)
+        check(got['details']['meetings'] == {SESSION: {'cues': 7, 'cap': 25}}, 'a meeting crosses as its cues and cap')
+        check(got['details']['cues'][0]['rating'] == {'vote': 'up', 'at': 1791636100000}, 'a lens vote alone crosses with no verdict')
+        state['status'] = 400; state['body'] = {'error': 'days 1..30', 'reason': 'invalid_request'}
+        got = run('live-cues-history')
+        check(got['details'] == {'transport': 'answered', 'httpStatus': 400, 'error': 'invalid_request'}, 'a refused read crosses by its code only')
         state['status'] = 401; state['body'] = {'error': 'unauthorized'}
         got = run('live-cues-rate', '--session', SESSION, '--cue', CUE, '--verdict', 'wrong')
         check(got['ok'] and got['details']['httpStatus'] == 401, '401 is an answer')

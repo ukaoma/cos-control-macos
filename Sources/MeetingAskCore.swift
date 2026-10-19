@@ -1349,10 +1349,11 @@ enum CueVerdicts {
         return "Glasses meeting"
     }
 
-    static func ratingsLine(_ counts: LiveCueCounts) -> String { "Rated in the last 7 days: \(counts.rated) of \(counts.total)." }
-    /// "10 of 25 used" with the server's own count and cap; just the count when the server named no cap.
+    static func ratingsLine(_ counts: LiveCueCounts) -> String { "Ratings in the last 7 days: \(counts.rated) of \(counts.total)." }
+    /// "10 of 25 used" with the server's own count and cap; "10 used" when the server named no cap (the cap is retuned
+    /// on the server, so it is never assumed here).
     static func usedLine(_ count: MeetingCount) -> String {
-        count.cap.map { "\(count.cues) of \($0) used" } ?? (count.cues == 1 ? "1 cue" : "\(count.cues) cues")
+        count.cap.map { "\(count.cues) of \($0) used" } ?? "\(count.cues) used"
     }
     static func leftLine(_ count: Int) -> String { count == 1 ? "1 left" : "\(count) left" }
     static func doneLine(_ counts: LiveCueCounts?) -> String {

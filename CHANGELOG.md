@@ -8,7 +8,7 @@ and down vote keeps working and is kept beside a verdict, never replaced by it.
   how many minutes into the meeting, the kind, the score, the cue, its sources ("none, from the room only" when it drew
   on nothing), what was said just before it (no box when the server has no excerpt), five verdicts (Useful, Late, Repeat, Wrong, Obvious), an optional note and
   Skip. Keys 1 to 5 rate, N goes to the note and S skips, only while the card has focus; Return or Escape in the note
-  gives the keys back. Skip moves a cue to the end and sends nothing. "Rated in the last 7 days: X of Y" under the views. The meeting is named
+  gives the keys back. Skip moves a cue to the end and sends nothing. "Ratings in the last 7 days: X of Y" under the views (a rolling 7 days, not a calendar week). The meeting is named
   by its saved title: the meeting this Mac's library holds for that glasses session, else the title the server resolved,
   else the generic "G2 Recording ..." name the cue was written under.
 - Memories, Rated cues: the last 7 days' rated cues, newest first, each with its verdict and note; pick another verdict to
@@ -16,7 +16,7 @@ and down vote keeps working and is kept beside a verdict, never replaced by it.
 - The two entries sit in the Memories page's own row, after To review, with the unrated count. They open a native view
   (its own route, so Back and a tab switch close it) whose rail goes back to To review or Recent learning.
 - Meetings: beside Live COS Ask (and Meeting Ask on a saved glasses recording), a Cues view: the meeting's cues, newest
-  first, "N of M used" with the server's own count and cap, each with the five verdicts inline; a rated cue shows its verdict and note, with Change. A tap
+  first, "N of M used" with the server's own count and cap ("N used" when it names no cap; nothing is assumed), each with the five verdicts inline; a rated cue shows its verdict and note, with Change. A tap
   on a cue shows what was said just before it. While the meeting runs the list reads again every 15 seconds, and only
   while Cues is showing; one failed read keeps the last good list, the second in a row says why, and a read that
   changes nothing redraws nothing. Hide Ask still hides the whole panel. A saved meeting shows the cues of each original glasses

@@ -175,9 +175,9 @@ import Foundation
               && CueVerdicts.ratedLine(nil) == nil, "the rated line")
         check(CueVerdicts.voteLine(LiveCueRating(vote: "down")) == "Voted down on the glasses" && CueVerdicts.voteLine(LiveCueRating(verdict: .useful)) == nil,
               "the lens vote line")
-        check(CueVerdicts.ratingsLine(LiveCueCounts(total: 31, rated: 3, unrated: 28)) == "Rated in the last 7 days: 3 of 31.", "the last 7 days' count line")
+        check(CueVerdicts.ratingsLine(LiveCueCounts(total: 31, rated: 3, unrated: 28)) == "Ratings in the last 7 days: 3 of 31.", "the last 7 days' count line")
         check(CueVerdicts.usedLine(.init(cues: 10, cap: 25)) == "10 of 25 used" && CueVerdicts.usedLine(.init(cues: 3, cap: 40)) == "3 of 40 used"
-              && CueVerdicts.usedLine(.init(cues: 3, cap: nil)) == "3 cues" && CueVerdicts.usedLine(.init(cues: 1, cap: nil)) == "1 cue",
+              && CueVerdicts.usedLine(.init(cues: 3, cap: nil)) == "3 used",
               "the meeting's count against the server's own cap, never an assumed one")
         check(CueVerdicts.leftLine(1) == "1 left" && CueVerdicts.leftLine(28) == "28 left", "left")
         check(CueVerdicts.doneLine(nil) == "No cues in the last 7 days." && CueVerdicts.doneLine(LiveCueCounts(total: 4, rated: 4, unrated: 0)) == "Every cue from the last 7 days is rated.",
