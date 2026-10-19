@@ -171,12 +171,12 @@ struct PetRotationChecks {
     }
 
     /// A strip of `frames` cells of `cell` px, each cell one flat colour: red channel = 40 * (first + index) + 20.
-    static func strip(frames: Int, cell: Int, first: Int = 0) -> Data {
-        let bmp = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: frames * cell, pixelsHigh: cell, bitsPerSample: 8,
+    static func strip(frames: Int, cell: Int, first: Int = 0, height: Int? = nil) -> Data {
+        let bmp = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: frames * cell, pixelsHigh: height ?? cell, bitsPerSample: 8,
                                    samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB,
                                    bytesPerRow: 0, bitsPerPixel: 0)!
         for x in 0..<(frames * cell) {
-            for y in 0..<cell {
+            for y in 0..<(height ?? cell) {
                 bmp.setColor(NSColor(deviceRed: CGFloat(40 * (first + x / cell) + 20) / 255, green: 0.2, blue: 0.3, alpha: 1), atX: x, y: y)
             }
         }
@@ -237,9 +237,14 @@ struct PetRotationChecks {
                 != PetSpriteStore.loadRotations(in: root, displayScale: 2)[.duel]?.fingerprint,
               "switching strip sets restarts the encounter state (new fingerprint)")
         // Every broken retina block falls back to the 1x strip; the pose never disappears.
-        try write("short.png", strip(frames: 2, cell: 6))
+        // Each bad segment breaks exactly one rule (a mutation run found the old 6x6 fixture broke two, so neither the height
+        // nor the cell-boundary rule was ever reached): short.png has 8 px cells but 6 px rows; narrow.png has 8 px rows and
+        // is 20 px wide, two whole cells and half of one, so only the cell-boundary rule refuses it.
+        try write("short.png", strip(frames: 2, cell: 8, first: 2, height: 6))
+        try write("narrow.png", strip(frames: 2, cell: 10, first: 2, height: 8))
         for (name, segs, scale) in [("segments out of order", ["two-s2.png", "two-s1.png"], 2), ("a missing segment", ["two-s1.png", "gone.png"], 2),
                                     ("one segment only", ["two-s1.png"], 2), ("a segment of the wrong height", ["two-s1.png", "short.png"], 2),
+                                    ("a segment not cut at the cell", ["two-s1.png", "narrow.png"], 2),
                                     ("an undefined scale", segments, 3), ("a path outside the folder", ["../two-s1.png", "two-s2.png"], 2)] {
             try map(retinaSegments: segs, scale: scale)
             let rows = PetSpriteStore.loadStateMap(in: root)
