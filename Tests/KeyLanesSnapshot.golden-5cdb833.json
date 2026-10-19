@@ -1,0 +1,1563 @@
+{
+  "golden": "G-control (plan v4 3.3)",
+  "normalizations": [],
+  "providerStatus": {
+    "fixtures": {
+      "all-signed-in": {
+        "providers": {
+          "claude": {
+            "probes": [
+              "/opt/homebrew/bin/claude --version",
+              "/opt/homebrew/bin/claude auth status --json"
+            ],
+            "status": {
+              "binaryPath": "/opt/homebrew/bin/claude",
+              "candidates": [
+                {
+                  "chosen": true,
+                  "executable": true,
+                  "path": "/opt/homebrew/bin/claude",
+                  "source": "absolute"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/usr/local/bin/claude",
+                  "source": "absolute"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/Users/fixture/.local/bin/claude",
+                  "source": "absolute"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/usr/bin/claude",
+                  "source": "path"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/bin/claude",
+                  "source": "path"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/Users/fixture/.volta/bin/claude",
+                  "source": "extra"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/Users/fixture/.asdf/shims/claude",
+                  "source": "extra"
+                }
+              ],
+              "detail": null,
+              "installed": true,
+              "provider": "claude",
+              "signIn": "signedIn",
+              "version": "2.1.293"
+            }
+          },
+          "codex": {
+            "probes": [
+              "/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex --version",
+              "/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex login status"
+            ],
+            "status": {
+              "binaryPath": "/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex",
+              "candidates": [
+                {
+                  "chosen": true,
+                  "executable": true,
+                  "path": "/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex",
+                  "source": "absolute"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/Applications/ChatGPT.app/Contents/Resources/codex",
+                  "source": "absolute"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/Users/fixture/.codex/bin/codex",
+                  "source": "absolute"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/opt/homebrew/bin/codex",
+                  "source": "absolute"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/usr/local/bin/codex",
+                  "source": "absolute"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/Users/fixture/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex",
+                  "source": "absolute"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/Users/fixture/Applications/ChatGPT.app/Contents/Resources/codex",
+                  "source": "absolute"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/usr/bin/codex",
+                  "source": "path"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/bin/codex",
+                  "source": "path"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/Users/fixture/.local/bin/codex",
+                  "source": "extra"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/Users/fixture/.volta/bin/codex",
+                  "source": "extra"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/Users/fixture/.asdf/shims/codex",
+                  "source": "extra"
+                }
+              ],
+              "detail": null,
+              "installed": true,
+              "provider": "codex",
+              "signIn": "signedIn",
+              "version": "0.163.0"
+            }
+          },
+          "cursor": {
+            "probes": [
+              "/Users/fixture/.local/bin/agent about"
+            ],
+            "status": {
+              "binaryPath": "/Users/fixture/.local/bin/agent",
+              "candidates": [
+                {
+                  "chosen": true,
+                  "executable": true,
+                  "path": "/Users/fixture/.local/bin/agent",
+                  "source": "absolute"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/Users/fixture/.local/bin/cursor-agent",
+                  "source": "absolute"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/opt/homebrew/bin/agent",
+                  "source": "path"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/usr/local/bin/agent",
+                  "source": "path"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/usr/bin/agent",
+                  "source": "path"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/bin/agent",
+                  "source": "path"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/opt/homebrew/bin/cursor-agent",
+                  "source": "path"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/usr/local/bin/cursor-agent",
+                  "source": "path"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/usr/bin/cursor-agent",
+                  "source": "path"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/bin/cursor-agent",
+                  "source": "path"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/Users/fixture/.volta/bin/agent",
+                  "source": "extra"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/Users/fixture/.asdf/shims/agent",
+                  "source": "extra"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/Users/fixture/.volta/bin/cursor-agent",
+                  "source": "extra"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/Users/fixture/.asdf/shims/cursor-agent",
+                  "source": "extra"
+                }
+              ],
+              "detail": null,
+              "installed": true,
+              "provider": "cursor",
+              "signIn": "signedIn",
+              "version": "2026.10.01-e373342"
+            }
+          },
+          "ollama": {
+            "probes": [
+              "/usr/local/bin/ollama --version",
+              "GET http://127.0.0.1:11434/api/tags"
+            ],
+            "status": {
+              "binaryPath": "/usr/local/bin/ollama",
+              "candidates": [
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/opt/homebrew/bin/ollama",
+                  "source": "absolute"
+                },
+                {
+                  "chosen": true,
+                  "executable": true,
+                  "path": "/usr/local/bin/ollama",
+                  "source": "absolute"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/Applications/Ollama.app/Contents/Resources/ollama",
+                  "source": "absolute"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/Users/fixture/Applications/Ollama.app/Contents/Resources/ollama",
+                  "source": "absolute"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/usr/bin/ollama",
+                  "source": "path"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/bin/ollama",
+                  "source": "path"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/Users/fixture/.local/bin/ollama",
+                  "source": "extra"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/Users/fixture/.volta/bin/ollama",
+                  "source": "extra"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/Users/fixture/.asdf/shims/ollama",
+                  "source": "extra"
+                }
+              ],
+              "daemon": "running",
+              "detail": null,
+              "host": "http://127.0.0.1:11434",
+              "installed": true,
+              "models": [
+                "qwen3:4b",
+                "llama3.2:3b"
+              ],
+              "provider": "ollama",
+              "signIn": "notNeeded",
+              "version": "0.40.0"
+            }
+          }
+        },
+        "setupProviderPresent": true
+      },
+      "claude-signed-out": {
+        "providers": {
+          "claude": {
+            "probes": [
+              "/opt/homebrew/bin/claude --version",
+              "/opt/homebrew/bin/claude auth status --json"
+            ],
+            "status": {
+              "binaryPath": "/opt/homebrew/bin/claude",
+              "candidates": [
+                {
+                  "chosen": true,
+                  "executable": true,
+                  "path": "/opt/homebrew/bin/claude",
+                  "source": "absolute"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/usr/local/bin/claude",
+                  "source": "absolute"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/Users/fixture/.local/bin/claude",
+                  "source": "absolute"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/usr/bin/claude",
+                  "source": "path"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/bin/claude",
+                  "source": "path"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/Users/fixture/.volta/bin/claude",
+                  "source": "extra"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/Users/fixture/.asdf/shims/claude",
+                  "source": "extra"
+                }
+              ],
+              "detail": null,
+              "installed": true,
+              "provider": "claude",
+              "signIn": "signInRequired",
+              "version": "2.1.293"
+            }
+          },
+          "codex": {
+            "probes": [],
+            "status": {
+              "binaryPath": null,
+              "candidates": [
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex",
+                  "source": "absolute"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/Applications/ChatGPT.app/Contents/Resources/codex",
+                  "source": "absolute"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/Users/fixture/.codex/bin/codex",
+                  "source": "absolute"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/opt/homebrew/bin/codex",
+                  "source": "absolute"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/usr/local/bin/codex",
+                  "source": "absolute"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/Users/fixture/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex",
+                  "source": "absolute"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/Users/fixture/Applications/ChatGPT.app/Contents/Resources/codex",
+                  "source": "absolute"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/usr/bin/codex",
+                  "source": "path"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/bin/codex",
+                  "source": "path"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/Users/fixture/.local/bin/codex",
+                  "source": "extra"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/Users/fixture/.volta/bin/codex",
+                  "source": "extra"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/Users/fixture/.asdf/shims/codex",
+                  "source": "extra"
+                }
+              ],
+              "detail": null,
+              "installed": false,
+              "provider": "codex",
+              "signIn": "unknown",
+              "version": null
+            }
+          },
+          "cursor": {
+            "probes": [],
+            "status": {
+              "binaryPath": null,
+              "candidates": [
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/Users/fixture/.local/bin/agent",
+                  "source": "absolute"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/Users/fixture/.local/bin/cursor-agent",
+                  "source": "absolute"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/opt/homebrew/bin/agent",
+                  "source": "path"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/usr/bin/agent",
+                  "source": "path"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/bin/agent",
+                  "source": "path"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/opt/homebrew/bin/cursor-agent",
+                  "source": "path"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/usr/bin/cursor-agent",
+                  "source": "path"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/bin/cursor-agent",
+                  "source": "path"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/usr/local/bin/agent",
+                  "source": "extra"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/Users/fixture/.volta/bin/agent",
+                  "source": "extra"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/Users/fixture/.asdf/shims/agent",
+                  "source": "extra"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/usr/local/bin/cursor-agent",
+                  "source": "extra"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/Users/fixture/.volta/bin/cursor-agent",
+                  "source": "extra"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/Users/fixture/.asdf/shims/cursor-agent",
+                  "source": "extra"
+                }
+              ],
+              "detail": null,
+              "installed": false,
+              "provider": "cursor",
+              "signIn": "unknown",
+              "version": null
+            }
+          },
+          "ollama": {
+            "probes": [
+              "GET http://127.0.0.1:11434/api/tags"
+            ],
+            "status": {
+              "binaryPath": null,
+              "candidates": [
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/opt/homebrew/bin/ollama",
+                  "source": "absolute"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/usr/local/bin/ollama",
+                  "source": "absolute"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/Applications/Ollama.app/Contents/Resources/ollama",
+                  "source": "absolute"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/Users/fixture/Applications/Ollama.app/Contents/Resources/ollama",
+                  "source": "absolute"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/usr/bin/ollama",
+                  "source": "path"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/bin/ollama",
+                  "source": "path"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/Users/fixture/.local/bin/ollama",
+                  "source": "extra"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/Users/fixture/.volta/bin/ollama",
+                  "source": "extra"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/Users/fixture/.asdf/shims/ollama",
+                  "source": "extra"
+                }
+              ],
+              "daemon": "down",
+              "detail": null,
+              "host": "http://127.0.0.1:11434",
+              "installed": false,
+              "models": [],
+              "provider": "ollama",
+              "signIn": "notNeeded",
+              "version": null
+            }
+          }
+        },
+        "setupProviderPresent": true
+      },
+      "env-overrides": {
+        "providers": {
+          "claude": {
+            "probes": [
+              "/opt/cos/bin/claude --version",
+              "/opt/cos/bin/claude auth status --json"
+            ],
+            "status": {
+              "binaryPath": "/opt/cos/bin/claude",
+              "candidates": [
+                {
+                  "chosen": true,
+                  "executable": true,
+                  "path": "/opt/cos/bin/claude",
+                  "source": "env"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/opt/homebrew/bin/claude",
+                  "source": "absolute"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/usr/local/bin/claude",
+                  "source": "absolute"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/Users/fixture/.local/bin/claude",
+                  "source": "absolute"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/usr/bin/claude",
+                  "source": "path"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/bin/claude",
+                  "source": "path"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/Users/fixture/.volta/bin/claude",
+                  "source": "extra"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/Users/fixture/.asdf/shims/claude",
+                  "source": "extra"
+                }
+              ],
+              "detail": null,
+              "installed": true,
+              "provider": "claude",
+              "signIn": "unknown",
+              "version": "2.1.293"
+            }
+          },
+          "codex": {
+            "probes": [
+              "/opt/cos/bin/codex --version",
+              "/opt/cos/bin/codex login status"
+            ],
+            "status": {
+              "binaryPath": "/opt/cos/bin/codex",
+              "candidates": [
+                {
+                  "chosen": true,
+                  "executable": true,
+                  "path": "/opt/cos/bin/codex",
+                  "source": "env"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex",
+                  "source": "absolute"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/Applications/ChatGPT.app/Contents/Resources/codex",
+                  "source": "absolute"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/Users/fixture/.codex/bin/codex",
+                  "source": "absolute"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/opt/homebrew/bin/codex",
+                  "source": "absolute"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/usr/local/bin/codex",
+                  "source": "absolute"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/Users/fixture/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex",
+                  "source": "absolute"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/Users/fixture/Applications/ChatGPT.app/Contents/Resources/codex",
+                  "source": "absolute"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/usr/bin/codex",
+                  "source": "path"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/bin/codex",
+                  "source": "path"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/Users/fixture/.local/bin/codex",
+                  "source": "extra"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/Users/fixture/.volta/bin/codex",
+                  "source": "extra"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/Users/fixture/.asdf/shims/codex",
+                  "source": "extra"
+                }
+              ],
+              "detail": null,
+              "installed": true,
+              "provider": "codex",
+              "signIn": "unknown",
+              "version": "0.163.0"
+            }
+          },
+          "cursor": {
+            "probes": [],
+            "status": {
+              "binaryPath": null,
+              "candidates": [
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/Users/fixture/.local/bin/agent",
+                  "source": "absolute"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/Users/fixture/.local/bin/cursor-agent",
+                  "source": "absolute"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/usr/bin/agent",
+                  "source": "path"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/bin/agent",
+                  "source": "path"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/usr/bin/cursor-agent",
+                  "source": "path"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/bin/cursor-agent",
+                  "source": "path"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/opt/homebrew/bin/agent",
+                  "source": "extra"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/usr/local/bin/agent",
+                  "source": "extra"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/Users/fixture/.volta/bin/agent",
+                  "source": "extra"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/Users/fixture/.asdf/shims/agent",
+                  "source": "extra"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/opt/homebrew/bin/cursor-agent",
+                  "source": "extra"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/usr/local/bin/cursor-agent",
+                  "source": "extra"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/Users/fixture/.volta/bin/cursor-agent",
+                  "source": "extra"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/Users/fixture/.asdf/shims/cursor-agent",
+                  "source": "extra"
+                }
+              ],
+              "detail": null,
+              "installed": false,
+              "provider": "cursor",
+              "signIn": "unknown",
+              "version": null
+            }
+          },
+          "ollama": {
+            "probes": [
+              "GET http://127.0.0.1:11434/api/tags"
+            ],
+            "status": {
+              "binaryPath": null,
+              "candidates": [
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/opt/homebrew/bin/ollama",
+                  "source": "absolute"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/usr/local/bin/ollama",
+                  "source": "absolute"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/Applications/Ollama.app/Contents/Resources/ollama",
+                  "source": "absolute"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/Users/fixture/Applications/Ollama.app/Contents/Resources/ollama",
+                  "source": "absolute"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/usr/bin/ollama",
+                  "source": "path"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/bin/ollama",
+                  "source": "path"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/Users/fixture/.local/bin/ollama",
+                  "source": "extra"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/Users/fixture/.volta/bin/ollama",
+                  "source": "extra"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/Users/fixture/.asdf/shims/ollama",
+                  "source": "extra"
+                }
+              ],
+              "daemon": "down",
+              "detail": null,
+              "host": "http://127.0.0.1:11434",
+              "installed": false,
+              "models": [],
+              "provider": "ollama",
+              "signIn": "notNeeded",
+              "version": null
+            }
+          }
+        },
+        "setupProviderPresent": true
+      },
+      "nothing-installed": {
+        "providers": {
+          "claude": {
+            "probes": [],
+            "status": {
+              "binaryPath": null,
+              "candidates": [
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/opt/homebrew/bin/claude",
+                  "source": "absolute"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/usr/local/bin/claude",
+                  "source": "absolute"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/Users/fixture/.local/bin/claude",
+                  "source": "absolute"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/usr/bin/claude",
+                  "source": "path"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/bin/claude",
+                  "source": "path"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/Users/fixture/.volta/bin/claude",
+                  "source": "extra"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/Users/fixture/.asdf/shims/claude",
+                  "source": "extra"
+                }
+              ],
+              "detail": null,
+              "installed": false,
+              "provider": "claude",
+              "signIn": "unknown",
+              "version": null
+            }
+          },
+          "codex": {
+            "probes": [],
+            "status": {
+              "binaryPath": null,
+              "candidates": [
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex",
+                  "source": "absolute"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/Applications/ChatGPT.app/Contents/Resources/codex",
+                  "source": "absolute"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/Users/fixture/.codex/bin/codex",
+                  "source": "absolute"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/opt/homebrew/bin/codex",
+                  "source": "absolute"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/usr/local/bin/codex",
+                  "source": "absolute"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/Users/fixture/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex",
+                  "source": "absolute"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/Users/fixture/Applications/ChatGPT.app/Contents/Resources/codex",
+                  "source": "absolute"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/usr/bin/codex",
+                  "source": "path"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/bin/codex",
+                  "source": "path"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/Users/fixture/.local/bin/codex",
+                  "source": "extra"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/Users/fixture/.volta/bin/codex",
+                  "source": "extra"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/Users/fixture/.asdf/shims/codex",
+                  "source": "extra"
+                }
+              ],
+              "detail": null,
+              "installed": false,
+              "provider": "codex",
+              "signIn": "unknown",
+              "version": null
+            }
+          },
+          "cursor": {
+            "probes": [],
+            "status": {
+              "binaryPath": null,
+              "candidates": [
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/Users/fixture/.local/bin/agent",
+                  "source": "absolute"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/Users/fixture/.local/bin/cursor-agent",
+                  "source": "absolute"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/usr/bin/agent",
+                  "source": "path"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/bin/agent",
+                  "source": "path"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/usr/bin/cursor-agent",
+                  "source": "path"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/bin/cursor-agent",
+                  "source": "path"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/opt/homebrew/bin/agent",
+                  "source": "extra"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/usr/local/bin/agent",
+                  "source": "extra"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/Users/fixture/.volta/bin/agent",
+                  "source": "extra"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/Users/fixture/.asdf/shims/agent",
+                  "source": "extra"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/opt/homebrew/bin/cursor-agent",
+                  "source": "extra"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/usr/local/bin/cursor-agent",
+                  "source": "extra"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/Users/fixture/.volta/bin/cursor-agent",
+                  "source": "extra"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/Users/fixture/.asdf/shims/cursor-agent",
+                  "source": "extra"
+                }
+              ],
+              "detail": null,
+              "installed": false,
+              "provider": "cursor",
+              "signIn": "unknown",
+              "version": null
+            }
+          },
+          "ollama": {
+            "probes": [
+              "GET http://127.0.0.1:11434/api/tags"
+            ],
+            "status": {
+              "binaryPath": null,
+              "candidates": [
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/opt/homebrew/bin/ollama",
+                  "source": "absolute"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/usr/local/bin/ollama",
+                  "source": "absolute"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/Applications/Ollama.app/Contents/Resources/ollama",
+                  "source": "absolute"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/Users/fixture/Applications/Ollama.app/Contents/Resources/ollama",
+                  "source": "absolute"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/usr/bin/ollama",
+                  "source": "path"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/bin/ollama",
+                  "source": "path"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/Users/fixture/.local/bin/ollama",
+                  "source": "extra"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/Users/fixture/.volta/bin/ollama",
+                  "source": "extra"
+                },
+                {
+                  "chosen": false,
+                  "executable": false,
+                  "path": "/Users/fixture/.asdf/shims/ollama",
+                  "source": "extra"
+                }
+              ],
+              "daemon": "down",
+              "detail": null,
+              "host": "http://127.0.0.1:11434",
+              "installed": false,
+              "models": [],
+              "provider": "ollama",
+              "signIn": "notNeeded",
+              "version": null
+            }
+          }
+        },
+        "setupProviderPresent": false
+      }
+    },
+    "providerTables": {
+      "claude": {
+        "absolutes": [
+          "/opt/homebrew/bin/claude",
+          "/usr/local/bin/claude",
+          "/Users/fixture/.local/bin/claude"
+        ],
+        "envKeys": [
+          "COS_ATTACHED_CLAUDE_BIN",
+          "COS_CLAUDE_BIN"
+        ],
+        "names": [
+          "claude"
+        ]
+      },
+      "codex": {
+        "absolutes": [
+          "/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex",
+          "/Applications/ChatGPT.app/Contents/Resources/codex",
+          "/Users/fixture/.codex/bin/codex",
+          "/opt/homebrew/bin/codex",
+          "/usr/local/bin/codex",
+          "/Users/fixture/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex",
+          "/Users/fixture/Applications/ChatGPT.app/Contents/Resources/codex"
+        ],
+        "envKeys": [
+          "COS_ATTACHED_CODEX_BIN",
+          "COS_CODEX_BIN"
+        ],
+        "names": [
+          "codex"
+        ]
+      },
+      "cursor": {
+        "absolutes": [
+          "/Users/fixture/.local/bin/agent",
+          "/Users/fixture/.local/bin/cursor-agent"
+        ],
+        "envKeys": [
+          "COS_ATTACHED_CURSOR_AGENT_BIN",
+          "COS_CURSOR_AGENT_BIN"
+        ],
+        "names": [
+          "agent",
+          "cursor-agent"
+        ]
+      },
+      "ollama": {
+        "absolutes": [
+          "/opt/homebrew/bin/ollama",
+          "/usr/local/bin/ollama",
+          "/Applications/Ollama.app/Contents/Resources/ollama",
+          "/Users/fixture/Applications/Ollama.app/Contents/Resources/ollama"
+        ],
+        "envKeys": [],
+        "names": [
+          "ollama"
+        ]
+      }
+    },
+    "schema": "key-lanes-control-status/1"
+  },
+  "render": {
+    "schema": "key-lanes-control-render/1",
+    "views": {
+      "activity-settings": {
+        "dark": {
+          "accessibility": [],
+          "pixelSha256": "4d566178c84dbdae3750c940730c30ea210074b35b0db54eaf751bf704a5f659",
+          "pixelsHigh": 2800,
+          "pixelsWide": 2000
+        },
+        "light": {
+          "accessibility": [],
+          "pixelSha256": "fbd4bcb367b8d807fa419a72e7275334f6e81a59793a06890ee0158113f99b0e",
+          "pixelsHigh": 2800,
+          "pixelsWide": 2000
+        }
+      },
+      "connect-all-missing": {
+        "dark": {
+          "accessibility": [],
+          "pixelSha256": "956a8dae64d489cb1da2d93656409674f8368a5998e687d4534d95629b0f4f73",
+          "pixelsHigh": 2600,
+          "pixelsWide": 1080
+        },
+        "light": {
+          "accessibility": [],
+          "pixelSha256": "c223d979243815f66cd01f353b53ae209416b92377d386c922bbf5c56b4198bd",
+          "pixelsHigh": 2600,
+          "pixelsWide": 1080
+        }
+      },
+      "connect-all-signed-in": {
+        "dark": {
+          "accessibility": [],
+          "pixelSha256": "77feb9ae04bbb7907331be966852f906d81b3e309c5840dc4fc5659a3a12934b",
+          "pixelsHigh": 2600,
+          "pixelsWide": 1080
+        },
+        "light": {
+          "accessibility": [],
+          "pixelSha256": "d261b534212be7900dbb85225a4de3f51175f980bb0e9434e18bc4eda4eb7367",
+          "pixelsHigh": 2600,
+          "pixelsWide": 1080
+        }
+      },
+      "panel-connect-ai-row": {
+        "dark": {
+          "accessibility": [],
+          "pixelSha256": "3dea0058895b9359c52b65aad66d7423a254c29f92a3c5c9fc1acf6dbc7cf553",
+          "pixelsHigh": 240,
+          "pixelsWide": 780
+        },
+        "light": {
+          "accessibility": [],
+          "pixelSha256": "a96eb4d13b5a7412aa9561b5cee2987c3cf6931ec13a1250750ea3884c1bc8bc",
+          "pixelsHigh": 240,
+          "pixelsWide": 780
+        }
+      },
+      "welcome-all-missing": {
+        "dark": {
+          "accessibility": [],
+          "pixelSha256": "827e828e3107d471a62dd89e5bf8ea6e0a805a866a6b4e63ac1d10c79108edeb",
+          "pixelsHigh": 2160,
+          "pixelsWide": 1080
+        },
+        "light": {
+          "accessibility": [],
+          "pixelSha256": "b917865b08ea37f73f8b4bc926c35e1149e3e43f74fba01a1f2ed86b5de6ace9",
+          "pixelsHigh": 2160,
+          "pixelsWide": 1080
+        }
+      },
+      "welcome-all-signed-in": {
+        "dark": {
+          "accessibility": [],
+          "pixelSha256": "8dd421a73f1f511a409f4c56022ba43ecf21fc37b73e87b8d6a7c26bbf9bebaf",
+          "pixelsHigh": 1800,
+          "pixelsWide": 1080
+        },
+        "light": {
+          "accessibility": [],
+          "pixelSha256": "291a8550798f87cff4db3eafebdc650dadb7df7817d4d2017b9050bbd430c4c8",
+          "pixelsHigh": 1800,
+          "pixelsWide": 1080
+        }
+      },
+      "work-start-sheet": {
+        "dark": {
+          "accessibility": [],
+          "pixelSha256": "7ae04e94cce4d6f838fd33e84b613cba5da08d1b56441b427fa30575ef77a9ad",
+          "pixelsHigh": 1280,
+          "pixelsWide": 1200
+        },
+        "light": {
+          "accessibility": [],
+          "pixelSha256": "695b9c8121e007cf028e055fce42323d92e0662ff010c222243132ed258526aa",
+          "pixelsHigh": 1280,
+          "pixelsWide": 1200
+        }
+      },
+      "work-workspace-claude": {
+        "dark": {
+          "accessibility": [],
+          "pixelSha256": "471f02b566e20961ca0f00c7018d4ab879223cac7ab9fafd454c44e20fa3f492",
+          "pixelsHigh": 1800,
+          "pixelsWide": 880
+        },
+        "light": {
+          "accessibility": [],
+          "pixelSha256": "6cae076e73495215cb3cd7e58fb02833d83dadbbe5d5ebba92c27328876221de",
+          "pixelsHigh": 1800,
+          "pixelsWide": 880
+        }
+      },
+      "work-workspace-codex": {
+        "dark": {
+          "accessibility": [],
+          "pixelSha256": "c3c42bd398fc112c3bd25cbcd56d297d937d335ee078e1c80d4837f04cddd803",
+          "pixelsHigh": 1800,
+          "pixelsWide": 880
+        },
+        "light": {
+          "accessibility": [],
+          "pixelSha256": "160c710ee491fbe89cf22452d7af40199727da2e47e77b7a55ad13424ea4b634",
+          "pixelsHigh": 1800,
+          "pixelsWide": 880
+        }
+      },
+      "work-workspace-ollama": {
+        "dark": {
+          "accessibility": [],
+          "pixelSha256": "81da158aee7188360c102e1b9fda01124c7648c9b1ea5d1cf179fcbaecb1044e",
+          "pixelsHigh": 1800,
+          "pixelsWide": 880
+        },
+        "light": {
+          "accessibility": [],
+          "pixelSha256": "f0bd1dc21763d972fcbf67d98ebb01ca9d01adb297d3c41cf871352cfc050408",
+          "pixelsHigh": 1800,
+          "pixelsWide": 880
+        }
+      }
+    },
+    "workModelCatalog": [
+      {
+        "available": true,
+        "id": "codex-frontier",
+        "provider": "codex",
+        "reason": null,
+        "title": "OpenAI / Codex · Frontier (sample)"
+      },
+      {
+        "available": true,
+        "id": "codex-balanced",
+        "provider": "codex",
+        "reason": null,
+        "title": "OpenAI / Codex · Balanced (sample)"
+      },
+      {
+        "available": true,
+        "id": "cursor-grok",
+        "provider": "cursor",
+        "reason": null,
+        "title": "Cursor · Grok (sample)"
+      },
+      {
+        "available": true,
+        "id": "cursor-composer",
+        "provider": "cursor",
+        "reason": null,
+        "title": "Cursor · Composer (sample)"
+      },
+      {
+        "available": true,
+        "id": "opus",
+        "provider": "claude",
+        "reason": null,
+        "title": "Claude · Opus (sample)"
+      },
+      {
+        "available": true,
+        "id": "sonnet",
+        "provider": "claude",
+        "reason": null,
+        "title": "Claude · Sonnet (sample)"
+      },
+      {
+        "available": true,
+        "id": "fable",
+        "provider": "claude",
+        "reason": null,
+        "title": "Claude · Fable (sample)"
+      },
+      {
+        "available": true,
+        "id": "ollama",
+        "provider": "ollama",
+        "reason": null,
+        "title": "Ollama · configured local model (sample)"
+      }
+    ]
+  },
+  "schema": "key-lanes-control-off/1",
+  "sourceSha": "5cdb833"
+}
