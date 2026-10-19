@@ -26,7 +26,11 @@ struct COSControlApp: App {
         HotKeyCenter.shared.register(model.activityHotKey)
         model.dictation.bridge = { [weak model] audio in
             guard let model else { throw HelperClientError.commandFailed("COS Control is closing.") }
-            return try await model.runHelper(["mac-dictation"], timeout: 40, stdinData: audio)
+            // 0.5.328: the helper's refusal (no speech, an engine missing, the server busy) comes back with its details, so
+            // the dictation reads noSpeech, reason and action instead of a bare helper_failed:command_failed (Miles
+            // 2026-10-19 19:02:06: the server dropped a near-silent 4.1 s capture as empty; Control offered a Retry that
+            // re-sent the same audio).
+            return try await model.runHelper(["mac-dictation"], timeout: 40, stdinData: audio, answers: true)
         }
         // 0.5.325 AI polish: the heard text on stdin, never argv; the helper process gets the whole budget and no more.
         model.dictation.polishBridge = { [weak model] request, budget in

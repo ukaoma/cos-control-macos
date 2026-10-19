@@ -39,6 +39,12 @@ final class ProgressCapture: @unchecked Sendable {
         if kind=='timeout':
             signal.signal(signal.SIGTERM, signal.SIG_IGN)
             time.sleep(10)
+        if kind=='refused':
+            print(json.dumps({'ok':False,'message':'No speech detected.','details':{'noSpeech':True,'action':'none'}}), flush=True)
+            sys.exit(0)
+        if kind=='crashed':
+            print(json.dumps({'ok':False,'message':'helper error','details':{'reason':'boom'}}), flush=True)
+            sys.exit(1)
         if kind=='stdin':
             data=sys.stdin.read()
             print(json.dumps({'ok':True,'message':str(len(data)),'details':{}}))
@@ -61,6 +67,25 @@ final class ProgressCapture: @unchecked Sendable {
         let input = Data(repeating: 97, count: 1024 * 1024)
         let echoed = try await client.run([child.path, "stdin"], timeout: 10, stdinData: input)
         precondition(echoed.message == String(input.count), "stdin incomplete")
+        // 0.5.328 (Miles 2026-10-19 19:02:06): mac-dictation's own refusal (exit 0, ok false) reached Control only as
+        // commandFailed(message), so its noSpeech, reason and action were lost and a near-silent capture read as a helper
+        // failure. With answers, the refusal comes back whole; without, it throws as before; a non-zero exit always throws.
+        do {
+            _ = try await client.run([child.path, "refused"], timeout: 5)
+            fatalError("transport: a refusal without answers must throw")
+        } catch HelperClientError.commandFailed(let message) { precondition(message == "No speech detected.", "transport: the refusal's message is kept") }
+        let refused: HelperResponse
+        do { refused = try await client.run([child.path, "refused"], timeout: 5, answers: true) }
+        catch { preconditionFailure("transport: with answers, a refusal comes back (it threw \(error))") }
+        precondition(!refused.ok && refused.details["noSpeech"]?.bool == true && refused.details["action"]?.string == "none",
+                     "transport: with answers, a refusal comes back with its details (noSpeech, action)")
+        do {
+            _ = try await client.run([child.path, "crashed"], timeout: 5, answers: true)
+            fatalError("transport: a helper that exited non-zero must throw even with answers")
+        } catch HelperClientError.commandFailed {}
+        precondition(HelperClient.returns(status: 0, ok: true, answers: false) && !HelperClient.returns(status: 0, ok: false, answers: false)
+                     && HelperClient.returns(status: 0, ok: false, answers: true) && !HelperClient.returns(status: 1, ok: true, answers: true)
+                     && !HelperClient.returns(status: 1, ok: false, answers: true), "transport: answers only ever relaxes a clean exit's refusal")
         let bounded = HelperClient(executableOverride: URL(fileURLWithPath: "/usr/bin/python3"), outputLimit: 1024)
         do {
             _ = try await bounded.run([child.path,"output","1025"], timeout: 5)
@@ -102,6 +127,6 @@ final class ProgressCapture: @unchecked Sendable {
         precondition(descriptorsAfter <= descriptorsBefore + 4,
                      "helper descriptors leaked: \(descriptorsBefore) -> \(descriptorsAfter)")
         print("helper resource checks: idle CPU \(idleCPU)s/1s; early-EOF CPU \(closedCPU)s; descriptors \(descriptorsBefore) -> \(descriptorsAfter)")
-        print("helper transport: large stdout/stderr, stdin, overflow, timeout, cancellation and resource cleanup passed")
+        print("helper transport: large stdout/stderr, stdin, refusals with and without answers, overflow, timeout, cancellation and resource cleanup passed")
     }
 }

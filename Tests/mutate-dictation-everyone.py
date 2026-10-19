@@ -221,6 +221,10 @@ MUTANTS = [
     ("smooth pins: the pet resizes for the pill", "Sources/SessionPet.swift", "        let dictation = model.dictation\n",
      "        let dictation = model.dictation\n        observers.append(dictation.$pill.sink { _ in })\n", "no resize", "smoothpins"),
     ("smooth pins: an unreviewed detached task", MD, "        spareTask = Task { [weak self] in", "        spareTask = Task.detached { [weak self] in", "census", "smoothpins"),
+    ("smooth pins: dictation refusals thrown as command_failed", APP, 'runHelper(["mac-dictation"], timeout: 40, stdinData: audio, answers: true)',
+     'runHelper(["mac-dictation"], timeout: 40, stdinData: audio)', "refusal reaches dictation", "smoothpins"),
+    ("smooth pins: runHelper drops answers", "Sources/ControllerModel.swift", "try await helper.run(arguments, timeout: timeout, stdinData: stdinData, answers: answers)",
+     "try await helper.run(arguments, timeout: timeout, stdinData: stdinData)", "refusal reaches dictation", "smoothpins"),
     ("start pins: STARTING shows level bars", MD, "                Text(pill.label)\n            case .listening(let since):",
      "                liveBars\n                Text(pill.label)\n            case .listening(let since):", "starting pill", "startpins"),
 ]

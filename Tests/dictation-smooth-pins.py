@@ -148,4 +148,16 @@ pin("let dictation = model.dictation" in pet and "private func dictationRouteCha
 resize = pet[pet.index("let dictation = model.dictation"):pet.index("private func dictationRouteChanged()")]
 pin("$pill" not in resize and "$phase" not in resize and "$surface" not in resize, "no resize",
     "the pet panel resizes for a card, a list or a note, never for the pill or the phase")
-print("PASS dictation smooth pins: mute, sounds and engines on their own queues, LISTENING never waits on them, placement and the edit watch off main, heartbeat on every path, callback census, no resize for the pill")
+# 9. 0.5.328 (Miles 2026-10-19 19:02:06, helper_failed:command_failed): the helper's refusal reaches the dictation whole.
+helper = code(read("Sources/HelperClient.swift"))
+model = code(read("Sources/ControllerModel.swift"))
+pin('return try await model.runHelper(["mac-dictation"], timeout: 40, stdinData: audio, answers: true)' in app
+    and "try await helper.run(arguments, timeout: timeout, stdinData: stdinData, answers: answers)" in model
+    and "guard Self.returns(status: process.terminationStatus, ok: response.ok, answers: answers) else {" in helper
+    and "nonisolated static func returns(status: Int32, ok: Bool, answers: Bool) -> Bool { status == 0 && (ok || answers) }" in helper,
+    "refusal reaches dictation", "mac-dictation asks for the helper's own refusal, so noSpeech, reason and action are read, not a bare command_failed")
+transcribe = body(store, "    private func transcribe(_ wav: Data, attempt: UUID) {")
+pin('let noSpeech = response.details["noSpeech"]?.bool == true' in transcribe
+    and "DictationFailReason.refused.code(reason)" in transcribe, "refusal reaches dictation",
+    "a refusal is named on the timing line by the server's own reason code (whitelisted by DictationFailReason.code)")
+print("PASS dictation smooth pins: mute, sounds and engines on their own queues, LISTENING never waits on them, placement and the edit watch off main, heartbeat on every path, callback census, no resize for the pill, helper refusals read whole")

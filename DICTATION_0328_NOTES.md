@@ -39,7 +39,28 @@ Miles, 2026-10-19 on 0.5.327: "the animation stops as the new listening pill com
   of the new off-main sites, no pet resize for the pill; 15 mutants killed). Existing pins updated where code moved
   (sound runtime check drives the player on its queue).
 
+### A dictation with no speech no longer reads as a helper failure
+
+Miles, 2026-10-19 19:02:06 UTC: a 4.1 s dictation failed with failReason helper_failed:command_failed.
+
+- Cause: the COS server dropped that capture as empty. The server log has two "/transcribe: DROPPED (hallucination or
+  empty): 0 chars" lines between his 50.2 s and 27.2 s dictations (matched by byte size), and the timing line shows
+  finalDBFS -74 and tailDBFS -75, so the end of the capture was silent. The press had waited 1,052 ms for the main thread
+  and 1,477 ms for the first buffer, so his first words were probably said before COS could hear. The helper answered
+  correctly (exit 0, ok false, noSpeech). But HelperClient.run, since the MVP, turns every ok-false answer into
+  commandFailed(message) and drops its details, so the dictation's refusal handling (noSpeech, the server's reason, the
+  card's action) never ran. Control showed a failure card with Retry, which re-sent the same silent audio; the second
+  DROPPED line fits that.
+- Now: the dictation bridge asks the helper client for refusals (`answers: true`). A refusal comes back with its
+  details: no speech is recorded as no_speech with no Retry, and any other refusal names the server's own reason code on
+  the timing line as refused:<reason> (codes only, whitelisted). A helper that exits non-zero still throws. Every other
+  helper caller is unchanged. AI polish has the same pattern and is left as it was.
+- Tests: the helper transport contract adds a refusal fixture (thrown without answers, returned whole with them) and a
+  non-zero exit (always thrown); 3 mutants of the guard each killed by a named check. Two pin mutants (the bridge, the
+  forwarding) are killed by Tests/dictation-smooth-pins.py.
+
 ## What's New sentence
 
 Your pet keeps moving while dictation starts: COS now sets up the microphone, the start sound and Mute other apps in
-the background, so the pet and the listening pill stay smooth from the moment you press.
+the background, so the pet and the listening pill stay smooth from the moment you press. A dictation that caught no
+speech now says so, instead of reporting an error and offering a Retry that cannot help.
