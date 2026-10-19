@@ -89,6 +89,9 @@ pin(conv.count("lock.lock(); defer { lock.unlock() }") == 2 and "guard !finished
 rec = body(d, "    private func recordTiming(_ outcome: String) {")
 logs = [l for l in rec.split("\n") if "dictationLog" in l]
 pin(len(logs) == 1 and not re.search(r"\\\((text|heard|said|pcm|wav|response)\b", logs[0]), "no text", "the timing log line carries numbers only")
+pin("timing?.polishMs = elapsed; timing?.polishModel = model.rawValue; timing?.polishOutcome = outcome.logName"
+    in body(d, "    private func polish(_ heard: String) async -> (outcome: DictationPolish.Outcome, model: DictationPolishModel)? {"),
+    "polish timing", "the timing line records the polish model, outcome word and milliseconds")
 pin("DictationTimingLog.append(finished, to: url)" in rec and "DictationTimingLog.fileName" in rec
     and "defaultHistoryURL()?.deletingLastPathComponent()" in rec, "file", "the JSONL lives beside the dictation history (a test home in checks)")
 pin('if case .refused = outcome { recordTiming("copied") } else { recordTiming("typed") }' in body(d, "    private func finish(")

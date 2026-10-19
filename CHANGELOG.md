@@ -16,13 +16,14 @@ the key about a second longer.
   interruption during the tail closes at once and copies, like any interruption.
 - A press during the tail (hold or Start / stop): the microphone is still open and nothing has been sent, so the same
   dictation carries on. It is never a second dictation, so no audio is lost and none is shared between two.
-- Timing, numbers only: one line per dictation in the log (subsystem com.gotcos.control, category dictation, public
-  numbers) and in ~/Library/Application Support/COS Control/dictation-timing.jsonl (private, 0600; past 256 KB it moves
-  to dictation-timing.jsonl.1, so at most two files). Fields: at, releaseToClosedMs, tailMs, capturedSeconds, finalDBFS
-  (the 250 ms before the release), tailDBFS (the tail), engine, transcribeMs, polishMs, outcome (typed, copied,
-  no_speech, failed). Never text or audio. The log lines were readable all along with
-  `log show --last 1h --predicate 'subsystem == "com.gotcos.control" AND category == "dictation"'`; the per-second
-  listening levels are debug and are not kept.
+- Timing, numbers only, in ~/Library/Application Support/COS Control/dictation-timing.jsonl: one JSON line per
+  dictation, private (0600), and past 256 KB the file moves to dictation-timing.jsonl.1, so at most two files. Fields:
+  at, releaseToClosedMs, tailMs, capturedSeconds, finalDBFS (the 250 ms before the release), tailDBFS (the tail),
+  engine, transcribeMs, polishModel, polishOutcome (applied, unchanged, timeout, failed:<reason>), polishMs, outcome
+  (typed, copied, no_speech, failed). Never text or audio. This file is the place to look: on Miles's Mac,
+  `log show --last 90m --predicate 'subsystem == "com.gotcos.control"'` returned no lines for about ten 0.5.325
+  dictations (2026-10-18), so the matching log line (category dictation) is a convenience, not the record. Why unified
+  logging dropped them was not diagnosed.
 - Canary against the real engine (Tests/dictation-tail-canary.py, run by hand with a local server): the pinned voice
   sample ends on "...for your country", whose last word ends at 10,180 ms. Through the helper's real dictation route to
   Parakeet Ultra: released at the end of the word without a tail, the capture (minus 120 ms in flight) heard "can do

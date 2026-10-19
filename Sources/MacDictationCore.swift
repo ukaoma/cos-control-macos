@@ -70,7 +70,9 @@ enum DictationReleaseTail {
 }
 
 /// One dictation's timing: numbers and identifiers only, never text or audio. One JSON line each in
-/// ~/Library/Application Support/COS Control/dictation-timing.jsonl, and the same numbers in the dictation log.
+/// ~/Library/Application Support/COS Control/dictation-timing.jsonl, the authoritative record: on Miles's Mac,
+/// `log show` returned no com.gotcos.control lines for 90 minutes of 0.5.325 dictations (2026-10-18), so the log line
+/// with the same numbers is a convenience only.
 struct DictationTiming: Codable, Equatable, Sendable {
     var at: String
     /// Key up (or toggle) to the microphone closed: the tail plus the close itself.
@@ -83,6 +85,9 @@ struct DictationTiming: Codable, Equatable, Sendable {
     var engine: String?
     var transcribeMs: Int?
     var polishMs: Int?
+    /// 0.5.326: AI polish, when it ran: the model (haiku or sonnet) and DictationPolish.Outcome.logName.
+    var polishModel: String? = nil
+    var polishOutcome: String? = nil
     /// typed, copied, no_speech, failed, canceled.
     var outcome: String
     static let finalWindowMilliseconds = 250

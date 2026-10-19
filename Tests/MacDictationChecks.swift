@@ -1177,6 +1177,15 @@ final class FakeDictationBoard: DictationPasteboardAccess {
             expect(line.hasSuffix("\n") && line.filter({ $0 == "\n" }).count == 1
                    && keys == ["at", "releaseToClosedMs", "tailMs", "capturedSeconds", "finalDBFS", "tailDBFS", "outcome"],
                    "tail: one JSON line, numbers and identifiers only (nil fields left out)")
+            // AI polish rides on the same line when it ran: the model and its outcome word, never the text.
+            var polishedTiming = timing
+            polishedTiming.engine = "parakeet-ultra"; polishedTiming.transcribeMs = 410; polishedTiming.polishMs = 2_930
+            polishedTiming.polishModel = "haiku"; polishedTiming.polishOutcome = DictationPolish.Outcome.applied("So the plan is ready.").logName
+            polishedTiming.outcome = "typed"
+            let polishedLine = DictationTimingLog.line(polishedTiming).flatMap { String(data: $0, encoding: .utf8) } ?? ""
+            let decoded = try? JSONDecoder().decode(DictationTiming.self, from: Data(polishedLine.utf8))
+            expect(decoded == polishedTiming && polishedLine.contains("\"polishModel\":\"haiku\"") && polishedLine.contains("\"polishOutcome\":\"applied\"")
+                   && !polishedLine.contains("plan is ready"), "tail: the line carries the polish model and outcome, never the text")
             let folder = FileManager.default.temporaryDirectory.appendingPathComponent("cos-timing-\(UUID().uuidString)")
             let url = folder.appendingPathComponent(DictationTimingLog.fileName)
             defer { try? FileManager.default.removeItem(at: folder) }

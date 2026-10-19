@@ -1843,7 +1843,7 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
             outcome = .failed(error is CancellationError ? "canceled" : "helper")
         }
         let elapsed = Int(Date().timeIntervalSince(started) * 1000)
-        timing?.polishMs = elapsed
+        timing?.polishMs = elapsed; timing?.polishModel = model.rawValue; timing?.polishOutcome = outcome.logName
         dictationLog.notice("polish model=\(model.rawValue, privacy: .public) outcome=\(outcome.logName, privacy: .public) ms=\(elapsed)")
         return (outcome, model)
     }
@@ -1885,7 +1885,7 @@ private let dictationHotKeyHandler: EventHandlerUPP = { _, event, _ in
         timing = nil
         if finished.outcome == "pending" { finished.outcome = outcome }
         func n(_ value: Double?) -> String { value.map { String(format: "%.1f", $0) } ?? "-" }
-        dictationLog.notice("timing release_to_closed_ms=\(finished.releaseToClosedMs) tail_ms=\(finished.tailMs) captured_s=\(n(finished.capturedSeconds), privacy: .public) final_dbfs=\(n(finished.finalDBFS), privacy: .public) tail_dbfs=\(n(finished.tailDBFS), privacy: .public) engine=\(finished.engine ?? "-", privacy: .public) transcribe_ms=\(finished.transcribeMs ?? -1) polish_ms=\(finished.polishMs ?? -1) outcome=\(finished.outcome, privacy: .public)")
+        dictationLog.notice("timing release_to_closed_ms=\(finished.releaseToClosedMs) tail_ms=\(finished.tailMs) captured_s=\(n(finished.capturedSeconds), privacy: .public) final_dbfs=\(n(finished.finalDBFS), privacy: .public) tail_dbfs=\(n(finished.tailDBFS), privacy: .public) engine=\(finished.engine ?? "-", privacy: .public) transcribe_ms=\(finished.transcribeMs ?? -1) polish_ms=\(finished.polishMs ?? -1) polish=\(finished.polishModel ?? "-", privacy: .public):\(finished.polishOutcome ?? "-", privacy: .public) outcome=\(finished.outcome, privacy: .public)")
         if let url = Self.defaultHistoryURL()?.deletingLastPathComponent().appendingPathComponent(DictationTimingLog.fileName) {
             DictationTimingLog.append(finished, to: url)
         }
