@@ -142,6 +142,11 @@ import SwiftUI
         let prefix = "session-pet-windu-v14-timing-v2-"
         func install(subfolder: Bool, tuned: Bool) throws {
             model.resetPetSprite()
+            // Start from an empty folder: removeAll clears the files a map names, not the cast layers an earlier
+            // character left (the Miles install above copied all of DefaultPet), and installDefault replaces those
+            // itself (Sources/Models.swift, removeItem before copyItem). This test copies by hand, so it clears first.
+            try? fm.removeItem(at: directory)
+            try fm.createDirectory(at: directory, withIntermediateDirectories: true)
             for file in Set(PetSpriteStore.loadStateMap(in: miles).values.map(\.file)) {
                 try fm.copyItem(at: miles.appendingPathComponent(file), to: directory.appendingPathComponent(file))
             }
