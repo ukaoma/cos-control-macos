@@ -103,6 +103,7 @@ struct ControlSetupView: View {
         }
         .font(COSType.body(15))
         .background(COSPalette.panel)
+        .background(KeyLanesInstallLatch(model: model))
         .cosControlTheme()
     }
 
@@ -147,6 +148,8 @@ struct ControlSetupView: View {
         case .ready:
             heading("Make yourself at home.", detail: "COS is ready on this Mac. Here are three places to start.", symbol: "checkmark.circle")
             firstSteps
+            // Key lanes (K1): the optional key step, new installs only (Sources/KeyLanesViews.swift).
+            KeyLanesSetupStep(model: model)
             PetIntroLine(model: model)
             Button("Finish setup") { guide.finishJourney() }.buttonStyle(COSPrimaryButtonStyle())
             Text("Your setup guide stays in the Dock menu, Help, the menu-bar panel and the pet's menu.")

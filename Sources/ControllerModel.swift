@@ -6915,6 +6915,7 @@ final class ControllerModel: ObservableObject {
     func sendChatMessage() {
         if chatEditingTurn != nil { replaceChatQueuedTurn(); return }
         guard let session = openClaudeRow, !chatSending, !chatPolling else { return }
+        if let line = KeyLanes.refusal(sessionID: session.sessionId) { chatRefusal = line; return }
         let prompt = chatDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !prompt.isEmpty else { return }
         guard prompt.count <= 32_000 else {
@@ -6983,6 +6984,7 @@ final class ControllerModel: ObservableObject {
     /// local child, so identical titles and pinned list order cannot misdirect it.
     func forkChatThread() {
         guard let session = openClaudeRow, !chatForking, !chatSending else { return }
+        if let line = KeyLanes.refusal(sessionID: session.sessionId) { chatRefusal = line; return }
         let prompt = chatForkPrompt
         guard !prompt.isEmpty else { return }
         guard prompt.count <= 32_000 else {

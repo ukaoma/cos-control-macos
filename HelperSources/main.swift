@@ -596,6 +596,7 @@ final class COSControlHelper {
         case "tailscale-whois": try emitTailscaleWhois(args: args)
         case "pairing-code": try emitPairingCall("/api/pairing/code", method: "POST", body: PairingCore.codeBody(allowLan: args.contains("--allow-lan")))
         case "pairing-status": try emitPairingCall("/api/pairing/status")
+        case "key-lanes": try emitKeyLanes(args: args)
         case "pairing-decision": try emitPairingDecision(args: args)
         case "self-test-whisper-runtime":
             guard let isolated = ProcessInfo.processInfo.environment["COS_CONTROL_TEST_HOME"], isolated.hasPrefix("/tmp/"),
@@ -5768,6 +5769,30 @@ final class COSControlHelper {
         let response = request(path, method: method, token: token, body: body, timeout: 5)
         let details = PairingCore.answer(status: response?.status, body: response?.body)
         emit(ok: true, message: (details["reason"] as? String).map { PairingCore.message($0) } ?? "Pairing answer ready", details: details)
+    }
+
+    /// Key lanes (K1 P10, plan v4 10.1, 12): one /api/key-lanes route over loopback with the token. The grammar, the
+    /// stdin bodies and the whitelist are KeyLanesHelperCore (HelperSources/ProviderStatusCore.swift). A key arrives only
+    /// on stdin, is sent only in the request body, and is never logged, emitted or put in a message.
+    private func emitKeyLanes(args: [String]) throws {
+        guard let plan = KeyLanesHelperCore.plan(Array(args.dropFirst())) else { throw HelperError.message(KeyLanesHelperCore.usage) }
+        var body = plan.body.map(KeyLanesHelperCore.fixedBody)
+        var secret: String?
+        if plan.stdin != .none {
+            guard let parsed = KeyLanesHelperCore.stdinBody(plan.stdin, try readBoundedStdin(KeyLanesHelperCore.stdinLimit)) else {
+                throw HelperError.message("key-lanes \(plan.action) takes one bounded JSON object on stdin.")
+            }
+            body = parsed.body; secret = parsed.secret
+        }
+        guard let token = try? readToken() else {
+            emit(ok: true, message: "No pairing token", details: ["transport": "no_token"]); return
+        }
+        let text = try body.map { String(decoding: try JSONSerialization.data(withJSONObject: $0, options: [.sortedKeys, .withoutEscapingSlashes]), as: UTF8.self) }
+        guard let response = request(plan.path, method: plan.method, token: token, body: text, timeout: plan.timeout) else {
+            emit(ok: true, message: "COS server unreachable", details: ["transport": "unavailable"]); return
+        }
+        emit(ok: true, message: "Key lanes answered (\(response.status))",
+             details: KeyLanesHelperCore.answer(plan.action, status: response.status, body: response.body, secret: secret))
     }
 
     private func emitPairingDecision(args: [String]) throws {

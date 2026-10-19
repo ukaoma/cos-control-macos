@@ -1939,6 +1939,8 @@ struct ControlPanel: View {
                 // so it is loaded from here, a view that is always drawn.
                 TranscriptionSettingsCard(store: model.transcriptionSettings, model: model)
                     .id("transcription")
+                // Key lanes (K1, server 6.80.0): drawn only for a server that can turn them on (Sources/KeyLanesViews.swift).
+                KeyLanesSettingsRow(model: model)
                 utilities
                 footer
             }

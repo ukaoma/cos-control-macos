@@ -1071,6 +1071,7 @@ struct WorkRecommendationKey: Equatable {
     func forkToPlatform(source: WorkSource, session: WorkSession, model: WorkModelChoice, prompt: String,
                         origin: WorkRequestOrigin? = nil, recovery: WorkIndependentRecovery? = nil) async {
         guard !busy else { return }
+        if let line = KeyLanes.refusal(sessionID: session.nativeID) { error = line; return }
         guard Self.exportableProviders.contains(session.provider) else {
             error = "This session has no readable transcript to carry over."; return
         }
@@ -1245,6 +1246,7 @@ struct WorkRecommendationKey: Equatable {
                 journalPrompt: String? = nil, origin: WorkRequestOrigin? = nil, replacing: String? = nil, resendAllFiles: Bool = false, orchestrationRunID: String? = nil, intentID suppliedID: String? = nil, recovery: WorkIndependentRecovery? = nil,
                 contextFileIDs: Set<String>? = nil, sessionFence: Bool = false) async {
         guard !busy else { return }
+        if mode != .newSession, let line = KeyLanes.refusal(sessionID: session?.nativeID) { error = line; return }
         // 0.5.252: one send at a time. A send for the glasses does not take `busy` (the Agent workspace stays usable).
         guard !quietSend else { if origin == nil { _ = refusedForGlassesSend() }; return }
         let quiet = origin != nil

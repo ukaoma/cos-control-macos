@@ -895,3 +895,241 @@ enum ParakeetCLIPath {
         return isExecutable(path)
     }
 }
+
+// ── Key lanes (K1, plan v4 10.1, 12; P10) ────────────────────────────────────────────────────────────────────────────
+// `cos-control-helper key-lanes <action>` talks to the server's /api/key-lanes/* over loopback with the token
+// (HelperSources/main.swift does the I/O). This part is pure and is what Tests/KeyLanesHelperChecks.swift drives: the
+// grammar (which action is which route), the stdin bodies, and the whitelist of what crosses back to the app. A pasted
+// key only ever arrives on stdin, never in argv or the environment (so `ps` never shows it), and nothing this returns
+// carries it: the server never sends a secret, and the answer is dropped whole if one ever appeared in it.
+enum KeyLanesHelperCore {
+    static let usage = "key-lanes takes status, enable, disable, save-key, set-cap --ref R --cap USD, remove-key --ref R [--force], remove-all [--export-ledger], catalog, save-profile, delete-profile --id ID"
+    /// The P1 grammars (server/lib/key-relay-contract.ts KEY_REF_RE, shared/key-preference.ts KEY_PROFILE_ID_RE).
+    static let refPattern = "\\Akey_[0-9a-f]{12}\\z"
+    static let profilePattern = "\\A[a-z0-9][a-z0-9-]{0,31}\\z"
+    /// P3 keyed-sessions.ts SESSION_ID_RE and MAX_KEYED_SESSIONS.
+    static let sessionPattern = "\\A[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\\z"
+    static let maxKeyedSessions = 20_000
+    static let kinds = ["openrouter", "anthropic", "openai", "openai-compatible"]
+    static let engines = ["claude", "codex", "direct"]
+    static let tiers = ["opus", "fable", "sonnet", "haiku"]
+    static let stdinLimit = 4_096
+
+    enum Stdin: Equatable { case none, key, profile }
+
+    struct Plan: Equatable {
+        let action: String
+        let method: String
+        let path: String
+        /// Fixed body (sorted-keys JSON is written by the caller), or nil.
+        let body: [String: String]?
+        let stdin: Stdin
+        let timeout: Int
+    }
+
+    static func matches(_ value: String, _ pattern: String) -> Bool {
+        value.range(of: pattern, options: .regularExpression) != nil
+    }
+
+    private static func option(_ name: String, _ args: [String]) -> String? {
+        guard let i = args.firstIndex(of: name), args.indices.contains(i + 1) else { return nil }
+        return args[i + 1]
+    }
+
+    /// `args` is what follows `key-lanes`. nil for anything outside the grammar, including any extra argument: an
+    /// action that takes stdin takes NOTHING else, so a key put in argv is refused before any request.
+    static func plan(_ args: [String]) -> Plan? {
+        guard let action = args.first else { return nil }
+        let rest = Array(args.dropFirst())
+        func p(_ method: String, _ path: String, _ body: [String: String]? = nil, _ stdin: Stdin = .none, _ timeout: Int = 10) -> Plan {
+            Plan(action: action, method: method, path: "/api/key-lanes" + path, body: body, stdin: stdin, timeout: timeout)
+        }
+        switch action {
+        case "status": return rest.isEmpty ? p("GET", "/status") : nil
+        case "enable": return rest.isEmpty ? p("POST", "/enable", [:]) : nil
+        case "disable": return rest.isEmpty ? p("POST", "/disable", [:]) : nil
+        case "catalog": return rest.isEmpty ? p("GET", "/catalog", nil, .none, 15) : nil
+        // The server checks a new key with its provider (10 s), so the wait is longer than that.
+        case "save-key": return rest.isEmpty ? p("POST", "/keys", nil, .key, 25) : nil
+        case "save-profile": return rest.isEmpty ? p("POST", "/profiles", nil, .profile) : nil
+        case "set-cap":
+            guard rest.count == 4, let ref = option("--ref", rest), matches(ref, refPattern),
+                  let cap = option("--cap", rest), let usd = capValue(cap) else { return nil }
+            return p("POST", "/keys", ["ref": ref, "capUsd": String(format: "%.2f", usd)])
+        case "remove-key":
+            guard rest.count == 2 || (rest.count == 3 && rest.last == "--force"),
+                  let ref = option("--ref", rest), matches(ref, refPattern) else { return nil }
+            return p("DELETE", "/keys/" + ref + (rest.count == 3 ? "?force=1" : ""))
+        case "remove-all":
+            guard rest.isEmpty || rest == ["--export-ledger"] else { return nil }
+            return p("POST", "/remove-all", ["exportLedger": rest.isEmpty ? "false" : "true"], .none, 20)
+        case "delete-profile":
+            guard rest.count == 2, let id = option("--id", rest), matches(id, profilePattern) else { return nil }
+            return p("DELETE", "/profiles/" + id)
+        default: return nil
+        }
+    }
+
+    /// A cap in dollars, cents only, within the server's $0.01 to $1000.
+    static func capValue(_ text: String) -> Double? {
+        guard matches(text, "\\A[0-9]{1,4}(\\.[0-9]{1,2})?\\z"), let value = Double(text), value >= 0.01, value <= 1000 else { return nil }
+        return value
+    }
+
+    /// The JSON the helper sends for a fixed body: numbers and booleans as JSON, not strings.
+    static func fixedBody(_ body: [String: String]) -> [String: Any] {
+        var out: [String: Any] = [:]
+        for (key, value) in body {
+            if key == "capUsd", let number = Double(value) { out[key] = number }
+            else if value == "true" || value == "false" { out[key] = value == "true" }
+            else { out[key] = value }
+        }
+        return out
+    }
+
+    /// The body from stdin and, for a key, the secret (so the answer can be checked for it). nil when the stdin is not
+    /// the one shape this action takes. Never echoes what it refused.
+    static func stdinBody(_ kind: Stdin, _ data: Data) -> (body: [String: Any], secret: String?)? {
+        guard data.count <= stdinLimit, let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        switch kind {
+        case .none: return nil
+        case .key:
+            guard Set(object.keys).isSubset(of: ["kind", "key", "capUsd", "baseUrl"]),
+                  let kindName = object["kind"] as? String, kinds.contains(kindName),
+                  let secret = object["key"] as? String, !secret.isEmpty, secret.utf8.count <= 512,
+                  secret.unicodeScalars.allSatisfy({ $0.value > 0x20 && $0.value < 0x7f }) else { return nil }
+            var body: [String: Any] = ["kind": kindName, "key": secret]
+            if let raw = object["capUsd"] {
+                guard let number = raw as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() else { return nil }
+                let usd = number.doubleValue
+                guard usd >= 0.01, usd <= 1000 else { return nil }
+                body["capUsd"] = (usd * 100).rounded() / 100
+            }
+            if let url = object["baseUrl"] {
+                guard kindName == "openai-compatible", let text = url as? String, text.utf8.count <= 300,
+                      text.hasPrefix("https://") || text.hasPrefix("http://") else { return nil }
+                body["baseUrl"] = text
+            } else if kindName == "openai-compatible" { return nil }
+            return (body, secret)
+        case .profile:
+            guard Set(object.keys).isSubset(of: ["id", "label", "keyRef", "engine", "model", "enabled", "timeoutTier"]),
+                  let id = object["id"] as? String, matches(id, profilePattern),
+                  let label = object["label"] as? String, !label.isEmpty, label.count <= 40,
+                  let ref = object["keyRef"] as? String, matches(ref, refPattern),
+                  let engine = object["engine"] as? String, engines.contains(engine),
+                  let model = object["model"] as? String, matches(model, "\\A[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}\\z"),
+                  let tier = object["timeoutTier"] as? String, tiers.contains(tier) else { return nil }
+            var body: [String: Any] = ["id": id, "label": label, "keyRef": ref, "engine": engine, "model": model, "timeoutTier": tier]
+            if let enabled = object["enabled"] {
+                guard let flag = enabled as? Bool else { return nil }
+                body["enabled"] = flag
+            }
+            return (body, nil)
+        }
+    }
+
+    /// `answered`, or `unsupported` for a 404 that is not JSON (lanes off on this server, or a server from before them:
+    /// both are today's Express 404 page).
+    static func transport(status: Int, body: [String: Any]?) -> String {
+        status == 404 && body == nil ? "unsupported" : "answered"
+    }
+
+    private static func number(_ value: Any?) -> Double? {
+        guard let n = value as? NSNumber, CFGetTypeID(n) != CFBooleanGetTypeID(), n.doubleValue.isFinite else { return nil }
+        return n.doubleValue
+    }
+    private static func bool(_ value: Any?) -> Bool? {
+        guard let n = value as? NSNumber, CFGetTypeID(n) == CFBooleanGetTypeID() else { return nil }
+        return n.boolValue
+    }
+    private static func text(_ value: Any?, max: Int, pattern: String? = nil) -> String? {
+        guard let s = value as? String, !s.isEmpty, s.count <= max else { return nil }
+        if let pattern, !matches(s, pattern) { return nil }
+        return s
+    }
+
+    /// A public key record: ref, kind, last 4, cap, and the day's spend and breaker on a status row. Nothing else.
+    static func keyRecord(_ raw: Any?) -> [String: Any]? {
+        guard let o = raw as? [String: Any], let ref = text(o["ref"], max: 16, pattern: refPattern),
+              let kind = o["kind"] as? String, kinds.contains(kind),
+              let last4 = o["last4"] as? String, last4.count == 4, let cap = number(o["capUsd"]) else { return nil }
+        var out: [String: Any] = ["ref": ref, "kind": kind, "last4": last4, "capUsd": cap]
+        if let spent = number(o["spentTodayUsd"]) { out["spentTodayUsd"] = spent }
+        if let b = o["breaker"] as? [String: Any] {
+            var breaker: [String: Any] = ["open": bool(b["open"]) ?? false, "failures": Int(number(b["failures"]) ?? 0)]
+            if let at = text(b["reopensAt"], max: 40, pattern: "\\A[0-9TZ:.+-]+\\z") { breaker["reopensAt"] = at }
+            out["breaker"] = breaker
+        }
+        return out
+    }
+
+    static func profileRecord(_ raw: Any?) -> [String: Any]? {
+        guard let o = raw as? [String: Any], let id = text(o["id"], max: 32, pattern: profilePattern),
+              let label = text(o["label"], max: 40), let ref = text(o["keyRef"], max: 16, pattern: refPattern),
+              let engine = o["engine"] as? String, engines.contains(engine),
+              let model = text(o["model"], max: 128), let enabled = bool(o["enabled"]) else { return nil }
+        var out: [String: Any] = ["id": id, "label": label, "keyRef": ref, "engine": engine, "model": model, "enabled": enabled]
+        if let tier = o["timeoutTier"] as? String, tiers.contains(tier) { out["timeoutTier"] = tier }
+        return out
+    }
+
+    /// What crosses to the app for one action. Every answer is `ok` with `transport` and `httpStatus`; a refusal's
+    /// `error` code and the server's `message` cross so the app can show the server's own words.
+    static func answer(_ action: String, status: Int, body: [String: Any]?, secret: String? = nil) -> [String: Any] {
+        var out: [String: Any] = ["transport": transport(status: status, body: body), "httpStatus": status]
+        guard let body else { return out }
+        if let code = text(body["error"], max: 64, pattern: "\\A[a-z_]+\\z") { out["error"] = code }
+        if let message = text(body["message"], max: 300) { out["message"] = message }
+        if status == 409, let ids = body["profiles"] as? [Any] {
+            out["profiles"] = ids.compactMap { text($0, max: 32, pattern: profilePattern) }
+        }
+        guard (200..<300).contains(status) else { return guarded(out, secret) }
+        for key in ["enabled", "active", "removed"] { if let flag = bool(body[key]) { out[key] = flag } }
+        switch action {
+        case "status":
+            out["keys"] = (body["keys"] as? [Any] ?? []).prefix(64).compactMap(keyRecord)
+            out["profiles"] = (body["profiles"] as? [Any] ?? []).prefix(64).compactMap(profileRecord)
+            out["keyedSessionIds"] = (body["keyedSessionIds"] as? [Any] ?? []).prefix(maxKeyedSessions)
+                .compactMap { text($0, max: 128, pattern: sessionPattern) }
+        case "disable":
+            if body["forcedOnBy"] as? String == "COS_KEY_LANES" { out["forcedOnBy"] = "COS_KEY_LANES" }
+        case "save-key", "set-cap":
+            if let key = keyRecord(body["key"]) { out["key"] = key }
+            if let credit = body["credit"] as? [String: Any] {
+                var c: [String: Any] = [:]
+                if let remaining = number(credit["remainingUsd"]) { c["remainingUsd"] = remaining }
+                if let free = bool(credit["freeTier"]) { c["freeTier"] = free }
+                out["credit"] = c
+            }
+        case "remove-key":
+            out["disabledProfiles"] = (body["disabledProfiles"] as? [Any] ?? []).compactMap { text($0, max: 32, pattern: profilePattern) }
+        case "remove-all":
+            if let removed = body["removed"] as? [Any] {
+                out["removed"] = removed.compactMap { ($0 as? String).flatMap { ["keys", "profiles", "codexHomes", "ledger"].contains($0) ? $0 : nil } }
+            }
+            if let path = text(body["ledgerExportedTo"], max: 1024), path.hasPrefix("/") { out["ledgerExportedTo"] = path }
+        case "catalog":
+            out["curated"] = (body["curated"] as? [Any] ?? []).prefix(8).compactMap { raw -> [String: Any]? in
+                guard let o = raw as? [String: Any], let id = text(o["id"], max: 128, pattern: "\\A[a-z0-9][a-z0-9._/-]{0,127}\\z"),
+                      let name = text(o["name"], max: 80), let inPer = number(o["inUsdPerM"]), let outPer = number(o["outUsdPerM"]) else { return nil }
+                var m: [String: Any] = ["id": id, "name": name, "inUsdPerM": inPer, "outUsdPerM": outPer]
+                if let role = o["role"] as? String, ["default", "cheaper"].contains(role) { m["role"] = role }
+                return m
+            }
+            if let from = body["pricesFrom"] as? String, ["openrouter", "built-in"].contains(from) { out["pricesFrom"] = from }
+        case "save-profile":
+            if let profile = profileRecord(body["profile"]) { out["profile"] = profile }
+        default: break
+        }
+        return guarded(out, secret)
+    }
+
+    /// Belt and braces: an answer that somehow contains the pasted key is replaced by a refusal that does not.
+    static func guarded(_ out: [String: Any], _ secret: String?) -> [String: Any] {
+        guard let secret, secret.count >= 8,
+              let data = try? JSONSerialization.data(withJSONObject: out, options: [.sortedKeys, .withoutEscapingSlashes]),
+              String(decoding: data, as: UTF8.self).contains(secret) else { return out }
+        return ["transport": out["transport"] ?? "answered", "httpStatus": out["httpStatus"] ?? 0, "error": "redacted",
+                "message": "COS dropped an answer that repeated the key."]
+    }
+}
