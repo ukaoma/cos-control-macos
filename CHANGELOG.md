@@ -31,6 +31,7 @@
 ### Dictation: a missed key release finishes normally
 
 - Dictation: if your Mac misses the moment you let go of the dictation key, COS now notices and finishes the dictation normally, typing the text instead of copying it. If the 🌐 key also has a job in macOS, COS tells you and opens Keyboard settings. A press while the last dictation is still finishing now says so. Dictation settings now live in Activity, Dictation, Settings.
+- Dictation no longer quits COS Control when you switch to a microphone with a different audio format, like the Studio Display Microphone.
 
 ## 0.5.328 (build 381), the pet keeps moving while dictation starts
 
