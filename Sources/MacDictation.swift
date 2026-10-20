@@ -2968,6 +2968,8 @@ private struct DictationShortcutRow: View {
     @State private var monitor: Any?
     @State private var note: String?
     @State private var pendingModifier: UInt16?
+    /// 0.5.329: reads the keyboard while a lone modifier is pending (watchPending).
+    @State private var recorderWatch: Task<Void, Never>?
     var body: some View {
         HStack {
             Text(slot.title).font(.caption)
@@ -2999,11 +3001,34 @@ private struct DictationShortcutRow: View {
         guard let info = DictationTrigger.modifierKeys[key] else { return }
         if raw & info.device != 0 {
             pendingModifier = DictationTrigger.alone(key, flags: raw) ? key : nil
-        } else if pendingModifier == key, let trigger = DictationTrigger.modifier(key) {
-            store.setShortcut(trigger, slot: slot, activity: activityShortcut); stop()
+            if pendingModifier == key { watchPending(key) }
+        } else if pendingModifier == key {
+            finishModifier(key)
         } else { pendingModifier = nil }
     }
-    private func stop() { if let monitor { NSEvent.removeMonitor(monitor) }; monitor = nil }
+    private func finishModifier(_ key: UInt16) {
+        guard let trigger = DictationTrigger.modifier(key) else { return }
+        store.setShortcut(trigger, slot: slot, activity: activityShortcut); stop()
+    }
+    /// 0.5.329 (Miles 2026-10-19): macOS can swallow Fn's release (TextInputSwitcher), so recording Fn by itself sat at
+    /// "Press shortcut…" for good. While a lone modifier is pending, read the keyboard's own state with the hold watch's
+    /// rule and cadence: two up reads after a down read finish the recording, as the release would have. A keyboard that
+    /// never showed the key down is never finished this way.
+    private func watchPending(_ key: UInt16) {
+        recorderWatch?.cancel()
+        recorderWatch = Task { @MainActor in
+            var reads = DictationHoldWatch.Reads()
+            while !Task.isCancelled, monitor != nil, pendingModifier == key,
+                  let down = DictationHoldWatch.modifierDown(flags: CGEventSource.flagsState(.hidSystemState).rawValue, keyCode: key) {
+                if reads.read(down: down) { finishModifier(key); break }
+                try? await Task.sleep(for: .milliseconds(DictationHoldWatch.pollMilliseconds))
+            }
+        }
+    }
+    private func stop() {
+        if let monitor { NSEvent.removeMonitor(monitor) }; monitor = nil
+        recorderWatch?.cancel(); recorderWatch = nil
+    }
 }
 
 extension DictationTrigger {

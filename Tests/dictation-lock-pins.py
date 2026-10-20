@@ -165,4 +165,13 @@ pin("+ [.dictation]" in window and "static var allCases: [ActivitySection] { vis
 pin("ForEach(ActivitySection.allCases) { item in\n                        activityChip(item)" in views and "openActivity(item)" in body(views, "    private func activityChip(_ item: ActivitySection) -> some View {"),
     "dictation chip", "every chip, Dictation's included, opens its own tab")
 pin("case .dictation: DictationActivityPane(model: model)" in window, "dictation chip", "the Dictation tab renders the Dictation pane")
-print("PASS dictation lock pins: refused, canceled, chord and reconciled presses written; the keyboard watched while held; STILL FINISHING; settings in the Dictation tab")
+# G. 0.5.329: the shortcut recorder finishes a lone modifier from the keyboard's state when its release never arrives.
+rec = body(d, "private struct DictationShortcutRow: View {")
+wp = body(rec, "    private func watchPending(_ key: UInt16) {")
+pin("if pendingModifier == key { watchPending(key) }" in rec and "var reads = DictationHoldWatch.Reads()" in wp
+    and "DictationHoldWatch.modifierDown(flags: CGEventSource.flagsState(.hidSystemState).rawValue, keyCode: key)" in wp
+    and "if reads.read(down: down) { finishModifier(key); break }" in wp and "monitor != nil, pendingModifier == key," in wp
+    and "try? await Task.sleep(for: .milliseconds(DictationHoldWatch.pollMilliseconds))" in wp
+    and "recorderWatch?.cancel(); recorderWatch = nil" in body(rec, "    private func stop() {"), "recorder release",
+    "a pending lone modifier is finished by the hold watch's rule on the keyboard state, and the watch stops with the recorder")
+print("PASS dictation lock pins: refused, canceled, chord and reconciled presses written; the keyboard watched while held; STILL FINISHING; settings in the Dictation tab; the recorder finishes a swallowed release")
