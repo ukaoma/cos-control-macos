@@ -86,4 +86,43 @@ pin(set(b) == {"haiku", "sonnet"} and set(d) == set(b) and all(abs(float(d[m]) -
     "deadline inside budget", f"helper deadline must be Control's budget less 0.5 s: budget {b}, deadline {d}")
 pin(re.search(r"static let maximumCharacters = 8_000", dcore) and re.search(r"static let maximumCharacters = 8_000", pcore), "limit", "both halves use the server's 8,000")
 
-print("PASS dictation polish pins: before the paste, current after the await, bounded, never a failure, no text logged, record and setting, budget agrees")
+# 6. 0.5.329 (server 6.79.2): AI polish's process started at the key press. Fire and forget, off the main actor; the
+# token rides on the polish; every way a dictation ends without using it discards it; the timing line says what happened.
+model = code(read("Sources/ControllerModel.swift"))
+start = between(dictation, "    func start() {", "    func stop() { stop(ending: .released) }")
+pin("generation = UUID(); let attempt = generation\n        startPrewarm(attempt)" in start and "task = Task {" in start
+    and start.index("startPrewarm(attempt)") < start.index("task = Task {"),
+    "prewarm at press", "the press starts the early polish right after its generation, before the microphone task")
+warm = between(dictation, "    private func startPrewarm(_ attempt: UUID) {", "    private func takePrewarm(")
+_needles = ["DictationPolishPrewarm.shouldStart(model: model,", "let bridge = prewarmBridge", "Task.detached(priority: .utility) {"]
+pin(all(n in warm for n in _needles) and [warm.index(n) for n in _needles] == sorted(warm.index(n) for n in _needles)
+    and "await" not in warm.split("Task.detached(priority: .utility) {")[0], "prewarm off main",
+    "only with AI polish on, and the helper is called from a detached task, never awaited at the press")
+pin("var prewarmBridge: (@Sendable (Data) async throws -> HelperResponse)?" in dictation
+    and 'model.dictation.prewarmBridge = model.detachedHelper("dictation-polish-prewarm", timeout: DictationPolishPrewarm.helperTimeout)' in app
+    and "return { input in try await helper.run([verb], timeout: timeout, stdinData: input, answers: true) }" in model, "prewarm off main",
+    "the bridge is Sendable and runs on the helper actor, never the main actor")
+pin(helper.count('case "dictation-polish-prewarm": try emitDictationPolishPrewarm()') == 1, "helper verb", "the helper dispatches dictation-polish-prewarm")
+pemit = between(helper, "private func emitDictationPolishPrewarm() throws {", "private func emitDictationCheck() throws {")
+pin("readToken()" in pemit and "speakerReviewToken" not in pemit and "deadlineUptime: deadline" in pemit and '"/api/' not in pemit
+    and 'method: "DELETE"' in pemit, "prewarm helper", "the token file alone, a deadline, the fixed route, DELETE to discard")
+take = between(dictation, "    private func takePrewarm(_ model: DictationPolishModel) async -> String? {", "    private func discardPrewarm() {")
+pin("guard held.attempt == generation, held.model == model else { Self.discardWhenReady(held.task, held.box, prewarmBridge); return nil }" in take
+    and "waited < DictationPolishPrewarm.waitMilliseconds" in take and take.count("Self.discardWhenReady(") == 2, "prewarm token",
+    "the polish takes only this press's token for this model, waits at most 150 ms, and discards one it cannot use")
+pin("let warm = await takePrewarm(model)" in step and "prewarmToken: warm) else { return nil }" in step and "try await polishBridge(request, budget)" in step
+    and step.index("let warm = await takePrewarm(model)") < step.index("try await polishBridge(request, budget)"), "prewarm token",
+    "the token rides on the polish request")
+pin('timing?.polishPrewarm = DictationPolishPrewarm.outcome(sentToken: warm != nil, answer: response.details["prewarm"]?.string)' in step
+    and "timing?.polishPrewarm = DictationPolishPrewarm.outcome(sentToken: warm != nil, answer: nil)" in step, "prewarm timing",
+    "the timing line says used, missed, discarded or none")
+pin("let polishBridge else {\n            discardPrewarm(); return nil\n        }" in step, "prewarm discard", "polish off or nothing to polish discards the token")
+for fn in ("    func cancel() {", "    private func fail("):
+    pin("discardPrewarm()" in between(dictation, fn, "\n    }\n"), "prewarm discard", f"{fn.strip()} discards the token")
+pin("    private func finish(" not in dictation or "discardPrewarm()" not in between(dictation, "    private func finish(", "\n    }\n"), "prewarm discard",
+    "finish() never discards: a new press may already hold its own token while the last dictation is delivered")
+disc = between(dictation, "    private nonisolated static func discardWhenReady(", "\n    }\n")
+pin("Task.detached(priority: .utility) {" in disc and "await task.value" in disc and "DictationPolishPrewarm.discardRequest(token: token)" in disc,
+    "prewarm discard", "a discard waits for its start off the main actor, then deletes that token")
+
+print("PASS dictation polish pins: before the paste, current after the await, bounded, never a failure, no text logged, record and setting, budget agrees, early polish at the press")

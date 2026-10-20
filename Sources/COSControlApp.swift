@@ -39,6 +39,8 @@ struct COSControlApp: App {
             // timing line names it instead of failed:helper. The heard text is pasted either way.
             return try await model.runHelper(["dictation-polish"], timeout: budget, stdinData: request, answers: true)
         }
+        // 0.5.329: AI polish's process started at the key press (server 6.79.2); called only from detached tasks.
+        model.dictation.prewarmBridge = model.detachedHelper("dictation-polish-prewarm", timeout: DictationPolishPrewarm.helperTimeout)
         model.dictation.petFrame = { [weak sessionPet] in sessionPet?.visibleFrame }
         // 0.5.317: a failure card's one action, and the server version a dictation succeeded on (the Voice row's proof).
         model.dictation.installParakeet = { [weak model] in model?.installParakeet() }

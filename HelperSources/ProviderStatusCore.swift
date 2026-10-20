@@ -712,7 +712,9 @@ enum DictationPolishBridge {
     /// 0.5.328 (server 6.79.1): why the model did not polish, on a 200 from finalize. Only these five codes cross into
     /// Control; anything else the server says there is dropped. `polished: true` with one of them means only the
     /// server's filler pass changed the text.
-    static let skipReasons: Set<String> = ["daily_cap", "breaker_open", "too_long", "disabled", "failed"]
+    static let skipReasons: Set<String> = ["daily_cap", "breaker_open", "too_long", "disabled", "failed", "clean"]
+    /// 0.5.329 (server 6.79.2): what became of a prewarmed process sent with finalize. Anything else is dropped.
+    static let prewarmOutcomes: Set<String> = ["used", "missed", "discarded"]
 
     /// The request's deadline: Control's whole wait (DictationPolish.budget: 5 s Haiku, 9 s Sonnet) less half a second
     /// for the helper to start and answer, so a slow model ends as this helper's timeout, not a killed process.
@@ -724,25 +726,32 @@ enum DictationPolishBridge {
         }
     }
 
-    struct Request: Equatable { let text: String; let model: String; let app: String? }
+    struct Request: Equatable {
+        let text: String; let model: String; let app: String?
+        /// 0.5.329: the token of a polish process the server started at the press (DictationPolishPrewarmBridge).
+        var prewarmToken: String? = nil
+    }
 
     /// Only text, model and app. Text: not blank, at most 8,000 UTF-16 units. Model: haiku or sonnet. App: one line, at
     /// most 64 characters, or left out (an unusable app name is dropped, never a reason to refuse the polish).
     static func parse(_ data: Data) -> Request? {
         guard data.count <= inputLimit, let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-              Set(object.keys).isSubset(of: ["text", "model", "app"]),
+              Set(object.keys).isSubset(of: ["text", "model", "app", "prewarmToken"]),
               let text = object["text"] as? String, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               text.utf16.count <= maximumCharacters,
               let model = object["model"] as? String, models.contains(model) else { return nil }
         let app = (object["app"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
         let usable = app.flatMap { !$0.isEmpty && $0.count <= 64 && !$0.contains(where: \.isNewline) ? $0 : nil }
-        return Request(text: text, model: model, app: usable)
+        // A token that is not one is dropped, never a reason to refuse the polish (the same posture as the app name).
+        let token = (object["prewarmToken"] as? String).flatMap { DictationPolishPrewarmBridge.isToken($0) ? $0 : nil }
+        return Request(text: text, model: model, app: usable, prewarmToken: token)
     }
 
     /// The finalize body: the text, the message surface (a dictation is typed into a message box), the model.
     static func body(_ request: Request) -> String {
         var object: [String: Any] = ["text": request.text, "surface": "message", "autocleanModel": request.model]
         if let app = request.app { object["context"] = ["app": app] }
+        if let token = request.prewarmToken { object["prewarmToken"] = token }
         let data = (try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])) ?? Data("{}".utf8)
         return String(decoding: data, as: UTF8.self)
     }
@@ -769,6 +778,7 @@ enum DictationPolishBridge {
             let polished = flag.boolValue
             var details = base.merging(["text": text, "polished": polished]) { a, _ in a }
             if let skipped = body["polishSkipped"] as? String, skipReasons.contains(skipped) { details["polishSkipped"] = skipped }
+            if let prewarm = body["prewarm"] as? String, prewarmOutcomes.contains(prewarm) { details["prewarm"] = prewarm }
             return DictationBridge.Answer(ok: true, message: polished ? "Polished" : "Not polished", details: details)
         case 404: return refused("needs_server_update", "This COS server has no dictation polish. COS pastes what it heard.", status: 404)
         case 413: return refused("too_long", "Too long for AI polish. COS pastes what it heard.", status: 413)
@@ -776,6 +786,68 @@ enum DictationPolishBridge {
         case 429: return refused("busy", "AI polish is busy. COS pastes what it heard.", status: 429)
         default: return refused("http_\(status)", "AI polish did not finish (HTTP \(status)). COS pastes what it heard.", status: status)
         }
+    }
+}
+
+/// 0.5.329 (server 6.79.2): start AI polish's process at the key press, so it is running when the text arrives (about
+/// 0.9 s off a Haiku polish when it starts 3 s or more ahead). The helper's `dictation-polish-prewarm` takes stdin
+/// `{"model": "haiku"|"sonnet"}` to start one, or `{"discard": "<token>"}` to end one a dictation will not use. No text
+/// ever travels here: it does not exist yet. Every refusal is a normal answer; Control proceeds exactly as before.
+enum DictationPolishPrewarmBridge {
+    static let route = "/api/dictation/polish/prewarm"
+    static let inputLimit = 256
+    /// The request's deadline. Control's own wait on the helper is a little longer (2.5 s), and nothing waits on either.
+    static let requestSeconds: TimeInterval = 2
+    /// The server's 409 reasons for not warming. Anything else reads as "refused".
+    static let refusalReasons: Set<String> = ["disabled", "model", "breaker_open", "daily_cap", "cli"]
+    /// A uuid, as the server issues and checks it.
+    static func isToken(_ value: String) -> Bool { value.range(of: "^[0-9a-f-]{36}$", options: .regularExpression) != nil }
+
+    enum Request: Equatable { case start(model: String), discard(token: String) }
+    /// Exactly one key: model (haiku or sonnet) or discard (a token).
+    static func parse(_ data: Data) -> Request? {
+        guard data.count <= inputLimit, let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any], object.count == 1 else { return nil }
+        if let model = object["model"] as? String, DictationPolishBridge.models.contains(model) { return .start(model: model) }
+        if let token = object["discard"] as? String, isToken(token) { return .discard(token: token) }
+        return nil
+    }
+    static func body(model: String) -> String {
+        let data = (try? JSONSerialization.data(withJSONObject: ["model": model, "surface": "message"], options: [.sortedKeys])) ?? Data("{}".utf8)
+        return String(decoding: data, as: UTF8.self)
+    }
+    static func discardPath(_ token: String) -> String? { isToken(token) ? route + "/" + token : nil }
+
+    /// A start's answer. 200 with a token: ok with the token and its lifetime. 404: an older server ("unsupported", so
+    /// Control stops asking until the server changes). 409: the server's reason. No answer: timeout or unreachable.
+    static func answer(status: Int?, body: [String: Any]?, elapsedMs: Int, timedOut: Bool) -> DictationBridge.Answer {
+        let base: [String: Any] = ["elapsedMs": elapsedMs]
+        func refused(_ reason: String, status: Int? = nil) -> DictationBridge.Answer {
+            var details: [String: Any] = base.merging(["reason": reason]) { a, _ in a }
+            if let status { details["httpStatus"] = status }
+            return DictationBridge.Answer(ok: false, message: "AI polish was not started early (\(reason)).", details: details)
+        }
+        guard let status else { return refused(timedOut ? "timeout" : "unreachable") }
+        switch status {
+        case 200:
+            guard let body, let token = body["token"] as? String, isToken(token), let expires = body["expiresMs"] as? NSNumber,
+                  CFGetTypeID(expires) != CFBooleanGetTypeID(), expires.intValue > 0 else { return refused("bad_answer", status: 200) }
+            return DictationBridge.Answer(ok: true, message: "AI polish started early",
+                                          details: base.merging(["token": token, "expiresMs": expires.intValue]) { a, _ in a })
+        case 404: return refused("unsupported", status: 404)
+        case 409:
+            let reason = (body?["reason"] as? String).flatMap { refusalReasons.contains($0) ? $0 : nil } ?? "refused"
+            return refused(reason, status: 409)
+        case 401, 403: return refused("unauthorized", status: status)
+        default: return refused("http_\(status)", status: status)
+        }
+    }
+    /// A discard's answer: whether the server still had that process. Nothing else is read.
+    static func discardAnswer(status: Int?, body: [String: Any]?) -> DictationBridge.Answer {
+        guard status == 200, let flag = body?["discarded"] as? NSNumber, CFGetTypeID(flag) == CFBooleanGetTypeID() else {
+            return DictationBridge.Answer(ok: false, message: "The early polish process was not discarded.",
+                                          details: ["reason": status == 404 ? "unsupported" : status.map { "http_\($0)" } ?? "unreachable"])
+        }
+        return DictationBridge.Answer(ok: true, message: "Discarded", details: ["discarded": flag.boolValue])
     }
 }
 

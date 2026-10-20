@@ -1515,6 +1515,13 @@ enum DictationSpareBuild: Sendable {
     var bridge: (@MainActor (Data) async throws -> HelperResponse)?
     /// 0.5.325: the helper's `dictation-polish`, given the request and the whole wait (DictationPolish.budget).
     var polishBridge: (@MainActor (Data, TimeInterval) async throws -> HelperResponse)?
+    /// 0.5.329: the helper's dictation-polish-prewarm (start or discard AI polish's process early). Sendable and not tied
+    /// to the main actor: it is called only from detached tasks, never awaited at the press.
+    var prewarmBridge: (@Sendable (Data) async throws -> HelperResponse)?
+    /// The press's early polish: its dictation, the model it was started for, where its answer lands, and the task.
+    private var prewarm: (attempt: UUID, model: DictationPolishModel, box: DictationPrewarmBox, task: Task<Void, Never>)?
+    /// The server version that answered "unsupported" (an older server): no early polish against it until it changes.
+    private var prewarmUnsupportedOn: String?
     var petFrame: (() -> NSRect?)?
     private var capture: DictationMicrophoneCapture?
     private var pendingAudio: Data? { didSet { if pendingAudio == nil { pendingInterrupted = false; interruptedChangeCount = nil } } }
@@ -1788,6 +1795,51 @@ enum DictationSpareBuild: Sendable {
         showCard(DictationCard(kind: .failed(DictationFnUsage.note, action: .openKeyboardSettings), recordID: nil, text: "",
                                countdown: DictationCountdown(start: Date())))
     }
+    /// 0.5.329 (server 6.79.2): ask the server to start AI polish's process for this press. Only with AI polish on, and
+    /// not against a server that said it cannot. The answer lands in a box the polish reads later; nothing awaits it here.
+    private func startPrewarm(_ attempt: UUID) {
+        discardPrewarm()
+        let model = polishModel
+        guard DictationPolishPrewarm.shouldStart(model: model, unsupportedOn: prewarmUnsupportedOn, serverVersion: serverVersion?()),
+              let bridge = prewarmBridge, let request = DictationPolishPrewarm.startRequest(model: model) else { return }
+        let box = DictationPrewarmBox()
+        let task = Task.detached(priority: .utility) {
+            let response = try? await bridge(request)
+            box.set(DictationPolishPrewarm.read(ok: response?.ok, token: response?.details["token"]?.string,
+                                                reason: response?.details["reason"]?.string, elapsedMs: response?.details["elapsedMs"]?.int))
+        }
+        prewarm = (attempt, model, box, task)
+    }
+    /// The polish takes this press's token, waiting at most 150 ms for a start still in flight. A token for another model
+    /// (the setting changed mid-hold) or one that arrives late is discarded, never reused.
+    private func takePrewarm(_ model: DictationPolishModel) async -> String? {
+        guard let held = prewarm else { return nil }
+        prewarm = nil
+        guard held.attempt == generation, held.model == model else { Self.discardWhenReady(held.task, held.box, prewarmBridge); return nil }
+        var waited = 0
+        while held.box.result == nil, waited < DictationPolishPrewarm.waitMilliseconds {
+            try? await Task.sleep(for: .milliseconds(DictationPolishPrewarm.pollMilliseconds))
+            waited += DictationPolishPrewarm.pollMilliseconds
+        }
+        guard let result = held.box.result else { Self.discardWhenReady(held.task, held.box, prewarmBridge); return nil }
+        timing?.prewarmMs = result.ms
+        if result == .unsupported { prewarmUnsupportedOn = serverVersion?() ?? "" }
+        return result.token
+    }
+    /// A token no polish will use (cancel, no text, polish off): discarded off the main actor once its start has answered.
+    private func discardPrewarm() {
+        guard let held = prewarm else { return }
+        prewarm = nil
+        Self.discardWhenReady(held.task, held.box, prewarmBridge)
+    }
+    private nonisolated static func discardWhenReady(_ task: Task<Void, Never>, _ box: DictationPrewarmBox, _ bridge: (@Sendable (Data) async throws -> HelperResponse)?) {
+        guard let bridge else { return }
+        Task.detached(priority: .utility) {
+            await task.value
+            guard let token = box.result?.token, let request = DictationPolishPrewarm.discardRequest(token: token) else { return }
+            _ = try? await bridge(request)
+        }
+    }
     /// 0.5.328: a start number measured after the fact on the output queue: onto the press's marks while they are held,
     /// else onto this dictation's open timing line; dropped once the line is written or a newer dictation began.
     private func lateMarks(_ attempt: UUID, _ apply: (inout DictationStartMarks) -> Void) {
@@ -2015,6 +2067,8 @@ enum DictationSpareBuild: Sendable {
         // 0.5.328: the main thread's heartbeat from the press (mainThreadStallMs on the timing line).
         heartbeat.begin(at: pressed)
         generation = UUID(); let attempt = generation
+        // 0.5.329: AI polish's process starts now, off the main actor; nothing here or at LISTENING waits on it.
+        startPrewarm(attempt)
         flashTask?.cancel(); flashTask = nil; fixOfferID = nil; dismissCard()
         let watching = editWatcher.isWatching
         editWatcher.stop("new dictation")
@@ -2310,13 +2364,20 @@ enum DictationSpareBuild: Sendable {
     /// never a failed dictation. The log line has the model, the outcome and the time, never the text.
     private func polish(_ heard: String) async -> (outcome: DictationPolish.Outcome, model: DictationPolishModel)? {
         let model = polishModel
-        guard DictationPolish.shouldPolish(text: heard, model: model), let budget = DictationPolish.budget(for: model), let polishBridge,
-              let request = DictationPolish.request(text: heard, model: model, app: NSWorkspace.shared.frontmostApplication?.localizedName) else { return nil }
+        guard DictationPolish.shouldPolish(text: heard, model: model), let budget = DictationPolish.budget(for: model), let polishBridge else {
+            discardPrewarm(); return nil
+        }
         pill = .polishing
         let started = Date()
+        // 0.5.329: the press's early process, when it is ready (at most 150 ms more); without one, polish runs cold as before.
+        let warm = await takePrewarm(model)
+        guard let request = DictationPolish.request(text: heard, model: model, app: NSWorkspace.shared.frontmostApplication?.localizedName,
+                                                    prewarmToken: warm) else { return nil }
+        timing?.polishPrewarm = DictationPolishPrewarm.outcome(sentToken: warm != nil, answer: nil)
         let outcome: DictationPolish.Outcome
         do {
             let response = try await polishBridge(request, budget)
+            timing?.polishPrewarm = DictationPolishPrewarm.outcome(sentToken: warm != nil, answer: response.details["prewarm"]?.string)
             outcome = DictationPolish.choose(heard: heard, ok: response.ok, text: response.details["text"]?.string,
                                              polished: response.details["polished"]?.bool, reason: response.details["reason"]?.string,
                                              skipped: response.details["polishSkipped"]?.string)
@@ -2385,6 +2446,7 @@ enum DictationSpareBuild: Sendable {
         timing?.failReason = code
         recordTiming("failed")
         let action = action ?? DictationFailureAction.resolve(action: nil, retryable: nil, noSpeech: false, audioHeld: pendingAudio != nil)
+        discardPrewarm()
         quiet.end()
         phase = enabled ? "Ready" : "Off"; message = reason; pill = .hidden; meter.reset()
         prepareSpare()
@@ -2442,6 +2504,7 @@ enum DictationSpareBuild: Sendable {
         meterTask?.cancel(); meterTask = nil; flashTask?.cancel(); flashTask = nil
         _ = try? capture?.stop(); capture = nil; held = false; toggleHeld = false; holdPending = false
         holdTracker?.reset(); toggleTracker?.reset(); startMarks = nil; _ = heartbeat.finish(); placing?.cancel(); placing = nil
+        discardPrewarm()
         phase = enabled ? "Ready" : "Off"; message = "Dictation canceled. No text was inserted."
         pill = .hidden; fixOfferID = nil; meter.reset()
         prepareSpare()

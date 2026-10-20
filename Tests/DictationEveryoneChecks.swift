@@ -185,6 +185,61 @@ struct DictationEveryoneChecks {
             let answer = PB.answer(status: 200, body: ["text": "um hi", "polished": false, "polishSkipped": odd], model: "haiku", elapsedMs: 4, timedOut: false)
             check(answer.ok && answer.details["polishSkipped"] == nil, "polish skipped whitelist", "\(odd) is not one of the five codes and is dropped")
         }
+        // 0.5.329 (server 6.79.2): clean is a skip code too; the token rides on finalize; what became of it comes back.
+        let clean = PB.answer(status: 200, body: ["text": "um hi", "polished": false, "polishSkipped": "clean"], model: "haiku", elapsedMs: 4, timedOut: false)
+        check(clean.details["polishSkipped"] as? String == "clean", "polish skipped", "clean is passed on")
+        let warmToken = "0a1b2c3d-4e5f-6a7b-8c9d-0e1f2a3b4c5d"
+        let withToken = PB.parse(Data(#"{"text":"um hi","model":"haiku","prewarmToken":"\#(warmToken)"}"#.utf8))
+        check(withToken?.prewarmToken == warmToken && withToken?.text == "um hi", "prewarm token", "a real token is accepted with the text")
+        for odd in [#""NOT-A-TOKEN""#, #""../../x""#, "7", "true", #""0A1B2C3D-4E5F-6A7B-8C9D-0E1F2A3B4C5D""#] {
+            let parsed = PB.parse(Data(#"{"text":"um hi","model":"haiku","prewarmToken":\#(odd)}"#.utf8))
+            check(parsed != nil && parsed?.prewarmToken == nil, "prewarm token", "a malformed token (\(odd)) is dropped, never a reason to refuse the polish")
+        }
+        check(PB.parse(Data(#"{"text":"um hi","model":"haiku","prewarmToken":"\#(warmToken)","extra":1}"#.utf8)) == nil, "prewarm token",
+              "an unknown key is still refused")
+        let sentWarm = (try? JSONSerialization.jsonObject(with: Data(PB.body(.init(text: "um hi", model: "haiku", app: nil, prewarmToken: warmToken)).utf8))) as? [String: Any] ?? [:]
+        check(sentWarm["prewarmToken"] as? String == warmToken && sentWarm.count == 4, "prewarm token", "the finalize body carries the token when there is one")
+        check(bare["prewarmToken"] == nil, "prewarm token", "and not when there is none")
+        for outcome in ["used", "missed", "discarded"] {
+            let a = PB.answer(status: 200, body: ["text": "So hi.", "polished": true, "prewarm": outcome], model: "haiku", elapsedMs: 4, timedOut: false)
+            check(a.ok && a.details["prewarm"] as? String == outcome, "prewarm outcome", "\(outcome) is passed on")
+        }
+        for odd: Any in ["Used", "warm", 1, true] {
+            let a = PB.answer(status: 200, body: ["text": "So hi.", "polished": true, "prewarm": odd], model: "haiku", elapsedMs: 4, timedOut: false)
+            check(a.ok && a.details["prewarm"] == nil, "prewarm outcome", "\(odd) is not one of used, missed, discarded and is dropped")
+        }
+        typealias PW = DictationPolishPrewarmBridge
+        check(PW.parse(Data(#"{"model":"haiku"}"#.utf8)) == .start(model: "haiku") && PW.parse(Data(#"{"model":"sonnet"}"#.utf8)) == .start(model: "sonnet")
+              && PW.parse(Data(#"{"discard":"\#(warmToken)"}"#.utf8)) == .discard(token: warmToken), "prewarm request", "a model starts one; a token discards one")
+        for bad in [#"{"model":"opus"}"#, #"{"model":"haiku","text":"um hi"}"#, #"{"discard":"../x"}"#, #"{}"#, "not json", #"{"model":"haiku","discard":"\#(warmToken)"}"#] {
+            check(PW.parse(Data(bad.utf8)) == nil, "prewarm request", "refused before the network: \(bad)")
+        }
+        check(PW.parse(Data(repeating: 32, count: 300)) == nil, "prewarm request", "over 256 bytes is refused")
+        let startBody = (try? JSONSerialization.jsonObject(with: Data(PW.body(model: "sonnet").utf8))) as? [String: String] ?? [:]
+        check(startBody == ["model": "sonnet", "surface": "message"], "prewarm request", "the server's prewarm body: the model and the message surface, nothing else")
+        check(PW.discardPath(warmToken) == "/api/dictation/polish/prewarm/" + warmToken && PW.discardPath("../../x") == nil, "prewarm request",
+              "a discard deletes that token's path, and only a token's")
+        let warm = PW.answer(status: 200, body: ["token": warmToken, "expiresMs": 150_000], elapsedMs: 120, timedOut: false)
+        check(warm.ok && warm.details["token"] as? String == warmToken && warm.details["expiresMs"] as? Int == 150_000 && warm.details["elapsedMs"] as? Int == 120,
+              "prewarm answer", "a started process comes back as its token, lifetime and time")
+        for body: [String: Any]? in [nil, [:], ["token": "nope", "expiresMs": 1], ["token": warmToken], ["token": warmToken, "expiresMs": true], ["token": warmToken, "expiresMs": 0]] {
+            let a = PW.answer(status: 200, body: body, elapsedMs: 1, timedOut: false)
+            check(!a.ok && a.details["reason"] as? String == "bad_answer" && a.details["token"] == nil, "prewarm answer", "an unreadable 200 is bad_answer: \(String(describing: body))")
+        }
+        for reason in ["disabled", "model", "breaker_open", "daily_cap", "cli"] {
+            let a = PW.answer(status: 409, body: ["error": "prewarm_unavailable", "reason": reason], elapsedMs: 3, timedOut: false)
+            check(!a.ok && a.details["reason"] as? String == reason, "prewarm answer", "409 \(reason) is passed on")
+        }
+        check(PW.answer(status: 409, body: ["reason": "whatever words"], elapsedMs: 3, timedOut: false).details["reason"] as? String == "refused"
+              && PW.answer(status: 404, body: nil, elapsedMs: 3, timedOut: false).details["reason"] as? String == "unsupported"
+              && PW.answer(status: nil, body: nil, elapsedMs: 2_000, timedOut: true).details["reason"] as? String == "timeout"
+              && PW.answer(status: nil, body: nil, elapsedMs: 3, timedOut: false).details["reason"] as? String == "unreachable"
+              && PW.answer(status: 500, body: nil, elapsedMs: 3, timedOut: false).details["reason"] as? String == "http_500",
+              "prewarm answer", "an unknown 409 reason is refused; 404 is unsupported (an older server); no answer is a timeout or unreachable")
+        check(PW.discardAnswer(status: 200, body: ["discarded": true]).details["discarded"] as? Bool == true
+              && PW.discardAnswer(status: 200, body: ["discarded": false]).ok
+              && PW.discardAnswer(status: 404, body: nil).details["reason"] as? String == "unsupported"
+              && !PW.discardAnswer(status: 200, body: ["discarded": 1]).ok, "prewarm discard", "a discard reads only the server's boolean")
         for body: [String: Any]? in [nil, [:], ["text": "", "polished": true], ["text": "x"], ["text": "x", "polished": 1], ["text": "x", "polished": "true"],
                                      ["text": String(repeating: "a", count: 16_001), "polished": true], ["text": 4, "polished": true]] {
             let answer = PB.answer(status: 200, body: body, model: "haiku", elapsedMs: 1, timedOut: false)

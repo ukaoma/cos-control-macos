@@ -69,6 +69,24 @@ check("Button(LiveCues.checkAgainLabel) { Task { await store.load(Self.run(model
 for banned in (".sheet(", ".alert(", ".confirmationDialog(", ".popover(", "NSAlert", "COSViewSwitch(", ".tracking(", ".textCase(.uppercase)"):
     check(banned not in row, f"the row has no {banned} (inline only; no pill tabs or caps kicker)")
 
+# 0.5.329: the spend limits, under the switch, only from a server that reports them, moved only through the store.
+check("if let limits = store.settings?.limits {\n                LiveCuesLimitsRows(store: store, limits: limits, run: Self.run(model))" in row
+      and sum(s.count("LiveCuesLimitsRows(") for s in sources.values()) == 1, "the limits draw only when the server sends them, in one place")
+check(row.index("Toggle(LiveCues.title") < row.index("LiveCuesLimitsRows(") < row.index("Text(LiveCues.glassesLine)"), "the limits sit under the switch")
+limits_view = body(ask, "struct LiveCuesLimitsRows: View {", "/// Transcription (server 6.72.0): its own Settings card.")
+check(limits_view.count("store.propose(") == 2 and "runHelper" not in limits_view, "the bar and the steppers move only through the store")
+check(limits_view.count("if limit.locked {") == 2 and "LiveCues.envNote" in limits_view, "a limit set in .env shows read-only with Set in .env")
+check("store.limitValue(" in limits_view and ".value" in limits_view, "the controls show the waiting move, else the server's value")
+check("if !store.pendingLimits.isEmpty {\n                Text(LiveCues.savingLine)" in limits_view, "Saving until the server answers")
+check("LiveCues.usageLine(usage)" in limits_view and "LiveCues.moreCues" in limits_view and "LiveCues.fewerCues" in limits_view, "usage and the bar's words")
+check("COSStepper(" in limits_view and "Stepper(" not in limits_view.replace("COSStepper(", ""), "the house stepper")
+for banned in (".sheet(", ".alert(", ".popover(", "@AppStorage", "UserDefaults", "Task.sleep"):
+    check(banned not in limits_view, f"the limits have no {banned} (the store owns timing; the server owns the values)")
+store_src = body(core, "final class LiveCuesStore: ObservableObject {", "// MARK: Live cue verdicts")
+check("guard let limit = settings?.limits?.values[key], !limit.locked else { return }" in store_src, "a locked or unreported limit never moves")
+check("try? await Task.sleep(for: wait)" in store_src and "limitsFlush?.cancel()" in store_src, "moves are debounced: each cancels the one before")
+check("state = LiveCues.state(answer?.details)" in body(store_src, "func flushLimits(", "func set("), "what shows after a change is the server's echo")
+
 # The jump: Decision models opens and the panel scrolls to it.
 scroll = body(views, "private func scrollToTarget(_ reader: ScrollViewProxy) {", "DispatchQueue.main.async {")
 check("if target == LiveCues.decisionKeysAnchor { jevExpanded = true }" in scroll, "the jump opens Decision models before it scrolls")
@@ -105,7 +123,8 @@ check('Self.liveCuesSettingsRequest(hasSet: args.contains("--set"), value: optio
 check('details: ["transport": "unavailable"]' in emit and 'details: ["transport": "no_token"]' in emit, "no answer and no token are their own states")
 check("var details = Self.liveCuesSettingsAnswer(response.body)" in emit and "response.body ?? " not in emit and '"body":' not in emit,
       "only the whitelisted keys cross")
-check(emit.count("request(Self.liveCuesSettingsPath, method: plan.method") == 1, "one request, the planned method")
+check(emit.count('request(Self.liveCuesSettingsPath + (plan.method == "GET" ? "?v=2" : ""), method: plan.method') == 1,
+      "one request, the planned method; a read asks for v 2 (server 6.79.2 then sends the limits)")
 check('"/api/live-cues/v2/settings"' not in emit, "the verb reaches the route only through the constant")
 
 # The suite runs it.

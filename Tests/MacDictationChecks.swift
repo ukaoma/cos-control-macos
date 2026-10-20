@@ -1099,7 +1099,9 @@ final class FakeDictationBoard: DictationPasteboardAccess {
                    && P.choose(heard: heard, ok: false, text: "So it.", polished: true, reason: "Bad Reason; rm -rf") == .failed("refused"),
                    "polish: a refusal never applies its text, and only a short identifier reaches the log")
             // 0.5.328 (server 6.79.1 polishSkipped): skipped, fillers only, and only the five codes.
-            expect(P.skipReasons == ["daily_cap", "breaker_open", "too_long", "disabled", "failed"], "polish: five skip codes")
+            expect(P.skipReasons == ["daily_cap", "breaker_open", "too_long", "disabled", "failed", "clean"], "polish: six skip codes (0.5.329 adds clean)")
+            expect(P.choose(heard: heard, ok: true, text: heard, polished: false, reason: nil, skipped: "clean") == .skipped("clean"),
+                   "polish: a dictation the server found clean is skipped:clean")
             for code in ["daily_cap", "breaker_open", "too_long", "disabled", "failed"] {
                 let skipped = P.choose(heard: heard, ok: true, text: heard, polished: false, reason: nil, skipped: code)
                 expect(skipped == .skipped(code) && skipped.logName == "skipped:" + code && skipped.text(heard: heard) == heard,
@@ -1429,6 +1431,47 @@ final class FakeDictationBoard: DictationPasteboardAccess {
             expect(DictationPill.finishing.label == "STILL FINISHING" && DictationPill.finishing.replacesLedger && DictationPill.finishingSeconds == 1.5,
                    "busy press: the pill says STILL FINISHING for a moment")
         }
-        print("PASS Mac dictation: \(count) policy checks; insert-target table, measured delivery, terminals, layout ⌘V, listening bars end to end, clipboard restore, sounds, pill placement, recent dictations file, card countdown, fix-a-word selection, quick fix, replace, span guess, quiet and restore, bounded audio, PCM16 WAV, device failure, any-key triggers, field context and its evidence, AI polish, release tail and timing, truthful start, smooth start, missed releases")
+        do {
+            // 0.5.329 (server 6.79.2): AI polish's process started at the key press.
+            typealias W = DictationPolishPrewarm
+            let token = "0a1b2c3d-4e5f-6a7b-8c9d-0e1f2a3b4c5d"
+            expect(W.isToken(token) && !W.isToken("0A1B2C3D-4E5F-6A7B-8C9D-0E1F2A3B4C5D") && !W.isToken(token + "0")
+                   && !W.isToken("../../api/x") && !W.isToken(""), "prewarm: a token is a lowercase uuid and nothing else")
+            expect(!W.shouldStart(model: .off, unsupportedOn: nil, serverVersion: "6.79.2"), "prewarm: AI polish off never starts one")
+            expect(W.shouldStart(model: .haiku, unsupportedOn: nil, serverVersion: nil) && W.shouldStart(model: .sonnet, unsupportedOn: nil, serverVersion: "6.79.2"),
+                   "prewarm: Haiku or Sonnet starts one")
+            expect(!W.shouldStart(model: .haiku, unsupportedOn: "6.79.1", serverVersion: "6.79.1") && W.shouldStart(model: .haiku, unsupportedOn: "6.79.1", serverVersion: "6.79.2"),
+                   "prewarm: an older server that said unsupported is not asked again until its version changes")
+            let started = (W.startRequest(model: .haiku).flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: String] }) ?? [:]
+            expect(started == ["model": "haiku"] && W.startRequest(model: .off) == nil, "prewarm: the start carries the model only (there is no text yet)")
+            let discard = (W.discardRequest(token: token).flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: String] }) ?? [:]
+            expect(discard == ["discard": token] && W.discardRequest(token: "x") == nil, "prewarm: a discard carries the token only, and only a real one")
+            expect(W.read(ok: true, token: token, reason: nil, elapsedMs: 180) == .token(token, ms: 180), "prewarm: a token answer is kept with its time")
+            expect(W.read(ok: true, token: "nope", reason: nil, elapsedMs: 5) == .refused("refused", ms: 5)
+                   && W.read(ok: false, token: nil, reason: "breaker_open", elapsedMs: 9) == .refused("breaker_open", ms: 9)
+                   && W.read(ok: false, token: nil, reason: "Bad; rm", elapsedMs: 9) == .refused("refused", ms: 9),
+                   "prewarm: a refusal keeps a short reason, never a malformed token")
+            expect(W.read(ok: nil, token: nil, reason: nil, elapsedMs: nil) == .refused("helper", ms: nil) && W.read(ok: nil, token: nil, reason: nil, elapsedMs: nil).token == nil,
+                   "prewarm: a helper that threw or timed out gives no token, so the polish runs cold as before")
+            expect(W.read(ok: false, token: nil, reason: "unsupported", elapsedMs: 4) == .unsupported, "prewarm: an older server (404) is unsupported")
+            expect(W.outcome(sentToken: false, answer: "used") == "none" && W.outcome(sentToken: true, answer: "used") == "used"
+                   && W.outcome(sentToken: true, answer: "discarded") == "discarded" && W.outcome(sentToken: true, answer: nil) == "missed"
+                   && W.outcome(sentToken: true, answer: "weird") == "missed", "prewarm: the line says used, missed, discarded or none")
+            expect(W.waitMilliseconds == 150 && W.helperTimeout == 2.5, "prewarm: the polish waits at most 150 ms for it; the helper at most 2.5 s")
+            func body(_ data: Data?) -> [String: String] { (data.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: String] }) ?? [:] }
+            expect(body(DictationPolish.request(text: "um hi", model: .haiku, app: nil, prewarmToken: token)) == ["text": "um hi", "model": "haiku", "prewarmToken": token]
+                   && body(DictationPolish.request(text: "um hi", model: .haiku, app: nil, prewarmToken: nil)) == ["text": "um hi", "model": "haiku"]
+                   && body(DictationPolish.request(text: "um hi", model: .haiku, app: nil, prewarmToken: "nope")) == ["text": "um hi", "model": "haiku"],
+                   "prewarm: the polish request carries the token only when there is a real one")
+            let box = DictationPrewarmBox()
+            expect(box.result == nil, "prewarm: an empty box has no answer")
+            box.set(.token(token, ms: 3))
+            expect(box.result?.token == token && box.result?.ms == 3, "prewarm: the box hands the answer over")
+            var line = DictationTiming.startFailure(DictationStartMarks(pressed: 0), at: Date(timeIntervalSince1970: 1_760_000_000))
+            line.polishPrewarm = "used"; line.prewarmMs = 212
+            let json = DictationTimingLog.line(line).flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] } ?? [:]
+            expect(json["polishPrewarm"] as? String == "used" && json["prewarmMs"] as? Int == 212, "prewarm: the timing line carries the outcome and the start's time")
+        }
+        print("PASS Mac dictation: \(count) policy checks; insert-target table, measured delivery, terminals, layout ⌘V, listening bars end to end, clipboard restore, sounds, pill placement, recent dictations file, card countdown, fix-a-word selection, quick fix, replace, span guess, quiet and restore, bounded audio, PCM16 WAV, device failure, any-key triggers, field context and its evidence, AI polish, release tail and timing, truthful start, smooth start, missed releases, early polish")
     }
 }

@@ -625,11 +625,106 @@ struct LiveCuesSettingsRow: View {
             case .none:
                 EmptyView()
             }
+            // 0.5.329: the spend limits, only from a server that reports them (6.79.2); an older one shows the switch alone.
+            if let limits = store.settings?.limits {
+                LiveCuesLimitsRows(store: store, limits: limits, run: Self.run(model))
+            }
             Text(LiveCues.glassesLine).font(COSType.body(11)).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .padding(.top, 4)
         .task(id: "\(model.status.running) \(model.status.version ?? "")") { await store.load(Self.run(model)) }
+    }
+}
+
+/// 0.5.329 (Miles, 2026-10-19): cap live cue spend from Settings. The bar (a slider: lower gives more cues), the most cues
+/// a meeting may get, the shortest gap between two cues and the daily writer limit, each inside the server's bounds, and
+/// today's usage. A limit set in the server's .env shows its value with "Set in .env" and cannot move. A move is sent
+/// after the person stops (LiveCues.limitsDebounce), and the row shows "Saving…" until the server's answer, whose values
+/// it then shows: never ahead of the server.
+struct LiveCuesLimitsRows: View {
+    @ObservedObject var store: LiveCuesStore
+    let limits: LiveCuesLimits
+    let run: LiveCuesStore.Run
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if let gate = limits.values[.gate] { bar(gate) }
+            ForEach([LiveCuesLimits.Key.maxCuesPerMeeting, .cooldownSeconds, .dailyWriterCalls], id: \.self) { key in
+                if let limit = limits.values[key] { stepper(key, limit) }
+            }
+            if !store.pendingLimits.isEmpty {
+                Text(LiveCues.savingLine).font(COSType.body(11)).foregroundStyle(.secondary)
+            }
+            if let note = store.limitsNote {
+                Text(note).font(COSType.body(11)).foregroundStyle(COSPalette.amber).fixedSize(horizontal: false, vertical: true)
+            }
+            if let usage = limits.usage {
+                Text(LiveCues.usageLine(usage)).font(COSType.body(11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .font(COSType.body(12))
+        .padding(.top, 2)
+    }
+
+    private func locked(_ title: String, _ value: String) -> some View {
+        HStack(spacing: 8) {
+            Text(title).lineLimit(1)
+            Spacer(minLength: 8)
+            Text(value).font(COSType.mono(11.5)).monospacedDigit()
+            Text(LiveCues.envNote).font(COSType.body(11)).foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder
+    private func bar(_ limit: LiveCuesLimit) -> some View {
+        let shown = store.limitValue(.gate) ?? limit.value
+        if limit.locked {
+            locked(LiveCues.barTitle, LiveCues.gateText(limit.value))
+        } else {
+            let steps = LiveCues.gateSteps(limit)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack {
+                    Text(LiveCues.barTitle)
+                    Spacer(minLength: 8)
+                    Text(LiveCues.gateText(shown)).font(COSType.mono(11.5)).monospacedDigit()
+                }
+                Slider(value: Binding(get: { shown }, set: { store.propose(.gate, (($0 * 100).rounded()) / 100, run: run) }),
+                       in: (steps.first ?? limit.value)...(steps.last ?? limit.value), step: 0.05)
+                    .controlSize(.small)
+                    .accessibilityLabel(LiveCues.barTitle)
+                    .accessibilityValue(LiveCues.gateText(shown))
+                HStack {
+                    Text(LiveCues.moreCues)
+                    Spacer(minLength: 8)
+                    Text(LiveCues.fewerCues)
+                }
+                .font(COSType.body(10.5))
+                .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func title(_ key: LiveCuesLimits.Key) -> String {
+        switch key {
+        case .gate: LiveCues.barTitle
+        case .maxCuesPerMeeting: LiveCues.maxCuesTitle
+        case .cooldownSeconds: LiveCues.gapTitle
+        case .dailyWriterCalls: LiveCues.dailyTitle
+        }
+    }
+
+    @ViewBuilder
+    private func stepper(_ key: LiveCuesLimits.Key, _ limit: LiveCuesLimit) -> some View {
+        let shown = Int((store.limitValue(key) ?? limit.value).rounded())
+        if limit.locked {
+            locked(title(key), LiveCues.countText(key, Int(limit.value.rounded())))
+        } else {
+            let ladder = LiveCues.ladder(key, limit)
+            let index = ladder.firstIndex(of: shown) ?? ladder.lastIndex { $0 <= shown } ?? 0
+            COSStepper(title(key), value: Binding(get: { index }, set: { store.propose(key, Double(ladder[$0]), run: run) }),
+                       in: 0...max(0, ladder.count - 1), valueText: LiveCues.countText(key, shown))
+        }
     }
 }
 

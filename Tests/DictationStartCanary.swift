@@ -69,8 +69,20 @@ final class CanaryAggregate: @unchecked Sendable {
     }
 }
 
-@MainActor func stallRound(offMain: Bool) async -> (stallMs: Int, firstBufferMs: Int)? {
+/// 0.5.329: what the early polish costs the press: a helper process launched from a detached task at the press, as
+/// startPrewarm does (a Python process that waits a second stands in for the helper and its 2 s request).
+func detachedProcessAtPress() {
+    Task.detached(priority: .utility) {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+        process.arguments = ["-c", "import time; time.sleep(1)"]
+        try? process.run(); process.waitUntilExit()
+    }
+}
+
+@MainActor func stallRound(offMain: Bool, prewarm: Bool = false) async -> (stallMs: Int, firstBufferMs: Int)? {
     let pressed = ProcessInfo.processInfo.systemUptime
+    if prewarm { detachedProcessAtPress() }
     let meter = DictationStallMeter(start: pressed)
     let beat = DispatchSource.makeTimerSource(queue: .main)
     beat.schedule(deadline: .now(), repeating: .milliseconds(DictationStallMeter.tickMilliseconds))
@@ -186,6 +198,9 @@ final class CanaryAggregate: @unchecked Sendable {
             try? await Task.sleep(for: .milliseconds(400))
             if let new = await stallRound(offMain: true) { row["stall_offMainMs"] = new.stallMs; row["stall_offMain_firstBufferMs"] = new.firstBufferMs }
             else { problems.append("round \(round): no first buffer (off main)") }
+            try? await Task.sleep(for: .milliseconds(400))
+            if let warm = await stallRound(offMain: true, prewarm: true) { row["stall_prewarmMs"] = warm.stallMs; row["stall_prewarm_firstBufferMs"] = warm.firstBufferMs }
+            else { problems.append("round \(round): no first buffer (with the early polish)") }
             if ownInputRunning() == true { problems.append("round \(round): the microphone was still running after the stall rounds") }
             stalls.append(row)
             print(row.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: " "))
@@ -204,6 +219,7 @@ final class CanaryAggregate: @unchecked Sendable {
             "median_old_listMs": median("old_listMs") ?? -1, "median_spare_warmMs": median("spare_warmMs") ?? -1,
             "median_stall_onMainMs": median("stall_onMainMs") ?? -1, "median_stall_offMainMs": median("stall_offMainMs") ?? -1,
             "max_stall_offMainMs": rows.compactMap { $0["stall_offMainMs"] as? Int }.max() ?? -1,
+            "median_stall_prewarmMs": median("stall_prewarmMs") ?? -1, "max_stall_prewarmMs": rows.compactMap { $0["stall_prewarmMs"] as? Int }.max() ?? -1,
             "max_stall_onMainMs": rows.compactMap { $0["stall_onMainMs"] as? Int }.max() ?? -1,
         ]
         if let evidence {
@@ -216,6 +232,10 @@ final class CanaryAggregate: @unchecked Sendable {
         if let on = summary["median_stall_onMainMs"] as? Int, let off = summary["median_stall_offMainMs"] as? Int, on > 0, off >= on {
             problems.append("moving the work off the main thread did not shorten the main thread's stall (\(off) ms vs \(on) ms)")
         }
+        if let off = summary["median_stall_offMainMs"] as? Int, let warm = summary["median_stall_prewarmMs"] as? Int, off > 0, warm > max(off * 2, 50) {
+            problems.append("the early polish at the press lengthened the main thread's stall (\(warm) ms vs \(off) ms)")
+        }
+        print("with the early polish started at the press (0.5.329): median \(summary["median_stall_prewarmMs"]!) max \(summary["max_stall_prewarmMs"]!)")
         print("main-thread stall (ms, 16 is smooth): 0.5.327 way median \(summary["median_stall_onMainMs"]!) max \(summary["max_stall_onMainMs"]!); 0.5.328 way median \(summary["median_stall_offMainMs"]!) max \(summary["max_stall_offMainMs"]!)")
         if problems.isEmpty {
             print("PASS dictation start canary: \(rounds) start rounds and \(rounds) stall pairs, a first buffer every time, the microphone off while a spare waits and after every stop")
