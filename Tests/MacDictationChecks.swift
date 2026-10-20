@@ -1370,6 +1370,65 @@ final class FakeDictationBoard: DictationPasteboardAccess {
             line.include(nil)
             expect(line.mainThreadStallMs == 17, "smooth: no marks leaves the line as it was")
         }
-        print("PASS Mac dictation: \(count) policy checks; insert-target table, measured delivery, terminals, layout ⌘V, listening bars end to end, clipboard restore, sounds, pill placement, recent dictations file, card countdown, fix-a-word selection, quick fix, replace, span guess, quiet and restore, bounded audio, PCM16 WAV, device failure, any-key triggers, field context and its evidence, AI polish, release tail and timing, truthful start, smooth start")
+        do {
+            // 0.5.330 (Miles 2026-10-19: hold to dictate "locked", and nothing on the timing line said why).
+            typealias H = DictationHoldWatch
+            var blind = H.Reads()
+            expect(!blind.read(down: false) && !blind.read(down: false) && !blind.read(down: false),
+                   "hold watch: a key the keyboard state never showed as down is never released (an up proves nothing)")
+            var reads = H.Reads()
+            expect(!reads.read(down: true) && !reads.read(down: false) && reads.read(down: true) == false,
+                   "hold watch: one up read, then down again, is a key still held")
+            expect(!reads.read(down: false) && reads.read(down: false), "hold watch: two up reads in a row after a down run the missed release")
+            var flicker = H.Reads()
+            _ = flicker.read(down: true)
+            expect(!flicker.read(down: false) && !flicker.read(down: true) && !flicker.read(down: false), "hold watch: a down between ups starts the count again")
+            expect(H.pollMilliseconds == 150 && H.upReadsToRelease == 2, "hold watch: every 150 ms, two up reads")
+            expect(H.watches(phase: "Starting", held: true, trackerDown: false) && H.watches(phase: "Listening", held: true, trackerDown: false),
+                   "hold watch: watches a held dictation that is starting or listening")
+            expect(!H.watches(phase: "Transcribing", held: true, trackerDown: false) && !H.watches(phase: "Listening", held: false, trackerDown: false)
+                   && !H.watches(phase: "Ready", held: false, trackerDown: false), "hold watch: nothing to watch once the microphone closed or nothing is held")
+            expect(H.watches(phase: "Ready", held: false, trackerDown: true), "hold watch: a tracker still latched down is watched, or the next press is swallowed")
+            expect(H.modifierDown(flags: 0x800000 | 0x800000, keyCode: 63) == true && H.modifierDown(flags: 0, keyCode: 63) == false,
+                   "hold watch: Fn reads its own device bit")
+            expect(H.modifierDown(flags: 0x08 | 0x100000, keyCode: 54) == false && H.modifierDown(flags: 0x10 | 0x100000, keyCode: 54) == true,
+                   "hold watch: Left Command held is not Right Command held")
+            expect(H.modifierDown(flags: 0xFFFF_FFFF, keyCode: 49) == nil, "hold watch: no answer for a key that is not a lone modifier")
+            expect(DictationPressEvent.allCases.map(\.rawValue) == ["refused_busy", "canceled_starting", "interrupted_chord", "release_reconciled"],
+                   "press events: the four outcome words")
+            var event = DictationTiming.event(.canceledStarting, at: Date(timeIntervalSince1970: 1_760_000_000))
+            event.phase = "Starting"; event.msSincePress = 812; event.firstBufferArrived = false; event.appVersion = "0.5.330"
+            event.held = false; event.holdTrackerDown = false; event.holdHardwareDown = true
+            let json = DictationTimingLog.line(event).flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] } ?? [:]
+            expect(json["outcome"] as? String == "canceled_starting" && json["phase"] as? String == "Starting" && json["msSincePress"] as? Int == 812
+                   && json["firstBufferArrived"] as? Bool == false && json["appVersion"] as? String == "0.5.330" && json["held"] as? Bool == false
+                   && json["holdTrackerDown"] as? Bool == false && json["holdHardwareDown"] as? Bool == true && json["capturedSeconds"] as? Double == 0,
+                   "press events: one line with the phase, the timing, the version and the hold key's state, nothing captured")
+            let plain = DictationTimingLog.line(DictationTiming.event(.refusedBusy, at: Date())).flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] } ?? [:]
+            expect(Set(plain.keys) == ["at", "releaseToClosedMs", "tailMs", "capturedSeconds", "outcome"], "press events: nothing else rides along unless set")
+            expect(H.keyDownIsMissedRelease(trackerDown: true, hardwareDown: false, seenDown: true, sincePress: 4.2),
+                   "missed release: a key typed seconds later while the keyboard says Fn is up is the release (it types, never a chord)")
+            expect(!H.keyDownIsMissedRelease(trackerDown: true, hardwareDown: true, seenDown: true, sincePress: 4.2)
+                   && !H.keyDownIsMissedRelease(trackerDown: true, hardwareDown: nil, seenDown: true, sincePress: 4.2),
+                   "missed release: Fn still down (or a keyboard that cannot say) keeps the chord")
+            expect(!H.keyDownIsMissedRelease(trackerDown: true, hardwareDown: false, seenDown: true, sincePress: 0.6) && H.keyDownReleaseAfterSeconds == 1,
+                   "missed release: a key within a second of the press is still a chord (Fn+arrow)")
+            expect(!H.keyDownIsMissedRelease(trackerDown: true, hardwareDown: false, seenDown: false, sincePress: 4.2)
+                   && !H.keyDownIsMissedRelease(trackerDown: false, hardwareDown: false, seenDown: true, sincePress: 4.2),
+                   "missed release: never from a keyboard that never showed the key down, and never when nothing is held")
+            typealias FU = DictationFnUsage
+            expect(FU.conflicts(usageType: nil, fnIsDictationKey: true) && FU.conflicts(usageType: 1, fnIsDictationKey: true)
+                   && FU.conflicts(usageType: 2, fnIsDictationKey: true) && !FU.conflicts(usageType: 0, fnIsDictationKey: true),
+                   "fn usage: anything but Do Nothing (absent is the system default) is a conflict while Fn dictates")
+            expect(!FU.conflicts(usageType: nil, fnIsDictationKey: false) && !FU.conflicts(usageType: 2, fnIsDictationKey: false),
+                   "fn usage: no conflict when Fn is not a dictation key")
+            expect(!FU.note.contains("\u{2192}") && !FU.note.contains("\u{2014}") && FU.note.contains("Do Nothing")
+                   && FU.keyboardSettingsURL == "x-apple.systempreferences:com.apple.Keyboard-Settings.extension"
+                   && DictationFailureAction.openKeyboardSettings.title == "Open Keyboard settings",
+                   "fn usage: the card says the fix in plain words and opens Keyboard settings")
+            expect(DictationPill.finishing.label == "STILL FINISHING" && DictationPill.finishing.replacesLedger && DictationPill.finishingSeconds == 1.5,
+                   "busy press: the pill says STILL FINISHING for a moment")
+        }
+        print("PASS Mac dictation: \(count) policy checks; insert-target table, measured delivery, terminals, layout ⌘V, listening bars end to end, clipboard restore, sounds, pill placement, recent dictations file, card countdown, fix-a-word selection, quick fix, replace, span guess, quiet and restore, bounded audio, PCM16 WAV, device failure, any-key triggers, field context and its evidence, AI polish, release tail and timing, truthful start, smooth start, missed releases")
     }
 }

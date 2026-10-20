@@ -65,5 +65,8 @@ print "PASS Mac dictation isolation pins: audio callbacks @Sendable, callback si
 /usr/bin/python3 "$ROOT/Tests/dictation-start-pins.py" "$ROOT"
 # 0.5.328 smooth start: no Core Audio, engine or other-app Accessibility work on the main actor while a dictation starts.
 /usr/bin/python3 "$ROOT/Tests/dictation-smooth-pins.py" "$ROOT"
+# 0.5.330 hold to dictate "lock": every press that is not a dictation is written, the keyboard is watched while the hold
+# key is believed down, a busy press says so, and the settings live in the Dictation tab.
+/usr/bin/python3 "$ROOT/Tests/dictation-lock-pins.py" "$ROOT"
 # 0.5.317: dictation for everyone (the helper core, the CLI checks, the pins).
 zsh "$ROOT/Tests/run-dictation-everyone.sh"

@@ -1556,6 +1556,17 @@ enum DictationSpareBuild: Sendable {
     private var spareTask: Task<Void, Never>?
     /// 0.5.328: the pill's placement (Accessibility off the main thread) and the main thread's heartbeat.
     private var placing: Task<Void, Never>?
+    /// 0.5.330: the hold key's watch (DictationHoldWatch) and the STILL FINISHING note's timer.
+    private var holdWatch: Task<Void, Never>?
+    private var finishingTask: Task<Void, Never>?
+    /// The keyboard has shown this press's hold key down at least once (the missed-release rules trust an "up" only then).
+    private var holdSeenDown = false
+    /// macOS's 🌐 key setting at the last check (DictationFnUsage), and whether a missed release or chord this dictation
+    /// should end with the card that says how to fix it.
+    private var fnUsageType: Int?
+    private var fnCardPending = false
+    /// The app version on each press event line.
+    private static let appVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
     private let heartbeat = DictationMainHeartbeat()
     var busy: Bool { ["Listening", "Starting", "Transcribing"].contains(phase) }
     private init() {
@@ -1673,6 +1684,103 @@ enum DictationSpareBuild: Sendable {
         if case .discard(let why) = verdict { dictationLog.notice("spare engine discarded: \(why, privacy: .public)"); return nil }
         return held.capture
     }
+    /// 0.5.330: one event line for a press that did not become a dictation, or a reconciled release. Numbers, codes and
+    /// the hold key's state only; never text or audio.
+    private func recordPressEvent(_ event: DictationPressEvent, msSincePress: Int? = nil, firstBufferArrived: Bool? = nil, reconcileSource: String? = nil) {
+        var line = DictationTiming.event(event, at: Date())
+        line.reconcileSource = reconcileSource
+        if fnIsDictationKey, fnUsageChecked { line.fnUsageType = fnUsageType ?? -1 }
+        line.phase = phase; line.msSincePress = msSincePress; line.firstBufferArrived = firstBufferArrived
+        line.appVersion = Self.appVersion
+        line.held = held; line.holdTrackerDown = holdTracker?.down; line.holdHardwareDown = holdKeyHardwareDown()
+        let hardware = line.holdHardwareDown.map { $0 ? "down" : "up" } ?? "-"
+        dictationLog.notice("press event=\(event.rawValue, privacy: .public) phase=\(self.phase, privacy: .public) held=\(self.held) hardware=\(hardware, privacy: .public)")
+        if let url = Self.defaultHistoryURL()?.deletingLastPathComponent().appendingPathComponent(DictationTimingLog.fileName) {
+            DictationTimingLog.append(line, to: url)
+        }
+    }
+    /// A press while the last dictation is still transcribing or polishing: STILL FINISHING for a moment, then the pill
+    /// it replaced. Nothing is queued: the press is refused, and says so.
+    private func noteStillFinishing() {
+        message = "Still finishing the last dictation."
+        guard pill == .transcribing || pill == .polishing || pill == .finishing else { return }
+        let previous = pill == .finishing ? (finishingReturn ?? .transcribing) : pill
+        finishingReturn = previous
+        pill = .finishing
+        finishingTask?.cancel()
+        finishingTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(DictationPill.finishingSeconds))
+            guard let self, !Task.isCancelled, self.pill == .finishing else { return }
+            self.pill = previous
+        }
+    }
+    private var finishingReturn: DictationPill?
+    /// The hold key as the keyboard reports it (CGEventSource, the HID system state): nil when there is no hold key.
+    private func holdKeyHardwareDown() -> Bool? {
+        switch holdTrigger {
+        case .modifier(let key)?: DictationHoldWatch.modifierDown(flags: CGEventSource.flagsState(.hidSystemState).rawValue, keyCode: key)
+        case .keys(let key, _)?: CGEventSource.keyState(.hidSystemState, key: CGKeyCode(key))
+        case nil: nil
+        }
+    }
+    /// While COS believes the hold key is down, read the keyboard every 150 ms; two "up" reads after one "down" run the
+    /// release COS missed.
+    private func ensureHoldWatch() {
+        guard holdWatch == nil, holdTrigger != nil,
+              DictationHoldWatch.watches(phase: phase, held: held, trackerDown: holdTracker?.down == true) else { return }
+        holdWatch = Task { [weak self] in
+            var reads = DictationHoldWatch.Reads()
+            while let self, !Task.isCancelled,
+                  DictationHoldWatch.watches(phase: self.phase, held: self.held, trackerDown: self.holdTracker?.down == true),
+                  let down = self.holdKeyHardwareDown() {
+                if down { self.holdSeenDown = true }
+                if reads.read(down: down) { self.reconcileRelease(source: "poll"); break }
+                try? await Task.sleep(for: .milliseconds(DictationHoldWatch.pollMilliseconds))
+            }
+            self?.holdWatch = nil
+        }
+    }
+    /// The release COS never heard: the same path as a real key-up, and the tracker forgets the press.
+    private func reconcileRelease(source: String) {
+        let wasHeld = held
+        recordPressEvent(.releaseReconciled, reconcileSource: source)
+        holdTracker?.reset(); holdSeenDown = false
+        if fnConflictNow { fnCardPending = true }
+        if wasHeld { hotKey(1, down: false) }
+    }
+    /// 0.5.330: macOS's own 🌐 key setting, read at launch and on every Fn press, logged when it changes.
+    private func checkFnUsage() {
+        guard fnIsDictationKey else { return }
+        let value = (CFPreferencesCopyAppValue("AppleFnUsageType" as CFString, "com.apple.HIToolbox" as CFString) as? NSNumber)?.intValue
+        if value != fnUsageType || !fnUsageChecked {
+            dictationLog.notice("fn usage: AppleFnUsageType=\(value.map(String.init) ?? "absent", privacy: .public) conflict=\(DictationFnUsage.conflicts(usageType: value, fnIsDictationKey: true))")
+        }
+        fnUsageType = value; fnUsageChecked = true
+    }
+    private var fnUsageChecked = false
+    private var fnIsDictationKey: Bool { holdTrigger?.isFn == true || toggleTrigger?.isFn == true }
+    private var fnConflictNow: Bool { fnUsageChecked && DictationFnUsage.conflicts(usageType: fnUsageType, fnIsDictationKey: fnIsDictationKey) }
+    /// 0.5.330 (team lead, from Miles's 2026-10-19 lock): at the moment Fn is pressed while macOS still gives the 🌐 key a
+    /// job of its own, say so: the card once per run of COS Control (after start(), which clears cards), and a log line on
+    /// every such press. A missed release later in the same run brings the card back when that dictation ends.
+    private func warnFnAtPress() {
+        guard holdTrigger?.isFn == true, fnConflictNow else { return }
+        dictationLog.notice("fn usage: pressed with AppleFnUsageType=\(self.fnUsageType.map(String.init) ?? "absent", privacy: .public); macOS may take the release")
+        guard !fnWarnedThisRun, card == nil else { return }
+        fnWarnedThisRun = true
+        fnCardPending = true
+        showFnCardIfPending()
+    }
+    private var fnWarnedThisRun = false
+    /// After a dictation whose Fn release was missed (or that a chord cut short): the card that says why, unless another
+    /// card is already showing.
+    private func showFnCardIfPending() {
+        guard fnCardPending else { return }
+        fnCardPending = false
+        guard fnConflictNow, card == nil else { return }
+        showCard(DictationCard(kind: .failed(DictationFnUsage.note, action: .openKeyboardSettings), recordID: nil, text: "",
+                               countdown: DictationCountdown(start: Date())))
+    }
     /// 0.5.328: a start number measured after the fact on the output queue: onto the press's marks while they are held,
     /// else onto this dictation's open timing line; dropped once the line is written or a newer dictation began.
     private func lateMarks(_ attempt: UUID, _ apply: (inout DictationStartMarks) -> Void) {
@@ -1763,7 +1871,7 @@ enum DictationSpareBuild: Sendable {
         }
         message = nil; registerHotKeys()
         if trigger?.isFn == true, message == nil {
-            message = "Fn is set. In System Settings → Keyboard, set “Press 🌐 key to” Do Nothing, and move Wispr Flow off Fn."
+            message = "Fn is set. In System Settings, Keyboard, set “Press 🌐 key to” Do Nothing, and move Wispr Flow off Fn."
         }
     }
     func registerHotKeys() {
@@ -1817,6 +1925,9 @@ enum DictationSpareBuild: Sendable {
                 message = "Fn and single-key shortcuts need Accessibility. Click Allow insertion into other apps…, then turn dictation off and on."
             }
         }
+        // 0.5.330: the 🌐 key's own job in macOS, checked when the shortcuts are set (launch included).
+        checkFnUsage()
+        if fnConflictNow, message == nil { message = DictationFnUsage.note }
         // The first spare waits for launch to settle; it also takes the one-time cost of loading the audio components.
         if !busy { phase = "Ready"; prepareSpare(after: .seconds(5)) }
     }
@@ -1832,14 +1943,23 @@ enum DictationSpareBuild: Sendable {
                 : pointer && clickWindow ? current.pointerDown(at: time) : current.keyDown()
             tracker = current; return output
         }
+        // 0.5.330: a key typed long after the press while the keyboard says the hold key is up is the release COS
+        // missed (Miles 2026-10-19, Fn), not a chord: it ends the dictation and types it.
+        if !flags, !pointer, let tracker = holdTracker, tracker.down,
+           DictationHoldWatch.keyDownIsMissedRelease(trackerDown: true, hardwareDown: holdKeyHardwareDown(), seenDown: holdSeenDown,
+                                                     sincePress: time - tracker.pressedAt) {
+            reconcileRelease(source: "key")
+        }
         switch feed(&holdTracker, clickWindow: true) {
         case .pressed?: hotKey(1, down: true)
         case .released?: hotKey(1, down: false)
         // Fn+arrow, ⌘C: the press was a chord. Right after the press nothing was said, so it is dropped quietly; after
         // a second of talking, what was said is transcribed and copied (interrupt).
-        case .chord?: if held { interrupt() }
+        case .chord?: if held { recordPressEvent(.interruptedChord); if fnConflictNow { fnCardPending = true }; interrupt() }
         case nil: break
         }
+        // 0.5.330: while COS believes the hold key is down, the keyboard's own state is read too (missed releases).
+        if holdTracker?.down == true { ensureHoldWatch() }
         // A lone-modifier toggle acts on a clean tap, so holding Fn for a chord never toggles.
         if feed(&toggleTracker) == .released { hotKey(2, down: true); hotKey(2, down: false) }
         if feed(&fixTracker) == .released { hotKey(3, down: true) }
@@ -1856,11 +1976,14 @@ enum DictationSpareBuild: Sendable {
             if down, !held, DictationReleaseTail.press(tailing: tailing, phase: phase) == .extend {
                 held = true; holdPending = true; extendTail()
             } else if down, !held {
+                holdSeenDown = false; checkFnUsage()
                 held = true; holdPending = true; start()
+                warnFnAtPress()
                 // QA 0.5.313: a press while the last dictation is still transcribing is refused. Latching `held` anyway
                 // let a chord on that refused press turn the LAST dictation into copy-only, and a chord's release never
                 // reaches `.released`, so `held` stuck and every later press did nothing.
                 if !["Starting", "Listening"].contains(phase) { held = false; holdPending = false }
+                ensureHoldWatch()
             }
             else if !down { held = false; if holdPending { holdPending = false; stop() } }
         } else if id == 2 {
@@ -1875,7 +1998,11 @@ enum DictationSpareBuild: Sendable {
         }
     }
     func start() {
-        guard MacDictationPolicy.mayStart(enabled: enabled, busy: busy) else { return }
+        guard MacDictationPolicy.mayStart(enabled: enabled, busy: busy) else {
+            // 0.5.330: never silent. The press is on the timing line, and the pill says the last one is still finishing.
+            if enabled, busy { recordPressEvent(.refusedBusy); noteStillFinishing() }
+            return
+        }
         // 0.5.327: the press's own time; every start number on the timing line counts from it.
         let pressed = ProcessInfo.processInfo.systemUptime
         // 0.5.328: the main thread's heartbeat from the press (mainThreadStallMs on the timing line).
@@ -2023,7 +2150,12 @@ enum DictationSpareBuild: Sendable {
     /// 0.5.326: the person's stop keeps listening for the release tail (the pill stays LISTENING), then closes the
     /// microphone; the two-minute limit and a microphone failure close at once, even mid-tail.
     func stop(ending: DictationReleaseTail.Ending) {
-        if phase == "Starting" { cancel(); return }
+        if phase == "Starting" {
+            // 0.5.330: released before COS could hear (or before LISTENING showed): on the line, then canceled as before.
+            let since = startMarks.map { $0.since(ProcessInfo.processInfo.systemUptime) }
+            recordPressEvent(.canceledStarting, msSincePress: since, firstBufferArrived: capture?.firstAudioUptime != nil)
+            cancel(); return
+        }
         guard phase == "Listening", let capture else { return }
         let tail = DictationReleaseTail.tail(for: ending)
         if tailing { if tail == 0 { closeMicrophone() }; return }
@@ -2219,6 +2351,8 @@ enum DictationSpareBuild: Sendable {
             showCard(DictationCard(kind: .copied(refusal), recordID: record.id, text: text, countdown: DictationCountdown(start: Date())))
         }
         remember(record)
+        // 0.5.330: a dictation whose Fn release was missed ends with the card that says how to stop it happening.
+        showFnCardIfPending()
     }
     /// A dictation that did not finish: the reason on the card, with its one action (0.5.317): Retry while the audio is
     /// held and a retry can succeed, Install Parakeet, Use Whisper, Open Transcription settings, or Open Settings when
@@ -2271,6 +2405,9 @@ enum DictationSpareBuild: Sendable {
         switch action {
         case .retry: retryTranscription()
         case .openMicrophoneSettings: openMicrophoneSettings()
+        case .openKeyboardSettings:
+            dismissCard()
+            if let url = URL(string: DictationFnUsage.keyboardSettingsURL) { NSWorkspace.shared.open(url) }
         case .openTranscriptionSettings: dismissCard(); openTranscriptionSettings?()
         case .installParakeet:
             // The held audio stays; Install runs in the background and dictation keeps working with Whisper.
@@ -3031,7 +3168,7 @@ struct DictationListeningPill: View {
                         Text("LISTENING " + DictationPill.clock(context.date.timeIntervalSince(since))).monospacedDigit()
                     }
                 }
-            case .transcribing, .polishing:
+            case .transcribing, .polishing, .finishing:
                 DictationWorkingBars(size: size, reduceMotion: reduceMotion)
                 Text(pill.label)
             case .flash:
@@ -3065,6 +3202,7 @@ struct DictationListeningPill: View {
             switch pill {
             case .transcribing: return "Transcribing dictation"
             case .polishing: return "Polishing dictation"
+            case .finishing: return "Still finishing the last dictation"
             case .starting: return "Dictation starting"
             case .flash(let label, _): return label
             default: return "Dictation listening"
@@ -3581,6 +3719,27 @@ struct DictationSuggestionRow: View {
 /// COS Activity → Dictation (0.5.318, Miles 13:31): what Learn from my edits suggested (review and add in a batch) and
 /// saved on its own (Undo), the dictionary's recent corrections, and the latest dictations. The full history and the
 /// whole dictionary open as their own panes, on their own route flags, from the header.
+/// 0.5.330 (Miles 2026-10-19): COS Activity → Dictation → Settings. The same settings the menu-bar panel shows, in the
+/// tab. Mounted on `model.dictationSettingsRouteActive`, which only openDictationSettings and closeDictationSettings write.
+struct DictationSettingsPane: View {
+    @ObservedObject var model: ControllerModel
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text("Dictation settings").font(COSType.display(20, weight: .medium))
+                    Spacer()
+                    Button("Close") { model.closeDictationSettings() }.buttonStyle(COSQuietButtonStyle()).controlSize(.small)
+                }
+                MacDictationSettings(store: model.dictation, activityShortcut: model.activityHotKey)
+            }
+            .padding(16)
+            .frame(maxWidth: 560, alignment: .leading)
+        }
+    }
+}
+
 struct DictationActivityPane: View {
     @ObservedObject var model: ControllerModel
     @ObservedObject private var store: MacDictationStore
@@ -3601,8 +3760,13 @@ struct DictationActivityPane: View {
                     Spacer()
                     Button("History") { model.openDictationHistory() }.buttonStyle(COSTextButtonStyle())
                     Button("Dictionary") { model.openDictionary() }.buttonStyle(COSTextButtonStyle())
+                    // 0.5.330: every dictation setting, here in the tab.
+                    Button("Settings") { model.openDictationSettings() }.buttonStyle(COSTextButtonStyle())
                 }
                 Text(modeLine).font(COSType.body(11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                if store.learnMode == .off {
+                    Button("Turn it on in Dictation settings") { model.openDictationSettings() }.buttonStyle(COSTextButtonStyle())
+                }
                 suggested
                 learned
                 corrections
@@ -3620,7 +3784,7 @@ struct DictationActivityPane: View {
         switch store.learnMode {
         case .automatic: "Learn from my edits saves your fixes on its own. Undo any of them below."
         case .suggest: "Learn from my edits suggests your fixes and keeps them for a week. Add the ones you want."
-        case .off: "Learn from my edits is off. Turn it on in Settings → Dictation."
+        case .off: "Learn from my edits is off."
         }
     }
 
@@ -3805,9 +3969,12 @@ struct DictationHistoryPane: View {
                     .cosField()
                 if store.recent.isEmpty {
                     Text(store.retention.writesToDisk ? "No dictations yet. Anything you dictate shows up here."
-                         : "Dictations aren't kept. Choose how long to keep them in Settings → Dictation.")
+                         : "Dictations aren't kept.")
                         .font(COSType.body(12)).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
+                    if !store.retention.writesToDisk {
+                        Button("Choose how long to keep them") { model.openDictationSettingsInActivity() }.buttonStyle(COSTextButtonStyle())
+                    }
                 } else if days.isEmpty {
                     Text("No dictation matches that search.")
                         .font(COSType.body(12)).foregroundStyle(.secondary)
@@ -3859,13 +4026,14 @@ struct DictationHistoryPane: View {
                 .font(COSType.body(12))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+            Button("Dictation settings") { model.openDictationSettingsInActivity() }.buttonStyle(COSTextButtonStyle())
         }
     }
 
     static func keepLine(_ retention: DictationRetention, count: Int) -> String {
         let kept = "\(count) \(count == 1 ? "dictation" : "dictations") on this Mac"
         switch retention {
-        case .none: return "Not kept: this session only, never saved. Change it in Settings → Dictation."
+        case .none: return "Not kept: this session only, never saved."
         case .forever: return kept + ", kept until you delete them (at most \(DictationHistory.cap.formatted()))."
         default: return kept + ", kept for \(retention.title) (at most \(DictationHistory.cap.formatted()))."
         }

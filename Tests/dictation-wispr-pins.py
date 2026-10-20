@@ -163,7 +163,7 @@ need('if phase == "Transcribing" {\n            pendingInterrupted = pendingAudi
      and "            if pendingInterrupted { interruptedChangeCount = NSPasteboard.general.changeCount }\n            return\n        }" in interrupt,
      "sleep while transcribing must copy, not type after wake")
 key = body(dictation, "    private func keyEvent(")
-need("case .chord?: if held { interrupt() }" in key and "cancel()" not in key, "a chord while talking must salvage, not cancel")
+need("case .chord?: if held { recordPressEvent(.interruptedChord); if fnConflictNow { fnCardPending = true }; interrupt() }" in key and "cancel()" not in key, "a chord while talking must salvage, not cancel")
 need(dictation.count("Task { @MainActor in self?.interrupt() }") == 1 and "Task { @MainActor in self?.cancel() }" not in dictation,
      "sleep and session switch must salvage, not cancel")
 copy_only = body(dictation, "    static func copyOnly(_ text: String, clipboardMoved: Bool) -> DictationDelivered {")

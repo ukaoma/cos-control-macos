@@ -181,6 +181,7 @@ final class ControllerModel: ObservableObject {
     var activityOpenDictionary = false
     /// 0.5.312: the pet's "All dictations" and Dictation → History… open the history pane after Meetings loads.
     var activityOpenDictationHistory = false
+    var activityOpenDictationSettings = false
     /// 0.5.313: a live transcript to open once the Activity window has switched to Meetings. Opening it before the switch
     /// lost it: the section change clears every detail route (Miles 2026-10-15 22:40, Open live meeting did nothing).
     var activityOpenLiveTranscriptID: String?
@@ -2819,6 +2820,8 @@ final class ControllerModel: ObservableObject {
     /// True while the Dictation history pane (0.5.312) should be the Meetings route.
     /// Written by `openDictationHistory()` / `closeDictationHistory()`, and by nothing else.
     @Published var dictationHistoryOpen = false
+    /// 0.5.330: Activity → Dictation → Settings, written only by openDictationSettings and closeDictationSettings.
+    @Published var dictationSettingsOpen = false
     /// 0.5.327: which cue review view is the Memories route (CueReviewPane), or nil while the Memories page shows.
     /// Written by `openCueReview(_:)` / `closeCueReview()`, and by nothing else.
     @Published private(set) var cueReview: CueVerdicts.Review?
@@ -2892,6 +2895,7 @@ final class ControllerModel: ObservableObject {
         meetingSuggestionsOpen = false
         dictionaryOpen = false
         dictationHistoryOpen = false
+        dictationSettingsOpen = false
         closeLibraryDetail()
         meetingImportOpen = true
         meetingImportError = nil
@@ -2909,6 +2913,7 @@ final class ControllerModel: ObservableObject {
         meetingImportOpen = false
         dictionaryOpen = false
         dictationHistoryOpen = false
+        dictationSettingsOpen = false
         closeLibraryDetail()
         meetingSuggestionsOpen = true
         meetingSuggestionsError = nil
@@ -2927,6 +2932,7 @@ final class ControllerModel: ObservableObject {
         meetingImportOpen = false
         meetingSuggestionsOpen = false
         dictationHistoryOpen = false
+        dictationSettingsOpen = false
         closeLibraryDetail()
         dictionaryOpen = true
         Task { await dictionary.load() }
@@ -2947,12 +2953,39 @@ final class ControllerModel: ObservableObject {
         meetingImportOpen = false
         meetingSuggestionsOpen = false
         dictionaryOpen = false
+        dictationSettingsOpen = false
         closeLibraryDetail()
         dictationHistoryOpen = true
     }
 
     func closeDictationHistory() {
         dictationHistoryOpen = false
+    }
+
+    /// 0.5.330 (Miles 2026-10-19): every dictation setting inside the Dictation tab. The same MacDictationSettings the
+    /// menu-bar panel shows, mounted on this flag; Back closes it.
+    var dictationSettingsRouteActive: Bool {
+        dictationSettingsOpen
+    }
+
+    func openDictationSettings() {
+        closeLiveTranscript()
+        meetingImportOpen = false
+        meetingSuggestionsOpen = false
+        dictionaryOpen = false
+        dictationHistoryOpen = false
+        closeLibraryDetail()
+        dictationSettingsOpen = true
+    }
+
+    func closeDictationSettings() {
+        dictationSettingsOpen = false
+    }
+
+    /// From anywhere (a pane's "Dictation settings" button, the Dictation menu): Activity opens on Dictation, then Settings.
+    func openDictationSettingsInActivity() {
+        activityOpenDictationSettings = true
+        openActivity?(.dictation)
     }
 
     /// Mounted while a cue review view is open. Its load errors show inside the pane, so the flag alone is the route.
