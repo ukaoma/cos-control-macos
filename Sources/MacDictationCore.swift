@@ -145,6 +145,9 @@ struct DictationTiming: Codable, Equatable, Sendable {
     var swapOutcome: String? = nil
     var swapMs: Int? = nil
     var swapRoute: String? = nil
+    /// 0.5.332: why a paste-first dictation was polished first instead (DictationPolishSwap.Unmeasurable: canvasEditor,
+    /// unreadableField), beside swapOutcome=unmeasurable.
+    var swapWhy: String? = nil
     static let finalWindowMilliseconds = 250
     /// The release-side numbers from the captured PCM and the byte count at the release.
     static func measure(pcm: Data, releaseBytes: Int, tailMs: Int, releaseToClosedMs: Int, at: Date) -> DictationTiming {
@@ -658,6 +661,12 @@ enum DictationInsertPolicy {
         if focused, textSettable || editableAncestor { return nil }
         return pasteApp ? nil : .noTextBox
     }
+    /// 0.5.332: a web editor that draws its own text (Google Slides, Docs and Sheets in a Chromium browser): nothing
+    /// focused takes text and nothing sits in an editable ancestor. `refusal` gives it ⌘V (labelled unconfirmed, never
+    /// NO TEXT BOX), and COS can never measure where it landed.
+    static func canvasEditor(chromium: Bool, focused: Bool, textSettable: Bool, editableAncestor: Bool) -> Bool {
+        chromium && !(focused && (textSettable || editableAncestor))
+    }
 }
 
 /// Apps that need ⌘V rather than Accessibility. ClaudeSession.terminalHostBundleIds (Models.swift) is the subset whose
@@ -677,12 +686,21 @@ enum KnownApps {
         frameworks.contains { $0 == "Electron Framework.framework" || $0 == "Chromium Embedded Framework.framework" }
     }
     /// Electron and Chromium apps expose their text fields to Accessibility only after AXManualAccessibility is set.
-    static func isChromiumFamily(frameworks: [String]) -> Bool {
+    /// 0.5.332 (Miles 2026-10-20 09:57, Google Slides in Comet): a Chromium browser is known by its STRUCTURE, not its
+    /// name. Comet's engine is "Comet Framework.framework", which no name list had. Any `* Framework.framework` whose
+    /// `Versions/Current/Helpers` holds a `* Helper (Renderer).app` is Chromium; the names stay as well. `helpers` lists
+    /// that Helpers folder for one framework (empty when it has none); it is asked only for `* Framework.framework`.
+    static func isChromiumFamily(frameworks: [String], helpers: (String) -> [String] = { _ in [] }) -> Bool {
         frameworks.contains { name in
             name == "Electron Framework.framework" || name == "Chromium Embedded Framework.framework"
-                || (name.hasSuffix(" Framework.framework") && ["Chrome", "Chromium", "Edge", "Brave", "Vivaldi", "Opera", "Arc"].contains { name.contains($0) })
+                || (name.hasSuffix(" Framework.framework")
+                    && (["Chrome", "Chromium", "Edge", "Brave", "Vivaldi", "Opera", "Arc"].contains { name.contains($0) } || hasRendererHelper(helpers(name))))
         }
     }
+    /// Where a Chromium framework keeps its helper apps, relative to the framework.
+    static let helpersPath = "Versions/Current/Helpers"
+    /// Chromium's renderer process ships as "<Product> Helper (Renderer).app".
+    static func hasRendererHelper(_ helpers: [String]) -> Bool { helpers.contains { $0.hasSuffix(" Helper (Renderer).app") } }
 }
 
 /// What COS can measure about the focused field without ever reading its text: AXNumberOfCharacters and
@@ -2122,8 +2140,9 @@ extension DictationTiming {
         if let ms = run.prewarmMs { prewarmMs = ms }
     }
     /// 0.5.331: what became of Claude's version, how long the swap took, and its route.
-    mutating func settle(_ result: DictationPolishSwap.Result, ms: Int?, route: DictationReplace.Route?) {
+    mutating func settle(_ result: DictationPolishSwap.Result, ms: Int?, route: DictationReplace.Route?, why: DictationPolishSwap.Unmeasurable? = nil) {
         swapOutcome = result.logName; swapMs = ms; swapRoute = route.map(DictationPolishSwap.routeName)
+        swapWhy = why?.rawValue
     }
 }
 
@@ -2159,18 +2178,31 @@ enum DictationPolishSwap {
     }
     /// Paste first only with the toggle on, a polish that will run, and a dictation that is typed (an interrupted one is
     /// copied, never typed, so it is polished first as before).
-    static func sequence(pasteFirst: Bool, polishes: Bool, copyOnly: Bool) -> Sequence {
+    /// 0.5.332 (Google Slides in Comet): and only where the swap could ever be proved. A target COS cannot measure
+    /// (`unmeasurable`) gets the 0.5.330 order for this dictation: wait for polish, then paste once.
+    static func sequence(pasteFirst: Bool, polishes: Bool, copyOnly: Bool, unmeasurable: Unmeasurable? = nil) -> Sequence {
         guard pasteFirst, polishes, !copyOnly else { return .polishThenDeliver }
+        if unmeasurable != nil { return .polishThenDeliver }
         return .deliverThenPolish
+    }
+    /// 0.5.332: why the target can never prove a swap, read before delivery. A canvas web editor (Slides, Docs, Sheets)
+    /// takes ⌘V with nothing to measure; any other field whose counts cannot be read cannot locate the span either.
+    enum Unmeasurable: String, Sendable, CaseIterable { case canvasEditor, unreadableField }
+    static func unmeasurable(canvas: Bool, baselineReadable: Bool) -> Unmeasurable? {
+        if canvas { return .canvasEditor }
+        return baselineReadable ? nil : .unreadableField
     }
 
     /// Why Claude's version was not swapped in. Codes only; they go on the timing line.
+    /// 0.5.332: `keysHeld` (a modifier still down at the ⌘V) is its own reason; 0.5.331 read it as notFocused.
     enum Skip: String, Sendable, CaseIterable {
         case notTyped, terminal, appGone, fieldGone, textMoved, notFrontmost, ownWindowKey, notFocused, selectionUnproven,
-             noChange, typing, busy, unverified, dictationOff, copyOnly
+             noChange, typing, busy, unverified, dictationOff, copyOnly, keysHeld
     }
+    /// 0.5.332: `swappedUnconfirmed` (the ⌘V landed by count, the text could not be read back), `mismatch` (after the
+    /// ⌘V the field did not hold the count it should), `unmeasurable` (polished first: nothing there could prove a swap).
     enum Result: Equatable, Sendable {
-        case swapped, skipped(Skip), off, identical, notPolished
+        case swapped, skipped(Skip), off, identical, notPolished, swappedUnconfirmed, mismatch, unmeasurable
         var logName: String {
             switch self {
             case .swapped: "swapped"
@@ -2178,13 +2210,19 @@ enum DictationPolishSwap {
             case .off: "off"
             case .identical: "identical"
             case .notPolished: "notPolished"
+            case .swappedUnconfirmed: "swappedUnconfirmed"
+            case .mismatch: "mismatch"
+            case .unmeasurable: "unmeasurable"
             }
         }
+        /// Claude's version is (by measurement) in the field: the record reads it and the learner starts from it.
+        var swappedIn: Bool { self == .swapped || self == .swappedUnconfirmed }
     }
-    /// A dictation that was polished before its one delivery: off (the toggle), copy-only, or not polished at all.
-    static func unswapped(pasteFirst: Bool, polished: Bool, copyOnly: Bool) -> Result {
+    /// A dictation that was polished before its one delivery: off (the toggle), copy-only, unmeasurable, or not polished.
+    static func unswapped(pasteFirst: Bool, polished: Bool, copyOnly: Bool, unmeasurable: Bool = false) -> Result {
         guard polished else { return .notPolished }
         if copyOnly, pasteFirst { return .skipped(.copyOnly) }
+        if unmeasurable, pasteFirst { return .unmeasurable }
         return .off
     }
 
@@ -2254,6 +2292,47 @@ enum DictationPolishSwap {
     /// An automatic swap never activates an app, never moves a COS window and never moves the person's focus. Fix a word
     /// and Apply polished, which the person asked for, may.
     static func mayActivate(automatic: Bool) -> Bool { !automatic }
+
+    // 0.5.332 paste-route safety (Miles 2026-10-20 09:50, Claude desktop: the proof passed, the ⌘V went out and the field
+    // read 37 characters where 154 were due). Miles's rule: an automatic swap never leaves the wrong text.
+
+    /// On the paste route an automatic swap replaces the WHOLE dictation, never the smallest word change, so the worst a
+    /// ⌘V that lands somewhere unexpected can leave is the whole polished dictation, never a fragment of it. The
+    /// Accessibility route keeps the smallest edit (it measures before it trusts).
+    static func pasteEdit(_ edit: DictationReplace.Edit, route: DictationReplace.Route, dictationAt: Int?, current: String,
+                          corrected: String) -> DictationReplace.Edit {
+        guard route == .paste, let at = dictationAt else { return edit }
+        return DictationReplace.Edit(location: at, length: current.utf16.count, original: current, replacement: corrected)
+    }
+    /// Immediately before the ⌘V (after any wait for held keys), the proof again: the field's count is what the plan read
+    /// and the proof measured, the selection is still exactly the span and still reads as it, and no key went down
+    /// (Return included) in the last `quietMilliseconds`. Anything else skips, and nothing is pasted.
+    static func reproof(planCount: Int?, proofCount: Int?, now: DictationFieldSnapshot, selectedText: String?,
+                        edit: DictationReplace.Edit, sinceKeyMs: Int) -> Skip? {
+        guard let planCount, let proofCount, let count = now.characters else { return .fieldGone }
+        guard count == proofCount, count == planCount else { return .textMoved }
+        guard now.location == edit.location, now.length == edit.length, selectedText == edit.original else { return .selectionUnproven }
+        if sinceKeyMs < quietMilliseconds { return .typing }
+        return nil
+    }
+    enum Landing: Equatable, Sendable { case swapped, unconfirmed, mismatch, pending }
+    /// After the ⌘V, polled: the field must hold the count it had at the proof, less the span, plus the polished text.
+    /// Read back as the polished text: swapped. The count right and the text unreadable: swapped (unconfirmed), and for a
+    /// same-length swap only with the caret after the new text (the count alone cannot move). Anything else at the last
+    /// poll is a mismatch; before it, keep waiting (an app may take the paste late). Never a second paste.
+    static func landing(proofCount: Int, after: DictationFieldSnapshot, edit: DictationReplace.Edit, readback: String?, finalPoll: Bool) -> Landing {
+        let newLength = edit.replacement.utf16.count
+        if after.characters == proofCount - edit.length + newLength {
+            if readback == edit.replacement { return .swapped }
+            let caretAfter = after.location == edit.location + newLength && after.length == 0
+            if readback == nil, newLength != edit.length || caretAfter { return .unconfirmed }
+        }
+        return finalPoll ? .mismatch : .pending
+    }
+    /// Why the paste route's ⌘V was not sent, as the swap's skip: held keys are their own reason.
+    static func skip(forPaste refusal: DictationInsertPolicy.Refusal) -> Skip { refusal == .keysHeld ? .keysHeld : .notFocused }
+    /// The pill after a mismatch, one line, the app's own name.
+    static func mismatchNotice(app: String) -> String { "Check \(app): COS's polish swap may not have landed cleanly" }
     /// Where the person's caret or selection goes after the edit: unchanged before it, shifted by the length change
     /// after it (the usual case: the caret at the end of the dictation), else just after the new words.
     static func shifted(location: Int, length: Int, edit: DictationReplace.Edit) -> (location: Int, length: Int) {
@@ -2265,16 +2344,26 @@ enum DictationPolishSwap {
     /// What Learn from my edits watches once the swap settles: the polished text where it landed after a swap (so COS's
     /// own swap is never read as the person's edit), else what was typed where it was typed.
     static func watch(span: DictationInsertedSpan, typed: String, polished: String, result: Result, swappedAt: Int?) -> (span: DictationInsertedSpan, text: String) {
-        guard result == .swapped, let at = swappedAt else { return (span, typed) }
+        guard result.swappedIn, let at = swappedAt else { return (span, typed) }
         return (DictationInsertedSpan(pid: span.pid, location: at, length: polished.utf16.count), polished)
     }
-    /// Claude's version waits in Activity, Dictation (Apply polished) after any skip of a typed dictation.
+    /// 0.5.332: after a mismatch nobody knows what the field holds, so Learn from my edits does not watch it.
+    static func watches(_ result: Result) -> Bool { result != .mismatch }
+    /// Claude's version waits in Activity, Dictation after any skip of a typed dictation, and after a mismatch (with what
+    /// was heard, to check against).
     static func keepsPolished(_ result: Result) -> Bool {
+        if result == .mismatch { return true }
         guard case .skipped(let why) = result else { return false }
         return why != .copyOnly
     }
-    /// The pill says one short line only when a skip happened; nothing when the swap succeeds or there was nothing to do.
-    static func notice(_ result: Result) -> String? { keepsPolished(result) ? skippedNotice : nil }
+    /// Apply polished only after a skip: COS never pastes again over a swap that may have landed (a mismatch).
+    static func offersApply(_ result: Result) -> Bool { result != .mismatch && keepsPolished(result) }
+    /// The pill says one short line only when a skip or a mismatch happened; nothing when the swap succeeded (confirmed or
+    /// not) or there was nothing to do.
+    static func notice(_ result: Result, app: String) -> String? {
+        if result == .mismatch { return mismatchNotice(app: app) }
+        return keepsPolished(result) ? skippedNotice : nil
+    }
     static func routeName(_ route: DictationReplace.Route) -> String { route == .accessibility ? "accessibility" : "paste" }
     static func settingNote(_ model: DictationPolishModel) -> String {
         model == .off ? "Works with AI polish on."
@@ -2287,6 +2376,8 @@ struct DictationPendingPolish: Equatable, Sendable {
     let text: String
     let heard: String
     let model: DictationPolishModel
+    /// 0.5.332: false after a mismatch. The row shows what was heard and Claude's version, with Copy, never Apply.
+    var applies = true
 }
 
 /// After COS types a dictation, it watches that one field until focus leaves it (three minutes at most) and learns a

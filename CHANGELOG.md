@@ -1,3 +1,68 @@
+## 0.5.332 (build 385), Dictation into canvas editors, a safer paste-route swap
+
+Miles, 2026-10-20, from his own use of 0.5.331: "Can you take a look at this and see how to resolve." Everything in
+0.5.331 is kept.
+
+### Why
+
+Control's own dictation log that morning:
+
+- 09:57:08 and 09:57:26, Google Slides in Comet (ai.perplexity.comet): `family=false role=AXGroup subrole=AXEmptyGroup
+  settable=false ancestor=false outcome=refused(noTextBox)`. The pill said NO TEXT BOX · COPIED; Wispr Flow pastes
+  there. COS knew Chromium browsers by name (Chrome, Chromium, Edge, Brave, Vivaldi, Opera, Arc), and Comet's engine is
+  "Comet Framework.framework", so it got neither AXManualAccessibility nor the ⌘V fallback.
+- 09:50:07, Claude desktop, an automatic swap on the paste route: the proof passed (`n=159 found=exact edit=86+42>37
+  selectedMatch=true`), the ⌘V went out, and the field then read 37 characters where 154 were due. Either the paste
+  replaced the whole field, or the message was sent between the proof and the ⌘V and the 37-character polished fragment
+  landed in the empty box. Either way an automatic swap left the wrong text.
+- 09:51:42, Slack: `paste=keysHeld` was reported as notFocused.
+
+### What changed
+
+- Chromium is detected by structure as well as by name: any `* Framework.framework` in Contents/Frameworks whose
+  `Versions/Current/Helpers` holds a `* Helper (Renderer).app` (KnownApps.isChromiumFamily, pure, over the listing).
+  Comet, and Chromium browsers to come, now get AXManualAccessibility and the ⌘V fallback like Chrome.
+- Canvas web editors (Slides, Docs, Sheets: Chromium, no settable element, no editable ancestor) are delivered by ⌘V and
+  labelled unconfirmed (PASTED · ⌘V SENT), never NO TEXT BOX. The delivery log line says `canvas=`.
+- A paste-first dictation probes its target first (DictationInsertion.unmeasurableTarget, counts only). Where no swap
+  could ever be proved (a canvas editor, or a field whose counts cannot be read) it takes the 0.5.330 order for that
+  dictation: wait for polish, then paste once (polished, or heard if polish fails or times out). The timing line reads
+  `swap=unmeasurable swap_why=canvasEditor|unreadableField`.
+- Automatic swaps on the paste route (Miles's rule: never leave the wrong text):
+  - The edit is the WHOLE dictation span, never the smallest word change, so the worst case is never a fragment
+    (DictationPolishSwap.pasteEdit). The Accessibility route keeps the smallest edit and is unchanged.
+  - Immediately before the ⌘V, after any wait for held keys, the proof runs again: the field's count equals what the plan
+    read and the proof measured, the selection is still exactly the span and reads as it, and no key went down
+    (Return included) in the last 600 ms (DictationPolishSwap.reproof). Anything moved: no paste, a skip with its reason.
+  - After the ⌘V the field must hold the proof's count, less the span, plus the polished text
+    (DictationPolishSwap.landing). Read back as the polished text: swapped. Right count, unreadable: swapped
+    (unconfirmed), which needs the caret after the new text when the lengths are equal. Anything else at the last poll:
+    `swap mismatch` in the log, `swap=mismatch` on the timing line, and the pill says "Check <app>: COS's polish swap
+    may not have landed cleanly". Activity, Dictation then shows what was heard and Claude's version with Copy
+    polished; Apply polished is not offered, nothing tracks the span, Learn from my edits does not watch it, and COS
+    never sends a second paste.
+  - A swap that landed by count but could not be read back is `swappedUnconfirmed`: the record reads the polished text,
+    the pill does not say POLISHED VERSION IN ACTIVITY, and Apply polished is not offered.
+  - Held keys at the ⌘V are their own skip reason, `skipped:keysHeld`.
+- Unchanged from 0.5.331: an automatic swap never activates an app or moves focus; the Accessibility route behaves as
+  before.
+
+### Tests
+
+- MacDictationChecks: Chromium by structure (Comet, Chrome, Arc, Electron, a native app, a non-Chromium framework), the
+  canvas branch and the order it picks, the re-proof, the whole span, the post-paste count, and the labels each
+  outcome shows and keeps.
+- dictation-swap-pins.py: the probe, the order, the structure listing, the whole span, the re-proof at the ⌘V, held
+  keys, the post-paste count and the labels at their call sites, each with an in-memory mutant that must fail.
+- mutate-mac-dictation-core.py: "0332 " mutants (structure detection, canvas editor branch, pre-paste re-proof, whole
+  span rule, post-paste count check, unconfirmed labelling), each killed by a named check, green baseline first.
+- run.sh: call-site pins for the probe, the whole span, the re-proof and the structure check.
+
+### Not verified without the real apps
+
+Slides in Comet and the Claude and Slack paste-route swaps need Miles's Mac with those apps open: the rules are pure
+and tested, the Accessibility and ⌘V behaviour of those apps is not.
+
 ## 0.5.331 (build 384), Paste first, polish in place
 
 Miles, 2026-10-20 07:49 CDT: "build paste-then-swap with those rules". Everything in 0.5.330 is kept.

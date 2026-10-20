@@ -121,10 +121,14 @@ need("kAXNumberOfCharactersAttribute" in snap and "kAXSelectedTextRangeAttribute
 need("kAXValueAttribute" not in dictation.replace("isSettable(element, kAXValueAttribute)", ""), "AXValue is only ever asked whether it is settable")
 settable = body(dictation, "nonisolated private static func textSettable(_ element: AXUIElement) -> Bool {")
 need("kAXSelectedTextAttribute" in settable and "kAXValueAttribute" in settable, "a role alone is not a text box")
-paste = body(dictation, "private static func paste(changeCount: Int) async -> DictationInsertPolicy.Refusal? {")
-need("DictationDelivery.modifiersHeld(isDown: { CGEventSource.keyState(.hidSystemState, key: CGKeyCode($0)) })" in paste and "flagsState" not in paste and "return .keysHeld" in paste
+need(dictation.count("private static func paste(changeCount: Int, recheck: () -> DictationPolishSwap.Skip? = { nil }) async -> PasteStop? {") == 1, "one ⌘V function")
+paste = body(dictation, ") async -> PasteStop? {")  # after the default closure's own braces
+need("DictationDelivery.modifiersHeld(isDown: { CGEventSource.keyState(.hidSystemState, key: CGKeyCode($0)) })" in paste and "flagsState" not in paste and "return .refused(.keysHeld)" in paste
      and "NSPasteboard.general.changeCount == changeCount" in paste and "CGKeyCode(vKeyCode())" in paste,
      "⌘V waits for released modifiers, refuses a changed clipboard, and uses the layout's V")
+# 0.5.332: the re-proof runs last, after the held-key wait and the clipboard check, immediately before the key is made.
+need(paste.index("return .refused(.clipboardChanged)") < paste.index("if let moved = recheck() { return .moved(moved) }") < paste.index("let key = CGKeyCode(vKeyCode())"),
+     "an automatic swap's re-proof runs immediately before the ⌘V is posted")
 need(re.findall(r"virtualKey: (\w+)", dictation) == ["key", "key"] and "kVK_Return" not in dictation
      and "kVK_ANSI_KeypadEnter" not in dictation and "virtualKey: 36" not in dictation,
      "the only key COS may post is ⌘V; it never presses Return or Send")
@@ -503,8 +507,8 @@ need("DictationReplace.plan(" in replace and "DictationReplace.route(setterWorke
 need("kAXStringForRangeParameterizedAttribute" in dictation, "the span is read with AXStringForRange")
 # 0.5.318 (Miles 13:02, Claude): the Accessibility set is a no-op in Electron, so a replace there pastes, and only after
 # the tested proof that the selection is exactly the misheard words in the app's own focused field.
-need(replace.count("await paste(changeCount: changeCount)") == 1
-     and replace.index("DictationReplace.pasteProof(") < replace.index("if let proof {") < replace.index("await paste(changeCount: changeCount)"),
+need(replace.count("await paste(changeCount: changeCount, recheck: reproof)") == 1
+     and replace.index("DictationReplace.pasteProof(") < replace.index("if let proof {") < replace.index("await paste(changeCount: changeCount, recheck: reproof)"),
      "the replace ⌘V is posted once, only after pasteProof passed")
 need(replace.index("key.orderOut(nil); key.orderFrontRegardless()") < replace.index("DictationReplace.pasteProof("),
      "COS's own panel gives the keyboard back before focus is proved")
@@ -525,7 +529,7 @@ need(transcribe.count("DictationListFormat.format(") == 1
      and transcribe.index("let text = formatLists ? DictationListFormat.format(said) : said") < transcribe.index("let delivered = copyOnly"),
      "the list format runs before delivery, so what is typed and what is kept match")
 replace_ui = body(dictation, "    func replaceCorrected() {")
-need(replace_ui.count("copy(offer.corrected)") == 3 and 'fixNote = "Copied the corrected text."' in replace_ui,
+need(replace_ui.count("copy(offer.corrected)") == 4 and 'fixNote = "Copied the corrected text."' in replace_ui,
      "every path that does not replace copies the corrected text and says so")
 need("DictationReplace.span(pid: app.processIdentifier, baseline: baseline, after: after, count: count)" in deliver
      and "baseline: beforePaste, after: measuredAfterPaste, count: count)" in deliver,

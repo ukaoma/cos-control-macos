@@ -37,6 +37,8 @@ final class FakeDictationBoard: DictationPasteboardAccess {
             ("iTerm2's read-only AXTextArea gets ⌘V", true, false, nil, true, false, false, true, false, nil),
             ("Finder or the desktop", true, false, nil, false, false, false, false, false, .noTextBox),
             ("Electron with no focused element gets ⌘V", true, false, nil, false, false, false, true, false, nil),
+            // 0.5.332 (Miles 09:57): Google Slides in Comet focuses an AXEmptyGroup; Comet is Chromium, so it gets ⌘V.
+            ("Comet's Slides canvas gets ⌘V, not NO TEXT BOX", true, false, "AXEmptyGroup", true, false, false, true, false, nil),
             ("settable but nothing focused is not a target", true, false, nil, false, true, false, false, false, .noTextBox),
         ]
         for (name, trusted, secureInput, subrole, focused, settable, ancestor, pasteApp, own, expected) in rows {
@@ -1577,7 +1579,7 @@ final class FakeDictationBoard: DictationPasteboardAccess {
             expect(P.keepsPolished(.skipped(.notFrontmost)) && P.keepsPolished(.skipped(.typing)) && !P.keepsPolished(.skipped(.copyOnly)),
                    "swap: a skip keeps Claude's version for Apply polished; copy-only already delivered it")
             expect(!P.keepsPolished(.swapped) && !P.keepsPolished(.identical) && !P.keepsPolished(.notPolished) && !P.keepsPolished(.off), "swap: nothing kept otherwise")
-            expect(P.notice(.skipped(.notFocused)) == P.skippedNotice && P.notice(.swapped) == nil && P.notice(.notPolished) == nil && P.notice(.identical) == nil,
+            expect(P.notice(.skipped(.notFocused), app: "Notes") == P.skippedNotice && P.notice(.swapped, app: "Notes") == nil && P.notice(.notPolished, app: "Notes") == nil && P.notice(.identical, app: "Notes") == nil,
                    "swap: the pill says one line only when a skip happened")
             expect(P.Result.swapped.logName == "swapped" && P.Result.skipped(.notFrontmost).logName == "skipped:notFrontmost" && P.Result.off.logName == "off"
                    && P.Result.identical.logName == "identical" && P.Result.notPolished.logName == "notPolished", "swap: the timing line's outcome words")
@@ -1606,6 +1608,106 @@ final class FakeDictationBoard: DictationPasteboardAccess {
             expect(after[0].text == polished && after[0].heard == "um open the page" && after[0].polishModel == "haiku" && after[0].polishLabel == "Polished · Haiku"
                    && after[0].engine == "parakeet-ultra" && after[0].createdAt == before[0].createdAt && after[1] == other, "swap: the dictation reads the swap and keeps what was heard")
         }
-        print("PASS Mac dictation: \(count) policy checks; insert-target table, measured delivery, terminals, layout ⌘V, listening bars end to end, clipboard restore, sounds, pill placement, recent dictations file, card countdown, fix-a-word selection, quick fix, replace, span guess, quiet and restore, bounded audio, PCM16 WAV, device failure, any-key triggers, field context and its evidence, AI polish, release tail and timing, truthful start, smooth start, missed releases, early polish, paste first and polish in place")
+        // 0.5.332 (Miles 2026-10-20 09:50 to 09:58): Chromium by structure, canvas editors, paste-route swap safety.
+        do {
+            func expect(_ value: Bool, _ name: String) { precondition(value, name); count += 1 }
+            typealias P = DictationPolishSwap
+            // 1. Chromium by structure: a "* Framework.framework" with Versions/Current/Helpers/"* Helper (Renderer).app".
+            let cometHelpers = ["Comet Helper (Aperitif GPU).app", "Comet Helper (Aperitif Renderer).app", "Comet Helper (GPU).app", "Comet Helper (Renderer).app",
+                                "Comet Helper.app", "CometUpdater.app", "chrome_crashpad_handler"]
+            func listing(_ table: [String: [String]]) -> (String) -> [String] { { table[$0] ?? [] } }
+            expect(KnownApps.isChromiumFamily(frameworks: ["Comet Framework.framework"], helpers: listing(["Comet Framework.framework": cometHelpers])),
+                   "chromium: Comet is Chromium by its Renderer helper")
+            expect(!KnownApps.isChromiumFamily(frameworks: ["Comet Framework.framework"]), "chromium: Comet's name alone is not on the list (the 0.5.331 bug)")
+            expect(KnownApps.isChromiumFamily(frameworks: ["Google Chrome Framework.framework"],
+                                              helpers: listing(["Google Chrome Framework.framework": ["Google Chrome Helper (Renderer).app", "Google Chrome Helper.app"]])),
+                   "chromium: Chrome by name and by structure")
+            expect(KnownApps.isChromiumFamily(frameworks: ["Arc Framework.framework"]), "chromium: Arc still by name")
+            expect(KnownApps.isChromiumFamily(frameworks: ["Electron Framework.framework", "Squirrel.framework", "Claude Helper (Renderer).app"]), "chromium: Electron still by name")
+            expect(!KnownApps.isChromiumFamily(frameworks: ["Sparkle.framework"], helpers: { _ in ["Any Helper (Renderer).app"] }),
+                   "chromium: a native app's framework that is not \"* Framework.framework\" is never asked")
+            expect(!KnownApps.isChromiumFamily(frameworks: ["Foo Framework.framework"], helpers: listing(["Foo Framework.framework": ["Foo Helper.app", "Foo Helper (GPU).app", "Foo Helper (Aperitif Renderer).app"]])),
+                   "chromium: a non-Chromium framework without a Renderer helper is not Chromium")
+            expect(KnownApps.helpersPath == "Versions/Current/Helpers", "chromium: the helpers live in Versions/Current/Helpers")
+            // 2. Canvas web editors: Chromium, nothing focused takes text, no editable ancestor.
+            expect(DictationInsertPolicy.canvasEditor(chromium: true, focused: true, textSettable: false, editableAncestor: false), "canvas: Slides in Comet is a canvas editor")
+            expect(DictationInsertPolicy.canvasEditor(chromium: true, focused: false, textSettable: true, editableAncestor: false), "canvas: nothing focused in Chromium is a canvas")
+            expect(!DictationInsertPolicy.canvasEditor(chromium: true, focused: true, textSettable: true, editableAncestor: false), "canvas: a settable Chromium field is not")
+            expect(!DictationInsertPolicy.canvasEditor(chromium: true, focused: true, textSettable: false, editableAncestor: true), "canvas: a web editor's editable ancestor is not")
+            expect(!DictationInsertPolicy.canvasEditor(chromium: false, focused: true, textSettable: false, editableAncestor: false), "canvas: never outside Chromium")
+            expect(P.unmeasurable(canvas: true, baselineReadable: true) == .canvasEditor, "canvas: a canvas is unmeasurable even if it reports counts")
+            expect(P.unmeasurable(canvas: false, baselineReadable: false) == .unreadableField, "canvas: an unreadable field is unmeasurable")
+            expect(P.unmeasurable(canvas: false, baselineReadable: true) == nil, "canvas: a readable field is measurable")
+            expect(P.sequence(pasteFirst: true, polishes: true, copyOnly: false, unmeasurable: .canvasEditor) == .polishThenDeliver,
+                   "canvas: an unmeasurable target waits for polish, then pastes once")
+            expect(P.sequence(pasteFirst: true, polishes: true, copyOnly: false, unmeasurable: nil) == .deliverThenPolish, "canvas: a measurable target still pastes first")
+            expect(P.unswapped(pasteFirst: true, polished: true, copyOnly: false, unmeasurable: true) == .unmeasurable && P.Result.unmeasurable.logName == "unmeasurable",
+                   "canvas: the line reads swapOutcome=unmeasurable")
+            expect(P.unswapped(pasteFirst: false, polished: true, copyOnly: false, unmeasurable: true) == .off, "canvas: the toggle off still reads off")
+            expect(P.unswapped(pasteFirst: true, polished: false, copyOnly: false, unmeasurable: true) == .notPolished, "canvas: no polish still reads notPolished")
+            var canvasLine = DictationTiming.startFailure(DictationStartMarks(pressed: 0), at: Date(timeIntervalSince1970: 1_760_000_000))
+            canvasLine.settle(.unmeasurable, ms: nil, route: nil, why: .canvasEditor)
+            let canvasJSON = DictationTimingLog.line(canvasLine).flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] } ?? [:]
+            expect(canvasJSON["swapOutcome"] as? String == "unmeasurable" && canvasJSON["swapWhy"] as? String == "canvasEditor", "canvas: the line carries the timing reason")
+            // 3a. The paste route replaces the whole dictation, never a fragment (Claude, 09:50: edit 86+42 of a 159 field).
+            let heardText = "so um the launch is next Tuesday", polishedText = "So the launch is next Tuesday."
+            let small = DictationReplace.Edit(location: 90, length: 5, original: "so um", replacement: "So")
+            let whole = P.pasteEdit(small, route: .paste, dictationAt: 86, current: heardText, corrected: polishedText)
+            expect(whole == DictationReplace.Edit(location: 86, length: heardText.utf16.count, original: heardText, replacement: polishedText),
+                   "whole span: the paste route replaces the whole dictation")
+            expect(P.pasteEdit(small, route: .accessibility, dictationAt: 86, current: heardText, corrected: polishedText) == small, "whole span: the Accessibility route keeps the smallest edit")
+            expect(P.pasteEdit(small, route: .paste, dictationAt: nil, current: heardText, corrected: polishedText) == small, "whole span: no known start keeps the plan's edit")
+            // 3b. The re-proof immediately before the ⌘V.
+            let n = 159, selected = DictationFieldSnapshot(characters: n, location: 86, length: whole.length)
+            func reproof(plan: Int? = 159, proof: Int? = 159, now: DictationFieldSnapshot = selected, text: String? = heardText, key: Int = 5_000) -> P.Skip? {
+                P.reproof(planCount: plan, proofCount: proof, now: now, selectedText: text, edit: whole, sinceKeyMs: key)
+            }
+            expect(reproof() == nil, "re-proof: nothing moved, paste")
+            expect(reproof(now: DictationFieldSnapshot(characters: 0, location: 0, length: 0)) == .textMoved, "re-proof: the field emptied by a send skips")
+            expect(reproof(proof: 160) == .textMoved, "re-proof: the count changed since the proof skips")
+            expect(reproof(plan: 158) == .textMoved, "re-proof: the count changed since the plan read skips")
+            expect(reproof(now: DictationFieldSnapshot(characters: nil, location: 86, length: whole.length)) == .fieldGone, "re-proof: an unreadable count skips")
+            expect(reproof(plan: nil) == .fieldGone && reproof(proof: nil) == .fieldGone, "re-proof: no count at the plan or the proof skips")
+            expect(reproof(now: DictationFieldSnapshot(characters: n, location: 159, length: 0)) == .selectionUnproven, "re-proof: the selection moved skips")
+            expect(reproof(now: DictationFieldSnapshot(characters: n, location: 86, length: 3)) == .selectionUnproven, "re-proof: the selection shrank skips")
+            expect(reproof(text: "so um the launch") == .selectionUnproven && reproof(text: nil) == .selectionUnproven, "re-proof: the selected text no longer reads as the dictation skips")
+            expect(reproof(key: 120) == .typing, "re-proof: a key (Return included) in the last 600 ms skips")
+            expect(reproof(key: 599) == .typing && reproof(key: 600) == nil, "re-proof: 600 ms without a key is quiet")
+            // 3c. After the ⌘V: the count it must leave (proof count, less the span, plus the new text).
+            let expected = n - whole.length + polishedText.utf16.count
+            func land(_ after: Int?, read: String?, caret: Int? = nil, final: Bool = true, edit: DictationReplace.Edit = whole, proof: Int = 159) -> P.Landing {
+                P.landing(proofCount: proof, after: DictationFieldSnapshot(characters: after, location: caret, length: caret == nil ? nil : 0), edit: edit, readback: read, finalPoll: final)
+            }
+            expect(land(expected, read: polishedText) == .swapped, "after paste: the expected count and the polished text read back is swapped")
+            expect(land(expected, read: nil) == .unconfirmed, "after paste: the expected count, unreadable, is swapped (unconfirmed)")
+            expect(land(37, read: nil) == .mismatch, "after paste: 37 where 154 were due is a mismatch (Claude, 09:50)")
+            expect(land(37, read: nil, final: false) == .pending, "after paste: before the last poll a wrong count keeps waiting")
+            expect(land(n, read: nil, final: true) == .mismatch, "after paste: an unmoved field at the last poll is a mismatch")
+            expect(land(expected, read: "something else") == .mismatch, "after paste: the right count with the wrong text read back is a mismatch")
+            expect(land(nil, read: nil) == .mismatch, "after paste: an unreadable count at the last poll is a mismatch")
+            expect(land(expected + 1, read: polishedText) == .mismatch, "after paste: one character off is a mismatch")
+            let same = DictationReplace.Edit(location: 10, length: 5, original: "hello", replacement: "Hello")
+            expect(land(20, read: nil, caret: 15, edit: same, proof: 20) == .unconfirmed, "after paste: a same-length swap unreadable needs the caret after the new text")
+            expect(land(20, read: nil, caret: 10, edit: same, proof: 20) == .mismatch, "after paste: a same-length swap with the caret not moved is not unconfirmed")
+            expect(land(20, read: nil, edit: same, proof: 20) == .mismatch, "after paste: a same-length swap with no caret is not unconfirmed")
+            // 3d. What each outcome shows and keeps.
+            expect(P.Result.swappedUnconfirmed.swappedIn && P.Result.swapped.swappedIn && !P.Result.mismatch.swappedIn && !P.Result.skipped(.typing).swappedIn,
+                   "unconfirmed: a swap that landed by count reads as swapped in")
+            expect(!P.keepsPolished(.swappedUnconfirmed) && P.notice(.swappedUnconfirmed, app: "Claude") == nil && !P.offersApply(.swappedUnconfirmed),
+                   "unconfirmed: no POLISHED VERSION IN ACTIVITY and no Apply polished")
+            expect(P.Result.swappedUnconfirmed.logName == "swappedUnconfirmed" && P.Result.mismatch.logName == "mismatch", "unconfirmed: the line's words")
+            expect(P.notice(.mismatch, app: "Claude") == "Check Claude: COS's polish swap may not have landed cleanly", "mismatch: the pill's one line names the app")
+            expect(P.keepsPolished(.mismatch) && !P.offersApply(.mismatch), "mismatch: both versions kept in Activity, never Apply polished")
+            expect(P.offersApply(.skipped(.notFocused)) && !P.offersApply(.skipped(.copyOnly)) && !P.offersApply(.swapped), "mismatch: Apply polished stays for a skip only")
+            expect(!P.watches(.mismatch) && P.watches(.swapped) && P.watches(.swappedUnconfirmed) && P.watches(.skipped(.typing)), "mismatch: Learn from my edits never watches it")
+            let watched = P.watch(span: DictationInsertedSpan(pid: 1, location: 86, length: 32), typed: heardText, polished: polishedText, result: .swappedUnconfirmed, swappedAt: 86)
+            expect(watched.text == polishedText, "unconfirmed: the learner starts from the polished text, so COS's swap is not the person's edit")
+            expect(P.skip(forPaste: .keysHeld) == .keysHeld && P.skip(forPaste: .clipboardChanged) == .notFocused, "keys held: its own skip reason, not notFocused (Slack 09:51)")
+            expect(DictationPendingPolish(text: "a", heard: "b", model: .haiku).applies, "mismatch: a pending polish applies unless a mismatch says not")
+            for copy in [P.mismatchNotice(app: "Claude")] {
+                expect(!copy.contains("\u{2014}") && !copy.contains("\u{2192}") && !copy.contains("->"), "mismatch: copy has no em dash or arrow")
+            }
+        }
+        print("PASS Mac dictation: \(count) policy checks; insert-target table, measured delivery, terminals, layout ⌘V, listening bars end to end, clipboard restore, sounds, pill placement, recent dictations file, card countdown, fix-a-word selection, quick fix, replace, span guess, quiet and restore, bounded audio, PCM16 WAV, device failure, any-key triggers, field context and its evidence, AI polish, release tail and timing, truthful start, smooth start, missed releases, early polish, paste first and polish in place, Chromium by structure, canvas editors, paste-route swap safety")
     }
 }

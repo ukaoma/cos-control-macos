@@ -288,6 +288,9 @@ struct DictationDelivered: Sendable {
         let settable = element.map { textSettable($0) } ?? false
         let ancestor = element.flatMap { editableAncestor($0) }
         facts += " family=\(family) role=\(role ?? "-") subrole=\(subrole ?? "-") settable=\(settable) ancestor=\(ancestor != nil)"
+        // 0.5.332: a canvas web editor (Slides in Comet) takes ⌘V below, unconfirmed; the log says which it was.
+        let canvas = DictationInsertPolicy.canvasEditor(chromium: family, focused: element != nil, textSettable: settable, editableAncestor: ancestor != nil)
+        facts += " canvas=\(canvas)"
         if let refusal = DictationInsertPolicy.refusal(
             trusted: trusted, secureInput: IsSecureEventInputEnabled(), subrole: subrole, focused: element != nil,
             textSettable: settable, editableAncestor: ancestor != nil, pasteApp: terminal || family, ownOverlay: ownOverlay) {
@@ -334,7 +337,7 @@ struct DictationDelivered: Sendable {
         wroteTranscript = true
         let changeCount = board.changeCount
         let beforePaste = snapshot(target)
-        if let refusal = await paste(changeCount: changeCount) { return done(.refused(refusal)) }
+        if let stop = await paste(changeCount: changeCount) { return done(.refused(stop.refusal)) }
         let postedAt = Date()
         facts += " paste=sent"
         var waited = 0
@@ -375,7 +378,9 @@ struct DictationDelivered: Sendable {
         return done(.unconfirmed(app: name, viaPaste: true))
     }
 
-    enum ReplaceResult: Equatable { case replaced, copied(DictationReplace.Reason), unverified(pasted: Bool) }
+    /// 0.5.332 (automatic swaps on the paste route only): `replacedUnconfirmed`, the ⌘V landed by count and could not be
+    /// read back; `mismatch`, after the ⌘V the field did not hold the count it should.
+    enum ReplaceResult: Equatable { case replaced, copied(DictationReplace.Reason), unverified(pasted: Bool), replacedUnconfirmed, mismatch }
     /// What a replace did, and where the dictation now is (nil: no longer tracked, so a later replace copies).
     struct Replaced {
         let result: ReplaceResult
@@ -426,10 +431,13 @@ struct DictationDelivered: Sendable {
             if case .copy(let reason) = plan { return done(.copied(reason), target, skip: skip) }
             return done(.copied(.textMoved), target, skip: skip)
         }
-        guard case .edit(let edit, let dictationAt) = plan else {
+        guard case .edit(let planned, let dictationAt) = plan else {
             if case .copy(let reason) = plan { facts += " found=\(reason.rawValue)"; return done(.copied(reason), target) }
             return done(.copied(.notMeasured), target)
         }
+        let route = DictationReplace.route(setterWorked: target.setterWorked)
+        // 0.5.332: an automatic swap on the paste route replaces the whole dictation, never a fragment of it.
+        let edit = automatic ? DictationPolishSwap.pasteEdit(planned, route: route, dictationAt: dictationAt, current: target.text, corrected: corrected) : planned
         let found = dictationAt == nil ? "words" : dictationAt == target.span.location ? "exact" : "moved"
         facts += " found=\(found) edit=\(edit.location)+\(edit.length)>\(edit.replacement.utf16.count)"
         // Where the dictation sits once the edit lands; nil when only the misheard words were found.
@@ -438,7 +446,6 @@ struct DictationDelivered: Sendable {
                                   terminal: target.terminal, app: target.app, text: corrected, setterWorked: target.setterWorked, bundle: target.bundle,
                                   chromium: target.chromium, electron: target.electron)
         }
-        let route = DictationReplace.route(setterWorked: target.setterWorked)
         routeTaken = route
         facts += " route=\(route)"
         func putBack() { if let l = original.location, let len = original.length { _ = select(element, location: l, length: len) } }
@@ -510,18 +517,46 @@ struct DictationDelivered: Sendable {
         let saved = DictationClipboard.snapshot(board)
         guard board.writeTranscript(edit.replacement, markerTypes: DictationClipboard.transientTypes) else { putBack(); return done(.copied(.fieldGone), target) }
         let changeCount = board.changeCount
-        if let refusal = await paste(changeCount: changeCount) {
-            facts += " paste=\(refusal.rawValue)"
+        // 0.5.332: an automatic swap proves it again immediately before the ⌘V (after any wait for held keys): the count
+        // the plan read and the proof measured, the selection still exactly the span and reading as it, no key in 600 ms.
+        let planCount = original.characters, proofCount = selection.characters
+        func reproof() -> DictationPolishSwap.Skip? {
+            guard automatic else { return nil }
+            let now = snapshot(element), selectedNow = attribute(element, kAXSelectedTextAttribute) as? String
+            let sinceKey = msSinceKeyDown()
+            let skip = DictationPolishSwap.reproof(planCount: planCount, proofCount: proofCount, now: now, selectedText: selectedNow, edit: edit, sinceKeyMs: sinceKey)
+            facts += " reproof=\(skip?.rawValue ?? "ok") now=\(now.logDescription) sinceKeyMs=\(sinceKey)"
+            return skip
+        }
+        if let stop = await paste(changeCount: changeCount, recheck: reproof) {
             // Not pasted: the person's clipboard goes back now; the caller copies the corrected dictation.
             if let saved { _ = DictationClipboard.restore(saved, to: board) }
-            putBack(); return done(.copied(.notFocused), target)
+            switch stop {
+            case .refused(let refusal):
+                facts += " paste=\(refusal.rawValue)"
+                putBack(); return done(.copied(.notFocused), target, skip: automatic ? DictationPolishSwap.skip(forPaste: refusal) : nil)
+            case .moved(let skip):
+                facts += " paste=skipped"
+                // The field moved under the selection: leave the caret where the person put it.
+                if skip != .textMoved, skip != .fieldGone { putBack() }
+                return done(.copied(.textMoved), target, skip: skip)
+            }
         }
         facts += " paste=sent"
         let postedAt = Date()
         var landed = false, waited = 0
-        for ms in [80, 200, 400, 700] {
+        var landing = DictationPolishSwap.Landing.pending
+        let polls = [80, 200, 400, 700]
+        for ms in polls {
             try? await Task.sleep(for: .milliseconds(ms - waited)); waited = ms
             let after = snapshot(element), back = string(element, location: edit.location, length: edit.replacement.utf16.count)
+            // 0.5.332: an automatic swap is judged by the count it must leave: proof count, less the span, plus the new text.
+            if automatic, let proofCount {
+                landing = DictationPolishSwap.landing(proofCount: proofCount, after: after, edit: edit, readback: back, finalPoll: ms == polls.last)
+                if landing != .pending { facts += " after=\(after.logDescription) expected=\(proofCount - edit.length + edit.replacement.utf16.count) readback=\(back == nil ? "unreadable" : back == edit.replacement ? "match" : "mismatch") landing=\(landing)" }
+                if landing != .pending { break }
+                continue
+            }
             if DictationReplace.confirmed(before: selection, after: after, edit: edit, readback: back) {
                 facts += " after=\(after.logDescription) readback=\(back == nil ? "unreadable" : "match")"; landed = true; break
             }
@@ -537,6 +572,16 @@ struct DictationDelivered: Sendable {
                 _ = DictationClipboard.restore(saved, to: board)
             }
             if landed { restoreCaret(); return done(.replaced, next) }
+        }
+        if automatic {
+            switch landing {
+            case .swapped: restoreCaret(); return done(.replaced, next)
+            case .unconfirmed: restoreCaret(); return done(.replacedUnconfirmed, next)
+            // Never a second paste. Where the dictation is now is unknown, so nothing tracks it.
+            case .mismatch, .pending:
+                dictationLog.notice("swap mismatch bundle=\(target.bundle ?? "-", privacy: .public) \(facts, privacy: .public)")
+                return done(.mismatch, nil)
+            }
         }
         return done(.unverified(pasted: true), target)
     }
@@ -557,19 +602,31 @@ struct DictationDelivered: Sendable {
         return AXUIElementSetAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, value) == .success
     }
 
+    /// 0.5.332: milliseconds since any key went down (Return included), from the session's own event record. Read only.
+    private static func msSinceKeyDown() -> Int {
+        Int((CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: .keyDown) * 1000).rounded())
+    }
+    /// 0.5.332: why a ⌘V was not posted: a delivery refusal, or (an automatic swap's re-proof) something moved.
+    enum PasteStop: Equatable {
+        case refused(DictationInsertPolicy.Refusal)
+        case moved(DictationPolishSwap.Skip)
+        var refusal: DictationInsertPolicy.Refusal { if case .refused(let refusal) = self { refusal } else { .noTextBox } }
+    }
     /// ⌘V on the current layout's V, only once no modifier is physically held and only while the clipboard still
-    /// holds what COS put there. Returns why it did not paste.
-    private static func paste(changeCount: Int) async -> DictationInsertPolicy.Refusal? {
+    /// holds what COS put there. Returns why it did not paste. 0.5.332: `recheck` runs last, immediately before the
+    /// key is posted; a reason from it posts nothing.
+    private static func paste(changeCount: Int, recheck: () -> DictationPolishSwap.Skip? = { nil }) async -> PasteStop? {
         var waited = 0
         while DictationDelivery.modifiersHeld(isDown: { CGEventSource.keyState(.hidSystemState, key: CGKeyCode($0)) }) {
-            guard waited < DictationDelivery.modifierWaitMilliseconds else { return .keysHeld }
+            guard waited < DictationDelivery.modifierWaitMilliseconds else { return .refused(.keysHeld) }
             try? await Task.sleep(for: .milliseconds(30)); waited += 30
         }
-        guard NSPasteboard.general.changeCount == changeCount else { return .clipboardChanged }
+        guard NSPasteboard.general.changeCount == changeCount else { return .refused(.clipboardChanged) }
+        if let moved = recheck() { return .moved(moved) }
         let key = CGKeyCode(vKeyCode())
         guard let source = CGEventSource(stateID: .combinedSessionState),
               let down = CGEvent(keyboardEventSource: source, virtualKey: key, keyDown: true),
-              let up = CGEvent(keyboardEventSource: source, virtualKey: key, keyDown: false) else { return .noTextBox }
+              let up = CGEvent(keyboardEventSource: source, virtualKey: key, keyDown: false) else { return .refused(.noTextBox) }
         down.flags = .maskCommand; up.flags = .maskCommand
         down.post(tap: .cghidEventTap); up.post(tap: .cghidEventTap)
         return nil
@@ -710,10 +767,39 @@ struct DictationDelivered: Sendable {
     private static func isChromiumFamily(_ app: NSRunningApplication) -> Bool {
         guard let url = app.bundleURL else { return false }
         if let known = chromium[url.path] { return known }
-        let names = (try? FileManager.default.contentsOfDirectory(atPath: url.appendingPathComponent("Contents/Frameworks").path)) ?? []
-        let result = KnownApps.isChromiumFamily(frameworks: names)
+        let frameworks = url.appendingPathComponent("Contents/Frameworks")
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: frameworks.path)) ?? []
+        // 0.5.332: by structure too (a Renderer helper inside the framework), so Comet and future Chromium browsers count.
+        let result = KnownApps.isChromiumFamily(frameworks: names) { name in
+            (try? FileManager.default.contentsOfDirectory(atPath: frameworks.appendingPathComponent(name).appendingPathComponent(KnownApps.helpersPath).path)) ?? []
+        }
         chromium[url.path] = result
         return result
+    }
+
+    /// 0.5.332 (Google Slides in Comet): before a paste-first dictation, whether its target could ever prove a swap.
+    /// Reads what delivery reads (the focused element after Chromium's AXManualAccessibility, settable, the editable
+    /// ancestor, the counts), never text. nil: measurable, or a case delivery handles on its own (no Accessibility, COS's
+    /// own window, a terminal). One `probe` log line, codes only.
+    static func unmeasurableTarget() -> DictationPolishSwap.Unmeasurable? {
+        guard AXIsProcessTrusted(), let app = NSWorkspace.shared.frontmostApplication,
+              app.processIdentifier != ProcessInfo.processInfo.processIdentifier, !KnownApps.isTerminal(app.bundleIdentifier) else { return nil }
+        let appElement = AXUIElementCreateApplication(app.processIdentifier)
+        AXUIElementSetMessagingTimeout(appElement, 0.25)
+        var element = focused(appElement)
+        let family = isChromiumFamily(app)
+        if family, element.map({ !textCapable($0) }) ?? true {
+            AXUIElementSetAttributeValue(appElement, "AXManualAccessibility" as CFString, kCFBooleanTrue)
+            element = focused(appElement)
+        }
+        if let element { AXUIElementSetMessagingTimeout(element, 0.25) }
+        let settable = element.map { textSettable($0) } ?? false
+        let ancestor = element.flatMap { editableAncestor($0) }
+        let canvas = DictationInsertPolicy.canvasEditor(chromium: family, focused: element != nil, textSettable: settable, editableAncestor: ancestor != nil)
+        let baseline = snapshot(settable ? element : (ancestor ?? element))
+        let why = DictationPolishSwap.unmeasurable(canvas: canvas, baselineReadable: baseline.readable)
+        dictationLog.notice("probe bundle=\(app.bundleIdentifier ?? "-", privacy: .public) family=\(family) settable=\(settable) ancestor=\(ancestor != nil) canvas=\(canvas) before=\(baseline.logDescription, privacy: .public) unmeasurable=\(why?.rawValue ?? "no", privacy: .public)")
+        return why
     }
 
     /// AXNumberOfCharacters and AXSelectedTextRange only. The field's text (AXValue) is never read.
@@ -2416,8 +2502,11 @@ enum DictationSpareBuild: Sendable {
                 DictationProof.record(engine: engine, serverVersion: serverVersion?())
                 // 0.5.331 paste first, polish in place: with the toggle on and a polish that will run, what was heard is
                 // typed now and Claude's version swapped in place when it is ready. Off: today's order, below.
-                let sequence = DictationPolishSwap.sequence(pasteFirst: pasteThenPolish, polishes: polishBridge != nil && DictationPolish.shouldPolish(text: heard, model: polishModel),
-                                                            copyOnly: pendingInterrupted)
+                // 0.5.332: a target that can never prove a swap (a canvas editor like Slides) is polished first instead.
+                let polishes = polishBridge != nil && DictationPolish.shouldPolish(text: heard, model: polishModel)
+                let unmeasurable = pasteThenPolish && polishes && !pendingInterrupted ? DictationInsertion.unmeasurableTarget() : nil
+                let sequence = DictationPolishSwap.sequence(pasteFirst: pasteThenPolish, polishes: polishes,
+                                                            copyOnly: pendingInterrupted, unmeasurable: unmeasurable)
                 if sequence == .deliverThenPolish { await deliverThenPolish(heard, attempt: attempt); return }
                 // 0.5.325 AI polish, before lists and delivery: Claude's cleanup within its budget, or what was heard.
                 let polished = await polish(heard, attempt: attempt)
@@ -2439,7 +2528,8 @@ enum DictationSpareBuild: Sendable {
                 deliveryInFlight = false
                 timing?.deliverMs = DictationStartMarks.ms(delivering, ProcessInfo.processInfo.systemUptime)
                 timing?.releaseToFirstTextMs = firstTextMs()
-                timing?.settle(DictationPolishSwap.unswapped(pasteFirst: pasteThenPolish, polished: polished != nil, copyOnly: copyOnly), ms: nil, route: nil)
+                timing?.settle(DictationPolishSwap.unswapped(pasteFirst: pasteThenPolish, polished: polished != nil, copyOnly: copyOnly, unmeasurable: unmeasurable != nil),
+                               ms: nil, route: nil, why: unmeasurable)
                 // What was typed, after the field's own words respelled it (0.5.323), is what is kept and watched.
                 finish(delivered.context?.text ?? text, outcome: delivered.outcome, target: delivered.target, context: delivered.context)
             } catch {
@@ -2532,7 +2622,7 @@ enum DictationSpareBuild: Sendable {
         if line == nil { timing = nil }
         if finished.outcome == "pending" { finished.outcome = outcome }
         func n(_ value: Double?) -> String { value.map { String(format: "%.1f", $0) } ?? "-" }
-        dictationLog.notice("timing release_to_closed_ms=\(finished.releaseToClosedMs) tail_ms=\(finished.tailMs) captured_s=\(n(finished.capturedSeconds), privacy: .public) final_dbfs=\(n(finished.finalDBFS), privacy: .public) tail_dbfs=\(n(finished.tailDBFS), privacy: .public) engine=\(finished.engine ?? "-", privacy: .public) transcribe_ms=\(finished.transcribeMs ?? -1) polish_ms=\(finished.polishMs ?? -1) polish=\(finished.polishModel ?? "-", privacy: .public):\(finished.polishOutcome ?? "-", privacy: .public) first_text_ms=\(finished.releaseToFirstTextMs ?? -1) swap=\(finished.swapOutcome ?? "-", privacy: .public) swap_ms=\(finished.swapMs ?? -1) swap_route=\(finished.swapRoute ?? "-", privacy: .public) outcome=\(finished.outcome, privacy: .public)")
+        dictationLog.notice("timing release_to_closed_ms=\(finished.releaseToClosedMs) tail_ms=\(finished.tailMs) captured_s=\(n(finished.capturedSeconds), privacy: .public) final_dbfs=\(n(finished.finalDBFS), privacy: .public) tail_dbfs=\(n(finished.tailDBFS), privacy: .public) engine=\(finished.engine ?? "-", privacy: .public) transcribe_ms=\(finished.transcribeMs ?? -1) polish_ms=\(finished.polishMs ?? -1) polish=\(finished.polishModel ?? "-", privacy: .public):\(finished.polishOutcome ?? "-", privacy: .public) first_text_ms=\(finished.releaseToFirstTextMs ?? -1) swap=\(finished.swapOutcome ?? "-", privacy: .public) swap_ms=\(finished.swapMs ?? -1) swap_route=\(finished.swapRoute ?? "-", privacy: .public) swap_why=\(finished.swapWhy ?? "-", privacy: .public) outcome=\(finished.outcome, privacy: .public)")
         if let url = Self.defaultHistoryURL()?.deletingLastPathComponent().appendingPathComponent(DictationTimingLog.fileName) {
             DictationTimingLog.append(finished, to: url)
         }
@@ -2595,13 +2685,14 @@ enum DictationSpareBuild: Sendable {
                 watchTarget = DictationInsertTarget(element: target.element, span: watched.span, terminal: target.terminal, app: target.app, text: watched.text,
                                                     setterWorked: target.setterWorked, bundle: target.bundle, chromium: target.chromium, electron: target.electron)
             }
-            if result == .swapped, let model = run?.model {
+            if result.swappedIn, let model = run?.model {
                 // The dictation now reads what the field holds, and keeps what was heard (Fix a word, Heard, history).
                 recent = DictationHistory.polishing(id, to: polished, heard: heard, model: model.rawValue, in: recent); saveRecent()
                 if let watchTarget { rememberTarget(watchTarget, for: id) }
                 watchContext = delivered.context.map { DictationFieldContext.Applied(text: polished, fixes: final?.fixes ?? [], outside: $0.outside, terms: $0.terms) }
             } else if DictationPolishSwap.keepsPolished(result), let model = run?.model, record(id) != nil {
-                pendingPolish[id] = DictationPendingPolish(text: polished, heard: heard, model: model)
+                // 0.5.332: after a mismatch the row shows what was heard and Claude's version, with Copy, never Apply.
+                pendingPolish[id] = DictationPendingPolish(text: polished, heard: heard, model: model, applies: DictationPolishSwap.offersApply(result))
             }
         }
         quiet?.stop()
@@ -2609,10 +2700,10 @@ enum DictationSpareBuild: Sendable {
         if case .refused = delivered.outcome { recordTiming("copied", line: line) } else { recordTiming("typed", line: line) }
         dictationLog.notice("swap outcome=\(result.logName, privacy: .public) route=\(route.map(DictationPolishSwap.routeName) ?? "-", privacy: .public) ms=\(swapMs ?? -1)")
         // Learn from my edits starts once the swap settled, from what the field now holds, unless a newer dictation began.
-        if generation == attempt, inserted, let watchTarget {
+        if generation == attempt, inserted, DictationPolishSwap.watches(result), let watchTarget {
             editWatcher.start(watchTarget, mode: learnMode, context: watchContext) { [weak self] candidate in self?.editLearned(candidate, app: watchTarget.app) }
         }
-        if let notice = DictationPolishSwap.notice(result), !busy {
+        if let notice = DictationPolishSwap.notice(result, app: delivered.target?.app ?? "the app"), !busy {
             let flash = DictationPill.flash(label: notice, confirmed: false)
             pill = flash
             flashTask?.cancel()
@@ -2647,6 +2738,9 @@ enum DictationSpareBuild: Sendable {
         insertTargets[id] = replaced.target
         switch replaced.result {
         case .replaced: return (.swapped, replaced.route, replaced.target)
+        // 0.5.332: landed by count, not read back: swapped, unconfirmed. Never skipped, so never Apply polished.
+        case .replacedUnconfirmed: return (.swappedUnconfirmed, replaced.route, replaced.target)
+        case .mismatch: return (.mismatch, replaced.route, nil)
         case .copied(let reason): return (.skipped(replaced.skip ?? DictationPolishSwap.skip(for: reason)), replaced.route, nil)
         case .unverified: return (.skipped(.unverified), replaced.route, nil)
         }
@@ -2654,7 +2748,7 @@ enum DictationSpareBuild: Sendable {
     /// Apply polished (Activity, Dictation): the person asked, so this is Fix a word's own replace, which may bring the
     /// app forward. Anything short of proof copies Claude's version and says why.
     func applyPolished(_ id: UUID) {
-        guard let pending = pendingPolish[id], record(id) != nil else { return }
+        guard let pending = pendingPolish[id], pending.applies, record(id) != nil else { return }
         pendingPolish[id] = nil
         // COS's own edit is never the person's: the watch on that field ends first.
         editWatcher.stop("apply polished")
@@ -2672,8 +2766,15 @@ enum DictationSpareBuild: Sendable {
                 copy(pending.text); polishNote = (id, DictationReplace.copiedNote(reason, app: target.app))
             case .unverified(let pasted):
                 copy(pending.text); polishNote = (id, DictationReplace.unverifiedNote(app: target.app, pasted: pasted))
+            case .replacedUnconfirmed, .mismatch:
+                copy(pending.text); polishNote = (id, DictationReplace.unverifiedNote(app: target.app, pasted: true))
             }
         }
+    }
+    /// 0.5.332: after a mismatch, Claude's version is copied, never pasted again.
+    func copyPolished(_ id: UUID) {
+        guard let pending = pendingPolish[id] else { return }
+        copy(pending.text); polishNote = (id, "Copied the polished version.")
     }
     /// `code` (DictationFailReason) names the failed step on the timing line; `reason` is the card's words and never logged there.
     private func fail(_ reason: String, code: String, card: Bool = true, action: DictationFailureAction? = nil) {
@@ -3050,6 +3151,8 @@ enum DictationSpareBuild: Sendable {
                 copy(offer.corrected); fixNote = DictationReplace.copiedNote(reason, app: target.app)
             case .unverified(let pasted):
                 copy(offer.corrected); fixNote = DictationReplace.unverifiedNote(app: target.app, pasted: pasted)
+            case .replacedUnconfirmed, .mismatch:
+                copy(offer.corrected); fixNote = DictationReplace.unverifiedNote(app: target.app, pasted: true)
             }
         }
     }
@@ -4203,8 +4306,15 @@ struct DictationActivityPane: View {
                         Text(record.metaLine(time: record.createdAt.formatted(date: .omitted, time: .shortened)))
                             .font(COSType.mono(9, weight: .medium)).foregroundStyle(.secondary)
                         // 0.5.331: Claude's version, when COS could not swap it in place.
-                        if store.pendingPolish[record.id] != nil {
-                            Button("Apply polished") { store.applyPolished(record.id) }.buttonStyle(COSTextButtonStyle())
+                        if let pending = store.pendingPolish[record.id] {
+                            if pending.applies {
+                                Button("Apply polished") { store.applyPolished(record.id) }.buttonStyle(COSTextButtonStyle())
+                            } else {
+                                // 0.5.332: a swap that may not have landed cleanly: both versions, to check the app against.
+                                Text("Heard: " + pending.heard).font(COSType.body(11)).foregroundStyle(.secondary).lineLimit(3)
+                                Text("Polished: " + pending.text).font(COSType.body(11)).foregroundStyle(.secondary).lineLimit(3)
+                                Button("Copy polished") { store.copyPolished(record.id) }.buttonStyle(COSTextButtonStyle())
+                            }
                         }
                         if let note = store.polishNote, note.id == record.id {
                             Text(note.text).font(COSType.body(11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
