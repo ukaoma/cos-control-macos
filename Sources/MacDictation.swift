@@ -91,7 +91,7 @@ final class DictationMicrophoneCapture: @unchecked Sendable {
     func warm(deviceID: AudioDeviceID?) throws {
         engineLock.lock(); defer { engineLock.unlock() }
         try select(deviceID)
-        _ = engine.inputNode.outputFormat(forBus: 0)
+        _ = engine.inputNode.inputFormat(forBus: 0)
     }
     private func select(_ deviceID: AudioDeviceID?) throws {
         let input = engine.inputNode
@@ -107,7 +107,12 @@ final class DictationMicrophoneCapture: @unchecked Sendable {
         engineLock.lock(); defer { engineLock.unlock() }
         let input = engine.inputNode
         try select(deviceID)
-        let format = input.outputFormat(forBus: 0)
+        // 0.5.329 (Miles 2026-10-19 21:51, crash on every press with the Studio Display Microphone selected): the tap's
+        // format is the device's own, read AFTER the switch. The node's outputFormat still described the default input
+        // (2 ch, 48 kHz) while the Studio Display microphone runs at 1 ch, 96 kHz, and AVAudioEngine raised "Failed to
+        // create tap due to format mismatch", an exception Swift cannot catch. A probe on this Mac (one file) reproduced
+        // it: outputFormat 48000/2 after the switch, inputFormat 96000/1; tapping with inputFormat delivered audio.
+        let format = input.inputFormat(forBus: 0)
         guard format.sampleRate > 0, format.channelCount > 0,
               let target = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: 16_000, channels: 1, interleaved: true),
               let converter = AVAudioConverter(from: format, to: target) else { throw error("The microphone format is unavailable.") }
@@ -117,6 +122,8 @@ final class DictationMicrophoneCapture: @unchecked Sendable {
         // @Sendable on both: a closure formed inside a @MainActor class otherwise inherits main-actor isolation, Swift 6
         // checks it on entry, and AVAudioEngine calls from its own queue. 0.5.305 trapped on the first buffer. Kept
         // explicit since 0.5.328 moved this class off the main actor, so moving it back can never reintroduce the trap.
+        // Never two taps on one bus (another exception): a reused spare always starts from none.
+        input.removeTap(onBus: 0)
         input.installTap(onBus: 0, bufferSize: 2048, format: format) { @Sendable buffer, _ in converterBox.consume(buffer) }
         tapped = true
         observer = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine, queue: nil) { @Sendable _ in

@@ -174,4 +174,16 @@ pin("if pendingModifier == key { watchPending(key) }" in rec and "var reads = Di
     and "try? await Task.sleep(for: .milliseconds(DictationHoldWatch.pollMilliseconds))" in wp
     and "recorderWatch?.cancel(); recorderWatch = nil" in body(rec, "    private func stop() {"), "recorder release",
     "a pending lone modifier is finished by the hold watch's rule on the keyboard state, and the watch stops with the recorder")
-print("PASS dictation lock pins: refused, canceled, chord and reconciled presses written; the keyboard watched while held; STILL FINISHING; settings in the Dictation tab; the recorder finishes a swallowed release")
+# H. 0.5.329 crash (Studio Display Microphone, 2026-10-19 21:51): the tap uses the device's own format, read after the
+# switch, never the node's stale outputFormat; one tap per bus; a spare only for the same device.
+cap_start = body(d, "    func start(deviceID: AudioDeviceID?) throws {")
+order(cap_start, ["try select(deviceID)", "let format = input.inputFormat(forBus: 0)", "guard format.sampleRate > 0, format.channelCount > 0,",
+                  "input.removeTap(onBus: 0)", "input.installTap(onBus: 0, bufferSize: 2048, format: format)"], "tap format",
+      "the tap format is the hardware format read after the device switch, checked, and the bus is cleared before the tap")
+pin("outputFormat(" not in cap_start and 'throw error("The microphone format is unavailable.")' in cap_start, "tap format",
+    "no stale outputFormat in start(), and an unusable format is the existing error, never a tap")
+pin("_ = engine.inputNode.inputFormat(forBus: 0)" in body(d, "    func warm(deviceID: AudioDeviceID?) throws {"), "tap format", "the spare primes the same hardware format")
+take_spare = body(d, "    private func takeSpare(device: AudioDeviceID?) -> DictationMicrophoneCapture? {")
+pin("DictationSpare.check(held.warmed, selectedUID: microphoneUID, device: device," in take_spare and "if case .discard" in take_spare, "spare device",
+    "a spare is used only when the device it was built for is the device this press opens")
+print("PASS dictation lock pins: refused, canceled, chord and reconciled presses written; the keyboard watched while held; STILL FINISHING; settings in the Dictation tab; the recorder finishes a swallowed release; the tap uses the device\'s own format")
