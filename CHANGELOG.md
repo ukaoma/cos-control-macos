@@ -1,3 +1,91 @@
+## 0.5.330 (build 383), Version 15 Miles Windu, live cue limits, AI polish at the key press
+
+Miles, 2026-10-19 23:27 CDT: "make sure we're on V15, merge in the cue limits as well." Everything in 0.5.329 is kept.
+
+### Miles Windu Version 15
+
+Miles, 2026-10-19: "deploy these updated sprites for our jedi. Needs to be the default for our future releases as well."
+
+- The bundled Jedi Miles Windu is Version 15 (V14 to V15), re-rendered from a 2x source. Session 1 (one running session)
+  now rotates four opponents (tan droid, heavy droid, rolling droid, alien), like Sessions 2 to 4. Blaster bolts travel
+  instead of hanging as static beams, the left droid walks instead of sliding (duel F8 to 15), the F52 swarm shots no
+  longer collide, the white specks on the shoulder and collar are gone, and the violet ghost at Session 1 F22 is gone.
+- Fixed before ship, each with a check that fails on the unfixed art: the heavy droid's wreck no longer fades violet
+  (duel, trio, swarm); the done saber is no longer cut at the cell edge (done cell 99 to 199 pt, figure the same size);
+  the duel loop seam F37 to F1 is exact again; Windu no longer shrinks mid-swing in Session 1 F22 to F24 (head was at
+  72 to 76% of his other frames); the attention (F4 to 6, F13 to 15) and done (F9 to 11) bridge frames are no longer
+  55 to 59% see-through and stand at his standing height.
+- Attention runs 18 frames (was 13) and done 14 (was 10), because Version 15 adds drawn bridge frames: the loops are
+  0.34 and 0.36 s longer.
+- Memory: casts now decode for the state on screen only, off the main thread. The old state keeps animating until the
+  new state's casts are ready (about 0.5 s at most), then the old casts are released. Cells live in their own mapped
+  pages, so a released state really gives its memory back (before, freed cells stayed resident). Measured over 20 cycles
+  through every state: peak +222 MB over the bare app against V14's +215 MB, idle +46 to +76 MB (V14 held +214 MB all
+  the time), longest main-thread slice 6.2 ms.
+- Retina: the pack carries 2x strips and the loader can play them at the same size on screen, but this release plays the
+  1x strips on every display. Two cast states at 2x, held during a decode, peaked at +589 MB, over the gate of V14 plus
+  150 MB. `ControllerModel.petRetinaArtScaleCeiling` stays 1 until casts decode one variant at a time.
+- Upgrade (art generation 23): a stock V12.6 or V14 (flat or rotation/ layout) moves to Version 15 on first launch with
+  no file deleted. A tuned V14 is left alone. V14's 27 cast layers no longer ship; its four session strips stay in the
+  bundle, so an installed V14 is still recognized by its bytes.
+- Tests: `Tests/jedi-v15-pack-pins.py` (96 files and the map pinned by hash; display scale, art ceiling, off-main decode,
+  stale-decode and display-pose wiring; 45 in-memory mutants, each proven to land and caught). PetRotationChecks: retina
+  segments and fallbacks, Session 1 casts, `only:` loading, memory release (63 MB loaded and dropped three times, back
+  within 12 MB) and a use-after-free sample (three cells held past their release read back identical to a fresh decode).
+  SimplePetDefault: production renderer for every cast state of all four Jedi, V14 to V15 upgrade paths, 2x strips at
+  identical point sizes, the 1x ceiling; pool-scoped, peak footprint 703 to 770 MB (an earlier eager version reached 21.5 GB).
+  Memory mutants (cell never unmapped, cells on malloc, cell unmapped while held, loader ignoring `only:`): 4 of 4 caught.
+
+### Live cue limits in Settings
+
+Miles, 2026-10-19: cap live cue spend from COS Control. Needs COS server 6.79.2 or later; an older server shows the Live
+cues switch only, as before.
+
+- Settings, Meeting assistant, under the Live cues switch:
+  - Bar: a slider from 0.50 to 0.95 in steps of 0.05. Lower gives more cues, higher fewer.
+  - Max cues per meeting: 1 to 25.
+  - Minimum gap between cues: 20 seconds to 15 minutes, in stops such as 45 s and 1.5 min.
+  - Daily writer limit: 1 to 500 writer calls a day.
+  - "Today: N cues, N writer calls, ~NK tokens", the server's own count for the day.
+- Each control uses the server's own minimum and maximum. A limit set in the server's .env shows its value with "Set in
+  .env" and cannot be changed here.
+- A change is sent 600 ms after the last move (a new move restarts the wait), all waiting changes in one call. The row
+  says Saving until the server answers, then shows the values the server sent back, never the ones asked for. A change
+  waits for a read in progress, and a move made while a save is out goes in its own call.
+- When the server refuses a value, the row says why in the server's terms, such as "The server takes 1 to 25 there.", or
+  that the limit is set in .env.
+- Helper: `live-cues-settings` reads `GET /api/live-cues/v2/settings?v=2`; `--gate`, `--max-cues`, `--cooldown-seconds`
+  and `--daily-writer-calls` post `{"v":2,...}` with the checked values, and `--set on|off` now posts
+  `{"v":2,"enabled":...}` (accepted by every server since 6.76.2) so the limits stay on screen after the switch moves.
+  Only the contract's keys cross back.
+- Tests: live cues pins, checks, helper loopback checks (one per 6.79.2 response shape), helper self-test 945, the
+  Settings card drawn at 390 pt in light and dark (the widest limit row is 288 of 334 pt), and the live cue mutants,
+  each killed by a named check.
+
+### AI polish starts when you press
+
+Polish was 1.8 to 4.1 s with Haiku, most of it Claude starting up. With AI polish on, COS now asks the server to start
+that process the moment the dictation key goes down. When the text arrives, the polish names it and the server uses it.
+Measured server-side on Miles's Mac: about 0.9 s off a Haiku polish whose process started 3 s or more before the text.
+Needs COS server 6.79.2 or later; an older server answers 404 and nothing changes.
+
+- Fire and forget, off the main thread: a detached task calls the helper's new `dictation-polish-prewarm` command
+  (token file only, 2 s deadline, `{"model"}` in, never any text). Nothing waits on it at the press or at LISTENING.
+- The polish takes the token if this press's start has answered (waiting at most 150 ms more), and sends it with the
+  text as `prewarmToken`. A token for another model (the setting changed mid-hold) or one that answered late is
+  discarded, never reused.
+- Every way a dictation ends without polishing (cancel, a failure, no speech, too short, AI polish off) discards its token
+  through the helper (`DELETE`), off the main thread; the server's 150 s limit cleans up anything else. finish() never
+  discards, so a new press during delivery keeps its own token.
+- An older server (404) is not asked again until its version changes. A 409 (disabled, model, breaker open, daily cap, no
+  CLI), a timeout or no server changes nothing: the polish runs cold exactly as before.
+- Timing line: `polishPrewarm` (used, missed, discarded, or none when no token went with the polish) and `prewarmMs` (how
+  long the start took). `clean` is a polish skip code now (server 6.79.2).
+- Tests: helper core (token parse and drop, finalize body, the prewarm outcome, start, refusals, discard), the compiled
+  helper against a loopback server (start, 409 reasons, 404 unsupported, the 2 s deadline, DELETE, bad input never sent),
+  Control core (when to start, read, outcome, request, the line), wiring pins, and the start canary's early-polish stall
+  round.
+
 ## 0.5.329 (build 382), answer with your own key
 
 ### Answer with your own key (COS server 6.80.0, key lanes K1)
