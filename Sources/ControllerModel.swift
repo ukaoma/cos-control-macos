@@ -553,6 +553,12 @@ final class ControllerModel: ObservableObject {
     func runHelper(_ arguments: [String], timeout: TimeInterval, stdinData: Data? = nil, answers: Bool = false) async throws -> HelperResponse {
         try await helper.run(arguments, timeout: timeout, stdinData: stdinData, answers: answers)
     }
+    /// 0.5.329: one helper verb as a Sendable call that never touches the main actor (the HelperClient actor runs it), for
+    /// work started from detached tasks: dictation's early polish at the key press.
+    func detachedHelper(_ verb: String, timeout: TimeInterval) -> @Sendable (Data) async throws -> HelperResponse {
+        let helper = self.helper
+        return { input in try await helper.run([verb], timeout: timeout, stdinData: input, answers: true) }
+    }
     private let mediaFetchGate = MediaFetchGate()
     private var refreshTask: Task<Void, Never>?
     private var updateCheckTask: Task<Void, Never>?

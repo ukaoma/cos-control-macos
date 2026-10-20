@@ -19,6 +19,9 @@ token = 'p' * 64
 SECRET = 'Um so the the quarterly plan is ready Niala'
 seen = []
 answer = {'status': 200, 'body': {'text': 'So the quarterly plan is ready, Niala.', 'surface': 'message', 'polished': True}, 'delay': 0}
+# 0.5.329: the prewarm route's own answer (POST start, DELETE discard).
+WARM = '0a1b2c3d-4e5f-6a7b-8c9d-0e1f2a3b4c5d'
+warm_answer = {'status': 200, 'body': {'token': WARM, 'expiresMs': 150000}, 'delay': 0}
 checks = 0
 
 
@@ -26,6 +29,7 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args): pass
     def do_GET(self): self.respond()
     def do_POST(self): self.respond()
+    def do_DELETE(self): self.respond()
     def respond(self):
         data = self.rfile.read(int(self.headers.get('Content-Length', 0)))
         seen.append((self.command, self.path, self.headers, data))
@@ -34,12 +38,13 @@ class Handler(BaseHTTPRequestHandler):
             raw = b'{"ok": true}'
             self.send_response(200); self.send_header('Content-Length', str(len(raw))); self.end_headers(); self.wfile.write(raw)
             return
-        if answer['delay']:
-            time.sleep(answer['delay'])
+        reply = warm_answer if self.path.startswith('/api/dictation/polish/prewarm') else answer
+        if reply['delay']:
+            time.sleep(reply['delay'])
         authenticated = self.headers.get('X-COS-Token') == token
-        raw = json.dumps(answer['body'] if authenticated else {'error': 'unauthorized'}).encode() if answer['body'] is not None else b'not json'
+        raw = json.dumps(reply['body'] if authenticated else {'error': 'unauthorized'}).encode() if reply['body'] is not None else b'not json'
         try:
-            self.send_response(answer['status'] if authenticated else 401)
+            self.send_response(reply['status'] if authenticated else 401)
             self.send_header('Content-Length', str(len(raw))); self.end_headers(); self.wfile.write(raw)
         except (BrokenPipeError, ConnectionResetError):
             pass
@@ -56,10 +61,10 @@ def check(ok, why):
     checks += 1
 
 
-def run(request, environment=None, timeout=15):
+def run(request, environment=None, timeout=15, verb='dictation-polish'):
     data = request if isinstance(request, bytes) else json.dumps(request).encode()
     started = time.monotonic()
-    proc = subprocess.run([helper, 'dictation-polish'], input=data, capture_output=True, env=environment or env, timeout=timeout)
+    proc = subprocess.run([helper, verb], input=data, capture_output=True, env=environment or env, timeout=timeout)
     elapsed = time.monotonic() - started
     check(proc.returncode == 0 and not proc.stderr, 'JSON only on stdout; nothing on stderr')
     check(token.encode() not in proc.stdout, 'credential never emitted')
@@ -138,6 +143,49 @@ try:
     result, elapsed = run({'text': SECRET, 'model': 'sonnet'}, dict(env, COS_CONTROL_TEST_API_PORT=str(closed)))
     check(not result['ok'] and result['details']['reason'] == 'unreachable' and elapsed < 3, 'no server is unreachable, at once')
 
-    print(f'PASS dictation polish helper: {checks} checks; finalize contract, stdin only, deadline inside the budget, every failure a reason without text')
+    # 0.5.329 (server 6.79.2): the token rides on finalize; a malformed one is dropped; what became of it comes back.
+    answer.update(status=200, body={'text': 'So.', 'polished': True, 'prewarm': 'used'}, delay=0)
+    result, _ = run({'text': SECRET, 'model': 'haiku', 'prewarmToken': WARM})
+    check(json.loads(seen[-1][3]) == {'text': SECRET, 'surface': 'message', 'autocleanModel': 'haiku', 'prewarmToken': WARM}, 'the token rides on finalize')
+    check(result['ok'] and result['details']['prewarm'] == 'used', 'prewarm used comes back')
+    result, _ = run({'text': SECRET, 'model': 'haiku', 'prewarmToken': '../../api/x'})
+    check(result['ok'] and 'prewarmToken' not in json.loads(seen[-1][3]), 'a malformed token is dropped, the polish still runs')
+
+    # dictation-polish-prewarm: start (POST, the model and the message surface only) and discard (DELETE that token).
+    def prewarm(request, environment=None):
+        return run(request, environment, verb='dictation-polish-prewarm')
+    before = len(seen)
+    result, elapsed = prewarm({'model': 'haiku'})
+    method, path, headers, body = seen[-1]
+    check(result['ok'] and result['details']['token'] == WARM and result['details']['expiresMs'] == 150000, 'a started process answers its token')
+    check(method == 'POST' and path == '/api/dictation/polish/prewarm' and json.loads(body) == {'model': 'haiku', 'surface': 'message'}
+          and headers.get('X-COS-Token') == token and len(seen) == before + 1, 'one authenticated start with the model only, no health probe')
+    for status, body, reason in [(409, {'error': 'prewarm_unavailable', 'reason': 'breaker_open'}, 'breaker_open'),
+                                 (409, {'error': 'prewarm_unavailable', 'reason': 'daily_cap'}, 'daily_cap'),
+                                 (409, {'error': 'x', 'reason': 'something else'}, 'refused'),
+                                 (404, {'error': 'not found'}, 'unsupported'), (500, {'error': 'x'}, 'http_500'),
+                                 (200, {'token': 'nope', 'expiresMs': 1}, 'bad_answer')]:
+        warm_answer.update(status=status, body=body)
+        result, _ = prewarm({'model': 'sonnet'})
+        check(not result['ok'] and result['details']['reason'] == reason and 'token' not in result['details'], f'prewarm {status} is {reason}')
+    warm_answer.update(status=200, body={'token': WARM, 'expiresMs': 150000}, delay=4)
+    result, elapsed = prewarm({'model': 'haiku'})
+    check(not result['ok'] and result['details']['reason'] == 'timeout' and 1.8 <= elapsed < 2.5, f'a slow start ends at the 2 s deadline ({elapsed:.2f} s)')
+    warm_answer.update(status=200, body={'discarded': True}, delay=0)
+    result, _ = prewarm({'discard': WARM})
+    method, path, _, _ = seen[-1]
+    check(result['ok'] and result['details']['discarded'] is True and method == 'DELETE' and path == '/api/dictation/polish/prewarm/' + WARM,
+          'a discard deletes exactly that token')
+    for bad in [{'model': 'opus'}, {'model': 'haiku', 'text': SECRET}, {'discard': '../../api/health'}, {}, b'not json']:
+        before = len(seen)
+        result, _ = prewarm(bad)
+        check(not result['ok'] and result['details']['reason'] == 'invalid_request' and len(seen) == before, f'prewarm input refused before the network: {str(bad)[:40]}')
+    before = len(seen)
+    result, _ = prewarm({'model': 'haiku'}, dict(env, COS_CONTROL_TEST_HOME=str(empty)))
+    check(not result['ok'] and result['details']['reason'] == 'no_token' and len(seen) == before, 'prewarm: no token, nothing sent')
+    result, elapsed = prewarm({'model': 'haiku'}, dict(env, COS_CONTROL_TEST_API_PORT=str(closed)))
+    check(not result['ok'] and result['details']['reason'] == 'unreachable' and elapsed < 2.5, 'prewarm: no server is unreachable, at once')
+
+    print(f'PASS dictation polish helper: {checks} checks; finalize contract, stdin only, deadline inside the budget, every failure a reason without text, early polish start and discard')
 finally:
     server.shutdown(); shutil.rmtree(root)
