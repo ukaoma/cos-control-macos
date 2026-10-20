@@ -88,6 +88,10 @@ struct DictationTiming: Codable, Equatable, Sendable {
     /// 0.5.326: AI polish, when it ran: the model (haiku or sonnet) and DictationPolish.Outcome.logName.
     var polishModel: String? = nil
     var polishOutcome: String? = nil
+    /// 0.5.329 (server 6.79.2): the polish process started at the press: used, missed, discarded, or none (no token
+    /// went with the polish). prewarmMs: how long the helper took to start it.
+    var polishPrewarm: String? = nil
+    var prewarmMs: Int? = nil
     /// typed, copied, no_speech, failed, canceled.
     var outcome: String
     /// 0.5.327 truthful start (DictationStartMarks): the press to the microphone's first buffer, step by step, in ms.
@@ -348,6 +352,73 @@ final class DictationStallMeter: @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         return beats > 0 ? Int((worst * 1000).rounded()) : nil
     }
+}
+
+// MARK: - AI polish started at the press (0.5.329, server 6.79.2)
+//
+// Polish was 1.8 to 4.1 s with Haiku, most of it the Claude CLI starting. The server can start that process when the
+// key goes down; the finalize call then names it with the token. Measured on Miles's Mac: about 0.9 s off a polish whose
+// process started 3 s or more before the text. Fire and forget: nothing waits on it at the press, and every refusal
+// (an older server, a breaker, a cap) leaves the dictation exactly as it was.
+
+enum DictationPolishPrewarm {
+    /// Control's wait on the helper (its own request deadline is 2 s).
+    static let helperTimeout: TimeInterval = 2.5
+    /// At the polish, how long COS waits for a start still in flight before polishing without it.
+    static let waitMilliseconds = 150
+    static let pollMilliseconds = 10
+    static let outcomes: Set<String> = ["used", "missed", "discarded"]
+    static func isToken(_ value: String) -> Bool { value.range(of: "^[0-9a-f-]{36}$", options: .regularExpression) != nil }
+    /// Start one only when AI polish is on, and not against a server that answered "unsupported" (until it changes).
+    static func shouldStart(model: DictationPolishModel, unsupportedOn: String?, serverVersion: String?) -> Bool {
+        if model == .off { return false }
+        guard let unsupportedOn else { return true }
+        return unsupportedOn != (serverVersion ?? "")
+    }
+    static func startRequest(model: DictationPolishModel) -> Data? {
+        guard model != .off else { return nil }
+        return try? JSONSerialization.data(withJSONObject: ["model": model.rawValue], options: [.sortedKeys])
+    }
+    static func discardRequest(token: String) -> Data? {
+        guard isToken(token) else { return nil }
+        return try? JSONSerialization.data(withJSONObject: ["discard": token], options: [.sortedKeys])
+    }
+    /// What a start came back with.
+    enum Result: Equatable, Sendable {
+        case token(String, ms: Int)
+        case refused(String, ms: Int?)
+        /// An older server (404): stop asking until the server version changes.
+        case unsupported
+        var token: String? { if case .token(let t, _) = self { t } else { nil } }
+        var ms: Int? {
+            switch self {
+            case .token(_, let ms): ms
+            case .refused(_, let ms): ms
+            case .unsupported: nil
+            }
+        }
+    }
+    /// The helper's answer (nil: it threw or did not answer).
+    static func read(ok: Bool?, token: String?, reason: String?, elapsedMs: Int?) -> Result {
+        if ok == true, let token, isToken(token) { return .token(token, ms: elapsedMs ?? 0) }
+        if reason == "unsupported" { return .unsupported }
+        let why = reason.flatMap { $0.range(of: "^[a-z0-9_]{1,40}$", options: [.regularExpression]) != nil ? $0 : nil } ?? (ok == nil ? "helper" : "refused")
+        return .refused(why, ms: elapsedMs)
+    }
+    /// The timing line's polishPrewarm: none when no token went with the polish; else the server's word, or missed when
+    /// it did not say (it then ran cold, as before).
+    static func outcome(sentToken: Bool, answer: String?) -> String {
+        guard sentToken else { return "none" }
+        return answer.flatMap { outcomes.contains($0) ? $0 : nil } ?? "missed"
+    }
+}
+
+/// Where a press's start lands, written off the main actor and read by the polish without blocking.
+final class DictationPrewarmBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: DictationPolishPrewarm.Result?
+    func set(_ result: DictationPolishPrewarm.Result) { lock.lock(); value = result; lock.unlock() }
+    var result: DictationPolishPrewarm.Result? { lock.lock(); defer { lock.unlock() }; return value }
 }
 
 /// Serial microphone callback owns conversion; this lock protects its bounded result from Stop.
@@ -1854,13 +1925,15 @@ enum DictationPolish {
     }
     /// The helper's stdin: {text, model, app?}. The app is the frontmost app's name, one line, at most 64 characters,
     /// or left out. nil when polish is off.
-    static func request(text: String, model: DictationPolishModel, app: String?) -> Data? {
+    static func request(text: String, model: DictationPolishModel, app: String?, prewarmToken: String? = nil) -> Data? {
         guard model != .off else { return nil }
         var body: [String: String] = ["text": text, "model": model.rawValue]
         if let app = app?.trimmingCharacters(in: .whitespacesAndNewlines), !app.isEmpty,
            app.count <= 64, !app.contains(where: \.isNewline) {
             body["app"] = app
         }
+        // 0.5.329: the press's early polish process (DictationPolishPrewarm), only a token that is one.
+        if let prewarmToken, DictationPolishPrewarm.isToken(prewarmToken) { body["prewarmToken"] = prewarmToken }
         return try? JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])
     }
     enum Outcome: Equatable, Sendable {
@@ -1894,7 +1967,7 @@ enum DictationPolish {
     }
     /// Why the server's model did not polish (server 6.79.1 `polishSkipped`). Control checks the code again: the helper is
     /// one process away, and only these words may reach the timing line.
-    static let skipReasons: Set<String> = ["daily_cap", "breaker_open", "too_long", "disabled", "failed"]
+    static let skipReasons: Set<String> = ["daily_cap", "breaker_open", "too_long", "disabled", "failed", "clean"]
     /// The helper's answer, read. `ok` false (no server, an HTTP error, a bad answer, the helper's own timeout): the
     /// heard text. `polished` must be true: the server answers false with only the dictionary pass when Claude failed,
     /// which is not what the history would claim. An empty or runaway answer is never pasted.

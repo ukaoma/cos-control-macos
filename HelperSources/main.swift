@@ -654,6 +654,7 @@ final class COSControlHelper {
         case "mac-recording": try emitMacRecording()
         case "mac-dictation": try emitMacDictation()
         case "dictation-polish": try emitDictationPolish()
+        case "dictation-polish-prewarm": try emitDictationPolishPrewarm()
         case "dictation-check": try emitDictationCheck()
         case "dictation-benchmark": try emitDictationBenchmark()
         case "transcription-dictionary": try emitTranscriptionDictionary()
@@ -15845,6 +15846,42 @@ final class COSControlHelper {
         var answer = DictationBridge.answer(status: response?.status, body: response?.body, local: local)
         answer.details["localRoute"] = local
         return answer
+    }
+
+    /// 0.5.329 (server 6.79.2): start AI polish's process at the press, or discard one (DictationPolishPrewarmBridge).
+    /// The token file alone (no health probe), a 2 s deadline, and never any text: there is none yet.
+    private func emitDictationPolishPrewarm() throws {
+        let limit = DictationPolishPrewarmBridge.inputLimit
+        var input = Data()
+        while input.count <= limit {
+            let chunk = try FileHandle.standardInput.read(upToCount: limit + 1 - input.count) ?? Data()
+            if chunk.isEmpty { break }; input.append(chunk)
+        }
+        guard let parsed = DictationPolishPrewarmBridge.parse(input) else {
+            emit(ok: false, message: "Early polish takes a model (haiku or sonnet) or a token to discard.", details: ["reason": "invalid_request"]); return
+        }
+        guard let token = try? readToken() else {
+            emit(ok: false, message: "Early polish needs the COS server on this Mac.", details: ["reason": "no_token"]); return
+        }
+        let started = ProcessInfo.processInfo.systemUptime
+        let deadline = started + DictationPolishPrewarmBridge.requestSeconds
+        let seconds = Int(DictationPolishPrewarmBridge.requestSeconds.rounded(.up))
+        switch parsed {
+        case .start(let model):
+            let response = request(DictationPolishPrewarmBridge.route, method: "POST", token: token, body: DictationPolishPrewarmBridge.body(model: model),
+                                   timeout: seconds, deadlineUptime: deadline)
+            let now = ProcessInfo.processInfo.systemUptime
+            let answer = DictationPolishPrewarmBridge.answer(status: response?.status, body: response?.body, elapsedMs: Int((now - started) * 1000),
+                                                              timedOut: response == nil && now >= deadline - 0.05)
+            emit(ok: answer.ok, message: answer.message, details: answer.details)
+        case .discard(let warm):
+            guard let path = DictationPolishPrewarmBridge.discardPath(warm) else {
+                emit(ok: false, message: "Not a token.", details: ["reason": "invalid_request"]); return
+            }
+            let response = request(path, method: "DELETE", token: token, timeout: seconds, deadlineUptime: deadline)
+            let answer = DictationPolishPrewarmBridge.discardAnswer(status: response?.status, body: response?.body)
+            emit(ok: answer.ok, message: answer.message, details: answer.details)
+        }
     }
 
     /// 0.5.317: the onboarding Voice row's proof. One 11 s utterance of the pinned sample (0.5.318, DictationCheckSample)

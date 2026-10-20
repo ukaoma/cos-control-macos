@@ -20,7 +20,8 @@ if not lines:
     sys.exit(f"no timing lines in {path}")
 fields = ["pressToTaskMs", "placementMs", "editWatchAtPress", "warmEngine", "engineStartMs", "pressToFirstBufferMs",
           "pressToSoundMs", "soundMs", "quietMs", "quietBuildMs", "quietStartMs", "mainThreadStallMs",
-          "capturedSeconds", "transcribeMs", "deliverMs", "outcome", "failReason"]
+          "capturedSeconds", "transcribeMs", "polishModel", "polishOutcome", "polishMs", "polishPrewarm", "prewarmMs",
+          "deliverMs", "outcome", "failReason"]
 print("at (UTC)                  " + "  ".join(fields))
 for line in lines[-count:]:
     try:
