@@ -47,7 +47,7 @@ if [[ "$LANE" == "all" || "$LANE" == "models" ]]; then
   OUT="$(env "${RUN_ENV[@]}" "$DIR/key-lanes-checks")" || { print -r -- "$OUT"; exit 1; }
   print -r -- "$OUT"
   COUNT="${${OUT##*checks: }%% passed*}"
-  (( COUNT >= 101 )) || { print -u2 "key lanes checks ran only $COUNT (expected at least 101)"; exit 1; }
+  (( COUNT >= 106 )) || { print -u2 "key lanes checks ran only $COUNT (expected at least 106)"; exit 1; }
 fi
 
 if [[ "$LANE" == "all" || "$LANE" == "core" ]]; then
