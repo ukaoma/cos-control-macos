@@ -70,7 +70,7 @@ import Vision
             (LiveCues.gapTitle, NSHostingView(rootView: COSStepper(LiveCues.gapTitle, value: .constant(3), in: 0...10, valueText: "1.5 min")
                 .font(COSType.body(12)).fixedSize()).fittingSize.width),
             (LiveCues.dailyTitle + " locked", NSHostingView(rootView: HStack(spacing: 8) {
-                Text(LiveCues.dailyTitle); Text("5000").font(COSType.mono(11.5)); Text(LiveCues.envNote).font(COSType.body(11))
+                Text(LiveCues.dailyTitle); Text("500").font(COSType.mono(11.5)); Text(LiveCues.envNote).font(COSType.body(11))
             }.font(COSType.body(12)).fixedSize()).fittingSize.width),
         ]
         for (what, width) in controls {
@@ -98,7 +98,7 @@ import Vision
             ("helper-failed", nil),
         ]
         // 0.5.329: the limits under the switch (server 6.79.2), one set from .env.
-        let limitsJSON = #","gate":{"value":0.8,"source":"default","locked":false,"bounds":{"min":0.5,"max":0.95,"step":0.05}},"maxCuesPerMeeting":{"value":25,"source":"setting","locked":false,"bounds":{"min":1,"max":25}},"cooldownSeconds":{"value":45,"source":"default","locked":false,"bounds":{"min":0,"max":600}},"dailyWriterCalls":{"value":300,"source":"env","locked":true,"bounds":{"min":0,"max":5000}},"usage":{"writerCalls":12,"writerTokensIn":41200,"writerTokensOut":2900,"cues":7,"jevTokens":9100}}}"#
+        let limitsJSON = #","v":2,"limits":{"gate":{"value":0.8,"source":"default","locked":false,"min":0.5,"max":0.95,"default":0.8},"maxCuesPerMeeting":{"value":25,"source":"setting","locked":false,"min":1,"max":25,"default":25},"cooldownSeconds":{"value":45,"source":"default","locked":false,"min":20,"max":900,"default":45},"dailyWriterCalls":{"value":150,"source":"env","locked":true,"min":1,"max":500,"default":150}},"writerCallsPerMeeting":50,"today":{"day":"2026-10-19","writerCalls":12,"writerTokensIn":41200,"writerTokensOut":2900,"cues":7,"jevTokens":9100}}}"#
         let withLimits = String(shape(enabled: true, available: true).dropLast(2)) + limitsJSON
         for appearance in [NSAppearance.Name.aqua, .darkAqua] {
             let theme = appearance == .darkAqua ? "dark" : "light"

@@ -751,14 +751,14 @@ struct LiveCuesSettings: Equatable, Sendable {
 }
 
 /// One spend limit as the server reports it (server 6.79.2): its value, where it came from, whether the server's
-/// environment holds it (then Control shows it and cannot change it), and the bounds the server accepts.
+/// environment holds it (then Control shows it and cannot change it), the bounds the server accepts and its default.
 struct LiveCuesLimit: Equatable, Sendable {
     var value: Double
     var source: String?
     var locked: Bool
     var min: Double?
     var max: Double?
-    var step: Double?
+    var defaultValue: Double? = nil
 }
 
 /// Today's live cue spend on the server.
@@ -846,16 +846,18 @@ enum LiveCues {
                                 limits: limits(details))
     }
 
-    /// The limits in the answer, or nil when it has none (a server before 6.79.2).
+    /// The limits in the answer, or nil when it has none: only a server that answers `v: 2` (6.79.2, asked with ?v=2)
+    /// has them; an older one answers without `v` and shows the switch alone.
     static func limits(_ details: [String: JSONValue]) -> LiveCuesLimits? {
+        guard details["v"]?.int == 2 else { return nil }
         var out = LiveCuesLimits()
+        let raw = details["limits"]?.object ?? [:]
         for key in LiveCuesLimits.Key.allCases {
-            guard let raw = details[key.rawValue]?.object, let value = raw["value"]?.double else { continue }
-            let bounds = raw["bounds"]?.object
-            out.values[key] = LiveCuesLimit(value: value, source: raw["source"]?.string, locked: raw["locked"]?.bool ?? (raw["source"]?.string == "env"),
-                                            min: bounds?["min"]?.double, max: bounds?["max"]?.double, step: bounds?["step"]?.double)
+            guard let limit = raw[key.rawValue]?.object, let value = limit["value"]?.double else { continue }
+            out.values[key] = LiveCuesLimit(value: value, source: limit["source"]?.string, locked: limit["locked"]?.bool ?? (limit["source"]?.string == "env"),
+                                            min: limit["min"]?.double, max: limit["max"]?.double, defaultValue: limit["default"]?.double)
         }
-        if let usage = details["usage"]?.object {
+        if let usage = details["today"]?.object {
             out.usage = LiveCuesUsage(cues: usage["cues"]?.int ?? 0, writerCalls: usage["writerCalls"]?.int ?? 0,
                                       writerTokensIn: usage["writerTokensIn"]?.int ?? 0, writerTokensOut: usage["writerTokensOut"]?.int ?? 0,
                                       jevTokens: usage["jevTokens"]?.int ?? 0)
@@ -877,11 +879,12 @@ enum LiveCues {
 
     /// A limit's range: the server's bounds, else the one Control assumes for a server that sends none.
     static func range(_ key: LiveCuesLimits.Key, _ limit: LiveCuesLimit) -> ClosedRange<Double> {
+        // Server 6.79.2's own bounds, for an answer that leaves one out.
         let fallback: ClosedRange<Double> = switch key {
         case .gate: 0.5...0.95
         case .maxCuesPerMeeting: 1...25
-        case .cooldownSeconds: 0...600
-        case .dailyWriterCalls: 0...1_000
+        case .cooldownSeconds: 20...900
+        case .dailyWriterCalls: 1...500
         }
         let low = limit.min ?? fallback.lowerBound, high = limit.max ?? fallback.upperBound
         return low <= high ? low...high : fallback
@@ -889,7 +892,7 @@ enum LiveCues {
 
     /// The bar on the slider's 0.05 grid, inside the server's bounds.
     static func gateSteps(_ limit: LiveCuesLimit) -> [Double] {
-        let r = range(.gate, limit), step = limit.step ?? 0.05
+        let r = range(.gate, limit), step = 0.05
         var out: [Double] = []
         var n = (r.lowerBound / step).rounded(.up)
         while n * step <= r.upperBound + 1e-9 { out.append((n * step * 100).rounded() / 100); n += 1 }
@@ -964,7 +967,16 @@ enum LiveCues {
         switch details["httpStatus"]?.int {
         case 200: return settings(details)?.limits == nil ? "The server did not confirm the limit. Check again." : nil
         case 409: return "That limit is set in the server's .env, so it cannot be changed here."
-        case 400: return "The server did not accept that value."
+        case 400:
+            switch details["reason"]?.string {
+            case "out_of_bounds":
+                guard let low = details["min"]?.double, let high = details["max"]?.double else { return "The server did not accept that value." }
+                let whole = details["integer"]?.bool ?? true
+                let text: (Double) -> String = { whole ? String(Int($0.rounded())) : gateText($0) }
+                return "The server takes \(text(low)) to \(text(high)) there."
+            case "unknown_field", "unsupported_version": return "Limits need server 6.79.2. Update the server in Settings."
+            default: return "The server did not accept that value."
+            }
         case 404: return "Limits need server 6.79.2. Update the server in Settings."
         case 401, 403: return "Reconnect COS Control to the server to change limits."
         case let status?: return "The limit was not saved (HTTP \(status)). Try again."

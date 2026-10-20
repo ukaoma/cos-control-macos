@@ -16558,8 +16558,8 @@ final class COSControlHelper {
     static func liveCuesSettingsRequest(hasSet: Bool, value: String?) -> (method: String, body: String?)? {
         guard hasSet else { return ("GET", nil) }
         switch value {
-        case "on": return ("POST", #"{"enabled":true}"#)
-        case "off": return ("POST", #"{"enabled":false}"#)
+        case "on": return ("POST", #"{"v":2,"enabled":true}"#)
+        case "off": return ("POST", #"{"v":2,"enabled":false}"#)
         default: return nil
         }
     }
@@ -16591,42 +16591,57 @@ final class COSControlHelper {
                let proto = Int(exactly: number.doubleValue), (0...1_000).contains(proto) { capability["protocol"] = proto }
             out["capability"] = capability
         }
-        // 0.5.329 (server 6.79.2): the four limits ({value, source, locked, bounds {min, max, step?}}) and today's usage.
-        for key in Self.liveCuesLimitKeys {
-            guard let raw = body[key] as? [String: Any], let value = Self.liveCueNumber(raw["value"]), value >= 0 else { continue }
-            var limit: [String: Any] = ["value": value]
-            if let source = raw["source"] as? String, ["env", "setting", "default"].contains(source) { limit["source"] = source }
-            if let locked = flag(raw["locked"]) { limit["locked"] = locked }
-            if let bounds = raw["bounds"] as? [String: Any], let low = Self.liveCueNumber(bounds["min"]), let high = Self.liveCueNumber(bounds["max"]),
-               low >= 0, low <= high {
-                var kept: [String: Any] = ["min": low, "max": high]
-                if let step = Self.liveCueNumber(bounds["step"]), step > 0 { kept["step"] = step }
-                limit["bounds"] = kept
+        // 0.5.329 (server 6.79.2, asked for with ?v=2 and {"v":2}): the protocol, the four limits ({value, source, locked,
+        // min, max, default}), the writer calls a meeting may make, today's usage, and a refusal's details (its reason,
+        // the field, the bounds it broke, the env-locked fields).
+        if let version = Self.liveCueCount(body["v"]), (1...1_000).contains(version) { out["v"] = version }
+        if let raw = body["limits"] as? [String: Any] {
+            var limits: [String: Any] = [:]
+            for key in Self.liveCuesLimitKeys {
+                guard let limit = raw[key] as? [String: Any], let value = Self.liveCueNumber(limit["value"]), value >= 0 else { continue }
+                var kept: [String: Any] = ["value": value]
+                if let source = limit["source"] as? String, ["env", "setting", "default"].contains(source) { kept["source"] = source }
+                if let locked = flag(limit["locked"]) { kept["locked"] = locked }
+                for bound in ["min", "max", "default"] { if let n = Self.liveCueNumber(limit[bound]), n >= 0 { kept[bound] = n } }
+                limits[key] = kept
             }
-            out[key] = limit
+            out["limits"] = limits
         }
-        if let raw = body["usage"] as? [String: Any] {
-            var usage: [String: Any] = [:]
+        if let calls = Self.liveCueCount(body["writerCallsPerMeeting"]) { out["writerCallsPerMeeting"] = calls }
+        if let raw = body["today"] as? [String: Any] {
+            var today: [String: Any] = [:]
+            if let day = raw["day"] as? String, day.range(of: "\\A[0-9]{4}-[0-9]{2}-[0-9]{2}\\z", options: .regularExpression) != nil { today["day"] = day }
             for key in ["writerCalls", "writerTokensIn", "writerTokensOut", "cues", "jevTokens"] {
-                if let n = Self.liveCueCount(raw[key]) { usage[key] = n }
+                if let n = Self.liveCueCount(raw[key]) { today[key] = n }
             }
-            out["usage"] = usage
+            out["today"] = today
+        }
+        if let reason = code(body["reason"], "\\A[a-z_]{1,64}\\z") { out["reason"] = reason }
+        if let field = body["field"] as? String, (Self.liveCuesLimitKeys + ["enabled", "v"]).contains(field) { out["field"] = field }
+        if let fields = body["fields"] as? [Any] {
+            out["fields"] = fields.compactMap { $0 as? String }.filter { Self.liveCuesLimitKeys.contains($0) }
+        }
+        if out["reason"] as? String == "out_of_bounds" {
+            for bound in ["min", "max"] { if let n = Self.liveCueNumber(body[bound]) { out[bound] = n } }
+            if let whole = flag(body["integer"]) { out["integer"] = whole }
         }
         return out
     }
 
-    /// 0.5.329: the limits Control may set (server 6.79.2), each a flag of `live-cues-settings`, posted to the same route.
+    /// 0.5.329: the limits Control may set (server 6.79.2), each a flag of `live-cues-settings`, posted to the same route
+    /// with {"v":2}. Reads ask for ?v=2: a 6.79.2 server answers with `v: 2` and the limits, an older one without them.
     static let liveCuesLimitKeys = ["gate", "maxCuesPerMeeting", "cooldownSeconds", "dailyWriterCalls"]
     static let liveCuesLimitFlags: [(flag: String, key: String)] = [
         ("--gate", "gate"), ("--max-cues", "maxCuesPerMeeting"), ("--cooldown-seconds", "cooldownSeconds"), ("--daily-writer-calls", "dailyWriterCalls"),
     ]
 
     /// The POST body for the limit flags given, or nil when one is malformed. The gate is a probability (0 to 1, at most
-    /// three decimals); the others whole numbers up to six digits. The server owns the real bounds and answers out of
-    /// range itself. Each value is copied as the validated literal, so a JSON number is never re-printed as 0.55000000001.
+    /// three decimals); the others whole numbers up to six digits. The server owns the real bounds and refuses a value
+    /// outside them itself (400 out_of_bounds). Each value is copied as the validated literal, so a JSON number is never
+    /// re-printed as 0.55000000001.
     static func liveCuesLimitsBody(_ values: [String: String]) -> String? {
         guard !values.isEmpty, Set(values.keys).isSubset(of: Set(liveCuesLimitKeys)) else { return nil }
-        var pairs: [String] = []
+        var pairs = [#""v":2"#]
         for key in values.keys.sorted() {
             let text = values[key] ?? ""
             let pattern = key == "gate" ? "\\A(0(\\.[0-9]{1,3})?|1(\\.0{1,3})?)\\z" : "\\A(0|[1-9][0-9]{0,5})\\z"
@@ -16655,7 +16670,7 @@ final class COSControlHelper {
             emit(ok: true, message: "No pairing token", details: ["transport": "no_token"])
             return
         }
-        guard let response = request(Self.liveCuesSettingsPath, method: plan.method, token: token, body: plan.body,
+        guard let response = request(Self.liveCuesSettingsPath + (plan.method == "GET" ? "?v=2" : ""), method: plan.method, token: token, body: plan.body,
                                      timeout: plan.method == "GET" ? 8 : 10) else {
             emit(ok: true, message: "COS server unreachable", details: ["transport": "unavailable"])
             return
@@ -21840,9 +21855,9 @@ final class COSControlHelper {
         try expect(Self.liveCuesSettingsPath == "/api/live-cues/v2/settings", "live-cues-settings reaches only the v2 settings route")
         try expect(Self.liveCuesSettingsRequest(hasSet: false, value: nil).map { $0.method == "GET" && $0.body == nil } == true,
                    "live-cues-settings without --set reads")
-        try expect(Self.liveCuesSettingsRequest(hasSet: true, value: "on").map { $0.method == "POST" && $0.body == #"{"enabled":true}"# } == true,
+        try expect(Self.liveCuesSettingsRequest(hasSet: true, value: "on").map { $0.method == "POST" && $0.body == #"{"v":2,"enabled":true}"# } == true,
                    "live-cues-settings --set on posts enabled true")
-        try expect(Self.liveCuesSettingsRequest(hasSet: true, value: "off").map { $0.method == "POST" && $0.body == #"{"enabled":false}"# } == true,
+        try expect(Self.liveCuesSettingsRequest(hasSet: true, value: "off").map { $0.method == "POST" && $0.body == #"{"v":2,"enabled":false}"# } == true,
                    "live-cues-settings --set off posts enabled false")
         for bad in [nil, "", "true", "false", "1", "0", "ON", "On", "on ", " off", "yes", "on;off", "{\"enabled\":true}"] as [String?] {
             try expect(Self.liveCuesSettingsRequest(hasSet: true, value: bad) == nil, "live-cues-settings refuses --set \(String(describing: bad))")
@@ -21873,34 +21888,44 @@ final class COSControlHelper {
                    && Self.liveCuesSettingsAnswer(["capability": ["reason": "x"]])["capability"] == nil && Self.liveCuesSettingsAnswer(nil).isEmpty,
                    "live-cues-settings keeps a refusal's code; a capability without available is not one")
         // 0.5.329: the limits through live-cues-settings (server 6.79.2).
-        try expect(Self.liveCuesLimitsBody(["gate": "0.75", "maxCuesPerMeeting": "12"]) == #"{"gate":0.75,"maxCuesPerMeeting":12}"#,
-                   "the limits post as the validated literals, keys sorted")
-        try expect(Self.liveCuesLimitsBody(["cooldownSeconds": "0", "dailyWriterCalls": "300"]) == #"{"cooldownSeconds":0,"dailyWriterCalls":300}"#,
-                   "zero and whole numbers post")
+        try expect(Self.liveCuesLimitsBody(["gate": "0.75", "maxCuesPerMeeting": "12"]) == #"{"v":2,"gate":0.75,"maxCuesPerMeeting":12}"#,
+                   "the limits post with v 2, as the validated literals, keys sorted")
+        try expect(Self.liveCuesLimitsBody(["cooldownSeconds": "90", "dailyWriterCalls": "300"]) == #"{"v":2,"cooldownSeconds":90,"dailyWriterCalls":300}"#,
+                   "whole numbers post")
         for bad in [["gate": "1.5"], ["gate": "0.12345"], ["gate": ".5"], ["gate": "-0.1"], ["gate": "0.5e1"], ["maxCuesPerMeeting": "1.5"],
                     ["maxCuesPerMeeting": "-1"], ["maxCuesPerMeeting": "01"], ["maxCuesPerMeeting": "1000000"], ["cooldownSeconds": ""],
-                    ["enabled": "true"], [String: String]()] {
+                    ["enabled": "true"], ["v": "2"], [String: String]()] {
             try expect(Self.liveCuesLimitsBody(bad) == nil, "the limits refuse \(bad)")
         }
         let limitsAnswer = Self.liveCuesSettingsAnswer([
-            "enabled": true, "source": "setting", "capability": ["available": true],
-            "gate": ["value": 0.8, "source": "default", "locked": false, "bounds": ["min": 0.5, "max": 0.95, "step": 0.05], "x": "SECRET"],
-            "maxCuesPerMeeting": ["value": 25, "source": "env", "locked": true, "bounds": ["min": 1, "max": 25]],
-            "cooldownSeconds": ["value": "45", "source": "default"],
-            "dailyWriterCalls": ["value": 200, "source": "admin", "locked": "yes", "bounds": ["min": 9, "max": 1]],
-            "usage": ["writerCalls": 12, "writerTokensIn": 41_000, "writerTokensOut": 3_000, "cues": 7, "jevTokens": 9_000, "cost": "SECRET"],
+            "enabled": true, "source": "setting", "capability": ["available": true], "v": 2, "writerCallsPerMeeting": 50,
+            "limits": [
+                "gate": ["value": 0.8, "source": "default", "locked": false, "min": 0.5, "max": 0.95, "default": 0.8, "x": "SECRET"],
+                "maxCuesPerMeeting": ["value": 25, "source": "env", "locked": true, "min": 1, "max": 25, "default": 25],
+                "cooldownSeconds": ["value": "45", "source": "default"],
+                "dailyWriterCalls": ["value": 150, "source": "admin", "locked": "yes", "min": "1"],
+                "judgeKeep": ["value": 0.8],
+            ],
+            "today": ["day": "2026-10-19", "writerCalls": 12, "writerTokensIn": 41_000, "writerTokensOut": 3_000, "cues": 7, "jevTokens": 9_000, "usd": "SECRET"],
         ])
-        let gateLimit = limitsAnswer["gate"] as? [String: Any]
-        let capLimit = limitsAnswer["maxCuesPerMeeting"] as? [String: Any]
-        let dailyLimit = limitsAnswer["dailyWriterCalls"] as? [String: Any]
-        try expect(gateLimit?["value"] as? Double == 0.8 && gateLimit?["x"] == nil && (gateLimit?["bounds"] as? [String: Any])?["step"] as? Double == 0.05
-                   && capLimit?["locked"] as? Bool == true && capLimit?["source"] as? String == "env",
-                   "the limits pass value, source, locked and bounds")
-        try expect(limitsAnswer["cooldownSeconds"] == nil && dailyLimit?["value"] as? Double == 200 && dailyLimit?["source"] == nil
-                   && dailyLimit?["locked"] == nil && dailyLimit?["bounds"] == nil,
-                   "a value that is not a number drops the limit; a bad source, flag or bounds is dropped")
-        try expect((limitsAnswer["usage"] as? [String: Any])?.count == 5 && (limitsAnswer["usage"] as? [String: Any])?["cost"] == nil,
-                   "today's usage passes its five counts, nothing else")
+        let limitsOut = limitsAnswer["limits"] as? [String: [String: Any]]
+        try expect(limitsAnswer["v"] as? Int == 2 && limitsAnswer["writerCallsPerMeeting"] as? Int == 50
+                   && limitsOut?["gate"]?["value"] as? Double == 0.8 && limitsOut?["gate"]?["min"] as? Double == 0.5 && limitsOut?["gate"]?["default"] as? Double == 0.8
+                   && limitsOut?["gate"]?["x"] == nil && limitsOut?["maxCuesPerMeeting"]?["locked"] as? Bool == true,
+                   "v 2, the limits' value, source, locked, min, max and default pass")
+        try expect(limitsOut?["cooldownSeconds"] == nil && limitsOut?["judgeKeep"] == nil && limitsOut?["dailyWriterCalls"]?["source"] == nil
+                   && limitsOut?["dailyWriterCalls"]?["locked"] == nil && limitsOut?["dailyWriterCalls"]?["min"] == nil,
+                   "a limit without a number, an unknown limit, a bad source, flag or bound are dropped")
+        let todayOut = limitsAnswer["today"] as? [String: Any]
+        try expect(todayOut?.count == 6 && todayOut?["day"] as? String == "2026-10-19" && todayOut?["usd"] == nil, "today's usage passes its day and five counts")
+        let outOfBounds = Self.liveCuesSettingsAnswer(["error": "invalid_request", "reason": "out_of_bounds", "field": "gate", "min": 0.5, "max": 0.95, "integer": false, "x": "y"])
+        try expect(outOfBounds["reason"] as? String == "out_of_bounds" && outOfBounds["field"] as? String == "gate" && outOfBounds["min"] as? Double == 0.5
+                   && outOfBounds["integer"] as? Bool == false && outOfBounds["x"] == nil, "an out-of-bounds refusal passes its field and bounds")
+        let lockedOut = Self.liveCuesSettingsAnswer(["error": "env_locked", "fields": ["gate", "rm -rf", "dailyWriterCalls"], "min": 3])
+        try expect(lockedOut["error"] as? String == "env_locked" && lockedOut["fields"] as? [String] == ["gate", "dailyWriterCalls"] && lockedOut["min"] == nil,
+                   "env_locked passes only known field names; bounds only with out_of_bounds")
+        try expect(Self.liveCuesSettingsAnswer(["error": "invalid_request", "reason": "unknown_field", "field": "token"])["field"] == nil,
+                   "a field outside the contract is not echoed")
         // 0.5.327: live-cues-history and live-cues-rate. The grammar is refused before anything is sent; only the contract
         // crosses back.
         try expect(Self.liveCuesHistoryPath(days: nil, session: nil, unrated: false) == "/api/live-cues/history?days=7&limit=200",

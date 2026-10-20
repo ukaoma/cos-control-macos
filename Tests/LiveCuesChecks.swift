@@ -249,15 +249,18 @@ import Foundation
         check(slow.settings?.enabled == true && !slow.busy, "the change lands")
 
         // ── 0.5.329: the spend limits (server 6.79.2).
-        let limitsJSON = #""gate":{"value":0.8,"source":"default","locked":false,"bounds":{"min":0.5,"max":0.95,"step":0.05}},"maxCuesPerMeeting":{"value":25,"source":"setting","locked":false,"bounds":{"min":1,"max":25}},"cooldownSeconds":{"value":45,"source":"default","locked":false,"bounds":{"min":0,"max":600}},"dailyWriterCalls":{"value":300,"source":"env","locked":true,"bounds":{"min":0,"max":5000}},"usage":{"writerCalls":12,"writerTokensIn":41200,"writerTokensOut":2900,"cues":7,"jevTokens":9100}"#
+        // Server 6.79.2's exact v2 view (SERVER_6792_SETTINGS_WIRE.md).
+        let limitsJSON = #""v":2,"limits":{"gate":{"value":0.8,"source":"default","locked":false,"min":0.5,"max":0.95,"default":0.8},"maxCuesPerMeeting":{"value":25,"source":"setting","locked":false,"min":1,"max":25,"default":25},"cooldownSeconds":{"value":45,"source":"default","locked":false,"min":20,"max":900,"default":45},"dailyWriterCalls":{"value":150,"source":"env","locked":true,"min":1,"max":500,"default":150}},"writerCallsPerMeeting":50,"today":{"day":"2026-10-19","writerCalls":12,"writerTokensIn":41200,"writerTokensOut":2900,"cues":7,"jevTokens":9100}"#
         func withLimits(_ base: String, _ extra: String = limitsJSON) -> String { base + "," + extra }
         let full = loaded(answered(200, withLimits(shape(enabled: true, available: true))))?.limits
-        check(full?.values.count == 4 && full?.values[.gate] == LiveCuesLimit(value: 0.8, source: "default", locked: false, min: 0.5, max: 0.95, step: 0.05)
+        check(full?.values.count == 4 && full?.values[.gate] == LiveCuesLimit(value: 0.8, source: "default", locked: false, min: 0.5, max: 0.95, defaultValue: 0.8)
               && full?.values[.dailyWriterCalls]?.locked == true && full?.usage == LiveCuesUsage(cues: 7, writerCalls: 12, writerTokensIn: 41_200, writerTokensOut: 2_900, jevTokens: 9_100),
               "the four limits and today's usage are read")
         check(loaded(answered(200, shape(enabled: true, available: true)))?.limits == nil, "an older server has no limits: the switch alone")
-        check(loaded(answered(200, withLimits(shape(enabled: true, available: true), #""gate":{"value":"high"},"cooldownSeconds":{"value":30,"source":"env"}"#)))?.limits?.values.keys.map(\.rawValue) == ["cooldownSeconds"]
-              && loaded(answered(200, withLimits(shape(enabled: true, available: true), #""cooldownSeconds":{"value":30,"source":"env"}"#)))?.limits?.values[.cooldownSeconds]?.locked == true,
+        check(loaded(answered(200, withLimits(shape(enabled: true, available: true), limitsJSON.replacingOccurrences(of: #""v":2,"#, with: ""))))?.limits == nil,
+              "limits count only in an answer that says v 2")
+        check(loaded(answered(200, withLimits(shape(enabled: true, available: true), #""v":2,"limits":{"gate":{"value":"high"},"cooldownSeconds":{"value":30,"source":"env"}}"#)))?.limits?.values.keys.map(\.rawValue) == ["cooldownSeconds"]
+              && loaded(answered(200, withLimits(shape(enabled: true, available: true), #""v":2,"limits":{"cooldownSeconds":{"value":30,"source":"env"}}"#)))?.limits?.values[.cooldownSeconds]?.locked == true,
               "a limit without a number is skipped; env without a locked flag is locked")
         let bar = full!.values[.gate]!
         check(LiveCues.gateSteps(bar) == [0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95], "the bar steps 0.50 to 0.95 by 0.05")
@@ -265,7 +268,9 @@ import Foundation
         check(LiveCues.gateText(0.75) == "0.75" && LiveCues.gateText(0.5) == "0.50", "the bar reads with two decimals")
         check(LiveCues.ladder(.maxCuesPerMeeting, full!.values[.maxCuesPerMeeting]!) == Array(1...25), "max cues 1 to 25, one at a time")
         let gap = LiveCues.ladder(.cooldownSeconds, full!.values[.cooldownSeconds]!)
-        check(gap.first == 0 && gap.last == 600 && gap.contains(45) && gap.contains(90) && gap == gap.sorted(), "the gap ladder holds 45 s and 1.5 min, 0 to 10 min")
+        check(gap.first == 20 && gap.last == 900 && gap.contains(45) && gap.contains(90) && gap == gap.sorted(), "the gap ladder holds 45 s and 1.5 min, 20 s to 15 min")
+        check(LiveCues.ladder(.dailyWriterCalls, full!.values[.dailyWriterCalls]!).first == 1 && LiveCues.ladder(.dailyWriterCalls, full!.values[.dailyWriterCalls]!).last == 500,
+              "the daily limit 1 to 500")
         check(LiveCues.ladder(.cooldownSeconds, LiveCuesLimit(value: 50, source: nil, locked: false, min: 20, max: 100)) == [20, 30, 45, 50, 60, 90, 100],
               "the ladder keeps the server's bounds and its current value")
         check(LiveCues.ladder(.dailyWriterCalls, LiveCuesLimit(value: 300, source: nil, locked: false, min: 0, max: 400)) == [0, 10, 25, 50, 75, 100, 150, 200, 300, 400],
@@ -281,7 +286,14 @@ import Foundation
               "one call, the flags in a fixed order, the bar with two decimals")
         check(LiveCues.limitsRefusal(answered(200, withLimits(shape(enabled: true, available: true)))) == nil, "an echo with the limits is the save")
         check(LiveCues.limitsRefusal(answered(200, shape(enabled: true, available: true))) == "The server did not confirm the limit. Check again.", "an echo without them is not")
-        check(LiveCues.limitsRefusal(answered(409, #""error":"env_locked""#)) == "That limit is set in the server's .env, so it cannot be changed here."
+        check(LiveCues.limitsRefusal(answered(400, #""error":"invalid_request","reason":"out_of_bounds","field":"maxCuesPerMeeting","min":1,"max":25,"integer":true"#))
+              == "The server takes 1 to 25 there."
+              && LiveCues.limitsRefusal(answered(400, #""error":"invalid_request","reason":"out_of_bounds","field":"gate","min":0.5,"max":0.95,"integer":false"#))
+              == "The server takes 0.50 to 0.95 there."
+              && LiveCues.limitsRefusal(answered(400, #""error":"invalid_request","reason":"unknown_field","field":"gate""#)) == "Limits need server 6.79.2. Update the server in Settings."
+              && LiveCues.limitsRefusal(answered(400, #""error":"invalid_request","reason":"empty""#)) == "The server did not accept that value.",
+              "a 400 by its reason, with the server's own bounds")
+        check(LiveCues.limitsRefusal(answered(409, #""error":"env_locked","fields":["gate"]"#)) == "That limit is set in the server's .env, so it cannot be changed here."
               && LiveCues.limitsRefusal(answered(400)) == "The server did not accept that value."
               && LiveCues.limitsRefusal(answered(404)) == "Limits need server 6.79.2. Update the server in Settings."
               && LiveCues.limitsRefusal(details(#"{"transport":"unavailable"}"#)) == "COS server unreachable. The limit was not saved."
@@ -295,7 +307,7 @@ import Foundation
         let limited = LiveCuesStore(); let limitCalls = Calls()
         limited.limitsDebounce = .milliseconds(40)
         let echo = answered(200, withLimits(shape(enabled: true, available: true),
-            limitsJSON.replacingOccurrences(of: #""value":0.8"#, with: #""value":0.75"#).replacingOccurrences(of: #""value":25"#, with: #""value":12"#)))
+            limitsJSON.replacingOccurrences(of: #""value":0.8,"#, with: #""value":0.75,"#).replacingOccurrences(of: #""value":25,"#, with: #""value":12,"#)))
         await limited.load(fake(limitCalls, [answered(200, withLimits(shape(enabled: true, available: true)))]))
         let limitRun = fake(limitCalls, [echo])
         limited.propose(.dailyWriterCalls, 100, run: limitRun)
@@ -319,6 +331,40 @@ import Foundation
         await limited.flushLimits(fake(limitCalls, [answered(400, #""error":"out_of_range""#)]))
         check(limited.limitsNote == "The server did not accept that value." && limited.pendingLimits.isEmpty && limited.settings?.limits?.values[.maxCuesPerMeeting]?.value == 12,
               "a refusal says why and shows the server's value, never the refused one")
+        // Each move restarts the wait: a person still moving never sends a half-made change.
+        let moving = LiveCuesStore(); let movingCalls = Calls()
+        moving.limitsDebounce = .milliseconds(150)
+        await moving.load(fake(movingCalls, [answered(200, withLimits(shape(enabled: true, available: true)))]))
+        let movingRun = fake(movingCalls, [echo, echo])
+        moving.propose(.gate, 0.7, run: movingRun)
+        try? await Task.sleep(for: .milliseconds(100))
+        moving.propose(.gate, 0.75, run: movingRun)
+        try? await Task.sleep(for: .milliseconds(100))
+        check(movingCalls.log.count == 1, "a move inside the wait restarts it (nothing sent 200 ms after the first move)")
+        waited = 0
+        while movingCalls.log.count < 2 && waited < 200 { try? await Task.sleep(for: .milliseconds(10)); waited += 1 }
+        try? await Task.sleep(for: .milliseconds(200))
+        check(movingCalls.log.count == 2 && movingCalls.log.last == ["live-cues-settings", "--gate", "0.75"], "then one call with the last move")
+        // A change waits for a read in flight instead of crossing it.
+        let reading2 = LiveCuesStore(); let readingCalls = Calls(); let readingGate = Gate()
+        await reading2.load(fake(readingCalls, [answered(200, withLimits(shape(enabled: true, available: true)))]))
+        reading2.limitsDebounce = .seconds(60)
+        reading2.propose(.gate, 0.75, run: fake(readingCalls, [echo]))
+        let heldReading: LiveCuesStore.Run = { args, _ in
+            readingCalls.log.append(args)
+            while !readingGate.open { try? await Task.sleep(for: .milliseconds(5)) }
+            return HelperResponse(ok: true, message: "x", details: answered(200, withLimits(shape(enabled: true, available: true))))
+        }
+        let readTask = Task { await reading2.load(heldReading) }
+        while readingCalls.log.count < 2 { try? await Task.sleep(for: .milliseconds(5)) }
+        let flushTask = Task { await reading2.flushLimits(fake(readingCalls, [echo])) }
+        try? await Task.sleep(for: .milliseconds(80))
+        check(readingCalls.log.count == 2, "a limits change waits while a read is out")
+        readingGate.open = true
+        await readTask.value
+        await flushTask.value
+        check(readingCalls.log.count == 3 && readingCalls.log.last?.first == "live-cues-settings" && readingCalls.log.last?.count == 3
+              && reading2.settings?.limits?.values[.gate]?.value == 0.75, "then it goes, and its echo shows")
         // A move during a call stays waiting for its own call.
         let heldLimits = LiveCuesStore(); let heldCalls = Calls(); let limitGate = Gate()
         heldLimits.limitsDebounce = .seconds(60)

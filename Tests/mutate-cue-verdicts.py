@@ -19,7 +19,6 @@ ASK = "Sources/MeetingAsk.swift"
 MODEL = "Sources/ControllerModel.swift"
 WINDOW = "Sources/ActivityWindow.swift"
 PAGE = "Resources/memories/memories-app.js"
-PLIST = "Resources/Info.plist"
 HELPER = "HelperSources/main.swift"
 
 MUTANTS = [
@@ -96,7 +95,8 @@ MUTANTS = [
      'if let view = (args["view"] as? String).flatMap(CueVerdicts.Review.init(rawValue:)) {', "if let view = Optional(CueVerdicts.Review.toRate) {"),
     ("P12 the cue views open a sheet", "pins", ASK,
      "        .onAppear { focus = .card }\n", "        .onAppear { focus = .card }\n        .sheet(isPresented: .constant(false)) { EmptyView() }\n"),
-    ("P13 the version stays 0.5.326", "pins", PLIST, "<string>0.5.327</string>", "<string>0.5.326</string>"),
+    # Version-independent since 0.5.328 (the pins keep 0.5.327's history rather than requiring it to be the newest).
+    ("P13 the 0.5.327 CHANGELOG entry is lost", "pins", "CHANGELOG.md", "## 0.5.327 (build 380)", "## 0.5.3x (build 380)"),
     ("P14 the rate card shows the title at cue time", "pins", ASK,
      "CueRateCard(cue: cue, title: CueVerdicts.title(cue, library: model.libraryMeetings),", "CueRateCard(cue: cue, title: cue.meetingTitle,"),
     # The Memories page's entries (Tests/MemoriesCuesCanary.cjs).

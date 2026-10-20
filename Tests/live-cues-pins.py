@@ -123,7 +123,8 @@ check('Self.liveCuesSettingsRequest(hasSet: args.contains("--set"), value: optio
 check('details: ["transport": "unavailable"]' in emit and 'details: ["transport": "no_token"]' in emit, "no answer and no token are their own states")
 check("var details = Self.liveCuesSettingsAnswer(response.body)" in emit and "response.body ?? " not in emit and '"body":' not in emit,
       "only the whitelisted keys cross")
-check(emit.count("request(Self.liveCuesSettingsPath, method: plan.method") == 1, "one request, the planned method")
+check(emit.count('request(Self.liveCuesSettingsPath + (plan.method == "GET" ? "?v=2" : ""), method: plan.method') == 1,
+      "one request, the planned method; a read asks for v 2 (server 6.79.2 then sends the limits)")
 check('"/api/live-cues/v2/settings"' not in emit, "the verb reaches the route only through the constant")
 
 # The suite runs it.

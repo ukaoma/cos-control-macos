@@ -690,7 +690,7 @@ struct LiveCuesLimitsRows: View {
                     Text(LiveCues.gateText(shown)).font(COSType.mono(11.5)).monospacedDigit()
                 }
                 Slider(value: Binding(get: { shown }, set: { store.propose(.gate, (($0 * 100).rounded()) / 100, run: run) }),
-                       in: (steps.first ?? limit.value)...(steps.last ?? limit.value), step: limit.step ?? 0.05)
+                       in: (steps.first ?? limit.value)...(steps.last ?? limit.value), step: 0.05)
                     .controlSize(.small)
                     .accessibilityLabel(LiveCues.barTitle)
                     .accessibilityValue(LiveCues.gateText(shown))
