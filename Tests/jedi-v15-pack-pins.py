@@ -2,7 +2,7 @@
 """0.5.328: the bundled Jedi Miles Windu pack is Version 15 (V15), "V14 to V15: 2x retina pack" (Miles 2026-10-19:
 "deploy these updated sprites for our jedi. Needs to be the default for our future releases as well"; 13:59: deploy
 at 2x retina once regressions are cleared). Baked by installation-v1-5/bake_v15.py in the COS repo
-(render-receipt-v15.json, map sha256 af4fc61d..., pack sha256 07ee41d2...). V14 timing-v2 is the rollback.
+(render-receipt-v15.json, map sha256 af4fc61d..., pack sha256 b794eeb9...). V14 timing-v2 is the rollback.
 
 Pins, each checked once on the real tree and then required to FAIL on in-memory mutations that provably land:
   - every file the shipped map names (1x and retina), by sha256, PNG size, colour type and byte count, and the map;
@@ -32,10 +32,10 @@ P = "windu-pack15-"
 MANIFEST_SHA = "af4fc61df77344d955633563cef7b0c55fd7dc39a02753c443d26d9f16f4d134"
 # name: (sha256, width, height, bytes). The V15 1x and retina strips, then the three V14 ambient strips V15 keeps.
 PINNED = {
-    P + "attention-1x.png": ("297ac39bb832362664a16655f36a7ad2a6775791921304d18bc5b2061810ac3c", 2178, 256, 184160),
-    P + "attention-2x.png": ("6dcbc512187f46ffa395c142a126f43fa080b7346ba6081f9c657c1d09c10767", 4356, 512, 577716),
-    P + "done-1x.png": ("ec06c8b60180e8626de9350e97998859d18e886f6816e6670f54998aab95959d", 2394, 256, 188128),
-    P + "done-2x.png": ("be468e15771de61293e9fdc32a779ad25deaa06499cf0de3785e156e70f44141", 4788, 512, 585258),
+    P + "attention-1x.png": ("618354d32e6877551cf085fc8131b1d1b8e0d416345ddff96a13ef6c893f99d5", 2178, 256, 165031),
+    P + "attention-2x.png": ("cdca81ba5ec8fe678c5f4a3f58e5f7f9f551655e42f99a3ace0941d2d6e19b92", 4356, 512, 518212),
+    P + "done-1x.png": ("f0d05a1f90b3a29aef6cbd8e84ca722abe8fa296b55eb62ab2fa337e55be3adf", 2786, 256, 195460),
+    P + "done-2x.png": ("8a9e98fdf02d607a1e606e24a8f18d15ca14cae2468d905508d9ac56f7b6d258", 5572, 512, 603777),
     P + "duel-a-body-1x.png": ("955959a46291ef1c6aa38994cca7f00005465de7056795c2ce0c48573f86bad9", 11248, 256, 1136636),
     P + "duel-a-body-2x.png": ("48d7cea2f2fd8ac132c7312d25816f868b6c1ef27544ccdbb540aa33919d5dbb", 22496, 512, 3414769),
     P + "duel-a-entry-1x.png": ("9080517f22cc5f5a60b9ab55e09f012a74ac25d13043a3a5f72dd7e2efdbf767", 11248, 256, 99728),
@@ -101,30 +101,30 @@ PINNED = {
     P + "trio-c-entry-2x.png": ("f239152904dbf3959fda3ff916fa95a316c4e1a148cdc7fc4f2c24b99d87d1f8", 24596, 512, 563694),
     P + "trio-c-full-1x.png": ("50242cf98ac628f98f28cd5b2e1fba2f31f54f7b6f3dd48147947bf905501922", 12298, 256, 1583826),
     P + "trio-c-full-2x.png": ("5fd5e5f9779e8260b0c28df2addbcb2da61ff35f6c13ab65be5dba3efddd0ed1", 24596, 512, 4364736),
-    P + "working-a-body-1x.png": ("ea3930aa08c188c5ec691a0f427e314b931722e89766f507eada01769c1e5b19", 13984, 256, 1006902),
-    P + "working-a-body-2x.png": ("b2a9db6b91776db2a5c2a5102df6eb802a877f61845346a997f5495d2010e464", 27968, 512, 3335753),
+    P + "working-a-body-1x.png": ("5f026f9774e5fa7534838b976dc1772796eefd4d4a4759942d9d09d3014e8256", 13984, 256, 1024583),
+    P + "working-a-body-2x.png": ("56e375bbe1e9f59faf31af8c07c4570083a12aaab2e407a40709cd8e901765bf", 27968, 512, 3393318),
     P + "working-a-entry-1x.png": ("db8e15e81e2502758bb933ed04b9c8a27a2c48e8c4efdb5cd136ff8775359724", 13984, 256, 13968),
     P + "working-a-entry-2x.png": ("1ddc2252b5e51feabfa5e517be2f71719c5619aedcca53e9ec1948d4d30985ff", 27968, 512, 55658),
-    P + "working-a-full-1x.png": ("ea3930aa08c188c5ec691a0f427e314b931722e89766f507eada01769c1e5b19", 13984, 256, 1006902),
-    P + "working-a-full-2x.png": ("b2a9db6b91776db2a5c2a5102df6eb802a877f61845346a997f5495d2010e464", 27968, 512, 3335753),
-    P + "working-b-body-1x.png": ("d279cbf68b15a38695da14926f4c5f8d67a654dfc61335951f15c04f25065304", 13984, 256, 1058975),
-    P + "working-b-body-2x.png": ("34b9a3ec81b6195bd151e070cf31cf25778aff4d51beb2ebf5ef276a86043663", 27968, 512, 3494029),
+    P + "working-a-full-1x.png": ("5f026f9774e5fa7534838b976dc1772796eefd4d4a4759942d9d09d3014e8256", 13984, 256, 1024583),
+    P + "working-a-full-2x.png": ("56e375bbe1e9f59faf31af8c07c4570083a12aaab2e407a40709cd8e901765bf", 27968, 512, 3393318),
+    P + "working-b-body-1x.png": ("e82183d7435ed3602162277bf8c91a6d2ffe04e6b05c3b1d7645d2cf919e6a2f", 13984, 256, 1074410),
+    P + "working-b-body-2x.png": ("9b53faffa9fb5b746c24514a0dcaa68b02fdc1f208f000e74ad5d8bf31562a9b", 27968, 512, 3545381),
     P + "working-b-entry-1x.png": ("db8e15e81e2502758bb933ed04b9c8a27a2c48e8c4efdb5cd136ff8775359724", 13984, 256, 13968),
     P + "working-b-entry-2x.png": ("1ddc2252b5e51feabfa5e517be2f71719c5619aedcca53e9ec1948d4d30985ff", 27968, 512, 55658),
-    P + "working-b-full-1x.png": ("d279cbf68b15a38695da14926f4c5f8d67a654dfc61335951f15c04f25065304", 13984, 256, 1058975),
-    P + "working-b-full-2x.png": ("34b9a3ec81b6195bd151e070cf31cf25778aff4d51beb2ebf5ef276a86043663", 27968, 512, 3494029),
-    P + "working-c-body-1x.png": ("3679c33b888481d9a588837416f6ad10f5598a82ad1348807a440867890e4f6c", 13984, 256, 1040672),
-    P + "working-c-body-2x.png": ("eb3c1575cf5c4b6b582408b8a51342859e7518d6082c6f1ad8b81dbf1f2946b4", 27968, 512, 3437665),
+    P + "working-b-full-1x.png": ("e82183d7435ed3602162277bf8c91a6d2ffe04e6b05c3b1d7645d2cf919e6a2f", 13984, 256, 1074410),
+    P + "working-b-full-2x.png": ("9b53faffa9fb5b746c24514a0dcaa68b02fdc1f208f000e74ad5d8bf31562a9b", 27968, 512, 3545381),
+    P + "working-c-body-1x.png": ("5dfde6fbeb5867f5aa435f3035dc056e2bfe3aa1abf13e5324cb3496995f8a77", 13984, 256, 1057467),
+    P + "working-c-body-2x.png": ("5a6f3e8fba48250a00bb643788f88db063f8fb2df829eedb9561cc0047c039ac", 27968, 512, 3492426),
     P + "working-c-entry-1x.png": ("db8e15e81e2502758bb933ed04b9c8a27a2c48e8c4efdb5cd136ff8775359724", 13984, 256, 13968),
     P + "working-c-entry-2x.png": ("1ddc2252b5e51feabfa5e517be2f71719c5619aedcca53e9ec1948d4d30985ff", 27968, 512, 55658),
-    P + "working-c-full-1x.png": ("3679c33b888481d9a588837416f6ad10f5598a82ad1348807a440867890e4f6c", 13984, 256, 1040672),
-    P + "working-c-full-2x.png": ("eb3c1575cf5c4b6b582408b8a51342859e7518d6082c6f1ad8b81dbf1f2946b4", 27968, 512, 3437665),
-    P + "working-d-body-1x.png": ("920af6b9780e09611a9bc3c21878b7f29ca6a53a36f70565a654335c69d2e2b0", 13984, 256, 1024617),
-    P + "working-d-body-2x.png": ("6bcd8689f7798abd2c5ebbd4b22de243051a29bc4b9519d0f4060c601ea0f805", 27968, 512, 3394220),
+    P + "working-c-full-1x.png": ("5dfde6fbeb5867f5aa435f3035dc056e2bfe3aa1abf13e5324cb3496995f8a77", 13984, 256, 1057467),
+    P + "working-c-full-2x.png": ("5a6f3e8fba48250a00bb643788f88db063f8fb2df829eedb9561cc0047c039ac", 27968, 512, 3492426),
+    P + "working-d-body-1x.png": ("577651f532212bb9ca818d20046fd96f707f49a22936151d63da52753fc946a4", 13984, 256, 1041843),
+    P + "working-d-body-2x.png": ("dd0f06ac7c83917d82be55fd4eb09328ec0567ae7f687954ef2eac7d451896c9", 27968, 512, 3447198),
     P + "working-d-entry-1x.png": ("db8e15e81e2502758bb933ed04b9c8a27a2c48e8c4efdb5cd136ff8775359724", 13984, 256, 13968),
     P + "working-d-entry-2x.png": ("1ddc2252b5e51feabfa5e517be2f71719c5619aedcca53e9ec1948d4d30985ff", 27968, 512, 55658),
-    P + "working-d-full-1x.png": ("920af6b9780e09611a9bc3c21878b7f29ca6a53a36f70565a654335c69d2e2b0", 13984, 256, 1024617),
-    P + "working-d-full-2x.png": ("6bcd8689f7798abd2c5ebbd4b22de243051a29bc4b9519d0f4060c601ea0f805", 27968, 512, 3394220),
+    P + "working-d-full-1x.png": ("577651f532212bb9ca818d20046fd96f707f49a22936151d63da52753fc946a4", 13984, 256, 1041843),
+    P + "working-d-full-2x.png": ("dd0f06ac7c83917d82be55fd4eb09328ec0567ae7f687954ef2eac7d451896c9", 27968, 512, 3447198),
     "session-pet-idle-cutouts-v2.png": ("f16814c7139b1d72009c755497f9e97b9100635c86cde123bbc232565ae6e33c", 664, 256, 146417),
     "session-pet-patrol-polish-v3.png": ("c1340d57fd902522cc686664b225358b14a9d3246eada3e98221fbedd9efc4c6", 1024, 256, 146340),
     "session-pet-waiting-release-v1.png": ("e885beb423f2e8febd348d0a8fc566ed2e20da6c1b78bbe33efc3a9aa6b765f3", 1067, 256, 147023),
@@ -139,7 +139,7 @@ RETAINED_V14 = {
 # pose: (frames, interval, 1x cell width, handoff, casts).
 CASTS = {"working": (46, 0.08, 304, 37, "abcd"), "duel": (37, 0.08, 304, 28, "abc"),
          "trio": (43, 0.08, 286, 31, "abc"), "swarm": (64, 0.08, 311, 55, "abc")}
-SIGNALS = {"attention": (18, 0.12, 121), "done": (14, 0.14, 171), "error": (8, 0.14, 224)}
+SIGNALS = {"attention": (18, 0.12, 121), "done": (14, 0.14, 199), "error": (8, 0.14, 224)}
 KINDS = (("file", "full"), ("bodyFile", "body"), ("entryFile", "entry"))
 
 
@@ -237,16 +237,29 @@ def validate(map_bytes: bytes, read: Callable[[str], bytes | None], listing: set
     need("for pose in [PetSpritePose.working, .duel, .trio, .swarm] where only?.contains(pose) ?? true {" in models,
          "Session 1 casts load (loadRotations covers working)")
     need(int(re.search(r"petDefaultArtGeneration = (\d+)", controller).group(1)) >= 23, "art generation 23 runs the V15 upgrade once")
-    need("PetSpriteStore.loadPoseFrames(in: directory, stateMap: petStateMap, displayScale: petDisplayScale," in controller
+    need("PetSpriteStore.loadPoseFrames(in: directory, stateMap: petStateMap, displayScale: petArtScale," in controller
          and controller.count("PetSpriteStore.loadRotations(in: directory, displayScale: scale, only: [want])") == 2
-         and "let scale = petDisplayScale" in controller,
-         "the live pet picks its strips by the pet window's display scale")
-    # Memory gate (0.5.328): casts decode for the pose on screen only, the old pose's are released first, a hidden pet
-    # holds none, and loadPetSprite itself decodes no cast.
+         and "let scale = petArtScale" in controller
+         and "var petArtScale: CGFloat { min(petDisplayScale, Self.petRetinaArtScaleCeiling) }" in controller,
+         "the live pet picks its strips by the pet window's display scale, capped by the art ceiling")
+    # 0.5.329 memory gate: two cast states at 2x (old animating while new decodes) peaked at +589 MB against a bar of
+    # V14 + 150 = 365, so retina stays capped at 1x until casts load one variant at a time.
+    need("static let petRetinaArtScaleCeiling: CGFloat = 1\n" in controller, "retina art stays capped at 1x (0.5.329 memory gate)")
+    # Casts decode for the pose on screen only, off the main thread; the old state keeps animating until they land, a
+    # stale decode never lands, a state without casts holds none, and loadPetSprite itself decodes no cast.
     ensure = controller.split("func ensurePetRotation(for pose: PetSpritePose", 1)[1].split("\n    }\n", 1)[0]
-    need("if !petSpriteKit.rotations.isEmpty { petSpriteKit.rotations = [:] }" in ensure
-         and ensure.index("petSpriteKit.rotations = [:]") < ensure.index("loadRotations("),
-         "the previous pose's casts are released before the next pose decodes")
+    need("        guard let want else {\n            // A state without casts shows at once and holds none.\n"
+         "            if !petSpriteKit.rotations.isEmpty { petSpriteKit.rotations = [:] }\n" in ensure,
+         "a state without casts releases the previous state's casts")
+    need("petRotationLoad = Task.detached(priority: .userInitiated) { [weak self] in" in ensure
+         and "petRotationLoad?.cancel()" in ensure and "petRotationGeneration += 1" in ensure,
+         "a cast state decodes off the main thread and supersedes any decode in flight")
+    need("guard !Task.isCancelled, petRotationGeneration == generation else { return }\n"
+         "        petSpriteKit.rotations = loaded.value\n        petShownPose = pose" in controller,
+         "only the newest decode lands, and the state switches in the same update its casts land")
+    need("var petDisplayPose: PetSpritePose { petShownPose ?? petSpritePose }" in controller
+         and pet.count("model.petDisplayPose") >= 3,
+         "the sprite draws the shown pose, so the old state animates until the new one's casts are decoded")
     load = controller.split("    func loadPetSprite() {", 1)[1].split("\n    }\n", 1)[0]
     need("loadRotations(" not in load and "rotations: [:])" in load and "ensurePetRotation(for: petSpritePose)" in load,
          "loading the pet decodes no casts beyond the pose on screen")
@@ -335,15 +348,30 @@ def main() -> None:
         ("every cast decodes at once", with_(controller=controller.replace(
             "PetSpriteStore.loadRotations(in: directory, displayScale: scale, only: [want])",
             "PetSpriteStore.loadRotations(in: directory, displayScale: scale)", 1))),
-        ("the old pose is kept while the next decodes", with_(controller=controller.replace(
-            "        if !petSpriteKit.rotations.isEmpty { petSpriteKit.rotations = [:] }\n", "", 1))),
+        ("a state without casts keeps the old casts", with_(controller=controller.replace(
+            "            if !petSpriteKit.rotations.isEmpty { petSpriteKit.rotations = [:] }\n", "", 1))),
+        ("casts decode on the main thread", with_(controller=controller.replace(
+            "petRotationLoad = Task.detached(priority: .userInitiated) { [weak self] in",
+            "petRotationLoad = Task { @MainActor [weak self] in", 1))),
+        ("a stale decode lands", with_(controller=controller.replace(
+            "guard !Task.isCancelled, petRotationGeneration == generation else { return }",
+            "guard !Task.isCancelled else { return }", 1))),
+        ("the state switches before its casts land", with_(controller=controller.replace(
+            "var petDisplayPose: PetSpritePose { petShownPose ?? petSpritePose }",
+            "var petDisplayPose: PetSpritePose { petSpritePose }", 1))),
+        ("the sprite draws the requested pose", with_(pet=pet.replace("model.petDisplayPose", "model.petSpritePose"))),
+        ("retina uncapped before per-variant loading", with_(controller=controller.replace(
+            "static let petRetinaArtScaleCeiling: CGFloat = 1\n", "static let petRetinaArtScaleCeiling: CGFloat = 2\n", 1))),
+        ("the art scale ignores the ceiling", with_(controller=controller.replace(
+            "var petArtScale: CGFloat { min(petDisplayScale, Self.petRetinaArtScaleCeiling) }",
+            "var petArtScale: CGFloat { petDisplayScale }", 1))),
         ("loading the pet decodes every cast again", with_(controller=controller.replace(
             "cinematic: cinematic, rotations: [:])", "cinematic: cinematic, rotations: PetSpriteStore.loadRotations(in: directory))", 1))),
         ("a hidden pet keeps its casts", with_(pet=pet.replace(
             "model.ensurePetRotation(for: show ? model.petSpritePose : .idle)", "model.ensurePetRotation(for: model.petSpritePose)", 1))),
         ("the art generation stays at 22", with_(controller=re.sub(r"petDefaultArtGeneration = \d+", "petDefaultArtGeneration = 22", controller))),
         ("the live pet ignores the display scale", with_(controller=controller.replace(
-            "let scale = petDisplayScale", "let scale: CGFloat = 1", 1))),
+            "let scale = petArtScale", "let scale: CGFloat = 1", 1))),
         ("retina chosen on a 1x display", with_(models=models.replace(
             "displayScale >= CGFloat(row.scale) else { return nil }", "displayScale >= 1 else { return nil }", 1))),
         ("a screen change does not re-pick", with_(pet=pet.replace("func windowDidChangeScreen(", "func windowDidChangeScreenIgnored(", 1))),

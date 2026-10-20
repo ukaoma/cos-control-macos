@@ -4,7 +4,18 @@ import SwiftUI
 
 // Runs only in a disposable home. Never shows a window or starts background work.
 @main @MainActor struct SimplePetDefault {
+    /// The process footprint, written to stderr at each step so a watchdog stop shows where memory went.
+    static func mark(_ step: String) {
+        var info = rusage_info_v4()
+        let ok = withUnsafeMutablePointer(to: &info) { ptr in
+            ptr.withMemoryRebound(to: rusage_info_t?.self, capacity: 1) { proc_pid_rusage(getpid(), RUSAGE_INFO_V4, $0) }
+        }
+        let mb = ok == 0 ? Int(info.ri_phys_footprint / 1_048_576) : -1
+        FileHandle.standardError.write(Data("simple-pet: \(step), footprint \(mb) MB\n".utf8))
+    }
+
     static func main() throws {
+        setvbuf(stdout, nil, _IOLBF, 0) // PASS lines reach the log even if a watchdog stops the run
         NSApplication.shared.setActivationPolicy(.prohibited)
         precondition(NSHomeDirectory().contains("cos-simple-pet-test"))
         let directory = PetSpriteStore.supportDirectory()
@@ -45,7 +56,7 @@ import SwiftUI
         precondition(model.petCustomSprite == nil && model.petSpriteKit.frames(for: .idle).isEmpty)
         print("PASS: explicit COS robot choice survives reload")
 
-        for character in PetSpriteStore.bundledCharacters {
+        for character in PetSpriteStore.bundledCharacters { try autoreleasepool {
             let source = PetSpriteStore.bundledCharacterURL(character)!
             precondition(PetSpriteStore.installDefault(into: directory, from: source))
             let stateURL = directory.appendingPathComponent(PetSpriteStore.stateFileName)
@@ -64,7 +75,8 @@ import SwiftUI
                     ? [.working: 4, .duel: 3, .trio: 3, .swarm: 3] : [.duel: 3, .trio: 3, .swarm: 3]
                 let loaded = castCounts()
                 precondition(loaded == casts, "\(character.id) rotates \(casts), loaded \(loaded)")
-                for pose in [PetSpritePose.working, .duel, .trio, .swarm] where casts[pose] != nil {
+                for pose in [PetSpritePose.working, .duel, .trio, .swarm] where casts[pose] != nil { try autoreleasepool {
+                    // One pool per rendered pose: its casts, hosting view, window and snapshot all go before the next.
                     model.ensurePetRotation(for: pose, synchronously: true)
                     let rotation = model.petSpriteKit.rotations[pose]!
                     let clock = PetEncounterPlayback(seed: 17)
@@ -97,10 +109,13 @@ import SwiftUI
                     let held = clock.sample(pose: pose, rotation: rotation, now: now + 20, speed: 1, interval: 0.06, paused: true)!
                     precondition(held.frame == end!.frame && held.incoming == incoming)
                     print("PASS: production SessionPetSprite rendered \(character.id)/\(pose.rawValue), \(rotation.frames) frames, held cast continuity")
-                }
+                    mark("rendered \(character.id)/\(pose.rawValue)")
+                } }
+                autoreleasepool { model.ensurePetRotation(for: .idle, synchronously: true) }
             }
             model.resetPetSprite()
-        }
+        } }
+        mark("characters done")
 
         let source = PetSpriteStore.bundledDefaultURL()!
         let map = PetSpriteStore.loadStateMap(in: source)
@@ -114,6 +129,7 @@ import SwiftUI
         model.loadPetSprite()
         precondition(model.petCustomSprite != nil && (try! Data(contentsOf: installed)) == expected)
         print("PASS: custom artwork survives loading; explicit restore returns to Cloud Puff")
+        mark("custom artwork survives loading; e")
 
         model.resetPetSprite()
         UserDefaults.standard.removeObject(forKey: "cos.sessionPetDefaultSeeded")
@@ -152,6 +168,7 @@ import SwiftUI
             window.close()
         }
         print("PASS: bundled Cloud Puff rendered in light and dark")
+        mark("bundled Cloud Puff rendered in lig")
 
         // 0.5.328: an installed stock V14 (both exact forms the stock history names: flat as 0.5.325 to 0.5.327 shipped it,
         // and with its layers under rotation/v14-timing-v2/ as Miles installed it) moves to Version 15 on the first launch
@@ -240,6 +257,7 @@ import SwiftUI
                     }, "a later launch rewrote the upgraded V15 (\(what))")
                 }
                 print("PASS: installed V14 (\(label)\(tuned ? ", tuned: left alone" : "")) \(tuned ? "" : "moves to Version 15 with no file deleted, ")on a first, a post-0.5.324 and a post-0.5.327 launch")
+                mark("upgrade \(label) tuned \(tuned)")
             }
         }
         // An installed Version 15 is current on every launch path: nothing written.
@@ -258,32 +276,53 @@ import SwiftUI
             precondition(castCounts() == [.working: 4, .duel: 3, .trio: 3, .swarm: 3])
         }
         print("PASS: installed Version 15 survives first, post-0.5.324, post-0.5.327 and repeat launches untouched")
-        // Retina vs 1x display: the same pack, the same point sizes, twice the pixels. A 1x-to-2x screen move re-picks.
+        mark("installed Version 15 survives firs")
+        // Retina vs 1x: the pack's 2x strips decode to the same point sizes with twice the pixels (store level), and
+        // the live pet plays them only up to ControllerModel.petRetinaArtScaleCeiling (0.5.329: 1, the memory gate).
         func cellPixels(_ image: NSImage) -> Int {
             var rect = CGRect(origin: .zero, size: image.size)
             return image.cgImage(forProposedRect: &rect, context: nil, hints: nil)!.width
         }
+        let castList: [PetSpritePose] = [.working, .duel, .trio, .swarm]
+        let plainList: [PetSpritePose] = [.attention, .done, .error]
+        let stateMap = PetSpriteStore.loadStateMap(in: directory)
+        func storeCells(_ scale: CGFloat) -> (sizes: [NSSize], pixels: [Int]) {
+            autoreleasepool {
+                let casts = castList.map { pose in // one pose's casts held at a time
+                    autoreleasepool { PetSpriteStore.loadRotations(in: directory, displayScale: scale, only: [pose])[pose]!.variants[0].full[0] }
+                }
+                let plain = PetSpriteStore.loadPoseFrames(in: directory, stateMap: stateMap, displayScale: scale,
+                                                          castPoses: Set(castList))
+                let cells = casts + plainList.map { plain[$0]!.first! }
+                return (cells.map(\.size), cells.map(cellPixels))
+            }
+        }
+        let store1 = storeCells(1), store2 = storeCells(2)
+        mark("store-level 1x and 2x cells")
+        precondition(store1.sizes == store2.sizes, "retina and 1x cells have identical point sizes (the figure does not change size)")
+        precondition(zip(store1.pixels, store2.pixels).allSatisfy { $1 == 2 * $0 }, "retina cells carry twice the pixels")
+        precondition(zip(store1.sizes, store1.pixels).allSatisfy { Int($0.width) == $1 }, "1x cells are one pixel per point")
         var seen: [CGFloat: (sizes: [NSSize], pixels: [Int])] = [:]
         for scale in [CGFloat(1), 2, 1] {
             model.setPetDisplayScale(scale)
-            // Cast poses play their casts (checked here); their plain strip stays 1x and only sizes the view.
-            let poses: [PetSpritePose] = [.attention, .done, .error]
-            let rotationCells = [PetSpritePose.working, .duel, .trio, .swarm].map { pose in
+            let rotationCells = castList.map { pose in
                 autoreleasepool { () -> NSImage in
                     model.ensurePetRotation(for: pose, synchronously: true)
                     return model.petSpriteKit.rotations[pose]!.variants[0].full[0]
                 }
             }
-            let poseCells = poses.map { model.petSpriteKit.frames(for: $0).first! }
+            let poseCells = plainList.map { model.petSpriteKit.frames(for: $0).first! }
             seen[scale] = ((rotationCells + poseCells).map(\.size), (rotationCells + poseCells).map(cellPixels))
         }
-        precondition(seen[1]!.sizes == seen[2]!.sizes, "retina and 1x cells have identical point sizes (the figure does not change size)")
-        precondition(zip(seen[1]!.pixels, seen[2]!.pixels).allSatisfy { $1 == 2 * $0 }, "retina cells carry twice the pixels")
-        precondition(zip(seen[1]!.sizes, seen[1]!.pixels).allSatisfy { Int($0.width) == $1 }, "1x cells are one pixel per point")
-        precondition([PetSpritePose.working, .duel, .trio, .swarm].allSatisfy { pose in
+        let ceiling = ControllerModel.petRetinaArtScaleCeiling
+        precondition(seen[1]! == store1, "a 1x display plays the 1x strips")
+        precondition(seen[2]! == (ceiling >= 2 ? store2 : store1),
+                     "a retina display plays \(ceiling >= 2 ? "the 2x strips" : "the 1x strips (retina capped at 1x by the memory gate)")")
+        precondition(castList.allSatisfy { pose in
             model.petSpriteKit.frames(for: pose).first.map { cellPixels($0) == Int($0.size.width) } ?? false
         }, "cast poses keep the 1x strip they size the view with")
-        print("PASS: Version 15 plays 2x cells on a retina display and 1x cells on a 1x display, at identical point sizes, and re-picks on a screen change")
+        print("PASS: Version 15's 2x strips decode at identical point sizes with twice the pixels; the live pet plays them "
+              + (ceiling >= 2 ? "on a retina display and re-picks on a screen change" : "at most at 1x (petRetinaArtScaleCeiling 1, the 0.5.329 memory gate)"))
         model.resetPetSprite()
     }
 }

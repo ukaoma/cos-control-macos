@@ -2477,49 +2477,69 @@ final class ControllerModel: ObservableObject {
     /// on screen, every 2x pixel drawn); below it the 1x strips. The presenter reports it whenever the window changes
     /// screen or backing; until then, the main screen's.
     private(set) var petDisplayScale: CGFloat = NSScreen.main?.backingScaleFactor ?? 1
+    /// 0.5.329 memory gate: retina strips stay off. With the old state animating while the new one decodes, two cast
+    /// states at 2x peaked at +589 MB over the bare app (bar: V14's +215 plus 150); 1x peaked at +225. Retina returns
+    /// once casts load one variant at a time; until then this caps the art at 1x on every screen.
+    static let petRetinaArtScaleCeiling: CGFloat = 1
+    /// The scale the art is decoded for: the window's, capped by the ceiling above.
+    var petArtScale: CGFloat { min(petDisplayScale, Self.petRetinaArtScaleCeiling) }
 
     /// Reloads the art only when the choice of strip set changes (1x on one side of 2, retina on the other).
     func setPetDisplayScale(_ scale: CGFloat) {
         guard scale.isFinite, scale > 0 else { return }
-        let changesSet = (scale >= 2) != (petDisplayScale >= 2)
+        let before = petArtScale >= 2
         petDisplayScale = scale
-        if changesSet { loadPetSprite() }
+        if (petArtScale >= 2) != before { loadPetSprite() }
     }
 
-    /// 0.5.328 memory gate: cast art is decoded for the pose on screen only, and released when the pose changes. Every
-    /// cast decoded at once measured 798 MB at 2x (V14: 219 MB); one state at a time peaks near 282 MB (swarm, 2x).
+    /// 0.5.329 memory gate: cast art is decoded for one state at a time, off the main thread, and the previous state's
+    /// casts are released when the new state's land. Every cast decoded at once measured 798 MB at 2x (V14: 219 MB).
     private var petCastPoses: Set<PetSpritePose> = []
     private(set) var petRotationPose: PetSpritePose?
     private var petRotationLoad: Task<Void, Never>?
     private var petRotationGeneration = 0
+    /// The pose the sprite draws. It follows `petSpritePose`, except that a change to a cast state waits for that state's
+    /// casts: the old state keeps animating until they are decoded (about 0.4 s at 1x, 1.8 s for swarm at 2x).
+    @Published private(set) var petShownPose: PetSpritePose?
+    var petDisplayPose: PetSpritePose { petShownPose ?? petSpritePose }
 
-    /// Called whenever the pet may have changed pose. The old pose's casts are released BEFORE the new ones decode, so two
-    /// states are never held together; until the decode lands the pose plays its 1x strip. `synchronously` is for tests.
+    /// Called whenever the pet may have changed pose. `synchronously` is for tests.
     func ensurePetRotation(for pose: PetSpritePose, synchronously: Bool = false) {
         let want: PetSpritePose? = petCastPoses.contains(pose) ? pose : nil
-        guard want != petRotationPose else { return }
+        if want == petRotationPose {
+            if petShownPose != pose && (want == nil || petSpriteKit.rotations[pose] != nil) { petShownPose = pose }
+            return
+        }
         petRotationLoad?.cancel()
         petRotationGeneration += 1
         petRotationPose = want
-        if !petSpriteKit.rotations.isEmpty { petSpriteKit.rotations = [:] }
-        guard let want else { return }
+        guard let want else {
+            // A state without casts shows at once and holds none.
+            if !petSpriteKit.rotations.isEmpty { petSpriteKit.rotations = [:] }
+            petShownPose = pose
+            return
+        }
         let directory = PetSpriteStore.supportDirectory()
-        let scale = petDisplayScale
+        let scale = petArtScale
         if synchronously {
+            petSpriteKit.rotations = [:]
             petSpriteKit.rotations = PetSpriteStore.loadRotations(in: directory, displayScale: scale, only: [want])
+            petShownPose = want
             return
         }
         let generation = petRotationGeneration
         petRotationLoad = Task.detached(priority: .userInitiated) { [weak self] in
             let loaded = PetRotationBox(PetSpriteStore.loadRotations(in: directory, displayScale: scale, only: [want]))
-            await self?.applyPetRotation(loaded, generation: generation)
+            await self?.applyPetRotation(loaded, pose: want, generation: generation)
         }
     }
 
-    /// Lands a background decode only if the pet is still on that pose (no newer request since).
-    private func applyPetRotation(_ loaded: PetRotationBox, generation: Int) {
+    /// Lands a background decode only if the pet is still headed to that pose (no newer request since); the previous
+    /// state's casts are released by this assignment, and the sprite switches state in the same update.
+    private func applyPetRotation(_ loaded: PetRotationBox, pose: PetSpritePose, generation: Int) {
         guard !Task.isCancelled, petRotationGeneration == generation else { return }
         petSpriteKit.rotations = loaded.value
+        petShownPose = pose
     }
     let petEncounterPlayback = PetEncounterPlayback()
     @Published var petFrameIntervals: [PetSpritePose: Double] = [:]
@@ -4970,7 +4990,7 @@ final class ControllerModel: ObservableObject {
         }
         petStateMap = PetSpriteStore.loadStateMap(in: directory)
         petCastPoses = PetSpriteStore.castPoses(in: directory)
-        let poses = PetSpriteStore.loadPoseFrames(in: directory, stateMap: petStateMap, displayScale: petDisplayScale,
+        let poses = PetSpriteStore.loadPoseFrames(in: directory, stateMap: petStateMap, displayScale: petArtScale,
                                                   castPoses: petCastPoses)
         petFrameIntervals = PetSpriteStore.loadFrameIntervals(in: directory)
         petRenderScales = PetSpriteStore.loadRenderScales(in: directory)
@@ -4988,6 +5008,7 @@ final class ControllerModel: ObservableObject {
         petRotationLoad?.cancel()
         petRotationGeneration += 1
         petRotationPose = nil
+        petShownPose = nil
         petSpriteKit = PetSpriteKit(fallback: petCustomSprite, poses: poses, cinematic: cinematic, rotations: [:])
         ensurePetRotation(for: petSpritePose)
     }

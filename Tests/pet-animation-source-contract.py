@@ -31,7 +31,7 @@ def validate(root: pathlib.Path, models: str, controller: str, motion: str, pet:
     # 0.5.328: Miles approved Version 15 (V15, 2026-10-19; installation-v1-5/bake_v15.py in the COS repo, map sha256
     # af4fc61d...) as the bundled pack: 1x strips here plus retina blocks (Tests/jedi-v15-pack-pins.py), four shuffled casts
     # on Session 1 (working) and three on duel, trio and swarm, the 18-frame attention and 14-frame done bridges (done in a
-    # 171 pt cell so the saber is not cut) and the re-baked error, all flat names (the release copies DefaultPet without
+    # 199 pt cell so the saber is not cut) and the re-baked error, all flat names (the release copies DefaultPet without
     # subfolders). V14 timing-v2 (0.5.325 to 0.5.327) is the rollback; its four strips stay as retained stock.
     approved_state = {
         "attention": {"file": "windu-pack15-attention-1x.png", "frames": 18, "interval": 0.12},
@@ -70,8 +70,9 @@ def validate(root: pathlib.Path, models: str, controller: str, motion: str, pet:
     need(set(state) == set(approved_state), "the shipped Miles map has a pose V15 does not declare")
     frame_cap = int(re.search(r"static let maxFrames = (\d+)", models).group(1))
     need(frame_cap == 128, "runtime frame limit must preserve complete Jedi recovery and entrance frames")
-    # V15 widens done from 99 to 171: the A1 to A3 bridge sabers were cut at the 99 px edge (figure the same size).
-    cell_widths = {"attention": 121, "done": 171, "duel": 304, "error": 224, "idle": 83, "patrol": 128,
+    # V15 widens done from 99 to 199: the A1 to A3 bridge sabers were cut at the 99 px edge, and the 0.5.329 re-fit of
+    # the see-through F9 to F11 bridges (scaled up to the standing frames' height) needs the extra room (figure the same size).
+    cell_widths = {"attention": 121, "done": 199, "duel": 304, "error": 224, "idle": 83, "patrol": 128,
                    "swarm": 311, "trio": 286, "waiting": 97, "working": 304}
     for pose, cell_width in cell_widths.items():
         row = state[pose]

@@ -44,6 +44,10 @@ final class SessionPetPresenter: NSObject, ObservableObject, NSWindowDelegate {
         observers.append(model.$petSpriteKit.sink { [weak self] _ in
             Task { @MainActor in self?.syncPanel() }
         })
+        // 0.5.329: the sprite switches state when that state's casts have decoded.
+        observers.append(model.$petShownPose.removeDuplicates().sink { [weak self] _ in
+            Task { @MainActor in self?.syncPanel() }
+        })
         observers.append(model.$petRenderScales.sink { [weak self] _ in
             Task { @MainActor in self?.syncPanel() }
         })
@@ -193,7 +197,7 @@ final class SessionPetPresenter: NSObject, ObservableObject, NSWindowDelegate {
         if let host = panel.contentViewController as? NSHostingController<SessionPetRoot> {
             let characterScale = fittedCharacterScale(for: panel, model: model)
             let viewportSize = model.petSpriteKit.viewportSize(
-                current: model.petSpritePose,
+                current: model.petDisplayPose,
                 pixels: model.petSize.pixels,
                 scale: characterScale,
                 poseScales: model.petRenderScales
@@ -247,7 +251,7 @@ final class SessionPetPresenter: NSObject, ObservableObject, NSWindowDelegate {
             return NSPanel(contentRect: .zero, styleMask: [.borderless], backing: .buffered, defer: false)
         }
         let viewportSize = model.petSpriteKit.viewportSize(
-            current: model.petSpritePose,
+            current: model.petDisplayPose,
             pixels: model.petSize.pixels,
             scale: model.petCharacterFactor,
             poseScales: model.petRenderScales
@@ -376,7 +380,7 @@ final class SessionPetPresenter: NSObject, ObservableObject, NSWindowDelegate {
 enum SessionPetCanary {
     static func column(model: ControllerModel, presenter: SessionPetPresenter) -> AnyView {
         let viewport = model.petSpriteKit.viewportSize(
-            current: model.petSpritePose,
+            current: model.petDisplayPose,
             pixels: model.petSize.pixels,
             scale: model.petCharacterFactor,
             poseScales: model.petRenderScales
@@ -415,7 +419,7 @@ private struct SessionPetRoot: View {
     private var sessions: [ClaudeSession] { model.petSessions }
     private var focus: ClaudeSession? { model.petFocusSession }
     private var size: PetSize { model.petSize }
-    private var pose: PetSpritePose { model.petSpritePose }
+    private var pose: PetSpritePose { model.petDisplayPose }
 
     /// Reveal = hover intent OR a pinned list. A pin survives mouse-out, so a
     /// click-opened list never collapses under the cursor.

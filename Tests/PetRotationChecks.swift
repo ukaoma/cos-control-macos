@@ -258,6 +258,25 @@ struct PetRotationChecks {
         let after = footprintMB() - before
         check(loadedPeak > 40, "the release test holds its casts while loaded (\(Int(loadedPeak)) MB)")
         check(after < 12, "dropped casts give their memory back (\(Int(after)) MB still held after three loads)")
+        // 0.5.329 use-after-free sample: a cell the view still holds when its state's casts are dropped keeps its own
+        // pages. Cells are mapped and unmapped by their data provider; an early unmap would crash or read zeros here.
+        // Three sampled cells outlive their load, two more loads churn the freed pages, then each is read and compared
+        // with a fresh decode of the same cell.
+        func cell(_ loaded: [PetSpritePose: PetEncounterRotation], _ v: Int, _ layer: Int, _ f: Int) -> NSImage {
+            let variant = loaded[.duel]!.variants[v]
+            return [variant.full, variant.body, variant.entry][layer][f]
+        }
+        let picks = [(0, 0, 0), (1, 1, 3), (2, 2, 5)]
+        let held = autoreleasepool { picks.map { cell(PetSpriteStore.loadRotations(in: root, only: [.duel]), $0.0, $0.1, $0.2) } }
+        for _ in 0..<2 { autoreleasepool { _ = PetSpriteStore.loadRotations(in: root, only: [.duel]) } }
+        autoreleasepool {
+            let fresh = PetSpriteStore.loadRotations(in: root, only: [.duel])
+            for (i, pick) in picks.enumerated() {
+                let want = probe(cell(fresh, pick.0, pick.1, pick.2)), got = probe(held[i])
+                check(got.pixels == w && got.red == want.red && want.red > 0,
+                      "a cell held past its state's release keeps its pixels (cast \(pick.0) layer \(pick.1) frame \(pick.2))")
+            }
+        }
     }
 
     /// 0.5.328 (Version 15): retina strips. A 4-frame pose of 4x4 px cells at 1x carries 8x8 px cells at 2x, split into
