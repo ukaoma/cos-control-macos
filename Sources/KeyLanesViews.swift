@@ -177,6 +177,7 @@ struct KeyLanesSetupPanel: View {
             HStack(spacing: 8) {
                 TextField(KeyLanes.capLabel, text: Binding(get: { capEdits[key.ref] ?? KeyLanes.capArgument(key.capUsd) },
                                                          set: { capEdits[key.ref] = $0 }))
+                    .textFieldStyle(.plain).cosField()
                     .frame(width: 80)
                 Button("Set cap") {
                     guard let cap = KeyLanes.parseCap(capEdits[key.ref] ?? "") else { store.line = "A daily cap is between $0.01 and $1000."; return }
@@ -214,7 +215,7 @@ struct KeyLanesSetupPanel: View {
                 }
                 .buttonStyle(COSQuietButtonStyle())
                 Text("Cap $").font(COSType.body(11)).foregroundStyle(.secondary)
-                TextField(KeyLanes.capLabel, text: $capText).frame(width: 64)
+                TextField(KeyLanes.capLabel, text: $capText).textFieldStyle(.plain).cosField().frame(width: 64)
                 Button(KeyLanes.saveLabel) {
                     guard let secret = pending else { return }
                     guard let cap = KeyLanes.parseCap(capText) else { store.line = "A daily cap is between $0.01 and $1000."; return }
