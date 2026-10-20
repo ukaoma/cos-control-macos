@@ -28,6 +28,10 @@
 - With no key-lane answer from the server, Control draws and behaves as 0.5.328: the K0 golden replays identical at
   6.79.0, and at 6.80.0 with lanes off the panel is the 6.79.0 panel plus exactly one Settings row.
 
+### Dictation: a missed key release finishes normally
+
+- Dictation: if your Mac misses the moment you let go of the dictation key, COS now notices and finishes the dictation normally, typing the text instead of copying it. If the 🌐 key also has a job in macOS, COS tells you and opens Keyboard settings. A press while the last dictation is still finishing now says so. Dictation settings now live in Activity, Dictation, Settings.
+
 ## 0.5.328 (build 381), the pet keeps moving while dictation starts
 
 ### The pet keeps moving while dictation starts
