@@ -358,7 +358,7 @@ final class ControllerModel: ObservableObject {
     private static let petDefaultSeededKey = "cos.sessionPetDefaultSeeded"
     private static let petDismissedKey = "cos.sessionPetDismissed"
     private static let petDefaultArtGenerationKey = "cos.sessionPetDefaultArtGeneration"
-    private static let petDefaultArtGeneration = 22
+    private static let petDefaultArtGeneration = 23
 
     private static func loadPetCharacterPercent(defaults: UserDefaults = .standard) -> Int {
         PetCharacterScale.loadPersistedPercent(
@@ -2481,6 +2481,74 @@ final class ControllerModel: ObservableObject {
     )
     @Published var petCustomSprite: NSImage?
     @Published var petSpriteKit = PetSpriteKit()
+    /// 0.5.328 (Version 15): the pet window's backingScaleFactor. At 2 or more the pack's retina strips play (same size
+    /// on screen, every 2x pixel drawn); below it the 1x strips. The presenter reports it whenever the window changes
+    /// screen or backing; until then, the main screen's.
+    private(set) var petDisplayScale: CGFloat = NSScreen.main?.backingScaleFactor ?? 1
+    /// 0.5.329 memory gate: retina strips stay off. With the old state animating while the new one decodes, two cast
+    /// states at 2x peaked at +589 MB over the bare app (bar: V14's +215 plus 150); 1x peaked at +225. Retina returns
+    /// once casts load one variant at a time; until then this caps the art at 1x on every screen.
+    static let petRetinaArtScaleCeiling: CGFloat = 1
+    /// The scale the art is decoded for: the window's, capped by the ceiling above.
+    var petArtScale: CGFloat { min(petDisplayScale, Self.petRetinaArtScaleCeiling) }
+
+    /// Reloads the art only when the choice of strip set changes (1x on one side of 2, retina on the other).
+    func setPetDisplayScale(_ scale: CGFloat) {
+        guard scale.isFinite, scale > 0 else { return }
+        let before = petArtScale >= 2
+        petDisplayScale = scale
+        if (petArtScale >= 2) != before { loadPetSprite() }
+    }
+
+    /// 0.5.329 memory gate: cast art is decoded for one state at a time, off the main thread, and the previous state's
+    /// casts are released when the new state's land. Every cast decoded at once measured 798 MB at 2x (V14: 219 MB).
+    private var petCastPoses: Set<PetSpritePose> = []
+    private(set) var petRotationPose: PetSpritePose?
+    private var petRotationLoad: Task<Void, Never>?
+    private var petRotationGeneration = 0
+    /// The pose the sprite draws. It follows `petSpritePose`, except that a change to a cast state waits for that state's
+    /// casts: the old state keeps animating until they are decoded (about 0.4 s at 1x, 1.8 s for swarm at 2x).
+    @Published private(set) var petShownPose: PetSpritePose?
+    var petDisplayPose: PetSpritePose { petShownPose ?? petSpritePose }
+
+    /// Called whenever the pet may have changed pose. `synchronously` is for tests.
+    func ensurePetRotation(for pose: PetSpritePose, synchronously: Bool = false) {
+        let want: PetSpritePose? = petCastPoses.contains(pose) ? pose : nil
+        if want == petRotationPose {
+            if petShownPose != pose && (want == nil || petSpriteKit.rotations[pose] != nil) { petShownPose = pose }
+            return
+        }
+        petRotationLoad?.cancel()
+        petRotationGeneration += 1
+        petRotationPose = want
+        guard let want else {
+            // A state without casts shows at once and holds none.
+            if !petSpriteKit.rotations.isEmpty { petSpriteKit.rotations = [:] }
+            petShownPose = pose
+            return
+        }
+        let directory = PetSpriteStore.supportDirectory()
+        let scale = petArtScale
+        if synchronously {
+            petSpriteKit.rotations = [:]
+            petSpriteKit.rotations = PetSpriteStore.loadRotations(in: directory, displayScale: scale, only: [want])
+            petShownPose = want
+            return
+        }
+        let generation = petRotationGeneration
+        petRotationLoad = Task.detached(priority: .userInitiated) { [weak self] in
+            let loaded = PetRotationBox(PetSpriteStore.loadRotations(in: directory, displayScale: scale, only: [want]))
+            await self?.applyPetRotation(loaded, pose: want, generation: generation)
+        }
+    }
+
+    /// Lands a background decode only if the pet is still headed to that pose (no newer request since); the previous
+    /// state's casts are released by this assignment, and the sprite switches state in the same update.
+    private func applyPetRotation(_ loaded: PetRotationBox, pose: PetSpritePose, generation: Int) {
+        guard !Task.isCancelled, petRotationGeneration == generation else { return }
+        petSpriteKit.rotations = loaded.value
+        petShownPose = pose
+    }
     let petEncounterPlayback = PetEncounterPlayback()
     @Published var petFrameIntervals: [PetSpritePose: Double] = [:]
     private var petStateMap: [PetSpritePose: (file: String, frames: Int)] = [:]
@@ -4939,6 +5007,9 @@ final class ControllerModel: ObservableObject {
             // Generation 22 (0.5.325) promotes the EXACT stock V12.6 map (or any earlier recognized stock Miles pack)
             // to V14 timing-v2 with its three shuffled casts per combat state, every rotation layer copied and checked
             // before the map changes. V14 already installed, under flat or rotation/ subfolder names, is .current.
+            // Generation 23 (0.5.328, Miles 2026-10-19) promotes a stock V14 (its four strips byte-identical to the retained
+            // ones, layers flat or under rotation/) or V12.6 to Jedi V1.5: four Session 1 casts, traveling bolts and the
+            // 18/14-frame signal bridges. Nothing is deleted; V14's files stay on disk. V1.5 already installed is .current.
             let bundledRefresh = PetSpriteStore.refreshRecognizedBundledCharacter(
                 into: directory
             )
@@ -4957,13 +5028,10 @@ final class ControllerModel: ObservableObject {
         } else {
             petCustomSprite = nil
         }
-        var poses: [PetSpritePose: [NSImage]] = [:]
         petStateMap = PetSpriteStore.loadStateMap(in: directory)
-        for (pose, record) in petStateMap {
-            let url = directory.appendingPathComponent(record.file)
-            guard let image = NSImage(contentsOf: url) else { continue }
-            poses[pose] = PetSpriteStrip.slice(image, frames: record.frames)
-        }
+        petCastPoses = PetSpriteStore.castPoses(in: directory)
+        let poses = PetSpriteStore.loadPoseFrames(in: directory, stateMap: petStateMap, displayScale: petArtScale,
+                                                  castPoses: petCastPoses)
         petFrameIntervals = PetSpriteStore.loadFrameIntervals(in: directory)
         petRenderScales = PetSpriteStore.loadRenderScales(in: directory)
         var cinematic: [NSImage] = []
@@ -4976,8 +5044,13 @@ final class ControllerModel: ObservableObject {
                 ?? PetSpriteStrip.clampFrames(max(2, cg.width / max(cg.height, 1)))
             cinematic = PetSpriteStrip.slice(image, frames: frames)
         }
-        petSpriteKit = PetSpriteKit(fallback: petCustomSprite, poses: poses, cinematic: cinematic,
-                                    rotations: PetSpriteStore.loadRotations(in: directory))
+        // New art (or a new display scale): the casts reload for the pose on screen only.
+        petRotationLoad?.cancel()
+        petRotationGeneration += 1
+        petRotationPose = nil
+        petShownPose = nil
+        petSpriteKit = PetSpriteKit(fallback: petCustomSprite, poses: poses, cinematic: cinematic, rotations: [:])
+        ensurePetRotation(for: petSpritePose)
     }
 
     var petLedger: PetLedger {

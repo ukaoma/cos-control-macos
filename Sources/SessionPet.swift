@@ -44,6 +44,10 @@ final class SessionPetPresenter: NSObject, ObservableObject, NSWindowDelegate {
         observers.append(model.$petSpriteKit.sink { [weak self] _ in
             Task { @MainActor in self?.syncPanel() }
         })
+        // 0.5.329: the sprite switches state when that state's casts have decoded.
+        observers.append(model.$petShownPose.removeDuplicates().sink { [weak self] _ in
+            Task { @MainActor in self?.syncPanel() }
+        })
         observers.append(model.$petRenderScales.sink { [weak self] _ in
             Task { @MainActor in self?.syncPanel() }
         })
@@ -179,6 +183,8 @@ final class SessionPetPresenter: NSObject, ObservableObject, NSWindowDelegate {
         // An enabled pet is a persistent companion, not only a live-session
         // indicator. With no sessions, PetSpritePose.resolve selects `.idle`.
         let show = model.petEnabled
+        // 0.5.328: decode the casts of the pose about to show and release the last pose's; a hidden pet holds none.
+        model.ensurePetRotation(for: show ? model.petSpritePose : .idle)
         if !show {
             model.petEncounterPlayback.pause()
             panel?.orderOut(nil)
@@ -191,7 +197,7 @@ final class SessionPetPresenter: NSObject, ObservableObject, NSWindowDelegate {
         if let host = panel.contentViewController as? NSHostingController<SessionPetRoot> {
             let characterScale = fittedCharacterScale(for: panel, model: model)
             let viewportSize = model.petSpriteKit.viewportSize(
-                current: model.petSpritePose,
+                current: model.petDisplayPose,
                 pixels: model.petSize.pixels,
                 scale: characterScale,
                 poseScales: model.petRenderScales
@@ -245,7 +251,7 @@ final class SessionPetPresenter: NSObject, ObservableObject, NSWindowDelegate {
             return NSPanel(contentRect: .zero, styleMask: [.borderless], backing: .buffered, defer: false)
         }
         let viewportSize = model.petSpriteKit.viewportSize(
-            current: model.petSpritePose,
+            current: model.petDisplayPose,
             pixels: model.petSize.pixels,
             scale: model.petCharacterFactor,
             poseScales: model.petRenderScales
@@ -286,6 +292,7 @@ final class SessionPetPresenter: NSObject, ObservableObject, NSWindowDelegate {
         panel.setFrame(placed, display: false)
         restingAnchor = CGPoint(x: placed.minX, y: placed.minY)
         self.panel = panel
+        model.setPetDisplayScale(panel.backingScaleFactor)
         return panel
     }
 
@@ -324,6 +331,16 @@ final class SessionPetPresenter: NSObject, ObservableObject, NSWindowDelegate {
 
     /// A drag re-parks the pet. Our own setFrame also posts this, so the
     /// applyingFrame guard is what keeps a clamped slide out of the anchor.
+    // 0.5.328 (Version 15): retina strips play on a 2x screen, 1x strips on a 1x screen; moving the pet between
+    // them re-picks. Both notifications can fire for one move; the model reloads only when the set changes.
+    func windowDidChangeBackingProperties(_ notification: Notification) {
+        if let panel { model?.setPetDisplayScale(panel.backingScaleFactor) }
+    }
+
+    func windowDidChangeScreen(_ notification: Notification) {
+        if let panel { model?.setPetDisplayScale(panel.backingScaleFactor) }
+    }
+
     func windowDidMove(_ notification: Notification) {
         guard !applyingFrame, let panel else { return }
         restingAnchor = CGPoint(x: panel.frame.minX, y: panel.frame.minY)
@@ -363,7 +380,7 @@ final class SessionPetPresenter: NSObject, ObservableObject, NSWindowDelegate {
 enum SessionPetCanary {
     static func column(model: ControllerModel, presenter: SessionPetPresenter) -> AnyView {
         let viewport = model.petSpriteKit.viewportSize(
-            current: model.petSpritePose,
+            current: model.petDisplayPose,
             pixels: model.petSize.pixels,
             scale: model.petCharacterFactor,
             poseScales: model.petRenderScales
@@ -402,7 +419,7 @@ private struct SessionPetRoot: View {
     private var sessions: [ClaudeSession] { model.petSessions }
     private var focus: ClaudeSession? { model.petFocusSession }
     private var size: PetSize { model.petSize }
-    private var pose: PetSpritePose { model.petSpritePose }
+    private var pose: PetSpritePose { model.petDisplayPose }
 
     /// Reveal = hover intent OR a pinned list. A pin survives mouse-out, so a
     /// click-opened list never collapses under the cursor.

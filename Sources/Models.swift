@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import CryptoKit
+import ImageIO
 import OSLog
 
 enum JSONValue: Codable, Sendable {
@@ -7536,6 +7537,57 @@ enum PetSpritePose: String, CaseIterable, Hashable, Sendable {
     ]
 }
 
+/// 0.5.328 (Version 15): a pose's optional retina strips, beside its 1x `file` and `rotation`. Each list is one strip's
+/// ordered segments: a strip wider than 32,760 px or larger than 16,777,216 px is split at a cell boundary. Only scale 2
+/// is defined. Older builds ignore the block and play the 1x strips, so a map carrying it stays readable everywhere.
+struct PetRetinaRow: Equatable {
+    struct Variant: Equatable {
+        var id: String
+        var file: [String]
+        var bodyFile: [String]
+        var entryFile: [String]
+    }
+    var scale: Int
+    var file: [String]
+    var variants: [Variant]
+
+    init?(_ value: Any?) {
+        guard let row = value as? [String: Any], let scale = row["scale"] as? Int, scale == 2,
+              let file = row["file"] as? [String], !file.isEmpty, file.allSatisfy(PetRotationManifest.isRelativePath)
+        else { return nil }
+        var variants: [Variant] = []
+        if let items = row["variants"] {
+            guard let items = items as? [[String: Any]], !items.isEmpty else { return nil }
+            for item in items {
+                guard let id = item["id"] as? String, let full = item["file"] as? [String],
+                      let body = item["bodyFile"] as? [String], let entry = item["entryFile"] as? [String],
+                      ![full, body, entry].contains(where: \.isEmpty),
+                      (full + body + entry).allSatisfy(PetRotationManifest.isRelativePath) else { return nil }
+                variants.append(Variant(id: id, file: full, bodyFile: body, entryFile: entry))
+            }
+        }
+        self.scale = scale
+        self.file = file
+        self.variants = variants
+    }
+
+    /// Every file the block names, in map order.
+    var files: [String] { file + variants.flatMap { $0.file + $0.bodyFile + $0.entryFile } }
+
+    /// A retina strip is chosen only on a display that draws at least `scale` pixels per point.
+    static func chosen(_ value: Any?, displayScale: CGFloat) -> PetRetinaRow? {
+        guard let row = PetRetinaRow(value), displayScale >= CGFloat(row.scale) else { return nil }
+        return row
+    }
+}
+
+/// Carries decoded cast art from a background decode to the main actor. The images are never touched off the main
+/// actor once handed over.
+final class PetRotationBox: @unchecked Sendable {
+    let value: [PetSpritePose: PetEncounterRotation]
+    init(_ value: [PetSpritePose: PetEncounterRotation]) { self.value = value }
+}
+
 /// Optional versioned encounter art. The legacy pose strip remains the fallback.
 struct PetRotationManifest: Codable, Equatable {
     struct Variant: Codable, Equatable {
@@ -7847,11 +7899,13 @@ enum PetSpriteStrip {
         return nil
     }
 
-    static func slice(_ image: NSImage, frames: Int) -> [NSImage] {
+    /// `scale` (0.5.328, Version 15): a 2x strip's cells keep their pixels but report half their pixel size, so the
+    /// figure is the same size on screen as the 1x strip and a retina display draws every pixel.
+    static func slice(_ image: NSImage, frames: Int, scale: CGFloat = 1) -> [NSImage] {
         let count = clampFrames(frames)
         guard let cg = raster(image) else { return [image] }
         if count <= 1 {
-            return [NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))]
+            return [NSImage(cgImage: cg, size: NSSize(width: CGFloat(cg.width) / scale, height: CGFloat(cg.height) / scale))]
         }
         let frameWidth = max(1, cg.width / count)
         var out: [NSImage] = []
@@ -7859,7 +7913,7 @@ enum PetSpriteStrip {
         for index in 0..<count {
             let rect = CGRect(x: index * frameWidth, y: 0, width: frameWidth, height: cg.height)
             guard let cropped = cg.cropping(to: rect) else { continue }
-            out.append(NSImage(cgImage: cropped, size: NSSize(width: frameWidth, height: cg.height)))
+            out.append(NSImage(cgImage: cropped, size: NSSize(width: CGFloat(frameWidth) / scale, height: CGFloat(cg.height) / scale)))
         }
         return out.isEmpty ? [image] : out
     }
@@ -7867,32 +7921,43 @@ enum PetSpriteStrip {
     /// Rotation layers repeat guard poses and whole body frames. Cropped CGImages
     /// otherwise retain every decoded atlas, including duplicate and blank cells.
     /// Copy each unique cell once; cache identity is exact premultiplied pixels.
-    static func sliceCompact(_ cg: CGImage, frames: Int, cache: inout [String: NSImage]) -> [NSImage] {
+    static func sliceCompact(_ cg: CGImage, frames: Int, scale: CGFloat = 1, cache: inout [String: NSImage]) -> [NSImage] {
         let count = clampFrames(frames), w = cg.width / count, h = cg.height
         guard w > 0, let context = CGContext(data: nil, width: cg.width, height: h,
             bitsPerComponent: 8, bytesPerRow: cg.width * 4, space: CGColorSpaceCreateDeviceRGB(),
             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue), let pixels = context.data else { return [] }
         context.draw(cg, in: CGRect(x: 0, y: 0, width: cg.width, height: h))
+        let cellBytes = w * h * 4
+        var scratch = Data(count: cellBytes)
         return (0..<count).compactMap { frame in
-            var bytes = Data(count: w * h * 4)
-            bytes.withUnsafeMutableBytes { dst in
+            scratch.withUnsafeMutableBytes { dst in
                 for y in 0..<h {
                     dst.baseAddress!.advanced(by: y * w * 4).copyMemory(
                         from: pixels.advanced(by: (y * cg.width + frame * w) * 4), byteCount: w * 4)
                 }
             }
-            let key = "\(w):\(h):" + SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+            let key = "\(w):\(h):\(scale):" + SHA256.hash(data: scratch).map { String(format: "%02x", $0) }.joined()
             if let image = cache[key] { return image }
-            guard let provider = CGDataProvider(data: bytes as CFData),
-                let cell = CGImage(width: w, height: h, bitsPerComponent: 8, bitsPerPixel: 32,
+            // 0.5.328 memory gate: a kept cell lives in its own anonymous mapping, unmapped when the image goes. A malloc'd
+            // cell of 600x512 px (1.2 MB) was freed into malloc's small region, which kept the pages dirty: releasing one
+            // state's casts returned nothing (measured: footprint stayed at its peak, 434 MB of empty-but-resident small
+            // regions after the release).
+            guard let mapped = mmap(nil, cellBytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0),
+                  mapped != MAP_FAILED else { return nil }
+            scratch.withUnsafeBytes { mapped.copyMemory(from: $0.baseAddress!, byteCount: cellBytes) }
+            guard let provider = CGDataProvider(dataInfo: nil, data: mapped, size: cellBytes, releaseData: { _, data, size in
+                munmap(UnsafeMutableRawPointer(mutating: data), size)
+            }) else { munmap(mapped, cellBytes); return nil }
+            guard let cell = CGImage(width: w, height: h, bitsPerComponent: 8, bitsPerPixel: 32,
                     bytesPerRow: w * 4, space: CGColorSpaceCreateDeviceRGB(),
                     bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
                     provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent) else { return nil }
-            let image = NSImage(cgImage: cell, size: NSSize(width: w, height: h))
+            let image = NSImage(cgImage: cell, size: NSSize(width: CGFloat(w) / scale, height: CGFloat(h) / scale))
             cache[key] = image
             return image
         }
     }
+
 
     static func sliceGrid(_ image: NSImage, columns: Int, rows: Int) -> [NSImage] {
         let cols = max(1, columns)
@@ -8031,6 +8096,36 @@ enum PetSpriteStrip {
             out.append(NSImage(cgImage: cropped, size: NSSize(width: rect.width, height: rect.height)))
         }
         return out.count > 1 ? out : sliceGrid(image, columns: hint, rows: 1)
+    }
+
+    /// The cells of one retina strip given as ordered segments. Every cell must be `scale` times a 1x cell of `cell`
+    /// points, so the figure is exactly as big on screen as the 1x strip; the 256-point height rule applies to points.
+    /// Nil, and the caller keeps the 1x strip, when a segment is missing, outside the folder, unreadable, over a native
+    /// cap (32,760 px wide, 16,777,216 px, 1024 px cells), not cut at a cell boundary, or the cells do not add to `frames`.
+    static func retinaCells(
+        _ files: [String],
+        frames: Int,
+        cell: CGSize,
+        scale: Int,
+        in directory: URL,
+        slicer: (CGImage, Int) -> [NSImage]
+    ) -> [NSImage]? {
+        let root = directory.resolvingSymlinksInPath().standardizedFileURL.path + "/"
+        let w = Int(cell.width.rounded()) * scale, h = Int(cell.height.rounded()) * scale
+        guard scale >= 2, frames >= 1, w > 0, w <= 1024, h > 0, h <= 1024, Int(cell.height.rounded()) <= maxHeight
+        else { return nil }
+        var out: [NSImage] = []
+        for file in files {
+            let url = directory.appendingPathComponent(file).resolvingSymlinksInPath().standardizedFileURL
+            // ImageIO, not NSImage: the full pixel image whatever DPI the PNG declares.
+            guard url.path.hasPrefix(root), let data = try? Data(contentsOf: url), data.count <= 32 * 1024 * 1024,
+                  let source = CGImageSourceCreateWithData(data as CFData, nil),
+                  let cg = CGImageSourceCreateImageAtIndex(source, 0, nil),
+                  cg.height == h, cg.width % w == 0, cg.width <= 32_760, cg.width * cg.height <= 16_777_216
+            else { return nil }
+            out += slicer(cg, cg.width / w)
+        }
+        return out.count == frames ? out : nil
     }
 
     static func fitHeight(_ image: NSImage, maxHeight: Int = maxHeight) -> NSImage {
@@ -8739,14 +8834,23 @@ enum PetSpriteStore {
     }
     /// Strict all-or-nothing loading per pose. Bad or absent optional metadata
     /// falls back to the legacy strip without changing other poses.
-    static func loadRotations(in directory: URL, fileManager: FileManager = .default) -> [PetSpritePose: PetEncounterRotation] {
+    /// `only` (0.5.328): decode just these poses. The live pet asks for the pose on screen alone: Version 15's 2x casts
+    /// measured 798 MB decoded together against V14's 219 MB, and one state at a time peaks near 282 MB (swarm).
+    static func loadRotations(
+        in directory: URL,
+        fileManager: FileManager = .default,
+        displayScale: CGFloat = 1,
+        only: Set<PetSpritePose>? = nil
+    ) -> [PetSpritePose: PetEncounterRotation] {
         guard let data = try? Data(contentsOf: directory.appendingPathComponent(stateFileName)),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let poses = json["poses"] as? [String: [String: Any]] else { return [:] }
         var result: [PetSpritePose: PetEncounterRotation] = [:]
         var frameCache: [String: NSImage] = [:]
         let root = directory.resolvingSymlinksInPath().standardizedFileURL.path + "/"
-        for pose in [PetSpritePose.duel, .trio, .swarm] {
+        // 0.5.328: Session 1 (working) rotates casts too (Jedi Version 15: four casts for Miles Windu). The renderer was
+        // already pose-generic; only this loader limited rotation to duel, trio and swarm.
+        for pose in [PetSpritePose.working, .duel, .trio, .swarm] where only?.contains(pose) ?? true {
             guard let row = poses[pose.rawValue], let rotationJSON = row["rotation"] as? [String: Any],
                   let rotationData = try? JSONSerialization.data(withJSONObject: rotationJSON, options: [.sortedKeys]),
                   let manifest = try? JSONDecoder().decode(PetRotationManifest.self, from: rotationData),
@@ -8757,6 +8861,30 @@ enum PetSpriteStore {
             let width = raster.width, height = raster.height
             guard height > 0, height <= 1024, width / frames > 0, width / frames <= 1024,
                   width * height <= 16_777_216 else { continue }
+            // Version 15: on a display of scale 2 or more, the retina casts when every one of their layers is valid;
+            // otherwise the 1x casts below. Either way the cells measure the 1x strip's points.
+            if let retina = PetRetinaRow.chosen(row["retina"], displayScale: displayScale),
+               retina.variants.map(\.id) == manifest.variants.map(\.id) {
+                var hasher = SHA256(); hasher.update(data: rotationData)
+                var variants: [PetEncounterRotation.Variant] = []
+                for variant in retina.variants {
+                    let strips = [variant.file, variant.bodyFile, variant.entryFile].compactMap { files in
+                        PetSpriteStrip.retinaCells(files, frames: frames, cell: CGSize(width: width / frames, height: height),
+                                                   scale: retina.scale, in: directory) { cg, count in
+                            PetSpriteStrip.sliceCompact(cg, frames: count, scale: CGFloat(retina.scale), cache: &frameCache)
+                        }
+                    }
+                    guard strips.count == 3 else { break }
+                    hasher.update(data: Data((variant.file + variant.bodyFile + variant.entryFile).joined(separator: "\n").utf8))
+                    variants.append(.init(id: variant.id, full: strips[0], body: strips[1], entry: strips[2]))
+                }
+                if variants.count == manifest.variants.count {
+                    hasher.update(data: Data("retina\(retina.scale):\(frames):\(width):\(height)".utf8))
+                    let fingerprint = hasher.finalize().map { String(format: "%02x", $0) }.joined()
+                    result[pose] = PetEncounterRotation(fingerprint: fingerprint, manifest: manifest, frames: frames, variants: variants)
+                    continue
+                }
+            }
             var hasher = SHA256(); hasher.update(data: rotationData)
             var variants: [PetEncounterRotation.Variant] = []
             for variant in manifest.variants {
@@ -8779,6 +8907,45 @@ enum PetSpriteStore {
             result[pose] = PetEncounterRotation(fingerprint: fingerprint, manifest: manifest, frames: frames, variants: variants)
         }
         return result
+    }
+
+    /// Poses whose map row declares a cast rotation, read without decoding any art.
+    static func castPoses(in directory: URL) -> Set<PetSpritePose> {
+        guard let data = try? Data(contentsOf: directory.appendingPathComponent(stateFileName)),
+              let poses = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["poses"] as? [String: [String: Any]]
+        else { return [] }
+        return Set(poses.compactMap { name, row in row["rotation"] == nil ? nil : PetSpritePose(rawValue: name) })
+    }
+
+    /// Every pose's frames as the live pet plays them (0.5.328). On a display of scale 2 or more a pose whose map row
+    /// carries a valid retina block plays its 2x cells (pixel-for-pixel, at the 1x strip's point size); every other pose,
+    /// and any retina block that fails a check, plays the 1x strip exactly as before. `castPoses` keep their 1x strip:
+    /// their casts are what plays, the strip only sizes the view, and its 2x decode measured 240 MB for nothing.
+    static func loadPoseFrames(
+        in directory: URL,
+        stateMap: [PetSpritePose: (file: String, frames: Int)],
+        displayScale: CGFloat,
+        castPoses: Set<PetSpritePose> = []
+    ) -> [PetSpritePose: [NSImage]] {
+        let rows = (try? Data(contentsOf: directory.appendingPathComponent(stateFileName)))
+            .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }?["poses"] as? [String: Any] ?? [:]
+        var poses: [PetSpritePose: [NSImage]] = [:]
+        for (pose, record) in stateMap {
+            guard let image = NSImage(contentsOf: directory.appendingPathComponent(record.file)) else { continue }
+            let oneX = PetSpriteStrip.slice(image, frames: record.frames)
+            poses[pose] = oneX
+            guard !castPoses.contains(pose),
+                  let retina = PetRetinaRow.chosen((rows[pose.rawValue] as? [String: Any])?["retina"], displayScale: displayScale),
+                  let cell = oneX.first?.size, oneX.count == record.frames,
+                  let cells = PetSpriteStrip.retinaCells(retina.file, frames: record.frames, cell: cell, scale: retina.scale,
+                                                         in: directory, slicer: { cg, count in
+                                                             PetSpriteStrip.slice(NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height)),
+                                                                                  frames: count, scale: CGFloat(retina.scale))
+                                                         })
+            else { continue }
+            poses[pose] = cells
+        }
+        return poses
     }
 
     static let maxBytes = 8 * 1024 * 1024
@@ -9403,6 +9570,19 @@ enum PetSpriteStore {
         // The installed rotation is the bundled one when every variant's three layers are the bundled bytes, in the
         // same order, at the same handoff. File NAMES may differ: Miles's Mac holds V14 as installed by hand, under
         // rotation/v14-timing-v2/, and the bundle carries the same bytes under flat names.
+        // 0.5.328: the bundled retina strips are part of "already current": the same block, every file the same bytes.
+        func sameRetina(_ pose: PetSpritePose) -> Bool {
+            guard let wanted = bundledRows[pose.rawValue]?["retina"] else { return true }
+            guard let mine = installedRows[pose.rawValue]?["retina"],
+                  let wantedData = try? JSONSerialization.data(withJSONObject: wanted, options: [.sortedKeys]),
+                  let mineData = try? JSONSerialization.data(withJSONObject: mine, options: [.sortedKeys]),
+                  wantedData == mineData, let row = PetRetinaRow(wanted) else { return false }
+            return row.files.allSatisfy { file in
+                guard let mineBytes = try? Data(contentsOf: directory.appendingPathComponent(file)),
+                      let wantedBytes = try? Data(contentsOf: source.appendingPathComponent(file)) else { return false }
+                return mineBytes == wantedBytes
+            }
+        }
         func sameRotation(_ pose: PetSpritePose) -> Bool {
             guard let wanted = bundledRows[pose.rawValue]?["rotation"] as? [String: Any] else { return true }
             guard let mine = installedRows[pose.rawValue]?["rotation"] as? [String: Any],
@@ -9429,12 +9609,15 @@ enum PetSpriteStore {
                      let installedData = try? Data(contentsOf: directory.appendingPathComponent(row.file)),
                      let bundledData = try? Data(contentsOf: source.appendingPathComponent(row.file))
                else { return false }
-               return installedData == bundledData && sameRotation(pose)
+               return installedData == bundledData && sameRotation(pose) && sameRetina(pose)
            }) {
             return .current
         }
         // 0.5.325: a pack the earlier releases shipped WHOLE (V12.6, 0.5.316 to 0.5.324) is stock only as its exact
         // map. Same files with another speed, scale, count or an added rotation is the person's pack: left alone.
+        // 0.5.328: V14 has two exact stock maps with the same pose files (flat as 0.5.325 to 0.5.327 shipped it, and
+        // its layers under rotation/v14-timing-v2/ as Miles installed it), so the pack is stock when ANY map with its
+        // files matches exactly, and the person's only when maps share its files and none matches.
         if let historyData = try? Data(contentsOf: source.appendingPathComponent("stock-state-history.json")),
            let history = try? JSONSerialization.jsonObject(with: historyData) as? [String: Any],
            let maps = history["maps"] as? [[String: Any]] {
@@ -9446,6 +9629,8 @@ enum PetSpriteStore {
             }
             let installedCanonical = (try? Data(contentsOf: directory.appendingPathComponent(stateFileName)))
                 .flatMap { try? JSONSerialization.jsonObject(with: $0) }.flatMap(canonical)
+            var sharesFiles = false
+            var exactStock = false
             for map in maps {
                 guard let state = map["state"] as? [String: Any], let poses = state["poses"] as? [String: [String: Any]],
                       poses.count == installedRows.count,
@@ -9453,8 +9638,10 @@ enum PetSpriteStore {
                           (installedRows[name]?["file"] as? String) == (row["file"] as? String)
                       })
                 else { continue }
-                guard installedCanonical != nil, installedCanonical == canonical(state) else { return .notApplicable }
+                sharesFiles = true
+                if installedCanonical != nil, installedCanonical == canonical(state) { exactStock = true }
             }
+            if sharesFiles && !exactStock { return .notApplicable }
         }
         let retainedStock: [PetSpritePose: [(file: String, frames: Int)]] = [
             .idle: [(poseFileName(.idle), 8), ("session-pet-idle-cutouts-v2.png", 8)],
@@ -9468,6 +9655,8 @@ enum PetSpriteStore {
                 ("session-pet-working-one-droid-v15-1.png", 16),
                 ("session-pet-working-one-droid-v15-2.png", 16),
                 ("session-pet-working-run-slowed-v12-1.png", 46),
+                // 0.5.325 to 0.5.327 shipped V14 timing-v2: these four strips are its Sessions 1 to 4.
+                ("session-pet-working-v13.png", 46),
             ],
             .done: [(poseFileName(.done), 8), ("session-pet-done-retime-v12-v1.png", 10)],
             .error: [(poseFileName(.error), 8), ("session-pet-error-reassembled-v12-v5.png", 8)],
@@ -9480,6 +9669,7 @@ enum PetSpriteStore {
                 ("session-pet-duel-two-droid-v15-1.png", 12),
                 ("session-pet-duel-two-droid-v15-2.png", 17),
                 ("session-pet-duel-tail-tighter-v12-5.png", 37),
+                ("session-pet-duel-v13.png", 37),
             ],
             .trio: [
                 (poseFileName(.trio), 6),
@@ -9490,6 +9680,7 @@ enum PetSpriteStore {
                 ("session-pet-trio-story-v16.png", 26),
                 ("session-pet-trio-story-v17.png", 26),
                 ("session-pet-trio-deflect-eased-v12-6.png", 42),
+                ("session-pet-trio-v13.png", 43),
             ],
             .swarm: [
                 (poseFileName(.swarm), 6),
@@ -9501,6 +9692,7 @@ enum PetSpriteStore {
                 ("session-pet-swarm-story-v15-4.png", 26),
                 ("session-pet-swarm-story-v16.png", 52),
                 ("session-pet-swarm-alpha-v11-r2.png", 64),
+                ("session-pet-swarm-v13.png", 64),
             ],
         ]
         guard installed.count == retainedStock.count,
@@ -9559,6 +9751,35 @@ enum PetSpriteStore {
             }
             rotationRows[story.pose] = rotationJSON
         }
+        // 0.5.328 (Version 15): the retina strips land with the art they belong to, checked as the runtime reads them
+        // (flat names, the 1x strip's cells at twice the pixels, native caps, cells adding up to the frame count).
+        var retinaRows: [PetSpritePose: Any] = [:]
+        for story in stories {
+            guard let retinaJSON = bundledRows[story.pose.rawValue]?["retina"] else { continue }
+            guard let retina = PetRetinaRow(retinaJSON),
+                  let strip = NSImage(data: story.data).flatMap(PetSpriteStrip.raster), strip.width % story.frames == 0
+            else { return .failed }
+            let cell = CGSize(width: strip.width / story.frames, height: strip.height)
+            for files in [retina.file] + retina.variants.flatMap({ [$0.file, $0.bodyFile, $0.entryFile] }) {
+                guard files.allSatisfy({ $0 == URL(fileURLWithPath: $0).lastPathComponent }),
+                      PetSpriteStrip.retinaCells(files, frames: story.frames, cell: cell, scale: retina.scale, in: source,
+                                                 slicer: { _, count in Array(repeating: NSImage(), count: count) }) != nil
+                else {
+                    NSLog("COSControl Miles upgrade rejected an incomplete retina strip: %@", files.joined(separator: ","))
+                    return .failed
+                }
+                for file in files {
+                    guard let data = try? Data(contentsOf: source.appendingPathComponent(file)) else { return .failed }
+                    layers[file] = data
+                }
+            }
+            if let manifest = bundledRows[story.pose.rawValue]?["rotation"] as? [String: Any],
+               let ids = (manifest["variants"] as? [[String: Any]])?.compactMap({ $0["id"] as? String }),
+               ids != retina.variants.map(\.id) {
+                return .failed
+            }
+            retinaRows[story.pose] = retinaJSON
+        }
 
         do {
             try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -9608,6 +9829,7 @@ enum PetSpriteStore {
                 renderScaleOverrides: scaleOverrides,
                 clearRotations: Set(stories.map(\.pose)),
                 rotations: rotationRows,
+                retinas: retinaRows,
                 in: directory,
                 fileManager: fileManager
             )
@@ -9697,6 +9919,7 @@ enum PetSpriteStore {
         renderScaleOverrides: [PetSpritePose: CGFloat] = [:],
         clearRotations: Set<PetSpritePose> = [],
         rotations: [PetSpritePose: Any] = [:],
+        retinas: [PetSpritePose: Any] = [:],
         in directory: URL,
         fileManager: FileManager
     ) throws {
@@ -9732,8 +9955,14 @@ enum PetSpriteStore {
             if !clearRotations.contains(pose), let old = previousPoses[pose.rawValue],
                old["file"] as? String == row.file, old["frames"] as? Int == row.frames,
                let rotation = old["rotation"] { payload["rotation"] = rotation }
+            // 0.5.328: the retina strips belong to the same art, so they follow the same rule (a speed or scale change
+            // keeps them; new art or another frame count retires them).
+            if !clearRotations.contains(pose), let old = previousPoses[pose.rawValue],
+               old["file"] as? String == row.file, old["frames"] as? Int == row.frames,
+               let retina = old["retina"] { payload["retina"] = retina }
             // A stock upgrade lands the bundled cast with the new art (its layers are already written and checked).
             if let rotation = rotations[pose] { payload["rotation"] = rotation }
+            if let retina = retinas[pose] { payload["retina"] = retina }
             poses[pose.rawValue] = payload
         }
         let data = try JSONSerialization.data(withJSONObject: ["poses": poses], options: [.prettyPrinted, .sortedKeys])

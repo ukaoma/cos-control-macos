@@ -2732,8 +2732,10 @@ done
 /usr/bin/python3 "$ROOT/Tests/pet-layout-source-contract.py" "$ROOT"
 /usr/bin/python3 "$ROOT/Tests/pet-settings-source-contract.py" "$ROOT"
 /usr/bin/python3 "$ROOT/Tests/pet-animation-source-contract.py" "$ROOT"
-# 0.5.325: every Miles Windu V14 timing-v2 file by sha256, size and bytes, its three casts and flat names (pet-pins-helper).
-/usr/bin/python3 "$ROOT/Tests/windu-v14-pack-pins.py" "$ROOT"
+# 0.5.328: every Version 15 (V15) Miles Windu file, 1x and retina, by sha256, size and bytes; four Session 1 casts and
+# three on Sessions 2 to 4; retina segments; the retained V14 strips and the upgrade and display-scale wiring
+# (replaces the 0.5.325 windu-v14-pack-pins.py).
+/usr/bin/python3 "$ROOT/Tests/jedi-v15-pack-pins.py" "$ROOT"
 
 # --- Every route a click can enter must actually render -----------------------
 # The 0.5.17 Review Memories / Review Threads buttons did NOTHING when clicked. The
