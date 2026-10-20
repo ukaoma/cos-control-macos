@@ -220,11 +220,11 @@ struct DictationEveryoneChecks {
         check(PW.discardPath(warmToken) == "/api/dictation/polish/prewarm/" + warmToken && PW.discardPath("../../x") == nil, "prewarm request",
               "a discard deletes that token's path, and only a token's")
         let warm = PW.answer(status: 200, body: ["token": warmToken, "expiresMs": 150_000], elapsedMs: 120, timedOut: false)
-        check(warm.ok && warm.details["token"] as? String == warmToken && warm.details["expiresMs"] as? Int == 150_000 && warm.details["elapsedMs"] as? Int == 120,
+        check(warm.ok && warm.details["prewarmToken"] as? String == warmToken && warm.details["expiresMs"] as? Int == 150_000 && warm.details["elapsedMs"] as? Int == 120,
               "prewarm answer", "a started process comes back as its token, lifetime and time")
         for body: [String: Any]? in [nil, [:], ["token": "nope", "expiresMs": 1], ["token": warmToken], ["token": warmToken, "expiresMs": true], ["token": warmToken, "expiresMs": 0]] {
             let a = PW.answer(status: 200, body: body, elapsedMs: 1, timedOut: false)
-            check(!a.ok && a.details["reason"] as? String == "bad_answer" && a.details["token"] == nil, "prewarm answer", "an unreadable 200 is bad_answer: \(String(describing: body))")
+            check(!a.ok && a.details["reason"] as? String == "bad_answer" && a.details["prewarmToken"] == nil, "prewarm answer", "an unreadable 200 is bad_answer: \(String(describing: body))")
         }
         for reason in ["disabled", "model", "breaker_open", "daily_cap", "cli"] {
             let a = PW.answer(status: 409, body: ["error": "prewarm_unavailable", "reason": reason], elapsedMs: 3, timedOut: false)

@@ -1805,7 +1805,7 @@ enum DictationSpareBuild: Sendable {
         let box = DictationPrewarmBox()
         let task = Task.detached(priority: .utility) {
             let response = try? await bridge(request)
-            box.set(DictationPolishPrewarm.read(ok: response?.ok, token: response?.details["token"]?.string,
+            box.set(DictationPolishPrewarm.read(ok: response?.ok, token: response?.details["prewarmToken"]?.string,
                                                 reason: response?.details["reason"]?.string, elapsedMs: response?.details["elapsedMs"]?.int))
         }
         prewarm = (attempt, model, box, task)

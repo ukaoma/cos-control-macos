@@ -157,7 +157,7 @@ try:
     before = len(seen)
     result, elapsed = prewarm({'model': 'haiku'})
     method, path, headers, body = seen[-1]
-    check(result['ok'] and result['details']['token'] == WARM and result['details']['expiresMs'] == 150000, 'a started process answers its token')
+    check(result['ok'] and result['details']['prewarmToken'] == WARM and result['details']['expiresMs'] == 150000, 'a started process answers its token')
     check(method == 'POST' and path == '/api/dictation/polish/prewarm' and json.loads(body) == {'model': 'haiku', 'surface': 'message'}
           and headers.get('X-COS-Token') == token and len(seen) == before + 1, 'one authenticated start with the model only, no health probe')
     for status, body, reason in [(409, {'error': 'prewarm_unavailable', 'reason': 'breaker_open'}, 'breaker_open'),
@@ -167,7 +167,7 @@ try:
                                  (200, {'token': 'nope', 'expiresMs': 1}, 'bad_answer')]:
         warm_answer.update(status=status, body=body)
         result, _ = prewarm({'model': 'sonnet'})
-        check(not result['ok'] and result['details']['reason'] == reason and 'token' not in result['details'], f'prewarm {status} is {reason}')
+        check(not result['ok'] and result['details']['reason'] == reason and 'prewarmToken' not in result['details'], f'prewarm {status} is {reason}')
     warm_answer.update(status=200, body={'token': WARM, 'expiresMs': 150000}, delay=4)
     result, elapsed = prewarm({'model': 'haiku'})
     check(not result['ok'] and result['details']['reason'] == 'timeout' and 1.8 <= elapsed < 2.5, f'a slow start ends at the 2 s deadline ({elapsed:.2f} s)')

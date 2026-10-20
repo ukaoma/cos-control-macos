@@ -832,7 +832,7 @@ enum DictationPolishPrewarmBridge {
             guard let body, let token = body["token"] as? String, isToken(token), let expires = body["expiresMs"] as? NSNumber,
                   CFGetTypeID(expires) != CFBooleanGetTypeID(), expires.intValue > 0 else { return refused("bad_answer", status: 200) }
             return DictationBridge.Answer(ok: true, message: "AI polish started early",
-                                          details: base.merging(["token": token, "expiresMs": expires.intValue]) { a, _ in a })
+                                          details: base.merging(["prewarmToken": token, "expiresMs": expires.intValue]) { a, _ in a })
         case 404: return refused("unsupported", status: 404)
         case 409:
             let reason = (body?["reason"] as? String).flatMap { refusalReasons.contains($0) ? $0 : nil } ?? "refused"
