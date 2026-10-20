@@ -14,7 +14,7 @@ Lanes: core (ProviderStatusCore + DictationEveryoneChecks), store (run-transcrip
 helper, then the helper check scripts, 0.5.325's dictation-polish among them; one large compile per mutant, so few
 mutants use it), polishpins (0.5.325 dictation-polish-pins.py, no compile), tailpins (0.5.326 dictation-tail-pins.py, no
 compile), startpins (0.5.327 dictation-start-pins.py, no compile), smoothpins (0.5.328 dictation-smooth-pins.py, no
-compile).
+compile), lockpins (0.5.330 dictation-lock-pins.py, no compile).
 """
 import os, pathlib, shutil, subprocess, sys, tempfile
 
@@ -234,6 +234,50 @@ MUTANTS = [
      'runHelper(["mac-dictation"], timeout: 40, stdinData: audio)', "refusal reaches dictation", "smoothpins"),
     ("smooth pins: runHelper drops answers", "Sources/ControllerModel.swift", "try await helper.run(arguments, timeout: timeout, stdinData: stdinData, answers: answers)",
      "try await helper.run(arguments, timeout: timeout, stdinData: stdinData)", "refusal reaches dictation", "smoothpins"),
+    # 0.5.330 hold to dictate "lock" and settings in the Dictation tab (Tests/dictation-lock-pins.py, no compile).
+    ("lock pins: a busy press is silent again", MD, "if enabled, busy { recordPressEvent(.refusedBusy); noteStillFinishing() }",
+     "if enabled, busy { noteStillFinishing() }", "refused busy", "lockpins"),
+    ("lock pins: a canceled start writes nothing", MD,
+     "            recordPressEvent(.canceledStarting, msSincePress: since, firstBufferArrived: capture?.firstAudioUptime != nil)\n", "",
+     "canceled starting", "lockpins"),
+    ("lock pins: a chord writes nothing", MD, "case .chord?: if held { recordPressEvent(.interruptedChord); if fnConflictNow { fnCardPending = true }; interrupt() }",
+     "case .chord?: if held { if fnConflictNow { fnCardPending = true }; interrupt() }",
+     "chord", "lockpins"),
+    ("lock pins: a hold press is not watched", MD, "                ensureHoldWatch()\n", "", "hold watch", "lockpins"),
+    ("lock pins: a latched tracker is not watched", MD, "        if holdTracker?.down == true { ensureHoldWatch() }\n", "", "hold watch", "lockpins"),
+    ("lock pins: the tracker stays latched", MD, "        holdTracker?.reset(); holdSeenDown = false\n        if fnConflictNow { fnCardPending = true }\n",
+     "        holdSeenDown = false\n        if fnConflictNow { fnCardPending = true }\n", "reconcile", "lockpins"),
+    ("lock pins: a late key is a chord again", MD, '            reconcileRelease(source: "key")\n', "", "key is release", "lockpins"),
+    ("lock pins: the reconciled release copies", MD, "        if fnConflictNow { fnCardPending = true }\n        if wasHeld { hotKey(1, down: false) }",
+     "        if fnConflictNow { fnCardPending = true }\n        pendingInterrupted = true\n        if wasHeld { hotKey(1, down: false) }", "key is release", "lockpins"),
+    ("lock pins: Fn usage never read at launch", MD, "        checkFnUsage()\n        if fnConflictNow, message == nil { message = DictationFnUsage.note }\n", "",
+     "fn usage", "lockpins"),
+    ("lock pins: no warning at the Fn press", MD, "                warnFnAtPress()\n", "", "fn at press", "lockpins"),
+    ("lock pins: the press warning on every press", MD, "        guard !fnWarnedThisRun, card == nil else { return }\n        fnWarnedThisRun = true\n",
+     "        guard card == nil else { return }\n", "fn at press", "lockpins"),
+    ("lock pins: a reconciled release interrupts", MD, "        if fnConflictNow { fnCardPending = true }\n        if wasHeld { hotKey(1, down: false) }",
+     "        if fnConflictNow { fnCardPending = true }\n        if wasHeld { interrupt() }", "reconcile", "lockpins"),
+    ("lock pins: no card after a missed release", MD, "        // 0.5.330: a dictation whose Fn release was missed ends with the card that says how to stop it happening.\n        showFnCardIfPending()\n", "",
+     "fn card", "lockpins"),
+    ("lock pins: the card covers another card", MD, "        guard fnConflictNow, card == nil else { return }", "        guard fnConflictNow else { return }", "fn card", "lockpins"),
+    ("lock pins: the missed release never runs", MD, "        if wasHeld { hotKey(1, down: false) }\n    }\n    /// 0.5.330: macOS's own", "        _ = wasHeld\n    }\n    /// 0.5.330: macOS's own", "reconcile", "lockpins"),
+    ("lock pins: the session state instead of the keyboard", MD, "case .modifier(let key)?: DictationHoldWatch.modifierDown(flags: CGEventSource.flagsState(.hidSystemState).rawValue",
+     "case .modifier(let key)?: DictationHoldWatch.modifierDown(flags: CGEventSource.flagsState(.combinedSessionState).rawValue", "keyboard state", "lockpins"),
+    ("lock pins: a busy press queues a dictation", MD, '        message = "Still finishing the last dictation."\n',
+     '        message = "Still finishing the last dictation."; start()\n', "still finishing", "lockpins"),
+    ("lock pins: no Settings in the tab", MD, '                    Button("Settings") { model.openDictationSettings() }.buttonStyle(COSTextButtonStyle())\n', "",
+     "settings in tab", "lockpins"),
+    ("lock pins: Back cannot leave the settings", "Sources/ActivityWindow.swift",
+     "case .dictation: model.dictionaryRouteActive || model.dictationHistoryRouteActive || model.dictationSettingsRouteActive",
+     "case .dictation: model.dictionaryRouteActive || model.dictationHistoryRouteActive", "settings back", "lockpins"),
+    ("lock pins: the dead sentence returns", MD, '        case .off: "Learn from my edits is off."',
+     '        case .off: "Learn from my edits is off. Turn it on in Settings → Dictation."', "no dead sentence", "lockpins"),
+    ("lock pins: the Dictionary leaves the settings open", "Sources/ControllerModel.swift",
+     "        dictationHistoryOpen = false\n        dictationSettingsOpen = false\n        closeLibraryDetail()\n        dictionaryOpen = true",
+     "        dictationHistoryOpen = false\n        closeLibraryDetail()\n        dictionaryOpen = true", "settings route", "lockpins"),
+    ("lock pins: the recorder waits for a release that never comes", MD, "            if pendingModifier == key { watchPending(key) }\n", "",
+     "recorder release", "lockpins"),
+    ("lock pins: no Dictation chip", "Sources/ActivityWindow.swift", "+ [.dictation]", "+ []", "dictation chip", "lockpins"),
     ("start pins: STARTING shows level bars", MD, "                Text(pill.label)\n            case .listening(let since):",
      "                liveBars\n                Text(pill.label)\n            case .listening(let since):", "starting pill", "startpins"),
 ]
@@ -256,6 +300,8 @@ def lane(copy, name):
         return subprocess.run(["python3", str(copy / "Tests/dictation-tail-pins.py"), str(copy)], capture_output=True, text=True)
     if name == "smoothpins":
         return subprocess.run(["python3", str(copy / "Tests/dictation-smooth-pins.py"), str(copy)], capture_output=True, text=True)
+    if name == "lockpins":
+        return subprocess.run(["python3", str(copy / "Tests/dictation-lock-pins.py"), str(copy)], capture_output=True, text=True)
     if name == "startpins":
         return subprocess.run(["python3", str(copy / "Tests/dictation-start-pins.py"), str(copy)], capture_output=True, text=True)
     if name == "polishpins":

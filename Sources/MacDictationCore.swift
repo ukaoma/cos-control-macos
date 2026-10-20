@@ -119,6 +119,21 @@ struct DictationTiming: Codable, Equatable, Sendable {
     var editWatchAtPress: Bool? = nil
     /// Typing or copying the text into the other app (Accessibility, the clipboard, ⌘V), on the main actor.
     var deliverMs: Int? = nil
+    /// 0.5.330 press events (DictationPressEvent): a press that did not become a dictation, or a release COS had to
+    /// reconcile. The phase it met, how long after the press (canceled_starting), whether the first buffer had arrived,
+    /// the app version, and the hold key's state: what COS believed (held, the tracker) and what the keyboard said.
+    var phase: String? = nil
+    var msSincePress: Int? = nil
+    var firstBufferArrived: Bool? = nil
+    var appVersion: String? = nil
+    var held: Bool? = nil
+    var holdTrackerDown: Bool? = nil
+    var holdHardwareDown: Bool? = nil
+    /// release_reconciled: what noticed the missed release, the keyboard watch ("poll") or a key typed long after the
+    /// press while the keyboard said the hold key was up ("key"). fnUsageType: macOS's own setting for the 🌐 key
+    /// (com.apple.HIToolbox AppleFnUsageType, -1 when absent), when Fn is a dictation key.
+    var reconcileSource: String? = nil
+    var fnUsageType: Int? = nil
     static let finalWindowMilliseconds = 250
     /// The release-side numbers from the captured PCM and the byte count at the release.
     static func measure(pcm: Data, releaseBytes: Int, tailMs: Int, releaseToClosedMs: Int, at: Date) -> DictationTiming {
@@ -460,7 +475,8 @@ struct LoneModifierTracker: Sendable {
     private let device: UInt64, family: UInt64
     private(set) var down = false
     private var clean = false
-    private var pressedAt: TimeInterval = 0
+    /// 0.5.330: read by the missed-release rule (DictationHoldWatch.keyDownIsMissedRelease).
+    private(set) var pressedAt: TimeInterval = 0
     init?(keyCode: UInt16) {
         guard let key = DictationTrigger.modifierKeys[keyCode] else { return nil }
         self.keyCode = keyCode; device = key.device; family = key.family
@@ -1016,6 +1032,81 @@ enum DictionaryLabels {
     }
 }
 
+// MARK: - Presses that do not become a dictation, and missed releases (0.5.330)
+//
+// Miles, 2026-10-19: hold to dictate "locked": letting go did nothing and nothing was transcribed. None of the 55 lines
+// in his timing file was near the two-minute limit, and the stuck attempts wrote no line at all: every way a press can
+// end without a dictation was silent. Now each writes an event line, a press while the last dictation is still finishing
+// says so, and a key release COS never heard is reconciled from the keyboard's own state.
+
+/// A press that did not become a dictation, or a release COS reconciled. The raw value is the timing line's outcome.
+enum DictationPressEvent: String, Sendable, CaseIterable {
+    /// Pressed while the last dictation was still starting, listening, transcribing or polishing.
+    case refusedBusy = "refused_busy"
+    /// Released before the microphone's first buffer arrived (or before LISTENING showed).
+    case canceledStarting = "canceled_starting"
+    /// Another key joined the hold key mid-hold: what was said is copied, never typed.
+    case interruptedChord = "interrupted_chord"
+    /// The keyboard said the hold key was up, though COS never heard it go up.
+    case releaseReconciled = "release_reconciled"
+}
+
+extension DictationTiming {
+    /// One event line: nothing captured, and the event as its outcome.
+    static func event(_ event: DictationPressEvent, at: Date) -> DictationTiming {
+        let f = ISO8601DateFormatter(); f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return DictationTiming(at: f.string(from: at), releaseToClosedMs: 0, tailMs: 0, capturedSeconds: 0.0,
+                               finalDBFS: nil, tailDBFS: nil, engine: nil, transcribeMs: nil, polishMs: nil, outcome: event.rawValue)
+    }
+}
+
+/// While the hold key is believed down, COS reads the keyboard's own state (CGEventSource) every 150 ms. Two reads in a
+/// row that say "up" mean the release was missed (secure input, an app switch, a stalled main thread), so COS runs the
+/// release itself. A key the keyboard state never showed as down is never released this way: on a keyboard or remapper
+/// whose state does not carry the key, an "up" proves nothing, and a false release would cut every dictation short.
+enum DictationHoldWatch {
+    static let pollMilliseconds = 150
+    static let upReadsToRelease = 2
+    struct Reads: Equatable, Sendable {
+        private(set) var seenDown = false
+        private(set) var ups = 0
+        /// One read. True when the release should run now.
+        mutating func read(down: Bool) -> Bool {
+            if down { seenDown = true; ups = 0; return false }
+            guard seenDown else { return false }
+            ups += 1
+            return ups >= DictationHoldWatch.upReadsToRelease
+        }
+    }
+    /// Watch while a hold dictation is starting or listening, or while the tracker still believes the key is down (a
+    /// missed release then swallows the next press).
+    static func watches(phase: String, held: Bool, trackerDown: Bool) -> Bool {
+        (held && (phase == "Starting" || phase == "Listening")) || trackerDown
+    }
+    /// Miles 2026-10-19: Fn's release never arrived, so the next key he typed (seconds later) was taken as a chord and
+    /// the dictation was copied, not typed. A key typed more than a second after the press, while the keyboard says the
+    /// hold key is up (and once said it was down), is the missed release: a release that types, not a chord.
+    static let keyDownReleaseAfterSeconds: TimeInterval = 1
+    static func keyDownIsMissedRelease(trackerDown: Bool, hardwareDown: Bool?, seenDown: Bool, sincePress: TimeInterval) -> Bool {
+        trackerDown && hardwareDown == false && seenDown && sincePress > keyDownReleaseAfterSeconds
+    }
+    /// The trigger's own device bit in a flags word (CGEventSource.flagsState's raw value); nil for a key that is not a
+    /// lone-modifier trigger.
+    static func modifierDown(flags: UInt64, keyCode: UInt16) -> Bool? {
+        DictationTrigger.modifierKeys[keyCode].map { flags & $0.device != 0 }
+    }
+}
+
+/// macOS gives the 🌐 key a job of its own (System Settings, Keyboard, "Press 🌐 key to"): stored as com.apple.HIToolbox
+/// AppleFnUsageType, 0 for Do Nothing, absent for the system default. Anything but Do Nothing lets macOS act on the key,
+/// and on Miles's Mac (2026-10-19, TextInputSwitcher started at 20:56) Fn's release stopped reaching COS from then on.
+enum DictationFnUsage {
+    static let doNothing = 0
+    static func conflicts(usageType: Int?, fnIsDictationKey: Bool) -> Bool { fnIsDictationKey && usageType != doNothing }
+    static let note = "Your 🌐 key also has a job in macOS, which can swallow its release. In System Settings, Keyboard, set Press 🌐 key to Do Nothing."
+    static let keyboardSettingsURL = "x-apple.systempreferences:com.apple.Keyboard-Settings.extension"
+}
+
 /// What the listening pill shows. It replaces the pet's ledger row only while it is not hidden (Miles picked A).
 enum DictationPill: Equatable, Sendable {
     case hidden
@@ -1025,9 +1116,12 @@ enum DictationPill: Equatable, Sendable {
     case transcribing
     /// 0.5.325: Claude is polishing the heard text (AI polish), at most its budget.
     case polishing
+    /// 0.5.330: a press while the last dictation is still transcribing or polishing, for `finishingSeconds`.
+    case finishing
     /// About 1.5 seconds after delivery. `confirmed` (green, ✓) only when a measured change proved the text landed.
     case flash(label: String, confirmed: Bool)
     static let flashSeconds: TimeInterval = 1.5
+    static let finishingSeconds: TimeInterval = 1.5
     var replacesLedger: Bool { self != .hidden }
     var label: String {
         switch self {
@@ -1036,6 +1130,7 @@ enum DictationPill: Equatable, Sendable {
         case .listening: "LISTENING"
         case .transcribing: "TRANSCRIBING"
         case .polishing: "POLISHING"
+        case .finishing: "STILL FINISHING"
         case .flash(let label, _): label
         }
     }
@@ -2669,6 +2764,8 @@ enum DictationFailureAction: String, Equatable, Sendable {
     case retry
     case openTranscriptionSettings = "open_transcription_settings"
     case openMicrophoneSettings = "open_microphone_settings"
+    /// 0.5.330: the 🌐 key's own job in macOS (DictationFnUsage).
+    case openKeyboardSettings = "open_keyboard_settings"
     case none
 
     var title: String? {
@@ -2678,6 +2775,7 @@ enum DictationFailureAction: String, Equatable, Sendable {
         case .retry: "Retry"
         case .openTranscriptionSettings: "Open Transcription settings"
         case .openMicrophoneSettings: "Open Settings"
+        case .openKeyboardSettings: "Open Keyboard settings"
         case .none: nil
         }
     }

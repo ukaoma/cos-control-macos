@@ -702,7 +702,7 @@ struct ActivityWindow: View {
         case .sessions: selectedSessionID != nil
         case .tasks: taskDetail != nil
         case .work: !isolatedWorkPreview && workSubview == .tasks && taskDetail != nil
-        case .dictation: model.dictionaryRouteActive || model.dictationHistoryRouteActive
+        case .dictation: model.dictionaryRouteActive || model.dictationHistoryRouteActive || model.dictationSettingsRouteActive
         case nil: false
         }
     }
@@ -815,6 +815,9 @@ struct ActivityWindow: View {
                     TranscriptionDictionaryPane(model: model)
                 } else if section == .dictation, model.dictationHistoryRouteActive {
                     DictationHistoryPane(model: model)
+                // 0.5.330: Dictation settings in the tab, on its own flag (openDictationSettings / closeDictationSettings).
+                } else if section == .dictation, model.dictationSettingsRouteActive {
+                    DictationSettingsPane(model: model)
                 } else if section == .sessions, selectedSessionID != nil {
                     if model.claudeSessionRouteActive {
                         VStack(spacing: 0) {
@@ -982,6 +985,8 @@ struct ActivityWindow: View {
         model.activityOpenDictionary = false
         let openDictationHistory = model.activityOpenDictationHistory
         model.activityOpenDictationHistory = false
+        let openDictationSettings = model.activityOpenDictationSettings
+        model.activityOpenDictationSettings = false
         let openLiveTranscript = model.activityOpenLiveTranscriptID
         model.activityOpenLiveTranscriptID = nil
         if let next { select(next) }
@@ -991,6 +996,7 @@ struct ActivityWindow: View {
         if openDictationHistory, section == .meetings { model.openDictationHistory() }
         if openDictionary, section == .dictation { model.openDictionary() }
         if openDictationHistory, section == .dictation { model.openDictationHistory() }
+        if openDictationSettings, section == .dictation { model.openDictationSettings() }
         if let staged {
             selectedSessionID = staged.id
             model.openClaudeSession(staged)
@@ -1299,6 +1305,8 @@ struct ActivityWindow: View {
             model.closeDictionary()
         } else if section == .dictation, model.dictationHistoryRouteActive {
             model.closeDictationHistory()
+        } else if section == .dictation, model.dictationSettingsRouteActive {
+            model.closeDictationSettings()
         } else if section == .sessions, selectedSessionID != nil {
             selectedSessionID = nil
             model.closeClaudeSession()

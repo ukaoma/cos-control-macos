@@ -45,7 +45,7 @@ step = between(dictation, "private func polish(_ heard: String) async -> (outcom
                "private func finish(_ text: String")
 pin("DictationPolish.shouldPolish(text: heard, model: model), let budget = DictationPolish.budget(for: model)" in step, "gate", "polish only when the rule says so, with its budget")
 pin("try await polishBridge(request, budget)" in step, "budget", "the helper call carries the model's budget")
-pin("pill = .polishing" in step and "case .transcribing, .polishing:" in dictation, "pill", "the pill shows POLISHING with the working bars")
+pin("pill = .polishing" in step and "case .transcribing, .polishing, .finishing:" in dictation, "pill", "the pill shows POLISHING with the working bars")
 pin("catch HelperClientError.timedOut {\n            outcome = .timeout" in step, "timeout", "a killed helper reads as a timeout")
 pin(not re.search(r"\b(fail|showCard)\(", step) and "throw" not in step.replace("throws", ""), "never a failure", "polish never fails the dictation or shows a card")
 logs = [l for l in step.split("\n") if "dictationLog" in l]
