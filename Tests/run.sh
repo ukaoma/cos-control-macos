@@ -30,6 +30,12 @@ zsh "$ROOT/Tests/run-mac-recording.sh"
 # 0.5.313: meeting detection and the record suggestion (text only; the rules run in MacRecordingChecks above).
 /usr/bin/python3 "$ROOT/Tests/meeting-detect-pins.py" "$ROOT"
 zsh "$ROOT/Tests/run-mac-dictation.sh"
+# 0.5.331 paste first, polish in place (Miles 2026-10-20 07:49). Call sites, code only (comments never count); the full
+# set with its mutants is Tests/dictation-swap-pins.py inside run-mac-dictation.sh above.
+SWAP_SRC="$(grep -v -E '^[[:space:]]*//' "$ROOT/Sources/MacDictation.swift")"
+[[ $(print -r -- "$SWAP_SRC" | grep -c -F 'DictationPolishSwap.sequence(pasteFirst: pasteThenPolish,') == 1 && $(print -r -- "$SWAP_SRC" | grep -c -F 'Toggle("Paste right away, then polish in place", isOn: $store.pasteThenPolish)') == 1 ]] || { print -u2 "FAIL: the paste-first toggle must decide the order at its one call site and be in Settings"; exit 1; }
+[[ $(print -r -- "$SWAP_SRC" | grep -c -F '.activate(') == 1 && $(print -r -- "$SWAP_SRC" | grep -c -F 'if DictationPolishSwap.mayActivate(automatic: automatic) {') == 1 && $(print -r -- "$SWAP_SRC" | grep -c -F 'automatic: true)') == 1 ]] || { print -u2 "FAIL: an automatic polish swap must never activate an app (one activate(), inside the mayActivate guard; one automatic caller)"; exit 1; }
+[[ $(print -r -- "$SWAP_SRC" | grep -c -F 'timing?.releaseToFirstTextMs = firstTextMs()') == 2 && $(print -r -- "$SWAP_SRC" | grep -c -F 'line?.settle(result, ms: swapMs, route: route)') == 1 && $(print -r -- "$SWAP_SRC" | grep -c -F 'timing?.settle(DictationPolishSwap.unswapped(') == 1 ]] || { print -u2 "FAIL: both delivery paths must write releaseToFirstTextMs and the swap outcome"; exit 1; }
 
 # 0.5.254 (Miles, 2026-10-01 08:44: resizing Work with 268 tasks lagged; the board was rebuilt 27 times on each step).
 # A hard gate on counts, never milliseconds: over a 1200 to 1900 pt sweep of a 268-task board the rows are rebuilt 0

@@ -1,3 +1,66 @@
+## 0.5.331 (build 384), Paste first, polish in place
+
+Miles, 2026-10-20 07:49 CDT: "build paste-then-swap with those rules". Everything in 0.5.330 is kept.
+
+### Why
+
+Measured from Miles's dictation-timing.jsonl, 17 dictations on 2026-10-20: after the key release, the tail took 0.32 s,
+transcription about 0.85 s, AI polish 2.2 to 3.8 s (Haiku and Sonnet, the early process used) and the paste about
+0.1 s. Polish was two thirds of the wait, with a floor of about 2 s even when warm.
+
+### What changed
+
+- With AI polish on, COS types what it heard as soon as it is transcribed (spoken lists and the field's own spellings
+  as always) and runs the polish at the same time. When Claude's version is ready and differs, COS swaps it in over the
+  exact span it typed. The goal is text on screen about 1.2 s after the release.
+- New setting in Settings, Dictation, under AI polish: Paste right away, then polish in place. On by default. Off is
+  the order before 0.5.331: polish, then one delivery.
+- The swap uses Fix a word's replace and its proof: it reads a bounded window around the span and edits only when the
+  words there are exactly what COS typed, or found once, moved, within the window.
+- Focus rules (Miles's):
+  - Accessibility route (the field's setter worked at delivery): the swap edits that field directly, even after the
+    person moved to another field or app. It never activates an app or moves focus. The person's caret or selection
+    goes back afterwards, shifted by the length change when it sat after the span.
+  - Paste route (Chromium, Electron and web editors): the swap happens only when the app is already frontmost, its
+    focused element is the target (or its editable ancestor) and no COS window holds the keyboard. It never calls
+    activate() and never orders a window. The clipboard is snapshotted and put back as delivery does.
+  - The person typed in that field in the last 600 ms (its count or caret moved, or a key went down while it had the
+    keyboard): COS waits for a quiet moment, at most the polish budget, then proves again and swaps, or skips.
+  - Terminals, copy-only dictations, a field that is gone, text edited or moved past the window, an app that quit, a
+    paste-route field without focus, an unproven selection: skipped. The typed text stays. Never a second paste, never
+    doubled text.
+- On a skip, Claude's version waits on that dictation's row in Activity, Dictation, with Apply polished. That button is
+  the person's own action, so it uses Fix a word's full path, which may bring the app forward. The pill says
+  POLISHED VERSION IN ACTIVITY, only when a skip happened. Nothing is shown when the swap works.
+- Polish failed, timed out, did not run, only the filler pass changed it, or Claude's text came out identical: nothing
+  changes and nothing new is shown.
+- Learn from my edits never reads COS's own swap as the person's edit. Its watch starts once the swap settles, from the
+  polished text where it landed (or from what was typed, after a skip). An edit made during the 2 to 4 s polish wait
+  makes the swap skip, and the watch then has nothing it can prove, so it learns nothing from that dictation.
+- The dictation's record after a swap reads the polished text and keeps what was heard and the model (Polished, Fix a
+  word, Heard), as a dictation polished before the paste does. Lists, the field-context respelling (0.5.323) and the
+  record all see the same final text.
+- A newer dictation can start while a swap is pending. A delivery and a swap never edit at once: a delivery waits at
+  most 2 s for a swap that is editing.
+- dictation-timing.jsonl (numbers and codes only): `releaseToFirstTextMs`, `swapOutcome` (swapped, skipped:<reason>,
+  off, identical, notPolished), `swapMs` (from Claude's answer to the swap landing or being skipped) and `swapRoute`
+  (accessibility or paste). A paste-first dictation writes its line once the swap settles. The log line has them too.
+- AI polish's run comes back to the caller, which writes this dictation's own line, and the early process is taken only
+  by the press that started it (a paste-first polish can run after the next press began).
+
+### Tests
+
+- MacDictationChecks: every branch of `DictationPolishSwap` (sequence, setting, want, final, ready, placed, gate,
+  mayActivate, shifted, watch, keepsPolished, notice, timing fields, the record), including: the paste route with the
+  app not frontmost skips and never activates; the Accessibility route swaps while another app is frontmost; the toggle
+  off is today's order; the learner baseline is the polished text after a swap; a terminal skips.
+- Tests/dictation-swap-pins.py: the toggle, the no-activation rule, the paste-route focus gate, the deferred watch and
+  the timing fields, tied to their call sites, each with in-memory mutants that must fail.
+- Mutation gate: `swap: ` mutants in Tests/mutate-mac-dictation-core.py, green baseline first, each landing exactly
+  once and killed by a named check.
+- Not testable here: the swap in real apps (Chromium and Electron paste route, native Accessibility route, caret
+  restore, clipboard restore), which needs those apps on a Mac with Accessibility allowed.
+
 ## 0.5.330 (build 383), Version 15 Miles Windu, live cue limits, AI polish at the key press
 
 Miles, 2026-10-19 23:27 CDT: "make sure we're on V15, merge in the cue limits as well." Everything in 0.5.329 is kept.

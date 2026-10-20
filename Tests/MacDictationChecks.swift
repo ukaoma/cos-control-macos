@@ -1472,6 +1472,140 @@ final class FakeDictationBoard: DictationPasteboardAccess {
             let json = DictationTimingLog.line(line).flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] } ?? [:]
             expect(json["polishPrewarm"] as? String == "used" && json["prewarmMs"] as? Int == 212, "prewarm: the timing line carries the outcome and the start's time")
         }
-        print("PASS Mac dictation: \(count) policy checks; insert-target table, measured delivery, terminals, layout ⌘V, listening bars end to end, clipboard restore, sounds, pill placement, recent dictations file, card countdown, fix-a-word selection, quick fix, replace, span guess, quiet and restore, bounded audio, PCM16 WAV, device failure, any-key triggers, field context and its evidence, AI polish, release tail and timing, truthful start, smooth start, missed releases, early polish")
+        // 0.5.331 paste first, polish in place (Miles 2026-10-20 07:49): every branch of DictationPolishSwap, each check named.
+        do {
+            func expect(_ value: Bool, _ name: String) { precondition(value, name); count += 1 }
+            typealias P = DictationPolishSwap
+            expect(P.sequence(pasteFirst: false, polishes: true, copyOnly: false) == .polishThenDeliver, "swap: toggle off is today's order, polish then one delivery")
+            expect(P.sequence(pasteFirst: true, polishes: true, copyOnly: false) == .deliverThenPolish, "swap: toggle on with a polish to run types first")
+            expect(P.sequence(pasteFirst: true, polishes: false, copyOnly: false) == .polishThenDeliver, "swap: no polish to run is one delivery as before")
+            expect(P.sequence(pasteFirst: true, polishes: true, copyOnly: true) == .polishThenDeliver, "swap: an interrupted dictation is copied after polish, never typed first")
+            expect(P.stored(nil) && P.stored(true) && !P.stored(false) && P.stored("x"), "swap: the setting is on unless turned off")
+            expect(P.defaultsKey == "dictation.pasteThenPolish", "swap: the setting's key")
+            expect(P.unswapped(pasteFirst: true, polished: false, copyOnly: false) == .notPolished && P.unswapped(pasteFirst: false, polished: false, copyOnly: true) == .notPolished,
+                   "swap: no polish ran reads notPolished")
+            expect(P.unswapped(pasteFirst: true, polished: true, copyOnly: true) == .skipped(.copyOnly), "swap: an interrupted dictation reads skipped:copyOnly")
+            expect(P.unswapped(pasteFirst: false, polished: true, copyOnly: true) == .off && P.unswapped(pasteFirst: false, polished: true, copyOnly: false) == .off,
+                   "swap: the toggle off reads off")
+            expect(P.unswapped(pasteFirst: true, polished: true, copyOnly: false) == .off, "swap: polished first with the toggle on (the model changed mid-dictation) reads off")
+            // Only Claude's applied polish swaps.
+            expect(P.want(outcome: .applied("Hi there."), typed: "um hi there", final: "Hi there.") == .swap("Hi there."), "swap: an applied polish that differs swaps")
+            expect(P.want(outcome: .applied("Hi there."), typed: "Hi there.", final: "Hi there.") == .identical, "swap: identical text changes nothing")
+            expect(P.want(outcome: .applied("x"), typed: "y", final: nil) == .notPolished, "swap: no final text is nothing to swap")
+            for (outcome, name) in [(DictationPolish.Outcome.unchanged, "unchanged"), (.timeout, "timeout"), (.failed("helper"), "failed"), (.skipped("daily_cap"), "skipped"),
+                                    (.fillersOnly("failed", text: "hi"), "fillers only")] {
+                expect(P.want(outcome: outcome, typed: "um hi", final: "hi") == .notPolished, "swap: polish \(name) changes nothing")
+            }
+            expect(P.want(outcome: nil, typed: "a", final: "b") == .notPolished, "swap: polish that never ran changes nothing")
+            // The polished text as delivery would have typed it.
+            expect(P.final("Number one, pack. Number two, drive.", formatLists: true, terms: [], known: { _ in true }).text == "1. Pack.\n2. Drive.",
+                   "swap: Claude's version gets spoken lists like the typed text")
+            expect(P.final("Number one, pack. Number two, drive.", formatLists: false, terms: [], known: { _ in true }).text == "Number one, pack. Number two, drive.",
+                   "swap: lists off leaves Claude's version as it came")
+            let plain: Set<String> = ["the", "page", "joule", "open"]
+            let respelled = P.final("Open the joule 360 page.", formatLists: false, terms: [DictationFieldContext.Term(text: "Jewel360", strong: true)], known: { plain.contains($0) })
+            expect(respelled.text == "Open the Jewel360 page." && respelled.fixes == [DictationFieldContext.Fix(heard: "joule 360", written: "Jewel360")],
+                   "swap: Claude's version is respelled from the same field words, so a swap never undoes a field fix")
+            // Before the swap: the quiet moment and the reasons to skip.
+            func ready(inserted: Bool = true, measured: Bool = true, enabled: Bool = true, terminal: Bool = false, running: Bool = true, busy: Bool = false,
+                       field: Int? = 5_000, key: Int? = nil, waited: Int = 0, budget: Int = 5_000) -> P.Step {
+                P.ready(inserted: inserted, measured: measured, enabled: enabled, terminal: terminal, appRunning: running, busy: busy,
+                        sinceFieldChangeMs: field, sinceKeyMs: key, waitedMs: waited, budgetMs: budget)
+            }
+            expect(ready() == .go, "swap: a quiet field swaps now")
+            expect(ready(inserted: false) == .skip(.notTyped), "swap: a copied or refused delivery is not swapped")
+            expect(ready(measured: false) == .skip(.notTyped), "swap: an unmeasured delivery is not swapped")
+            expect(ready(enabled: false) == .skip(.dictationOff), "swap: dictation turned off skips")
+            expect(ready(terminal: true) == .skip(.terminal), "swap: a terminal skips")
+            expect(ready(running: false) == .skip(.appGone), "swap: the app gone skips")
+            expect(ready(field: 200) == .wait, "swap: the person typed in the field 200 ms ago: wait")
+            expect(ready(field: 600) == .go, "swap: 600 ms quiet is quiet")
+            expect(ready(field: 599) == .wait, "swap: 599 ms is still typing")
+            expect(ready(key: 100) == .wait, "swap: a key down while the field had the keyboard: wait")
+            expect(ready(field: nil, key: nil) == .go, "swap: nothing measured as typing is quiet")
+            expect(ready(field: 100, waited: 5_000) == .skip(.typing), "swap: still typing at the polish budget skips")
+            expect(ready(field: 100, waited: 4_900) == .wait, "swap: the wait is bounded by the budget, not shorter")
+            expect(ready(busy: true) == .wait, "swap: a newer delivery or Fix a word waits")
+            expect(ready(busy: true, waited: 5_000) == .skip(.busy), "swap: still busy at the budget skips busy")
+            // The plan, read for an automatic swap: only the whole dictation where COS typed it, or moved within the window.
+            let typed = "um open the page", polished = "Open the page."
+            let span = DictationInsertedSpan(pid: 1, location: 6, length: typed.utf16.count)
+            let exact = DictationReplace.plan(span: span, terminal: false, appRunning: true, fieldCharacters: 6 + typed.utf16.count, window: "Hello " + typed,
+                                              windowStart: 0, current: typed, corrected: polished)
+            expect(P.placed(exact) == nil, "swap: the dictation exactly where COS typed it is swapped")
+            let moved = DictationReplace.plan(span: span, terminal: false, appRunning: true, fieldCharacters: 12 + typed.utf16.count, window: "Hello there " + typed,
+                                              windowStart: 0, current: typed, corrected: polished)
+            expect(P.placed(moved) == nil, "swap: the dictation found once, moved within the window, is swapped")
+            let edited = DictationReplace.plan(span: span, terminal: false, appRunning: true, fieldCharacters: 30, window: "Hello um open that page now",
+                                               windowStart: 0, current: typed, corrected: polished)
+            expect(P.placed(edited) == .textMoved, "swap: text the person edited is never swapped")
+            let terminalPlan = DictationReplace.plan(span: span, terminal: true, appRunning: true, fieldCharacters: 30, window: "Hello " + typed,
+                                                     windowStart: 0, current: typed, corrected: polished)
+            expect(P.placed(terminalPlan) == .terminal, "swap: a terminal skips at the plan too")
+            expect(P.placed(.edit(DictationReplace.Edit(location: 0, length: 2, original: "um", replacement: "Um"), dictationAt: nil)) == .textMoved,
+                   "swap: only the misheard words found means the person edited it")
+            let reasons: [(DictationReplace.Reason, P.Skip)] = [(.notMeasured, .notTyped), (.terminal, .terminal), (.appGone, .appGone), (.fieldGone, .fieldGone),
+                                                                (.textMoved, .textMoved), (.notFocused, .notFocused), (.selectionUnproven, .selectionUnproven), (.noChange, .noChange)]
+            for (reason, skip) in reasons { expect(P.skip(for: reason) == skip && P.placed(.copy(reason)) == skip, "swap: replace's \(reason.rawValue) reads skipped:\(skip.rawValue)") }
+            // The focus rules.
+            expect(P.gate(route: .accessibility, frontmost: false, focusedIsTarget: false, ownWindowKey: true) == nil,
+                   "swap: the Accessibility route swaps while another app is frontmost")
+            expect(P.gate(route: .paste, frontmost: false, focusedIsTarget: true, ownWindowKey: false) == .notFrontmost && !P.mayActivate(automatic: true),
+                   "swap: the paste route with the app not frontmost skips and never activates")
+            expect(P.gate(route: .paste, frontmost: false, focusedIsTarget: false, ownWindowKey: true) == .notFrontmost, "swap: not frontmost is the first paste-route reason")
+            expect(P.gate(route: .paste, frontmost: true, focusedIsTarget: true, ownWindowKey: true) == .ownWindowKey, "swap: a COS window holding the keyboard skips the paste route")
+            expect(P.gate(route: .paste, frontmost: true, focusedIsTarget: false, ownWindowKey: false) == .notFocused, "swap: another field focused skips the paste route")
+            expect(P.gate(route: .paste, frontmost: true, focusedIsTarget: true, ownWindowKey: false) == nil, "swap: the paste route where the person already is swaps")
+            expect(P.mayActivate(automatic: false), "swap: Fix a word and Apply polished may still bring the app forward")
+            // The person's caret afterwards.
+            let edit = DictationReplace.Edit(location: 10, length: 6, original: "um hi.", replacement: "Hi.")
+            expect(P.shifted(location: 16, length: 0, edit: edit) == (13, 0), "swap: a caret at the end of the dictation moves with it")
+            expect(P.shifted(location: 30, length: 4, edit: edit) == (27, 4), "swap: a selection after the dictation shifts by the length change")
+            expect(P.shifted(location: 2, length: 3, edit: edit) == (2, 3), "swap: a selection before the dictation stays")
+            expect(P.shifted(location: 10, length: 0, edit: edit) == (10, 0), "swap: a caret at the dictation's start stays")
+            expect(P.shifted(location: 12, length: 2, edit: edit) == (13, 0), "swap: a selection inside the dictation lands after the new words")
+            expect(P.shifted(location: 5, length: 0, edit: DictationReplace.Edit(location: 5, length: 0, original: "", replacement: ".")) == (6, 0),
+                   "swap: an insertion at the caret moves the caret past it")
+            // Learn from my edits after the swap.
+            let watchedSwap = P.watch(span: span, typed: typed, polished: polished, result: .swapped, swappedAt: 12)
+            expect(watchedSwap.text == polished && watchedSwap.span == DictationInsertedSpan(pid: 1, location: 12, length: polished.utf16.count),
+                   "swap: after a swap the learner baseline is the polished text where it landed")
+            let watchedSkip = P.watch(span: span, typed: typed, polished: polished, result: .skipped(.typing), swappedAt: 12)
+            expect(watchedSkip.text == typed && watchedSkip.span == span, "swap: after a skip the learner watches what was typed")
+            expect(P.watch(span: span, typed: typed, polished: polished, result: .swapped, swappedAt: nil).text == typed, "swap: a swap with no landing place watches what was typed")
+            // What is kept and shown.
+            expect(P.keepsPolished(.skipped(.notFrontmost)) && P.keepsPolished(.skipped(.typing)) && !P.keepsPolished(.skipped(.copyOnly)),
+                   "swap: a skip keeps Claude's version for Apply polished; copy-only already delivered it")
+            expect(!P.keepsPolished(.swapped) && !P.keepsPolished(.identical) && !P.keepsPolished(.notPolished) && !P.keepsPolished(.off), "swap: nothing kept otherwise")
+            expect(P.notice(.skipped(.notFocused)) == P.skippedNotice && P.notice(.swapped) == nil && P.notice(.notPolished) == nil && P.notice(.identical) == nil,
+                   "swap: the pill says one line only when a skip happened")
+            expect(P.Result.swapped.logName == "swapped" && P.Result.skipped(.notFrontmost).logName == "skipped:notFrontmost" && P.Result.off.logName == "off"
+                   && P.Result.identical.logName == "identical" && P.Result.notPolished.logName == "notPolished", "swap: the timing line's outcome words")
+            expect(P.routeName(.accessibility) == "accessibility" && P.routeName(.paste) == "paste", "swap: the timing line's route words")
+            for copy in [P.settingNote(.haiku), P.settingNote(.off), P.skippedNotice] {
+                expect(!copy.contains("\u{2014}") && !copy.contains("\u{2192}") && !copy.contains("->"), "swap: copy has no em dash or arrow")
+            }
+            // The timing line: numbers and codes only.
+            var line = DictationTiming.startFailure(DictationStartMarks(pressed: 0), at: Date(timeIntervalSince1970: 1_760_000_000))
+            line.includePolish(DictationPolishRun(outcome: .applied("secret words"), model: .haiku, ms: 2_400, prewarm: "used", prewarmMs: 120))
+            line.releaseToFirstTextMs = 1_180
+            line.settle(.skipped(.notFrontmost), ms: 310, route: .paste)
+            let data = DictationTimingLog.line(line) ?? Data()
+            let json = (try? JSONSerialization.jsonObject(with: data) as? [String: Any]) ?? [:]
+            expect(json["releaseToFirstTextMs"] as? Int == 1_180 && json["swapOutcome"] as? String == "skipped:notFrontmost" && json["swapMs"] as? Int == 310
+                   && json["swapRoute"] as? String == "paste", "swap: the timing line carries first text, outcome, time and route")
+            expect(json["polishMs"] as? Int == 2_400 && json["polishModel"] as? String == "haiku" && json["polishOutcome"] as? String == "applied"
+                   && json["polishPrewarm"] as? String == "used" && json["prewarmMs"] as? Int == 120, "swap: the polish run reaches the line")
+            expect(!(String(data: data, encoding: .utf8) ?? "secret").contains("secret"), "swap: the timing line never carries the words")
+            var unset = line; unset.includePolish(nil)
+            expect(unset == line, "swap: no polish run leaves the line as it was")
+            // The record after a swap reads what the field holds and keeps what was heard.
+            let id = UUID(), other = DictationRecord(id: UUID(), text: "keep", createdAt: Date(timeIntervalSince1970: 1), delivery: .inserted(app: "Notes"))
+            let before = [DictationRecord(id: id, text: typed, createdAt: Date(timeIntervalSince1970: 2), delivery: .inserted(app: "Notes"), engine: "parakeet-ultra"), other]
+            let after = DictationHistory.polishing(id, to: polished, heard: "um open the page", model: "haiku", in: before)
+            expect(after[0].text == polished && after[0].heard == "um open the page" && after[0].polishModel == "haiku" && after[0].polishLabel == "Polished · Haiku"
+                   && after[0].engine == "parakeet-ultra" && after[0].createdAt == before[0].createdAt && after[1] == other, "swap: the dictation reads the swap and keeps what was heard")
+        }
+        print("PASS Mac dictation: \(count) policy checks; insert-target table, measured delivery, terminals, layout ⌘V, listening bars end to end, clipboard restore, sounds, pill placement, recent dictations file, card countdown, fix-a-word selection, quick fix, replace, span guess, quiet and restore, bounded audio, PCM16 WAV, device failure, any-key triggers, field context and its evidence, AI polish, release tail and timing, truthful start, smooth start, missed releases, early polish, paste first and polish in place")
     }
 }

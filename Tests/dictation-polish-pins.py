@@ -32,20 +32,21 @@ pcore = code(read("HelperSources/ProviderStatusCore.swift"))
 app = code(read("Sources/COSControlApp.swift"))
 
 # 1. Polish runs after the engine guard and before lists and delivery, and the dictation re-checks it is still current.
-transcribe = between(dictation, "private func transcribe(_ wav: Data, attempt: UUID) {", "private func polish(_ heard: String)")
-call = "let polished = await polish(heard)\n                guard generation == attempt, !Task.isCancelled else { return }"
+transcribe = between(dictation, "private func transcribe(_ wav: Data, attempt: UUID) {", "private func polish(_ heard: String,")
+call = "let polished = await polish(heard, attempt: attempt)\n                guard generation == attempt, !Task.isCancelled else { return }"
 pin(transcribe.count(call) == 1, "current after polish", "the await on polish is followed at once by the generation and cancellation check")
-order = [transcribe.find(s) for s in ["DictationEngineName.title(engine) != nil", "let polished = await polish(heard)",
+order = [transcribe.find(s) for s in ["DictationEngineName.title(engine) != nil", "if sequence == .deliverThenPolish { await deliverThenPolish(heard, attempt: attempt); return }",
+                                      "let polished = await polish(heard, attempt: attempt)",
                                       "DictationListFormat.format(said)", "DictationInsertion.deliver(text"]]
-pin(-1 not in order and order == sorted(order), "before paste", "engine guard, then polish, then lists, then delivery")
+pin(-1 not in order and order == sorted(order), "before paste", "engine guard, then (0.5.331) the paste-first branch, then polish, then lists, then delivery")
 pin("let said = polished?.outcome.text(heard: heard) ?? heard" in transcribe, "heard on failure", "every outcome but applied pastes what was heard")
 
 # 2. The polish step: its own pill, a bounded helper call, a timeout outcome, a log line without text, and never a card.
-step = between(dictation, "private func polish(_ heard: String) async -> (outcome: DictationPolish.Outcome, model: DictationPolishModel)? {",
+step = between(dictation, "private func polish(_ heard: String, attempt: UUID, showPill: Bool = true) async -> DictationPolishRun? {",
                "private func finish(_ text: String")
 pin("DictationPolish.shouldPolish(text: heard, model: model), let budget = DictationPolish.budget(for: model)" in step, "gate", "polish only when the rule says so, with its budget")
 pin("try await polishBridge(request, budget)" in step, "budget", "the helper call carries the model's budget")
-pin("pill = .polishing" in step and "case .transcribing, .polishing, .finishing:" in dictation, "pill", "the pill shows POLISHING with the working bars")
+pin("if showPill { pill = .polishing }" in step and "case .transcribing, .polishing, .finishing:" in dictation, "pill", "the pill shows POLISHING with the working bars")
 pin("catch HelperClientError.timedOut {\n            outcome = .timeout" in step, "timeout", "a killed helper reads as a timeout")
 pin(not re.search(r"\b(fail|showCard)\(", step) and "throw" not in step.replace("throws", ""), "never a failure", "polish never fails the dictation or shows a card")
 logs = [l for l in step.split("\n") if "dictationLog" in l]
@@ -106,17 +107,20 @@ pin(helper.count('case "dictation-polish-prewarm": try emitDictationPolishPrewar
 pemit = between(helper, "private func emitDictationPolishPrewarm() throws {", "private func emitDictationCheck() throws {")
 pin("readToken()" in pemit and "speakerReviewToken" not in pemit and "deadlineUptime: deadline" in pemit and '"/api/' not in pemit
     and 'method: "DELETE"' in pemit, "prewarm helper", "the token file alone, a deadline, the fixed route, DELETE to discard")
-take = between(dictation, "    private func takePrewarm(_ model: DictationPolishModel) async -> String? {", "    private func discardPrewarm() {")
-pin("guard held.attempt == generation, held.model == model else { Self.discardWhenReady(held.task, held.box, prewarmBridge); return nil }" in take
+take = between(dictation, "    private func takePrewarm(_ model: DictationPolishModel, attempt: UUID) async -> (token: String?, ms: Int?) {", "    private func discardPrewarm(")
+pin("guard let held = prewarm, held.attempt == attempt else { return (nil, nil) }" in take
+    and "guard held.model == model else { Self.discardWhenReady(held.task, held.box, prewarmBridge); return (nil, nil) }" in take
     and "waited < DictationPolishPrewarm.waitMilliseconds" in take and take.count("Self.discardWhenReady(") == 2, "prewarm token",
     "the polish takes only this press's token for this model, waits at most 150 ms, and discards one it cannot use")
-pin("let warm = await takePrewarm(model)" in step and "prewarmToken: warm) else { return nil }" in step and "try await polishBridge(request, budget)" in step
-    and step.index("let warm = await takePrewarm(model)") < step.index("try await polishBridge(request, budget)"), "prewarm token",
+pin("let (warm, warmMs) = await takePrewarm(model, attempt: attempt)" in step and "prewarmToken: warm) else { return nil }" in step and "try await polishBridge(request, budget)" in step
+    and step.index("let (warm, warmMs) = await takePrewarm(model, attempt: attempt)") < step.index("try await polishBridge(request, budget)"), "prewarm token",
     "the token rides on the polish request")
-pin('timing?.polishPrewarm = DictationPolishPrewarm.outcome(sentToken: warm != nil, answer: response.details["prewarm"]?.string)' in step
-    and "timing?.polishPrewarm = DictationPolishPrewarm.outcome(sentToken: warm != nil, answer: nil)" in step, "prewarm timing",
+pin('prewarm = DictationPolishPrewarm.outcome(sentToken: warm != nil, answer: response.details["prewarm"]?.string)' in step
+    and "var prewarm = DictationPolishPrewarm.outcome(sentToken: warm != nil, answer: nil)" in step
+    and "return DictationPolishRun(outcome: outcome, model: model, ms: elapsed, prewarm: prewarm, prewarmMs: warmMs)" in step
+    and "timing?.includePolish(polished)" in transcribe and "line?.includePolish(run)" in dictation, "prewarm timing",
     "the timing line says used, missed, discarded or none")
-pin("let polishBridge else {\n            discardPrewarm(); return nil\n        }" in step, "prewarm discard", "polish off or nothing to polish discards the token")
+pin("let polishBridge else {\n            discardPrewarm(attempt); return nil\n        }" in step, "prewarm discard", "polish off or nothing to polish discards this press's token")
 for fn in ("    func cancel() {", "    private func fail("):
     pin("discardPrewarm()" in between(dictation, fn, "\n    }\n"), "prewarm discard", f"{fn.strip()} discards the token")
 pin("    private func finish(" not in dictation or "discardPrewarm()" not in between(dictation, "    private func finish(", "\n    }\n"), "prewarm discard",

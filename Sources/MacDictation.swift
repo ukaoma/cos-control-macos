@@ -377,7 +377,14 @@ struct DictationDelivered: Sendable {
 
     enum ReplaceResult: Equatable { case replaced, copied(DictationReplace.Reason), unverified(pasted: Bool) }
     /// What a replace did, and where the dictation now is (nil: no longer tracked, so a later replace copies).
-    struct Replaced { let result: ReplaceResult; let target: DictationInsertTarget? }
+    struct Replaced {
+        let result: ReplaceResult
+        let target: DictationInsertTarget?
+        /// 0.5.331: an automatic swap's own reason (the focus rules), more precise than `result`'s.
+        var skip: DictationPolishSwap.Skip? = nil
+        /// The route it took (accessibility or paste), once the plan placed the edit.
+        var route: DictationReplace.Route? = nil
+    }
 
     /// Replace it in <App> (0.5.313; 0.5.318 routes and proof). Reads only a bounded window around where the dictation
     /// went (AXStringForRange; else the span selected and read), plans the smallest whole-word edit, then takes the route
@@ -385,13 +392,19 @@ struct DictationDelivered: Sendable {
     /// misheard words. Measures after either. The only key it can post is ⌘V, after that proof; never Return.
     /// One `replace` line per attempt: bundle, route, where the text was found, the selection and focus proof, the
     /// read-back. Counts and booleans only, never text.
-    static func replace(_ target: DictationInsertTarget, corrected: String, restoreClipboard: Bool) async -> Replaced {
+    /// 0.5.331 `automatic`: AI polish's swap (paste first, polish in place). Only the whole dictation, exactly where COS
+    /// typed it or found moved within the window; the paste route only where the person already is (the app frontmost,
+    /// its focused element the target, no COS window holding the keyboard), with no activation and no window moved;
+    /// the person's caret goes back afterwards, shifted by the length change. The clipboard goes back as delivery's does.
+    static func replace(_ target: DictationInsertTarget, corrected: String, restoreClipboard: Bool, automatic: Bool = false) async -> Replaced {
         let element = target.element
         AXUIElementSetMessagingTimeout(element, 0.25)
-        var facts = "bundle=\(target.bundle ?? "-") setterWorked=\(target.setterWorked) terminal=\(target.terminal)"
-        func done(_ result: ReplaceResult, _ next: DictationInsertTarget?) -> Replaced {
+        var facts = "bundle=\(target.bundle ?? "-") setterWorked=\(target.setterWorked) terminal=\(target.terminal) automatic=\(automatic)"
+        var routeTaken: DictationReplace.Route?
+        func done(_ result: ReplaceResult, _ next: DictationInsertTarget?, skip: DictationPolishSwap.Skip? = nil) -> Replaced {
+            if let skip { facts += " skip=\(skip.rawValue)" }
             dictationLog.notice("replace \(facts, privacy: .public) result=\(String(describing: result), privacy: .public)")
-            return Replaced(result: result, target: next)
+            return Replaced(result: result, target: next, skip: skip, route: routeTaken)
         }
         let running = NSRunningApplication(processIdentifier: target.span.pid).map { !$0.isTerminated } ?? false
         let original = running && !target.terminal ? snapshot(element) : DictationFieldSnapshot()
@@ -409,6 +422,10 @@ struct DictationDelivered: Sendable {
         let plan = DictationReplace.plan(span: target.span, terminal: target.terminal, appRunning: running, fieldCharacters: original.characters,
                                          window: window, windowStart: windowStart, current: target.text, corrected: corrected)
         facts += " n=\(original.characters.map(String.init) ?? "?") read=\(read)"
+        if automatic, let skip = DictationPolishSwap.placed(plan) {
+            if case .copy(let reason) = plan { return done(.copied(reason), target, skip: skip) }
+            return done(.copied(.textMoved), target, skip: skip)
+        }
         guard case .edit(let edit, let dictationAt) = plan else {
             if case .copy(let reason) = plan { facts += " found=\(reason.rawValue)"; return done(.copied(reason), target) }
             return done(.copied(.notMeasured), target)
@@ -422,8 +439,15 @@ struct DictationDelivered: Sendable {
                                   chromium: target.chromium, electron: target.electron)
         }
         let route = DictationReplace.route(setterWorked: target.setterWorked)
+        routeTaken = route
         facts += " route=\(route)"
         func putBack() { if let l = original.location, let len = original.length { _ = select(element, location: l, length: len) } }
+        // 0.5.331: after an automatic swap the person's caret or selection goes back where it was, shifted past the edit.
+        func restoreCaret() {
+            guard automatic, let l = original.location, let len = original.length else { return }
+            let to = DictationPolishSwap.shifted(location: l, length: len, edit: edit)
+            facts += " caret=\(select(element, location: to.location, length: to.length) ? "restored" : "failed")"
+        }
 
         if route == .accessibility {
             guard select(element, location: edit.location, length: edit.length) else { facts += " select=failed"; return done(.copied(.fieldGone), target) }
@@ -437,6 +461,7 @@ struct DictationDelivered: Sendable {
                 let after = snapshot(element), back = string(element, location: edit.location, length: edit.replacement.utf16.count)
                 if DictationReplace.confirmed(before: before, after: after, edit: edit, readback: back) {
                     facts += " after=\(after.logDescription) readback=\(back == nil ? "unreadable" : "match")"
+                    restoreCaret()
                     return done(.replaced, next)
                 }
             }
@@ -446,11 +471,14 @@ struct DictationDelivered: Sendable {
 
         // ⌘V. COS's own pet or editor holds the keyboard while Fix a word is open: give it back to the app's window
         // the way the composer does (out and front again never takes key), bring the app forward, then prove focus.
-        if let key = NSApp.keyWindow, key is PetPanel || key is DictationOverlayPanel { key.orderOut(nil); key.orderFrontRegardless() }
-        if let app = NSRunningApplication(processIdentifier: target.span.pid), NSWorkspace.shared.frontmostApplication?.processIdentifier != app.processIdentifier {
-            app.activate()
+        // 0.5.331: an automatic swap does none of this. It never activates an app or moves a window (DictationPolishSwap).
+        if DictationPolishSwap.mayActivate(automatic: automatic) {
+            if let key = NSApp.keyWindow, key is PetPanel || key is DictationOverlayPanel { key.orderOut(nil); key.orderFrontRegardless() }
+            if let app = NSRunningApplication(processIdentifier: target.span.pid), NSWorkspace.shared.frontmostApplication?.processIdentifier != app.processIdentifier {
+                app.activate()
+            }
+            try? await Task.sleep(for: .milliseconds(150))
         }
-        try? await Task.sleep(for: .milliseconds(150))
         let frontmost = NSWorkspace.shared.frontmostApplication?.processIdentifier == target.span.pid
         let appElement = AXUIElementCreateApplication(target.span.pid)
         AXUIElementSetMessagingTimeout(appElement, 0.25)
@@ -458,6 +486,10 @@ struct DictationDelivered: Sendable {
         var focusedIsTarget = false
         if let focusedNow {
             focusedIsTarget = CFEqual(focusedNow, element) || editableAncestor(focusedNow).map { ancestor in CFEqual(ancestor, element) } == true
+        }
+        if automatic, let skip = DictationPolishSwap.gate(route: route, frontmost: frontmost, focusedIsTarget: focusedIsTarget, ownWindowKey: NSApp.keyWindow != nil) {
+            facts += " frontmost=\(frontmost) ownKey=\(NSApp.keyWindow != nil) focused=\(focusedIsTarget)"
+            return done(.copied(.notFocused), target, skip: skip)
         }
         // Chromium applies a selection asynchronously: poll until it reads back as the edit range.
         var selection = DictationFieldSnapshot()
@@ -496,14 +528,15 @@ struct DictationDelivered: Sendable {
             if ms == 700 { facts += " after=\(after.logDescription) readback=\(back == nil ? "unreadable" : back == edit.replacement ? "match" : "mismatch")" }
         }
         // Unconfirmed: the caller leaves the corrected dictation on the clipboard. Confirmed: the person's goes back.
-        if landed {
+        // 0.5.331: an automatic swap puts the person's clipboard back either way, as delivery does.
+        if landed || automatic {
             let elapsed = Int(Date().timeIntervalSince(postedAt) * 1000)
             if elapsed < DictationClipboard.restoreAfterMilliseconds { try? await Task.sleep(for: .milliseconds(DictationClipboard.restoreAfterMilliseconds - elapsed)) }
             if case .restore = DictationClipboard.decision(enabled: restoreClipboard, pasted: true, snapshot: saved, setChangeCount: changeCount,
                                                            currentChangeCount: board.changeCount), let saved {
                 _ = DictationClipboard.restore(saved, to: board)
             }
-            return done(.replaced, next)
+            if landed { restoreCaret(); return done(.replaced, next) }
         }
         return done(.unverified(pasted: true), target)
     }
@@ -645,7 +678,17 @@ struct DictationDelivered: Sendable {
         let terms = DictationFieldContext.terms(in: read, known: known)
         let result = DictationFieldContext.corrected(dictation, terms: terms, known: known)
         facts += " context=read terms=\(terms.count) fixes=\(result.fixes.count) ms=\(Int(Date().timeIntervalSince(started) * 1000))"
-        return DictationFieldContext.Applied(text: result.text, fixes: result.fixes, outside: [read.before, read.after].filter { !$0.isEmpty })
+        return DictationFieldContext.Applied(text: result.text, fixes: result.fixes, outside: [read.before, read.after].filter { !$0.isEmpty }, terms: terms)
+    }
+
+    /// 0.5.331: AI polish's version as delivery would have typed it: lists, then the same field words' spellings.
+    static func polishedFinal(_ polished: String, formatLists: Bool, context: DictationFieldContext.Applied?) -> (text: String, fixes: [DictationFieldContext.Fix]) {
+        var spelled: [String: Bool] = [:]
+        return DictationPolishSwap.final(polished, formatLists: formatLists, terms: context?.terms ?? []) { word in
+            if let k = spelled[word] { return k }
+            let k = NSSpellChecker.shared.checkSpelling(of: word, startingAt: 0).location == NSNotFound
+            spelled[word] = k; return k
+        }
     }
 
     // Learn from my edits (0.5.318) reads through these: counts and the caret, a bounded range, focus, secure fields.
@@ -818,6 +861,27 @@ struct DictationDelivered: Sendable {
             corrections.contains { DictationFixGuess.normalized($0.heard) == DictationFixGuess.normalized(heard) && $0.written == written }
         }, outside: outside)
     }
+}
+
+/// 0.5.331: when the dictated field last changed (its count or caret), measured off the main actor every 100 ms while
+/// AI polish works, so a swap waits for a quiet moment. Counts and the caret only, never text.
+final class DictationFieldQuiet: @unchecked Sendable {
+    private let last = OSAllocatedUnfairLock(initialState: ProcessInfo.processInfo.systemUptime)
+    private var task: Task<Void, Never>?
+    init(_ target: DictationInsertTarget) {
+        let last = self.last
+        task = Task.detached(priority: .utility) {
+            let element = target.element
+            var previous = DictationInsertion.measure(element)
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(DictationPolishSwap.quietPollMilliseconds))
+                let now = DictationInsertion.measure(element)
+                if now != previous { previous = now; last.withLock { $0 = ProcessInfo.processInfo.systemUptime } }
+            }
+        }
+    }
+    var sinceChangeMs: Int { DictationStartMarks.ms(last.withLock { $0 }, ProcessInfo.processInfo.systemUptime) }
+    func stop() { task?.cancel(); task = nil }
 }
 
 /// System Audio Recording through TCC, the way Apple's AudioCap sample reads and asks for it (0.5.318). macOS lists an
@@ -1469,6 +1533,15 @@ enum DictationSpareBuild: Sendable {
     @Published var polishModel: DictationPolishModel = DictationPolishModel.stored(UserDefaults.standard.string(forKey: DictationPolishModel.defaultsKey)) {
         didSet { UserDefaults.standard.set(polishModel.rawValue, forKey: DictationPolishModel.defaultsKey) }
     }
+    /// 0.5.331 paste first, polish in place: with AI polish on, type what was heard at once and swap Claude's version in
+    /// place when it is ready (DictationPolishSwap). On unless turned off; off is the order before 0.5.331.
+    @Published var pasteThenPolish: Bool = DictationPolishSwap.stored(UserDefaults.standard.object(forKey: DictationPolishSwap.defaultsKey)) {
+        didSet { UserDefaults.standard.set(pasteThenPolish, forKey: DictationPolishSwap.defaultsKey) }
+    }
+    /// Claude's version of a dictation whose swap was skipped, for Apply polished in Activity, Dictation. Memory only.
+    @Published private(set) var pendingPolish: [UUID: DictationPendingPolish] = [:]
+    /// The last Apply polished's one line, on that dictation's row.
+    @Published private(set) var polishNote: (id: UUID, text: String)?
     @Published private(set) var microphones: [DictationMicrophone] = []
     @Published private(set) var holdTrigger: DictationTrigger?
     @Published private(set) var toggleTrigger: DictationTrigger?
@@ -1536,6 +1609,11 @@ enum DictationSpareBuild: Sendable {
     private var lastEngine: (engine: String, fallback: String?)?
     /// 0.5.325: what was heard and which model polished it, only when AI polish changed the text; kept until finish().
     private var lastPolish: (heard: String, model: DictationPolishModel)?
+    /// 0.5.331: a delivery is typing into an app, and an automatic swap is editing one. Never both at once.
+    private var deliveryInFlight = false
+    private var swapEditing = false
+    /// 0.5.331: the person's stop (systemUptime), for the timing line's releaseToFirstTextMs.
+    private var releasedAt: TimeInterval?
     private var task: Task<Void, Never>?
     private var timer: Task<Void, Never>?
     private var meterTask: Task<Void, Never>?
@@ -1812,23 +1890,24 @@ enum DictationSpareBuild: Sendable {
     }
     /// The polish takes this press's token, waiting at most 150 ms for a start still in flight. A token for another model
     /// (the setting changed mid-hold) or one that arrives late is discarded, never reused.
-    private func takePrewarm(_ model: DictationPolishModel) async -> String? {
-        guard let held = prewarm else { return nil }
+    /// 0.5.331: only this press's token. A newer press's (a paste-first polish runs after the next press may have
+    /// started its own) is left for that press.
+    private func takePrewarm(_ model: DictationPolishModel, attempt: UUID) async -> (token: String?, ms: Int?) {
+        guard let held = prewarm, held.attempt == attempt else { return (nil, nil) }
         prewarm = nil
-        guard held.attempt == generation, held.model == model else { Self.discardWhenReady(held.task, held.box, prewarmBridge); return nil }
+        guard held.model == model else { Self.discardWhenReady(held.task, held.box, prewarmBridge); return (nil, nil) }
         var waited = 0
         while held.box.result == nil, waited < DictationPolishPrewarm.waitMilliseconds {
             try? await Task.sleep(for: .milliseconds(DictationPolishPrewarm.pollMilliseconds))
             waited += DictationPolishPrewarm.pollMilliseconds
         }
-        guard let result = held.box.result else { Self.discardWhenReady(held.task, held.box, prewarmBridge); return nil }
-        timing?.prewarmMs = result.ms
+        guard let result = held.box.result else { Self.discardWhenReady(held.task, held.box, prewarmBridge); return (nil, nil) }
         if result == .unsupported { prewarmUnsupportedOn = serverVersion?() ?? "" }
-        return result.token
+        return (result.token, result.ms)
     }
     /// A token no polish will use (cancel, no text, polish off): discarded off the main actor once its start has answered.
-    private func discardPrewarm() {
-        guard let held = prewarm else { return }
+    private func discardPrewarm(_ attempt: UUID? = nil) {
+        guard let held = prewarm, attempt.map({ $0 == held.attempt }) ?? true else { return }
         prewarm = nil
         Self.discardWhenReady(held.task, held.box, prewarmBridge)
     }
@@ -2244,6 +2323,7 @@ enum DictationSpareBuild: Sendable {
         do {
             let pcm = try capture.stop()
             if let mark = releaseMark {
+                releasedAt = mark.uptime
                 timing = DictationTiming.measure(pcm: pcm, releaseBytes: mark.bytes, tailMs: mark.tailMs,
                                                  releaseToClosedMs: Int(((ProcessInfo.processInfo.systemUptime - mark.uptime) * 1000).rounded()), at: Date())
                 startMarks?.mainThreadStallMs = heartbeat.finish()
@@ -2334,9 +2414,15 @@ enum DictationSpareBuild: Sendable {
                 lastEngine = (engine, fallback)
                 dictationLog.notice("transcribed engine=\(engine, privacy: .public) fallback=\(fallback ?? "none", privacy: .public)")
                 DictationProof.record(engine: engine, serverVersion: serverVersion?())
+                // 0.5.331 paste first, polish in place: with the toggle on and a polish that will run, what was heard is
+                // typed now and Claude's version swapped in place when it is ready. Off: today's order, below.
+                let sequence = DictationPolishSwap.sequence(pasteFirst: pasteThenPolish, polishes: polishBridge != nil && DictationPolish.shouldPolish(text: heard, model: polishModel),
+                                                            copyOnly: pendingInterrupted)
+                if sequence == .deliverThenPolish { await deliverThenPolish(heard, attempt: attempt); return }
                 // 0.5.325 AI polish, before lists and delivery: Claude's cleanup within its budget, or what was heard.
-                let polished = await polish(heard)
+                let polished = await polish(heard, attempt: attempt)
                 guard generation == attempt, !Task.isCancelled else { return }
+                timing?.includePolish(polished)
                 let said = polished?.outcome.text(heard: heard) ?? heard
                 if case .applied? = polished?.outcome, let model = polished?.model { lastPolish = (heard, model) } else { lastPolish = nil }
                 let text = formatLists ? DictationListFormat.format(said) : said
@@ -2345,10 +2431,15 @@ enum DictationSpareBuild: Sendable {
                 pendingAudio = nil; phase = "Ready"; message = nil
                 // 0.5.328: delivery still runs on the main actor (Accessibility into the target app, the clipboard, ⌘V);
                 // deliverMs says how long, so a stutter at the end of a dictation can be told from one at its start.
+                await waitForSwapEdit()
                 let delivering = ProcessInfo.processInfo.systemUptime
+                deliveryInFlight = true
                 let delivered = copyOnly ? DictationInsertion.copyOnly(text, clipboardMoved: clipboardMoved)
                     : await DictationInsertion.deliver(text, restoreClipboard: restoreClipboard, fieldContext: useFieldContext)
+                deliveryInFlight = false
                 timing?.deliverMs = DictationStartMarks.ms(delivering, ProcessInfo.processInfo.systemUptime)
+                timing?.releaseToFirstTextMs = firstTextMs()
+                timing?.settle(DictationPolishSwap.unswapped(pasteFirst: pasteThenPolish, polished: polished != nil, copyOnly: copyOnly), ms: nil, route: nil)
                 // What was typed, after the field's own words respelled it (0.5.323), is what is kept and watched.
                 finish(delivered.context?.text ?? text, outcome: delivered.outcome, target: delivered.target, context: delivered.context)
             } catch {
@@ -2362,22 +2453,25 @@ enum DictationSpareBuild: Sendable {
     /// 0.5.325 AI polish. nil when it does not run (Off, empty, over 8,000 characters, no helper). Otherwise one helper
     /// round trip bounded by the model's budget; every failure is an outcome that pastes what was heard, never a card and
     /// never a failed dictation. The log line has the model, the outcome and the time, never the text.
-    private func polish(_ heard: String) async -> (outcome: DictationPolish.Outcome, model: DictationPolishModel)? {
+    /// 0.5.331: the run comes back to the caller, which writes it on this dictation's own timing line (a paste-first
+    /// dictation's line outlives the next press). `attempt` is the press whose early process this polish may take;
+    /// `showPill` is false when the text is already typed (paste first).
+    private func polish(_ heard: String, attempt: UUID, showPill: Bool = true) async -> DictationPolishRun? {
         let model = polishModel
         guard DictationPolish.shouldPolish(text: heard, model: model), let budget = DictationPolish.budget(for: model), let polishBridge else {
-            discardPrewarm(); return nil
+            discardPrewarm(attempt); return nil
         }
-        pill = .polishing
+        if showPill { pill = .polishing }
         let started = Date()
         // 0.5.329: the press's early process, when it is ready (at most 150 ms more); without one, polish runs cold as before.
-        let warm = await takePrewarm(model)
+        let (warm, warmMs) = await takePrewarm(model, attempt: attempt)
         guard let request = DictationPolish.request(text: heard, model: model, app: NSWorkspace.shared.frontmostApplication?.localizedName,
                                                     prewarmToken: warm) else { return nil }
-        timing?.polishPrewarm = DictationPolishPrewarm.outcome(sentToken: warm != nil, answer: nil)
+        var prewarm = DictationPolishPrewarm.outcome(sentToken: warm != nil, answer: nil)
         let outcome: DictationPolish.Outcome
         do {
             let response = try await polishBridge(request, budget)
-            timing?.polishPrewarm = DictationPolishPrewarm.outcome(sentToken: warm != nil, answer: response.details["prewarm"]?.string)
+            prewarm = DictationPolishPrewarm.outcome(sentToken: warm != nil, answer: response.details["prewarm"]?.string)
             outcome = DictationPolish.choose(heard: heard, ok: response.ok, text: response.details["text"]?.string,
                                              polished: response.details["polished"]?.bool, reason: response.details["reason"]?.string,
                                              skipped: response.details["polishSkipped"]?.string)
@@ -2387,20 +2481,25 @@ enum DictationSpareBuild: Sendable {
             outcome = .failed(error is CancellationError ? "canceled" : "helper")
         }
         let elapsed = Int(Date().timeIntervalSince(started) * 1000)
-        timing?.polishMs = elapsed; timing?.polishModel = model.rawValue; timing?.polishOutcome = outcome.logName
         dictationLog.notice("polish model=\(model.rawValue, privacy: .public) outcome=\(outcome.logName, privacy: .public) ms=\(elapsed)")
-        return (outcome, model)
+        return DictationPolishRun(outcome: outcome, model: model, ms: elapsed, prewarm: prewarm, prewarmMs: warmMs)
     }
     /// The text is on the clipboard already. Measured or sent: flash the pill. Refused: the card, which never takes focus.
-    private func finish(_ text: String, outcome: DictationDeliveryOutcome, target: DictationInsertTarget?, context: DictationFieldContext.Applied? = nil) {
+    /// 0.5.331 `swapPending`: Claude's version is still coming (paste first). Its timing line and its watch wait for the
+    /// swap to settle (deliverThenPolish), so the swap is never read as the person's own edit.
+    @discardableResult
+    private func finish(_ text: String, outcome: DictationDeliveryOutcome, target: DictationInsertTarget?, context: DictationFieldContext.Applied? = nil,
+                        swapPending: Bool = false) -> UUID {
         let record = DictationRecord(id: UUID(), text: text, createdAt: Date(), delivery: outcome.delivery,
                                      engine: lastEngine?.engine, fallbackReason: lastEngine?.fallback,
                                      heard: lastPolish?.heard, polishModel: lastPolish?.model.rawValue)
         lastEngine = nil; lastPolish = nil
-        if case .refused = outcome { recordTiming("copied") } else { recordTiming("typed") }
+        if !swapPending { if case .refused = outcome { recordTiming("copied") } else { recordTiming("typed") } }
         if let target { rememberTarget(target, for: record.id) }
         // 0.5.318: watch the field it went into for the person's own fixes (native apps; Electron is only measured).
-        if let target, case .inserted = outcome {
+        if swapPending {
+            editWatcher.stop("polish pending")
+        } else if let target, case .inserted = outcome {
             editWatcher.start(target, mode: learnMode, context: context) { [weak self] candidate in self?.editLearned(candidate, app: target.app) }
         } else {
             editWatcher.stop("not inserted")
@@ -2421,19 +2520,159 @@ enum DictationSpareBuild: Sendable {
         remember(record)
         // 0.5.330: a dictation whose Fn release was missed ends with the card that says how to stop it happening.
         showFnCardIfPending()
+        return record.id
     }
     /// A dictation that did not finish: the reason on the card, with its one action (0.5.317): Retry while the audio is
     /// held and a retry can succeed, Install Parakeet, Use Whisper, Open Transcription settings, or Open Settings when
     /// the microphone is not allowed. A failure COS raised itself retries the held audio (DictationFailureAction).
     /// 0.5.326: one timing line per dictation, numbers only: the log (public, notice) and dictation-timing.jsonl.
-    private func recordTiming(_ outcome: String) {
-        guard var finished = timing else { return }
-        timing = nil
+    /// 0.5.331: `line` is a paste-first dictation's own line, written once its swap settles; nil is the store's current one.
+    private func recordTiming(_ outcome: String, line: DictationTiming? = nil) {
+        guard var finished = line ?? timing else { return }
+        if line == nil { timing = nil }
         if finished.outcome == "pending" { finished.outcome = outcome }
         func n(_ value: Double?) -> String { value.map { String(format: "%.1f", $0) } ?? "-" }
-        dictationLog.notice("timing release_to_closed_ms=\(finished.releaseToClosedMs) tail_ms=\(finished.tailMs) captured_s=\(n(finished.capturedSeconds), privacy: .public) final_dbfs=\(n(finished.finalDBFS), privacy: .public) tail_dbfs=\(n(finished.tailDBFS), privacy: .public) engine=\(finished.engine ?? "-", privacy: .public) transcribe_ms=\(finished.transcribeMs ?? -1) polish_ms=\(finished.polishMs ?? -1) polish=\(finished.polishModel ?? "-", privacy: .public):\(finished.polishOutcome ?? "-", privacy: .public) outcome=\(finished.outcome, privacy: .public)")
+        dictationLog.notice("timing release_to_closed_ms=\(finished.releaseToClosedMs) tail_ms=\(finished.tailMs) captured_s=\(n(finished.capturedSeconds), privacy: .public) final_dbfs=\(n(finished.finalDBFS), privacy: .public) tail_dbfs=\(n(finished.tailDBFS), privacy: .public) engine=\(finished.engine ?? "-", privacy: .public) transcribe_ms=\(finished.transcribeMs ?? -1) polish_ms=\(finished.polishMs ?? -1) polish=\(finished.polishModel ?? "-", privacy: .public):\(finished.polishOutcome ?? "-", privacy: .public) first_text_ms=\(finished.releaseToFirstTextMs ?? -1) swap=\(finished.swapOutcome ?? "-", privacy: .public) swap_ms=\(finished.swapMs ?? -1) swap_route=\(finished.swapRoute ?? "-", privacy: .public) outcome=\(finished.outcome, privacy: .public)")
         if let url = Self.defaultHistoryURL()?.deletingLastPathComponent().appendingPathComponent(DictationTimingLog.fileName) {
             DictationTimingLog.append(finished, to: url)
+        }
+    }
+    // MARK: Paste first, polish in place (0.5.331)
+
+    /// The release to now, once, for the timing line (nil on a retry, which has no release).
+    private func firstTextMs() -> Int? {
+        guard let released = releasedAt else { return nil }
+        releasedAt = nil
+        return DictationStartMarks.ms(released, ProcessInfo.processInfo.systemUptime)
+    }
+    /// A delivery never types while an automatic swap is editing a field (bounded; the swap is a few hundred ms).
+    private func waitForSwapEdit() async {
+        var waited = 0
+        while swapEditing, waited < DictationPolishSwap.deliveryWaitMilliseconds {
+            try? await Task.sleep(for: .milliseconds(20)); waited += 20
+        }
+    }
+    /// Type what was heard now (lists and the field's spellings as always), polish in parallel, then swap Claude's version
+    /// in place when it differs, under DictationPolishSwap's rules. This dictation's timing line and its edit watch wait
+    /// for the swap to settle. A newer dictation may start meanwhile: nothing here waits on it or blocks it.
+    private func deliverThenPolish(_ heard: String, attempt: UUID) async {
+        let polishing = Task { await self.polish(heard, attempt: attempt, showPill: false) }
+        let lists = formatLists
+        let text = lists ? DictationListFormat.format(heard) : heard
+        lastPolish = nil
+        pendingAudio = nil; phase = "Ready"; message = nil
+        await waitForSwapEdit()
+        let delivering = ProcessInfo.processInfo.systemUptime
+        deliveryInFlight = true
+        let delivered = await DictationInsertion.deliver(text, restoreClipboard: restoreClipboard, fieldContext: useFieldContext)
+        deliveryInFlight = false
+        timing?.deliverMs = DictationStartMarks.ms(delivering, ProcessInfo.processInfo.systemUptime)
+        timing?.releaseToFirstTextMs = firstTextMs()
+        // This dictation's own line from here: a newer press stops and measures a line of its own.
+        var line = timing; timing = nil
+        let typed = delivered.context?.text ?? text
+        let id = finish(typed, outcome: delivered.outcome, target: delivered.target, context: delivered.context, swapPending: true)
+        var inserted = false
+        if case .inserted = delivered.outcome { inserted = true }
+        let quiet = delivered.target.map { DictationFieldQuiet($0) }
+        let run = await polishing.value
+        line?.includePolish(run)
+        let answered = ProcessInfo.processInfo.systemUptime
+        var result = DictationPolishSwap.Result.notPolished, route: DictationReplace.Route?, swapMs: Int?
+        var watchTarget = delivered.target, watchContext = delivered.context
+        var final: (text: String, fixes: [DictationFieldContext.Fix])?
+        if case .applied(let polished)? = run?.outcome { final = DictationInsertion.polishedFinal(polished, formatLists: lists, context: delivered.context) }
+        switch DictationPolishSwap.want(outcome: run?.outcome, typed: typed, final: final?.text) {
+        case .notPolished: result = .notPolished
+        case .identical: result = .identical
+        case .swap(let polished):
+            let budgetMs = Int((DictationPolish.budget(for: run?.model ?? polishModel) ?? 5) * 1000)
+            let swapped = await swapPolished(id: id, target: delivered.target, inserted: inserted, polished: polished, budgetMs: budgetMs, quiet: quiet)
+            result = swapped.result; route = swapped.route
+            swapMs = DictationStartMarks.ms(answered, ProcessInfo.processInfo.systemUptime)
+            if let target = delivered.target {
+                let watched = DictationPolishSwap.watch(span: target.span, typed: typed, polished: polished, result: result, swappedAt: swapped.target?.span.location)
+                watchTarget = DictationInsertTarget(element: target.element, span: watched.span, terminal: target.terminal, app: target.app, text: watched.text,
+                                                    setterWorked: target.setterWorked, bundle: target.bundle, chromium: target.chromium, electron: target.electron)
+            }
+            if result == .swapped, let model = run?.model {
+                // The dictation now reads what the field holds, and keeps what was heard (Fix a word, Heard, history).
+                recent = DictationHistory.polishing(id, to: polished, heard: heard, model: model.rawValue, in: recent); saveRecent()
+                if let watchTarget { rememberTarget(watchTarget, for: id) }
+                watchContext = delivered.context.map { DictationFieldContext.Applied(text: polished, fixes: final?.fixes ?? [], outside: $0.outside, terms: $0.terms) }
+            } else if DictationPolishSwap.keepsPolished(result), let model = run?.model, record(id) != nil {
+                pendingPolish[id] = DictationPendingPolish(text: polished, heard: heard, model: model)
+            }
+        }
+        quiet?.stop()
+        line?.settle(result, ms: swapMs, route: route)
+        if case .refused = delivered.outcome { recordTiming("copied", line: line) } else { recordTiming("typed", line: line) }
+        dictationLog.notice("swap outcome=\(result.logName, privacy: .public) route=\(route.map(DictationPolishSwap.routeName) ?? "-", privacy: .public) ms=\(swapMs ?? -1)")
+        // Learn from my edits starts once the swap settled, from what the field now holds, unless a newer dictation began.
+        if generation == attempt, inserted, let watchTarget {
+            editWatcher.start(watchTarget, mode: learnMode, context: watchContext) { [weak self] candidate in self?.editLearned(candidate, app: watchTarget.app) }
+        }
+        if let notice = DictationPolishSwap.notice(result), !busy {
+            let flash = DictationPill.flash(label: notice, confirmed: false)
+            pill = flash
+            flashTask?.cancel()
+            flashTask = Task {
+                try? await Task.sleep(for: .seconds(DictationQuickFix.offerSeconds))
+                if !Task.isCancelled, pill == flash { pill = .hidden; fixOfferID = nil }
+            }
+        }
+    }
+    /// Waits for a quiet moment, then the automatic replace (no activation; the focus rules inside). The edit and a
+    /// delivery never overlap.
+    private func swapPolished(id: UUID, target: DictationInsertTarget?, inserted: Bool, polished: String, budgetMs: Int,
+                              quiet: DictationFieldQuiet?) async -> (result: DictationPolishSwap.Result, route: DictationReplace.Route?, target: DictationInsertTarget?) {
+        var waited = 0
+        while true {
+            let running = target.flatMap { NSRunningApplication(processIdentifier: $0.span.pid) }.map { !$0.isTerminated } ?? false
+            // A key typed counts only while the target field has the keyboard ("typed in that field").
+            let sinceKey: Int? = target.map { DictationInsertion.holdsFocus($0.element, pid: $0.span.pid) } == true
+                ? Int((CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: .keyDown) * 1000).rounded()) : nil
+            let step = DictationPolishSwap.ready(inserted: inserted, measured: target != nil, enabled: enabled && !Task.isCancelled,
+                                                 terminal: target?.terminal ?? false, appRunning: running,
+                                                 busy: deliveryInFlight || listRoute == .fix(id), sinceFieldChangeMs: quiet?.sinceChangeMs,
+                                                 sinceKeyMs: sinceKey, waitedMs: waited, budgetMs: budgetMs)
+            if case .skip(let why) = step { return (.skipped(why), nil, nil) }
+            if step == .go { break }
+            try? await Task.sleep(for: .milliseconds(DictationPolishSwap.quietPollMilliseconds)); waited += DictationPolishSwap.quietPollMilliseconds
+        }
+        guard let target else { return (.skipped(.notTyped), nil, nil) }
+        swapEditing = true
+        defer { swapEditing = false }
+        let replaced = await DictationInsertion.replace(target, corrected: polished, restoreClipboard: restoreClipboard, automatic: true)
+        insertTargets[id] = replaced.target
+        switch replaced.result {
+        case .replaced: return (.swapped, replaced.route, replaced.target)
+        case .copied(let reason): return (.skipped(replaced.skip ?? DictationPolishSwap.skip(for: reason)), replaced.route, nil)
+        case .unverified: return (.skipped(.unverified), replaced.route, nil)
+        }
+    }
+    /// Apply polished (Activity, Dictation): the person asked, so this is Fix a word's own replace, which may bring the
+    /// app forward. Anything short of proof copies Claude's version and says why.
+    func applyPolished(_ id: UUID) {
+        guard let pending = pendingPolish[id], record(id) != nil else { return }
+        pendingPolish[id] = nil
+        // COS's own edit is never the person's: the watch on that field ends first.
+        editWatcher.stop("apply polished")
+        guard let target = insertTargets[id] else {
+            copy(pending.text); polishNote = (id, "Copied the polished version."); return
+        }
+        Task {
+            let replaced = await DictationInsertion.replace(target, corrected: pending.text, restoreClipboard: restoreClipboard)
+            insertTargets[id] = replaced.target
+            switch replaced.result {
+            case .replaced:
+                recent = DictationHistory.polishing(id, to: pending.text, heard: pending.heard, model: pending.model.rawValue, in: recent); saveRecent()
+                polishNote = (id, "Polished it in \(target.app).")
+            case .copied(let reason):
+                copy(pending.text); polishNote = (id, DictationReplace.copiedNote(reason, app: target.app))
+            case .unverified(let pasted):
+                copy(pending.text); polishNote = (id, DictationReplace.unverifiedNote(app: target.app, pasted: pasted))
+            }
         }
     }
     /// `code` (DictationFailReason) names the failed step on the timing line; `reason` is the card's words and never logged there.
@@ -2500,7 +2739,7 @@ enum DictationSpareBuild: Sendable {
     func cancel() {
         quiet.end()
         generation = UUID(); pendingAudio = nil; task?.cancel(); task = nil; timer?.cancel(); timer = nil
-        tailing = false; tailTask?.cancel(); tailTask = nil; releaseMark = nil; timing = nil
+        tailing = false; tailTask?.cancel(); tailTask = nil; releaseMark = nil; timing = nil; releasedAt = nil
         meterTask?.cancel(); meterTask = nil; flashTask?.cancel(); flashTask = nil
         _ = try? capture?.stop(); capture = nil; held = false; toggleHeld = false; holdPending = false
         holdTracker?.reset(); toggleTracker?.reset(); startMarks = nil; _ = heartbeat.finish(); placing?.cancel(); placing = nil
@@ -2782,6 +3021,8 @@ enum DictationSpareBuild: Sendable {
                     // replaced in the app; the insert target still describes what the field holds.
                     recent = DictationHistory.correcting(recordID, to: corrected, in: recent)
                     saveRecent()
+                    // 0.5.331: Claude's waiting version predates this fix; Apply polished would undo it.
+                    pendingPolish[recordID] = nil
                     fixNote = (dictionary.message.map { $0 + " " } ?? "Saved. ") + "This dictation now reads “\(written)”, and COS writes it that way from the next sentence."
                     // 0.5.313: offer the corrected dictation back where it went (or on the clipboard).
                     replaceOffer = DictationReplaceOffer(recordID: recordID, corrected: corrected, app: insertTargets[recordID]?.app)
@@ -2816,6 +3057,7 @@ enum DictationSpareBuild: Sendable {
         insertTargets[id] = target
         let keep = Set(([id] + recent.prefix(DictationHistory.petCount).map(\.id)))
         insertTargets = insertTargets.filter { keep.contains($0.key) }
+        pendingPolish = pendingPolish.filter { keep.contains($0.key) }
     }
     // MARK: Learn from my edits (0.5.318)
 
@@ -2967,6 +3209,11 @@ struct MacDictationSettings: View {
                 COSDropdown("AI polish", selection: $store.polishModel,
                             options: DictationPolishModel.allCases.map { COSDropdownOption($0, $0.title) })
                 Text(DictationPolish.settingNote(store.polishModel))
+                    .font(.caption2).foregroundStyle(.secondary)
+                // 0.5.331 paste first, polish in place: on by default; off is the order before 0.5.331.
+                Toggle("Paste right away, then polish in place", isOn: $store.pasteThenPolish).toggleStyle(COSSwitchStyle())
+                    .disabled(store.polishModel == .off)
+                Text(DictationPolishSwap.settingNote(store.polishModel))
                     .font(.caption2).foregroundStyle(.secondary)
                 Text("Any shortcut: a modifier plus a key, a function key, or one modifier key by itself such as Fn 🌐 or Right ⌘. Fn and single-key shortcuts use Accessibility. Finished text drops into the text box that has the cursor; with no text box it is copied, and the pet shows it with a Copy button. Some apps, such as terminals and Electron editors, get ⌘V; COS shows Pasted when it can't confirm, then puts your clipboard back. COS never presses Send or Return.")
                     .font(.caption2).foregroundStyle(.secondary)
@@ -3955,6 +4202,13 @@ struct DictationActivityPane: View {
                         Text(record.firstLine).font(COSType.body(11)).lineLimit(2)
                         Text(record.metaLine(time: record.createdAt.formatted(date: .omitted, time: .shortened)))
                             .font(COSType.mono(9, weight: .medium)).foregroundStyle(.secondary)
+                        // 0.5.331: Claude's version, when COS could not swap it in place.
+                        if store.pendingPolish[record.id] != nil {
+                            Button("Apply polished") { store.applyPolished(record.id) }.buttonStyle(COSTextButtonStyle())
+                        }
+                        if let note = store.polishNote, note.id == record.id {
+                            Text(note.text).font(COSType.body(11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                        }
                     }
                     .padding(.vertical, 5)
                     .frame(maxWidth: .infinity, alignment: .leading)

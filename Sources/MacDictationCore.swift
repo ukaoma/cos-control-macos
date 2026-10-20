@@ -138,6 +138,13 @@ struct DictationTiming: Codable, Equatable, Sendable {
     /// (com.apple.HIToolbox AppleFnUsageType, -1 when absent), when Fn is a dictation key.
     var reconcileSource: String? = nil
     var fnUsageType: Int? = nil
+    /// 0.5.331 paste first, polish in place (DictationPolishSwap): the release to the first text in the app, what became
+    /// of Claude's version (swapped, skipped:<reason>, off, identical, notPolished), how long from its answer to the swap
+    /// landing or being skipped, and the route the swap took (accessibility or paste).
+    var releaseToFirstTextMs: Int? = nil
+    var swapOutcome: String? = nil
+    var swapMs: Int? = nil
+    var swapRoute: String? = nil
     static let finalWindowMilliseconds = 250
     /// The release-side numbers from the captured PCM and the byte count at the release.
     static func measure(pcm: Data, releaseBytes: Int, tailMs: Int, releaseToClosedMs: Int, at: Date) -> DictationTiming {
@@ -999,6 +1006,12 @@ enum DictationHistory {
     static func correcting(_ id: UUID, to text: String, in list: [DictationRecord]) -> [DictationRecord] {
         list.map { $0.id == id ? DictationRecord(id: $0.id, text: text, createdAt: $0.createdAt, delivery: $0.delivery, engine: $0.engine, fallbackReason: $0.fallbackReason,
                                                  heard: $0.heard, polishModel: $0.polishModel) : $0 }
+    }
+    /// 0.5.331 paste first, polish in place: Claude's version replaced the typed text in the field, so the dictation reads
+    /// it, and keeps what was heard and the model, as a dictation polished before the paste does. Same id, time and place.
+    static func polishing(_ id: UUID, to text: String, heard: String, model: String, in list: [DictationRecord]) -> [DictationRecord] {
+        list.map { r in r.id == id ? DictationRecord(id: r.id, text: text, createdAt: r.createdAt, delivery: r.delivery, engine: r.engine, fallbackReason: r.fallbackReason,
+                                                     heard: heard, polishModel: model) : r }
     }
     /// A file that exists but does not read is moved aside to `<name>.corrupt-<UTC stamp>` before anything is saved
     /// over it, so a bad build can never silently erase someone's history. `writable` is false when it could not move.
@@ -2090,6 +2103,192 @@ enum DictationPolish {
     }
 }
 
+/// One AI polish: what it answered and its numbers for the timing line. 0.5.331: the caller writes them, since a
+/// paste-first dictation's line outlives the next press (which starts a line of its own).
+struct DictationPolishRun: Equatable, Sendable {
+    let outcome: DictationPolish.Outcome
+    let model: DictationPolishModel
+    var ms = 0
+    var prewarm: String? = nil
+    var prewarmMs: Int? = nil
+}
+
+extension DictationTiming {
+    /// The polish model, outcome word and milliseconds, and what became of the press's early process.
+    mutating func includePolish(_ run: DictationPolishRun?) {
+        guard let run else { return }
+        polishMs = run.ms; polishModel = run.model.rawValue; polishOutcome = run.outcome.logName
+        polishPrewarm = run.prewarm
+        if let ms = run.prewarmMs { prewarmMs = ms }
+    }
+    /// 0.5.331: what became of Claude's version, how long the swap took, and its route.
+    mutating func settle(_ result: DictationPolishSwap.Result, ms: Int?, route: DictationReplace.Route?) {
+        swapOutcome = result.logName; swapMs = ms; swapRoute = route.map(DictationPolishSwap.routeName)
+    }
+}
+
+// MARK: - Paste first, polish in place (0.5.331)
+//
+// Miles, 2026-10-20 07:49: "build paste-then-swap with those rules". Measured on his Mac (17 dictations that morning):
+// after the key release, the tail took 0.32 s, transcription about 0.85 s, AI polish 2.2 to 3.8 s even warm, the paste
+// 0.1 s. Polish was two thirds of the wait. Now the heard text is typed at once and Claude's version replaces it in the
+// same spot when it is ready, only where COS can prove the spot still holds exactly what it typed. The focus rules are
+// Miles's: the Accessibility route edits the field itself, wherever the person has gone, and puts their caret back; the
+// paste route swaps only where the person already is, and never brings an app forward. Anything short of proof leaves
+// the typed text alone and keeps Claude's version in Activity, Dictation, with Apply polished.
+
+/// The pure half of paste first, polish in place. The app measures, asks these and acts (DictationInsertion.replace with
+/// `automatic`, MacDictationStore.deliverThenPolish).
+enum DictationPolishSwap {
+    /// Settings, Dictation: "Paste right away, then polish in place", under AI polish. On unless turned off.
+    static let defaultsKey = "dictation.pasteThenPolish"
+    static func stored(_ value: Any?) -> Bool { (value as? Bool) ?? true }
+    /// The person typed in the field this recently: wait for a quiet moment, at most the polish budget.
+    static let quietMilliseconds = 600
+    static let quietPollMilliseconds = 100
+    /// A delivery waits at most this long for a swap that is editing a field right now.
+    static let deliveryWaitMilliseconds = 2_000
+    /// The pill's one line, only when a swap was skipped.
+    static let skippedNotice = "POLISHED VERSION IN ACTIVITY"
+
+    enum Sequence: String, Sendable {
+        /// Today's order (and the toggle off): polish, then one delivery.
+        case polishThenDeliver
+        /// Type what was heard now; polish in parallel; swap it in place.
+        case deliverThenPolish
+    }
+    /// Paste first only with the toggle on, a polish that will run, and a dictation that is typed (an interrupted one is
+    /// copied, never typed, so it is polished first as before).
+    static func sequence(pasteFirst: Bool, polishes: Bool, copyOnly: Bool) -> Sequence {
+        guard pasteFirst, polishes, !copyOnly else { return .polishThenDeliver }
+        return .deliverThenPolish
+    }
+
+    /// Why Claude's version was not swapped in. Codes only; they go on the timing line.
+    enum Skip: String, Sendable, CaseIterable {
+        case notTyped, terminal, appGone, fieldGone, textMoved, notFrontmost, ownWindowKey, notFocused, selectionUnproven,
+             noChange, typing, busy, unverified, dictationOff, copyOnly
+    }
+    enum Result: Equatable, Sendable {
+        case swapped, skipped(Skip), off, identical, notPolished
+        var logName: String {
+            switch self {
+            case .swapped: "swapped"
+            case .skipped(let why): "skipped:" + why.rawValue
+            case .off: "off"
+            case .identical: "identical"
+            case .notPolished: "notPolished"
+            }
+        }
+    }
+    /// A dictation that was polished before its one delivery: off (the toggle), copy-only, or not polished at all.
+    static func unswapped(pasteFirst: Bool, polished: Bool, copyOnly: Bool) -> Result {
+        guard polished else { return .notPolished }
+        if copyOnly, pasteFirst { return .skipped(.copyOnly) }
+        return .off
+    }
+
+    enum Want: Equatable, Sendable { case swap(String), identical, notPolished }
+    /// Only Claude's applied polish is swapped in: a failure, a timeout, a skip, the filler pass alone or no change
+    /// leaves what was typed. `final` is the polished text after lists and the field's spellings, as it would be typed.
+    static func want(outcome: DictationPolish.Outcome?, typed: String, final: String?) -> Want {
+        guard case .applied? = outcome, let final else { return .notPolished }
+        return final == typed ? .identical : .swap(final)
+    }
+    /// Claude's version as delivery would have typed it: spoken lists, then the field's own spellings (0.5.323), the
+    /// same rules and order as before the paste.
+    static func final(_ polished: String, formatLists: Bool, terms: [DictationFieldContext.Term],
+                      known: (String) -> Bool) -> (text: String, fixes: [DictationFieldContext.Fix]) {
+        let listed = formatLists ? DictationListFormat.format(polished) : polished
+        guard !terms.isEmpty else { return (listed, []) }
+        return DictationFieldContext.corrected(listed, terms: terms, known: known)
+    }
+
+    enum Step: Equatable, Sendable { case go, wait, skip(Skip) }
+    /// Before the swap, polled every `quietPollMilliseconds`. Nothing to swap where nothing was measured as typed, in a
+    /// terminal, or once the app is gone. A field the person typed in under 600 ms ago (its measured count or caret
+    /// moved, or a key went down while it had the keyboard), or a newer delivery or Fix a word on this dictation, waits
+    /// for a quiet moment, at most `budgetMs`, then skips.
+    static func ready(inserted: Bool, measured: Bool, enabled: Bool, terminal: Bool, appRunning: Bool, busy: Bool,
+                      sinceFieldChangeMs: Int?, sinceKeyMs: Int?, waitedMs: Int, budgetMs: Int) -> Step {
+        guard inserted, measured else { return .skip(.notTyped) }
+        guard enabled else { return .skip(.dictationOff) }
+        if terminal { return .skip(.terminal) }
+        guard appRunning else { return .skip(.appGone) }
+        let typing = (sinceFieldChangeMs.map { $0 < quietMilliseconds } ?? false) || (sinceKeyMs.map { $0 < quietMilliseconds } ?? false)
+        if !typing, !busy { return .go }
+        if waitedMs >= budgetMs { return .skip(busy ? .busy : .typing) }
+        return .wait
+    }
+    /// Replace's plan, read for an automatic swap: only the whole dictation, exactly where COS typed it or found once
+    /// within the window (text typed above it moved it). Only the misheard words found means the person edited it: skip.
+    static func placed(_ plan: DictationReplace.Plan) -> Skip? {
+        switch plan {
+        case .edit(_, dictationAt: .some): nil
+        case .edit(_, dictationAt: nil): .textMoved
+        case .copy(let reason): skip(for: reason)
+        }
+    }
+    static func skip(for reason: DictationReplace.Reason) -> Skip {
+        switch reason {
+        case .notMeasured: .notTyped
+        case .terminal: .terminal
+        case .appGone: .appGone
+        case .fieldGone: .fieldGone
+        case .textMoved: .textMoved
+        case .notFocused: .notFocused
+        case .selectionUnproven: .selectionUnproven
+        case .noChange: .noChange
+        }
+    }
+    /// The focus rules at swap time. The Accessibility route edits the original element itself, so it may swap while
+    /// the person is in another field or app. The paste route (⌘V lands wherever the keyboard is) swaps only when the
+    /// target app is ALREADY frontmost, no COS window holds the keyboard, and the focused element is the target.
+    static func gate(route: DictationReplace.Route, frontmost: Bool, focusedIsTarget: Bool, ownWindowKey: Bool) -> Skip? {
+        guard route == .paste else { return nil }
+        if !frontmost { return .notFrontmost }
+        if ownWindowKey { return .ownWindowKey }
+        if !focusedIsTarget { return .notFocused }
+        return nil
+    }
+    /// An automatic swap never activates an app, never moves a COS window and never moves the person's focus. Fix a word
+    /// and Apply polished, which the person asked for, may.
+    static func mayActivate(automatic: Bool) -> Bool { !automatic }
+    /// Where the person's caret or selection goes after the edit: unchanged before it, shifted by the length change
+    /// after it (the usual case: the caret at the end of the dictation), else just after the new words.
+    static func shifted(location: Int, length: Int, edit: DictationReplace.Edit) -> (location: Int, length: Int) {
+        let end = edit.location + edit.length, newLength = edit.replacement.utf16.count
+        if location >= end { return (location + newLength - edit.length, length) }
+        if location + length <= edit.location { return (location, length) }
+        return (edit.location + newLength, 0)
+    }
+    /// What Learn from my edits watches once the swap settles: the polished text where it landed after a swap (so COS's
+    /// own swap is never read as the person's edit), else what was typed where it was typed.
+    static func watch(span: DictationInsertedSpan, typed: String, polished: String, result: Result, swappedAt: Int?) -> (span: DictationInsertedSpan, text: String) {
+        guard result == .swapped, let at = swappedAt else { return (span, typed) }
+        return (DictationInsertedSpan(pid: span.pid, location: at, length: polished.utf16.count), polished)
+    }
+    /// Claude's version waits in Activity, Dictation (Apply polished) after any skip of a typed dictation.
+    static func keepsPolished(_ result: Result) -> Bool {
+        guard case .skipped(let why) = result else { return false }
+        return why != .copyOnly
+    }
+    /// The pill says one short line only when a skip happened; nothing when the swap succeeds or there was nothing to do.
+    static func notice(_ result: Result) -> String? { keepsPolished(result) ? skippedNotice : nil }
+    static func routeName(_ route: DictationReplace.Route) -> String { route == .accessibility ? "accessibility" : "paste" }
+    static func settingNote(_ model: DictationPolishModel) -> String {
+        model == .off ? "Works with AI polish on."
+            : "COS types what it heard right away. When Claude's version is ready, COS swaps it in at the same spot. If you moved on or changed the text, COS leaves it and keeps the polished version in Activity, Dictation."
+    }
+}
+
+/// Claude's version of a dictation whose swap was skipped, for Apply polished. Memory only.
+struct DictationPendingPolish: Equatable, Sendable {
+    let text: String
+    let heard: String
+    let model: DictationPolishModel
+}
+
 /// After COS types a dictation, it watches that one field until focus leaves it (three minutes at most) and learns a
 /// word or two the person changed into something that sounds like it ("joule 360" → "Jewel360"). Pure, so every rule is
 /// tested and mutated; the app measures, calls these and acts.
@@ -2477,6 +2676,8 @@ enum DictationFieldContext {
         let text: String
         let fixes: [Fix]
         let outside: [String]
+        /// 0.5.331: the field's terms that respelled it, so AI polish's version (swapped in later) is respelled the same way.
+        var terms: [Term] = []
     }
     /// The dictation with words the field already spells differently fixed. One to three words that score at the Fix a
     /// word threshold against a field term become that term, best match first, never overlapping, never across a line

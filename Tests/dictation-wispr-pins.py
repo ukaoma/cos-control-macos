@@ -170,7 +170,7 @@ copy_only = body(dictation, "    static func copyOnly(_ text: String, clipboardM
 need("writeTranscript(text, markerTypes: [])" in copy_only and ".refused(wrote ? .interrupted : .clipboardFailed)" in copy_only
      and "AXUIElement" not in copy_only and "postPaste" not in copy_only and "CGEvent" not in copy_only,
      "copy-only writes a durable clipboard item and never types or pastes")
-finish = body(dictation, "private func finish(_ text: String, outcome: DictationDeliveryOutcome, target: DictationInsertTarget?, context: DictationFieldContext.Applied? = nil) {")
+finish = body(dictation, "private func finish(_ text: String, outcome: DictationDeliveryOutcome, target: DictationInsertTarget?, context: DictationFieldContext.Applied? = nil,\n                        swapPending: Bool = false) -> UUID {")
 need("remember(record)" in finish and "showCard(" in finish and "DictationPill.flashSeconds" in finish
      and "delivery: outcome.delivery" in finish and "outcome.flash" in finish,
      "finish must record the honest outcome, flash only what the outcome allows, and card when refused")
@@ -494,7 +494,7 @@ need('forKey: "dictation.quiet") ?? "") ?? .default' in dictation and "Dictation
 media = ("NX_KEYTYPE", "systemDefined", "MRMediaRemote", "MediaRemote.framework", "MPRemoteCommand", "keyCode: 16, keyDown")
 need(not any(m in src for src in sources.values() for m in media),
      "no media key and no MediaRemote: a blind play/pause can START playback (0.5.313 finding)")
-replace = body(dictation, "    static func replace(_ target: DictationInsertTarget, corrected: String, restoreClipboard: Bool) async -> Replaced {")
+replace = body(dictation, "    static func replace(_ target: DictationInsertTarget, corrected: String, restoreClipboard: Bool, automatic: Bool = false) async -> Replaced {")
 need("CGEvent" not in replace and ".post(" not in replace and "kAXValueAttribute" not in replace,
      "Replace posts no key of its own (only paste's ⌘V, below) and never reads the field's whole value")
 need("DictationReplace.plan(" in replace and "DictationReplace.route(setterWorked: target.setterWorked)" in replace
@@ -645,7 +645,10 @@ facts_lines = [line for line in read_ctx.splitlines() if "facts +=" in line]
 need(len(facts_lines) == 4 and not any(bad in line for line in facts_lines for bad in ("read.before", "read.after", "result.text", "dictation", "\\(terms)", "terms.map", "fixes)"))
      and "dictationLog" not in read_ctx and "FileManager" not in read_ctx and "UserDefaults" not in read_ctx and "request(" not in read_ctx,
      "the read logs counts only and writes nothing: the field's text stays in memory")
-need(dictation.count("DictationFieldContext.Applied(") == 1 and dictation.count("context?.outside") == 1 and dictation.count("context?.fixes") == 1,
+# 0.5.331: the second Applied is the paste-first swap's: the same outside text, handed only to the watch that follows it.
+need(dictation.count("DictationFieldContext.Applied(") == 2 and dictation.count("context?.outside") == 1 and dictation.count("context?.fixes") == 1
+     and dictation.count("watchContext = delivered.context.map { DictationFieldContext.Applied(text: polished, fixes: final?.fixes ?? [], outside: $0.outside, terms: $0.terms) }") == 1
+     and dictation.count("editWatcher.start(watchTarget, mode: learnMode, context: watchContext)") == 1,
      "the field's text reaches only the watch that follows")
 need('forKey: "dictation.fieldContext") as? Bool ?? true' in dictation
      and 'Toggle("Spell words the way the text box has them", isOn: $store.useFieldContext)' in dictation

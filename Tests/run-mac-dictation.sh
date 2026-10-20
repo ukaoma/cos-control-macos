@@ -58,6 +58,9 @@ print "PASS Mac dictation isolation pins: audio callbacks @Sendable, callback si
 /usr/bin/python3 "$ROOT/Tests/dictation-wispr-pins.py" "$ROOT"
 # 0.5.325 AI polish: where DictationPolish and DictationPolishBridge are wired (text only; the rules run in the checks above).
 /usr/bin/python3 "$ROOT/Tests/dictation-polish-pins.py" "$ROOT"
+# 0.5.331 paste first, polish in place: the toggle, never activating, the focus gate, the deferred watch and the timing
+# fields, at their call sites (the rules run in MacDictationChecks above), with in-memory mutants that must fail.
+/usr/bin/python3 "$ROOT/Tests/dictation-swap-pins.py" "$ROOT"
 # 0.5.326 release tail: where DictationReleaseTail and DictationTiming are wired (the rules run in MacDictationChecks).
 /usr/bin/python3 "$ROOT/Tests/dictation-tail-pins.py" "$ROOT"
 # 0.5.327 truthful start: STARTING until the first buffer, then LISTENING, the sound and the mute; no microphone list on

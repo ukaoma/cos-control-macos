@@ -86,11 +86,11 @@ pin(conv.count("lock.lock(); defer { lock.unlock() }") == 2 and "guard !finished
     "finish and consume never overlap, and a late buffer after the drain is ignored")
 
 # 5. One timing line per dictation, numbers only, in the log and the private JSONL file.
-rec = body(d, "    private func recordTiming(_ outcome: String) {")
+rec = body(d, "    private func recordTiming(_ outcome: String, line: DictationTiming? = nil) {")
 logs = [l for l in rec.split("\n") if "dictationLog" in l]
 pin(len(logs) == 1 and not re.search(r"\\\((text|heard|said|pcm|wav|response)\b", logs[0]), "no text", "the timing log line carries numbers only")
-pin("timing?.polishMs = elapsed; timing?.polishModel = model.rawValue; timing?.polishOutcome = outcome.logName"
-    in body(d, "    private func polish(_ heard: String) async -> (outcome: DictationPolish.Outcome, model: DictationPolishModel)? {"),
+pin("polishMs = run.ms; polishModel = run.model.rawValue; polishOutcome = run.outcome.logName" in code(read("Sources/MacDictationCore.swift"))
+    and "return DictationPolishRun(outcome: outcome, model: model, ms: elapsed," in body(d, "    private func polish(_ heard: String, attempt: UUID, showPill: Bool = true) async -> DictationPolishRun? {"),
     "polish timing", "the timing line records the polish model, outcome word and milliseconds")
 pin("DictationTimingLog.append(finished, to: url)" in rec and "DictationTimingLog.fileName" in rec
     and "defaultHistoryURL()?.deletingLastPathComponent()" in rec, "file", "the JSONL lives beside the dictation history (a test home in checks)")
