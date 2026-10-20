@@ -532,7 +532,7 @@ MUTANTS = [
     ("swap: a caret after the span not shifted", "        if location >= end { return (location + newLength - edit.length, length) }", "        if location >= end { return (location, length) }"),
     ("swap: a caret before the span moved", "        if location + length <= edit.location { return (location, length) }\n", ""),
     ("swap: a caret inside lands at the start", "        return (edit.location + newLength, 0)\n    }", "        return (edit.location, 0)\n    }"),
-    ("swap: the learner keeps the typed baseline", "        guard result == .swapped, let at = swappedAt else { return (span, typed) }", "        return (span, typed)"),
+    ("swap: the learner keeps the typed baseline", "        guard result == .swapped, let at = swappedAt else { return (span, typed) }", "        guard result == .notPolished, let at = swappedAt else { return (span, typed) }"),
     ("swap: the learner watches the polish after a skip", "        guard result == .swapped, let at = swappedAt else { return (span, typed) }", "        guard let at = swappedAt else { return (span, typed) }"),
     ("swap: the swapped span keeps the typed length", "        return (DictationInsertedSpan(pid: span.pid, location: at, length: polished.utf16.count), polished)",
      "        return (DictationInsertedSpan(pid: span.pid, location: at, length: typed.utf16.count), polished)"),
