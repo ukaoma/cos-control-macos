@@ -5,7 +5,7 @@ Runs the unmutated lanes first and refuses on any failure (a red baseline would 
 match its target EXACTLY ONCE, and is killed only when its lane fails with a named check ("... FAILED: ..."); a compile
 failure or any other exit is an infrastructure error, not a kill. Compiles go through the lane, so through
 Tests/compile-guard.sh, one at a time, never in parallel.
-Usage: python3 Tests/mutate-key-lanes.py [--lane pins|models|core|onerow|helper]
+Usage: python3 Tests/mutate-key-lanes.py [--lane pins|models|core|onerow|helper] [--only C9,P15,...]
 """
 import os
 import subprocess
@@ -133,8 +133,11 @@ def run(lane):
 
 
 only = sys.argv[sys.argv.index("--lane") + 1] if "--lane" in sys.argv else None
-lanes = [lane for lane in ("pins", "models", "core", "onerow", "helper") if only in (None, lane)]
-mutants = [m for m in MUTANTS if m[1] in lanes]
+# --only C9,P15: just these mutants (by their leading id), and only their lanes' baselines.
+picked = sys.argv[sys.argv.index("--only") + 1].split(",") if "--only" in sys.argv else None
+mutants = [m for m in MUTANTS if picked is None or m[0].split(" ")[0] in picked]
+lanes = [lane for lane in ("pins", "models", "core", "onerow", "helper") if only in (None, lane) and any(m[1] == lane for m in mutants)]
+mutants = [m for m in mutants if m[1] in lanes]
 for lane in lanes:
     base = run(lane)
     if base.returncode != 0:
