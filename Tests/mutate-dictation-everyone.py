@@ -93,7 +93,8 @@ MUTANTS = [
     ("no speech offers an action", MDC, "        if noSpeech { return .none }\n        let asked", "        let asked", "no speech offers nothing", "dictation"),
     ("engine not saved", MDC, "        try c.encodeIfPresent(engine, forKey: .engine); try c.encodeIfPresent(fallbackReason, forKey: .fallbackReason)\n", "",
      "the engine is saved with the dictation", "dictation"),
-    ("Fix a word drops the engine", MDC, "delivery: $0.delivery, engine: $0.engine, fallbackReason: $0.fallbackReason) : $0 }", "delivery: $0.delivery) : $0 }",
+    # Retargeted 0.5.329: 0.5.325 added heard and polishModel after fallbackReason, so the old target landed 0 times.
+    ("Fix a word drops the engine", MDC, "delivery: $0.delivery, engine: $0.engine, fallbackReason: $0.fallbackReason,\n", "delivery: $0.delivery,\n",
      "Fix a word keeps the engine", "dictation"),
     # Wiring (source pins).
     ("app requires Parakeet again", MD, '                      let engine = response.details["engine"]?.string, DictationEngineName.title(engine) != nil else {',
