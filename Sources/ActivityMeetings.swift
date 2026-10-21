@@ -10,6 +10,8 @@ struct MeetingLibraryBody: View {
     let onOpen: (LibraryMeeting) -> Void
     @State private var confirmRecoverAllOrphans = false
     @State private var confirmSaveAllStranded = false
+    /// 0.5.334: the stranded Mac capture (no speech) the inline Discard confirmation is for.
+    @State private var discardStrandedTarget: String?
     @AppStorage(LiveTranscript.enabledKey) private var showLiveTranscript = true
 
     var body: some View {
@@ -103,9 +105,16 @@ struct MeetingLibraryBody: View {
                         .foregroundStyle(.tertiary)
                         .lineLimit(1)
                     Spacer()
-                    Button("Save") { model.saveStranded(capture.sessionId) }
-                        .controlSize(.small)
-                        .disabled(model.busy || model.orphanBusy)
+                    // 0.5.334: Save can never work for a Mac capture the server found no speech in; Discard can.
+                    if MacRecordingDiscard.strandedOffersDiscard(sessionId: capture.sessionId, transcriptState: capture.transcriptState, canSave: capture.canSave) {
+                        Button(MacRecordingDiscard.buttonTitle) { discardStrandedTarget = capture.sessionId }
+                            .controlSize(.small)
+                            .disabled(model.busy || model.orphanBusy)
+                    } else {
+                        Button("Save") { model.saveStranded(capture.sessionId) }
+                            .controlSize(.small)
+                            .disabled(model.busy || model.orphanBusy)
+                    }
                 }
             }
             if model.strandedCaptures.count > 1 {
@@ -120,6 +129,21 @@ struct MeetingLibraryBody: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(COSPalette.amber.opacity(0.08))
         .overlay(alignment: .bottom) { Divider() }
+        .cosConfirm(MacRecordingDiscard.confirmTitle, isPresented: Binding(get: { discardStrandedTarget != nil }, set: { if !$0 { discardStrandedTarget = nil } }),
+                    message: MacRecordingDiscard.confirmLine, actions: discardStrandedActions)
+    }
+
+    /// cosConfirm dismisses BEFORE it runs the action, and dismissal nils `discardStrandedTarget`, so the action closes
+    /// over the id captured while the confirmation is on screen and never reads the state itself.
+    private var discardStrandedActions: [COSConfirmAction] {
+        let pending = discardStrandedTarget
+        return [
+            .destructive(MacRecordingDiscard.confirmButton) {
+                guard let pending else { return }
+                model.discardStrandedMac(pending)
+            },
+            .cancel { },
+        ]
     }
 
     private var toolbar: some View {
@@ -2295,7 +2319,12 @@ struct LiveTranscriptPane: View {
                 }
             }
             .font(COSType.body(11.5))
-            if let feed, feed.ended { handoffLine(feed) }
+            if let feed, feed.ended {
+                // 0.5.334: a Mac capture with no sound has no meeting to find; say so instead of looking for one.
+                if MacRecordingNoMeeting.endsHandoff(sessionId: feed.sessionId, noMeeting: model.macRecording.noMeetingCaptureIDs) {
+                    Text(MacRecordingNoMeeting.line).font(COSType.body(11.5)).foregroundStyle(.secondary)
+                } else { handoffLine(feed) }
+            }
             if let session = model.liveTranscriptOpenID, let files = model.workHandoffStore?.meetingFiles {
                 DisclosureGroup("Files shared in this meeting", isExpanded: $filesExpanded) {
                     MeetingFilesSection(files: files, keys: [LibraryMeeting.captureContextKey(session)], supported: true, ambiguous: false, reason: "",

@@ -78,7 +78,11 @@ need(start.split("\n")[1].strip() == "guard noticeAcknowledged else { return }",
 starts = [(name, m.start()) for name, src in sources.items() for m in re.finditer(r"(?:store|macRecording|\bself)\.start\(\)|await start\(\)", src)]
 need(len(starts) == 1, f"Mac recording starts from exactly one place, record(), found {starts}")
 records = [(name, m.group(0)) for name, src in sources.items() for m in re.finditer(r"(?:store\.|await )record\(title:", src)]
-need(len(records) == 2, f"record() is reached from Meetings' Record and the card only, found {records}")
+# 0.5.334: plus Try again after "COS Control can't hear your Mac's audio", the one other door, which records All Mac audio.
+again = body(recording, "    func tryAgainAfterCannotHear(bridge: @escaping Bridge) async -> String? {")
+need(len(re.findall(r"await record\(title:", again)) == 1 and "sourceID: MacAudioSource.allMacAudioID" in again,
+     "Try again records All Mac audio through record(), once")
+need(len(records) == 3, f"record() is reached from Meetings' Record, the card and Try again only, found {records}")
 need(sum(src.count("startFromMeetingSuggestion(") for src in sources.values()) == 2
      and "model.macRecording.startFromMeetingSuggestion(title: MeetingDetectedCard.title(source, at: Date()), bridge: model.macRecordingBridge)" in app,
      "the card's start is called only from the meeting card's record closure")

@@ -69,12 +69,40 @@ final class MacRecordingStore: ObservableObject {
     @Published private(set) var heardSound = false
     /// 0.5.310: the last delivery attempt stopped on an error; cleared when delivery runs again.
     @Published private(set) var deliveryPaused = false
+    /// 0.5.334: can COS hear this Mac (MacRecordingHearing): the probe's warning and the fail-fast's count.
+    @Published private(set) var hearing = MacRecordingHearing.State()
+    /// 0.5.334: the last capture stopped because it heard only exact zeros: the panel shows the message, Open System
+    /// Settings and Try again until the next recording starts.
+    @Published private(set) var cannotHear = false
+    /// 0.5.334: Mac captures that will never have a meeting (no speech, discarded). The live hand-off ends for these
+    /// instead of "Saved meeting not found yet" (MacRecordingNoMeeting).
+    @Published private(set) var noMeetingCaptureIDs: Set<String> = []
+    /// 0.5.334: the server advertises POST /api/meeting/sessions/:id/discard (capabilities `discard: true`, 6.83.2).
+    @Published private(set) var serverDiscard = false
+    /// The title the fail-fast capture had, for Try again.
+    private var cannotHearTitle: String?
+    private var failFast = false
     /// Only while recording (Miles 2026-10-15: "No sound… for 24s" stayed on the live pane and this panel after the capture
     /// stopped and saved). Once stopped, a silent capture is reported by the save (noSpeech), not by this live check.
     var signalWarning: String? {
         guard isRecording else { return nil }
+        if let line = MacRecordingHearing.line(hearing, recording: isRecording) { return line }
         return MacRecordingSignal.warning(silentChunks: silentChunks, source: manifest?.sourceName ?? "the selected source")
     }
+    /// 0.5.334: Discard is offered for a stopped capture the server called no speech or that is exact zeros here.
+    var canDiscard: Bool {
+        MacRecordingDiscard.offered(noSpeech: noSpeech, allZero: manifest?.allDigitalSilence == true, pending: phase == "pending",
+                                    stopped: manifest?.stopped == true, delivering: deliveryTask != nil)
+    }
+    /// "Retry saving retained audio" only where a retry can work.
+    var canRetrySave: Bool {
+        MacRecordingDiscard.retryOffered(noSpeech: noSpeech, allZero: manifest?.allDigitalSilence == true, pending: phase == "pending",
+                                         hasChunks: manifest?.chunks.isEmpty == false)
+    }
+    /// 0.5.334: the pane the panel's Open System Settings shows (ControllerModel.requestSystemAudio with the pane).
+    var openSystemAudioSettings: (@MainActor () async -> Void)?
+    /// A capture was discarded (Meetings re-reads its stranded list).
+    var discarded: ((String) -> Void)?
     var isRecording: Bool { phase == "recording" }
     /// 0.5.320: prepareToQuit (stop) has work to do only in these phases; any other phase quits at once.
     var needsQuitTeardown: Bool { ["starting", "recording", "stopping"].contains(phase) }
@@ -117,6 +145,7 @@ final class MacRecordingStore: ObservableObject {
                         throw MacRecordingError.unavailable("Manual Mac recording needs the matched server candidate. Your current recording settings have not changed.")
                     }
                     instance = id; available = true
+                    serverDiscard = result["discard"]?.bool == true
                     sources = [.allMacAudio] + (try await Task.detached(priority: .utility) { try MacAudioCapture.sources() }.value)
                     if !sources.contains(where: { $0.id == selectedID }) { selectedID = MacAudioSource.allMacAudioID }
                 } else { throw MacRecordingError.unavailable("Manual system audio recording requires macOS 14.2 or later.") }
@@ -188,6 +217,7 @@ final class MacRecordingStore: ObservableObject {
             guard noticeAcknowledged, canStart, available else { return }
         }
         phase = "starting"; error = nil; noSpeech = false; captureInterruption = nil; silentChunks = 0; heardSound = false; deliveryPaused = false
+        hearing = MacRecordingHearing.State(); cannotHear = false; failFast = false; cannotHearTitle = nil
         let attempt = UUID(); startAttempt = attempt
         installStopObservers()
         var localCapture: MacAudioCapture?
@@ -222,6 +252,10 @@ final class MacRecordingStore: ObservableObject {
                             let count = self.silentChunks, source = self.manifest?.sourceName ?? "?"
                             recordingLog.warning("silent capture: \(count) chunks below the peak floor from \(source, privacy: .public)")
                         }
+                        // 0.5.334: exact zeros from All Mac audio while another app plays is macOS not letting COS record.
+                        if await self.hearingCheck(chunk, allMacAudio: source.isAllMacAudio) == .cannotHear {
+                            Task { await self.stopCannotHear(id) }; break
+                        }
                         self.deliverPending()
                     }
                     catch {
@@ -239,6 +273,8 @@ final class MacRecordingStore: ObservableObject {
                     recordingLog.error("capture failed: \(reason, privacy: .public)")
                     self?.captureInterruption = reason; await self?.stop()
                 }
+            }, probe: { [weak self] sawSignal in
+                Task { @MainActor in await self?.hearingProbe(sawSignal, captureId: id, allMacAudio: source.isAllMacAudio) }
             })
             localCapture = engine; capture = engine
             try await engine.start(source: source)
@@ -306,7 +342,128 @@ final class MacRecordingStore: ObservableObject {
         message = manifest?.chunks.isEmpty == true ? "Capture stopped before any audio was stored. There is nothing to save."
             : "Capture stopped. Audio stays on this Mac until its saved-meeting receipt is verified."
         if let reason = captureInterruption { stoppedOnItsOwn?(reason) }
-        deliverPending()
+        // 0.5.334: exact zeros are discarded (stopCannotHear), never delivered.
+        if !failFast { deliverPending() }
+    }
+
+    // MARK: Can COS hear this Mac? (0.5.334)
+
+    /// One stored chunk through MacRecordingHearing. Reads whether another app is playing only when it can matter.
+    private func hearingCheck(_ chunk: MacRecordingChunk, allMacAudio: Bool) async -> MacRecordingHearing.Verdict {
+        let silence = chunk.digitalSilence
+        var playing: Bool? = true
+        if silence, allMacAudio, !hearing.heardSignal {
+            if #available(macOS 14.2, *) { playing = await Task.detached(priority: .utility) { MacAudioCapture.othersPlaying() }.value }
+        }
+        var next = hearing
+        let verdict = MacRecordingHearing.step(&next, digitalSilence: silence, othersPlaying: playing, allMacAudio: allMacAudio)
+        if next != hearing { hearing = next }
+        if silence, allMacAudio, !next.heardSignal {
+            recordingLog.warning("hearing: chunk \(chunk.index) exact zeros playing=\(playing.map { $0 ? "yes" : "no" } ?? "unknown", privacy: .public) count=\(next.zeroChunksWhilePlaying)")
+        }
+        return verdict
+    }
+    /// The ~1 s probe through the same tap: sets the warning only; the fail-fast decides.
+    private func hearingProbe(_ sawSignal: Bool, captureId: String, allMacAudio: Bool) async {
+        guard manifest?.captureId == captureId, ["starting", "recording"].contains(phase) else { return }
+        var playing: Bool? = true
+        if !sawSignal, allMacAudio {
+            if #available(macOS 14.2, *) { playing = await Task.detached(priority: .utility) { MacAudioCapture.othersPlaying() }.value }
+        }
+        guard manifest?.captureId == captureId else { return }
+        var next = hearing
+        MacRecordingHearing.probe(&next, sawSignal: sawSignal, othersPlaying: playing, allMacAudio: allMacAudio)
+        if next != hearing { hearing = next }
+        recordingLog.notice("hearing probe: signal=\(sawSignal) playing=\(playing.map { $0 ? "yes" : "no" } ?? "unknown", privacy: .public) suspect=\(next.suspect)")
+    }
+    /// The fail-fast: stop, keep nothing pending (the zero audio moves to the discarded folder, the server is asked to let
+    /// its side go) and show the one message with Open System Settings and Try again.
+    private func stopCannotHear(_ id: String) async {
+        guard manifest?.captureId == id, ["starting", "recording"].contains(phase) else { return }
+        recordingLog.error("cannot hear: exact zeros from All Mac audio while another app played; stopping and discarding")
+        failFast = true
+        cannotHearTitle = manifest?.title
+        captureInterruption = MacRecordingHearing.cannotHearMessage
+        await stop()
+        await discardNoSound(cannotHear: true)
+    }
+    /// Try again after the fail-fast: a fresh capture of All Mac audio with the same title.
+    func tryAgainAfterCannotHear(bridge: @escaping Bridge) async -> String? {
+        let again = cannotHearTitle ?? MacRecordingNotice.autoTitle(meetingApp: nil, at: Date())
+        cannotHear = false
+        return await record(title: again, sourceID: MacAudioSource.allMacAudioID, bridge: bridge)
+    }
+
+    // MARK: Discard a capture with no sound (0.5.334)
+
+    private var discarder: MacRecordingDiscarder {
+        MacRecordingDiscarder(spool: spool, server: { [weak self] captureId, serverInstanceId in
+            await self?.askServerDiscard(captureId: captureId, serverInstanceId: serverInstanceId) ?? .unreachable
+        })
+    }
+    @MainActor private func askServerDiscard(captureId: String, serverInstanceId: String) async -> MacRecordingDiscard.Server {
+        guard let bridge else { return .unreachable }
+        do {
+            let response = try await bridge("discard", ["captureId": .string(captureId), "serverInstanceId": .string(serverInstanceId), "confirm": .bool(true)])
+            return MacRecordingDiscard.serverAnswer(ok: response.ok, httpStatus: response.details["httpStatus"]?.int, reason: response.details["reason"]?.string,
+                                                    discarded: response.details["discarded"]?.bool, replayed: response.details["replayed"]?.bool)
+        } catch { return .unreachable }
+    }
+    /// A not-yet-idle server is asked again past its idle window, a bounded number of times, while Control runs.
+    private func retryServerDiscard(captureId: String, serverInstanceId: String, left: Int) {
+        guard left > 0 else { return }
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(MacRecordingDiscard.retryAfterSeconds))
+            guard let self else { return }
+            let answer = await self.askServerDiscard(captureId: captureId, serverInstanceId: serverInstanceId)
+            recordingLog.notice("discard retry: server=\(String(describing: answer), privacy: .public)")
+            if answer == .notIdle { self.retryServerDiscard(captureId: captureId, serverInstanceId: serverInstanceId, left: left - 1) }
+            else { self.discarded?(captureId) }
+        }
+    }
+    /// Discard (no sound was captured), after the panel's confirm, and the fail-fast. Never removes a file.
+    func discardNoSound(cannotHear failFastStop: Bool = false) async {
+        guard let value = manifest, phase == "pending", value.stopped, !value.saved,
+              failFastStop || canDiscard || value.chunks.isEmpty else { return }
+        phase = "discarding"
+        deliveryWake = false
+        if let delivering = deliveryTask { delivering.cancel(); await delivering.value }
+        let outcome = await discarder.discard(captureId: value.captureId, serverInstanceId: value.serverInstanceId, serverSupported: serverDiscard)
+        recordingLog.notice("discard: moved=\(outcome.moved != nil) server=\(String(describing: outcome.server), privacy: .public) chunks=\(value.chunks.count)")
+        if let localError = outcome.localError {
+            recordingLog.error("discard failed: \(localError, privacy: .public)")
+            phase = "pending"; error = outcome.line; return
+        }
+        noMeetingCaptureIDs.insert(value.captureId)
+        manifest = nil; noSpeech = false; deliveryPaused = false; silentChunks = 0; error = nil
+        selectedID = MacAudioSource.allMacAudioID
+        if failFastStop { cannotHear = true }
+        phase = "idle"
+        message = failFastStop ? MacRecordingHearing.cannotHearMessage : outcome.line
+        recoverable = (try? await spool.recoverable()) ?? recoverable
+        if outcome.server == .notIdle { retryServerDiscard(captureId: value.captureId, serverInstanceId: value.serverInstanceId, left: MacRecordingDiscard.retries) }
+        discarded?(value.captureId)
+    }
+    /// A stranded Mac row on Meetings (the server says no speech): its local copy, if this Mac has it, and the server's.
+    func discardStranded(_ sessionId: String, bridge passed: Bridge? = nil) async -> String {
+        if let passed, bridge == nil { bridge = passed }
+        if manifest?.captureId == sessionId {
+            guard canDiscard else { return "This Mac recording is still being delivered. Discard it once it stops." }
+            await discardNoSound(); return error ?? message
+        }
+        if !available || instance == nil, let bridge { await prepare(bridge: bridge) }
+        let retained = try? await spool.recoverable()
+        let local = retained?.first { $0.captureId == sessionId }
+        guard let pin = local?.serverInstanceId ?? instance else { return "COS couldn't reach its recording helper. Try again in a moment." }
+        let outcome = await discarder.discard(captureId: sessionId, serverInstanceId: pin, serverSupported: serverDiscard, localPresent: local != nil)
+        recordingLog.notice("discard stranded: local=\(local != nil) server=\(String(describing: outcome.server), privacy: .public)")
+        if outcome.localError == nil {
+            noMeetingCaptureIDs.insert(sessionId)
+            recoverable = (try? await spool.recoverable()) ?? recoverable
+            if outcome.server == .notIdle { retryServerDiscard(captureId: sessionId, serverInstanceId: pin, left: MacRecordingDiscard.retries) }
+            discarded?(sessionId)
+        }
+        return outcome.line
     }
     /// 0.5.313: Record on the pet's meeting card. Always All Mac audio, the proven source, never a per-app tap.
     func startFromMeetingSuggestion(title meetingTitle: String, bridge: @escaping Bridge) async -> String? {
@@ -371,6 +528,7 @@ final class MacRecordingStore: ObservableObject {
         }
     }
     func deliverPending() {
+        guard phase != "discarding" else { return }
         if deliveryTask != nil { deliveryWake = true; return }
         guard let id = manifest?.captureId else { return }
         deliveryWake = false
@@ -416,7 +574,12 @@ final class MacRecordingStore: ObservableObject {
                     }
                     break
                 }
-            } catch { failed = true; self.deliveryPaused = true; let reason = error.localizedDescription; recordingLog.error("delivery paused: \(reason, privacy: .public)"); self.error = "Delivery paused: \(error.localizedDescription) Audio is retained. Retry does not restart recording." }
+            } catch { failed = true; self.deliveryPaused = true; let reason = error.localizedDescription; recordingLog.error("delivery paused: \(reason, privacy: .public)")
+                // 0.5.334: no speech is not a paused delivery to retry. The panel offers Discard and says why; no red
+                // "Delivery paused: ... Choose the app" line, and the hand-off stops looking for a meeting.
+                if self.noSpeech { self.noMeetingCaptureIDs.insert(id); self.error = nil }
+                else { self.error = "Delivery paused: \(error.localizedDescription) Audio is retained. Retry does not restart recording." }
+            }
         }
     }
 }
@@ -438,6 +601,8 @@ struct MacRecordingPanel: View {
     @State private var showingNotice = false
     /// The notice hides the moment it is acknowledged anywhere (the pet's notice too), not only by this card.
     @AppStorage(MacRecordingNotice.acknowledgedKey) private var acknowledged = false
+    /// 0.5.334: Discard (no sound was captured) asks once, inline.
+    @State private var confirmDiscard = false
     private var noticeVisible: Bool { MacRecordingNotice.panelShowsNotice(requested: showingNotice, acknowledged: acknowledged, occupied: store.occupied) }
     private var recordable: Bool { store.canStart && store.available && store.sources.contains { $0.id == store.selectedID } }
     private var automaticTitle: String { MacRecordingNotice.autoTitle(meetingApp: meetings.current?.app.title, at: Date()) }
@@ -457,6 +622,19 @@ struct MacRecordingPanel: View {
                 else if !store.occupied, !noticeVisible {
                     Button("Record") { record() }.buttonStyle(COSPrimaryButtonStyle()).disabled(!recordable)
                         .help("Records everything this Mac plays, with a live transcript. Your microphone stays off")
+                }
+            }
+            // 0.5.334: the fail-fast's one message, with the two things that can fix it.
+            if store.cannotHear && !store.occupied {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(MacRecordingHearing.cannotHearMessage).font(COSType.body(11.5, weight: .semibold)).foregroundStyle(COSPalette.danger)
+                        .fixedSize(horizontal: false, vertical: true)
+                    HStack(spacing: 8) {
+                        Button(MacRecordingHearing.openSettingsTitle) { Task { await store.openSystemAudioSettings?() } }
+                            .buttonStyle(COSQuietButtonStyle())
+                        Button(MacRecordingHearing.tryAgainTitle) { Task { _ = await store.tryAgainAfterCannotHear(bridge: bridge) } }
+                            .buttonStyle(COSPrimaryButtonStyle()).disabled(!store.canStart || !store.available)
+                    }
                 }
             }
             if noticeVisible {
@@ -493,11 +671,18 @@ struct MacRecordingPanel: View {
                         Text(line.text).font(COSType.body(11)).foregroundStyle(line.problem ? COSPalette.danger : COSPalette.muted)
                     }
                     if store.phase == "pending", !value.chunks.isEmpty {
-                        Text(store.noSpeech ? "No speech was found in this audio. It stays on this Mac." : "Save this retained recording before starting another.").font(COSType.body(11)).foregroundStyle(.secondary)
+                        let nothing = store.noSpeech || value.allDigitalSilence
+                        Text(nothing ? "No sound was captured in this recording, so there is nothing to save." : "Save this retained recording before starting another.").font(COSType.body(11)).foregroundStyle(.secondary)
+                        // 0.5.334: Keep only where it can help (a paused delivery); Retry only where a retry can work.
                         if store.canKeepForLater {
-                            Button(store.noSpeech ? "Keep audio and record again" : "Keep audio for later") { Task { await store.keepSilentAudioForLater() } }
+                            Button("Keep audio for later") { Task { await store.keepSilentAudioForLater() } }
                         }
-                        Button("Retry saving retained audio") { store.deliverPending() }
+                        if store.canDiscard {
+                            Button(MacRecordingDiscard.buttonTitle) { confirmDiscard = true }
+                        }
+                        if store.canRetrySave {
+                            Button("Retry saving retained audio") { store.deliverPending() }
+                        }
                     }
                 }
             }
@@ -508,6 +693,10 @@ struct MacRecordingPanel: View {
         }
         .padding(.horizontal, 24).padding(.vertical, 12).background(COSPalette.amber.opacity(0.06))
         .overlay(alignment: .bottom) { Divider() }
+        .cosConfirm(MacRecordingDiscard.confirmTitle, isPresented: $confirmDiscard, message: MacRecordingDiscard.confirmLine, actions: [
+            .destructive(MacRecordingDiscard.confirmButton) { confirmDiscard = false; Task { await store.discardNoSound() } },
+            .cancel { confirmDiscard = false },
+        ])
         .task { await store.prepare(bridge: bridge) }
     }
     /// Record: the one-time notice first on this Mac, then every Record starts at once.

@@ -625,6 +625,8 @@ final class ControllerModel: ObservableObject {
         activityLoadsEnabled = startBackgroundWork || allowActivityLoads
         workActivity = WorkActivityJournal(url: WorkActivityJournal.defaultURL(background: startBackgroundWork))
         macRecording.stoppedOnItsOwn = { [weak self] reason in self?.meetingAudioNotifier.postRecordingStopped(reason) }
+        // 0.5.334: a discard re-reads the stranded list, so a Save that could never work leaves with it.
+        macRecording.discarded = { [weak self] _ in guard let self else { return }; Task { await self.loadOrphans(quiet: true) } }
         macRecording.activeChanged = { [weak self] active in
             guard let self else { return }
             self.macRecordingActive = active
@@ -2083,6 +2085,19 @@ final class ControllerModel: ObservableObject {
 
     func recoverAllOrphans() {
         perform("meeting-orphan-recover-all")
+    }
+
+    /// 0.5.334: Discard on a stranded Mac row the server found no speech in (inline confirm in Meetings).
+    func discardStrandedMac(_ sessionId: String) {
+        guard sessionId.hasPrefix("mac_"), !busy, !orphanBusy else { return }
+        orphanBusy = true
+        Task { [weak self] in
+            guard let self else { return }
+            let line = await self.macRecording.discardStranded(sessionId, bridge: self.macRecordingBridge)
+            self.notice = line
+            self.orphanBusy = false
+            await self.loadOrphans(quiet: true)
+        }
     }
 
     func saveStranded(_ sessionId: String) {
@@ -3622,9 +3637,11 @@ final class ControllerModel: ObservableObject {
 
     var liveTranscriptRows: [LiveTranscriptRow] {
         guard liveTranscriptEnabled else { return [] }
+        // 0.5.334: a Mac capture with no sound (no speech, discarded) never pins a row: there is no meeting to wait for.
+        let noMeeting = macRecording.noMeetingCaptureIDs
         let rows = LiveTranscript.rows(files: liveTranscriptFiles, feeds: liveTranscriptFeeds, serverLive: liveTranscriptServerLive,
                                        stale: Set(status.staleTranscriptionSessionIds), stranded: Set(strandedCaptures.map(\.sessionId)),
-                                       now: Date())
+                                       now: Date()).filter { !MacRecordingNoMeeting.endsHandoff(sessionId: $0.sessionId, noMeeting: noMeeting) }
         guard let mac = macRecording.manifest,
               let label = MacRecordingLiveRow.label(stopped: mac.stopped, saved: mac.saved, acknowledged: mac.acknowledged, chunks: mac.chunks.count,
                                                     paused: macRecording.deliveryPaused)
@@ -3867,6 +3884,8 @@ final class ControllerModel: ObservableObject {
             feed.phase = LiveTranscript.handoff(serverState: feed.serverState, endedAt: endedAt, now: now, savedRowFound: found != nil,
                                                 lastActivity: feed.lastActivityAt, leftover: feed.leftover,
                                                 recorded: feed.startTime.map { endedAt.timeIntervalSince($0) })
+            // 0.5.334: nothing will ever be saved for a no-sound Mac capture; end the hand-off, never "not found yet".
+            if found == nil, MacRecordingNoMeeting.endsHandoff(sessionId: id, noMeeting: macRecording.noMeetingCaptureIDs) { feed.phase = .ended }
             liveTranscriptFeeds[id] = feed
             if feed.phase == .saved, let found {
                 if liveTranscriptOpenID == id { liveTranscriptHandoff = found }

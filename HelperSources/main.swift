@@ -16208,7 +16208,7 @@ final class COSControlHelper {
               let payload = envelope["payload"] as? [String: Any] else {
             emit(ok: false, message: "Mac recording request is invalid."); return
         }
-        let allowed = Set(["serverInstanceId", "captureId", "sessionId", "startTime", "sourceType", "path", "chunkIndex", "elapsed", "title", "domain", "expectedChunkCount"])
+        let allowed = Set(["serverInstanceId", "captureId", "sessionId", "startTime", "sourceType", "path", "chunkIndex", "elapsed", "title", "domain", "expectedChunkCount", "confirm"])
         guard Set(payload.keys).isSubset(of: allowed) else {
             emit(ok: false, message: "Mac recording request is invalid."); return
         }
@@ -16270,6 +16270,14 @@ final class COSControlHelper {
         case "status":
             let pin = instance.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? ""
             path = "/api/meeting/sessions/" + capture + "/status?serverInstanceId=" + pin
+        case "discard":
+            // 0.5.334 (server 6.83.2): a no-sound capture's server side. Sent only with confirm: true; the server re-checks
+            // that it holds no speech and refuses anything else.
+            guard payload["confirm"] as? Bool == true, (payload["confirm"] as? NSNumber).map({ CFGetTypeID($0) == CFBooleanGetTypeID() }) == true else {
+                emit(ok: false, message: "Mac recording discard needs confirmation.", details: ["reason": "confirmation_required"]); return
+            }
+            path = "/api/meeting/sessions/" + capture + "/discard"; method = "POST"
+            body = String(data: try JSONSerialization.data(withJSONObject: ["confirm": true, "serverInstanceId": instance]), encoding: .utf8)
         default: emit(ok: false, message: "Mac recording operation is unsupported."); return
         }
         let token = try speakerReviewToken()
@@ -16280,6 +16288,14 @@ final class COSControlHelper {
         guard (200..<300).contains(response.status), var details = response.body else {
             let message: String
             switch response.status {
+            case _ where operation == "discard":
+                switch response.body?["reason"] as? String {
+                case "session_not_found"?: message = "The server no longer holds this recording."
+                case "not_idle"?, "asr_in_progress"?, "chunk_in_progress"?: message = "The server is still finishing this recording. It is asked again in a couple of minutes."
+                case "has_speech"?: message = "The server heard speech in this recording, so it kept it. Save it instead."
+                case nil where response.status == 404: message = "This COS server cannot discard recordings yet. Only this Mac's copy was discarded."
+                default: message = "The server kept this recording."
+                }
             case 400 where operation == "start": message = "The server rejected the recording start. No audio was captured. Refresh apps and try again."
             case 401, 403: message = operation == "start" ? "Reconnect COS Control to the server. No audio was captured." : "Reconnect COS Control to the server. The recording is retained."
             case 404 where response.body?["reason"] as? String == "nothing_to_save": message = "No speech was detected in the selected app. Audio is retained on this Mac. Choose the app actually playing the meeting audio."
@@ -16290,6 +16306,7 @@ final class COSControlHelper {
             }
             var failure: [String: Any] = ["httpStatus": response.status]
             if let reason = response.body?["reason"] as? String, reason.range(of: "\\A[a-z][a-z0-9_]{0,79}\\z", options: .regularExpression) != nil { failure["reason"] = reason }
+            else if operation == "discard", response.status == 404 { failure["reason"] = "route_absent" }
             emit(ok: false, message: message, details: failure); return
         }
         details["httpStatus"] = response.status

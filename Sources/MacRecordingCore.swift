@@ -109,7 +109,9 @@ enum MacRecordingInterruption {
     /// QA 0.5.313: a recording that stops without the person stopping it says so outside the panel, which is usually
     /// closed during a call. The call may still be going.
     static func notification(_ reason: String) -> (title: String, body: String) {
-        ("Mac recording stopped", line(reason).text + " If the meeting is still going, start a new recording.")
+        // 0.5.334: the no-sound stop is not an incomplete recording; it says what to do instead.
+        if reason == MacRecordingHearing.cannotHearMessage { return ("Mac recording stopped", MacRecordingHearing.notificationBody) }
+        return ("Mac recording stopped", line(reason).text + " If the meeting is still going, start a new recording.")
     }
 }
 
@@ -127,6 +129,14 @@ enum MacRecordingSignal {
         }
     }
     static func isSilent(_ pcm: Data) -> Bool { peak(pcm) < silentPeak }
+    /// 0.5.334: any captured float sample that is not exactly 0.0. A tap macOS has not authorized delivers exact zeros;
+    /// a quiet room, however quiet, does not. Read BEFORE resampling: a sample below 1/32768 rounds to an Int16 zero.
+    static func hasRawSignal(_ samples: UnsafeBufferPointer<Float>) -> Bool {
+        for sample in samples where sample != 0 { return true }
+        return false
+    }
+    /// Every Int16 sample is exactly zero (what an unauthorized tap's chunk is after conversion).
+    static func isDigitalZero(_ pcm: Data) -> Bool { peak(pcm) == 0 }
     static func warning(silentChunks: Int, source: String) -> String? {
         guard silentChunks >= warnAfterSilentChunks else { return nil }
         let seconds = silentChunks * MacRecordingWAV.framesPerChunk / MacRecordingWAV.sampleRate
@@ -152,6 +162,11 @@ struct MacRecordingChunk: Sendable {
     let index: Int
     let pcm: Data
     let endFrame: Int
+    /// 0.5.334: some raw (pre-resampling) input since the previous chunk was not exactly 0.0. A chunk made only of
+    /// exact zeros is what macOS delivers when it does not let COS record system audio. True when unknown.
+    var rawSignal: Bool = true
+    /// Digital silence for the hearing check: exact zeros in, exact zeros out.
+    var digitalSilence: Bool { !rawSignal && MacRecordingSignal.isDigitalZero(pcm) }
 }
 
 /// One explicit remote-playback track. No microphone, glasses, device rerouting, or auto-detection.
@@ -185,6 +200,10 @@ struct MacRecordingManifest: Codable, Equatable, Sendable, Identifiable {
     var acknowledged: Int
     var interruption: String? = nil
     var chunks: [Chunk]
+    /// 0.5.334: whether any stored chunk carried a nonzero sample. nil in a journal written before 0.5.334 (unknown).
+    var heardSignal: Bool? = nil
+    /// Stored audio known to be exact zeros from start to end: nothing to save, ever.
+    var allDigitalSilence: Bool { heardSignal == false && !chunks.isEmpty }
     struct Chunk: Codable, Equatable, Sendable {
         let index: Int
         let filename: String
@@ -224,7 +243,8 @@ actor MacRecordingSpool {
         return root.appendingPathComponent(id, isDirectory: true)
     }
     /// Traverse from a stable directory descriptor. No ancestor symlink may redirect audio writes.
-    private func rootFD(create: Bool) throws -> Int32 {
+    private func rootFD(create: Bool) throws -> Int32 { try directoryFD(root, create: create) }
+    private func directoryFD(_ root: URL, create: Bool) throws -> Int32 {
         guard root.isFileURL, root.path.hasPrefix("/"), root.pathComponents.count > 2,
               !root.pathComponents.contains("."), !root.pathComponents.contains("..") else { throw invalid() }
         var fd = Darwin.open("/", O_RDONLY | O_DIRECTORY | O_NOFOLLOW)
@@ -367,6 +387,7 @@ actor MacRecordingSpool {
         try atomicWrite(MacRecordingWAV.encode(chunk.pcm), name: filename, in: fd, immutable: true)
         var next = value
         next.chunks.append(.init(index: chunk.index, filename: filename, endFrame: chunk.endFrame))
+        next.heardSignal = (value.chunks.isEmpty ? false : (value.heardSignal ?? true)) || !chunk.digitalSilence
         try write(next); return next
     }
     func path(for chunk: MacRecordingManifest.Chunk, captureId: String) throws -> String {
@@ -374,6 +395,27 @@ actor MacRecordingSpool {
         return try directory(captureId).appendingPathComponent(chunk.filename).path
     }
     func recoveryWarnings() -> [String] { warnings }
+    /// 0.5.334: where a discarded capture goes, beside the spool: `mac-recordings-discarded/<yyyy-MM-dd>/`.
+    var discardedRoot: URL { root.deletingLastPathComponent().appendingPathComponent(MacRecordingDiscard.discardedFolderName, isDirectory: true) }
+    /// Moves one capture's folder, journal and WAVs untouched, into today's discarded folder. Never removes a file: a
+    /// wrong discard is undone by moving the folder back. Same volume, one rename, so it is all or nothing.
+    func discard(_ id: String, at date: Date = Date(), calendar: Calendar = .current) throws -> URL {
+        guard validID(id) else { throw invalid() }
+        let parent = try rootFD(create: false); defer { Darwin.close(parent) }
+        var metadata = stat()
+        guard fstatat(parent, id, &metadata, AT_SYMLINK_NOFOLLOW) == 0, metadata.st_mode & S_IFMT == S_IFDIR,
+              metadata.st_uid == getuid() else { throw invalid() }
+        let day = discardedRoot.appendingPathComponent(MacRecordingDiscard.dayFolder(date, calendar: calendar), isDirectory: true)
+        let target = try directoryFD(day, create: true); defer { Darwin.close(target) }
+        var name = id
+        if fstatat(target, name, &metadata, AT_SYMLINK_NOFOLLOW) == 0 { name = id + "." + String(Int(date.timeIntervalSince1970)) }
+        guard renameat(parent, id, target, name) == 0 else {
+            throw MacRecordingError.unavailable("COS couldn't move this recording to the discarded folder. Its audio is unchanged.")
+        }
+        _ = fsync(target); _ = fsync(parent)
+        active[id] = nil
+        return day.appendingPathComponent(name, isDirectory: true)
+    }
     func recoverable() throws -> [MacRecordingManifest] {
         warnings = []
         guard fm.fileExists(atPath: root.path) else { return [] }
@@ -403,8 +445,10 @@ actor MacRecordingSpool {
 enum MacRecordingRecoveryPolicy {
     /// QA 0.5.313: also when delivery paused on an error, so a capture that cannot reach the server never holds
     /// Record hostage; the audio stays in the spool and is listed with Recover.
+    /// 0.5.334 (Miles 2026-10-21): not for no speech. Audio the server found no speech in, or exact zeros, saves no
+    /// better later; Discard (MacRecordingDiscard) releases the composer for those instead.
     static func canKeepForLater(noSpeech: Bool, paused: Bool = false, pending: Bool, stopped: Bool, delivering: Bool) -> Bool {
-        (noSpeech || paused) && pending && stopped && !delivering
+        paused && !noSpeech && pending && stopped && !delivering
     }
     /// What the panel offers to Recover: retained captures with audio, other than the current one. A journal with no
     /// chunks (a start that failed after its manifest was written) has nothing to recover; it is hidden, never deleted.
@@ -429,6 +473,161 @@ enum MacRecordingRefusal: Equatable, Sendable {
         if pendingCapture { return .set(pending) }
         return .set("Mac recording couldn't start. Try again in a moment.")
     }
+}
+
+// MARK: - Can COS hear this Mac? (0.5.334, Miles 2026-10-21 13:15)
+//
+// "Clean up the Record on Mac pilot ... I want this functionality working moving forward." That morning All Mac audio
+// recorded a 21-minute Zoom call as 211 chunks of EXACT zeros: macOS hands a process tap zeros, not an error, when it
+// is not letting the app record system audio. COS logged "silent capture" 12 s in and recorded on for 21 minutes.
+//
+// What macOS offers to ask first (researched for this change): no public API reports System Audio Recording
+// authorization. AudioHardwareCreateProcessTap and the aggregate device succeed either way and the IOProc runs; the
+// samples are zero. AVAudioApplication's record permission is the microphone (kTCCServiceMicrophone), and
+// CGPreflightScreenCaptureAccess is Screen Recording, not "System Audio Recording Only" (kTCCServiceAudioCapture).
+// The only reader is the private TCCAccessPreflight that Apple's AudioCap sample uses (SystemAudioPermission), and on
+// 2026-10-21 it let the recording start without asking (no "system audio before recording" line), so it can say no
+// but cannot prove yes. The proof is the audio: exact zeros, not quiet.
+
+enum MacRecordingHearing {
+    static let cannotHearMessage = "COS Control can't hear your Mac's audio. macOS may not be letting it record system audio."
+    static let notificationBody = cannotHearMessage + " Open Meetings in COS Control to allow it in System Settings, then try again."
+    static let openSettingsTitle = "Open System Settings"
+    static let tryAgainTitle = "Try again"
+    /// The ~1 s probe's line while a capture has delivered only exact zeros with another app playing (a warning only;
+    /// the fail-fast below decides).
+    static let suspectLine = "No sound reaching COS yet. Checking that macOS lets it record system audio…"
+    /// Two 6 s chunks: 12 s.
+    static let failFastChunks = 2
+    /// The probe reads the tap's first second of input.
+    static let probeSeconds: Double = 1
+
+    struct State: Equatable, Sendable {
+        /// Any nonzero sample in this capture. Once true, never a fail-fast: a real meeting can go digitally silent.
+        var heardSignal = false
+        /// Exact-zero chunks stored while another app had audio output running.
+        var zeroChunksWhilePlaying = 0
+        /// The probe saw only zeros in the first second while another app was (or may have been) playing.
+        var suspect = false
+    }
+    enum Verdict: Equatable, Sendable { case keep, cannotHear }
+
+    /// One chunk stored. `othersPlaying`: another app had audio output running then (nil when it could not be read).
+    /// Fires only for All Mac audio, only before any nonzero sample, only on exact zeros while something plays: a quiet
+    /// meeting with any nonzero signal, a per-app source, and a Mac with nothing playing all keep recording.
+    static func step(_ state: inout State, digitalSilence: Bool, othersPlaying: Bool?, allMacAudio: Bool) -> Verdict {
+        guard digitalSilence else { state.heardSignal = true; state.suspect = false; state.zeroChunksWhilePlaying = 0; return .keep }
+        guard allMacAudio, !state.heardSignal, othersPlaying != false else { return .keep }
+        state.zeroChunksWhilePlaying += 1
+        return state.zeroChunksWhilePlaying >= failFastChunks ? .cannotHear : .keep
+    }
+    /// The non-blocking probe: the first second through the same tap. Sets the warning; never stops anything.
+    static func probe(_ state: inout State, sawSignal: Bool, othersPlaying: Bool?, allMacAudio: Bool) {
+        if sawSignal { state.heardSignal = true; state.suspect = false; return }
+        state.suspect = allMacAudio && !state.heardSignal && othersPlaying != false
+    }
+    static func line(_ state: State, recording: Bool) -> String? { recording && state.suspect && !state.heardSignal ? suspectLine : nil }
+}
+
+/// 0.5.334: Discard replaces the buttons that could not work for a capture with no sound ("Retry saving retained audio",
+/// a stranded Save). Local audio moves to a dated folder (never removed); the server is asked to let its side go.
+enum MacRecordingDiscard {
+    static let buttonTitle = "Discard (no sound was captured)"
+    static let confirmTitle = "Discard this recording?"
+    static let confirmLine = "No sound was captured, so there is nothing to save. Its audio files move to a dated discarded folder on this Mac; nothing is deleted."
+    static let confirmButton = "Discard"
+    static let discardedFolderName = "mac-recordings-discarded"
+    static func dayFolder(_ date: Date, calendar: Calendar = .current) -> String {
+        let f = DateFormatter(); f.calendar = calendar; f.timeZone = calendar.timeZone
+        f.locale = Locale(identifier: "en_US_POSIX"); f.dateFormat = "yyyy-MM-dd"
+        return f.string(from: date)
+    }
+    /// Offered for a stopped, pending capture the server called no speech or that is exact zeros here, while nothing
+    /// is being delivered.
+    static func offered(noSpeech: Bool, allZero: Bool, pending: Bool, stopped: Bool, delivering: Bool) -> Bool {
+        (noSpeech || allZero) && pending && stopped && !delivering
+    }
+    /// "Retry saving retained audio" only where a retry can work: never for no speech or exact zeros.
+    static func retryOffered(noSpeech: Bool, allZero: Bool, pending: Bool, hasChunks: Bool) -> Bool {
+        pending && hasChunks && !noSpeech && !allZero
+    }
+    /// A stranded row on Meetings: Discard instead of Save for a Mac capture the server says has no speech.
+    static func strandedOffersDiscard(sessionId: String, transcriptState: String, canSave: Bool) -> Bool {
+        sessionId.hasPrefix("mac_") && !canSave && transcriptState == "no_speech"
+    }
+
+    enum Server: Equatable, Sendable {
+        case discarded, replayed
+        /// The server holds it but it is still too fresh (no audio for 2 min yet): ask again later.
+        case notIdle
+        /// The server refused (speech, still transcribing, saved): its reason.
+        case refused(String)
+        /// Already gone from the server (never had it, or it was cleared): nothing to do there.
+        case absent
+        /// An older server without the route: only the local copy was discarded.
+        case unsupported
+        case unreachable
+    }
+    /// The helper's answer for operation "discard".
+    static func serverAnswer(ok: Bool, httpStatus: Int?, reason: String?, discarded: Bool?, replayed: Bool?) -> Server {
+        if ok, discarded == true { return replayed == true ? .replayed : .discarded }
+        switch reason {
+        case "not_idle"?, "asr_in_progress"?, "chunk_in_progress"?: return .notIdle
+        case "session_not_found"?: return .absent
+        case "route_absent"?: return .unsupported
+        case "server_unavailable"?: return .unreachable
+        case let reason?: return .refused(reason)
+        case nil: return httpStatus == 404 ? .unsupported : .unreachable
+        }
+    }
+    /// The one honest line after a discard.
+    static func note(localMoved: Bool, server: Server) -> String {
+        let local = localMoved ? "Discarded. No sound was captured, so there was nothing to save. The audio is in a dated discarded folder on this Mac."
+            : "Discarded. No sound was captured, so there was nothing to save."
+        switch server {
+        case .discarded, .replayed, .absent: return local
+        case .notIdle: return local + " The server lets its copy go in a couple of minutes."
+        case .unsupported: return local + " This COS server is older and keeps its copy until its own clean-up; update the server to clear it now."
+        case .unreachable: return local + " The server could not be reached; its copy clears on its own."
+        case .refused(let reason): return local + " The server kept its copy (\(reason))."
+        }
+    }
+    /// How many more times a not-yet-idle server is asked, and how long Control waits before each: past the server's
+    /// 2-minute idle window.
+    static let retryAfterSeconds: Double = 130
+    static let retries = 2
+}
+
+/// The discard itself, with its two sides as seams so the checks run it against a fake helper (MacRecordingChecks).
+/// The local spool moves first: it is on this Mac and cannot fail for a network reason.
+struct MacRecordingDiscarder: Sendable {
+    typealias Server = @Sendable (_ captureId: String, _ serverInstanceId: String) async -> MacRecordingDiscard.Server
+    let spool: MacRecordingSpool
+    let server: Server
+    struct Outcome: Equatable, Sendable {
+        let captureId: String
+        let moved: URL?
+        let localError: String?
+        let server: MacRecordingDiscard.Server
+        var line: String { localError.map { "Couldn't discard this recording: " + $0 } ?? MacRecordingDiscard.note(localMoved: moved != nil, server: server) }
+    }
+    /// `serverSupported`: the server advertised discard (capabilities `discard: true`); false asks nothing.
+    func discard(captureId: String, serverInstanceId: String, serverSupported: Bool, localPresent: Bool = true, at date: Date = Date()) async -> Outcome {
+        var moved: URL?
+        if localPresent {
+            do { moved = try await spool.discard(captureId, at: date) }
+            catch { return Outcome(captureId: captureId, moved: nil, localError: error.localizedDescription, server: .unreachable) }
+        }
+        let answer = serverSupported ? await server(captureId, serverInstanceId) : .unsupported
+        return Outcome(captureId: captureId, moved: moved, localError: nil, server: answer)
+    }
+}
+
+/// 0.5.334: a Mac capture known to have no meeting (discarded, no speech) never shows "Saved meeting not found yet":
+/// there is nothing to find. Its hand-off ends instead.
+enum MacRecordingNoMeeting {
+    static let line = "No sound was captured, so there is no meeting to open."
+    static func endsHandoff(sessionId: String, noMeeting: Set<String>) -> Bool { sessionId.hasPrefix("mac_") && noMeeting.contains(sessionId) }
 }
 
 // MARK: - Meeting detection (0.5.313, Miles 2026-10-15 22:39)

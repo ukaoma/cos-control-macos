@@ -53,8 +53,8 @@ import Darwin
                     for stopped in [false, true] {
                         for delivering in [false, true] {
                             let permitted = MacRecordingRecoveryPolicy.canKeepForLater(noSpeech: noSpeech, paused: paused, pending: pending, stopped: stopped, delivering: delivering)
-                            check(permitted == ((noSpeech || paused) && pending && stopped && !delivering),
-                                  "only a stopped capture that is silent or whose delivery paused, with no delivery in flight, may release the composer")
+                            check(permitted == (paused && !noSpeech && pending && stopped && !delivering),
+                                  "Keep audio for later only for a paused delivery, never for no speech (Discard is offered there), with no delivery in flight")
                         }
                     }
                 }
@@ -388,6 +388,160 @@ import Darwin
             check(rewritten?.phase == "idle" && rewritten?.pid == getpid(), "capture state: a rewrite names this process")
             check((second[.systemFileNumber] as? NSNumber)?.intValue != inode, "capture state: replaced atomically (a new file), never written in place")
             check(MacCaptureStateFile.decode(Data("{}".utf8)) == nil && MacCaptureStateFile.decode(Data("x".utf8)) == nil, "capture state: junk reads as nothing")
+        }
+        // MARK: 0.5.334, can COS hear this Mac (Miles 2026-10-21: 211 chunks of exact zeros from a 21-minute Zoom call)
+        do {
+            var floats: [Float] = [0, 0, 0, 0]
+            check(!floats.withUnsafeBufferPointer { MacRecordingSignal.hasRawSignal($0) }, "hearing: exact 0.0 input is no signal")
+            floats[3] = 1e-7
+            check(floats.withUnsafeBufferPointer { MacRecordingSignal.hasRawSignal($0) }, "hearing: a sample far below one Int16 step is still signal")
+            floats = [-0.0]
+            check(!floats.withUnsafeBufferPointer { MacRecordingSignal.hasRawSignal($0) }, "hearing: negative zero is zero")
+            let zeroChunk = MacRecordingChunk(index: 0, pcm: zeros, endFrame: MacRecordingWAV.framesPerChunk, rawSignal: false)
+            check(zeroChunk.digitalSilence, "hearing: exact zeros in and out is digital silence")
+            check(!MacRecordingChunk(index: 0, pcm: zeros, endFrame: MacRecordingWAV.framesPerChunk, rawSignal: true).digitalSilence,
+                  "hearing: quiet input that rounded to Int16 zeros is NOT digital silence (a quiet room keeps recording)")
+            check(!MacRecordingChunk(index: 0, pcm: zeros, endFrame: MacRecordingWAV.framesPerChunk).digitalSilence, "hearing: unknown raw input is never digital silence")
+            check(!MacRecordingChunk(index: 0, pcm: pcm16([0, 0, 1]), endFrame: 3, rawSignal: false).digitalSilence, "hearing: a nonzero Int16 sample is never digital silence")
+            // The incident, replayed: All Mac audio, Zoom playing, exact zeros. Fails fast at the second chunk (12 s).
+            var state = MacRecordingHearing.State()
+            check(MacRecordingHearing.step(&state, digitalSilence: true, othersPlaying: true, allMacAudio: true) == .keep, "fail-fast: one zero chunk is not enough")
+            check(MacRecordingHearing.step(&state, digitalSilence: true, othersPlaying: true, allMacAudio: true) == .cannotHear, "fail-fast: two zero chunks while another app plays stop it")
+            check(MacRecordingHearing.failFastChunks * MacRecordingWAV.framesPerChunk / MacRecordingWAV.sampleRate == 12, "fail-fast: within the first ~12 s")
+            // A quiet meeting with any nonzero sample never fails fast, even if it later goes to exact digital silence.
+            state = MacRecordingHearing.State()
+            check(MacRecordingHearing.step(&state, digitalSilence: false, othersPlaying: true, allMacAudio: true) == .keep && state.heardSignal, "fail-fast: quiet nonzero keeps recording")
+            for _ in 0..<50 { check(MacRecordingHearing.step(&state, digitalSilence: true, othersPlaying: true, allMacAudio: true) == .keep, "fail-fast: never after any sound") }
+            // Nothing playing: zeros are expected, not a permission problem.
+            state = MacRecordingHearing.State()
+            for _ in 0..<10 { check(MacRecordingHearing.step(&state, digitalSilence: true, othersPlaying: false, allMacAudio: true) == .keep, "fail-fast: nothing playing keeps recording") }
+            check(MacRecordingHearing.step(&state, digitalSilence: true, othersPlaying: true, allMacAudio: true) == .keep
+                  && MacRecordingHearing.step(&state, digitalSilence: true, othersPlaying: nil, allMacAudio: true) == .cannotHear,
+                  "fail-fast: counts only while something plays (unreadable counts), so a call that starts later is still caught")
+            // A per-app source has its own advice (the silence warning); the fail-fast is All Mac audio only.
+            state = MacRecordingHearing.State()
+            for _ in 0..<5 { check(MacRecordingHearing.step(&state, digitalSilence: true, othersPlaying: true, allMacAudio: false) == .keep, "fail-fast: not for a per-app source") }
+            // The probe: warning only.
+            state = MacRecordingHearing.State()
+            MacRecordingHearing.probe(&state, sawSignal: false, othersPlaying: true, allMacAudio: true)
+            check(state.suspect && MacRecordingHearing.line(state, recording: true) == MacRecordingHearing.suspectLine, "probe: zeros while playing warn")
+            check(MacRecordingHearing.line(state, recording: false) == nil, "probe: the warning is live only")
+            check(MacRecordingHearing.step(&state, digitalSilence: false, othersPlaying: true, allMacAudio: true) == .keep && !state.suspect
+                  && MacRecordingHearing.line(state, recording: true) == nil, "probe: the first sound clears the warning")
+            state = MacRecordingHearing.State()
+            MacRecordingHearing.probe(&state, sawSignal: false, othersPlaying: false, allMacAudio: true)
+            check(!state.suspect, "probe: nothing playing, no warning")
+            MacRecordingHearing.probe(&state, sawSignal: true, othersPlaying: true, allMacAudio: true)
+            check(state.heardSignal && !state.suspect, "probe: signal in the first second counts as heard")
+            state = MacRecordingHearing.State()
+            MacRecordingHearing.probe(&state, sawSignal: false, othersPlaying: true, allMacAudio: false)
+            check(!state.suspect, "probe: not for a per-app source")
+            check(MacRecordingHearing.cannotHearMessage == "COS Control can't hear your Mac's audio. macOS may not be letting it record system audio.", "the message, verbatim")
+            let note = MacRecordingInterruption.notification(MacRecordingHearing.cannotHearMessage)
+            check(note.body.hasPrefix(MacRecordingHearing.cannotHearMessage) && !note.body.contains("Incomplete") && !note.body.contains("→"),
+                  "the no-sound stop notifies with the message, never as an incomplete recording")
+            for text in [MacRecordingHearing.cannotHearMessage, MacRecordingHearing.notificationBody, MacRecordingHearing.suspectLine,
+                         MacRecordingDiscard.buttonTitle, MacRecordingDiscard.confirmLine, MacRecordingNoMeeting.line] {
+                check(!text.contains("—") && !text.contains("→"), "no em dash or arrow in the new copy")
+            }
+        }
+        // MARK: 0.5.334, the dead ends become Discard
+        do {
+            for noSpeech in [false, true] { for allZero in [false, true] { for pending in [false, true] { for stopped in [false, true] { for delivering in [false, true] {
+                check(MacRecordingDiscard.offered(noSpeech: noSpeech, allZero: allZero, pending: pending, stopped: stopped, delivering: delivering)
+                      == ((noSpeech || allZero) && pending && stopped && !delivering), "Discard: only for a stopped, idle capture with no sound")
+                for hasChunks in [false, true] {
+                    check(MacRecordingDiscard.retryOffered(noSpeech: noSpeech, allZero: allZero, pending: pending, hasChunks: hasChunks)
+                          == (pending && hasChunks && !noSpeech && !allZero), "Retry saving: never for no sound (it cannot work)")
+                }
+            } } } } }
+            check(MacRecordingDiscard.strandedOffersDiscard(sessionId: "mac_x", transcriptState: "no_speech", canSave: false), "stranded: a no-speech Mac row offers Discard")
+            check(!MacRecordingDiscard.strandedOffersDiscard(sessionId: "mac_x", transcriptState: "ready", canSave: true), "stranded: a savable Mac row keeps Save")
+            check(!MacRecordingDiscard.strandedOffersDiscard(sessionId: "mac_x", transcriptState: "processing", canSave: false), "stranded: a Mac row still transcribing keeps Save")
+            check(!MacRecordingDiscard.strandedOffersDiscard(sessionId: "g2_1", transcriptState: "no_speech", canSave: false), "stranded: glasses rows are untouched")
+            typealias S = MacRecordingDiscard.Server
+            check(MacRecordingDiscard.serverAnswer(ok: true, httpStatus: 200, reason: nil, discarded: true, replayed: false) == S.discarded, "server: discarded")
+            check(MacRecordingDiscard.serverAnswer(ok: true, httpStatus: 200, reason: nil, discarded: true, replayed: true) == S.replayed, "server: replayed")
+            check(MacRecordingDiscard.serverAnswer(ok: false, httpStatus: 409, reason: "not_idle", discarded: nil, replayed: nil) == S.notIdle
+                  && MacRecordingDiscard.serverAnswer(ok: false, httpStatus: 409, reason: "asr_in_progress", discarded: nil, replayed: nil) == S.notIdle,
+                  "server: still fresh or transcribing is asked again later")
+            check(MacRecordingDiscard.serverAnswer(ok: false, httpStatus: 404, reason: "session_not_found", discarded: nil, replayed: nil) == S.absent, "server: already gone")
+            check(MacRecordingDiscard.serverAnswer(ok: false, httpStatus: 404, reason: "route_absent", discarded: nil, replayed: nil) == S.unsupported
+                  && MacRecordingDiscard.serverAnswer(ok: false, httpStatus: 404, reason: nil, discarded: nil, replayed: nil) == S.unsupported,
+                  "server: an older server without the route")
+            check(MacRecordingDiscard.serverAnswer(ok: false, httpStatus: 409, reason: "has_speech", discarded: nil, replayed: nil) == S.refused("has_speech"), "server: speech is refused")
+            check(MacRecordingDiscard.serverAnswer(ok: false, httpStatus: nil, reason: "server_unavailable", discarded: nil, replayed: nil) == S.unreachable, "server: unreachable")
+            check(MacRecordingDiscard.note(localMoved: true, server: .unsupported).contains("This COS server is older"), "older server: the note is honest that only this Mac's copy went")
+            check(!MacRecordingDiscard.note(localMoved: true, server: .discarded).contains("server"), "a full discard needs no server caveat")
+            check(MacRecordingDiscard.dayFolder(Date(timeIntervalSince1970: 1_792_600_000), calendar: { var c = Calendar(identifier: .gregorian); c.timeZone = TimeZone(identifier: "America/Chicago")!; return c }()) == "2026-10-21",
+                  "discarded folder is dated")
+            check(MacRecordingNoMeeting.endsHandoff(sessionId: "mac_a", noMeeting: ["mac_a"]) && !MacRecordingNoMeeting.endsHandoff(sessionId: "mac_b", noMeeting: ["mac_a"])
+                  && !MacRecordingNoMeeting.endsHandoff(sessionId: "g2_a", noMeeting: ["g2_a"]), "no meeting to find: only a known no-sound Mac capture")
+        }
+        // MARK: 0.5.334, execution: the spool's heard flag, discard to a dated folder, against a fake server
+        do {
+            let droot = scratch.appendingPathComponent("discard-home/cos-data/mac-recordings")
+            let dspool = MacRecordingSpool(root: droot)
+            func journal(_ n: Int) -> MacRecordingManifest {
+                MacRecordingManifest(captureId: String(format: "mac_%08d-aaaa-4aaa-8aaa-123456789abc", n), startTime: 1_792_600_000_000, serverInstanceId: "fixture-server",
+                                     sourceName: MacAudioSource.allMacAudio.name, title: "Zoom meeting 8:44 AM", stopped: false, saved: false, acknowledged: 0, chunks: [])
+            }
+            let silent = journal(1)
+            try await dspool.write(silent)
+            var value = try await dspool.append(.init(index: 0, pcm: zeros, endFrame: MacRecordingWAV.framesPerChunk, rawSignal: false), captureId: silent.id)
+            value = try await dspool.append(.init(index: 1, pcm: zeros, endFrame: MacRecordingWAV.framesPerChunk * 2, rawSignal: false), captureId: silent.id)
+            check(value.heardSignal == false && value.allDigitalSilence, "spool: exact zeros are known to be all silence")
+            check(try await MacRecordingSpool(root: droot).snapshot(silent.id).allDigitalSilence, "spool: the flag survives a restart")
+            let quiet = journal(2)
+            try await dspool.write(quiet)
+            _ = try await dspool.append(.init(index: 0, pcm: zeros, endFrame: MacRecordingWAV.framesPerChunk, rawSignal: false), captureId: quiet.id)
+            let heard = try await dspool.append(.init(index: 1, pcm: zeros, endFrame: MacRecordingWAV.framesPerChunk * 2, rawSignal: true), captureId: quiet.id)
+            check(heard.heardSignal == true && !heard.allDigitalSilence, "spool: one chunk with signal clears it for good")
+            let after = try await dspool.append(.init(index: 2, pcm: zeros, endFrame: MacRecordingWAV.framesPerChunk * 3, rawSignal: false), captureId: quiet.id)
+            check(after.heardSignal == true, "spool: exact zeros after sound never forget the sound")
+            var legacyJournal = journal(4); legacyJournal.chunks = [.init(index: 0, filename: "000000.wav", endFrame: MacRecordingWAV.framesPerChunk)]
+            try await dspool.write(legacyJournal)
+            let appendedOld = try await dspool.append(.init(index: 1, pcm: zeros, endFrame: MacRecordingWAV.framesPerChunk * 2, rawSignal: false), captureId: legacyJournal.id)
+            check(appendedOld.heardSignal == true && !appendedOld.allDigitalSilence, "spool: a journal begun before 0.5.334 (unknown) is never turned silent by a later zero chunk")
+            var legacy = journal(3); legacy.chunks = [.init(index: 0, filename: "000000.wav", endFrame: 16_000)]
+            check(!legacy.allDigitalSilence, "spool: a journal from before 0.5.334 is never assumed silent")
+            check(try JSONDecoder().decode(MacRecordingManifest.self, from: Data(#"{"captureId":"mac_00000003-aaaa-4aaa-8aaa-123456789abc","startTime":1,"serverInstanceId":"s","sourceName":"x","title":"t","stopped":true,"saved":false,"acknowledged":0,"chunks":[]}"#.utf8)).heardSignal == nil,
+                  "spool: an older journal still decodes")
+            _ = try await dspool.markStopped(silent.id)
+            // The fake helper: records what it was asked and answers like server 6.83.2, then like an older server.
+            final class Calls: @unchecked Sendable { var asked: [(String, String)] = [] }
+            let calls = Calls()
+            let discarder = MacRecordingDiscarder(spool: dspool, server: { id, pin in calls.asked.append((id, pin)); return .discarded })
+            let when = Date(timeIntervalSince1970: 1_792_600_000)
+            let outcome = await discarder.discard(captureId: silent.id, serverInstanceId: "fixture-server", serverSupported: true, at: when)
+            let day = MacRecordingDiscard.dayFolder(when)
+            let movedTo = droot.deletingLastPathComponent().appendingPathComponent("mac-recordings-discarded/\(day)/\(silent.id)")
+            check(outcome.localError == nil && outcome.moved?.path == movedTo.path && outcome.server == .discarded, "discard: moved to the dated folder and the server was asked")
+            check(calls.asked.count == 1 && calls.asked[0] == (silent.id, "fixture-server"), "discard: the server is asked once, for this capture and pin")
+            check(!fm.fileExists(atPath: droot.appendingPathComponent(silent.id).path), "discard: nothing pending remains in the spool")
+            check(fm.fileExists(atPath: movedTo.appendingPathComponent("000000.wav").path) && fm.fileExists(atPath: movedTo.appendingPathComponent("000001.wav").path)
+                  && fm.fileExists(atPath: movedTo.appendingPathComponent("manifest.json").path), "discard: every file moved, none removed")
+            check(Set(try await MacRecordingSpool(root: droot).recoverable().map(\.id)) == [quiet.id, legacyJournal.id], "discard: gone from Recover, the other captures untouched")
+            check(outcome.line == MacRecordingDiscard.note(localMoved: true, server: .discarded), "discard: one honest line")
+            // An older server: only the local copy, and it says so; nothing is sent.
+            _ = try await dspool.markStopped(quiet.id)
+            let older = await discarder.discard(captureId: quiet.id, serverInstanceId: "fixture-server", serverSupported: false, at: when)
+            check(older.server == .unsupported && calls.asked.count == 1 && older.line.contains("This COS server is older"), "older server: local discard, no request, honest note")
+            // Discarding the same id again (a capture folder with that name already discarded today) never overwrites.
+            let again = journal(1)
+            try await dspool.write(again); _ = try await dspool.markStopped(again.id)
+            let second = await discarder.discard(captureId: again.id, serverInstanceId: "fixture-server", serverSupported: true, at: when)
+            check(second.moved != nil && second.moved?.path != movedTo.path && fm.fileExists(atPath: movedTo.appendingPathComponent("manifest.json").path),
+                  "discard: a second folder of the same name gets its own name; the first is kept")
+            // A stranded row this Mac has no copy of: only the server is asked.
+            let remote = await discarder.discard(captureId: journal(9).id, serverInstanceId: "fixture-server", serverSupported: true, localPresent: false, at: when)
+            check(remote.moved == nil && remote.localError == nil && remote.server == .discarded && calls.asked.count == 3, "discard: no local copy, the server's side only")
+            // A missing local folder is an error that leaves the server alone.
+            let missing = await discarder.discard(captureId: journal(8).id, serverInstanceId: "fixture-server", serverSupported: true, at: when)
+            check(missing.localError != nil && calls.asked.count == 3 && missing.line.hasPrefix("Couldn't discard"), "discard: a local failure is reported and the server is not asked")
+            await rejects("discard refuses an invalid capture id") { _ = try await dspool.discard("../escape") }
+            let folder = try fm.attributesOfItem(atPath: movedTo.deletingLastPathComponent().path)
+            check((folder[.posixPermissions] as? NSNumber)?.intValue == 0o700, "discard: the discarded folder is owner only")
         }
         print("Mac recording core checks: \(checks) passed (fixture bytes only)")
     }
