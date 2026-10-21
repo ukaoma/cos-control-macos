@@ -32,8 +32,9 @@ but this would allow them to provide further steer." Needs COS server 6.85.0; wi
 - Core mutation gate `Tests/mutate-mac-dictation-core.py --only 0335`: 23 of 23 killed, each by a named check in
   MacDictationChecks, a green baseline before every run (the compile guard refused some compiles for memory headroom
   on a busy Mac, so the 23 were collected over four runs; no mutant survived or crashed in any run).
-- `Tests/mutate-polish-instructions-helper.py` (12 helper mutants against the helper checks) is in the branch; it
-  could not get a helper compile admitted under the guard's memory floor on this Mac, so it has not run yet.
+- Helper mutation gate `Tests/mutate-polish-instructions-helper.py` (the bridge, the finalize flag and the verb, run
+  by the helper checks against the compiled helper): 12 of 12 killed by a named assertion, a green baseline before each
+  run; collected over several runs for the same memory-floor reason. It now takes mutant names to rerun only those.
 - Not run here: the full `Tests/run.sh` and the full app build (left for the 0.5.335 merge).
 
 ## 0.5.333 (build 386), Work chat sees every session on the card, and Auto-send per card

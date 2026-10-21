@@ -5,7 +5,7 @@ in HelperSources/main.swift), executed by Tests/dictation-polish-instructions-he
 helper and a loopback fixture. SERIAL helper compiles through Tests/compile-guard.sh on a scratch copy; a green
 baseline first; a kill is the checks failing on a named assertion ("AssertionError: <why>").
 
-Usage: python3 Tests/mutate-polish-instructions-helper.py <repo root>
+Usage: python3 Tests/mutate-polish-instructions-helper.py <repo root> [mutant name...]   (names: run only those)
 """
 import os, pathlib, re, shutil, subprocess, sys, tempfile
 root = pathlib.Path(sys.argv[1]).resolve()
@@ -49,6 +49,11 @@ def run(work):
     return (1, named.group(1)) if named else (3, "no named assertion: " + r.stderr[-200:])
 
 
+only = sys.argv[2:]
+if only:
+    unknown = set(only) - {m[0] for m in MUTANTS}
+    if unknown: sys.exit(f"unknown mutant names: {sorted(unknown)}")
+    MUTANTS = [m for m in MUTANTS if m[0] in only]
 work = pathlib.Path(tempfile.mkdtemp(prefix="cos-polish-instr-mutants-", dir="/private/tmp"))
 os.environ.setdefault("COS_TEST_KIT_DIR", str(work / ".kits"))
 try:
