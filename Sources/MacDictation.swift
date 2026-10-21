@@ -4371,7 +4371,7 @@ struct DictationActivityPane: View {
                 message = "Already in the dictionary."
             } else if response.ok, let note = DictionaryLearnNote.line(correctionOnly: response.details["correctionOnly"]?.bool,
                                                                       note: response.details["note"]?.string) {
-                // 0.5.334 (server 6.83.1): "/pricing" is kept as a correction only; say so, in the server's words.
+                // 0.5.334 (server 6.84.0): "/pricing" is kept as a correction only; say so, in the server's words.
                 message = note
             } else {
                 message = response.ok ? nil : response.message

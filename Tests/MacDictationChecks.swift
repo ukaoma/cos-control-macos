@@ -1127,10 +1127,11 @@ final class FakeDictationBoard: DictationPasteboardAccess {
                    && P.choose(heard: heard, ok: false, text: "So it.", polished: true, reason: "Bad Reason; rm -rf") == .failed("refused"),
                    "polish: a refusal never applies its text, and only a short identifier reaches the log")
             // 0.5.328 (server 6.79.1 polishSkipped): skipped, fillers only, and only the five codes.
-            expect(P.skipReasons == ["daily_cap", "breaker_open", "too_long", "disabled", "failed", "clean"], "polish: six skip codes (0.5.329 adds clean)")
+            expect(P.skipReasons == ["daily_cap", "breaker_open", "too_long", "disabled", "failed", "clean", "link_guard"],
+                   "polish: seven skip codes (0.5.329 adds clean, 0.5.334 adds link_guard)")
             expect(P.choose(heard: heard, ok: true, text: heard, polished: false, reason: nil, skipped: "clean") == .skipped("clean"),
                    "polish: a dictation the server found clean is skipped:clean")
-            for code in ["daily_cap", "breaker_open", "too_long", "disabled", "failed"] {
+            for code in ["daily_cap", "breaker_open", "too_long", "disabled", "failed", "link_guard"] {
                 let skipped = P.choose(heard: heard, ok: true, text: heard, polished: false, reason: nil, skipped: code)
                 expect(skipped == .skipped(code) && skipped.logName == "skipped:" + code && skipped.text(heard: heard) == heard,
                        "polish: polished false with \(code) is skipped:\(code) and pastes what was heard")
@@ -1139,6 +1140,11 @@ final class FakeDictationBoard: DictationPasteboardAccess {
             expect(fillers == .fillersOnly("daily_cap", text: "So the the plan is ready") && fillers.logName == "fillers_only:daily_cap"
                    && fillers.text(heard: heard) == "So the the plan is ready",
                    "polish: polished true with a skip code is fillers_only:<code>, and the filler-cleaned text is pasted")
+            // 0.5.334 (server 6.84.0): the server refused the model's answer (a link nobody said). Its deterministic pass may
+            // still have changed the text ("/pricing"), so polished is true; that is not Claude's polish.
+            let guarded = P.choose(heard: heard, ok: true, text: "So go to /pricing", polished: true, reason: nil, skipped: "link_guard")
+            expect(guarded == .fillersOnly("link_guard", text: "So go to /pricing") && guarded.logName == "fillers_only:link_guard",
+                   "polish: a link_guard refusal is never labeled polished")
             expect(P.choose(heard: heard, ok: true, text: heard, polished: true, reason: nil, skipped: "disabled") == .skipped("disabled"),
                    "polish: a filler pass that changed nothing is still skipped:<code>")
             expect(P.choose(heard: heard, ok: true, text: String(repeating: "b", count: 81), polished: true, reason: nil, skipped: "daily_cap") == .failed("grew")

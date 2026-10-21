@@ -487,7 +487,8 @@ MUTANTS = [
     ("prewarm: the polish waits longer", "    static let waitMilliseconds = 150", "    static let waitMilliseconds = 1_000"),
     ("prewarm: the start carries more than the model", 'return try? JSONSerialization.data(withJSONObject: ["model": model.rawValue], options: [.sortedKeys])',
      'return try? JSONSerialization.data(withJSONObject: ["model": model.rawValue, "surface": "message"], options: [.sortedKeys])'),
-    ("prewarm: clean is not a skip code", '"disabled", "failed", "clean"]', '"disabled", "failed"]'),
+    ("prewarm: clean is not a skip code", '"disabled", "failed", "clean", "link_guard"]', '"disabled", "failed", "link_guard"]'),
+    ("0334 polish: link_guard is not a skip code", '"failed", "clean", "link_guard"]', '"failed", "clean"]'),
     ("start: milliseconds go negative", "    static func ms(_ from: TimeInterval, _ to: TimeInterval) -> Int { max(0, Int(((to - from) * 1000).rounded())) }",
      "    static func ms(_ from: TimeInterval, _ to: TimeInterval) -> Int { Int(((to - from) * 1000).rounded()) }"),
     # 0.5.331 paste first, polish in place (DictationPolishSwap): every branch, and the never-activate rule.
@@ -596,7 +597,7 @@ MUTANTS = [
     ("swap: the polish run never reaches the line", "        polishMs = run.ms; polishModel = run.model.rawValue; polishOutcome = run.outcome.logName\n", ""),
     ("swap: the record forgets what was heard", "                                                     heard: heard, polishModel: model) : r }", "                                                     heard: r.heard, polishModel: model) : r }"),
     ("swap: the swap rewrites another dictation", "        list.map { r in r.id == id ? DictationRecord(", "        list.map { r in r.id != id ? DictationRecord("),
-    # 0.5.334 (server 6.83.1): Learn from my edits keeps a link's lead mark; the correction-only note is shown plain.
+    # 0.5.334 (server 6.84.0): Learn from my edits keeps a link's lead mark; the correction-only note is shown plain.
     ("0334 written: trimmed at both ends again", "written = writtenSide(edit.replacement)", "written = edit.replacement.trimmingCharacters(in: edge)"),
     ("0334 written: the lead mark is trimmed", "        while let c = s.first, !writtenLeadKeep.contains(c), c.unicodeScalars",
      "        while let c = s.first, c.unicodeScalars"),

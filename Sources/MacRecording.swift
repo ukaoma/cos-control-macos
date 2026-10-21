@@ -77,7 +77,7 @@ final class MacRecordingStore: ObservableObject {
     /// 0.5.334: Mac captures that will never have a meeting (no speech, discarded). The live hand-off ends for these
     /// instead of "Saved meeting not found yet" (MacRecordingNoMeeting).
     @Published private(set) var noMeetingCaptureIDs: Set<String> = []
-    /// 0.5.334: the server advertises POST /api/meeting/sessions/:id/discard (capabilities `discard: true`, 6.83.2).
+    /// 0.5.334: the server advertises POST /api/meeting/sessions/:id/discard (capabilities `discard: true`, 6.84.0).
     @Published private(set) var serverDiscard = false
     /// The title the fail-fast capture had, for Try again.
     private var cannotHearTitle: String?

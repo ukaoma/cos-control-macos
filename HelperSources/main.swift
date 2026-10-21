@@ -16115,7 +16115,7 @@ final class COSControlHelper {
             guard response?.status == 200 else { emitDictionary(token: token, ok: false, message: refused(response, "The correction was not saved.")); return }
             unchanged = response?.body?["unchanged"] as? Bool == true
             message = unchanged ? "Already in the dictionary" : "Saved to the dictionary"
-            // 0.5.334 (server 6.83.1): a link, email or path is kept as a correction only; pass the server's note on.
+            // 0.5.334 (server 6.84.0): a link, email or path is kept as a correction only; pass the server's note on.
             if response?.body?["correctionOnly"] as? Bool == true, let note = response?.body?["note"] as? String {
                 extra = ["correctionOnly": true, "note": note]
             }
@@ -16271,7 +16271,7 @@ final class COSControlHelper {
             let pin = instance.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? ""
             path = "/api/meeting/sessions/" + capture + "/status?serverInstanceId=" + pin
         case "discard":
-            // 0.5.334 (server 6.83.2): a no-sound capture's server side. Sent only with confirm: true; the server re-checks
+            // 0.5.334 (server 6.84.0): a no-sound capture's server side. Sent only with confirm: true; the server re-checks
             // that it holds no speech and refuses anything else.
             guard payload["confirm"] as? Bool == true, (payload["confirm"] as? NSNumber).map({ CFGetTypeID($0) == CFBooleanGetTypeID() }) == true else {
                 emit(ok: false, message: "Mac recording discard needs confirmation.", details: ["reason": "confirmation_required"]); return

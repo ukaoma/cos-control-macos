@@ -161,6 +161,7 @@ MUTANTS = [
      'if let skipped = body["polishSkipped"] as? String { details["polishSkipped"] = skipped }', "polish skipped whitelist", "core"),
     ("polish core: the skip reason dropped", PSC, 'if let skipped = body["polishSkipped"] as? String, skipReasons.contains(skipped) { details["polishSkipped"] = skipped }',
      '', "polish skipped", "core"),
+    ("polish core: link_guard dropped", PSC, '"failed", "clean", "link_guard"]', '"failed", "clean"]', "polish skipped link_guard", "core"),
     ("polish pins: the deadline equals the budget", PSC, '        case "sonnet": 8.5', '        case "sonnet": 9', "deadline inside budget", "polishpins"),
     ("polish helper probes health first", H, "could spend the whole budget.\n        guard let token = try? readToken() else {",
      "could spend the whole budget.\n        guard let token = try? speakerReviewToken() else {",

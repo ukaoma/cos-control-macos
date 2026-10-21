@@ -711,8 +711,9 @@ enum DictationPolishBridge {
     static let models: Set<String> = ["haiku", "sonnet"]
     /// 0.5.328 (server 6.79.1): why the model did not polish, on a 200 from finalize. Only these five codes cross into
     /// Control; anything else the server says there is dropped. `polished: true` with one of them means only the
-    /// server's filler pass changed the text.
-    static let skipReasons: Set<String> = ["daily_cap", "breaker_open", "too_long", "disabled", "failed", "clean"]
+    /// server's filler pass changed the text. 0.5.334 (server 6.84.0): link_guard, the server refused the model's answer
+    /// because it held a link nobody said, so the pre-polish text went out.
+    static let skipReasons: Set<String> = ["daily_cap", "breaker_open", "too_long", "disabled", "failed", "clean", "link_guard"]
     /// 0.5.329 (server 6.79.2): what became of a prewarmed process sent with finalize. Anything else is dropped.
     static let prewarmOutcomes: Set<String> = ["used", "missed", "discarded"]
 

@@ -115,7 +115,7 @@ try:
     result=run('save',dict(base,expectedChunkCount=1))
     check(not result['ok'] and 'No speech was detected' in result['message'] and 'Update the COS server' not in result['message'],'known silent recording is not mislabeled as an old server')
 
-    # 0.5.334 (server 6.83.2): discard a no-sound capture's server side, only with confirm: true.
+    # 0.5.334 (server 6.84.0): discard a no-sound capture's server side, only with confirm: true.
     answer.update(status=200,body={'sessionId':capture,'discarded':True,'replayed':False,'quarantined':capture,'chunkFiles':2})
     result=run('discard',dict(base,confirm=True))
     check(result['ok'] and result['details']['discarded'] is True,'discard passes the server receipt through')

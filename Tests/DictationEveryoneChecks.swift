@@ -188,6 +188,10 @@ struct DictationEveryoneChecks {
         // 0.5.329 (server 6.79.2): clean is a skip code too; the token rides on finalize; what became of it comes back.
         let clean = PB.answer(status: 200, body: ["text": "um hi", "polished": false, "polishSkipped": "clean"], model: "haiku", elapsedMs: 4, timedOut: false)
         check(clean.details["polishSkipped"] as? String == "clean", "polish skipped", "clean is passed on")
+        // 0.5.334 (server 6.84.0): link_guard, the server refused an answer with a link nobody said.
+        let guarded = PB.answer(status: 200, body: ["text": "go to /pricing", "polished": true, "polishSkipped": "link_guard"], model: "haiku", elapsedMs: 4, timedOut: false)
+        check(guarded.ok && guarded.details["polishSkipped"] as? String == "link_guard" && guarded.details["polished"] as? Bool == true,
+              "polish skipped link_guard", "link_guard is passed on with polished, so Control can say it was not Claude's polish")
         let warmToken = "0a1b2c3d-4e5f-6a7b-8c9d-0e1f2a3b4c5d"
         let withToken = PB.parse(Data(#"{"text":"um hi","model":"haiku","prewarmToken":"\#(warmToken)"}"#.utf8))
         check(withToken?.prewarmToken == warmToken && withToken?.text == "um hi", "prewarm token", "a real token is accepted with the text")

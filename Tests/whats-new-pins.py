@@ -123,6 +123,14 @@ pin("considerPostUpdateWhatsNew()" in refresh, "after update meeting", "every st
 pin("noteCheckReached(incoming)" in background and "noteCheckReached(incoming)" in manual, "after update show",
     "both checks tell the after-update window the feed answered")
 pin('cp "$ROOT/Resources/WhatsNew.json" "$APP/Contents/Resources/"' in release, "bundled notes", "the release ships this build's own What's New")
+# 0.5.334: 0.5.333's first build shipped a What's New whose version still said 0.5.332, so the after-update window (which
+# shows the bundled copy only when its version is the running one) fell back to the appcast words. The notes must name
+# the build they ship in.
+import json, plistlib
+notes_version = json.loads((root / "Resources/WhatsNew.json").read_text(encoding="utf-8")).get("version")
+bundle_version = plistlib.loads((root / "Resources/Info.plist").read_bytes()).get("CFBundleShortVersionString")
+pin(isinstance(notes_version, str) and notes_version == bundle_version, "notes version",
+    f"Resources/WhatsNew.json version {notes_version!r} must equal Info.plist CFBundleShortVersionString {bundle_version!r}")
 
 # The helper never says a stage staged when it did not, and apply proves the stage before Control quits.
 stage_verb = code(between(helper, "private func emitStageAppUpdate(args: [String]) throws {", "private func bundleHasRunningProcess"))

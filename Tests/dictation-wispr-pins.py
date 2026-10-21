@@ -679,7 +679,7 @@ need("FileHandle.standardInput" in seam and "request(" not in seam and "/api/" n
 need(not any('"dictionary-suggestions"' in src for src in sources.values()) and "transcript-cleanup" not in "".join(sources.values()).replace(core, ""),
      "Control does not call the seam or the server's routes yet")
 
-# 0.5.334 (server 6.83.1): a correction-only learn ("/pricing") carries the server's note from the helper to the store,
+# 0.5.334 (server 6.84.0): a correction-only learn ("/pricing") carries the server's note from the helper to the store,
 # through the tested DictionaryLearnNote rule, and Fix a word shows the store's message.
 learn_verb = body(helper, "private func emitTranscriptionDictionary() throws {")
 need('if response?.body?["correctionOnly"] as? Bool == true, let note = response?.body?["note"] as? String {' in learn_verb

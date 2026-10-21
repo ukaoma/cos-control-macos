@@ -1,13 +1,44 @@
-## 0.5.334 (build 387), Record on Mac stops when it can't hear your Mac, and Discard replaces the dead ends
+## 0.5.334 (build 387), Dictation keeps "/pricing", Record on Mac stops when it can't hear your Mac, and Discard replaces the dead ends
+
+Two lanes in one build, both paired with COS server 6.84.0 (the server release that holds both lanes' server sides).
+
+### Dictation keeps paths
+
+Miles, 2026-10-21 13:09, dictating funnel pages ("demo, forward slash pricing, forward slash build and price"): COS
+gave him the words, and Fix a word refused "forward slash pricing" written "/pricing".
+
+- **Fix a word accepts a link, email or path as a correction.** Server 6.84.0 saves it as a correction only (never a
+  vocabulary word) and answers `correctionOnly: true` with a `note`. The helper's dictionary `learn` case passes both
+  on (one additive hunk in `HelperSources/main.swift`), and the Dictionary pane shows the note in place of "Saved",
+  plain: one line, at most 240 characters, never an em dash, an arrow or a line break (`DictionaryLearnNote`).
+- **"forward slash pricing" writes "/pricing"** in a dictation. That is the server's spoken-path rule (6.84.0,
+  `COS_DICTATION_SPOKEN_PATHS=0` turns it off); Control pastes what the server sends.
+- **Learn from my edits keeps the leading mark.** `DictationEditLearning.writtenSide` keeps a leading `/`, `\`, `@`,
+  `#`, `~` or `.` on the written side and trims only trailing punctuation. Before, an edit to "/pricing" was learned
+  as "pricing".
+- **AI polish prompt v3** is the server's default in 6.84.0 (rollback on the server: `COS_DICTATION_POLISH_PROMPT=v2`).
+  When the server refuses the model's answer because it holds a link nobody said, it answers `polishSkipped:
+  "link_guard"`. Both skip lists (`HelperSources/ProviderStatusCore.swift` and `Sources/MacDictationCore.swift`) now
+  hold `link_guard`, so Control labels that dictation not polished (`skipped:link_guard`, or `fillers_only:link_guard`
+  when the server's deterministic pass changed the text) instead of `failed:not_polished` or Claude's polish.
+- Tests: `Tests/MacDictationChecks.swift` (the written side, the note, the seven skip codes, a link_guard answer never
+  labeled polished), `Tests/DictationEveryoneChecks.swift` (the helper passes link_guard on), helper checks and wiring
+  pins; mutants in `Tests/mutate-mac-dictation-core.py` and `Tests/mutate-dictation-everyone.py`.
+- **What's New names its own build.** `Tests/whats-new-pins.py` now fails unless `Resources/WhatsNew.json` `version`
+  equals Info.plist `CFBundleShortVersionString` (0.5.333's first build shipped notes that still said 0.5.332). Two
+  mutants in `Tests/mutate-whats-new.py` prove it (stale notes version, Info.plist bumped without the notes): both
+  killed by `[notes version]`.
+
+### Record on Mac stops when it can't hear your Mac
 
 Miles, 2026-10-21 13:15: "clean up the Record on Mac pilot ... I want this functionality working moving forward."
 That morning All Mac audio (the global system-audio tap since 0.5.304) captured a 21-minute Zoom call, 08:44 to 09:05,
 as 211 chunks of EXACT zeros. Control logged "silent capture: 2 chunks below the peak floor" 12 s in and recorded on;
 the server refused the save as no speech; and the panel became a dead end ("Delivery paused: No speech was detected",
 Keep audio for later, a Retry saving that could not work, "Saved meeting not found yet · Starting", and an Unsaved
-captures row with a Save that could not work). Pairs with COS server 6.83.2 for the server side of Discard.
+captures row with a Save that could not work). Pairs with COS server 6.84.0 for the server side of Discard.
 
-### What changed
+### What changed in Record on Mac
 
 - **The hearing check.** The capture reads its raw float input before resampling and marks each chunk that held any
   sample that is not exactly 0.0 (a sample below one Int16 step rounds to zero, so the Int16 audio cannot tell quiet
@@ -23,7 +54,7 @@ captures row with a Save that could not work). Pairs with COS server 6.83.2 for 
 - **Discard (no sound was captured)** replaces Retry saving retained audio for a capture the server called no speech
   or that is exact zeros here, with an inline confirm. It moves the capture's folder (journal and WAVs untouched) into
   `~/cos-data/mac-recordings-discarded/<yyyy-MM-dd>/` with one rename (never removed), then asks the server
-  (`POST /api/meeting/sessions/:id/discard`, server 6.83.2, advertised as `discard: true`). A server still inside its
+  (`POST /api/meeting/sessions/:id/discard`, server 6.84.0, advertised as `discard: true`). A server still inside its
   2-minute idle window is asked again after 130 s, twice at most. An older server: only this Mac's copy, and the line
   says so. Meetings' Unsaved captures row offers the same Discard instead of Save for a Mac capture with no speech.
 - **No more "Saved meeting not found yet"** for a capture with no sound: its Live now row is gone and the open live
@@ -41,7 +72,7 @@ is Screen Recording, not System Audio Recording Only (`kTCCServiceAudioCapture`)
 without asking (no "system audio before recording" line was logged), so it can say no but cannot prove yes. The audio
 is the proof: exact zeros, not quiet.
 
-### Tests
+### Tests for Record on Mac
 
 - `Tests/MacRecordingChecks.swift`: the rules (raw scan, digital silence, fail-fast fires on the replayed incident and
   not on quiet nonzero, nothing playing or a per-app source; the probe; Discard, Retry and Keep policies; server

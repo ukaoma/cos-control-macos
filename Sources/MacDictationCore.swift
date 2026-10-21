@@ -1108,7 +1108,7 @@ enum DictationFixText {
     }
 }
 
-/// 0.5.334 (server 6.83.1): a link, email or path Fix a word saves ("/pricing") is kept as a correction only, and the
+/// 0.5.334 (server 6.84.0): a link, email or path Fix a word saves ("/pricing") is kept as a correction only, and the
 /// server's learn answer says so (`correctionOnly: true`, `note`). Control shows that note, plain: one line, bounded, never
 /// an em dash or an arrow, and nothing when the answer is not correction-only.
 enum DictionaryLearnNote {
@@ -2106,8 +2106,9 @@ enum DictationPolish {
         }
     }
     /// Why the server's model did not polish (server 6.79.1 `polishSkipped`). Control checks the code again: the helper is
-    /// one process away, and only these words may reach the timing line.
-    static let skipReasons: Set<String> = ["daily_cap", "breaker_open", "too_long", "disabled", "failed", "clean"]
+    /// one process away, and only these words may reach the timing line. 0.5.334 (server 6.84.0): link_guard, the
+    /// server refused the model's answer for a link nobody said; it is not Claude's polish.
+    static let skipReasons: Set<String> = ["daily_cap", "breaker_open", "too_long", "disabled", "failed", "clean", "link_guard"]
     /// The helper's answer, read. `ok` false (no server, an HTTP error, a bad answer, the helper's own timeout): the
     /// heard text. `polished` must be true: the server answers false with only the dictionary pass when Claude failed,
     /// which is not what the history would claim. An empty or runaway answer is never pasted.

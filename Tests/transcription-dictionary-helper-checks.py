@@ -103,7 +103,7 @@ try:
     check(posts == [('POST', '/api/transcription-glossary/correction', {'heard': 'Whisper', 'written': 'Wispr', 'source': 'dictation'})],
           'exactly one correction POST, trimmed, with the source')
     check('note' not in result['details'] and 'correctionOnly' not in result['details'], 'a plain learn carries no correction-only note')
-    # 0.5.334 (server 6.83.1): a link, email or path is kept as a correction only; the server's note reaches Control.
+    # 0.5.334 (server 6.84.0): a link, email or path is kept as a correction only; the server's note reaches Control.
     note = 'Saved as a correction. Links, emails and paths are never added to the words that guide transcription, so COS rewrites what it hears instead.'
     routes['learn'] = (200, {'unchanged': False, 'entry': entry, 'correctionOnly': True, 'note': note})
     result = run({'operation': 'learn', 'payload': {'heard': 'forward slash pricing', 'written': '/pricing', 'source': 'dictation'}})

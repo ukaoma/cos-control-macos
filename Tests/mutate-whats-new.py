@@ -20,6 +20,23 @@ A = "Sources/COSControlApp.swift"
 H = "HelperSources/main.swift"
 R = "Tests/run.sh"
 B = "scripts/build-release.sh"
+W = "Resources/WhatsNew.json"
+I = "Resources/Info.plist"
+
+
+def _bundle_versions():
+    """0.5.334: the notes-version mutants target this checkout's own version, so they need no edit per release."""
+    import json, plistlib
+    root = pathlib.Path(sys.argv[1]) if len(sys.argv) > 1 else pathlib.Path(".")
+    try:
+        notes = json.loads((root / W).read_text(encoding="utf-8"))["version"]
+        bundle = plistlib.loads((root / I).read_bytes())["CFBundleShortVersionString"]
+    except Exception:
+        return "0.0.0", "0.0.0"
+    return notes, bundle
+
+
+NOTES_VERSION, BUNDLE_VERSION = _bundle_versions()
 # (name, file, original, mutant, words the killing failure must contain, lane)
 MUTANTS = [
     # The app's reading of whatsNew.
@@ -79,6 +96,10 @@ MUTANTS = [
     ("first run not remembered", C, "        if postUpdateLaunch == .firstRun { whatsNewSeen.lastSeenBuild = Self.currentBuild }\n", "", "[after update first run]", "wiring"),
     ("shows before the feed answers", C, "        guard incoming.reason != \"unreachable\", incoming.reason != \"malformed\", incoming.reason != \"idle\" else { return }\n", "", "[after update show]", "wiring"),
     ("refresh never asks again", C, "            // A What's New held back by a recording meeting shows once the meeting ends (cheap when nothing waits).\n            considerPostUpdateWhatsNew()\n", "", "[after update meeting]", "pins"),
+    # 0.5.334: the bundled notes must name the build they ship in (0.5.333's first build said 0.5.332).
+    ("stale What's New version", W, f'  "version": "{NOTES_VERSION}",', '  "version": "0.0.0",', "[notes version]", "pins"),
+    ("Info.plist bumped, notes not", I, f"<key>CFBundleShortVersionString</key>\n\t<string>{BUNDLE_VERSION}</string>",
+     "<key>CFBundleShortVersionString</key>\n\t<string>9.9.9</string>", "[notes version]", "pins"),
     ("release ships no notes", B, "cp \"$ROOT/Resources/WhatsNew.json\" \"$APP/Contents/Resources/\"\n", "", "[bundled notes]", "pins"),
     # The helper copy of the sanitizer.
     ("helper passes whatsNew raw", H, "if let whatsNew = Self.sanitizedWhatsNew(stable[\"whatsNew\"]) { details[\"whatsNew\"] = whatsNew }",

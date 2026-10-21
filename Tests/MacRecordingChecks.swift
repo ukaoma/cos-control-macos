@@ -508,7 +508,7 @@ import Darwin
             check(try JSONDecoder().decode(MacRecordingManifest.self, from: Data(#"{"captureId":"mac_00000003-aaaa-4aaa-8aaa-123456789abc","startTime":1,"serverInstanceId":"s","sourceName":"x","title":"t","stopped":true,"saved":false,"acknowledged":0,"chunks":[]}"#.utf8)).heardSignal == nil,
                   "spool: an older journal still decodes")
             _ = try await dspool.markStopped(silent.id)
-            // The fake helper: records what it was asked and answers like server 6.83.2, then like an older server.
+            // The fake helper: records what it was asked and answers like server 6.84.0, then like an older server.
             final class Calls: @unchecked Sendable { var asked: [(String, String)] = [] }
             let calls = Calls()
             let discarder = MacRecordingDiscarder(spool: dspool, server: { id, pin in calls.asked.append((id, pin)); return .discarded })
