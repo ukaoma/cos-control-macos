@@ -1475,7 +1475,7 @@ private struct WorkChatSendControls: View {
             Text(chat.refreshing ? "Refreshing receipts and updates… Your draft is preserved." : (cardAutoSend ? "⌘ Return to plan and send · Return adds a line" : "⌘ Return to plan · Return adds a line")).font(COSType.body(10)).foregroundStyle(COSPalette.muted)
             Spacer()
             Toggle("Auto-send", isOn: Binding(get: { cardAutoSend }, set: { autoSendCards = WorkOrchestrator.setting(workID: source.id, on: $0, raw: autoSendCards, settingDefault: autoSend) }))
-                .toggleStyle(.switch).controlSize(.mini).font(COSType.body(10)).disabled(chat.busy)
+                .toggleStyle(COSSwitchStyle()).font(COSType.body(10)).disabled(chat.busy)
                 .help("This card only. On: plans are sent without review, each assignment with a Stop. Its default is Settings › Work › Send plans without review.")
                 .accessibilityIdentifier("work-chat-auto-send")
             if !chat.planners.isEmpty {
