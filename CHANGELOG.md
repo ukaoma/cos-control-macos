@@ -50,6 +50,16 @@ Needs server 6.83.0 for the new input; with an older server nothing below change
 
 ### Checks
 
+- **Lens plans** (after the 6.10.651 QA fixes): full suite (`Tests/run.sh`, one full compile at a time, SimplePetDefault
+  under the 3 GB watchdog, peak 1,911 MB) passed, rc 0, 11:28 to 11:58. `Tests/WorkLensPlansChecks.swift` (two-file
+  compile) 38 checks; `Tests/WorkLensPlansStoreChecks.swift` (the real pump and stores against a fake helper): an older
+  server gets the capability read only; a round lands once in history as a WorkChatRound marked From glasses with its
+  time and the checks Send uses; the next Mac plan reads it as history; a confirmed send goes through submit with the
+  round's own receipts and results; a lens Stop cancels the job through Stop and is reported stopped; unconfirmed with
+  Auto-send off is refused; the card switch is re-reported and an Auto-send send queues behind earlier work; recording
+  never sends; Miles's own Mac Send of a lens round is reported through mac-send. `Tests/mutate-work-lens-plans.py`,
+  green baseline per tier: pure 17 of 17 killed, hub 17 of 18 killed by an execution check plus 1 documented survivor
+  (the lens-dispatch flag; the Mac report reads only assignments no lens send sent).
 - Full suite (`Tests/run.sh`, one full compile at a time, SimplePetDefault under the 3 GB footprint watchdog, peak
   2,123 MB): passed, rc 0. The first full run stopped at the brand pin (the Auto-send switch used a stock
   `.toggleStyle(.switch)`); it now uses `COSSwitchStyle`, and the second run passed end to end.
