@@ -922,6 +922,32 @@ final class FakeDictationBoard: DictationPasteboardAccess {
             expect(edited("market", "Marktpos", outside: prompt) == nil, "one plain word never learns a below-threshold spelling: it would rewrite every \"market\"")
             expect(edited("Ukoma", "Ukaoma", outside: prompt) == .init(heard: "Ukoma", written: "Ukaoma", evidence: .nearbyText)
                    && edited("Ukoma", "Ukaoma") == .init(heard: "Ukoma", written: "Ukaoma"), "a sound-alike that qualifies anyway carries the evidence when there is some")
+            // 0.5.334: the server's correction-only note, shown plain or not at all.
+            let serverNote = "Saved as a correction. Links, emails and paths are never added to the words that guide transcription, so COS rewrites what it hears instead."
+            expect(DictionaryLearnNote.line(correctionOnly: true, note: "  " + serverNote + " ") == serverNote, "a correction-only learn shows the server's note")
+            expect(DictionaryLearnNote.line(correctionOnly: false, note: serverNote) == nil && DictionaryLearnNote.line(correctionOnly: nil, note: serverNote) == nil
+                   && DictionaryLearnNote.line(correctionOnly: true, note: nil) == nil && DictionaryLearnNote.line(correctionOnly: true, note: "  ") == nil,
+                   "no note unless the answer is correction-only and carries one")
+            expect(DictionaryLearnNote.line(correctionOnly: true, note: "Saved \u{2014} kept") == nil && DictionaryLearnNote.line(correctionOnly: true, note: "a \u{2192} b") == nil
+                   && DictionaryLearnNote.line(correctionOnly: true, note: "two\nlines") == nil
+                   && DictionaryLearnNote.line(correctionOnly: true, note: String(repeating: "a", count: DictionaryLearnNote.maximumLength + 1)) == nil
+                   && DictionaryLearnNote.line(correctionOnly: true, note: String(repeating: "a", count: DictionaryLearnNote.maximumLength)) != nil,
+                   "a note with an em dash, an arrow, a line break or past the length is not shown")
+            // 0.5.334 (Miles, 2026-10-21): the written side keeps what a link, handle or file name starts with, and loses
+            // only trailing punctuation. Before, "/pricing" was learned as "pricing" and "@Ukaoma" as "Ukaoma".
+            for mark in ["/", "\\", "@", "#", "~", "."] {
+                expect(edited("Ukoma", mark + "Ukaoma")?.written == mark + "Ukaoma", "a leading \(mark) stays on the written side")
+            }
+            expect(edited("Ukoma", "(Ukaoma).")?.written == "Ukaoma" && edited("Ukoma", "\u{201C}Ukaoma\u{201D},")?.written == "Ukaoma",
+                   "a bracket or quote the edit picked up still goes, and trailing punctuation goes")
+            expect(edited("Ukoma", "/Ukaoma/.")?.written == "/Ukaoma" && edited("Ukoma", "@Ukaoma:")?.written == "@Ukaoma",
+                   "trailing punctuation goes after a kept leading mark too")
+            expect(edited("Ukoma", "Ukaoma++")?.written == "Ukaoma++" && edited("Ukoma", "Ukaoma\u{2122}")?.written == "Ukaoma\u{2122}",
+                   "a trailing symbol is part of the spelling (C++, a trademark)")
+            expect(edited("Ukoma", "$Ukaoma")?.written == "Ukaoma", "a leading symbol outside the kept marks still goes")
+            expect(edited("slash", "/") == nil && edited("Ukoma", " / ") == nil, "a mark with no word is never learned")
+            expect(EL.writtenSide(" /pricing, ") == "/pricing" && EL.writtenSide("\"#launch\"") == "#launch" && EL.writtenSide("...") == "",
+                   "writtenSide keeps the lead mark and drops the rest of the edge")
             expect(EL.evidence(written: "Jewel360", outside: ["see Jewel360's site"]) == .nearbyText && EL.evidence(written: "Jewel360", outside: ["(Jewel360)"]) == .nearbyText
                    && EL.evidence(written: "Jewel360", outside: ["Jewel3600 and xJewel360"]) == nil && EL.evidence(written: "Jewel360", outside: ["jewel360"]) == nil
                    && EL.evidence(written: "Jewel360", outside: []) == nil && EL.evidence(written: "", outside: ["x"]) == nil,

@@ -102,6 +102,19 @@ try:
     check(result['ok'] and result['message'] == 'Saved to the dictionary', 'learn reports the save')
     check(posts == [('POST', '/api/transcription-glossary/correction', {'heard': 'Whisper', 'written': 'Wispr', 'source': 'dictation'})],
           'exactly one correction POST, trimmed, with the source')
+    check('note' not in result['details'] and 'correctionOnly' not in result['details'], 'a plain learn carries no correction-only note')
+    # 0.5.334 (server 6.83.1): a link, email or path is kept as a correction only; the server's note reaches Control.
+    note = 'Saved as a correction. Links, emails and paths are never added to the words that guide transcription, so COS rewrites what it hears instead.'
+    routes['learn'] = (200, {'unchanged': False, 'entry': entry, 'correctionOnly': True, 'note': note})
+    result = run({'operation': 'learn', 'payload': {'heard': 'forward slash pricing', 'written': '/pricing', 'source': 'dictation'}})
+    check(result['ok'] and result['details'].get('correctionOnly') is True and result['details'].get('note') == note and result['details']['vocabulary'],
+          'a correction-only learn passes the server note on with the dictionary')
+    routes['glossary'] = 503
+    result = run({'operation': 'learn', 'payload': {'heard': 'forward slash pricing', 'written': '/pricing', 'source': 'dictation'}})
+    check(result['ok'] and result['details'].get('stale') is True and result['details'].get('note') == note, 'the note survives a failed read-back')
+    routes['glossary'] = 200
+    routes['learn'] = (200, {'unchanged': False, 'entry': entry, 'correctionOnly': False, 'note': note})
+    check('note' not in run({'operation': 'learn', 'payload': {'heard': 'a', 'written': 'b', 'source': 'manual'}})['details'], 'a note without correctionOnly is not passed on')
     routes['learn'] = (200, {'unchanged': True, 'entry': None})
     check(run({'operation': 'learn', 'payload': {'heard': 'a', 'written': 'b', 'source': 'manual'}})['message'] == 'Already in the dictionary', 'unchanged is said plainly')
 

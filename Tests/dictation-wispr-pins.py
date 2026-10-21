@@ -417,7 +417,7 @@ need('case "transcription-dictionary": try emitTranscriptionDictionary()' in hel
 verb = body(helper, "private func emitTranscriptionDictionary() throws {")
 need("FileHandle.standardInput" in verb and 'option("--' not in verb and "args" not in verb,
      "dictionary words ride on stdin; a word in argv is published to every process on this Mac")
-emit_dictionary = body(helper, "private func emitDictionary(token: String, ok: Bool, message: String, unchanged: Bool = false) {")
+emit_dictionary = body(helper, "private func emitDictionary(token: String, ok: Bool, message: String, unchanged: Bool = false, extra: [String: Any] = [:]) {")
 paths = set(re.findall(r'"(/api/[^"?]*)', verb + emit_dictionary))
 need(paths == {"/api/transcription-glossary", "/api/transcription-glossary/correction", "/api/transcription-glossary/correction/undo",
                "/api/transcription-glossary/recent", "/api/transcription-glossary/vocabulary/add", "/api/transcription-glossary/vocabulary/remove",
@@ -428,7 +428,7 @@ need(verb.count("put([") == 1 and 'if response?.status == 404, source == "manual
      "the only PUT is the old-server fallback for a hand-added correction")
 need("value.utf16.count <= Self.dictionaryMaxTermUTF16" in verb and "value.count <=" not in verb,
      "the helper counts UTF-16 units, as the server's MAX_TERM_LEN does")
-need('if ok { emit(ok: true, message: message, details: ["stale": true, "unchanged": unchanged]) }' in emit_dictionary,
+need('if ok { emit(ok: true, message: message, details: (["stale": true, "unchanged": unchanged] as [String: Any]).merging(extra) { current, _ in current }) }' in emit_dictionary,
      "a change that worked stays a success when the read-back fails")
 # 0.5.317: the answer's meaning moved to DictationBridge.answer (ProviderStatusCore), shared with dictation-check.
 need("let answer = try dictate(audio)" in body(helper, "private func emitMacDictation() throws {")
@@ -678,5 +678,24 @@ need("FileHandle.standardInput" in seam and "request(" not in seam and "/api/" n
      and '"dormant": true' in seam, "the seam reads stdin, reads no token and sends nothing")
 need(not any('"dictionary-suggestions"' in src for src in sources.values()) and "transcript-cleanup" not in "".join(sources.values()).replace(core, ""),
      "Control does not call the seam or the server's routes yet")
+
+# 0.5.334 (server 6.83.1): a correction-only learn ("/pricing") carries the server's note from the helper to the store,
+# through the tested DictionaryLearnNote rule, and Fix a word shows the store's message.
+learn_verb = body(helper, "private func emitTranscriptionDictionary() throws {")
+need('if response?.body?["correctionOnly"] as? Bool == true, let note = response?.body?["note"] as? String {' in learn_verb
+     and 'extra = ["correctionOnly": true, "note": note]' in learn_verb
+     and "emitDictionary(token: token, ok: true, message: message, unchanged: unchanged, extra: extra)" in learn_verb,
+     "the helper's learn case passes correctionOnly and note on")
+emit_dict = body(helper, "private func emitDictionary(token: String, ok: Bool, message: String, unchanged: Bool = false, extra: [String: Any] = [:]) {")
+need(emit_dict.count(".merging(extra) { current, _ in current }") == 2, "both dictionary answers (read back and stale) carry the extra fields")
+store = body(dictation, "@MainActor final class TranscriptionDictionaryStore: ObservableObject {")
+need('let note = DictionaryLearnNote.line(correctionOnly: response.details["correctionOnly"]?.bool,' in store
+     and 'note: response.details["note"]?.string) {' in store and "message = note" in store,
+     "the dictionary store shows the note through the tested rule")
+_order = [store.find('response.details["unchanged"]?.bool == true'), store.find("DictionaryLearnNote.line("), store.find("message = response.ok ? nil : response.message")]
+need(-1 not in _order and _order == sorted(_order),
+     "unchanged still wins, and a plain save still clears the message")
+save_fix = body(dictation, "func saveFix(to dictionary: TranscriptionDictionaryStore) {")
+need('fixNote = (dictionary.message.map { $0 + " " } ?? "Saved. ")' in save_fix, "Fix a word shows the store message before its own line")
 
 print(f"PASS dictation-wispr pins: {checks} checks; HUD gone, copy-then-insert-at-focus, private history, overlay focus, pet slot and lists, Dictionary route, helper stdin, quick fix, replace, quiet restore on every exit")
