@@ -33,7 +33,19 @@ Needs server 6.83.0 for the new input; with an older server nothing below change
 
 ### Checks
 
-CHECKS_PLACEHOLDER
+- Full suite (`Tests/run.sh`, one full compile at a time, SimplePetDefault under the 3 GB footprint watchdog, peak
+  2,123 MB): passed, rc 0. The first full run stopped at the brand pin (the Auto-send switch used a stock
+  `.toggleStyle(.switch)`); it now uses `COSSwitchStyle`, and the second run passed end to end.
+- `Tests/WorkOrchestratorChecks.swift` (two-file compile): 41 checks, including the Auto-send golden (no card choice
+  and Settings off is off, as in 0.5.332).
+- `Tests/WorkOrchestratorStoreChecks.swift` (the real stores against a fake transport, in the hub runner): the toadstone
+  card plans with both sessions and the Guardian row never reaches the server; the list is read right before the input;
+  Continue, Fork and New session each go through submit once; the fork child is journaled; Auto-send sends without the
+  review click and Stop cancels the running New session's job; empty plans say why; an older server gets 0.5.332's body.
+- `Tests/work-orchestrator-pins.py`: helper routes and timeouts, the Settings default, compile lists.
+- `Tests/mutate-work-orchestrator.py`, green baseline per tier: pure tier 30 of 30 killed by a named check; hub tier
+  (pins taken out of the copy, so each kill is an execution check) 9 of 9 killed, plus 1 documented survivor (the
+  Guardian filter on Continue targets: the server's rows never carry a Guardian row).
 
 ## 0.5.332 (build 385), Dictation into canvas editors, a safer paste-route swap
 
