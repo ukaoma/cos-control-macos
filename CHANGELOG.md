@@ -1,3 +1,40 @@
+## 0.5.333 (build 386), Work chat sees every session on the card, and Auto-send per card
+
+Miles, 2026-10-20 21:47: the Work chat should act like an orchestrator, not a form. On the toadstone card that evening
+the planner saw no sessions: the card had one confirmed link (Claude "2026 SBU/XBU") and a Codex session on it by
+handoff history only, and Control sent only links that were also in a session list under 45 s old. Decisions (21:55):
+Q1, Auto-send is a per-card switch with a Settings default; Q2, plan usage only, never a silent key-lane fallback.
+Needs server 6.83.0 for the new input; with an older server nothing below changes except the never-silent note.
+
+### What changed
+
+- **The server builds the planner input** (server 6.83.0 advertises `orchestrator: 1`). Phase A, decided in
+  cos-glasses-server `docs/work-orchestrator.md`: Control keeps owning its Work journal and pushes the server a bounded
+  snapshot (ids, modes, statuses and times; never a prompt, result or file name) in the same helper call that reads
+  the card's rows (`work-orchestrator-input`). The server finds the card's sessions (links, receipts, the COS-WORK
+  handoff prompts and status lines in the session logs, the card's source meetings), writes a redacted pick-up note
+  for each, and says why each can or cannot take a Continue now (not in the session list, open in its app, Cursor,
+  plan usage used up, working on another card). Plan usage per provider rides along.
+- **The session list is read again right before planning.** A plan where no session can take a Continue says why,
+  above the plan: none found, or which sessions were found and what stops each. With an older server it says when
+  the linked sessions are not in the list just read. Never an empty list in silence.
+- **A plan may Fork or start a New session.** Fork only from a row the server marked forkable (Claude or Codex, its
+  log on this Mac, usage left); a session found outside the live list can be forked. New session only on a provider
+  with an available model. Continue keeps its gate: Claude or Codex, in the fresh list, not owned by its app. All three
+  go through the existing handoff path: submit, the card and session fences, receipts and the queue.
+- **Fork receipts journal the child** (`forkChildID`), the moment the child is known, so discovery finds fork children
+  even when the receipt's session later reads differently.
+- **Codex Guardian review rows** never reach the server or the planner.
+- **Auto-send, per card.** A switch on each card's Work chat; a card with no choice of its own follows Settings ›
+  Work › Send plans without review (off by default). On: plans send without the review click (the first Plan and
+  send still asks once), each send logs a line, and each assignment shows Stop while it can stop: one not sent yet or
+  queued never goes; a New session's run is cancelled (`work-job-cancel`); a Continue's turn is stopped
+  (`session-chat-cancel`); a fork in progress says it cannot be stopped from here. Off: today, unchanged.
+
+### Checks
+
+CHECKS_PLACEHOLDER
+
 ## 0.5.332 (build 385), Dictation into canvas editors, a safer paste-route swap
 
 Miles, 2026-10-20, from his own use of 0.5.331: "Can you take a look at this and see how to resolve." Everything in

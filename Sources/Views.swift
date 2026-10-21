@@ -2826,7 +2826,7 @@ struct ControlPanel: View {
             // 0.5.312 (Miles 2026-10-15): Work chat plans and sends in one step. The first use still asks once.
             Toggle("Send plans without review", isOn: $workChatSendWithoutReview)
                 .toggleStyle(COSSwitchStyle())
-                .help("Work chat's main button becomes Plan and send: assignments go to their sessions as soon as they are planned. Plan, with review, stays available")
+                .help("The default for every card's Auto-send switch (0.5.333). On: Work chat's main button becomes Plan and send, assignments go to their sessions as soon as they are planned, and each has a Stop. A card's own switch overrides this. Plan, with review, stays available")
             // 0.5.317 (Miles 2026-10-16): a send that earlier work on the card would hold queues by default. Plan and send
             // always queues; it never skips the check.
             COSDropdown("When earlier work is still open", selection: $workChatWhenHeld,
