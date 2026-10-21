@@ -596,6 +596,24 @@ MUTANTS = [
     ("swap: the polish run never reaches the line", "        polishMs = run.ms; polishModel = run.model.rawValue; polishOutcome = run.outcome.logName\n", ""),
     ("swap: the record forgets what was heard", "                                                     heard: heard, polishModel: model) : r }", "                                                     heard: r.heard, polishModel: model) : r }"),
     ("swap: the swap rewrites another dictation", "        list.map { r in r.id == id ? DictationRecord(", "        list.map { r in r.id != id ? DictationRecord("),
+    # 0.5.334 (server 6.83.1): Learn from my edits keeps a link's lead mark; the correction-only note is shown plain.
+    ("0334 written: trimmed at both ends again", "written = writtenSide(edit.replacement)", "written = edit.replacement.trimmingCharacters(in: edge)"),
+    ("0334 written: the lead mark is trimmed", "        while let c = s.first, !writtenLeadKeep.contains(c), c.unicodeScalars",
+     "        while let c = s.first, c.unicodeScalars"),
+    ("0334 written: only a slash is kept", '    static let writtenLeadKeep: Set<Character> = ["/", "\\\\", "@", "#", "~", "."]',
+     '    static let writtenLeadKeep: Set<Character> = ["/"]'),
+    ("0334 written: a picked-up quote stays", "        while let c = s.first, !writtenLeadKeep.contains(c), c.unicodeScalars.allSatisfy({ lead.contains($0) }) { s = s.dropFirst() }\n", ""),
+    ("0334 written: trailing punctuation stays", "        while let c = s.last, c.unicodeScalars.allSatisfy({ tail.contains($0) }) { s = s.dropLast() }\n", ""),
+    ("0334 written: a trailing symbol is trimmed", "        let tail = CharacterSet.punctuationCharacters.union(.whitespacesAndNewlines)\n",
+     "        let tail = lead\n"),
+    ("0334 note: shown without correctionOnly", "        guard correctionOnly == true, let raw = note else { return nil }", "        guard let raw = note else { return nil }"),
+    ("0334 note: an em dash is shown", '              !text.contains("\\u{2014}"), !text.contains("\\u{2192}") else { return nil }',
+     '              !text.contains("\\u{2192}") else { return nil }'),
+    ("0334 note: an arrow is shown", '              !text.contains("\\u{2014}"), !text.contains("\\u{2192}") else { return nil }',
+     '              !text.contains("\\u{2014}") else { return nil }'),
+    ("0334 note: no length bound", "        guard !text.isEmpty, text.count <= maximumLength,", "        guard !text.isEmpty,"),
+    ("0334 note: a line break is shown", " !text.contains(where: \\.isNewline),\n", "\n"),
+    ("0334 note: a blank note is shown", "        guard !text.isEmpty, text.count <= maximumLength,", "        guard text.count <= maximumLength,"),
 ]
 
 

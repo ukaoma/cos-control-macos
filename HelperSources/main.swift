@@ -16094,6 +16094,7 @@ final class COSControlHelper {
         }
         var message = "Dictionary"
         var unchanged = false
+        var extra: [String: Any] = [:]
         switch operation {
         case "learn":
             let heard = fields["heard"]!, written = fields["written"]!, source = fields["source"]!
@@ -16114,6 +16115,10 @@ final class COSControlHelper {
             guard response?.status == 200 else { emitDictionary(token: token, ok: false, message: refused(response, "The correction was not saved.")); return }
             unchanged = response?.body?["unchanged"] as? Bool == true
             message = unchanged ? "Already in the dictionary" : "Saved to the dictionary"
+            // 0.5.334 (server 6.83.1): a link, email or path is kept as a correction only; pass the server's note on.
+            if response?.body?["correctionOnly"] as? Bool == true, let note = response?.body?["note"] as? String {
+                extra = ["correctionOnly": true, "note": note]
+            }
         case "undo":
             let response = post("/api/transcription-glossary/correction/undo", ["id": fields["id"]!])
             guard response?.status == 200 else { emitDictionary(token: token, ok: false, message: refused(response, "That correction was not undone.")); return }
@@ -16132,7 +16137,7 @@ final class COSControlHelper {
             message = unchanged && operation == "add-vocabulary" ? "Already in the dictionary" : done
         default: break
         }
-        emitDictionary(token: token, ok: true, message: message, unchanged: unchanged)
+        emitDictionary(token: token, ok: true, message: message, unchanged: unchanged, extra: extra)
     }
 
     /// The server's MAX_TERM_LEN (server/lib/glossary-learn.ts), in UTF-16 units.
@@ -16140,9 +16145,9 @@ final class COSControlHelper {
 
     /// The dictionary as COS Control shows it. `learnAvailable` is false on a server older than 6.73.11 (no recent log).
     /// A change that succeeded stays a success when the read-back fails: `stale` says the lists were not refreshed.
-    private func emitDictionary(token: String, ok: Bool, message: String, unchanged: Bool = false) {
+    private func emitDictionary(token: String, ok: Bool, message: String, unchanged: Bool = false, extra: [String: Any] = [:]) {
         guard let response = request("/api/transcription-glossary", token: token, timeout: 5), response.status == 200, let body = response.body else {
-            if ok { emit(ok: true, message: message, details: ["stale": true, "unchanged": unchanged]) }
+            if ok { emit(ok: true, message: message, details: (["stale": true, "unchanged": unchanged] as [String: Any]).merging(extra) { current, _ in current }) }
             else { emit(ok: false, message: message) }
             return
         }
@@ -16155,10 +16160,10 @@ final class COSControlHelper {
             guard let id = entry["id"] as? String, let heard = entry["heard"] as? String, let written = entry["written"] as? String else { return nil }
             return ["id": id, "heard": heard, "written": written, "source": entry["source"] as? String ?? "", "at": entry["at"] as? String ?? ""]
         }
-        emit(ok: ok, message: message, details: [
+        emit(ok: ok, message: message, details: ([
             "vocabulary": vocabulary, "corrections": corrections, "recent": recent,
             "learnAvailable": recentResponse?.status == 200, "unchanged": unchanged,
-        ])
+        ] as [String: Any]).merging(extra) { current, _ in current })
     }
 
     /// 0.5.323 seam for the server's dictionary suggestions (server 6.77.0 transcript cleanup, unpublished when this was

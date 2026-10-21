@@ -1108,6 +1108,20 @@ enum DictationFixText {
     }
 }
 
+/// 0.5.334 (server 6.83.1): a link, email or path Fix a word saves ("/pricing") is kept as a correction only, and the
+/// server's learn answer says so (`correctionOnly: true`, `note`). Control shows that note, plain: one line, bounded, never
+/// an em dash or an arrow, and nothing when the answer is not correction-only.
+enum DictionaryLearnNote {
+    static let maximumLength = 240
+    static func line(correctionOnly: Bool?, note: String?) -> String? {
+        guard correctionOnly == true, let raw = note else { return nil }
+        let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, text.count <= maximumLength, !text.contains(where: \.isNewline),
+              !text.contains("\u{2014}"), !text.contains("\u{2192}") else { return nil }
+        return text
+    }
+}
+
 /// The dictionary's "where and when" line (mock 06): "dictation · now", "meeting · Oct 12", "G2 · Oct 9".
 enum DictionaryLabels {
     static func source(_ raw: String) -> String {
@@ -2466,7 +2480,7 @@ enum DictationEditLearning {
     static func candidate(_ edit: DictationReplace.Edit, known: (String) -> Bool, learned: (String, String) -> Bool,
                           outside: [String] = []) -> Candidate? {
         let edge = CharacterSet.punctuationCharacters.union(.symbols).union(.whitespacesAndNewlines)
-        let heard = edit.original.trimmingCharacters(in: edge), written = edit.replacement.trimmingCharacters(in: edge)
+        let heard = edit.original.trimmingCharacters(in: edge), written = writtenSide(edit.replacement)
         guard !heard.isEmpty, !written.isEmpty, heard != written, !(heard + written).contains(where: \.isNewline) else { return nil }
         let heardWords = heard.split(whereSeparator: \.isWhitespace).map(String.init), writtenWords = written.split(whereSeparator: \.isWhitespace).map(String.init)
         guard (1...maximumWords).contains(heardWords.count), (1...maximumWords).contains(writtenWords.count) else { return nil }
@@ -2488,6 +2502,20 @@ enum DictationEditLearning {
         }
         guard !learned(heard, written) else { return nil }
         return Candidate(heard: heard, written: written, evidence: evidence)
+    }
+
+    /// 0.5.334 (Miles, 2026-10-21): what a link, handle or file name starts with. The written side keeps it ("/pricing",
+    /// "@sam", "#launch", "~/notes", ".env", "\\share"); trimming it learned "forward slash pricing" as "pricing".
+    static let writtenLeadKeep: Set<Character> = ["/", "\\", "@", "#", "~", "."]
+    /// The written side of an edit: other leading punctuation, symbols and spaces go (a quote or bracket the edit picked
+    /// up), a leading `writtenLeadKeep` mark stays, and at the end only punctuation and spaces go ("C++" and "Jewel360™" stay).
+    static func writtenSide(_ raw: String) -> String {
+        let lead = CharacterSet.punctuationCharacters.union(.symbols).union(.whitespacesAndNewlines)
+        let tail = CharacterSet.punctuationCharacters.union(.whitespacesAndNewlines)
+        var s = Substring(raw)
+        while let c = s.first, !writtenLeadKeep.contains(c), c.unicodeScalars.allSatisfy({ lead.contains($0) }) { s = s.dropFirst() }
+        while let c = s.last, c.unicodeScalars.allSatisfy({ tail.contains($0) }) { s = s.dropLast() }
+        return String(s)
     }
 
     /// The field's text outside the dictation in one read: before `start` and after `start + length` (UTF-16 units).
