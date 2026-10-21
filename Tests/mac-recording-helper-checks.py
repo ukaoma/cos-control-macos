@@ -136,7 +136,7 @@ try:
     check(not result['ok'] and result['details']['reason']=='session_not_found','already gone is named')
     answer.update(status=404,body=None)
     result=run('discard',dict(base,confirm=True))
-    check(not result['ok'] and result['details']['reason']=='route_absent' and 'cannot discard' in result['message'],'an older server without the route reads route_absent')
+    check(not result['ok'] and result['details'].get('reason')=='route_absent' and 'cannot discard' in result['message'],'an older server without the route reads route_absent')
     answer.update(status=200,body={'serverInstanceId':'fixture-server','available':True,'sourceType':'mac_system_audio'})
 
     before=len(seen)

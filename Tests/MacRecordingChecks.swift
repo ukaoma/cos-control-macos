@@ -471,7 +471,7 @@ import Darwin
                   "server: an older server without the route")
             check(MacRecordingDiscard.serverAnswer(ok: false, httpStatus: 409, reason: "has_speech", discarded: nil, replayed: nil) == S.refused("has_speech"), "server: speech is refused")
             check(MacRecordingDiscard.serverAnswer(ok: false, httpStatus: nil, reason: "server_unavailable", discarded: nil, replayed: nil) == S.unreachable, "server: unreachable")
-            check(MacRecordingDiscard.note(localMoved: true, server: .unsupported).contains("older"), "older server: the note is honest that only this Mac's copy went")
+            check(MacRecordingDiscard.note(localMoved: true, server: .unsupported).contains("This COS server is older"), "older server: the note is honest that only this Mac's copy went")
             check(!MacRecordingDiscard.note(localMoved: true, server: .discarded).contains("server"), "a full discard needs no server caveat")
             check(MacRecordingDiscard.dayFolder(Date(timeIntervalSince1970: 1_792_600_000), calendar: { var c = Calendar(identifier: .gregorian); c.timeZone = TimeZone(identifier: "America/Chicago")!; return c }()) == "2026-10-21",
                   "discarded folder is dated")
@@ -521,12 +521,12 @@ import Darwin
             check(!fm.fileExists(atPath: droot.appendingPathComponent(silent.id).path), "discard: nothing pending remains in the spool")
             check(fm.fileExists(atPath: movedTo.appendingPathComponent("000000.wav").path) && fm.fileExists(atPath: movedTo.appendingPathComponent("000001.wav").path)
                   && fm.fileExists(atPath: movedTo.appendingPathComponent("manifest.json").path), "discard: every file moved, none removed")
-            check(try await MacRecordingSpool(root: droot).recoverable().map(\.id) == [quiet.id], "discard: gone from Recover, the other capture untouched")
+            check(Set(try await MacRecordingSpool(root: droot).recoverable().map(\.id)) == [quiet.id, legacyJournal.id], "discard: gone from Recover, the other captures untouched")
             check(outcome.line == MacRecordingDiscard.note(localMoved: true, server: .discarded), "discard: one honest line")
             // An older server: only the local copy, and it says so; nothing is sent.
             _ = try await dspool.markStopped(quiet.id)
             let older = await discarder.discard(captureId: quiet.id, serverInstanceId: "fixture-server", serverSupported: false, at: when)
-            check(older.server == .unsupported && calls.asked.count == 1 && older.line.contains("older"), "older server: local discard, no request, honest note")
+            check(older.server == .unsupported && calls.asked.count == 1 && older.line.contains("This COS server is older"), "older server: local discard, no request, honest note")
             // Discarding the same id again (a capture folder with that name already discarded today) never overwrites.
             let again = journal(1)
             try await dspool.write(again); _ = try await dspool.markStopped(again.id)

@@ -54,7 +54,8 @@ pin("MacRecordingHearing.step(&next, digitalSilence: silence, othersPlaying: pla
 pin("MacAudioCapture.othersPlaying()" in check and "if silence, allMacAudio, !hearing.heardSignal {" in check, "playing read only when it matters",
     "the process list is read only for an exact-zero chunk of All Mac audio before any sound")
 fail = between(store, "    private func stopCannotHear(", "    func tryAgainAfterCannotHear(")
-pin("failFast = true" in fail and fail.index("failFast = true") < fail.index("await stop()") < fail.index("await discardNoSound(cannotHear: true)"),
+pin(all(x in fail for x in ("failFast = true", "await stop()", "await discardNoSound(cannotHear: true)"))
+    and fail.index("failFast = true") < fail.index("await stop()") < fail.index("await discardNoSound(cannotHear: true)"),
     "fail-fast keeps nothing pending", "it marks the stop, stops, then discards (outside the stop gate)")
 pin("captureInterruption = MacRecordingHearing.cannotHearMessage" in fail, "fail-fast notifies", "the stop nobody made says it cannot hear")
 finish = between(store, "    private func finishStop() async {", "    private func hearingCheck(")

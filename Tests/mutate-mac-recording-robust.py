@@ -64,6 +64,16 @@ MUTANTS = [
 ]
 
 def run(lane, root):
+    # compile-bounded refuses (exit 75) while the Mac lacks memory headroom; that is a wait, never a kill.
+    import time
+    for _ in range(20):
+        r = run_once(lane, root)
+        if r.returncode == 75 or "compile-bounded: refused" in (r.stdout + r.stderr):
+            time.sleep(60); continue
+        return r
+    return r
+
+def run_once(lane, root):
     if lane == "helper":
         out = tempfile.mkdtemp(prefix="cos-mac-rec-helper-", dir="/private/tmp")
         # The helper exactly as Tests/run.sh builds it.
