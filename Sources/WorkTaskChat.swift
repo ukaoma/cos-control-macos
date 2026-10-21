@@ -23,12 +23,19 @@ struct WorkChatAssignment: Codable, Equatable, Identifiable {
     var waitingOn: [String]? = nil
     /// True when it was sent in parallel: only handoffs on its own session hold it. False or nil: the whole card's.
     var parallel: Bool? = nil
-    enum CodingKeys: String, CodingKey { case sessionID, prompt, receiptID, state, detail, result, contextItemIDs, waitingOn, parallel }
+    /// 0.5.333 (server 6.83.0 orchestrator): "fork" or "newSession"; nil is a Continue, as every earlier assignment was.
+    /// A New session has no session yet: its `sessionID` is WorkOrchestrator.newSessionID and `provider` names where it starts.
+    var mode: String? = nil
+    var provider: String? = nil
+    enum CodingKeys: String, CodingKey { case sessionID, prompt, receiptID, state, detail, result, contextItemIDs, waitingOn, parallel, mode, provider }
     init(sessionID: String, prompt: String) { self.sessionID = sessionID; self.prompt = prompt }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        sessionID = try c.decode(String.self, forKey: .sessionID); prompt = try c.decode(String.self, forKey: .prompt)
+        mode = try c.decodeIfPresent(String.self, forKey: .mode); provider = try c.decodeIfPresent(String.self, forKey: .provider)
+        prompt = try c.decode(String.self, forKey: .prompt)
         receiptID = try c.decodeIfPresent(String.self, forKey: .receiptID) ?? UUID().uuidString.lowercased()
+        if mode == "newSession", let provider, c.contains(.sessionID) == false { sessionID = WorkOrchestrator.newSessionID(provider: provider, receiptID: receiptID) }
+        else { sessionID = try c.decode(String.self, forKey: .sessionID) }
         state = try c.decodeIfPresent(String.self, forKey: .state) ?? "Not sent"
         detail = try c.decodeIfPresent(String.self, forKey: .detail) ?? ""; result = try c.decodeIfPresent(String.self, forKey: .result) ?? ""
         contextItemIDs = try c.decodeIfPresent([String].self, forKey: .contextItemIDs)
@@ -62,6 +69,21 @@ struct WorkChatRound: Codable, Identifiable {
     var contextChosen: Bool? = nil
     /// 0.5.312 (Miles 2026-10-15): planned and sent in one step, without stopping for review ("Plan and send").
     var sentWithoutReview: Bool? = nil
+    /// 0.5.333: planned from the server's orchestrator input. The rows the planner saw, as targets this round may send to
+    /// (Continue only to an `automatic` one, Fork only from a `forkable` one); nil on rounds planned the 0.5.332 way.
+    var orchestrated: [WorkOrchestratorTarget]? = nil
+    /// Providers a New session in this round may start on. Nil outside orchestrator rounds.
+    var newSessionProviders: [String]? = nil
+    /// 0.5.333: why the planner saw no session that can take a Continue (never silent). Shown above the plan.
+    var sessionsNote: String? = nil
+}
+/// 0.5.333: one planner row a round may send to, kept with the round so a later send checks the plan's own targets.
+struct WorkOrchestratorTarget: Codable, Equatable {
+    let id: String
+    let title: String
+    let automatic: Bool
+    let forkable: Bool
+    let reason: String?
 }
 struct WorkChatRecord: Codable {
     var workID: String
@@ -309,6 +331,11 @@ enum WorkChatPreflight {
     /// 0.5.317 / server 6.73.15 (`references`): the planner takes reference sessions, so Link as reference is offered and
     /// this card's references go to the planner and, as items, to its assignments. False: no references anywhere.
     @Published private(set) var referencesOffered = false
+    /// 0.5.333 / server 6.83.0 (`orchestrator: 1`): the server builds this card's planner rows (discovery, pick-up notes,
+    /// usage), and plans may fork or start a new session. False: 0.5.332's planner input, unchanged.
+    @Published private(set) var orchestratorOffered = false
+    /// 0.5.333 Stop: assignments a Stop is on its way to the server for.
+    @Published private(set) var stopping: Set<String> = []
     /// A reference's outputs and change counts since it was linked, from the Connections session cards (another view owns
     /// that read). Unwired: summary only.
     var referenceFacts: WorkReferenceFacts = { _, _ in nil }
@@ -401,12 +428,52 @@ enum WorkChatPreflight {
     }
     private func object<T: Encodable>(_ value: T) throws -> Any { try JSONSerialization.jsonObject(with: JSONEncoder().encode(value)) }
     private func targets(_ handoff: WorkHandoffStore, source: WorkSource) -> [WorkSession] {
-        handoff.observedSessions().filter { handoff.confirmedSessionCards[$0.id]?.workID == source.id }
+        handoff.observedSessions().filter { handoff.confirmedSessionCards[$0.id]?.workID == source.id && !WorkOrchestrator.isGuardian(id: $0.id, title: $0.title, summary: $0.summary) }
     }
-    private func payload(source: WorkSource, handoff: WorkHandoffStore, question: String, context: String, revision: String, mode: String, roundIndex: Int? = nil, planner: String? = nil, effort: String? = nil, items: [WorkContextItem]? = nil, open: [WorkHandoffReceipt]? = nil) throws -> Data {
+    /// 0.5.333: where a round may Continue. An orchestrator round: its own automatic rows that are in the fresh session list
+    /// now. Any other round: the linked sessions, as before.
+    private func continueTargets(_ handoff: WorkHandoffStore, source: WorkSource, round: WorkChatRound) -> [WorkSession] {
+        guard let rows = round.orchestrated else { return targets(handoff, source: source) }
+        let allowed = Set(rows.filter(\.automatic).map(\.id))
+        return handoff.observedSessions().filter { allowed.contains($0.id) && !WorkOrchestrator.isGuardian(id: $0.id, title: $0.title, summary: $0.summary) }
+    }
+    /// 0.5.333: the card's Work snapshot for the server (Phase A). Ids, modes, statuses and times only.
+    private func orchestratorSnapshot(_ handoff: WorkHandoffStore) -> [String: Any] {
+        let links = handoff.confirmedSessionCards.map { WorkOrchestrator.Link(sessionID: $0.key.lowercased(), workID: $0.value.workID, at: $0.value.at) }
+        let receipts = handoff.receipts.map { r in
+            WorkOrchestrator.Receipt(id: r.id, workID: r.workID, mode: r.mode.rawValue, provider: r.provider, sessionID: r.sessionID?.lowercased(),
+                                     sourceSessionID: r.sourceSessionID?.lowercased(), forkChildID: r.forkChildID?.lowercased(), status: r.status, createdAt: r.createdAt)
+        }
+        let fresh = handoff.activityFresh()
+        let live = fresh ? handoff.observedSessions().map { s in
+            WorkOrchestrator.LiveRow(id: s.id.lowercased(), title: s.title, status: s.status, updatedAt: s.updatedAt, busy: ["busy", "running"].contains(s.status),
+                                     waitingOnUser: s.status == "waiting", appOwned: WorkHandoffStore.appOwner(of: s.id, in: handoff.receipts) != nil, summary: s.summary)
+        } : nil
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.5.333"
+        return WorkOrchestrator.snapshot(links: links, receipts: receipts, live: live, liveCheckedAt: fresh ? handoff.activityCheckedAt : nil, controlVersion: version, now: Date())
+    }
+    /// 0.5.333: push the snapshot and read this card's planner rows in one helper call (server 6.83.0).
+    private func orchestratorInput(source: WorkSource, handoff: WorkHandoffStore, meetings: [String]) async throws -> WorkOrchestrator.Input {
+        let body: [String: Any] = ["workID": source.id, "meetingWorkIDs": meetings, "snapshot": orchestratorSnapshot(handoff)]
+        let response = try await handoff.taskChatCall(["work-orchestrator-input"], data: try JSONSerialization.data(withJSONObject: body))
+        let input = try JSONDecoder().decode(WorkOrchestrator.Input.self, from: JSONEncoder().encode(response))
+        guard input.protocolVersion == WorkOrchestrator.protocolVersion, input.workID == source.id else { throw WorkSessionLinks.Failure.corrupt }
+        return input
+    }
+    /// A round's assignment title: the session's, or what a New session will be.
+    func assignmentTitle(_ a: WorkChatAssignment, round: WorkChatRound, handoff: WorkHandoffStore, source: WorkSource) -> String {
+        if a.mode == "newSession" { return "New \(WorkHandoffStore.providerName(a.provider ?? "")) session" }
+        let title = handoff.contributors(workID: source.id).first(where: { $0.id == a.sessionID })?.title
+            ?? round.orchestrated?.first(where: { $0.id == a.sessionID })?.title ?? a.sessionID
+        return a.mode == "fork" ? "Fork of \(title)" : title
+    }
+    private func payload(source: WorkSource, handoff: WorkHandoffStore, question: String, context: String, revision: String, mode: String, roundIndex: Int? = nil, planner: String? = nil, effort: String? = nil, items: [WorkContextItem]? = nil, open: [WorkHandoffReceipt]? = nil, orchestrated: (input: WorkOrchestrator.Input, newProviders: [String])? = nil) throws -> Data {
         let sessions = targets(handoff, source: source)
-        guard sessions.count <= 12 else { throw WorkSessionLinks.Failure.corrupt }
-        let rows: [[String: Any]] = sessions.map { session in
+        guard orchestrated != nil || sessions.count <= 12 else { throw WorkSessionLinks.Failure.corrupt }
+        let rows: [[String: Any]] = orchestrated.map { o in
+            WorkOrchestrator.plannerRows(o.input, controlAllows: { handoff.automaticChatTarget($0) },
+                                         openWork: open.map { (open: [WorkHandoffReceipt]) -> (String) -> Bool in { (id: String) -> Bool in open.contains { WorkChatPreflight.onSession($0, id) } } })
+        } ?? sessions.map { session in
             var row: [String: Any] = ["id":session.id, "title":String(session.title.prefix(300)), "summary":String(session.summary.prefix(2000)),
                 "status":session.status, "automatic":handoff.automaticChatTarget(session.id)]
             // 0.5.317: only to a server that advertised queueRounds (6.73.15); 6.73.14 refuses unknown session keys.
@@ -420,6 +487,13 @@ enum WorkChatPreflight {
         if let planner { body["planner"] = planner } // Only when the server advertised planners; 6.73.9 refuses unknown keys.
         if let effort { body["effort"] = effort }    // Only when the server advertised efforts; 6.73.11 refuses unknown keys.
         if let items { body["items"] = WorkContextMeter.plannerItems(items) } // Only when advertised (6.73.13); ids and estimates, no contents.
+        // 0.5.333: only to a server that advertised orchestrator 1 (6.83.0); 6.81.0 refuses these keys.
+        if let o = orchestrated, mode == "plan" {
+            body["orchestrator"] = true; body["now"] = ISO8601DateFormatter().string(from: Date())
+            body["usage"] = o.input.usage.prefix(3).map(\.json)
+            body["leftOut"] = o.input.leftOut.prefix(12).map { ["id": $0.id, "title": String($0.title.prefix(300)), "reason": String($0.reason.prefix(120))] }
+            body["newSessionProviders"] = o.newProviders
+        }
         // 0.5.317: only when advertised (6.73.15); 6.73.14 refuses unknown keys. Evidence; the server never lets one be a target.
         if referencesOffered, !handoff.isolated, mode == "plan" {
             body["references"] = referenceContext(source: source, handoff: handoff).map { ["id": $0.id, "title": $0.title, "summary": $0.summary, "result": $0.result] }
@@ -530,6 +604,7 @@ enum WorkChatPreflight {
             self.record?.rounds[index].attachmentNames = attachments.names
             self.record?.rounds[index].attachmentDigest = attachments.digest
             var context: String; let revision: String
+            var meetingWorkIDs: [String] = []
             if handoff.isolated { context = source.context; revision = source.revision }
             else {
                 let fresh = try await handoff.taskChatCall(["work-context","--work-id",source.id])
@@ -537,6 +612,8 @@ enum WorkChatPreflight {
                 context = fresh["contextText"]?.string ?? ""; revision = fresh["workRevision"]?.string ?? ""
                 guard let taskValue = fresh["task"], let task = TaskRow(taskValue), WorkSource.taskSnapshot(task).revision == source.revision else { throw WorkSessionLinks.Failure.conflict }
                 guard !context.isEmpty, revision.count == 64 else { throw WorkSessionLinks.Failure.corrupt }
+                // 0.5.333: the card's confirmed source meetings as meeting cards, for discovery rule 8 (a suggestion only).
+                meetingWorkIDs = task.meetingRefs.map { "meeting:" + $0.recordId }.filter { $0.count <= 250 }.prefix(20).map { $0 }
             }
             let items = linkedItems(source: source, handoff: handoff, question: question, context: context)
             let chooses = !handoff.isolated && contextItemsOffered && items.count <= WorkContextMeter.maxItems
@@ -545,12 +622,25 @@ enum WorkChatPreflight {
                 guard context.count <= 16000 else { throw HelperClientError.commandFailed("The task and file context is too long. Reduce the attachments before sending.") }
             }
             let digest = try WorkChatPolicy.linksDigest(handoff.confirmedSessionCards,workID:source.id)
+            // 0.5.333 (Work orchestrator, server 6.83.0): the session list is read again right before planning, then the
+            // server builds this card's planner rows from Control's snapshot, its own log scan and plan usage.
+            var orchestrated: WorkOrchestrator.Input? = nil
+            var newProviders: [String] = []
+            if !handoff.isolated, orchestratorOffered {
+                phase = "Finding this task's sessions…"
+                await handoff.refreshActivity()
+                orchestrated = try await orchestratorInput(source: source, handoff: handoff, meetings: meetingWorkIDs)
+                newProviders = ["claude", "codex"].filter { p in handoff.models.contains { $0.provider == p && $0.available } }
+                let found = orchestrated!.rows.count, left = orchestrated!.leftOut.count, total = orchestrated!.discovered
+                workChatLog.info("orchestrator input: \(found) row(s), \(left) left out, \(total) discovered, new-session providers \(newProviders.joined(separator: ","), privacy: .public)")
+            }
             let answer: WorkChatPlannerAnswer
             if handoff.isolated {
                 let sample = targets(handoff,source:source).filter { $0.provider != "cursor" }
                 answer = WorkChatPlannerAnswer(protocolVersion:1,answer:"Sample plan: ask Claude to review the launch copy and Codex to check the implementation. Their assignments are independent. Cursor's mobile review stays connected and requires sending in its existing app. The shared task stays at its current stage.",assignments:sample.prefix(2).map { WorkChatAssignment(sessionID:$0.id,prompt:$0.provider == "claude" ? "Review the launch copy and report unresolved decisions. Do not publish." : "Check the launch implementation and report checks and outstanding issues. Do not publish.") })
             } else {
-                let data = try payload(source:source,handoff:handoff,question:question,context:context,revision:revision,mode:"plan",planner:planner,effort:effort,items:chooses ? items : nil,open:hold == .stop ? nil : held)
+                let data = try payload(source:source,handoff:handoff,question:question,context:context,revision:revision,mode:"plan",planner:planner,effort:effort,items:chooses ? items : nil,open:hold == .stop ? nil : held,
+                                       orchestrated:orchestrated.map { ($0, newProviders) })
                 let gate = WorkChatCallGate.shared
                 if gate.inFlight { phase = "Waiting for the last update to finish…" }
                 guard await gate.acquire(waitingUpTo: busyWait) else {
@@ -563,8 +653,32 @@ enum WorkChatPreflight {
             }
             if !handoff.isolated { await handoff.refreshActivity() }
             let automatic = Set(targets(handoff,source:source).filter { handoff.automaticChatTarget($0.id) }.map(\.id))
-            // Not a file error: the plan named a destination that is not a linked automatic session right now (or broke a bound).
-            guard WorkChatPolicy.valid(answer,targets:automatic) else { throw HelperClientError.commandFailed("The plan named a session that is not linked for automatic sends here, or broke a limit. Refresh the task's sessions and plan again.") }
+            var orchestratedTargets: [WorkOrchestratorTarget]? = nil
+            if let o = orchestrated {
+                let observed = Set(handoff.observedSessions().map(\.id))
+                orchestratedTargets = o.rows.prefix(12).map { r in
+                    WorkOrchestratorTarget(id: r.id, title: String(r.title.prefix(300)), automatic: WorkOrchestrator.automatic(r, controlAllows: handoff.automaticChatTarget(r.id)) && observed.contains(r.id),
+                                           forkable: r.forkable && WorkHandoffStore.nativeForkProviders.contains(r.provider), reason: r.reason)
+                }
+                let continueSet = Set(orchestratedTargets!.filter(\.automatic).map(\.id)), forkSet = Set(orchestratedTargets!.filter(\.forkable).map(\.id))
+                let kinds = answer.assignments.map { (WorkOrchestrator.kind(mode: $0.mode, provider: $0.provider), $0.sessionID, $0.prompt) }
+                guard answer.protocolVersion == 1, !answer.answer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, answer.answer.count <= 6000,
+                      Set(answer.assignments.map(\.receiptID)).count == answer.assignments.count,
+                      WorkOrchestrator.valid(kinds: kinds, continueTargets: continueSet, forkTargets: forkSet, newProviders: Set(newProviders), validPrompt: WorkChatPolicy.validPrompt) else {
+                    throw HelperClientError.commandFailed("The plan named a session it may not send to here, or broke a limit. Refresh the task's sessions and plan again.")
+                }
+                self.record?.rounds[index].sessionsNote = WorkOrchestrator.emptyExplanation(rows: o.rows, leftOut: o.leftOut, automaticIDs: continueSet, listFailed: handoff.activityError != nil)
+            } else {
+                // Not a file error: the plan named a destination that is not a linked automatic session right now (or broke a bound).
+                guard WorkChatPolicy.valid(answer,targets:automatic) else { throw HelperClientError.commandFailed("The plan named a session that is not linked for automatic sends here, or broke a limit. Refresh the task's sessions and plan again.") }
+                if !handoff.isolated {
+                    self.record?.rounds[index].sessionsNote = WorkOrchestrator.legacyEmptyExplanation(linkedCount: handoff.confirmedSessionCards.values.filter { $0.workID == source.id }.count,
+                                                                                                         inList: targets(handoff, source: source).count, listFailed: handoff.activityError != nil)
+                }
+            }
+            self.record?.rounds[index].orchestrated = orchestratedTargets
+            self.record?.rounds[index].newSessionProviders = orchestrated == nil ? nil : newProviders
+            if self.record?.rounds[index].sessionsNote != nil { workChatLog.info("plan: no session can take a Continue; the round says why") }
             // 0.5.312: each assignment keeps its own items: the server's choice when it made one, else every item.
             self.record?.rounds[index].contextItems = items; self.record?.rounds[index].contextChosen = chooses
             self.record?.rounds[index].answer = answer.answer
@@ -637,6 +751,55 @@ enum WorkChatPreflight {
         record?.rounds[r].state = WorkChatPolicy.reviewedState(record!.rounds[r].assignments)
         workChatLog.info("queue canceled")
         _ = persist()
+    }
+    /// 0.5.333 (Miles Q1: every running assignment has a Stop). What Stop does for one assignment of a round sent without
+    /// review: nil when there is nothing to stop.
+    func stopAction(roundID: String, assignmentID: String, handoff: WorkHandoffStore) -> WorkOrchestrator.StopAction? {
+        guard let round = record?.rounds.first(where: { $0.id == roundID }), round.sentWithoutReview == true,
+              let a = round.assignments.first(where: { $0.receiptID == assignmentID }) else { return nil }
+        let receipt = handoff.receipts.first { $0.id == assignmentID }
+        let action = WorkOrchestrator.stopAction(state: a.state, queuedState: WorkChatHold.queuedState, receiptStatus: receipt?.status,
+                                                 channel: receipt?.channel, jobID: receipt?.jobID, sessionID: receipt?.sessionID)
+        return action == .none ? nil : action
+    }
+    /// Stop one assignment of a round sent without review. Not sent yet or queued: it never goes (and a round still sending
+    /// stops before its next send). Running: its job or turn is asked to stop through the server. Never resends anything.
+    func stop(roundID: String, assignmentID: String, handoff: WorkHandoffStore) async {
+        guard let action = stopAction(roundID: roundID, assignmentID: assignmentID, handoff: handoff),
+              let r = record?.rounds.firstIndex(where: { $0.id == roundID }),
+              let n = record?.rounds[r].assignments.firstIndex(where: { $0.receiptID == assignmentID }) else { return }
+        switch action {
+        case .unqueue:
+            // A round still sending reads each assignment's state before it sends it, so this one is passed over.
+            record?.rounds[r].assignments[n].state = "Skipped"; record?.rounds[r].assignments[n].waitingOn = nil; record?.rounds[r].assignments[n].parallel = nil
+            record?.rounds[r].assignments[n].detail = "Stopped. Nothing was sent to this session."
+            record?.rounds[r].state = WorkChatPolicy.reviewedState(record!.rounds[r].assignments)
+            workChatLog.info("stop: assignment \(assignmentID, privacy: .public) will not be sent")
+            _ = persist()
+        case .cancelJob(let job):
+            await requestStop(assignmentID: assignmentID, args: ["work-job-cancel", "--job-id", job], handoff: handoff)
+        case .cancelTurn(let provider, let thread):
+            await requestStop(assignmentID: assignmentID, args: ["session-chat-cancel", "--provider", provider, "--thread-id", thread, "--client-cancel-id", "stop-" + assignmentID], handoff: handoff)
+        case .unavailable(let why):
+            error = why
+            workChatLog.info("stop: assignment \(assignmentID, privacy: .public) cannot be stopped from here")
+        case .none: return
+        }
+    }
+    private func requestStop(assignmentID: String, args: [String], handoff: WorkHandoffStore) async {
+        guard !stopping.contains(assignmentID) else { return }
+        stopping.insert(assignmentID); defer { stopping.remove(assignmentID) }
+        do {
+            let answer = try await handoff.taskChatCall(args)
+            let http = answer["httpStatus"]?.int ?? 0
+            workChatLog.info("stop: assignment \(assignmentID, privacy: .public) \(args[0], privacy: .public) answered HTTP \(http)")
+            if !(200..<300).contains(http) { error = answer["reasonCopy"]?.string ?? answer["error"]?.object?["message"]?.string ?? "The server could not stop it (HTTP \(http))." }
+        } catch {
+            self.error = "Stop did not reach the server: \(error.localizedDescription)"
+            let reason = error.localizedDescription
+            workChatLog.error("stop: assignment \(assignmentID, privacy: .public) failed: \(reason, privacy: .public)")
+        }
+        await handoff.refreshReceipts()
     }
     /// 0.5.317: a queued round's waiting assignments stop waiting for the whole card and go as Send in parallel would.
     func sendQueuedInParallel(roundID: String, source: WorkSource, handoff: WorkHandoffStore) async {
@@ -721,9 +884,33 @@ enum WorkChatPreflight {
                 guard let context = try await sendContext(round: round, source: source, handoff: handoff) else {
                     stale(index, reason: "the task, its files or its session links changed since planning"); break sending
                 }
-                guard let session = targets(handoff,source:source).first(where: { $0.id == assignment.sessionID }), handoff.automaticChatTarget(session.id) else {
-                    if wasQueued { unqueue(index, n) }
-                    self.record?.rounds[index].assignments[n].detail = "This session is no longer linked for automatic sends. Nothing was sent."
+                // 0.5.333: an orchestrator round may also Fork a row it marked forkable, or start a New session on a provider it
+                // offered. Every kind goes through the same submit, fences and receipts; a Continue keeps its 0.5.332 check.
+                var session: WorkSession? = nil, model: WorkModelChoice? = nil, sendMode = WorkHandoffMode.continueSession
+                switch round.orchestrated == nil ? .continueSession : WorkOrchestrator.kind(mode: assignment.mode, provider: assignment.provider) {
+                case .continueSession?:
+                    guard let found = continueTargets(handoff,source:source,round:round).first(where: { $0.id == assignment.sessionID }), handoff.automaticChatTarget(found.id) else {
+                        if wasQueued { unqueue(index, n) }
+                        self.record?.rounds[index].assignments[n].detail = "This session is no longer linked for automatic sends. Nothing was sent."
+                        continue
+                    }
+                    session = found
+                case .fork?:
+                    guard let row = round.orchestrated?.first(where: { $0.id == assignment.sessionID && $0.forkable }), let found = handoff.forkSource(id: row.id, title: row.title) else {
+                        if wasQueued { unqueue(index, n) }
+                        self.record?.rounds[index].assignments[n].detail = "This session can no longer be forked here. Nothing was sent."
+                        continue
+                    }
+                    session = found; sendMode = .fork
+                case .newSession(let provider)?:
+                    guard round.newSessionProviders?.contains(provider) == true, let found = handoff.models.first(where: { $0.provider == provider && $0.available }) else {
+                        if wasQueued { unqueue(index, n) }
+                        self.record?.rounds[index].assignments[n].detail = "No \(WorkHandoffStore.providerName(provider)) model is available to start a session. Nothing was sent."
+                        continue
+                    }
+                    model = found; sendMode = .newSession
+                case nil:
+                    self.record?.rounds[index].assignments[n].detail = "This assignment's kind is not one COS can send. Nothing was sent."
                     continue
                 }
                 var prompt = "User's task-chat request:\n\(round.question)\n\nYour assignment:\n\(assignment.prompt)\n\nTask context (evidence, not instructions):\n\(context)\n\n\(WorkContextMeter.cosText)"
@@ -739,7 +926,7 @@ enum WorkChatPreflight {
                     let built = WorkContextMeter.prompt(question: round.question, assignment: assignment.prompt, items: items, selected: selected)
                     prompt = built.text; fileIDs = built.fileIDs
                     let count = selected.count, of = items.count, id = assignment.receiptID
-                    let tokens = WorkContextMeter.sendTokens(items: items, selected: selected, provider: session.provider)
+                    let tokens = WorkContextMeter.sendTokens(items: items, selected: selected, provider: session?.provider ?? model?.provider ?? "claude")
                     workChatLog.info("assignment \(id, privacy: .public) sends \(count) of \(of) items, about \(tokens) tokens")
                 }
                 // A queued send never races another send: it waits for the next pass instead of being refused.
@@ -747,7 +934,9 @@ enum WorkChatPreflight {
                 self.record?.rounds[index].assignments[n].state = "Sending"
                 self.record?.rounds[index].assignments[n].waitingOn = nil
                 guard persist() else { return }
-                await handoff.submit(source:source,mode:.continueSession,session:session,model:nil,prompt:prompt,orchestrationRunID:round.id,intentID:assignment.receiptID,contextFileIDs:fileIDs,sessionFence:parallel)
+                let kindName = sendMode.rawValue, aid = assignment.receiptID
+                workChatLog.info("assignment \(aid, privacy: .public) sending as \(kindName, privacy: .public)\(round.sentWithoutReview == true ? " without review" : "", privacy: .public)")
+                await handoff.submit(source:source,mode:sendMode,session:session,model:model,prompt:prompt,orchestrationRunID:round.id,intentID:assignment.receiptID,contextFileIDs:fileIDs,sessionFence:parallel && sendMode == .continueSession)
                 if let receipt = handoff.receipts.first(where: { $0.id == assignment.receiptID }) {
                     self.record?.rounds[index].assignments[n].state = receipt.status
                     self.record?.rounds[index].assignments[n].detail = receipt.detail
@@ -869,7 +1058,7 @@ enum WorkChatPreflight {
     /// counted as a failed answer, `try? await Task.sleep` returned at once, the retry was cancelled too, and the picker
     /// vanished for "using Sonnet". Cancellation, during the call or the backoff, now changes nothing.
     func loadPlanners(handoff: WorkHandoffStore, retryDelay: Duration = .milliseconds(600)) async {
-        guard enabled, !handoff.isolated else { planners = []; efforts = []; contextItemsOffered = false; queueOffered = false; serverQueueMissing = false; referencesOffered = false; plannerNotice = nil; discovery = .loaded; return }
+        guard enabled, !handoff.isolated else { planners = []; efforts = []; contextItemsOffered = false; queueOffered = false; serverQueueMissing = false; referencesOffered = false; orchestratorOffered = false; plannerNotice = nil; discovery = .loaded; return }
         for attempt in 0..<2 {
             do {
                 let caps = try await handoff.taskChatCall(["work-chat-capabilities"])
@@ -880,6 +1069,7 @@ enum WorkChatPreflight {
                 contextItemsOffered = caps["contextItems"]?.bool == true
                 queueOffered = caps["queueRounds"]?.bool == true; serverQueueMissing = !queueOffered
                 referencesOffered = caps["references"]?.bool == true; handoff.referencesOffered = referencesOffered
+                orchestratorOffered = caps["orchestrator"]?.bool == true
                 discovery = .loaded
                 return
             } catch {
@@ -897,7 +1087,7 @@ enum WorkChatPreflight {
                 }
             }
         }
-        planners = []; efforts = []; contextItemsOffered = false; queueOffered = false; serverQueueMissing = false; referencesOffered = false; handoff.referencesOffered = false; plannerNotice = WorkChatPolicy.plannerUnavailable; discovery = .failed
+        planners = []; efforts = []; contextItemsOffered = false; queueOffered = false; serverQueueMissing = false; referencesOffered = false; handoff.referencesOffered = false; orchestratorOffered = false; plannerNotice = WorkChatPolicy.plannerUnavailable; discovery = .failed
     }
     /// Restore text for deliberate review and Send. Never replay any assignment automatically.
     func restoreUnsentRequest(roundID: String, checkedUnconfirmed: Bool = false) {
@@ -1028,11 +1218,24 @@ struct WorkTaskChatView: View {
                 VStack(alignment:.leading,spacing:10) {
                     COSMarkdownText(round.question,bodySize:14).font(COSType.body(14,weight:.semibold)).textSelection(.enabled)
                     if let names = round.attachmentNames, !names.isEmpty { Text("Attachments: " + names.joined(separator: ", ")).font(COSType.body(11)).foregroundStyle(COSPalette.muted) }
+                    // 0.5.333: never an empty session list in silence; this says why no session could take a Continue.
+                    if let note = round.sessionsNote { Text(note).font(COSType.body(11.5)).foregroundStyle(COSPalette.muted).fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("work-chat-sessions-note") }
                     if !round.answer.isEmpty { COSMarkdownText(round.answer,bodySize:13).font(COSType.body(13)).textSelection(.enabled) }
                     canary(round)
                     ForEach(round.assignments) { a in
                         VStack(alignment:.leading,spacing:5) {
-                            HStack { Button(handoff.contributors(workID:source.id).first(where: { $0.id == a.sessionID })?.title ?? a.sessionID) { onOpenSession(a.sessionID) }.buttonStyle(COSTextButtonStyle()); Spacer(); Text(a.state).font(COSType.mono(10)) }
+                            HStack {
+                                Button(chat.assignmentTitle(a, round: round, handoff: handoff, source: source)) {
+                                    let opened = WorkOrchestrator.isNewSessionID(a.sessionID) || a.mode == "fork" ? handoff.receipts.first(where: { $0.id == a.receiptID })?.sessionID : a.sessionID
+                                    if let opened { onOpenSession(opened) }
+                                }.buttonStyle(COSTextButtonStyle()); Spacer(); Text(a.state).font(COSType.mono(10))
+                                // 0.5.333: an assignment sent without review always shows Stop while it can be stopped.
+                                if let action = chat.stopAction(roundID: round.id, assignmentID: a.receiptID, handoff: handoff) {
+                                    Button(chat.stopping.contains(a.receiptID) ? "Stopping…" : "Stop") { Task { await chat.stop(roundID: round.id, assignmentID: a.receiptID, handoff: handoff) } }
+                                        .buttonStyle(COSQuietButtonStyle()).disabled(chat.stopping.contains(a.receiptID))
+                                        .help(WorkOrchestrator.stopHelp(action)).accessibilityIdentifier("work-chat-stop")
+                                }
+                            }
                             if ["Ready to send", "Saved as drafts"].contains(round.state) && a.state == "Not sent" {
                                 WorkChatAssignmentReview(chat: chat, handoff: handoff, source: source, roundID: round.id, assignment: a, sending: round.state == "Ready to send",
                                                          sendTokens: round.contextItems.map { WorkContextMeter.sendTokens(items: $0, selected: WorkContextMeter.selection(a.contextItemIDs, items: $0), provider: Self.provider(a.sessionID)) })
@@ -1252,6 +1455,10 @@ private struct WorkChatSendControls: View {
     /// 0.5.312: Settings › Work › Send plans without review. Off by default; on makes Plan and send the primary button.
     @AppStorage(WorkChatPolicy.autoSendKey) private var autoSend = WorkChatPolicy.autoSendDefault
     @AppStorage(WorkChatPolicy.autoSendAcknowledgedKey) private var autoSendAcknowledged = false
+    /// 0.5.333 (Miles Q1, 2026-10-20 21:55): Auto-send per card. A card with no choice of its own follows the Settings switch
+    /// above, so with no card choice this view is exactly 0.5.332's.
+    @AppStorage(WorkOrchestrator.autoSendCardsKey) private var autoSendCards = ""
+    private var cardAutoSend: Bool { WorkOrchestrator.autoSend(workID: source.id, raw: autoSendCards, settingDefault: autoSend) }
     @State private var confirmAutoSend = false
     private static let autoSendHelp = "Plans, then sends every assignment without stopping for review"
     private var blocked: Bool {
@@ -1265,13 +1472,17 @@ private struct WorkChatSendControls: View {
     }
     var body: some View {
         HStack {
-            Text(chat.refreshing ? "Refreshing receipts and updates… Your draft is preserved." : (autoSend ? "⌘ Return to plan and send · Return adds a line" : "⌘ Return to plan · Return adds a line")).font(COSType.body(10)).foregroundStyle(COSPalette.muted)
+            Text(chat.refreshing ? "Refreshing receipts and updates… Your draft is preserved." : (cardAutoSend ? "⌘ Return to plan and send · Return adds a line" : "⌘ Return to plan · Return adds a line")).font(COSType.body(10)).foregroundStyle(COSPalette.muted)
             Spacer()
+            Toggle("Auto-send", isOn: Binding(get: { cardAutoSend }, set: { autoSendCards = WorkOrchestrator.setting(workID: source.id, on: $0, raw: autoSendCards, settingDefault: autoSend) }))
+                .toggleStyle(.switch).controlSize(.mini).font(COSType.body(10)).disabled(chat.busy)
+                .help("This card only. On: plans are sent without review, each assignment with a Stop. Its default is Settings › Work › Send plans without review.")
+                .accessibilityIdentifier("work-chat-auto-send")
             if !chat.planners.isEmpty {
                 // GOTCOS theme (0.5.251): COSDropdown, never a stock Picker.
                 COSDropdown("Plan with", selection: $planner, options: chat.planners.map { COSDropdownOption($0, WorkChatPolicy.plannerName($0)) })
                     .frame(maxWidth: 190).disabled(chat.busy)
-                    .help(autoSend ? "The model that plans." : "The model that plans. Plan never sends: you review every assignment first.")
+                    .help(cardAutoSend ? "The model that plans." : "The model that plans. Plan never sends: you review every assignment first.")
                     .accessibilityIdentifier("work-chat-planner")
                 if !chat.efforts.isEmpty {
                     COSDropdown("Effort", selection: $effort, options: chat.efforts.map { COSDropdownOption($0, WorkChatPolicy.effortName($0)) })
@@ -1282,7 +1493,7 @@ private struct WorkChatSendControls: View {
             } else if let notice = chat.plannerNotice {
                 Text(notice).font(COSType.body(10)).foregroundStyle(COSPalette.muted).help("COS could not read this server's planner choice. Plans use Sonnet until the next try.")
             }
-            if autoSend {
+            if cardAutoSend {
                 Button("Plan") { plan() }.buttonStyle(COSQuietButtonStyle()).disabled(blocked)
                     .help("Plans and stops for your review").accessibilityIdentifier("work-chat-send")
                 Button("Plan and send") { planAndSend() }.buttonStyle(COSPrimaryButtonStyle()).keyboardShortcut(.return,modifiers:.command)

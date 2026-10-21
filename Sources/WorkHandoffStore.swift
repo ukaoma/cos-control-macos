@@ -215,6 +215,9 @@ struct WorkHandoffReceipt: Identifiable, Codable, Sendable {
     /// 0.5.254: the card's files this handoff carried (WorkCardFiles.swift), so a Continue or Fork sends only what is new
     /// and a file stays on disk while a session working on it may read it. Optional, never a new status.
     var context: [WorkContextRef]?
+    /// 0.5.333 (Work orchestrator, canary C3 precision fix 1): a fork's child, journaled the moment it is known and never
+    /// cleared, so the server's discovery finds the child even when `sessionID` later names something else (or nothing).
+    var forkChildID: String? = nil
     /// Server-terminal states never block another handoff: completed, failed, refused, canceled (server job states:
     /// completed | failed | canceled | interrupted; interrupted is recorded as failed).
     nonisolated static let terminalStatuses: Set<String> = ["completed", "failed", "refused", "canceled", "reviewed"]
@@ -429,7 +432,7 @@ struct WorkRecommendationKey: Equatable {
         self.cardFiles = cardFiles ?? (isolated ? .preview() : storageURL == nil ? WorkCardFileStore(root: ProcessInfo.processInfo.environment["COS_CONTROL_TEST_HOME"].map { URL(fileURLWithPath: $0).appendingPathComponent("work-context") } ?? WorkCardFiles.defaultRoot()) : WorkCardFileStore(root: nil))
         let helper = HelperClient()
         self.transport = transport ?? { args, data in
-            try await helper.run(args, timeout: args.first == "session-chat-fork" ? 310 : (args.first == "work-new" ? 85 : (args.first == "work-chat" ? 200 : 45)), stdinData: data)
+            try await helper.run(args, timeout: args.first == "session-chat-fork" ? 310 : (args.first == "work-new" ? 85 : (args.first == "work-chat" ? 200 : (args.first == "work-orchestrator-input" ? 60 : 45))), stdinData: data)
         }
         let base: URL
         if isolated {
@@ -555,6 +558,20 @@ struct WorkRecommendationKey: Equatable {
         return true
     }
     func cancelIndependentRecovery() { independentRecovery = nil }
+    /// 0.5.333 (Work orchestrator): a session the server found for a card, whose log is on this Mac, as a Fork source,
+    /// so a planned Fork can name it although the live list aged it out. Fork only (Claude or Codex); a Continue still
+    /// needs the fresh list. Remembered like a fork's child is, so `submit`'s exact-session check finds it.
+    func forkSource(id rawID: String, title: String) -> WorkSession? {
+        let id = rawID.lowercased()
+        guard WorkSessionLinks.validSessionID(id, includeCursor: false), let colon = id.firstIndex(of: ":") else { return nil }
+        let provider = String(id[..<colon]), native = String(id[id.index(after: colon)...])
+        guard Self.nativeForkProviders.contains(provider) else { return nil }
+        if let known = sessions.first(where: { $0.id == id && $0.provider == provider && $0.nativeID == native }) { return known }
+        if let live = activitySessions.first(where: { $0.id == id }) { sessions.append(live); return live }
+        let found = WorkSession(id: id, nativeID: native, provider: provider, title: String(title.prefix(300)), summary: "", project: "", status: "discovered")
+        sessions.append(found)
+        return found
+    }
     func automaticChatTarget(_ id: String) -> Bool {
         ["claude", "codex"].contains(String(id.split(separator: ":")[0])) && Self.appOwner(of: id, in: receipts) == nil
     }
@@ -2098,7 +2115,7 @@ struct WorkRecommendationKey: Equatable {
         case "forked":
             if let value = result["forkSession"], let child = WorkSession.parse(value), child.provider == row.provider, child.id != row.sourceSessionID {
                 if !sessions.contains(where: { $0.id == child.id }) { sessions.append(child) }
-                row.sessionID = child.id; row.sessionTitle = child.title
+                row.sessionID = child.id; row.sessionTitle = child.title; row.forkChildID = child.id
                 row.status = "delivered"; row.detail = "Fork created and instruction submitted. Open the child session to inspect its result."
             } else {
                 row.sessionID = nil; row.status = "unknown"; row.detail = "Fork reported success, but its exact child is not discoverable yet. Do not fork again."
@@ -2118,7 +2135,7 @@ struct WorkRecommendationKey: Equatable {
         if result["turnFailed"]?.bool == true, let value = result["forkSession"], let copy = WorkSession.parse(value),
            copy.provider == row.provider, copy.id != row.sourceSessionID {
             if !sessions.contains(where: { $0.id == copy.id }) { sessions.append(copy) }
-            row.sessionID = copy.id; row.sessionTitle = copy.title
+            row.sessionID = copy.id; row.sessionTitle = copy.title; row.forkChildID = copy.id
             row.status = "failed"
         } else {
             row.sessionID = nil

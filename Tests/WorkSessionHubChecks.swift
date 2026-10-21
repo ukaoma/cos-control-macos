@@ -95,6 +95,7 @@ import CoreText
         await tracker.tick()
         precondition(moves == 0 && store.receipts.first?.progress?.pendingStage == nil, "A queued single-session move cannot move a shared task")
         try await runWorkOrchestrationChecks()
+        try await runWorkOrchestratorStoreChecks(root: root)
         try await runWorkActivityChecks()
         try await runWorkBoardCacheChecks()
         try await runWorkInputChecks(root: root)

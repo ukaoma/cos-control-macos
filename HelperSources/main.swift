@@ -626,6 +626,9 @@ final class COSControlHelper {
         case "session-chat-queue-cancel": try emitSessionChatQueueCancel(args: args)
         case "work-chat": try emitWorkChat()
         case "work-chat-capabilities": try emitWorkChatCapabilities()
+        case "work-orchestrator-input": try emitWorkOrchestratorInput()
+        case "work-job-cancel": try emitWorkJobCancel(args: args)
+        case "session-chat-cancel": try emitSessionChatCancel(args: args)
         case "work-models": try emitWorkModels()
         case "work-new": try emitWorkNew()
         case "work-job": try emitWorkJob(args: args)
@@ -18176,15 +18179,21 @@ final class COSControlHelper {
 
     private func emitWorkChat() throws {
         try requireLiveWorkTransport()
-        let data = try FileHandle.standardInput.read(upToCount: 100_001) ?? Data()
-        guard data.count <= 100_000, let body = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+        // 0.5.333: an orchestrator plan (server 6.83.0) carries pick-up notes and may be up to 220,000 bytes.
+        let data = try FileHandle.standardInput.read(upToCount: 220_001) ?? Data()
+        guard data.count <= 220_000, let body = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               let workID = body["workID"] as? String else { throw HelperError.message("Invalid task chat") }
+        let orchestrator = body["orchestrator"] as? Bool == true
+        guard orchestrator || data.count <= 100_000 else { throw HelperError.message("Invalid task chat") }
         let task = try roundtripTask(workID)
         guard task.row["workRevision"] as? String == body["revision"] as? String else { throw HelperError.message("The task changed. Read fresh context before planning.") }
         let links = try WorkSessionLinks.load(WorkSessionLinks.defaultURL())
         guard let sessions = body["sessions"] as? [[String: Any]], sessions.count <= 12,
               sessions.allSatisfy({ row in
                 guard let id = row["id"] as? String else { return false }
+                // 0.5.333: an orchestrator row the server discovered (not linked here) is evidence the server found for this
+                // card; a row that claims a link must still match the link file.
+                if orchestrator, row["linked"] as? Bool != true, let found = row["discoveredBy"] as? [String], !found.isEmpty { return true }
                 return links[id]?.workID == workID
               }) else { throw HelperError.message("Task connections changed. Nothing was dispatched.") }
         let started = ProcessInfo.processInfo.systemUptime
@@ -18254,7 +18263,60 @@ final class COSControlHelper {
         emit(ok: true, message: "Task chat", details: ["protocolVersion": 1, "planners": planners, "efforts": efforts,
                                                      "contextItems": body["contextItems"] as? Bool == true,
                                                      "queueRounds": body["queueRounds"] as? Bool == true,
-                                                     "references": body["references"] as? Bool == true])
+                                                     "references": body["references"] as? Bool == true,
+                                                     // 0.5.333: server 6.83.0 builds the orchestrator input (POST /api/work/orchestrator/input).
+                                                     "orchestrator": body["orchestrator"] as? Int == 1])
+    }
+
+    /// 0.5.333 (Work orchestrator): pushes Control's Work snapshot and reads the card's planner rows in one call. stdin is
+    /// `{workID, meetingWorkIDs, snapshot}` (at most 4 MB); the server stores the snapshot, then answers. No model call.
+    private func emitWorkOrchestratorInput() throws {
+        try requireLiveWorkTransport()
+        let data = try FileHandle.standardInput.read(upToCount: 4_000_001) ?? Data()
+        guard data.count <= 4_000_000, let body = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let workID = body["workID"] as? String, workID.range(of: "^task:[a-z_]+:[a-f0-9]{12}$", options: .regularExpression) != nil else {
+            throw HelperError.message("Invalid orchestrator request")
+        }
+        // The server waits up to 20 s for its log scan and 16 s for a usage read before it answers.
+        guard let response = request("/api/work/orchestrator/input", method: "POST", token: try readToken(), body: String(decoding: data, as: UTF8.self), timeout: 50) else {
+            throw HelperError.message("COS could not read this task's sessions from the server (no answer in 50 s).")
+        }
+        if response.status == 404 { throw HelperError.message("This server does not build the orchestrator input (HTTP 404).") }
+        guard response.status == 200, let answer = response.body, answer["protocolVersion"] as? Int == 1, answer["workID"] as? String == workID else {
+            let code = (response.body?["error"] as? String).map { " · \($0)" } ?? ""
+            throw HelperError.message("The server could not build this task's session list (HTTP \(response.status)\(code)).")
+        }
+        emit(ok: true, message: "Orchestrator input", details: answer)
+    }
+
+    /// 0.5.333 Stop: cancels a New session's server job (POST /api/query-jobs/:jobId/cancel, generation 1).
+    private func emitWorkJobCancel(args: [String]) throws {
+        try requireLiveWorkTransport()
+        guard let id = option("--job-id", in: args), id.range(of: "^[A-Za-z0-9_-]{8,80}$", options: .regularExpression) != nil else {
+            throw HelperError.message("--job-id is not a valid job id")
+        }
+        guard let response = request("/api/query-jobs/\(id)/cancel", method: "POST", token: try readToken(), body: "{\"generation\":1}", timeout: 15) else {
+            throw HelperError.message("The server did not answer the stop.")
+        }
+        var details = response.body ?? [:]
+        details["httpStatus"] = response.status
+        emit(ok: true, message: (200..<300).contains(response.status) ? "Stop sent" : "Stop refused", details: details)
+    }
+
+    /// 0.5.333 Stop: stops a Continue's running turn (POST /api/agent-sessions/:provider/:threadId/cancel). Idempotent per
+    /// client cancel id on the server.
+    private func emitSessionChatCancel(args: [String]) throws {
+        let (provider, threadId) = try sessionChatIds(args: args)
+        guard let cancelID = option("--client-cancel-id", in: args), cancelID.range(of: "^[A-Za-z0-9][A-Za-z0-9._:-]{3,127}$", options: .regularExpression) != nil else {
+            throw HelperError.message("--client-cancel-id is not a valid id")
+        }
+        let json = String(data: try JSONSerialization.data(withJSONObject: ["clientCancelId": cancelID]), encoding: .utf8) ?? "{}"
+        guard let response = request("/api/agent-sessions/\(provider)/\(threadId)/cancel", method: "POST", token: try speakerReviewToken(), body: json, timeout: 15) else {
+            throw HelperError.message("The server did not answer the stop.")
+        }
+        var details = response.body ?? [:]
+        details["httpStatus"] = response.status
+        emit(ok: true, message: (200..<300).contains(response.status) ? "Stop sent" : "Stop refused", details: details)
     }
 
     private func emitWorkNew() throws {

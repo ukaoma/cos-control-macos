@@ -57,7 +57,7 @@ assert '.onKeyPress(.space) { onPreview(item); return .handled }' in meter, "Spa
 assert ".onHover { inside in if inside { focusedRow = item.id }" in meter, "hovering a row makes Space reach it"
 dispatch = chat[chat.index("    private func dispatch("):chat.index("    private func sendContext(")]
 assert "WorkContextMeter.prompt(question: round.question, assignment: assignment.prompt, items: items, selected: selected)" in dispatch, "the send builds its prompt from the assignment's items"
-assert "contextFileIDs:fileIDs,sessionFence:parallel)" in dispatch and "include: contextFileIDs" in store, "the send lists only the assignment's files"
+assert "contextFileIDs:fileIDs,sessionFence:parallel && sendMode == .continueSession)" in dispatch and "include: contextFileIDs" in store, "the send lists only the assignment's files"
 assert '"contextItems": body["contextItems"] as? Bool == true' in helper, "the helper passes the server's context-items capability"
 import re
 logged = re.findall(r'workChatLog\.\w+\("((?:[^"\\]|\\.)*)"', chat)
@@ -99,8 +99,10 @@ print("PASS Work chat queue and reference wiring: helper capabilities, Settings 
 PY
 # 0.5.313: the idle CPU fixes stay in place (text pins; the behaviour is checked in WorkInputChecks).
 /usr/bin/python3 "$ROOT/Tests/idle-cpu-pins.py" "$ROOT"
+# 0.5.333: the Work orchestrator's pure rules (a two-file compile) and its wiring pins.
+zsh "$ROOT/Tests/run-work-orchestrator.sh"
 SOURCES=("$ROOT"/Sources/*.swift)
 SOURCES=("${(@)SOURCES:#*/COSControlApp.swift}")
 COS_COMPILE_PROFILE=bounded /usr/bin/python3 "$ROOT/Tests/kit-compile.py" "$ROOT/Tests/compile-guard.sh" swiftc -target arm64-apple-macosx14.0 -swift-version 6 -strict-concurrency=complete -parse-as-library \
- "${SOURCES[@]}" "$ROOT/Tests/WorkInputChecks.swift" "$ROOT/Tests/WorkSessionHubChecks.swift" "$ROOT/Tests/WorkActivityChecks.swift" "$ROOT/Tests/WorkOrchestrationChecks.swift" "$ROOT/Tests/WorkBoardCacheChecks.swift" "$OUT/ContextChecks.swift" -framework SwiftUI -framework AppKit -framework ServiceManagement -o "$OUT/hub-checks"
+ "${SOURCES[@]}" "$ROOT/Tests/WorkInputChecks.swift" "$ROOT/Tests/WorkSessionHubChecks.swift" "$ROOT/Tests/WorkActivityChecks.swift" "$ROOT/Tests/WorkOrchestrationChecks.swift" "$ROOT/Tests/WorkOrchestratorStoreChecks.swift" "$ROOT/Tests/WorkBoardCacheChecks.swift" "$OUT/ContextChecks.swift" -framework SwiftUI -framework AppKit -framework ServiceManagement -o "$OUT/hub-checks"
 "$OUT/hub-checks" --render "$OUT/renders"
