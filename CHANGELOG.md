@@ -29,7 +29,11 @@ but this would allow them to provide further steer." Needs COS server 6.85.0; wi
 - `Tests/dictation-polish-instructions-helper-checks.py` (in `Tests/run.sh`, against the compiled helper): 190
   checks; `dictation-polish-helper-checks.py` 207, `transcription-dictionary-helper-checks.py` 128 and
   `mac-dictation-helper-checks.py` 43 still pass.
-- Core mutation gate `Tests/mutate-mac-dictation-core.py --only 0335`: see the branch commit for the count.
+- Core mutation gate `Tests/mutate-mac-dictation-core.py --only 0335`: 23 of 23 killed, each by a named check in
+  MacDictationChecks, a green baseline before every run (the compile guard refused some compiles for memory headroom
+  on a busy Mac, so the 23 were collected over four runs; no mutant survived or crashed in any run).
+- `Tests/mutate-polish-instructions-helper.py` (12 helper mutants against the helper checks) is in the branch; it
+  could not get a helper compile admitted under the guard's memory floor on this Mac, so it has not run yet.
 - Not run here: the full `Tests/run.sh` and the full app build (left for the 0.5.335 merge).
 
 ## 0.5.333 (build 386), Work chat sees every session on the card, and Auto-send per card
