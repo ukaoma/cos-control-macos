@@ -23,11 +23,26 @@ final class MacAudioCapture: @unchecked Sendable {
     private var interruption: String?
     private var lastInput = Date()
     private var started = Date()
+    /// 0.5.334: the hearing check (MacRecordingHearing). Raw input since the last chunk, and in all, that was not 0.0.
+    private var rawSignalSinceChunk = false
+    private var rawSignalEver = false
+    private var rawFrames = 0
+    private var probed = false
     private let chunk: @Sendable (MacRecordingChunk) -> Bool
     private let failure: @Sendable (String) -> Void
+    /// Called once, on the capture queue, after the tap's first `MacRecordingHearing.probeSeconds` of input: whether any
+    /// of it was not exactly 0.0. Never blocks the capture.
+    private let probe: (@Sendable (Bool) -> Void)?
 
-    init(chunk: @escaping @Sendable (MacRecordingChunk) -> Bool, failure: @escaping @Sendable (String) -> Void) {
-        self.chunk = chunk; self.failure = failure
+    init(chunk: @escaping @Sendable (MacRecordingChunk) -> Bool, failure: @escaping @Sendable (String) -> Void,
+         probe: (@Sendable (Bool) -> Void)? = nil) {
+        self.chunk = chunk; self.failure = failure; self.probe = probe
+    }
+    /// 0.5.334: whether another app has audio output running now (the hearing check's "something is playing"). nil
+    /// when the process list cannot be read. COS itself is excluded (sources() skips this process).
+    static func othersPlaying() -> Bool? {
+        guard let list = try? sources() else { return nil }
+        return !list.isEmpty
     }
     private static func address(_ selector: AudioObjectPropertySelector) -> AudioObjectPropertyAddress {
         .init(mSelector: selector, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
@@ -152,6 +167,13 @@ final class MacAudioCapture: @unchecked Sendable {
             input.frameLength = input.frameCapacity
             guard let data = input.floatChannelData?[0] else { throw MacRecordingError.unavailable("Audio conversion could not read the input.") }
             raw.withUnsafeBytes { data.update(from: $0.bindMemory(to: Float.self).baseAddress!, count: raw.count / 4) }
+            if !rawSignalSinceChunk, MacRecordingSignal.hasRawSignal(UnsafeBufferPointer(start: data, count: raw.count / 4)) {
+                rawSignalSinceChunk = true; rawSignalEver = true
+            }
+            rawFrames += raw.count / 4
+            if !probed, Double(rawFrames) >= format.sampleRate * MacRecordingHearing.probeSeconds {
+                probed = true; probe?(rawSignalEver)
+            }
             var supplied = false
             guard let output = AVAudioPCMBuffer(pcmFormat: converter.outputFormat, frameCapacity: AVAudioFrameCount(ceil(Double(input.frameLength) * 16_000 / format.sampleRate)) + 64) else {
                 throw MacRecordingError.unavailable("Audio conversion could not allocate a bounded output buffer.")
@@ -170,7 +192,8 @@ final class MacAudioCapture: @unchecked Sendable {
             while pending.count >= size {
                 let data = Data(pending.prefix(size)); pending.removeFirst(size)
                 frames += size / 2
-                guard chunk(.init(index: index, pcm: data, endFrame: frames)) else {
+                let signal = rawSignalSinceChunk; rawSignalSinceChunk = false
+                guard chunk(.init(index: index, pcm: data, endFrame: frames, rawSignal: signal)) else {
                     throw MacRecordingError.unavailable("Local audio storage fell behind. This recording is incomplete; earlier chunks are retained.")
                 }
                 index += 1
@@ -180,7 +203,8 @@ final class MacAudioCapture: @unchecked Sendable {
     private func emitPartial() {
         guard !pending.isEmpty else { return }
         frames += pending.count / 2
-        if !chunk(.init(index: index, pcm: pending, endFrame: frames)) {
+        let signal = rawSignalSinceChunk; rawSignalSinceChunk = false
+        if !chunk(.init(index: index, pcm: pending, endFrame: frames, rawSignal: signal)) {
             interruption = interruption ?? "Local audio storage fell behind. This recording is incomplete; earlier chunks are retained."
         }
         pending.removeAll()

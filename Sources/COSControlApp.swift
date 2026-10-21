@@ -54,6 +54,8 @@ struct COSControlApp: App {
             await model?.requestSystemAudio(for: "Mute other apps", wantsPane: wantsPane) ?? false
         }
         model.macRecording.requestSystemAudio = { [weak model] in await model?.requestSystemAudio(for: "All Mac audio") ?? false }
+        // 0.5.334: Open System Settings after "can't hear your Mac's audio": the pane itself, even when the preflight says allowed.
+        model.macRecording.openSystemAudioSettings = { [weak model] in _ = await model?.requestSystemAudio(for: "All Mac audio", wantsPane: true) }
         // 0.5.312 sounds: the pet's family picks its default sound; nothing plays while a Mac recording captures.
         // Any live COS recording, Mac or glasses (QA 2026-10-15): muting other apps would silence the call being recorded,
         // and a glasses mic hears the call through the Mac's speakers.

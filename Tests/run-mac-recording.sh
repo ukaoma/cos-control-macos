@@ -1,11 +1,25 @@
 #!/bin/zsh
 set -euo pipefail
 ROOT="${0:A:h:h}"
+# 0.5.334: COS_MAC_REC_LANE=core|pins runs one lane alone (Tests/mutate-mac-recording-robust.py); default runs all.
+LANE="${COS_MAC_REC_LANE:-all}"
 DIR="$(mktemp -d /private/tmp/cos-mac-recording-checks.XXXXXX)"
 trap 'rm -rf "$DIR"' EXIT
+if [[ "$LANE" == "all" || "$LANE" == "core" ]]; then
 COS_COMPILE_PROFILE=bounded /usr/bin/python3 "$ROOT/Tests/kit-compile.py" "$ROOT/Tests/compile-guard.sh" swiftc -target arm64-apple-macosx14.0 -swift-version 6 -strict-concurrency=complete -parse-as-library \
   "$ROOT/Sources/MacRecordingCore.swift" "$ROOT/Tests/MacRecordingChecks.swift" -o "$DIR/checks"
-"$DIR/checks"
+OUT="$("$DIR/checks")" || { print -r -- "$OUT"; exit 1; }
+print -r -- "$OUT"
+COUNT="${${OUT##*checks: }%% passed*}"
+(( COUNT >= 12371 )) || { print -u2 "Mac recording core checks ran only $COUNT"; exit 1; }
+fi
+if [[ "$LANE" == "core" ]]; then exit 0; fi
+# 0.5.334: the hearing check, the fail-fast and Discard, wired (rules above, wiring here).
+OUT="$(/usr/bin/python3 "$ROOT/Tests/mac-recording-robust-pins.py" "$ROOT")" || { print -r -- "$OUT"; exit 1; }
+print -r -- "$OUT"
+COUNT="${${OUT##*pins: }%% passed*}"
+(( COUNT >= 60 )) || { print -u2 "mac recording robust pins ran only $COUNT (expected at least 60)"; exit 1; }
+if [[ "$LANE" == "pins" ]]; then exit 0; fi
 # 0.5.310: the Meetings row reads the store's paused state (the label rule itself is checked above). Source pins only:
 # the store needs the full app to run, so these prove the wiring exists, not its runtime behaviour.
 python3 - "$ROOT/Sources/MacRecording.swift" "$ROOT/Sources/ControllerModel.swift" <<'PY'
@@ -52,7 +66,7 @@ saved = model[start:model.index("        orphanBusy = true", start)]
 assert "await self.macRecording.retainedCaptures()" in saved and "self.macRecording.recover(capture, bridge: self.macRecordingBridge)" in saved \
     and saved.index("retainedCaptures()") < saved.index("not on this Mac"), \
     "a stranded Save reads the spool fresh and passes the transport before claiming the audio is absent"
-assert 'if store.canKeepForLater {' in store, "Keep audio is offered whenever the policy allows (silence or paused delivery)"
+assert 'if store.canKeepForLater {' in store, "Keep audio is offered whenever the policy allows (a paused delivery; never no speech, 0.5.334)"
 print("PASS Mac recording: one interruption line, stop notice, safe Recover and stranded Save, keep when paused")
 PY
 # 0.5.314 (Miles 2026-10-16): the pet's REC pill appears only while something records and opens the live meeting through

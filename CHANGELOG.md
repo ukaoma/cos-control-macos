@@ -1,3 +1,56 @@
+## 0.5.334 (build 387), Record on Mac stops when it can't hear your Mac, and Discard replaces the dead ends
+
+Miles, 2026-10-21 13:15: "clean up the Record on Mac pilot ... I want this functionality working moving forward."
+That morning All Mac audio (the global system-audio tap since 0.5.304) captured a 21-minute Zoom call, 08:44 to 09:05,
+as 211 chunks of EXACT zeros. Control logged "silent capture: 2 chunks below the peak floor" 12 s in and recorded on;
+the server refused the save as no speech; and the panel became a dead end ("Delivery paused: No speech was detected",
+Keep audio for later, a Retry saving that could not work, "Saved meeting not found yet · Starting", and an Unsaved
+captures row with a Save that could not work). Pairs with COS server 6.83.2 for the server side of Discard.
+
+### What changed
+
+- **The hearing check.** The capture reads its raw float input before resampling and marks each chunk that held any
+  sample that is not exactly 0.0 (a sample below one Int16 step rounds to zero, so the Int16 audio cannot tell quiet
+  from nothing). A ~1 s probe through the same tap sets a warning only ("No sound reaching COS yet. Checking that
+  macOS lets it record system audio…"); it never blocks the start.
+- **The fail-fast.** Two exact-zero chunks (12 s) from All Mac audio while another app has audio output running, with
+  no nonzero sample yet in the capture, stop the capture. Nothing is kept pending: the zero audio moves to the dated
+  discarded folder and the server is asked to discard its side. The panel shows one message, "COS Control can't hear
+  your Mac's audio. macOS may not be letting it record system audio.", with Open System Settings (Privacy & Security,
+  Screen & System Audio Recording; on macOS 26 the `Privacy_AudioCapture` anchor, read from this Mac's 26.6.2
+  PrivacySecurity.searchTerms) and Try again (a fresh All Mac audio capture). A notification says the same. A quiet
+  meeting with any nonzero signal, a per-app source and a Mac with nothing playing keep recording as before.
+- **Discard (no sound was captured)** replaces Retry saving retained audio for a capture the server called no speech
+  or that is exact zeros here, with an inline confirm. It moves the capture's folder (journal and WAVs untouched) into
+  `~/cos-data/mac-recordings-discarded/<yyyy-MM-dd>/` with one rename (never removed), then asks the server
+  (`POST /api/meeting/sessions/:id/discard`, server 6.83.2, advertised as `discard: true`). A server still inside its
+  2-minute idle window is asked again after 130 s, twice at most. An older server: only this Mac's copy, and the line
+  says so. Meetings' Unsaved captures row offers the same Discard instead of Save for a Mac capture with no speech.
+- **No more "Saved meeting not found yet"** for a capture with no sound: its Live now row is gone and the open live
+  pane says "No sound was captured, so there is no meeting to open."
+- **Keep audio for later only where it can help** (a paused delivery), never for no speech; Retry saving only where a
+  retry can work; no red "Delivery paused: ... Choose the app" line for no speech.
+- Local copies of captures already saved in the library are unchanged (no pruning in this release).
+
+### What macOS can tell us about System Audio Recording (researched for this change)
+
+No public API reports it. `AudioHardwareCreateProcessTap`, the aggregate device and the IOProc all succeed without it
+and the samples are zero. `AVAudioApplication`'s record permission is the microphone; `CGPreflightScreenCaptureAccess`
+is Screen Recording, not System Audio Recording Only (`kTCCServiceAudioCapture`). The private `TCCAccessPreflight`
+(Apple's AudioCap sample, `SystemAudioPermission`) is the only reader, and on 2026-10-21 it let the recording start
+without asking (no "system audio before recording" line was logged), so it can say no but cannot prove yes. The audio
+is the proof: exact zeros, not quiet.
+
+### Tests
+
+- `Tests/MacRecordingChecks.swift`: the rules (raw scan, digital silence, fail-fast fires on the replayed incident and
+  not on quiet nonzero, nothing playing or a per-app source; the probe; Discard, Retry and Keep policies; server
+  answers; the honest notes) and execution against a fake helper: the spool's heard flag, discard into the dated
+  folder with every file kept, the server asked once with the capture and pin, an older server asked nothing, a
+  second discard of the same name kept apart, a local failure leaving the server alone.
+- `Tests/mac-recording-robust-pins.py` (wiring, 59 pins), `Tests/mac-recording-helper-checks.py` (the helper's
+  `discard` operation against the loopback stand-in), `Tests/mutate-mac-recording-robust.py` (mutation gate).
+
 ## 0.5.333 (build 386), Work chat sees every session on the card, and Auto-send per card
 
 Miles, 2026-10-20 21:47: the Work chat should act like an orchestrator, not a form. On the toadstone card that evening
