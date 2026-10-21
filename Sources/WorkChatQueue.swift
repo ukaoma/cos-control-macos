@@ -65,10 +65,11 @@ enum WorkChatHold: Equatable {
 
     private let handoff: WorkHandoffStore
     private let sources: () -> [WorkSource]
-    private let store = WorkTaskChatStore()
+    private let store: WorkTaskChatStore
     private var loop: Task<Void, Never>?
-    init(handoff: WorkHandoffStore, sources: @escaping () -> [WorkSource]) {
-        self.handoff = handoff; self.sources = sources; store.enabled = true
+    /// 0.5.333: `store` is shared with the lens plans pump, so a card not open in a view has one background writer.
+    init(handoff: WorkHandoffStore, sources: @escaping () -> [WorkSource], store: WorkTaskChatStore = WorkTaskChatStore()) {
+        self.handoff = handoff; self.sources = sources; self.store = store; store.enabled = true
     }
     func start(interval: Duration = .seconds(15)) {
         guard loop == nil else { return }

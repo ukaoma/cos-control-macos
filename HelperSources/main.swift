@@ -627,6 +627,10 @@ final class COSControlHelper {
         case "work-chat": try emitWorkChat()
         case "work-chat-capabilities": try emitWorkChatCapabilities()
         case "work-orchestrator-input": try emitWorkOrchestratorInput()
+        case "work-lens-inbox": try emitWorkLensInbox(args: args)
+        case "work-lens-history": try emitWorkLensHistory(args: args)
+        case "work-lens-result": try emitWorkLensResult(args: args)
+        case "work-lens-mac-send": try emitWorkLensMacSend(args: args)
         case "work-job-cancel": try emitWorkJobCancel(args: args)
         case "session-chat-cancel": try emitSessionChatCancel(args: args)
         case "work-models": try emitWorkModels()
@@ -18265,7 +18269,9 @@ final class COSControlHelper {
                                                      "queueRounds": body["queueRounds"] as? Bool == true,
                                                      "references": body["references"] as? Bool == true,
                                                      // 0.5.333: server 6.83.0 builds the orchestrator input (POST /api/work/orchestrator/input).
-                                                     "orchestrator": body["orchestrator"] as? Int == 1])
+                                                     "orchestrator": body["orchestrator"] as? Int == 1,
+                                                     // 0.5.333: server 6.83.0 holds lens plans (POST /api/work/chat/lens-rounds) for Control to pull.
+                                                     "lensPlans": body["lensPlans"] as? Int == 1])
     }
 
     /// 0.5.333 (Work orchestrator): pushes Control's Work snapshot and reads the card's planner rows in one call. stdin is
@@ -18287,6 +18293,78 @@ final class COSControlHelper {
             throw HelperError.message("The server could not build this task's session list (HTTP \(response.status)\(code)).")
         }
         emit(ok: true, message: "Orchestrator input", details: answer)
+    }
+
+    /// 0.5.333 lens plans (server 6.83.0, `lensPlans: 1`): COS Control's inbox poll. Rounds the lens recorded and COS Control
+    /// has not written into the card's Work chat history, send requests and stop requests. Polling is what the server
+    /// reports as COS Control being connected. A failure is an answer (`available: false` and why), never a throw.
+    static let workLensRoundID = "^lr_[a-f0-9]{16}$", workLensSendID = "^ls_[a-f0-9]{16}$"
+    static func workLensInboxPath(since: String, autoSend: String) -> String? {
+        guard since.range(of: "^[0-9]{1,12}$", options: .regularExpression) != nil, ["0", "1"].contains(autoSend) else { return nil }
+        return "/api/work/chat/lens-inbox?since=\(since)&autoSend=\(autoSend)"
+    }
+    private func emitWorkLensInbox(args: [String]) throws {
+        try requireLiveWorkTransport()
+        guard let path = Self.workLensInboxPath(since: option("--since", in: args) ?? "0", autoSend: option("--auto-send", in: args) ?? "0") else {
+            throw HelperError.message("--since is a cursor and --auto-send is 0 or 1")
+        }
+        guard let response = request(path, token: try readToken(), timeout: 10) else {
+            emit(ok: true, message: "Lens plans are unreachable", details: ["available": false, "reason": "unreachable"]); return
+        }
+        guard response.status == 200, let body = response.body, body["v"] as? Int == 1 else {
+            let code = (response.body?["error"] as? String) ?? (response.status == 404 ? "server_too_old" : "http_\(response.status)")
+            emit(ok: true, message: "Lens plans are unavailable", details: ["available": false, "reason": code, "httpStatus": response.status]); return
+        }
+        var details = body; details["available"] = true
+        emit(ok: true, message: "Lens inbox", details: details)
+    }
+    /// After COS Control wrote a lens round into the card's history: `{state: "in_history", autoSendCard}` on stdin.
+    private func emitWorkLensHistory(args: [String]) throws {
+        try requireLiveWorkTransport()
+        guard let id = option("--round-id", in: args), id.range(of: Self.workLensRoundID, options: .regularExpression) != nil else {
+            throw HelperError.message("--round-id is not a lens round id")
+        }
+        let data = try readBoundedStdin(256)
+        guard data.count <= 256, let raw = try? JSONSerialization.jsonObject(with: data) as? [String: Any], raw["state"] as? String == "in_history",
+              Set(raw.keys).isSubset(of: ["state", "autoSendCard"]), raw["autoSendCard"] == nil || raw["autoSendCard"] is Bool else {
+            throw HelperError.message("History is { state: \"in_history\", autoSendCard? }")
+        }
+        workLensPost("/api/work/chat/lens-rounds/\(id)/history", data)
+    }
+    /// What happened to each assignment of a lens send request: `{assignments: [{id, state, receiptId?, detail?, sessionID?}]}`.
+    private func emitWorkLensResult(args: [String]) throws {
+        try requireLiveWorkTransport()
+        guard let id = option("--send-id", in: args), id.range(of: Self.workLensSendID, options: .regularExpression) != nil else {
+            throw HelperError.message("--send-id is not a lens send request id")
+        }
+        let data = try readBoundedStdin(8_192)
+        guard data.count <= 8_192, let raw = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let rows = raw["assignments"] as? [[String: Any]], (1...3).contains(rows.count) else {
+            throw HelperError.message("A result is { assignments: [{ id, state, receiptId?, detail?, sessionID? }] }")
+        }
+        workLensPost("/api/work/chat/lens-send/\(id)/result", data)
+    }
+    /// Miles's own Send of a lens round's assignments on the Mac, reported on the round (same assignments[] shape).
+    private func emitWorkLensMacSend(args: [String]) throws {
+        try requireLiveWorkTransport()
+        guard let id = option("--round-id", in: args), id.range(of: Self.workLensRoundID, options: .regularExpression) != nil else {
+            throw HelperError.message("--round-id is not a lens round id")
+        }
+        let data = try readBoundedStdin(8_192)
+        guard data.count <= 8_192, let raw = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let rows = raw["assignments"] as? [[String: Any]], (1...3).contains(rows.count) else {
+            throw HelperError.message("A Mac send is { assignments: [{ id, state, receiptId?, detail?, sessionID? }] }")
+        }
+        workLensPost("/api/work/chat/lens-rounds/\(id)/mac-send", data)
+    }
+    private func workLensPost(_ path: String, _ data: Data) {
+        guard let token = try? readToken(), let response = request(path, method: "POST", token: token, body: String(decoding: data, as: UTF8.self), timeout: 10) else {
+            emit(ok: true, message: "Not confirmed", details: ["accepted": false, "reason": "unreachable"]); return
+        }
+        guard response.status == 200 else {
+            emit(ok: true, message: "Not taken", details: ["accepted": false, "httpStatus": response.status, "reason": (response.body?["error"] as? String) ?? "http_\(response.status)"]); return
+        }
+        emit(ok: true, message: "Recorded", details: ["accepted": true, "round": response.body ?? [:]])
     }
 
     /// 0.5.333 Stop: cancels a New session's server job (POST /api/query-jobs/:jobId/cancel, generation 1).

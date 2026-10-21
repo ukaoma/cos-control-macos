@@ -101,8 +101,10 @@ PY
 /usr/bin/python3 "$ROOT/Tests/idle-cpu-pins.py" "$ROOT"
 # 0.5.333: the Work orchestrator's pure rules (a two-file compile) and its wiring pins.
 zsh "$ROOT/Tests/run-work-orchestrator.sh"
+# 0.5.333 lens plans: the pure rules (a two-file compile) and their wiring pins.
+zsh "$ROOT/Tests/run-work-lens-plans.sh"
 SOURCES=("$ROOT"/Sources/*.swift)
 SOURCES=("${(@)SOURCES:#*/COSControlApp.swift}")
 COS_COMPILE_PROFILE=bounded /usr/bin/python3 "$ROOT/Tests/kit-compile.py" "$ROOT/Tests/compile-guard.sh" swiftc -target arm64-apple-macosx14.0 -swift-version 6 -strict-concurrency=complete -parse-as-library \
- "${SOURCES[@]}" "$ROOT/Tests/WorkInputChecks.swift" "$ROOT/Tests/WorkSessionHubChecks.swift" "$ROOT/Tests/WorkActivityChecks.swift" "$ROOT/Tests/WorkOrchestrationChecks.swift" "$ROOT/Tests/WorkOrchestratorStoreChecks.swift" "$ROOT/Tests/WorkBoardCacheChecks.swift" "$OUT/ContextChecks.swift" -framework SwiftUI -framework AppKit -framework ServiceManagement -o "$OUT/hub-checks"
+ "${SOURCES[@]}" "$ROOT/Tests/WorkInputChecks.swift" "$ROOT/Tests/WorkSessionHubChecks.swift" "$ROOT/Tests/WorkActivityChecks.swift" "$ROOT/Tests/WorkOrchestrationChecks.swift" "$ROOT/Tests/WorkOrchestratorStoreChecks.swift" "$ROOT/Tests/WorkLensPlansStoreChecks.swift" "$ROOT/Tests/WorkBoardCacheChecks.swift" "$OUT/ContextChecks.swift" -framework SwiftUI -framework AppKit -framework ServiceManagement -o "$OUT/hub-checks"
 "$OUT/hub-checks" --render "$OUT/renders"

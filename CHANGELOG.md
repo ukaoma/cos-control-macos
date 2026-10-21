@@ -30,6 +30,23 @@ Needs server 6.83.0 for the new input; with an older server nothing below change
   send still asks once), each send logs a line, and each assignment shows Stop while it can stop: one not sent yet or
   queued never goes; a New session's run is cancelled (`work-job-cancel`); a Continue's turn is stopped
   (`session-chat-cancel`); a fork in progress says it cannot be stopped from here. Off: today, unchanged.
+- **Lens plans** (Miles 2026-10-21 09:11, "Add both"; server 6.83.0 `lensPlans: 1`, contract
+  `CONTRACT_lens_plans_6.83.0_2026-10-21.md`). While COS Control runs it polls the lens inbox every 5 s, and only when
+  the server advertises lensPlans (it asks once a minute; an older server gets that read and nothing else). Each plan
+  the lens recorded is written into the card's Work chat history as an ordinary Work chat round, marked "From glasses"
+  with the time, with the task revision, session links, attachments and context items read at that moment, so history,
+  update summaries and later sends work as for a round planned on the Mac. "Send this plan" from the lens goes through
+  the same `dispatch` as Send: queued rounds (an assignment held by earlier open work queues, never Ask each time),
+  context items, the card and session fences, receipts, and Stop. Control re-checks the card's Auto-send switch: an
+  unconfirmed send (no two-step tap) on a card with Auto-send off is refused, and a change of the switch is reported to
+  the server. Each assignment's result (pending, held, sent, delivered, failed, refused, stopped) is reported, and
+  reported again as it changes until final. A lens Stop uses the existing Stop. A card open in a Work chat view is
+  written and sent through that view's store; the queue pump and the lens pump share one store for the others, so a
+  card has one writer. Recording a lens round never sends it, whatever the card's Auto-send: only a lens send request
+  (two-step, or Auto-send plus an explicit request) or Miles's own Send does. When Miles sends a lens round's
+  assignments from the Mac (the lens tells him to after a 423), Control reports them on the round (`mac-send`, server
+  6.83.0 QA), so the lens can never send them twice. New helper commands: `work-lens-inbox`, `work-lens-history`,
+  `work-lens-result`, `work-lens-mac-send`.
 
 ### Checks
 

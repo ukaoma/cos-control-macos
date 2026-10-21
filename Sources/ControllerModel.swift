@@ -313,6 +313,7 @@ final class ControllerModel: ObservableObject {
     private(set) var workHandoffStore: WorkHandoffStore?
     /// 0.5.317: sends queued Work chat assignments for cards not open in a Work chat view.
     private var workChatQueuePump: WorkChatQueuePump?
+    private var workLensPlansPump: WorkLensPlansPump?
     /// 0.5.258: an older server answered the card-link lookup with 404; it is not asked again this launch.
     private var meetingKeysRouteAbsent = false
     /// The sessions Work handoffs name, so Sessions shows them as work rather than as COS server jobs (0.5.247).
@@ -946,9 +947,14 @@ final class ControllerModel: ObservableObject {
         // 0.5.317: queued Work chat sends for cards whose chat is not open go out while COS Control runs (WorkChatQueue.swift).
         if Bundle.main.object(forInfoDictionaryKey: "COSWorkChatEnabled") as? Bool == true
             || ProcessInfo.processInfo.environment["COS_WORK_ORCHESTRATION_CANDIDATE"] == "1" {
-            let pump = WorkChatQueuePump(handoff: store, sources: { [weak self] in (self?.workTasks ?? []).map(WorkSource.taskSnapshot) })
+            let background = WorkTaskChatStore()
+            let pump = WorkChatQueuePump(handoff: store, sources: { [weak self] in (self?.workTasks ?? []).map(WorkSource.taskSnapshot) }, store: background)
             pump.start()
             workChatQueuePump = pump
+            // 0.5.333 lens plans: pulls the lens inbox every 5 s, only from a server that advertises lensPlans (WorkLensPlansPump.swift).
+            let lens = WorkLensPlansPump(handoff: store, sources: { [weak self] in (self?.workTasks ?? []).map(WorkSource.taskSnapshot) }, enabled: true, store: background)
+            lens.start()
+            workLensPlansPump = lens
         }
         meetingAudioNotifier.onOpenWork = { [weak self] workID in self?.openWorkItem(workID) }
         tracker.start()

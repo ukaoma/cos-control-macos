@@ -27,7 +27,11 @@ struct WorkChatAssignment: Codable, Equatable, Identifiable {
     /// A New session has no session yet: its `sessionID` is WorkOrchestrator.newSessionID and `provider` names where it starts.
     var mode: String? = nil
     var provider: String? = nil
-    enum CodingKeys: String, CodingKey { case sessionID, prompt, receiptID, state, detail, result, contextItemIDs, waitingOn, parallel, mode, provider }
+    /// 0.5.333 lens plans: the lens's id for this assignment (a1..aN), and the server's send request that sent it from the
+    /// lens. Nil on every assignment planned on the Mac.
+    var lensID: String? = nil
+    var lensSendID: String? = nil
+    enum CodingKeys: String, CodingKey { case sessionID, prompt, receiptID, state, detail, result, contextItemIDs, waitingOn, parallel, mode, provider, lensID, lensSendID }
     init(sessionID: String, prompt: String) { self.sessionID = sessionID; self.prompt = prompt }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -41,6 +45,7 @@ struct WorkChatAssignment: Codable, Equatable, Identifiable {
         contextItemIDs = try c.decodeIfPresent([String].self, forKey: .contextItemIDs)
         waitingOn = try c.decodeIfPresent([String].self, forKey: .waitingOn)
         parallel = try c.decodeIfPresent(Bool.self, forKey: .parallel)
+        lensID = try c.decodeIfPresent(String.self, forKey: .lensID); lensSendID = try c.decodeIfPresent(String.self, forKey: .lensSendID)
     }
 }
 struct WorkChatRound: Codable, Identifiable {
@@ -76,6 +81,13 @@ struct WorkChatRound: Codable, Identifiable {
     var newSessionProviders: [String]? = nil
     /// 0.5.333: why the planner saw no session that can take a Continue (never silent). Shown above the plan.
     var sessionsNote: String? = nil
+    /// 0.5.333 lens plans: "glasses" for a round the lens made (WorkLensPlans.origin), with the server's round id and when
+    /// the lens made it. Nil on rounds planned on the Mac.
+    var origin: String? = nil
+    var lensRoundID: String? = nil
+    var lensAt: Double? = nil
+    /// Sent from the lens (two-step confirm or the card's Auto-send): each running assignment has a Stop, as sent without review.
+    var sentFromGlasses: Bool? = nil
 }
 /// 0.5.333: one planner row a round may send to, kept with the round so a later send checks the plan's own targets.
 struct WorkOrchestratorTarget: Codable, Equatable {
@@ -336,6 +348,12 @@ enum WorkChatPreflight {
     @Published private(set) var orchestratorOffered = false
     /// 0.5.333 Stop: assignments a Stop is on its way to the server for.
     @Published private(set) var stopping: Set<String> = []
+    /// 0.5.333 lens plans: set while a lens send request is dispatched, so only Miles's own Send of a lens round on the
+    /// Mac is reported as a Mac send (the lens pump reports a lens send's results itself).
+    var lensDispatching = false
+    /// 0.5.333 lens plans: told (card, lens round) after Miles's own Send of a lens round's assignments on the Mac, so the
+    /// server never lets the lens send them again. Set by the lens pump.
+    static var onLensMacSend: ((String, String) -> Void)?
     /// A reference's outputs and change counts since it was linked, from the Connections session cards (another view owns
     /// that read). Unwired: summary only.
     var referenceFacts: WorkReferenceFacts = { _, _ in nil }
@@ -755,7 +773,7 @@ enum WorkChatPreflight {
     /// 0.5.333 (Miles Q1: every running assignment has a Stop). What Stop does for one assignment of a round sent without
     /// review: nil when there is nothing to stop.
     func stopAction(roundID: String, assignmentID: String, handoff: WorkHandoffStore) -> WorkOrchestrator.StopAction? {
-        guard let round = record?.rounds.first(where: { $0.id == roundID }), round.sentWithoutReview == true,
+        guard let round = record?.rounds.first(where: { $0.id == roundID }), round.sentWithoutReview == true || round.sentFromGlasses == true,
               let a = round.assignments.first(where: { $0.receiptID == assignmentID }) else { return nil }
         let receipt = handoff.receipts.first { $0.id == assignmentID }
         let action = WorkOrchestrator.stopAction(state: a.state, queuedState: WorkChatHold.queuedState, receiptStatus: receipt?.status,
@@ -973,6 +991,8 @@ enum WorkChatPreflight {
             self.record?.rounds[index].state = WorkChatPolicy.reviewedState(assignments)
         }
         _ = persist()
+        // 0.5.333 lens plans: Miles sent assignments of a lens round from the Mac; the server must know they went.
+        if !lensDispatching, let lensRound = self.record?.rounds[index].lensRoundID { Self.onLensMacSend?(record.workID, lensRound) }
     }
     /// 0.5.317: what holds this assignment now. Parallel: handoffs on its own session. Otherwise: the card's fence.
     private func heldBy(parallel: Bool, assignment: WorkChatAssignment, round: WorkChatRound, source: WorkSource, handoff: WorkHandoffStore) async -> [WorkHandoffReceipt] {
@@ -1217,6 +1237,10 @@ struct WorkTaskChatView: View {
     private func roundView(_ round: WorkChatRound) -> some View {
                 VStack(alignment:.leading,spacing:10) {
                     COSMarkdownText(round.question,bodySize:14).font(COSType.body(14,weight:.semibold)).textSelection(.enabled)
+                    // 0.5.333 lens plans: a round the lens made says so, with the time.
+                    if round.origin == WorkLensPlans.origin, let at = round.lensAt {
+                        Text(WorkLensPlans.fromGlassesLabel(at: Date(timeIntervalSince1970: at), now: Date())).font(COSType.body(11)).foregroundStyle(COSPalette.muted).accessibilityIdentifier("work-chat-from-glasses")
+                    }
                     if let names = round.attachmentNames, !names.isEmpty { Text("Attachments: " + names.joined(separator: ", ")).font(COSType.body(11)).foregroundStyle(COSPalette.muted) }
                     // 0.5.333: never an empty session list in silence; this says why no session could take a Continue.
                     if let note = round.sessionsNote { Text(note).font(COSType.body(11.5)).foregroundStyle(COSPalette.muted).fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("work-chat-sessions-note") }
@@ -1300,6 +1324,8 @@ struct WorkTaskChatView: View {
         }.task(id:source.id) {
             // 0.5.317: while this card is open here, this store sends its queued work; the app-wide pump leaves it alone.
             WorkChatQueuePump.show(source.id); defer { WorkChatQueuePump.hide(source.id) }
+            // 0.5.333 lens plans: while this card is open here, the lens pump writes and sends through this store (one writer).
+            WorkTaskChatStore.register(chat, for: source.id); defer { WorkTaskChatStore.unregister(chat, for: source.id) }
             chat.enabled = Bundle.main.object(forInfoDictionaryKey: "COSWorkChatEnabled") as? Bool == true
                 || ProcessInfo.processInfo.environment["COS_WORK_ORCHESTRATION_CANDIDATE"] == "1"
             // 0.5.317: when this Mac already knows the server, the saved history shows at once, before the session read.
@@ -1707,5 +1733,161 @@ private struct WorkChatSendControls: View {
     private func formatButton(_ title: String, _ action: String, _ icon: String) -> some View {
         Button { command = action; commandID = UUID() } label: { Image(systemName: icon) }
             .buttonStyle(COSQuietButtonStyle()).help(title).accessibilityLabel(title).disabled(disabled)
+    }
+}
+
+// MARK: - 0.5.333 lens plans (server 6.83.0 `lensPlans: 1`; WorkLensPlans.swift)
+
+extension WorkTaskChatStore {
+    private final class Shown { weak var store: WorkTaskChatStore?; init(_ s: WorkTaskChatStore) { store = s } }
+    private static var shownStores: [String: Shown] = [:]
+    /// The store a Work chat view has open for this card, so the lens pump writes through it (one writer per card).
+    static func register(_ store: WorkTaskChatStore, for workID: String) { shownStores[workID] = Shown(store) }
+    static func unregister(_ store: WorkTaskChatStore, for workID: String) { if shownStores[workID]?.store === store { shownStores[workID] = nil } }
+    static func shown(_ workID: String) -> WorkTaskChatStore? { shownStores[workID]?.store }
+
+    /// Waits up to `limit` for this store to be free (a plan, send or refresh in flight here goes first).
+    func waitIdle(upTo limit: Duration) async -> Bool {
+        let deadline = ContinuousClock.now + limit
+        while busy || refreshing {
+            guard ContinuousClock.now < deadline else { return false }
+            do { try await Task.sleep(for: .milliseconds(100)) } catch { return false }
+        }
+        return true
+    }
+
+    /// Writes a lens round into this card's Work chat record as a WorkChatRound marked "From glasses": the same record type
+    /// as a round planned here, with the task revision, session links, attachments and context items read now, so a later
+    /// send gets every check a Mac send gets. True when the round is in the history (now, or already).
+    func recordLensRound(_ lens: WorkLensPlans.Round, source: WorkSource, handoff: WorkHandoffStore) async -> Bool {
+        syncFromDisk()
+        guard !busy, !refreshing, WorkLensPlans.valid(lens), lens.workID == source.id, let current = record, current.workID == source.id,
+              current.serverID == (handoff.taskChatServerID ?? "unverified") else { return false }
+        if current.rounds.contains(where: { $0.lensRoundID == lens.roundId }) { return true }
+        guard current.rounds.count < 100 else { workChatLog.error("lens round not saved: this card's Work chat history is full"); return false }
+        busy = true; phase = "Saving a plan from the glasses…"
+        defer { busy = false; phase = "" }
+        do {
+            await handoff.refreshActivity()
+            let attachments = try attachmentSnapshot(source: source, handoff: handoff)
+            let fresh = try await handoff.taskChatCall(["work-context", "--work-id", source.id])
+            guard handoff.taskChatServerID == current.serverID else { throw WorkSessionLinks.Failure.conflict }
+            let context = fresh["contextText"]?.string ?? "", revision = fresh["workRevision"]?.string ?? ""
+            guard !context.isEmpty, revision.count == 64 else { throw WorkSessionLinks.Failure.corrupt }
+            let items = linkedItems(source: source, handoff: handoff, question: lens.question, context: context)
+            var round = WorkChatRound(question: lens.question)
+            round.answer = lens.answer
+            round.origin = WorkLensPlans.origin; round.lensRoundID = lens.roundId
+            round.lensAt = WorkLensPlans.roundTime(lens, now: Date()).timeIntervalSince1970
+            round.planner = lens.planner.flatMap { WorkChatPolicy.planners.contains($0) ? $0 : nil }
+            round.revision = revision; round.linkDigest = try WorkChatPolicy.linksDigest(handoff.confirmedSessionCards, workID: source.id)
+            round.attachmentNames = attachments.names; round.attachmentDigest = attachments.digest
+            round.contextItems = items; round.contextChosen = lens.assignments.allSatisfy { $0.contextItemIDs != nil }
+            round.assignments = lens.assignments.map { a in
+                var w = WorkChatAssignment(sessionID: a.sessionID ?? "", prompt: a.prompt)
+                w.mode = WorkLensPlans.chatMode(a.mode); w.provider = a.provider; w.lensID = a.id
+                if a.mode == "newSession", let p = a.provider { w.sessionID = WorkOrchestrator.newSessionID(provider: p, receiptID: w.receiptID) }
+                w.contextItemIDs = WorkContextMeter.selection(a.contextItemIDs, items: items)
+                if !WorkChatPolicy.validPrompt(a.prompt) {
+                    w.state = "Skipped"; w.detail = "COS Control cannot send this assignment: keep it under 2,000 characters, without a COS-WORK line."
+                }
+                return w
+            }
+            if lens.orchestrator == true {
+                // The plan's own targets, as Control sees them now: a Continue only into a live automatic session, a Fork only
+                // from a Claude or Codex session. Every send checks them again.
+                let observed = handoff.observedSessions()
+                round.orchestrated = lens.assignments.compactMap { a in
+                    guard a.mode != "newSession", let id = a.sessionID else { return nil }
+                    let title = observed.first(where: { $0.id == id })?.title ?? handoff.contributors(workID: source.id).first(where: { $0.id == id })?.title ?? id
+                    let provider = String(id.split(separator: ":").first ?? "")
+                    return WorkOrchestratorTarget(id: id, title: String(title.prefix(300)), automatic: handoff.automaticChatTarget(id) && observed.contains { $0.id == id },
+                                                  forkable: WorkHandoffStore.nativeForkProviders.contains(provider), reason: nil)
+                }
+                round.newSessionProviders = ["claude", "codex"].filter { p in handoff.models.contains { $0.provider == p && $0.available } }
+            }
+            round.state = round.assignments.isEmpty ? "Answered" : WorkChatPolicy.reviewedState(round.assignments)
+            var next = current
+            next.rounds.append(round)
+            self.record = next
+            guard persist() else { return false }
+            let count = round.assignments.count
+            workChatLog.info("lens round \(lens.roundId, privacy: .public) saved to Work chat history with \(count) assignment(s)")
+            return true
+        } catch {
+            let reason = error.localizedDescription
+            workChatLog.error("lens round \(lens.roundId, privacy: .public) not saved: \(reason, privacy: .public)")
+            return false
+        }
+    }
+
+    /// Each lens assignment of a round, as the lens reads it: state from the receipt once there is one, else from the round.
+    /// `macOnly`: only the assignments no lens send request sent (Miles's own Send on the Mac).
+    func lensResults(lensRoundID: String, lensIDs: [String]? = nil, handoff: WorkHandoffStore, attempted: Set<String> = [], fallback: String? = nil, macOnly: Bool = false) -> [WorkLensPlans.Result] {
+        guard let round = record?.rounds.first(where: { $0.lensRoundID == lensRoundID }) else { return [] }
+        return round.assignments.compactMap { a in
+            guard let id = a.lensID, lensIDs?.contains(id) ?? true, !macOnly || a.lensSendID == nil else { return nil }
+            let receipt = handoff.receipts.first { $0.id == a.receiptID }
+            let state = WorkLensPlans.lensState(chatState: receipt?.status ?? a.state, attempted: attempted.contains(id), queuedState: WorkChatHold.queuedState)
+            let session = receipt?.sessionID.flatMap { WorkSessionLinks.validSessionID($0, includeCursor: true) ? $0.lowercased() : nil }
+            return WorkLensPlans.Result(id: id, state: state, receiptId: receipt?.id, detail: WorkLensPlans.detail(state: state, chatDetail: receipt?.detail ?? a.detail, fallback: fallback), sessionID: session)
+        }
+    }
+
+    /// A lens send request, through the same `dispatch` as Send (queued rounds and openWork holds, context items, fences,
+    /// receipts, Stop). Nil when this store is busy: the caller tries again. Never sends what the per-card rule refuses.
+    func sendLensRequest(_ send: WorkLensPlans.SendRequest, source: WorkSource, handoff: WorkHandoffStore, cardAutoSend: Bool) async -> [WorkLensPlans.Result]? {
+        syncFromDisk()
+        guard !busy, !refreshing, let current = record, current.workID == source.id,
+              let index = current.rounds.firstIndex(where: { $0.lensRoundID == send.roundId }) else { return nil }
+        let refuse = { (why: String) -> [WorkLensPlans.Result] in
+            self.lensResults(lensRoundID: send.roundId, lensIDs: send.assignmentIds, handoff: handoff).map {
+                WorkLensPlans.final.contains($0.state) || $0.state == "sent" ? $0 : WorkLensPlans.Result(id: $0.id, state: "refused", receiptId: $0.receiptId, detail: why, sessionID: $0.sessionID)
+            }
+        }
+        guard WorkLensPlans.maySend(confirm: send.confirm, cardAutoSend: cardAutoSend) else {
+            workChatLog.info("lens send \(send.sendRequestId, privacy: .public) refused: not confirmed and the card's Auto-send is off")
+            return refuse(WorkLensPlans.autoSendOff)
+        }
+        guard enabled else { return refuse(WorkLensPlans.notEnabled) }
+        // Held from here, before the first suspension, so no other writer opens this store on another card meanwhile.
+        busy = true; error = nil; blockers = []
+        defer { busy = false; phase = "" }
+        if current.rounds[index].state == "Saved as drafts" { record?.rounds[index].state = "Ready to send" }
+        var ids: [String] = []
+        for n in current.rounds[index].assignments.indices {
+            guard let lensID = current.rounds[index].assignments[n].lensID, send.assignmentIds.contains(lensID) else { continue }
+            record?.rounds[index].assignments[n].lensSendID = send.sendRequestId
+            ids.append(current.rounds[index].assignments[n].receiptID)
+        }
+        record?.rounds[index].sentFromGlasses = true
+        guard persist() else { return nil }
+        if discovery != .loaded { await loadPlanners(handoff: handoff) }
+        await handoff.refreshActivity()
+        workChatLog.info("lens send \(send.sendRequestId, privacy: .public): \(ids.count) assignment(s) through Send\(send.confirm == "two-step" ? " (confirmed on the lens)" : " (card Auto-send)", privacy: .public)")
+        // A lens send cannot answer "Ask each time": a held send queues, as Plan and send does (an older server checks first).
+        lensDispatching = true; defer { lensDispatching = false }
+        await dispatch(roundID: current.rounds[index].id, assignmentIDs: ids, source: source, handoff: handoff, hold: holdChoice(nil, autoSend: true, handoff: handoff))
+        let why = error ?? (record?.rounds[index].state == "Needs a new plan" ? WorkChatPolicy.staleMessage : nil)
+        return lensResults(lensRoundID: send.roundId, lensIDs: send.assignmentIds, handoff: handoff, attempted: Set(send.assignmentIds), fallback: why)
+    }
+
+    /// A lens stop request: the existing Stop for each named assignment. What it can stop, it stops; the rest is reported as is.
+    func stopLensAssignments(_ stop: WorkLensPlans.StopRequest, handoff: WorkHandoffStore) async -> [WorkLensPlans.Result] {
+        syncFromDisk()
+        guard let round = record?.rounds.first(where: { $0.lensRoundID == stop.roundId }) else { return [] }
+        // An idle store is held for the Stop, so no other writer opens it on another card between stops.
+        let hold = !busy; if hold { busy = true }
+        defer { if hold { busy = false } }
+        var why: String? = nil
+        for a in round.assignments where stop.assignmentIds.contains(a.lensID ?? "") {
+            guard stopAction(roundID: round.id, assignmentID: a.receiptID, handoff: handoff) != nil else { continue }
+            await self.stop(roundID: round.id, assignmentID: a.receiptID, handoff: handoff)
+            if let e = error { why = e }
+        }
+        workChatLog.info("lens stop \(stop.stopRequestId, privacy: .public) for \(stop.assignmentIds.count) assignment(s)")
+        return lensResults(lensRoundID: stop.roundId, lensIDs: stop.assignmentIds, handoff: handoff).map { r in
+            r.state == "stopped" || why == nil ? r : WorkLensPlans.Result(id: r.id, state: r.state, receiptId: r.receiptId, detail: why, sessionID: r.sessionID)
+        }
     }
 }

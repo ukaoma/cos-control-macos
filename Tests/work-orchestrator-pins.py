@@ -49,8 +49,8 @@ pin("!WorkOrchestrator.isGuardian(" in chat[chat.index("    private func targets
 # Fork child journaled in both places a child becomes known.
 pin(store.count("row.forkChildID = child.id") == 1 and store.count("row.forkChildID = copy.id") == 1, "the fork child is journaled when it is known")
 pin("var forkChildID: String? = nil" in store, "the receipt carries the fork child")
-# Stop: visible only on rounds sent without review, on assignments that can stop.
-pin('round.sentWithoutReview == true,' in chat[chat.index("    func stopAction(roundID"):chat.index("    /// Stop one assignment")], "Stop only on rounds sent without review")
+# Stop: visible only on rounds sent without review (0.5.333 lens plans: or sent from the glasses), on assignments that can stop.
+pin('round.sentWithoutReview == true || round.sentFromGlasses == true,' in chat[chat.index("    func stopAction(roundID"):chat.index("    /// Stop one assignment")], "Stop only on rounds sent without review or from the glasses")
 pin('if let action = chat.stopAction(roundID: round.id, assignmentID: a.receiptID, handoff: handoff) {' in chat and 'accessibilityIdentifier("work-chat-stop")' in chat, "the Stop button is drawn from stopAction")
 # Auto-send per card: the Settings switch stays the default; the composer reads the card's value everywhere it read Settings.
 controls = chat[chat.index("private struct WorkChatSendControls: View {"):chat.index("// Native rich text stays local as RTF")]
