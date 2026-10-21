@@ -2558,6 +2558,7 @@ enum DictationSpareBuild: Sendable {
         guard let request = DictationPolish.request(text: heard, model: model, app: NSWorkspace.shared.frontmostApplication?.localizedName,
                                                     prewarmToken: warm) else { return nil }
         var prewarm = DictationPolishPrewarm.outcome(sentToken: warm != nil, answer: nil)
+        var instructions: (on: Bool, hash: String?) = (false, nil)
         let outcome: DictationPolish.Outcome
         do {
             let response = try await polishBridge(request, budget)
@@ -2565,6 +2566,9 @@ enum DictationSpareBuild: Sendable {
             outcome = DictationPolish.choose(heard: heard, ok: response.ok, text: response.details["text"]?.string,
                                              polished: response.details["polished"]?.bool, reason: response.details["reason"]?.string,
                                              skipped: response.details["polishSkipped"]?.string)
+            // 0.5.335 (server 6.85.0): whether the person's polish instructions went with it, for the timing line only.
+            instructions = DictationPolishInstructions.used(flag: response.details["customInstructions"]?.bool,
+                                                            hash: response.details["instructionsHash"]?.string)
         } catch HelperClientError.timedOut {
             outcome = .timeout
         } catch {
@@ -2572,7 +2576,8 @@ enum DictationSpareBuild: Sendable {
         }
         let elapsed = Int(Date().timeIntervalSince(started) * 1000)
         dictationLog.notice("polish model=\(model.rawValue, privacy: .public) outcome=\(outcome.logName, privacy: .public) ms=\(elapsed)")
-        return DictationPolishRun(outcome: outcome, model: model, ms: elapsed, prewarm: prewarm, prewarmMs: warmMs)
+        return DictationPolishRun(outcome: outcome, model: model, ms: elapsed, prewarm: prewarm, prewarmMs: warmMs,
+                                  customInstructions: instructions.on, instructionsHash: instructions.hash)
     }
     /// The text is on the clipboard already. Measured or sent: flash the pill. Refused: the card, which never takes focus.
     /// 0.5.331 `swapPending`: Claude's version is still coming (paste first). Its timing line and its watch wait for the
@@ -3318,6 +3323,8 @@ struct MacDictationSettings: View {
                     .disabled(store.polishModel == .off)
                 Text(DictationPolishSwap.settingNote(store.polishModel))
                     .font(.caption2).foregroundStyle(.secondary)
+                // 0.5.335 (server 6.85.0): Your polish instructions, after the built-in rules. Absent on an older server.
+                DictationPolishInstructionsCard(store: DictationPolishInstructionsStore.shared, polishOn: store.polishModel != .off)
                 Text("Any shortcut: a modifier plus a key, a function key, or one modifier key by itself such as Fn 🌐 or Right ⌘. Fn and single-key shortcuts use Accessibility. Finished text drops into the text box that has the cursor; with no text box it is copied, and the pet shows it with a Copy button. Some apps, such as terminals and Electron editors, get ⌘V; COS shows Pasted when it can't confirm, then puts your clipboard back. COS never presses Send or Return.")
                     .font(.caption2).foregroundStyle(.secondary)
                 if let message = store.message { Text(message).font(.caption2).foregroundStyle(COSPalette.amber) }
@@ -4326,6 +4333,137 @@ struct DictationActivityPane: View {
                 }
                 Button("All dictations") { model.openDictationHistory() }.buttonStyle(COSTextButtonStyle())
             }
+        }
+    }
+}
+
+// MARK: - Your polish instructions (0.5.335, server 6.85.0)
+
+/// The server's one polish-instructions setting and its read-only built-in rules. Every call goes through the helper's
+/// `dictation-polish-instructions` verb; the words ride on stdin, never argv, and are never logged.
+@MainActor final class DictationPolishInstructionsStore: ObservableObject {
+    static let shared = DictationPolishInstructionsStore()
+    struct Rules: Equatable { let heading: String; let text: String; let userBlock: String? }
+    /// False until a server says it has the setting (capabilities.dictationCleanup.customInstructions): no box.
+    @Published private(set) var available = false
+    @Published private(set) var saved = ""
+    @Published private(set) var loaded = false
+    @Published private(set) var busy = false
+    @Published private(set) var message: String?
+    @Published private(set) var rules: Rules?
+    @Published private(set) var rulesMessage: String?
+    var bridge: (@MainActor (Data) async throws -> HelperResponse)?
+
+    func load() async { _ = await send("get") }
+    @discardableResult func save(_ text: String) async -> Bool { await send("set", text: text) }
+    @discardableResult func clear() async -> Bool { await send("clear") }
+    func loadRules() async {
+        guard let bridge, let body = DictationPolishInstructions.request("rules") else { rulesMessage = "COS Control is not connected to its helper yet."; return }
+        do {
+            let response = try await bridge(body)
+            guard response.ok, let text = response.details["rules"]?.string else {
+                rulesMessage = response.ok ? "This COS server has no built-in rules view." : response.message; return
+            }
+            rules = Rules(heading: DictationPolishInstructions.rulesHeading(version: response.details["version"]?.string,
+                                                                           rolledBack: response.details["rolledBack"]?.bool),
+                          text: text, userBlock: response.details["userBlock"]?.string)
+            rulesMessage = nil
+        } catch {
+            rulesMessage = error.localizedDescription
+        }
+    }
+
+    private func send(_ operation: String, text: String? = nil) async -> Bool {
+        guard let bridge else { message = "COS Control is not connected to its helper yet."; return false }
+        guard let body = DictationPolishInstructions.request(operation, text: text) else {
+            message = "Polish instructions are at most \(DictationPolishInstructions.maximumCharacters) characters."; return false
+        }
+        busy = true
+        defer { busy = false; loaded = true }
+        do {
+            let response = try await bridge(body)
+            guard response.ok else { message = response.message; return false }
+            let state = DictationPolishInstructions.saved(available: response.details["available"]?.bool,
+                                                          text: response.details["customInstructions"]?.string,
+                                                          hash: response.details["instructionsHash"]?.string)
+            available = state.available
+            saved = state.text
+            message = operation == "set" ? "Saved." : operation == "clear" ? "Cleared." : nil
+            return true
+        } catch {
+            message = error.localizedDescription
+            return false
+        }
+    }
+}
+
+/// Settings, Dictation, under AI polish: the box, its counter, Save and Clear, and the built-in rules read-only. Shown
+/// only on a server that advertises the setting. Plain copy, no em dashes.
+struct DictationPolishInstructionsCard: View {
+    @ObservedObject var store: DictationPolishInstructionsStore
+    let polishOn: Bool
+    @State private var draft = ""
+    /// The draft was typed in, so a reload never replaces what the person is writing.
+    @State private var touched = false
+    @State private var rulesOpen = false
+    var body: some View {
+        Group {
+            if DictationPolishInstructions.visible(available: store.available) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(DictationPolishInstructions.title).font(COSType.body(12.5))
+                    ZStack(alignment: .topLeading) {
+                        TextEditor(text: Binding(get: { draft }, set: { draft = $0; touched = true }))
+                            .font(COSType.body(12)).frame(minHeight: 72, maxHeight: 140).cosEditor()
+                            .accessibilityLabel(DictationPolishInstructions.title)
+                            .accessibilityIdentifier("dictation-polish-instructions-editor")
+                        if draft.isEmpty {
+                            Text(DictationPolishInstructions.placeholder).font(COSType.body(12)).foregroundStyle(COSPalette.muted)
+                                .padding(.horizontal, 6).padding(.vertical, 2).allowsHitTesting(false).accessibilityHidden(true)
+                        }
+                    }
+                    HStack(spacing: 8) {
+                        Text(DictationPolishInstructions.counter(draft)).font(COSType.mono(10))
+                            .foregroundStyle(DictationPolishInstructions.isOver(draft) ? COSPalette.danger : COSPalette.muted)
+                        Spacer()
+                        Button("Clear") { Task { if await store.clear() { draft = ""; touched = false } } }
+                            .buttonStyle(COSTextButtonStyle())
+                            .disabled(!DictationPolishInstructions.canClear(draft: draft, saved: store.saved, busy: store.busy))
+                        Button("Save") { Task { if await store.save(draft) { draft = store.saved; touched = false } } }
+                            .buttonStyle(COSQuietButtonStyle())
+                            .disabled(!DictationPolishInstructions.canSave(draft: draft, saved: store.saved, busy: store.busy))
+                    }
+                    Text(DictationPolishInstructions.note).font(.caption2).foregroundStyle(.secondary)
+                    if !polishOn { Text(DictationPolishInstructions.offNote).font(.caption2).foregroundStyle(.secondary) }
+                    if let message = store.message { Text(message).font(.caption2).foregroundStyle(COSPalette.amber) }
+                    DisclosureGroup("See the built-in rules", isExpanded: $rulesOpen) {
+                        VStack(alignment: .leading, spacing: 6) {
+                            if let rules = store.rules {
+                                Text(rules.heading).font(COSType.body(12))
+                                ScrollView {
+                                    VStack(alignment: .leading, spacing: 8) {
+                                        Text(rules.text).font(COSType.mono(10)).textSelection(.enabled)
+                                        if let block = rules.userBlock {
+                                            Text("Your instructions go after the rules, in this block:").font(.caption2).foregroundStyle(.secondary)
+                                            Text(block).font(COSType.mono(10)).textSelection(.enabled)
+                                        }
+                                    }.frame(maxWidth: .infinity, alignment: .leading)
+                                }
+                                .frame(minHeight: 0, maxHeight: 220)
+                            } else {
+                                Text(store.rulesMessage ?? "Loading the built-in rules\u{2026}").font(.caption2).foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                    .font(.caption)
+                    .onChange(of: rulesOpen) { _, open in
+                        if open, store.rules == nil { Task { await store.loadRules() } }
+                    }
+                }
+            }
+        }
+        .task {
+            await store.load()
+            if !touched { draft = store.saved }
         }
     }
 }

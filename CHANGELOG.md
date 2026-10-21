@@ -1,3 +1,37 @@
+## 0.5.335 (build 388), Your polish instructions
+
+Miles, 2026-10-21 15:15: "I want the ability to change that polishing prompt, at least expose for me ... make
+available to our users as well ... a custom AI polish. Like we still want to keep all of our kind of general rules,
+but this would allow them to provide further steer." Needs COS server 6.85.0; with an older server nothing here shows.
+
+### What changed
+
+- **Settings, Dictation, under AI polish: "Your polish instructions".** A box for extra direction, up to 1,000
+  characters (counted the way the server counts them: trimmed, UTF-16), with a counter, Save and Clear, and three
+  example lines while it is empty (Use Oxford commas. / Write product names as Bottle POS and IT Retail. / In Slack,
+  keep it casual and skip the closing period.). The server keeps the one setting and uses it after its built-in
+  polish rules, which keep precedence: the instructions never change meaning, links, paths, numbers or names. It is
+  used for Mac dictation (when AI polish is on) and glasses dictation, not meeting transcripts.
+- **See the built-in rules.** A disclosure under the box shows the server's rules in use, read-only, with their
+  version (v3, or v2 when the server is rolled back), and the block the instructions go into.
+- **Hidden on an older server.** The helper's new `dictation-polish-instructions` verb asks the public
+  `/api/health` first and calls the setting only when `capabilities.dictationCleanup.customInstructions` is there;
+  otherwise the box does not appear. The words ride on the helper's stdin, never argv, and are never logged.
+- **Timing line.** A polished dictation's line in `dictation-timing.jsonl` adds `polishCustom` (true or false) and
+  `polishInstructionsHash` (the server's 8-hex hash when they went), never the words.
+
+### Checks
+
+- `Tests/run-mac-dictation.sh` PASS: 785 policy checks (the new block covers the cap at 1,000 and 1,001, trimmed
+  UTF-16 counting, the counter, Save and Clear rules, hidden on an older server, request shapes, the saved answer,
+  the finalize flag and hash, the rules heading, plain copy, the timing fields); the new
+  `Tests/dictation-polish-instructions-pins.py` 15 of 15 in-memory mutants caught.
+- `Tests/dictation-polish-instructions-helper-checks.py` (in `Tests/run.sh`, against the compiled helper): 190
+  checks; `dictation-polish-helper-checks.py` 207, `transcription-dictionary-helper-checks.py` 128 and
+  `mac-dictation-helper-checks.py` 43 still pass.
+- Core mutation gate `Tests/mutate-mac-dictation-core.py --only 0335`: see the branch commit for the count.
+- Not run here: the full `Tests/run.sh` and the full app build (left for the 0.5.335 merge).
+
 ## 0.5.333 (build 386), Work chat sees every session on the card, and Auto-send per card
 
 Miles, 2026-10-20 21:47: the Work chat should act like an orchestrator, not a form. On the toadstone card that evening

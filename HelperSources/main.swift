@@ -663,6 +663,7 @@ final class COSControlHelper {
         case "mac-dictation": try emitMacDictation()
         case "dictation-polish": try emitDictationPolish()
         case "dictation-polish-prewarm": try emitDictationPolishPrewarm()
+        case "dictation-polish-instructions": try emitDictationPolishInstructions()
         case "dictation-check": try emitDictationCheck()
         case "dictation-benchmark": try emitDictationBenchmark()
         case "transcription-dictionary": try emitTranscriptionDictionary()
@@ -15918,6 +15919,46 @@ final class COSControlHelper {
         var answer = DictationBridge.answer(status: response?.status, body: response?.body, local: local)
         answer.details["localRoute"] = local
         return answer
+    }
+
+    /// 0.5.335 (server 6.85.0): "Your polish instructions" (DictationPolishInstructionsBridge). The words ride on stdin
+    /// and leave only to the server's own route; nothing here logs them. `get` asks the public health capability first,
+    /// so an older server is answered available false (Control hides the box) without calling a route it lacks.
+    private func emitDictationPolishInstructions() throws {
+        let limit = DictationPolishInstructionsBridge.inputLimit
+        var input = Data()
+        while input.count <= limit {
+            let chunk = try FileHandle.standardInput.read(upToCount: min(16_384, limit + 1 - input.count)) ?? Data()
+            if chunk.isEmpty { break }; input.append(chunk)
+        }
+        guard let parsed = DictationPolishInstructionsBridge.parse(input) else {
+            emit(ok: false, message: "Polish instructions take get, rules, clear, or set with up to 1,000 characters.", details: ["reason": "invalid_request"]); return
+        }
+        guard let token = try? readToken() else {
+            emit(ok: false, message: "Polish instructions need the COS server on this Mac.", details: ["reason": "no_token"]); return
+        }
+        let route = DictationPolishInstructionsBridge.route
+        let answer: DictationBridge.Answer
+        switch parsed {
+        case .get:
+            let health = request("/api/health", timeout: 5)
+            guard let health else {
+                answer = DictationPolishInstructionsBridge.answer(status: nil, body: nil, operation: "get"); break
+            }
+            guard DictationPolishInstructionsBridge.advertised(health.body) else { answer = DictationPolishInstructionsBridge.unavailable(); break }
+            let response = request(route, token: token, timeout: 5)
+            answer = DictationPolishInstructionsBridge.answer(status: response?.status, body: response?.body, operation: "get")
+        case .rules:
+            let response = request(DictationPolishInstructionsBridge.rulesRoute, token: token, timeout: 5)
+            answer = DictationPolishInstructionsBridge.rulesAnswer(status: response?.status, body: response?.body)
+        case .clear:
+            let response = request(route, method: "DELETE", token: token, timeout: 10)
+            answer = DictationPolishInstructionsBridge.answer(status: response?.status, body: response?.body, operation: "clear")
+        case .set(let text):
+            let response = request(route, method: "PUT", token: token, body: DictationPolishInstructionsBridge.body(text), timeout: 10)
+            answer = DictationPolishInstructionsBridge.answer(status: response?.status, body: response?.body, operation: "set")
+        }
+        emit(ok: answer.ok, message: answer.message, details: answer.details)
     }
 
     /// 0.5.329 (server 6.79.2): start AI polish's process at the press, or discard one (DictationPolishPrewarmBridge).
