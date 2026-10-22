@@ -8315,7 +8315,7 @@ extension ActivityWindow {
                     HStack(alignment: .top, spacing: 28) {
                         todayNeedsPanel(frame, now: now).frame(width: columns.left)
                         VStack(alignment: .leading, spacing: 16) {
-                            todayRunningPanel(run, compactOpen: compactOpen)
+                            todayRunningPanel(run, compactOpen: compactOpen, sessionsKnown: frame.counts.sessionsKnown)
                             todayNextUp(frame, now: now)
                             todayMeetingsPanel(frame.split)
                         }
@@ -8323,7 +8323,7 @@ extension ActivityWindow {
                     }
                 } else {
                     VStack(alignment: .leading, spacing: 16) {
-                        todayRunningPanel(run, compactOpen: false)
+                        todayRunningPanel(run, compactOpen: false, sessionsKnown: frame.counts.sessionsKnown)
                         todayNeedsPanel(frame, now: now)
                         todayNextUp(frame, now: now)
                         todayMeetingsPanel(frame.split)
@@ -8585,7 +8585,7 @@ extension ActivityWindow {
 
     // MARK: Running
 
-    func todayRunningPanel(_ run: TodayHome.RunningView, compactOpen: Bool) -> some View {
+    func todayRunningPanel(_ run: TodayHome.RunningView, compactOpen: Bool, sessionsKnown: Bool = true) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .firstTextBaseline) {
                 HStack(alignment: .firstTextBaseline, spacing: 7) {
@@ -8598,7 +8598,9 @@ extension ActivityWindow {
             }
             .padding(.bottom, 6)
             if run.shown.isEmpty && run.finished.isEmpty {
-                if !model.claudeSessionsEnabled {
+                if model.claudeSessionsEnabled && !sessionsKnown {
+                    Text("Reading sessions").font(COSType.body(13.5)).foregroundStyle(TodayInk.runSub).padding(.top, 4).padding(.bottom, 10)
+                } else if !model.claudeSessionsEnabled {
                     HStack(spacing: 10) {
                         Text("Turn on session tracking to see agents here").font(COSType.body(13.5)).foregroundStyle(TodayInk.runSub)
                         Button("Turn on") { model.setClaudeSessionsEnabled(true) }.buttonStyle(TodayLinkStyle(color: TodayInk.runOpen, size: 13))

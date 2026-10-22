@@ -359,6 +359,8 @@ import Foundation
         let loading = TodayHome.Counts()
         check(TodayHome.brief(loading) == "Still reading what needs you." && TodayHome.story("today", loading, now: now, calendar: calendar).text == "Reading",
               "no false caught up while loading", TodayHome.brief(loading))
+        check(TodayHome.story("sessions", loading, now: now, calendar: calendar).text != "No agents running"
+              && TodayHome.card("sessions", loading, now: now, calendar: calendar).story != "No agents are running.", "sessions still loading: no false no agents")
         var failedWork = TodayHome.Counts(); failedWork.failedSources = [.work]
         check(TodayHome.brief(failedWork) == "Couldn't read Work, so this may not be everything." && !TodayHome.brief(failedWork).contains("Nothing"),
               "no false caught up after a source failed", TodayHome.brief(failedWork))

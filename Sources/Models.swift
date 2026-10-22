@@ -12575,6 +12575,8 @@ enum TodayHome {
         var lastMessage: Date?
         /// Every source answered; until then nothing says "nothing".
         var settled = false
+        /// The session list answered (until then nothing says no agents are running).
+        var sessionsKnown = false
         var failedSources: [Source] = []
     }
 
@@ -12666,6 +12668,7 @@ enum TodayHome {
         c.morningBrief = facts.morningBrief
         c.lastMessage = facts.lastMessage
         c.settled = settled(states)
+        c.sessionsKnown = answered(.sessions, states)
         c.failedSources = failed(states)
         return Frame(needs: needs, running: running, finished: finished, counts: c, states: states,
                      line: needsLine(rows: needs.count, states: states), reachable: reachable,
@@ -12782,7 +12785,7 @@ enum TodayHome {
             return Story(text: "\(active) active" + (c.newestThread.map { ", newest " + ActivityHome.clip($0, 40) } ?? ""), hot: false)
         case "sessions":
             let working = c.agentsWorking
-            if c.sessionsWaiting == 0 && working == 0 { return Story(text: "No agents running", hot: false) }
+            if c.sessionsWaiting == 0 && working == 0 { return Story(text: c.sessionsKnown ? "No agents running" : "Claude, Codex and Cursor on this Mac", hot: false) }
             var bits: [String] = []
             if c.sessionsWaiting > 0 { bits.append("\(c.sessionsWaiting) waiting on you") }
             if working > 0 { bits.append("\(working) working") }
@@ -12850,7 +12853,7 @@ enum TodayHome {
         case "sessions":
             let tag = c.sessionsWaiting > 0 ? "\(c.sessionsWaiting) waiting" : nil
             var story: String
-            if c.agentsWorking == 0 && c.finishedHour == 0 { story = "No agents are running." }
+            if c.agentsWorking == 0 && c.finishedHour == 0 { story = c.sessionsKnown ? "No agents are running." : "Claude, Codex and Cursor sessions on this Mac." }
             else {
                 story = c.agentsWorking == 0 ? "No agents are working" : "\(c.agentsWorking) " + (c.agentsWorking == 1 ? "agent is working" : "agents are working")
                 if c.finishedHour > 0 { story += " and \(c.finishedHour) finished in the last hour" }
