@@ -274,6 +274,25 @@ import Foundation
         check(TodayHome.things(unnamed)[2].title == "Name a voice from a 1:00 PM recording", "without a meeting join: the start time")
         check(Set(rows.map(\.id)).count == rows.count, "no id twice")
         check(TodayHome.shortLabel(rows[5]) == "sort 23 older suggestions in Work", "the Show more line's words")
+
+        // Miles's Mac, 10/22: 130 held groups, 3 with a name to confirm, read as "128 need you".
+        var crowd = needInputs(runningInputs())
+        crowd.voiceGroups = (0..<5).map { group("vs\($0)", name: "Person \($0)", similarity: 0.8) } + (0..<125).map { group("vu\($0)", name: nil, similarity: 0) }
+        crowd.groupMeeting = [:]
+        let crowdRows = TodayHome.things(crowd)
+        let held = crowdRows.filter { $0.kind == .heldVoices }
+        check(crowdRows.filter { $0.kind == .voice }.count == TodayHome.voiceRowLimit, "at most voiceRowLimit voices one by one", "\(crowdRows.filter { $0.kind == .voice }.count)")
+        check(held.count == 1 && held[0].items == 127 && held[0].why == "127 held voices without a name yet." && held[0].openLabel == "Open Speakers",
+              "the rest fold into one row that opens Speakers", held.first?.why ?? "none")
+        check(crowdRows.count == rows.count - 1 + TodayHome.voiceRowLimit + 1, "130 groups are 4 rows, not 130", "\(crowdRows.count)")
+        var today = needInputs(runningInputs()); today.groupMeeting = [:]
+        today.voiceGroups = [group("vt", name: nil, similarity: 0), group("vo", name: nil, similarity: 0)]
+        today.groupStart = ["vt": at("2026-10-21 13:00"), "vo": at("2026-10-12 13:00")]
+        let todayRows = TodayHome.things(today)
+        check(todayRows.contains { $0.id == "voice:vt" } && !todayRows.contains { $0.id == "voice:vo" } && todayRows.contains { $0.kind == .heldVoices && $0.items == 1 },
+              "an unnamed voice heard today stays its own row; an older one folds")
+        let crowdFrame = TodayHome.compose(dayInputs(runningInputs(), crowd))
+        check(crowdFrame.counts.voicesToName == 130 && crowdFrame.counts.needs == crowdRows.count, "Speakers still counts every voice; Today counts things", "\(String(describing: crowdFrame.counts.voicesToName))")
     }
 
     // MARK: The plan's pin tests

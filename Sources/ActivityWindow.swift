@@ -8074,10 +8074,13 @@ extension ActivityWindow {
         case .voice:
             select(.speakers)
             speakerSubview = .samples
+        case .heldVoices:
+            select(.speakers)
+            speakerSubview = .samples
         case .meetingVoices:
             select(.speakers)
-            guard let meeting = row.meeting else { return }
             speakerSubview = .meetings
+            guard let meeting = row.meeting else { return }
             voiceParentName = nil
             selectedSpeakerSessionID = meeting.sessionId
             model.openSpeakerReview(meeting)
@@ -8179,9 +8182,13 @@ extension ActivityWindow {
             + ActivitySection.allCases.map { ($0.rawValue, $0, $0.title) }
         return VStack(alignment: mode == .full ? .leading : .center, spacing: mode == .full ? 4 : 6) {
             HStack(spacing: 10) {
-                Text("COS").font(COSType.body(11, weight: .semibold)).foregroundStyle(TodayInk.page)
-                    .frame(width: 30, height: 30).background(RoundedRectangle(cornerRadius: 8).fill(TodayInk.ink))
-                if mode == .full { Text("Control").font(COSType.display(20, weight: .medium)).foregroundStyle(TodayInk.ink) }
+                if mode == .full {
+                    COSLockupView(height: 20).foregroundStyle(TodayInk.ink)
+                    Text("Control").font(COSType.display(20, weight: .medium)).foregroundStyle(TodayInk.ink)
+                } else {
+                    Image(nsImage: COSBrand.svg("COSMark")).renderingMode(.template).resizable().scaledToFit()
+                        .frame(width: 22, height: 24).foregroundStyle(TodayInk.ink).accessibilityHidden(true)
+                }
             }
             .padding(mode == .full ? EdgeInsets(top: 4, leading: 12, bottom: 18, trailing: 12) : EdgeInsets(top: 0, leading: 0, bottom: 14, trailing: 0))
             .accessibilityElement(children: .combine).accessibilityLabel("COS Control")
@@ -8577,7 +8584,7 @@ extension ActivityWindow {
             case .work:
                 Button(row.openLabel ?? "Review") { todayOpenNeed(row) }.buttonStyle(TodayButtonStyle())
                 Button("Open in Work") { select(.work) }.buttonStyle(TodayLinkStyle())
-            case .memories, .olderToSort, .dictation:
+            case .memories, .olderToSort, .dictation, .heldVoices:
                 Button(row.openLabel ?? "Open") { todayOpenNeed(row) }.buttonStyle(TodayButtonStyle())
             }
         }

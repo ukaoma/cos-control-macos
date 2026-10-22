@@ -12307,7 +12307,11 @@ enum TodayHome {
 
     // MARK: Needs you (B1, B3, B4)
 
-    enum NeedKind: String { case session, voice, meetingVoices, work, memories, olderToSort, dictation }
+    enum NeedKind: String { case session, voice, meetingVoices, heldVoices, work, memories, olderToSort, dictation }
+
+    /// Voice and meeting rows shown one by one; the rest fold into one row each (Miles's Mac held 130 groups on 10/22,
+    /// which read as "128 need you").
+    static let voiceRowLimit = 3
 
     struct NeedRow: Identifiable {
         let id: String
@@ -12372,8 +12376,13 @@ enum TodayHome {
                                 quote: questionText(session), why: askedWhy(session), source: sessionSource(session, host: host),
                                 since: waitingSince(session), session: session, openLabel: label))
         }
+        // One by one: a group with a name to confirm, or one heard today. Everything else is one row that opens Speakers.
+        var voiceRows = 0, heldVoices = 0
         for group in input.voiceGroups ?? [] {
             let name = group.suggestionName.flatMap(guarded)
+            let today = input.groupStart[group.id].map { input.calendar.isDate($0, inSameDayAs: input.now) } ?? false
+            guard voiceRows < voiceRowLimit, name != nil || today else { heldVoices += 1; continue }
+            voiceRows += 1
             let meeting = input.groupMeeting[group.id]
             let title = meeting.map { "Name a voice from " + $0 } ?? (input.groupStart[group.id].map { "Name a voice from a " + clock($0, calendar: input.calendar) + " recording" } ?? "Name a voice")
             rows.append(NeedRow(id: "voice:" + group.id, kind: .voice, tier: 2, title: title,
@@ -12381,11 +12390,22 @@ enum TodayHome {
                                 source: group.sampleCount == 1 ? "1 sample held" : "\(group.sampleCount) samples held",
                                 since: input.groupStart[group.id], items: max(1, group.sampleCount), group: group))
         }
+        var meetingRows = 0, olderMeetings: [ReviewableMeeting] = []
         for meeting in input.meetingsToName {
+            let today = ActivityHome.meetingDate(meeting, calendar: input.calendar).map { input.calendar.isDate($0, inSameDayAs: input.now) } ?? false
+            guard meetingRows < voiceRowLimit, today else { olderMeetings.append(meeting); continue }
+            meetingRows += 1
             rows.append(NeedRow(id: "meeting-voices:" + meeting.sessionId, kind: .meetingVoices, tier: 2,
                                 title: "Name the voices in " + (guarded(meeting.title) ?? "a saved meeting"),
                                 why: (meeting.unattributedVoices ?? 0) == 1 ? "1 speaker has no name yet." : "\(meeting.unattributedVoices ?? 0) speakers have no name yet.",
                                 since: ActivityHome.meetingDate(meeting, calendar: input.calendar), items: max(1, meeting.unattributedVoices ?? 1), meeting: meeting))
+        }
+        if heldVoices > 0 || !olderMeetings.isEmpty {
+            let parts = [heldVoices > 0 ? (heldVoices == 1 ? "1 held voice" : "\(heldVoices) held voices") : nil,
+                         olderMeetings.isEmpty ? nil : (olderMeetings.count == 1 ? "1 earlier meeting" : "\(olderMeetings.count) earlier meetings")].compactMap { $0 }
+            rows.append(NeedRow(id: "held-voices", kind: .heldVoices, tier: 5, title: "Name voices in Speakers",
+                                why: parts.joined(separator: " and ") + " without a name yet.",
+                                items: heldVoices + olderMeetings.count, openLabel: "Open Speakers"))
         }
         let waitingIDs = input.waiting.filter(isWaiting).map(\.id)
         for move in input.yourMove ?? [] {
@@ -12457,6 +12477,7 @@ enum TodayHome {
     static func shortLabel(_ row: NeedRow) -> String {
         switch row.kind {
         case .olderToSort: row.title.replacingOccurrences(of: "Sort", with: "sort")
+        case .heldVoices: row.title.replacingOccurrences(of: "Name", with: "name")
         case .memories: row.title.replacingOccurrences(of: "Review", with: "review")
         case .dictation: row.title.replacingOccurrences(of: "Check", with: "check")
         default: row.title
@@ -12650,7 +12671,7 @@ enum TodayHome {
         let finished = finishedRows(input.run)
         var c = counts(needs: needs, running: running, finished: finished)
         let facts = input.facts
-        c.voicesToName = answered(.voices, states) && facts.voicesLoaded ? needs.filter { $0.kind == .voice || $0.kind == .meetingVoices }.count : nil
+        c.voicesToName = answered(.voices, states) && facts.voicesLoaded ? needs.filter { $0.kind == .voice || $0.kind == .meetingVoices || $0.kind == .heldVoices }.reduce(0) { $0 + ($1.kind == .voice ? 1 : $1.items) } : nil
         c.memoriesToReview = answered(.memories, states) ? facts.memoriesToReview : nil
         c.memoriesTotal = c.memoriesToReview == nil ? nil : facts.memoriesTotal
         c.oldestReview = facts.oldestReview
