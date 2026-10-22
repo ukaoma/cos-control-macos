@@ -1703,6 +1703,7 @@ struct ClaudeSession: Identifiable, Sendable {
     var namedTitle = false
     /// Activity Today (B1): the pending AskUserQuestion's own words, from the helper's transcript tail read (`waitingQuestion`).
     var waitingQuestion = ""
+    var waitingQuestionCount = 0
 
     var isScheduledJob: Bool { origin == "job" && !fromWork }
     /// Only the COS server may write this session now: a scheduled job, or a Work New session still running.
@@ -2032,6 +2033,7 @@ struct ClaudeSession: Identifiable, Sendable {
         waitingOnUser = o["waitingOnUser"]?.bool ?? false
         namedTitle = o["namedTitle"]?.bool ?? false
         waitingQuestion = o["waitingQuestion"]?.string ?? ""
+        waitingQuestionCount = o["waitingQuestionCount"]?.int ?? 0
     }
 
     static func isKeepWarmSessionTitle(_ title: String) -> Bool {
@@ -11778,11 +11780,15 @@ enum TodayHome {
     /// The main column's side padding, each side.
     static let mainPadding: CGFloat = 40
     static let narrowPadding: CGFloat = 28
-    /// Two columns once the main column's content is this wide (a window of about 1,228 pt).
-    static let twoColumnMain: CGFloat = 900
+    /// Two columns from this window width (the main column is then 900 pt). Decided from the window, never in icon-rail mode.
+    static let twoColumnWindow: CGFloat = 1228
+    /// The right column (Running, Next up, today's meetings) is never narrower than this (the canvas's flex basis).
+    static let rightColumnFloor: CGFloat = 380
+    /// Below this right-column width, Running's Open links say just "Open" (the full words stay in help and VoiceOver).
+    static let runOpenWordsWidth: CGFloat = 430
     /// Running rows before "N more in Sessions": six beside Needs you, three when stacked (Running above the fold).
     static let runningCapWide = 6
-    static let runningCapStacked = 3
+    static let runningCapStacked = 2
     /// Needs you rows drawn before "Show N more".
     static let needsShown = 4
 
@@ -11794,13 +11800,17 @@ enum TodayHome {
     static func mainContentWidth(windowWidth: CGFloat) -> CGFloat {
         max(0, windowWidth - railWidth(railMode(windowWidth: windowWidth)) - 2 * padding(windowWidth: windowWidth))
     }
-    static func twoColumns(windowWidth: CGFloat) -> Bool { mainContentWidth(windowWidth: windowWidth) >= twoColumnMain }
-    /// Stacked at the 760 pt minimum, two rows keep "N more running" and the Needs you header above the fold (B2).
-    static let runningCapMinimum = 2
-    static func runningCap(windowWidth: CGFloat) -> Int {
-        if twoColumns(windowWidth: windowWidth) { return runningCapWide }
-        return windowWidth < 840 ? runningCapMinimum : runningCapStacked
+    static func twoColumns(windowWidth: CGFloat) -> Bool {
+        windowWidth >= twoColumnWindow && railMode(windowWidth: windowWidth) == .full
     }
+    /// The two columns' widths: the right one at least `rightColumnFloor`, Needs you the rest (flex 1.6 to 1 above that).
+    static func columns(windowWidth: CGFloat, gap: CGFloat = 28) -> (left: CGFloat, right: CGFloat) {
+        let content = mainContentWidth(windowWidth: windowWidth)
+        let right = max(rightColumnFloor, (content - gap) / 2.6)
+        return (max(0, content - gap - right), right)
+    }
+    /// Stacked (icon rail), two Running rows keep "N more running" and the first Needs you row above the fold at 920 x 680.
+    static func runningCap(windowWidth: CGFloat) -> Int { twoColumns(windowWidth: windowWidth) ? runningCapWide : runningCapStacked }
 
     // MARK: Days (D2: today's intake by the meeting filename's date)
 
@@ -11890,14 +11900,13 @@ enum TodayHome {
 
     // MARK: Tool-name guard (B1)
 
-    static let toolNames: Set<String> = ["AskUserQuestion", "ExitPlanMode", "Bash", "Edit", "Write", "Read", "Grep", "Glob", "Task",
-                                         "WebFetch", "WebSearch", "TodoWrite", "NotebookEdit", "MultiEdit"]
-    /// A bare tool name is never shown: a known tool, or any single CamelCase token ("SomeTool").
+    static let toolNames: Set<String> = ["AskUserQuestion", "ExitPlanMode", "Bash", "BashOutput", "KillShell", "Edit", "Write", "Read",
+                                         "Grep", "Glob", "LS", "Task", "Agent", "WebFetch", "WebSearch", "TodoWrite", "NotebookEdit",
+                                         "MultiEdit", "SlashCommand", "Skill", "ToolSearch"]
+    /// A bare tool name is never shown. Only known tool names: a single CamelCase word is often a brand or a title
+    /// (ThriftCart, MarktPOS, DiveShop360, HubSpot), and those stay.
     static func isBareToolName(_ text: String) -> Bool {
-        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !t.isEmpty else { return false }
-        if toolNames.contains(t) { return true }
-        return t.range(of: "^[A-Z][a-z0-9]+([A-Z][A-Za-z0-9]*)+$", options: .regularExpression) != nil
+        toolNames.contains(text.trimmingCharacters(in: .whitespacesAndNewlines))
     }
     /// Text with every bare tool name dropped; nil when nothing is left.
     static func guarded(_ text: String) -> String? {
@@ -11929,6 +11938,7 @@ enum TodayHome {
     /// A permission's command ("Bash git push") as its why line; a bare tool name alone is dropped.
     static func askedWhy(_ session: ClaudeSession) -> String? {
         guard session.provider == "claude" else { return nil }
+        if session.waitingQuestionCount > 1, questionText(session) != nil { return "Question 1 of \(session.waitingQuestionCount)" }
         if session.waitingKind == "plan" { return "Has a plan for you to approve" }
         if session.waitingKind == "permission", let detail = guarded(session.waitingDetail) { return "Wants to run " + ActivityHome.clip(detail, 80) }
         return nil
@@ -11982,7 +11992,7 @@ enum TodayHome {
         case messages(Int?)
     }
 
-    static func openFor(_ session: ClaudeSession, host: Host?, cursorTrusted: Bool) -> (label: String, action: OpenAction, note: String?) {
+    static func openFor(_ session: ClaudeSession, host: Host?, cursorTrusted: Bool, hostsRead: Bool = false) -> (label: String, action: OpenAction, note: String?) {
         let platform = platform(session, host: host)
         switch platform {
         case .work, .routine: return ("In Sessions", .inSessions(session.id), nil)
@@ -11992,8 +12002,10 @@ enum TodayHome {
                 : ("In Sessions", .inSessions(session.id), "Open in Cursor needs Accessibility. Turn on in Settings")
         case .claude: return ("Open in Claude", .platform(session.id), nil)
         case .claudeCode:
-            guard let host else { return ("Open session", .platform(session.id), nil) }
-            return ("Open in " + host.app, .platform(session.id), nil)
+            if let host { return ("Open in " + host.app, .platform(session.id), nil) }
+            // Hosts not read yet: Open session lets the platform route decide. Read, and no process holds it: section 6's fallback.
+            return hostsRead ? ("In Sessions", .inSessions(session.id), "Terminal is not running this session any more.")
+                : ("Open session", .platform(session.id), nil)
         case .glasses, .question: return ("Open in Messages", .messages(nil), nil)
         }
     }
@@ -12034,13 +12046,19 @@ enum TodayHome {
         let title: String
         let elapsedMs: Double
         let messageNo: Int?
-        init?(_ value: JSONValue) {
+        /// When it was accepted, on this Mac's clock: the moment the answer arrived less its `elapsedMs` (the server's own
+        /// count), so a clock difference between the two machines never shows. Rows count up from it between ticks.
+        let started: Date
+        init?(_ value: JSONValue, receivedAt: Date = Date()) {
             guard let o = value.object, let id = o["jobId"]?.string, !id.isEmpty else { return nil }
             jobId = id
-            origin = o["origin"]?.string ?? "person"
-            title = ActivityHome.clip(o["title"]?.string ?? "", 120)
+            // An origin the server does not send (or does not know) is `other`: shown only as a row Control already has.
+            let raw = o["origin"]?.string ?? "other"
+            origin = ["person", "routine", "task", "other"].contains(raw) ? raw : "other"
+            title = ActivityHome.clip(o["title"]?.string ?? "", 80)
             elapsedMs = max(0, o["elapsedMs"]?.double ?? 0)
             messageNo = o["messageNo"]?.int
+            started = receivedAt.addingTimeInterval(-elapsedMs / 1000)
         }
     }
     struct RoutineRun: Equatable, Sendable {
@@ -12049,9 +12067,11 @@ enum TodayHome {
         let firedAt: Date?
         let jobId: String?
         let messageNo: Int?
+        let status: String
         init?(_ value: JSONValue) {
             guard let o = value.object, let id = o["id"]?.string, !id.isEmpty else { return nil }
             self.id = id
+            status = o["status"]?.string ?? "running"
             label = ActivityHome.clip(o["label"]?.string ?? o["routineId"]?.string ?? "Routine", 80)
             firedAt = (o["firedAt"]?.string).flatMap(ActivityHome.stamp)
             jobId = o["jobId"]?.string
@@ -12093,6 +12113,8 @@ enum TodayHome {
     struct RunInputs {
         var sessions: [ClaudeSession] = []
         var hosts: [String: Host] = [:]
+        /// The host lookup has run at least once (until then a Claude row without a host is unknown, not gone).
+        var hostsRead = false
         var cursorTrusted = true
         var workRuns: [WorkRun] = []
         var recordings: [Recording] = []
@@ -12122,7 +12144,7 @@ enum TodayHome {
         for session in working {
             let host = input.hosts[session.id]
             let platform = platform(session, host: host)
-            let open = openFor(session, host: host, cursorTrusted: input.cursorTrusted)
+            let open = openFor(session, host: host, cursorTrusted: input.cursorTrusted, hostsRead: input.hostsRead)
             let started = ActivityHome.stamp(session.stateSince) ?? ActivityHome.stamp(session.createdAt)
             let place = placeWords(platform, host: host)
             let detail: String
@@ -12159,27 +12181,26 @@ enum TodayHome {
             switch job.origin {
             case "routine":
                 rows.append(RunRow(id: "job:" + job.jobId, platform: .routine, title: guarded(job.title) ?? "Routine",
-                                   detail: "running since " + clock(input.now.addingTimeInterval(-job.elapsedMs / 1000), calendar: input.calendar),
+                                   detail: "running since " + clock(job.started, calendar: input.calendar),
                                    openLabel: "Open in Messages", open: .messages(job.messageNo), working: true, finished: false,
-                                   started: input.now.addingTimeInterval(-job.elapsedMs / 1000)))
+                                   started: job.started))
             case "person":
-                rows.append(RunRow(id: "job:" + job.jobId, platform: .question, title: guarded(job.title) ?? "A glasses question",
-                                   detail: "COS is answering, " + duration(job.elapsedMs / 1000),
+                rows.append(RunRow(id: "job:" + job.jobId, platform: .question, title: guarded(job.title) ?? "A question to COS",
+                                   detail: "COS is answering, " + duration(input.now.timeIntervalSince(job.started)),
                                    openLabel: "Open in Messages", open: .messages(job.messageNo), working: true, finished: false,
-                                   started: input.now.addingTimeInterval(-job.elapsedMs / 1000)))
+                                   started: job.started))
             case "task":
                 // A captured task's dispatch Control did not start: on the server, In Sessions.
                 rows.append(RunRow(id: "job:" + job.jobId, platform: .work, title: guarded(job.title) ?? "A captured task",
-                                   detail: "a captured task, on the server, " + duration(job.elapsedMs / 1000), openLabel: "In Sessions",
-                                   open: .inSessions(nil), working: true, finished: false,
-                                   started: input.now.addingTimeInterval(-job.elapsedMs / 1000)))
+                                   detail: "a captured task, on the server, " + duration(input.now.timeIntervalSince(job.started)), openLabel: "In Sessions",
+                                   open: .inSessions(nil), working: true, finished: false, started: job.started))
             default:
                 // `other`: a Control Work session or a meeting review. Shown only as the row it already is (a Work receipt
                 // or a session), never a second one.
                 break
             }
         }
-        for run in input.routines {
+        for run in input.routines where !routineStale(run, now: input.now) {
             rows.append(RunRow(id: "routine:" + run.id, platform: .routine, title: run.label,
                                detail: run.firedAt.map { "running since " + clock($0, calendar: input.calendar) } ?? "running",
                                openLabel: "Open in Messages", open: .messages(run.messageNo), working: true, finished: false, started: run.firedAt))
@@ -12191,6 +12212,14 @@ enum TodayHome {
             let x = a.started ?? .distantPast, y = b.started ?? .distantPast
             return x == y ? a.id < b.id : x > y
         })
+    }
+
+    /// A routine run with no job that still says `submitting` after this long never started (the scheduler keeps the row).
+    static let routineSubmitWindow: TimeInterval = 600
+    static func routineStale(_ run: RoutineRun, now: Date) -> Bool {
+        guard run.jobId == nil || run.status == "submitting" else { return false }
+        guard let fired = run.firedAt else { return true }
+        return now.timeIntervalSince(fired) > routineSubmitWindow
     }
 
     static let finishedWindow: TimeInterval = 3600
@@ -12233,9 +12262,9 @@ enum TodayHome {
         var moreLabel: String? {
             switch (moreRunning, moreFinished) {
             case (0, 0): nil
-            case (let r, 0): "\(r) more in Sessions"
-            case (0, let f): f == 1 ? "1 more finished, in Sessions" : "\(f) more finished, in Sessions"
-            case (let r, let f): "\(r) more running, and \(f) finished, in Sessions"
+            case (let r, 0): "\(r) more running"
+            case (0, let f): f == 1 ? "1 more finished" : "\(f) more finished"
+            case (let r, let f): "\(r) more running, and \(f) finished"
             }
         }
     }
@@ -12392,6 +12421,38 @@ enum TodayHome {
         return "\(count) to review"
     }
 
+    /// The model a run from Today uses: Sonnet when the catalog has it, else another Claude model that is not Opus, else any
+    /// available non-Opus model that runs on the server (never Cursor, which waits for a person). Never Opus by default.
+    static func pickRunModel(_ choices: [(id: String, provider: String, available: Bool)]) -> Int? {
+        let usable = choices.indices.filter { choices[$0].available && choices[$0].provider != "cursor" && !choices[$0].id.lowercased().contains("opus") }
+        return usable.first { choices[$0].provider == "claude" && choices[$0].id.lowercased().contains("sonnet") }
+            ?? usable.first { choices[$0].provider == "claude" } ?? usable.first
+    }
+
+    /// "Show 4 more: review 7 memories, sort 23 older suggestions in Work and 2 more". Two labels at most.
+    static func showMoreLabel(_ hidden: [NeedRow]) -> String {
+        let labels = hidden.prefix(2).map(shortLabel)
+        let rest = hidden.count - labels.count
+        return "Show \(hidden.count) more: " + labels.joined(separator: ", ") + (rest > 0 ? " and \(rest) more" : "")
+    }
+
+    /// What a suggestion row offers: an ask or a review becomes a task (one resolve accept); a link to an existing card opens
+    /// that card. Never dismiss.
+    enum SuggestionAction: Equatable { case createTask, openCard(String), unavailable }
+    static func suggestionAction(_ item: WorkIntakeItem, cardCreation: Bool) -> SuggestionAction {
+        if item.kind == .link { return .openCard(item.pullTitle ?? item.text) }
+        return cardCreation ? .createTask : .unavailable
+    }
+    enum SuggestionState: Equatable { case ready, creating, created, failed(String) }
+    /// A row's state from the one accept path (ControllerModel.resolveWorkIntake): busy ids, what Today saw created, and the
+    /// refusal it kept.
+    static func suggestionState(_ id: String, busy: Set<String>, created: Set<String>, failures: [String: String]) -> SuggestionState {
+        if busy.contains(id) { return .creating }
+        if created.contains(id) { return .created }
+        if let reason = failures[id] { return .failed(reason) }
+        return .ready
+    }
+
     /// The row's line in "Show N more: …".
     static func shortLabel(_ row: NeedRow) -> String {
         switch row.kind {
@@ -12404,10 +12465,11 @@ enum TodayHome {
 
     // MARK: Quiet hours
 
-    /// After 6 PM local and on weekends.
+    /// After 6 PM and before 6 AM local, and on weekends.
     static func isQuiet(now: Date, enabled: Bool, calendar: Calendar = .current) -> Bool {
         guard enabled else { return false }
-        return calendar.isDateInWeekend(now) || calendar.component(.hour, from: now) >= 18
+        let hour = calendar.component(.hour, from: now)
+        return calendar.isDateInWeekend(now) || hour >= 18 || hour < 6
     }
 
     /// Under quiet hours, tiers 2 to 5 fold under "For tomorrow". Session questions never fold. Running is not in here.
@@ -12434,14 +12496,43 @@ enum TodayHome {
         }
     }
 
+    /// Each source as its loader left it, plus whether the server answers at all. `reachable` false comes only from a
+    /// transport failure (the status loop, or a tick where nothing answered), never from one source's error.
+    struct SourceInputs: Equatable {
+        var reachable = true
+        var sessions: ActivityHome.SourceState = .pending
+        var voices: ActivityHome.SourceState = .pending
+        var memories: ActivityHome.SourceState = .pending
+        var work: ActivityHome.SourceState = .pending
+        /// Work's Intake read failed (a Create task refusal is not a read failure).
+        var intakeFailed = false
+        var dictation: ActivityHome.SourceState = .answered
+    }
+
+    /// The states every surface reads. Unreachable: the server's sources failed (sessions are this Mac's). Intake failing
+    /// fails Work.
+    static func sourceStates(_ input: SourceInputs) -> [Source: ActivityHome.SourceState] {
+        func server(_ state: ActivityHome.SourceState) -> ActivityHome.SourceState { input.reachable || state == .off ? state : .failed }
+        var work = server(input.work)
+        if input.intakeFailed, work != .off { work = .failed }
+        return [.sessions: input.sessions, .voices: server(input.voices), .memories: server(input.memories), .work: work, .dictation: input.dictation]
+    }
+
+    /// Every source that applies answered. Only then may anything say "nothing" ("Nothing is waiting on you", "Every voice has
+    /// a name", "Nothing to sort").
+    static func settled(_ states: [Source: ActivityHome.SourceState]) -> Bool {
+        let counted = Source.allCases.map { states[$0] ?? .pending }.filter { $0 != .off }
+        return !counted.isEmpty && counted.allSatisfy { $0 == .answered }
+    }
+    static func answered(_ source: Source, _ states: [Source: ActivityHome.SourceState]) -> Bool { states[source] == .answered }
+
     enum NeedsLine: Equatable { case loading, rows, caughtUp }
 
     /// Rows when anything waits. "Nothing is waiting on you" only once every source that applies answered: never while one
     /// is loading or after one failed.
     static func needsLine(rows: Int, states: [Source: ActivityHome.SourceState]) -> NeedsLine {
         if rows > 0 { return .rows }
-        let counted = Source.allCases.map { states[$0] ?? .pending }.filter { $0 != .off }
-        return !counted.isEmpty && counted.allSatisfy { $0 == .answered } ? .caughtUp : .loading
+        return settled(states) ? .caughtUp : .loading
     }
     static func failed(_ states: [Source: ActivityHome.SourceState]) -> [Source] { Source.allCases.filter { states[$0] == .failed } }
     static func failureLine(_ source: Source) -> String { "Couldn't read \(source.name). Try again" }
@@ -12473,15 +12564,18 @@ enum TodayHome {
         var todaySuggestions: Int?
         var meetingsReady: Int?
         var latestMeetingToday: String?
-        var latestMeetingAt: Date?
         var threadsActive: Int?
         var newestThread: String?
         var dictationLast: Date?
         var dictationFixes = 0
         var nextEvent: NextEvent?
+        /// True only when the server said it read the calendar (welcome-context `calendarRead`); nil or false says nothing.
         var calendarRead = false
         var morningBrief: Date?
         var lastMessage: Date?
+        /// Every source answered; until then nothing says "nothing".
+        var settled = false
+        var failedSources: [Source] = []
     }
 
     static let agentPlatforms: Set<Platform> = [.claudeCode, .claude, .codex, .codexCLI, .cursor, .work]
@@ -12497,6 +12591,84 @@ enum TodayHome {
         c.routinesRunning = running.filter { $0.platform == .routine }.count
         c.finishedHour = finished.count
         return c
+    }
+
+    // MARK: Composition: the one frame the rail, the home and every count read
+
+    /// Facts for the story cards, read from the model by the window (nil: not loaded).
+    struct CardFacts: Equatable {
+        var memoriesToReview: Int?
+        var memoriesTotal: Int?
+        var oldestReview: Date?
+        var meetingsReady: Int?
+        var latestMeetingToday: String?
+        var threadsActive: Int?
+        var newestThread: String?
+        var dictationLast: Date?
+        var dictationFixes = 0
+        var calendarRead: Bool?
+        var morningBrief: Date?
+        var lastMessage: Date?
+        /// The voice groups loaded (Speakers answered); nil while not.
+        var voicesLoaded = false
+        var yourMoveLoaded = false
+    }
+
+    struct HomeInputs {
+        var run = RunInputs()
+        var need = NeedInputs()
+        var sources = SourceInputs()
+        var facts = CardFacts()
+        var split: IntakeSplit?
+    }
+
+    struct Frame {
+        let needs: [NeedRow]
+        let running: [RunRow]
+        let finished: [RunRow]
+        let counts: Counts
+        let states: [Source: ActivityHome.SourceState]
+        let line: NeedsLine
+        let reachable: Bool
+        let split: IntakeSplit?
+    }
+
+    /// The whole home from its inputs. Unreachable: Needs you keeps this Mac's sessions only. A source that has not answered
+    /// gives nil to every count that reads it, so no surface can say "nothing" for it.
+    static func compose(_ input: HomeInputs) -> Frame {
+        let states = sourceStates(input.sources)
+        let reachable = input.sources.reachable
+        var need = input.need
+        if !reachable {
+            need.voiceGroups = nil; need.meetingsToName = []; need.yourMove = nil; need.memoriesToReview = nil; need.olderToSort = nil
+        }
+        if states[.work] != .answered { need.olderToSort = nil }
+        let needs = things(need)
+        let running = inFlight(input.run)
+        let finished = finishedRows(input.run)
+        var c = counts(needs: needs, running: running, finished: finished)
+        let facts = input.facts
+        c.voicesToName = answered(.voices, states) && facts.voicesLoaded ? needs.filter { $0.kind == .voice || $0.kind == .meetingVoices }.count : nil
+        c.memoriesToReview = answered(.memories, states) ? facts.memoriesToReview : nil
+        c.memoriesTotal = c.memoriesToReview == nil ? nil : facts.memoriesTotal
+        c.oldestReview = facts.oldestReview
+        c.workNeedsYou = answered(.work, states) && facts.yourMoveLoaded ? needs.filter { $0.kind == .work }.count : nil
+        c.olderToSort = answered(.work, states) ? input.split?.olderCount : nil
+        c.todaySuggestions = answered(.work, states) ? input.split?.todayCount : nil
+        c.meetingsReady = reachable ? facts.meetingsReady : nil
+        c.latestMeetingToday = facts.latestMeetingToday
+        c.threadsActive = reachable ? facts.threadsActive : nil
+        c.newestThread = facts.newestThread
+        c.dictationLast = facts.dictationLast
+        c.dictationFixes = facts.dictationFixes
+        c.nextEvent = input.run.event.flatMap { $0.start.timeIntervalSince(input.run.now) > -3600 ? $0 : nil }
+        c.calendarRead = facts.calendarRead == true
+        c.morningBrief = facts.morningBrief
+        c.lastMessage = facts.lastMessage
+        c.settled = settled(states)
+        c.failedSources = failed(states)
+        return Frame(needs: needs, running: running, finished: finished, counts: c, states: states,
+                     line: needsLine(rows: needs.count, states: states), reachable: reachable, split: input.split)
     }
 
     // MARK: Brief (zero LLM, fixed templates)
@@ -12515,49 +12687,57 @@ enum TodayHome {
         }
     }
 
-    /// "3:30" for the brief and the rail (the canvas's words); the panels say "3:30 PM".
-    static func shortClock(_ date: Date, calendar: Calendar = .current) -> String {
-        let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX"); f.timeZone = calendar.timeZone; f.dateFormat = "h:mm"
+    /// Formatters are made once per format and time zone (the home draws every minute on every tab).
+    nonisolated(unsafe) private static var formatters: [String: DateFormatter] = [:]
+    private static let formatterLock = NSLock()
+    static func format(_ date: Date, _ pattern: String, calendar: Calendar) -> String {
+        formatterLock.lock(); defer { formatterLock.unlock() }
+        let key = pattern + "|" + calendar.timeZone.identifier
+        let f = formatters[key] ?? {
+            let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX"); f.timeZone = calendar.timeZone; f.dateFormat = pattern
+            formatters[key] = f
+            return f
+        }()
         return f.string(from: date)
     }
-    static func clock(_ date: Date, calendar: Calendar = .current) -> String {
-        let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX"); f.timeZone = calendar.timeZone; f.dateFormat = "h:mm a"
-        return f.string(from: date)
-    }
-    static func monthDay(_ date: Date, calendar: Calendar = .current) -> String {
-        let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX"); f.timeZone = calendar.timeZone; f.dateFormat = "MMM d"
-        return f.string(from: date)
-    }
+    static func clock(_ date: Date, calendar: Calendar = .current) -> String { format(date, "h:mm a", calendar: calendar) }
+    static func monthDay(_ date: Date, calendar: Calendar = .current) -> String { format(date, "MMM d", calendar: calendar) }
     /// "Wednesday, October 21, 2:47 PM".
-    static func headerDate(_ date: Date, calendar: Calendar = .current) -> String {
-        let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX"); f.timeZone = calendar.timeZone; f.dateFormat = "EEEE, MMMM d, h:mm a"
-        return f.string(from: date)
-    }
+    static func headerDate(_ date: Date, calendar: Calendar = .current) -> String { format(date, "EEEE, MMMM d, h:mm a", calendar: calendar) }
 
+    /// Fixed templates over the counts. "Nothing is waiting on you" only once every source answered; until then the
+    /// brief says only what it knows, or that it is still reading (or what it could not read). The calendar is "clear"
+    /// only when the server said it read it.
     static func brief(_ c: Counts, calendar: Calendar = .current) -> String {
-        var first: String
+        var first: String?
         if c.sessionsWaiting > 0 {
             first = number(c.sessionsWaiting, capital: true) + (c.sessionsWaiting == 1 ? " session is waiting on you" : " sessions are waiting on you")
         } else if c.needs > 0 {
-            first = number(c.needs, capital: true) + (c.needs == 1 ? " thing needs you" : " things need you")
-        } else {
+            first = number(c.needs, capital: true) + (c.needs == 1 ? " thing needs you" : " things need you") + (c.settled ? "" : " so far")
+        } else if c.settled {
             first = "Nothing is waiting on you"
         }
         if let event = c.nextEvent {
-            first += ", and " + event.title + " starts at " + shortClock(event.start, calendar: calendar)
+            let words = event.title + " starts at " + clock(event.start, calendar: calendar)
+            first = first.map { $0 + ", and " + words } ?? words
         } else if c.calendarRead {
-            first += ", and your calendar is clear for the rest of the day"
+            first = first.map { $0 + ", and your calendar is clear for the rest of the day" } ?? "Your calendar is clear for the rest of the day"
         }
         var parts: [String] = []
         if c.agentsWorking > 0 { parts.append(number(c.agentsWorking) + (c.agentsWorking == 1 ? " agent is working" : " agents are working")) }
         if c.glassesQuestions > 0 {
-            parts.append(c.glassesQuestions == 1 ? "COS is answering a glasses question" : "COS is answering " + number(c.glassesQuestions) + " glasses questions")
+            parts.append(c.glassesQuestions == 1 ? "COS is answering a question" : "COS is answering " + number(c.glassesQuestions) + " questions")
         }
         if c.routinesRunning > 0 { parts.append(c.routinesRunning == 1 ? "a routine is running" : number(c.routinesRunning) + " routines are running") }
         if c.recording { parts.append("the glasses are recording") }
-        guard !parts.isEmpty else { return first + "." }
-        let second = list(parts)
-        return first + ". " + second.prefix(1).uppercased() + second.dropFirst() + "."
+        var sentences: [String] = []
+        if let first { sentences.append(first + ".") }
+        if !parts.isEmpty { let second = list(parts); sentences.append(second.prefix(1).uppercased() + second.dropFirst() + ".") }
+        if !c.settled && c.needs == 0 {
+            sentences.append(c.failedSources.isEmpty ? "Still reading what needs you."
+                             : "Couldn't read " + list(c.failedSources.map(\.name)) + ", so this may not be everything.")
+        }
+        return sentences.joined(separator: " ")
     }
 
     // MARK: Rail stories (one line per tab; the same counts the tab lists)
@@ -12571,8 +12751,12 @@ enum TodayHome {
     static func story(_ tab: String, _ c: Counts, now: Date, calendar: Calendar = .current) -> Story {
         switch tab {
         case "today":
-            let needs = c.needs == 0 ? "Nothing needs you" : (c.needs == 1 ? "1 needs you" : "\(c.needs) need you")
-            return Story(text: c.running > 0 ? needs + ", \(c.running) running" : needs, hot: c.needs > 0)
+            let needs: String?
+            if c.needs > 0 { needs = c.needs == 1 ? "1 needs you" : "\(c.needs) need you" }
+            else if c.settled { needs = "Nothing needs you" }
+            else { needs = c.failedSources.isEmpty ? "Reading" : "Couldn't read " + list(c.failedSources.map(\.name)) }
+            let running = c.running > 0 ? "\(c.running) running" : nil
+            return Story(text: [needs, running].compactMap { $0 }.joined(separator: ", "), hot: c.needs > 0)
         case "messages":
             if let brief = c.morningBrief, calendar.isDate(brief, inSameDayAs: now) {
                 return Story(text: "Morning brief reached the glasses at " + clock(brief, calendar: calendar), hot: false)
@@ -12587,7 +12771,7 @@ enum TodayHome {
         case "meetings":
             var bits: [String] = []
             if let ready = c.meetingsReady, ready > 0 { bits.append("\(ready) ready to review") }
-            if let event = c.nextEvent { bits.append((bits.isEmpty ? "Next at " : "next at ") + shortClock(event.start, calendar: calendar)) }
+            if let event = c.nextEvent { bits.append((bits.isEmpty ? "Next at " : "next at ") + clock(event.start, calendar: calendar)) }
             return Story(text: bits.isEmpty ? "Saved meetings by day" : bits.joined(separator: ", "), hot: false)
         case "memories":
             guard let n = c.memoriesToReview else { return Story(text: "What your COS can recall", hot: false) }
@@ -12606,7 +12790,8 @@ enum TodayHome {
             var bits: [String] = []
             if let n = c.workNeedsYou, n > 0 { bits.append(n == 1 ? "1 needs you" : "\(n) need you") }
             if let n = c.olderToSort, n > 0 { bits.append("\(n) older to sort") }
-            return Story(text: bits.isEmpty ? "Nothing to sort" : bits.joined(separator: ", "), hot: !bits.isEmpty)
+            if !bits.isEmpty { return Story(text: bits.joined(separator: ", "), hot: c.workNeedsYou ?? 0 > 0) }
+            return Story(text: c.olderToSort == nil || c.workNeedsYou == nil ? "Your tasks and meeting follow-ups" : "Nothing to sort", hot: false)
         case "dictation":
             var text = c.dictationLast.map { calendar.isDate($0, inSameDayAs: now) ? "Last at " + clock($0, calendar: calendar) : "Last on " + monthDay($0, calendar: calendar) } ?? "Dictate anywhere on this Mac"
             if c.dictationFixes > 0 { text += c.dictationFixes == 1 ? ", 1 fix waiting" : ", \(c.dictationFixes) fixes waiting" }
@@ -12642,14 +12827,13 @@ enum TodayHome {
             return StoryCard(tag: "\(n) to name", story: n == 1 ? "One new voice is waiting for a name." : number(n, capital: true) + " new voices are waiting for names.",
                              sub: n == 1 ? "Its suggestion is in Needs you." : "Their suggestions are in Needs you.")
         case "meetings":
-            let next = c.nextEvent.map { "Next is \($0.title) at " + shortClock($0.start, calendar: calendar) + "." }
+            let next = c.nextEvent.map { "Next is \($0.title) at " + clock($0.start, calendar: calendar) + "." }
             let foot = c.nextEvent.map { "Next at " + clock($0.start, calendar: calendar) }
             guard let ready = c.meetingsReady else { return StoryCard(story: "Saved meetings, by day.", sub: next, foot: foot) }
             if ready == 0 { return StoryCard(story: "Every saved meeting has been reviewed.", sub: next, foot: foot) }
             let story = c.latestMeetingToday.map { $0 + " is saved and ready to review." }
                 ?? (ready == 1 ? "One meeting is ready to review." : number(ready, capital: true) + " meetings are ready to review.")
-            let latest = c.latestMeetingAt.map { "Latest saved at " + clock($0, calendar: calendar) + "." }
-            let sub = [latest, next].compactMap { $0 }.joined(separator: " ")
+            let sub = next ?? ""
             return StoryCard(tag: "\(ready) to review", story: story, sub: sub.isEmpty ? nil : sub, foot: foot)
         case "memories":
             guard let n = c.memoriesToReview else { return StoryCard(story: "What your COS can recall.") }
@@ -12751,13 +12935,62 @@ struct TodayRunGuard {
         }
     }
 
+    /// How one start ended. `notStarted`: refused before anything was recorded (Work was busy, an earlier run holds the
+    /// target, no model): never a start and never a breaker failure. `refused`: the server did not admit it.
+    enum Outcome: Equatable { case notStarted(String), admitted, refused(String) }
+    static func outcome(receiptStatus: String?, error: String?) -> Outcome {
+        guard let status = receiptStatus else { return .notStarted(error ?? "Nothing was started.") }
+        if ["refused", "failed"].contains(status) { return .refused(error ?? "The server did not start it.") }
+        return .admitted
+    }
+    /// The cap and the breaker count only starts that reached the server.
+    func account(_ outcome: Outcome, now: Date) {
+        switch outcome {
+        case .notStarted: break
+        case .admitted: recordStart(now: now); recordOutcome(admitted: true, now: now)
+        case .refused: recordStart(now: now); recordOutcome(admitted: false, now: now)
+        }
+    }
+    /// Checked before anything is recorded: Work is sending something else, or an earlier run still holds this target.
+    static func preflight(busy: Bool, holds: Bool) -> String? {
+        if busy { return "Work is sending something else. Try again in a moment." }
+        if holds { return "This already has a run in Work. It shows in Sessions." }
+        return nil
+    }
+
     /// The words on the button when a start is not allowed.
     static func line(_ admission: Admission, calendar: Calendar = .current) -> String? {
         switch admission {
         case .allowed, .switchOff: nil
-        case .capReached: "Daily limit reached. Open Work to start more."
+        case .capReached: "Today's limit on this Mac is reached. Open Work to start more."
         case .paused(let until): "Paused after 3 failed starts. Try again at " + TodayHome.clock(until, calendar: calendar) + "."
         case .inFlight: "Prep in Sessions"
+        }
+    }
+}
+
+/// The Today home's tick loop, apart from the view so a test can run it on a fake clock. One tick at a time; a tick only
+/// while the window is visible (never minimized, hidden or closed); the first only after the window's opening loads are
+/// done; a window that comes back gets a tick at once when the last is a minute old.
+enum TodayTickLoop {
+    static let interval: TimeInterval = 60
+    static let step: TimeInterval = 1
+    static let readyLimit: TimeInterval = 60
+
+    @MainActor
+    static func run(now: () -> Date, visible: () -> Bool, ready: () -> Bool, tick: () async -> Void,
+                    wait: (TimeInterval) async -> Bool) async {
+        let start = now()
+        while !ready(), now().timeIntervalSince(start) < readyLimit {
+            guard await wait(0.5) else { return }
+        }
+        var last: Date?
+        while true {
+            if visible(), last.map({ now().timeIntervalSince($0) >= interval }) ?? true {
+                last = now()
+                await tick()
+            }
+            guard await wait(step) else { return }
         }
     }
 }

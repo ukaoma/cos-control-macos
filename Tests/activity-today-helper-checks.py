@@ -15,7 +15,7 @@ token = 'b' * 64
 (root / '.cos-glasses').mkdir(mode=0o700)
 (root / '.cos-glasses/.env').write_text('COS_API_TOKEN=' + token + '\n'); (root / '.cos-glasses/.env').chmod(0o600)
 calls = []
-state = {'features': {'activeQueryJobs': True, 'activeQueryJobsProtocol': 1}, 'active': 200, 'runs': 200, 'welcome': 200}
+state = {'features': {'activeQueryJobs': True, 'activeQueryJobsProtocol': 1}, 'active': 200, 'runs': 200, 'welcome': 200, 'health': 200, 'calendarRead': None}
 JOB = {'jobId': 'qj_1', 'generation': 1, 'origin': 'person', 'state': 'running', 'status': 'running', 'acceptedAt': '2026-10-21T19:46:20Z',
        'elapsedMs': 40000, 'provider': 'claude', 'model': 'opus', 'messageNo': 3120, 'title': 'What did Dana say about renewal timing?',
        'response': 'SECRET ANSWER', 'query': 'SECRET PROMPT', 'trail': ['x']}
@@ -27,7 +27,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         calls.append(self.path)
         if self.path == '/api/health':
-            return self.reply(200, {'ok': True, 'features': state['features']})
+            return self.reply(state['health'], {'ok': state['health'] == 200, 'features': state['features']})
         assert self.headers.get('X-COS-Token') == token, self.path
         if self.path == '/api/query-jobs/active':
             if state['active'] == 400:  # an older server: the path falls into /query-jobs/:jobId
@@ -43,7 +43,9 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(200, {'routines': [{'id': 'brief', 'name': 'Morning brief', 'instruction': 'SECRET'}]})
         if self.path == '/api/welcome-context':
             if state['welcome'] != 200: return self.reply(state['welcome'], {})
-            return self.reply(200, {'weather': {'temp': 71}, 'nextEvent': {'title': 'Northwind renewal', 'time': '2026-10-21T20:30:00Z', 'inMinutes': 43}})
+            body = {'weather': {'temp': 71}, 'nextEvent': {'title': 'Northwind renewal', 'time': '2026-10-21T20:30:00Z', 'inMinutes': 43}}
+            if state['calendarRead'] is not None: body['calendarRead'] = state['calendarRead']
+            return self.reply(200, body)
         self.reply(404, {})
 
 server = HTTPServer(('127.0.0.1', 0), Handler); threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -74,24 +76,36 @@ try:
     assert 'temp' not in text and 'weather' not in text, 'never the weather'
     runs = full['details']['routines']
     assert runs['available'] and [r['id'] for r in runs['runs']] == ['rr_1'] and runs['runs'][0]['label'] == 'Morning brief' and runs['runs'][0]['messageNo'] == 3100, runs
-    assert full['details']['calendar'] == {'available': True, 'nextEvent': {'title': 'Northwind renewal', 'time': '2026-10-21T20:30:00Z', 'inMinutes': 43}}
+    assert full['details']['calendar'] == {'available': True, 'nextEvent': {'title': 'Northwind renewal', 'time': '2026-10-21T20:30:00Z', 'inMinutes': 43}}, 'no calendarRead field: none passed'
     assert calls == ['/api/query-jobs/active', '/api/routines/runs?limit=20', '/api/routines', '/api/welcome-context'], ('serial reads, in order', calls)
+    assert full['details']['unreachable'] is False
+    state['calendarRead'] = False
+    assert run(['activity-today', '--calendar'])['details']['calendar']['calendarRead'] is False, 'the server says whether the calendar was read'
+    state['calendarRead'] = None
+    state['health'] = 503
+    drained = run(['activity-today', '--probe'])
+    assert drained['ok'] and 'activeQueryJobs' not in drained['details'] and drained['details']['probe'] == 'failed', 'a non-200 health caches nothing'
+    assert drained['details']['routines']['available'] is True and drained['details']['unreachable'] is False, 'a failed probe never stops the other reads'
+    state['health'] = 200
 
     state['active'] = 400
     old = run(['activity-today', '--jobs'])
-    assert old['ok'] and old['details']['queryJobs'] == {'available': False}, 'an older server is unavailable, never an error'
+    assert old['ok'] and old['details']['queryJobs'] == {'available': False, 'reason': 'status', 'status': 400}, 'an older server is unavailable, never an error'
+    assert old['details']['unreachable'] is False
     state['active'] = 200
     state['runs'] = 404; state['welcome'] = 404
     older = run(['activity-today', '--calendar'])
-    assert older['ok'] and older['details']['routines'] == {'available': False} and older['details']['calendar'] == {'available': False}, older
+    assert older['ok'] and older['details']['routines'] == {'available': False, 'reason': 'status', 'status': 404} and older['details']['calendar']['available'] is False, older
+    assert older['details']['unreachable'] is False, 'a source that answered with an error is that source unavailable, never the server down'
     state['runs'] = 200; state['welcome'] = 200
     calls.clear()
     run(['activity-today'])
     assert '/api/welcome-context' not in calls and '/api/query-jobs/active' not in calls, 'the calendar and the jobs only when asked'
     server.shutdown(); server.server_close()
     down = run(['activity-today', '--jobs'])
-    assert not down['ok'] and down['message'] == 'Server not reachable', down
-    print('PASS compiled helper: activity-today probe by capability, listed job fields only, running routine runs with names, one calendar event, older server unavailable, unreachable reported')
+    assert down['ok'] and down['details']['unreachable'] is True and down['message'] == 'Server not reachable', down
+    assert down['details']['queryJobs']['reason'] == 'unreachable' and down['details']['routines']['reason'] == 'unreachable', down
+    print('PASS compiled helper: activity-today probe by capability (200 only, 12 s, never blocking other reads), listed job fields only, running routine runs with names, one calendar event and calendarRead, per-source reasons, unreachable only when nothing answered')
 finally:
     try: server.shutdown()
     except Exception: pass

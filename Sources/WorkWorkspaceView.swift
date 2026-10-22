@@ -3282,7 +3282,8 @@ struct WorkIntakeView: View {
     }
 
     var body: some View {
-        let split = TodayHome.intakeSplit(items: model.workIntake.items, tasks: model.workTasks, now: Date())
+        // Computed only with Today on: the switch-off path reads nothing new.
+        let split = todayHome ? TodayHome.intakeSplit(items: model.workIntake.items, tasks: model.workTasks, now: Date()) : TodayHome.IntakeSplit()
         let snapshot = todayHome ? Self.only(model.workIntake, split.older.filter { domain == nil || $0.meeting.domain == domain }) : model.workIntake.daily(catchUp: catchUp, domain: domain)
         let cards = todayHome ? split.olderCards.filter { domain == nil || $0.domain == domain } : WorkSortGroup.mentioned(model.workTasks, catchUp: catchUp, domain: domain)
         let groups = WorkSortGroup.groups(snapshot: snapshot, cards: cards)
@@ -3302,6 +3303,11 @@ struct WorkIntakeView: View {
                 Spacer()
                 if model.workUndoBatch != nil { Button("Undo last decision") { Task { await model.undoWorkIntake() } }.buttonStyle(COSTextButtonStyle()) }
             }.padding(.horizontal, 18).padding(.bottom, 10) }
+            // Activity Today on: the Today/Catch up row is gone, and Undo last decision (also a Create task from Today) stays.
+            if todayHome, model.workUndoBatch != nil {
+                HStack { Spacer(); Button("Undo last decision") { Task { await model.undoWorkIntake() } }.buttonStyle(COSTextButtonStyle()) }
+                    .padding(.horizontal, 18).padding(.bottom, 10)
+            }
             HStack {
                 Button("Expired this week: \(model.workExpiredWeekly), \(model.workExpiredYours) yours") { expiredOpen.toggle(); Task { await model.loadWorkExpiry() } }.buttonStyle(COSTextButtonStyle())
                 Text("Restore within 30 days").font(COSType.body(11)).foregroundStyle(COSPalette.muted)

@@ -5428,40 +5428,60 @@ final class COSControlHelper {
         return ["available": true, "runs": running]
     }
 
-    /// welcome-context's one `nextEvent { title, time, inMinutes }`; nothing else from that route (never the weather).
+    /// welcome-context's one `nextEvent { title, time, inMinutes }` and, from a server that says so, `calendarRead` (true only
+    /// when the calendar was actually read). Nothing else from that route (never the weather).
     static func activityTodayNextEvent(_ body: [String: Any]?) -> [String: Any] {
         guard let body else { return ["available": false] }
+        var out: [String: Any] = ["available": true, "nextEvent": NSNull()]
+        if let read = body["calendarRead"] as? Bool { out["calendarRead"] = read }
         guard let event = body["nextEvent"] as? [String: Any], let title = event["title"] as? String,
-              let time = event["time"] as? String, !time.isEmpty else { return ["available": true, "nextEvent": NSNull()] }
-        var out: [String: Any] = ["title": String(title.prefix(160)), "time": String(time.prefix(64))]
-        if let minutes = jsonInt(event["inMinutes"]) { out["inMinutes"] = minutes }
-        return ["available": true, "nextEvent": out]
+              let time = event["time"] as? String, !time.isEmpty else { return out }
+        var next: [String: Any] = ["title": String(title.prefix(160)), "time": String(time.prefix(64))]
+        if let minutes = jsonInt(event["inMinutes"]) { next["inMinutes"] = minutes }
+        out["nextEvent"] = next
+        return out
     }
 
+    /// One tick's reads, serial. Each part says why it is missing (`reason`): `unreachable` when the request got no answer
+    /// at all, `status` for any other answer. The call as a whole says `unreachable` only when every request it made got no
+    /// answer; a probe answers `activeQueryJobs` only from a 200 health (anything else is `probe: "failed"`, read again).
     private func emitActivityToday(args: [String]) throws {
         let token = try readToken()
         var details: [String: Any] = [:]
+        var asked = 0, answered = 0
+        func get(_ path: String, auth: Bool = true, timeout: Int = 6) -> HTTPResponse? {
+            asked += 1
+            let response = request(path, token: auth ? token : nil, timeout: timeout)
+            if response != nil { answered += 1 }
+            return response
+        }
+        func missing(_ response: HTTPResponse?) -> [String: Any] {
+            ["available": false, "reason": response == nil ? "unreachable" : "status", "status": response?.status ?? 0]
+        }
         if args.contains("--probe") {
-            guard let health = request("/api/health", timeout: 6) else { throw HelperError.message("Server not reachable") }
-            details["activeQueryJobs"] = Self.activityTodayJobsSupported(health.status == 200 ? health.body : nil)
+            let health = get("/api/health", auth: false, timeout: 12)
+            if let health, health.status == 200 {
+                details["activeQueryJobs"] = Self.activityTodayJobsSupported(health.body)
+            } else {
+                details["probe"] = "failed"
+            }
         }
         // A probe that finds the capability reads the jobs in the same call, so opening the home is one helper run.
         if args.contains("--jobs") || details["activeQueryJobs"] as? Bool == true {
-            let response = request("/api/query-jobs/active", token: token, timeout: 6)
-            if response == nil, details.isEmpty { throw HelperError.message("Server not reachable") }
-            details["queryJobs"] = Self.activityTodayJobs(response?.status == 200 ? response?.body : nil)
+            let response = get("/api/query-jobs/active")
+            details["queryJobs"] = response?.status == 200 ? Self.activityTodayJobs(response?.body) : missing(response)
         }
-        let runs = request("/api/routines/runs?limit=20", token: token, timeout: 6)
-        if runs == nil, details.isEmpty { throw HelperError.message("Server not reachable") }
+        let runs = get("/api/routines/runs?limit=20")
         let runsBody = runs?.status == 200 ? runs?.body : nil
         let anyRunning = (runsBody?["runs"] as? [[String: Any]] ?? []).contains { Self.activityTodayRunningStatuses.contains($0["status"] as? String ?? "") }
-        let routines = anyRunning ? request("/api/routines", token: token, timeout: 6) : nil
-        details["routines"] = Self.activityTodayRoutineRuns(runsBody, routines: routines?.status == 200 ? routines?.body : nil)
+        let routines = anyRunning ? get("/api/routines") : nil
+        details["routines"] = runsBody == nil ? missing(runs) : Self.activityTodayRoutineRuns(runsBody, routines: routines?.status == 200 ? routines?.body : nil)
         if args.contains("--calendar") {
-            let response = request("/api/welcome-context", token: token, timeout: 12)
-            details["calendar"] = Self.activityTodayNextEvent(response?.status == 200 ? response?.body : nil)
+            let response = get("/api/welcome-context", timeout: 12)
+            details["calendar"] = response?.status == 200 ? Self.activityTodayNextEvent(response?.body) : missing(response)
         }
-        emit(ok: true, message: "Today read", details: details)
+        details["unreachable"] = asked > 0 && answered == 0
+        emit(ok: true, message: answered == 0 ? "Server not reachable" : "Today read", details: details)
     }
 
     static let workIntakeRefusals: [String: String] = [
@@ -12291,7 +12311,8 @@ final class COSControlHelper {
             "reason": reason,
             "partial": partial,
             "dropped": dropped,
-            "sessions": sessions,
+            // Activity Today: a pending question's words ride the live answer only, never the cache file on disk.
+            "sessions": sessions.map { $0.filter { $0.key != "waitingQuestion" && $0.key != "waitingQuestionCount" } },
         ]
     }
 
@@ -12952,6 +12973,8 @@ final class COSControlHelper {
         var title: String? = nil
         /// Activity Today: the pending AskUserQuestion's first question (trimmed, no control characters, 240 at most).
         var questionText: String? = nil
+        /// How many questions that call asks (Today shows "1 of N").
+        var questionCount: Int? = nil
     }
 
     /// A live session's activity: its own transcript plus any subagent still working.
@@ -12963,6 +12986,7 @@ final class COSControlHelper {
         let subagentInFlightAt: Date?
         var title: String? = nil
         var questionText: String? = nil
+        var questionCount: Int? = nil
     }
 
     /// First window read from the end of a transcript, and the widest it grows to (x4 a
@@ -13007,7 +13031,9 @@ final class COSControlHelper {
                 let stop = message["stop_reason"] as? String
                 let pending = stop == nil || stop == "tool_use"
                 let asking = pending && claudeLastToolName(message).map { claudeWaitingTools.contains($0) } == true
-                return ClaudeTurn(at: at, inFlight: pending, waitingOnUser: asking, questionText: asking ? claudePendingQuestion(message) : nil)
+                let question = asking ? claudePendingQuestion(message) : nil
+                return ClaudeTurn(at: at, inFlight: pending, waitingOnUser: asking, questionText: question,
+                                  questionCount: question == nil ? nil : claudePendingQuestionCount(message))
             }
             let texts = claudeMessageTexts(message).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             let ended = texts.contains { text in
@@ -13029,6 +13055,14 @@ final class COSControlHelper {
             .split(whereSeparator: \.isWhitespace).joined(separator: " ")
         guard !clean.isEmpty else { return nil }
         return clean.count <= 240 ? clean : String(clean.prefix(239)) + "\u{2026}"
+    }
+
+    /// How many questions the pending AskUserQuestion asks (1 at least when there is one).
+    static func claudePendingQuestionCount(_ message: [String: Any]) -> Int? {
+        guard let call = (message["content"] as? [[String: Any]] ?? []).last(where: { $0["type"] as? String == "tool_use" }),
+              call["name"] as? String == "AskUserQuestion",
+              let list = (call["input"] as? [String: Any])?["questions"] as? [[String: Any]], !list.isEmpty else { return nil }
+        return min(list.count, 20)
     }
 
     /// 0.5.226: the newest `custom-title` record in `lines`. Claude Desktop writes the title it
@@ -13155,7 +13189,8 @@ final class COSControlHelper {
             waitingOnUser: main?.waitingOnUser ?? false,
             subagentInFlightAt: subagentInFlightAt,
             title: main?.title ?? lastCustomTitle(in: url),
-            questionText: main?.questionText
+            questionText: main?.questionText,
+            questionCount: main?.questionCount
         )
     }
 
@@ -13368,7 +13403,7 @@ final class COSControlHelper {
     ) -> [[String: Any]] {
         var out = rows
         for index in out.indices {
-            for key in ["turnInFlight", "waitingOnUser", "subagentInFlightAt", "activitySource", "waitingQuestion"] {
+            for key in ["turnInFlight", "waitingOnUser", "subagentInFlightAt", "activitySource", "waitingQuestion", "waitingQuestionCount"] {
                 out[index].removeValue(forKey: key)
             }
             let provider = (out[index]["provider"] as? String ?? "claude").lowercased()
@@ -13385,6 +13420,7 @@ final class COSControlHelper {
             out[index]["turnInFlight"] = activity.inFlight
             out[index]["waitingOnUser"] = activity.waitingOnUser
             if let question = activity.questionText { out[index]["waitingQuestion"] = question }
+            if let count = activity.questionCount, activity.questionText != nil { out[index]["waitingQuestionCount"] = count }
             if let sub = activity.subagentInFlightAt { out[index]["subagentInFlightAt"] = isoString(from: sub) }
             out[index]["activitySource"] = "transcript"
         }
@@ -21681,6 +21717,12 @@ final class COSControlHelper {
             })
         try expect(liveActOverlay[0]["waitingQuestion"] as? String == "Sandbox or new draft?" && liveActOverlay[1]["waitingQuestion"] == nil,
                    "the session row carries the question text, and a cached one is cleared")
+        try expect(Self.claudeTurnFromTail([liveActAsk(["questions": [["question": "One?"], ["question": "Two?"], ["question": "Three?"]]])])?.questionCount == 3,
+                   "a call with three questions says so (Today shows 1 of 3)")
+        let liveActQuestionCache = Self.sessionListCachePayload(sessions: [["id": "a1", "waitingQuestion": "Sandbox or new draft?", "waitingQuestionCount": 2, "name": "x"]],
+                                                        dropped: [:], enabled: true, reason: "", partial: false)
+        try expect((liveActQuestionCache["sessions"] as? [[String: Any]])?.first.map { $0["waitingQuestion"] == nil && $0["waitingQuestionCount"] == nil && $0["name"] as? String == "x" } == true,
+                   "a pending question's words are never written to the session cache on disk")
         try expect(Self.claudeTurnFromTail([liveActRecord("user", "2026-09-14T03:28:20.288Z", blocks: ["tool_result"])])?.inFlight == true,
                    "a returned tool result means the model is working")
         try expect(Self.claudeTurnFromTail([liveActRecord("user", "2026-09-14T03:26:00.000Z", text: "[Request interrupted by user]")])?.inFlight == false,

@@ -67,7 +67,7 @@ import Foundation
         return WorkYourMove(.object(o))!
     }
 
-    static func main() {
+    static func main() async {
         guardChecks()
         intakeChecks()
         platformChecks()
@@ -79,15 +79,25 @@ import Foundation
         runGuardChecks()
         layoutChecks()
         stateChecks()
+        composeChecks()
+        actionChecks()
+        await tickLoopChecks()
         print("PASS: Activity Today home: \(ran) checks (predicates, five pin tests, tool-name guard, platform table, finished hour and cap, intake split and midnight, quiet hours, cost guards, capability gating, layout)")
     }
 
     // MARK: B1 tool-name guard
 
     static func guardChecks() {
-        for name in ["AskUserQuestion", "ExitPlanMode", "Bash", "SomeNewTool", " WebFetch "] {
+        for name in ["AskUserQuestion", "ExitPlanMode", "Bash", " WebFetch "] {
             check(TodayHome.isBareToolName(name), "a bare tool name is caught", name)
         }
+        // QA round 1 (item 9): one CamelCase word is often a brand or a title, never a tool, and it stays.
+        for brand in ["ThriftCart", "MarktPOS", "DiveShop360", "HubSpot", "CigarsPOS", "LikeSew", "DeAndre"] {
+            check(!TodayHome.isBareToolName(brand) && TodayHome.guarded(brand) == brand, "a brand title is never taken for a tool", brand)
+        }
+        let branded = session("claude:b1", "running", name: "ThriftCart")
+        check(TodayHome.inFlight({ var i = TodayHome.RunInputs(); i.now = now; i.sessions = [branded]; return i }()).first?.title == "ThriftCart",
+              "a brand title is never taken for a tool")
         for words in ["Bash git push", "Build the age-gate module?", "Priya", "Holiday promo landing page", "HubSpot theme settings"] {
             check(!TodayHome.isBareToolName(words), "words are not a tool name", words)
         }
@@ -176,8 +186,8 @@ import Foundation
         input.workRuns = [TodayHome.WorkRun(id: "r1", title: "Pricing page QA pass", sessionID: nil, jobIDs: ["job-w1"], startedAt: now.addingTimeInterval(-360))]
         input.recordings = [TodayHome.Recording(sessionId: "g2-1", start: at("2026-10-21 14:29"), isMac: false)]
         input.jobs = [
-            TodayHome.ActiveJob(.object(["jobId": .string("job-q1"), "origin": .string("person"), "title": .string("What did Dana say about renewal timing?"), "elapsedMs": .number(40_000), "messageNo": .number(3120)]))!,
-            TodayHome.ActiveJob(.object(["jobId": .string("job-w1"), "origin": .string("task"), "title": .string("Pricing page QA pass"), "elapsedMs": .number(360_000)]))!,
+            TodayHome.ActiveJob(.object(["jobId": .string("job-q1"), "origin": .string("person"), "title": .string("What did Dana say about renewal timing?"), "elapsedMs": .number(40_000), "messageNo": .number(3120)]), receivedAt: now)!,
+            TodayHome.ActiveJob(.object(["jobId": .string("job-w1"), "origin": .string("task"), "title": .string("Pricing page QA pass"), "elapsedMs": .number(360_000)]), receivedAt: now)!,
         ]
         input.finished = [
             TodayHome.Finished(id: "claude:f1", title: "Testimonial HubDB refresh", provider: "claude", finishedAt: now.addingTimeInterval(-4 * 60)),
@@ -198,8 +208,8 @@ import Foundation
         check(rows[4].detail == "COS is answering, 40 s" && rows[4].open == .messages(3120), "a glasses question opens its conversation")
         check(rows.filter { $0.title == "Pricing page QA pass" }.count == 1, "a Work run's server job is the Work row, never a second row")
         var stray = input
-        stray.jobs = [TodayHome.ActiveJob(.object(["jobId": .string("job-o9"), "origin": .string("other"), "title": .string("Meeting review"), "elapsedMs": .number(9000)]))!,
-                      TodayHome.ActiveJob(.object(["jobId": .string("job-t9"), "origin": .string("task"), "title": .string("Fix the H1"), "elapsedMs": .number(9000)]))!]
+        stray.jobs = [TodayHome.ActiveJob(.object(["jobId": .string("job-o9"), "origin": .string("other"), "title": .string("Meeting review"), "elapsedMs": .number(9000)]), receivedAt: now)!,
+                      TodayHome.ActiveJob(.object(["jobId": .string("job-t9"), "origin": .string("task"), "title": .string("Fix the H1"), "elapsedMs": .number(9000)]), receivedAt: now)!]
         let strayRows = TodayHome.inFlight(stray)
         check(!strayRows.contains { $0.id == "job:job-o9" } && strayRows.contains { $0.id == "job:job-t9" && $0.platform == .work },
               "an unmatched `other` job is skipped; a task dispatch shows once as Work")
@@ -222,10 +232,10 @@ import Foundation
         var many = input
         many.sessions += (0..<6).map { session("claude:m\($0)", "running", name: "Agent \($0)", minutes: Double($0 + 1)) }
         let crowded = TodayHome.runningView(inFlight: TodayHome.inFlight(many), finished: TodayHome.finishedRows(many), cap: 6)
-        check(crowded.count == 11 && crowded.shown.count == 6 && crowded.finished.isEmpty && crowded.moreLabel == "5 more running, and 1 finished, in Sessions",
+        check(crowded.count == 11 && crowded.shown.count == 6 && crowded.finished.isEmpty && crowded.moreLabel == "5 more running, and 1 finished",
               "8 or more running: six shown, finished drop first, N more in Sessions", crowded.moreLabel ?? "nil")
         let stacked = TodayHome.runningView(inFlight: rows, finished: finished, cap: 3)
-        check(stacked.shown.count == 3 && stacked.moreLabel == "2 more running, and 1 finished, in Sessions", "stacked: three rows above the fold", stacked.moreLabel ?? "nil")
+        check(stacked.shown.count == 3 && stacked.moreLabel == "2 more running, and 1 finished", "stacked: three rows above the fold", stacked.moreLabel ?? "nil")
 
         var dupes = input
         dupes.sessions = [session("claude:d1", "running", name: "Footer tweak", workspace: "Bottle POS"), session("claude:d2", "running", name: "Footer tweak", workspace: "IT Retail")]
@@ -268,18 +278,30 @@ import Foundation
 
     // MARK: The plan's pin tests
 
+    /// Every source answered, the calendar read: the day as the production composition draws it (TodayHome.compose).
+    static func answeredSources() -> TodayHome.SourceInputs {
+        TodayHome.SourceInputs(reachable: true, sessions: .answered, voices: .answered, memories: .answered, work: .answered)
+    }
+    static func dayInputs(_ run: TodayHome.RunInputs, _ need: TodayHome.NeedInputs, sources: TodayHome.SourceInputs? = nil) -> TodayHome.HomeInputs {
+        var input = TodayHome.HomeInputs()
+        input.run = run
+        input.need = need
+        input.sources = sources ?? answeredSources()
+        input.facts.memoriesToReview = need.memoriesToReview
+        input.facts.memoriesTotal = need.memoriesTotal
+        input.facts.calendarRead = true
+        input.facts.voicesLoaded = need.voiceGroups != nil
+        input.facts.yourMoveLoaded = need.yourMove != nil
+        input.split = need.olderToSort.map { n in
+            var split = TodayHome.IntakeSplit()
+            split.olderCards = (0..<n).map { mentioned("o\($0)", filename: "2026-10-12_Old.md") }
+            return split
+        }
+        return input
+    }
     static func dayCounts(_ run: TodayHome.RunInputs, _ need: TodayHome.NeedInputs) -> (TodayHome.Counts, [TodayHome.NeedRow], [TodayHome.RunRow]) {
-        let needs = TodayHome.things(need)
-        let running = TodayHome.inFlight(run)
-        var c = TodayHome.counts(needs: needs, running: running, finished: TodayHome.finishedRows(run))
-        c.voicesToName = need.voiceGroups?.count
-        c.memoriesToReview = need.memoriesToReview
-        c.memoriesTotal = need.memoriesTotal
-        c.workNeedsYou = needs.filter { $0.kind == .work }.count
-        c.olderToSort = need.olderToSort
-        c.nextEvent = run.event
-        c.calendarRead = true
-        return (c, needs, running)
+        let frame = TodayHome.compose(dayInputs(run, need))
+        return (frame.counts, frame.needs, frame.running)
     }
 
     static func pinChecks() {
@@ -298,7 +320,7 @@ import Foundation
         check(TodayHome.story("memories", c, now: now, calendar: calendar).text == "7 to review" && TodayHome.card("memories", c, now: now, calendar: calendar).tag == "7 to review",
               "Memories rail and card agree")
         check(TodayHome.story("speakers", c, now: now, calendar: calendar).text == "1 voice to name", "Speakers' rail")
-        check(TodayHome.story("meetings", c, now: now, calendar: calendar).text == "Next at 3:30", "Meetings' rail")
+        check(TodayHome.story("meetings", c, now: now, calendar: calendar).text == "Next at 3:30 PM", "Meetings' rail")
         // Pin 2: working to waiting moves the session from Running to Needs you in the same refresh.
         var moved = run
         moved.sessions[0] = session("claude:t1", "waiting", name: "Holiday promo landing page", kind: "question")
@@ -325,14 +347,25 @@ import Foundation
     static func briefChecks() {
         let run = runningInputs()
         let (c, _, _) = dayCounts(run, needInputs(run))
-        check(TodayHome.brief(c, calendar: calendar) == "Two sessions are waiting on you, and Northwind renewal starts at 3:30. Three agents are working, COS is answering a glasses question and the glasses are recording.",
+        check(TodayHome.brief(c, calendar: calendar) == "Two sessions are waiting on you, and Northwind renewal starts at 3:30 PM. Three agents are working, COS is answering a question and the glasses are recording.",
               "the canvas brief", TodayHome.brief(c, calendar: calendar))
-        var quiet = TodayHome.Counts(); quiet.calendarRead = true
-        check(TodayHome.brief(quiet) == "Nothing is waiting on you, and your calendar is clear for the rest of the day.", "the caught-up brief")
-        var unread = TodayHome.Counts(); unread.needs = 1
+        var quiet = TodayHome.Counts(); quiet.calendarRead = true; quiet.settled = true
+        check(TodayHome.brief(quiet, calendar: calendar) == "Nothing is waiting on you, and your calendar is clear for the rest of the day.", "the caught-up brief")
+        var unread = TodayHome.Counts(); unread.needs = 1; unread.settled = true
         check(TodayHome.brief(unread) == "One thing needs you.", "no calendar read: nothing said about it")
-        var routine = TodayHome.Counts(); routine.routinesRunning = 2; routine.agentsWorking = 1
+        var routine = TodayHome.Counts(); routine.routinesRunning = 2; routine.agentsWorking = 1; routine.settled = true
         check(TodayHome.brief(routine) == "Nothing is waiting on you. One agent is working and two routines are running.", "routines", TodayHome.brief(routine))
+        // QA round 1 (item 1): nothing says "nothing" until every source answered.
+        let loading = TodayHome.Counts()
+        check(TodayHome.brief(loading) == "Still reading what needs you." && TodayHome.story("today", loading, now: now, calendar: calendar).text == "Reading",
+              "no false caught up while loading", TodayHome.brief(loading))
+        var failedWork = TodayHome.Counts(); failedWork.failedSources = [.work]
+        check(TodayHome.brief(failedWork) == "Couldn't read Work, so this may not be everything." && !TodayHome.brief(failedWork).contains("Nothing"),
+              "no false caught up after a source failed", TodayHome.brief(failedWork))
+        var partial = TodayHome.Counts(); partial.needs = 2
+        check(TodayHome.brief(partial) == "Two things need you so far.", "a count before every source answered says so far", TodayHome.brief(partial))
+        var clearUnknown = TodayHome.Counts(); clearUnknown.settled = true
+        check(TodayHome.brief(clearUnknown) == "Nothing is waiting on you.", "the calendar is never called clear unless the server said it read it")
         let a = TodayHome.brief(c, calendar: calendar), b = TodayHome.brief(c, calendar: calendar)
         check(a == b, "the brief is deterministic")
         for word in ["\u{2014}", "\u{2192}", "you said", "You said"] { check(!a.contains(word), "no em dash, arrow or attribution in the brief", word) }
@@ -344,6 +377,8 @@ import Foundation
         check(!TodayHome.isQuiet(now: now, enabled: true, calendar: calendar), "2:47 PM on a Wednesday is not quiet")
         check(TodayHome.isQuiet(now: at("2026-10-21 18:00"), enabled: true, calendar: calendar), "6 PM is quiet")
         check(TodayHome.isQuiet(now: at("2026-10-24 10:00"), enabled: true, calendar: calendar), "Saturday is quiet")
+        check(TodayHome.isQuiet(now: at("2026-10-21 03:00"), enabled: true, calendar: calendar) && !TodayHome.isQuiet(now: at("2026-10-21 06:00"), enabled: true, calendar: calendar),
+              "before 6 AM on a weekday is quiet; 6 AM is not")
         check(!TodayHome.isQuiet(now: at("2026-10-24 10:00"), enabled: false, calendar: calendar), "the switch off: never quiet")
         let rows = TodayHome.things(needInputs(runningInputs()))
         let folded = TodayHome.fold(rows, quiet: true)
@@ -366,7 +401,7 @@ import Foundation
         check(guardrail.admission(target: "prep:a", inFlight: [], switchOn: true, now: now) == .allowed && guardrail.used(now: now) == 19, "the 20th is allowed")
         guardrail.recordStart(now: now)
         check(guardrail.admission(target: "prep:b", inFlight: [], switchOn: true, now: now) == .capReached, "the 21st of the day is refused")
-        check(TodayRunGuard.line(.capReached) == "Daily limit reached. Open Work to start more.", "the cap's words")
+        check(TodayRunGuard.line(.capReached) == "Today's limit on this Mac is reached. Open Work to start more.", "the cap's words")
         check(guardrail.admission(target: "prep:b", inFlight: [], switchOn: true, now: at("2026-10-22 08:00")) == .allowed, "a new day starts a new count")
         let fresh = TodayRunGuard(defaults: UserDefaults(suiteName: suite + ".b")!, calendar: calendar)
         defer { UserDefaults(suiteName: suite + ".b")!.removePersistentDomain(forName: suite + ".b") }
@@ -386,8 +421,12 @@ import Foundation
     static func layoutChecks() {
         check(TodayHome.railMode(windowWidth: 1099) == .icons && TodayHome.railMode(windowWidth: 1100) == .full, "the rail is icons at 1,099 pt and full at 1,100 pt")
         check(!TodayHome.twoColumns(windowWidth: 1100) && !TodayHome.twoColumns(windowWidth: 920) && TodayHome.twoColumns(windowWidth: 1280), "two columns only once the main column is 900 pt")
-        check(TodayHome.mainContentWidth(windowWidth: 760) == 760 - 64 - 56 && TodayHome.runningCap(windowWidth: 920) == 3 && TodayHome.runningCap(windowWidth: 1440) == 6
-              && TodayHome.runningCap(windowWidth: 760) == 2, "760 and 920 stack; three Running rows at 920, two at 760")
+        check(TodayHome.mainContentWidth(windowWidth: 760) == 760 - 64 - 56 && TodayHome.runningCap(windowWidth: 920) == 2 && TodayHome.runningCap(windowWidth: 1440) == 6
+              && TodayHome.runningCap(windowWidth: 760) == 2, "760 and 920 stack with two Running rows; six beside Needs you")
+        check(!TodayHome.twoColumns(windowWidth: 1227) && TodayHome.twoColumns(windowWidth: 1228) && !TodayHome.twoColumns(windowWidth: 1099),
+              "two columns from a 1,228 pt window, never with the icon rail")
+        check(TodayHome.columns(windowWidth: 1228).right == 380 && TodayHome.columns(windowWidth: 1228).left == 900 - 28 - 380
+              && TodayHome.columns(windowWidth: 1800).right > 380, "the right column never narrower than 380 pt")
     }
 
     // MARK: States and capability parsing
@@ -417,5 +456,131 @@ import Foundation
         let defaults = UserDefaults(suiteName: "cos.activity-today-defaults.\(getpid())")!
         defer { defaults.removePersistentDomain(forName: "cos.activity-today-defaults.\(getpid())") }
         check(!TodayHome.enabled(defaults) && TodayHome.quietHoursOn(defaults) && TodayHome.workRunsOn(defaults), "opt-in home; quiet hours and Work runs on by default")
+    }
+
+    // MARK: QA round 1: composition, reachability, sources (items 1, 2, 10)
+
+    static func composeChecks() {
+        let run = runningInputs()
+        let need = needInputs(run)
+        // Unreachable: this Mac's sessions only, the server's sources failed, nothing says "nothing".
+        var down = answeredSources(); down.reachable = false
+        let off = TodayHome.compose(dayInputs(run, need, sources: down))
+        check(off.needs.allSatisfy { $0.kind == .session } && off.needs.count == 2, "unreachable: Needs you keeps this Mac's sessions only")
+        check(off.states[.voices] == .failed && off.states[.memories] == .failed && off.states[.work] == .failed && off.states[.sessions] == .answered,
+              "unreachable: the server's sources are failed, sessions are not")
+        check(!off.counts.settled && off.counts.voicesToName == nil && off.counts.memoriesToReview == nil && off.counts.olderToSort == nil,
+              "unreachable: no count that reads the server")
+        check(TodayHome.story("speakers", off.counts, now: now, calendar: calendar).text != "Every voice has a name"
+              && TodayHome.story("work", off.counts, now: now, calendar: calendar).text != "Nothing to sort", "unreachable: no false nothing on the rail")
+        // Empty and unreachable: never caught up.
+        var quietRun = TodayHome.RunInputs(); quietRun.now = now
+        let emptyDown = TodayHome.compose(dayInputs(quietRun, TodayHome.NeedInputs(), sources: down))
+        check(emptyDown.line == .loading && !TodayHome.brief(emptyDown.counts).contains("Nothing is waiting"), "unreachable and empty: no false caught up",
+              TodayHome.brief(emptyDown.counts))
+        // Intake failed fails Work; a pending source keeps the line from claiming anything.
+        var intake = answeredSources(); intake.intakeFailed = true
+        let noIntake = TodayHome.compose(dayInputs(run, need, sources: intake))
+        check(noIntake.states[.work] == .failed && noIntake.counts.olderToSort == nil && !noIntake.needs.contains { $0.kind == .olderToSort },
+              "a failed Intake read fails Work and its counts")
+        var pending = answeredSources(); pending.voices = .pending
+        let voicing = TodayHome.compose(dayInputs(quietRun, TodayHome.NeedInputs(), sources: pending))
+        check(voicing.line == .loading && voicing.counts.voicesToName == nil, "voices still loading: no Every voice has a name, no caught up")
+        let caught = TodayHome.compose(dayInputs(quietRun, { var n = TodayHome.NeedInputs(); n.voiceGroups = []; n.yourMove = []; n.memoriesToReview = 0; return n }()))
+        check(caught.line == .caughtUp && caught.counts.settled && TodayHome.story("speakers", caught.counts, now: now, calendar: calendar).text == "Every voice has a name",
+              "every source answered: caught up, and the rail may say so")
+        // The calendar is clear only when the server says it read it.
+        var unsaid = dayInputs(quietRun, TodayHome.NeedInputs()); unsaid.facts.calendarRead = nil
+        check(!TodayHome.brief(TodayHome.compose(unsaid).counts).contains("calendar"), "no calendarRead from the server: no clear-day claim")
+        // Pin 1 again, on the composed frame: rail, header and rows agree.
+        let frame = TodayHome.compose(dayInputs(run, need))
+        check(frame.counts.needs == frame.needs.count && frame.counts.running == frame.running.count
+              && TodayHome.story("today", frame.counts, now: now, calendar: calendar).text == "\(frame.needs.count) need you, \(frame.running.count) running",
+              "the composed frame: rail == header == rows")
+    }
+
+    // MARK: QA round 1: hosts, questions, jobs, routines, guard, actions (items 11, 12, 13, 22, 23, 26)
+
+    static func actionChecks() {
+        let cc = session("claude:h1", "running", name: "Holiday promo landing page")
+        let read = TodayHome.openFor(cc, host: nil, cursorTrusted: true, hostsRead: true)
+        check(read.label == "In Sessions" && read.note == "Terminal is not running this session any more." && read.action == .inSessions(cc.id),
+              "no host after the lookup: section 6's fallback, In Sessions")
+        check(TodayHome.openFor(cc, host: nil, cursorTrusted: true, hostsRead: false).label == "Open session", "before the lookup: Open session routes")
+        var asking = session("claude:q3", "waiting", name: "Docs", kind: "question", question: "Sandbox or new draft?")
+        asking.waitingQuestionCount = 3
+        check(TodayHome.askedWhy(asking) == "Question 1 of 3", "several questions: 1 of N")
+        let received = now
+        let job = TodayHome.ActiveJob(.object(["jobId": .string("j1"), "elapsedMs": .number(40_000), "title": .string("Q")]), receivedAt: received)!
+        check(job.origin == "other" && job.started == now.addingTimeInterval(-40), "a missing origin is other; the start is the answer's time less elapsed")
+        var input = TodayHome.RunInputs(); input.now = now.addingTimeInterval(80)
+        input.jobs = [TodayHome.ActiveJob(.object(["jobId": .string("j2"), "origin": .string("person"), "elapsedMs": .number(40_000), "title": .string("Q")]), receivedAt: received)!]
+        check(TodayHome.inFlight(input).first?.detail == "COS is answering, 2 min", "elapsed counts up between ticks", TodayHome.inFlight(input).first?.detail ?? "nil")
+        input.jobs = [TodayHome.ActiveJob(.object(["jobId": .string("j3"), "elapsedMs": .number(1000)]), receivedAt: received)!]
+        check(TodayHome.inFlight(input).isEmpty, "a job with no origin is never a second row")
+        let stuck = TodayHome.RoutineRun(.object(["id": .string("r1"), "status": .string("submitting"), "firedAt": .string(iso(now.addingTimeInterval(-1200)))]))!
+        let fresh = TodayHome.RoutineRun(.object(["id": .string("r2"), "status": .string("submitting"), "firedAt": .string(iso(now.addingTimeInterval(-120)))]))!
+        var routines = TodayHome.RunInputs(); routines.now = now; routines.routines = [stuck, fresh]
+        check(TodayHome.inFlight(routines).map(\.id) == ["routine:r2"], "a jobless run still submitting after 10 minutes is not running")
+        // Guard accounting: only starts that reached the server count; refusals before that are neither starts nor failures.
+        check(TodayRunGuard.outcome(receiptStatus: nil, error: "busy") == .notStarted("busy") && TodayRunGuard.outcome(receiptStatus: "queued", error: nil) == .admitted
+              && TodayRunGuard.outcome(receiptStatus: "refused", error: nil) == .refused("The server did not start it."), "the run outcome from the new receipt")
+        let suite = "cos.activity-today-account.\(getpid())"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let guardrail = TodayRunGuard(defaults: defaults, calendar: calendar)
+        for _ in 0..<5 { guardrail.account(.notStarted("busy"), now: now) }
+        check(guardrail.used(now: now) == 0 && guardrail.pausedUntil(now: now) == nil, "refused before submit: not a start and not a breaker failure")
+        for _ in 0..<3 { guardrail.account(.refused("no"), now: now) }
+        check(guardrail.used(now: now) == 3 && guardrail.pausedUntil(now: now) != nil, "three admission refusals open the breaker")
+        check(TodayRunGuard.preflight(busy: true, holds: false) != nil && TodayRunGuard.preflight(busy: false, holds: true) != nil
+              && TodayRunGuard.preflight(busy: false, holds: false) == nil, "busy Work or an open run refuses before anything is recorded")
+        check(TodayRunGuard.line(.capReached)?.contains("on this Mac") == true, "the cap says it is this Mac's")
+        // The model: Sonnet, never Opus by default, never Cursor.
+        let models: [(id: String, provider: String, available: Bool)] = [("claude-opus-4-8", "claude", true), ("cursor-auto", "cursor", true),
+                                                                       ("claude-sonnet-4-6", "claude", true), ("gpt-5", "codex", true)]
+        check(TodayHome.pickRunModel(models) == 2, "a run from Today uses Sonnet")
+        check(TodayHome.pickRunModel([("claude-opus-4-8", "claude", true), ("gpt-5", "codex", true)]) == 1
+              && TodayHome.pickRunModel([("claude-opus-4-8", "claude", true)]) == nil, "never Opus by default")
+        // Suggestions: Create task for an ask, Open card for a link; state from Work's one accept path.
+        let ask = intake("2026-10-21_x.md")
+        let link = WorkIntakeItem(.object(["id": .string("wi_" + String(repeating: "a", count: 32)), "kind": .string("link"), "status": .string("suggested"),
+                                           "confidence": .number(0.8), "task": .object(["text": .string("Age-gate module")]),
+                                           "meeting": .object(["recordId": .string("r"), "domain": .string("quilt"), "month": .string("2026-10"),
+                                                               "filename": .string("2026-10-21_d.md"), "title": .string("Design review")])]))!
+        check(TodayHome.suggestionAction(ask, cardCreation: true) == .createTask && TodayHome.suggestionAction(ask, cardCreation: false) == .unavailable
+              && TodayHome.suggestionAction(link, cardCreation: true) == .openCard("Age-gate module"), "an ask creates, a link opens its card")
+        check(TodayHome.suggestionState(ask.id, busy: [ask.id], created: [], failures: [:]) == .creating
+              && TodayHome.suggestionState(ask.id, busy: [], created: [ask.id], failures: [:]) == .created
+              && TodayHome.suggestionState(ask.id, busy: [], created: [], failures: [ask.id: "No"]) == .failed("No"), "the row follows Work's busy ids")
+        let rows = TodayHome.things(needInputs(runningInputs()))
+        check(TodayHome.showMoreLabel(Array(rows.suffix(4))) == "Show 4 more: " + TodayHome.shortLabel(rows[2]) + ", " + TodayHome.shortLabel(rows[3]) + " and 2 more",
+              "Show more names two at most", TodayHome.showMoreLabel(Array(rows.suffix(4))))
+    }
+
+    // MARK: QA round 1: the tick loop on a fake clock (item 20)
+
+    static func tickLoopChecks() async {
+        var clock = now
+        var visible = true
+        var ticks = 0
+        var steps = 0
+        await TodayTickLoop.run(now: { clock }, visible: { visible }, ready: { true }, tick: { ticks += 1 }, wait: { seconds in
+            clock = clock.addingTimeInterval(seconds); steps += 1
+            if steps == 180 { visible = false }      // three minutes on screen
+            if steps == 360 { visible = true }       // three minutes hidden, then back
+            return steps < 400
+        })
+        check(ticks == 4, "one tick a minute while on screen, none while hidden, one at once on return", "\(ticks) ticks")
+        var waited = 0
+        var ready = false
+        var early = 0
+        clock = now
+        await TodayTickLoop.run(now: { clock }, visible: { true }, ready: { ready }, tick: { early += 1 }, wait: { seconds in
+            clock = clock.addingTimeInterval(seconds); waited += 1
+            if waited == 6 { ready = true }
+            return waited < 8
+        })
+        check(early == 1 && waited == 8, "the first tick waits for the window's opening loads")
     }
 }

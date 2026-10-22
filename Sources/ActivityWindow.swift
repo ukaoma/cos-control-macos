@@ -1,3 +1,4 @@
+import OSLog
 import AppKit
 import SwiftUI
 
@@ -583,6 +584,7 @@ struct ActivityWindow: View {
     @State private var todayShowAll = false
     @State private var todayShowTomorrow = false
     @State private var todayNextIndex = 0
+    @State private var todayRetrying = false
     /// 0.5.259: the view Memories opens on when an item asks for one ("review"); cleared by the next tab choice.
     @State private var memoriesOpenView: String?
     /// One indicator that travels between tabs instead of six that blink.
@@ -758,7 +760,7 @@ struct ActivityWindow: View {
     /// The window's content region, shared by the classic frame and the Today frame (whose rail sits beside it). `today`:
     /// the Today home's frame when that home is on.
     @ViewBuilder
-    private func activityContent(today: TodayFrame?, width: CGFloat, now: Date) -> some View {
+    private func activityContent(today: TodayHome.Frame?, width: CGFloat, now: Date) -> some View {
             Group {
                 if showingSettings {
                     ControlPanel(model: model, openActivity: { destination in
@@ -1068,6 +1070,8 @@ struct ActivityWindow: View {
                 .buttonStyle(COSQuietButtonStyle())
                 .accessibilityLabel("Open Activity settings")
                 .disabled(isolatedWorkPreview)
+            // Activity Today: the rail's footer says it (once, with the same reachability as the home).
+            if !(todayEnabled && !isolatedWorkPreview) {
             HStack(spacing: 6) {
                 Circle()
                     .fill(isolatedWorkPreview ? COSPalette.gold : (model.status.running ? COSPalette.green : COSPalette.amber))
@@ -1075,6 +1079,7 @@ struct ActivityWindow: View {
                 Text(isolatedWorkPreview ? "Isolated Work preview" : (model.status.running ? "Server connected" : "Server offline"))
                     .font(COSType.mono(10.5))
                     .foregroundStyle(.secondary)
+            }
             }
         }
         .padding(.horizontal, 18)
@@ -1474,7 +1479,7 @@ struct ActivityWindow: View {
     /// backlog as one short segment of counts (ActivityHome.parts). Next ⌘] opens the first item, then the next one each
     /// press (ActivityHome.nextTarget). ⌘] is also Speakers' Next to name;
     /// the two never both respond, because this line lives only on the home and the speaker review only on its own route
-    /// of the same if/else chain (activityFrame). Tests/activity-home-pins.py pins both.
+    /// of the same if/else chain (activityContent). Tests/activity-home-pins.py pins both.
     @ViewBuilder
     private func needsYouLine(_ needs: [ActivityHome.Need], states: [ActivityHome.Source: ActivityHome.SourceState], now: Date) -> some View {
         switch ActivityHome.line(needs, states: states) {
@@ -5922,6 +5927,8 @@ struct ActivityWindow: View {
         await work
         // 0.5.259: the Memories card dates its oldest wait from the review list, the loader Memories already uses.
         if (model.status.learningToReview ?? 0) > 0, model.toReviewEvents.isEmpty { await model.loadToReviewEvents() }
+        // Activity Today: its tick starts after these opening loads, so the two never read the same routes at once.
+        today.overviewDone = true
     }
 
     /// 0.5.259: the home's Work card and Needs you line read Work's board, its meeting reviews and Intake: the loaders
@@ -7615,49 +7622,107 @@ struct TodayLinkStyle: ButtonStyle {
     }
 }
 
-/// The working dot. Under Reduce Motion it stays solid and still.
+/// The working dot. Under Reduce Motion it stays solid and still, and it follows the setting while shown.
 struct TodayPulse: View {
-    let reduceMotion: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var on = false
     var body: some View {
         Circle().fill(TodayInk.pulse).frame(width: 7, height: 7)
             .overlay(Circle().stroke(TodayInk.pulse.opacity(on ? 0.05 : 0.30), lineWidth: 3).scaleEffect(on ? 1.6 : 1.1))
-            .onAppear { if !reduceMotion { withAnimation(.easeInOut(duration: 1.2).repeatForever(autoreverses: true)) { on = true } } }
+            .onAppear { animate(!reduceMotion) }
+            .onChange(of: reduceMotion) { _, still in animate(!still) }
             .accessibilityHidden(true)
+    }
+    private func animate(_ moving: Bool) {
+        if moving { withAnimation(.easeInOut(duration: 1.2).repeatForever(autoreverses: true)) { on = true } }
+        else { var quiet = Transaction(); quiet.disablesAnimations = true; withTransaction(quiet) { on = false } }
     }
 }
 
+/// Whether the Activity window is really on screen: visible, not minimized, not covered, and not closed. The Today home
+/// owns this (the live-transcript flag is that feature's own), so its tick stops when the window closes or hides.
+struct TodayWindowWatcher: NSViewRepresentable {
+    let onChange: (Bool) -> Void
+    func makeNSView(context: Context) -> WatcherView { WatcherView(onChange: onChange) }
+    func updateNSView(_ nsView: WatcherView, context: Context) { nsView.onChange = onChange }
+
+    final class WatcherView: NSView {
+        var onChange: (Bool) -> Void
+        nonisolated(unsafe) private var observers: [NSObjectProtocol] = []
+        init(onChange: @escaping (Bool) -> Void) { self.onChange = onChange; super.init(frame: .zero) }
+        required init?(coder: NSCoder) { nil }
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            observers.forEach(NotificationCenter.default.removeObserver)
+            observers = []
+            guard let window else { onChange(false); return }
+            let names: [NSNotification.Name] = [NSWindow.didChangeOcclusionStateNotification, NSWindow.didMiniaturizeNotification,
+                                                 NSWindow.didDeminiaturizeNotification, NSWindow.didBecomeKeyNotification]
+            for name in names {
+                observers.append(NotificationCenter.default.addObserver(forName: name, object: window, queue: .main) { [weak self] _ in
+                    MainActor.assumeIsolated { self?.report() }
+                })
+            }
+            observers.append(NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: window, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.onChange(false) }
+            })
+            report()
+        }
+        private func report() {
+            guard let window else { onChange(false); return }
+            onChange(window.isVisible && !window.isMiniaturized && window.occlusionState.contains(.visible))
+        }
+        deinit { observers.forEach(NotificationCenter.default.removeObserver) }
+    }
+}
+
+/// Today's own log (no titles, questions or names): each tick's reads, how long, what came back; each guard decision and
+/// breaker change; each Create task outcome; each Open that fell back.
+let todayLog = Logger(subsystem: "com.gotcos.control", category: "activity-today")
+
 /// What the Today home reads beyond the model: the in-flight query jobs (only on a server that advertises them), routine
-/// runs, the one next event, which app hosts each live Claude session, and the state of its one-at-a-time actions. One
-/// helper call per tick (`activity-today`), only while the Activity window is on screen; calendar and intake at most every
-/// 5 minutes; never `/api/session-questions`.
+/// runs, the one next event, which app hosts each live Claude session, and the state of its one-at-a-time actions. Each tick
+/// is one `activity-today` helper run (its reads serial), plus a host lookup and, every 5 minutes, Work's Intake; only while
+/// the window is on screen (TodayTickLoop); never `/api/session-questions`.
 @MainActor final class TodayHomeStore: ObservableObject {
-    enum IntakeState: Equatable { case creating, created, failed(String) }
     enum VoiceState: Equatable { case working, listen, named(String, String?), failed(String) }
 
     @Published var nextEvent: TodayHome.NextEvent?
-    @Published var calendarRead = false
+    /// The server said it read the calendar (welcome-context `calendarRead`); nil: it did not say.
+    @Published var calendarRead: Bool?
+    /// welcome-context answered at all (an older or standalone server does not): Next up shows only then.
+    @Published var calendarAvailable = false
     @Published var jobsSupported: Bool?
     @Published var jobs: [TodayHome.ActiveJob]?
     @Published var routines: [TodayHome.RoutineRun] = []
     @Published var hosts: [String: TodayHome.Host] = [:]
+    @Published var hostsRead = false
+    /// False only when a tick got no answer from any read (a transport failure).
     @Published var reachable: Bool?
     @Published var checkedAt: Date?
-    @Published var intake: [String: IntakeState] = [:]
+    @Published var lastError: String?
+    @Published var created: Set<String> = []
     @Published var createdItems: [WorkIntakeItem] = []
-    @Published var intakeBusy = false
+    @Published var failures: [String: String] = [:]
+    /// The refusal the last Create task kept (ControllerModel puts it in workIntakeError, which is not a read failure).
+    @Published var lastResolveError: String?
     @Published var voices: [String: VoiceState] = [:]
     @Published var runNote: String?
     @Published var runBusy = false
+    @Published var captureBusy = false
+    @Published var notice: String?
+    /// On screen (TodayWindowWatcher), and the window's opening loads finished (loadOverviewIfNeeded).
+    @Published var windowVisible = true
+    var overviewDone = false
+    var openLoadsDone = false
     /// The rail as last drawn (a test probe for the breakpoint; never read by the app).
     nonisolated(unsafe) static var drawnRailWidth: CGFloat = 0
-    /// How many helper ticks ran (canary 6: one a minute while on screen, none when closed).
+    /// Ticks run (logged with each tick; canary 6 counts them).
     private(set) var ticks = 0
     private var probedFor: String?
     private var lastCalendar: Date?
     private var lastIntake: Date?
     private var ticking = false
-    static let tickSeconds: UInt64 = 60
     static let slowSeconds: TimeInterval = 300
 
     /// One tick: the helper's serial reads, then the local host lookup, then intake when 5 minutes have passed.
@@ -7666,6 +7731,7 @@ struct TodayPulse: View {
         ticking = true
         defer { ticking = false }
         ticks += 1
+        let started = Date()
         let server = "\(model.status.running)|\(model.status.version ?? "")"
         var args = ["activity-today"]
         let probe = jobsSupported == nil || probedFor != server
@@ -7673,50 +7739,65 @@ struct TodayPulse: View {
         let calendar = lastCalendar.map { now.timeIntervalSince($0) >= Self.slowSeconds } ?? true
         if calendar { args.append("--calendar") }
         do {
-            let response = try await model.todayHelper(args, timeout: 45)
+            let response = try await model.todayHelper(args, timeout: 60)
             guard response.ok else { throw HelperClientError.commandFailed(response.message) }
-            reachable = true
+            let received = Date()
+            reachable = response.details["unreachable"]?.bool != true
             if probe, let supported = response.details["activeQueryJobs"]?.bool { jobsSupported = supported; probedFor = server }
             if jobsSupported == true, let block = response.details["queryJobs"]?.object {
-                jobs = block["available"]?.bool == true ? (block["items"]?.array ?? []).compactMap(TodayHome.ActiveJob.init) : nil
+                jobs = block["available"]?.bool == true ? (block["items"]?.array ?? []).compactMap { TodayHome.ActiveJob($0, receivedAt: received) } : nil
             } else if jobsSupported != true { jobs = nil }
             if let block = response.details["routines"]?.object {
                 routines = block["available"]?.bool == true ? (block["runs"]?.array ?? []).compactMap(TodayHome.RoutineRun.init) : []
             }
             if calendar, let block = response.details["calendar"]?.object {
                 lastCalendar = now
-                calendarRead = block["available"]?.bool == true
-                nextEvent = calendarRead ? TodayHome.nextEvent(block["nextEvent"], now: now) : nil
+                calendarAvailable = block["available"]?.bool == true
+                calendarRead = calendarAvailable ? block["calendarRead"]?.bool : nil
+                nextEvent = calendarAvailable ? TodayHome.nextEvent(block["nextEvent"], now: now) : nil
             }
+            lastError = nil
+            if reachable == true { checkedAt = Date() }
+            todayLog.info("tick \(self.ticks) args=\(args.joined(separator: " "), privacy: .public) ms=\(Int(Date().timeIntervalSince(started) * 1000)) reachable=\(self.reachable == true) jobs=\(self.jobs?.count ?? -1) routines=\(self.routines.count) calendar=\(self.calendarAvailable)")
         } catch {
-            reachable = false
+            // The helper did not run or said no: these reads are missing this tick, and that is not the server being down.
+            lastError = error.localizedDescription
+            routines = []
+            if jobsSupported == true { jobs = nil }
+            todayLog.error("tick \(self.ticks) args=\(args.joined(separator: " "), privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
         }
-        hosts = Self.readHosts(model: model)
-        if lastIntake.map({ now.timeIntervalSince($0) >= Self.slowSeconds }) ?? true {
-            lastIntake = now
-            await model.loadWorkIntake()
+        hosts = await Self.readHosts(model: model)
+        hostsRead = true
+        if let last = lastIntake {
+            if now.timeIntervalSince(last) >= Self.slowSeconds { lastIntake = now; await model.loadWorkIntake() }
+        } else {
+            lastIntake = now   // the window's opening loads just read it
         }
-        checkedAt = Date()
     }
 
-    /// Where each live Claude session runs: `~/.claude/sessions/<pid>.json` (pid, entrypoint) and the pid's app. Local
-    /// files only, read on the home tick.
-    static func readHosts(model: ControllerModel) -> [String: TodayHome.Host] {
+    /// Where each live Claude session runs: `~/.claude/sessions/<pid>.json` (pid, entrypoint), read off the main thread, and
+    /// the pid's app. An exact session id, or a prefix of at least 8 characters that names one entry only.
+    static func readHosts(model: ControllerModel) async -> [String: TodayHome.Host] {
         let root = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude/sessions", isDirectory: true)
-        guard let files = try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) else { return [:] }
-        var entries: [(id: String, pid: Int, entrypoint: String)] = []
-        for file in files.prefix(200) where file.pathExtension == "json" {
-            guard let data = try? Data(contentsOf: file), data.count < 64_000,
-                  let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-                  let id = (obj["sessionId"] as? String)?.lowercased(), let pid = (obj["pid"] as? NSNumber)?.intValue, pid > 0 else { continue }
-            entries.append((id, pid, (obj["entrypoint"] as? String ?? "").lowercased()))
-        }
+        let entries: [(id: String, pid: Int, entrypoint: String)] = await Task.detached(priority: .utility) {
+            guard let files = try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) else { return [] }
+            var out: [(id: String, pid: Int, entrypoint: String)] = []
+            for file in files where file.pathExtension == "json" {
+                guard let data = try? Data(contentsOf: file), data.count < 64_000,
+                      let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+                      let id = (obj["sessionId"] as? String)?.lowercased(), let pid = (obj["pid"] as? NSNumber)?.intValue, pid > 0 else { continue }
+                out.append((id, pid, (obj["entrypoint"] as? String ?? "").lowercased()))
+            }
+            return out
+        }.value
         var hosts: [String: TodayHome.Host] = [:]
         let sessions = (model.petEnabled ? model.petSessions : []) + model.claudeSessions
         for session in sessions where session.provider == "claude" && (session.state == "running" || session.state == "waiting") {
             let native = session.sessionId.lowercased()
-            guard hosts[session.id] == nil, native.count >= 8,
-                  let entry = entries.first(where: { $0.id == native || $0.id.hasPrefix(native) || native.hasPrefix($0.id) }) else { continue }
+            guard hosts[session.id] == nil else { continue }
+            let exact = entries.filter { $0.id == native }
+            let prefixed = native.count >= 8 ? entries.filter { $0.id.hasPrefix(native) || native.hasPrefix($0.id) } : []
+            guard let entry = exact.first ?? (prefixed.count == 1 ? prefixed.first : nil) else { continue }
             let app = model.resolveHostApp(pid_t(entry.pid))
             if PetJumpRoute.route(entrypoint: entry.entrypoint, hostBundleId: app?.bundleIdentifier) == .terminal {
                 let name = app?.bundleIdentifier == "com.googlecode.iterm2" ? "iTerm" : (app?.localizedName ?? "Terminal")
@@ -7728,33 +7809,34 @@ struct TodayPulse: View {
         return hosts
     }
 
-    /// Create task: one resolve accept, one at a time across the panel; the row says Creating, then Created, or keeps the
-    /// server's words with Try again. Never seen, never dismiss.
+    /// Create task goes through Work's own accept (ControllerModel.resolveWorkIntake): one at a time (its busy ids), accept
+    /// only, never seen or dismiss, and it leaves Work's Undo last decision armed.
     func createTask(_ item: WorkIntakeItem, model: ControllerModel) async {
-        guard !intakeBusy, intake[item.id] != .created else { return }
-        intakeBusy = true
-        intake[item.id] = .creating
-        defer { intakeBusy = false }
-        do {
-            let payload = try JSONSerialization.data(withJSONObject: ["id": item.id, "action": "accept"])
-            let response = try await model.todayHelper(["work-intake-resolve"], timeout: 75, stdinData: payload)
-            guard response.ok else { throw HelperClientError.commandFailed(response.message) }
-            intake[item.id] = .created
+        guard model.workIntakeBusyIDs.isEmpty, !created.contains(item.id) else { return }
+        failures[item.id] = nil
+        await model.resolveWorkIntake(item, accept: true)
+        if let error = model.workIntakeError {
+            failures[item.id] = error
+            lastResolveError = error
+            todayLog.error("create task refused: \(error, privacy: .public)")
+        } else {
+            created.insert(item.id)
             createdItems.append(item)
-            await model.loadWorkIntake()
-            await model.loadWorkTasks(force: true)
-        } catch {
-            intake[item.id] = .failed(error.localizedDescription)
+            todayLog.info("create task accepted")
         }
     }
 
     /// Yes, <name>: a read-only preview, then apply with its hash. Listening or the owner's acknowledgement is never sent
-    /// from here: the row switches to Listen, which opens Speakers on that group.
+    /// from here: the row switches to Listen, which opens Speakers on that group. Nothing stale from an earlier naming is
+    /// read: the preview and result are cleared first, and the result must be for this name.
     func nameVoice(_ group: HeldVoiceGroup, as name: String, model: ControllerModel) async {
         guard voices[group.id] != .working, !model.addVoiceBusy else { return }
+        guard model.heldGroupsSpeakerModel, model.heldNamingAvailable else { voices[group.id] = .listen; return }
         voices[group.id] = .working
+        model.heldNamingResult = nil
+        model.cancelHeldNamingPreview()
         await model.nameHeld(group.members, as: name)
-        guard let preview = model.heldNamingPreview else {
+        guard let preview = model.heldNamingPreview, preview.speaker == name else {
             voices[group.id] = .failed(model.addVoiceResult ?? "Could not preview this name.")
             return
         }
@@ -7765,7 +7847,7 @@ struct TodayPulse: View {
         }
         model.heldNamingShowReview = false
         await model.applyHeldNaming()
-        if let result = model.heldNamingResult, result.kind == "applied" {
+        if let result = model.heldNamingResult, result.kind == "applied", result.speaker == name {
             voices[group.id] = .named(name, result.batchId ?? result.undoHandle)
             await model.loadHeldGroups()
         } else if model.heldNamingResult?.kind.contains("listen") == true {
@@ -7780,28 +7862,54 @@ struct TodayPulse: View {
         Set(receipts.filter { $0.workID.hasPrefix("today:") && $0.blocksNewHandoff }.map(\.workID))
     }
 
-    /// Prep me and Return in the Ask box: one Work run each, through TodayRunGuard.
+    /// Prep me and Return in the Ask box: one Work run each, through TodayRunGuard. Refused before anything is recorded
+    /// (Work busy, an earlier run holds the target, no model): not a start, not a breaker failure. The new receipt is
+    /// matched by its own id.
     func startRun(target: String, title: String, prompt: String, context: String, handoff: WorkHandoffStore) async {
         guard !runBusy else { return }
         let guardrail = TodayRunGuard(defaults: .standard)
         let admission = guardrail.admission(target: target, inFlight: Self.inFlightTargets(handoff.receipts),
                                             switchOn: TodayHome.workRunsOn(.standard), now: Date())
-        guard admission == .allowed else { runNote = TodayRunGuard.line(admission) ?? "Starting Work runs from Today is off in Settings."; return }
+        guard admission == .allowed else {
+            runNote = TodayRunGuard.line(admission) ?? "Starting Work runs from Today is off in Settings."
+            todayLog.info("run refused by the guard: \(String(describing: admission), privacy: .public)")
+            return
+        }
+        let holds = handoff.receipts(for: target).contains { WorkChatPreflight.holds($0, continuations: [:]) }
+        if let refusal = TodayRunGuard.preflight(busy: handoff.busy || handoff.quietSend, holds: holds) {
+            runNote = refusal
+            todayLog.info("run not started: work busy=\(handoff.busy || handoff.quietSend) holds=\(holds)")
+            return
+        }
         runBusy = true
         defer { runBusy = false }
         if handoff.models.isEmpty { await handoff.refresh() }
-        let available = handoff.models.filter { $0.available && $0.provider != "cursor" }
-        guard let choice = available.first(where: { $0.provider == "claude" }) ?? available.first else {
+        guard let index = TodayHome.pickRunModel(handoff.models.map { ($0.id, $0.provider, $0.available) }) else {
             runNote = "No model is available for a Work run. Open Work to start one."
             return
         }
-        guardrail.recordStart(now: Date())
+        let id = UUID().uuidString.lowercased()
         let source = WorkSource(id: target, title: title, revision: ActivityHome.dayKey(Date()), project: "today", context: context)
-        await handoff.submit(source: source, mode: .newSession, session: nil, model: choice, prompt: prompt)
-        let receipt = handoff.receipts.first { $0.workID == target }
-        let admitted = handoff.error == nil && receipt != nil && !["refused", "failed"].contains(receipt?.status ?? "")
-        guardrail.recordOutcome(admitted: admitted, now: Date())
-        runNote = admitted ? "Started. It shows in Running." : (handoff.error ?? receipt?.detail ?? "The server did not start it.")
+        await handoff.submit(source: source, mode: .newSession, session: nil, model: handoff.models[index], prompt: prompt, intentID: id)
+        let receipt = handoff.receipts.first { $0.id == id }
+        let outcome = TodayRunGuard.outcome(receiptStatus: receipt?.status, error: handoff.error)
+        let before = guardrail.pausedUntil(now: Date())
+        guardrail.account(outcome, now: Date())
+        if before == nil, guardrail.pausedUntil(now: Date()) != nil { todayLog.error("run breaker opened for 15 minutes") }
+        switch outcome {
+        case .admitted: runNote = "Started. It shows in Running."
+        case .refused(let reason), .notStarted(let reason): runNote = reason
+        }
+        todayLog.info("run outcome: \(String(describing: outcome).prefix(60), privacy: .public) used=\(guardrail.used(now: Date()))")
+    }
+
+    /// A line that clears itself after a few seconds.
+    func flash(_ text: String) {
+        notice = text
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 10_000_000_000)
+            if self?.notice == text { self?.notice = nil }
+        }
     }
 }
 
@@ -7817,6 +7925,7 @@ extension ActivityWindow {
         input.now = now
         input.sessions = todaySessions()
         input.hosts = today.hosts
+        input.hostsRead = today.hostsRead
         input.cursorTrusted = model.petJumpTrusted
         input.workRuns = handoffStore.receipts.compactMap { r in
             guard r.mode == .newSession, r.channel == "job", r.blocksNewHandoff, r.status != "delivered" else { return nil }
@@ -7844,12 +7953,7 @@ extension ActivityWindow {
         return input
     }
 
-    func todayIntakeSplit(now: Date) -> TodayHome.IntakeSplit? {
-        guard model.workIntake.available, model.workIntakeError == nil else { return nil }
-        return TodayHome.intakeSplit(items: model.workIntake.items, tasks: model.workTasks, now: now)
-    }
-
-    func todayNeedInputs(now: Date) -> TodayHome.NeedInputs {
+    func todayNeedInputs(now: Date, split: TodayHome.IntakeSplit?) -> TodayHome.NeedInputs {
         var input = TodayHome.NeedInputs()
         input.now = now
         input.waiting = todaySessions()
@@ -7873,65 +7977,72 @@ extension ActivityWindow {
         input.yourMove = model.workYourMoveAvailable ? model.workYourMove : nil
         input.memoriesToReview = model.status.learningToReview
         input.memoriesTotal = model.toReviewEvents.isEmpty ? nil : model.toReviewEvents.count
-        input.olderToSort = todayIntakeSplit(now: now)?.olderCount
+        input.olderToSort = split?.olderCount
         input.dictationFixes = model.dictation.suggestions.suggestions.count
         return input
     }
 
-    struct TodayFrame {
-        let needs: [TodayHome.NeedRow]
-        let running: [TodayHome.RunRow]
-        let finished: [TodayHome.RunRow]
-        let counts: TodayHome.Counts
-        let split: TodayHome.IntakeSplit?
+    func todaySourceInputs() -> TodayHome.SourceInputs {
+        var input = TodayHome.SourceInputs()
+        input.reachable = model.status.running && today.reachable != false
+        input.sessions = ActivityHome.sourceState(enabled: true, loaded: homeLoads[.sessions], hasData: !model.claudeSessions.isEmpty || !model.petSessions.isEmpty)
+        input.voices = model.heldGroupsError != nil ? .failed : (model.heldGroupsState == nil ? .pending : .answered)
+        input.memories = model.status.learningToReview == nil ? .off : .answered
+        input.work = ActivityHome.sourceState(enabled: workConnectionsEnabled && !isolatedWorkPreview, loaded: homeLoads[.work], hasData: !model.workTasks.isEmpty)
+        input.intakeFailed = model.workIntakeError != nil && model.workIntakeError != today.lastResolveError
+        return input
     }
 
-    func todayFrame(now: Date) -> TodayFrame {
-        let runInput = todayRunInputs(now: now)
-        // Server not reachable (section 7): Needs you shows this Mac's sessions only; voices, memories and Work are on the server.
-        let reachable = model.status.running && today.reachable != false
-        let needs = TodayHome.things(todayNeedInputs(now: now)).filter { reachable || $0.kind == .session }
-        let running = TodayHome.inFlight(runInput)
-        let finished = TodayHome.finishedRows(runInput)
-        let split = todayIntakeSplit(now: now)
-        var c = TodayHome.counts(needs: needs, running: running, finished: finished)
-        c.voicesToName = model.heldGroupsState == nil ? nil : needs.filter { $0.kind == .voice || $0.kind == .meetingVoices }.count
-        c.memoriesToReview = model.status.learningToReview
-        c.memoriesTotal = model.toReviewEvents.isEmpty ? nil : model.toReviewEvents.count
-        c.oldestReview = model.toReviewEvents.compactMap { ActivityHome.stamp($0.ts) }.min()
-        c.workNeedsYou = model.workYourMoveAvailable ? needs.filter { $0.kind == .work }.count : nil
-        c.olderToSort = split?.olderCount
-        c.todaySuggestions = split?.todayCount
-        c.meetingsReady = reviewStore.available ? reviewStore.reviews.filter { $0.status == "ready" }.count : nil
+    func todayCardFacts(now: Date) -> TodayHome.CardFacts {
+        var facts = TodayHome.CardFacts()
+        facts.memoriesToReview = model.status.learningToReview
+        facts.memoriesTotal = model.toReviewEvents.isEmpty ? nil : model.toReviewEvents.count
+        facts.oldestReview = model.toReviewEvents.compactMap { ActivityHome.stamp($0.ts) }.min()
+        facts.meetingsReady = reviewStore.available ? reviewStore.reviews.filter { $0.status == "ready" }.count : nil
         let todayKey = ActivityHome.dayKey(now)
-        if let latest = model.libraryMeetings.filter({ TodayHome.meetingDay($0.filename) == todayKey }).last {
-            c.latestMeetingToday = latest.title
-        }
-        c.threadsActive = model.status.threadsAvailable == true ? model.status.activeThreadCount : nil
-        c.newestThread = model.threadRecords.filter { !$0.isResolved }.max { $0.createdAt < $1.createdAt }?.title
-        c.dictationLast = model.dictation.recent.first?.createdAt
-        c.dictationFixes = model.dictation.suggestions.suggestions.count
-        c.nextEvent = today.nextEvent.flatMap { $0.start.timeIntervalSince(now) > -3600 ? $0 : nil }
-        c.calendarRead = today.calendarRead
-        c.morningBrief = model.morningBrief?.runs.filter { $0.status == "completed" }.compactMap { ActivityHome.stamp($0.firedAt) }.max()
-        c.lastMessage = model.recentMessages.compactMap { $0.timestamp }.max().map { Date(timeIntervalSince1970: $0) }
-        return TodayFrame(needs: needs, running: running, finished: finished, counts: c, split: split)
+        facts.latestMeetingToday = model.libraryMeetings.filter { TodayHome.meetingDay($0.filename) == todayKey }.last?.title
+        facts.threadsActive = model.status.threadsAvailable == true ? model.status.activeThreadCount : nil
+        facts.newestThread = model.threadRecords.filter { !$0.isResolved }.max { $0.createdAt < $1.createdAt }?.title
+        facts.dictationLast = model.dictation.recent.first?.createdAt
+        facts.dictationFixes = model.dictation.suggestions.suggestions.count
+        facts.calendarRead = today.calendarRead
+        facts.morningBrief = model.morningBrief?.runs.filter { $0.status == "completed" }.compactMap { ActivityHome.stamp($0.firedAt) }.max()
+        facts.lastMessage = model.recentMessages.compactMap { $0.timestamp }.max().map { Date(timeIntervalSince1970: $0) }
+        facts.voicesLoaded = model.heldGroupsState != nil
+        facts.yourMoveLoaded = model.workYourMoveAvailable
+        return facts
     }
 
-    func todaySourceStates() -> [TodayHome.Source: ActivityHome.SourceState] {
-        let sessions = ActivityHome.sourceState(enabled: true, loaded: homeLoads[.sessions], hasData: !model.claudeSessions.isEmpty || !model.petSessions.isEmpty)
-        let voices: ActivityHome.SourceState = model.heldGroupsError != nil ? .failed : (model.heldGroupsState == nil ? .pending : .answered)
-        let memories: ActivityHome.SourceState = model.status.learningToReview == nil ? .off : .answered
-        let work = ActivityHome.sourceState(enabled: workConnectionsEnabled && !isolatedWorkPreview, loaded: homeLoads[.work], hasData: !model.workTasks.isEmpty)
-        return [.sessions: sessions, .voices: voices, .memories: memories, .work: work, .dictation: .answered]
+    func todayIntakeSplit(now: Date) -> TodayHome.IntakeSplit? {
+        guard model.workIntake.available else { return nil }
+        return TodayHome.intakeSplit(items: model.workIntake.items, tasks: model.workTasks, now: now)
+    }
+
+    /// The one frame the rail, the home and every count read (TodayHome.compose).
+    func todayFrame(now: Date) -> TodayHome.Frame {
+        var input = TodayHome.HomeInputs()
+        input.split = todayIntakeSplit(now: now)
+        input.run = todayRunInputs(now: now)
+        input.need = todayNeedInputs(now: now, split: input.split)
+        input.sources = todaySourceInputs()
+        input.facts = todayCardFacts(now: now)
+        return TodayHome.compose(input)
     }
 
     // MARK: Today: opening things
 
     func todayOpen(_ action: TodayHome.OpenAction) {
+        model.platformOpenNotice = nil
         switch action {
         case .platform(let id):
-            if let session = model.petSession(id: id) { model.openSessionInPlatform(session) } else { select(.sessions) }
+            if let session = model.petSession(id: id) {
+                model.openSessionInPlatform(session)
+                Task { try? await Task.sleep(nanoseconds: 10_000_000_000); if !model.platformOpening { model.platformOpenNotice = nil } }
+            } else {
+                todayLog.info("open fell back to Sessions: the session is not listed any more")
+                today.flash("That session is not open any more. In Sessions")
+                select(.sessions)
+            }
         case .inSessions(let id):
             select(.sessions)
             if let id, let row = model.claudeSessions.first(where: { ClaudeSession.sameSession($0.id, id) }) ?? model.petSession(id: id) {
@@ -7947,6 +8058,7 @@ extension ActivityWindow {
         case .messages(let number):
             select(.messages)
             if let number, let turn = model.recentMessages.first(where: { $0.no == number }) { selectedTurnID = turn.id }
+            else if number != nil { todayLog.info("open fell back to Messages: the conversation is not loaded yet") }
         }
     }
 
@@ -7954,7 +8066,10 @@ extension ActivityWindow {
         switch row.kind {
         case .session:
             guard let session = row.session else { return }
-            if session.provider == "cursor", !model.petJumpTrusted { todayOpen(.inSessions(session.id)) } else { model.openSessionInPlatform(session) }
+            if session.provider == "cursor", !model.petJumpTrusted {
+                todayLog.info("open fell back to Sessions: Cursor needs Accessibility")
+                todayOpen(.inSessions(session.id))
+            } else { model.openSessionInPlatform(session) }
         case .voice:
             select(.speakers)
             speakerSubview = .samples
@@ -7979,6 +8094,12 @@ extension ActivityWindow {
         }
     }
 
+    /// A suggestion that matches a card opens Work filtered to that card.
+    func todayOpenCard(_ title: String) {
+        select(.work)
+        workWorkspaceState.query = title
+    }
+
     // MARK: Today: the frame (rail on every tab, D1)
 
     @ViewBuilder
@@ -7986,7 +8107,7 @@ extension ActivityWindow {
         GeometryReader { geometry in
             let width = geometry.size.width
             let mode = TodayHome.railMode(windowWidth: width)
-            TimelineView(.periodic(from: .now, by: 60)) { timeline in
+            TimelineView(.periodic(from: .now, by: 30)) { timeline in
                 let frame = todayFrame(now: timeline.date)
                 HStack(spacing: 0) {
                     todayRail(mode: mode, frame: frame, now: timeline.date)
@@ -7998,40 +8119,61 @@ extension ActivityWindow {
                     }
                     .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity, alignment: .top)
                 }
+                .onChange(of: ActivityHome.dayKey(timeline.date)) { _, _ in todayResetExpansions() }
             }
         }
         .background(TodayInk.page)
+        .background(TodayWindowWatcher { visible in if today.windowVisible != visible { today.windowVisible = visible } }.frame(width: 0, height: 0))
         .task(id: todayEnabled) { await todayTickLoop() }
+        .onAppear { todayResetExpansions() }
         .background {
-            // ⌘K focuses the Ask box from any tab; ⌘0 goes to Today.
+            // ⌘K focuses the Ask box from any tab.
             Button("") { goHome(); DispatchQueue.main.async { todayAskFocused = true } }
                 .keyboardShortcut("k", modifiers: .command).opacity(0).frame(width: 0, height: 0).accessibilityHidden(true)
         }
     }
 
-    /// The one 60 s home tick: only while this window is on screen and not minimized, its loads serial, gone when the
-    /// window closes. Voices and memories load on open and after an action, never here; session questions are never polled.
-    func todayTickLoop() async {
-        guard todayEnabled, Self.allowsLiveSectionLoads(isolatedWorkPreview: isolatedWorkPreview, backgroundWorkEnabled: model.activityLoadsEnabled) else { return }
-        await todayOpenLoads()
-        while !Task.isCancelled {
-            if model.liveTranscriptWindowOnScreen { await today.tick(model: model) }
-            try? await Task.sleep(nanoseconds: TodayHomeStore.tickSeconds * 1_000_000_000)
-        }
+    /// A new day or a reopened window starts folded again.
+    func todayResetExpansions() {
+        todayShowAll = false
+        todayShowTomorrow = false
+        todayNextIndex = 0
     }
 
-    /// On open: the voices, Work's your move, the review list and Work's runs (models), once.
+    /// The home's tick (TodayTickLoop): only while this window is on screen, first after the window's opening loads, gone
+    /// when the window goes. Voices and memories load on open and after an action, never on the tick; session questions are
+    /// never polled.
+    func todayTickLoop() async {
+        guard todayEnabled, Self.allowsLiveSectionLoads(isolatedWorkPreview: isolatedWorkPreview, backgroundWorkEnabled: model.activityLoadsEnabled) else { return }
+        await TodayTickLoop.run(now: { Date() }, visible: { today.windowVisible }, ready: { today.overviewDone }, tick: { await todayTick() },
+                                wait: { seconds in
+                                    try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                                    return !Task.isCancelled
+                                })
+    }
+
+    func todayTick() async {
+        if !today.openLoadsDone {
+            today.openLoadsDone = true
+            await todayOpenLoads()
+        }
+        // With the pet off nothing else refreshes the session list (the classic home's refreshHomeSessions, here on the tick).
+        if !model.petEnabled { await model.loadClaudeSessions() }
+        await today.tick(model: model)
+    }
+
+    /// Once, after loadOverviewIfNeeded: what it does not already read (voices, Work's your move, Work's runs and models, the
+    /// morning brief).
     func todayOpenLoads() async {
         await model.loadHeldGroups()
         await model.loadYourMove()
-        if workConnectionsEnabled { await handoffStore.refresh(); await reviewStore.refresh() }
-        if (model.status.learningToReview ?? 0) > 0, model.toReviewEvents.isEmpty { await model.loadToReviewEvents() }
+        if workConnectionsEnabled { await handoffStore.refresh() }
         if model.morningBrief == nil { await model.loadMorningBrief(quiet: true) }
     }
 
     // MARK: Rail
 
-    func todayRail(mode: TodayHome.RailMode, frame: TodayFrame, now: Date) -> some View {
+    func todayRail(mode: TodayHome.RailMode, frame: TodayHome.Frame, now: Date) -> some View {
         let items: [(key: String, section: ActivitySection?, name: String)] = [("today", nil, "Today")]
             + ActivitySection.allCases.map { ($0.rawValue, $0, $0.title) }
         return VStack(alignment: mode == .full ? .leading : .center, spacing: mode == .full ? 4 : 6) {
@@ -8055,8 +8197,13 @@ extension ActivityWindow {
                 if mode == .full {
                     Button("Settings", action: openActivitySettings).buttonStyle(TodayLinkStyle(color: TodayInk.sub, size: 13))
                         .disabled(isolatedWorkPreview)
+                } else {
+                    Button(action: openActivitySettings) {
+                        Image(systemName: "gearshape").font(.system(size: 15, weight: .medium)).foregroundStyle(TodayInk.sub).frame(width: 40, height: 32)
+                    }
+                    .buttonStyle(.plain).disabled(isolatedWorkPreview).help("Settings").accessibilityLabel("Settings")
                 }
-                todayServerLine(mode: mode)
+                todayServerLine(mode: mode, reachable: frame.reachable)
             }
             .padding(mode == .full ? EdgeInsets(top: 18, leading: 12, bottom: 4, trailing: 12) : EdgeInsets(top: 0, leading: 0, bottom: 4, trailing: 0))
         }
@@ -8075,12 +8222,11 @@ extension ActivityWindow {
         .accessibilityLabel("COS sections")
     }
 
-    func todayServerLine(mode: TodayHome.RailMode) -> some View {
-        let connected = model.status.running && today.reachable != false
-        let words = isolatedWorkPreview ? "Isolated Work preview" : (connected ? "Server connected" : "Server not reachable")
+    func todayServerLine(mode: TodayHome.RailMode, reachable: Bool) -> some View {
+        let words = isolatedWorkPreview ? "Isolated Work preview" : (reachable ? "Server connected" : "Server not reachable")
         return HStack(spacing: 8) {
-            Circle().fill(connected ? TodayInk.ok : TodayInk.hot).frame(width: 8, height: 8)
-            if mode == .full { Text(words).font(COSType.mono(11.5, weight: .medium)).foregroundStyle(connected ? TodayInk.ok : TodayInk.hot) }
+            Circle().fill(reachable ? TodayInk.ok : TodayInk.hot).frame(width: 8, height: 8)
+            if mode == .full { Text(words).font(COSType.mono(11.5, weight: .medium)).foregroundStyle(reachable ? TodayInk.ok : TodayInk.hot) }
         }
         .help(words)
         .accessibilityElement(children: .ignore)
@@ -8099,7 +8245,7 @@ extension ActivityWindow {
             }
         }
         .frame(width: 18, height: 18)
-        return Button {
+        let button = Button {
             if let item { select(item) } else { goHome() }
         } label: {
             Group {
@@ -8132,23 +8278,27 @@ extension ActivityWindow {
             .contentShape(RoundedRectangle(cornerRadius: 10))
         }
         .buttonStyle(.plain)
-        .keyboardShortcut(KeyEquivalent(Character(String(index))), modifiers: .command)
         .help(label)
         .accessibilityLabel(label)
         .accessibilityAddTraits(active ? .isSelected : [])
+        // ⌘0 Today, then ⌘1 to ⌘9; a tenth item gets none (a key equivalent takes one character).
+        return Group {
+            if index <= 9 { button.keyboardShortcut(KeyEquivalent(Character(String(index))), modifiers: .command) } else { button }
+        }
     }
 
     // MARK: Home
 
-    func todayHomeView(_ frame: TodayFrame, width: CGFloat, now: Date) -> some View {
+    func todayHomeView(_ frame: TodayHome.Frame, width: CGFloat, now: Date) -> some View {
         let pad = TodayHome.padding(windowWidth: width)
-        let content = TodayHome.mainContentWidth(windowWidth: width)
         let wide = TodayHome.twoColumns(windowWidth: width)
+        let columns = TodayHome.columns(windowWidth: width)
         let cap = TodayHome.runningCap(windowWidth: width)
         let run = TodayHome.runningView(inFlight: frame.running, finished: frame.finished, cap: cap)
+        let compactOpen = wide ? columns.right < TodayHome.runOpenWordsWidth : false
         return ScrollView {
             VStack(alignment: .leading, spacing: wide ? 26 : 20) {
-                todayHeader(now: now, content: content)
+                todayHeader(now: now)
                 Text(TodayHome.brief(frame.counts))
                     .font(COSType.display(wide ? 25 : 22))
                     .lineSpacing(wide ? 8 : 6)
@@ -8161,19 +8311,18 @@ extension ActivityWindow {
                 }
                 .frame(maxWidth: 560, alignment: .leading)
                 if wide {
-                    let right = (content - 28) / 2.6
                     HStack(alignment: .top, spacing: 28) {
-                        todayNeedsPanel(frame, now: now).frame(width: content - 28 - right)
+                        todayNeedsPanel(frame, now: now).frame(width: columns.left)
                         VStack(alignment: .leading, spacing: 16) {
-                            todayRunningPanel(run)
+                            todayRunningPanel(run, compactOpen: compactOpen)
                             todayNextUp(frame, now: now)
                             todayMeetingsPanel(frame.split)
                         }
-                        .frame(width: right)
+                        .frame(width: columns.right)
                     }
                 } else {
                     VStack(alignment: .leading, spacing: 16) {
-                        todayRunningPanel(run)
+                        todayRunningPanel(run, compactOpen: false)
                         todayNeedsPanel(frame, now: now)
                         todayNextUp(frame, now: now)
                         todayMeetingsPanel(frame.split)
@@ -8187,7 +8336,7 @@ extension ActivityWindow {
         .background(TodayInk.page)
     }
 
-    func todayHeader(now: Date, content: CGFloat) -> some View {
+    func todayHeader(now: Date) -> some View {
         let title = HStack(alignment: .firstTextBaseline, spacing: 14) {
             Text("Today").font(COSType.display(40, weight: .medium)).kerning(-0.5).foregroundStyle(TodayInk.ink)
                 .accessibilityAddTraits(.isHeader)
@@ -8196,24 +8345,26 @@ extension ActivityWindow {
         let short = Text("Today").font(COSType.display(40, weight: .medium)).kerning(-0.5).foregroundStyle(TodayInk.ink)
             .accessibilityAddTraits(.isHeader).help(TodayHome.headerDate(now))
         return ViewThatFits(in: .horizontal) {
-            HStack(alignment: .center, spacing: 18) { title; Spacer(minLength: 12); todayAskBox.frame(minWidth: 320, maxWidth: 460) }
-            HStack(alignment: .center, spacing: 18) { short; Spacer(minLength: 12); todayAskBox.frame(minWidth: 320, maxWidth: 520) }
+            HStack(alignment: .center, spacing: 18) { title; Spacer(minLength: 12); todayAskBox.frame(minWidth: 340, maxWidth: 460) }
+            HStack(alignment: .center, spacing: 18) { short; Spacer(minLength: 12); todayAskBox.frame(minWidth: 340, maxWidth: 520) }
             VStack(alignment: .leading, spacing: 14) { title; todayAskBox.frame(maxWidth: 520) }
         }
     }
 
     var todayAskBox: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        let runs = TodayHome.workRunsOn(.standard)
+        return VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 10) {
-                Image(systemName: "magnifyingglass").font(.system(size: 14, weight: .medium)).foregroundStyle(TodayInk.grey).accessibilityHidden(true)
-                TextField("Ask COS or capture a task", text: $todayAsk)
+                Image(systemName: runs ? "sparkle" : "tray.and.arrow.down").font(.system(size: 14, weight: .medium)).foregroundStyle(TodayInk.grey).accessibilityHidden(true)
+                TextField(runs ? "Ask COS. Return starts a run, Option-Return files a task" : "Capture a task. Return files it to Work", text: $todayAsk)
                     .textFieldStyle(.plain)
-                    .font(COSType.body(14.5))
+                    .font(COSType.body(14))
                     .foregroundStyle(TodayInk.ink)
                     .focused($todayAskFocused)
                     .onSubmit { todaySubmitAsk(file: NSEvent.modifierFlags.contains(.option)) }
+                    .disabled(today.runBusy || today.captureBusy)
                     .accessibilityLabel("Ask COS")
-                    .accessibilityHint(TodayHome.workRunsOn(.standard) ? "Return asks COS as a Work run. Option Return files it to the Work inbox." : "Return files it to the Work inbox.")
+                    .accessibilityHint(runs ? "Return starts one Work run on the server. Option Return files your words to the Work inbox." : "Return files your words to the Work inbox.")
                 Text("⌘K").font(COSType.mono(11, weight: .medium)).foregroundStyle(TodayInk.grey)
                     .padding(.horizontal, 6).padding(.vertical, 2)
                     .overlay(RoundedRectangle(cornerRadius: 6).stroke(TodayInk.kbdBorder, lineWidth: 1))
@@ -8232,9 +8383,11 @@ extension ActivityWindow {
     /// Return: one Work run (switch on, through the cap and the breaker). Option Return, or the switch off: the Work inbox.
     func todaySubmitAsk(file: Bool) {
         let text = todayAsk.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, !today.runBusy else { return }
+        guard !text.isEmpty, !today.runBusy, !today.captureBusy else { return }
         if file || !TodayHome.workRunsOn(.standard) {
+            today.captureBusy = true
             Task {
+                defer { today.captureBusy = false }
                 do {
                     try await model.captureTask(domain: taskDomain, text: text)
                     todayAsk = ""
@@ -8253,14 +8406,13 @@ extension ActivityWindow {
 
     // MARK: Needs you
 
-    func todayNeedsPanel(_ frame: TodayFrame, now: Date) -> some View {
-        let states = todaySourceStates()
-        let line = TodayHome.needsLine(rows: frame.needs.count, states: states)
+    func todayNeedsPanel(_ frame: TodayHome.Frame, now: Date) -> some View {
+        let states = frame.states
+        let line = frame.line
         let quiet = TodayHome.isQuiet(now: now, enabled: TodayHome.quietHoursOn(.standard))
         let folded = TodayHome.fold(frame.needs, quiet: quiet && !todayShowTomorrow)
         let visible = todayShowAll ? folded.now : Array(folded.now.prefix(TodayHome.needsShown))
         let hidden = Array(folded.now.dropFirst(visible.count))
-        let reachable = model.status.running && today.reachable != false
         return VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .center) {
                 HStack(alignment: .firstTextBaseline, spacing: 7) {
@@ -8269,15 +8421,16 @@ extension ActivityWindow {
                 }
                 .accessibilityElement(children: .combine).accessibilityAddTraits(.isHeader)
                 Spacer()
-                if line == .rows {
+                if line == .rows, !folded.now.isEmpty {
                     Button {
-                        guard !frame.needs.isEmpty else { return }
-                        let index = todayNextIndex % frame.needs.count
+                        // Next walks the rows Needs you shows, never the folded ones.
+                        let rows = folded.now
+                        let index = todayNextIndex % rows.count
                         todayNextIndex = index + 1
-                        todayOpenNeed(frame.needs[index])
+                        todayOpenNeed(rows[index])
                     } label: {
                         HStack(spacing: 8) {
-                            Text(frame.needs.count == 1 ? "Open" : "Next")
+                            Text(folded.now.count == 1 ? "Open" : "Next")
                             Text("⌘]").font(COSType.mono(11, weight: .medium)).foregroundStyle(TodayInk.grey)
                         }
                     }
@@ -8293,7 +8446,7 @@ extension ActivityWindow {
                     todayNeedRow(row, open: index == 0, now: now)
                 }
                 if !hidden.isEmpty {
-                    Button("Show \(hidden.count) more: " + hidden.map(TodayHome.shortLabel).joined(separator: ", ")) { todayShowAll = true }
+                    Button(TodayHome.showMoreLabel(hidden)) { todayShowAll = true }
                         .buttonStyle(TodayLinkStyle())
                         .padding(.horizontal, 18).padding(.vertical, 14)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -8305,12 +8458,14 @@ extension ActivityWindow {
                         .padding(.horizontal, 18).padding(.vertical, 14)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .overlay(alignment: .top) { Rectangle().fill(TodayInk.rowBorder).frame(height: 1) }
-                        .help("Quiet hours: after 6 PM and on weekends. Session questions never fold.")
+                        .help("Quiet hours: after 6 PM, before 6 AM and on weekends. Session questions never fold.")
                 }
             case .caughtUp:
                 VStack(alignment: .leading, spacing: 6) {
                     Text(TodayHome.caughtUpLine).font(COSType.display(20)).foregroundStyle(TodayInk.ink)
-                    Text(TodayHome.checkedLine(today.checkedAt ?? now, states: states)).font(COSType.body(12)).foregroundStyle(TodayInk.grey)
+                    if let checked = today.checkedAt {
+                        Text(TodayHome.checkedLine(checked, states: states)).font(COSType.body(12)).foregroundStyle(TodayInk.grey)
+                    }
                 }
                 .padding(.horizontal, 18).padding(.bottom, 18)
             case .loading:
@@ -8319,7 +8474,7 @@ extension ActivityWindow {
                         .padding(.horizontal, 18).padding(.bottom, 18)
                 }
             }
-            if !reachable {
+            if !frame.reachable {
                 todayRetryLine(TodayHome.unreachableLine)
             } else {
                 ForEach(TodayHome.failed(states), id: \.self) { source in todayRetryLine(TodayHome.failureLine(source)) }
@@ -8333,11 +8488,22 @@ extension ActivityWindow {
     }
 
     func todayRetryLine(_ text: String) -> some View {
-        Button(text) { Task { await model.refresh(quiet: true); await todayOpenLoads(); await today.tick(model: model) } }
-            .buttonStyle(TodayLinkStyle(color: TodayInk.hot, size: 13))
-            .padding(.horizontal, 18).padding(.vertical, 12)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .overlay(alignment: .top) { Rectangle().fill(TodayInk.rowBorder).frame(height: 1) }
+        Button(text) {
+            guard !todayRetrying else { return }
+            todayRetrying = true
+            Task {
+                defer { todayRetrying = false }
+                await model.refresh(quiet: true)
+                await model.loadHeldGroups()
+                await model.loadWorkIntake()
+                await today.tick(model: model)
+            }
+        }
+        .buttonStyle(TodayLinkStyle(color: TodayInk.hot, size: 13))
+        .disabled(todayRetrying)
+        .padding(.horizontal, 18).padding(.vertical, 12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .overlay(alignment: .top) { Rectangle().fill(TodayInk.rowBorder).frame(height: 1) }
     }
 
     func todayNeedRow(_ row: TodayHome.NeedRow, open: Bool, now: Date) -> some View {
@@ -8393,7 +8559,7 @@ extension ActivityWindow {
                         if let batch { Button("Undo") { heldNamingUndoHandle = batch }.buttonStyle(TodayLinkStyle()) }
                     case .failed(let reason)?:
                         Text(reason).font(COSType.body(12.5)).foregroundStyle(TodayInk.hot).lineLimit(2)
-                        Button("Try again") { today.voices[group.id] = nil }.buttonStyle(TodayLinkStyle())
+                        Button("Try again") { today.voices[group.id] = nil }.buttonStyle(TodayLinkStyle()).disabled(model.addVoiceBusy)
                     case nil:
                         if let name = group.suggestionName.flatMap(TodayHome.guarded) {
                             Button("Yes, " + name) { Task { await today.nameVoice(group, as: name, model: model) } }
@@ -8418,7 +8584,7 @@ extension ActivityWindow {
 
     // MARK: Running
 
-    func todayRunningPanel(_ run: TodayHome.RunningView) -> some View {
+    func todayRunningPanel(_ run: TodayHome.RunningView, compactOpen: Bool) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .firstTextBaseline) {
                 HStack(alignment: .firstTextBaseline, spacing: 7) {
@@ -8441,21 +8607,21 @@ extension ActivityWindow {
                     Text("Nothing is running.").font(COSType.body(13.5)).foregroundStyle(TodayInk.runSub).padding(.top, 4).padding(.bottom, 10)
                 }
             }
-            ForEach(run.shown) { row in todayRunRow(row) }
+            ForEach(run.shown) { row in todayRunRow(row, compactOpen: compactOpen) }
             if !run.finished.isEmpty {
                 Text("Finished in the last hour").font(COSType.body(12)).foregroundStyle(TodayInk.runSub)
                     .padding(.top, 8).padding(.bottom, 2)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .overlay(alignment: .top) { Rectangle().fill(TodayInk.runLine).frame(height: 1) }
-                ForEach(Array(run.finished.enumerated()), id: \.element.id) { index, row in todayRunRow(row, rule: index > 0) }
+                ForEach(Array(run.finished.enumerated()), id: \.element.id) { index, row in todayRunRow(row, compactOpen: compactOpen, rule: index > 0) }
             }
             if let more = run.moreLabel {
-                Button(more) { select(.sessions) }.buttonStyle(TodayLinkStyle(color: TodayInk.runOpen, size: 13))
+                Button(more + ". All sessions") { select(.sessions) }.buttonStyle(TodayLinkStyle(color: TodayInk.runOpen, size: 13))
                     .padding(.vertical, 10)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .overlay(alignment: .top) { Rectangle().fill(TodayInk.runLine).frame(height: 1) }
             }
-            if let notice = model.platformOpenNotice, !notice.isEmpty, !model.platformOpening {
+            if let notice = today.notice ?? (model.platformOpening ? nil : model.platformOpenNotice), !notice.isEmpty {
                 Text(notice).font(COSType.body(12)).foregroundStyle(TodayInk.runSub).padding(.vertical, 6).lineLimit(2)
             }
         }
@@ -8466,7 +8632,7 @@ extension ActivityWindow {
         .accessibilityLabel("Running")
     }
 
-    func todayRunRow(_ row: TodayHome.RunRow, rule: Bool = true) -> some View {
+    func todayRunRow(_ row: TodayHome.RunRow, compactOpen: Bool, rule: Bool = true) -> some View {
         let colors = TodayInk.badge(row.platform)
         return HStack(alignment: .top, spacing: 12) {
             Text(row.platform.badge)
@@ -8478,18 +8644,20 @@ extension ActivityWindow {
                 .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).stroke(row.finished ? TodayInk.runSub : Color.clear, lineWidth: 1))
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 8) {
-                    if row.working { TodayPulse(reduceMotion: reduceMotion) }
+                    if row.working { TodayPulse() }
                     Text(row.title).font(COSType.body(14, weight: row.finished ? .medium : .semibold))
                         .foregroundStyle(row.finished ? TodayInk.runSub : TodayInk.runTitle).lineLimit(1).truncationMode(.tail)
                 }
-                Text(row.detail).font(COSType.body(12.5)).foregroundStyle(TodayInk.runSub).lineLimit(1)
+                Text(row.detail).font(COSType.body(12.5)).foregroundStyle(TodayInk.runSub).lineLimit(2).fixedSize(horizontal: false, vertical: true)
                 if let note = row.note { Text(note).font(COSType.body(12)).foregroundStyle(TodayInk.runOpen).lineLimit(2) }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            Button(row.openLabel) { todayOpen(row.open) }
+            .layoutPriority(1)
+            Button(compactOpen ? "Open" : row.openLabel) { todayOpen(row.open) }
                 .buttonStyle(TodayLinkStyle(color: TodayInk.runOpen, size: 12.5))
                 .fixedSize()
                 .padding(.top, 8)
+                .help(row.openLabel)
                 .disabled(model.platformOpening)
         }
         .padding(.vertical, 12)
@@ -8504,12 +8672,14 @@ extension ActivityWindow {
     // MARK: Next up, From today's meetings
 
     @ViewBuilder
-    func todayNextUp(_ frame: TodayFrame, now: Date) -> some View {
-        // welcome-context missing (an older server, or no calendar) hides Next up; no error text for a missing feature.
-        if today.calendarRead {
+    func todayNextUp(_ frame: TodayHome.Frame, now: Date) -> some View {
+        // welcome-context missing (an older server) hides Next up; "Nothing else on your calendar today" only when the
+        // server said it read the calendar. No error text for a missing feature.
+        let event = frame.counts.nextEvent
+        if today.calendarAvailable && (event != nil || frame.counts.calendarRead) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Next up").font(COSType.body(17, weight: .semibold)).foregroundStyle(TodayInk.ink).accessibilityAddTraits(.isHeader)
-                if let event = frame.counts.nextEvent {
+                if let event {
                     let target = "today:prep:" + ActivityHome.dayKey(now) + ":" + event.title
                     let admission = TodayRunGuard(defaults: .standard).admission(target: target, inFlight: TodayHomeStore.inFlightTargets(handoffStore.receipts),
                                                                                switchOn: TodayHome.workRunsOn(.standard), now: now)
@@ -8541,7 +8711,8 @@ extension ActivityWindow {
     @ViewBuilder
     func todayPrepButtons(_ event: TodayHome.NextEvent, target: String, admission: TodayRunGuard.Admission) -> some View {
         HStack(spacing: 8) {
-            if admission == .allowed {
+            switch admission {
+            case .allowed:
                 Button("Prep me") {
                     let when = TodayHome.clock(event.start)
                     Task {
@@ -8551,8 +8722,12 @@ extension ActivityWindow {
                     }
                 }
                 .buttonStyle(TodayButtonStyle(primary: true, small: true)).disabled(today.runBusy)
-            } else if let line = TodayRunGuard.line(admission) {
-                Text(line).font(COSType.body(12.5)).foregroundStyle(TodayInk.sub).lineLimit(2)
+            case .inFlight:
+                Button("Prep in Sessions") { todayOpen(.workRun("")) }.buttonStyle(TodayLinkStyle(size: 13))
+            case .switchOff:
+                EmptyView()
+            default:
+                if let line = TodayRunGuard.line(admission) { Text(line).font(COSType.body(12.5)).foregroundStyle(TodayInk.sub).lineLimit(2) }
             }
             Button("Open meeting") { select(.meetings) }.buttonStyle(TodayLinkStyle(size: 13))
         }
@@ -8600,7 +8775,8 @@ extension ActivityWindow {
     }
 
     func todaySuggestionRow(_ item: WorkIntakeItem) -> some View {
-        let state = today.intake[item.id]
+        let state = TodayHome.suggestionState(item.id, busy: model.workIntakeBusyIDs, created: today.created, failures: today.failures)
+        let action = TodayHome.suggestionAction(item, cardCreation: model.workIntake.cardCreation)
         let owner = item.ownerIsMiles ? "Yours, from " : ((item.owner.flatMap(TodayHome.guarded)).map { "\($0)'s, from " } ?? "From ")
         let source = item.kind == .link
             ? "Matches the Work card " + (item.pullTitle ?? item.text) + ", from " + item.meeting.title
@@ -8610,22 +8786,26 @@ extension ActivityWindow {
             Text(source).font(COSType.body(12.5)).foregroundStyle(TodayInk.suggSrc).fixedSize(horizontal: false, vertical: true)
             HStack(spacing: 6) {
                 switch state {
-                case .creating?:
+                case .creating:
                     ProgressView().controlSize(.small); Text("Creating").font(COSType.body(12.5)).foregroundStyle(TodayInk.sub)
-                case .created?:
+                case .created:
                     Text("Created.").font(COSType.body(12.5)).foregroundStyle(TodayInk.ink)
-                    Button("Open card") { select(.work) }.buttonStyle(TodayLinkStyle(size: 12.5))
-                case .failed(let reason)?:
+                    Button("Open card") { todayOpenCard(item.text) }.buttonStyle(TodayLinkStyle(size: 12.5))
+                case .failed(let reason):
                     Text(reason).font(COSType.body(12.5)).foregroundStyle(TodayInk.hot).lineLimit(3).fixedSize(horizontal: false, vertical: true)
-                    Button("Try again") { Task { await today.createTask(item, model: model) } }.buttonStyle(TodayLinkStyle(size: 12.5)).disabled(today.intakeBusy)
-                case nil:
-                    if item.kind == .link {
-                        Button("Open card") { select(.work) }.buttonStyle(TodayButtonStyle(small: true))
-                    } else {
+                    Button("Try again") { Task { await today.createTask(item, model: model) } }.buttonStyle(TodayLinkStyle(size: 12.5))
+                        .disabled(!model.workIntakeBusyIDs.isEmpty)
+                case .ready:
+                    switch action {
+                    case .openCard(let title):
+                        Button("Open card") { todayOpenCard(title) }.buttonStyle(TodayButtonStyle(small: true))
+                    case .createTask:
                         Button("Create task") { Task { await today.createTask(item, model: model) } }
                             .buttonStyle(TodayButtonStyle(primary: true, small: true))
-                            .disabled(today.intakeBusy || !model.workIntake.cardCreation)
+                            .disabled(!model.workIntakeBusyIDs.isEmpty)
                         Button("Open in Work") { select(.work) }.buttonStyle(TodayLinkStyle(size: 12.5)).padding(.leading, 6)
+                    case .unavailable:
+                        Button("Open in Work") { select(.work) }.buttonStyle(TodayLinkStyle(size: 12.5))
                     }
                 }
             }
