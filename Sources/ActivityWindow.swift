@@ -7888,7 +7888,9 @@ extension ActivityWindow {
 
     func todayFrame(now: Date) -> TodayFrame {
         let runInput = todayRunInputs(now: now)
-        let needs = TodayHome.things(todayNeedInputs(now: now))
+        // Server not reachable (section 7): Needs you shows this Mac's sessions only; voices, memories and Work are on the server.
+        let reachable = model.status.running && today.reachable != false
+        let needs = TodayHome.things(todayNeedInputs(now: now)).filter { reachable || $0.kind == .session }
         let running = TodayHome.inFlight(runInput)
         let finished = TodayHome.finishedRows(runInput)
         let split = todayIntakeSplit(now: now)
@@ -8429,7 +8431,7 @@ extension ActivityWindow {
             }
             .padding(.bottom, 6)
             if run.shown.isEmpty && run.finished.isEmpty {
-                if !model.claudeSessionsEnabled && model.claudeSessionsReason.isEmpty == false || (!model.claudeSessionsEnabled && model.claudeSessions.isEmpty) {
+                if !model.claudeSessionsEnabled {
                     HStack(spacing: 10) {
                         Text("Turn on session tracking to see agents here").font(COSType.body(13.5)).foregroundStyle(TodayInk.runSub)
                         Button("Turn on") { model.setClaudeSessionsEnabled(true) }.buttonStyle(TodayLinkStyle(color: TodayInk.runOpen, size: 13))
