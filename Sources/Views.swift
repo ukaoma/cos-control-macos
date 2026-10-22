@@ -493,6 +493,10 @@ struct ControlPanel: View {
     }
     /// 0.5.278: Settings, "Show live meeting transcript". Off: no Live now row, no live dots, no live-transcript helper.
     @AppStorage(LiveTranscript.enabledKey) private var showLiveTranscript = true
+    /// Activity Today home (plan v2): the opt-in candidate switch, quiet hours and Work runs from Today.
+    @AppStorage(TodayHome.enabledKey) private var todayHomeEnabled = false
+    @AppStorage(TodayHome.quietHoursKey) private var todayQuietHours = true
+    @AppStorage(TodayHome.workRunsKey) private var todayWorkRuns = true
     /// 0.5.312: Work chat's Plan and send as the primary button. Off by default (review stays normal).
     @AppStorage(WorkChatPolicy.autoSendKey) private var workChatSendWithoutReview = WorkChatPolicy.autoSendDefault
     /// 0.5.317: Settings › Work › When earlier work is still open. Queue it by default.
@@ -2838,6 +2842,18 @@ struct ControlPanel: View {
                 .toggleStyle(COSSwitchStyle())
                 .help("While a glasses meeting records, show it at the top of Meetings with the text so far. The transcript opens only when you click it. Off: no live row, no live dots, and nothing is read")
                 .onChange(of: showLiveTranscript) { _, _ in model.liveTranscriptSettingChanged() }
+            // Activity Today home (plan v2, an opt-in candidate): the rail on every Activity tab and the Today home.
+            Toggle("New Today home", isOn: $todayHomeEnabled)
+                .toggleStyle(COSSwitchStyle())
+                .help("Activity opens on Today: what needs you, what is running, what is next, and today's meeting suggestions, with the section rail on every tab. Off: the earlier home and the tab strip")
+            if todayHomeEnabled {
+                Toggle("Quiet hours on Today", isOn: $todayQuietHours)
+                    .toggleStyle(COSSwitchStyle())
+                    .help("After 6 PM and on weekends, Needs you folds everything below agent questions under For tomorrow. Running and session questions never fold")
+                Toggle("Start Work runs from Today", isOn: $todayWorkRuns)
+                    .toggleStyle(COSSwitchStyle())
+                    .help("Prep me and Return in the Ask box each start one Work run, at most 20 a day, paused for 15 minutes after 3 failed starts. Off: no Prep me, and Return files your words to the Work inbox")
+            }
             MeetingSuggestSettings(store: MeetingDetectorStore.shared, recording: model.macRecording)
             DisclosureGroup("Advanced") {
                 // 0.5.234: the Meetings clock. The server sends 24-hour times and

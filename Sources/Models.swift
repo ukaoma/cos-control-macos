@@ -1701,6 +1701,9 @@ struct ClaudeSession: Identifiable, Sendable {
     /// transcript, such as a Work session named after its task), never from its first prompt. Such a row is never
     /// hidden as a warm-up, even when it is called "Ready".
     var namedTitle = false
+    /// Activity Today (B1): the pending AskUserQuestion's own words, from the helper's transcript tail read (`waitingQuestion`).
+    var waitingQuestion = ""
+    var waitingQuestionCount = 0
 
     var isScheduledJob: Bool { origin == "job" && !fromWork }
     /// Only the COS server may write this session now: a scheduled job, or a Work New session still running.
@@ -2029,6 +2032,8 @@ struct ClaudeSession: Identifiable, Sendable {
         queuedTurns = o["queuedTurns"]?.int ?? 0
         waitingOnUser = o["waitingOnUser"]?.bool ?? false
         namedTitle = o["namedTitle"]?.bool ?? false
+        waitingQuestion = o["waitingQuestion"]?.string ?? ""
+        waitingQuestionCount = o["waitingQuestionCount"]?.int ?? 0
     }
 
     static func isKeepWarmSessionTitle(_ title: String) -> Bool {
@@ -11743,5 +11748,1274 @@ enum ActivityHome {
     static func clip(_ text: String, _ limit: Int) -> String {
         let flat = text.split(whereSeparator: \.isNewline).joined(separator: " ")
         return flat.count <= limit ? flat : String(flat.prefix(limit - 1)) + "…"
+    }
+}
+
+// MARK: - Activity Today home (plan v2, 2026-10-21)
+
+/// The Activity window's Today home (PLAN_control_activity_home_v2_2026-10-21, direction A). Pure: every number the rail,
+/// the Needs you header, the brief, the cards and the tabs show comes from one function here, so Tests/ActivityTodayChecks
+/// executes each rule and pins that they agree. A source Control has not loaded is nil, never a made-up 0. Zero LLM: the
+/// brief is fixed templates over these counts.
+enum TodayHome {
+    // MARK: Settings (UserDefaults keys; Settings > Activity)
+
+    /// The integrated candidate's opt-in switch. Off: the stable 0.5.259 home and the top lens rail, unchanged.
+    static let enabledKey = "activityTodayHomeEnabled"
+    /// Quiet hours (Miles's default, 2026-10-21): after 6 PM and on weekends, fold Needs you below agent-blocking items.
+    static let quietHoursKey = "activityTodayQuietHours"
+    /// "Start Work runs from Today": Prep me and Return in the Ask box. Off hides Prep me and files Return to the inbox.
+    static let workRunsKey = "activityTodayStartsWorkRuns"
+
+    static func enabled(_ defaults: UserDefaults) -> Bool { defaults.object(forKey: enabledKey) as? Bool ?? false }
+    static func quietHoursOn(_ defaults: UserDefaults) -> Bool { defaults.object(forKey: quietHoursKey) as? Bool ?? true }
+    static func workRunsOn(_ defaults: UserDefaults) -> Bool { defaults.object(forKey: workRunsKey) as? Bool ?? true }
+
+    // MARK: Layout (B2)
+
+    /// At this window width and wider the rail shows names and stories; below it, icons.
+    static let fullRailBreakpoint: CGFloat = 1100
+    static let fullRailWidth: CGFloat = 248
+    static let iconRailWidth: CGFloat = 64
+    /// The main column's side padding, each side.
+    static let mainPadding: CGFloat = 40
+    static let narrowPadding: CGFloat = 28
+    /// Two columns from this window width (the main column is then 900 pt). Decided from the window, never in icon-rail mode.
+    static let twoColumnWindow: CGFloat = 1228
+    /// The right column (Running, Next up, today's meetings) is never narrower than this (the canvas's flex basis).
+    static let rightColumnFloor: CGFloat = 380
+    /// Below this right-column width, Running's Open links say just "Open" (the full words stay in help and VoiceOver).
+    static let runOpenWordsWidth: CGFloat = 430
+    /// Running rows before "N more in Sessions": six beside Needs you, three when stacked (Running above the fold).
+    static let runningCapWide = 6
+    static let runningCapStacked = 2
+    /// Needs you rows drawn before "Show N more".
+    static let needsShown = 4
+
+    enum RailMode: Equatable { case full, icons }
+    static func railMode(windowWidth: CGFloat) -> RailMode { windowWidth >= fullRailBreakpoint ? .full : .icons }
+    static func railWidth(_ mode: RailMode) -> CGFloat { mode == .full ? fullRailWidth : iconRailWidth }
+    static func padding(windowWidth: CGFloat) -> CGFloat { railMode(windowWidth: windowWidth) == .full ? mainPadding : narrowPadding }
+    /// The main column's content width: the window less the rail and the main column's padding.
+    static func mainContentWidth(windowWidth: CGFloat) -> CGFloat {
+        max(0, windowWidth - railWidth(railMode(windowWidth: windowWidth)) - 2 * padding(windowWidth: windowWidth))
+    }
+    static func twoColumns(windowWidth: CGFloat) -> Bool {
+        windowWidth >= twoColumnWindow && railMode(windowWidth: windowWidth) == .full
+    }
+    /// The two columns' widths: the right one at least `rightColumnFloor`, Needs you the rest (flex 1.6 to 1 above that).
+    static func columns(windowWidth: CGFloat, gap: CGFloat = 28) -> (left: CGFloat, right: CGFloat) {
+        let content = mainContentWidth(windowWidth: windowWidth)
+        let right = max(rightColumnFloor, (content - gap) / 2.6)
+        return (max(0, content - gap - right), right)
+    }
+    /// Stacked (icon rail), two Running rows keep "N more running" and the first Needs you row above the fold at 920 x 680.
+    static func runningCap(windowWidth: CGFloat) -> Int { twoColumns(windowWidth: windowWidth) ? runningCapWide : runningCapStacked }
+
+    // MARK: Days (D2: today's intake by the meeting filename's date)
+
+    /// The `YYYY-MM-DD` prefix of a meeting record's filename; nil when it has none (such an item is older, never Today).
+    static func meetingDay(_ filename: String) -> String? {
+        let prefix = String(filename.prefix(10))
+        guard prefix.range(of: "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$", options: .regularExpression) != nil else { return nil }
+        return prefix
+    }
+
+    static func isToday(filename: String, now: Date, calendar: Calendar = .current) -> Bool {
+        meetingDay(filename) == ActivityHome.dayKey(now, calendar: calendar)
+    }
+
+    /// Open intake: not yet accepted or dismissed (`suggested`, `review`, `ask`).
+    static func isOpen(_ item: WorkIntakeItem) -> Bool { ["suggested", "review", "ask"].contains(item.status) }
+    static func mentionedCards(_ tasks: [TaskRow]) -> [TaskRow] { tasks.filter { $0.workStage == "mentioned" && !$0.checked } }
+    /// A mentioned card's meeting: its first linked meeting's filename. A card with none is older.
+    static func cardIsToday(_ card: TaskRow, now: Date, calendar: Calendar = .current) -> Bool {
+        guard let ref = card.meetingRefs.first else { return false }
+        return isToday(filename: ref.filename, now: now, calendar: calendar)
+    }
+
+    struct IntakeSplit: Equatable {
+        var today: [WorkIntakeItem] = []
+        var older: [WorkIntakeItem] = []
+        var todayCards: [TaskRow] = []
+        var olderCards: [TaskRow] = []
+        var todayCount: Int { today.count + todayCards.count }
+        var olderCount: Int { older.count + olderCards.count }
+        static func == (a: IntakeSplit, b: IntakeSplit) -> Bool {
+            a.today.map(\.id) == b.today.map(\.id) && a.older.map(\.id) == b.older.map(\.id)
+                && a.todayCards.map(\.id) == b.todayCards.map(\.id) && a.olderCards.map(\.id) == b.olderCards.map(\.id)
+        }
+    }
+
+    /// The one split home, Needs you and Work's Sort view read (replaces `newItems` "since yesterday" and the mentioned
+    /// cutoff for them): today's meetings on Today, everything else in Work. A filter only: midnight moves an item with no
+    /// server call, and `today + older` is every open item.
+    static func intakeSplit(items: [WorkIntakeItem], tasks: [TaskRow], now: Date, calendar: Calendar = .current) -> IntakeSplit {
+        var split = IntakeSplit()
+        for item in items where isOpen(item) {
+            if isToday(filename: item.meeting.filename, now: now, calendar: calendar) { split.today.append(item) } else { split.older.append(item) }
+        }
+        for card in mentionedCards(tasks) {
+            if cardIsToday(card, now: now, calendar: calendar) { split.todayCards.append(card) } else { split.olderCards.append(card) }
+        }
+        split.today.sort { ($0.meeting.filename, $0.id) < ($1.meeting.filename, $1.id) }
+        return split
+    }
+
+    // MARK: Sessions
+
+    /// The sessions home reads: the pet's live list when the pet is on (so the two never disagree), else the Sessions list.
+    /// A live row keeps the list row's question text when the live read has none.
+    static func liveSessions(list: [ClaudeSession], live: [ClaudeSession]?) -> [ClaudeSession] {
+        guard let live else { return list.filter { !$0.isKeepWarm } }
+        var out: [ClaudeSession] = []
+        for row in live where !row.isKeepWarm {
+            guard !out.contains(where: { ClaudeSession.sameSession($0.id, row.id) }) else { continue }
+            var next = row
+            if next.waitingQuestion.isEmpty, let listed = list.first(where: { ClaudeSession.sameSession($0.id, row.id) }) {
+                next.waitingQuestion = listed.waitingQuestion
+            }
+            out.append(next)
+        }
+        return out
+    }
+
+    /// Waiting on Miles: `state == "waiting"` on any provider. A run only the COS server writes cannot stop on a prompt.
+    static func isWaiting(_ session: ClaudeSession) -> Bool {
+        session.state == "waiting" && !session.heldByServer && !session.isKeepWarm
+    }
+    /// Working now: running, or a server-held run (a Work New session, a scheduled job) the helper reads as waiting.
+    static func isWorking(_ session: ClaudeSession) -> Bool {
+        guard !session.isKeepWarm else { return false }
+        return session.state == "running" || (session.state == "waiting" && session.heldByServer)
+    }
+
+    static func waitingSessions(_ sessions: [ClaudeSession]) -> [ClaudeSession] {
+        sessions.filter(isWaiting).sorted { a, b in
+            let x = waitingSince(a) ?? .distantPast, y = waitingSince(b) ?? .distantPast
+            return x == y ? a.id < b.id : x < y
+        }
+    }
+    static func waitingSince(_ session: ClaudeSession) -> Date? { ActivityHome.stamp(session.stateSince) ?? ActivityHome.stamp(session.updatedAt) }
+
+    // MARK: Tool-name guard (B1)
+
+    static let toolNames: Set<String> = ["AskUserQuestion", "ExitPlanMode", "Bash", "BashOutput", "KillShell", "Edit", "Write", "Read",
+                                         "Grep", "Glob", "LS", "Task", "Agent", "WebFetch", "WebSearch", "TodoWrite", "NotebookEdit",
+                                         "MultiEdit", "SlashCommand", "Skill", "ToolSearch"]
+    /// A bare tool name is never shown. Only known tool names: a single CamelCase word is often a brand or a title
+    /// (ThriftCart, MarktPOS, DiveShop360, HubSpot), and those stay.
+    static func isBareToolName(_ text: String) -> Bool {
+        toolNames.contains(text.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+    /// Text with every bare tool name dropped; nil when nothing is left.
+    static func guarded(_ text: String) -> String? {
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return t.isEmpty || isBareToolName(t) ? nil : t
+    }
+
+    /// What a waiting session asked, read only (B1): the AskUserQuestion's own words, or a question's detail when it is
+    /// words and not a tool name. A plan, Codex and Cursor carry none.
+    static func questionText(_ session: ClaudeSession) -> String? {
+        guard session.provider == "claude", session.waitingKind != "plan" else { return nil }
+        if let text = guarded(session.waitingQuestion) { return ActivityHome.clip(text, 240) }
+        if session.waitingKind == "question", let text = guarded(session.waitingDetail) { return ActivityHome.clip(text, 240) }
+        return nil
+    }
+
+    /// "<title> asked you a question", by what the session waits on.
+    static func askedTitle(_ session: ClaudeSession) -> String {
+        let title = guarded(session.title) ?? "A session"
+        if session.provider != "claude" { return title + " is waiting for your reply" }
+        switch session.waitingKind {
+        case "plan": return title + " has a plan for you to approve"
+        case "permission": return title + " wants your permission"
+        case "mcp_input": return title + " needs your input"
+        default: return title + " asked you a question"
+        }
+    }
+
+    /// A permission's command ("Bash git push") as its why line; a bare tool name alone is dropped.
+    static func askedWhy(_ session: ClaudeSession) -> String? {
+        guard session.provider == "claude" else { return nil }
+        if session.waitingQuestionCount > 1, questionText(session) != nil { return "Question 1 of \(session.waitingQuestionCount)" }
+        if session.waitingKind == "plan" { return "Has a plan for you to approve" }
+        if session.waitingKind == "permission", let detail = guarded(session.waitingDetail) { return "Wants to run " + ActivityHome.clip(detail, 80) }
+        return nil
+    }
+
+    // MARK: Platforms (section 6)
+
+    enum Platform: String, CaseIterable {
+        case claudeCode, claude, codex, codexCLI, cursor, work, glasses, question, routine
+        /// Spelled words in a small rounded label, never a monogram.
+        var badge: String {
+            switch self {
+            case .claudeCode: "Claude Code"
+            case .claude: "Claude"
+            case .codex: "Codex"
+            case .codexCLI: "Codex CLI"
+            case .cursor: "Cursor"
+            case .work: "Work"
+            case .glasses: "Glasses"
+            // The server cannot tell a glasses question from a phone one (6.84.1 `origin: person`).
+            case .question: "Question"
+            case .routine: "Routine"
+            }
+        }
+        /// The group order of the Running panel (section 6).
+        var order: Int { Self.allCases.firstIndex(of: self) ?? 99 }
+    }
+
+    /// The app a live Claude Code session runs in, from its process (the Terminal or iTerm window, or Claude Desktop).
+    struct Host: Equatable, Sendable {
+        let app: String
+        let terminal: Bool
+    }
+
+    static func platform(_ session: ClaudeSession, host: Host?) -> Platform {
+        if session.workRunning { return .work }
+        if session.isScheduledJob { return .routine }
+        switch session.provider {
+        case "codex": return .codex
+        case "cursor": return .cursor
+        default: return host.map { $0.terminal ? .claudeCode : .claude } ?? .claudeCode
+        }
+    }
+
+    /// Where Open goes and its label; `note` is the fallback copy when it cannot be focused.
+    enum OpenAction: Equatable {
+        case platform(String)
+        case inSessions(String?)
+        case workRun(String)
+        case liveView(String)
+        case messages(Int?)
+    }
+
+    static func openFor(_ session: ClaudeSession, host: Host?, cursorTrusted: Bool, hostsRead: Bool = false) -> (label: String, action: OpenAction, note: String?) {
+        let platform = platform(session, host: host)
+        switch platform {
+        case .work, .routine: return ("In Sessions", .inSessions(session.id), nil)
+        case .codex, .codexCLI: return ("Open in Codex", .platform(session.id), nil)
+        case .cursor:
+            return cursorTrusted ? ("Open in Cursor", .platform(session.id), nil)
+                : ("In Sessions", .inSessions(session.id), "Open in Cursor needs Accessibility. Turn on in Settings")
+        case .claude: return ("Open in Claude", .platform(session.id), nil)
+        case .claudeCode:
+            if let host { return ("Open in " + host.app, .platform(session.id), nil) }
+            // Hosts not read yet: Open session lets the platform route decide. Read, and no process holds it: section 6's fallback.
+            return hostsRead ? ("In Sessions", .inSessions(session.id), "Terminal is not running this session any more.")
+                : ("Open session", .platform(session.id), nil)
+        case .glasses, .question: return ("Open in Messages", .messages(nil), nil)
+        }
+    }
+
+    /// "in Terminal", "in Claude", "in the Codex app", "in Cursor", "from Work, on the server".
+    static func placeWords(_ platform: Platform, host: Host?) -> String {
+        switch platform {
+        case .claudeCode: host.map { "in " + $0.app } ?? "on this Mac"
+        case .claude: "in Claude"
+        case .codex: "in Codex"
+        case .codexCLI: "in Terminal"
+        case .cursor: "in Cursor"
+        case .work: "from Work, on the server"
+        case .glasses: "glasses recording, live transcript"
+        case .question: "COS is answering"
+        case .routine: "on the server"
+        }
+    }
+
+    // MARK: Running (D3, D4, section 6)
+
+    struct WorkRun: Equatable, Sendable {
+        let id: String
+        let title: String
+        let sessionID: String?
+        let jobIDs: Set<String>
+        let startedAt: Date
+    }
+    struct Recording: Equatable, Sendable {
+        let sessionId: String
+        let start: Date?
+        let isMac: Bool
+    }
+    /// One in-flight job from GET /api/query-jobs/active (server 6.84.1).
+    struct ActiveJob: Equatable, Sendable {
+        let jobId: String
+        let origin: String
+        let title: String
+        let elapsedMs: Double
+        let messageNo: Int?
+        /// When it was accepted, on this Mac's clock: the moment the answer arrived less its `elapsedMs` (the server's own
+        /// count), so a clock difference between the two machines never shows. Rows count up from it between ticks.
+        let started: Date
+        init?(_ value: JSONValue, receivedAt: Date = Date()) {
+            guard let o = value.object, let id = o["jobId"]?.string, !id.isEmpty else { return nil }
+            jobId = id
+            // An origin the server does not send (or does not know) is `other`: shown only as a row Control already has.
+            let raw = o["origin"]?.string ?? "other"
+            origin = ["person", "routine", "task", "other"].contains(raw) ? raw : "other"
+            title = ActivityHome.clip(o["title"]?.string ?? "", 80)
+            elapsedMs = max(0, o["elapsedMs"]?.double ?? 0)
+            messageNo = o["messageNo"]?.int
+            started = receivedAt.addingTimeInterval(-elapsedMs / 1000)
+        }
+    }
+    struct RoutineRun: Equatable, Sendable {
+        let id: String
+        let label: String
+        let firedAt: Date?
+        let jobId: String?
+        let messageNo: Int?
+        let status: String
+        init?(_ value: JSONValue) {
+            guard let o = value.object, let id = o["id"]?.string, !id.isEmpty else { return nil }
+            self.id = id
+            status = o["status"]?.string ?? "running"
+            label = ActivityHome.clip(o["label"]?.string ?? o["routineId"]?.string ?? "Routine", 80)
+            firedAt = (o["firedAt"]?.string).flatMap(ActivityHome.stamp)
+            jobId = o["jobId"]?.string
+            messageNo = o["messageNo"]?.int
+        }
+    }
+    struct Finished: Equatable, Sendable {
+        let id: String
+        let title: String
+        let provider: String
+        let finishedAt: Date
+    }
+
+    struct RunRow: Identifiable, Equatable {
+        let id: String
+        let platform: Platform
+        var title: String
+        let detail: String
+        let openLabel: String
+        let open: OpenAction
+        var note: String? = nil
+        /// Working now: the pulse dot (never under Reduce Motion), and counted in Running N.
+        let working: Bool
+        let finished: Bool
+        let started: Date?
+        /// Repo or meeting time, added after a separator when two rows share a title.
+        var disambiguator: String? = nil
+        /// VoiceOver: "Claude Code in Terminal, Holiday promo landing page, working 12 minutes, Open in Terminal".
+        var voiceLabel: String {
+            var spoken = detail
+            if !placeLead.isEmpty, spoken.hasPrefix(placeLead + ", ") { spoken.removeFirst(placeLead.count + 2) }
+            spoken = spoken.replacingOccurrences(of: "([0-9]) min\\b", with: "$1 minutes", options: .regularExpression)
+                .replacingOccurrences(of: "([0-9]) s\\b", with: "$1 seconds", options: .regularExpression)
+            return [platform.badge + (placeLead.isEmpty ? "" : " " + placeLead), title, spoken, openLabel].filter { !$0.isEmpty }.joined(separator: ", ")
+        }
+        var placeLead = ""
+    }
+
+    struct RunInputs {
+        var sessions: [ClaudeSession] = []
+        var hosts: [String: Host] = [:]
+        /// The host lookup has run at least once (until then a Claude row without a host is unknown, not gone).
+        var hostsRead = false
+        var cursorTrusted = true
+        var workRuns: [WorkRun] = []
+        var recordings: [Recording] = []
+        /// nil: the server does not advertise the in-flight route (older server), and glasses questions do not appear.
+        var jobs: [ActiveJob]?
+        var routines: [RoutineRun] = []
+        var finished: [Finished] = []
+        var event: NextEvent?
+        var now = Date()
+        var calendar = Calendar.current
+    }
+
+    /// "12 min", "40 s", "2 h 5 min".
+    static func duration(_ seconds: Double) -> String {
+        let s = max(0, Int(seconds))
+        if s < 60 { return "\(s) s" }
+        if s < 3600 { return "\(s / 60) min" }
+        let minutes = (s % 3600) / 60
+        return "\(s / 3600) h" + (minutes > 0 ? " \(minutes) min" : "")
+    }
+
+    /// What is running now, one row per thing, grouped by platform in section 6's order, newest first in a group. A
+    /// session waiting on Miles is never here (it is in Needs you); a Work run whose session is listed shows once.
+    static func inFlight(_ input: RunInputs) -> [RunRow] {
+        var rows: [RunRow] = []
+        let working = input.sessions.filter(isWorking)
+        for session in working {
+            let host = input.hosts[session.id]
+            let platform = platform(session, host: host)
+            let open = openFor(session, host: host, cursorTrusted: input.cursorTrusted, hostsRead: input.hostsRead)
+            let started = ActivityHome.stamp(session.stateSince) ?? ActivityHome.stamp(session.createdAt)
+            let place = placeWords(platform, host: host)
+            let detail: String
+            if platform == .routine {
+                detail = started.map { "running since " + clock($0, calendar: input.calendar) } ?? "running"
+            } else {
+                detail = place + ", working" + (started.map { " " + duration(input.now.timeIntervalSince($0)) } ?? "")
+            }
+            rows.append(RunRow(id: "session:" + session.id, platform: platform, title: guarded(session.title) ?? "Untitled session",
+                               detail: detail, openLabel: open.label, open: open.action, note: open.note, working: true, finished: false,
+                               started: started, disambiguator: session.workspace.isEmpty ? nil : session.workspace,
+                               placeLead: platform == .claudeCode ? (host.map { "in " + $0.app } ?? "") : ""))
+        }
+        var workJobIDs = Set<String>()
+        for run in input.workRuns {
+            workJobIDs.formUnion(run.jobIDs); workJobIDs.insert(run.id)
+            if let sid = run.sessionID, input.sessions.contains(where: { ClaudeSession.sameSession($0.id, sid) && (isWorking($0) || isWaiting($0)) }) { continue }
+            rows.append(RunRow(id: "work:" + run.id, platform: .work, title: guarded(run.title) ?? "Work run",
+                               detail: "from Work, on the server, " + duration(input.now.timeIntervalSince(run.startedAt)),
+                               openLabel: "In Sessions", open: .workRun(run.id), working: true, finished: false, started: run.startedAt))
+        }
+        for recording in input.recordings {
+            let start = recording.start
+            var title = start.map { "Recording from " + clock($0, calendar: input.calendar) } ?? "Recording now"
+            if let event = input.event, let start, abs(event.start.timeIntervalSince(start)) <= 15 * 60 { title = event.title }
+            rows.append(RunRow(id: "recording:" + recording.sessionId, platform: .glasses, title: title,
+                               detail: (recording.isMac ? "recording on this Mac, live transcript" : "glasses recording, live transcript")
+                                   + (start.map { ", " + duration(input.now.timeIntervalSince($0)) } ?? ""),
+                               openLabel: "Live view", open: .liveView(recording.sessionId), working: true, finished: false, started: start))
+        }
+        let routineJobs = Set(input.routines.compactMap(\.jobId))
+        for job in input.jobs ?? [] {
+            guard !workJobIDs.contains(job.jobId), !routineJobs.contains(job.jobId) else { continue }
+            switch job.origin {
+            case "routine":
+                rows.append(RunRow(id: "job:" + job.jobId, platform: .routine, title: guarded(job.title) ?? "Routine",
+                                   detail: "running since " + clock(job.started, calendar: input.calendar),
+                                   openLabel: "Open in Messages", open: .messages(job.messageNo), working: true, finished: false,
+                                   started: job.started))
+            case "person":
+                rows.append(RunRow(id: "job:" + job.jobId, platform: .question, title: guarded(job.title) ?? "A question to COS",
+                                   detail: "COS is answering, " + duration(input.now.timeIntervalSince(job.started)),
+                                   openLabel: "Open in Messages", open: .messages(job.messageNo), working: true, finished: false,
+                                   started: job.started))
+            case "task":
+                // A captured task's dispatch Control did not start: on the server, In Sessions.
+                rows.append(RunRow(id: "job:" + job.jobId, platform: .work, title: guarded(job.title) ?? "A captured task",
+                                   detail: "a captured task, on the server, " + duration(input.now.timeIntervalSince(job.started)), openLabel: "In Sessions",
+                                   open: .inSessions(nil), working: true, finished: false, started: job.started))
+            default:
+                // `other`: a Control Work session or a meeting review. Shown only as the row it already is (a Work receipt
+                // or a session), never a second one.
+                break
+            }
+        }
+        for run in input.routines where !routineStale(run, now: input.now) {
+            rows.append(RunRow(id: "routine:" + run.id, platform: .routine, title: run.label,
+                               detail: run.firedAt.map { "running since " + clock($0, calendar: input.calendar) } ?? "running",
+                               openLabel: "Open in Messages", open: .messages(run.messageNo), working: true, finished: false, started: run.firedAt))
+        }
+        var seen = Set<String>()
+        rows = rows.filter { seen.insert($0.id).inserted }
+        return disambiguate(rows.sorted { a, b in
+            if a.platform.order != b.platform.order { return a.platform.order < b.platform.order }
+            let x = a.started ?? .distantPast, y = b.started ?? .distantPast
+            return x == y ? a.id < b.id : x > y
+        })
+    }
+
+    /// A routine run with no job that still says `submitting` after this long never started (the scheduler keeps the row).
+    static let routineSubmitWindow: TimeInterval = 600
+    static func routineStale(_ run: RoutineRun, now: Date) -> Bool {
+        guard run.jobId == nil || run.status == "submitting" else { return false }
+        guard let fired = run.firedAt else { return true }
+        return now.timeIntervalSince(fired) > routineSubmitWindow
+    }
+
+    static let finishedWindow: TimeInterval = 3600
+    static let finishedCap = 3
+
+    /// Finished within the hour (D3), newest first, at most three, never a row that is running or waiting again.
+    static func finishedRows(_ input: RunInputs) -> [RunRow] {
+        let live = input.sessions.filter { isWorking($0) || isWaiting($0) }
+        return input.finished
+            .filter { input.now.timeIntervalSince($0.finishedAt) >= 0 && input.now.timeIntervalSince($0.finishedAt) <= finishedWindow }
+            .filter { row in !live.contains { ClaudeSession.sameSession($0.id, row.id) } }
+            .sorted { $0.finishedAt > $1.finishedAt }
+            .prefix(finishedCap)
+            .map { row in
+                let platform: Platform = row.provider == "codex" ? .codex : row.provider == "cursor" ? .cursor : .claudeCode
+                let minutes = Int(input.now.timeIntervalSince(row.finishedAt) / 60)
+                return RunRow(id: "finished:" + row.id, platform: platform, title: guarded(row.title) ?? "Untitled session",
+                              detail: minutes < 1 ? "finished just now" : "finished \(minutes) min ago", openLabel: "In Sessions",
+                              open: .inSessions(row.id), working: false, finished: true, started: row.finishedAt)
+            }
+    }
+
+    /// Two rows with one title get their repo or meeting time after a separator: "Footer tweak, Bottle POS".
+    static func disambiguate(_ rows: [RunRow]) -> [RunRow] {
+        var counts: [String: Int] = [:]
+        for row in rows { counts[row.title, default: 0] += 1 }
+        return rows.map { row in
+            guard counts[row.title, default: 0] > 1, let extra = row.disambiguator ?? row.started.map({ clock($0, calendar: .current) }) else { return row }
+            var next = row; next.title = row.title + ", " + extra; return next
+        }
+    }
+
+    struct RunningView: Equatable {
+        let shown: [RunRow]
+        let finished: [RunRow]
+        let moreRunning: Int
+        let moreFinished: Int
+        /// Running N: things in flight. Finished rows are never counted.
+        let count: Int
+        var moreLabel: String? {
+            switch (moreRunning, moreFinished) {
+            case (0, 0): nil
+            case (let r, 0): "\(r) more running"
+            case (0, let f): f == 1 ? "1 more finished" : "\(f) more finished"
+            case (let r, let f): "\(r) more running, and \(f) finished"
+            }
+        }
+    }
+
+    /// The cap (six, or three stacked) counts every row; finished rows give way first.
+    static func runningView(inFlight: [RunRow], finished: [RunRow], cap: Int) -> RunningView {
+        let shown = Array(inFlight.prefix(cap))
+        let room = max(0, cap - shown.count)
+        let done = Array(finished.prefix(room))
+        return RunningView(shown: shown, finished: done, moreRunning: inFlight.count - shown.count,
+                           moreFinished: finished.count - done.count, count: inFlight.count)
+    }
+
+    // MARK: Next up (section 4)
+
+    struct NextEvent: Equatable, Sendable {
+        let title: String
+        let start: Date
+        func minutes(until now: Date) -> Int { max(0, Int((start.timeIntervalSince(now) / 60).rounded())) }
+    }
+
+    /// welcome-context's one event, if it starts today and has not started more than an hour ago.
+    static func nextEvent(_ value: JSONValue?, now: Date, calendar: Calendar = .current) -> NextEvent? {
+        guard let o = value?.object, let title = o["title"]?.string?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty,
+              let time = o["time"]?.string, let start = ActivityHome.stamp(time) ?? localStamp(time),
+              calendar.isDate(start, inSameDayAs: now), start.timeIntervalSince(now) > -3600 else { return nil }
+        return NextEvent(title: ActivityHome.clip(title, 120), start: start)
+    }
+    /// A calendar time without a zone ("2026-10-21T15:30:00"): local.
+    static func localStamp(_ text: String) -> Date? {
+        let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX"); f.dateFormat = "yyyy-MM-dd'T'HH:mm:ss"
+        return f.date(from: String(text.prefix(19)))
+    }
+    /// "In 43 min", "In 2 h 5 min", "Now".
+    static func eventWhen(_ event: NextEvent, now: Date) -> String {
+        let m = event.minutes(until: now)
+        if m == 0 { return event.start <= now ? "Started at " + clock(event.start) : "Now" }
+        return "In " + duration(Double(m * 60))
+    }
+
+    // MARK: Needs you (B1, B3, B4)
+
+    enum NeedKind: String { case session, voice, meetingVoices, heldVoices, work, memories, olderToSort, dictation }
+
+    /// Voice and meeting rows shown one by one; the rest fold into one row each (Miles's Mac held 130 groups on 10/22,
+    /// which read as "128 need you").
+    static let voiceRowLimit = 3
+
+    struct NeedRow: Identifiable {
+        let id: String
+        let kind: NeedKind
+        /// 1 blocks an agent and never folds; 2 to 5 fold under quiet hours.
+        let tier: Int
+        let title: String
+        var quote: String? = nil
+        var why: String? = nil
+        var source: String? = nil
+        var since: Date? = nil
+        /// Items inside the thing ("Review 7 memories" is one thing of 7 items).
+        var items = 1
+        var session: ClaudeSession? = nil
+        var group: HeldVoiceGroup? = nil
+        var meeting: ReviewableMeeting? = nil
+        var move: WorkYourMove? = nil
+        var openLabel: String? = nil
+    }
+
+    struct NeedInputs {
+        var waiting: [ClaudeSession] = []
+        var hosts: [String: Host] = [:]
+        var cursorTrusted = true
+        /// nil: Speakers' held groups have not loaded.
+        var voiceGroups: [HeldVoiceGroup]?
+        var groupMeeting: [String: String] = [:]
+        var groupStart: [String: Date] = [:]
+        var meetingsToName: [ReviewableMeeting] = []
+        var yourMove: [WorkYourMove]?
+        var memoriesToReview: Int?
+        var memoriesTotal: Int?
+        var olderToSort: Int?
+        var dictationFixes = 0
+        var now = Date()
+        var calendar = Calendar.current
+    }
+
+    /// "Claude Code in Terminal, MU-Chief-Staff. Paused until you answer there."
+    static func sessionSource(_ session: ClaudeSession, host: Host?) -> String {
+        let platform = platform(session, host: host)
+        let lead: String
+        switch platform {
+        case .cursor: lead = "Cursor on this Mac"
+        case .codex, .codexCLI: lead = "Codex on this Mac"
+        default: lead = platform.badge + " " + placeWords(platform, host: host)
+        }
+        let repo = session.workspace.isEmpty ? "" : ", " + session.workspace
+        return lead + repo + (session.provider == "claude" ? ". Paused until you answer there." : "")
+    }
+
+    /// Every thing waiting on Miles, one row per thing, ranked: sessions (oldest first), voices, Work's your move, memories,
+    /// older to sort, dictation fixes. A thing is in one place only: no id twice, and a Work row for a waiting session is
+    /// the session's row.
+    static func things(_ input: NeedInputs) -> [NeedRow] {
+        var rows: [NeedRow] = []
+        for session in waitingSessions(input.waiting) {
+            let host = input.hosts[session.id]
+            let open = openFor(session, host: host, cursorTrusted: input.cursorTrusted)
+            let label = session.provider == "claude" ? "Open session" : open.label
+            rows.append(NeedRow(id: "session:" + session.id, kind: .session, tier: 1, title: askedTitle(session),
+                                quote: questionText(session), why: askedWhy(session), source: sessionSource(session, host: host),
+                                since: waitingSince(session), session: session, openLabel: label))
+        }
+        // One by one: a group with a name to confirm, or one heard today. Everything else is one row that opens Speakers.
+        var voiceRows = 0, heldVoices = 0
+        for group in input.voiceGroups ?? [] {
+            let name = group.suggestionName.flatMap(guarded)
+            let today = input.groupStart[group.id].map { input.calendar.isDate($0, inSameDayAs: input.now) } ?? false
+            guard voiceRows < voiceRowLimit, name != nil || today else { heldVoices += 1; continue }
+            voiceRows += 1
+            let meeting = input.groupMeeting[group.id]
+            let title = meeting.map { "Name a voice from " + $0 } ?? (input.groupStart[group.id].map { "Name a voice from a " + clock($0, calendar: input.calendar) + " recording" } ?? "Name a voice")
+            rows.append(NeedRow(id: "voice:" + group.id, kind: .voice, tier: 2, title: title,
+                                why: name.map { "Sounds like \($0), similarity " + String(format: "%.2f", group.suggestionSimilarity) + "." },
+                                source: group.sampleCount == 1 ? "1 sample held" : "\(group.sampleCount) samples held",
+                                since: input.groupStart[group.id], items: max(1, group.sampleCount), group: group))
+        }
+        var meetingRows = 0, olderMeetings: [ReviewableMeeting] = []
+        for meeting in input.meetingsToName {
+            let today = ActivityHome.meetingDate(meeting, calendar: input.calendar).map { input.calendar.isDate($0, inSameDayAs: input.now) } ?? false
+            guard meetingRows < voiceRowLimit, today else { olderMeetings.append(meeting); continue }
+            meetingRows += 1
+            rows.append(NeedRow(id: "meeting-voices:" + meeting.sessionId, kind: .meetingVoices, tier: 2,
+                                title: "Name the voices in " + (guarded(meeting.title) ?? "a saved meeting"),
+                                why: (meeting.unattributedVoices ?? 0) == 1 ? "1 speaker has no name yet." : "\(meeting.unattributedVoices ?? 0) speakers have no name yet.",
+                                since: ActivityHome.meetingDate(meeting, calendar: input.calendar), items: max(1, meeting.unattributedVoices ?? 1), meeting: meeting))
+        }
+        if heldVoices > 0 || !olderMeetings.isEmpty {
+            let parts = [heldVoices > 0 ? (heldVoices == 1 ? "1 held voice" : "\(heldVoices) held voices") : nil,
+                         olderMeetings.isEmpty ? nil : (olderMeetings.count == 1 ? "1 earlier meeting" : "\(olderMeetings.count) earlier meetings")].compactMap { $0 }
+            rows.append(NeedRow(id: "held-voices", kind: .heldVoices, tier: 5, title: "Name voices in Speakers",
+                                why: parts.joined(separator: " and ") + " without a name yet.",
+                                items: heldVoices + olderMeetings.count, openLabel: "Open Speakers"))
+        }
+        let waitingIDs = input.waiting.filter(isWaiting).map(\.id)
+        for move in input.yourMove ?? [] {
+            if let sid = move.sessionID, waitingIDs.contains(where: { ClaudeSession.sameSession($0, sid) }) { continue }
+            rows.append(NeedRow(id: "work:" + move.id, kind: .work, tier: 3, title: (move.action == "review" ? "Review " : "") + (guarded(move.title) ?? "a Work item"),
+                                why: move.kind == "question" ? "The Work card is waiting on your answer before it moves on." : "The Work card is waiting on your review before it moves on.",
+                                source: "In Work", move: move, openLabel: move.actionTitle))
+        }
+        if let count = input.memoriesToReview, count > 0 {
+            rows.append(NeedRow(id: "memories", kind: .memories, tier: 4, title: count == 1 ? "Review 1 memory" : "Review \(count) memories",
+                                why: memoriesStory(count, total: input.memoriesTotal), items: count, openLabel: "Review all"))
+        }
+        if let older = input.olderToSort, older > 0 {
+            rows.append(NeedRow(id: "older-to-sort", kind: .olderToSort, tier: 5,
+                                title: older == 1 ? "Sort 1 older suggestion in Work" : "Sort \(older) older suggestions in Work",
+                                why: "From meetings before today.", items: older, openLabel: "Open in Work"))
+        }
+        if input.dictationFixes > 0 {
+            let n = input.dictationFixes
+            rows.append(NeedRow(id: "dictation", kind: .dictation, tier: 5, title: n == 1 ? "Check 1 dictation fix" : "Check \(n) dictation fixes",
+                                why: "COS learned from your edits.", items: n, openLabel: "Open Dictation"))
+        }
+        var seen = Set<String>()
+        return rows.filter { seen.insert($0.id).inserted }.enumerated().sorted { a, b in
+            if a.element.tier != b.element.tier { return a.element.tier < b.element.tier }
+            return a.offset < b.offset
+        }.map(\.element)
+    }
+
+    /// "7 to review" only when To review opens on those same 7; else "Next 7 of 23".
+    static func memoriesStory(_ count: Int, total: Int?) -> String {
+        if let total, total > count { return "Next \(count) of \(total)" }
+        return "\(count) to review"
+    }
+
+    /// The model a run from Today uses: Sonnet when the catalog has it, else another Claude model that is not Opus, else any
+    /// available non-Opus model that runs on the server (never Cursor, which waits for a person). Never Opus by default.
+    static func pickRunModel(_ choices: [(id: String, provider: String, available: Bool)]) -> Int? {
+        let usable = choices.indices.filter { choices[$0].available && choices[$0].provider != "cursor" && !choices[$0].id.lowercased().contains("opus") }
+        return usable.first { choices[$0].provider == "claude" && choices[$0].id.lowercased().contains("sonnet") }
+            ?? usable.first { choices[$0].provider == "claude" } ?? usable.first
+    }
+
+    /// "Show 4 more: review 7 memories, sort 23 older suggestions in Work and 2 more". Two labels at most.
+    static func showMoreLabel(_ hidden: [NeedRow]) -> String {
+        let labels = hidden.prefix(2).map(shortLabel)
+        let rest = hidden.count - labels.count
+        return "Show \(hidden.count) more: " + labels.joined(separator: ", ") + (rest > 0 ? " and \(rest) more" : "")
+    }
+
+    /// What a suggestion row offers: an ask or a review becomes a task (one resolve accept); a link to an existing card opens
+    /// that card. Never dismiss.
+    enum SuggestionAction: Equatable { case createTask, openCard(String), unavailable }
+    static func suggestionAction(_ item: WorkIntakeItem, cardCreation: Bool) -> SuggestionAction {
+        if item.kind == .link { return .openCard(item.pullTitle ?? item.text) }
+        return cardCreation ? .createTask : .unavailable
+    }
+    enum SuggestionState: Equatable { case ready, creating, created, failed(String) }
+    /// A row's state from the one accept path (ControllerModel.resolveWorkIntake): busy ids, what Today saw created, and the
+    /// refusal it kept.
+    static func suggestionState(_ id: String, busy: Set<String>, created: Set<String>, failures: [String: String]) -> SuggestionState {
+        if busy.contains(id) { return .creating }
+        if created.contains(id) { return .created }
+        if let reason = failures[id] { return .failed(reason) }
+        return .ready
+    }
+
+    /// The row's line in "Show N more: …".
+    static func shortLabel(_ row: NeedRow) -> String {
+        switch row.kind {
+        case .olderToSort: row.title.replacingOccurrences(of: "Sort", with: "sort")
+        case .heldVoices: row.title.replacingOccurrences(of: "Name", with: "name")
+        case .memories: row.title.replacingOccurrences(of: "Review", with: "review")
+        case .dictation: row.title.replacingOccurrences(of: "Check", with: "check")
+        default: row.title
+        }
+    }
+
+    // MARK: Quiet hours
+
+    /// After 6 PM and before 6 AM local, and on weekends.
+    static func isQuiet(now: Date, enabled: Bool, calendar: Calendar = .current) -> Bool {
+        guard enabled else { return false }
+        let hour = calendar.component(.hour, from: now)
+        return calendar.isDateInWeekend(now) || hour >= 18 || hour < 6
+    }
+
+    /// Under quiet hours, tiers 2 to 5 fold under "For tomorrow". Session questions never fold. Running is not in here.
+    static func fold(_ rows: [NeedRow], quiet: Bool) -> (now: [NeedRow], tomorrow: [NeedRow]) {
+        guard quiet else { return (rows, []) }
+        return (rows.filter { $0.tier == 1 }, rows.filter { $0.tier != 1 })
+    }
+
+    static func tomorrowLine(_ rows: [NeedRow]) -> String {
+        rows.count == 1 ? "For tomorrow: 1 more thing" : "For tomorrow: \(rows.count) more things"
+    }
+
+    // MARK: Sources and states (section 7)
+
+    enum Source: String, CaseIterable { case sessions, voices, memories, work, dictation
+        var name: String {
+            switch self {
+            case .sessions: "sessions"
+            case .voices: "voices"
+            case .memories: "memories"
+            case .work: "Work"
+            case .dictation: "dictation"
+            }
+        }
+    }
+
+    /// Each source as its loader left it, plus whether the server answers at all. `reachable` false comes only from a
+    /// transport failure (the status loop, or a tick where nothing answered), never from one source's error.
+    struct SourceInputs: Equatable {
+        var reachable = true
+        var sessions: ActivityHome.SourceState = .pending
+        var voices: ActivityHome.SourceState = .pending
+        var memories: ActivityHome.SourceState = .pending
+        var work: ActivityHome.SourceState = .pending
+        /// Work's Intake read failed (a Create task refusal is not a read failure).
+        var intakeFailed = false
+        var dictation: ActivityHome.SourceState = .answered
+    }
+
+    /// The states every surface reads. Unreachable: the server's sources failed (sessions are this Mac's). Intake failing
+    /// fails Work.
+    static func sourceStates(_ input: SourceInputs) -> [Source: ActivityHome.SourceState] {
+        func server(_ state: ActivityHome.SourceState) -> ActivityHome.SourceState { input.reachable || state == .off ? state : .failed }
+        var work = server(input.work)
+        if input.intakeFailed, work != .off { work = .failed }
+        return [.sessions: input.sessions, .voices: server(input.voices), .memories: server(input.memories), .work: work, .dictation: input.dictation]
+    }
+
+    /// Every source that applies answered. Only then may anything say "nothing" ("Nothing is waiting on you", "Every voice has
+    /// a name", "Nothing to sort").
+    static func settled(_ states: [Source: ActivityHome.SourceState]) -> Bool {
+        let counted = Source.allCases.map { states[$0] ?? .pending }.filter { $0 != .off }
+        return !counted.isEmpty && counted.allSatisfy { $0 == .answered }
+    }
+    static func answered(_ source: Source, _ states: [Source: ActivityHome.SourceState]) -> Bool { states[source] == .answered }
+
+    enum NeedsLine: Equatable { case loading, rows, caughtUp }
+
+    /// Rows when anything waits. "Nothing is waiting on you" only once every source that applies answered: never while one
+    /// is loading or after one failed.
+    static func needsLine(rows: Int, states: [Source: ActivityHome.SourceState]) -> NeedsLine {
+        if rows > 0 { return .rows }
+        return settled(states) ? .caughtUp : .loading
+    }
+    static func failed(_ states: [Source: ActivityHome.SourceState]) -> [Source] { Source.allCases.filter { states[$0] == .failed } }
+    static func failureLine(_ source: Source) -> String { "Couldn't read \(source.name). Try again" }
+    static let caughtUpLine = "Nothing is waiting on you."
+    static let loadingLine = "Reading sessions and Work"
+    static let unreachableLine = "Voices, memories and Work are on the server. Try again"
+    static func checkedLine(_ at: Date, states: [Source: ActivityHome.SourceState], calendar: Calendar = .current) -> String {
+        let names = Source.allCases.filter { (states[$0] ?? .pending) != .off }.map(\.name)
+        return "Checked " + list(names) + " at " + clock(at, calendar: calendar) + "."
+    }
+
+    // MARK: Counts (B3): one struct read by the rail, the headers, the brief and the cards
+
+    struct Counts: Equatable {
+        var needs = 0
+        var running = 0
+        var sessionsWaiting = 0
+        var agentsWorking = 0
+        var finishedHour = 0
+        var glassesQuestions = 0
+        var recording = false
+        var routinesRunning = 0
+        var voicesToName: Int?
+        var memoriesToReview: Int?
+        var memoriesTotal: Int?
+        var oldestReview: Date?
+        var workNeedsYou: Int?
+        var olderToSort: Int?
+        var todaySuggestions: Int?
+        var meetingsReady: Int?
+        var latestMeetingToday: String?
+        var threadsActive: Int?
+        var newestThread: String?
+        var dictationLast: Date?
+        var dictationFixes = 0
+        var nextEvent: NextEvent?
+        /// True only when the server said it read the calendar (welcome-context `calendarRead`); nil or false says nothing.
+        var calendarRead = false
+        var morningBrief: Date?
+        var lastMessage: Date?
+        /// Every source answered; until then nothing says "nothing".
+        var settled = false
+        /// The session list answered (until then nothing says no agents are running).
+        var sessionsKnown = false
+        var failedSources: [Source] = []
+    }
+
+    static let agentPlatforms: Set<Platform> = [.claudeCode, .claude, .codex, .codexCLI, .cursor, .work]
+
+    static func counts(needs: [NeedRow], running: [RunRow], finished: [RunRow]) -> Counts {
+        var c = Counts()
+        c.needs = needs.count
+        c.sessionsWaiting = needs.filter { $0.kind == .session }.count
+        c.running = running.count
+        c.agentsWorking = running.filter { agentPlatforms.contains($0.platform) }.count
+        c.glassesQuestions = running.filter { $0.platform == .question }.count
+        c.recording = running.contains { $0.platform == .glasses }
+        c.routinesRunning = running.filter { $0.platform == .routine }.count
+        c.finishedHour = finished.count
+        return c
+    }
+
+    // MARK: Composition: the one frame the rail, the home and every count read
+
+    /// Facts for the story cards, read from the model by the window (nil: not loaded).
+    struct CardFacts: Equatable {
+        var memoriesToReview: Int?
+        var memoriesTotal: Int?
+        var oldestReview: Date?
+        var meetingsReady: Int?
+        var latestMeetingToday: String?
+        var threadsActive: Int?
+        var newestThread: String?
+        var dictationLast: Date?
+        var dictationFixes = 0
+        var calendarRead: Bool?
+        var morningBrief: Date?
+        var lastMessage: Date?
+        /// The voice groups loaded (Speakers answered); nil while not.
+        var voicesLoaded = false
+        var yourMoveLoaded = false
+    }
+
+    struct HomeInputs {
+        var run = RunInputs()
+        var need = NeedInputs()
+        var sources = SourceInputs()
+        var facts = CardFacts()
+        var split: IntakeSplit?
+    }
+
+    struct Frame {
+        let needs: [NeedRow]
+        let running: [RunRow]
+        let finished: [RunRow]
+        let counts: Counts
+        let states: [Source: ActivityHome.SourceState]
+        let line: NeedsLine
+        let reachable: Bool
+        let split: IntakeSplit?
+    }
+
+    /// The whole home from its inputs. Unreachable: Needs you keeps this Mac's sessions only. A source that has not answered
+    /// gives nil to every count that reads it, so no surface can say "nothing" for it.
+    static func compose(_ input: HomeInputs) -> Frame {
+        let states = sourceStates(input.sources)
+        let reachable = input.sources.reachable
+        var need = input.need
+        if !reachable {
+            need.voiceGroups = nil; need.meetingsToName = []; need.yourMove = nil; need.memoriesToReview = nil; need.olderToSort = nil
+        }
+        if states[.work] != .answered { need.olderToSort = nil }
+        let needs = things(need)
+        let running = inFlight(input.run)
+        let finished = finishedRows(input.run)
+        var c = counts(needs: needs, running: running, finished: finished)
+        let facts = input.facts
+        c.voicesToName = answered(.voices, states) && facts.voicesLoaded ? needs.filter { $0.kind == .voice || $0.kind == .meetingVoices || $0.kind == .heldVoices }.reduce(0) { $0 + ($1.kind == .voice ? 1 : $1.items) } : nil
+        c.memoriesToReview = answered(.memories, states) ? facts.memoriesToReview : nil
+        c.memoriesTotal = c.memoriesToReview == nil ? nil : facts.memoriesTotal
+        c.oldestReview = facts.oldestReview
+        c.workNeedsYou = answered(.work, states) && facts.yourMoveLoaded ? needs.filter { $0.kind == .work }.count : nil
+        c.olderToSort = answered(.work, states) ? input.split?.olderCount : nil
+        c.todaySuggestions = answered(.work, states) ? input.split?.todayCount : nil
+        c.meetingsReady = reachable ? facts.meetingsReady : nil
+        c.latestMeetingToday = facts.latestMeetingToday
+        c.threadsActive = reachable ? facts.threadsActive : nil
+        c.newestThread = facts.newestThread
+        c.dictationLast = facts.dictationLast
+        c.dictationFixes = facts.dictationFixes
+        c.nextEvent = input.run.event.flatMap { $0.start.timeIntervalSince(input.run.now) > -3600 ? $0 : nil }
+        c.calendarRead = facts.calendarRead == true
+        c.morningBrief = facts.morningBrief
+        c.lastMessage = facts.lastMessage
+        c.settled = settled(states)
+        c.sessionsKnown = answered(.sessions, states)
+        c.failedSources = failed(states)
+        return Frame(needs: needs, running: running, finished: finished, counts: c, states: states,
+                     line: needsLine(rows: needs.count, states: states), reachable: reachable,
+                     split: reachable && states[.work] == .answered ? input.split : nil)
+    }
+
+    // MARK: Brief (zero LLM, fixed templates)
+
+    static func number(_ n: Int, capital: Bool = false) -> String {
+        let words = ["no", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"]
+        let w = n >= 0 && n < words.count ? words[n] : "\(n)"
+        return capital ? w.prefix(1).uppercased() + w.dropFirst() : w
+    }
+
+    static func list(_ parts: [String]) -> String {
+        switch parts.count {
+        case 0: ""
+        case 1: parts[0]
+        default: parts.dropLast().joined(separator: ", ") + " and " + parts.last!
+        }
+    }
+
+    /// Formatters are made once per format and time zone (the home draws every minute on every tab).
+    nonisolated(unsafe) private static var formatters: [String: DateFormatter] = [:]
+    private static let formatterLock = NSLock()
+    static func format(_ date: Date, _ pattern: String, calendar: Calendar) -> String {
+        formatterLock.lock(); defer { formatterLock.unlock() }
+        let key = pattern + "|" + calendar.timeZone.identifier
+        let f = formatters[key] ?? {
+            let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX"); f.timeZone = calendar.timeZone; f.dateFormat = pattern
+            formatters[key] = f
+            return f
+        }()
+        return f.string(from: date)
+    }
+    static func clock(_ date: Date, calendar: Calendar = .current) -> String { format(date, "h:mm a", calendar: calendar) }
+    static func monthDay(_ date: Date, calendar: Calendar = .current) -> String { format(date, "MMM d", calendar: calendar) }
+    /// "Wednesday, October 21, 2:47 PM".
+    static func headerDate(_ date: Date, calendar: Calendar = .current) -> String { format(date, "EEEE, MMMM d, h:mm a", calendar: calendar) }
+
+    /// Fixed templates over the counts. "Nothing is waiting on you" only once every source answered; until then the
+    /// brief says only what it knows, or that it is still reading (or what it could not read). The calendar is "clear"
+    /// only when the server said it read it.
+    static func brief(_ c: Counts, calendar: Calendar = .current) -> String {
+        var first: String?
+        if c.sessionsWaiting > 0 {
+            first = number(c.sessionsWaiting, capital: true) + (c.sessionsWaiting == 1 ? " session is waiting on you" : " sessions are waiting on you")
+        } else if c.needs > 0 {
+            first = number(c.needs, capital: true) + (c.needs == 1 ? " thing needs you" : " things need you") + (c.settled ? "" : " so far")
+        } else if c.settled {
+            first = "Nothing is waiting on you"
+        }
+        if let event = c.nextEvent {
+            let words = event.title + " starts at " + clock(event.start, calendar: calendar)
+            first = first.map { $0 + ", and " + words } ?? words
+        } else if c.calendarRead {
+            first = first.map { $0 + ", and your calendar is clear for the rest of the day" } ?? "Your calendar is clear for the rest of the day"
+        }
+        var parts: [String] = []
+        if c.agentsWorking > 0 { parts.append(number(c.agentsWorking) + (c.agentsWorking == 1 ? " agent is working" : " agents are working")) }
+        if c.glassesQuestions > 0 {
+            parts.append(c.glassesQuestions == 1 ? "COS is answering a question" : "COS is answering " + number(c.glassesQuestions) + " questions")
+        }
+        if c.routinesRunning > 0 { parts.append(c.routinesRunning == 1 ? "a routine is running" : number(c.routinesRunning) + " routines are running") }
+        if c.recording { parts.append("the glasses are recording") }
+        var sentences: [String] = []
+        if let first { sentences.append(first + ".") }
+        if !parts.isEmpty { let second = list(parts); sentences.append(second.prefix(1).uppercased() + second.dropFirst() + ".") }
+        if !c.settled && c.needs == 0 {
+            sentences.append(c.failedSources.isEmpty ? "Still reading what needs you."
+                             : "Couldn't read " + list(c.failedSources.map(\.name)) + ", so this may not be everything.")
+        }
+        return sentences.joined(separator: " ")
+    }
+
+    // MARK: Rail stories (one line per tab; the same counts the tab lists)
+
+    struct Story: Equatable {
+        let text: String
+        let hot: Bool
+    }
+
+    /// `tab`: "today" or an ActivitySection raw value.
+    static func story(_ tab: String, _ c: Counts, now: Date, calendar: Calendar = .current) -> Story {
+        switch tab {
+        case "today":
+            let needs: String?
+            if c.needs > 0 { needs = c.needs == 1 ? "1 needs you" : "\(c.needs) need you" }
+            else if c.settled { needs = "Nothing needs you" }
+            else { needs = c.failedSources.isEmpty ? "Reading" : "Couldn't read " + list(c.failedSources.map(\.name)) }
+            let running = c.running > 0 ? "\(c.running) running" : nil
+            return Story(text: [needs, running].compactMap { $0 }.joined(separator: ", "), hot: c.needs > 0)
+        case "messages":
+            if let brief = c.morningBrief, calendar.isDate(brief, inSameDayAs: now) {
+                return Story(text: "Morning brief reached the glasses at " + clock(brief, calendar: calendar), hot: false)
+            }
+            if let last = c.lastMessage, calendar.isDate(last, inSameDayAs: now) {
+                return Story(text: "Last from the glasses at " + clock(last, calendar: calendar), hot: false)
+            }
+            return Story(text: "Questions and answers from your glasses", hot: false)
+        case "speakers":
+            guard let n = c.voicesToName else { return Story(text: "Voices from your meetings", hot: false) }
+            return n > 0 ? Story(text: n == 1 ? "1 voice to name" : "\(n) voices to name", hot: true) : Story(text: "Every voice has a name", hot: false)
+        case "meetings":
+            var bits: [String] = []
+            if let ready = c.meetingsReady, ready > 0 { bits.append("\(ready) ready to review") }
+            if let event = c.nextEvent { bits.append((bits.isEmpty ? "Next at " : "next at ") + clock(event.start, calendar: calendar)) }
+            return Story(text: bits.isEmpty ? "Saved meetings by day" : bits.joined(separator: ", "), hot: false)
+        case "memories":
+            guard let n = c.memoriesToReview else { return Story(text: "What your COS can recall", hot: false) }
+            return n > 0 ? Story(text: memoriesStory(n, total: c.memoriesTotal), hot: true) : Story(text: "Nothing to review", hot: false)
+        case "threads":
+            guard let active = c.threadsActive, active > 0 else { return Story(text: "Work that develops over time", hot: false) }
+            return Story(text: "\(active) active" + (c.newestThread.map { ", newest " + ActivityHome.clip($0, 40) } ?? ""), hot: false)
+        case "sessions":
+            let working = c.agentsWorking
+            if c.sessionsWaiting == 0 && working == 0 { return Story(text: c.sessionsKnown ? "No agents running" : "Claude, Codex and Cursor on this Mac", hot: false) }
+            var bits: [String] = []
+            if c.sessionsWaiting > 0 { bits.append("\(c.sessionsWaiting) waiting on you") }
+            if working > 0 { bits.append("\(working) working") }
+            return Story(text: bits.joined(separator: ", "), hot: c.sessionsWaiting > 0)
+        case "work", "tasks":
+            var bits: [String] = []
+            if let n = c.workNeedsYou, n > 0 { bits.append(n == 1 ? "1 needs you" : "\(n) need you") }
+            if let n = c.olderToSort, n > 0 { bits.append("\(n) older to sort") }
+            if !bits.isEmpty { return Story(text: bits.joined(separator: ", "), hot: c.workNeedsYou ?? 0 > 0) }
+            return Story(text: c.olderToSort == nil || c.workNeedsYou == nil ? "Your tasks and meeting follow-ups" : "Nothing to sort", hot: false)
+        case "dictation":
+            var text = c.dictationLast.map { calendar.isDate($0, inSameDayAs: now) ? "Last at " + clock($0, calendar: calendar) : "Last on " + monthDay($0, calendar: calendar) } ?? "Dictate anywhere on this Mac"
+            if c.dictationFixes > 0 { text += c.dictationFixes == 1 ? ", 1 fix waiting" : ", \(c.dictationFixes) fixes waiting" }
+            return Story(text: text, hot: c.dictationFixes > 0)
+        default:
+            return Story(text: "", hot: false)
+        }
+    }
+
+    // MARK: Story cards ("Activity / Views into the work your COS already holds.")
+
+    struct StoryCard: Equatable {
+        var tag: String?
+        var story: String
+        var sub: String?
+        var foot: String?
+        var hot: Bool { tag != nil }
+    }
+
+    static func card(_ tab: String, _ c: Counts, now: Date, calendar: Calendar = .current) -> StoryCard {
+        switch tab {
+        case "messages":
+            if let brief = c.morningBrief, calendar.isDate(brief, inSameDayAs: now) {
+                return StoryCard(story: "Your morning brief reached the glasses at " + clock(brief, calendar: calendar) + ".", sub: "Open Messages to read it again.")
+            }
+            if let last = c.lastMessage, calendar.isDate(last, inSameDayAs: now) {
+                return StoryCard(story: "Your last question from the glasses was at " + clock(last, calendar: calendar) + ".")
+            }
+            return StoryCard(story: "Questions and answers from your glasses land here.")
+        case "speakers":
+            guard let n = c.voicesToName else { return StoryCard(story: "The voices from your meetings, by name.") }
+            if n == 0 { return StoryCard(story: "Every voice from your meetings has a name.") }
+            return StoryCard(tag: "\(n) to name", story: n == 1 ? "One new voice is waiting for a name." : number(n, capital: true) + " new voices are waiting for names.",
+                             sub: n == 1 ? "Its suggestion is in Needs you." : "Their suggestions are in Needs you.")
+        case "meetings":
+            let next = c.nextEvent.map { "Next is \($0.title) at " + clock($0.start, calendar: calendar) + "." }
+            let foot = c.nextEvent.map { "Next at " + clock($0.start, calendar: calendar) }
+            guard let ready = c.meetingsReady else { return StoryCard(story: "Saved meetings, by day.", sub: next, foot: foot) }
+            if ready == 0 { return StoryCard(story: "Every saved meeting has been reviewed.", sub: next, foot: foot) }
+            let story = c.latestMeetingToday.map { $0 + " is saved and ready to review." }
+                ?? (ready == 1 ? "One meeting is ready to review." : number(ready, capital: true) + " meetings are ready to review.")
+            let sub = next ?? ""
+            return StoryCard(tag: "\(ready) to review", story: story, sub: sub.isEmpty ? nil : sub, foot: foot)
+        case "memories":
+            guard let n = c.memoriesToReview else { return StoryCard(story: "What your COS can recall.") }
+            if n == 0 { return StoryCard(story: "Nothing COS learned is waiting on you.") }
+            return StoryCard(tag: "\(n) to review", story: "\(n) new " + (n == 1 ? "thing COS learned is" : "things COS learned are") + " waiting for a keep or drop.",
+                             sub: c.oldestReview.map { "The oldest has waited since " + monthDay($0, calendar: calendar) + "." })
+        case "threads":
+            guard let active = c.threadsActive, active > 0 else { return StoryCard(story: "No threads are active.") }
+            if let newest = c.newestThread {
+                return StoryCard(story: newest + " is the newest of \(active) active " + (active == 1 ? "thread." : "threads."), foot: "\(active) active")
+            }
+            return StoryCard(story: "\(active) " + (active == 1 ? "thread is" : "threads are") + " active.", foot: "\(active) active")
+        case "sessions":
+            let tag = c.sessionsWaiting > 0 ? "\(c.sessionsWaiting) waiting" : nil
+            var story: String
+            if c.agentsWorking == 0 && c.finishedHour == 0 { story = c.sessionsKnown ? "No agents are running." : "Claude, Codex and Cursor sessions on this Mac." }
+            else {
+                story = c.agentsWorking == 0 ? "No agents are working" : "\(c.agentsWorking) " + (c.agentsWorking == 1 ? "agent is working" : "agents are working")
+                if c.finishedHour > 0 { story += " and \(c.finishedHour) finished in the last hour" }
+                story += "."
+            }
+            let sub = c.sessionsWaiting == 0 ? nil : (c.sessionsWaiting == 1 ? "The waiting session is at the top of Needs you." : "The waiting sessions are at the top of Needs you.")
+            return StoryCard(tag: tag, story: story, sub: sub)
+        case "work", "tasks":
+            let tag = (c.workNeedsYou ?? 0) > 0 ? "\(c.workNeedsYou!) needs you" : nil
+            guard let older = c.olderToSort else { return StoryCard(tag: tag, story: "Your tasks, and what your meetings asked for.") }
+            if older == 0 { return StoryCard(tag: tag, story: "Nothing is waiting to be sorted.") }
+            return StoryCard(tag: tag, story: "\(older) older " + (older == 1 ? "suggestion is" : "suggestions are") + " waiting to be sorted.",
+                             sub: "Today's suggestions stay on Today until midnight.")
+        case "dictation":
+            let story = c.dictationLast.map { calendar.isDate($0, inSameDayAs: now) ? "Your last dictation was at " + clock($0, calendar: calendar) + "."
+                : "Your last dictation was on " + monthDay($0, calendar: calendar) + "." } ?? "Dictate anywhere on this Mac."
+            let sub = c.dictationFixes > 0 ? (c.dictationFixes == 1 ? "1 fix is waiting." : "\(c.dictationFixes) fixes are waiting.") : (c.dictationLast == nil ? nil : "No fixes are waiting.")
+            return StoryCard(tag: c.dictationFixes > 0 ? "\(c.dictationFixes) to check" : nil, story: story, sub: sub)
+        default:
+            return StoryCard(story: "")
+        }
+    }
+}
+
+/// Prep me and Return in the Ask box each start one Work run (a `claude -p` on the COS server): bounded here, on the
+/// Control side, because the admission route has no per-day cap or breaker. Cap: 20 home-started runs per local day. Switch:
+/// Settings, "Start Work runs from Today". Breaker: 3 admission failures in a row pause home starts for 15 minutes. One run in
+/// flight per target (a meeting, or an ask). Work's own New is never counted or blocked.
+struct TodayRunGuard {
+    static let dailyCap = 20
+    static let breakerFailures = 3
+    static let breakerPause: TimeInterval = 15 * 60
+    static let dayKey = "activityTodayRunDay"
+    static let countKey = "activityTodayRunCount"
+    static let failuresKey = "activityTodayRunFailures"
+    static let pausedKey = "activityTodayRunPausedUntil"
+
+    enum Admission: Equatable {
+        case allowed
+        case switchOff
+        case capReached
+        case paused(until: Date)
+        case inFlight
+    }
+
+    let defaults: UserDefaults
+    var calendar = Calendar.current
+
+    func used(now: Date) -> Int {
+        defaults.string(forKey: Self.dayKey) == ActivityHome.dayKey(now, calendar: calendar) ? defaults.integer(forKey: Self.countKey) : 0
+    }
+    func pausedUntil(now: Date) -> Date? {
+        let raw = defaults.double(forKey: Self.pausedKey)
+        guard raw > 0 else { return nil }
+        let until = Date(timeIntervalSince1970: raw)
+        return until > now ? until : nil
+    }
+
+    func admission(target: String, inFlight: Set<String>, switchOn: Bool, now: Date) -> Admission {
+        guard switchOn else { return .switchOff }
+        if inFlight.contains(target) { return .inFlight }
+        if let until = pausedUntil(now: now) { return .paused(until: until) }
+        if used(now: now) >= Self.dailyCap { return .capReached }
+        return .allowed
+    }
+
+    /// Counted when the run is asked for, before the server answers: a refused start still used a try.
+    func recordStart(now: Date) {
+        let today = ActivityHome.dayKey(now, calendar: calendar)
+        let count = defaults.string(forKey: Self.dayKey) == today ? defaults.integer(forKey: Self.countKey) : 0
+        defaults.set(today, forKey: Self.dayKey)
+        defaults.set(count + 1, forKey: Self.countKey)
+    }
+
+    func recordOutcome(admitted: Bool, now: Date) {
+        guard !admitted else { defaults.set(0, forKey: Self.failuresKey); return }
+        let failures = defaults.integer(forKey: Self.failuresKey) + 1
+        if failures >= Self.breakerFailures {
+            defaults.set(now.addingTimeInterval(Self.breakerPause).timeIntervalSince1970, forKey: Self.pausedKey)
+            defaults.set(0, forKey: Self.failuresKey)
+        } else {
+            defaults.set(failures, forKey: Self.failuresKey)
+        }
+    }
+
+    /// How one start ended. `notStarted`: refused before anything was recorded (Work was busy, an earlier run holds the
+    /// target, no model): never a start and never a breaker failure. `refused`: the server did not admit it.
+    enum Outcome: Equatable { case notStarted(String), admitted, refused(String) }
+    static func outcome(receiptStatus: String?, error: String?) -> Outcome {
+        guard let status = receiptStatus else { return .notStarted(error ?? "Nothing was started.") }
+        if ["refused", "failed"].contains(status) { return .refused(error ?? "The server did not start it.") }
+        return .admitted
+    }
+    /// The cap and the breaker count only starts that reached the server.
+    func account(_ outcome: Outcome, now: Date) {
+        switch outcome {
+        case .notStarted: break
+        case .admitted: recordStart(now: now); recordOutcome(admitted: true, now: now)
+        case .refused: recordStart(now: now); recordOutcome(admitted: false, now: now)
+        }
+    }
+    /// Checked before anything is recorded: Work is sending something else, or an earlier run still holds this target.
+    static func preflight(busy: Bool, holds: Bool) -> String? {
+        if busy { return "Work is sending something else. Try again in a moment." }
+        if holds { return "This already has a run in Work. It shows in Sessions." }
+        return nil
+    }
+
+    /// The words on the button when a start is not allowed.
+    static func line(_ admission: Admission, calendar: Calendar = .current) -> String? {
+        switch admission {
+        case .allowed, .switchOff: nil
+        case .capReached: "Today's limit on this Mac is reached. Open Work to start more."
+        case .paused(let until): "Paused after 3 failed starts. Try again at " + TodayHome.clock(until, calendar: calendar) + "."
+        case .inFlight: "Prep in Sessions"
+        }
+    }
+}
+
+/// The Today home's tick loop, apart from the view so a test can run it on a fake clock. One tick at a time; a tick only
+/// while the window is visible (never minimized, hidden or closed); the first only after the window's opening loads are
+/// done; a window that comes back gets a tick at once when the last is a minute old.
+enum TodayTickLoop {
+    static let interval: TimeInterval = 60
+    static let step: TimeInterval = 1
+    static let readyLimit: TimeInterval = 60
+
+    @MainActor
+    static func run(now: () -> Date, visible: () -> Bool, ready: () -> Bool, tick: () async -> Void,
+                    wait: (TimeInterval) async -> Bool) async {
+        let start = now()
+        while !ready(), now().timeIntervalSince(start) < readyLimit {
+            guard await wait(0.5) else { return }
+        }
+        var last: Date?
+        while true {
+            if visible(), last.map({ now().timeIntervalSince($0) >= interval }) ?? true {
+                last = now()
+                await tick()
+            }
+            guard await wait(step) else { return }
+        }
     }
 }

@@ -1672,6 +1672,11 @@ struct WorkWorkspaceView: View {
     private var intakeTitle: String {
         let count = model.workIntake.newCount + WorkSortGroup.mentioned(model.workTasks, catchUp: false, domain: nil).count
         if !model.workIntake.available || model.workIntakeError != nil { return "Intake · !" }
+        // Activity Today on: the same older count the rail and Needs you show (TodayHome.intakeSplit).
+        if TodayHome.enabled(.standard) {
+            let older = TodayHome.intakeSplit(items: model.workIntake.items, tasks: model.workTasks, now: Date()).olderCount
+            return older > 0 ? "Sort · \(older) older" : "Sort"
+        }
         return count > 0 ? "Sort · \(count) new" : "Sort"
     }
 
@@ -3269,27 +3274,40 @@ struct WorkIntakeView: View {
     @State private var keepingGroup = false
     @State private var sortStarted = Date()
     @FocusState private var keyboardFocus: Bool
+    /// Activity Today (plan v2, D2): with the Today home on, today's meetings belong to Today, and Sort holds only the
+    /// older ones (TodayHome.intakeSplit, the same filter the home and the rail count).
+    @AppStorage(TodayHome.enabledKey) private var todayHome = false
+    private static func only(_ snapshot: WorkIntakeSnapshot, _ items: [WorkIntakeItem]) -> WorkIntakeSnapshot {
+        var next = snapshot; next.items = items; return next
+    }
 
     var body: some View {
-        let snapshot = model.workIntake.daily(catchUp: catchUp, domain: domain)
-        let cards = WorkSortGroup.mentioned(model.workTasks, catchUp: catchUp, domain: domain)
+        // Computed only with Today on: the switch-off path reads nothing new.
+        let split = todayHome ? TodayHome.intakeSplit(items: model.workIntake.items, tasks: model.workTasks, now: Date()) : TodayHome.IntakeSplit()
+        let snapshot = todayHome ? Self.only(model.workIntake, split.older.filter { domain == nil || $0.meeting.domain == domain }) : model.workIntake.daily(catchUp: catchUp, domain: domain)
+        let cards = todayHome ? split.olderCards.filter { domain == nil || $0.domain == domain } : WorkSortGroup.mentioned(model.workTasks, catchUp: catchUp, domain: domain)
         let groups = WorkSortGroup.groups(snapshot: snapshot, cards: cards)
         let selected = groups.isEmpty ? nil : groups[min(groupIndex, groups.count - 1)]
         VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .firstTextBaseline) {
-                Text(catchUp ? "Catch up" : "Sort today").font(COSType.display(19, weight: .medium))
-                Text(catchUp ? "Older items, at your pace" : "New since yesterday").font(COSType.body(11.5)).foregroundStyle(COSPalette.muted)
+                Text(todayHome ? "Sort" : (catchUp ? "Catch up" : "Sort today")).font(COSType.display(19, weight: .medium))
+                Text(todayHome ? "From meetings before today. Today's stay on Today until midnight." : (catchUp ? "Older items, at your pace" : "New since yesterday")).font(COSType.body(11.5)).foregroundStyle(COSPalette.muted)
                 Spacer()
                 if model.workIntakeLoading { ProgressView().controlSize(.small) }
                 Button { Task { await model.loadWorkIntake() } } label: { Image(systemName: "arrow.clockwise") }
                     .buttonStyle(COSIconButtonStyle()).help("Refresh Intake")
             }.padding(.horizontal, 18).padding(.vertical, 12)
-            HStack {
+            if !todayHome { HStack {
                 Button("Today · \(model.workIntake.daily(catchUp: false, domain: domain).openCount + WorkSortGroup.mentioned(model.workTasks, catchUp: false, domain: domain).count) new") { catchUp = false; expiredOpen = false; groupIndex = 0 }.buttonStyle(COSQuietButtonStyle())
                 Button("Catch up · \(model.workIntake.daily(catchUp: true, domain: domain).openCount + WorkSortGroup.mentioned(model.workTasks, catchUp: true, domain: domain).count)") { catchUp = true; expiredOpen = false; groupIndex = 0 }.buttonStyle(COSTextButtonStyle())
                 Spacer()
                 if model.workUndoBatch != nil { Button("Undo last decision") { Task { await model.undoWorkIntake() } }.buttonStyle(COSTextButtonStyle()) }
-            }.padding(.horizontal, 18).padding(.bottom, 10)
+            }.padding(.horizontal, 18).padding(.bottom, 10) }
+            // Activity Today on: the Today/Catch up row is gone, and Undo last decision (also a Create task from Today) stays.
+            if todayHome, model.workUndoBatch != nil {
+                HStack { Spacer(); Button("Undo last decision") { Task { await model.undoWorkIntake() } }.buttonStyle(COSTextButtonStyle()) }
+                    .padding(.horizontal, 18).padding(.bottom, 10)
+            }
             HStack {
                 Button("Expired this week: \(model.workExpiredWeekly), \(model.workExpiredYours) yours") { expiredOpen.toggle(); Task { await model.loadWorkExpiry() } }.buttonStyle(COSTextButtonStyle())
                 Text("Restore within 30 days").font(COSType.body(11)).foregroundStyle(COSPalette.muted)
