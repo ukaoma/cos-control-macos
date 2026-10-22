@@ -8357,7 +8357,7 @@ extension ActivityWindow {
         return VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 10) {
                 Image(systemName: runs ? "sparkle" : "tray.and.arrow.down").font(.system(size: 14, weight: .medium)).foregroundStyle(TodayInk.grey).accessibilityHidden(true)
-                TextField(runs ? "Ask COS. Return starts a run, Option-Return files a task" : "Capture a task. Return files it to Work", text: $todayAsk)
+                TextField(runs ? "Ask COS: Return runs it, Option-Return files it" : "Capture a task: Return files it to Work", text: $todayAsk)
                     .textFieldStyle(.plain)
                     .font(COSType.body(14))
                     .foregroundStyle(TodayInk.ink)
@@ -8682,8 +8682,11 @@ extension ActivityWindow {
                 Text("Next up").font(COSType.body(17, weight: .semibold)).foregroundStyle(TodayInk.ink).accessibilityAddTraits(.isHeader)
                 if let event {
                     let target = "today:prep:" + ActivityHome.dayKey(now) + ":" + event.title
-                    let admission = TodayRunGuard(defaults: .standard).admission(target: target, inFlight: TodayHomeStore.inFlightTargets(handoffStore.receipts),
-                                                                               switchOn: TodayHome.workRunsOn(.standard), now: now)
+                    // Server not reachable: Prep me would only be refused, so it is not offered.
+                    let admission: TodayRunGuard.Admission = frame.reachable
+                        ? TodayRunGuard(defaults: .standard).admission(target: target, inFlight: TodayHomeStore.inFlightTargets(handoffStore.receipts),
+                                                                      switchOn: TodayHome.workRunsOn(.standard), now: now)
+                        : .switchOff
                     ViewThatFits(in: .horizontal) {
                         HStack(alignment: .center, spacing: 12) { todayEventWords(event, now: now); Spacer(minLength: 8); todayPrepButtons(event, target: target, admission: admission) }
                         VStack(alignment: .leading, spacing: 10) { todayEventWords(event, now: now); todayPrepButtons(event, target: target, admission: admission) }

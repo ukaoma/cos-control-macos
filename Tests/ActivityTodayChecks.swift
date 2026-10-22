@@ -446,6 +446,9 @@ import Foundation
         let event = TodayHome.nextEvent(.object(["title": .string("Northwind renewal"), "time": .string(iso(at("2026-10-21 15:30"))), "inMinutes": .number(43)]), now: now, calendar: calendar)
         check(event?.title == "Northwind renewal" && event.map { TodayHome.eventWhen($0, now: now) } == "In 43 min", "one next event, its minutes from now")
         check(TodayHome.nextEvent(.object(["title": .string("Tomorrow"), "time": .string(iso(at("2026-10-22 09:00")))]), now: now, calendar: calendar) == nil, "an event not today is not Next up")
+        // QA round 1 (item 26): a calendar time with no zone is local.
+        let naive = TodayHome.nextEvent(.object(["title": .string("Standup"), "time": .string("2026-10-21T15:30:00")]), now: now, calendar: calendar)
+        check(naive.map { TodayHome.clock($0.start, calendar: calendar) } == "3:30 PM", "a naive calendar time is read as local", naive.map { "\($0.start)" } ?? "nil")
         check(TodayHome.ActiveJob(.object(["origin": .string("person")])) == nil, "a job without an id is dropped")
         let routine = TodayHome.RoutineRun(.object(["id": .string("rr1"), "label": .string("Morning brief"), "firedAt": .string(iso(at("2026-10-21 14:40")))]))
         check(routine?.label == "Morning brief", "a routine run keeps its label")
@@ -471,6 +474,7 @@ import Foundation
               "unreachable: the server's sources are failed, sessions are not")
         check(!off.counts.settled && off.counts.voicesToName == nil && off.counts.memoriesToReview == nil && off.counts.olderToSort == nil,
               "unreachable: no count that reads the server")
+        check(off.split == nil, "unreachable: today's suggestions are not offered (Create task would fail)")
         check(TodayHome.story("speakers", off.counts, now: now, calendar: calendar).text != "Every voice has a name"
               && TodayHome.story("work", off.counts, now: now, calendar: calendar).text != "Nothing to sort", "unreachable: no false nothing on the rail")
         // Empty and unreachable: never caught up.

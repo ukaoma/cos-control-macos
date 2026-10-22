@@ -12668,7 +12668,8 @@ enum TodayHome {
         c.settled = settled(states)
         c.failedSources = failed(states)
         return Frame(needs: needs, running: running, finished: finished, counts: c, states: states,
-                     line: needsLine(rows: needs.count, states: states), reachable: reachable, split: input.split)
+                     line: needsLine(rows: needs.count, states: states), reachable: reachable,
+                     split: reachable && states[.work] == .answered ? input.split : nil)
     }
 
     // MARK: Brief (zero LLM, fixed templates)
