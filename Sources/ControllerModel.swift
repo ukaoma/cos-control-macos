@@ -4155,6 +4155,12 @@ final class ControllerModel: ObservableObject {
     @Published var workYourMoveAvailable = false
     @Published var workYourMoveTotal = 0
     private var yourMoveGeneration = 0
+    /// Activity Today home (plan v2): its one helper call per home tick (`activity-today`) and its one-at-a-time intake
+    /// accept. Read-only apart from that accept; no LLM.
+    func todayHelper(_ arguments: [String], timeout: TimeInterval = 30, stdinData: Data? = nil) async throws -> HelperResponse {
+        try await helper.run(arguments, timeout: timeout, stdinData: stdinData)
+    }
+
     func loadYourMove() async {
         yourMoveGeneration += 1
         let generation = yourMoveGeneration

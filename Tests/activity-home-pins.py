@@ -42,7 +42,11 @@ home_logic = models[models.index("enum ActivityHome {"):]   # the last type in M
 # 1. ⌘] routing: one owner per route. The home's Next is the only ⌘] in Activity; Speakers' Next to name is the only one in
 #    the review pane; the home is the content chain's final else, and the review sits on its own route of the same chain,
 #    so the two are never in the window at once. Next advances from the item it opened last.
-need(win.count('.keyboardShortcut("]"') == 1, "[⌘] routing] Activity has exactly one ⌘], the home's Next")
+# Activity Today (plan v2): the Today home has its own Next ⌘]. The two homes are the same content chain's last two
+# branches (`else if let today` and `else`), so exactly one is ever in the window.
+need(win.count('.keyboardShortcut("]"') == 2, "[⌘] routing] Activity has exactly two ⌘]: the classic home's Next and the Today home's Next")
+today_needs = body(win, "func todayNeedsPanel(", "\n    func todayRetryLine(")
+need(today_needs.count('.keyboardShortcut("]", modifiers: .command)') == 1, "[⌘] routing] the Today home's ⌘] is its Needs you Next")
 need(views.count('.keyboardShortcut("]"') == 1, "[⌘] routing] Speakers' Next to name is the only other ⌘]")
 line = body(win, "private func needsYouLine(", "\n    private var needsRule")
 need('.keyboardShortcut("]", modifiers: .command)' in line, "[⌘] routing] the home's ⌘] is on the Next button")
@@ -72,7 +76,10 @@ need("Text(need.why" not in segment and "Text(need.what" not in segment and "nee
      "[compact backlog] no meeting name or description in the segment (help text only)")
 home = body(win, "private var activityHome: some View {", "private func needsYouLine(")
 need("needsYouLine(needs, states: homeSourceStates(desks: desks), now: now)" in home, "[⌘] routing] the home draws the Needs you line")
-frame = body(win, "private var activityFrame: some View {", "\n    var body: some View {")
+# Activity Today (plan v2): the content chain moved into activityContent, shared by the classic frame and the Today frame.
+frame = body(win, "private func activityContent(", "\n    private var rootFrame: some View {")
+need(re.search(r"\} else if let today \{\n\s*todayHomeView\(today, width: width, now: now\)\n\s*\} else \{\n\s*activityHome\n", frame),
+     "[⌘] routing] the Today home and the classic home are the chain's last two branches")
 need(len(re.findall(r"\bactivityHome\b", frame)) == 1 and re.search(r"\} else \{\n\s*activityHome\n", frame),
      "[⌘] routing] the home is the content chain's final else, and nowhere else in the window")
 need(len(re.findall(r"\bactivityHome\b", win)) == 2, "[⌘] routing] the home is mounted once")

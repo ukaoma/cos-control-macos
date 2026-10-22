@@ -54,10 +54,14 @@ def run(args):
 try:
     probe = run(['activity-today', '--probe'])
     assert probe['ok'] and probe['details']['activeQueryJobs'] is True, probe
-    assert '/api/query-jobs/active' not in calls and '/api/welcome-context' not in calls, 'a probe alone reads health and routines, never the jobs or the calendar'
+    assert probe['details']['queryJobs']['items'][0]['jobId'] == 'qj_1', 'a probe that finds the capability reads the jobs in the same call'
+    assert '/api/welcome-context' not in calls, 'a probe never reads the calendar unless asked'
     for features in ({}, {'activeQueryJobs': True}, {'activeQueryJobs': True, 'activeQueryJobsProtocol': 2}, {'activeQueryJobs': 'yes', 'activeQueryJobsProtocol': 1}):
         state['features'] = features
-        assert run(['activity-today', '--probe'])['details']['activeQueryJobs'] is False, features
+        calls.clear()
+        unsupported = run(['activity-today', '--probe'])
+        assert unsupported['details']['activeQueryJobs'] is False and 'queryJobs' not in unsupported['details'], features
+        assert '/api/query-jobs/active' not in calls, ('no capability: the route is never called', features)
     state['features'] = {'activeQueryJobs': True, 'activeQueryJobsProtocol': 1}
 
     calls.clear()

@@ -5445,7 +5445,8 @@ final class COSControlHelper {
             guard let health = request("/api/health", timeout: 6) else { throw HelperError.message("Server not reachable") }
             details["activeQueryJobs"] = Self.activityTodayJobsSupported(health.status == 200 ? health.body : nil)
         }
-        if args.contains("--jobs") {
+        // A probe that finds the capability reads the jobs in the same call, so opening the home is one helper run.
+        if args.contains("--jobs") || details["activeQueryJobs"] as? Bool == true {
             let response = request("/api/query-jobs/active", token: token, timeout: 6)
             if response == nil, details.isEmpty { throw HelperError.message("Server not reachable") }
             details["queryJobs"] = Self.activityTodayJobs(response?.status == 200 ? response?.body : nil)

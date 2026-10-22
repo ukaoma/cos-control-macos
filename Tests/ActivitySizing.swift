@@ -26,13 +26,22 @@ import SwiftUI
         case "check":
             var failures: [String] = []
             for tab in tabs { failures += check(tab) }
+            // Activity Today (plan v2, B2): the same limits with the rail on every tab, which now holds the 760 pt minimum
+            // (each tab's own content fits 696 pt), and the rail is icons at 1,099 pt and full at 1,100 pt.
+            UserDefaults.standard.set(true, forKey: TodayHome.enabledKey)
+            for tab in tabs { failures += check(tab).map { "Today rail on: " + $0 } + railCheck(tab) }
+            UserDefaults.standard.removeObject(forKey: TodayHome.enabledKey)
             if !failures.isEmpty {
                 for failure in failures { fputs("Activity sizing check FAILED: \(failure)\n", stderr) }
                 exit(1)
             }
-            print("PASS: Activity window sizing (0.5.254): no hosting size tracking; home and \(tabs.count - 1) tabs hold 760x560 at the least, grow without a limit, and never go below what they need")
+            print("PASS: Activity window sizing (0.5.254): no hosting size tracking; home and \(tabs.count - 1) tabs hold 760x560 at the least, grow without a limit, and never go below what they need, with the Today rail off and on; the rail is icons at 1099 pt and full at 1100 pt on home and every tab")
         case "measure":
             for tab in tabs { measure(tab) }
+            UserDefaults.standard.set(true, forKey: TodayHome.enabledKey)
+            print("-- Today rail on --")
+            for tab in tabs { measure(tab) }
+            UserDefaults.standard.removeObject(forKey: TodayHome.enabledKey)
         case "render":
             guard arguments.count >= 3 else { fputs("render <folder> WxH ...\n", stderr); exit(2) }
             let out = URL(fileURLWithPath: arguments[1], isDirectory: true)
@@ -43,7 +52,10 @@ import SwiftUI
                 return NSSize(width: parts[0], height: parts[1])
             }
             for tab in tabs { for size in sizes { try render(tab, size: size, out: out) } }
-            print("wrote \(tabs.count * sizes.count * 2) PNGs to \(out.path)")
+            UserDefaults.standard.set(true, forKey: TodayHome.enabledKey)
+            for tab in tabs { for size in sizes { try render(tab, size: size, out: out, prefix: "today-") } }
+            UserDefaults.standard.removeObject(forKey: TodayHome.enabledKey)
+            print("wrote \(tabs.count * sizes.count * 4) PNGs to \(out.path)")
         default:
             fputs("usage: measure | render <folder> WxH ...\n", stderr); exit(2)
         }
@@ -92,6 +104,22 @@ import SwiftUI
         return failures
     }
 
+    /// The rail's breakpoint, read from the drawn rail (TodayHomeStore.drawnRailWidth).
+    static func railCheck(_ tab: ActivitySection?) -> [String] {
+        let (window, _) = window(tab)
+        defer { window.close() }
+        var failures: [String] = []
+        // Each step changes the mode, so a rail that did not redraw keeps the last width and fails.
+        for (width, want) in [(CGFloat(1440), TodayHome.fullRailWidth), (1099, TodayHome.iconRailWidth), (1100, TodayHome.fullRailWidth), (920, TodayHome.iconRailWidth)] {
+            window.setContentSize(NSSize(width: width, height: 760))
+            settle(window, seconds: 0.6)
+            if abs(TodayHomeStore.drawnRailWidth - want) > 0.5 {
+                failures.append("\(name(tab)): at \(Int(width)) pt the rail drew \(TodayHomeStore.drawnRailWidth) pt wide, not \(want)")
+            }
+        }
+        return failures
+    }
+
     static func settle(_ window: NSWindow, seconds: TimeInterval = 1) {
         let end = Date().addingTimeInterval(seconds)
         while Date() < end {
@@ -121,7 +149,7 @@ import SwiftUI
         window.close()
     }
 
-    static func render(_ tab: ActivitySection?, size: NSSize, out: URL) throws {
+    static func render(_ tab: ActivitySection?, size: NSSize, out: URL, prefix: String = "") throws {
         for appearance in [NSAppearance.Name.darkAqua, .aqua] {
             let (window, _) = window(tab)
             window.appearance = NSAppearance(named: appearance)
@@ -130,7 +158,7 @@ import SwiftUI
             guard let view = window.contentView, let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { throw CocoaError(.fileWriteUnknown) }
             view.cacheDisplay(in: view.bounds, to: rep)
             let word = appearance == .darkAqua ? "dark" : "light"
-            let file = "\(name(tab))-\(Int(size.width))x\(Int(size.height))-\(word).png"
+            let file = "\(prefix)\(name(tab))-\(Int(size.width))x\(Int(size.height))-\(word).png"
             try rep.representation(using: .png, properties: [:])!.write(to: out.appendingPathComponent(file))
             if view.bounds.size != size { print("note: \(file) drew at \(text(view.bounds.size)), asked \(text(size))") }
             window.close()

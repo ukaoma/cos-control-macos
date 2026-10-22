@@ -85,8 +85,8 @@ except ValueError:
 if not value.get("ok"):
     sys.exit("helper self-test FAILED: " + str(value.get("message") or value)[:2000])
 count = value.get("details", {}).get("tests", 0)
-if count < 945:
-    sys.exit(f"helper self-test ran only {count} checks; expected at least 945 (945 at 0.5.329: the live cue limits grammar, v 2 and refusal whitelist; 924 at 0.5.327: live-cues-history and live-cues-rate grammar, whitelists, unsupported and the stdin note; 856 at 0.5.322: live-cues-settings grammar and whitelist; 836 at 0.5.321; 820 at 0.5.278: the live transcript path grammar, fixture parse, --since and stamp; 784 at 0.5.268: Codex inside the ChatGPT app; 774 at 0.5.250: the Work session name, transcript titles and named rows that are never warm-ups; 727 at 0.5.238)")
+if count < 950:
+    sys.exit(f"helper self-test ran only {count} checks; expected at least 950 (950 with the Activity Today question text; 945 at 0.5.329: the live cue limits grammar, v 2 and refusal whitelist; 924 at 0.5.327: live-cues-history and live-cues-rate grammar, whitelists, unsupported and the stdin note; 856 at 0.5.322: live-cues-settings grammar and whitelist; 836 at 0.5.321; 820 at 0.5.278: the live transcript path grammar, fixture parse, --since and stamp; 784 at 0.5.268: Codex inside the ChatGPT app; 774 at 0.5.250: the Work session name, transcript titles and named rows that are never warm-ups; 727 at 0.5.238)")
 ' "$SELF_TEST"
 # The Work contract self-test (the model catalog, admission, and from 0.5.249 the Cursor chat finder) is its own command,
 # and nothing ran it: a mutation of the tab folder rules survived because of it (2026-09-29).
@@ -118,6 +118,8 @@ python3 "$ROOT/Tests/dictation-polish-helper-checks.py" "$TMP/cos-control-helper
 python3 "$ROOT/Tests/dictation-everyone-helper-checks.py" "$TMP/cos-control-helper" "$ROOT"
 python3 "$ROOT/Tests/transcription-dictionary-helper-checks.py" "$TMP/cos-control-helper"
 python3 "$ROOT/Tests/work-intake-helper-checks.py" "$TMP/cos-control-helper"
+# Activity Today: activity-today against a loopback fixture (capability probe, listed job fields only, routine runs, one event).
+python3 "$ROOT/Tests/activity-today-helper-checks.py" "$TMP/cos-control-helper"
 python3 "$ROOT/Tests/work-jev-helper-checks.py" "$TMP/cos-control-helper"
 python3 "$ROOT/Tests/decision-provider-helper-checks.py" "$TMP/cos-control-helper"
 python3 "$ROOT/Tests/work-progress-helper-checks.py" "$TMP/cos-control-helper"
@@ -1321,6 +1323,11 @@ PY
 # and Tests/run-activity-home-perf.sh (the first frame, and when the loads on opening start).
 "$ROOT/Tests/run-activity-home.sh"
 /usr/bin/python3 "$ROOT/Tests/activity-home-pins.py" "$ROOT"
+# Activity Today home (plan v2, opt-in): the shared predicates and the plan's five pin tests against fixture rows
+# (Tests/run-activity-today.sh), then the wiring pins. Hand-run: Tests/mutate-activity-today.py (the mutation lane) and
+# Tests/run-activity-today-render.sh (PNGs against activity-canvas).
+"$ROOT/Tests/run-activity-today.sh"
+/usr/bin/python3 "$ROOT/Tests/activity-today-pins.py" "$ROOT"
 
 # ── 0.5.252: glasses requests (server 6.59.0 inbox) ─────────────────────────────
 # Behaviour: Tests/run-work-progress.sh test 22 (claim race, expiry, a late claim, a changed task, a missing destination,
@@ -5892,11 +5899,19 @@ if "case .speakers:\n            await loadSpeakerSubview(speakerSubview, refres
     fail("opening Speakers must load the current view through loadSpeakerSubview")
 # Work's additional overlays made the full SwiftUI expression too large for the
 # solver. The extracted frame still owns the same bounded, clipped content.
-root_body = body(activity, "    private var activityFrame: some View {\n        VStack(spacing: 0) {\n            navigationBar", "    var body: some View {\n        let _ = WorkBoardMetrics.countActivityBody()\n        activityFrame")
-if "    var body: some View {\n        let _ = WorkBoardMetrics.countActivityBody()\n        activityFrame\n        .frame(minWidth: 760, minHeight: 560)" not in activity:
-    fail("Activity body must mount the extracted frame with its content minimum")
-if not re.search(r"activityHome\n\s*\}\n\s*\}\n(?:\s*//.*\n)*\s*\.frame\(minWidth: 0, maxWidth: \.infinity, minHeight: 0, maxHeight: \.infinity, alignment: \.top\)\n\s*\.clipped\(\)\n\s*\}\n\s*\}\n\s*$", root_body):
+# Activity Today (plan v2): the content chain is activityContent, shared by the classic frame (under the toolbar and the
+# lens rail) and the Today frame (beside the rail); rootFrame picks one by the opt-in switch. Both clamp and clip it.
+root_body = body(activity, "    private var activityFrame: some View {\n        VStack(spacing: 0) {\n            navigationBar", "    /// The window's content region")
+if "    var body: some View {\n        let _ = WorkBoardMetrics.countActivityBody()\n        rootFrame\n        .frame(minWidth: 760, minHeight: 560)" not in activity \
+        or "if todayEnabled && !isolatedWorkPreview { todayFrameView } else { activityFrame }" not in activity:
+    fail("Activity body must mount the extracted frame (classic or Today) with its content minimum")
+if not re.search(r"activityContent\(today: nil, width: 0, now: Date\(\)\)\n(?:\s*//.*\n)*\s*\.frame\(minWidth: 0, maxWidth: \.infinity, minHeight: 0, maxHeight: \.infinity, alignment: \.top\)\n\s*\.clipped\(\)\n\s*\}\n\s*\}\n\s*$", root_body):
     fail("the content under the toolbar must be .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity, alignment: .top).clipped()")
+today_frame = body(activity, "    var todayFrameView: some View {", "    func todayTickLoop() async {")
+if not re.search(r"activityContent\(today: frame, width: width, now: timeline\.date\)\n\s*\.frame\(minWidth: 0, maxWidth: \.infinity, minHeight: 0, maxHeight: \.infinity, alignment: \.top\)\n\s*\.clipped\(\)", today_frame):
+    fail("the Today frame's content beside the rail must be clamped and clipped the same way")
+if not re.search(r"\} else if let today \{\n\s*todayHomeView\(today, width: width, now: now\)\n\s*\} else \{\n\s*activityHome\n\s*\}\n\s*\}\n\s*\}", activity):
+    fail("the two homes must be the content chain's last two branches")
 # 0.5.254: the window holds its pinned content minimum itself (ActivityHostWindow), because the hosting view, no longer
 # tracking sizes, writes a zero minimum as it lays out. Behaviour: Tests/run-activity-sizing.sh check.
 if ("static let contentMinSize = NSSize(width: 760, height: 560)" not in activity or "window.contentMinSize = contentMinSize" not in activity

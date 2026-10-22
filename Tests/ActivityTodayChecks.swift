@@ -177,7 +177,7 @@ import Foundation
         input.recordings = [TodayHome.Recording(sessionId: "g2-1", start: at("2026-10-21 14:29"), isMac: false)]
         input.jobs = [
             TodayHome.ActiveJob(.object(["jobId": .string("job-q1"), "origin": .string("person"), "title": .string("What did Dana say about renewal timing?"), "elapsedMs": .number(40_000), "messageNo": .number(3120)]))!,
-            TodayHome.ActiveJob(.object(["jobId": .string("job-w1"), "origin": .string("other"), "title": .string("Pricing page QA pass"), "elapsedMs": .number(360_000)]))!,
+            TodayHome.ActiveJob(.object(["jobId": .string("job-w1"), "origin": .string("task"), "title": .string("Pricing page QA pass"), "elapsedMs": .number(360_000)]))!,
         ]
         input.finished = [
             TodayHome.Finished(id: "claude:f1", title: "Testimonial HubDB refresh", provider: "claude", finishedAt: now.addingTimeInterval(-4 * 60)),
@@ -197,6 +197,13 @@ import Foundation
         check(rows[3].title == "Recording from 2:29 PM" && rows[3].openLabel == "Live view", "a G2 recording has no title of its own", rows[3].title)
         check(rows[4].detail == "COS is answering, 40 s" && rows[4].open == .messages(3120), "a glasses question opens its conversation")
         check(rows.filter { $0.title == "Pricing page QA pass" }.count == 1, "a Work run's server job is the Work row, never a second row")
+        var stray = input
+        stray.jobs = [TodayHome.ActiveJob(.object(["jobId": .string("job-o9"), "origin": .string("other"), "title": .string("Meeting review"), "elapsedMs": .number(9000)]))!,
+                      TodayHome.ActiveJob(.object(["jobId": .string("job-t9"), "origin": .string("task"), "title": .string("Fix the H1"), "elapsedMs": .number(9000)]))!]
+        let strayRows = TodayHome.inFlight(stray)
+        check(!strayRows.contains { $0.id == "job:job-o9" } && strayRows.contains { $0.id == "job:job-t9" && $0.platform == .work },
+              "an unmatched `other` job is skipped; a task dispatch shows once as Work")
+        check(TodayHome.Platform.question.badge == "Question", "a person's question is not claimed for the glasses")
         check(!rows.contains { $0.id.contains("claude:a1") || $0.id.contains("cursor:c1") }, "a waiting session is never in Running")
         check(rows.allSatisfy(\.working) && rows.allSatisfy { !$0.finished }, "every in-flight row pulses")
         var older = input; older.jobs = nil
@@ -303,7 +310,7 @@ import Foundation
         check(runIDs.isDisjoint(with: Set(needs.map(\.id))), "no Needs you id is a Running id")
         // The tool-name guard on every surface: a session waiting on AskUserQuestion never shows the tool name.
         var tool = run
-        tool.sessions = [session("claude:z1", "waiting", name: "Docs", kind: "question", detail: "AskUserQuestion")]
+        tool.sessions = [session("claude:z1", "waiting", name: "Docs", kind: "question", detail: "AskUserQuestion", question: "AskUserQuestion")]
         let (tc, tneeds, trunning) = dayCounts(tool, needInputs(tool))
         var text = [TodayHome.brief(tc, calendar: calendar)] + ["today", "sessions", "work", "messages", "speakers", "meetings", "memories", "threads", "dictation"].map { TodayHome.story($0, tc, now: now, calendar: calendar).text }
         text += tneeds.flatMap { [$0.title, $0.quote, $0.why, $0.source, $0.openLabel].compactMap { $0 } }
@@ -379,7 +386,8 @@ import Foundation
     static func layoutChecks() {
         check(TodayHome.railMode(windowWidth: 1099) == .icons && TodayHome.railMode(windowWidth: 1100) == .full, "the rail is icons at 1,099 pt and full at 1,100 pt")
         check(!TodayHome.twoColumns(windowWidth: 1100) && !TodayHome.twoColumns(windowWidth: 920) && TodayHome.twoColumns(windowWidth: 1280), "two columns only once the main column is 900 pt")
-        check(TodayHome.mainContentWidth(windowWidth: 760) == 760 - 64 - 56 && TodayHome.runningCap(windowWidth: 920) == 3 && TodayHome.runningCap(windowWidth: 1440) == 6, "760 and 920 stack")
+        check(TodayHome.mainContentWidth(windowWidth: 760) == 760 - 64 - 56 && TodayHome.runningCap(windowWidth: 920) == 3 && TodayHome.runningCap(windowWidth: 1440) == 6
+              && TodayHome.runningCap(windowWidth: 760) == 2, "760 and 920 stack; three Running rows at 920, two at 760")
     }
 
     // MARK: States and capability parsing

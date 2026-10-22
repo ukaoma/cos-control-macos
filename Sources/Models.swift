@@ -11795,7 +11795,12 @@ enum TodayHome {
         max(0, windowWidth - railWidth(railMode(windowWidth: windowWidth)) - 2 * padding(windowWidth: windowWidth))
     }
     static func twoColumns(windowWidth: CGFloat) -> Bool { mainContentWidth(windowWidth: windowWidth) >= twoColumnMain }
-    static func runningCap(windowWidth: CGFloat) -> Int { twoColumns(windowWidth: windowWidth) ? runningCapWide : runningCapStacked }
+    /// Stacked at the 760 pt minimum, two rows keep "N more running" and the Needs you header above the fold (B2).
+    static let runningCapMinimum = 2
+    static func runningCap(windowWidth: CGFloat) -> Int {
+        if twoColumns(windowWidth: windowWidth) { return runningCapWide }
+        return windowWidth < 840 ? runningCapMinimum : runningCapStacked
+    }
 
     // MARK: Days (D2: today's intake by the meeting filename's date)
 
@@ -11942,7 +11947,9 @@ enum TodayHome {
             case .codexCLI: "Codex CLI"
             case .cursor: "Cursor"
             case .work: "Work"
-            case .glasses, .question: "Glasses"
+            case .glasses: "Glasses"
+            // The server cannot tell a glasses question from a phone one (6.84.1 `origin: person`).
+            case .question: "Question"
             case .routine: "Routine"
             }
         }
@@ -12160,12 +12167,16 @@ enum TodayHome {
                                    detail: "COS is answering, " + duration(job.elapsedMs / 1000),
                                    openLabel: "Open in Messages", open: .messages(job.messageNo), working: true, finished: false,
                                    started: input.now.addingTimeInterval(-job.elapsedMs / 1000)))
-            default:
-                // A captured task's dispatch or another server run Control did not start: on the server, In Sessions.
-                rows.append(RunRow(id: "job:" + job.jobId, platform: .work, title: guarded(job.title) ?? "Server run",
-                                   detail: "on the server, " + duration(job.elapsedMs / 1000), openLabel: "In Sessions",
+            case "task":
+                // A captured task's dispatch Control did not start: on the server, In Sessions.
+                rows.append(RunRow(id: "job:" + job.jobId, platform: .work, title: guarded(job.title) ?? "A captured task",
+                                   detail: "a captured task, on the server, " + duration(job.elapsedMs / 1000), openLabel: "In Sessions",
                                    open: .inSessions(nil), working: true, finished: false,
                                    started: input.now.addingTimeInterval(-job.elapsedMs / 1000)))
+            default:
+                // `other`: a Control Work session or a meeting review. Shown only as the row it already is (a Work receipt
+                // or a session), never a second one.
+                break
             }
         }
         for run in input.routines {
@@ -12309,7 +12320,12 @@ enum TodayHome {
     /// "Claude Code in Terminal, MU-Chief-Staff. Paused until you answer there."
     static func sessionSource(_ session: ClaudeSession, host: Host?) -> String {
         let platform = platform(session, host: host)
-        let lead = platform.badge + " " + placeWords(platform, host: host)
+        let lead: String
+        switch platform {
+        case .cursor: lead = "Cursor on this Mac"
+        case .codex, .codexCLI: lead = "Codex on this Mac"
+        default: lead = platform.badge + " " + placeWords(platform, host: host)
+        }
         let repo = session.workspace.isEmpty ? "" : ", " + session.workspace
         return lead + repo + (session.provider == "claude" ? ". Paused until you answer there." : "")
     }
