@@ -92,6 +92,10 @@ struct DictationTiming: Codable, Equatable, Sendable {
     /// went with the polish). prewarmMs: how long the helper took to start it.
     var polishPrewarm: String? = nil
     var prewarmMs: Int? = nil
+    /// 0.5.335 (server 6.85.0): whether the person's polish instructions went to the model, and the server's 8-hex hash
+    /// of them. Never the words. Absent when polish did not run.
+    var polishCustom: Bool? = nil
+    var polishInstructionsHash: String? = nil
     /// typed, copied, no_speech, failed, canceled.
     var outcome: String
     /// 0.5.327 truthful start (DictationStartMarks): the press to the microphone's first buffer, step by step, in ms.
@@ -2144,6 +2148,105 @@ struct DictationPolishRun: Equatable, Sendable {
     var ms = 0
     var prewarm: String? = nil
     var prewarmMs: Int? = nil
+    /// 0.5.335 (server 6.85.0): whether the server gave the model the person's polish instructions, and their 8-hex hash
+    /// (DictationPolishInstructions.used). Never the words.
+    var customInstructions = false
+    var instructionsHash: String? = nil
+}
+
+// MARK: - Your polish instructions (0.5.335, server 6.85.0)
+//
+// Miles, 2026-10-21 15:15: "I want the ability to change that polishing prompt ... make available to our users as well
+// ... a custom AI polish. Like we still want to keep all of our kind of general rules, but this would allow them to
+// provide further steer." The server keeps one setting (GET/PUT/DELETE /api/dictation/polish/instructions) and layers it
+// AFTER its built-in rules, which keep precedence; GET /api/dictation/polish/rules shows those rules read-only. The box
+// lives in Settings, Dictation, under AI polish, only on a server that advertises
+// capabilities.dictationCleanup.customInstructions. The words go to the server through the helper's stdin, never argv,
+// and never into a log; the timing line carries true or false and the server's hash.
+enum DictationPolishInstructions {
+    /// The server's cap (6.85.0 CUSTOM_INSTRUCTIONS_MAX_CHARS), a JavaScript string length: UTF-16 units, after trimming.
+    static let maximumCharacters = 1_000
+    /// The helper's stdin bound for a save: 1,000 characters at up to 4 UTF-8 bytes each, the JSON around them, and room
+    /// for whitespace the server trims (it refuses more than 8,000 raw characters itself).
+    static let inputLimit = 40_000
+    /// Three short examples, shown in the empty box. Never saved: an empty box is off.
+    static let placeholder = "Use Oxford commas.\nWrite product names as Bottle POS and IT Retail.\nIn Slack, keep it casual and skip the closing period."
+    static let title = "Your polish instructions"
+    /// The line under the box. Plain copy: no em dash, no arrow.
+    static let note = "Extra direction for AI polish, used after COS's built-in rules. The built-in rules still win: your instructions never change what you meant, and never change links, paths, numbers or names you said. Used for Mac and glasses dictation, not meeting transcripts."
+    static let offNote = "Mac dictation uses these when AI polish is on. Glasses dictation uses them whenever it polishes."
+
+    /// What the server counts: the trimmed text's UTF-16 length.
+    static func length(_ draft: String) -> Int { draft.trimmingCharacters(in: .whitespacesAndNewlines).utf16.count }
+    static func isOver(_ draft: String) -> Bool { length(draft) > maximumCharacters }
+    /// "120 of 1,000 characters", or how many to cut.
+    static func counter(_ draft: String) -> String {
+        let n = length(draft)
+        let over = n - maximumCharacters
+        return over > 0 ? "\(grouped(n)) of \(grouped(maximumCharacters)) characters. Remove \(grouped(over)) to save."
+            : "\(grouped(n)) of \(grouped(maximumCharacters)) characters"
+    }
+    private static func grouped(_ n: Int) -> String {
+        let digits = String(n)
+        guard digits.count > 3 else { return digits }
+        return String(digits.dropLast(3)) + "," + String(digits.suffix(3))
+    }
+    /// Save: something changed, it fits, and the box is not saving already. Saving an empty box is Clear's job.
+    static func canSave(draft: String, saved: String, busy: Bool) -> Bool {
+        let trimmed = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !busy && !trimmed.isEmpty && !isOver(draft) && trimmed != saved
+    }
+    /// Clear: there is something saved, or something typed.
+    static func canClear(draft: String, saved: String, busy: Bool) -> Bool {
+        !busy && (!saved.isEmpty || !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+    }
+    /// Shown only when the server says it has the setting. An older server omits the capability: no box at all.
+    static func visible(available: Bool?) -> Bool { available == true }
+
+    /// The helper's stdin for one operation. nil for an operation or a text the helper would refuse.
+    static func request(_ operation: String, text: String? = nil) -> Data? {
+        let object: [String: Any]
+        switch operation {
+        case "get", "clear", "rules":
+            guard text == nil else { return nil }
+            object = ["operation": operation]
+        case "set":
+            guard let text, !isOver(text), !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+            object = ["operation": "set", "customInstructions": text]
+        default:
+            return nil
+        }
+        guard let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]), data.count <= inputLimit else { return nil }
+        return data
+    }
+
+    /// What one helper answer says about the setting. `available` false: hide the box. The server's text is trusted for
+    /// length only up to its own cap; anything longer reads as nothing saved.
+    struct Saved: Equatable, Sendable {
+        var available: Bool
+        var text: String
+        var instructionsHash: String?
+    }
+    static func saved(available: Bool?, text: String?, hash: String?) -> Saved {
+        guard available == true else { return Saved(available: false, text: "", instructionsHash: nil) }
+        let value = text ?? ""
+        let fits = value.utf16.count <= maximumCharacters
+        return Saved(available: true, text: fits ? value : "", instructionsHash: fits ? used(flag: !value.isEmpty, hash: hash).hash : nil)
+    }
+
+    /// A finalize answer's `customInstructions` and `instructionsHash`, read for the timing line: a JSON true and 8 hex
+    /// characters only. Anything else is false and no hash.
+    static func used(flag: Bool?, hash: String?) -> (on: Bool, hash: String?) {
+        guard flag == true else { return (false, nil) }
+        let valid = hash.flatMap { $0.range(of: "^[0-9a-f]{8}$", options: .regularExpression) != nil ? $0 : nil }
+        return (true, valid)
+    }
+
+    /// The disclosure's heading: which built-in rules the server runs.
+    static func rulesHeading(version: String?, rolledBack: Bool?) -> String {
+        guard let version, version.range(of: "^v[0-9]{1,2}$", options: .regularExpression) != nil else { return "Built-in rules" }
+        return rolledBack == true ? "Built-in rules (\(version), rolled back)" : "Built-in rules (\(version))"
+    }
 }
 
 extension DictationTiming {
@@ -2153,6 +2256,8 @@ extension DictationTiming {
         polishMs = run.ms; polishModel = run.model.rawValue; polishOutcome = run.outcome.logName
         polishPrewarm = run.prewarm
         if let ms = run.prewarmMs { prewarmMs = ms }
+        polishCustom = run.customInstructions
+        polishInstructionsHash = run.customInstructions ? run.instructionsHash : nil
     }
     /// 0.5.331: what became of Claude's version, how long the swap took, and its route.
     mutating func settle(_ result: DictationPolishSwap.Result, ms: Int?, route: DictationReplace.Route?, why: DictationPolishSwap.Unmeasurable? = nil) {

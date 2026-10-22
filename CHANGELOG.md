@@ -1,3 +1,81 @@
+## 0.5.335 (build 389), Activity's Today home (opt-in) and Your polish instructions
+
+Two lanes in one build on top of 0.5.334. Activity gets a new Today home you can turn on in Settings, New Today home
+(off by default; with it off, Activity is unchanged from 0.5.334). Dictation gets Your polish instructions in Settings,
+Dictation, under AI polish. Pair with COS server 6.85.0: it holds the polish instructions setting and the glasses
+questions in Today's Running list. An older server hides both and the rest works as before.
+
+### Activity Today home (opt-in)
+
+Plan v2, direction A. The switch is Settings, New Today home, off by default (`activityTodayHomeEnabled`). Nothing
+below shows until you turn it on.
+
+- **A left rail on every Activity tab**, with a one-line story per section. Below 1,100 pt it becomes an icon rail with
+  dots. Command-0 opens Today, Command-1 to Command-9 open the tabs, and Settings is in both rails.
+- **Today:**
+  - The Ask box (Command-K). Return starts one Work run on Sonnet; Option-Return files to the Work inbox.
+  - A brief built from fixed templates, with no LLM. It never says nothing is waiting until every source has answered.
+  - **Needs you**, ranked: session questions first, read only, in the question's own words (`questionText` on
+    `ClaudeTurn`), with "1 of N" and one Open; voices to name in Speakers (held groups fold into one row); Work's your
+    move items, memories, older suggestions to sort and dictation fixes.
+  - **Running:** what every platform is working on (Terminal, iTerm, Claude, Codex, Cursor, Work, the glasses and
+    routines), with an Open that goes to the right app. Glasses and phone questions show while COS answers, read from
+    `GET /api/query-jobs/active` (server 6.85.0), only when the server advertises them. Finished sessions stay for an
+    hour.
+  - **Next up:** your next event, with Prep me (one Work run).
+  - **From today's meetings:** today's suggestions until midnight, with Create task through Work's own accept path.
+- **Quiet hours on Today** (on by default once Today is on): after 6 PM, before 6 AM and on weekends, everything but
+  agent questions folds under For tomorrow.
+- **Load:** one new `activity-today` helper run a minute, only while the window is on screen. Calendar and Intake are
+  read at most every 5 minutes. `/api/session-questions` is never polled.
+- **Runs from Today are capped per Mac:** 20 a day, "Start Work runs from Today" turns them off, and three failed starts
+  in a row pause them for 15 minutes.
+- **Work Sort** shows only older suggestions while Today is on; today's stay on Today until midnight.
+- Known limits: Memories Keep and Drop are not on Today (Review all is); every Codex row reads "Codex"; Undo after
+  Create task needs a server with the work-loop undo route.
+- Tests: `Tests/ActivityTodayChecks.swift` (`Tests/run-activity-today.sh`), `Tests/activity-today-helper-checks.py`,
+  `Tests/activity-today-pins.py`, `Tests/activity-home-pins.py`, the sizing check and the mutation lane
+  `Tests/mutate-activity-today.py`.
+
+### Your polish instructions
+
+Miles, 2026-10-21 15:15: "I want the ability to change that polishing prompt, at least expose for me ... make
+available to our users as well ... a custom AI polish. Like we still want to keep all of our kind of general rules,
+but this would allow them to provide further steer." Needs COS server 6.85.0; with an older server nothing here shows.
+
+#### What changed
+
+- **Settings, Dictation, under AI polish: "Your polish instructions".** A box for extra direction, up to 1,000
+  characters (counted the way the server counts them: trimmed, UTF-16), with a counter, Save and Clear, and three
+  example lines while it is empty (Use Oxford commas. / Write product names as Bottle POS and IT Retail. / In Slack,
+  keep it casual and skip the closing period.). The server keeps the one setting and uses it after its built-in
+  polish rules, which keep precedence: the instructions never change meaning, links, paths, numbers or names. It is
+  used for Mac dictation (when AI polish is on) and glasses dictation, not meeting transcripts.
+- **See the built-in rules.** A disclosure under the box shows the server's rules in use, read-only, with their
+  version (v3, or v2 when the server is rolled back), and the block the instructions go into.
+- **Hidden on an older server.** The helper's new `dictation-polish-instructions` verb asks the public
+  `/api/health` first and calls the setting only when `capabilities.dictationCleanup.customInstructions` is there;
+  otherwise the box does not appear. The words ride on the helper's stdin, never argv, and are never logged.
+- **Timing line.** A polished dictation's line in `dictation-timing.jsonl` adds `polishCustom` (true or false) and
+  `polishInstructionsHash` (the server's 8-hex hash when they went), never the words.
+
+#### Checks (on the polish branch, 231ff4b)
+
+- `Tests/run-mac-dictation.sh` PASS: 785 policy checks (the new block covers the cap at 1,000 and 1,001, trimmed
+  UTF-16 counting, the counter, Save and Clear rules, hidden on an older server, request shapes, the saved answer,
+  the finalize flag and hash, the rules heading, plain copy, the timing fields); the new
+  `Tests/dictation-polish-instructions-pins.py` 15 of 15 in-memory mutants caught.
+- `Tests/dictation-polish-instructions-helper-checks.py` (in `Tests/run.sh`, against the compiled helper): 190
+  checks; `dictation-polish-helper-checks.py` 207, `transcription-dictionary-helper-checks.py` 128 and
+  `mac-dictation-helper-checks.py` 43 still pass.
+- Core mutation gate `Tests/mutate-mac-dictation-core.py --only 0335`: 23 of 23 killed, each by a named check in
+  MacDictationChecks, a green baseline before every run (the compile guard refused some compiles for memory headroom
+  on a busy Mac, so the 23 were collected over four runs; no mutant survived or crashed in any run).
+- Helper mutation gate `Tests/mutate-polish-instructions-helper.py` (the bridge, the finalize flag and the verb, run
+  by the helper checks against the compiled helper): 12 of 12 killed by a named assertion, a green baseline before each
+  run; collected over several runs for the same memory-floor reason. It now takes mutant names to rerun only those.
+- The full `Tests/run.sh` and the app build ran on the merged 0.5.335 tree (see Checks on the merged tree below).
+
 ## 0.5.334 (build 387), Dictation keeps "/pricing", Record on Mac stops when it can't hear your Mac, and Discard replaces the dead ends
 
 Two lanes in one build, both paired with COS server 6.84.0 (the server release that holds both lanes' server sides).

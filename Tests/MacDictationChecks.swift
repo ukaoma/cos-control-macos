@@ -1740,6 +1740,63 @@ final class FakeDictationBoard: DictationPasteboardAccess {
                 expect(!copy.contains("\u{2014}") && !copy.contains("\u{2192}") && !copy.contains("->"), "mismatch: copy has no em dash or arrow")
             }
         }
-        print("PASS Mac dictation: \(count) policy checks; insert-target table, measured delivery, terminals, layout ⌘V, listening bars end to end, clipboard restore, sounds, pill placement, recent dictations file, card countdown, fix-a-word selection, quick fix, replace, span guess, quiet and restore, bounded audio, PCM16 WAV, device failure, any-key triggers, field context and its evidence, AI polish, release tail and timing, truthful start, smooth start, missed releases, early polish, paste first and polish in place, Chromium by structure, canvas editors, paste-route swap safety")
+        // 0.5.335 (server 6.85.0): Your polish instructions. Synthetic text only.
+        do {
+            func expect(_ value: Bool, _ name: String) { precondition(value, name); count += 1 }
+            typealias I = DictationPolishInstructions
+            let full = String(repeating: "a", count: 1_000), over = String(repeating: "b", count: 1_001)
+            expect(I.maximumCharacters == 1_000 && !I.isOver(full) && I.isOver(over), "instructions: 1,000 fits, 1,001 is over")
+            expect(!I.isOver("  \n" + full + "\n  ") && I.length("  Use Oxford commas.  ") == 18, "instructions: counted after trimming, as the server counts")
+            expect(I.length("\u{1F600}") == 2, "instructions: counted in UTF-16 units, as the server counts")
+            expect(I.counter("Use Oxford commas.") == "18 of 1,000 characters" && I.counter(over) == "1,001 of 1,000 characters. Remove 1 to save.",
+                   "instructions: the counter, and how many to cut")
+            expect(I.canSave(draft: "Use Oxford commas.", saved: "", busy: false), "instructions: a new text can be saved")
+            expect(!I.canSave(draft: "Use Oxford commas.", saved: "", busy: true) && !I.canSave(draft: " Use Oxford commas. ", saved: "Use Oxford commas.", busy: false)
+                   && !I.canSave(draft: over, saved: "", busy: false) && !I.canSave(draft: "   ", saved: "x", busy: false),
+                   "instructions: no Save while saving, when nothing changed, when over the cap, or for an empty box (that is Clear)")
+            expect(I.canClear(draft: "", saved: "x", busy: false) && I.canClear(draft: "typed", saved: "", busy: false)
+                   && !I.canClear(draft: "  ", saved: "", busy: false) && !I.canClear(draft: "", saved: "x", busy: true),
+                   "instructions: Clear when something is saved or typed, never while saving")
+            expect(I.visible(available: true) && !I.visible(available: false) && !I.visible(available: nil), "instructions: hidden unless the server says it has them")
+            func object(_ data: Data?) -> [String: String]? { data.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: String] } }
+            expect(object(I.request("get")) == ["operation": "get"] && object(I.request("rules")) == ["operation": "rules"]
+                   && object(I.request("clear")) == ["operation": "clear"], "instructions: get, rules and clear send the operation only")
+            expect(object(I.request("set", text: "Use Oxford commas.")) == ["operation": "set", "customInstructions": "Use Oxford commas."],
+                   "instructions: set sends the words on stdin with the operation")
+            expect(I.request("set", text: over) == nil && I.request("set", text: "  ") == nil && I.request("set") == nil
+                   && I.request("get", text: "x") == nil && I.request("delete") == nil, "instructions: an over-cap, empty or unknown request is not sent")
+            expect(I.saved(available: true, text: "Use Oxford commas.", hash: "0a1b2c3d") == .init(available: true, text: "Use Oxford commas.", instructionsHash: "0a1b2c3d"),
+                   "instructions: a saved answer reads its text and hash")
+            expect(I.saved(available: false, text: "x", hash: "0a1b2c3d") == .init(available: false, text: "", instructionsHash: nil)
+                   && I.saved(available: nil, text: "x", hash: nil).available == false, "instructions: an older server reads as no box and nothing saved")
+            expect(I.saved(available: true, text: over, hash: "0a1b2c3d") == .init(available: true, text: "", instructionsHash: nil)
+                   && I.saved(available: true, text: "", hash: nil) == .init(available: true, text: "", instructionsHash: nil),
+                   "instructions: an answer past the cap reads as nothing saved; empty is off with no hash")
+            expect(I.used(flag: true, hash: "0a1b2c3d") == (true, "0a1b2c3d") && I.used(flag: true, hash: "XYZ") == (true, nil)
+                   && I.used(flag: true, hash: "0a1b2c3d9") == (true, nil) && I.used(flag: false, hash: "0a1b2c3d") == (false, nil) && I.used(flag: nil, hash: nil) == (false, nil),
+                   "instructions: the finalize flag is true only for a JSON true, the hash only 8 lowercase hex")
+            expect(I.rulesHeading(version: "v3", rolledBack: false) == "Built-in rules (v3)" && I.rulesHeading(version: "v2", rolledBack: true) == "Built-in rules (v2, rolled back)"
+                   && I.rulesHeading(version: "v3; rm", rolledBack: false) == "Built-in rules" && I.rulesHeading(version: nil, rolledBack: nil) == "Built-in rules",
+                   "instructions: the rules heading names the version, or nothing it cannot read")
+            expect(I.placeholder.split(separator: "\n").count == 3 && I.placeholder.contains("Use Oxford commas.")
+                   && I.placeholder.contains("Bottle POS and IT Retail") && I.placeholder.contains("In Slack, keep it casual"), "instructions: three example lines")
+            for copy in [I.title, I.note, I.offNote, I.placeholder, I.counter(over), I.rulesHeading(version: "v2", rolledBack: true)] {
+                expect(!copy.contains("\u{2014}") && !copy.contains("\u{2192}") && !copy.contains("->"), "instructions: copy has no em dash or arrow")
+            }
+            // The timing line: true or false and the hash, never the words.
+            var line = DictationTiming.startFailure(DictationStartMarks(pressed: 0), at: Date(timeIntervalSince1970: 1_760_000_000))
+            line.includePolish(DictationPolishRun(outcome: .applied("secret words"), model: .haiku, ms: 2_400, customInstructions: true, instructionsHash: "0a1b2c3d"))
+            let json = (try? JSONSerialization.jsonObject(with: DictationTimingLog.line(line) ?? Data()) as? [String: Any]) ?? [:]
+            expect(json["polishCustom"] as? Bool == true && json["polishInstructionsHash"] as? String == "0a1b2c3d", "instructions: the timing line says they went, by hash")
+            var plain = DictationTiming.startFailure(DictationStartMarks(pressed: 0), at: Date(timeIntervalSince1970: 1_760_000_000))
+            plain.includePolish(DictationPolishRun(outcome: .applied("x"), model: .haiku, ms: 1, instructionsHash: "0a1b2c3d"))
+            let plainJSON = (try? JSONSerialization.jsonObject(with: DictationTimingLog.line(plain) ?? Data()) as? [String: Any]) ?? [:]
+            expect(plainJSON["polishCustom"] as? Bool == false && plainJSON["polishInstructionsHash"] == nil, "instructions: without them the line says false and no hash")
+            var none = DictationTiming.startFailure(DictationStartMarks(pressed: 0), at: Date(timeIntervalSince1970: 1_760_000_000))
+            none.includePolish(nil)
+            let noneJSON = (try? JSONSerialization.jsonObject(with: DictationTimingLog.line(none) ?? Data()) as? [String: Any]) ?? [:]
+            expect(noneJSON["polishCustom"] == nil, "instructions: no polish, no field")
+        }
+        print("PASS Mac dictation: \(count) policy checks; insert-target table, measured delivery, terminals, layout ⌘V, listening bars end to end, clipboard restore, sounds, pill placement, recent dictations file, card countdown, fix-a-word selection, quick fix, replace, span guess, quiet and restore, bounded audio, PCM16 WAV, device failure, any-key triggers, field context and its evidence, AI polish, release tail and timing, truthful start, smooth start, missed releases, early polish, paste first and polish in place, Chromium by structure, canvas editors, paste-route swap safety, polish instructions")
     }
 }

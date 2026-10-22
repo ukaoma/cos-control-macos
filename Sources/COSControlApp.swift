@@ -77,6 +77,11 @@ struct COSControlApp: App {
             guard let model else { throw HelperClientError.commandFailed("COS Control is closing.") }
             return try await model.runHelper(["transcription-dictionary"], timeout: 20, stdinData: request)
         }
+        // 0.5.335 (server 6.85.0): Your polish instructions; the words on stdin, never argv.
+        DictationPolishInstructionsStore.shared.bridge = { [weak model] request in
+            guard let model else { throw HelperClientError.commandFailed("COS Control is closing.") }
+            return try await model.runHelper(["dictation-polish-instructions"], timeout: 20, stdinData: request)
+        }
         model.dictation.registerHotKeys()
         // 0.5.313: a meeting app on the microphone for 10 s gets a Record card on the pet. COS never records or stops
         // on its own: Record and Stop and save are the person's clicks.

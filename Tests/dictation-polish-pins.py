@@ -117,7 +117,7 @@ pin("let (warm, warmMs) = await takePrewarm(model, attempt: attempt)" in step an
     "the token rides on the polish request")
 pin('prewarm = DictationPolishPrewarm.outcome(sentToken: warm != nil, answer: response.details["prewarm"]?.string)' in step
     and "var prewarm = DictationPolishPrewarm.outcome(sentToken: warm != nil, answer: nil)" in step
-    and "return DictationPolishRun(outcome: outcome, model: model, ms: elapsed, prewarm: prewarm, prewarmMs: warmMs)" in step
+    and "return DictationPolishRun(outcome: outcome, model: model, ms: elapsed, prewarm: prewarm, prewarmMs: warmMs," in step
     and "timing?.includePolish(polished)" in transcribe and "line?.includePolish(run)" in dictation, "prewarm timing",
     "the timing line says used, missed, discarded or none")
 pin("let polishBridge else {\n            discardPrewarm(attempt); return nil\n        }" in step, "prewarm discard", "polish off or nothing to polish discards this press's token")
