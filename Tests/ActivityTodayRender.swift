@@ -29,6 +29,13 @@ import SwiftUI
         try render(.many, width: 1440, height: 1240, name: "today-many-running-1440")
         try render(.busy, width: 1440, height: 900, name: "today-tab-sessions-1440", tab: .sessions)
         try render(.busy, width: 920, height: 680, name: "today-tab-work-920", tab: .work)
+        // QA round 1: the states (loading, one source failed, server unreachable, first run, older server).
+        try render(.loading, width: 1440, height: 980, name: "today-state-loading-1440")
+        try render(.oneFailed, width: 1440, height: 1240, name: "today-state-one-failed-1440")
+        try render(.unreachable, width: 1440, height: 1240, name: "today-state-unreachable-1440")
+        try render(.firstRun, width: 1440, height: 980, name: "today-state-first-run-1440")
+        try render(.olderServer, width: 1440, height: 1240, name: "today-state-older-server-1440")
+        try render(.busy, width: 1228, height: 900, name: "today-main-1228")
         UserDefaults.standard.set(true, forKey: TodayHome.quietHoursKey)
         try render(.busy, width: 1440, height: 1240, name: "today-quiet-hours-1440")
         print("wrote PNGs to \(out.path)")
@@ -37,7 +44,7 @@ import SwiftUI
         }
     }
 
-    enum Scene { case busy, caughtUp, many }
+    enum Scene { case busy, caughtUp, many, loading, oneFailed, unreachable, firstRun, olderServer }
 
     static func iso(_ minutesAgo: Double) -> String { ISO8601DateFormatter().string(from: now.addingTimeInterval(-minutesAgo * 60)) }
 
@@ -67,9 +74,23 @@ import SwiftUI
         model.threadRecords = [ContextRecord.thread(["id": .string("t1"), "name": .string("HubSpot theme settings"), "last_seen": .string(iso(90))])]
         let store = TodayHomeStore()
         store.reachable = true
+        store.calendarAvailable = true
         store.calendarRead = true
+        store.hostsRead = true
         store.checkedAt = now
         let handoff = WorkHandoffStore(isolated: true)
+        if scene == .loading {
+            model.claudeSessionsEnabled = true
+            store.checkedAt = nil
+            return (model, store, handoff)
+        }
+        if scene == .firstRun {
+            model.claudeSessionsEnabled = false
+            model.heldGroupsState = "ready"; model.workYourMoveAvailable = true
+            model.workIntake = WorkIntakeSnapshot(available: true, message: nil, items: [], cardCreation: true, linkWrites: true)
+            store.calendarRead = nil
+            return (model, store, handoff)
+        }
         guard scene != .caughtUp else {
             model.heldGroupsState = "ready"
             model.workYourMoveAvailable = true
@@ -129,6 +150,12 @@ import SwiftUI
         model.workIntake = WorkIntakeSnapshot(available: true, message: nil, items: items, cardCreation: true, linkWrites: true)
         model.workTasks = []
         model.workTasksComplete = true
+        switch scene {
+        case .oneFailed: model.workIntakeError = "Work intake is temporarily unavailable."
+        case .unreachable: store.reachable = false
+        case .olderServer: store.jobsSupported = false; store.jobs = nil; store.calendarAvailable = false; store.calendarRead = nil; store.nextEvent = nil
+        default: break
+        }
         return (model, store, handoff)
     }
 
@@ -136,7 +163,9 @@ import SwiftUI
         for appearance in [NSAppearance.Name.darkAqua, .aqua] {
             let (model, store, handoff) = setup(scene)
             model.activityOpenSection = tab
-            let view = ActivityWindow.todayFixture(model: model, store: store, handoff: handoff)
+            let view = scene == .loading
+                ? ActivityWindow.todayFixture(model: model, store: store, handoff: handoff, loads: [:])
+                : ActivityWindow.todayFixture(model: model, store: store, handoff: handoff)
             let host = NSHostingView(rootView: view.frame(width: width, height: height))
             let window = NSWindow(contentRect: NSRect(x: -20000, y: -20000, width: width, height: height), styleMask: [.borderless], backing: .buffered, defer: false)
             window.isReleasedWhenClosed = false

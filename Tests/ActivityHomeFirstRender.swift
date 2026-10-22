@@ -22,6 +22,10 @@ import SwiftUI
             fputs("run through Tests/run-activity-home-perf.sh (a scratch home and a stand-in helper)\n", stderr); exit(2)
         }
         let log = URL(fileURLWithPath: logPath)
+        // Activity Today (QA round 1 item 25): COS_PERF_TODAY=1 measures the same window with the Today home on.
+        let today = ProcessInfo.processInfo.environment["COS_PERF_TODAY"] == "1"
+        if today { UserDefaults.standard.set(true, forKey: TodayHome.enabledKey) } else { UserDefaults.standard.removeObject(forKey: TodayHome.enabledKey) }
+        print("Today home: \(today ? "on" : "off")")
         let runs = 7
         for loads in [false, true] {
             var firstFrame: [Double] = []

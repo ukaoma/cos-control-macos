@@ -20,6 +20,16 @@ def need(ok, label):
 def strip(text):
     return "\n".join(l for l in text.split("\n") if not l.strip().startswith("//") and not l.strip().startswith("///"))
 
+def in_order(text, *parts):
+    """Every part present, in this order (a missing part is a failed pin, never a crash)."""
+    at = -1
+    for part in parts:
+        i = text.find(part, at + 1)
+        if i < 0 or i <= at:
+            return False
+        at = i
+    return True
+
 def body(text, start, end):
     i = text.index(start)
     j = text.index(end, i + len(start))
@@ -41,7 +51,7 @@ need("TodayTickLoop.run(now: { Date() }, visible: { today.windowVisible }, ready
      "[polling] the tick loop runs on the window's own visibility, after the opening loads")
 need("TodayWindowWatcher { visible in if today.windowVisible != visible { today.windowVisible = visible } }" in today,
      "[polling] the window's visibility (close, minimize, cover) reaches the loop")
-need("today.overviewDone = true" in win and win.index("today.overviewDone = true") < win.index("private func loadHomeWork()"),
+need(in_order(win, "today.overviewDone = true", "private func loadHomeWork()"),
      "[polling] the opening loads say when they are done")
 need("static let interval: TimeInterval = 60" in models and "static let slowSeconds: TimeInterval = 300" in store and store.count("Self.slowSeconds") == 2,
      "[polling] one tick a minute; calendar and intake at most every 5 minutes")
@@ -81,14 +91,14 @@ need("session-chat-send" not in today and "permission" not in session_case, "[re
 name = body(store, "    func nameVoice(", "\n    static func inFlightTargets(")
 need("heldNamingListened" not in name and "heldNamingOwnerAck" not in name and "!preview.requiresListening, !preview.owner" in name
      and "voices[group.id] = .listen" in name, "[voices] Listen and owner checks route to Speakers, never sent from home")
-need(name.index("model.heldNamingResult = nil") < name.index("await model.nameHeld(") and 'result.speaker == name' in name and "preview.speaker == name" in name,
+need(in_order(name, "model.heldNamingResult = nil", "await model.nameHeld(") and 'result.speaker == name' in name and "preview.speaker == name" in name,
      "[voices] the result is cleared first and must be for this name")
 need("guard model.heldGroupsSpeakerModel, model.heldNamingAvailable" in name, "[voices] no naming without the speaker model")
 
 # Cost guards (section 3): admission, then preflight, then the one submit, then accounting by the new receipt's id.
 start = body(store, "    func startRun(", "\n    func flash(")
 need(start.count("handoff.submit(") == 1, "[cost guards] one Work run per tap")
-need(start.index("guardrail.admission(") < start.index("TodayRunGuard.preflight(") < start.index("handoff.submit(") < start.index("guardrail.account(outcome"),
+need(in_order(start, "guardrail.admission(", "TodayRunGuard.preflight(", "handoff.submit(", "guardrail.account(outcome"),
      "[cost guards] admission, then the busy and open-run check, then the one submit, then the accounting")
 need("guard admission == .allowed else {" in start, "[cost guards] nothing starts unless the guard allows it")
 need("intentID: id)" in start and "handoff.receipts.first { $0.id == id }" in start, "[cost guards] the new receipt is matched by its own id")

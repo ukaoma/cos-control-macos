@@ -600,12 +600,13 @@ struct ActivityWindow: View {
 
     /// Activity Today (plan v2) offscreen fixture: the production window with a filled Today store and Work journal, and no
     /// live loads (Tests/ActivityTodayRender.swift).
-    static func todayFixture(model: ControllerModel, store: TodayHomeStore, handoff: WorkHandoffStore) -> ActivityWindow {
+    static func todayFixture(model: ControllerModel, store: TodayHomeStore, handoff: WorkHandoffStore,
+                             loads: [ActivityHome.Source: ActivityHome.SourceState] = [.sessions: .answered, .voices: .answered, .memories: .answered, .work: .answered]) -> ActivityWindow {
         precondition(!model.backgroundWorkEnabled)
         var view = ActivityWindow(model: model)
         view._today = StateObject(wrappedValue: store)
         view._handoffStore = StateObject(wrappedValue: handoff)
-        view._homeLoads = State(initialValue: [.sessions: .answered, .voices: .answered, .memories: .answered, .work: .answered])
+        view._homeLoads = State(initialValue: loads)
         return view
     }
 

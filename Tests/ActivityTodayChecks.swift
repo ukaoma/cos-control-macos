@@ -575,12 +575,13 @@ import Foundation
         var waited = 0
         var ready = false
         var early = 0
+        var firstTickAt: Date?
         clock = now
-        await TodayTickLoop.run(now: { clock }, visible: { true }, ready: { ready }, tick: { early += 1 }, wait: { seconds in
+        await TodayTickLoop.run(now: { clock }, visible: { true }, ready: { ready }, tick: { early += 1; if firstTickAt == nil { firstTickAt = clock } }, wait: { seconds in
             clock = clock.addingTimeInterval(seconds); waited += 1
             if waited == 6 { ready = true }
             return waited < 8
         })
-        check(early == 1 && waited == 8, "the first tick waits for the window's opening loads")
+        check(early == 1 && firstTickAt == now.addingTimeInterval(3), "the first tick waits for the window's opening loads")
     }
 }
