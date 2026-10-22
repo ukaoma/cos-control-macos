@@ -74,7 +74,21 @@ but this would allow them to provide further steer." Needs COS server 6.85.0; wi
 - Helper mutation gate `Tests/mutate-polish-instructions-helper.py` (the bridge, the finalize flag and the verb, run
   by the helper checks against the compiled helper): 12 of 12 killed by a named assertion, a green baseline before each
   run; collected over several runs for the same memory-floor reason. It now takes mutant names to rerun only those.
-- The full `Tests/run.sh` and the app build ran on the merged 0.5.335 tree (see Checks on the merged tree below).
+- The full `Tests/run.sh` and the app build ran on the merged 0.5.335 tree (see below).
+
+### Checks on the merged tree
+
+Read from the logs of the merged tree, one compile at a time.
+
+- `Tests/run-mac-dictation.sh` PASS: 787 policy checks; polish instructions pins 15 of 15 in-memory mutants caught.
+- `Tests/run-mac-recording.sh` PASS, `Tests/run-whats-new.sh` PASS (the notes version pin reads 0.5.335 on both sides).
+- `Tests/run-activity-today.sh` PASS: 181 checks; `activity-today-pins.py`, `activity-home-pins.py` pass;
+  `Tests/run-activity-sizing.sh check` PASS (Today rail off and on, icons at 1,099 pt, full at 1,100 pt).
+- Against the compiled helper: polish instructions helper 190 checks, dictation polish helper 207, activity-today
+  helper checks pass.
+- Mutation gates, each with a green baseline first: dictation core `--only 0335` 23 of 23 killed by a named check;
+  `Tests/mutate-polish-instructions-helper.py` 12 of 12; `Tests/mutate-activity-today.py` 68 of 68, every restore
+  equal.
 
 ## 0.5.334 (build 387), Dictation keeps "/pricing", Record on Mac stops when it can't hear your Mac, and Discard replaces the dead ends
 
