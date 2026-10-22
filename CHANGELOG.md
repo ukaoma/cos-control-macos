@@ -1,3 +1,77 @@
+## 0.5.336 (build 390), the live meeting view
+
+On top of 0.5.335 (build 389). The live meeting window gets the plan of 2026-10-22 (decisions 09:35 and 15:21). Pair
+with COS server 6.86.0 (`claude/server-live-meeting`): it advertises `capabilities.liveMeeting` and
+`capabilities.liveCues.kinds`, and everything that needs the server is gated on those, never on a status code. On 6.84
+or 6.85 the server-backed parts stay hidden and the window works as in 0.5.335.
+
+### What you see
+
+- **The real title.** A typed Mac title, else the calendar event that started within 20 minutes of the recording (the
+  Today home's next event), else the automatic title ("Zoom meeting 2:05 PM", "Glasses meeting 10:10 AM").
+- **A status line.** "Recording on this Mac" or "Recording on the glasses", and with 6.86.0 "· 2 decisions, 1 promise and
+  1 follow-up so far", counted from the meeting's cue history kinds. No LLM. Omitted when the server lists no kinds.
+- **Participant strip.** Initials and names of the voices heard so far, first heard first, with one Unidentified chip
+  for unrecognized voices and a small bar under the one heard last (it trails the room by 5 to 10 s, as the text does).
+  A Mac recording never shows You. The bar is still under Reduce Motion.
+- **Inline cues (6.86.0).** Each cue under the turn in progress at its `createdAt`, led by its kind: Decision, Promise,
+  Follow-up, Challenge, Reinforce. A kind this build does not know is drawn as a plain cue. The five verdicts stay on
+  each one, through the same cue store as the Cues tab, which keeps the full list. The cue history is re-asked every 5 s
+  and read at most every 15 s (the store's floor).
+- **The grey line (6.86.0).** The newest words still being transcribed, greyed under the last turn and replaced by the
+  final text (shown only for a chunk past the last final one). Glasses meetings read `GET
+  /api/transcribe-stream/provisional` through the new helper verb `live-provisional`, beside the live transcript read at
+  its 1.5 s cadence and only while the view is open. Mac recordings post the open chunk's newest audio (at most 15 s; a
+  chunk is 6 s) to `POST /api/transcribe-stream/preview` through `mac-recording` operation `preview`: at most every 2 s,
+  one at a time, previewGen per chunk, older answers dropped, and three failures in a row stop it for that recording
+  (`LiveMeetingPreviewGate`). The WAV (`preview.wav` in the capture's spool folder) is removed after each post and is
+  never counted as audio outside the journal.
+- **Bottom bar.** The red dot, the elapsed time on its own one-second TimelineView, and Stop (moved from the header).
+  Mac recordings add an audiogram: RMS of the raw samples per 100 ms capture drain (`MacAudioCapture`), through
+  DictationLevelMeter into `LiveAudiogramFeed`, its own ObservableObject (never on ControllerModel or
+  MacRecordingStore), drawn as one Canvas over a 12 s history ring with dotted segments for silence. Reduce Motion: a
+  still level bar. Under it: "Drop in screenshots or files while it's on. They're saved with the meeting." (a drop
+  target, the same intake as the Files box). Live COS Ask stays as the right-hand panel.
+- **Command-Shift-R** stops and saves a Mac recording. It is the Meetings menu's "Stop Mac recording and save", and no
+  other menu item, button or key monitor in COS Control uses it. Glasses meetings still stop through the inline
+  confirmation.
+- **Live cues on Mac recordings (6.86.0).** The Mac start sends `liveCues: true` only when the server advertises
+  `liveMeeting.macLiveCues` and the Live cues switch is on (the server advertises `liveCuesV2`). A refusal shows as
+  "Cues off: <reason>" and never fails the recording. COS never calls `/api/live-cues/start` for a `mac_` id. The Cues
+  tab shows beside a Mac recording on such a server.
+- **Rail badge.** Meetings shows the dot, a small level glyph (live for a Mac recording) and the elapsed time while
+  recording, each in its own small view. The pet keeps its REC dot, which opens the live window; no pet cards.
+
+### Helper
+
+- `status` forwards `liveMeetingProtocol`, `liveMeetingMacLiveCues`, `liveMeetingProvisional`, `liveCueKinds` and
+  `liveCuesOn` from public health.
+- `live-cues-history` keeps any kind in the server's spelling (`[a-z][A-Za-z0-9]{0,31}`) instead of only reinforce and
+  challenge, so decision, promise, followUp and later kinds reach the app.
+- `live-provisional --session ID` (new) and `mac-recording` `preview` (new), and `mac-recording` `start` takes a JSON
+  `liveCues: true` (false or absent sends the 6.85.0 body exactly). The grey text crosses only to the app's stdout.
+
+### Privacy
+
+No transcript, grey or cue text in any log. `Tests/live-transcript-pins.py` now covers the grey text too: the model's
+live meeting section, the helper's verb and the Mac preview path have no log, print, stderr, error or notice, only the
+model and the live views hold it, and Copy transcript and Live COS Ask never see it. Fixtures use invented names.
+
+### Tests
+
+- New lane `Tests/run-live-meeting.sh`: `Tests/live-meeting-pins.py`, `Tests/LiveMeetingChecks.swift` (capability
+  gating, counts, anchoring, the strip, the title, the audiogram ring, the preview rate cap, the grey line, the helper
+  answers) and `Tests/live-meeting-helper-checks.py`; mutation gate `Tests/mutate-live-meeting.py`.
+- Extended: `Tests/mac-recording-helper-checks.py` (liveCues on the start, the preview), `Tests/MacRecordingChecks.swift`
+  (the preview WAV in the spool, the sum of squares), `Tests/cue-verdicts-helper-checks.py` (the new kinds cross),
+  `Tests/cue-verdicts-pins.py` (the Mac Cues tab), the helper self-test (961).
+
+### Known limits
+
+- The audiogram is for Mac recordings only; glasses meetings show the timer and a still glyph (no level reaches the Mac).
+- The calendar title needs the Today home to have read the calendar (it reads only while on screen).
+- Inline cues appear up to about 15 s after the server writes them (the history store's floor).
+
 ## 0.5.335 (build 389), Activity's Today home (opt-in) and Your polish instructions
 
 Two lanes in one build on top of 0.5.334. Activity gets a new Today home you can turn on in Settings, New Today home

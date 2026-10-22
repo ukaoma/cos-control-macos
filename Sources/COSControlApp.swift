@@ -216,7 +216,10 @@ struct COSControlApp: App {
             }
             CommandMenu("Meetings") {
                 Button("Record on Mac…") { activityWindow.show(model: model, section: .meetings) }
+                // 0.5.336 (Miles, 2026-10-22 15:21): Command-Shift-R stops it. An app shortcut, not a global one; no other
+                // menu item, button or key monitor in COS Control uses it (Tests/live-meeting-pins.py checks every source).
                 Button("Stop Mac recording and save") { Task { await model.macRecording.stop() } }
+                    .keyboardShortcut("r", modifiers: [.command, .shift])
                     .disabled(!model.macRecordingActive)
                 Button("View live transcript") { model.showRecordingTranscript() }
                     .keyboardShortcut("l", modifiers: [.command, .shift])

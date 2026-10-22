@@ -79,6 +79,17 @@ final class MacRecordingStore: ObservableObject {
     @Published private(set) var noMeetingCaptureIDs: Set<String> = []
     /// 0.5.334: the server advertises POST /api/meeting/sessions/:id/discard (capabilities `discard: true`, 6.84.0).
     @Published private(set) var serverDiscard = false
+    /// 0.5.336 (server 6.86.0): the start's answer about live cues, for "Cues off: ..." in the live view. nil when the
+    /// start did not ask, or the server did not say. A refusal never fails the recording.
+    @Published private(set) var liveCuesArm: MacLiveCuesArm?
+    /// Whether a start asks the server for live cues (COSControlApp: LiveMeetingCapability.sendsMacLiveCues).
+    var liveCuesWanted: (@MainActor () -> Bool)?
+    /// Whether the grey line's preview posts now, for this capture id (COSControlApp: the capability, the setting and the
+    /// live view open on this recording).
+    var previewWanted: (@MainActor (String) -> Bool)?
+    /// Where a preview answer goes (ControllerModel.liveProvisional, memory only).
+    var previewDelivered: (@MainActor (String, LiveProvisionalLine) -> Void)?
+    private var previewTask: Task<Void, Never>?
     /// The title the fail-fast capture had, for Try again.
     private var cannotHearTitle: String?
     private var failFast = false
@@ -217,6 +228,7 @@ final class MacRecordingStore: ObservableObject {
             guard noticeAcknowledged, canStart, available else { return }
         }
         phase = "starting"; error = nil; noSpeech = false; captureInterruption = nil; silentChunks = 0; heardSound = false; deliveryPaused = false
+        LiveAudiogramFeed.live.reset()
         hearing = MacRecordingHearing.State(); cannotHear = false; failFast = false; cannotHearTitle = nil
         let attempt = UUID(); startAttempt = attempt
         installStopObservers()
@@ -224,14 +236,21 @@ final class MacRecordingStore: ObservableObject {
         var localContinuation: AsyncStream<MacRecordingChunk>.Continuation?
         let id = "mac_" + UUID().uuidString.lowercased()
         let startTime = (Date().timeIntervalSince1970 * 1_000).rounded(.down)
+        liveCuesArm = nil
         do {
-            let response = try await invoke("start", ["captureId": .string(id), "serverInstanceId": .string(instance), "startTime": .number(startTime)])
+            // 0.5.336 (server 6.86.0): live cues ride on the start, only when the person has Live cues on and the server
+            // takes the flag. Never /live-cues/start for a mac_ id.
+            var startPayload: [String: JSONValue] = ["captureId": .string(id), "serverInstanceId": .string(instance), "startTime": .number(startTime)]
+            let asksCues = liveCuesWanted?() == true
+            if asksCues { startPayload["liveCues"] = .bool(true) }
+            let response = try await invoke("start", startPayload)
             guard startAttempt == attempt, phase == "starting" else { throw CancellationError() }
             guard response["sessionId"]?.string == id, response["speakerPolicy"]?.string == "high-confidence",
                   response["sourceType"]?.string == "mac_system_audio", response["sampleRate"]?.int == 16_000,
                   response["channels"]?.int == 1, response["bitsPerSample"]?.int == 16 else {
                 throw MacRecordingError.unavailable("The server did not confirm this recording’s source and strict speaker policy.")
             }
+            if asksCues { liveCuesArm = LiveMeeting.arm(response["liveCues"]) }
             let initial = MacRecordingManifest(captureId: id, startTime: startTime, serverInstanceId: instance,
                 sourceName: source.name, title: title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Mac recording" : String(title.prefix(160)),
                 stopped: false, saved: false, acknowledged: 0, chunks: [])
@@ -275,12 +294,16 @@ final class MacRecordingStore: ObservableObject {
                 }
             }, probe: { [weak self] sawSignal in
                 Task { @MainActor in await self?.hearingProbe(sawSignal, captureId: id, allMacAudio: source.isAllMacAudio) }
+            }, level: { rms in
+                // 0.5.336: the audiogram. A number, ten a second, into its own feed (never this store or the model).
+                Task { @MainActor in LiveAudiogramFeed.live.push(rms: rms) }
             })
             localCapture = engine; capture = engine
             try await engine.start(source: source)
             guard startAttempt == attempt, phase == "starting" else { _ = await engine.stop(); throw CancellationError() }
             phase = "recording"
-            recordingLog.notice("start ok source=\(source.isAllMacAudio ? "all Mac audio" : "one app", privacy: .public)")
+            startPreviews(id)
+            recordingLog.notice("start ok source=\(source.isAllMacAudio ? "all Mac audio" : "one app", privacy: .public) cues=\(asksCues ? (self.liveCuesArm?.armed == true ? "armed" : "refused") : "not asked", privacy: .public)")
             message = source.isAllMacAudio ? "Recording everything this Mac plays. Microphone off." : "Recording \(source.name) playback only. Microphone off."
         } catch {
             let interruption = await localCapture?.stop(); localContinuation?.finish()
@@ -320,6 +343,7 @@ final class MacRecordingStore: ObservableObject {
         startAttempt = nil
         phase = "stopping"
         recordingLog.notice("stop")
+        previewTask?.cancel(); previewTask = nil
         // QA 0.5.313: an interruption is written to the journal and shown once, by MacRecordingInterruption.line (muted for
         // the two-hour limit). Copying it into `error` too showed the same news again in red, and nothing cleared it.
         if let reason = await capture?.stop() { captureInterruption = reason }
@@ -328,6 +352,7 @@ final class MacRecordingStore: ObservableObject {
         await chunksTask?.value; chunksTask = nil
         for observer in observers { NSWorkspace.shared.notificationCenter.removeObserver(observer) }; observers.removeAll()
         if let id = manifest?.captureId {
+            await spool.removePreview(captureId: id)
             do {
                 if let reason = captureInterruption { _ = try await spool.interrupt(id, reason: reason) }
                 manifest = try await spool.markStopped(id)
@@ -344,6 +369,45 @@ final class MacRecordingStore: ObservableObject {
         if let reason = captureInterruption { stoppedOnItsOwn?(reason) }
         // 0.5.334: exact zeros are discarded (stopCannotHear), never delivered.
         if !failFast { deliverPending() }
+    }
+
+    // MARK: The grey line's previews (0.5.336, server 6.86.0)
+    //
+    // While a Mac recording runs and its live view is open on a server that advertises the grey line, the open chunk's
+    // newest audio (at most 15 s; a chunk is 6 s) goes to POST /api/transcribe-stream/preview through the helper, every 2 s
+    // at most and one at a time (LiveMeetingPreviewGate), and the answer's text goes to the live view. Cosmetic: a miss
+    // or a failure changes nothing on the recording, three failures in a row stop the previews for this recording, and
+    // the WAV is removed after each post. SECRET BOUNDARY: the text goes only to `previewDelivered`; nothing here logs.
+
+    private func startPreviews(_ id: String) {
+        previewTask?.cancel()
+        previewTask = Task { [weak self] in
+            var gate = LiveMeetingPreviewGate()
+            while !Task.isCancelled, gate.open {
+                try? await Task.sleep(for: .milliseconds(500))
+                guard let self, !Task.isCancelled, self.isRecording, self.manifest?.captureId == id else { return }
+                guard self.previewWanted?(id) == true else { continue }
+                await self.postPreview(id, gate: &gate)
+            }
+        }
+    }
+
+    private func postPreview(_ id: String, gate: inout LiveMeetingPreviewGate) async {
+        guard let capture, let bridge, let instance = manifest?.serverInstanceId, let open = await capture.openChunk() else { return }
+        let pcm = LiveMeetingPreviewGate.window(open.pcm)
+        guard let generation = gate.begin(chunkIndex: open.index, bytes: pcm.count, now: Date()) else { return }
+        var answered = false
+        defer { gate.finish(answered: answered) }
+        guard let path = try? await spool.writePreview(pcm, captureId: id) else { return }
+        let response = try? await bridge("preview", ["captureId": .string(id), "serverInstanceId": .string(instance), "path": .string(path),
+                                                     "chunkIndex": .number(Double(open.index)), "previewGen": .number(Double(generation))])
+        await spool.removePreview(captureId: id)
+        guard let response, response.ok else { return }
+        answered = true
+        guard isRecording, manifest?.captureId == id,
+              let line = LiveMeeting.previewAnswer(response.details, chunkIndex: open.index, previewGen: generation),
+              gate.accept(chunkIndex: line.chunkIndex, previewGen: line.previewGen) else { return }
+        previewDelivered?(id, line)
     }
 
     // MARK: Can COS hear this Mac? (0.5.334)
@@ -585,6 +649,8 @@ final class MacRecordingStore: ObservableObject {
 }
 
 protocol MacCaptureSession: AnyObject, Sendable {
+    /// 0.5.336: the open chunk's index and PCM so far, for the grey line's preview.
+    func openChunk() async -> (index: Int, pcm: Data)?
     func stop() async -> String?
 }
 @available(macOS 14.2, *)

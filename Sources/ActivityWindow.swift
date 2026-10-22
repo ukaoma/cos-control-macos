@@ -1181,7 +1181,10 @@ struct ActivityWindow: View {
                             Text(item.title)
                             // 0.5.278: a meeting is recording (the server's count), unless the live transcript is off.
                             if item == .meetings, showLiveTranscript, model.liveTranscriptDot {
-                                LiveDot(size: 6).accessibilityLabel("Meeting recording now")
+                                // 0.5.336: the dot, a level glyph and the elapsed time, in a view of its own (its clock and
+                                // the Mac level redraw the badge only).
+                                let badge = model.liveMeetingRailBadge
+                                LiveRailBadge(start: badge.start, mac: badge.mac)
                             }
                         }
                         .font(COSType.body(11.5, weight: !showingSettings && section == item ? .semibold : .medium))
@@ -7756,6 +7759,8 @@ let todayLog = Logger(subsystem: "com.gotcos.control", category: "activity-today
                 calendarAvailable = block["available"]?.bool == true
                 calendarRead = calendarAvailable ? block["calendarRead"]?.bool : nil
                 nextEvent = calendarAvailable ? TodayHome.nextEvent(block["nextEvent"], now: now) : nil
+                // 0.5.336: the live meeting view's title takes this event when it started near the recording.
+                model.liveMeetingCalendarEvent = nextEvent
             }
             lastError = nil
             if reachable == true { checkedAt = Date() }

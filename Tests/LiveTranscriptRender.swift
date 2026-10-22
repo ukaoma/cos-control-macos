@@ -160,6 +160,97 @@ import Vision
         return (model, defaults)
     }
 
+
+    // MARK: 0.5.336 live meeting view (server 6.86.0)
+
+    /// A 6.86.0 status: the live meeting surface, the five kinds, Live cues on.
+    static func liveMeetingStatus(_ live: Int) -> ServerStatus {
+        ServerStatus([
+            "installed": .bool(true), "running": .bool(true), "runtimeState": .string("managedHealthy"),
+            "activeTranscriptionSessions": .number(Double(live)), "liveTranscriptionSessions": .number(Double(live)),
+            "liveMeetingProtocol": .number(1), "liveMeetingMacLiveCues": .bool(true), "liveMeetingProvisional": .bool(true),
+            "liveCueKinds": .array(LiveMeeting.knownKinds.map { .string($0) }), "liveCuesOn": .bool(true),
+        ])
+    }
+
+    static let greyAnswer = #"{"ok":true,"message":"Live provisional answered (200)","details":{"transport":"answered","httpStatus":200,"live":true,"provisional":{"chunkIndex":99,"previewGen":1,"text":"fixture grey words still being said"}}}"#
+
+    /// The grey line's read, its gates and its boundary, with the app model against the stand-in helper.
+    static func checkLiveMeeting(_ stand: Stand) async {
+        stand.write("live-mode", "normal")
+        stand.write("live-provisional.json", greyAnswer)
+        // An older server (6.85.0: no capability keys): the view is today's, and live-provisional is never spawned.
+        let (older, olderDefaults) = model(stand, enabled: true)
+        let before = stand.calls("live-provisional")
+        older.openLiveTranscript(sid)
+        await older.pollLiveTranscriptOnce()
+        await older.pollLiveTranscriptOnce()
+        expect(stand.calls("live-provisional") == before && older.liveProvisional.lines.isEmpty && !older.liveMeetingCapability.available,
+               "an older server spawns no grey line read", "calls \(stand.calls("live-provisional") - before)")
+        expect(older.macRecording.liveCuesWanted?() == false && !older.liveMeetingPreviewWanted("mac_" + UUID().uuidString.lowercased()),
+               "an older server: no liveCues on a Mac start, no Mac previews")
+        older.closeLiveTranscript()
+        _ = olderDefaults
+
+        // 6.86.0: one read beside each live transcript poll, only while the view is open on a live glasses meeting.
+        let (newer, newerDefaults) = model(stand, enabled: true)
+        newer.status = liveMeetingStatus(1)
+        let first = stand.calls("live-provisional")
+        await newer.pollLiveTranscriptOnce()
+        expect(stand.calls("live-provisional") == first, "no view open: no grey line read")
+        newer.openLiveTranscript(sid)
+        await newer.pollLiveTranscriptOnce()
+        expect(stand.calls("live-provisional") == first + 1 && stand.lastArgs("live-provisional") == ["live-provisional", "--session", sid],
+               "the open meeting's grey line is read once per poll", "\(stand.lastArgs("live-provisional"))")
+        expect(newer.liveProvisional.lines[sid] == LiveProvisionalLine(chunkIndex: 99, previewGen: 1, text: "fixture grey words still being said"),
+               "the grey line reaches its own object", "\(String(describing: newer.liveProvisional.lines[sid]))")
+        expect(LiveMeeting.visibleProvisional(newer.liveProvisional.lines[sid], lastFinalChunk: LiveMeeting.lastFinalChunk(newer.openLiveTranscriptFeed)) != nil,
+               "it shows past the last final chunk")
+        expect(newer.macRecording.liveCuesWanted?() == true, "6.86.0 with Live cues on: a Mac start asks for cues")
+        newer.liveTranscriptViewer("live-pane", visible: false)
+        // The server stops holding it: the line goes.
+        stand.write("live-provisional.json", #"{"ok":true,"message":"x","details":{"transport":"answered","httpStatus":200,"live":false,"provisional":null}}"#)
+        await newer.pollLiveTranscriptOnce()
+        expect(newer.liveProvisional.lines[sid] == nil, "a meeting the server no longer holds shows no grey line")
+        // A failed read keeps what was shown and says nothing (no reason, no text).
+        stand.write("live-provisional.json", greyAnswer)
+        await newer.pollLiveTranscriptOnce()
+        stand.remove("live-provisional.json")
+        await newer.pollLiveTranscriptOnce()
+        expect(newer.liveProvisional.lines[sid]?.previewGen == 1 && newer.liveTranscriptReason == nil, "a failed grey read changes nothing and sets no reason")
+        // A Mac recording's line comes from its previews, never this read.
+        let mac = "mac_" + UUID().uuidString.lowercased()
+        let macBefore = stand.calls("live-provisional")
+        newer.openLiveTranscript(mac)
+        await newer.pollLiveTranscriptOnce()
+        expect(stand.calls("live-provisional") == macBefore, "a Mac recording is never read through live-provisional")
+        expect(newer.liveMeetingPreviewWanted(mac) && !newer.liveMeetingPreviewWanted("mac_" + UUID().uuidString.lowercased()),
+               "Mac previews post only for the recording whose view is open")
+        newer.setLiveTranscriptWindowOnScreen(false)
+        expect(!newer.liveMeetingPreviewWanted(mac), "no previews while the window is off screen")
+        newer.setLiveTranscriptWindowOnScreen(true)
+        newer.closeLiveTranscript()
+        expect(newer.liveProvisional.lines.isEmpty && !newer.liveMeetingPreviewWanted(mac), "closing the view drops the grey text and stops the previews")
+        // The setting off: nothing.
+        newerDefaults.set(false, forKey: LiveTranscript.enabledKey)
+        let offBefore = stand.calls("live-provisional")
+        newer.openLiveTranscript(sid)
+        await newer.pollLiveProvisionalOnce()
+        expect(stand.calls("live-provisional") == offBefore && !newer.liveMeetingPreviewWanted(mac), "the setting off reads nothing")
+        // The title: the calendar event near the start, else the source and time.
+        let start = Date(timeIntervalSince1970: 1_791_635_349.988)
+        newer.liveMeetingCalendarEvent = TodayHome.NextEvent(title: "Fixture planning sync", start: start.addingTimeInterval(120))
+        expect(newer.liveMeetingTitle(sid, start: start) == "Fixture planning sync", "a glasses meeting takes the calendar event near its start")
+        newer.liveMeetingCalendarEvent = TodayHome.NextEvent(title: "Fixture later event", start: start.addingTimeInterval(4 * 3600))
+        expect(newer.liveMeetingTitle(sid, start: start).hasPrefix("Glasses meeting "), "an event hours away is not the title")
+        for m in [newer, older] {
+            m.closeLiveTranscript()
+            m.liveTranscriptViewer("meetings", visible: false)
+            m.liveTranscriptViewer("live-pane", visible: false)
+            await until("a quiet live meeting model") { !m.liveTranscriptPollRunning }
+        }
+    }
+
     // MARK: check
 
     static func checkModel(_ stand: Stand) async {
@@ -665,6 +756,7 @@ import Vision
         expect(refusedCopy == nil, "server change during full-context copy refuses mixed-context output")
         await quiesce(recording)
         await checkQuietLeftovers(stand)
+        await checkLiveMeeting(stand)
         print("live transcript wiring checks: \(passed) passed")
         print("PASS: live transcript wiring checks complete")
         exit(0)
@@ -852,7 +944,47 @@ import Vision
         }
         await previewAsk.open("meeting_fixture", model: live)
 
+        // 0.5.336: the live meeting view on a 6.86.0 server, a glasses meeting with inline cues and the grey line, and a
+        // Mac recording with the audiogram. Invented names and words only.
+        let meetingChunks: [(Int, String, String, Int)] = [
+            (0, "Priya Raman", "Fixture opening: we agreed the pilot starts with the two stores in the north.", 2_000),
+            (1, "Jordan", "Fixture reply: I can send the revised pricing sheet by Thursday.", 9_000),
+            (2, "Zoë Ångström", "Fixture worry: the vendor has not answered about the scanner firmware.", 16_000),
+            (3, "Speaker", "Fixture aside from a voice nobody named yet.", 23_000),
+            (4, "Jordan", "Fixture close: let us check back on the firmware next week.", 30_000),
+        ]
+        let meetingStart = now.addingTimeInterval(-4 * 60)
+        let liveMeeting = make(meetingChunks, last: now.addingTimeInterval(-3), settled: 4)
+        liveMeeting.applyLiveTranscript(reply(liveAnswer(chunks: meetingChunks, settled: 4, stamp: "1", start: meetingStart.timeIntervalSince1970 * 1000,
+                                                         last: now.addingTimeInterval(-3).timeIntervalSince1970 * 1000)), now: now)
+        liveMeeting.status = liveMeetingStatus(1)
+        liveMeeting.liveMeetingCalendarEvent = TodayHome.NextEvent(title: "Northwind pilot planning", start: meetingStart.addingTimeInterval(60))
+        func cueRow(_ id: Int, _ kind: String, _ seconds: Double, _ detail: String, verdict: String? = nil) -> String {
+            let rating = verdict.map { #","rating":{"verdict":"\#($0)","at":1}"# } ?? ""
+            return #"{"cueId":"fixture-cue-000\#(id)","sessionId":"\#(sid)","createdAt":\#(String(format: "%.0f", (meetingStart.timeIntervalSince1970 + seconds) * 1000)),"kind":"\#(kind)","detail":"\#(detail)"\#(rating)}"#
+        }
+        let cueHistory = #"{"ok":true,"message":"x","details":{"transport":"answered","httpStatus":200,"v":1,"counts":{"total":4,"rated":1,"unrated":3},"cues":["#
+            + [cueRow(1, "decision", 6, "The pilot starts with the two north stores."),
+               cueRow(2, "promise", 12, "Jordan sends the revised pricing sheet by Thursday.", verdict: "useful"),
+               cueRow(3, "followUp", 33, "Check back on the scanner firmware next week."),
+               cueRow(4, "advice", 34, "A fixture cue of a kind this build does not know.")].joined(separator: ",") + "]}}"
+        let cueResponse = try! JSONDecoder().decode(HelperResponse.self, from: Data(cueHistory.utf8))
+        await liveMeeting.meetingAsk.cueVerdicts.loadMeeting(sid, days: 1, force: true) { _, _ in cueResponse }
+        liveMeeting.liveProvisional.set(sid, LiveProvisionalLine(chunkIndex: 5, previewGen: 1, text: "and the second store opens on the first of the month if the"))
+        let macID = "mac_8c1f2a3b-4c5d-4e6f-8a9b-0c1d2e3f4a5b"
+        let macStill = standIn("helper-mac-still", "{\"ok\":true,\"message\":\"x\",\"details\":{\"sessions\":[{\"sessionId\":\"\(macID)\",\"mtimeMs\":\(String(format: "%.0f", now.timeIntervalSince1970 * 1000)),\"size\":1,\"stamp\":\"1\"}],\"read\":{\"sessionId\":\"\(macID)\",\"ended\":false,\"unchanged\":true,\"stamp\":\"1\"}}}")
+        let (macMeeting, _) = model(stand, enabled: true, helper: macStill)
+        macMeeting.status = liveMeetingStatus(1)
+        macMeeting.applyLiveTranscript(reply(liveAnswer(sessionId: macID, chunks: Array(meetingChunks.prefix(3)), settled: 2, stamp: "1",
+                                                        start: meetingStart.timeIntervalSince1970 * 1000, last: now.addingTimeInterval(-2).timeIntervalSince1970 * 1000)), now: now)
+        macMeeting.openLiveTranscript(macID)
+        LiveAudiogramFeed.live.reset()
+        for i in 0..<LiveAudiogramRing.capacity { LiveAudiogramFeed.live.push(rms: i % 37 < 9 ? 0 : 0.02 + 0.08 * abs(sin(Double(i) / 4))) }
+
         for appearance in [NSAppearance.Name.aqua, .darkAqua] {
+            try render(LiveTranscriptPane(model: liveMeeting), width: 1180, height: 820, appearance: appearance, name: "pane-live-meeting-6.86", out: out)
+            try render(LiveTranscriptPane(model: macMeeting), width: 1180, height: 640, appearance: appearance, name: "pane-mac-recording-6.86", out: out)
+            try render(LiveTranscriptPane(model: live), width: 900, height: 560, appearance: appearance, name: "pane-live-older-server", out: out)
             try render(ScrollView { COSMarkdownView(text: savedText, meetingTranscript: true, bodySize: 14).padding(24).frame(maxWidth: 700) }, width: 900, height: 700, appearance: appearance, name: "saved-recording-readable", out: out)
             try render(LiveAskPanel(state: previewAsk, model: live, session: "meeting_fixture", feed: live.openLiveTranscriptFeed, jump: { _ in }), width: 362, height: 700, appearance: appearance, name: "live-ask-answer", out: out)
             for width in [280.0, 520.0] {

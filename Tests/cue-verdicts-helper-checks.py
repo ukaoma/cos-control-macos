@@ -78,11 +78,16 @@ with tempfile.TemporaryDirectory(prefix='cos-cue-verdicts-', dir='/tmp') as tmp:
 
         rated = dict(row, rating={'verdict': 'repeat', 'note': 'same ask as 7:49', 'vote': 'down', 'at': 1791636100000, 'extra': 'SECRET'},
                      token='SECRET')
-        state['body'] = dict(history, cues=[rated, dict(row, cueId='bad id'), dict(row, kind='advice')], extra='SECRET')
+        state['body'] = dict(history, cues=[rated, dict(row, cueId='bad id'), dict(row, kind='Bad kind')], extra='SECRET')
         got = run('live-cues-history')
         cues = got['details']['cues']
         check(len(cues) == 1 and cues[0]['rating'] == {'verdict': 'repeat', 'note': 'same ask as 7:49', 'vote': 'down', 'at': 1791636100000}
               and 'SECRET' not in json.dumps(got), 'only the contract crosses; a row without its required fields is dropped')
+        # 0.5.336 (server 6.86.0): the three new kinds, and a kind this build does not know, cross in the kind spelling.
+        state['body'] = dict(history, cues=[dict(row, kind=k, cueId=CUE[:-1] + str(n)) for n, k in enumerate(['decision', 'promise', 'followUp', 'advice'])])
+        got = run('live-cues-history')
+        check([c['kind'] for c in got['details']['cues']] == ['decision', 'promise', 'followUp', 'advice'],
+              'decision, promise, followUp and an unknown kind cross; the app draws the unknown one as a plain cue')
 
         prior = len(requests)
         for bad in (['--days', '0'], ['--days', '31'], ['--days', 'week'], ['--session', 'a b'], ['--session', 'x&unrated=1']):

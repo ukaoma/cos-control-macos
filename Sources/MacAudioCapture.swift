@@ -33,10 +33,13 @@ final class MacAudioCapture: @unchecked Sendable {
     /// Called once, on the capture queue, after the tap's first `MacRecordingHearing.probeSeconds` of input: whether any
     /// of it was not exactly 0.0. Never blocks the capture.
     private let probe: (@Sendable (Bool) -> Void)?
+    /// 0.5.336: the audiogram. Called on the capture queue once per drain tick (every 100 ms) with the RMS of the raw
+    /// samples that tick drained, 0 when none arrived. A number only: never samples, never blocks the capture.
+    private let level: (@Sendable (Double) -> Void)?
 
     init(chunk: @escaping @Sendable (MacRecordingChunk) -> Bool, failure: @escaping @Sendable (String) -> Void,
-         probe: (@Sendable (Bool) -> Void)? = nil) {
-        self.chunk = chunk; self.failure = failure; self.probe = probe
+         probe: (@Sendable (Bool) -> Void)? = nil, level: (@Sendable (Double) -> Void)? = nil) {
+        self.chunk = chunk; self.failure = failure; self.probe = probe; self.level = level
     }
     /// 0.5.334: whether another app has audio output running now (the hearing check's "something is playing"). nil
     /// when the process list cannot be read. COS itself is excluded (sources() skips this process).
@@ -160,6 +163,9 @@ final class MacAudioCapture: @unchecked Sendable {
     }
     private func drain() throws {
         guard let format, let converter else { return }
+        // 0.5.336: the tick's level, from the same float samples the hearing check reads (sum of squares, then RMS).
+        var squares = 0.0, samples = 0
+        defer { if let level { level(samples > 0 ? (squares / Double(samples)).squareRoot() : 0) } }
         while let raw = ring.pop() {
             guard raw.count % 4 == 0, let input = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(raw.count / 4)) else {
                 throw MacRecordingError.unavailable("The captured audio buffer is invalid.")
@@ -169,6 +175,9 @@ final class MacAudioCapture: @unchecked Sendable {
             raw.withUnsafeBytes { data.update(from: $0.bindMemory(to: Float.self).baseAddress!, count: raw.count / 4) }
             if !rawSignalSinceChunk, MacRecordingSignal.hasRawSignal(UnsafeBufferPointer(start: data, count: raw.count / 4)) {
                 rawSignalSinceChunk = true; rawSignalEver = true
+            }
+            if level != nil {
+                squares += MacRecordingSignal.sumOfSquares(UnsafeBufferPointer(start: data, count: raw.count / 4)); samples += raw.count / 4
             }
             rawFrames += raw.count / 4
             if !probed, Double(rawFrames) >= format.sampleRate * MacRecordingHearing.probeSeconds {
@@ -217,6 +226,15 @@ final class MacAudioCapture: @unchecked Sendable {
         ioProc = nil
         if aggregate != kAudioObjectUnknown { AudioHardwareDestroyAggregateDevice(aggregate); aggregate = kAudioObjectUnknown }
         if tap != kAudioObjectUnknown { AudioHardwareDestroyProcessTap(tap); tap = kAudioObjectUnknown }
+    }
+    /// 0.5.336: the chunk still open (the index it will be stored under) and its PCM so far, for the grey line's preview.
+    /// A copy, on the capture queue; nil once stopped or before any audio.
+    func openChunk() async -> (index: Int, pcm: Data)? {
+        await withCheckedContinuation { continuation in
+            queue.async { [self] in
+                continuation.resume(returning: stopped || pending.isEmpty ? nil : (index, Data(pending)))
+            }
+        }
     }
     func stop() async -> String? {
         await withCheckedContinuation { continuation in

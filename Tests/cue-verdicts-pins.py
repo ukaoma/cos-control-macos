@@ -111,14 +111,16 @@ check(ask.count("if !cue.before.isEmpty {") == 2, "no empty box when the server 
 
 # ── Beside the meeting: Cues only once the server answered with the history; Ask stays.
 side = body(ask, "struct MeetingSidePanel<Ask: View>: View {", "struct MeetingCuesPanel: View {")
-check("private var cuesOffered: Bool { store.available == true && G2MeetingStop.isGlassesSession(session) }" in side,
-      "the Cues view needs a server that answered with the history, on a glasses meeting")
+check("private var cuesOffered: Bool { store.available == true && Self.cuesSession(session, macCues: macCues) }" in side
+      and 'G2MeetingStop.isGlassesSession(session) || (macCues && session.hasPrefix("mac_"))' in side,
+      "the Cues view needs a server that answered with the history, on a glasses meeting (0.5.336: or a Mac recording the server cues)")
+check("guard Self.cuesSession(session, macCues: macCues) else { return }" in side, "the panel reads cues only for a session it may show them for")
 check(side.index("if cuesOffered {") < side.index("COSViewSwitch(") and "if cuesOffered && shown == .cues {" in side and "ask()" in side,
       "no switch and only the Ask panel otherwise")
 check("force: true" in side and ".task(id: session)" in side, "one read when the panel shows a meeting")
 live_pane = body(meetings, "struct LiveTranscriptPane: View {", "struct LiveTurnRow: View {")
 check('Button(showAsk ? "Hide Ask" : "Live COS Ask") { showAsk.toggle() }' in live_pane, "Hide Ask still hides the whole panel")
-check("MeetingSidePanel(store: model.meetingAsk.cueVerdicts, model: model, session: session,\n                                     live: model.openLiveTranscriptFeed?.ended != true) {\n                        LiveAskPanel(" in live_pane,
+check("MeetingSidePanel(store: model.meetingAsk.cueVerdicts, model: model, session: session,\n                                     live: model.openLiveTranscriptFeed?.ended != true, macCues: model.liveMeetingCapability.macCues) {\n                        LiveAskPanel(" in live_pane,
       "the live meeting's panel wraps Live COS Ask")
 check('MeetingSidePanel(store: model.meetingAsk.cueVerdicts, model: model, session: session, askTitle: "Meeting Ask") {\n                                    LiveAskPanel(state: model.meetingAsk, model: model, session: session, saved: true' in meetings,
       "a saved meeting's capture wraps Meeting Ask")

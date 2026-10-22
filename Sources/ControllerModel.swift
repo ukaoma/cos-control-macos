@@ -625,6 +625,10 @@ final class ControllerModel: ObservableObject {
         activityLoadsEnabled = startBackgroundWork || allowActivityLoads
         workActivity = WorkActivityJournal(url: WorkActivityJournal.defaultURL(background: startBackgroundWork))
         macRecording.stoppedOnItsOwn = { [weak self] reason in self?.meetingAudioNotifier.postRecordingStopped(reason) }
+        // 0.5.336 (server 6.86.0): live cues on a Mac recording, and its grey line (ControllerModel, Live meeting view).
+        macRecording.liveCuesWanted = { [weak self] in self?.liveMeetingCapability.sendsMacLiveCues == true }
+        macRecording.previewWanted = { [weak self] id in self?.liveMeetingPreviewWanted(id) == true }
+        macRecording.previewDelivered = { [weak self] id, line in self?.liveProvisional.set(id, line) }
         // 0.5.334: a discard re-reads the stranded list, so a Save that could never work leaves with it.
         macRecording.discarded = { [weak self] _ in guard let self else { return }; Task { await self.loadOrphans(quiet: true) } }
         macRecording.activeChanged = { [weak self] active in
@@ -3755,6 +3759,7 @@ final class ControllerModel: ObservableObject {
 
     func closeLiveTranscript() {
         recordingShortcutDeadline = nil
+        liveProvisional.clear()
         liveTranscriptOpenID = nil
         liveTranscriptCopyNote = nil
     }
@@ -3802,6 +3807,7 @@ final class ControllerModel: ObservableObject {
             liveTranscriptReason = Self.liveTranscriptReasonCode(error)
             if (liveTranscriptServerLive ?? 0) == 0, liveTranscriptErrorSince == nil { liveTranscriptErrorSince = Date() }
         }
+        await pollLiveProvisionalOnce()
         await checkLiveTranscriptHandoffs(now: Date())
     }
 
@@ -4030,6 +4036,54 @@ final class ControllerModel: ObservableObject {
             return
         }
         await loadMeetingAlertPermission()
+    }
+
+    // MARK: - Live meeting view (0.5.336, server 6.86.0)
+    //
+    // The live meeting window's new parts, gated on what the server advertises (status.liveMeeting), never on a status
+    // code: the grey line for the open glasses meeting (GET /api/transcribe-stream/provisional through the helper's
+    // `live-provisional`, read beside the live transcript at its 1.5 s cadence, only while the view is open), the Mac
+    // recording's grey line (MacRecordingStore's previews, delivered here) and the title's calendar event.
+    // SECRET BOUNDARY: the grey text goes from the helper's answer into `liveProvisional` and the view, and nowhere else:
+    // no log, print, error, notice, report or file. A failed read shows nothing and keeps no text.
+
+    /// The grey line, per live session, in memory only. Its own object: a new preview redraws the line, not the window.
+    let liveProvisional = LiveProvisionalFeed()
+    /// The Today home's next calendar event (TodayHomeStore writes it on each calendar read). The live view's title takes
+    /// it when it started near the recording. Not published: the header reads it when it redraws.
+    var liveMeetingCalendarEvent: TodayHome.NextEvent?
+
+    var liveMeetingCapability: LiveMeetingCapability { status.liveMeeting }
+
+    /// The rail's Meetings badge while something records: the Mac recording's start (with its live level glyph), else
+    /// the newest live glasses meeting's start once read.
+    var liveMeetingRailBadge: (start: Date?, mac: Bool) {
+        if macRecording.isRecording, let manifest = macRecording.manifest { return (Date(timeIntervalSince1970: manifest.startTime / 1000), true) }
+        return (liveTranscriptRows.first { $0.phase == .live }?.startTime, false)
+    }
+
+    /// The open glasses meeting's grey line: one read, only when the setting is on, the server advertises the line and
+    /// the view is open on a session still live. A Mac recording's line comes from its own previews instead.
+    func pollLiveProvisionalOnce() async {
+        guard liveTranscriptEnabled, liveMeetingCapability.greyLine, let open = liveTranscriptOpenID, !open.hasPrefix("mac_"),
+              liveTranscriptFeeds[open]?.ended != true else { return }
+        guard let response = try? await helper.run(["live-provisional", "--session", open], timeout: 6),
+              liveTranscriptEnabled, liveTranscriptOpenID == open else { return }
+        guard let answer = LiveMeeting.provisional(response.details, sessionId: open) else { return }
+        liveProvisional.set(open, answer.live ? answer.line : nil)
+    }
+
+    /// A Mac recording's previews post only while its live view is open, the setting is on and the server advertises
+    /// the grey line.
+    func liveMeetingPreviewWanted(_ captureId: String) -> Bool {
+        liveTranscriptEnabled && liveMeetingCapability.greyLine && liveTranscriptOpenID == captureId && liveTranscriptWindowOnScreen
+    }
+
+    /// The live view's title for a session: a typed Mac title, else the calendar event near its start, else the automatic one.
+    func liveMeetingTitle(_ sessionId: String, start: Date?) -> String {
+        let mac = macRecording.manifest.flatMap { $0.captureId == sessionId ? $0 : nil }
+        let begun = start ?? mac.map { Date(timeIntervalSince1970: $0.startTime / 1000) }
+        return LiveMeeting.title(sessionId: sessionId, macTitle: mac?.title, calendar: liveMeetingCalendarEvent.map { ($0.title, $0.start) }, start: begun)
     }
 
     /// 0.5.228. Checked only while a meeting is live. A Mac with no answer on record is asked again at

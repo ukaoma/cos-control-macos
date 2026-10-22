@@ -11,7 +11,7 @@ COS_COMPILE_PROFILE=bounded /usr/bin/python3 "$ROOT/Tests/kit-compile.py" "$ROOT
 OUT="$("$DIR/checks")" || { print -r -- "$OUT"; exit 1; }
 print -r -- "$OUT"
 COUNT="${${OUT##*checks: }%% passed*}"
-(( COUNT >= 12373 )) || { print -u2 "Mac recording core checks ran only $COUNT"; exit 1; }
+(( COUNT >= 12384 )) || { print -u2 "Mac recording core checks ran only $COUNT"; exit 1; }
 fi
 if [[ "$LANE" == "core" ]]; then exit 0; fi
 # 0.5.334: the hearing check, the fail-fast and Discard, wired (rules above, wiring here).

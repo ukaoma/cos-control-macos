@@ -653,6 +653,7 @@ final class COSControlHelper {
         case "live-cues-settings": try emitLiveCuesSettings(args: args)
         case "live-cues-history": try emitLiveCuesHistory(args: args)
         case "live-cues-rate": try emitLiveCuesRate(args: args)
+        case "live-provisional": try emitLiveProvisional(args: args)
         case "meeting-stranded-save-all": try emitMeetingStrandedSaveAll()
         case "clear-stranded-video-uploads": try clearStrandedVideoUploads()
         case "reset-message-era": try resetMessageEra()
@@ -2992,6 +2993,8 @@ final class COSControlHelper {
         // The person this COS is about (profile owner_name), so the Knowledge
         // graph opens on them rather than on "COS" (Miles, 2026-09-06 22:23).
         details["ownerName"] = profileOwnerName() ?? NSNull()
+        // 0.5.336 (server 6.86.0): the live meeting view's capability keys, from public health; codes and bools only.
+        details.merge(Self.liveMeetingStatusFields(health?["capabilities"])) { _, new in new }
         return details
     }
 
@@ -16387,7 +16390,7 @@ final class COSControlHelper {
               let payload = envelope["payload"] as? [String: Any] else {
             emit(ok: false, message: "Mac recording request is invalid."); return
         }
-        let allowed = Set(["serverInstanceId", "captureId", "sessionId", "startTime", "sourceType", "path", "chunkIndex", "elapsed", "title", "domain", "expectedChunkCount", "confirm"])
+        let allowed = Set(["serverInstanceId", "captureId", "sessionId", "startTime", "sourceType", "path", "chunkIndex", "elapsed", "title", "domain", "expectedChunkCount", "confirm", "liveCues", "previewGen"])
         guard Set(payload.keys).isSubset(of: allowed) else {
             emit(ok: false, message: "Mac recording request is invalid."); return
         }
@@ -16410,8 +16413,17 @@ final class COSControlHelper {
                   payload["sourceType"] == nil || payload["sourceType"] as? String == "mac_system_audio" else {
                 emit(ok: false, message: "Mac recording start is invalid."); return
             }
+            // 0.5.336 (server 6.86.0): `liveCues: true` asks for live cues on this recording. Only a JSON true is sent;
+            // false or absent sends the 6.85.0 body exactly, and anything else is refused here.
+            var startBody: [String: Any] = ["captureId": capture, "startTime": NSNumber(value: start.int64Value), "sourceType": "mac_system_audio"]
+            if let flag = payload["liveCues"] {
+                guard let flag = flag as? NSNumber, CFGetTypeID(flag) == CFBooleanGetTypeID() else {
+                    emit(ok: false, message: "Mac recording start is invalid."); return
+                }
+                if flag.boolValue { startBody["liveCues"] = true }
+            }
             path = "/api/mac-recording/start"; method = "POST"
-            body = String(data: try JSONSerialization.data(withJSONObject: ["captureId": capture, "startTime": NSNumber(value: start.int64Value), "sourceType": "mac_system_audio"]), encoding: .utf8)
+            body = String(data: try JSONSerialization.data(withJSONObject: startBody), encoding: .utf8)
         case "chunk":
             guard let index = payload["chunkIndex"] as? NSNumber, CFGetTypeID(index) != CFBooleanGetTypeID(), index.doubleValue.isFinite,
                   index.doubleValue == Double(index.intValue), (0...100_000).contains(index.intValue),
@@ -16449,6 +16461,31 @@ final class COSControlHelper {
         case "status":
             let pin = instance.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? ""
             path = "/api/meeting/sessions/" + capture + "/status?serverInstanceId=" + pin
+        case "preview":
+            // 0.5.336 (server 6.86.0): the grey line for a Mac recording. The open chunk's newest audio, written by the app
+            // as a canonical WAV in this capture's spool folder, to the server's preview route. Its answer is cosmetic:
+            // the text crosses to the app only, a 204 is a miss, and no failure carries server text.
+            guard let index = payload["chunkIndex"] as? NSNumber, CFGetTypeID(index) != CFBooleanGetTypeID(), index.doubleValue.isFinite,
+                  index.doubleValue == Double(index.intValue), (0...100_000).contains(index.intValue),
+                  let gen = payload["previewGen"] as? NSNumber, CFGetTypeID(gen) != CFBooleanGetTypeID(), gen.doubleValue.isFinite,
+                  gen.doubleValue == Double(gen.intValue), (0...1_000_000).contains(gen.intValue),
+                  let localPath = payload["path"] as? String, localPath.hasSuffix("/" + Self.macRecordingPreviewFilename) else {
+                emit(ok: false, message: "Mac recording preview is invalid."); return
+            }
+            guard let previewAudio = try? Self.macRecordingAudio(home: home, capture: capture, path: localPath),
+                  previewAudio.count <= Self.macRecordingPreviewMaxBytes else {
+                emit(ok: false, message: "Mac recording preview audio could not be read safely.", details: ["reason": "preview_audio"]); return
+            }
+            let pin = instance.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? ""
+            let token = try speakerReviewToken()
+            guard let response = request("/api/transcribe-stream/preview?sessionId=" + capture + "&chunkIndex=\(index.intValue)&previewGen=\(gen.intValue)"
+                                         + "&serverInstanceId=" + pin + "&previewModels=parakeet-ultra",
+                                         method: "POST", token: token, rawBody: previewAudio, headers: ["X-COS-Server-Instance": instance], timeout: 8) else {
+                emit(ok: false, message: "The COS server did not answer the preview.", details: ["reason": "server_unavailable"]); return
+            }
+            emit(ok: true, message: "Mac recording preview", details: Self.macRecordingPreviewAnswer(status: response.status, body: response.body,
+                                                                                                   chunkIndex: index.intValue, previewGen: gen.intValue))
+            return
         case "discard":
             // 0.5.334 (server 6.84.0): a no-sound capture's server side. Sent only with confirm: true; the server re-checks
             // that it holds no speech and refuses anything else.
@@ -16490,6 +16527,20 @@ final class COSControlHelper {
         }
         details["httpStatus"] = response.status
         emit(ok: true, message: "Mac recording", details: details)
+    }
+
+    /// 0.5.336: the preview WAV's name in the capture's spool folder (MacRecordingSpool.previewFilename), and its ceiling:
+    /// 15 s of 16 kHz mono PCM16 plus the header, under the server's 512 KB.
+    static let macRecordingPreviewFilename = "preview.wav"
+    static let macRecordingPreviewMaxBytes = 480_044
+
+    /// The preview's answer for the app: a 200 in the contract carries the chunk, the generation and the text (its last
+    /// 600 characters); a 204 is a miss; any other status is its code alone.
+    static func macRecordingPreviewAnswer(status: Int, body: [String: Any]?, chunkIndex: Int, previewGen: Int) -> [String: Any] {
+        if status == 204 { return ["httpStatus": 204, "miss": true] }
+        guard status == 200, let body, Self.liveCueCount(body["chunkIndex"]) == chunkIndex, Self.liveCueCount(body["previewGen"]) == previewGen,
+              let text = body["text"] as? String, !text.isEmpty else { return ["httpStatus": status, "miss": true] }
+        return ["httpStatus": 200, "chunkIndex": chunkIndex, "previewGen": previewGen, "text": String(text.suffix(Self.liveProvisionalMaxCharacters))]
     }
 
     /// Descriptor-relative traversal refuses symlinked directories, swapped files and hardlinks outside the spool.
@@ -17020,6 +17071,12 @@ final class COSControlHelper {
         return note
     }
 
+    /// 0.5.336 (server 6.86.0): a cue's kind. The five the writer knows (reinforce, challenge, decision, promise, followUp)
+    /// and any later one in the same spelling cross, so the app draws an unknown kind as a plain cue instead of losing it.
+    static func liveCueKindValid(_ value: String) -> Bool {
+        value.range(of: "\\A[a-z][A-Za-z0-9]{0,31}\\z", options: .regularExpression) != nil
+    }
+
     static func liveCueIdValid(_ value: String) -> Bool {
         value.range(of: "\\A[A-Za-z0-9-]{8,64}\\z", options: .regularExpression) != nil
     }
@@ -17103,7 +17160,7 @@ final class COSControlHelper {
               let cueId = raw["cueId"] as? String, Self.liveCueIdValid(cueId),
               let sessionId = raw["sessionId"] as? String, Self.liveCueSessionValid(sessionId),
               let createdAt = Self.liveCueNumber(raw["createdAt"]), createdAt > 0,
-              let kind = raw["kind"] as? String, ["reinforce", "challenge"].contains(kind),
+              let kind = raw["kind"] as? String, Self.liveCueKindValid(kind),
               let detail = Self.liveCueText(raw["detail"], 440), !detail.isEmpty else { return nil }
         var out: [String: Any] = ["cueId": cueId, "sessionId": sessionId, "createdAt": createdAt, "kind": kind, "detail": detail]
         if let headline = Self.liveCueText(raw["headline"], 128) { out["headline"] = headline }
@@ -17167,6 +17224,60 @@ final class COSControlHelper {
         else if body["verdict"] is NSNull { out["verdict"] = NSNull() }
         if let vote = body["vote"] as? String, ["up", "down"].contains(vote) { out["vote"] = vote }
         return out
+    }
+
+    // MARK: - Live meeting view (0.5.336, server 6.86.0)
+    //
+    // `capabilities.liveMeeting` and `capabilities.liveCues.kinds` from public /api/health become five status keys, and
+    // `live-provisional --session ID` reads GET /api/transcribe-stream/provisional for the grey line. SECRET BOUNDARY: the
+    // grey text goes only to stdout for the app (never progress, a log or a message); a failure is a transport code.
+    static let liveProvisionalRoute = "/api/transcribe-stream/provisional"
+    static let liveProvisionalMaxCharacters = 600
+
+    /// The status keys: `liveMeetingProtocol` (an integer or null), `liveMeetingMacLiveCues`, `liveMeetingProvisional`
+    /// (the route the contract names), `liveCueKinds` (at most 16, in the kind spelling) and `liveCuesOn` (the server
+    /// advertises `liveCuesV2`, which it does only while the Live cues switch is on).
+    static func liveMeetingStatusFields(_ capabilities: Any?) -> [String: Any] {
+        let block = capabilities as? [String: Any]
+        let meeting = block?["liveMeeting"] as? [String: Any]
+        let version = Self.liveCueCount(meeting?["protocol"]).map { $0 as Any } ?? NSNull()
+        let provisional = (meeting?["provisional"] as? [String: Any])?["route"] as? String == Self.liveProvisionalRoute
+        let kinds = (((block?["liveCues"] as? [String: Any])?["kinds"] as? [Any]) ?? []).compactMap { $0 as? String }.filter(Self.liveCueKindValid)
+        return ["liveMeetingProtocol": version,
+                "liveMeetingMacLiveCues": (meeting?["macLiveCues"] as? NSNumber).map { CFGetTypeID($0) == CFBooleanGetTypeID() && $0.boolValue } ?? false,
+                "liveMeetingProvisional": provisional,
+                "liveCueKinds": Array(kinds.prefix(16)),
+                "liveCuesOn": block?["liveCuesV2"] is [String: Any]]
+    }
+
+    /// The provisional answer the app may see: `live`, and the line's chunk, generation and text (the last 600
+    /// characters), or null. Nothing else crosses.
+    static func liveProvisionalAnswer(status: Int, body: [String: Any]?) -> [String: Any] {
+        guard status == 200, let body, let live = body["live"] as? NSNumber, CFGetTypeID(live) == CFBooleanGetTypeID() else { return [:] }
+        var out: [String: Any] = ["live": live.boolValue, "provisional": NSNull()]
+        if let line = body["provisional"] as? [String: Any], let index = Self.liveCueCount(line["chunkIndex"]),
+           let gen = Self.liveCueCount(line["previewGen"]), let text = line["text"] as? String, !text.isEmpty {
+            out["provisional"] = ["chunkIndex": index, "previewGen": gen, "text": String(text.suffix(Self.liveProvisionalMaxCharacters))]
+        }
+        return out
+    }
+
+    private func emitLiveProvisional(args: [String]) throws {
+        guard let session = option("--session", in: args), Self.liveCueSessionValid(session) else {
+            throw HelperError.message("Use --session and a meeting session id")
+        }
+        guard let token = try? readToken() else {
+            emit(ok: true, message: "No pairing token", details: ["transport": "no_token"])
+            return
+        }
+        guard let response = request(Self.liveProvisionalRoute + "?sessionId=" + session, token: token, timeout: 4) else {
+            emit(ok: true, message: "COS server unreachable", details: ["transport": "unavailable"])
+            return
+        }
+        var details = Self.liveProvisionalAnswer(status: response.status, body: response.body)
+        details["transport"] = Self.liveCuesTransport(status: response.status, body: response.body)
+        details["httpStatus"] = response.status
+        emit(ok: true, message: "Live provisional answered (\(response.status))", details: details)
     }
 
     private func emitLiveCuesHistory(args: [String]) throws {
@@ -22452,11 +22563,49 @@ final class COSControlHelper {
         ])
         let historyRows = historyAnswer["cues"] as? [[String: Any]]
         let firstRating = historyRows?.first?["rating"] as? [String: Any]
-        try expect(historyAnswer["v"] as? Int == 1 && historyAnswer["extra"] == nil && historyRows?.count == 2
+        try expect(historyAnswer["v"] as? Int == 1 && historyAnswer["extra"] == nil && historyRows?.count == 3
                    && historyRows?.first?["token"] == nil && historyRows?.first?["gate"] as? Double == 0.97
                    && (historyRows?.first?["sources"] as? [[String: Any]])?.first?["title"] as? String == "Earlier"
                    && firstRating?["verdict"] as? String == "late" && firstRating?["vote"] as? String == "up" && firstRating?["x"] == nil,
                    "live-cues-history passes the contract's rows and drops a row without its required fields")
+        // 0.5.336 (server 6.86.0): a kind this build does not know crosses in the kind spelling, to be drawn as a plain cue.
+        try expect(historyRows?[1]["kind"] as? String == "advice", "live-cues-history passes a kind it does not know, never drops it")
+        try expect(["reinforce", "challenge", "decision", "promise", "followUp", "advice"].allSatisfy(Self.liveCueKindValid)
+                   && !["", "Decision", "follow-up", "a b", "x<", String(repeating: "a", count: 33), "decision\n"].contains(where: Self.liveCueKindValid),
+                   "a cue kind is the server's spelling: lower camel case, 32 at most")
+        let meetingFields = Self.liveMeetingStatusFields(["liveMeeting": ["protocol": 1, "macLiveCues": true,
+                                                                           "provisional": ["route": "/api/transcribe-stream/provisional", "maxChars": 600, "ttlMs": 30000]],
+                                                          "liveCues": ["kinds": ["reinforce", "challenge", "decision", "promise", "followUp", "Bad Kind", 7]],
+                                                          "liveCuesV2": ["protocol": 2, "available": true]])
+        try expect(meetingFields["liveMeetingProtocol"] as? Int == 1 && meetingFields["liveMeetingMacLiveCues"] as? Bool == true
+                   && meetingFields["liveMeetingProvisional"] as? Bool == true && meetingFields["liveCuesOn"] as? Bool == true
+                   && meetingFields["liveCueKinds"] as? [String] == ["reinforce", "challenge", "decision", "promise", "followUp"],
+                   "status forwards the 6.86.0 live meeting capability, kinds in the kind spelling only")
+        let olderFields = Self.liveMeetingStatusFields(["liveCues": ["enabled": true]])
+        try expect(olderFields["liveMeetingProtocol"] is NSNull && olderFields["liveMeetingMacLiveCues"] as? Bool == false
+                   && olderFields["liveMeetingProvisional"] as? Bool == false && (olderFields["liveCueKinds"] as? [String])?.isEmpty == true
+                   && olderFields["liveCuesOn"] as? Bool == false, "an older server's health reads as no live meeting surface")
+        let oddFields = Self.liveMeetingStatusFields(["liveMeeting": ["protocol": true, "macLiveCues": 1, "provisional": ["route": "/elsewhere"]]])
+        try expect(oddFields["liveMeetingProtocol"] is NSNull && oddFields["liveMeetingMacLiveCues"] as? Bool == false
+                   && oddFields["liveMeetingProvisional"] as? Bool == false, "a bool is not a protocol, a number is not a bool, another route is not the grey line")
+        let provisionalAnswer = Self.liveProvisionalAnswer(status: 200, body: ["v": 1, "sessionId": "meeting_1", "live": true, "serverInstanceId": "SECRET",
+                                                                               "provisional": ["chunkIndex": 7, "previewGen": 3, "text": String(repeating: "w", count: 700) + "end", "model": "turbo", "at": 1]])
+        let provisionalLine = provisionalAnswer["provisional"] as? [String: Any]
+        try expect(provisionalAnswer["live"] as? Bool == true && provisionalAnswer["serverInstanceId"] == nil && provisionalLine?["chunkIndex"] as? Int == 7
+                   && provisionalLine?["previewGen"] as? Int == 3 && (provisionalLine?["text"] as? String)?.count == 600
+                   && (provisionalLine?["text"] as? String)?.hasSuffix("end") == true && provisionalLine?["model"] == nil,
+                   "live-provisional passes the line's chunk, generation and newest 600 characters, nothing else")
+        try expect(Self.liveProvisionalAnswer(status: 200, body: ["live": false, "provisional": NSNull()])["provisional"] is NSNull
+                   && Self.liveProvisionalAnswer(status: 200, body: ["live": 1]).isEmpty && Self.liveProvisionalAnswer(status: 500, body: ["live": true]).isEmpty,
+                   "live-provisional: null stays null, a number is not live, a failure carries nothing")
+        let previewAnswer = Self.macRecordingPreviewAnswer(status: 200, body: ["sessionId": "mac_x", "chunkIndex": 4, "previewGen": 2, "text": "hello there", "provisional": true,
+                                                                             "model": "turbo", "backend": "metal", "serverInstanceId": "SECRET"], chunkIndex: 4, previewGen: 2)
+        try expect(previewAnswer["text"] as? String == "hello there" && previewAnswer["chunkIndex"] as? Int == 4 && previewAnswer["previewGen"] as? Int == 2
+                   && previewAnswer["serverInstanceId"] == nil && previewAnswer["backend"] == nil, "the Mac preview passes its line and nothing else")
+        try expect(Self.macRecordingPreviewAnswer(status: 204, body: nil, chunkIndex: 4, previewGen: 2)["miss"] as? Bool == true
+                   && Self.macRecordingPreviewAnswer(status: 200, body: ["chunkIndex": 4, "previewGen": 1, "text": "stale"], chunkIndex: 4, previewGen: 2)["text"] == nil
+                   && Self.macRecordingPreviewAnswer(status: 400, body: ["error": "SECRET"], chunkIndex: 4, previewGen: 2)["error"] == nil,
+                   "a 204 is a miss; an answer for another generation, or a refusal, carries no text")
         try expect(historyRows?.last?["gate"] == nil && historyRows?.last?["rating"] is NSNull,
                    "a gate outside 0 to 1 and a verdict outside the five are dropped")
         try expect(historyRows?.first?["title"] as? String == "Archive search logs (G2)" && historyRows?.first?["titleSource"] as? String == "saved"

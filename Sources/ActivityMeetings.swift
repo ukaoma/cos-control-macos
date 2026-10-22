@@ -2204,6 +2204,13 @@ struct LiveTranscriptPane: View {
     @State private var resizeStart: Double?
     /// 0.5.321: the inline confirmation for Stop and save on a glasses meeting (COSConfirm, never a sheet).
     @State private var confirmGlassesStop = false
+    /// 0.5.336: the cue history, observed so the inline cues and the header's counts redraw when it is read again.
+    @ObservedObject private var cueStore: CueVerdictsStore
+
+    init(model: ControllerModel) {
+        _model = ObservedObject(wrappedValue: model)
+        _cueStore = ObservedObject(wrappedValue: model.meetingAsk.cueVerdicts)
+    }
 
     var body: some View {
         GeometryReader { geometry in
@@ -2223,7 +2230,7 @@ struct LiveTranscriptPane: View {
                         }
                     // 0.5.327: the panel's Cues view sits beside Live COS Ask on a server with the cue history.
                     MeetingSidePanel(store: model.meetingAsk.cueVerdicts, model: model, session: session,
-                                     live: model.openLiveTranscriptFeed?.ended != true) {
+                                     live: model.openLiveTranscriptFeed?.ended != true, macCues: model.liveMeetingCapability.macCues) {
                         LiveAskPanel(state: model.meetingAsk, model: model, session: session, feed: model.openLiveTranscriptFeed) { id in
                             follow.selectionBegan(); askJumpID = id
                         }
@@ -2242,26 +2249,48 @@ struct LiveTranscriptPane: View {
 
     private var meetingBody: some View {
         let feed = model.openLiveTranscriptFeed
+        let session = model.liveTranscriptOpenID
+        let mac = session?.hasPrefix("mac_") == true
         return VStack(alignment: .leading, spacing: 0) {
             TimelineView(.periodic(from: .now, by: 15)) { context in header(feed, now: context.date) }
-            if let session = model.liveTranscriptOpenID, !session.hasPrefix("mac_"), feed?.ended != true {
+            if let session, !session.hasPrefix("mac_"), feed?.ended != true {
                 MeetingSpeakerPolicyView(model: model, sessionId: session).id(session).padding(.horizontal, 22).padding(.bottom, 10)
+            }
+            // 0.5.336: the voices heard so far, with the one heard last.
+            if let feed, !feed.turns.isEmpty {
+                let strip = LiveMeeting.participants(feed.turns, mac: mac)
+                if !strip.people.isEmpty { LiveParticipantStrip(people: strip.people, lastHeard: strip.lastHeard).padding(.bottom, 10) }
             }
             Divider()
             if let feed, !feed.turns.isEmpty {
                 transcript(feed)
             } else {
-                Text(feed?.ended == true ? "No words were transcribed before the recording ended." : "Waiting for the first words. Text appears a few seconds after it is spoken.")
-                    .font(COSType.body(12))
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                    .frame(maxWidth: 420)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .padding(30)
+                VStack(spacing: 14) {
+                    Text(feed?.ended == true ? "No words were transcribed before the recording ended." : "Waiting for the first words. Text appears a few seconds after it is spoken.")
+                        .font(COSType.body(12))
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: 420)
+                    if let session, feed?.ended != true, model.liveMeetingCapability.greyLine || mac {
+                        LiveProvisionalLineView(feed: model.liveProvisional, sessionId: session, lastFinalChunk: LiveMeeting.lastFinalChunk(feed)) {}
+                            .frame(maxWidth: 560)
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .padding(30)
             }
             Divider()
+            // 0.5.336: the bottom bar while it records, and the files line under it.
+            if let session, feed?.ended != true {
+                LiveRecordingBar(start: feed?.startTime ?? macStart(session), mac: mac) { stopControls(feed) }
+                if let files = model.workHandoffStore?.meetingFiles {
+                    LiveFilesDropLine(files: files, key: LibraryMeeting.captureContextKey(session))
+                }
+                Divider()
+            }
             footer(feed)
         }
+        .task(id: "\(session ?? "") \(model.liveMeetingCapability.inlineCues) \(feed?.ended == true)") { await followInlineCues(session) }
         .frame(minWidth: 420, maxWidth: .infinity, minHeight: 300, maxHeight: .infinity, alignment: .top)
         .background(COSPalette.panel)
         .onAppear { model.liveTranscriptViewer("live-pane", visible: true) }
@@ -2272,8 +2301,10 @@ struct LiveTranscriptPane: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .center, spacing: 10) {
                 LiveDot(live: feed?.ended != true, size: 10)
-                Text(feed?.ended == true ? "Meeting ended" : "Live meeting")
+                // 0.5.336: the meeting's real title (typed, or the calendar's), never a fixed "Live meeting".
+                Text(verbatim: model.liveTranscriptOpenID.map { model.liveMeetingTitle($0, start: feed?.startTime) } ?? "Live meeting")
                     .font(COSType.display(22, weight: .medium))
+                    .lineLimit(1)
                 // 0.5.313 (Miles 2026-10-15): a G2 meeting and a Mac recording can be live together; switch between them
                 // here, without leaving the live view.
                 let liveRows = model.liveTranscriptRows.filter { $0.phase == .live }
@@ -2283,17 +2314,17 @@ struct LiveTranscriptPane: View {
                         .fixedSize()
                 }
                 Spacer()
-                if model.macRecording.isRecording, model.macRecording.manifest?.captureId == model.liveTranscriptOpenID {
-                    Button("Stop and save") { Task { await model.macRecording.stop() } }.buttonStyle(COSQuietButtonStyle())
-                }
-                // 0.5.321: a live glasses meeting stops on the glasses, asked from here after an inline confirmation.
-                if let id = model.liveTranscriptOpenID, G2MeetingStop.isGlassesSession(id), feed?.ended != true {
-                    Button(G2MeetingStop.buttonLabel) { confirmGlassesStop = true }
-                        .buttonStyle(COSQuietButtonStyle())
-                        .disabled(model.glassesMeetingStopping(id))
-                }
                 Button(showAsk ? "Hide Ask" : "Live COS Ask") { showAsk.toggle() }
                     .buttonStyle(COSQuietButtonStyle())
+            }
+            // 0.5.336: where it records and, on a server that lists its cue kinds, what the cues found so far.
+            if let id = model.liveTranscriptOpenID,
+               let status = LiveMeeting.statusLine(mac: id.hasPrefix("mac_"), ended: feed?.ended == true,
+                                                   kinds: model.liveMeetingCapability.counts ? inlineCues(id).map(\.kind) : nil) {
+                Text(status).font(COSType.body(12.5, weight: .medium)).foregroundStyle(.primary)
+            }
+            if let line = LiveMeeting.armLine(model.macRecording.manifest?.captureId == model.liveTranscriptOpenID ? model.macRecording.liveCuesArm : nil) {
+                Text(line).font(COSType.body(11)).foregroundStyle(COSPalette.muted)
             }
             Text(LiveTranscript.header)
                 .font(COSType.body(12))
@@ -2376,8 +2407,22 @@ struct LiveTranscriptPane: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 22) {
                     let hours = LiveTranscript.usesHours(feed.turns)
+                    let cues = inlineCues(feed.sessionId)
+                    let anchored = LiveMeeting.anchor(cues: cues.map { ($0.id, $0.createdAt) }, turns: feed.turns, start: feed.startTime)
                     ForEach(feed.turns) { turn in
                         LiveTurnRow(turn: turn, hours: hours)
+                        // 0.5.336: each cue under the turn it belongs to, with its verdicts.
+                        ForEach(cues.filter { anchored[turn.id]?.contains($0.id) == true }) { cue in
+                            LiveInlineCueRow(cue: cue, saving: cueStore.saving.contains(cue.id), error: cueStore.rateErrors[cue.id]) { verdict in
+                                Task { await cueStore.rate(cue, verdict: verdict, note: cue.rating?.note, run: CueReviewPane.run(model)) }
+                            }
+                        }
+                    }
+                    // 0.5.336: the words still being transcribed, greyed, replaced by the final text.
+                    if feed.ended != true, model.liveMeetingCapability.greyLine || feed.sessionId.hasPrefix("mac_") {
+                        LiveProvisionalLineView(feed: model.liveProvisional, sessionId: feed.sessionId, lastFinalChunk: LiveMeeting.lastFinalChunk(feed)) {
+                            if follow.contentChanged(now: Date()) { proxy.scrollTo(LiveTranscriptPane.bottomID, anchor: .bottom) }
+                        }
                     }
                     Color.clear
                         .frame(height: 1)
@@ -2406,6 +2451,46 @@ struct LiveTranscriptPane: View {
     }
 
     static let bottomID = "live-transcript-bottom"
+
+    /// 0.5.336: the open meeting's cues for the inline lines, only on a server with the live meeting surface (an older
+    /// server keeps the Cues tab alone). The history store's copy, so a verdict here shows in the Cues tab too.
+    private func inlineCues(_ session: String) -> [LiveCueRecord] {
+        guard model.liveMeetingCapability.inlineCues else { return [] }
+        return cueStore.meetings[session]?.cues ?? []
+    }
+
+    /// While a meeting with inline cues is live: re-ask the cue history every few seconds; the store reads no more than
+    /// once per 15 s per meeting, and one read at a time.
+    private func followInlineCues(_ session: String?) async {
+        guard let session, model.liveMeetingCapability.inlineCues, model.openLiveTranscriptFeed?.ended != true,
+              G2MeetingStop.isGlassesSession(session) || model.liveMeetingCapability.macCues else { return }
+        while !Task.isCancelled {
+            await cueStore.loadMeeting(session, days: CueVerdicts.liveDays, run: CueReviewPane.run(model))
+            try? await Task.sleep(for: .seconds(LiveMeeting.inlineCueCheckSeconds))
+        }
+    }
+
+    /// The Mac recording's own start, before the first read gives the session's.
+    private func macStart(_ session: String) -> Date? {
+        guard let manifest = model.macRecording.manifest, manifest.captureId == session else { return nil }
+        return Date(timeIntervalSince1970: manifest.startTime / 1000)
+    }
+
+    /// Stop in the bottom bar: a Mac recording stops and saves here (and with Command-Shift-R); a glasses meeting asks the
+    /// glasses after the inline confirmation (0.5.321).
+    @ViewBuilder
+    private func stopControls(_ feed: LiveTranscriptFeed?) -> some View {
+        if model.macRecording.isRecording, model.macRecording.manifest?.captureId == model.liveTranscriptOpenID {
+            Button("Stop and save") { Task { await model.macRecording.stop() } }.buttonStyle(COSQuietButtonStyle())
+                .help("Stop and save (Command-Shift-R)")
+        }
+        // 0.5.321: a live glasses meeting stops on the glasses, asked from here after an inline confirmation.
+        if let id = model.liveTranscriptOpenID, G2MeetingStop.isGlassesSession(id), feed?.ended != true {
+            Button(G2MeetingStop.buttonLabel) { confirmGlassesStop = true }
+                .buttonStyle(COSQuietButtonStyle())
+                .disabled(model.glassesMeetingStopping(id))
+        }
+    }
 
     private func footer(_ feed: LiveTranscriptFeed?) -> some View {
         HStack(spacing: 8) {
@@ -2459,6 +2544,292 @@ struct LiveTurnRow: View {
                 .fixedSize(horizontal: false, vertical: true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+// MARK: - Live meeting view (0.5.336, server 6.86.0)
+//
+// The parts of the live meeting window that move: each in its own small view observing its own object, so a level ten
+// times a second or a grey line every 1.5 s redraws that view and nothing around it. The rules are LiveMeeting
+// (Sources/LiveTranscript.swift).
+
+/// The Mac recording's audiogram levels, ten a second (MacAudioCapture's drain). The DictationMeterFeed pattern: its own
+/// object, observed only by the bar and the rail badge, never on ControllerModel or MacRecordingStore. One for the app,
+/// since one Mac recording runs at a time.
+@MainActor final class LiveAudiogramFeed: ObservableObject {
+    static let live = LiveAudiogramFeed()
+    @Published private(set) var ring = LiveAudiogramRing()
+    private var meter = DictationLevelMeter()
+    /// One drain tick's RMS (raw float samples, 0 to 1).
+    func push(rms: Double) { var next = ring; next.push(meter.update(rms: rms)); ring = next }
+    func reset() { meter = DictationLevelMeter(); if ring.pushed > 0 { ring = LiveAudiogramRing() } }
+}
+
+/// The grey line per live session, in memory only (ControllerModel.liveProvisional). Never logged or saved.
+@MainActor final class LiveProvisionalFeed: ObservableObject {
+    @Published private(set) var lines: [String: LiveProvisionalLine] = [:]
+    func set(_ sessionId: String, _ line: LiveProvisionalLine?) { if lines[sessionId] != line { lines[sessionId] = line } }
+    func clear() { if !lines.isEmpty { lines = [:] } }
+}
+
+/// The scrolling audiogram: one Canvas of the history ring, newest at the right, a bar per level and dotted segments
+/// where it is silent. Reduce Motion: a static level bar, no scrolling.
+struct LiveAudiogramView: View {
+    @ObservedObject var feed: LiveAudiogramFeed
+    var height: CGFloat = 22
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        Group {
+            if reduceMotion {
+                GeometryReader { geometry in
+                    ZStack(alignment: .leading) {
+                        Capsule().fill(COSPalette.line)
+                        Capsule().fill(COSPalette.accent).frame(width: max(2, geometry.size.width * feed.ring.latest))
+                    }
+                }
+                .frame(height: 4)
+                .frame(height: height)
+            } else {
+                Canvas { context, size in
+                    let levels = feed.ring.levels
+                    let step = size.width / CGFloat(levels.count)
+                    let mid = size.height / 2
+                    for (index, level) in levels.enumerated() {
+                        let x = CGFloat(index) * step + step / 2
+                        if LiveAudiogramRing.isSilent(level) {
+                            if index % 3 == 0 {
+                                context.fill(Path(ellipseIn: CGRect(x: x - 0.75, y: mid - 0.75, width: 1.5, height: 1.5)), with: .color(COSPalette.muted.opacity(0.7)))
+                            }
+                        } else {
+                            let h = max(2, CGFloat(level) * size.height)
+                            context.fill(Path(roundedRect: CGRect(x: x - step * 0.3, y: mid - h / 2, width: max(1, step * 0.6), height: h), cornerRadius: 1),
+                                         with: .color(COSPalette.accent))
+                        }
+                    }
+                }
+                .frame(height: height)
+            }
+        }
+        .accessibilityElement()
+        .accessibilityLabel("Audio level")
+        .accessibilityValue(LiveAudiogramRing.isSilent(feed.ring.latest) ? "Silent" : "Sound")
+    }
+}
+
+/// The rail's Meetings badge while recording: the red dot, a small level glyph (live for a Mac recording, still for the
+/// glasses) and the elapsed time, on its own one-second clock.
+struct LiveRailBadge: View {
+    let start: Date?
+    let mac: Bool
+    var body: some View {
+        HStack(spacing: 4) {
+            LiveDot(size: 6)
+            if mac { LiveLevelGlyph(feed: LiveAudiogramFeed.live) } else { LiveLevelGlyph(feed: nil) }
+            if let start {
+                TimelineView(.periodic(from: start, by: 1)) { context in
+                    Text(LiveMeeting.elapsed(context.date.timeIntervalSince(start))).font(COSType.mono(10)).monospacedDigit()
+                }
+            }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Meeting recording now")
+    }
+}
+
+/// Three small bars: the latest levels of a Mac recording, or a still glyph for the glasses (no level reaches the Mac).
+struct LiveLevelGlyph: View {
+    let feed: LiveAudiogramFeed?
+    var body: some View {
+        if let feed { LiveLevelBars(feed: feed) } else { Self.bars([0.45, 0.8, 0.55]) }
+    }
+    static func bars(_ levels: [Double]) -> some View {
+        HStack(alignment: .center, spacing: 1.5) {
+            ForEach(Array(levels.enumerated()), id: \.offset) { _, level in
+                Capsule().fill(COSPalette.live.opacity(0.85)).frame(width: 2, height: 3 + 7 * min(1, max(0, level)))
+            }
+        }
+        .frame(height: 10)
+    }
+}
+
+struct LiveLevelBars: View {
+    @ObservedObject var feed: LiveAudiogramFeed
+    var body: some View { LiveLevelGlyph.bars(Array(feed.ring.levels.suffix(3))) }
+}
+
+/// The bottom bar while the meeting records: the red dot, the elapsed time on its own one-second clock, the audiogram
+/// (Mac recordings only) and Stop.
+struct LiveRecordingBar<Stop: View>: View {
+    let start: Date?
+    let mac: Bool
+    @ViewBuilder let stop: () -> Stop
+
+    var body: some View {
+        HStack(spacing: 12) {
+            LiveDot(size: 9)
+            if let start {
+                TimelineView(.periodic(from: start, by: 1)) { context in
+                    Text(LiveMeeting.elapsed(context.date.timeIntervalSince(start)))
+                        .font(COSType.mono(12.5, weight: .medium)).monospacedDigit()
+                }
+            } else {
+                Text("Starting").font(COSType.body(12)).foregroundStyle(.secondary)
+            }
+            if mac {
+                LiveAudiogramView(feed: .live).frame(maxWidth: .infinity)
+            } else {
+                Spacer(minLength: 0)
+            }
+            stop()
+        }
+        .padding(.horizontal, 24)
+        .padding(.vertical, 10)
+    }
+}
+
+/// The voices heard so far: initials and names, a small bar under the one heard last (it trails the room by 5 to 10 s,
+/// as the transcript does). Still under Reduce Motion; otherwise the bar breathes.
+struct LiveParticipantStrip: View {
+    let people: [LiveMeetingParticipant]
+    let lastHeard: String?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 14) {
+                ForEach(people) { person in
+                    let last = person.id == lastHeard
+                    HStack(spacing: 7) {
+                        Text(verbatim: person.initials)
+                            .font(COSType.body(10.5, weight: .semibold))
+                            .foregroundStyle(person.unidentified ? COSPalette.muted : COSPalette.ink)
+                            .frame(width: 24, height: 24)
+                            .background(Circle().fill(person.unidentified ? COSPalette.raised : COSPalette.gold.opacity(0.55)))
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(verbatim: person.name).font(COSType.body(11.5, weight: last ? .semibold : .regular))
+                                .foregroundStyle(last ? .primary : .secondary).lineLimit(1)
+                            if last { LiveLastHeardBar(still: reduceMotion) }
+                        }
+                    }
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel(last ? person.name + ", heard last" : person.name)
+                }
+            }
+            .padding(.horizontal, 24)
+        }
+        .frame(height: 34)
+    }
+}
+
+/// "Last heard": a short accent bar under the name. Breathes slowly unless Reduce Motion is on, then it is still.
+struct LiveLastHeardBar: View {
+    let still: Bool
+    @State private var dim = false
+    var body: some View {
+        Capsule().fill(COSPalette.accent)
+            .frame(width: 18, height: 2.5)
+            .opacity(still ? 1 : (dim ? 0.45 : 1))
+            .onAppear {
+                guard !still else { return }
+                withAnimation(.easeInOut(duration: 1.2).repeatForever(autoreverses: true)) { dim = true }
+            }
+            .help("Heard last. Names arrive with the text, a few seconds after they speak.")
+    }
+}
+
+/// One cue under the turn it belongs to: its kind as the line's lead word (a plain cue for a kind this build does not
+/// know), the cue, and the five verdicts, or the verdict it has with Change.
+struct LiveInlineCueRow: View {
+    let cue: LiveCueRecord
+    let saving: Bool
+    let error: String?
+    let rate: (CueVerdict) -> Void
+    @State private var changing = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Group {
+                if let label = LiveMeeting.kindLabel(cue.kind) {
+                    Text(label + "  ").font(COSType.body(12.5, weight: .semibold)).foregroundColor(COSPalette.accent)
+                        + Text(verbatim: cue.detail).font(COSType.body(13))
+                } else {
+                    Text(verbatim: cue.detail).font(COSType.body(13))
+                }
+            }
+            .fixedSize(horizontal: false, vertical: true)
+            .textSelection(.enabled)
+            if let rated = CueVerdicts.ratedLine(cue.rating), !changing {
+                HStack(spacing: 8) {
+                    Text(rated).font(COSType.body(11, weight: .medium)).foregroundStyle(COSPalette.accent)
+                    Button("Change") { changing = true }.buttonStyle(COSTextButtonStyle())
+                }
+            } else {
+                CueVerdictButtons(selected: cue.verdict, disabled: saving) { verdict in
+                    changing = false
+                    if verdict != cue.verdict { rate(verdict) }
+                }
+                .controlSize(.small)
+            }
+            if let error { Text(error).font(COSType.body(11)).foregroundStyle(COSPalette.amber).fixedSize(horizontal: false, vertical: true) }
+        }
+        .padding(.leading, 12)
+        .padding(.vertical, 4)
+        .overlay(alignment: .leading) { Rectangle().fill(COSPalette.accent.opacity(0.55)).frame(width: 2) }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// The grey line: the newest words still being transcribed, below the last turn, replaced by the final text. Its own
+/// view on its own object, so a new preview redraws only this.
+struct LiveProvisionalLineView: View {
+    @ObservedObject var feed: LiveProvisionalFeed
+    let sessionId: String
+    let lastFinalChunk: Int
+    let changed: () -> Void
+
+    var body: some View {
+        let text = LiveMeeting.visibleProvisional(feed.lines[sessionId], lastFinalChunk: lastFinalChunk)
+        Group {
+            if let text {
+                Text(verbatim: text)
+                    .font(COSType.body(14))
+                    .lineSpacing(4)
+                    .foregroundStyle(COSPalette.muted.opacity(0.75))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityLabel("Still transcribing")
+                    .accessibilityValue(text)
+            }
+        }
+        .onChange(of: text) { _, _ in changed() }
+    }
+}
+
+/// The line under the bottom bar: drop files on it while the meeting runs; they are saved with the meeting (the same
+/// intake as the Files box above).
+struct LiveFilesDropLine: View {
+    @ObservedObject var files: WorkCardFileStore
+    let key: String
+    @State private var targeted = false
+    static let line = "Drop in screenshots or files while it's on. They're saved with the meeting."
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "paperclip").font(.system(size: 11))
+            Text(targeted ? "Drop to add to this meeting" : Self.line)
+            Spacer(minLength: 0)
+        }
+        .font(COSType.body(11.5))
+        .foregroundStyle(targeted ? COSPalette.accent : COSPalette.muted)
+        .padding(.horizontal, 24)
+        .padding(.vertical, 8)
+        .background(targeted ? COSPalette.gold.opacity(0.06) : .clear)
+        .contentShape(Rectangle())
+        .modifier(MeetingFilesDrop(enabled: files.enabled, targeted: $targeted) { providers in
+            let info = WorkMeetingInfo(recordId: "", title: "Live meeting", date: "")
+            Task { await files.intakeMeeting(providers: providers, key: key, info: info) }
+        })
     }
 }
 

@@ -130,6 +130,26 @@ import Darwin
         await rejects("endFrame must match PCM frames") { _ = try await spool.append(.init(index: 0, pcm: pcm, endFrame: 15_999), captureId: initial.id) }
         let appended = try await spool.append(.init(index: 0, pcm: pcm, endFrame: 16_000), captureId: initial.id)
         check(appended.chunks.count == 1 && appended.chunks[0].endFrame == 16_000, "journal advances exact frame count")
+        // 0.5.336: the grey line's preview WAV, beside the chunks and never in the journal.
+        let previewPath = try await spool.writePreview(pcm, captureId: initial.id)
+        check(previewPath.hasSuffix("/" + MacRecordingSpool.previewFilename) && (try? Data(contentsOf: URL(fileURLWithPath: previewPath))) == wav,
+              "preview WAV canonical, beside the chunks")
+        let previewRecovery = MacRecordingSpool(root: root)
+        let previewRecoverable = try await previewRecovery.recoverable().map(\.id)
+        let previewWarnings = await previewRecovery.recoveryWarnings()
+        check(previewRecoverable == [initial.id] && previewWarnings.isEmpty, "a preview WAV is never audio outside the journal")
+        check(try await spool.snapshot(initial.id).chunks.count == 1, "the preview never enters the journal")
+        _ = try await spool.writePreview(pcm + pcm, captureId: initial.id)
+        check((try? Data(contentsOf: URL(fileURLWithPath: previewPath)))?.count == pcm.count * 2 + 44, "the next preview replaces the last")
+        await spool.removePreview(captureId: initial.id)
+        check(!fm.fileExists(atPath: previewPath), "the preview WAV is removed after its post")
+        await spool.removePreview(captureId: initial.id)
+        await rejects("a preview over 15 s refused") { _ = try await spool.writePreview(Data(count: LiveMeetingPreviewLimit.maximumBytes + 2), captureId: initial.id) }
+        await rejects("an empty preview refused") { _ = try await spool.writePreview(Data(), captureId: initial.id) }
+        await rejects("an odd preview refused") { _ = try await spool.writePreview(Data([0, 0, 0]), captureId: initial.id) }
+        check(LiveMeetingPreviewLimit.maximumBytes == 480_000, "the preview ceiling is 15 s")
+        let squares: [Float] = [0.5, -0.5, .nan, .infinity, 0]
+        check(squares.withUnsafeBufferPointer { MacRecordingSignal.sumOfSquares($0) } == 0.5, "the audiogram's sum of squares skips NaN and infinity")
         let audioURL = URL(fileURLWithPath: try await spool.path(for: appended.chunks[0], captureId: initial.id))
         check(try Data(contentsOf: audioURL) == wav, "disk audio canonical and unchanged")
         for url in [root, root.appendingPathComponent(initial.id), audioURL, audioURL.deletingLastPathComponent().appendingPathComponent("manifest.json")] {
@@ -141,6 +161,7 @@ import Darwin
         check(acknowledged.acknowledged == 1 && acknowledged.chunks.count == 1, "acknowledgement preserves captured journal")
         await rejects("duplicate ack rejected") { _ = try await spool.acknowledge(initial.id, index: 0) }
         _ = try await spool.markStopped(initial.id)
+        await rejects("a stopped capture takes no preview") { _ = try await spool.writePreview(pcm, captureId: initial.id) }
         await rejects("stopped capture cannot append") { _ = try await spool.append(.init(index: 1, pcm: pcm, endFrame: 32_000), captureId: initial.id) }
         _ = try await spool.markSaved(initial.id)
         await rejects("saved capture cannot append") { _ = try await spool.append(.init(index: 1, pcm: pcm, endFrame: 32_000), captureId: initial.id) }

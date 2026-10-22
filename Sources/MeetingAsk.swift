@@ -1746,24 +1746,31 @@ struct MeetingSidePanel<Ask: View>: View {
     let session: String
     /// The live meeting is still running: its Cues list polls (MeetingCuesPanel).
     let live: Bool
+    /// 0.5.336 (server 6.86.0): the server can cue a Mac recording (LiveMeetingCapability.macCues), so its Cues show too.
+    let macCues: Bool
     let askTitle: String
     let ask: () -> Ask
     private enum Shown: Hashable { case ask, cues }
     @State private var shown: Shown
 
     /// `showsCues` opens on Cues (the render harness); the app always opens on Ask.
-    init(store: CueVerdictsStore, model: ControllerModel, session: String, live: Bool = false, askTitle: String = "Live COS Ask",
+    init(store: CueVerdictsStore, model: ControllerModel, session: String, live: Bool = false, macCues: Bool = false, askTitle: String = "Live COS Ask",
          showsCues: Bool = false, @ViewBuilder ask: @escaping () -> Ask) {
         _store = ObservedObject(wrappedValue: store)
         self.model = model
         self.session = session
         self.live = live
+        self.macCues = macCues
         self.askTitle = askTitle
         self.ask = ask
         _shown = State(initialValue: showsCues ? .cues : .ask)
     }
 
-    private var cuesOffered: Bool { store.available == true && G2MeetingStop.isGlassesSession(session) }
+    private var cuesOffered: Bool { store.available == true && Self.cuesSession(session, macCues: macCues) }
+    /// A glasses meeting, or (0.5.336) a Mac recording on a server that cues them.
+    static func cuesSession(_ session: String, macCues: Bool) -> Bool {
+        G2MeetingStop.isGlassesSession(session) || (macCues && session.hasPrefix("mac_"))
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -1786,7 +1793,7 @@ struct MeetingSidePanel<Ask: View>: View {
         .background(COSPalette.panel)
         // One read when the panel shows a meeting: it is the capability check and the count on the switch.
         .task(id: session) {
-            guard G2MeetingStop.isGlassesSession(session) else { return }
+            guard Self.cuesSession(session, macCues: macCues) else { return }
             await store.loadMeeting(session, days: live ? CueVerdicts.liveDays : CueVerdicts.savedDays, force: true, run: CueReviewPane.run(model))
         }
     }

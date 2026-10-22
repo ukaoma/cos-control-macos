@@ -70,6 +70,51 @@ try:
     check(json.loads(request[3]) == {'captureId':capture,'startTime':1792026000000,'sourceType':'mac_system_audio'}, 'source type immutable')
     check(run('start', dict(base,startTime=1792026000000.875))['ok'], 'native fractional clock admitted by bridge')
     check(json.loads(seen[-1][3])['startTime'] == 1792026000000, 'bridge canonicalizes native fractional clock to integer milliseconds')
+    # 0.5.336 (server 6.86.0): live cues ride on the start only as a JSON true; false sends the 6.85.0 body exactly.
+    answer.update(status=200,body={'serverInstanceId':'fixture-server','available':True,'sourceType':'mac_system_audio',
+                                   'liveCues':{'armed':True,'kinds':['reinforce','challenge','decision','promise','followUp'],'cuesGenerated':0}})
+    result=run('start', dict(base,startTime=1792026000000,liveCues=True))
+    check(result['ok'] and json.loads(seen[-1][3]) == {'captureId':capture,'startTime':1792026000000,'sourceType':'mac_system_audio','liveCues':True},
+          'liveCues true reaches the start body')
+    check(result['details']['liveCues']['armed'] is True, 'the arm answer reaches the app')
+    check(run('start', dict(base,startTime=1792026000000,liveCues=False))['ok']
+          and json.loads(seen[-1][3]) == {'captureId':capture,'startTime':1792026000000,'sourceType':'mac_system_audio'},
+          'liveCues false sends the 6.85.0 body byte for byte')
+    refused(dict(base,startTime=1792026000000,liveCues=1), 'a number for liveCues refused before the network','start')
+    refused(dict(base,startTime=1792026000000,liveCues='true'), 'a string for liveCues refused before the network','start')
+    answer.update(status=200,body={'serverInstanceId':'fixture-server','available':True,'sourceType':'mac_system_audio'})
+
+    # 0.5.336 (server 6.86.0): the grey line's preview, from preview.wav in the capture's spool folder.
+    preview = spool / 'preview.wav'
+    pcm = b'\x01\x00' * 16000
+    preview.write_bytes(b'RIFF' + struct.pack('<I', 36 + len(pcm)) + b'WAVEfmt ' + struct.pack('<IHHIIHH',16,1,1,16000,32000,2,16) + b'data' + struct.pack('<I',len(pcm)) + pcm)
+    preview.chmod(0o600)
+    pv = dict(base, path=str(preview), chunkIndex=7, previewGen=2)
+    answer.update(status=200,body={'sessionId':capture,'chunkIndex':7,'previewGen':2,'text':'fixture words in progress','provisional':True,
+                                   'model':'large-v3-turbo','backend':'metal','serverInstanceId':'fixture-server'})
+    result=run('preview', pv)
+    request=seen[-1]
+    check(result['ok'] and result['details'] == {'httpStatus':200,'chunkIndex':7,'previewGen':2,'text':'fixture words in progress'},
+          'the preview passes the line and nothing else')
+    check(request[0]=='POST' and request[1]=='/api/transcribe-stream/preview?sessionId='+capture+'&chunkIndex=7&previewGen=2&serverInstanceId=fixture%2Dserver&previewModels=parakeet-ultra',
+          'the preview route and query, exactly as the contract says (the pin percent-encoded, as status does)')
+    check(request[2].get('x-cos-server-instance')=='fixture-server' and request[3]==preview.read_bytes(), 'the pin header and the raw WAV')
+    answer.update(status=204,body=None)
+    check(run('preview', pv)['details']=={'httpStatus':204,'miss':True}, 'a 204 is a miss, not a failure')
+    answer.update(status=200,body={'chunkIndex':7,'previewGen':1,'text':'older words'})
+    check('text' not in run('preview', pv)['details'], 'an answer for another generation carries no text')
+    answer.update(status=400,body={'error':'SECRET server words','reason':'invalid_preview_generation'})
+    got=run('preview', pv)
+    check(got['ok'] and got['details']=={'httpStatus':400,'miss':True} and 'SECRET' not in json.dumps(got), 'a refusal carries its status alone')
+    refused(dict(pv,path=str(path)), 'only preview.wav is a preview','preview')
+    refused(dict(pv,previewGen=True), 'bool previewGen refused','preview')
+    refused(dict(pv,previewGen=-1), 'negative previewGen refused','preview')
+    refused(dict(pv,chunkIndex=0.5), 'fractional preview chunk refused','preview')
+    big = b'\x01\x00' * 240_001
+    preview.write_bytes(b'RIFF' + struct.pack('<I', 36 + len(big)) + b'WAVEfmt ' + struct.pack('<IHHIIHH',16,1,1,16000,32000,2,16) + b'data' + struct.pack('<I',len(big)) + big)
+    refused(pv, 'a preview over 15 s refused before the network','preview')
+    preview.unlink()
+    answer.update(status=200,body={'serverInstanceId':'fixture-server','available':True,'sourceType':'mac_system_audio'})
     refused(dict(base,startTime=0.5), 'sub-millisecond start refused','start')
     refused(dict(base,startTime=1e20), 'unsafe integer clock refused','start')
 

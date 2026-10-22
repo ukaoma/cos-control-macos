@@ -137,6 +137,12 @@ enum MacRecordingSignal {
     }
     /// Every Int16 sample is exactly zero (what an unauthorized tap's chunk is after conversion).
     static func isDigitalZero(_ pcm: Data) -> Bool { peak(pcm) == 0 }
+    /// 0.5.336: the audiogram's sum of squares over raw float samples (RMS is its mean, rooted). NaN and infinity count 0.
+    static func sumOfSquares(_ samples: UnsafeBufferPointer<Float>) -> Double {
+        var total = 0.0
+        for sample in samples where sample.isFinite { total += Double(sample) * Double(sample) }
+        return total
+    }
     static func warning(silentChunks: Int, source: String) -> String? {
         guard silentChunks >= warnAfterSilentChunks else { return nil }
         let seconds = silentChunks * MacRecordingWAV.framesPerChunk / MacRecordingWAV.sampleRate
@@ -395,6 +401,21 @@ actor MacRecordingSpool {
         return try directory(captureId).appendingPathComponent(chunk.filename).path
     }
     func recoveryWarnings() -> [String] { warnings }
+    /// 0.5.336: the grey line's preview WAV, beside the chunks and never in the journal: written before each preview
+    /// post (replaced, not appended), removed after it and at stop, and never counted as audio outside the journal.
+    static let previewFilename = "preview.wav"
+    func writePreview(_ pcm: Data, captureId: String) throws -> String {
+        let value = try snapshot(captureId)
+        guard !value.stopped, !value.saved, !pcm.isEmpty, pcm.count % 2 == 0, pcm.count <= LiveMeetingPreviewLimit.maximumBytes else { throw invalid() }
+        let fd = try captureFD(captureId, create: false); defer { Darwin.close(fd) }
+        try atomicWrite(MacRecordingWAV.encode(pcm), name: Self.previewFilename, in: fd)
+        return try directory(captureId).appendingPathComponent(Self.previewFilename).path
+    }
+    func removePreview(captureId: String) {
+        guard let fd = try? captureFD(captureId, create: false) else { return }
+        defer { Darwin.close(fd) }
+        _ = unlinkat(fd, Self.previewFilename, 0)
+    }
     /// 0.5.334: where a discarded capture goes, beside the spool: `mac-recordings-discarded/<yyyy-MM-dd>/`.
     var discardedRoot: URL { root.deletingLastPathComponent().appendingPathComponent(MacRecordingDiscard.discardedFolderName, isDirectory: true) }
     /// Moves one capture's folder, journal and WAVs untouched, into today's discarded folder. Never removes a file: a
@@ -429,7 +450,7 @@ actor MacRecordingSpool {
                 let value = try snapshot(name)
                 let expected = Set(value.chunks.map(\.filename))
                 let files = try fm.contentsOfDirectory(atPath: directory(name).path)
-                if files.contains(where: { $0.lowercased().hasSuffix(".wav") && !expected.contains($0) }) {
+                if files.contains(where: { $0.lowercased().hasSuffix(".wav") && !expected.contains($0) && $0 != Self.previewFilename }) {
                     warnings.append("A Mac recording has audio outside its saved journal. Those files were retained and will not be uploaded automatically.")
                 }
                 if !value.saved { result.append(value) }
@@ -439,6 +460,12 @@ actor MacRecordingSpool {
         }
         return result.sorted { $0.startTime < $1.startTime }
     }
+}
+
+/// 0.5.336: the preview's byte ceiling, here so the spool (compiled alone in its lane) and the gate agree: 15 s of 16 kHz
+/// mono PCM16 (LiveMeetingPreviewGate.maximumBytes says the same; Tests/live-meeting-pins.py pins the two equal).
+enum LiveMeetingPreviewLimit {
+    static let maximumBytes = 480_000
 }
 
 /// A confirmed no-speech result may release the composer, never an uncertain or live delivery.

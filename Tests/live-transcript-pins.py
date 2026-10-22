@@ -255,4 +255,35 @@ for rel in ("Tests/run.sh", "scripts/build-release.sh", "Tests/run-held-ui.sh", 
     need(lists >= 1 and lists <= text.count('"$ROOT/Sources/LiveTranscript.swift"'),
          rel + " compiles Sources/LiveTranscript.swift wherever it compiles ActivityMeetings.swift")
 
+# ── 0.5.336 (server 6.86.0): the grey provisional text keeps the same boundary as the transcript. It goes from the
+# helper's answer (live-provisional, or the Mac preview) into ControllerModel.liveProvisional and the grey line, and
+# nowhere else: no log, print, stderr, error, notice, report, cache, file or saved meeting, and never into Copy.
+raw_model = (root / "Sources/ControllerModel.swift").read_text()
+lm_model = strip_comments(raw_model[raw_model.index("    // MARK: - Live meeting view (0.5.336, server 6.86.0)"):raw_model.index("    /// 0.5.228.")])
+for banned, why in (("Log.", "a Logger"), ("Logger(", "a Logger"), ("NSLog", "NSLog"), ("print(", "print"), ("debugPrint", "print"),
+                    ("localizedDescription", "an error's description"), ("String(describing:", "an error's description"),
+                    ("self.error =", "the alert"), (" error = ", "the alert"), ("notice =", "the notice"), ("fputs", "stderr"),
+                    ("write(to", "a file"), ("UserDefaults", "the defaults"), ("liveTranscriptReason", "the paused line")):
+    need(banned not in lm_model, "the grey text never reaches " + why + " (" + banned + ")")
+raw_helper = (root / "HelperSources/main.swift").read_text()
+lm_helper = strip_comments(raw_helper[raw_helper.index("    // MARK: - Live meeting view (0.5.336, server 6.86.0)"):raw_helper.index("    private func emitLiveCuesHistory(args: [String]) throws {")])
+for banned in ("progress(", "print(", "FileHandle.standardError", "NSLog", "appendHelperLog", "helperLog", "fputs", "debugPrint"):
+    need(banned not in lm_helper, "the helper's live-provisional never writes the grey text to " + banned)
+need('emit(ok: true, message: "Live provisional answered (\\(response.status))", details: details)' in lm_helper,
+     "the helper's message names only the status; the text rides in details for the app")
+lm_views = strip_comments(meetings[meetings.index("struct LiveProvisionalLineView: View {"):meetings.index("struct LiveFilesDropLine: View {")])
+need("Text(verbatim: text)" in lm_views and "Markdown" not in lm_views and "print(" not in lm_views and "Logger" not in lm_views,
+     "the grey line is drawn as plain text and never logged")
+all_text = {p.name: strip_comments(p.read_text()) for p in (root / "Sources").glob("*.swift")}
+holders = sorted(name for name, text in all_text.items() if "liveProvisional" in text)
+need(holders == ["ActivityMeetings.swift", "ControllerModel.swift"], "only the model and the live views hold the grey text: " + ", ".join(holders))
+copy = body(model, "func copyLiveTranscript() {") + body(model, "var liveTranscriptCopyText: String? {")
+need("liveProvisional" not in copy and "provisional" not in copy.lower(), "Copy transcript never includes the grey text")
+need("liveProvisional" not in strip_comments(code("Sources/MeetingAsk.swift")) and "liveProvisional" not in strip_comments(code("Sources/MeetingAskCore.swift")),
+     "Live COS Ask and Copy full context never see the grey text")
+raw_rec = code("Sources/MacRecording.swift")
+mac_previews = strip_comments(raw_rec[raw_rec.index("    // MARK: The grey line's previews (0.5.336, server 6.86.0)"):raw_rec.index("    // MARK: Can COS hear this Mac? (0.5.334)")])
+need(strip_comments(raw_rec).count("previewDelivered?(id, line)") == 1 and "previewDelivered?(id, line)" in mac_previews and "recordingLog" not in mac_previews,
+     "the Mac preview's text goes only to the live view, never the recording log")
+
 print("live transcript pins: %d passed" % passed)

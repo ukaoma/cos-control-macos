@@ -85,8 +85,8 @@ except ValueError:
 if not value.get("ok"):
     sys.exit("helper self-test FAILED: " + str(value.get("message") or value)[:2000])
 count = value.get("details", {}).get("tests", 0)
-if count < 950:
-    sys.exit(f"helper self-test ran only {count} checks; expected at least 950 (950 with the Activity Today question text; 945 at 0.5.329: the live cue limits grammar, v 2 and refusal whitelist; 924 at 0.5.327: live-cues-history and live-cues-rate grammar, whitelists, unsupported and the stdin note; 856 at 0.5.322: live-cues-settings grammar and whitelist; 836 at 0.5.321; 820 at 0.5.278: the live transcript path grammar, fixture parse, --since and stamp; 784 at 0.5.268: Codex inside the ChatGPT app; 774 at 0.5.250: the Work session name, transcript titles and named rows that are never warm-ups; 727 at 0.5.238)")
+if count < 961:
+    sys.exit(f"helper self-test ran only {count} checks; expected at least 961 (961 at 0.5.336: the live meeting status keys, live-provisional, the Mac preview and the cue kind grammar; 950 with the Activity Today question text; 945 at 0.5.329: the live cue limits grammar, v 2 and refusal whitelist; 924 at 0.5.327: live-cues-history and live-cues-rate grammar, whitelists, unsupported and the stdin note; 856 at 0.5.322: live-cues-settings grammar and whitelist; 836 at 0.5.321; 820 at 0.5.278: the live transcript path grammar, fixture parse, --since and stamp; 784 at 0.5.268: Codex inside the ChatGPT app; 774 at 0.5.250: the Work session name, transcript titles and named rows that are never warm-ups; 727 at 0.5.238)")
 ' "$SELF_TEST"
 # The Work contract self-test (the model catalog, admission, and from 0.5.249 the Cursor chat finder) is its own command,
 # and nothing ran it: a mutation of the tab folder rules survived because of it (2026-09-29).
@@ -144,6 +144,10 @@ python3 "$ROOT/Tests/live-cues-helper-checks.py" "$TMP/cos-control-helper"
 # 0.5.327 Cue verdicts (server 6.79.0): live-cues-history and live-cues-rate through the compiled helper against a loopback
 # fixture (the query and the body exactly, every status an answer, only the contract's keys, unreachable and no token).
 python3 "$ROOT/Tests/cue-verdicts-helper-checks.py" "$TMP/cos-control-helper"
+# 0.5.336 live meeting view (server 6.86.0): live-provisional through the compiled helper against a loopback fixture (the
+# route and session exactly, only the line's chunk, generation and newest 600 characters, every status an answer, no text
+# on stderr). The Mac preview and liveCues on the start are in mac-recording-helper-checks.py above.
+python3 "$ROOT/Tests/live-meeting-helper-checks.py" "$TMP/cos-control-helper"
 # K1 P10 key lanes: the key-lanes verb through the compiled helper against a loopback fixture (the key on stdin only,
 # never echoed, every status an answer, only the contract's keys).
 python3 "$ROOT/Tests/key-lanes-helper-checks.py" "$TMP/cos-control-helper"
@@ -224,6 +228,12 @@ zsh "$ROOT/Tests/run-live-cues.sh"
 # 0.5.327: rating live cues. The wiring pins (the route flag and its opener, keys only on the card, the note in the card,
 # Cues only after the history answered, the 15-second poll only while it shows), then the words, keys and store.
 zsh "$ROOT/Tests/run-cue-verdicts.sh"
+# 0.5.336: the live meeting view (server 6.86.0). The wiring pins (capability gating, the audiogram in its own object,
+# Reduce Motion, the one-second clock, Command-Shift-R once, live cues only on the Mac start, no grey text in any log),
+# then the pure rules (counts, anchoring, the strip, the title, the audiogram ring, the preview rate cap, the grey line).
+# The helper lane runs above with the suite's own helper.
+COS_LIVE_MEETING_LANE=pins zsh "$ROOT/Tests/run-live-meeting.sh"
+COS_LIVE_MEETING_LANE=models zsh "$ROOT/Tests/run-live-meeting.sh"
 # K1 P10 key lanes: the pins and P8 copy parity, then the decisions and store, then the helper grammar (Tests/run-key-lanes.sh).
 zsh "$ROOT/Tests/run-key-lanes.sh"
 # Transcription switcher: the store against a stand-in helper (404 hides, 400 shows, one partial PUT, install polls).

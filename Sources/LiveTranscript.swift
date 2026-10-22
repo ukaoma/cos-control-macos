@@ -737,3 +737,308 @@ struct G2MeetingStopProgress: Equatable, Sendable {
     let sessionId: String
     var phase: G2MeetingStop.Phase
 }
+
+// MARK: - The live meeting view (0.5.336, server 6.86.0)
+//
+// Kept in this file (not its own) for the same reason as the stop above: every lane and scripts/build-release.sh that
+// lists the live meeting sources by name compiles it with them.
+//
+// 0.5.336 (Miles, 2026-10-22 plan, decisions 09:35 and 15:21): the live meeting window shows the meeting's real title, a
+// line that counts what the cue writer found so far, the voices heard, each cue under the turn it belongs to, a grey
+// line for the words still being transcribed, and a bottom bar with the elapsed time and, for a Mac recording, an
+// audiogram. This is the pure part: what the server advertises, the counts, the anchoring, the strip, the audiogram's
+// history ring, the preview rate cap and the grey line's rules. Pure Foundation, so Tests/LiveMeetingChecks.swift runs it.
+//
+// CAPABILITY, NEVER STATUS CODE. Everything new is gated on what /api/health advertises (the helper's status forwards
+// it): `capabilities.liveMeeting.protocol == 1`, `liveMeeting.macLiveCues`, `liveMeeting.provisional` and
+// `capabilities.liveCues.kinds`. An older server (6.84, 6.85) advertises none of them, and the view is today's.
+//
+// SECRET BOUNDARY. Nothing here logs or prints. The grey text lives in memory only, for the one meeting on screen.
+
+/// One grey line: the newest preview of the chunk still being transcribed.
+struct LiveProvisionalLine: Equatable, Sendable {
+    let chunkIndex: Int
+    let previewGen: Int
+    let text: String
+}
+
+/// A participant in the strip: initials and the name as the transcript shows it.
+struct LiveMeetingParticipant: Equatable, Identifiable, Sendable {
+    let name: String
+    let initials: String
+    /// Not a recognized voice ("Speaker", "Ext", "Unidentified 2"): one chip stands for all of them.
+    let unidentified: Bool
+    var id: String { unidentified ? "?unidentified" : name }
+}
+
+/// The Mac recording start's answer about live cues (server 6.86.0).
+struct MacLiveCuesArm: Equatable, Sendable {
+    let armed: Bool
+    let reason: String?
+}
+
+/// The bottom bar's audiogram: the last `capacity` levels, 10 a second, oldest first. A level is 0 to 1 from
+/// DictationLevelMeter (0 is at or under the room's own floor, drawn dotted as silence). Fixed size: pushing never grows it.
+struct LiveAudiogramRing: Equatable, Sendable {
+    /// 12 seconds at the capture drain's 10 Hz.
+    static let capacity = 120
+    /// At or under this a level draws as silence (a dotted segment).
+    static let silence = 0.02
+    private var storage = [Double](repeating: 0, count: LiveAudiogramRing.capacity)
+    /// Where the next level goes; storage[next] is the oldest.
+    private var next = 0
+    private(set) var pushed = 0
+
+    mutating func push(_ level: Double) {
+        storage[next] = level.isFinite ? min(1, max(0, level)) : 0
+        next = (next + 1) % Self.capacity
+        pushed += 1
+    }
+
+    /// Oldest first, newest last, always `capacity` long (silence before the first push).
+    var levels: [Double] { Array(storage[next...] + storage[..<next]) }
+    var latest: Double { storage[(next + Self.capacity - 1) % Self.capacity] }
+    static func isSilent(_ level: Double) -> Bool { level <= silence }
+}
+
+/// The Mac grey line's posts to POST /api/transcribe-stream/preview: at most one in flight, at least `interval` apart,
+/// only with enough of the open chunk to read, and the newest `maximumBytes` of it. `previewGen` starts at 0 for each
+/// chunk and rises with each post for that chunk; an answer older than one already shown is dropped. After
+/// `breakerFailures` failed posts in a row the recording stops posting (the grey line is cosmetic).
+struct LiveMeetingPreviewGate: Equatable, Sendable {
+    static let interval: TimeInterval = 2
+    /// One second of 16 kHz mono PCM16.
+    static let minimumBytes = 32_000
+    /// 15 seconds of 16 kHz mono PCM16; with the 44-byte header it stays under the server's 512 KB.
+    static let maximumBytes = 480_000
+    static let breakerFailures = 3
+    private(set) var inFlight = false
+    private(set) var lastPost: Date?
+    private(set) var chunkIndex = -1
+    private(set) var generation = -1
+    private(set) var shownChunk = -1
+    private(set) var shownGeneration = -1
+    private(set) var failures = 0
+
+    var open: Bool { failures < Self.breakerFailures }
+
+    /// The previewGen for a post of `chunkIndex` with `bytes` of its audio, or nil when no post may go now.
+    mutating func begin(chunkIndex: Int, bytes: Int, now: Date) -> Int? {
+        guard open, !inFlight, chunkIndex >= 0, bytes >= Self.minimumBytes else { return nil }
+        if let lastPost, now.timeIntervalSince(lastPost) < Self.interval { return nil }
+        if chunkIndex != self.chunkIndex { self.chunkIndex = chunkIndex; generation = -1 }
+        generation += 1
+        inFlight = true
+        lastPost = now
+        return generation
+    }
+
+    /// The post came back: `answered` is false for a transport or server failure (a 204 miss is an answer).
+    mutating func finish(answered: Bool) {
+        inFlight = false
+        failures = answered ? 0 : failures + 1
+    }
+
+    /// Whether an answer may replace what is shown: never older than the newest shown, by chunk then generation.
+    mutating func accept(chunkIndex: Int, previewGen: Int) -> Bool {
+        guard chunkIndex > shownChunk || (chunkIndex == shownChunk && previewGen > shownGeneration) else { return false }
+        shownChunk = chunkIndex; shownGeneration = previewGen
+        return true
+    }
+
+    /// The bytes a post sends: the newest `maximumBytes`, on a sample boundary.
+    static func window(_ pcm: Data) -> Data {
+        let even = pcm.count - pcm.count % 2
+        let start = max(0, even - maximumBytes)
+        return pcm.subdata(in: pcm.startIndex + start..<pcm.startIndex + even)
+    }
+}
+
+enum LiveMeeting {
+    /// The five kinds the 6.86.0 writer can write, in the server's spelling (shared/live-cues-v2.ts CUE_KINDS).
+    static let knownKinds = ["reinforce", "challenge", "decision", "promise", "followUp"]
+    /// The kinds the header counts: what was decided or promised in the meeting, not the coaching ones.
+    static let countedKinds = ["decision", "promise", "followUp"]
+    /// The inline cues re-ask the cue history this often; the history store's own 15 s floor decides when it reads.
+    static let inlineCueCheckSeconds: TimeInterval = 5
+    /// The grey line never shows more than this (the server keeps the last 600 characters).
+    static let provisionalMaxCharacters = 600
+
+    /// The inline line's prefix for a kind, or nil for a kind this build does not know (drawn as a plain cue).
+    static func kindLabel(_ kind: String) -> String? {
+        switch kind {
+        case "decision": "Decision"
+        case "promise": "Promise"
+        case "followUp": "Follow-up"
+        case "challenge": "Challenge"
+        case "reinforce": "Reinforce"
+        default: nil
+        }
+    }
+
+    /// "2 decisions, 1 promise and 1 follow-up", or nil when none of the counted kinds is there yet.
+    static func countsPhrase(kinds: [String]) -> String? {
+        let words: [(kind: String, one: String, many: String)] = [("decision", "decision", "decisions"), ("promise", "promise", "promises"),
+                                                                    ("followUp", "follow-up", "follow-ups")]
+        let parts = words.compactMap { word -> String? in
+            let n = kinds.filter { $0 == word.kind }.count
+            return n == 0 ? nil : "\(n) " + (n == 1 ? word.one : word.many)
+        }
+        return joined(parts)
+    }
+
+    /// "a", "a and b", "a, b and c".
+    static func joined(_ parts: [String]) -> String? {
+        switch parts.count {
+        case 0: return nil
+        case 1: return parts[0]
+        default: return parts.dropLast().joined(separator: ", ") + " and " + parts[parts.count - 1]
+        }
+    }
+
+    /// The line under the title. Live: "Recording on this Mac · 2 decisions and 1 promise so far". Ended: the counts
+    /// alone, or nil. `kinds` is nil when the server does not list its kinds: then no counts at all.
+    static func statusLine(mac: Bool, ended: Bool, kinds: [String]?) -> String? {
+        let counts = kinds.flatMap(countsPhrase)
+        if ended { return counts }
+        let source = mac ? "Recording on this Mac" : "Recording on the glasses"
+        return counts.map { source + " · " + $0 + " so far" } ?? source
+    }
+
+    /// Whether a Mac recording's title is the automatic one ("Mac recording 2:05 PM", "Zoom meeting 2:05 PM").
+    static func isAutomaticTitle(_ title: String) -> Bool {
+        title == "Mac recording" || title.range(of: "\\A(Mac recording|.{1,40} meeting) [0-9]{1,2}:[0-9]{2} (AM|PM)\\z", options: .regularExpression) != nil
+    }
+
+    /// A calendar event is this meeting's when it starts within this of the recording's start.
+    static let calendarMatchSeconds: TimeInterval = 20 * 60
+
+    /// The header's title: a typed Mac title, else the calendar event that started near the recording, else the Mac
+    /// recording's automatic title, else "Glasses meeting 10:10 AM".
+    static func title(sessionId: String, macTitle: String?, calendar: (title: String, start: Date)?, start: Date?,
+                      timeZone: TimeZone = .current) -> String {
+        if let macTitle = macTitle?.trimmingCharacters(in: .whitespacesAndNewlines), !macTitle.isEmpty, !isAutomaticTitle(macTitle) { return macTitle }
+        if let calendar, let start, abs(calendar.start.timeIntervalSince(start)) <= calendarMatchSeconds {
+            let name = calendar.title.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !name.isEmpty { return String(name.prefix(160)) }
+        }
+        if let macTitle = macTitle?.trimmingCharacters(in: .whitespacesAndNewlines), !macTitle.isEmpty { return macTitle }
+        return LiveTranscript.sourceLabel(sessionId, start: start, timeZone: timeZone)
+    }
+
+    /// A speaker label that is not a recognized voice.
+    static func unidentified(_ name: String) -> Bool {
+        let lower = name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return ["", "speaker", "ext", "unknown", "unidentified", "?"].contains(lower) || lower.hasPrefix("unidentified ")
+            || lower.hasPrefix("speaker ")
+    }
+
+    /// "Priya Raman" is "PR", "Jordan" is "J".
+    static func initials(_ name: String) -> String {
+        let words = name.split(whereSeparator: { $0.isWhitespace }).filter { $0.first?.isLetter == true }
+        guard let first = words.first?.first else { return "?" }
+        guard words.count > 1, let last = words.last?.first else { return String(first).uppercased() }
+        return (String(first) + String(last)).uppercased()
+    }
+
+    /// The strip: each voice heard so far, in the order first heard, and which one spoke last. On a Mac recording "You"
+    /// never shows (the global tap leaves the microphone out). Unrecognized voices share one chip.
+    static func participants(_ turns: [LiveTranscriptTurn], mac: Bool) -> (people: [LiveMeetingParticipant], lastHeard: String?) {
+        var people: [LiveMeetingParticipant] = []
+        var seen = Set<String>()
+        var lastHeard: String?
+        for turn in turns {
+            let name = turn.speaker.trimmingCharacters(in: .whitespacesAndNewlines)
+            if mac, name.lowercased() == "you" { continue }
+            let person = unidentified(name) ? LiveMeetingParticipant(name: "Unidentified", initials: "?", unidentified: true)
+                                            : LiveMeetingParticipant(name: name, initials: initials(name), unidentified: false)
+            lastHeard = person.id
+            if seen.insert(person.id).inserted { people.append(person) }
+        }
+        // The unidentified chip goes last, after the named voices, which keep the order they were first heard in.
+        return (people.filter { !$0.unidentified } + people.filter(\.unidentified), lastHeard)
+    }
+
+    /// Each cue under the turn it belongs to: the last turn that had started by the cue's `createdAt` (the turn in
+    /// progress when it was written). A cue from before the first turn goes under the first. Nothing anchors without the
+    /// meeting's start or any turn; those cues stay in the Cues tab only. Within a turn, oldest first.
+    static func anchor(cues: [(id: String, createdAt: Date)], turns: [LiveTranscriptTurn], start: Date?) -> [Int: [String]] {
+        guard let start, let first = turns.first else { return [:] }
+        var out: [Int: [String]] = [:]
+        for cue in cues.sorted(by: { $0.createdAt < $1.createdAt }) {
+            let offset = cue.createdAt.timeIntervalSince(start) * 1000
+            let turn = turns.last { Double($0.elapsedMs) <= offset } ?? first
+            out[turn.id, default: []].append(cue.id)
+        }
+        return out
+    }
+
+    /// The highest chunk index the transcript holds as final: the chunks read or the helper's settled cursor.
+    static func lastFinalChunk(_ feed: LiveTranscriptFeed?) -> Int {
+        guard let feed else { return -1 }
+        return max(feed.cursor, feed.chunks.keys.max() ?? -1)
+    }
+
+    /// The grey text to show, or nil: only for a chunk past the last final one, never empty, at most 600 characters
+    /// (the newest ones).
+    static func visibleProvisional(_ line: LiveProvisionalLine?, lastFinalChunk: Int) -> String? {
+        guard let line, line.chunkIndex > lastFinalChunk else { return nil }
+        let text = line.text.split(whereSeparator: { $0.isWhitespace || $0.isNewline }).joined(separator: " ")
+        guard !text.isEmpty else { return nil }
+        return text.count > provisionalMaxCharacters ? "…" + String(text.suffix(provisionalMaxCharacters)) : text
+    }
+
+    /// The helper's `live-provisional` details: nil when the read did not answer in the contract; otherwise whether the
+    /// server holds the meeting and the line (nil when nothing is grey).
+    static func provisional(_ details: [String: JSONValue], sessionId: String) -> (live: Bool, line: LiveProvisionalLine?)? {
+        guard details["transport"]?.string == "answered", details["httpStatus"]?.int == 200, let live = details["live"]?.bool else { return nil }
+        guard let object = details["provisional"]?.object else { return (live, nil) }
+        guard let index = object["chunkIndex"]?.int, index >= 0, let gen = object["previewGen"]?.int, gen >= 0,
+              let text = object["text"]?.string else { return (live, nil) }
+        return (live, LiveProvisionalLine(chunkIndex: index, previewGen: gen, text: text))
+    }
+
+    /// The Mac preview post's answer: the line, or nil for a miss (204) or anything outside the contract.
+    static func previewAnswer(_ details: [String: JSONValue], chunkIndex: Int, previewGen: Int) -> LiveProvisionalLine? {
+        guard details["miss"]?.bool != true, details["chunkIndex"]?.int == chunkIndex, details["previewGen"]?.int == previewGen,
+              let text = details["text"]?.string else { return nil }
+        return LiveProvisionalLine(chunkIndex: chunkIndex, previewGen: previewGen, text: text)
+    }
+
+    /// The Mac start answer's `liveCues`, or nil when the server did not say (an older server, or the flag not sent).
+    static func arm(_ value: JSONValue?) -> MacLiveCuesArm? {
+        guard let object = value?.object, let armed = object["armed"]?.bool else { return nil }
+        let reason = object["reason"]?.string.flatMap { $0.range(of: "\\A[a-z][a-z0-9_]{0,63}\\z", options: .regularExpression) != nil ? $0 : nil }
+        return MacLiveCuesArm(armed: armed, reason: armed ? nil : reason)
+    }
+
+    /// "Cues off: the Live cues switch is off" for a refusal; nil when armed or not asked. Never a recording error.
+    static func armLine(_ arm: MacLiveCuesArm?) -> String? {
+        guard let arm, !arm.armed else { return nil }
+        return "Cues off: " + reasonWords(arm.reason)
+    }
+
+    static func reasonWords(_ code: String?) -> String {
+        switch code {
+        case "master_flag_off": "the Live cues switch is off"
+        case "mac_cues_off": "cues for Mac recordings are off on the server"
+        case "meeting_ended": "the meeting has ended"
+        case "budget_exhausted": "today's cue budget is used up"
+        case "jev_cap_reached", "decision_cap_reached": "today's decision model limit is reached"
+        case "jev_breaker_open", "decision_breaker_open": "the decision model is pausing after errors"
+        case "decision_not_configured", "jev_not_configured": "no decision model key is set"
+        case "decision_invalid_provider": "the decision model setting is not valid"
+        case "claude_not_found": "the server cannot find Claude"
+        case "api_key_in_env": "the server has an API key in its environment"
+        case let code?: code.replacingOccurrences(of: "_", with: " ")
+        case nil: "unavailable"
+        }
+    }
+
+    /// The bottom bar's and the rail's elapsed time: "0:07", "12:04", "1:02:03".
+    static func elapsed(_ seconds: TimeInterval) -> String {
+        let total = max(0, Int(seconds.isFinite ? seconds : 0))
+        let h = total / 3600, m = (total % 3600) / 60, s = total % 60
+        return h > 0 ? String(format: "%d:%02d:%02d", h, m, s) : String(format: "%d:%02d", m, s)
+    }
+}

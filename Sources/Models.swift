@@ -110,6 +110,46 @@ struct HelperResponse: Codable, Sendable {
     let details: [String: JSONValue]
 }
 
+/// 0.5.336 (server 6.86.0). The live meeting view's gates; the rules that use them are in Sources/LiveTranscript.swift
+/// (LiveMeeting). Here so ServerStatus can hold it in every lane that compiles Models.swift alone.
+/// What the server says about the 6.86.0 live meeting surface. All false on an older server.
+struct LiveMeetingCapability: Equatable, Sendable {
+    /// `capabilities.liveMeeting.protocol`.
+    var protocolVersion: Int? = nil
+    /// `capabilities.liveMeeting.macLiveCues`: POST /api/mac-recording/start takes `liveCues: true`.
+    var macLiveCues = false
+    /// `capabilities.liveMeeting.provisional` names the grey line's route.
+    var provisional = false
+    /// `capabilities.liveCues.kinds`; empty when the server does not list them.
+    var cueKinds: [String] = []
+    /// `capabilities.liveCuesV2` is advertised, which the server does only while the Live cues switch is on.
+    var liveCuesOn = false
+
+    /// The 6.86.0 live meeting surface exists.
+    var available: Bool { protocolVersion == 1 }
+    /// Each cue drawn under its turn, labelled by kind.
+    var inlineCues: Bool { available }
+    /// The header's "2 decisions, 1 promise and 1 follow-up so far": only when the server lists the kinds it writes.
+    var counts: Bool { available && !cueKinds.isEmpty }
+    /// The grey provisional line.
+    var greyLine: Bool { available && provisional }
+    /// Send `liveCues: true` on a Mac recording's start: the Live cues switch on and the server taking the flag.
+    var sendsMacLiveCues: Bool { available && macLiveCues && liveCuesOn }
+    /// The Cues tab beside a Mac recording: the server can cue Mac recordings.
+    var macCues: Bool { available && macLiveCues }
+}
+
+extension LiveMeetingCapability {
+    /// The helper's status keys (from /api/health) to a capability. A key the server did not send stays off.
+    init(statusDetails details: [String: JSONValue]) {
+        self.init(protocolVersion: details["liveMeetingProtocol"]?.int,
+                  macLiveCues: details["liveMeetingMacLiveCues"]?.bool == true,
+                  provisional: details["liveMeetingProvisional"]?.bool == true,
+                  cueKinds: (details["liveCueKinds"]?.array ?? []).compactMap(\.string),
+                  liveCuesOn: details["liveCuesOn"]?.bool == true)
+    }
+}
+
 struct ServerStatus: Sendable {
     /// Absence must be proven. A failed probe, foreign owner, disabled service,
     /// or interrupted transaction is never a fresh install.
@@ -192,6 +232,9 @@ struct ServerStatus: Sendable {
     /// calls stale (quiet 30 min, or empty for 2). The live transcript row follows this, never the files' clocks.
     var liveTranscriptionSessions: Int?
     var staleTranscriptionSessionIds: [String] = []
+    /// 0.5.336 (server 6.86.0): what /api/health says about the live meeting view (`capabilities.liveMeeting`,
+    /// `capabilities.liveCues.kinds`, `capabilities.liveCuesV2`). All absent on an older server.
+    var liveMeeting = LiveMeetingCapability()
     var backgroundJobsSupported = false
     var backgroundJobsEnabled: Bool?
     var meetingPreviewSupported = false
@@ -408,6 +451,7 @@ struct ServerStatus: Sendable {
         activeTranscriptionSessions = details["activeTranscriptionSessions"]?.int
         liveTranscriptionSessions = details["liveTranscriptionSessions"]?.int
         staleTranscriptionSessionIds = (details["staleTranscriptionSessionIds"]?.array ?? []).compactMap(\.string)
+        liveMeeting = LiveMeetingCapability(statusDetails: details)
         backgroundJobsSupported = details["backgroundJobsSupported"]?.bool ?? false
         backgroundJobsEnabled = details["backgroundJobsEnabled"]?.bool
         meetingPreviewSupported = details["meetingPreviewSupported"]?.bool ?? false

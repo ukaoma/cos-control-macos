@@ -1530,6 +1530,10 @@ enum CueVerdicts {
         switch kind {
         case "challenge": return "Challenge"
         case "reinforce": return "Reinforce"
+        // 0.5.336 (server 6.86.0): LiveMeeting.kindLabel says the same (Tests/live-meeting-pins.py pins the two tables).
+        case "decision": return "Decision"
+        case "promise": return "Promise"
+        case "followUp": return "Follow-up"
         default: return kind
         }
     }
