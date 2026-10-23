@@ -204,7 +204,7 @@ own_start = body(dictation, "    func startOwn(_ target: DictationOwnTarget,", "
 need("DictationEditLearning.eligibility(mode: mode," in own_start and "run(field, span: target.span, typed: target.text" in own_start
      and "DictationOwnField.read(" in own_start and "DictationOwnField.snapshot(" in own_start, "[own learn] the same rules and the same loop, reading the view itself")
 watcher = body(dictation, "    nonisolated private static func watch(", "\n    static func candidate(_ edit: DictationReplace.Edit")
-need(watcher.count("await field.measure()") == 2 and "await field.text(bounds.location, bounds.length)" in watcher and "await field.focused()" in watcher
+need(watcher.count("await field.measure()") == 2 and "await field.text(bounds.location, bounds.length)" in watcher and "await field.focus(canary.rebinds)" in watcher
      and "DictationEditLearning.stop(elapsed:" in watcher and "AXUIElement" not in watcher, "[own learn] one watch loop for both kinds of field")
 composer = body(chat, "struct WorkChatSendControls: View {", "\n        .confirmationDialog(\"Send plans without review?\"")
 need("ViewThatFits(in: .horizontal) {" in composer and ".frame(minWidth: WorkChatPolicy.plannerPickerMinWidth, maxWidth: 190)" in composer
