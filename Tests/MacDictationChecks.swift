@@ -1797,6 +1797,140 @@ final class FakeDictationBoard: DictationPasteboardAccess {
             let noneJSON = (try? JSONSerialization.jsonObject(with: DictationTimingLog.line(none) ?? Data()) as? [String: Any]) ?? [:]
             expect(noneJSON["polishCustom"] == nil, "instructions: no polish, no field")
         }
-        print("PASS Mac dictation: \(count) policy checks; insert-target table, measured delivery, terminals, layout ⌘V, listening bars end to end, clipboard restore, sounds, pill placement, recent dictations file, card countdown, fix-a-word selection, quick fix, replace, span guess, quiet and restore, bounded audio, PCM16 WAV, device failure, any-key triggers, field context and its evidence, AI polish, release tail and timing, truthful start, smooth start, missed releases, early polish, paste first and polish in place, Chromium by structure, canvas editors, paste-route swap safety, polish instructions")
+        // 0.5.338 Learn from my edits in every app (design: DESIGN_learn_edits_everywhere_0_5_338.md). Fictional text only.
+        do {
+            typealias EL = DictationEditLearning
+            typealias E = DictationReplace.Edit
+            func eligible338(_ bundle: String?, electron: Bool = true, chromium: Bool = true, setter: Bool = false,
+                             secure: Bool = false, terminal: Bool = false, mode: DictationLearnMode = .automatic) -> EL.Eligibility {
+                EL.eligibility(mode: mode, secure: secure, terminal: terminal, electron: electron, chromium: chromium, setterWorked: setter, bundle: bundle)
+            }
+            expect(eligible338("com.anthropic.claudefordesktop") == .learn, "Claude desktop learns: its watches read the dictation back (canary 2026-10-22)")
+            expect(eligible338("com.tinyspeck.slackmacgap") == .probe && eligible338("com.todesktop.230313mzl4w4u92") == .probe,
+                   "Slack and Cursor are Electron with no canary: measured, never learned")
+            expect(eligible338("com.openai.codex", electron: false, chromium: false, setter: true) == .probe
+                   && eligible338("com.openai.chat", electron: false, chromium: false, setter: true) == .probe,
+                   "ChatGPT reads as native to the structure check but is Chromium: measured, never learned")
+            expect(eligible338("com.google.Chrome", electron: false, chromium: true, setter: false) == .probe
+                   && eligible338("ai.perplexity.comet", electron: false, chromium: true, setter: true) == .learn,
+                   "a browser's rich editor is measured; its plain field (the set moved it) learns, as in 0.5.318")
+            expect(eligible338("com.apple.Safari", electron: false, chromium: false, setter: true) == .learn && eligible338(nil, electron: true) == .probe,
+                   "a native app learns; an Electron app with no bundle id is measured")
+            expect(eligible338("com.anthropic.claudefordesktop", secure: true) == .skip("secure")
+                   && eligible338("com.anthropic.claudefordesktop", terminal: true) == .skip("terminal")
+                   && eligible338("com.anthropic.claudefordesktop", mode: .off) == .skip("off"),
+                   "a proven app still never watches a password field, a terminal, or with learning off")
+            expect(EL.notYetNames == ["Slack", "Cursor", "ChatGPT"], "Settings names each not-yet app once, in order")
+            expect(EL.settingNote.contains("Not available yet in Slack, Cursor, ChatGPT, or text boxes in Chrome and Comet")
+                   && EL.settingNote.contains("Works in native apps and Claude.") && !EL.settingNote.contains("\u{2014}") && !EL.settingNote.contains("\u{2192}"),
+                   "the Settings line names where learning works and where it does not yet, from the same table, with no em dash or arrow")
+            // Track the field, not the element.
+            let watched = EL.FieldIdentity(pid: 42, role: "AXTextArea", identifier: nil, frame: CGRect(x: 100, y: 600, width: 500, height: 40))
+            func moved(_ f: CGRect, role: String = "AXTextArea", pid: Int32 = 42, id: String? = nil) -> EL.FieldIdentity {
+                EL.FieldIdentity(pid: pid, role: role, identifier: id, frame: f)
+            }
+            func focus(_ now: EL.FieldIdentity?, frontmost: Bool = true, same: Bool = false, window: Bool = true, rebinds: Int = 0, from: EL.FieldIdentity? = nil) -> EL.Focus {
+                EL.focus(frontmost: frontmost, sameElement: same, watched: from ?? watched, now: now, sameWindow: window, rebinds: rebinds)
+            }
+            expect(focus(nil, same: true) == .same && focus(nil, frontmost: false, same: true) == .left("app"), "the same element holds; another app in front leaves")
+            expect(focus(moved(CGRect(x: 100, y: 520, width: 500, height: 120))) == .rebound
+                   && focus(moved(CGRect(x: 103, y: 600, width: 497, height: 90))) == .rebound,
+                   "a re-mounted composer that grew up (bottom kept) or down (top kept) is the same field")
+            expect(focus(moved(CGRect(x: 100, y: 300, width: 500, height: 40))) == .left("frame")
+                   && focus(moved(CGRect(x: 105, y: 600, width: 500, height: 40))) == .left("frame")
+                   && focus(moved(CGRect(x: 100, y: 600, width: 505, height: 40))) == .left("frame"),
+                   "moved more than 4 points on both edges, or the left edge or width more than 4: another field")
+            expect(focus(moved(CGRect(x: 104, y: 604, width: 504, height: 40))) == .rebound, "4 points is still the same field")
+            expect(focus(moved(watched.frame!), window: false) == .left("window") && focus(moved(watched.frame!, role: "AXButton")) == .left("role")
+                   && focus(moved(watched.frame!, pid: 7)) == .left("pid") && focus(nil) == .left("none")
+                   && focus(EL.FieldIdentity(pid: 42, role: "AXTextArea", identifier: nil, frame: nil)) == .left("frame"),
+                   "another window, role or process, or no frame to compare, is not the field")
+            let tagged = EL.FieldIdentity(pid: 42, role: "AXTextArea", identifier: "composer", frame: CGRect(x: 0, y: 0, width: 10, height: 10))
+            expect(focus(moved(CGRect(x: 900, y: 0, width: 80, height: 10), id: "composer"), window: false, from: tagged) == .rebound
+                   && focus(moved(tagged.frame!, id: "search"), from: tagged) == .left("identifier")
+                   && focus(moved(tagged.frame!, id: ""), from: tagged) == .rebound,
+                   "a matching identifier decides, even moved or in another window; a different one leaves; an empty one falls back to the frame")
+            expect(focus(moved(watched.frame!), rebinds: EL.maximumRebinds - 1) == .rebound && focus(moved(watched.frame!), rebinds: EL.maximumRebinds) == .left("churn"),
+                   "eight rebinds at most: a field that keeps re-mounting ends the watch")
+            // Re-anchor on the dictated words instead of "lost".
+            let said338 = "please email Jerry Sakolik about the launch plan today"
+            let page338 = "Notes: " + said338 + " Thanks."
+            let start338 = 7, length338 = (said338 as NSString).length
+            expect(EL.follow(baseline: page338, current: "\n", start: start338, length: length338) == .cleared
+                   && EL.follow(baseline: page338, current: "", start: start338, length: length338) == .cleared
+                   && EL.follow(baseline: page338, current: "  ", start: start338, length: length338) == .cleared,
+                   "a blank field (Chromium's empty composer reads as one newline) is a sent message, not a lost dictation")
+            expect(EL.follow(baseline: "\n", current: "\n", start: 0, length: 1) == .unchanged, "a field that was already blank is not cleared again")
+            let fixed338 = page338.replacingOccurrences(of: "Sakolik", with: "Sokolic")
+            expect(EL.follow(baseline: page338, current: fixed338, start: start338, length: length338)
+                   == .inside(E(location: 19, length: 7, original: "Sakolik", replacement: "Sokolic"), length: length338),
+                   "a fix inside the dictation is inside, as before")
+            let glued = "Notes" + said338.replacingOccurrences(of: "please", with: "pleese")
+            let gluedFixed = "Notes" + said338
+            expect(EL.track(baseline: glued, current: gluedFixed, start: 5, length: length338) == .lost
+                   && EL.follow(baseline: glued, current: gluedFixed, start: 5, length: length338)
+                   == .inside(E(location: 0, length: 6, original: "pleese", replacement: "please"), length: length338),
+                   "a fix of a first word glued to the text before it was lost; now it is inside, widened only to the dictation's edge")
+            let tailGlued = said338 + "Bye"
+            let tailFixed = said338.replacingOccurrences(of: "today", with: "tooday") + "Bye"
+            expect(EL.follow(baseline: tailGlued, current: tailFixed, start: 0, length: length338)
+                   == .inside(E(location: length338 - 5, length: 5, original: "today", replacement: "tooday"), length: length338 + 1),
+                   "a fix of a last word glued to the text after it stops at the dictation's edge")
+            let rewritten = "Hello Jerry, " + "please email Jerry Sokolic about the launch plan today" + " Thanks."
+            expect(EL.follow(baseline: page338, current: rewritten, start: start338, length: length338)
+                   == .reanchored(start: 13, length: length338, edit: E(location: 19, length: 7, original: "Sakolik", replacement: "Sokolic")),
+                   "an edit across its edge plus a fix inside it: found again by its first and last words, the fix inside reported")
+            expect(EL.follow(baseline: page338, current: "Hello, " + said338 + " Thanks.", start: start338, length: length338) != .lost,
+                   "the same dictation after a rewritten prefix is found again")
+            expect(EL.follow(baseline: page338, current: "Hi. Totally different words here now. Bye.", start: start338, length: length338) == .lost
+                   && EL.follow(baseline: page338, current: "Notes: totally different words here now. Thanks.", start: start338, length: length338)
+                   != .lost,
+                   "a dictation rewritten past recognition, across its edges, is lost; a rewrite inside its edges is an inside edit, which the word cap refuses")
+            expect(EL.reanchor(said338, in: "x " + said338 + " y").map { $0.start == 2 && $0.length == length338 } == true,
+                   "the exact dictation once is found where it is")
+            expect(EL.reanchor(said338, in: said338 + " " + said338) == nil, "the exact dictation twice is ambiguous")
+            expect(EL.reanchor("call Jerry today", in: "call Jerri today") == nil, "three words or fewer need the exact text")
+            let twoHeads = "please email Jerry about this. please email Jerry Sokolic about the launch plan today"
+            expect(EL.reanchor(said338, in: twoHeads) == nil, "a first word run found twice is ambiguous")
+            let wide = "please email Jerry " + String(repeating: "word ", count: 40) + "launch plan today"
+            expect(EL.reanchor(said338, in: wide) == nil, "anchors further apart than twice the dictation plus 16 are not it")
+            expect(EL.reanchor(said338, in: "launch plan today please email Jerry") == nil, "the last words before the first are not it")
+            expect(EL.reanchor(said338, in: "xplease email Jerry Sokolic about the launch plan today") == nil,
+                   "anchors count only on word boundaries")
+            // Confidence rules.
+            let plain338: Set<String> = ["please", "the", "tuna", "fish", "launch"]
+            func learn338(_ heard: String, _ written: String) -> EL.Candidate? {
+                EL.candidate(E(location: 0, length: heard.utf16.count, original: heard, replacement: written),
+                             known: { plain338.contains($0.lowercased()) }, learned: { _, _ in false })
+            }
+            expect(learn338("Sakolik", "Sokolic") == .init(heard: "Sakolik", written: "Sokolic"), "Jeremy's surname fixed by hand is learned")
+            expect(learn338("teh", "the") == nil && learn338("tunna", "tuna") == nil && learn338("feesh", "fish") == nil,
+                   "a fix to a plain English word is a typo fix, never a dictionary term")
+            expect(EL.allowsAnother(learned: 0) && EL.allowsAnother(learned: EL.maximumLearnedPerWatch - 1) && !EL.allowsAnother(learned: EL.maximumLearnedPerWatch)
+                   && EL.maximumLearnedPerWatch == 2, "two learned pairs per watch at most")
+            // The watch ends cleared when a Chromium field drops to its empty newline.
+            expect(EL.stop(elapsed: 5, reads: 2, appRunning: true, secure: false, focused: true, fieldCharacters: 1, dictationLength: 40) == .cleared
+                   && EL.stop(elapsed: 5, reads: 2, appRunning: true, secure: false, focused: true, fieldCharacters: 1, dictationLength: 1) == nil
+                   && EL.stop(elapsed: 5, reads: 2, appRunning: true, secure: false, focused: true, fieldCharacters: 2, dictationLength: 40) == nil,
+                   "a field down to one character, under a longer dictation, was sent or cleared")
+            // The canary ledger: counts, verdicts and the bundle id; never text.
+            let canary = DictationLearnCanary(at: "2026-10-22T21:00:00Z", bundle: "com.anthropic.claudefordesktop", eligibility: "learn", readable: true,
+                                              reads: 3, stop: "cleared", rebinds: 1, reanchors: 0, inside: 1, candidates: 1, learned: 1, focusWhy: "frame")
+            let canaryLine = DictationLearnCanaryLog.line(canary).flatMap { String(data: $0, encoding: .utf8) } ?? ""
+            expect(canaryLine.hasSuffix("}\n") && canaryLine.contains("\"stop\":\"cleared\"") && canaryLine.contains("\"rebinds\":1")
+                   && Set((try? JSONSerialization.jsonObject(with: Data(canaryLine.utf8)) as? [String: Any])?.keys.map { $0 } ?? [])
+                   == ["at", "bundle", "eligibility", "readable", "reads", "stop", "rebinds", "reanchors", "inside", "candidates", "learned", "focusWhy"],
+                   "one canary line per watch, exactly these fields: no text, no word pair")
+            expect(DictationLearnCanaryLog.fileName == "learn-canary.jsonl" && DictationLearnCanaryLog.maximumBytes == 128 * 1024, "a 128 KB canary file")
+            let canaryDir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("cos-canary-\(UUID().uuidString)")
+            defer { try? FileManager.default.removeItem(at: canaryDir) }
+            let canaryURL = canaryDir.appendingPathComponent(DictationLearnCanaryLog.fileName)
+            for _ in 0..<((DictationLearnCanaryLog.maximumBytes / canaryLine.utf8.count) + 3) { DictationLearnCanaryLog.append(canary, to: canaryURL) }
+            let canarySize = (try? FileManager.default.attributesOfItem(atPath: canaryURL.path)[.size] as? Int) ?? 0
+            expect(canarySize > 0 && canarySize <= DictationLearnCanaryLog.maximumBytes && FileManager.default.fileExists(atPath: canaryURL.path + ".1")
+                   && ((try? FileManager.default.attributesOfItem(atPath: canaryURL.path)[.posixPermissions] as? Int) ?? 0) == 0o600,
+                   "the canary file rotates at its cap and is private")
+        }
+        print("PASS Mac dictation: \(count) policy checks; insert-target table, measured delivery, terminals, layout ⌘V, listening bars end to end, clipboard restore, sounds, pill placement, recent dictations file, card countdown, fix-a-word selection, quick fix, replace, span guess, quiet and restore, bounded audio, PCM16 WAV, device failure, any-key triggers, field context and its evidence, AI polish, release tail and timing, truthful start, smooth start, missed releases, early polish, paste first and polish in place, Chromium by structure, canvas editors, paste-route swap safety, polish instructions, learning in every app (0.5.338)")
     }
 }

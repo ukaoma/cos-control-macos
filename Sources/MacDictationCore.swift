@@ -178,6 +178,10 @@ enum DictationTimingLog {
     }
     static func append(_ timing: DictationTiming, to url: URL, fileManager: FileManager = .default) {
         guard let line = line(timing) else { return }
+        appendBounded(line, to: url, maximumBytes: maximumBytes, fileManager: fileManager)
+    }
+    /// One line onto a bounded private file (0.5.338: the timing file and the learn canary share it).
+    static func appendBounded(_ line: Data, to url: URL, maximumBytes: Int, fileManager: FileManager = .default) {
         let size = (try? fileManager.attributesOfItem(atPath: url.path)[.size] as? Int) ?? 0
         if size + line.count > maximumBytes, size > 0 {
             let rotated = url.appendingPathExtension("1")
@@ -192,6 +196,44 @@ enum DictationTimingLog {
         defer { try? handle.close() }
         _ = try? handle.seekToEnd()
         try? handle.write(contentsOf: line)
+    }
+}
+
+/// 0.5.338: one line per Learn from my edits watch, so the per-app canary survives the unified log (which keeps COS
+/// Control's notices about five hours). Counts, verdicts and the bundle id only: never text, never a word pair.
+struct DictationLearnCanary: Codable, Equatable, Sendable {
+    var at: String
+    var bundle: String
+    /// learn, probe
+    var eligibility: String
+    /// The first read held the dictation (exactly, or found again).
+    var readable: Bool
+    var reads: Int
+    /// How the watch ended: cap, reads, focusLeft, cleared, emptied, lost, unreadable, secure, appGone, new.
+    var stop: String
+    var rebinds: Int
+    var reanchors: Int
+    /// Reads whose edit sat inside the dictation.
+    var inside: Int
+    var candidates: Int
+    var learned: Int
+    /// Why focus left, when it did: app, none, pid, role, identifier, window, frame, churn.
+    var focusWhy: String?
+}
+
+/// `learn-canary.jsonl` next to the timing file, bounded the same way (one rotation, private).
+enum DictationLearnCanaryLog {
+    static let fileName = "learn-canary.jsonl"
+    static let maximumBytes = 128 * 1024
+    static func line(_ canary: DictationLearnCanary) -> Data? {
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        guard var data = try? encoder.encode(canary) else { return nil }
+        data.append(0x0A)
+        return data
+    }
+    static func append(_ canary: DictationLearnCanary, to url: URL, fileManager: FileManager = .default) {
+        guard let line = line(canary) else { return }
+        DictationTimingLog.appendBounded(line, to: url, maximumBytes: maximumBytes, fileManager: fileManager)
     }
 }
 
@@ -2523,18 +2565,25 @@ enum DictationEditLearning {
     }
     /// Native apps first (Miles 13:31). `chromium` is any Chromium-family app; a browser's plain field is the one whose
     /// Accessibility set moved it at delivery (`setterWorked`). Terminals never: the AX text is scrollback.
-    static func eligibility(mode: DictationLearnMode, secure: Bool, terminal: Bool, electron: Bool, chromium: Bool, setterWorked: Bool) -> Eligibility {
+    /// 0.5.338: an app in `proven` learns whatever its engine; one in `notYet` is only measured.
+    static func eligibility(mode: DictationLearnMode, secure: Bool, terminal: Bool, electron: Bool, chromium: Bool, setterWorked: Bool,
+                            bundle: String? = nil) -> Eligibility {
         if mode == .off { return .skip("off") }
         if secure { return .skip("secure") }
         if terminal { return .skip("terminal") }
+        if let bundle, proven[bundle] != nil { return .learn }
+        if let bundle, notYet.contains(where: { $0.bundle == bundle }) { return .probe }
         if electron { return .probe }
         if chromium, !setterWorked { return .probe }
         return .learn
     }
 
-    enum Stop: String, Sendable { case secure, appGone, cap, reads, focusLeft, emptied, unreadable }
+    enum Stop: String, Sendable { case secure, appGone, cap, reads, focusLeft, emptied, unreadable, cleared }
     /// Why the watch ends now, or nil to keep watching. Secure input is checked first, on every poll.
-    static func stop(elapsed: TimeInterval, reads: Int, appRunning: Bool, secure: Bool, focused: Bool, fieldCharacters: Int?) -> Stop? {
+    /// 0.5.338 `cleared`: Chromium counts an empty contenteditable as one character (its newline), so a sent message in
+    /// Claude never read as `emptied`; a field down to one character under a longer dictation was sent or cleared.
+    static func stop(elapsed: TimeInterval, reads: Int, appRunning: Bool, secure: Bool, focused: Bool, fieldCharacters: Int?,
+                     dictationLength: Int = 0) -> Stop? {
         if secure { return .secure }
         if !appRunning { return .appGone }
         if elapsed >= watchSeconds { return .cap }
@@ -2542,6 +2591,7 @@ enum DictationEditLearning {
         if !focused { return .focusLeft }
         guard let fieldCharacters else { return .unreadable }
         if fieldCharacters == 0 { return .emptied }
+        if fieldCharacters <= 1, dictationLength > 1 { return .cleared }
         return nil
     }
     /// How much to read so the window covers the same text as the baseline: its length plus what the field gained.
@@ -2597,12 +2647,13 @@ enum DictationEditLearning {
             let innerCapital = written.dropFirst().contains(where: \.isUppercase)
             guard innerCapital || !heardWords.allSatisfy(known) else { return nil }
         } else {
-            if heardWords.allSatisfy(known), writtenWords.allSatisfy(known) { return nil }
+            // 0.5.338 (plan, 2026-10-22): the written side is a name or a term, never only plain English ("teh" to "the"
+            // is a typo fix). Before, this held only when the heard side was plain English too.
+            if writtenWords.allSatisfy(known) { return nil }
             let score = DictationFixGuess.score(heard: heard, term: written)
             if score < DictationFixGuess.threshold {
                 guard evidence != nil else { return nil }
                 guard score >= contextFloor else { return nil }
-                guard !writtenWords.allSatisfy(known) else { return nil }
                 guard heardWords.count > 1 || !heardWords.allSatisfy(known) else { return nil }
             }
         }
@@ -2661,6 +2712,160 @@ enum DictationEditLearning {
             let spelled = DictationFixGuess.normalized(fix.written)
             return !spelled.isEmpty && heard.contains(spelled)
         }
+    }
+
+    // MARK: 0.5.338 Learn from my edits in every app (design: operations/personal/wk43_2026/DESIGN_learn_edits_everywhere_0_5_338.md)
+
+    /// Apps whose watches proved real reads on Miles's Mac (log canary 2026-10-22: Claude desktop read the exact dictation
+    /// back in 4 of 5 watches, and later reads matched the field). In this table an Electron or Chromium app learns.
+    static let proven: [String: String] = ["com.anthropic.claudefordesktop": "Claude"]
+    /// Apps Miles dictates into that have no canary yet: watched, logged, never learned. ChatGPT is here because its
+    /// Chromium engine ships "Codex (Renderer).app", which the structure check misses, so it would read as native.
+    static let notYet: [(bundle: String, name: String)] = [
+        ("com.tinyspeck.slackmacgap", "Slack"), ("com.todesktop.230313mzl4w4u92", "Cursor"),
+        ("com.openai.codex", "ChatGPT"), ("com.openai.chat", "ChatGPT"),
+    ]
+    /// Settings names the apps where learning is not available yet, from the same table the rule reads.
+    static var notYetNames: [String] {
+        var seen: Set<String> = [], names: [String] = []
+        for row in notYet where seen.insert(row.name).inserted { names.append(row.name) }
+        return names
+    }
+    static var settingNote: String {
+        "When you fix a word COS just typed, in that same field, COS learns it: until you leave the field or send the message, three minutes at most. "
+            + "It learns names and terms, never plain English words. Works in native apps and "
+            + proven.values.sorted().joined(separator: ", ")
+            + ". Not available yet in " + notYetNames.joined(separator: ", ")
+            + ", or text boxes in Chrome and Comet: COS only measures there for now. Suggest only keeps them a week in Activity, Dictation for you to add. Never in terminals or password fields."
+    }
+
+    /// At most this many pairs from one watch: a third edit inside one dictation is a rewrite, not a mishearing.
+    static let maximumLearnedPerWatch = 2
+    static func allowsAnother(learned: Int) -> Bool { learned < maximumLearnedPerWatch }
+    /// A field that keeps re-mounting is not one field any more.
+    static let maximumRebinds = 8
+    /// How far (points) a re-mounted field's edges may move and still be the field COS typed into.
+    static let frameSlack: Double = 4
+
+    /// What COS knows about a focused element without its text: attributes only.
+    struct FieldIdentity: Equatable, Sendable {
+        var pid: Int32
+        var role: String?
+        /// AXIdentifier, else AXDOMIdentifier. Empty counts as none.
+        var identifier: String?
+        var frame: CGRect?
+    }
+    enum Focus: Equatable, Sendable {
+        case same
+        /// Another element, the same field (re-mounted): read through the new one from now on.
+        case rebound
+        case left(String)
+    }
+    /// Whether the field COS watches still has the keyboard. `sameElement`: the focused element is the watched one (or
+    /// sits in it). `sameWindow`: the new element's window is the watched one's.
+    static func focus(frontmost: Bool, sameElement: Bool, watched: FieldIdentity?, now: FieldIdentity?, sameWindow: Bool, rebinds: Int) -> Focus {
+        guard frontmost else { return .left("app") }
+        if sameElement { return .same }
+        guard let watched, let now else { return .left("none") }
+        guard watched.pid == now.pid else { return .left("pid") }
+        guard watched.role == now.role else { return .left("role") }
+        if let a = watched.identifier, let b = now.identifier, !a.isEmpty, !b.isEmpty {
+            guard a == b else { return .left("identifier") }
+        } else {
+            guard sameWindow else { return .left("window") }
+            guard let f0 = watched.frame, let f1 = now.frame else { return .left("frame") }
+            let left = abs(f0.minX - f1.minX) <= frameSlack, width = abs(f0.width - f1.width) <= frameSlack
+            let edge = abs(f0.minY - f1.minY) <= frameSlack || abs(f0.maxY - f1.maxY) <= frameSlack
+            guard left, width, edge else { return .left("frame") }
+        }
+        guard rebinds < maximumRebinds else { return .left("churn") }
+        return .rebound
+    }
+
+    enum Follow: Equatable, Sendable {
+        case unchanged
+        case moved(start: Int, length: Int)
+        case inside(DictationReplace.Edit, length: Int)
+        /// The dictation was found again in the read (`start`, `length` in window units); `edit` is what changed inside it.
+        case reanchored(start: Int, length: Int, edit: DictationReplace.Edit?)
+        /// The field is blank: the message was sent, or the text deleted.
+        case cleared
+        case lost
+    }
+    /// `track`, then what `track` calls lost: a cleared field, an edit at the dictation's edge, or the dictation found again.
+    static func follow(baseline: String, current: String, start: Int, length: Int) -> Follow {
+        if current.allSatisfy({ $0.isWhitespace || $0.isNewline }), !baseline.allSatisfy({ $0.isWhitespace || $0.isNewline }) { return .cleared }
+        switch track(baseline: baseline, current: current, start: start, length: length) {
+        case .unchanged: return .unchanged
+        case .moved(let s, let l): return .moved(start: s, length: l)
+        case .inside(let edit, let l): return .inside(edit, length: l)
+        case .lost: break
+        }
+        if let (edit, l) = insideByCharacters(baseline: baseline, current: current, start: start, length: length) { return .inside(edit, length: l) }
+        let ns = baseline as NSString
+        guard start >= 0, length > 0, start + length <= ns.length else { return .lost }
+        let dictation = ns.substring(with: NSRange(location: start, length: length))
+        guard let found = reanchor(dictation, in: current) else { return .lost }
+        let now = (current as NSString).substring(with: NSRange(location: found.start, length: found.length))
+        return .reanchored(start: found.start, length: found.length, edit: DictationReplace.wordEdit(from: dictation, to: now))
+    }
+    /// The changed characters sit inside the dictation even though the word diff crossed its edge (a word glued to the
+    /// text before it): the edit, widened to whole words but never past the dictation, relative to its start.
+    static func insideByCharacters(baseline: String, current: String, start: Int, length: Int) -> (DictationReplace.Edit, Int)? {
+        let a = Array(baseline.utf16), b = Array(current.utf16)
+        let end = start + length
+        guard start >= 0, length > 0, end <= a.count else { return nil }
+        var lead = 0
+        while lead < a.count, lead < b.count, a[lead] == b[lead] { lead += 1 }
+        var trail = 0
+        while trail < a.count - lead, trail < b.count - lead, a[a.count - 1 - trail] == b[b.count - 1 - trail] { trail += 1 }
+        var lowA = lead, highA = a.count - trail, highB = b.count - trail
+        guard lowA < highA || lead < highB else { return nil }
+        guard lowA >= start, highA <= end else { return nil }
+        func word(_ unit: UInt16) -> Bool { Unicode.Scalar(unit).map { CharacterSet.alphanumerics.contains($0) } ?? true }
+        while lowA > start, word(a[lowA - 1]) { lowA -= 1 }
+        while highA < end, word(a[highA]) { highA += 1; highB += 1 }
+        let lowB = lowA
+        guard highB >= lowB, highB <= b.count else { return nil }
+        let original = String(utf16CodeUnits: Array(a[lowA..<highA]), count: highA - lowA)
+        let replacement = String(utf16CodeUnits: Array(b[lowB..<highB]), count: highB - lowB)
+        let delta = (highB - lowB) - (highA - lowA)
+        return (DictationReplace.Edit(location: lowA - start, length: highA - lowA, original: original, replacement: replacement), length + delta)
+    }
+    /// The dictation in `window` again: the exact text once; else, for four words or more, its first and last word runs
+    /// (up to three words each), each once on word boundaries, in order, no wider than twice the dictation plus 16.
+    static func reanchor(_ dictation: String, in window: String) -> (start: Int, length: Int)? {
+        let ns = window as NSString, d = dictation as NSString
+        guard d.length > 0 else { return nil }
+        let exact = literal(dictation, in: ns, wordBounded: false)
+        if exact.count == 1 { return (exact[0], d.length) }
+        // Twice exactly is ambiguous; its word runs are then found twice too, so the anchors below refuse it.
+        var words: [NSRange] = []
+        d.enumerateSubstrings(in: NSRange(location: 0, length: d.length), options: [.byWords, .substringNotRequired]) { _, range, _, _ in words.append(range) }
+        guard words.count >= 4 else { return nil }
+        let k = min(3, words.count / 2)
+        let head = d.substring(with: NSRange(location: 0, length: NSMaxRange(words[k - 1])))
+        let tailStart = words[words.count - k].location
+        let tail = d.substring(from: tailStart)
+        let heads = literal(head, in: ns, wordBounded: true), tails = literal(tail, in: ns, wordBounded: true)
+        guard heads.count == 1, tails.count == 1 else { return nil }
+        let from = heads[0], to = tails[0] + (tail as NSString).length
+        guard tails[0] >= from + (head as NSString).length, to - from <= 2 * d.length + 16 else { return nil }
+        return (from, to - from)
+    }
+    private static func literal(_ needle: String, in haystack: NSString, wordBounded: Bool) -> [Int] {
+        let n = (needle as NSString).length
+        guard n > 0 else { return [] }
+        func wordUnit(_ i: Int) -> Bool { Unicode.Scalar(haystack.character(at: i)).map { CharacterSet.alphanumerics.contains($0) } ?? true }
+        var out: [Int] = [], from = 0
+        while from < haystack.length {
+            let found = haystack.range(of: needle, options: [.literal], range: NSRange(location: from, length: haystack.length - from))
+            guard found.location != NSNotFound else { break }
+            let ok = !wordBounded || ((found.location == 0 || !wordUnit(found.location - 1)) && (NSMaxRange(found) == haystack.length || !wordUnit(NSMaxRange(found))))
+            if ok { out.append(found.location) }
+            from = found.location + 1
+        }
+        return out
     }
 }
 

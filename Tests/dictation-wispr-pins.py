@@ -313,8 +313,8 @@ need("if fixing { panel.makeKeyAndOrderFront(nil) } else { panel.orderFrontRegar
 need("screen.minY + 8" in overlay and "screen.midX - size.width / 2" in overlay and "store.floatingScreen.flatMap" in overlay,
      "bottom center, above the Dock, on the chosen screen")
 sinks = re.findall(r"\.sink \{ \[weak self\] _ in Task \{ @MainActor in self\?\.sync\(\) \} \}", overlay)
-need(len(sinks) == 7 and overlay.count(".sink") == 7,
-     "every overlay sink hops to the main actor before reading the new state (reviewed 0.5.309; 0.5.313 added fixOfferID and replaceOffer); a new sink needs the same review")
+need(len(sinks) == 8 and overlay.count(".sink") == 8,
+     "every overlay sink hops to the main actor before reading the new state (reviewed 0.5.309; 0.5.313 added fixOfferID and replaceOffer; 0.5.338 learnedUndoID); a new sink needs the same review")
 
 # ── 5. The pet: the pill takes the ledger's slot, a DICTATED pill, the lists, the card.
 slot = pet[pet.index("private var ledgerSlot"):pet.index("private func ledgerBar")]
@@ -555,11 +555,30 @@ need("DictationFixGuess.guess(tokens: tokens, tapped: index, vocabulary: Transcr
 need('Button(offer.app.map { "Replace it in \\($0)" } ?? "Copy the corrected text") { store.replaceCorrected() }' in dictation,
      "Fix a word offers Replace it in <App> after Save")
 
+# ── 9a. 0.5.338 Learn from my edits in every app: the field, not the element; re-anchor; the canary; Undo on the pill.
+watcher = body(dictation, "@MainActor final class DictationEditWatcher {")
+need(watcher.count("DictationEditLearning.focus(frontmost: seen.frontmost, sameElement: seen.sameElement, watched: identity,") == 1
+     and "element = next; identity = nextIdentity; canary.rebinds += 1; rebound = true" in watcher
+     and "DictationInsertion.focusedField(pid: pid, watched: element)" in watcher
+     and "focused: focused, fieldCharacters: now.characters, dictationLength: length)" in watcher,
+     "every poll asks the tested focus rule; a rebound field is read through the new element; the stop rule hears focus and the dictation's length")
+need("DictationEditLearning.reanchor(target.text, in: baseline)" in watcher and "case .reanchored(let s, let l, let edit):" in watcher
+     and "case .cleared:" in watcher and "defer { DictationEditWatcher.record(canary) }" in watcher,
+     "the start finds a moved dictation again, a read re-anchors or ends cleared, and every watch writes its canary line")
+need("kAXValueAttribute" not in body(dictation, "    nonisolated static func fieldIdentity(") and "kAXValueAttribute" not in body(dictation, "    nonisolated static func focusedField("),
+     "the field's identity is attributes only, never its text")
+need("learnedUndoID = item.id" in body(dictation, "    private func editLearned(") and "Task { await undoLearned(id) }" in body(dictation, "    func undoLearnedFromPill() {")
+     and "onUndo: store.learnedUndoID == nil ? nil : { store.undoLearnedFromPill() })" in dictation
+     and "onUndo: dictation.learnedUndoID == nil ? nil : { dictation.undoLearnedFromPill() })" in pet
+     and "panel.ignoresMouseEvents = store.card == nil && !fixing && store.fixOfferID == nil && store.learnedUndoID == nil" in dictation,
+     "\"LEARNED\" on the pill offers Undo on both pills, the floating pill takes the click, and Undo is the Learned list's Undo")
+
 # ── 9. 0.5.318 Learn from my edits (Miles 13:31): Save automatically by default, native first, never secure, Undo.
 need('UserDefaults.standard.string(forKey: "dictation.learnMode") ?? "") ?? .default' in dictation
      and 'COSDropdown("Learn from my edits", selection: $store.learnMode,' in dictation, "Learn from my edits is a Setting with the tested default")
-need("Never in terminals or password fields." in dictation and "Electron apps are being measured first" in dictation,
-     "the Settings footnote says terminals and password fields never learn, and Electron is only measured")
+need("Never in terminals or password fields." in dictation and "Text(DictationEditLearning.settingNote)" in dictation
+     and "Electron apps are being measured first" not in dictation,
+     "the Settings footnote is the tested line that names where learning works and where it is only measured (0.5.338)")
 finish = body(dictation, "    private func finish(")
 need("if let target, case .inserted = outcome {\n            editWatcher.start(target, mode: learnMode, context: context)" in finish and 'editWatcher.stop("not inserted")' in finish,
      "only a measured insertion starts a watch; anything else ends the last one")
@@ -569,12 +588,14 @@ need('if learnMode == .off { editWatcher.stop("learning off") }' in dictation, "
 watcher = body(dictation, "@MainActor final class DictationEditWatcher {")
 need(watcher.count("DictationEditLearning.eligibility(mode: mode, secure: DictationInsertion.secure(element)") == 1
      and "if case .skip(let reason) = eligibility {" in watcher and "let learning = eligibility == .learn" in watcher
-     and "var candidate = learning ? await MainActor.run { Self.candidate(edit, outside: outside) } : nil" in watcher,
+     and "let candidate = learning && DictationEditLearning.allowsAnother(learned: learnedHere)\n                        ? await Self.consider(edit, window: baseline, start: start, length: length, context: context) : nil" in watcher
+     and "guard let candidate = await MainActor.run(body: { Self.candidate(edit, outside: outside) }) else { return nil }" in watcher
+     and "bundle: target.bundle)" in watcher,
      "the tested gate decides learn, probe or skip, and only .learn produces a candidate (Electron is probed only)")
 need("DictationEditLearning.stop(elapsed: Date().timeIntervalSince(started), reads: reads, appRunning: running,\n                                                        secure: DictationInsertion.secure(element)," in watcher,
      "every poll asks the tested stop rule, secure input and password fields included")
 need("DictationReplace.holds(baseline, at: target.span.location - bounds.location, target.text)" in watcher
-     and "DictationEditLearning.readLength(" in watcher and "DictationEditLearning.track(" in watcher,
+     and "DictationEditLearning.readLength(" in watcher and "DictationEditLearning.follow(" in watcher,
      "a watch starts only from proof of what COS typed, and reads the bounded window it planned")
 need("kAXValueAttribute" not in watcher and "AXObserver" not in watcher and "DictationInsertion.text(element, location: bounds.location" in watcher,
      "the watch reads only the bounded window, never AXValue")
@@ -659,10 +680,11 @@ need('forKey: "dictation.fieldContext") as? Bool ?? true' in dictation
      and "never saves or sends it" in dictation and "Never in terminals or password fields." in dictation,
      "a setting, on by default, says what is read and that it is kept for that dictation only")
 need("editWatcher.start(target, mode: learnMode, context: context)" in finish, "the watch gets the read")
-need("let outside = DictationEditLearning.outside(window: current, start: start, length: l) + (context?.outside ?? [])" in watcher
-     and "DictationEditLearning.undoesContextFix($0, fixes: context?.fixes ?? [])" in watcher
-     and "if reverted { candidate = nil }" in watcher and watcher.index("if reverted { candidate = nil }") < watcher.index("if let candidate { await found(candidate) }")
-     and "evidence=\\(candidate?.evidence != nil) revert=\\(reverted)" in watcher,
+consider = body(dictation, "    nonisolated private static func consider(")
+need("let outside = DictationEditLearning.outside(window: window, start: start, length: length) + (context?.outside ?? [])" in consider
+     and "return DictationEditLearning.undoesContextFix(candidate, fixes: context?.fixes ?? []) ? nil : candidate" in consider
+     and watcher.index("? await Self.consider(edit, window: baseline, start: start, length: length, context: context) : nil") < watcher.index("if let candidate { learnedHere += 1; canary.learned += 1; await found(candidate) }")
+     and "evidence=\\(candidate?.evidence != nil) learned=\\(learnedHere)" in watcher,
      "the window around the dictation and the read before it are evidence; putting back what was heard is never learned")
 need("}, outside: outside)" in body(dictation, "    private static func candidate(_ edit: DictationReplace.Edit, outside: [String]) -> DictationEditLearning.Candidate? {"),
      "the tested candidate rule sees the evidence")
