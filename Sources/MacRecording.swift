@@ -76,7 +76,12 @@ final class MacRecordingStore: ObservableObject {
     @Published private(set) var cannotHear = false
     /// 0.5.334: Mac captures that will never have a meeting (no speech, discarded). The live hand-off ends for these
     /// instead of "Saved meeting not found yet" (MacRecordingNoMeeting).
-    @Published private(set) var noMeetingCaptureIDs: Set<String> = []
+    /// 0.5.337 (loop audit W16): kept across launches (the last 100), so a discarded capture never comes back as an unsaved
+    /// row after a restart.
+    @Published private(set) var noMeetingCaptureIDs: Set<String> = Set(UserDefaults.standard.stringArray(forKey: MacRecordingStore.discardedKey) ?? []) {
+        didSet { UserDefaults.standard.set(Array(noMeetingCaptureIDs.sorted().suffix(100)), forKey: MacRecordingStore.discardedKey) }
+    }
+    nonisolated static let discardedKey = "macRecording.discardedCaptureIDs"
     /// 0.5.334: the server advertises POST /api/meeting/sessions/:id/discard (capabilities `discard: true`, 6.84.0).
     @Published private(set) var serverDiscard = false
     /// 0.5.336 (server 6.86.0): the start's answer about live cues, for "Cues off: ..." in the live view. nil when the
@@ -376,17 +381,18 @@ final class MacRecordingStore: ObservableObject {
     // While a Mac recording runs and its live view is open on a server that advertises the grey line, the open chunk's
     // newest audio (at most 15 s; a chunk is 6 s) goes to POST /api/transcribe-stream/preview through the helper, every 2 s
     // at most and one at a time (LiveMeetingPreviewGate), and the answer's text goes to the live view. Cosmetic: a miss
-    // or a failure changes nothing on the recording, three failures in a row stop the previews for this recording, and
+    // or a failure changes nothing on the recording, three failures in a row pause the previews for a minute (0.5.337), and
     // the WAV is removed after each post. SECRET BOUNDARY: the text goes only to `previewDelivered`; nothing here logs.
 
     private func startPreviews(_ id: String) {
         previewTask?.cancel()
         previewTask = Task { [weak self] in
             var gate = LiveMeetingPreviewGate()
-            while !Task.isCancelled, gate.open {
+            // 0.5.337 (loop audit N14): the gate pauses after three failures and tries again a minute later.
+            while !Task.isCancelled {
                 try? await Task.sleep(for: .milliseconds(500))
                 guard let self, !Task.isCancelled, self.isRecording, self.manifest?.captureId == id else { return }
-                guard self.previewWanted?(id) == true else { continue }
+                guard self.previewWanted?(id) == true, gate.mayPost(now: Date()) else { continue }
                 await self.postPreview(id, gate: &gate)
             }
         }

@@ -34,6 +34,9 @@ private let lensLog = Logger(subsystem: "com.gotcos.control", category: "work-le
     /// Lens rounds Miles sent from the Mac (his own Send), to report through mac-send; then followed until final.
     private(set) var macPending: [String: String] = [:]
     private(set) var macTracked: [String: Tracked] = [:]
+    /// 0.5.337 (loop audit W11): the first time a lens round lands in its card's history, a Work notice says so.
+    var onNotice: ((WorkProgressNotice) -> Void)?
+    private var noticed: Set<String> = []
 
     init(handoff: WorkHandoffStore, sources: @escaping () -> [WorkSource], enabled: Bool, defaults: UserDefaults = .standard, store: WorkTaskChatStore = WorkTaskChatStore()) {
         self.handoff = handoff; self.sources = sources; self.defaults = defaults; self.own = store; own.enabled = enabled
@@ -101,11 +104,23 @@ private let lensLog = Logger(subsystem: "com.gotcos.control", category: "work-le
 
     /// Writes one round into its card's history and tells the server. True when the server knows it is in history.
     private func writeHistory(_ round: WorkLensPlans.Round) async -> Bool {
-        guard let (chat, source) = await acquire(round.workID), await chat.recordLensRound(round, source: source, handoff: handoff) else {
+        guard let (chat, source) = await acquire(round.workID) else {
+            lensLog.error("lens round \(round.roundId, privacy: .public) not written into history yet")
+            return false
+        }
+        chat.syncFromDisk()
+        let already = chat.record?.rounds.contains(where: { $0.lensRoundID == round.roundId }) == true
+        guard await chat.recordLensRound(round, source: source, handoff: handoff) else {
             lensLog.error("lens round \(round.roundId, privacy: .public) not written into history yet")
             return false
         }
         let on = cardAutoSend(round.workID)
+        // Only a round written into history now, on a card that waits for review (Auto-send off).
+        if !already, !noticed.contains(round.roundId), !on {
+            noticed.insert(round.roundId)
+            let notice = WorkChatBoardCounts.lensNotice(roundID: round.roundId, title: source.title)
+            onNotice?(WorkProgressNotice(key: notice.key, receiptID: "lens-" + round.roundId, workID: round.workID, title: "Work", body: notice.body))
+        }
         guard await postHistory(round.roundId, autoSendCard: on) else { return false }
         autoSendPosted[round.roundId] = (round.workID, on)
         return true
@@ -145,7 +160,9 @@ private let lensLog = Logger(subsystem: "com.gotcos.control", category: "work-le
                 chat = again.0
             }
             guard chat.record?.rounds.contains(where: { $0.lensRoundID == send.roundId }) == true else {
-                if waited >= sendPatience { await report(send.sendRequestId, refusedAll(send, WorkLensPlans.notInHistory)) } else { keep.append(item) }
+                // 0.5.337 (loop audit W15): a full card says so, at once (waiting cannot free a round).
+                let full = WorkLensPlans.isFull(rounds: chat.record?.rounds.count ?? 0)
+                if waited >= sendPatience || full { await report(send.sendRequestId, refusedAll(send, WorkLensPlans.notSavedReason(rounds: chat.record?.rounds.count ?? 0))) } else { keep.append(item) }
                 continue
             }
             guard let results = await chat.sendLensRequest(send, source: source, handoff: handoff, cardAutoSend: cardAutoSend(send.workID)) else {

@@ -125,7 +125,8 @@ need("macRecording.liveCuesWanted = { [weak self] in self?.liveMeetingCapability
 for name, text in list(sources.items()) + [("main.swift", helper)]:
     need("live-cues/start" not in text and '"live-cues-start"' not in text, name + " never calls /live-cues/start")
 need("if flag.boolValue { startBody[\"liveCues\"] = true }" in helper, "the helper sends liveCues only as a JSON true")
-need("LiveMeeting.armLine(model.macRecording.manifest?.captureId == model.liveTranscriptOpenID ? model.macRecording.liveCuesArm : nil)" in pane,
+need("if let arm = model.macRecording.manifest?.captureId == model.liveTranscriptOpenID ? model.macRecording.liveCuesArm : nil," in pane
+     and "let line = LiveMeeting.armLine(arm)" in pane,
      "Cues off shows on the recording it belongs to")
 
 # ── The audiogram: computed in the drain, its own object, never on the model or the store.
@@ -183,7 +184,7 @@ for banned in ("recordingLog", "Logger", "NSLog", "print(", "self.error", "messa
 need("previewDelivered?(id, line)" in previews and previews.count("previewDelivered") == 1, "the text goes only to the live view")
 need("gate.begin(chunkIndex: open.index, bytes: pcm.count, now: Date())" in previews and "defer { gate.finish(answered: answered) }" in previews
      and "gate.accept(chunkIndex: line.chunkIndex, previewGen: line.previewGen)" in previews, "every post through the rate cap, an old answer dropped")
-need("await spool.removePreview(captureId: id)" in previews and "while !Task.isCancelled, gate.open {" in previews, "the WAV goes after each post; the breaker ends the loop")
+need("await spool.removePreview(captureId: id)" in previews and "gate.mayPost(now: Date())" in previews, "the WAV goes after each post; the breaker pauses the loop (0.5.337: and retries a minute later)")
 need("previewTask?.cancel(); previewTask = nil" in body(recording, "private func finishStop() async {") and "await spool.removePreview(captureId: id)" in body(recording, "private func finishStop() async {"),
      "stop ends the previews and removes the WAV")
 need("&& $0 != Self.previewFilename" in body(core, "func recoverable() throws -> [MacRecordingManifest] {"), "the preview WAV is never audio outside the journal")
@@ -223,7 +224,7 @@ need("TimelineView(.periodic(from: start, by: 1))" in badge and "LiveMeeting.ela
 need("model.liveMeetingCalendarEvent = nextEvent" in window, "the calendar's event reaches the title")
 need('Text(verbatim: model.liveTranscriptOpenID.map { model.liveMeetingTitle($0, start: feed?.startTime) } ?? "Live meeting")' in pane, "the header shows the real title")
 need('static let line = "Drop in screenshots or files while it\'s on. They\'re saved with the meeting."' in meetings
-     and "LiveFilesDropLine(files: files, key: LibraryMeeting.captureContextKey(session))" in pane, "the files line under the bar")
+     and "LiveFilesDropLine(files: files, key: LibraryMeeting.captureContextKey(session), info: model.liveMeetingFileInfo(session))" in pane, "the files line under the bar")
 need("MeetingFilesDrop(enabled: files.enabled, targeted: $targeted)" in body(meetings, "struct LiveFilesDropLine: View {"), "the files line is a drop target, on the line itself")
 need("LiveAskPanel(" in pane and 'Button(showAsk ? "Hide Ask" : "Live COS Ask") { showAsk.toggle() }' in pane, "the Ask panel stays")
 

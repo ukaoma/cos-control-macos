@@ -170,9 +170,14 @@ actor HelperClient {
         let executable = try helperURL(preferStable: preferStable)
         let cancellation = HelperProcessCancellation()
         let outputLimit = self.outputLimit
+        // 0.5.337 (performance audit W8): the run waits on its own dispatch thread. As a detached task it held a Swift
+        // concurrency thread in its poll loop for the whole run, so a handful of slow helpers (one per core) stalled every
+        // other task in the app. Cancellation and the timeout work as before (HelperProcessCancellation, the loop's checks).
         return try await withTaskCancellationHandler {
-            try await Task.detached(priority: .userInitiated) {
-                try Task.checkCancellation()
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<HelperResponse, Error>) in
+              Self.runQueue.async {
+                continuation.resume(with: Result { () throws -> HelperResponse in
+                try cancellation.checkCancellation()
                 let process = Process()
                 try cancellation.checkCancellation()
                 defer { cancellation.clear() }
@@ -273,9 +278,13 @@ actor HelperClient {
                     throw HelperClientError.commandFailed(response.message)
                 }
                 return response
-            }.value
+                })
+              }
+            }
         } onCancel: {
             cancellation.cancel()
         }
     }
+    /// The helper runs' own threads (concurrent): a run blocks one of these, never a Swift concurrency thread.
+    private static let runQueue = DispatchQueue(label: "com.gotcos.control.helper-runs", qos: .userInitiated, attributes: .concurrent)
 }

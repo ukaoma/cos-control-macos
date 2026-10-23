@@ -1487,6 +1487,9 @@ struct MeetingAudioAlertLedger: Sendable, Equatable {
 /// delete its session files. Save it with POST /api/meeting/save; the
 /// quarantine recover route will 404 until the 4h cutoff.
 struct StrandedCapture: Identifiable, Sendable {
+    /// 0.5.337 (loop audit W16): the server can still list a capture this Mac discarded (its own discard retries ran out,
+    /// or it was not idle yet); it is not offered again.
+    static func shown(_ rows: [StrandedCapture], discarded: Set<String>) -> [StrandedCapture] { rows.filter { !discarded.contains($0.sessionId) } }
     let sessionId: String
     let idleMinutes: Int
     let capturedMinutes: Int
@@ -2038,15 +2041,12 @@ struct ClaudeSession: Identifiable, Sendable {
     var createdDate: Date? { Self.parseStamp(createdAt) }
     var updatedDate: Date? { Self.parseStamp(updatedAt) }
 
-    private static func parseStamp(_ raw: String) -> Date? {
+    /// 0.5.337 (performance audit B1): the two shared ISO 8601 formatters (WorkIntakeItem.stamp), made once. This built two
+    /// new ISO8601DateFormatters on every read, and the Sessions list reads it for every row on every redraw.
+    static func parseStamp(_ raw: String) -> Date? {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
-        let withFraction = ISO8601DateFormatter()
-        withFraction.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let date = withFraction.date(from: trimmed) { return date }
-        let basic = ISO8601DateFormatter()
-        basic.formatOptions = [.withInternetDateTime]
-        return basic.date(from: trimmed)
+        return WorkIntakeItem.stamp(trimmed)
     }
 
     init?(_ value: JSONValue?) {
@@ -11795,6 +11795,140 @@ enum ActivityHome {
     }
 }
 
+// MARK: - Status refresh cadence (0.5.337, performance audit W5)
+
+/// The status refresh spawned 4 to 5 helpers every 12 s whatever was on screen, and republished unchanged values (Activity
+/// body rebuilds 22 to 58 a minute for hours). Now: every 12 s while a Control surface is on screen or a meeting records;
+/// every 60 s when nothing is on screen or the screen is locked or asleep. The loop still wakes every 12 s, so opening the
+/// panel is read within one tick.
+enum RefreshCadence {
+    static let tick: TimeInterval = 12
+    static let idle: TimeInterval = 60
+    static func seconds(panelVisible: Bool, activityOnScreen: Bool, locked: Bool, recording: Bool) -> TimeInterval {
+        if recording { return tick }
+        if locked { return idle }
+        return panelVisible || activityOnScreen ? tick : idle
+    }
+    /// A tick refreshes when the cadence has passed since the last refresh (a little early counts: ticks drift).
+    static func due(last: Date?, now: Date, every seconds: TimeInterval) -> Bool {
+        guard let last else { return true }
+        return now.timeIntervalSince(last) >= seconds - 1
+    }
+    /// The extra reads (orphans, your move) are for what is on screen; a recording keeps them.
+    static func readsExtras(panelVisible: Bool, activityOnScreen: Bool, recording: Bool) -> Bool { panelVisible || activityOnScreen || recording }
+}
+
+/// 0.5.337 (performance audit W4): the pet's animation pauses while nobody can see it.
+enum PetPause {
+    static func paused(occluded: Bool, locked: Bool, displayAsleep: Bool) -> Bool { occluded || locked || displayAsleep }
+}
+
+// MARK: - Work loop support (0.5.337, loop audit W1)
+
+/// The shipped server has only the four Intake routes; the work-loop routes (seen, undo, expired, waiting, dropped, batch)
+/// arrive with a newer server. The helper answers every 404 as `unsupported`; these are the rules Control reads it with.
+enum WorkLoopSupport {
+    static func unsupported(_ details: [String: JSONValue]) -> Bool { details["unsupported"]?.bool == true }
+    /// Undo is offered only on a server that has the routes, and never after this server said undo is missing.
+    static func undoOffered(available: Bool?, unsupported: Set<String>) -> Bool { available == true && !unsupported.contains("undo") }
+    /// Said where Undo would be, on a server without it.
+    static let undoMissing = "Undo needs a newer COS server. To change a card, open it in Work."
+}
+
+// MARK: - One Intake resolve's answer (0.5.337)
+
+/// What one Intake resolve (`work-intake-resolve`) came back with. Only the server's own confirmation is `changed`; the
+/// undo id is `<item id>:<resolution at>`, the batch id the server's `/api/work-intake/undo` takes for a single resolve, and
+/// only when the server says it made this decision (a repeat on an item already decided the other way gives no undo, so
+/// Undo can never reverse a different decision). A 404 on an older server (`unsupported`) changed nothing.
+enum WorkIntakeResolveResult: Equatable {
+    case changed(undo: String?)
+    case refused(String, code: String)
+    case busy
+
+    init(details: [String: JSONValue], message: String, itemID: String, accept: Bool) {
+        if details["unsupported"]?.bool == true { self = .refused(message, code: "unsupported"); return }
+        let resolution = details["item"]?.object?["resolution"]?.object
+        let at: String? = resolution?["at"]?.string
+        let decided: String? = resolution?["action"]?.string
+        let undo: String? = decided == (accept ? "accept" : "dismiss") ? at.map { itemID + ":" + $0 } : nil
+        self = .changed(undo: undo)
+    }
+}
+
+/// Today's Dismiss on "From today's meetings" (0.5.337, Miles 2026-10-22: some suggestions are not real tasks). Pure, so
+/// Tests/ActivityTodayChecks executes every rule: a dismiss the server confirmed collapses its row to "Dismissed. Undo"
+/// for `undoSeconds`, then the row leaves; a refusal keeps the row with the server's reason; Undo sends that row's own undo
+/// id and only a confirmed undo removes the line (a failed one keeps it, with the reason, for another `undoSeconds`).
+struct TodayDismissals: Equatable {
+    static let undoSeconds: TimeInterval = 8
+
+    struct Row: Equatable {
+        let item: WorkIntakeItem
+        /// The undo id the server gave (`<item id>:<at>`); nil: nothing to undo, so the line says only "Dismissed."
+        let undo: String?
+        var until: Date
+        var undoing = false
+        var undoError: String?
+    }
+
+    var rows: [String: Row] = [:]
+    var dismissing: Set<String> = []
+    var failures: [String: String] = [:]
+
+    /// One dismiss starts: not one already in flight for this row, and not a row already collapsed.
+    mutating func begin(_ id: String) -> Bool {
+        guard !dismissing.contains(id), rows[id] == nil else { return false }
+        dismissing.insert(id)
+        failures[id] = nil
+        return true
+    }
+
+    /// The resolve's answer. Only `changed` collapses the row.
+    mutating func finish(_ item: WorkIntakeItem, result: WorkIntakeResolveResult, now: Date) {
+        dismissing.remove(item.id)
+        switch result {
+        case .changed(let undo):
+            rows[item.id] = Row(item: item, undo: undo, until: now.addingTimeInterval(Self.undoSeconds))
+        case .refused(let reason, _):
+            failures[item.id] = reason
+        case .busy:
+            break
+        }
+    }
+
+    /// Undo starts: the row's own undo id, once.
+    mutating func beginUndo(_ id: String) -> String? {
+        guard var row = rows[id], !row.undoing, let undo = row.undo else { return nil }
+        row.undoing = true
+        row.undoError = nil
+        rows[id] = row
+        return undo
+    }
+
+    /// nil error: the server restored it, and the line goes (the item is open again in the next read).
+    mutating func finishUndo(_ id: String, error: String?, now: Date) {
+        guard var row = rows[id] else { return }
+        guard let error else { rows[id] = nil; return }
+        row.undoing = false
+        row.undoError = error
+        row.until = now.addingTimeInterval(Self.undoSeconds)
+        rows[id] = row
+    }
+
+    /// The collapsed lines still showing: inside their window, or with an undo in flight.
+    func live(now: Date) -> [Row] { rows.values.filter { $0.undoing || $0.until > now } }
+
+    /// Drop the lines whose window has passed.
+    mutating func expire(now: Date) { rows = rows.filter { $0.value.undoing || $0.value.until > now } }
+
+    /// The ids ControllerModel keeps hidden after an undo: a single resolve's undo id (`<item id>:<at>`) gives its item
+    /// back; a batch id (a UUID) names no item here.
+    static func afterUndo(_ dismissed: Set<String>, batchId: String) -> Set<String> {
+        dismissed.filter { !batchId.hasPrefix($0 + ":") }
+    }
+}
+
 // MARK: - Activity Today home (plan v2, 2026-10-21)
 
 /// The Activity window's Today home (PLAN_control_activity_home_v2_2026-10-21, direction A). Pure: every number the rail,
@@ -11871,6 +12005,9 @@ enum TodayHome {
 
     /// Open intake: not yet accepted or dismissed (`suggested`, `review`, `ask`).
     static func isOpen(_ item: WorkIntakeItem) -> Bool { ["suggested", "review", "ask"].contains(item.status) }
+    /// 0.5.337: open, and not dismissed on this Mac since the last read (ControllerModel.workIntakeDismissedIDs), so a
+    /// dismissed item leaves Today, the counts and midnight's move at once, before the next Intake read says so.
+    static func isShown(_ item: WorkIntakeItem, dismissed: Set<String>) -> Bool { isOpen(item) && !dismissed.contains(item.id) }
     static func mentionedCards(_ tasks: [TaskRow]) -> [TaskRow] { tasks.filter { $0.workStage == "mentioned" && !$0.checked } }
     /// A mentioned card's meeting: its first linked meeting's filename. A card with none is older.
     static func cardIsToday(_ card: TaskRow, now: Date, calendar: Calendar = .current) -> Bool {
@@ -11893,10 +12030,11 @@ enum TodayHome {
 
     /// The one split home, Needs you and Work's Sort view read (replaces `newItems` "since yesterday" and the mentioned
     /// cutoff for them): today's meetings on Today, everything else in Work. A filter only: midnight moves an item with no
-    /// server call, and `today + older` is every open item.
-    static func intakeSplit(items: [WorkIntakeItem], tasks: [TaskRow], now: Date, calendar: Calendar = .current) -> IntakeSplit {
+    /// server call, and `today + older` is every open item. 0.5.337: an item dismissed here is in neither (`isShown`).
+    static func intakeSplit(items: [WorkIntakeItem], tasks: [TaskRow], now: Date, calendar: Calendar = .current,
+                            dismissed: Set<String> = []) -> IntakeSplit {
         var split = IntakeSplit()
-        for item in items where isOpen(item) {
+        for item in items where isShown(item, dismissed: dismissed) {
             if isToday(filename: item.meeting.filename, now: now, calendar: calendar) { split.today.append(item) } else { split.older.append(item) }
         }
         for card in mentionedCards(tasks) {
@@ -12077,6 +12215,8 @@ enum TodayHome {
         let sessionID: String?
         let jobIDs: Set<String>
         let startedAt: Date
+        /// 0.5.337 (loop audit W5): the server job behind the run, which Stop cancels (work-job-cancel). nil: no Stop yet.
+        var jobID: String? = nil
     }
     struct Recording: Equatable, Sendable {
         let sessionId: String
@@ -12127,6 +12267,8 @@ enum TodayHome {
         let title: String
         let provider: String
         let finishedAt: Date
+        /// 0.5.337 (loop audit W5): a run started from Today opens its result ("Open result"), not just Sessions.
+        var openLabel: String? = nil
     }
 
     struct RunRow: Identifiable, Equatable {
@@ -12143,6 +12285,8 @@ enum TodayHome {
         let started: Date?
         /// Repo or meeting time, added after a separator when two rows share a title.
         var disambiguator: String? = nil
+        /// 0.5.337 (loop audit W5): a Work run's server job, which the row's Stop cancels.
+        var stopJobID: String? = nil
         /// VoiceOver: "Claude Code in Terminal, Holiday promo landing page, working 12 minutes, Open in Terminal".
         var voiceLabel: String {
             var spoken = detail
@@ -12208,7 +12352,8 @@ enum TodayHome {
             if let sid = run.sessionID, input.sessions.contains(where: { ClaudeSession.sameSession($0.id, sid) && (isWorking($0) || isWaiting($0)) }) { continue }
             rows.append(RunRow(id: "work:" + run.id, platform: .work, title: guarded(run.title) ?? "Work run",
                                detail: "from Work, on the server, " + duration(input.now.timeIntervalSince(run.startedAt)),
-                               openLabel: "In Sessions", open: .workRun(run.id), working: true, finished: false, started: run.startedAt))
+                               openLabel: "In Sessions", open: .workRun(run.id), working: true, finished: false, started: run.startedAt,
+                               stopJobID: run.jobID))
         }
         for recording in input.recordings {
             let start = recording.start
@@ -12281,7 +12426,7 @@ enum TodayHome {
                 let platform: Platform = row.provider == "codex" ? .codex : row.provider == "cursor" ? .cursor : .claudeCode
                 let minutes = Int(input.now.timeIntervalSince(row.finishedAt) / 60)
                 return RunRow(id: "finished:" + row.id, platform: platform, title: guarded(row.title) ?? "Untitled session",
-                              detail: minutes < 1 ? "finished just now" : "finished \(minutes) min ago", openLabel: "In Sessions",
+                              detail: minutes < 1 ? "finished just now" : "finished \(minutes) min ago", openLabel: row.openLabel ?? "In Sessions",
                               open: .inSessions(row.id), working: false, finished: true, started: row.finishedAt)
             }
     }
@@ -12501,20 +12646,69 @@ enum TodayHome {
     }
 
     /// What a suggestion row offers: an ask or a review becomes a task (one resolve accept); a link to an existing card opens
-    /// that card. Never dismiss.
+    /// that card. 0.5.337: every ready row also has a quiet Dismiss (one resolve dismiss), whatever this returns.
     enum SuggestionAction: Equatable { case createTask, openCard(String), unavailable }
     static func suggestionAction(_ item: WorkIntakeItem, cardCreation: Bool) -> SuggestionAction {
         if item.kind == .link { return .openCard(item.pullTitle ?? item.text) }
         return cardCreation ? .createTask : .unavailable
     }
-    enum SuggestionState: Equatable { case ready, creating, created, failed(String) }
-    /// A row's state from the one accept path (ControllerModel.resolveWorkIntake): busy ids, what Today saw created, and the
-    /// refusal it kept.
-    static func suggestionState(_ id: String, busy: Set<String>, created: Set<String>, failures: [String: String]) -> SuggestionState {
-        if busy.contains(id) { return .creating }
+    enum SuggestionState: Equatable { case ready, creating, created, failed(String), dismissing, dismissFailed(String) }
+    /// A row's state from the one resolve path (ControllerModel.resolveWorkIntake): busy ids, what Today saw created, and the
+    /// refusal it kept. 0.5.337: a busy id Today is dismissing reads Dismissing, and a refused dismiss keeps the row with
+    /// the server's reason (its buttons stay, so Dismiss is the retry).
+    static func suggestionState(_ id: String, busy: Set<String>, created: Set<String>, failures: [String: String],
+                                dismissals: TodayDismissals = TodayDismissals()) -> SuggestionState {
+        if busy.contains(id) { return dismissals.dismissing.contains(id) ? .dismissing : .creating }
         if created.contains(id) { return .created }
         if let reason = failures[id] { return .failed(reason) }
+        if let reason = dismissals.failures[id] { return .dismissFailed(reason) }
         return .ready
+    }
+
+    /// 0.5.337 (loop audit W5): a Work run's session, once its receipt names one.
+    static func workRunSession(id: String, receipts: [(id: String, sessionID: String?)]) -> String? {
+        guard !id.isEmpty else { return nil }
+        return receipts.first { $0.id == id }?.sessionID
+    }
+
+    /// 0.5.337 (loop audit W12): "Named <name>. Undo" after naming a voice from Today, for this long.
+    struct LastNaming: Equatable { let name: String; let undo: String?; let at: Date }
+    static let namedLineSeconds: TimeInterval = 120
+    static func showsNamed(_ named: LastNaming, now: Date) -> Bool {
+        now >= named.at && now.timeIntervalSince(named.at) < namedLineSeconds
+    }
+
+    /// VoiceOver's name for a row's Dismiss.
+    static func dismissLabel(_ item: WorkIntakeItem) -> String { "Dismiss suggestion: " + item.text }
+
+    /// One place in "From today's meetings": an open suggestion, or one dismissed here and still offering Undo.
+    enum SuggestionSlot: Equatable {
+        case open(WorkIntakeItem)
+        case dismissed(TodayDismissals.Row)
+        var id: String {
+            switch self {
+            case .open(let item): item.id
+            case .dismissed(let row): row.item.id
+            }
+        }
+        var isDismissed: Bool {
+            if case .dismissed = self { return true }
+            return false
+        }
+    }
+    /// Today's open suggestions with the collapsed "Dismissed. Undo" rows in the places they had (the split's order:
+    /// meeting filename, then id). A collapsed row wins over an open copy of the same item from a stale read.
+    static func suggestionSlots(open: [WorkIntakeItem], dismissals: TodayDismissals, now: Date) -> [SuggestionSlot] {
+        let live = dismissals.live(now: now)
+        let collapsed = Set(live.map(\.item.id))
+        let slots = open.filter { !collapsed.contains($0.id) }.map(SuggestionSlot.open) + live.map(SuggestionSlot.dismissed)
+        func key(_ slot: SuggestionSlot) -> (String, String) {
+            switch slot {
+            case .open(let item): (item.meeting.filename, item.id)
+            case .dismissed(let row): (row.item.meeting.filename, row.item.id)
+            }
+        }
+        return slots.sorted { key($0) < key($1) }
     }
 
     /// The row's line in "Show N more: …".
@@ -12702,7 +12896,22 @@ enum TodayHome {
 
     /// The whole home from its inputs. Unreachable: Needs you keeps this Mac's sessions only. A source that has not answered
     /// gives nil to every count that reads it, so no surface can say "nothing" for it.
+    /// 0.5.337 (performance audit B2): the Today frame's clock (TodayFrameSchedule): every 30 s from the start, or the
+    /// start alone while the window is off screen.
+    static let frameInterval: TimeInterval = 30
+    static func frameEntries(from start: Date, paused: Bool) -> AnyIterator<Date> {
+        var next: Date? = start
+        return AnyIterator {
+            guard let current = next else { return nil }
+            next = paused ? nil : current.addingTimeInterval(frameInterval)
+            return current
+        }
+    }
+
+    /// 0.5.337 (performance audit B2): how many times the home was composed (the resize gate counts it; never read by the app).
+    nonisolated(unsafe) static var composeRuns = 0
     static func compose(_ input: HomeInputs) -> Frame {
+        composeRuns += 1
         let states = sourceStates(input.sources)
         let reachable = input.sources.reachable
         var need = input.need
@@ -13031,7 +13240,8 @@ struct TodayRunGuard {
     static func line(_ admission: Admission, calendar: Calendar = .current) -> String? {
         switch admission {
         case .allowed, .switchOff: nil
-        case .capReached: "Today's limit on this Mac is reached. Open Work to start more."
+        // 0.5.337 (loop audit N6): when the limit lifts.
+        case .capReached: "Today's limit of \(TodayRunGuard.dailyCap) runs on this Mac is reached. It resets at midnight; open Work to start more now."
         case .paused(let until): "Paused after 3 failed starts. Try again at " + TodayHome.clock(until, calendar: calendar) + "."
         case .inFlight: "Prep in Sessions"
         }
@@ -13044,6 +13254,9 @@ struct TodayRunGuard {
 enum TodayTickLoop {
     static let interval: TimeInterval = 60
     static let step: TimeInterval = 1
+    /// 0.5.337 (performance audit note): off screen the loop wakes every 5 s, not every second; coming back still ticks
+    /// within one of these.
+    static let hiddenStep: TimeInterval = 5
     static let readyLimit: TimeInterval = 60
 
     @MainActor
@@ -13059,7 +13272,7 @@ enum TodayTickLoop {
                 last = now()
                 await tick()
             }
-            guard await wait(step) else { return }
+            guard await wait(visible() ? step : hiddenStep) else { return }
         }
     }
 }

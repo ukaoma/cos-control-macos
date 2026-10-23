@@ -227,9 +227,9 @@ enum DictationLearnCanaryLog {
     static let maximumBytes = 128 * 1024
     static func line(_ canary: DictationLearnCanary) -> Data? {
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
-        guard var data = try? encoder.encode(canary) else { return nil }
-        data.append(0x0A)
-        return data
+        guard var line = try? encoder.encode(canary) else { return nil }
+        line.append(0x0A)
+        return line
     }
     static func append(_ canary: DictationLearnCanary, to url: URL, fileManager: FileManager = .default) {
         guard let line = line(canary) else { return }
@@ -2182,6 +2182,74 @@ enum DictationPolish {
     }
 }
 
+/// 0.5.337 (Miles 2026-10-22 21:11): Learn from my edits reading one of COS Control's own text views: its count and caret,
+/// and a bounded slice of its text in UTF-16 units (the units the watch and DictationReplace count in). nil outside it.
+enum DictationOwnField {
+    static func snapshot(text: String, selection: NSRange) -> DictationFieldSnapshot {
+        DictationFieldSnapshot(characters: text.utf16.count, location: selection.location == NSNotFound ? nil : selection.location, length: selection.length)
+    }
+    static func read(_ text: String, location: Int, length: Int) -> String? {
+        let units = text.utf16
+        guard location >= 0, length >= 0, location + length <= units.count else { return nil }
+        return String(decoding: Array(units.dropFirst(location).prefix(length)), as: UTF16.self)
+    }
+}
+
+/// 0.5.337 (Miles 2026-10-22 21:11): the floating dictation panel (the pill, its card, Fix a word) always inside the
+/// visible frame of its screen. It sat at the bottom edge and grew downward when Fix a word opened (an AppKit content-size
+/// change keeps the top-left), so the panel was cut off by the bottom of the screen. With a caret it goes below the caret,
+/// or above it when there is no room below; without one, bottom centre. Never past the left, right, top or bottom edge.
+enum DictationOverlayFrame {
+    static let margin: CGFloat = 8
+    static func place(size: CGSize, caret: CGRect?, screen: CGRect) -> CGRect {
+        let width = max(1, min(size.width, screen.width - 2 * margin)), height = max(1, min(size.height, screen.height - 2 * margin))
+        var x: CGFloat, y: CGFloat
+        if let caret {
+            x = caret.midX - width / 2
+            y = caret.minY - margin - height                          // below the caret (AppKit: y grows upward)
+            if y < screen.minY + margin { y = caret.maxY + margin }   // no room below: above it
+        } else {
+            x = screen.midX - width / 2
+            y = screen.minY + margin
+        }
+        x = min(max(x, screen.minX + margin), screen.maxX - margin - width)
+        y = min(max(y, screen.minY + margin), screen.maxY - margin - height)
+        return CGRect(x: x.rounded(), y: y.rounded(), width: width, height: height)
+    }
+}
+
+/// 0.5.337 (loop audit W4): AI polish paused by the server's daily cap or its breaker was silent on the Mac (it pasted what
+/// it heard, which looks like polish not working). Now: one pill flash a day and a line under AI polish in Settings.
+enum DictationPolishPause {
+    static let flashedDayKey = "dictation.polishPauseFlashedDay"
+    /// The pause behind an outcome: the server's daily cap or its breaker, whether or not the filler pass changed text.
+    static func code(_ outcome: DictationPolish.Outcome) -> String? {
+        let code: String
+        switch outcome {
+        case .skipped(let c): code = c
+        case .fillersOnly(let c, _): code = c
+        default: return nil
+        }
+        return ["daily_cap", "breaker_open"].contains(code) ? code : nil
+    }
+    /// A polish that ran clears the line; other outcomes (a timeout, a failure) leave it as it was.
+    static func clears(_ outcome: DictationPolish.Outcome) -> Bool {
+        switch outcome {
+        case .applied, .unchanged: return true
+        default: return false
+        }
+    }
+    static func pill(_ code: String) -> String { code == "daily_cap" ? "AI POLISH PAUSED · DAILY LIMIT" : "AI POLISH PAUSED · ERRORS" }
+    /// The line under AI polish in Settings.
+    static func settingLine(_ code: String) -> String {
+        code == "daily_cap"
+            ? "AI polish reached the server's daily limit. COS pastes what it heard until the limit resets tomorrow."
+            : "AI polish is paused after repeated errors on the server. COS pastes what it heard and tries polish again shortly."
+    }
+    /// The pill flashes once a day at most.
+    static func shouldFlash(lastFlashedDay: String?, today: String) -> Bool { lastFlashedDay != today }
+}
+
 /// One AI polish: what it answered and its numbers for the timing line. 0.5.331: the caller writes them, since a
 /// paste-first dictation's line outlives the next press (which starts a line of its own).
 struct DictationPolishRun: Equatable, Sendable {
@@ -2529,7 +2597,7 @@ enum DictationPolishSwap {
     static func routeName(_ route: DictationReplace.Route) -> String { route == .accessibility ? "accessibility" : "paste" }
     static func settingNote(_ model: DictationPolishModel) -> String {
         model == .off ? "Works with AI polish on."
-            : "COS types what it heard right away. When Claude's version is ready, COS swaps it in at the same spot. If you moved on or changed the text, COS leaves it and keeps the polished version in Activity, Dictation."
+            : "COS types what it heard right away. When Claude's version is ready, COS swaps it in at the same spot. If you moved on or changed the text, COS leaves it and keeps the polished version in Activity, Dictation until COS Control quits."
     }
 }
 

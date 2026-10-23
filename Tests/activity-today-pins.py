@@ -5,7 +5,7 @@
 
 Behaviour lives in Tests/ActivityTodayChecks.swift; these pins hold what only the view and store code can show: the
 polling rule (one 60 s tick while on screen, serial, never session questions, no second activity-signals reader), Today
-never calls seen or dismiss, one intake action at a time, session questions read only, the Work-run cost guards around the
+never calls seen or a batch and dismisses only through Work's own resolve (0.5.337), one intake action at a time, session questions read only, the Work-run cost guards around the
 one submit, capability gating, Reduce Motion, the rail on every tab, the shared intake split in Work's Sort, keyboard, and
 copy rules. Each failure names its behaviour in brackets.
 """
@@ -36,6 +36,7 @@ def body(text, start, end):
     return text[i:j]
 
 win = strip((root / "Sources/ActivityWindow.swift").read_text())
+controller = strip((root / "Sources/ControllerModel.swift").read_text())
 models = strip((root / "Sources/Models.swift").read_text())
 work = strip((root / "Sources/WorkWorkspaceView.swift").read_text())
 views = strip((root / "Sources/Views.swift").read_text())
@@ -73,13 +74,57 @@ need("reviewStore.refresh" not in opens and "loadToReviewEvents" not in opens an
 need("Task.detached(priority: .utility)" in body(store, "    static func readHosts(", "\n    func createTask("), "[hosts] session files are read off the main thread")
 need("let frame = TodayHome.compose(" not in today and "TodayHome.compose(input)" in today, "[composition] the frame is TodayHome.compose, which the checks execute")
 
-# Intake on Today (B4): Work's own accept path, one at a time, never seen or dismiss.
-create = body(store, "    func createTask(", "\n    func nameVoice(")
-need("await model.resolveWorkIntake(item, accept: true)" in create and "dismiss" not in today and '"seen"' not in today and "markSeen" not in today,
-     "[never seen or dismiss] Today only ever accepts, through Work's own path (its Undo and busy ids)")
+# Intake on Today (B4): Work's own resolve path, one at a time, never seen, never a batch. Create task accepts; 0.5.337
+# (Miles 2026-10-22) Dismiss dismisses, through the same call Work's Sort Dismiss makes, with no new route.
+create = body(store, "    func createTask(", "\n    func dismiss(")
+dismiss = body(store, "    func dismiss(", "\n    func undoDismiss(")
+undo = body(store, "    func undoDismiss(", "\n    private func expireDismissals()")
+need("await model.resolveWorkIntake(item, accept: true)" in create and "accept: false" not in create,
+     "[create accepts] Create task only ever accepts, through Work's own path (its Undo and busy ids)")
+need("let result = await model.resolveWorkIntake(item, accept: false)" in dismiss and today.count("accept: false") == 1,
+     "[dismiss through Work's path] Today dismisses only in dismiss(), through Work's own resolve")
+need('"seen"' not in today and "markSeen" not in today and "dismissWorkIntake" not in today and "resolve-batch" not in today
+     and "work-intake-resolve" not in today, "[never seen or batch] Today never marks seen, never batches and has no route of its own")
 need("guard model.workIntakeBusyIDs.isEmpty" in create, "[one at a time] one intake action in flight")
-need(today.count(".disabled(!model.workIntakeBusyIDs.isEmpty)") == 2, "[one at a time] Create task and Try again wait for the one in flight")
-need("resolve-batch" not in today, "[one at a time] no batch")
+need("guard model.workIntakeBusyIDs.isEmpty, !created.contains(item.id), dismissals.begin(item.id) else { return }" in dismiss,
+     "[one at a time] one dismiss in flight, and never on a row Today created")
+need(today.count(".disabled(!model.workIntakeBusyIDs.isEmpty)") == 3, "[one at a time] Create task, Try again and Dismiss wait for the one in flight")
+# Only the server's confirmation collapses a row (TodayDismissals.finish, executed in the checks): the store never writes
+# the rows itself, and a refusal keeps the panel (workIntakeError is then a refusal, not a read failure).
+need("dismissals.finish(item, result: result, now: Date())" in dismiss and "dismissals.rows" not in today,
+     "[confirmed only] the row collapses only through TodayDismissals.finish")
+need(in_order(dismiss, "case .refused(_, let code):", "lastResolveError = model.workIntakeError", 'todayLog.error("dismiss refused code=\\(code, privacy: .public)")'),
+     "[refusal keeps the row] a refused dismiss keeps the panel and logs its code")
+logs = [l for l in (dismiss + undo).split("\n") if "todayLog." in l]
+need(len(logs) >= 3 and all("workIntakeError" not in l and "reason" not in l and "\\(error" not in l and "item.text" not in l for l in logs),
+     "[log the code only] no reason, error text or title in a dismiss log line")
+need("let error = await model.undoWorkIntake(batchId: undo)" in undo and "guard let undo = dismissals.beginUndo(item.id) else { return }" in undo
+     and "model.undoWorkIntake()" not in today and "dismissals.finishUndo(item.id, error: error, now: Date())" in undo,
+     "[undo its own row] Undo sends that row's own undo id, never Work's last decision")
+need("self?.dismissals.expire(now: Date())" in store and "TodayDismissals.undoSeconds" in store, "[collapsed line] the Dismissed line leaves after its window")
+panel = body(today, "    func todayMeetingsPanel(", "\n    func todaySuggestionRow(")
+need("TodayHome.suggestionSlots(open: $0.today, dismissals: today.dismissals, now: now)" in panel and "ForEach(split.today," not in panel
+     and "case .dismissed(let row): todayDismissedRow(row)" in panel and "split.todayCount + created.count + collapsed > 0" in panel,
+     "[collapsed line] dismissed rows hold their place, and the panel stays while one shows")
+button = body(today, "    func todayDismissButton(", "\n    func todayDismissedRow(")
+need('Button("Dismiss")' in button and "TodayLinkStyle(color: TodayInk.sub, size: 12.5)" in button and "TodayButtonStyle" not in button,
+     "[quiet] Dismiss is a link, never a third filled button")
+need(".accessibilityLabel(TodayHome.dismissLabel(item))" in button, "[voiceover] Dismiss reads Dismiss suggestion and the title")
+row = body(today, "    func todaySuggestionRow(", "\n    func todayDismissButton(")
+need(row.count("todayDismissButton(item)") == 2 and ".onKeyPress(keys: [.delete, .deleteForward], phases: .down)" in row
+     and row.count("Task { await today.dismiss(item, model: model) }") == 1 and ".focusable(interactions: .activate)" in row,
+     "[keyboard] Delete on a focused row dismisses it, as the link does")
+need("if case .dismissFailed(let reason) = state {" in row, "[refusal keeps the row] the server's reason shows in place")
+# The same predicate everywhere (TodayHome.isShown): Today, the rail and Work's Sort leave a dismissed item out at once,
+# so it never shows again on Today and never moves to Work at midnight.
+need(win.count("dismissed: model.workIntakeDismissedIDs") == 1 and work.count("dismissed: model.workIntakeDismissedIDs") == 2,
+     "[same predicate] Today, the rail and Work's Sort leave out what was dismissed here")
+need("if !accept, case .changed = result { workIntakeDismissedIDs.insert(item.id) }" in controller
+     and "result = WorkIntakeResolveResult(details: response.details, message: response.message, itemID: item.id, accept: accept)" in controller,
+     "[same predicate] only a dismiss the server confirmed hides the item")
+undo_model = body(controller, "    func undoWorkIntake(batchId: String) async -> String? {", "\n    func resolveWorkIntake(")
+need(in_order(undo_model, 'guard await workLoop("undo", body: ["batchId": batchId]) != nil else {', "workIntakeDismissedIDs = TodayDismissals.afterUndo(workIntakeDismissedIDs, batchId: batchId)", "return nil"),
+     "[undo its own row] only a confirmed undo gives the item back")
 
 # Session questions are read only (B1): one Open button, never an answer.
 actions = body(today, "    func todayNeedActions(", "\n    func todayRunningPanel(")
@@ -140,7 +185,7 @@ retry = body(today, "    func todayRetryLine(", "\n    func todayNeedRow(")
 need("guard !todayRetrying else { return }" in retry and ".disabled(todayRetrying)" in retry, "[retry] one retry at a time")
 
 # Work's Sort reads the same split (D2), only with Today on, and keeps Undo.
-need("let split = todayHome ? TodayHome.intakeSplit(items: model.workIntake.items, tasks: model.workTasks, now: Date()) : TodayHome.IntakeSplit()" in work
+need("let split = todayHome ? TodayHome.intakeSplit(items: model.workIntake.items, tasks: model.workTasks, now: Date(), dismissed: model.workIntakeDismissedIDs) : TodayHome.IntakeSplit()" in work
      and "todayHome ? Self.only(model.workIntake, split.older" in work, "[split] Work's Sort holds only older suggestions with Today on, and reads nothing new with it off")
 need("if todayHome, model.workUndoBatch != nil {" in work, "[undo] Undo last decision stays with Today on")
 
@@ -162,4 +207,4 @@ if fails:
     for f in fails:
         print("Activity Today pin: " + f)
     sys.exit(1)
-print("COS Control: Activity Today wiring pinned: polling rule, accept only and one at a time, read-only questions, cost guards, capability gating, Reduce Motion, rail and keyboard, VoiceOver, the shared Sort split, settings and copy")
+print("COS Control: Activity Today wiring pinned: polling rule, Work's own resolve one at a time, Dismiss and its Undo, read-only questions, cost guards, capability gating, Reduce Motion, rail and keyboard, VoiceOver, the shared Sort split, settings and copy")

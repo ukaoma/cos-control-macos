@@ -155,7 +155,45 @@ final class ControllerModel: ObservableObject {
     static let managedServerInstallVersion = "latest"
 
     @Published var status = ServerStatus() {
-        didSet { recordingCountChanged() }
+        didSet { recordingCountChanged(); statusDetailsBytes = nil }
+    }
+    /// 0.5.337 (performance audit W5): the status answer `status` was built from, so an unchanged answer is not
+    /// published again. Any other write to `status` clears it.
+    private var statusDetailsBytes: Data?
+    private var lastRefreshAt: Date?
+    /// The Activity window is on screen (any tab), for the refresh cadence. Starts false: nothing is on screen at launch.
+    private(set) var activityOnScreen = false
+    /// The screen is locked (com.apple.screenIsLocked) or the displays sleep: no one sees the pet or a window.
+    @Published private(set) var screenLocked = false
+    @Published private(set) var displayAsleep = false
+    /// The pet's panel is fully covered or off the active space (its occlusion state).
+    @Published private(set) var petOccluded = false
+    func setPetOccluded(_ occluded: Bool) { if petOccluded != occluded { petOccluded = occluded } }
+    var refreshSeconds: TimeInterval {
+        RefreshCadence.seconds(panelVisible: panelVisible, activityOnScreen: activityOnScreen, locked: screenLocked || displayAsleep,
+                               recording: macRecording.isRecording || (status.liveTranscriptionSessions ?? status.activeTranscriptionSessions ?? 0) > 0)
+    }
+    /// The status answer's bytes, keys sorted, to tell an unchanged answer from a new one. nil: always publish.
+    nonisolated static func statusBytes(_ details: [String: JSONValue]) -> Data? {
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        return try? encoder.encode(details)
+    }
+    private var screenObservers: [NSObjectProtocol] = []
+    private func observeScreenState() {
+        let distributed = DistributedNotificationCenter.default()
+        screenObservers.append(distributed.addObserver(forName: Notification.Name("com.apple.screenIsLocked"), object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { if self?.screenLocked != true { self?.screenLocked = true } }
+        })
+        screenObservers.append(distributed.addObserver(forName: Notification.Name("com.apple.screenIsUnlocked"), object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { if self?.screenLocked != false { self?.screenLocked = false } }
+        })
+        let workspace = NSWorkspace.shared.notificationCenter
+        screenObservers.append(workspace.addObserver(forName: NSWorkspace.screensDidSleepNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { if self?.displayAsleep != true { self?.displayAsleep = true } }
+        })
+        screenObservers.append(workspace.addObserver(forName: NSWorkspace.screensDidWakeNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { if self?.displayAsleep != false { self?.displayAsleep = false } }
+        })
     }
     private var lastRecordingCount = 0
     /// QA 0.5.313: any recording starting (Mac or glasses) while dictation has other apps muted gets their sound back,
@@ -599,6 +637,8 @@ final class ControllerModel: ObservableObject {
     var showSetupGuide: (() -> Void)?
     /// Opens the menu-bar panel on its settings (the pet's and the Dock's Settings…).
     var showSettings: (() -> Void)?
+    /// 0.5.337 (loop audit W9): Settings opened on Decision models, where the Jev and SubQ key fields are.
+    var showDecisionKeySettings: (() -> Void)?
     /// 0.5.317: opens Settings on COS's Transcription card (a dictation card's action), never macOS Privacy.
     var showTranscriptionSettings: (() -> Void)?
     /// The panel scrolls here when it appears ("settings"); the panel clears it.
@@ -644,11 +684,14 @@ final class ControllerModel: ObservableObject {
         whatsNewSeen = WhatsNewSeenStore(defaults: .standard)
         beginPostUpdateWhatsNew()
         try? Self.pruneMediaHandoffs()
+        observeScreenState()
         refreshTask = Task { [weak self] in
             await self?.refresh()
             while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(12))
-                await self?.refresh(quiet: true)
+                try? await Task.sleep(for: .seconds(RefreshCadence.tick))
+                guard let model = self else { return }
+                guard RefreshCadence.due(last: model.lastRefreshAt, now: Date(), every: model.refreshSeconds) else { continue }
+                await model.refresh(quiet: true)
             }
         }
         // Update check: once at launch, then every 6h (and on panel open after 15 minutes, panelOpenedForUpdates).
@@ -955,10 +998,14 @@ final class ControllerModel: ObservableObject {
             || ProcessInfo.processInfo.environment["COS_WORK_ORCHESTRATION_CANDIDATE"] == "1" {
             let background = WorkTaskChatStore()
             let pump = WorkChatQueuePump(handoff: store, sources: { [weak self] in (self?.workTasks ?? []).map(WorkSource.taskSnapshot) }, store: background)
+            // 0.5.337 (loop audit W2, W11): the board's "Queued N" and "From glasses N", and a notice when queued work stops.
+            pump.onCounts = { [weak self] counts in if self?.workChatCounts != counts { self?.workChatCounts = counts } }
+            pump.onNotice = { [weak self] notice in self?.postWorkNotice(notice) }
             pump.start()
             workChatQueuePump = pump
             // 0.5.333 lens plans: pulls the lens inbox every 5 s, only from a server that advertises lensPlans (WorkLensPlansPump.swift).
             let lens = WorkLensPlansPump(handoff: store, sources: { [weak self] in (self?.workTasks ?? []).map(WorkSource.taskSnapshot) }, enabled: true, store: background)
+            lens.onNotice = { [weak self] notice in self?.postWorkNotice(notice) }
             lens.start()
             workLensPlansPump = lens
         }
@@ -1389,11 +1436,17 @@ final class ControllerModel: ObservableObject {
     func refresh(quiet: Bool = false) async {
         if !quiet { busy = true }
         defer { if !quiet { busy = false } }
+        lastRefreshAt = Date()
         do {
             // 0.5.217: a helper blocked in a TCC prompt (Documents access on the meetings
             // library) hung this call forever and left every row at its decode default.
             let response = try await helper.run(["status"], timeout: 45)
-            status = ServerStatus(response.details)
+            // 0.5.337 (performance audit W5): an answer the same as the one `status` came from is not published again.
+            let bytes = Self.statusBytes(response.details)
+            if bytes == nil || bytes != statusDetailsBytes {
+                status = ServerStatus(response.details)
+                statusDetailsBytes = bytes
+            }
             statusReadOnce = true
             // A What's New held back by a recording meeting shows once the meeting ends (cheap when nothing waits).
             considerPostUpdateWhatsNew()
@@ -1403,13 +1456,15 @@ final class ControllerModel: ObservableObject {
                 firstRunPresented = true
                 openSetup()
             }
-            if !quiet { error = nil }
-            await loadOrphans(quiet: true)
+            if !quiet, error != nil { error = nil }
+            let recording = macRecording.isRecording || (status.liveTranscriptionSessions ?? status.activeTranscriptionSessions ?? 0) > 0
+            let extras = !quiet || RefreshCadence.readsExtras(panelVisible: panelVisible, activityOnScreen: activityOnScreen, recording: recording)
+            if extras { await loadOrphans(quiet: true) }
             await loadMeetingAudioWatch()
             // 0.5.278: a meeting the server now reports live starts the live transcript poll, if anyone is looking.
             liveTranscriptKick()
             await loadActivitySignals(force: !quiet)
-            await loadYourMove()
+            if extras { await loadYourMove() }
         } catch {
             status.running = false
             meetingAudioGeneration += 1
@@ -3583,7 +3638,9 @@ final class ControllerModel: ObservableObject {
         do {
             let response = try await helper.run(["meeting-orphans"])
             orphanCaptures = (response.details["items"]?.array ?? []).compactMap(OrphanCapture.init)
-            strandedCaptures = (response.details["stranded"]?.array ?? []).compactMap(StrandedCapture.init)
+            // 0.5.337 (loop audit W16): a capture discarded on this Mac never comes back as an unsaved row.
+            strandedCaptures = StrandedCapture.shown((response.details["stranded"]?.array ?? []).compactMap(StrandedCapture.init),
+                                                     discarded: macRecording.noMeetingCaptureIDs)
         } catch {
             if !quiet { self.error = error.localizedDescription }
             if status.unsavedCaptures == 0 {
@@ -3709,6 +3766,7 @@ final class ControllerModel: ObservableObject {
 
     /// The Activity window came on screen or left it. Coming back reads at once.
     func setLiveTranscriptWindowOnScreen(_ onScreen: Bool) {
+        activityOnScreen = onScreen
         guard onScreen != liveTranscriptWindowOnScreen else { return }
         liveTranscriptWindowOnScreen = onScreen
         if onScreen { liveTranscriptImmediate = true; liveTranscriptKick() }
@@ -4081,9 +4139,26 @@ final class ControllerModel: ObservableObject {
 
     /// The live view's title for a session: a typed Mac title, else the calendar event near its start, else the automatic one.
     func liveMeetingTitle(_ sessionId: String, start: Date?) -> String {
+        // 0.5.337 (loop audit N10): a calendar title, once taken, stays for that meeting. The next event changes when this
+        // one passes, so the title could flip mid-meeting.
+        if let kept = liveMeetingTitlesKept[sessionId] { return kept }
         let mac = macRecording.manifest.flatMap { $0.captureId == sessionId ? $0 : nil }
         let begun = start ?? mac.map { Date(timeIntervalSince1970: $0.startTime / 1000) }
-        return LiveMeeting.title(sessionId: sessionId, macTitle: mac?.title, calendar: liveMeetingCalendarEvent.map { ($0.title, $0.start) }, start: begun)
+        let title = LiveMeeting.title(sessionId: sessionId, macTitle: mac?.title, calendar: liveMeetingCalendarEvent.map { ($0.title, $0.start) }, start: begun)
+        if (mac?.title ?? "").isEmpty, let event = liveMeetingCalendarEvent, title == event.title {
+            if liveMeetingTitlesKept.count > 50 { liveMeetingTitlesKept.removeAll() }
+            liveMeetingTitlesKept[sessionId] = title
+        }
+        return title
+    }
+    private var liveMeetingTitlesKept: [String: String] = [:]
+    /// 0.5.337 (loop audit N11): files dropped on a live meeting are filed under its real title and day, not "Live meeting"
+    /// with no date.
+    func liveMeetingFileInfo(_ sessionId: String) -> WorkMeetingInfo {
+        let feed = liveTranscriptFeeds[sessionId]
+        let mac = macRecording.manifest.flatMap { $0.captureId == sessionId ? $0 : nil }
+        let start = feed?.startTime ?? mac.map { Date(timeIntervalSince1970: $0.startTime / 1000) }
+        return WorkMeetingInfo(recordId: "", title: liveMeetingTitle(sessionId, start: start), date: ActivityHome.dayKey(start ?? Date()))
     }
 
     /// 0.5.228. Checked only while a meeting is live. A Mac with no answer on record is asked again at
@@ -4298,6 +4373,12 @@ final class ControllerModel: ObservableObject {
     @Published var workIntakeLoading = false
     @Published var workIntakeError: String?
     @Published var workIntakeBusyIDs: Set<String> = []
+    /// 0.5.337: items a single resolve dismissed on this Mac. Today and Work's Sort leave them out at once
+    /// (TodayHome.isShown), so a dismissed item never shows again or moves to Work at midnight on a stale read. An undo of
+    /// that resolve gives the item back (TodayDismissals.afterUndo).
+    @Published var workIntakeDismissedIDs: Set<String> = []
+    /// 0.5.337 (loop audit W2, W11): per card, what its Work chat holds that the board shows (the queue pump counts it).
+    @Published var workChatCounts: [String: WorkChatBoardCount] = [:]
     /// Intake shows in Work on server 6.57.0+, including when its store is down or a load failed (with the reason);
     /// only an older server (404) hides it.
     var workIntakeVisible: Bool { workIntake.available || workIntake.storeUnavailable || workIntakeError != nil }
@@ -4323,6 +4404,7 @@ final class ControllerModel: ObservableObject {
     @Published var workExpiredWeekly = 0
     @Published var workExpiredYours = 0
     func loadWorkExpiry() async {
+        await probeWorkLoopIfNeeded()
         if let settings = await workLoop("settings"), let enabled = settings["expiryEnabled"]?.bool {
             workExpiryEnabled = enabled; workExpiryAvailable = true
         }
@@ -4378,29 +4460,69 @@ final class ControllerModel: ObservableObject {
 
     @Published var workUndoBatch: String?
     @Published var workLoopError: String?
-    func workLoop(_ action: String, body: [String: Any]? = nil) async -> [String: JSONValue]? {
+    /// 0.5.337 (loop audit W1): the work-loop actions this server answered 404 for. The shipped server has only the four
+    /// Intake routes, so these are a missing feature there, never an error; the views hide what needs them.
+    @Published var workLoopUnsupported: Set<String> = []
+    /// The server has the work-loop routes (read once per server version from `decisions`, a read-only GET). nil: not
+    /// known yet. Undo is offered only when true.
+    @Published var workLoopAvailable: Bool?
+    private var workLoopProbedFor: String?
+    var workUndoAvailable: Bool { WorkLoopSupport.undoOffered(available: workLoopAvailable, unsupported: workLoopUnsupported) }
+    /// `acceptUnsupported`: the caller reads `unsupported` itself (Skip all's single-item fallback); every other caller gets
+    /// nil, with no error, so an older server never shows a red line.
+    func workLoop(_ action: String, body: [String: Any]? = nil, acceptUnsupported: Bool = false) async -> [String: JSONValue]? {
         do {
             let payload = try body.map { try JSONSerialization.data(withJSONObject: $0) }
             let response = try await helper.run(["work-loop", "--action", action], timeout: 40, stdinData: payload)
             guard response.ok else { throw HelperClientError.commandFailed(response.message) }
+            if WorkLoopSupport.unsupported(response.details) {
+                workLoopUnsupported.insert(action); workLoopError = nil
+                return acceptUnsupported ? response.details : nil
+            }
             workLoopError = nil
             return response.details
         } catch { workLoopError = error.localizedDescription; return nil }
     }
+    /// Once per server version: does this server have the work-loop routes? A transport failure leaves it unknown.
+    func probeWorkLoopIfNeeded() async {
+        let server = status.version ?? ""
+        guard workLoopAvailable == nil || workLoopProbedFor != server else { return }
+        let kept = workLoopError
+        let answer = await workLoop("decisions", acceptUnsupported: true)
+        workLoopError = kept
+        guard let answer else { return }
+        workLoopProbedFor = server
+        workLoopAvailable = !WorkLoopSupport.unsupported(answer)
+        if workLoopAvailable == true { workLoopUnsupported.remove("undo") }
+    }
     func undoWorkIntake() async {
         guard let batch = workUndoBatch else { return }
-        if await workLoop("undo", body: ["batchId": batch]) != nil {
-            workUndoBatch = nil
-            await loadWorkIntake(); await loadWorkTasks(force: true)
-        }
+        await undoWorkIntake(batchId: batch)
     }
 
-    /// Accept makes the link or the card on the server (one locked write); dismiss is remembered there.
-    func resolveWorkIntake(_ item: WorkIntakeItem, accept: Bool) async {
-        guard !workIntakeBusyIDs.contains(item.id) else { return }
+    /// One decision's undo through `/api/work-intake/undo` (work-loop `undo`). nil when the server confirmed it, else why
+    /// not. 0.5.337: Today's "Dismissed. Undo" sends its own row's undo id here, never whatever was decided last.
+    @discardableResult
+    func undoWorkIntake(batchId: String) async -> String? {
+        guard await workLoop("undo", body: ["batchId": batchId]) != nil else {
+            if workLoopUnsupported.contains("undo") { return WorkLoopSupport.undoMissing }
+            return workLoopError ?? "Undo did not go through. Refresh and try again."
+        }
+        if workUndoBatch == batchId { workUndoBatch = nil }
+        workIntakeDismissedIDs = TodayDismissals.afterUndo(workIntakeDismissedIDs, batchId: batchId)
+        await loadWorkIntake(); await loadWorkTasks(force: true)
+        return nil
+    }
+
+    /// Accept makes the link or the card on the server (one locked write); dismiss is remembered there. 0.5.337: returns
+    /// the answer (WorkIntakeResolveResult) for Today's rows; Work's own callers ignore it, and its behaviour is unchanged.
+    @discardableResult
+    func resolveWorkIntake(_ item: WorkIntakeItem, accept: Bool) async -> WorkIntakeResolveResult {
+        guard !workIntakeBusyIDs.contains(item.id) else { return .busy }
         workIntakeBusyIDs.insert(item.id)
         defer { workIntakeBusyIDs.remove(item.id) }
         var failure: String?
+        var result = WorkIntakeResolveResult.busy
         do {
             let payload = try JSONSerialization.data(withJSONObject: ["id": item.id, "action": accept ? "accept" : "dismiss"])
             // Longer than the helper's own 60-second request, so the helper can report a timeout itself.
@@ -4409,12 +4531,19 @@ final class ControllerModel: ObservableObject {
             if let at = response.details["item"]?.object?["resolution"]?.object?["at"]?.string {
                 workUndoBatch = item.id + ":" + at
             }
+            result = WorkIntakeResolveResult(details: response.details, message: response.message, itemID: item.id, accept: accept)
+            if !accept, case .changed = result { workIntakeDismissedIDs.insert(item.id) }
         } catch {
             failure = error.localizedDescription
+            // The code is what Today logs (never the reason's words): the server said no, or the helper got no answer.
+            var code = "transport"
+            if let helperError = error as? HelperClientError, case .commandFailed = helperError { code = "refused" }
+            result = .refused(error.localizedDescription, code: code)
         }
         await loadWorkIntake()
         if let failure { workIntakeError = failure }  // the refresh must not hide why the change was refused
         else if accept { await loadWorkTasks(force: true) }
+        return result
     }
 
     // MARK: Optional decision provider. No selection or key is persisted in Control.
@@ -4598,7 +4727,7 @@ final class ControllerModel: ObservableObject {
         for offset in stride(from: 0, to: ids.count, by: 200) {
             let batch = UUID().uuidString
             let chunk = Array(ids[offset..<min(offset + 200, ids.count)])
-            guard let result = await workLoop("dismiss", body: ["ids": chunk, "action": "dismiss", "batchId": batch]) else { break }
+            guard let result = await workLoop("dismiss", body: ["ids": chunk, "action": "dismiss", "batchId": batch], acceptUnsupported: true) else { break }
             if result["unsupported"]?.bool == true {
                 // Only the helper's actual HTTP 404 enables the old single-item route.
                 for id in chunk {

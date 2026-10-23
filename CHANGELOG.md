@@ -1,3 +1,214 @@
+## 0.5.338 (build 392), Learn from my edits in every app
+
+On top of 0.5.337 (build 391). Plan: `operations/personal/wk43_2026/PLAN_control_0_5_338_learn_edits_everywhere_2026-10-22.md`
+(Miles 21:11 and 21:26, 2026-10-22). Design and evidence: `DESIGN_learn_edits_everywhere_0_5_338.md` in the same folder.
+No server change.
+
+### The evidence (counts and verdicts only)
+
+- The unified log keeps COS Control's notices about five hours (a 7-day query of the subsystem starts at 15:57 the same
+  day), so the only watch evidence was 5 Claude desktop dictations. 4 of 5 read the exact dictation back at its span;
+  `learning=false` on all 5 (Electron meant probe only). Stops: `focusLeft` 2, both in a composer that started empty;
+  `lost` 2, both after a read had matched. Slack, Cursor, ChatGPT, Chrome, Comet and Safari had no sample.
+- The idea that Electron changes the focused element on every render did not hold: in a composer that already had text,
+  focus held for 7 s and 21 s across polls.
+
+### Root causes
+
+- `focusLeft`: `holdsFocus` compares AX element identity (`CFEqual`), so a re-mounted editor reads as focus leaving.
+- `lost`: Chromium counts an empty contenteditable as one character, so a sent message never read as `emptied`. The diff
+  to the cleared field crossed the dictation's edges. A fix to a first or last word glued to the text beside it crossed
+  an edge too.
+- `readable=false`: the watch starts after AI polish settles and wanted the exact text, so an edit made meanwhile was
+  never seen.
+- ChatGPT (`com.openai.codex`) ships `Codex (Renderer).app`, which the Chromium structure check misses. It read as native
+  and was learned from without a measurement.
+
+### What changes
+
+- **The field, not the element** (`DictationEditLearning.focus`, `FieldIdentity`). When the focused element is a
+  different one:
+  - Same process and role, and the same identifier (`AXIdentifier`, else `AXDOMIdentifier`), is the same field.
+  - Without an identifier, it is the same field when the window is the same, the left edge and width are within 4 pt,
+    and the top or bottom edge is within 4 pt.
+  - The watch rebinds to that element, at most 8 times. The log says `focus=rebound` or `focus=left why=...` with the
+    new element's count, so the next canary can tell a send from a re-mount.
+- **Re-anchor instead of lost** (`DictationEditLearning.follow`):
+  - A blank read is `cleared` (the message was sent). A field at 1 character under a longer dictation is `cleared` too.
+  - A character edit that sits inside the dictation is `inside`, widened to whole words but never past its edges.
+  - Otherwise the dictation is found again: the exact text once, or (4 words or more) its first and last word runs,
+    each once, on word boundaries, in order, no wider than twice the dictation plus 16. A fix found that way counts.
+  - The watch's start re-anchors the same way, so an edit made while polish ran is seen.
+- **Confidence**: the written side is never only plain English words (before, only when the heard side was plain English
+  too). At most 2 learned pairs per watch. Links, emails and paths go through the server's Fix a word guard (6.84.0,
+  correction only), unchanged from 0.5.334.
+- **Per-app eligibility**:
+  - `proven` (learns): Claude desktop.
+  - `notYet` (measured, never learned): Slack, Cursor, ChatGPT.
+  - Chromium rich editors stay probe only; native apps and plain browser fields learn as in 0.5.318.
+  - Settings' line (`DictationEditLearning.settingNote`) is built from the same tables.
+- **Learned, with Undo, on the pill**. "✓ LEARNED · WORD" now has UNDO on both pills for `DictationQuickFix.offerSeconds`.
+  It is the Learned list's Undo: the dictionary entry is reversed and the pair stays quiet for 30 days.
+- **learn-canary.jsonl**: one line per watch next to the timing file. Bundle, eligibility, readable, reads, stop,
+  rebinds, re-anchors, inside, candidates, learned and why focus left. Never text, never a word pair. 128 KB with one
+  rotation, mode 0600.
+- 0.5.337's watch of COS's own text views uses the same loop: re-anchor, cleared and the canary line (bundle
+  `com.gotcos.control`). A view is one object, so it never rebinds.
+
+### Privacy
+
+The watcher's text stays in memory for the watch only: it is never logged, saved or sent. The field's identity is
+attributes only (role, identifier, window, frame), never AXValue. Secure fields and terminals are never watched.
+
+### Tests
+
+- MacDictationChecks covers the eligibility table, the focus rule, follow, re-anchor, the character edit, the new
+  confidence rules, the cleared stop, the canary line and its rotation. Fixtures are fictional text only.
+- 33 new mutants (`learn338: `) in `Tests/mutate-mac-dictation-core.py`; the targets the change moved are updated.
+- The dictation pins name the focus rule, the rebind, re-anchor, cleared, the canary line and the pill Undo.
+
+## 0.5.337 (build 391), dismiss a suggestion from Today, and the 0.5.337 hardening pass
+
+On top of 0.5.336 (build 390). Two parts: Dismiss on Today (below), and the hardening pass from the two read-only audits
+of 0.5.336 (`QA_control_loops_0_5_337_2026-10-22.md`, `QA_control_performance_0_5_337_2026-10-22.md`, scope in
+`PATCHLIST_control_0_5_337_2026-10-22.md`). Control only: no new server route.
+
+### Hardening: incomplete loops
+
+- **W1 Work loop on the shipped server.** The shipped server has only the four Intake routes, so Sort's seen, Expired,
+  Waiting, Dropped and Undo were red errors there. The helper answers every work-loop 404 as `unsupported` (it was only
+  dismiss); `workLoop` sets no error for it; Expired shows only when the server answered its settings; Undo (Work's Undo
+  last decision and Today's) shows only on a server that has the routes, read once per server version from the
+  read-only `decisions` GET, else one line says to open the card in Work. Sort stops calling seen per row once the
+  server said it lacks it.
+- **W2, W11 the board.** The queue pump counts every card's Work chat each pass (bytes only, no store opened): a card shows
+  "Queued N" and "From glasses N" and opens its chat. A background pass that leaves queued work needing a new plan, or not
+  sent, posts a Work notice; a plan the glasses write into a card waiting for review posts one, once.
+- **W3** A queued round lists each handoff it waits on, with status and age, Open session, Mark reviewed or Check status,
+  and "Waits until you review X".
+- **W4** AI polish paused by the server's daily cap or breaker: the pill says so once a day, and Settings has a line under
+  AI polish saying which and when it lifts.
+- **W5 Today runs.** Open goes to the run's own session (Prep in Sessions names its run); a running Work run has Stop
+  (work-job-cancel, only a 2xx says it stopped); a run started from Today comes back in the finished hour with Open result.
+- **W6** Stop on the running assignments of a round sent after review (job, turn or queued turn); its unsent rows keep
+  their own Send.
+- **W7** Stop on an assignment parked behind a busy turn takes it out of the session's queue (session-chat-queue-cancel);
+  only "cancelled" marks it Skipped.
+- **W8, W9 live cues.** The Cues view says which limit stopped cues (this meeting's cap, or today's writer calls) and when
+  it lifts, and says when Live cues was off. The live view's "Cues off" words call the budget this week's and say when
+  limits lift; a missing key gets "Add a Jev or SubQ key", which opens Settings on Decision models.
+- **W10** A saved Mac recording the server cued shows its Cues tab.
+- **W12** Naming a voice from Today shows "Named X." with Undo for two minutes.
+- **W13** Your polish instructions: a failed first read says why, with Try again (an older server still shows nothing).
+- **W14** Learn from my edits (Save automatically): a failed save is kept as a suggestion, so Add is the retry.
+- **W15** A card's Work chat full at 100 rounds says so, Plan is off, and the lens hears the same reason at once.
+- **W16** A capture discarded on this Mac is never offered again as an unsaved row; the set is kept across launches.
+- **W17** Today's "Created." has Undo where the server has undo, with that row's own undo id.
+- **Notes.** N1 Stop says it was asked. N3 a round sent from the glasses says so. N5 the Ask box note clears itself.
+  N6 the run cap says it resets at midnight. N7 Prep me off says where the switch is. N8 the quiet hours help names the
+  early morning. N10 a calendar title stays for its meeting. N11 live meeting files are filed under the meeting's title and
+  day. N12 the drop line only with meeting files on. N13 failed cue reads keep the last cues. N14 the grey line's breaker
+  tries again after a minute. N15 a failed learned-row Undo keeps the row. N16 the polished version is kept until COS
+  Control quits, and says so. N17 Saved. is not amber.
+
+### Miles's three, 2026-10-22 21:11
+
+- **Fix a word inside the screen.** The floating dictation panel (the pill, its card and Fix a word) is placed by
+  `DictationOverlayFrame.place`: inside the visible frame of its screen, never past an edge, and placed again whenever its
+  content resizes it (Fix a word opening grew it downward from its top-left, off the bottom of the screen). With a caret
+  it goes below it, or above it when there is no room below; the checks place it for a caret at each edge and on a second
+  screen.
+- **Learn from my edits in COS's own fields.** A dictation into one of COS Control's own text views (route ownWindow, the
+  Work task editor) now starts the same watch: the same eligibility (native, so it learns; Off still stops it), the same
+  three-minute window, read cap, bounded window, debounce and candidate rule. The watch loop reads through a field: the
+  Accessibility reads for another app, the view itself (on the main actor) for COS's own, since an Accessibility read of
+  this app from itself would wait on its own main thread. Not here: Electron and Chrome rich editors (0.5.338).
+- **The Work chat composer footer adapts.** One row when it fits; otherwise the Auto-send switch and the Plan with and
+  Effort pickers on one row (each with a minimum width, so the chosen value shows), and the hint or status line at full
+  width beside Plan and send and Plan, which never wrap. Tests/ActivitySizing.swift measures the footer at 700, 900 and
+  1,200 pt with both pickers and with the long Refreshing line: at most two rows narrow, one row wide. The old layout fails
+  it ("at 700 pt the composer footer is one row: it squeezes instead of taking two"). The files disclosure and drop help
+  already wrap (`fixedSize(horizontal: false, vertical: true)`).
+
+### Hardening: performance
+
+- **B1** Sessions: the list and its duplicate titles once per redraw, not per row; session stamps read with the two shared
+  ISO 8601 formatters (two new formatters were built per read).
+- **B2** Today: the frame is composed per tick and per data change, not per resize step (the GeometryReader moved inside the
+  TimelineView), and the 30 s clock stops while the window is off screen. The Work resize gate now sweeps the real Activity
+  window with Today on, 1100 to 1900 pt, and fails if the home composes more than 4 times.
+- **W3** COSBrand SVGs are read and parsed once.
+- **W4** The pet's sprite clock stops while the pet is covered, the screen is locked or the displays sleep, and the pet's
+  20 s session read skips while locked.
+- **W5** The status refresh republishes only a changed answer, runs every 60 s when no Control surface is on screen or the
+  screen is locked (12 s while recording or on screen), and skips orphans and Your move when nothing is on screen.
+- **W6** A closed What's New window stops observing the model.
+- **W7** Live meeting: each turn's cues are looked up once per redraw; the divider drag writes AppStorage when it ends.
+- **W8** Helper runs wait on their own dispatch threads, never a Swift concurrency thread (a slow helper per core stalled
+  every other task in the app).
+- **Notes.** The hidden Today loop wakes every 5 s, not every second; the session feed's clock ticks only while it works;
+  COSSpinner is one repeating animation, not a 30 fps timeline.
+
+### Not in this pass
+
+- P-W4 `sizingOptions = []` on the pet host: SessionPet.swift records that disabling the controller's sizing broke list
+  layout before (2026-09-01). The pause is in; the sizing needs an on-device check first.
+- P-W7's outer GeometryReader on the live pane (the drag and the cue lookup are fixed); the live transcript's combined
+  helper call (two helper verbs into one is a helper protocol change).
+- N2 (a lens send held by Auto-send off has no Mac trace: needs a new history field), N4 (planner reasons), N9 (Open card
+  by task id: needs the accepted task id plumbed), N19 (key-lane reset words are in the key-lanes golden snapshot),
+  N20 (already says 30 days in its help), N21 (cancelling a download is a new feature), N22 (the Jedi pack upgrade is
+  Miles-gated).
+
+### Dismiss a suggestion from Today
+
+Miles, 2026-10-22 19:29, on Today's "From today's meetings" (12 items): some suggestions
+are not real tasks (someone else's follow-up, a step already done, another owner's topic), and they sat there until he
+opened them in Work or created a task. Plan: `PLAN_control_0_5_337_dismiss_suggestions_2026-10-22.md`. No server change:
+it is Work's own single-item resolve (`POST /api/work-intake/<id>/resolve` with `dismiss`, through the helper's
+`work-intake-resolve`) and Work's own undo (`POST /api/work-intake/undo` through `work-loop --action undo`).
+
+#### What you see
+
+- **Dismiss on every ready row.** A quiet link (`TodayLinkStyle`, the sub ink) beside Create task and Open in Work, on a
+  link suggestion beside Open card, and beside Try again after a refused Create task. Never a third filled button. Help:
+  "Not a task: it leaves Today and does not move to Work at midnight".
+- **Dismissed. Undo.** A dismiss the server confirmed collapses the row to one line in the same place for 8 seconds
+  (`TodayDismissals.undoSeconds`), then the line leaves. The count beside "From today's meetings" and the rail's count
+  drop at once. Undo sends that row's own undo id (`<item id>:<resolution at>`, the batch id the server records for a
+  single resolve), never "whatever was decided last"; only a confirmed undo removes the line, and the item comes back
+  where it was. A refused undo keeps the line with the reason for another 8 seconds. When the server gave no undo id
+  (a repeat on an item already decided the other way) the line says only "Dismissed."
+- **A refusal keeps the row.** The server's reason shows in place under the buttons, which stay, so Dismiss is the retry.
+  An older server's 404 (`unsupported`) is a refusal too, never a quiet success. Only the code (`refused`, `transport`,
+  `unsupported`) is logged, never the reason or the title. The refusal is kept as `lastResolveError`, so the panel does
+  not read it as a failed Intake read and vanish.
+- **Keyboard and VoiceOver.** Delete (or Forward Delete) on a row focused with Full Keyboard Access dismisses it, as the
+  link does. The link reads "Dismiss suggestion: <the suggestion's words>"; Undo reads "Undo dismiss: <words>".
+
+#### How it holds
+
+- **One predicate.** `TodayHome.isShown` (open, and not dismissed on this Mac since the last read) feeds
+  `TodayHome.intakeSplit` for Today, the rail, Needs you and Work's Sort. `ControllerModel.workIntakeDismissedIDs` holds
+  an id only after the server confirmed its dismiss, and a confirmed undo of that resolve gives it back
+  (`TodayDismissals.afterUndo`). So a dismissed item never shows on Today again and is never in midnight's move to Work,
+  on the server's word or on a stale read.
+- **Work's own path, one at a time.** `resolveWorkIntake` now returns a `WorkIntakeResolveResult` (`changed(undo:)`,
+  `refused(_, code:)`, `busy`); Work's callers ignore it and behave as before (it still sets "Undo last decision"). Today
+  never marks seen, never batches, and every intake button waits on Work's busy ids. "Dismiss all from this meeting" (the
+  plan's optional item) is not built: it would need a batch and a batch undo on Today, against the one-at-a-time rule.
+
+#### Tests
+
+- `Tests/ActivityTodayChecks.swift` `dismissChecks()`: the resolve answer (own undo id, no undo for another decision, the
+  404), dismiss collapses the row and the count drops (fresh and stale reads), the line holds its place, stays 8 seconds
+  and leaves, midnight's move skips the item, Undo sends its own id once and restores the row and the count, a refused
+  undo keeps the line, a refused dismiss keeps the row with its reason, a busy resolve changes nothing, and the label.
+- `Tests/activity-today-pins.py`: the old "[never seen or dismiss]" pin becomes "[create accepts]", "[dismiss through
+  Work's path]" and "[never seen or batch]", plus one at a time, confirmed only, the refusal keeping the panel, log the
+  code only, undo its own row, the collapsed line, quiet, VoiceOver, keyboard and the same predicate in all three callers.
+- `Tests/mutate-activity-today.py`: 31 new mutants for the dismiss rules and wiring (run by hand).
+
 ## 0.5.336 (build 390), the live meeting view
 
 On top of 0.5.335 (build 389). The live meeting window gets the plan of 2026-10-22 (decisions 09:35 and 15:21). Pair

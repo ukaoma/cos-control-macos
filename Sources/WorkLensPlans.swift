@@ -77,6 +77,15 @@ enum WorkLensPlans {
     static let notEnabled = "Work chat sending is not enabled in this COS Control."
     static let notInHistory = "COS Control could not save this plan into the card's Work chat. Nothing was sent."
     static let busy = "COS Control was busy with this card. Nothing was sent; send it again."
+    /// 0.5.337 (loop audit W15): a card's Work chat keeps at most this many rounds; past it Plan did nothing and the lens
+    /// got the vague notInHistory.
+    static let roundCap = 100
+    static let historyFull = "This card's Work chat is full at 100 rounds. Nothing was sent. Start a new card on the Mac to plan more."
+    /// The Mac's line under the composer when the card is full.
+    static let fullLine = "This card's Work chat is full at 100 rounds, the most it keeps. Start a new card to plan more."
+    static func isFull(rounds: Int) -> Bool { rounds >= roundCap }
+    /// Why a lens round could not go into the card's history.
+    static func notSavedReason(rounds: Int) -> String { isFull(rounds: rounds) ? historyFull : notInHistory }
 
     struct Result: Equatable, Sendable {
         let id: String; let state: String; let receiptId: String?; let detail: String?; let sessionID: String?
@@ -135,5 +144,64 @@ enum WorkLensPlans {
             if let d = f.date(from: s) ?? plain.date(from: s) { return d }
         }
         return now
+    }
+}
+
+// MARK: - Work chat on the board (0.5.337, loop audit W2, W3 and W11)
+
+/// What a card's saved Work chat holds that the board should show: assignments queued behind earlier work, plans made on
+/// the glasses waiting for review, and rounds the queue could not send (a new plan needed, or nothing sent). Read from the
+/// history file's bytes with a minimal decoder (no store opened), so the queue pump can count every card each pass.
+struct WorkChatBoardCount: Equatable, Sendable {
+    var queued = 0
+    var fromGlasses = 0
+    var needsPlan = 0
+    var notSent = 0
+    var isEmpty: Bool { queued == 0 && fromGlasses == 0 }
+    /// The card's line: "Queued 2", "From glasses 1", or both. nil when there is nothing to open the chat for.
+    var line: String? {
+        var parts: [String] = []
+        if queued > 0 { parts.append("Queued \(queued)") }
+        if fromGlasses > 0 { parts.append("From glasses \(fromGlasses)") }
+        return parts.isEmpty ? nil : parts.joined(separator: ", ")
+    }
+}
+
+enum WorkChatBoardCounts {
+    static let queuedState = "Queued"
+    private struct Assignment: Decodable { let state: String? }
+    private struct Round: Decodable { let state: String?; let assignments: [Assignment]?; let origin: String? }
+    private struct Record: Decodable { let workID: String; let serverID: String; let rounds: [Round]? }
+
+    /// One history file's count for this server, or nil (another server's history, or not a history file).
+    static func count(_ data: Data, server: String) -> (workID: String, count: WorkChatBoardCount)? {
+        guard let record = try? JSONDecoder().decode(Record.self, from: data), record.serverID == server else { return nil }
+        var count = WorkChatBoardCount()
+        for round in record.rounds ?? [] {
+            count.queued += (round.assignments ?? []).filter { $0.state == queuedState }.count
+            if round.origin == "glasses", round.state == "Ready to send" { count.fromGlasses += 1 }
+            if round.state == "Needs a new plan" { count.needsPlan += 1 }
+            if round.state == "Not sent" { count.notSent += 1 }
+        }
+        return (record.workID, count)
+    }
+
+    /// The Work notice when a background pass moved this card's queued work: a new plan is needed, or it was not sent.
+    /// nil when nothing new went wrong (a send that went out is the tracker's notice, not this one).
+    static func notice(before: WorkChatBoardCount, after: WorkChatBoardCount, title: String) -> (key: String, body: String)? {
+        let quoted = "\u{201C}" + (title.count > 60 ? String(title.prefix(59)) + "…" : title) + "\u{201D}"
+        if after.needsPlan > before.needsPlan {
+            return ("queue-needs-plan-\(after.needsPlan)", "Queued work on \(quoted) needs a new plan: the task changed while it waited. Nothing was sent.")
+        }
+        if after.notSent > before.notSent {
+            return ("queue-not-sent-\(after.notSent)", "Queued work on \(quoted) was not sent. Open the card to choose again.")
+        }
+        return nil
+    }
+
+    /// The notice for a plan the glasses wrote into a card's history, once per round.
+    static func lensNotice(roundID: String, title: String) -> (key: String, body: String) {
+        let quoted = "\u{201C}" + (title.count > 60 ? String(title.prefix(59)) + "…" : title) + "\u{201D}"
+        return ("lens-round-" + roundID, "A plan from your glasses is waiting on \(quoted). Open the card to review and send it.")
     }
 }

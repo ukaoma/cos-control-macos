@@ -143,6 +143,12 @@ import Foundation
             breaker.finish(answered: false)
         }
         check(!breaker.open && breaker.begin(chunkIndex: 9, bytes: 64_000, now: t0.addingTimeInterval(60)) == nil, "three failures in a row stop the previews")
+        // 0.5.337 (loop audit N14): a minute after the last failed post it tries once more; that one failing pauses again.
+        check(breaker.begin(chunkIndex: 9, bytes: 64_000, now: t0.addingTimeInterval(6 + LiveMeetingPreviewGate.breakerPause)) != nil,
+              "a paused breaker tries one post again a minute later")
+        breaker.finish(answered: false)
+        check(!breaker.open && breaker.begin(chunkIndex: 10, bytes: 64_000, now: t0.addingTimeInterval(6 + LiveMeetingPreviewGate.breakerPause + 30)) == nil,
+              "that post failing pauses it again")
         var recovered = LiveMeetingPreviewGate()
         _ = recovered.begin(chunkIndex: 0, bytes: 64_000, now: t0); recovered.finish(answered: false)
         _ = recovered.begin(chunkIndex: 0, bytes: 64_000, now: t0.addingTimeInterval(3)); recovered.finish(answered: false)

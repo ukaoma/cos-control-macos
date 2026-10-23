@@ -249,6 +249,8 @@ struct SessionPetSprite: View {
     var restClips: [PetSpriteClip] = []
     var rotation: PetEncounterRotation? = nil
     var encounterPlayback: PetEncounterPlayback? = nil
+    /// 0.5.337 (performance audit W4): nobody can see the pet (covered, locked, displays asleep), so its clock stops.
+    var paused: Bool = false
 
     /// Patrol is an ambient action rather than a state. Authored running and
     /// duel story strips bypass this scheduler and play in order.
@@ -281,7 +283,7 @@ struct SessionPetSprite: View {
         // V4's duel, trio and swarm strips are continuous animations. Blending
         // adjacent cells double-exposes two different fight poses and reads as
         // a washed-out ghost, so every authored animation advances frame-clean.
-        TimelineView(.animation(minimumInterval: interval, paused: reduceMotion && frames.count <= 1)) { timeline in
+        TimelineView(.animation(minimumInterval: interval, paused: paused || (reduceMotion && frames.count <= 1))) { timeline in
             let encounter = encounterPlayback?.sample(pose: pose, rotation: rotation, now: ProcessInfo.processInfo.systemUptime,
                                                        speed: resolvedAnimationSpeed, interval: primaryFrameInterval, paused: reduceMotion)
             let elapsed = timeline.date.timeIntervalSinceReferenceDate * resolvedAnimationSpeed

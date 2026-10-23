@@ -687,6 +687,7 @@ MUTANTS = [
     ("learn338: not-yet names repeated", "        for row in notYet where seen.insert(row.name).inserted { names.append(row.name) }", "        for row in notYet { _ = seen; names.append(row.name) }"),
     ("learn338: the canary never rotates", "        DictationTimingLog.appendBounded(line, to: url, maximumBytes: maximumBytes, fileManager: fileManager)",
      "        DictationTimingLog.appendBounded(line, to: url, maximumBytes: Int.max, fileManager: fileManager)"),
+    ("learn338: canary lines run together", "        line.append(0x0A)\n        return line", "        return line"),
     ("learn338: the canary carries text", "    var focusWhy: String?\n}", "    var focusWhy: String?\n    var heard = \"x\"\n}"),
 ]
 

@@ -612,7 +612,9 @@ struct MeetingLibraryDetailPane: View {
                             if row.sourceSessionId != nil { Text("Ask history covers the whole original capture, including its other split pieces.").font(COSType.body(12)).foregroundStyle(.secondary) }
                             ForEach(Array(row.meetingAskSessions(keys: keys).enumerated()), id: \.element) { captureIndex, session in
                                 // 0.5.327: a saved glasses recording shows its cues beside Meeting Ask (the server keeps them 30 days).
-                                MeetingSidePanel(store: model.meetingAsk.cueVerdicts, model: model, session: session, askTitle: "Meeting Ask") {
+                                // 0.5.337 (loop audit W10): a saved Mac recording the server cued shows its Cues tab too.
+                                MeetingSidePanel(store: model.meetingAsk.cueVerdicts, model: model, session: session,
+                                                 macCues: model.liveMeetingCapability.macCues, askTitle: "Meeting Ask") {
                                     LiveAskPanel(state: model.meetingAsk, model: model, session: session, saved: true, captureLabel: "Original recording \(captureIndex + 1). Questions use its saved cutoff; each recording keeps its own history.", meeting: row)
                                 }
                                 .frame(minHeight: 300, idealHeight: 500, maxHeight: 600)
@@ -2202,6 +2204,8 @@ struct LiveTranscriptPane: View {
     @State private var askJumpID: Int?
     @AppStorage("meetingAskPanelWidth") private var askWidth = 360.0
     @State private var resizeStart: Double?
+    /// 0.5.337 (performance audit W7): the width while the divider is dragged; AppStorage is written once, when it ends.
+    @State private var dragWidth: Double?
     /// 0.5.321: the inline confirmation for Stop and save on a glasses meeting (COSConfirm, never a sheet).
     @State private var confirmGlassesStop = false
     /// 0.5.336: the cue history, observed so the inline cues and the header's counts redraw when it is read again.
@@ -2214,7 +2218,7 @@ struct LiveTranscriptPane: View {
 
     var body: some View {
         GeometryReader { geometry in
-            let width = min(max(280, askWidth), max(280, geometry.size.width - 440))
+            let width = min(max(280, dragWidth ?? askWidth), max(280, geometry.size.width - 440))
             HStack(spacing: 0) {
                 meetingBody
                 if showAsk, let session = model.liveTranscriptOpenID {
@@ -2222,8 +2226,11 @@ struct LiveTranscriptPane: View {
                         .contentShape(Rectangle())
                         .gesture(DragGesture(minimumDistance: 1).onChanged { value in
                             if resizeStart == nil { resizeStart = askWidth }
-                            askWidth = min(max(280, (resizeStart ?? askWidth) - value.translation.width), max(280, geometry.size.width - 440))
-                        }.onEnded { _ in resizeStart = nil })
+                            dragWidth = min(max(280, (resizeStart ?? askWidth) - value.translation.width), max(280, geometry.size.width - 440))
+                        }.onEnded { _ in
+                            if let dragWidth { askWidth = dragWidth }
+                            dragWidth = nil; resizeStart = nil
+                        })
                         .accessibilityLabel("Resize meeting assistant")
                         .accessibilityAdjustableAction { direction in
                             askWidth = min(max(280, askWidth + (direction == .increment ? 40 : -40)), max(280, geometry.size.width - 440))
@@ -2283,8 +2290,9 @@ struct LiveTranscriptPane: View {
             // 0.5.336: the bottom bar while it records, and the files line under it.
             if let session, feed?.ended != true {
                 LiveRecordingBar(start: feed?.startTime ?? macStart(session), mac: mac) { stopControls(feed) }
-                if let files = model.workHandoffStore?.meetingFiles {
-                    LiveFilesDropLine(files: files, key: LibraryMeeting.captureContextKey(session))
+                // 0.5.337 (loop audit N12): only while meeting files are on.
+                if let files = model.workHandoffStore?.meetingFiles, files.enabled {
+                    LiveFilesDropLine(files: files, key: LibraryMeeting.captureContextKey(session), info: model.liveMeetingFileInfo(session))
                 }
                 Divider()
             }
@@ -2323,8 +2331,15 @@ struct LiveTranscriptPane: View {
                                                    kinds: model.liveMeetingCapability.counts ? inlineCues(id).map(\.kind) : nil) {
                 Text(status).font(COSType.body(12.5, weight: .medium)).foregroundStyle(.primary)
             }
-            if let line = LiveMeeting.armLine(model.macRecording.manifest?.captureId == model.liveTranscriptOpenID ? model.macRecording.liveCuesArm : nil) {
-                Text(line).font(COSType.body(11)).foregroundStyle(COSPalette.muted)
+            if let arm = model.macRecording.manifest?.captureId == model.liveTranscriptOpenID ? model.macRecording.liveCuesArm : nil,
+               let line = LiveMeeting.armLine(arm) {
+                HStack(spacing: 8) {
+                    Text(line).font(COSType.body(11)).foregroundStyle(COSPalette.muted)
+                    // 0.5.337 (loop audit W9): a missing key has a way forward, the key fields in Settings.
+                    if LiveMeeting.needsDecisionKey(arm) {
+                        Button(LiveCues.addKeyLabel) { model.showDecisionKeySettings?() }.buttonStyle(COSTextButtonStyle())
+                    }
+                }
             }
             Text(LiveTranscript.header)
                 .font(COSType.body(12))
@@ -2359,7 +2374,7 @@ struct LiveTranscriptPane: View {
             if let session = model.liveTranscriptOpenID, let files = model.workHandoffStore?.meetingFiles {
                 DisclosureGroup("Files shared in this meeting", isExpanded: $filesExpanded) {
                     MeetingFilesSection(files: files, keys: [LibraryMeeting.captureContextKey(session)], supported: true, ambiguous: false, reason: "",
-                        info: WorkMeetingInfo(recordId: "", title: "Live meeting", date: ""))
+                        info: model.liveMeetingFileInfo(session))
                 }.font(COSType.body(11.5))
             }
         }
@@ -2409,10 +2424,12 @@ struct LiveTranscriptPane: View {
                     let hours = LiveTranscript.usesHours(feed.turns)
                     let cues = inlineCues(feed.sessionId)
                     let anchored = LiveMeeting.anchor(cues: cues.map { ($0.id, $0.createdAt) }, turns: feed.turns, start: feed.startTime)
+                    // 0.5.337 (performance audit W7): each turn's cues looked up, not filtered per turn.
+                    let byTurn = LiveMeeting.cuesByTurn(cues, id: \.id, anchored: anchored)
                     ForEach(feed.turns) { turn in
                         LiveTurnRow(turn: turn, hours: hours)
                         // 0.5.336: each cue under the turn it belongs to, with its verdicts.
-                        ForEach(cues.filter { anchored[turn.id]?.contains($0.id) == true }) { cue in
+                        ForEach(byTurn[turn.id] ?? []) { cue in
                             LiveInlineCueRow(cue: cue, saving: cueStore.saving.contains(cue.id), error: cueStore.rateErrors[cue.id]) { verdict in
                                 Task { await cueStore.rate(cue, verdict: verdict, note: cue.rating?.note, run: CueReviewPane.run(model)) }
                             }
@@ -2811,6 +2828,7 @@ struct LiveProvisionalLineView: View {
 struct LiveFilesDropLine: View {
     @ObservedObject var files: WorkCardFileStore
     let key: String
+    var info = WorkMeetingInfo(recordId: "", title: "Live meeting", date: "")
     @State private var targeted = false
     static let line = "Drop in screenshots or files while it's on. They're saved with the meeting."
 
@@ -2827,7 +2845,7 @@ struct LiveFilesDropLine: View {
         .background(targeted ? COSPalette.gold.opacity(0.06) : .clear)
         .contentShape(Rectangle())
         .modifier(MeetingFilesDrop(enabled: files.enabled, targeted: $targeted) { providers in
-            let info = WorkMeetingInfo(recordId: "", title: "Live meeting", date: "")
+            let info = info
             Task { await files.intakeMeeting(providers: providers, key: key, info: info) }
         })
     }

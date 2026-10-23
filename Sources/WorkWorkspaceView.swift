@@ -1674,7 +1674,7 @@ struct WorkWorkspaceView: View {
         if !model.workIntake.available || model.workIntakeError != nil { return "Intake · !" }
         // Activity Today on: the same older count the rail and Needs you show (TodayHome.intakeSplit).
         if TodayHome.enabled(.standard) {
-            let older = TodayHome.intakeSplit(items: model.workIntake.items, tasks: model.workTasks, now: Date()).olderCount
+            let older = TodayHome.intakeSplit(items: model.workIntake.items, tasks: model.workTasks, now: Date(), dismissed: model.workIntakeDismissedIDs).olderCount
             return older > 0 ? "Sort · \(older) older" : "Sort"
         }
         return count > 0 ? "Sort · \(count) new" : "Sort"
@@ -2368,6 +2368,12 @@ struct WorkWorkspaceView: View {
         let asking = tracking?.asksForYou == true
         return VStack(alignment: .leading, spacing: 0) {
             cardTapArea(item, handoff: handoff, running: running, hit: hit)
+            // 0.5.337 (loop audit W2, W11): queued work and plans from the glasses show on the card, and open its chat.
+            if let line = model.workChatCounts[item.sourceID]?.line {
+                Button(line) { select(item) }.buttonStyle(COSTextButtonStyle())
+                    .help("Open this card's Work chat").accessibilityLabel(line + ", open this card's Work chat")
+                    .padding(.horizontal, 12).padding(.bottom, 8)
+            }
             // Outside the tap area: its Undo is its own control, not part of the card's single action.
             if let autoMove, let tracking { cardWhyLine(tracking, autoMove).padding(.horizontal, 12).padding(.bottom, 10) }
             if let task = item.task {
@@ -3281,9 +3287,20 @@ struct WorkIntakeView: View {
         var next = snapshot; next.items = items; return next
     }
 
+    /// 0.5.337 (loop audit W1): Undo only on a server with the undo route; without it, one line says where to go instead.
+    @ViewBuilder private var undoLastDecision: some View {
+        if model.workUndoBatch != nil {
+            if model.workUndoAvailable {
+                Button("Undo last decision") { Task { await model.undoWorkIntake() } }.buttonStyle(COSTextButtonStyle())
+            } else if model.workLoopAvailable == false {
+                Text(WorkLoopSupport.undoMissing).font(COSType.body(11)).foregroundStyle(COSPalette.muted)
+            }
+        }
+    }
+
     var body: some View {
         // Computed only with Today on: the switch-off path reads nothing new.
-        let split = todayHome ? TodayHome.intakeSplit(items: model.workIntake.items, tasks: model.workTasks, now: Date()) : TodayHome.IntakeSplit()
+        let split = todayHome ? TodayHome.intakeSplit(items: model.workIntake.items, tasks: model.workTasks, now: Date(), dismissed: model.workIntakeDismissedIDs) : TodayHome.IntakeSplit()
         let snapshot = todayHome ? Self.only(model.workIntake, split.older.filter { domain == nil || $0.meeting.domain == domain }) : model.workIntake.daily(catchUp: catchUp, domain: domain)
         let cards = todayHome ? split.olderCards.filter { domain == nil || $0.domain == domain } : WorkSortGroup.mentioned(model.workTasks, catchUp: catchUp, domain: domain)
         let groups = WorkSortGroup.groups(snapshot: snapshot, cards: cards)
@@ -3301,17 +3318,20 @@ struct WorkIntakeView: View {
                 Button("Today · \(model.workIntake.daily(catchUp: false, domain: domain).openCount + WorkSortGroup.mentioned(model.workTasks, catchUp: false, domain: domain).count) new") { catchUp = false; expiredOpen = false; groupIndex = 0 }.buttonStyle(COSQuietButtonStyle())
                 Button("Catch up · \(model.workIntake.daily(catchUp: true, domain: domain).openCount + WorkSortGroup.mentioned(model.workTasks, catchUp: true, domain: domain).count)") { catchUp = true; expiredOpen = false; groupIndex = 0 }.buttonStyle(COSTextButtonStyle())
                 Spacer()
-                if model.workUndoBatch != nil { Button("Undo last decision") { Task { await model.undoWorkIntake() } }.buttonStyle(COSTextButtonStyle()) }
+                undoLastDecision
             }.padding(.horizontal, 18).padding(.bottom, 10) }
             // Activity Today on: the Today/Catch up row is gone, and Undo last decision (also a Create task from Today) stays.
             if todayHome, model.workUndoBatch != nil {
-                HStack { Spacer(); Button("Undo last decision") { Task { await model.undoWorkIntake() } }.buttonStyle(COSTextButtonStyle()) }
+                HStack { Spacer(); undoLastDecision }
                     .padding(.horizontal, 18).padding(.bottom, 10)
             }
-            HStack {
-                Button("Expired this week: \(model.workExpiredWeekly), \(model.workExpiredYours) yours") { expiredOpen.toggle(); Task { await model.loadWorkExpiry() } }.buttonStyle(COSTextButtonStyle())
-                Text("Restore within 30 days").font(COSType.body(11)).foregroundStyle(COSPalette.muted)
-            }.padding(.horizontal, 18).padding(.bottom, 8)
+            // 0.5.337 (loop audit W1): Expired only on a server that answered its settings.
+            if model.workExpiryAvailable {
+                HStack {
+                    Button("Expired this week: \(model.workExpiredWeekly), \(model.workExpiredYours) yours") { expiredOpen.toggle(); Task { await model.loadWorkExpiry() } }.buttonStyle(COSTextButtonStyle())
+                    Text("Restore within 30 days").font(COSType.body(11)).foregroundStyle(COSPalette.muted)
+                }.padding(.horizontal, 18).padding(.bottom, 8)
+            }
             if let error = model.workLoopError { Text(error).font(COSType.body(12)).foregroundStyle(COSPalette.danger).padding(.horizontal, 18) }
             if let error = model.workIntakeError {
                 Text(error).font(COSType.body(12)).foregroundStyle(COSPalette.danger).padding(.horizontal, 18).padding(.bottom, 8)
@@ -3417,7 +3437,7 @@ struct WorkIntakeView: View {
                 Text(note).font(COSType.body(11)).foregroundStyle(COSPalette.muted)
                 LazyVStack(spacing: 0) {
                     ForEach(items) { item in
-                        row(item).onAppear { Task { _ = await model.workLoop("seen", body: ["ids": [item.id]]) } }.padding(.vertical, 10).frame(maxWidth: .infinity, alignment: .leading)  // short rows stay flush left when stacked
+                        row(item).onAppear { if !model.workLoopUnsupported.contains("seen") { Task { _ = await model.workLoop("seen", body: ["ids": [item.id]]) } } }.padding(.vertical, 10).frame(maxWidth: .infinity, alignment: .leading)  // short rows stay flush left when stacked
                         if item.id != items.last?.id { Divider().overlay(COSPalette.line) }
                     }
                 }.padding(.horizontal, 12)
@@ -3523,6 +3543,10 @@ struct WorkWaitingView: View {
                 Button("Dropped cards") { dropped = true; Task { await model.loadDroppedWork() } }.buttonStyle(COSTextButtonStyle())
             }
             Text(dropped ? "Restore a dropped card with its identity and links intact." : "Follow up by person. These cards also appear in 1:1 prep.").font(COSType.body(12)).foregroundStyle(COSPalette.muted)
+            // 0.5.337 (loop audit W1): an older server has no Waiting or Dropped list; say so instead of an empty view.
+            if model.workLoopUnsupported.contains(dropped ? "dropped" : "waiting") {
+                Text(dropped ? "Dropped cards need a newer COS server." : "Waiting on needs a newer COS server.").font(COSType.body(12)).foregroundStyle(COSPalette.muted)
+            }
             if let error = model.workLoopError { Text(error).foregroundStyle(COSPalette.danger) }
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 12) {
