@@ -100,7 +100,7 @@ MUTANTS = [
     ("W7: AppStorage per drag event", AM, "                            if let dragWidth { askWidth = dragWidth }\n", "", "[W7 drag]"),
     ("B2: geometry around the frame", W, "        TimelineView(TodayFrameSchedule(paused: !today.windowVisible)) { timeline in", "        TimelineView(TodayFrameSchedule(paused: false)) { timeline in", "[B2 frame]"),
     ("N10: the title flips", CM, "        if let kept = liveMeetingTitlesKept[sessionId] { return kept }\n", "", "[N10 title]"),
-    ("N12: the drop line with files off", AM, "                if let files = model.workHandoffStore?.meetingFiles, files.enabled {", "                if let files = model.workHandoffStore?.meetingFiles {", "[N12 drop]"),
+    ("N12: adding with files off", AM, "        guard let files = model.workHandoffStore?.meetingFiles, files.enabled else { return false }", "        guard let files = model.workHandoffStore?.meetingFiles else { return false }", "[N12 drop]"),
     ("P-W8: back on the pool", HC, "              Self.runQueue.async {", "              Task.detached(priority: .userInitiated) {", "[P-W8 queue]"),
     ("W16: the set forgotten at launch", MR, "forKey: MacRecordingStore.discardedKey) }", "forKey: \"unused\") }", "[W16 discard]"),
     # Miles 2026-10-22 21:11

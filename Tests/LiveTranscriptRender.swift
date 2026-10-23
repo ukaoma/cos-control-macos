@@ -123,13 +123,14 @@ import Vision
     }
 
     static func liveAnswer(sessionId: String = sid, chunks: [(Int, String, String, Int)], settled: Int, stamp: String,
-                           start: Double = 1_791_635_349_988, last: Double? = nil, dataDir: String = "/tmp/cos-live-fixture-data") -> String {
+                           start: Double = 1_791_635_349_988, last: Double? = nil, dataDir: String = "/tmp/cos-live-fixture-data",
+                           levels: String? = nil) -> String {
         let turns = chunks.map { chunkJSON($0.0, $0.1, $0.2, ms: $0.3) }.joined(separator: ",")
         let lastText = last.map { String(format: "%.0f", $0) } ?? "null"
         return """
         {"ok":true,"message":"Live transcript","details":{"dataDir":"\(dataDir)","sessions":[{"sessionId":"\(sessionId)","mtimeMs":\(String(format: "%.0f", last ?? Date().timeIntervalSince1970 * 1000)),"size":4096,"stamp":"\(stamp)"}],
         "read":{"sessionId":"\(sessionId)","ended":false,"unchanged":false,"stamp":"\(stamp)","startTime":\(String(format: "%.0f", start)),"lastActivityAt":\(lastText),
-        "maxIndex":\(chunks.map(\.0).max() ?? -1),"settledThrough":\(settled),"chunkCount":\(chunks.count),"turns":[\(turns)]}}}
+        "maxIndex":\(chunks.map(\.0).max() ?? -1),"settledThrough":\(settled),"chunkCount":\(chunks.count),"turns":[\(turns)]\(levels.map { ",\"levels\":" + $0 } ?? "")}}}
         """
     }
 
@@ -164,13 +165,114 @@ import Vision
     // MARK: 0.5.336 live meeting view (server 6.86.0)
 
     /// A 6.86.0 status: the live meeting surface, the five kinds, Live cues on.
-    static func liveMeetingStatus(_ live: Int) -> ServerStatus {
+    static func liveMeetingStatus(_ live: Int, chunkLevels: Bool = false) -> ServerStatus {
         ServerStatus([
             "installed": .bool(true), "running": .bool(true), "runtimeState": .string("managedHealthy"),
             "activeTranscriptionSessions": .number(Double(live)), "liveTranscriptionSessions": .number(Double(live)),
             "liveMeetingProtocol": .number(1), "liveMeetingMacLiveCues": .bool(true), "liveMeetingProvisional": .bool(true),
             "liveCueKinds": .array(LiveMeeting.knownKinds.map { .string($0) }), "liveCuesOn": .bool(true),
+            "liveMeetingChunkLevels": .bool(chunkLevels),
         ])
+    }
+
+    static let levelsJSON = #"[{"i":0,"level":0.71,"speechSec":3.2},{"i":1,"level":0.12,"speechSec":0.1},{"i":2,"level":0.55,"speechSec":null}]"#
+
+    /// 0.5.339 (server 6.87.0): a glasses meeting's chunk levels go from the live transcript read to the strip's own
+    /// object, only for the open glasses meeting on a server that keeps them, and closing drops them.
+    static func checkLevelStrip(_ stand: Stand) async {
+        let expected = [LiveChunkLevel(i: 0, level: 0.71, speechSec: 3.2), LiveChunkLevel(i: 1, level: 0.12, speechSec: 0.1), LiveChunkLevel(i: 2, level: 0.55, speechSec: nil)]
+        let chunks = [(0, "Fixture Voice", "fixture words one", 2_000), (1, "Fixture Voice", "fixture words two", 8_000)]
+        stand.write("live-mode", "normal")
+        stand.write("live-transcript.json", liveAnswer(chunks: chunks, settled: 1, stamp: "339.1.4096", levels: levelsJSON))
+        LiveChunkLevelFeed.live.clear()
+        // A 6.86.0 server (no chunkLevels): the read's levels are not handed on.
+        let (older, _) = model(stand, enabled: true)
+        older.status = liveMeetingStatus(1)
+        older.openLiveTranscript(sid)
+        await older.pollLiveTranscriptOnce()
+        expect(LiveChunkLevelFeed.live.levels(for: sid).isEmpty && !older.liveMeetingCapability.levelStrip, "a 6.86.0 server keeps the still glyph: no levels handed on")
+        older.closeLiveTranscript()
+        // 6.87.0: the open glasses meeting's levels reach the strip's object, and only that meeting's.
+        let (newer, _) = model(stand, enabled: true)
+        newer.status = liveMeetingStatus(1, chunkLevels: true)
+        await newer.pollLiveTranscriptOnce()
+        expect(LiveChunkLevelFeed.live.levels(for: sid).isEmpty, "no view open: no levels handed on")
+        newer.openLiveTranscript(sid)
+        await newer.pollLiveTranscriptOnce()
+        expect(newer.liveMeetingCapability.levelStrip && LiveChunkLevelFeed.live.levels(for: sid) == expected,
+               "the open glasses meeting's levels reach the strip's own object", "\(LiveChunkLevelFeed.live.levels(for: sid))")
+        expect(LiveChunkLevelFeed.live.levels(for: sid + "x").isEmpty, "another meeting reads no levels")
+        newer.closeLiveTranscript()
+        expect(LiveChunkLevelFeed.live.levels(for: sid).isEmpty && LiveChunkLevelFeed.live.sessionId == nil, "closing the view drops the levels")
+        // A Mac recording's read never feeds the strip (it has the audiogram).
+        let mac = "mac_" + UUID().uuidString.lowercased()
+        stand.write("live-transcript.json", liveAnswer(sessionId: mac, chunks: chunks, settled: 1, stamp: "339.2.4096", levels: levelsJSON))
+        newer.openLiveTranscript(mac)
+        await newer.pollLiveTranscriptOnce()
+        expect(LiveChunkLevelFeed.live.levels(for: mac).isEmpty, "a Mac recording's levels never reach the glasses strip")
+        for m in [newer, older] {
+            m.closeLiveTranscript()
+            m.liveTranscriptViewer("meetings", visible: false)
+            m.liveTranscriptViewer("live-pane", visible: false)
+            await until("a quiet level strip model") { !m.liveTranscriptPollRunning }
+        }
+        stand.write("live-transcript.json", liveAnswer(chunks: chunks, settled: 1, stamp: "339.3.4096"))
+    }
+
+    /// Frames the bar's sizing check records, in the hosting view's coordinates.
+    @MainActor final class BarFrames { var frames: [String: CGRect] = [:]; var labelled: Bool? }
+
+    /// One bar at `width`: the Add file and Stop frames, whether Add file was labelled, and the hosting view's fitting width.
+    static func barLayout(width: CGFloat, mac: Bool, strip: Bool) -> (frames: [String: CGRect], labelled: Bool?, fitting: CGFloat) {
+        let box = BarFrames()
+        func marked(_ name: String) -> some View {
+            GeometryReader { g in
+                Color.clear
+                    .onAppear { box.frames[name] = g.frame(in: .global) }
+                    .onChange(of: g.size) { _, _ in box.frames[name] = g.frame(in: .global) }
+            }
+        }
+        let bar = LiveRecordingBar(start: Date().addingTimeInterval(-2881), mac: mac, levelStrip: strip, sessionId: sid) { labelled in
+            LiveAddFileButton(labelled: labelled, open: .constant(false), paste: {}, choose: {})
+                .background(marked("add"))
+                .onAppear { box.labelled = labelled }
+        } stop: {
+            Button("Stop and save") {}.buttonStyle(COSQuietButtonStyle()).background(marked("stop"))
+        }
+        let host = NSHostingView(rootView: bar.frame(width: width).background(COSPalette.panel))
+        let window = NSWindow(contentRect: NSRect(x: -20000, y: -20000, width: width, height: 80), styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = host
+        settle(host, seconds: 0.4)
+        let fitting = host.fittingSize.width
+        window.close()
+        return (box.frames, box.labelled, fitting)
+    }
+
+    /// 0.5.339: the bar at 1000, 640 and 420 pt (and under 340): one row whatever the width, Add file labelled at 560 and
+    /// up and icon-only under it, the buttons inside the bar and never wrapped, the meter shown down to 340 pt.
+    static func checkRecordingBar() {
+        for (width, labelled) in [(1000.0, true), (640.0, true), (420.0, false), (320.0, false)] {
+            for (mac, strip) in [(true, false), (false, true), (false, false)] {
+                let what = "the bar at \(Int(width)) pt (\(mac ? "Mac" : strip ? "glasses, strip" : "glasses, still"))"
+                let layout = barLayout(width: width, mac: mac, strip: strip)
+                guard let add = layout.frames["add"], let stop = layout.frames["stop"] else { fail(what, "no frames recorded: \(layout.frames)") }
+                expect(layout.labelled == labelled, what + ": Add file labelled at 560 pt and up only", "labelled \(String(describing: layout.labelled))")
+                expect(add.maxX <= stop.minX + 0.5 && stop.maxX <= width + 0.5 && add.minX >= 0, what + ": Add file then Stop, inside the bar", "add \(add) stop \(stop)")
+                expect(add.height <= 34 && stop.height <= 34 && abs(add.midY - stop.midY) < 1, what + ": one row, the buttons never wrap", "add \(add) stop \(stop)")
+                expect(labelled ? add.width >= 70 : add.width <= 48, what + ": icon-only under 560 pt", "add \(add)")
+                expect(layout.fitting <= width + 0.5, what + ": the bar fits its width", "fitting \(layout.fitting)")
+            }
+        }
+        // Narrower than the bar can hold: the buttons still never wrap (they may run past the edge, never onto a second line).
+        for (mac, strip) in [(true, false), (false, true)] {
+            let layout = barLayout(width: 200, mac: mac, strip: strip)
+            guard let add = layout.frames["add"], let stop = layout.frames["stop"] else { fail("the bar at 200 pt", "no frames recorded: \(layout.frames)") }
+            expect(add.height <= 34 && stop.height <= 34 && abs(add.midY - stop.midY) < 1 && stop.width >= 80 && add.maxX <= stop.minX + 0.5,
+                   "the bar at 200 pt: one row, Stop and save on one line", "add \(add) stop \(stop)")
+        }
+        // VoiceOver's "Add file" and which meter shows are pinned in source (Tests/live-meeting-pins.py) and executed as
+        // LiveRecordingBarLayout.mode (Tests/LiveMeetingChecks.swift): an offscreen host builds no accessibility tree.
     }
 
     static let greyAnswer = #"{"ok":true,"message":"Live provisional answered (200)","details":{"transport":"answered","httpStatus":200,"live":true,"provisional":{"chunkIndex":99,"previewGen":1,"text":"fixture grey words still being said"}}}"#
@@ -759,6 +861,8 @@ import Vision
         await quiesce(recording)
         await checkQuietLeftovers(stand)
         await checkLiveMeeting(stand)
+        await checkLevelStrip(stand)
+        checkRecordingBar()
         print("live transcript wiring checks: \(passed) passed")
         print("PASS: live transcript wiring checks complete")
         exit(0)
@@ -983,7 +1087,53 @@ import Vision
         LiveAudiogramFeed.live.reset()
         for i in 0..<LiveAudiogramRing.capacity { LiveAudiogramFeed.live.push(rms: i % 37 < 9 ? 0 : 0.02 + 0.08 * abs(sin(Double(i) / 4))) }
 
+        // 0.5.339: the files row (collapsed, open) on a meeting store with one screenshot, the bar's width ladder, and the
+        // glasses strip on a 6.87.0 server at 1000, 640 and 420 pt. Invented words only.
+        let filesStore = WorkCardFileStore(root: out.appendingPathComponent("meeting-context-render", isDirectory: true), policy: .meeting)
+        filesStore.loadIfNeeded()
+        let shot = out.appendingPathComponent("Dropped screenshot fixture.png")
+        if let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 640, pixelsHigh: 200, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                                      colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0) {
+            NSGraphicsContext.saveGraphicsState()
+            NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+            NSColor.white.setFill(); NSRect(x: 0, y: 0, width: 640, height: 200).fill()
+            ("Week 3 cohort fixture chart" as NSString).draw(at: NSPoint(x: 24, y: 90), withAttributes: [.font: NSFont.systemFont(ofSize: 28)])
+            NSGraphicsContext.restoreGraphicsState()
+            try rep.representation(using: .png, properties: [:])?.write(to: shot)
+        }
+        let filesKey = LibraryMeeting.captureContextKey(sid), filesInfo = WorkMeetingInfo(recordId: "", title: "Fixture meeting", date: "2026-10-23")
+        await filesStore.intakeMeeting(urls: [shot], key: filesKey, info: filesInfo)
+        await filesStore.waitForCompanions()
+        func ladderBar(mac: Bool) -> some View {
+            VStack(alignment: .leading, spacing: 14) {
+                ForEach([600.0, 561.0, 520.0, 360.0, 320.0], id: \.self) { width in
+                    VStack(alignment: .leading, spacing: 4) {
+                        LiveRecordingBar(start: now.addingTimeInterval(-2881), mac: mac, levelStrip: !mac, sessionId: sid) { labelled in
+                            LiveAddFileButton(labelled: labelled, open: .constant(false), paste: {}, choose: {})
+                        } stop: { Button("Stop and save") {}.buttonStyle(COSQuietButtonStyle()) }
+                        .frame(width: width)
+                        Text("\(Int(width)) pt").font(COSType.body(11)).foregroundStyle(.secondary)
+                    }
+                }
+            }.padding(20)
+        }
+        let stripLevels = (0..<90).map { i in LiveChunkLevel(i: i, level: 0.3 + 0.5 * abs(sin(Double(i) / 3)), speechSec: i % 13 < 2 ? 0.1 : 4) }
+        let stripMeeting = make(meetingChunks, last: now.addingTimeInterval(-3), settled: 4)
+        stripMeeting.status = liveMeetingStatus(1, chunkLevels: true)
+
         for appearance in [NSAppearance.Name.aqua, .darkAqua] {
+            LiveChunkLevelFeed.live.set(sid, stripLevels)
+            try render(LiveMeetingFilesRow(files: filesStore, key: filesKey, info: filesInfo, open: .constant(false)).padding(20), width: 620, height: 90, appearance: appearance, name: "files-row-collapsed-339", out: out)
+            try render(LiveMeetingFilesRow(files: filesStore, key: filesKey, info: filesInfo, open: .constant(true)).padding(20), width: 620, height: 220, appearance: appearance, name: "files-row-open-339", out: out)
+            try render(LiveAddFileMenu(paste: {}, choose: {}).padding(20), width: 280, height: 120, appearance: appearance, name: "add-file-menu-339", out: out)
+            try render(LiveFilesDropOutline().frame(height: 300), width: 600, height: 300, appearance: appearance, name: "drop-outline-339", out: out)
+            try render(ladderBar(mac: true), width: 640, height: 420, appearance: appearance, name: "bar-ladder-mac-339", out: out)
+            try render(ladderBar(mac: false), width: 640, height: 420, appearance: appearance, name: "bar-ladder-glasses-339", out: out)
+            for width in [1000.0, 640.0, 420.0] {
+                try render(LiveTranscriptPane(model: stripMeeting), width: width, height: 640, appearance: appearance, name: "pane-glasses-strip-\(Int(width))", out: out)
+                try render(LiveTranscriptPane(model: macMeeting), width: width, height: 640, appearance: appearance, name: "pane-mac-\(Int(width))", out: out)
+            }
+            LiveChunkLevelFeed.live.clear()
             try render(LiveTranscriptPane(model: liveMeeting), width: 1180, height: 820, appearance: appearance, name: "pane-live-meeting-6.86", out: out)
             try render(LiveTranscriptPane(model: macMeeting), width: 1180, height: 640, appearance: appearance, name: "pane-mac-recording-6.86", out: out)
             try render(LiveTranscriptPane(model: live), width: 900, height: 560, appearance: appearance, name: "pane-live-older-server", out: out)

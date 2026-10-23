@@ -320,7 +320,7 @@ final class MeetingAskStore: ObservableObject {
     }
     /// 0.5.281: files dropped on or pasted into the Ask panel go to this meeting's Files through the Files box's own intake
     /// (`intakeMeeting` for files and drops, `pasteMeeting` for image data), never into the question. Returns the names
-    /// that landed; a refusal is the intake's own line, shown in the panel and in Files shared in this meeting.
+    /// that landed; a refusal is the intake's own line, shown in the panel and under the live Files row.
     @discardableResult func attach(_ attachment: MeetingAskAttachment, session: String, model: ControllerModel, pathOnly: Bool = false) async -> [String] {
         let key = LibraryMeeting.captureContextKey(session)
         guard let files = model.workHandoffStore?.meetingFiles, files.enabled, WorkCardFiles.meetingID(forKey: key) != nil else {

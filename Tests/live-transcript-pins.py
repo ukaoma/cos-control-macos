@@ -271,7 +271,7 @@ for banned in ("progress(", "print(", "FileHandle.standardError", "NSLog", "appe
     need(banned not in lm_helper, "the helper's live-provisional never writes the grey text to " + banned)
 need('emit(ok: true, message: "Live provisional answered (\\(response.status))", details: details)' in lm_helper,
      "the helper's message names only the status; the text rides in details for the app")
-lm_views = strip_comments(meetings[meetings.index("struct LiveProvisionalLineView: View {"):meetings.index("struct LiveFilesDropLine: View {")])
+lm_views = strip_comments(meetings[meetings.index("struct LiveProvisionalLineView: View {"):meetings.index("// Live COS Ask: durable state")])
 need("Text(verbatim: text)" in lm_views and "Markdown" not in lm_views and "print(" not in lm_views and "Logger" not in lm_views,
      "the grey line is drawn as plain text and never logged")
 all_text = {p.name: strip_comments(p.read_text()) for p in (root / "Sources").glob("*.swift")}

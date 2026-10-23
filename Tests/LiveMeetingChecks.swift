@@ -215,6 +215,54 @@ import Foundation
         check(LiveMeeting.elapsed(0) == "0:00" && LiveMeeting.elapsed(7.9) == "0:07" && LiveMeeting.elapsed(724) == "12:04"
               && LiveMeeting.elapsed(3723) == "1:02:03" && LiveMeeting.elapsed(-5) == "0:00" && LiveMeeting.elapsed(.infinity) == "0:00", "the clock")
 
+        // ── 0.5.339 (server 6.87.0): the glasses meeting's level strip, the bar's widths, the Files row.
+        let levelled = ServerStatus(details(#"""
+        {"ok":true,"message":"x","details":{"running":true,"liveMeetingProtocol":1,"liveMeetingMacLiveCues":true,"liveMeetingProvisional":true,"liveMeetingChunkLevels":true}}
+        """#)).liveMeeting
+        check(levelled.chunkLevels && levelled.levelStrip, "a 6.87.0 server's chunkLevels opens the level strip")
+        check(!full.chunkLevels && !full.levelStrip && !older.levelStrip, "a 6.86.0 or older server keeps the still glyph")
+        var levelsNoProtocol = levelled; levelsNoProtocol.protocolVersion = nil
+        check(!levelsNoProtocol.levelStrip, "the strip needs protocol 1 too")
+        let stringFlag = ServerStatus(details(#"{"ok":true,"message":"x","details":{"liveMeetingProtocol":1,"liveMeetingChunkLevels":"true"}}"#)).liveMeeting
+        check(!stringFlag.levelStrip, "only a real true opens the strip")
+
+        let levelRead = try! JSONDecoder().decode(LiveTranscriptRead.self, from: Data(#"""
+        {"sessionId":"meeting_1","ended":false,"unchanged":false,"levels":[{"i":3,"level":0.71,"speechSec":3.2},{"i":4,"level":0.1,"speechSec":null},{"i":5,"level":0.4}]}
+        """#.utf8))
+        check(levelRead.levels == [LiveChunkLevel(i: 3, level: 0.71, speechSec: 3.2), LiveChunkLevel(i: 4, level: 0.1, speechSec: nil), LiveChunkLevel(i: 5, level: 0.4, speechSec: nil)],
+              "a read carries the levels; null or absent speech seconds is nil")
+        let noLevels = try! JSONDecoder().decode(LiveTranscriptRead.self, from: Data(#"{"sessionId":"meeting_1","ended":false,"unchanged":false}"#.utf8))
+        check(noLevels.levels == nil, "an older server's read has no levels")
+
+        check(LiveLevelStrip.isSilent(LiveChunkLevel(i: 0, level: 0.9, speechSec: 0.1)) && LiveLevelStrip.isSilent(LiveChunkLevel(i: 0, level: 0.9, speechSec: 0.49))
+              && !LiveLevelStrip.isSilent(LiveChunkLevel(i: 0, level: 0.05, speechSec: 0.5)), "speech seconds decide: under the quiet gate's 0.5 s is dotted, whatever the level")
+        check(LiveLevelStrip.isSilent(LiveChunkLevel(i: 0, level: 0.27, speechSec: nil)) && !LiveLevelStrip.isSilent(LiveChunkLevel(i: 0, level: 0.28, speechSec: nil)),
+              "without speech seconds, the level at about the RMS gate decides")
+        let many = (0..<50).map { LiveChunkLevel(i: $0, level: 0.5, speechSec: 2) }
+        check(LiveLevelStrip.visible(many, width: 100).map(\.i) == Array(30..<50), "a narrow strip keeps the newest chunks, the oldest clipped")
+        check(LiveLevelStrip.visible(many, width: 1000).count == 50 && LiveLevelStrip.visible(many, width: 4).isEmpty
+              && LiveLevelStrip.visible(many, width: .nan).isEmpty && LiveLevelStrip.visible([], width: 300).isEmpty, "wide shows all; under one step or not a width shows none")
+        check(LiveLevelStrip.visible(many, width: 40).count == 8, "the 40 pt floor still draws eight chunks")
+        check(LiveLevelStrip.accessibilityLabel == "Audio level, a few seconds behind", "VoiceOver says the strip trails the room")
+        check(LiveLevelStrip.accessibilityValue([]) == "Waiting for the first chunk" && LiveLevelStrip.accessibilityValue([LiveChunkLevel(i: 0, level: 0.6, speechSec: 3)]) == "Speech"
+              && LiveLevelStrip.accessibilityValue([LiveChunkLevel(i: 0, level: 0.6, speechSec: 0)]) == "Quiet", "its value is the newest chunk")
+
+        typealias Mode = LiveRecordingBarLayout.Mode
+        let widths: [(Double, Mode)] = [(1000, Mode(addFileLabelled: true, meter: true)), (640, Mode(addFileLabelled: true, meter: true)),
+                                        (600, Mode(addFileLabelled: true, meter: true)), (561, Mode(addFileLabelled: true, meter: true)),
+                                        (560, Mode(addFileLabelled: true, meter: true)), (559.5, Mode(addFileLabelled: false, meter: true)),
+                                        (520, Mode(addFileLabelled: false, meter: true)), (420, Mode(addFileLabelled: false, meter: true)),
+                                        (360, Mode(addFileLabelled: false, meter: true)), (340, Mode(addFileLabelled: false, meter: true)),
+                                        (339, Mode(addFileLabelled: false, meter: false)), (200, Mode(addFileLabelled: false, meter: false))]
+        for (width, mode) in widths { check(LiveRecordingBarLayout.mode(barWidth: width) == mode, "the bar at \(width) pt, as the mock's ladder") }
+        check(LiveRecordingBarLayout.meterFloor == 40 && LiveRecordingBarLayout.addFileLabel == "Add file", "the 40 pt floor; VoiceOver's Add file")
+
+        check(LiveMeetingFiles.rowTitle(count: 2) == "Files \u{00B7} 2" && LiveMeetingFiles.rowTitle(count: 1) == "Files \u{00B7} 1", "the Files row's title")
+        check(!LiveMeetingFiles.showsRow(count: 0, pendingUndo: 0) && LiveMeetingFiles.showsRow(count: 1, pendingUndo: 0)
+              && LiveMeetingFiles.showsRow(count: 0, pendingUndo: 1), "no files: no row, unless an Undo is still offered")
+        check(LiveMeetingFiles.dropLabel == "Drop to add to this meeting" && LiveMeetingFiles.pasteLabel == "Paste screenshot"
+              && LiveMeetingFiles.chooseLabel == "Choose files\u{2026}" && LiveMeetingFiles.note.hasPrefix("On this Mac only."), "the mock's words")
+
         print("live meeting checks: \(passed) passed")
     }
 }

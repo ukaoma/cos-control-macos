@@ -3818,6 +3818,7 @@ final class ControllerModel: ObservableObject {
     func closeLiveTranscript() {
         recordingShortcutDeadline = nil
         liveProvisional.clear()
+        LiveChunkLevelFeed.live.clear()
         liveTranscriptOpenID = nil
         liveTranscriptCopyNote = nil
     }
@@ -3908,6 +3909,12 @@ final class ControllerModel: ObservableObject {
             var feed = feeds[read.sessionId] ?? LiveTranscriptFeed(sessionId: read.sessionId)
             feed.apply(read, now: now)
             feeds[read.sessionId] = feed
+            // 0.5.339 (server 6.87.0): a glasses meeting's chunk levels go to the strip's own object (LiveChunkLevelFeed,
+            // the Mac audiogram's pattern), never this model's published state, so a new level redraws the strip alone.
+            if let levels = read.levels, read.sessionId == liveTranscriptOpenID, G2MeetingStop.isGlassesSession(read.sessionId),
+               liveMeetingCapability.levelStrip {
+                LiveChunkLevelFeed.live.set(read.sessionId, levels)
+            }
         }
         // A file that left the list ended, whether or not this poll read it.
         for id in Array(feeds.keys) where !listed.contains(id) && feeds[id]?.ended == false && reply.read?.sessionId != id {

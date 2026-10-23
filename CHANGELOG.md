@@ -1,3 +1,60 @@
+## 0.5.339 (build 393), One place for files in the live meeting, and a level strip for glasses meetings
+
+On top of 0.5.338 (build 392). Approved by Miles 09:08 (A) and 09:25 (B), 2026-10-23; split at 10:06 (Mac Voice N labels
+move to 0.5.340). Approved mock: `operations/personal/wk43_2026/mock-339/live-meeting-files.html`. Pairs with COS server
+6.87.0 for the level strip; every other part works with 6.86.0.
+
+### A. One place for files (the live meeting pane)
+
+- **The whole pane takes a drop.** Drag a screenshot or file anywhere over the live meeting: the transcript is outlined
+  with "Drop to add to this meeting", and the file goes through the same meeting-files intake as before. The drop is on
+  the pane itself; the outline is drawn only (an overlay drop destination never fires, 0.5.246).
+- **Add file in the bar,** with a paperclip, beside Stop. It opens an inline menu: Paste screenshot (Command-V) and Choose
+  files… (Command-O). Command-O is a key equivalent while the button shows. Command-V is the pane's own paste command
+  (once the pane has focus, a click on its header or bar), never a key equivalent, so the Live COS Ask field keeps its
+  paste.
+- **One collapsed Files row.** "Files · N", the total size and a chevron, under the header lines; hidden with no files
+  (kept while an Undo for a removed file is still offered). Open, it lists the files with Quick Look, Show in Finder and
+  Remove, and the "On this Mac only" note. No drop strip and no buttons of its own. A drop's or paste's flash, and any
+  refusal, shows under it, open or not.
+- **The line under the bar is gone** ("Drop in screenshots or files while it's on"). The transcript gets that room and
+  the room of the open Files box.
+- The file rows are one view now (`MeetingFileRow`), shared with the saved meeting's Files box, which is unchanged (it
+  had one files section, so nothing was duplicated there).
+
+### Narrow widths (the mock's ladder, `LiveRecordingBarLayout`)
+
+- The meter shrinks first, clipping its OLDEST samples at a faded left edge, down to a 40 pt floor. The Mac audiogram now
+  draws a fixed 2.5 pt per level from the right instead of squeezing 12 s into any width.
+- Under 560 pt of bar Add file is the paperclip alone; VoiceOver still reads "Add file".
+- Under 340 pt the still level glyph takes the meter's place. The buttons never wrap.
+
+### B. A level strip for glasses meetings (server 6.87.0)
+
+- On a server that advertises `capabilities.liveMeeting.chunkLevels`, the glasses meeting's bar draws one bar per chunk,
+  newest on the right, dotted where the chunk held under half a second of speech (the server's own quiet gate). VoiceOver:
+  "Audio level, a few seconds behind". Reduce Motion: a static bar of the newest chunk. An older server, or no chunk yet:
+  today's still glyph.
+- The helper's `live-transcript` read passes the session file's `chunkLevels` as three numbers a chunk (index, level,
+  speech seconds), validated, the newest 120. No new route and no new spawn.
+- The levels live in their own object (`LiveChunkLevelFeed`, the Mac audiogram's pattern): ControllerModel only hands
+  the open glasses meeting's levels on and clears them on close; nothing about them is published on the model.
+
+### Checks
+
+- Live meeting lane (`Tests/run-live-meeting.sh`): 332 pins, 114 model checks, helper self-test 965, live meeting helper
+  19, Mac recording helper 167, cue verdicts helper 46.
+- Live transcript lanes: 147 pins, 38 helper checks (the `chunkLevels` fixture), 198 wiring checks with the whole app
+  compiled, including the new bar sizing check: at 1000, 640, 420 and 320 pt (Mac, glasses with the strip, glasses with
+  the still glyph) Add file is labelled only at 560 pt and up, Add file then Stop sit inside the bar on one row, and the
+  bar fits its width; at 200 pt the buttons still never wrap.
+- Activity sizing and Work card files (meeting files) lanes pass.
+- Mutation (`Tests/mutate-live-meeting.py`, green baseline first): 33 new 0.5.339 mutants (M30 to M40, W7 to W11, H20 to
+  H24, P30 to P41), every one killed by a named check; H24 (a read that drops its levels) survived the first run and is
+  killed by a new helper self-test. The existing P6 and H9 targets were moved to the new bar and status code.
+- Full `Tests/run.sh` exits 0 (33 min 59 s), helper self-test 965 (floor raised from 961). The 0.5.337 hardening pin N12
+  now pins its rule where it lives: adding to a live meeting needs meeting files on (`canAddFiles`).
+
 ## 0.5.338 (build 392), Learn from my edits in every app
 
 On top of 0.5.337 (build 391). Plan: `operations/personal/wk43_2026/PLAN_control_0_5_338_learn_edits_everywhere_2026-10-22.md`

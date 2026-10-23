@@ -124,6 +124,8 @@ struct LiveMeetingCapability: Equatable, Sendable {
     var cueKinds: [String] = []
     /// `capabilities.liveCuesV2` is advertised, which the server does only while the Live cues switch is on.
     var liveCuesOn = false
+    /// 0.5.339: `capabilities.liveMeeting.chunkLevels` (server 6.87.0): the session file keeps each chunk's level.
+    var chunkLevels = false
 
     /// The 6.86.0 live meeting surface exists.
     var available: Bool { protocolVersion == 1 }
@@ -137,6 +139,8 @@ struct LiveMeetingCapability: Equatable, Sendable {
     var sendsMacLiveCues: Bool { available && macLiveCues && liveCuesOn }
     /// The Cues tab beside a Mac recording: the server can cue Mac recordings.
     var macCues: Bool { available && macLiveCues }
+    /// 0.5.339: the glasses meeting's level strip in the bar. Off: today's still glyph.
+    var levelStrip: Bool { available && chunkLevels }
 }
 
 extension LiveMeetingCapability {
@@ -146,7 +150,8 @@ extension LiveMeetingCapability {
                   macLiveCues: details["liveMeetingMacLiveCues"]?.bool == true,
                   provisional: details["liveMeetingProvisional"]?.bool == true,
                   cueKinds: (details["liveCueKinds"]?.array ?? []).compactMap(\.string),
-                  liveCuesOn: details["liveCuesOn"]?.bool == true)
+                  liveCuesOn: details["liveCuesOn"]?.bool == true,
+                  chunkLevels: details["liveMeetingChunkLevels"]?.bool == true)
     }
 }
 

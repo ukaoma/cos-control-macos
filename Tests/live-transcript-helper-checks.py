@@ -115,6 +115,24 @@ try:
     r = landed["details"]["read"]
     check(r["unchanged"] is False and [t["i"] for t in r["turns"]] == [6, 7] and r["settledThrough"] == 8,
           "a late chunk below maxIndex still arrives, because the cursor waited for it")
+    check("levels" not in read and "levels" not in r, "a 6.86.0 file (no chunkLevels) reads with no levels")
+
+    # 0.5.339 (server 6.87.0): the file's chunkLevels cross as three numbers a chunk, in index order, the newest 120.
+    body["chunkLevels"] = [{"i": 4, "level": 0.105, "speechSec": 0.04}, {"i": 1, "level": 0.714, "speechSec": 3.2, "text": "SECRET-LEVEL-TEXT"},
+                           {"i": 2, "level": 0.3, "speechSec": None}, {"i": 3, "level": 7, "speechSec": 1}, {"i": 5, "level": True, "speechSec": 1}]
+    body["chunkLevels"] += [{"i": 10 + n, "level": 0.5, "speechSec": 2} for n in range(130)]
+    (sessions / (SID + ".json")).write_text(json.dumps(body, ensure_ascii=False))
+    code, levelled, out, err = run("live-transcript", "--data-dir", str(data_dir), "--session", SID, "--since", "8")
+    levels = levelled["details"]["read"]["levels"]
+    check(code == 0 and err == "" and len(levels) == 120 and levels[0]["i"] == 20 and levels[-1]["i"] == 139,
+          "chunkLevels: the newest 120, in index order")
+    check(all(set(entry) == {"i", "level", "speechSec"} for entry in levels) and "SECRET-LEVEL-TEXT" not in out, "each level is three numbers, nothing else")
+    body["chunkLevels"] = body["chunkLevels"][:5]
+    (sessions / (SID + ".json")).write_text(json.dumps(body, ensure_ascii=False))
+    code, few, _, _ = run("live-transcript", "--data-dir", str(data_dir), "--session", SID, "--since", "8")
+    check(few["details"]["read"]["levels"] == [{"i": 1, "level": 0.714, "speechSec": 3.2}, {"i": 2, "level": 0.3, "speechSec": None},
+                                               {"i": 4, "level": 0.105, "speechSec": 0.04}],
+          "a level outside 0 to 1, or not a number, is dropped; null speech seconds stays null")
 
     for bad in ["..", "a/b", "abc.tmp", "ab", "x" * 97, "../active-sessions/" + SID]:
         code, refused, out, err = run("live-transcript", "--data-dir", str(data_dir), "--session", bad)

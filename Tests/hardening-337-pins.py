@@ -165,7 +165,8 @@ need('Text("Prep me is off: Settings, Start Work runs from Today")' in win, "[N7
 need("After 6 PM, before 6 AM and on weekends" in views, "[N8 quiet] the help names the early morning")
 need("if let kept = liveMeetingTitlesKept[sessionId] { return kept }" in model, "[N10 title] a calendar title stays for its meeting")
 need("model.liveMeetingFileInfo(session)" in meetings and "let info = model.liveMeetingFileInfo(session)" in ask, "[N11 files] live files are filed under the meeting's title and day")
-need("if let files = model.workHandoffStore?.meetingFiles, files.enabled {" in meetings, "[N12 drop] the drop line only with meeting files on")
+# 0.5.339: the drop line under the bar is gone (the whole pane takes the drop); adding of any kind still needs meeting files on.
+need("guard let files = model.workHandoffStore?.meetingFiles, files.enabled else { return false }" in meetings, "[N12 drop] adding to a live meeting only with meeting files on")
 need("else if next.state != .loaded || missed >= 2 { next = Meeting(state: state, cues: next.cues, count: next.count) }" in core, "[N13 cues] failed reads keep the last cues")
 need("gate.mayPost(now: Date())" in recording, "[N14 grey] the preview loop asks the gate before reading audio")
 need("store.lastOK ? Color.secondary : COSPalette.amber" in dictation, "[N17 saved] Saved. is not amber")

@@ -42,6 +42,17 @@ struct LiveTranscriptRead: Codable, Equatable, Sendable {
     var lastActivityAt: Double? = nil
     var settledThrough: Int? = nil
     var turns: [LiveTranscriptChunk]? = nil
+    /// 0.5.339 (server 6.87.0): the newest chunks' levels from the file's `chunkLevels`, in index order. Two numbers a
+    /// chunk, never text. nil when the file has none (an older server).
+    var levels: [LiveChunkLevel]? = nil
+}
+
+/// 0.5.339 (server 6.87.0): one live chunk's rough level, as the server's quiet gate measured it: `level` 0 to 1 (its RMS
+/// on a dBFS scale) and `speechSec`, the Silero speech seconds (nil when the gate fell back to RMS).
+struct LiveChunkLevel: Codable, Equatable, Sendable {
+    let i: Int
+    let level: Double
+    var speechSec: Double? = nil
 }
 
 struct LiveTranscriptReply: Codable, Sendable {
@@ -862,6 +873,67 @@ struct LiveMeetingPreviewGate: Equatable, Sendable {
         let start = max(0, even - maximumBytes)
         return pcm.subdata(in: pcm.startIndex + start..<pcm.startIndex + even)
     }
+}
+
+/// 0.5.339: the glasses meeting's level strip (server 6.87.0, `capabilities.liveMeeting.chunkLevels`). One bar per chunk,
+/// newest on the right, dotted where the chunk held almost no speech. It trails the room by a chunk (about 6 s) plus
+/// transcription, which its VoiceOver label says.
+enum LiveLevelStrip {
+    /// Under this many Silero speech seconds a chunk draws dotted: the server's own quiet gate (QUIET_SPEECH_SEC).
+    static let speechFloor = 0.5
+    /// Without speech seconds (the gate fell back to RMS), at or under this level: about the gate's RMS 150.
+    static let levelFloor = 0.27
+    /// Points per chunk: a bar and its gap.
+    static let step: Double = 5
+    static let accessibilityLabel = "Audio level, a few seconds behind"
+
+    static func isSilent(_ level: LiveChunkLevel) -> Bool {
+        if let speech = level.speechSec { return speech < speechFloor }
+        return level.level <= levelFloor
+    }
+
+    /// The levels a strip `width` points wide draws: the newest that fit, oldest first. The oldest are the ones clipped.
+    static func visible(_ levels: [LiveChunkLevel], width: Double) -> [LiveChunkLevel] {
+        guard width.isFinite, width >= step else { return [] }
+        let fit = Int((width / step).rounded(.down))
+        return levels.count > fit ? Array(levels.suffix(fit)) : levels
+    }
+
+    static func accessibilityValue(_ levels: [LiveChunkLevel]) -> String {
+        guard let last = levels.last else { return "Waiting for the first chunk" }
+        return isSilent(last) ? "Quiet" : "Speech"
+    }
+}
+
+/// 0.5.339: the bottom bar's widths, from the approved mock (wk43 mock-339). The meter shrinks first, clipping its
+/// oldest samples, down to `meterFloor`; under `labelWidth` of bar Add file is icon-only (its VoiceOver label stays "Add
+/// file"); under `meterWidth` the still glyph takes the meter's place. The buttons never wrap.
+enum LiveRecordingBarLayout {
+    static let labelWidth: Double = 560
+    static let meterWidth: Double = 340
+    static let meterFloor: Double = 40
+    static let addFileLabel = "Add file"
+
+    struct Mode: Equatable, Sendable {
+        let addFileLabelled: Bool
+        let meter: Bool
+    }
+
+    static func mode(barWidth: Double) -> Mode {
+        Mode(addFileLabelled: barWidth >= labelWidth, meter: barWidth >= meterWidth)
+    }
+}
+
+/// 0.5.339: one place for files in the live pane. The Files row under the header: "Files · 2", the total size and a
+/// chevron; hidden with no files (unless an Undo for a removed one is still offered).
+enum LiveMeetingFiles {
+    static let dropLabel = "Drop to add to this meeting"
+    static let pasteLabel = "Paste screenshot"
+    static let chooseLabel = "Choose files\u{2026}"
+    static let note = "On this Mac only. COS keeps copies in ~/cos-data/meeting-context and saves them with the meeting."
+
+    static func rowTitle(count: Int) -> String { "Files \u{00B7} \(count)" }
+    static func showsRow(count: Int, pendingUndo: Int) -> Bool { count > 0 || pendingUndo > 0 }
 }
 
 enum LiveMeeting {

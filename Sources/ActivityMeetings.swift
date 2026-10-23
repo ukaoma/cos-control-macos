@@ -796,7 +796,6 @@ struct MeetingFilesSection: View {
     let info: WorkMeetingInfo
     @State private var targeted = false
     @State private var preview: URL?
-    @State private var hovered: String?
     @FocusState private var focused: Bool
 
     private var primaryID: String? { keys.first.flatMap(WorkCardFiles.meetingID(forKey:)) }
@@ -908,7 +907,23 @@ struct MeetingFilesSection: View {
     }
 
     private func row(_ file: WorkContextFile, folder: URL, id: String) -> some View {
-        let hover = hovered == file.id
+        MeetingFileRow(files: files, file: file, folder: folder, id: id, removable: supported == true, preview: $preview)
+    }
+}
+
+/// One file in a meeting's list: its icon, name, state and details, and Quick Look, Show in Finder (or Open the link) and
+/// Remove (Undo is offered). Shared by the saved meeting's Files box and the live pane's Files row (0.5.339).
+struct MeetingFileRow: View {
+    @ObservedObject var files: WorkCardFileStore
+    let file: WorkContextFile
+    let folder: URL
+    /// The meeting folder's id the file sits in (Remove and Undo act there).
+    let id: String
+    let removable: Bool
+    @Binding var preview: URL?
+    @State private var hover = false
+
+    var body: some View {
         let (word, tint) = WorkCardFiles.secretFlagged(file) ? ("Not sent", COSPalette.amber) : WorkCardFilesSection.stateWord(file)
         var parts = WorkCardFilesSection.metaParts(file)
         if let text = file.companions.first(where: { $0.kind == "text" }), file.kind == "image" || file.kind == "heic" {
@@ -937,15 +952,16 @@ struct MeetingFilesSection: View {
                         guard let location else { return }
                         if file.kind == "link" { NSWorkspace.shared.open(location) } else { NSWorkspace.shared.activateFileViewerSelecting([location]) }
                     }
-                    if supported == true { icon("xmark", "Remove from this meeting (Undo is offered)") { files.remove(file.id, workID: id) } }
+                    if removable { icon("xmark", "Remove from this meeting (Undo is offered)") { files.remove(file.id, workID: id) } }
                 }.foregroundStyle(COSPalette.muted)
             }
         }
         .padding(.horizontal, 10).padding(.vertical, 8)
         .background(hover ? COSPalette.gold.opacity(0.06) : .clear)
         .contentShape(Rectangle())
-        .onHover { inside in hovered = inside ? file.id : (hovered == file.id ? nil : hovered) }
+        .onHover { hover = $0 }
     }
+
     private func icon(_ symbol: String, _ help: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: symbol).font(.system(size: 11)).frame(width: 24, height: 24).contentShape(Rectangle())
@@ -2198,9 +2214,16 @@ struct LiveTranscriptPane: View {
     @State private var follow = LiveTranscriptFollow()
     @State private var atBottom = true
     @State private var showAsk = true
-    /// 0.5.281 (Miles, 2026-10-10): open while the meeting is live. Collapsed, the drop zone, Paste screenshot and Add
-    /// files were out of sight, so a screenshot went to the Ask box as its path instead. It can still be closed.
-    @State private var filesExpanded = true
+    /// 0.5.339 (approved mock wk43 mock-339): one place for files. The Files row stays collapsed until opened; adding
+    /// moved to the whole pane (a drop anywhere on it) and the bar's Add file button, so nothing to add hides in it.
+    @State private var filesOpen = false
+    /// 0.5.339: a file is being dragged over the pane (the outline and "Drop to add to this meeting" on the transcript).
+    @State private var dropTargeted = false
+    /// 0.5.339: the Add file menu (inline, never a sheet or a popover window).
+    @State private var addMenuOpen = false
+    /// 0.5.339: Command-V adds a screenshot while the pane itself has focus (a click on its header or bar). A text field
+    /// keeps its own paste: this is the responder chain's paste, never a key equivalent that could take it.
+    @FocusState private var paneFocused: Bool
     @State private var askJumpID: Int?
     @AppStorage("meetingAskPanelWidth") private var askWidth = 360.0
     @State private var resizeStart: Double?
@@ -2269,6 +2292,7 @@ struct LiveTranscriptPane: View {
                 if !strip.people.isEmpty { LiveParticipantStrip(people: strip.people, lastHeard: strip.lastHeard).padding(.bottom, 10) }
             }
             Divider()
+            Group {
             if let feed, !feed.turns.isEmpty {
                 transcript(feed)
             } else {
@@ -2286,18 +2310,38 @@ struct LiveTranscriptPane: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .padding(30)
             }
-            Divider()
-            // 0.5.336: the bottom bar while it records, and the files line under it.
+            }
+            // 0.5.339: while a file is dragged over the pane, the transcript is outlined with where it goes. Drawn only:
+            // the drop destination is the pane itself (an overlay drop destination never fires, 0.5.246).
+            .overlay { if dropTargeted { LiveFilesDropOutline() } }
+            .overlay { if addMenuOpen { menuDismissLayer } }
+            // 0.5.336, 0.5.339: the bottom bar while it records, with Add file beside Stop. The line that used to sit under
+            // it ("Drop in screenshots or files while it's on") is gone: the whole pane takes the drop.
             if let session, feed?.ended != true {
-                LiveRecordingBar(start: feed?.startTime ?? macStart(session), mac: mac) { stopControls(feed) }
-                // 0.5.337 (loop audit N12): only while meeting files are on.
-                if let files = model.workHandoffStore?.meetingFiles, files.enabled {
-                    LiveFilesDropLine(files: files, key: LibraryMeeting.captureContextKey(session), info: model.liveMeetingFileInfo(session))
-                }
+                LiveRecordingBar(start: feed?.startTime ?? macStart(session), mac: mac,
+                                 levelStrip: !mac && model.liveMeetingCapability.levelStrip, sessionId: session) { labelled in
+                    addFileControl(session, labelled: labelled)
+                } stop: { stopControls(feed) }
+                .padding(.horizontal, 18).padding(.top, 8).padding(.bottom, 2)
+                .contentShape(Rectangle())
+                .onTapGesture { if canAddFiles(session) { paneFocused = true } }
+            } else {
                 Divider()
             }
             footer(feed)
         }
+        // 0.5.339: the whole live pane takes a file drop, into the same meeting-files store and intake as before.
+        .modifier(MeetingFilesDrop(enabled: session.map(canAddFiles) ?? false, targeted: $dropTargeted) { providers in
+            guard let session, let files = model.workHandoffStore?.meetingFiles else { return }
+            let key = LibraryMeeting.captureContextKey(session), info = model.liveMeetingFileInfo(session)
+            Task { await files.intakeMeeting(providers: providers, key: key, info: info) }
+        })
+        .focusable(session.map(canAddFiles) ?? false, interactions: .edit)
+        .focusEffectDisabled()
+        .focused($paneFocused)
+        .onPasteCommand(of: [.fileURL, .png, .tiff]) { _ in if let session { pasteScreenshot(session) } }
+        .onChange(of: dropTargeted) { _, targeted in if targeted { addMenuOpen = false } }
+        .onChange(of: session) { _, _ in addMenuOpen = false; filesOpen = false }
         .task(id: "\(session ?? "") \(model.liveMeetingCapability.inlineCues) \(feed?.ended == true)") { await followInlineCues(session) }
         .frame(minWidth: 420, maxWidth: .infinity, minHeight: 300, maxHeight: .infinity, alignment: .top)
         .background(COSPalette.panel)
@@ -2371,17 +2415,63 @@ struct LiveTranscriptPane: View {
                     Text(MacRecordingNoMeeting.line).font(COSType.body(11.5)).foregroundStyle(.secondary)
                 } else { handoffLine(feed) }
             }
+            // 0.5.339: one collapsed "Files · N" row (hidden with none); open, the list with Quick Look, Show in Finder and
+            // Remove, and the note. No drop strip and no buttons of its own: adding is the pane's drop and the bar's Add file.
             if let session = model.liveTranscriptOpenID, let files = model.workHandoffStore?.meetingFiles {
-                DisclosureGroup("Files shared in this meeting", isExpanded: $filesExpanded) {
-                    MeetingFilesSection(files: files, keys: [LibraryMeeting.captureContextKey(session)], supported: true, ambiguous: false, reason: "",
-                        info: model.liveMeetingFileInfo(session))
-                }.font(COSType.body(11.5))
+                LiveMeetingFilesRow(files: files, key: LibraryMeeting.captureContextKey(session), info: model.liveMeetingFileInfo(session), open: $filesOpen)
+                    .padding(.top, 4)
             }
         }
         .padding(.horizontal, 24)
         .padding(.top, 18)
         .padding(.bottom, 12)
         .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            addMenuOpen = false
+            if let session = model.liveTranscriptOpenID, canAddFiles(session) { paneFocused = true }
+        }
+    }
+
+    /// Files may be added to this live meeting: meeting files are on and its capture key names a meeting folder.
+    private func canAddFiles(_ session: String) -> Bool {
+        guard let files = model.workHandoffStore?.meetingFiles, files.enabled else { return false }
+        return WorkCardFiles.meetingID(forKey: LibraryMeeting.captureContextKey(session)) != nil
+    }
+
+    /// Paste screenshot: the clipboard's image or files, through the meeting-files paste (the same path as before).
+    private func pasteScreenshot(_ session: String) {
+        guard canAddFiles(session), let files = model.workHandoffStore?.meetingFiles else { return }
+        let key = LibraryMeeting.captureContextKey(session), info = model.liveMeetingFileInfo(session)
+        Task { await files.pasteMeeting(from: NSPasteboard.general, key: key, info: info) }
+    }
+
+    /// Choose files…: files and folders, several at once, through the same intake as a drop.
+    private func chooseFiles(_ session: String) {
+        guard canAddFiles(session), let files = model.workHandoffStore?.meetingFiles else { return }
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true; panel.canChooseDirectories = true; panel.allowsMultipleSelection = true
+        panel.prompt = "Add to meeting"; panel.message = "Choose screenshots, slides or files to add to this meeting."
+        guard panel.runModal() == .OK else { return }
+        let urls = panel.urls, key = LibraryMeeting.captureContextKey(session), info = model.liveMeetingFileInfo(session)
+        Task { await files.intakeMeeting(urls: urls, key: key, info: info) }
+    }
+
+    /// The bar's Add file button and its inline menu (Paste screenshot, Choose files…). Command-O chooses files while the
+    /// live pane shows; Command-V is the pane's paste (above). Only while files may be added.
+    @ViewBuilder
+    private func addFileControl(_ session: String, labelled: Bool) -> some View {
+        if canAddFiles(session) {
+            LiveAddFileButton(labelled: labelled, open: $addMenuOpen,
+                              paste: { addMenuOpen = false; pasteScreenshot(session) },
+                              choose: { addMenuOpen = false; chooseFiles(session) })
+        }
+    }
+
+    /// Under the open Add file menu: a click anywhere else on the pane closes it.
+    private var menuDismissLayer: some View {
+        Color.black.opacity(0.001).contentShape(Rectangle()).onTapGesture { addMenuOpen = false }
+            .accessibilityHidden(true)
     }
 
     @ViewBuilder
@@ -2594,6 +2684,8 @@ struct LiveTurnRow: View {
 struct LiveAudiogramView: View {
     @ObservedObject var feed: LiveAudiogramFeed
     var height: CGFloat = 22
+    /// Points per level: the full 12 s ring is 300 pt.
+    static let step: CGFloat = 2.5
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
@@ -2608,14 +2700,17 @@ struct LiveAudiogramView: View {
                 .frame(height: 4)
                 .frame(height: height)
             } else {
+                // 0.5.339: a fixed step per level, newest at the right edge. A narrower bar clips the OLDEST levels at
+                // the left (faded), down to the 40 pt floor; it never squeezes the history.
                 Canvas { context, size in
                     let levels = feed.ring.levels
-                    let step = size.width / CGFloat(levels.count)
+                    let step = LiveAudiogramView.step
                     let mid = size.height / 2
-                    for (index, level) in levels.enumerated() {
-                        let x = CGFloat(index) * step + step / 2
+                    for (back, level) in levels.reversed().enumerated() {
+                        let x = size.width - (CGFloat(back) + 0.5) * step
+                        guard x >= 0 else { break }
                         if LiveAudiogramRing.isSilent(level) {
-                            if index % 3 == 0 {
+                            if back % 3 == 0 {
                                 context.fill(Path(ellipseIn: CGRect(x: x - 0.75, y: mid - 0.75, width: 1.5, height: 1.5)), with: .color(COSPalette.muted.opacity(0.7)))
                             }
                         } else {
@@ -2626,6 +2721,7 @@ struct LiveAudiogramView: View {
                     }
                 }
                 .frame(height: height)
+                .mask(LiveMeterFade())
             }
         }
         .accessibilityElement()
@@ -2675,33 +2771,291 @@ struct LiveLevelBars: View {
     var body: some View { LiveLevelGlyph.bars(Array(feed.ring.levels.suffix(3))) }
 }
 
-/// The bottom bar while the meeting records: the red dot, the elapsed time on its own one-second clock, the audiogram
-/// (Mac recordings only) and Stop.
-struct LiveRecordingBar<Stop: View>: View {
+/// The bottom bar while the meeting records (0.5.339, the approved mock): the red dot, the elapsed time on its own
+/// one-second clock, the meter, Add file and Stop. The meter is the Mac recording's audiogram, the glasses meeting's level
+/// strip on a 6.87.0 server, else the still glyph. Widths follow LiveRecordingBarLayout: the meter shrinks first (its
+/// oldest samples clipped) to 40 pt, Add file goes icon-only under 560 pt, the still glyph takes the meter's place under
+/// 340 pt, and the buttons never wrap.
+struct LiveRecordingBar<Add: View, Stop: View>: View {
     let start: Date?
     let mac: Bool
+    /// A glasses meeting on a server that keeps chunk levels.
+    var levelStrip = false
+    var sessionId: String? = nil
+    @ViewBuilder let add: (_ labelled: Bool) -> Add
     @ViewBuilder let stop: () -> Stop
 
+    static var height: CGFloat { 50 }
+
     var body: some View {
-        HStack(spacing: 12) {
-            LiveDot(size: 9)
-            if let start {
-                TimelineView(.periodic(from: start, by: 1)) { context in
-                    Text(LiveMeeting.elapsed(context.date.timeIntervalSince(start)))
-                        .font(COSType.mono(12.5, weight: .medium)).monospacedDigit()
+        GeometryReader { geometry in
+            let mode = LiveRecordingBarLayout.mode(barWidth: geometry.size.width)
+            HStack(spacing: 10) {
+                LiveDot(size: 9)
+                Group {
+                    if let start {
+                        TimelineView(.periodic(from: start, by: 1)) { context in
+                            Text(LiveMeeting.elapsed(context.date.timeIntervalSince(start)))
+                                .font(COSType.mono(12.5, weight: .medium)).monospacedDigit()
+                        }
+                    } else {
+                        Text("Starting").font(COSType.body(12)).foregroundStyle(.secondary)
+                    }
                 }
-            } else {
-                Text("Starting").font(COSType.body(12)).foregroundStyle(.secondary)
+                .lineLimit(1).fixedSize()
+                meter(mode)
+                add(mode.addFileLabelled).fixedSize()
+                stop().lineLimit(1).fixedSize()
             }
-            if mac {
-                LiveAudiogramView(feed: .live).frame(maxWidth: .infinity)
-            } else {
-                Spacer(minLength: 0)
-            }
-            stop()
+            .padding(.leading, 14).padding(.trailing, 8)
+            .frame(width: geometry.size.width, height: geometry.size.height, alignment: .leading)
         }
-        .padding(.horizontal, 24)
-        .padding(.vertical, 10)
+        .frame(height: Self.height)
+        .background(COSPalette.raised.opacity(0.55), in: RoundedRectangle(cornerRadius: 11))
+        .overlay(RoundedRectangle(cornerRadius: 11).stroke(COSPalette.line))
+    }
+
+    @ViewBuilder
+    private func meter(_ mode: LiveRecordingBarLayout.Mode) -> some View {
+        if mode.meter && mac {
+            LiveAudiogramView(feed: .live).frame(minWidth: LiveRecordingBarLayout.meterFloor, maxWidth: .infinity)
+        } else if mode.meter && levelStrip, let sessionId {
+            LiveChunkLevelStripView(feed: .live, sessionId: sessionId).frame(minWidth: LiveRecordingBarLayout.meterFloor, maxWidth: .infinity)
+        } else {
+            LiveLevelGlyph(feed: nil).accessibilityHidden(true)
+            Spacer(minLength: 0)
+        }
+    }
+}
+
+/// The meter's left edge fades out, so clipped history reads as older, not cut.
+struct LiveMeterFade: View {
+    var body: some View {
+        HStack(spacing: 0) {
+            LinearGradient(colors: [.clear, .black], startPoint: .leading, endPoint: .trailing).frame(width: 28)
+            Color.black
+        }
+    }
+}
+
+/// The glasses meeting's chunk levels (server 6.87.0), from the live transcript read. The DictationMeterFeed and
+/// LiveAudiogramFeed pattern: its own object, observed only by the strip, never ControllerModel's published state. One
+/// session at a time (the open one); in memory only, two numbers a chunk.
+@MainActor final class LiveChunkLevelFeed: ObservableObject {
+    static let live = LiveChunkLevelFeed()
+    @Published private(set) var sessionId: String?
+    @Published private(set) var levels: [LiveChunkLevel] = []
+    func set(_ sessionId: String, _ levels: [LiveChunkLevel]) {
+        if self.sessionId != sessionId { self.sessionId = sessionId }
+        if self.levels != levels { self.levels = levels }
+    }
+    func clear() { if sessionId != nil { sessionId = nil }; if !levels.isEmpty { levels = [] } }
+    func levels(for sessionId: String) -> [LiveChunkLevel] { self.sessionId == sessionId ? levels : [] }
+}
+
+/// The coarse strip for a glasses meeting: one bar per chunk, newest at the right, dotted where the chunk held almost no
+/// speech, the oldest clipped first when narrow. It trails the room by a chunk, which VoiceOver says. Reduce Motion: a
+/// static level bar of the newest chunk. No levels yet: the still glyph.
+struct LiveChunkLevelStripView: View {
+    @ObservedObject var feed: LiveChunkLevelFeed
+    let sessionId: String
+    var height: CGFloat = 22
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        let levels = feed.levels(for: sessionId)
+        Group {
+            if levels.isEmpty {
+                HStack(spacing: 0) { LiveLevelGlyph(feed: nil); Spacer(minLength: 0) }.frame(height: height)
+            } else if reduceMotion {
+                GeometryReader { geometry in
+                    let latest = levels.last.map { LiveLevelStrip.isSilent($0) ? 0 : $0.level } ?? 0
+                    ZStack(alignment: .leading) {
+                        Capsule().fill(COSPalette.line)
+                        Capsule().fill(COSPalette.accent).frame(width: max(2, geometry.size.width * latest))
+                    }
+                }
+                .frame(height: 4)
+                .frame(height: height)
+            } else {
+                Canvas { context, size in
+                    let shown = LiveLevelStrip.visible(levels, width: Double(size.width))
+                    let step = CGFloat(LiveLevelStrip.step)
+                    let mid = size.height / 2
+                    for (back, level) in shown.reversed().enumerated() {
+                        let x = size.width - (CGFloat(back) + 0.5) * step
+                        if LiveLevelStrip.isSilent(level) {
+                            context.fill(Path(ellipseIn: CGRect(x: x - 1, y: mid - 1, width: 2, height: 2)), with: .color(COSPalette.muted.opacity(0.7)))
+                        } else {
+                            let h = max(3, CGFloat(level.level) * size.height)
+                            context.fill(Path(roundedRect: CGRect(x: x - 1.5, y: mid - h / 2, width: 3, height: h), cornerRadius: 1.5),
+                                         with: .color(COSPalette.accent.opacity(0.8)))
+                        }
+                    }
+                }
+                .frame(height: height)
+                .mask(LiveMeterFade())
+            }
+        }
+        .accessibilityElement()
+        .accessibilityLabel(LiveLevelStrip.accessibilityLabel)
+        .accessibilityValue(LiveLevelStrip.accessibilityValue(levels))
+    }
+}
+
+/// The bar's Add file button: a paperclip and "Add file", or the paperclip alone under 560 pt (VoiceOver still reads
+/// "Add file"). It opens an inline menu above it: Paste screenshot (Command-V) and Choose files… (Command-O). Command-O
+/// works while the button shows; Command-V is the live pane's own paste, so a text field keeps its paste.
+struct LiveAddFileButton: View {
+    let labelled: Bool
+    @Binding var open: Bool
+    let paste: () -> Void
+    let choose: () -> Void
+
+    var body: some View {
+        Button { open.toggle() } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "paperclip").font(.system(size: 12, weight: .semibold))
+                if labelled { Text(LiveRecordingBarLayout.addFileLabel).lineLimit(1) }
+            }
+            .frame(minWidth: labelled ? nil : 18)
+        }
+        .buttonStyle(COSQuietButtonStyle())
+        .accessibilityLabel(LiveRecordingBarLayout.addFileLabel)
+        .help("Add a screenshot or files to this meeting")
+        .overlay(alignment: .bottomTrailing) {
+            if open {
+                LiveAddFileMenu(paste: paste, choose: choose)
+                    .offset(y: -40)
+                    .transition(.opacity)
+            }
+        }
+        .background {
+            // Command-O, and Escape while the menu is open. Hidden buttons: window key equivalents that no text field uses.
+            Button("") { choose() }.keyboardShortcut("o", modifiers: .command).opacity(0).allowsHitTesting(false).accessibilityHidden(true)
+            if open {
+                Button("") { open = false }.keyboardShortcut(.cancelAction).opacity(0).allowsHitTesting(false).accessibilityHidden(true)
+            }
+        }
+    }
+}
+
+/// The two rows of the Add file menu, each with its shortcut at the right.
+struct LiveAddFileMenu: View {
+    let paste: () -> Void
+    let choose: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            row(LiveMeetingFiles.pasteLabel, symbol: "doc.on.clipboard", keys: "\u{2318}V", action: paste)
+            row(LiveMeetingFiles.chooseLabel, symbol: "folder", keys: "\u{2318}O", action: choose)
+        }
+        .padding(5)
+        .frame(width: 224)
+        .background(COSPalette.panel, in: RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(COSPalette.line))
+        .shadow(color: .black.opacity(0.18), radius: 14, y: 8)
+        .fixedSize()
+    }
+
+    private func row(_ title: String, symbol: String, keys: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                Image(systemName: symbol).font(.system(size: 12)).frame(width: 16)
+                Text(title).lineLimit(1)
+                Spacer(minLength: 8)
+                Text(keys).font(COSType.mono(11.5)).foregroundStyle(COSPalette.muted)
+            }
+            .font(COSType.body(13))
+            .padding(.horizontal, 9).frame(height: 30)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(title)
+    }
+}
+
+/// While a file is dragged over the live pane: a light outline on the transcript and where the file goes.
+struct LiveFilesDropOutline: View {
+    var body: some View {
+        RoundedRectangle(cornerRadius: 12)
+            .stroke(COSPalette.gold.opacity(0.55), lineWidth: 2)
+            .background(COSPalette.gold.opacity(0.05), in: RoundedRectangle(cornerRadius: 12))
+            .overlay {
+                Label(LiveMeetingFiles.dropLabel, systemImage: "paperclip")
+                    .font(COSType.body(14, weight: .semibold))
+                    .foregroundStyle(COSPalette.accent)
+                    .padding(.horizontal, 18).padding(.vertical, 12)
+                    .background(COSPalette.panel, in: RoundedRectangle(cornerRadius: 10))
+                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(COSPalette.gold.opacity(0.35)))
+            }
+            .padding(6)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+    }
+}
+
+/// The live pane's one Files row (0.5.339): "Files · 2", the total size and a chevron. Open, the files with Quick Look,
+/// Show in Finder and Remove, any Undo still offered, and the note. Hidden with no files. No drop strip and no buttons of
+/// its own. A drop's or a paste's flash and any error show under it, open or not, so an add is never silent.
+struct LiveMeetingFilesRow: View {
+    @ObservedObject var files: WorkCardFileStore
+    let key: String
+    let info: WorkMeetingInfo
+    @Binding var open: Bool
+    @State private var preview: URL?
+
+    var body: some View {
+        let shown = files.meetingFiles(keys: [key])
+        let id = WorkCardFiles.meetingID(forKey: key)
+        let undo = id.map { files.recentlyRemoved(for: $0) } ?? []
+        VStack(alignment: .leading, spacing: 6) {
+            if LiveMeetingFiles.showsRow(count: shown.count, pendingUndo: undo.count) {
+                VStack(alignment: .leading, spacing: 0) {
+                    Button { open.toggle() } label: {
+                        HStack(spacing: 8) {
+                            Image(systemName: "paperclip").font(.system(size: 11, weight: .semibold)).foregroundStyle(COSPalette.muted)
+                            Text(LiveMeetingFiles.rowTitle(count: shown.count)).font(COSType.body(12.5, weight: .semibold))
+                            Spacer(minLength: 6)
+                            Text(WorkCardFiles.sizeText(shown.filter { !$0.file.isLink }.reduce(0) { $0 + $1.file.bytes }))
+                                .font(COSType.mono(11)).foregroundStyle(COSPalette.muted)
+                            Image(systemName: open ? "chevron.up" : "chevron.down").font(.system(size: 9, weight: .bold)).foregroundStyle(COSPalette.muted)
+                        }
+                        .padding(.horizontal, 12).frame(height: 34)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(LiveMeetingFiles.rowTitle(count: shown.count))
+                    .accessibilityValue(open ? "Open" : "Closed")
+                    if open {
+                        Divider().overlay(COSPalette.line)
+                        ForEach(shown, id: \.file.id) { entry in
+                            MeetingFileRow(files: files, file: entry.file, folder: entry.folder, id: entry.id, removable: true, preview: $preview)
+                            Divider().overlay(COSPalette.line)
+                        }
+                        if let id {
+                            ForEach(undo) { file in
+                                HStack(spacing: 8) {
+                                    Text("Removed \u{201C}\(file.display)\u{201D}.").lineLimit(1).truncationMode(.middle)
+                                    Spacer(minLength: 6)
+                                    Button("Undo") { files.undoRemove(file.id, workID: id) }.buttonStyle(COSTextButtonStyle())
+                                }.font(COSType.body(11)).foregroundStyle(COSPalette.muted).padding(.horizontal, 10).padding(.vertical, 6)
+                                Divider().overlay(COSPalette.line)
+                            }
+                        }
+                        Text(LiveMeetingFiles.note).font(COSType.body(11)).foregroundStyle(COSPalette.muted)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .padding(.horizontal, 12).padding(.top, 8).padding(.bottom, 10)
+                    }
+                }
+                .background(COSPalette.raised.opacity(0.5), in: RoundedRectangle(cornerRadius: 9))
+                .overlay(RoundedRectangle(cornerRadius: 9).stroke(COSPalette.line))
+            }
+            if let id { WorkCardFlashView(files: files, workID: id) }
+            if let error = files.error { Text(error).font(COSType.body(11)).foregroundStyle(COSPalette.danger) }
+        }
+        .quickLookPreview($preview)
+        .task(id: key) { files.loadIfNeeded(); files.noteMeeting(keys: [key], info: info) }
     }
 }
 
@@ -2820,34 +3174,6 @@ struct LiveProvisionalLineView: View {
             }
         }
         .onChange(of: text) { _, _ in changed() }
-    }
-}
-
-/// The line under the bottom bar: drop files on it while the meeting runs; they are saved with the meeting (the same
-/// intake as the Files box above).
-struct LiveFilesDropLine: View {
-    @ObservedObject var files: WorkCardFileStore
-    let key: String
-    var info = WorkMeetingInfo(recordId: "", title: "Live meeting", date: "")
-    @State private var targeted = false
-    static let line = "Drop in screenshots or files while it's on. They're saved with the meeting."
-
-    var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "paperclip").font(.system(size: 11))
-            Text(targeted ? "Drop to add to this meeting" : Self.line)
-            Spacer(minLength: 0)
-        }
-        .font(COSType.body(11.5))
-        .foregroundStyle(targeted ? COSPalette.accent : COSPalette.muted)
-        .padding(.horizontal, 24)
-        .padding(.vertical, 8)
-        .background(targeted ? COSPalette.gold.opacity(0.06) : .clear)
-        .contentShape(Rectangle())
-        .modifier(MeetingFilesDrop(enabled: files.enabled, targeted: $targeted) { providers in
-            let info = info
-            Task { await files.intakeMeeting(providers: providers, key: key, info: info) }
-        })
     }
 }
 

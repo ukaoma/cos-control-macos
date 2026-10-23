@@ -71,7 +71,7 @@ all_sources = "\n".join(sources.values())
 # ── The capability, from public health through the helper's status, never a status code.
 need('details.merge(Self.liveMeetingStatusFields(health?["capabilities"])) { _, new in new }' in helper, "status forwards the live meeting keys")
 fields = body(helper, "static func liveMeetingStatusFields(_ capabilities: Any?) -> [String: Any] {")
-for key in ("liveMeetingProtocol", "liveMeetingMacLiveCues", "liveMeetingProvisional", "liveCueKinds", "liveCuesOn"):
+for key in ("liveMeetingProtocol", "liveMeetingMacLiveCues", "liveMeetingProvisional", "liveCueKinds", "liveCuesOn", "liveMeetingChunkLevels"):
     need('"' + key + '"' in fields and 'details["' + key + '"]' in models, "the " + key + " key crosses and the model reads it")
 need('block?["liveCuesV2"] is [String: Any]' in fields, "Live cues on is the server advertising liveCuesV2 (it does only while the switch is on)")
 need("liveMeeting = LiveMeetingCapability(statusDetails: details)" in models, "ServerStatus reads the capability")
@@ -151,10 +151,11 @@ need("@Environment(\\.accessibilityReduceMotion) private var reduceMotion" in au
      and audiogram.index("if reduceMotion {") < audiogram.index("Canvas {") and "Canvas {" not in between(audiogram, "if reduceMotion {", "} else {"),
      "Reduce Motion draws a static level bar, never the scrolling Canvas")
 need(audiogram.count("Canvas {") == 1 and "LiveAudiogramRing.isSilent(level)" in audiogram, "one Canvas, dotted where silent")
-bar = body(meetings, "struct LiveRecordingBar<Stop: View>: View {")
-need("TimelineView(.periodic(from: start, by: 1))" in bar and "LiveAudiogramView(feed: .live)" in bar and "if mac {" in bar,
+bar = body(meetings, "struct LiveRecordingBar<Add: View, Stop: View>: View {")
+need("TimelineView(.periodic(from: start, by: 1))" in bar and "LiveAudiogramView(feed: .live)" in bar and "if mode.meter && mac {" in bar,
      "the bar's clock ticks each second in its own TimelineView; the audiogram is for Mac recordings only")
-need("LiveRecordingBar(start: feed?.startTime ?? macStart(session), mac: mac) { stopControls(feed) }" in pane, "the pane draws the bar while it records")
+need("LiveRecordingBar(start: feed?.startTime ?? macStart(session), mac: mac," in pane and "} stop: { stopControls(feed) }" in pane,
+     "the pane draws the bar while it records")
 strip = body(meetings, "struct LiveParticipantStrip: View {")
 need("LiveLastHeardBar(still: reduceMotion)" in strip and "guard !still else { return }" in body(meetings, "struct LiveLastHeardBar: View {"),
      "the last-heard bar is still under Reduce Motion")
@@ -223,9 +224,89 @@ badge = body(meetings, "struct LiveRailBadge: View {")
 need("TimelineView(.periodic(from: start, by: 1))" in badge and "LiveMeeting.elapsed(" in badge, "the badge's elapsed time on its own clock")
 need("model.liveMeetingCalendarEvent = nextEvent" in window, "the calendar's event reaches the title")
 need('Text(verbatim: model.liveTranscriptOpenID.map { model.liveMeetingTitle($0, start: feed?.startTime) } ?? "Live meeting")' in pane, "the header shows the real title")
-need('static let line = "Drop in screenshots or files while it\'s on. They\'re saved with the meeting."' in meetings
-     and "LiveFilesDropLine(files: files, key: LibraryMeeting.captureContextKey(session), info: model.liveMeetingFileInfo(session))" in pane, "the files line under the bar")
-need("MeetingFilesDrop(enabled: files.enabled, targeted: $targeted)" in body(meetings, "struct LiveFilesDropLine: View {"), "the files line is a drop target, on the line itself")
+
+# ── 0.5.339: one place for files (the approved mock, wk43 mock-339). The whole pane takes the drop; the bar's Add file
+# opens Paste screenshot and Choose files…; the Files row is collapsed, hidden with none, and adds nothing itself.
+meeting_body = body(pane, "private var meetingBody: some View {")
+need("Drop in screenshots" not in all_sources and "LiveFilesDropLine" not in all_sources, "the line under the bar is gone")
+need(".modifier(MeetingFilesDrop(enabled: session.map(canAddFiles) ?? false, targeted: $dropTargeted) { providers in" in meeting_body
+     and "Task { await files.intakeMeeting(providers: providers, key: key, info: info) }" in meeting_body,
+     "the whole live pane is the drop target, through the meeting files intake")
+need(meeting_body.index(".modifier(MeetingFilesDrop(") > meeting_body.index("footer(feed)"), "the drop is on the pane itself, after all its parts, never on one of them")
+need(".overlay { if dropTargeted { LiveFilesDropOutline() } }" in meeting_body, "while dragging, the transcript is outlined")
+outline = body(meetings, "struct LiveFilesDropOutline: View {")
+need(".allowsHitTesting(false)" in outline and "LiveMeetingFiles.dropLabel" in outline, "the outline is drawn only (an overlay drop destination never fires), with where it goes")
+need('static let dropLabel = "Drop to add to this meeting"' in pure, "the drop's words")
+can_add = body(pane, "private func canAddFiles(_ session: String) -> Bool {")
+need("files.enabled" in can_add and "WorkCardFiles.meetingID(forKey: LibraryMeeting.captureContextKey(session)) != nil" in can_add,
+     "adding needs meeting files on and a meeting folder for the capture (0.5.337 N12)")
+need("addFileControl(session, labelled: labelled)" in pane and "if canAddFiles(session) {" in body(pane, "private func addFileControl(_ session: String, labelled: Bool) -> some View {"),
+     "Add file sits in the bar, only while files may be added")
+add_button = body(meetings, "struct LiveAddFileButton: View {")
+need(".accessibilityLabel(LiveRecordingBarLayout.addFileLabel)" in add_button and "if labelled { Text(LiveRecordingBarLayout.addFileLabel)" in add_button,
+     "icon-only Add file keeps its VoiceOver label")
+need('Image(systemName: "paperclip")' in add_button and "LiveAddFileMenu(paste: paste, choose: choose)" in add_button, "the paperclip, and the menu above it")
+menu = body(meetings, "struct LiveAddFileMenu: View {")
+need('row(LiveMeetingFiles.pasteLabel, symbol: "doc.on.clipboard", keys: "\\u{2318}V", action: paste)' in menu
+     and 'row(LiveMeetingFiles.chooseLabel, symbol: "folder", keys: "\\u{2318}O", action: choose)' in menu, "Paste screenshot and Choose files…, with their keys")
+need(all_sources.count('.keyboardShortcut("o", modifiers: .command)') == 1 and '.keyboardShortcut("o", modifiers: .command)' in add_button,
+     "Command-O is bound once, on Add file")
+need('keyboardShortcut("v"' not in all_sources and 'keyboardShortcut("V"' not in all_sources,
+     "Command-V is never a key equivalent (it would take a text field's paste); it is the pane's paste command")
+need(".onPasteCommand(of: [.fileURL, .png, .tiff]) { _ in if let session { pasteScreenshot(session) } }" in meeting_body
+     and ".focusable(session.map(canAddFiles) ?? false, interactions: .edit)" in meeting_body and ".focusEffectDisabled()" in meeting_body,
+     "Command-V adds a screenshot while the pane has focus, with no focus ring")
+paste_fn = body(pane, "private func pasteScreenshot(_ session: String) {")
+choose_fn = body(pane, "private func chooseFiles(_ session: String) {")
+need("files.pasteMeeting(from: NSPasteboard.general, key: key, info: info)" in paste_fn and "files.intakeMeeting(urls: urls, key: key, info: info)" in choose_fn
+     and "guard canAddFiles(session)" in paste_fn and "guard canAddFiles(session)" in choose_fn, "both menu rows reuse the meeting files store")
+need("MeetingFilesSection(" not in pane and "LiveMeetingFilesRow(files: files, key: LibraryMeeting.captureContextKey(session), info: model.liveMeetingFileInfo(session), open: $filesOpen)" in pane,
+     "the header holds the one Files row, not the old Files box")
+need("@State private var filesOpen = false" in pane, "the Files row starts collapsed")
+files_row = body(meetings, "struct LiveMeetingFilesRow: View {")
+need("if LiveMeetingFiles.showsRow(count: shown.count, pendingUndo: undo.count) {" in files_row and "if open {" in files_row
+     and "MeetingFileRow(files: files, file: entry.file, folder: entry.folder, id: entry.id, removable: true, preview: $preview)" in files_row
+     and "LiveMeetingFiles.note" in files_row, "collapsed by default, hidden with none; open, the shared rows and the note")
+for banned in ("intakeMeeting", "pasteMeeting", "NSOpenPanel", "MeetingFilesDrop", "onDrop", "Paste screenshot", "Add files", "pasteLabel", "chooseLabel"):
+    need(banned not in files_row, "the Files row adds nothing itself (" + banned + ")")
+need("WorkCardFlashView(files: files, workID: id)" in files_row and "files.error" in files_row, "an add's flash or error shows under the row, open or not")
+shared_row = body(meetings, "struct MeetingFileRow: View {")
+need('icon("eye", "Quick Look")' in shared_row and '"Show in Finder"' in shared_row and '"Remove from this meeting (Undo is offered)"' in shared_row,
+     "the rows keep Quick Look, Show in Finder and Remove")
+need("MeetingFileRow(files: files, file: file, folder: folder, id: id, removable: supported == true, preview: $preview)" in body(meetings, "struct MeetingFilesSection: View {"),
+     "the saved meeting's Files box draws the same rows")
+detail = body(meetings, "struct MeetingLibraryDetailPane: View {")
+need(detail.count("MeetingFilesSection(files: files, keys: keys") == 1 and "LiveMeetingFilesRow" not in detail, "the saved meeting keeps its one Files box")
+
+# ── 0.5.339: the bar's widths (the mock's ladder) and the glasses meeting's level strip (server 6.87.0).
+need("let mode = LiveRecordingBarLayout.mode(barWidth: geometry.size.width)" in bar and "add(mode.addFileLabelled).fixedSize()" in bar
+     and "stop().lineLimit(1).fixedSize()" in bar, "the bar picks its mode from its own width; the buttons never wrap")
+need(bar.count(".frame(minWidth: LiveRecordingBarLayout.meterFloor, maxWidth: .infinity)") == 2, "both meters shrink first, to the 40 pt floor")
+need("} else if mode.meter && levelStrip, let sessionId {" in bar and "LiveChunkLevelStripView(feed: .live, sessionId: sessionId)" in bar
+     and "LiveLevelGlyph(feed: nil)" in bar, "the strip for a glasses meeting on a 6.87.0 server, else the still glyph")
+need("levelStrip: !mac && model.liveMeetingCapability.levelStrip, sessionId: session" in pane, "the strip only for a glasses meeting, gated on the capability")
+need("guard x >= 0 else { break }" in audiogram and "levels.reversed().enumerated()" in audiogram and ".mask(LiveMeterFade())" in audiogram,
+     "the audiogram clips its oldest levels at the faded left edge, newest at the right")
+need("var levelStrip: Bool { available && chunkLevels }" in cap and 'details["liveMeetingChunkLevels"]?.bool == true' in models, "the strip's gate")
+level_feed = body(meetings, "@MainActor final class LiveChunkLevelFeed: ObservableObject {")
+need("static let live = LiveChunkLevelFeed()" in level_feed and "@Published private(set) var levels: [LiveChunkLevel] = []" in level_feed,
+     "the strip's levels in their own object, the audiogram's pattern")
+need(all_sources.count("@ObservedObject var feed: LiveChunkLevelFeed") == 1, "only the strip observes the chunk levels")
+need(model.count("LiveChunkLevelFeed") == 2 and "LiveChunkLevelFeed.live.set(read.sessionId, levels)" in model and "LiveChunkLevelFeed.live.clear()" in body(model, "func closeLiveTranscript() {"),
+     "ControllerModel only hands the levels on and clears them; it never holds them")
+hand = between(model, "if let levels = read.levels,", "LiveChunkLevelFeed.live.set(read.sessionId, levels)")
+need("read.sessionId == liveTranscriptOpenID" in hand and "G2MeetingStop.isGlassesSession(read.sessionId)" in hand and "liveMeetingCapability.levelStrip" in hand,
+     "only the open glasses meeting's levels, on a server that keeps them")
+level_strip = body(meetings, "struct LiveChunkLevelStripView: View {")
+need("@Environment(\\.accessibilityReduceMotion) private var reduceMotion" in level_strip and "} else if reduceMotion {" in level_strip
+     and level_strip.index("} else if reduceMotion {") < level_strip.index("Canvas {") and level_strip.count("Canvas {") == 1,
+     "Reduce Motion: a static level bar, never the strip's Canvas")
+need(".accessibilityLabel(LiveLevelStrip.accessibilityLabel)" in level_strip and "LiveLevelStrip.isSilent(level)" in level_strip
+     and "LiveLevelStrip.visible(levels, width: Double(size.width))" in level_strip, "dotted where quiet, the newest that fit, labelled for VoiceOver")
+helper_levels = body(helper, "static func liveTranscriptLevels(_ value: Any?) -> [[String: Any]]? {")
+need('byIndex[index] = ["i": index, "level": level, "speechSec": speech]' in helper_levels and "text" not in helper_levels
+     and ".suffix(liveTranscriptLevelLimit)" in helper_levels, "the helper passes three numbers a chunk, the newest 120, never text")
+need('if let levels = liveTranscriptLevels(object["chunkLevels"]) { read["levels"] = levels }' in helper, "a read carries the levels from the session file")
 need("LiveAskPanel(" in pane and 'Button(showAsk ? "Hide Ask" : "Live COS Ask") { showAsk.toggle() }' in pane, "the Ask panel stays")
 
 # ── The pet keeps its REC dot, which opens the live window (no popover cards).

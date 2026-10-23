@@ -15954,7 +15954,7 @@ final class COSControlHelper {
             }
         }
         let turns = chunks.keys.sorted().filter { $0 > since }.compactMap { chunks[$0] }
-        return [
+        var read: [String: Any] = [
             "sessionId": sessionId,
             "ended": false,
             "unchanged": false,
@@ -15965,6 +15965,28 @@ final class COSControlHelper {
             "settledThrough": settledThrough,
             "turns": turns,
         ]
+        if let levels = liveTranscriptLevels(object["chunkLevels"]) { read["levels"] = levels }
+        return read
+    }
+
+    /// 0.5.339 (server 6.87.0): the level strip's numbers from `chunkLevels[{i, level, speechSec}]`, or nil when the file
+    /// has none. Only well-formed entries (an index, a level 0 to 1, speech seconds or null), one per index, in index
+    /// order, the newest `liveTranscriptLevelLimit`. Numbers only: nothing else in an entry crosses.
+    static let liveTranscriptLevelLimit = 120
+    static func liveTranscriptLevels(_ value: Any?) -> [[String: Any]]? {
+        guard let rows = value as? [Any] else { return nil }
+        func number(_ any: Any?) -> Double? {
+            guard let n = any as? NSNumber, CFGetTypeID(n) != CFBooleanGetTypeID(), n.doubleValue.isFinite else { return nil }
+            return n.doubleValue
+        }
+        var byIndex: [Int: [String: Any]] = [:]
+        for case let row as [String: Any] in rows {
+            guard let index = liveTranscriptIndexes([row["i"] as Any]).first, let level = number(row["level"]), (0...1).contains(level) else { continue }
+            let speech: Any
+            if row["speechSec"] is NSNull { speech = NSNull() } else if let seconds = number(row["speechSec"]), seconds >= 0 { speech = seconds } else { continue }
+            byIndex[index] = ["i": index, "level": level, "speechSec": speech]
+        }
+        return byIndex.keys.sorted().suffix(liveTranscriptLevelLimit).compactMap { byIndex[$0] }
     }
 
     /// Read one session: `ended` when the file is gone (the server deletes it at save or discard), `unchanged` when
@@ -17237,8 +17259,9 @@ final class COSControlHelper {
     static let liveProvisionalMaxCharacters = 600
 
     /// The status keys: `liveMeetingProtocol` (an integer or null), `liveMeetingMacLiveCues`, `liveMeetingProvisional`
-    /// (the route the contract names), `liveCueKinds` (at most 16, in the kind spelling) and `liveCuesOn` (the server
-    /// advertises `liveCuesV2`, which it does only while the Live cues switch is on).
+    /// (the route the contract names), `liveCueKinds` (at most 16, in the kind spelling), `liveCuesOn` (the server
+    /// advertises `liveCuesV2`, which it does only while the Live cues switch is on) and, 0.5.339 (server 6.87.0),
+    /// `liveMeetingChunkLevels` (the session file keeps `chunkLevels`; a real boolean true only).
     static func liveMeetingStatusFields(_ capabilities: Any?) -> [String: Any] {
         let block = capabilities as? [String: Any]
         let meeting = block?["liveMeeting"] as? [String: Any]
@@ -17249,7 +17272,8 @@ final class COSControlHelper {
                 "liveMeetingMacLiveCues": (meeting?["macLiveCues"] as? NSNumber).map { CFGetTypeID($0) == CFBooleanGetTypeID() && $0.boolValue } ?? false,
                 "liveMeetingProvisional": provisional,
                 "liveCueKinds": Array(kinds.prefix(16)),
-                "liveCuesOn": block?["liveCuesV2"] is [String: Any]]
+                "liveCuesOn": block?["liveCuesV2"] is [String: Any],
+                "liveMeetingChunkLevels": (meeting?["chunkLevels"] as? NSNumber).map { CFGetTypeID($0) == CFBooleanGetTypeID() && $0.boolValue } ?? false]
     }
 
     /// The provisional answer the app may see: `live`, and the line's chunk, generation and text (the last 600
@@ -22591,6 +22615,27 @@ final class COSControlHelper {
         let oddFields = Self.liveMeetingStatusFields(["liveMeeting": ["protocol": NSNumber(value: true), "macLiveCues": NSNumber(value: 1), "provisional": ["route": "/elsewhere"]]])
         try expect(oddFields["liveMeetingProtocol"] is NSNull && oddFields["liveMeetingMacLiveCues"] as? Bool == false
                    && oddFields["liveMeetingProvisional"] as? Bool == false, "a bool is not a protocol, a number is not a bool, another route is not the grey line")
+        // 0.5.339 (server 6.87.0): the level strip's flag, a real boolean only, and the levels from the session file.
+        try expect(meetingFields["liveMeetingChunkLevels"] as? Bool == false && olderFields["liveMeetingChunkLevels"] as? Bool == false
+                   && Self.liveMeetingStatusFields(["liveMeeting": ["protocol": 1, "chunkLevels": true]])["liveMeetingChunkLevels"] as? Bool == true
+                   && Self.liveMeetingStatusFields(["liveMeeting": ["protocol": 1, "chunkLevels": NSNumber(value: 1)]])["liveMeetingChunkLevels"] as? Bool == false,
+                   "status forwards capabilities.liveMeeting.chunkLevels only as a real true")
+        let levelRows: [Any] = [["i": 3, "level": 0.5, "speechSec": 2.5] as [String: Any], ["i": 1, "level": 0.25, "speechSec": NSNull(), "text": "SECRET"] as [String: Any],
+                                ["i": 2, "level": 1.5, "speechSec": 1] as [String: Any], ["i": 4, "level": 0.5, "speechSec": -1] as [String: Any],
+                                ["i": 5, "level": 0.5] as [String: Any], ["i": -1, "level": 0.5, "speechSec": 1] as [String: Any],
+                                ["i": 6, "level": NSNumber(value: true), "speechSec": 1] as [String: Any], "words",
+                                ["i": 3, "level": 0.75, "speechSec": 4] as [String: Any]]
+        let levels = Self.liveTranscriptLevels(levelRows)
+        try expect(levels?.map { $0["i"] as? Int } == [1, 3] && levels?.first?["speechSec"] is NSNull && levels?.last?["level"] as? Double == 0.75
+                   && levels?.first?["text"] == nil && Self.liveTranscriptLevels(nil) == nil && Self.liveTranscriptLevels("x") == nil,
+                   "chunkLevels: well-formed entries only, one per index, in order, numbers only; none in the file is nil")
+        try expect(Self.liveTranscriptLevels((0..<200).map { ["i": $0, "level": 0.5, "speechSec": 1] as [String: Any] })?.map { $0["i"] as? Int }.first == 80,
+                   "chunkLevels: the newest 120")
+        let parsedRead = try Self.liveTranscriptParse(Data(#"{"sessionId":"meeting_1","chunksIndexed":[],"chunkLevels":[{"i":2,"level":0.4,"speechSec":1.5}]}"#.utf8),
+                                                      sessionId: "meeting_1", since: -1, stamp: "1")
+        let unlevelledRead = try Self.liveTranscriptParse(Data(#"{"sessionId":"meeting_1","chunksIndexed":[]}"#.utf8), sessionId: "meeting_1", since: -1, stamp: "1")
+        try expect((parsedRead["levels"] as? [[String: Any]])?.first?["i"] as? Int == 2 && unlevelledRead["levels"] == nil,
+                   "a live-transcript read carries the file's chunkLevels, and none from a file without them")
         let provisionalAnswer = Self.liveProvisionalAnswer(status: 200, body: ["v": 1, "sessionId": "meeting_1", "live": true, "serverInstanceId": "SECRET",
                                                                                "provisional": ["chunkIndex": 7, "previewGen": 3, "text": String(repeating: "w", count: 700) + "end", "model": "turbo", "at": 1]])
         let provisionalLine = provisionalAnswer["provisional"] as? [String: Any]
