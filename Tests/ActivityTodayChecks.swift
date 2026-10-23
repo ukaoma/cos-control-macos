@@ -82,7 +82,8 @@ import Foundation
         composeChecks()
         actionChecks()
         await tickLoopChecks()
-        print("PASS: Activity Today home: \(ran) checks (predicates, five pin tests, tool-name guard, platform table, finished hour and cap, intake split and midnight, quiet hours, cost guards, capability gating, layout)")
+        dismissChecks()
+        print("PASS: Activity Today home: \(ran) checks (predicates, five pin tests, tool-name guard, platform table, finished hour and cap, intake split and midnight, quiet hours, cost guards, capability gating, layout, dismiss and undo)")
     }
 
     // MARK: B1 tool-name guard
@@ -422,7 +423,7 @@ import Foundation
         check(guardrail.admission(target: "prep:a", inFlight: [], switchOn: true, now: now) == .allowed && guardrail.used(now: now) == 19, "the 20th is allowed")
         guardrail.recordStart(now: now)
         check(guardrail.admission(target: "prep:b", inFlight: [], switchOn: true, now: now) == .capReached, "the 21st of the day is refused")
-        check(TodayRunGuard.line(.capReached) == "Today's limit on this Mac is reached. Open Work to start more.", "the cap's words")
+        check(TodayRunGuard.line(.capReached) == "Today's limit of 20 runs on this Mac is reached. It resets at midnight; open Work to start more now.", "the cap's words, with when it resets")
         check(guardrail.admission(target: "prep:b", inFlight: [], switchOn: true, now: at("2026-10-22 08:00")) == .allowed, "a new day starts a new count")
         let fresh = TodayRunGuard(defaults: UserDefaults(suiteName: suite + ".b")!, calendar: calendar)
         defer { UserDefaults(suiteName: suite + ".b")!.removePersistentDomain(forName: suite + ".b") }
@@ -581,6 +582,110 @@ import Foundation
         let rows = TodayHome.things(needInputs(runningInputs()))
         check(TodayHome.showMoreLabel(Array(rows.suffix(4))) == "Show 4 more: " + TodayHome.shortLabel(rows[2]) + ", " + TodayHome.shortLabel(rows[3]) + " and 2 more",
               "Show more names two at most", TodayHome.showMoreLabel(Array(rows.suffix(4))))
+    }
+
+    // MARK: 0.5.337 Dismiss on "From today's meetings"
+
+    /// The item as the server returns it after a decision (same id and meeting, a new status).
+    static func with(_ item: WorkIntakeItem, status: String) -> WorkIntakeItem {
+        WorkIntakeItem(.object(["id": .string(item.id), "kind": .string("ask"), "status": .string(status), "confidence": .number(0.9),
+                                "text": .string(item.text),
+                                "meeting": .object(["recordId": .string(item.meeting.recordId), "domain": .string("quilt"), "month": .string("2026-10"),
+                                                    "filename": .string(item.meeting.filename), "title": .string(item.meeting.title)])]))!
+    }
+    static func resolved(_ action: String, at: String = "2026-10-21T19:47:03.120Z") -> [String: JSONValue] {
+        ["item": .object(["status": .string(action == "dismiss" ? "dismissed" : "accepted"),
+                          "resolution": .object(["action": .string(action), "by": .string("user"), "at": .string(at)])])]
+    }
+
+    static func dismissChecks() {
+        let a = intake("2026-10-21_Churn_review.md", text: "Megan to follow up with the onboarding vendor")
+        let b = intake("2026-10-21_Churn_review.md", text: "Install the latest pricing page build")
+        let c = intake("2026-10-21_Roadmap_sync.md", text: "Draft the 2027 roadmap one-pager")
+        let open = [a, b, c]
+        let split = TodayHome.intakeSplit(items: open, tasks: [], now: now, calendar: calendar)
+        check(split.todayCount == 3, "three suggestions from today's meetings", "\(split.todayCount)")
+
+        // The server's answer: only its own confirmation of a dismiss is changed, with that decision's undo id.
+        let changed = WorkIntakeResolveResult(details: resolved("dismiss"), message: "Dismissed", itemID: a.id, accept: false)
+        check(changed == .changed(undo: a.id + ":2026-10-21T19:47:03.120Z"), "a confirmed dismiss carries its own undo id", "\(changed)")
+        let other = WorkIntakeResolveResult(details: resolved("accept"), message: "Dismissed", itemID: a.id, accept: false)
+        check(other == .changed(undo: nil), "a dismiss answered with another decision offers no undo (Undo never reverses an accept)", "\(other)")
+        let older = WorkIntakeResolveResult(details: ["unsupported": .bool(true)], message: "Update the server to use this Work action", itemID: a.id, accept: false)
+        check(older == .refused("Update the server to use this Work action", code: "unsupported"), "an older server's 404 changed nothing", "\(older)")
+
+        // Dismiss: the row collapses to one line, the count drops at once, and the line leaves after the window.
+        var d = TodayDismissals()
+        check(d.begin(a.id) && !d.begin(a.id), "one dismiss per row in flight")
+        check(TodayHome.suggestionState(a.id, busy: [a.id], created: [], failures: [:], dismissals: d) == .dismissing
+              && TodayHome.suggestionState(b.id, busy: [b.id], created: [], failures: [:], dismissals: d) == .creating, "a dismissing row says Dismissing, a creating one Creating")
+        d.finish(a, result: changed, now: now)
+        check(d.dismissing.isEmpty && d.rows[a.id]?.undo == a.id + ":2026-10-21T19:47:03.120Z", "a confirmed dismiss collapses the row")
+        // The next read (the server says dismissed) and a stale read (still open, hidden by the id ControllerModel keeps).
+        let fresh = TodayHome.intakeSplit(items: [with(a, status: "dismissed"), b, c], tasks: [], now: now, calendar: calendar)
+        let stale = TodayHome.intakeSplit(items: open, tasks: [], now: now, calendar: calendar, dismissed: [a.id])
+        check(fresh.todayCount == 2 && stale.todayCount == 2 && stale.today.map(\.id) == [b.id, c.id], "the count drops as soon as the dismiss is confirmed",
+              "\(fresh.todayCount) \(stale.todayCount)")
+        let slots = TodayHome.suggestionSlots(open: stale.today, dismissals: d, now: now.addingTimeInterval(3))
+        check(slots.map(\.id) == [a.id, b.id, c.id] && slots.first == .dismissed(d.rows[a.id]!), "the Dismissed line holds the row's place",
+              "\(slots.map(\.id))")
+        check(TodayHome.suggestionSlots(open: open, dismissals: d, now: now.addingTimeInterval(3)).count == 3,
+              "the Dismissed line wins over an open copy from a stale read")
+        check(TodayHome.suggestionSlots(open: stale.today, dismissals: d, now: now.addingTimeInterval(7.9)).count == 3,
+              "the Dismissed line stays for the undo window")
+        check(TodayHome.suggestionSlots(open: stale.today, dismissals: d, now: now.addingTimeInterval(8.1)).map(\.id) == [b.id, c.id],
+              "after about 8 seconds the Dismissed line leaves")
+        var expired = d
+        expired.expire(now: now.addingTimeInterval(8.1))
+        check(expired.rows.isEmpty, "after about 8 seconds the Dismissed line leaves")
+        expired = d
+        expired.expire(now: now.addingTimeInterval(5))
+        check(expired.rows[a.id] != nil, "the Dismissed line stays for the undo window")
+
+        // Midnight: a dismissed item never moves to Work's Sort, on the server's word or on a stale read.
+        for items in [[with(a, status: "dismissed"), b, c], open] {
+            let later = TodayHome.intakeSplit(items: items, tasks: [], now: at("2026-10-22 00:01"), calendar: calendar, dismissed: [a.id])
+            check(later.today.isEmpty && later.older.map(\.id) == [b.id, c.id], "a dismissed item is not in midnight's move", "\(later.older.map(\.id))")
+        }
+
+        // Undo: the row's own undo id, once; only a confirmed undo removes the line, and the item is back with the count.
+        var u = d
+        check(u.beginUndo(a.id) == a.id + ":2026-10-21T19:47:03.120Z" && u.beginUndo(a.id) == nil, "Undo sends that row's own undo id, once")
+        check(TodayHome.suggestionSlots(open: [b, c], dismissals: u, now: now.addingTimeInterval(30)).count == 3, "an undo in flight keeps its line")
+        var failedUndo = u
+        failedUndo.finishUndo(a.id, error: "That item changed. Refresh.", now: now.addingTimeInterval(4))
+        check(failedUndo.rows[a.id]?.undoError == "That item changed. Refresh." && failedUndo.rows[a.id]?.undoing == false
+              && failedUndo.live(now: now.addingTimeInterval(11)).count == 1, "a refused undo keeps the line with the reason")
+        u.finishUndo(a.id, error: nil, now: now.addingTimeInterval(4))
+        let hidden = TodayDismissals.afterUndo([a.id, b.id], batchId: a.id + ":2026-10-21T19:47:03.120Z")
+        check(hidden == [b.id] && TodayDismissals.afterUndo([a.id], batchId: "7a0c6a3e-2b1d-4c55-9e0f-3d2a1b0c9f88") == [a.id],
+              "an undo gives back only its own item", "\(hidden)")
+        let restored = TodayHome.intakeSplit(items: open, tasks: [], now: now, calendar: calendar,
+                                             dismissed: TodayDismissals.afterUndo([a.id], batchId: a.id + ":2026-10-21T19:47:03.120Z"))
+        let back = TodayHome.suggestionSlots(open: restored.today, dismissals: u, now: now.addingTimeInterval(4))
+        check(u.rows.isEmpty && restored.todayCount == 3 && back == [.open(a), .open(b), .open(c)], "Undo restores the row and the count",
+              "\(restored.todayCount) \(back.map(\.id))")
+        var noUndo = TodayDismissals()
+        _ = noUndo.begin(c.id)
+        noUndo.finish(c, result: .changed(undo: nil), now: now)
+        check(noUndo.rows[c.id] != nil && noUndo.beginUndo(c.id) == nil, "no undo id: Dismissed, with nothing to undo")
+
+        // A refusal keeps the row, with the server's reason, and the count does not move.
+        var f = TodayDismissals()
+        _ = f.begin(b.id)
+        f.finish(b, result: .refused("That item is already being saved.", code: "refused"), now: now)
+        check(f.rows.isEmpty && f.dismissing.isEmpty && f.failures[b.id] == "That item is already being saved.", "a failed dismiss keeps the row")
+        check(TodayHome.suggestionState(b.id, busy: [], created: [], failures: [:], dismissals: f) == .dismissFailed("That item is already being saved."),
+              "a failed dismiss keeps the row", "\(TodayHome.suggestionState(b.id, busy: [], created: [], failures: [:], dismissals: f))")
+        check(TodayHome.suggestionSlots(open: split.today, dismissals: f, now: now) == [.open(a), .open(b), .open(c)]
+              && TodayHome.intakeSplit(items: open, tasks: [], now: now, calendar: calendar).todayCount == 3, "a failed dismiss keeps the row")
+        check(f.begin(b.id) && f.failures[b.id] == nil, "Dismiss again clears the old reason")
+        var busy = TodayDismissals()
+        _ = busy.begin(c.id)
+        busy.finish(c, result: .busy, now: now)
+        check(busy.rows.isEmpty && busy.failures.isEmpty && busy.dismissing.isEmpty, "a resolve already in flight changes nothing")
+
+        check(TodayHome.dismissLabel(a) == "Dismiss suggestion: Megan to follow up with the onboarding vendor", "VoiceOver names what Dismiss removes")
     }
 
     // MARK: QA round 1: the tick loop on a fake clock (item 20)

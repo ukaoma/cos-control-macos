@@ -242,7 +242,9 @@ import Vision
         newer.liveMeetingCalendarEvent = TodayHome.NextEvent(title: "Fixture planning sync", start: start.addingTimeInterval(120))
         expect(newer.liveMeetingTitle(sid, start: start) == "Fixture planning sync", "a glasses meeting takes the calendar event near its start")
         newer.liveMeetingCalendarEvent = TodayHome.NextEvent(title: "Fixture later event", start: start.addingTimeInterval(4 * 3600))
-        expect(newer.liveMeetingTitle(sid, start: start).hasPrefix("Glasses meeting "), "an event hours away is not the title")
+        // 0.5.337 (loop audit N10): a title taken from the calendar stays for its meeting when the next event changes.
+        expect(newer.liveMeetingTitle(sid, start: start) == "Fixture planning sync", "a calendar title stays for its meeting when the next event changes")
+        expect(newer.liveMeetingTitle(sid + "-other", start: start).hasPrefix("Glasses meeting "), "an event hours away is not the title")
         for m in [newer, older] {
             m.closeLiveTranscript()
             m.liveTranscriptViewer("meetings", visible: false)

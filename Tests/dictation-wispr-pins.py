@@ -133,7 +133,7 @@ need(re.findall(r"virtualKey: (\w+)", dictation) == ["key", "key"] and "kVK_Retu
      and "kVK_ANSI_KeypadEnter" not in dictation and "virtualKey: 36" not in dictation,
      "the only key COS may post is ⌘V; it never presses Return or Send")
 need("UCKeyTranslate(" in dictation and "DictationDelivery.keyCode(for: \"v\")" in dictation, "V is found on the current layout")
-own_window = body(dictation, "private static func ownWindow(_ text: String, app: String) -> DictationDeliveryOutcome {")
+own_window = body(dictation, "private static func ownWindow(_ text: String, app: String) -> (DictationDeliveryOutcome, DictationOwnTarget?) {")
 need("NSApp.keyWindow?.firstResponder" in own_window and "insertText(" in own_window and "NSSecureTextField" in own_window,
      "COS's own windows insert through their first responder, never AX on this process")
 need("mayInsert" not in core, "the old same-field-and-caret rule is gone; one insertion rule, not two")
@@ -146,7 +146,7 @@ need(hosts is not None and terminals is not None and set(re.findall(r'"([^"]+)"'
 # ── 3. Store flow: the pill, the flash, the card; text stays private.
 transcribe = body(dictation, "private func transcribe(_ wav: Data, attempt: UUID) {")
 need("let delivered = copyOnly ? DictationInsertion.copyOnly(text, clipboardMoved: clipboardMoved)\n                    : await DictationInsertion.deliver(text, restoreClipboard: restoreClipboard, fieldContext: useFieldContext)" in transcribe
-     and "finish(delivered.context?.text ?? text, outcome: delivered.outcome, target: delivered.target, context: delivered.context)" in transcribe,
+     and "finish(delivered.context?.text ?? text, outcome: delivered.outcome, target: delivered.target, context: delivered.context, own: delivered.own)" in transcribe,
      "a finished transcript must be delivered and recorded")
 # 0.5.313 (Miles 2026-10-15): an interrupted dictation is transcribed and copied, never thrown away and never typed.
 need("let copyOnly = pendingInterrupted\n                let clipboardMoved = interruptedChangeCount.map { $0 != NSPasteboard.general.changeCount } ?? false\n                pendingAudio = nil" in transcribe,
@@ -156,7 +156,7 @@ need("if pointer, held { pointerDuringHold = true }" in body(dictation, "    pri
      and 'phase = "Starting"; pointerDuringHold = false' in dictation,
      "a slow modifier-click with no speech ends quietly, and the flag resets each dictation (QA 2026-10-15)")
 need("quiet.end()" in body(dictation, "    func recordingStarted() {") and "if count > 0, lastRecordingCount == 0 { dictation.recordingStarted() }" in model
-     and "didSet { recordingCountChanged() }" in model and "self.recordingCountChanged()" in model
+     and "didSet { recordingCountChanged(); statusDetailsBytes = nil }" in model and "self.recordingCountChanged()" in model
      and "model.dictation.macRecordingActive = { [weak model] in (model?.recordingCount ?? 0) > 0 }" in app,
      "a recording (Mac or glasses) that starts mid-dictation restores other apps' sound, and any live COS recording counts (QA 2026-10-15)")
 interrupt = body(dictation, "    func interrupt() {")
@@ -174,7 +174,7 @@ copy_only = body(dictation, "    static func copyOnly(_ text: String, clipboardM
 need("writeTranscript(text, markerTypes: [])" in copy_only and ".refused(wrote ? .interrupted : .clipboardFailed)" in copy_only
      and "AXUIElement" not in copy_only and "postPaste" not in copy_only and "CGEvent" not in copy_only,
      "copy-only writes a durable clipboard item and never types or pastes")
-finish = body(dictation, "private func finish(_ text: String, outcome: DictationDeliveryOutcome, target: DictationInsertTarget?, context: DictationFieldContext.Applied? = nil,\n                        swapPending: Bool = false) -> UUID {")
+finish = body(dictation, "private func finish(_ text: String, outcome: DictationDeliveryOutcome, target: DictationInsertTarget?, context: DictationFieldContext.Applied? = nil,\n                        swapPending: Bool = false, own: DictationOwnTarget? = nil) -> UUID {")
 need("remember(record)" in finish and "showCard(" in finish and "DictationPill.flashSeconds" in finish
      and "delivery: outcome.delivery" in finish and "outcome.flash" in finish,
      "finish must record the honest outcome, flash only what the outcome allows, and card when refused")
@@ -310,7 +310,8 @@ need("panel.allowsKey = fixing" in overlay and "override var canBecomeKey: Bool 
      "the overlay may take the keyboard only for Fix a word")
 need("if fixing { panel.makeKeyAndOrderFront(nil) } else { panel.orderFrontRegardless() }" in overlay,
      "showing the pill or card must never make the overlay key")
-need("screen.minY + 8" in overlay and "screen.midX - size.width / 2" in overlay and "store.floatingScreen.flatMap" in overlay,
+# 0.5.337: through DictationOverlayFrame.place (bottom centre with no caret, always inside the screen; Hardening337Checks).
+need("DictationOverlayFrame.place(size: size, caret: nil, screen: screen)" in overlay and "store?.floatingScreen.flatMap" in overlay,
      "bottom center, above the Dock, on the chosen screen")
 sinks = re.findall(r"\.sink \{ \[weak self\] _ in Task \{ @MainActor in self\?\.sync\(\) \} \}", overlay)
 need(len(sinks) == 7 and overlay.count(".sink") == 7,
@@ -568,15 +569,17 @@ need('editWatcher.stop("new dictation")' in body(dictation, "    func start() {"
 need('if learnMode == .off { editWatcher.stop("learning off") }' in dictation, "turning learning off ends a watch at once")
 watcher = body(dictation, "@MainActor final class DictationEditWatcher {")
 need(watcher.count("DictationEditLearning.eligibility(mode: mode, secure: DictationInsertion.secure(element)") == 1
-     and "if case .skip(let reason) = eligibility {" in watcher and "let learning = eligibility == .learn" in watcher
-     and "var candidate = learning ? await MainActor.run { Self.candidate(edit, outside: outside) } : nil" in watcher,
+     and "if case .skip(let reason) = eligibility {" in watcher and watcher.count("learning: eligibility == .learn") == 2
+     and "var candidate = learning ? await MainActor.run { DictationEditWatcher.candidate(edit, outside: outside) } : nil" in watcher,
      "the tested gate decides learn, probe or skip, and only .learn produces a candidate (Electron is probed only)")
-need("DictationEditLearning.stop(elapsed: Date().timeIntervalSince(started), reads: reads, appRunning: running,\n                                                        secure: DictationInsertion.secure(element)," in watcher,
+need("DictationEditLearning.stop(elapsed: Date().timeIntervalSince(started), reads: reads, appRunning: running,\n                                                        secure: await field.secure()," in watcher
+     and "secure: { DictationInsertion.secure(element) }," in watcher,
      "every poll asks the tested stop rule, secure input and password fields included")
-need("DictationReplace.holds(baseline, at: target.span.location - bounds.location, target.text)" in watcher
+need("DictationReplace.holds(baseline, at: span.location - bounds.location, typed)" in watcher
      and "DictationEditLearning.readLength(" in watcher and "DictationEditLearning.track(" in watcher,
      "a watch starts only from proof of what COS typed, and reads the bounded window it planned")
-need("kAXValueAttribute" not in watcher and "AXObserver" not in watcher and "DictationInsertion.text(element, location: bounds.location" in watcher,
+need("kAXValueAttribute" not in watcher and "AXObserver" not in watcher and "DictationInsertion.text(element, location: $0, length: $1)" in watcher
+     and "await field.text(bounds.location, bounds.length)" in watcher,
      "the watch reads only the bounded window, never AXValue")
 learned_fn = body(dictation, "    private func editLearned(")
 need(learned_fn.index("DictationSuggestions.isQuiet(") < learned_fn.index("if learnMode == .suggest {") < learned_fn.index("TranscriptionDictionaryStore.shared.learn(")
@@ -664,7 +667,7 @@ need("let outside = DictationEditLearning.outside(window: current, start: start,
      and "if reverted { candidate = nil }" in watcher and watcher.index("if reverted { candidate = nil }") < watcher.index("if let candidate { await found(candidate) }")
      and "evidence=\\(candidate?.evidence != nil) revert=\\(reverted)" in watcher,
      "the window around the dictation and the read before it are evidence; putting back what was heard is never learned")
-need("}, outside: outside)" in body(dictation, "    private static func candidate(_ edit: DictationReplace.Edit, outside: [String]) -> DictationEditLearning.Candidate? {"),
+need("}, outside: outside)" in body(dictation, "    static func candidate(_ edit: DictationReplace.Edit, outside: [String]) -> DictationEditLearning.Candidate? {"),
      "the tested candidate rule sees the evidence")
 need("evidence: candidate.evidence)" in learned_fn, "the suggestion carries the evidence")
 row = body(dictation, "struct DictationSuggestionRow: View {")

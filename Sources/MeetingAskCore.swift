@@ -1581,6 +1581,23 @@ enum CueVerdicts {
     static func usedLine(_ count: MeetingCount) -> String {
         count.cap.map { "\(count.cues) of \($0) used" } ?? "\(count.cues) used"
     }
+    /// 0.5.337 (loop audit W8): cues stopped because a limit was reached said nothing ("No cues yet"). Which limit, and when
+    /// it lifts: this meeting's cap (the next meeting), or today's writer calls (tomorrow). nil while neither is reached.
+    static func limitLine(_ count: MeetingCount, limits: LiveCuesLimits?) -> String? {
+        if let cap = count.cap, cap > 0, count.cues >= cap {
+            return "This meeting reached its limit of \(cap) \(cap == 1 ? "cue" : "cues"). Cues start again in your next meeting."
+        }
+        if let daily = limits?.values[.dailyWriterCalls].map({ Int($0.value.rounded()) }), daily > 0,
+           let used = limits?.usage?.writerCalls, used >= daily {
+            return "Today's live cue limit of \(daily) writer calls is used up. Cues start again tomorrow."
+        }
+        return nil
+    }
+    /// An empty Cues view: why there are none. Live cues off says so; otherwise the old words.
+    static func emptyLine(polls: Bool, cuesOn: Bool?) -> String {
+        if cuesOn == false { return "Live cues is off in Settings, so this meeting has no cues." }
+        return polls ? "No cues yet in this meeting." : "No cues were shown in this meeting."
+    }
     static func leftLine(_ count: Int) -> String { count == 1 ? "1 left" : "\(count) left" }
     static func doneLine(_ counts: LiveCueCounts?) -> String {
         (counts?.total ?? 0) == 0 ? "No cues in the last 7 days." : "Every cue from the last 7 days is rated."
@@ -1683,7 +1700,10 @@ final class CueVerdictsStore: ObservableObject {
         } else {
             let missed = (misses[session] ?? 0) + 1
             misses[session] = missed
-            if next.state != .loaded || missed >= 2 || state == .olderServer { next = Meeting(state: state) }
+            // 0.5.337 (loop audit N13): a run of failed reads says so but keeps the last good cues (the inline cues
+            // vanished silently); only a server without the routes empties the list.
+            if state == .olderServer { next = Meeting(state: state) }
+            else if next.state != .loaded || missed >= 2 { next = Meeting(state: state, cues: next.cues, count: next.count) }
         }
         if meetings[session] != next { meetings[session] = next }
     }

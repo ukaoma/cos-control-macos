@@ -122,7 +122,8 @@ live_pane = body(meetings, "struct LiveTranscriptPane: View {", "struct LiveTurn
 check('Button(showAsk ? "Hide Ask" : "Live COS Ask") { showAsk.toggle() }' in live_pane, "Hide Ask still hides the whole panel")
 check("MeetingSidePanel(store: model.meetingAsk.cueVerdicts, model: model, session: session,\n                                     live: model.openLiveTranscriptFeed?.ended != true, macCues: model.liveMeetingCapability.macCues) {\n                        LiveAskPanel(" in live_pane,
       "the live meeting's panel wraps Live COS Ask")
-check('MeetingSidePanel(store: model.meetingAsk.cueVerdicts, model: model, session: session, askTitle: "Meeting Ask") {\n                                    LiveAskPanel(state: model.meetingAsk, model: model, session: session, saved: true' in meetings,
+# 0.5.337 (loop audit W10): a saved Mac recording the server cued shows its Cues tab too.
+check('MeetingSidePanel(store: model.meetingAsk.cueVerdicts, model: model, session: session,\n                                                 macCues: model.liveMeetingCapability.macCues, askTitle: "Meeting Ask") {\n                                    LiveAskPanel(state: model.meetingAsk, model: model, session: session, saved: true' in meetings,
       "a saved meeting's capture wraps Meeting Ask")
 panel = body(ask, "struct MeetingCuesPanel: View {", "struct MeetingCueCard: View {")
 poll = body(panel, '.task(id: "\\(session) \\(polls)") {')

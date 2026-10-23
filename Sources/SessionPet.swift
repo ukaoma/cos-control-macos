@@ -139,7 +139,10 @@ final class SessionPetPresenter: NSObject, ObservableObject, NSWindowDelegate {
             await self?.model?.loadPetSessions()
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(20))
-                await self?.model?.loadPetSessions()
+                // 0.5.337 (performance audit note): no session reads while the screen is locked or the displays sleep.
+                guard let model = self?.model else { return }
+                if model.screenLocked || model.displayAsleep { continue }
+                await model.loadPetSessions()
             }
         }
         syncPanel()
@@ -307,6 +310,12 @@ final class SessionPetPresenter: NSObject, ObservableObject, NSWindowDelegate {
     /// stale width and spilled out of its card. Let the controller size the
     /// window exactly as it always has, and put the ORIGIN back afterwards:
     /// the parked bottom edge is restored, and the menu grows upward from it.
+    /// 0.5.337 (performance audit W4): covered or on another space, the pet's animation pauses.
+    func windowDidChangeOcclusionState(_ notification: Notification) {
+        guard let panel else { return }
+        model?.setPetOccluded(!panel.occlusionState.contains(.visible))
+    }
+
     func windowDidResize(_ notification: Notification) {
         guard !applyingFrame, let panel, let anchor = restingAnchor else {
             // Whether this handler runs at all with the guard DOWN is the one
@@ -542,7 +551,8 @@ private struct SessionPetRoot: View {
                 animationSpeed: model.petAnimationSpeedFactor,
                 restClips: model.petRestClips(for: pose),
                 rotation: model.petSpriteKit.rotations[pose],
-                encounterPlayback: model.petEncounterPlayback
+                encounterPlayback: model.petEncounterPlayback,
+                paused: PetPause.paused(occluded: model.petOccluded, locked: model.screenLocked, displayAsleep: model.displayAsleep)
             )
             .contentShape(Rectangle())
             // Declared before the single tap so SwiftUI resolves the double

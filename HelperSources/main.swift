@@ -5640,7 +5640,9 @@ final class COSControlHelper {
         }
         let candidate = try reviewCandidateTransport(), token = try candidate?.token ?? readToken()
         guard let response = request(route.1, method: route.0, token: token, body: body, timeout: 30, reviewCandidatePort: candidate?.port) else { throw HelperError.message("Work is unavailable. Refresh before trying again.") }
-        if response.status == 404, action == "dismiss" { emit(ok: true, message: "Update the server to use this Work action", details: ["unsupported": true]); return }
+        // 0.5.337 (loop audit W1): a 404 is an older server without this route, for every action, not only dismiss. The
+        // shipped server has only the four Intake routes, so Sort's seen, Expired, Waiting and Undo were red errors there.
+        if response.status == 404 { emit(ok: true, message: "Update the server to use this Work action", details: ["unsupported": true]); return }
         guard response.status == 200, let result = response.body else {
             let error = response.body?["error"] as? [String: Any]
             throw HelperError.message((error?["message"] as? String) ?? (error?["code"] as? String) ?? "Work action unavailable")

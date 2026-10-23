@@ -50,7 +50,8 @@ pin("if !window.isVisible { window.center() }" in show and show.index("window.ce
 close = presenter.split("func close()", 1)[-1]
 pin("installAppUpdate" not in close and "appUpdateFlow" not in close and "busy" not in close, "close does not cancel",
     "closing the window touches nothing of the install")
-pin("NSHostingController(rootView: WhatsNewWindowRoot(model: model)" in prepare and "self?.close()" in prepare, "window root",
+# 0.5.337 (performance audit W6): the root takes the presenter's slot, so a closed window stops observing the model.
+pin("NSHostingController(rootView: WhatsNewWindowRoot(model: model, slot: slot)" in prepare and "self?.close()" in prepare, "window root",
     "the window hosts WhatsNewWindowRoot, whose Cancel closes it")
 
 # Download and install is the confirmation and runs the existing path.

@@ -148,6 +148,9 @@ python3 "$ROOT/Tests/cue-verdicts-helper-checks.py" "$TMP/cos-control-helper"
 # route and session exactly, only the line's chunk, generation and newest 600 characters, every status an answer, no text
 # on stderr). The Mac preview and liveCues on the start are in mac-recording-helper-checks.py above.
 python3 "$ROOT/Tests/live-meeting-helper-checks.py" "$TMP/cos-control-helper"
+# 0.5.337 (loop audit W1): work-loop through the compiled helper against a loopback fixture: a 404 is unsupported for
+# every action (the shipped server has only the four Intake routes), a 409 keeps its message, a 200 passes through.
+python3 "$ROOT/Tests/work-loop-helper-checks.py" "$TMP/cos-control-helper"
 # K1 P10 key lanes: the key-lanes verb through the compiled helper against a loopback fixture (the key on stdin only,
 # never echoed, every status an answer, only the contract's keys).
 python3 "$ROOT/Tests/key-lanes-helper-checks.py" "$TMP/cos-control-helper"
@@ -1340,6 +1343,9 @@ PY
 # Tests/run-activity-today-render.sh (PNGs against activity-canvas).
 "$ROOT/Tests/run-activity-today.sh"
 /usr/bin/python3 "$ROOT/Tests/activity-today-pins.py" "$ROOT"
+# 0.5.337 hardening (the loop and performance audits): the wiring pins, then the rules (Tests/Hardening337Checks.swift).
+# Hand-run: Tests/mutate-hardening-337.py (the mutation lane).
+zsh "$ROOT/Tests/run-hardening-337.sh"
 
 # ── 0.5.252: glasses requests (server 6.59.0 inbox) ─────────────────────────────
 # Behaviour: Tests/run-work-progress.sh test 22 (claim race, expiry, a late claim, a changed task, a missing destination,
@@ -2201,13 +2207,14 @@ src = open(sys.argv[1]).read()
 start = src.index("private func sessionRow(")
 end = src.index("\n    private ", start + 10)
 row = src[start:end]
-assert "ambiguousSessionTitles.contains(" in row, \
-    "sessionRow does not consult ambiguousSessionTitles -- forks stay indistinguishable"
+# 0.5.337 (performance audit B1): the set is computed once in sessionsList and passed to every row.
+assert "ambiguous.contains(" in row and "ambiguous: Set<String>" in row, \
+    "sessionRow does not consult the duplicate titles -- forks stay indistinguishable"
 assert "session.createdDate" in row, \
     "sessionRow does not render createdDate -- nothing on the row differs between a fork and its parent"
 PY
 # The ambiguity set must union BOTH surfaces; the row is shared by the list and search.
-/usr/bin/grep -q 'visibleSessions + model.visibleSessionSearchHits' "$ROOT/Sources/ActivityWindow.swift"
+/usr/bin/grep -q 'ClaudeSession.ambiguousTitles(in: sessions + model.visibleSessionSearchHits' "$ROOT/Sources/ActivityWindow.swift"
 
 # --- 0.5.50 the gateway paints itself in -------------------------------------
 # The accent bar was a 3pt pill overlaid on a 16pt-radius card: a CSS border-left moved
@@ -7096,7 +7103,9 @@ if "SessionActivityFeed(feed: model.sessionFeed, queued: model.openClaudeRow?.qu
 if pane.index("SessionActivityFeed(") > pane.index("ForEach(detail.turns"):
     fail("the feed sits ABOVE the turns")
 feedview = body(window, "struct SessionActivityFeed: View")
-if "Timer.publish(every: 1, on: .main, in: .common).autoconnect()" not in feedview or "feed.elapsed(now: now)" not in feedview:
+# 0.5.337 (performance audit note): the clock is a one-second TimelineView, and only while the session works or waits.
+if "TimelineView(.periodic(from: .now, by: 1)) { context in Self.elapsedText(feed, now: context.date) }" not in feedview or "feed.elapsed(now: now)" not in feedview \
+        or '["Working", "Waiting"].contains(feed.stateWord)' not in feedview:
     fail("elapsed ticks locally once a second off the feed's clock")
 if "ForEach(feed.tools)" not in feedview or "Text(feed.stateWord)" not in feedview or "Text(feed.prompt)" not in feedview:
     fail("the feed draws the state word, the prompt and the tool lines")

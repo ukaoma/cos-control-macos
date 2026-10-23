@@ -235,12 +235,17 @@ final class WhatsNewWindowPresenter {
     private(set) var controller: NSWindowController?
     /// How many windows this presenter has made. One for the life of the app (Tests/WhatsNewRender.swift).
     private(set) var windowsMade = 0
+    /// 0.5.337 (performance audit W6): the kept window's content observes the model only while the window is open. A
+    /// closed What's New window was still redrawn on every model change (WhatsNewView.body in the idle sample).
+    let slot = WhatsNewSlot()
+    private var closeObserver: NSObjectProtocol?
 
     /// The window, made once and kept (`isReleasedWhenClosed` is false); never ordered in here. `show` orders it in.
     @discardableResult
     func prepare(model: ControllerModel) -> NSWindow {
         if let window = controller?.window { return window }
-        let host = NSHostingController(rootView: WhatsNewWindowRoot(model: model) { [weak self] in self?.close() })
+        slot.live = true
+        let host = NSHostingController(rootView: WhatsNewWindowRoot(model: model, slot: slot) { [weak self] in self?.close() })
         let window = NSWindow(contentViewController: host)
         window.title = "What's New in COS Control"
         window.styleMask = [.titled, .closable, .fullSizeContentView]
@@ -253,11 +258,15 @@ final class WhatsNewWindowPresenter {
         window.center()
         controller = NSWindowController(window: window)
         windowsMade += 1
+        closeObserver = NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: window, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.slot.live = false }
+        }
         return window
     }
 
     func show(model: ControllerModel) {
         let window = prepare(model: model)
+        if !slot.live { slot.live = true }
         // Centered again whenever it is not already on screen, so a reopen never lands where it was last dragged off to.
         if !window.isVisible { window.center() }
         controller?.showWindow(nil)
@@ -273,7 +282,25 @@ final class WhatsNewWindowPresenter {
 
 /// The window's root: the model's mode, offer, flow and frozen words, with Download and install wired to
 /// installAppUpdate.
+@MainActor final class WhatsNewSlot: ObservableObject {
+    @Published var live = true
+}
+
 struct WhatsNewWindowRoot: View {
+    let model: ControllerModel
+    @ObservedObject var slot: WhatsNewSlot
+    let close: () -> Void
+    init(model: ControllerModel, slot: WhatsNewSlot = WhatsNewSlot(), close: @escaping () -> Void) {
+        self.model = model; self.slot = slot; self.close = close
+    }
+
+    var body: some View {
+        if slot.live { WhatsNewWindowContent(model: model, close: close) } else { Color.clear.frame(width: WhatsNewView.width, height: WhatsNewView.height) }
+    }
+}
+
+/// The open window's content: the only part that observes the model.
+struct WhatsNewWindowContent: View {
     @ObservedObject var model: ControllerModel
     let close: () -> Void
 
@@ -2849,7 +2876,7 @@ struct ControlPanel: View {
             if todayHomeEnabled {
                 Toggle("Quiet hours on Today", isOn: $todayQuietHours)
                     .toggleStyle(COSSwitchStyle())
-                    .help("After 6 PM and on weekends, Needs you folds everything below agent questions under For tomorrow. Running and session questions never fold")
+                    .help("After 6 PM, before 6 AM and on weekends, Needs you folds everything below agent questions under For tomorrow. Running and session questions never fold")
                 Toggle("Start Work runs from Today", isOn: $todayWorkRuns)
                     .toggleStyle(COSSwitchStyle())
                     .help("Prep me and Return in the Ask box each start one Work run, at most 20 a day, paused for 15 minutes after 3 failed starts. Off: no Prep me, and Return files your words to the Work inbox")

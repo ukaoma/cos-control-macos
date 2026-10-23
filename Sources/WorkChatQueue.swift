@@ -67,6 +67,10 @@ enum WorkChatHold: Equatable {
     private let sources: () -> [WorkSource]
     private let store: WorkTaskChatStore
     private var loop: Task<Void, Never>?
+    /// 0.5.337 (loop audit W2): every card's queued and from-glasses counts, after each pass (the board's line).
+    var onCounts: (([String: WorkChatBoardCount]) -> Void)?
+    /// 0.5.337 (loop audit W2): a background pass left a card's queued work needing a new plan, or not sent.
+    var onNotice: ((WorkProgressNotice) -> Void)?
     /// 0.5.333: `store` is shared with the lens plans pump, so a card not open in a view has one background writer.
     init(handoff: WorkHandoffStore, sources: @escaping () -> [WorkSource], store: WorkTaskChatStore = WorkTaskChatStore()) {
         self.handoff = handoff; self.sources = sources; self.store = store; store.enabled = true
@@ -84,22 +88,37 @@ enum WorkChatHold: Equatable {
     /// One pass: each saved card chat holding a queued assignment, for this server, whose card is on the board and not
     /// open in a Work chat view. Reads only; a send happens in the card's store, through the card's own checks.
     func pass() async {
-        guard handoff.canSendQueued else { return }
         let server = handoff.isolated ? "sample" : handoff.taskChatServerID
         guard let server else { return }
         let files = (try? FileManager.default.contentsOfDirectory(at: WorkTaskChatStore.historyFolder(), includingPropertiesForKeys: nil)) ?? []
-        guard !files.isEmpty else { return }
+        defer { publishCounts(files, server: server) }
+        guard handoff.canSendQueued, !files.isEmpty else { return }
         let cards = Dictionary(sources().map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let marker = Data("\"\(WorkChatHold.queuedState)\"".utf8)
         for file in files.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) where file.pathExtension == "json" {
             guard let data = try? WorkSessionLinks.chatRead(file), data.range(of: marker) != nil,
                   let saved = try? JSONDecoder().decode(WorkChatRecord.self, from: data), saved.serverID == server,
                   !Self.isShown(saved.workID), let source = cards[saved.workID] else { continue }
+            let before = WorkChatBoardCounts.count(data, server: server)?.count ?? WorkChatBoardCount()
             store.open(source: source, handoff: handoff)
             store.syncFromDisk()
             await store.pumpQueued(source: source, handoff: handoff)
+            if let after = (try? WorkSessionLinks.chatRead(file)).flatMap({ WorkChatBoardCounts.count($0, server: server)?.count }),
+               let notice = WorkChatBoardCounts.notice(before: before, after: after, title: source.title) {
+                onNotice?(WorkProgressNotice(key: notice.key, receiptID: "chat-" + source.id, workID: source.id, title: "Work", body: notice.body))
+            }
             guard handoff.canSendQueued else { return }
         }
+    }
+    /// Counts every card's history for this server (the bytes only; no store is opened).
+    private func publishCounts(_ files: [URL], server: String) {
+        guard let onCounts else { return }
+        var counts: [String: WorkChatBoardCount] = [:]
+        for file in files where file.pathExtension == "json" {
+            guard let data = try? WorkSessionLinks.chatRead(file), let row = WorkChatBoardCounts.count(data, server: server), !row.count.isEmpty else { continue }
+            counts[row.workID] = row.count
+        }
+        onCounts(counts)
     }
 }
 
@@ -134,12 +153,34 @@ struct WorkChatQueuedLine: View {
     @ObservedObject var handoff: WorkHandoffStore
     let source: WorkSource
     let round: WorkChatRound
+    var onOpenSession: (String) -> Void = { _ in }
     private var queued: [WorkChatAssignment] { round.assignments.filter { $0.state == WorkChatHold.queuedState } }
+    /// 0.5.337 (loop audit W3): the handoffs it waits on, each with its status and age and the action that resolves it.
+    private var blocking: [WorkHandoffReceipt] {
+        let ids = Set(queued.flatMap { $0.waitingOn ?? [] })
+        return handoff.receipts.filter { ids.contains($0.id) }.sorted { $0.createdAt < $1.createdAt }
+    }
     var body: some View {
         let parallel = queued.allSatisfy { $0.parallel == true }
         VStack(alignment: .leading, spacing: 6) {
             Text(WorkChatHold.queuedLine(titles: WorkChatHold.waitingTitles(round, receipts: handoff.receipts)))
                 .font(COSType.body(13, weight: .semibold)).accessibilityIdentifier("work-chat-queued-line")
+            ForEach(blocking) { receipt in
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(WorkChatPreflight.line(receipt, now: Date().timeIntervalSince1970)).font(COSType.body(11.5, weight: .medium))
+                    if receipt.acknowledgeable {
+                        Text("Waits until you review \u{201C}" + WorkSendPlan.clip(receipt.sessionTitle) + "\u{201D}.").font(COSType.body(11)).foregroundStyle(COSPalette.muted)
+                    }
+                    HStack(spacing: 8) {
+                        if let sessionID = receipt.sessionID { Button("Open session") { onOpenSession(sessionID) }.buttonStyle(COSTextButtonStyle()) }
+                        if receipt.acknowledgeable {
+                            Button(WorkHandoffView.acknowledgeTitle(receipt)) { handoff.markReviewed(receiptID: receipt.id) }.buttonStyle(COSTextButtonStyle())
+                        } else {
+                            Button("Check status") { Task { await handoff.refreshReceipts(asked: true) } }.buttonStyle(COSTextButtonStyle())
+                        }
+                    }.disabled(handoff.busy || chat.busy)
+                }
+            }
             Text(parallel ? "Sent in parallel. Each waiting assignment goes once its own session's earlier work is resolved. Cancel to choose another destination."
                           : "Sends by itself once that work is resolved, after the same checks. If the task changed meanwhile, it asks for a new plan instead.")
                 .font(COSType.body(11)).foregroundStyle(COSPalette.muted).fixedSize(horizontal: false, vertical: true)

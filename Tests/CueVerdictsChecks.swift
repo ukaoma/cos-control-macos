@@ -359,7 +359,8 @@ import Foundation
         check(meetingStore.meetings[meeting]?.state == .loaded && meetingStore.meetings[meeting]?.cues.count == 1 && changes == 0,
               "one failed read keeps the last good list (a wake, an update's restart)")
         await meetingStore.loadMeeting(meeting, days: CueVerdicts.liveDays, force: true, run: fake(meetingCalls, [details(#"{"transport":"unavailable"}"#)]))
-        check(meetingStore.meetings[meeting]?.state == .unreachable && meetingStore.meetings[meeting]?.cues.isEmpty == true, "the second in a row says unreachable")
+        check(meetingStore.meetings[meeting]?.state == .unreachable && meetingStore.meetings[meeting]?.cues.count == 1,
+              "the second in a row says unreachable and keeps the last good cues (0.5.337 N13)")
         await meetingStore.loadMeeting(meeting, days: CueVerdicts.liveDays, force: true, run: fake(meetingCalls, [list]))
         check(meetingStore.meetings[meeting]?.state == .loaded, "a good read brings the list back")
         await meetingStore.loadMeeting(meeting, days: CueVerdicts.liveDays, force: true, run: fake(meetingCalls, [details(#"{"transport":"unavailable"}"#)]))

@@ -804,7 +804,8 @@ struct LiveAudiogramRing: Equatable, Sendable {
 /// The Mac grey line's posts to POST /api/transcribe-stream/preview: at most one in flight, at least `interval` apart,
 /// only with enough of the open chunk to read, and the newest `maximumBytes` of it. `previewGen` starts at 0 for each
 /// chunk and rises with each post for that chunk; an answer older than one already shown is dropped. After
-/// `breakerFailures` failed posts in a row the recording stops posting (the grey line is cosmetic).
+/// `breakerFailures` failed posts in a row the recording stops posting for `breakerPause`, then tries one post (the grey
+/// line is cosmetic).
 struct LiveMeetingPreviewGate: Equatable, Sendable {
     static let interval: TimeInterval = 2
     /// One second of 16 kHz mono PCM16.
@@ -812,6 +813,8 @@ struct LiveMeetingPreviewGate: Equatable, Sendable {
     /// 15 seconds of 16 kHz mono PCM16; with the 44-byte header it stays under the server's 512 KB.
     static let maximumBytes = 480_000
     static let breakerFailures = 3
+    /// 0.5.337 (loop audit N14): an open breaker tries one post again after this long (it stopped for the whole recording).
+    static let breakerPause: TimeInterval = 60
     private(set) var inFlight = false
     private(set) var lastPost: Date?
     private(set) var chunkIndex = -1
@@ -821,9 +824,16 @@ struct LiveMeetingPreviewGate: Equatable, Sendable {
     private(set) var failures = 0
 
     var open: Bool { failures < Self.breakerFailures }
+    /// A post may be tried now: the breaker is closed, or its pause has passed (the loop asks before it reads any audio).
+    func mayPost(now: Date) -> Bool { open || (lastPost.map { now.timeIntervalSince($0) >= Self.breakerPause } ?? false) }
 
     /// The previewGen for a post of `chunkIndex` with `bytes` of its audio, or nil when no post may go now.
     mutating func begin(chunkIndex: Int, bytes: Int, now: Date) -> Int? {
+        if !open {
+            // One post again after the pause; a failure opens the breaker again at once (failures goes back to the limit).
+            guard let lastPost, now.timeIntervalSince(lastPost) >= Self.breakerPause else { return nil }
+            failures = Self.breakerFailures - 1
+        }
         guard open, !inFlight, chunkIndex >= 0, bytes >= Self.minimumBytes else { return nil }
         if let lastPost, now.timeIntervalSince(lastPost) < Self.interval { return nil }
         if chunkIndex != self.chunkIndex { self.chunkIndex = chunkIndex; generation = -1 }
@@ -962,6 +972,16 @@ enum LiveMeeting {
     /// Each cue under the turn it belongs to: the last turn that had started by the cue's `createdAt` (the turn in
     /// progress when it was written). A cue from before the first turn goes under the first. Nothing anchors without the
     /// meeting's start or any turn; those cues stay in the Cues tab only. Within a turn, oldest first.
+    /// 0.5.337 (performance audit W7): each turn's cues, looked up once per redraw. The rows filtered every cue for every
+    /// turn (turns x cues). In the anchored order; a cue the anchoring did not place is left out, as before.
+    static func cuesByTurn<Cue>(_ cues: [Cue], id: (Cue) -> String, anchored: [Int: [String]]) -> [Int: [Cue]] {
+        var turnOf: [String: Int] = [:]
+        for (turn, ids) in anchored { for cue in ids { turnOf[cue] = turn } }
+        var out: [Int: [Cue]] = [:]
+        for cue in cues { if let turn = turnOf[id(cue)] { out[turn, default: []].append(cue) } }   // the history's order
+        return out
+    }
+
     static func anchor(cues: [(id: String, createdAt: Date)], turns: [LiveTranscriptTurn], start: Date?) -> [Int: [String]] {
         guard let start, let first = turns.first else { return [:] }
         var out: [Int: [String]] = [:]
@@ -1018,14 +1038,22 @@ enum LiveMeeting {
         return "Cues off: " + reasonWords(arm.reason)
     }
 
+    /// 0.5.337 (loop audit W9): the refusal a key in Settings fixes.
+    static func needsDecisionKey(_ arm: MacLiveCuesArm?) -> Bool {
+        guard let arm, !arm.armed else { return false }
+        return arm.reason == "decision_not_configured" || arm.reason == "jev_not_configured"
+    }
+
     static func reasonWords(_ code: String?) -> String {
         switch code {
         case "master_flag_off": "the Live cues switch is off"
         case "mac_cues_off": "cues for Mac recordings are off on the server"
         case "meeting_ended": "the meeting has ended"
-        case "budget_exhausted": "today's cue budget is used up"
-        case "jev_cap_reached", "decision_cap_reached": "today's decision model limit is reached"
-        case "jev_breaker_open", "decision_breaker_open": "the decision model is pausing after errors"
+        // 0.5.337 (loop audit W9): the server's words for these (LiveCues.reasonLine): the budget is weekly, and each one
+        // says when it lifts.
+        case "budget_exhausted": "this week's live cues limit is used up, and cues start again next week"
+        case "jev_cap_reached", "decision_cap_reached": "the decision model's limit is used up, and cues start again by themselves"
+        case "jev_breaker_open", "decision_breaker_open": "the decision model failed several times, and cues start again by themselves after a pause"
         case "decision_not_configured", "jev_not_configured": "no decision model key is set"
         case "decision_invalid_provider": "the decision model setting is not valid"
         case "claude_not_found": "the server cannot find Claude"

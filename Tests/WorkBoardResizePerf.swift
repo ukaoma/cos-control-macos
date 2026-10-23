@@ -151,6 +151,30 @@ import SwiftUI
                      label, steps.count, median, p95, sorted.last ?? 0, resizeProjections, Double(resizeProjections) / n,
                      resizeBodies, Double(resizeBodies) / n, resizeBoards, Double(resizeBoards) / n, Double(resizeLayouts) / n, idleProjections, idleBodies))
         guard label == "--gate" else { return }
+        // 0.5.337 (performance audit B2): the real Activity window with the Today home on, 1100 to 1900 pt. A resize step
+        // must not compose the home again (it did for every step while the GeometryReader sat around the TimelineView).
+        UserDefaults.standard.set(true, forKey: TodayHome.enabledKey)
+        let todayModel = ControllerModel(startBackgroundWork: false)
+        todayModel.claudeSessionsEnabled = true
+        todayModel.workIntake = WorkIntakeSnapshot(available: true, message: nil, items: [], cardCreation: true, linkWrites: true)
+        let todayStore = TodayHomeStore()
+        todayStore.reachable = true; todayStore.hostsRead = true; todayStore.checkedAt = Date()
+        let todayHost = CountingHost(rootView: ActivityWindow.todayFixture(model: todayModel, store: todayStore, handoff: WorkHandoffStore(isolated: true)))
+        todayHost.sizingOptions = ActivityWindowPresenter.hostingSizing
+        let todayWindow = NSWindow(contentRect: NSRect(x: -20000, y: -20000, width: 1100, height: 900), styleMask: [.borderless], backing: .buffered, defer: false)
+        todayWindow.isReleasedWhenClosed = false
+        todayWindow.contentView = todayHost
+        settle(todayHost, seconds: 1)
+        let composedAtRest = TodayHome.composeRuns
+        precondition(composedAtRest > 0, "the Today home never composed: the fixture did not show it")
+        TodayHome.composeRuns = 0
+        let todaySteps = resize(todayWindow, todayHost, widths: Array(stride(from: 1100, through: 1900, by: 10)))
+        let todayComposes = TodayHome.composeRuns
+        todayWindow.close()
+        if todayComposes > 4 {
+            failures.append("the Today home composed \(todayComposes) times in \(todaySteps.count) resize steps (bound 4): the frame is computed per resize step again (a GeometryReader around the TimelineView)")
+        }
+        print("Today resize: \(todaySteps.count) steps 1100-1900 pt, home composed \(todayComposes) times (bound 4)")
         if !failures.isEmpty {
             for failure in failures { fputs("resize gate FAILED: \(failure)\n", stderr) }
             exit(1)

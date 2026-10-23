@@ -45,6 +45,10 @@ final class ProgressCapture: @unchecked Sendable {
         if kind=='crashed':
             print(json.dumps({'ok':False,'message':'helper error','details':{'reason':'boom'}}), flush=True)
             sys.exit(1)
+        if kind=='slow':
+            time.sleep(float(sys.argv[2]))
+            print(json.dumps({'ok':True,'message':'slow','details':{}}), flush=True)
+            sys.exit(0)
         if kind=='stdin':
             data=sys.stdin.read()
             print(json.dumps({'ok':True,'message':str(len(data)),'details':{}}))
@@ -126,6 +130,21 @@ final class ProgressCapture: @unchecked Sendable {
         let descriptorsAfter = try openDescriptors()
         precondition(descriptorsAfter <= descriptorsBefore + 4,
                      "helper descriptors leaked: \(descriptorsBefore) -> \(descriptorsAfter)")
+        // 0.5.337 (performance audit W8): a helper run waits on its own dispatch thread, never on a Swift concurrency
+        // thread. While twice as many helpers as there are cores each take a second, a task on the cooperative pool still
+        // starts at once (it waited for them when each run blocked a pool thread in its poll loop).
+        let many = ProcessInfo.processInfo.activeProcessorCount * 2
+        let slowStart = ProcessInfo.processInfo.systemUptime
+        let runs = (0..<many).map { _ in Task { try await client.run([child.path, "slow", "1.0"], timeout: 10) } }
+        try await Task.sleep(for: .milliseconds(250))
+        let probeStart = ProcessInfo.processInfo.systemUptime
+        _ = await Task.detached(priority: .userInitiated) { 1 }.value
+        let probeLatency = ProcessInfo.processInfo.systemUptime - probeStart
+        for run in runs { let answer = try await run.value; precondition(answer.message == "slow", "a slow helper's answer was lost") }
+        let slowElapsed = ProcessInfo.processInfo.systemUptime - slowStart
+        precondition(probeLatency < 0.2, "a pool task waited \(probeLatency)s behind \(many) running helpers: helper runs block Swift concurrency threads")
+        precondition(slowElapsed < 4, "\(many) one-second helpers took \(slowElapsed)s: they did not run side by side")
+        print("helper concurrency: \(many) one-second helpers in \(String(format: "%.2f", slowElapsed))s; a pool task started in \(String(format: "%.3f", probeLatency))s")
         print("helper resource checks: idle CPU \(idleCPU)s/1s; early-EOF CPU \(closedCPU)s; descriptors \(descriptorsBefore) -> \(descriptorsAfter)")
         print("helper transport: large stdout/stderr, stdin, refusals with and without answers, overflow, timeout, cancellation and resource cleanup passed")
     }

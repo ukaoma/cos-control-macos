@@ -113,6 +113,9 @@ struct WorkChatPlannerAnswer: Decodable {
 }
 
 enum WorkChatPolicy {
+    /// 0.5.337: the composer footer's pickers never shrink below these, so the chosen planner and effort show.
+    static let plannerPickerMinWidth: CGFloat = 150
+    static let effortPickerMinWidth: CGFloat = 130
     static func linksDigest(_ links: [String: WorkSessionCardLink], workID: String) throws -> String {
         let e = JSONEncoder(); e.outputFormatting = [.sortedKeys]
         return SHA256.hash(data: try e.encode(links.filter { $0.value.workID == workID })).map { String(format: "%02x", $0) }.joined()
@@ -312,6 +315,8 @@ enum WorkChatPreflight {
         }
     }
     @Published var error: String?
+    /// 0.5.337 (loop audit N1): what a Stop did, said once it was asked (the row's own state follows).
+    @Published var stopNote: String?
     @Published var busy = false
     @Published private(set) var refreshing = false
     /// 0.5.317 (Miles 2026-10-16, "Check again disabled", his message blocked): the combined update summary is a planner
@@ -333,6 +338,8 @@ enum WorkChatPreflight {
     var busyWait: Duration = .seconds(60)
     /// Server 6.73.12: the planner efforts it advertises. Empty: no effort picker, and no effort key is sent.
     @Published private(set) var efforts: [String] = []
+    /// 0.5.337: the sizing check's planner and effort choices (Tests/ActivitySizing.swift), never called by the app.
+    func setPlannerChoicesForLayout(_ planners: [String], efforts: [String], refreshing: Bool = false) { self.planners = planners; self.efforts = efforts; self.refreshing = refreshing }
     /// Server 6.73.13: it takes context items and chooses each assignment's. False: every assignment sends every item.
     @Published private(set) var contextItemsOffered = false
     /// 0.5.317 / server 6.73.15 (`queueRounds`): a held send can queue or go in parallel, and the planner is told which
@@ -589,7 +596,7 @@ enum WorkChatPreflight {
         guard !busy, !refreshing, var record, record.workID == source.id, record.serverID != "unverified", enabled || handoff.isolated else { return }
         guard flushDraft() else { return }
         let question = record.draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !question.isEmpty, record.rounds.count < 100,
+        guard !question.isEmpty, !WorkLensPlans.isFull(rounds: record.rounds.count),
               !record.rounds.contains(where: { ["Planning","Executing"].contains($0.state) }) else { return }
         busy = true; error = nil; blockers = []; phase = "Checking earlier handoffs…"
         defer { busy = false; phase = "" }
@@ -773,12 +780,13 @@ enum WorkChatPreflight {
     /// 0.5.333 (Miles Q1: every running assignment has a Stop). What Stop does for one assignment of a round sent without
     /// review: nil when there is nothing to stop.
     func stopAction(roundID: String, assignmentID: String, handoff: WorkHandoffStore) -> WorkOrchestrator.StopAction? {
-        guard let round = record?.rounds.first(where: { $0.id == roundID }), round.sentWithoutReview == true || round.sentFromGlasses == true,
+        guard let round = record?.rounds.first(where: { $0.id == roundID }),
               let a = round.assignments.first(where: { $0.receiptID == assignmentID }) else { return nil }
         let receipt = handoff.receipts.first { $0.id == assignmentID }
         let action = WorkOrchestrator.stopAction(state: a.state, queuedState: WorkChatHold.queuedState, receiptStatus: receipt?.status,
-                                                 channel: receipt?.channel, jobID: receipt?.jobID, sessionID: receipt?.sessionID)
-        return action == .none ? nil : action
+                                                 channel: receipt?.channel, jobID: receipt?.jobID, sessionID: receipt?.sessionID,
+                                                 receiptID: receipt?.id, queueSessionID: receipt?.sourceSessionID)
+        return WorkOrchestrator.stopOffered(action, sentWithoutReview: round.sentWithoutReview == true || round.sentFromGlasses == true)
     }
     /// Stop one assignment of a round sent without review. Not sent yet or queued: it never goes (and a round still sending
     /// stops before its next send). Running: its job or turn is asked to stop through the server. Never resends anything.
@@ -786,6 +794,7 @@ enum WorkChatPreflight {
         guard let action = stopAction(roundID: roundID, assignmentID: assignmentID, handoff: handoff),
               let r = record?.rounds.firstIndex(where: { $0.id == roundID }),
               let n = record?.rounds[r].assignments.firstIndex(where: { $0.receiptID == assignmentID }) else { return }
+        stopNote = nil
         switch action {
         case .unqueue:
             // A round still sending reads each assignment's state before it sends it, so this one is passed over.
@@ -798,11 +807,37 @@ enum WorkChatPreflight {
             await requestStop(assignmentID: assignmentID, args: ["work-job-cancel", "--job-id", job], handoff: handoff)
         case .cancelTurn(let provider, let thread):
             await requestStop(assignmentID: assignmentID, args: ["session-chat-cancel", "--provider", provider, "--thread-id", thread, "--client-cancel-id", "stop-" + assignmentID], handoff: handoff)
+        case .cancelQueued(let provider, let thread, let turn):
+            await stopQueued(r: r, n: n, assignmentID: assignmentID, args: ["session-chat-queue-cancel", "--provider", provider, "--thread-id", thread, "--client-turn-id", turn], handoff: handoff)
         case .unavailable(let why):
             error = why
             workChatLog.info("stop: assignment \(assignmentID, privacy: .public) cannot be stopped from here")
         case .none: return
         }
+    }
+    /// 0.5.337 (loop audit W7): a queued turn answers with its queue state, not an HTTP status. Only "cancelled" marks it
+    /// Skipped; anything else keeps it and says why.
+    private func stopQueued(r: Int, n: Int, assignmentID: String, args: [String], handoff: WorkHandoffStore) async {
+        guard !stopping.contains(assignmentID) else { return }
+        stopping.insert(assignmentID); defer { stopping.remove(assignmentID) }
+        do {
+            let answer = try await handoff.taskChatCall(args)
+            let state = answer["state"]?.string ?? ""
+            let verdict = WorkOrchestrator.queueCancelLine(state: state)
+            workChatLog.info("stop: assignment \(assignmentID, privacy: .public) queue cancel answered \(state, privacy: .public)")
+            if verdict.stopped { stopNote = verdict.line }
+            if verdict.stopped, let rounds = record?.rounds, rounds.indices.contains(r), rounds[r].assignments.indices.contains(n),
+               rounds[r].assignments[n].receiptID == assignmentID {
+                record?.rounds[r].assignments[n].state = "Skipped"
+                record?.rounds[r].assignments[n].detail = verdict.line
+                record?.rounds[r].state = WorkChatPolicy.reviewedState(record!.rounds[r].assignments)
+                _ = persist()
+            } else if !verdict.stopped { error = verdict.line }
+        } catch {
+            self.error = "Stop did not reach the server: \(error.localizedDescription)"
+            workChatLog.error("stop: assignment \(assignmentID, privacy: .public) queue cancel failed")
+        }
+        await handoff.refreshReceipts()
     }
     private func requestStop(assignmentID: String, args: [String], handoff: WorkHandoffStore) async {
         guard !stopping.contains(assignmentID) else { return }
@@ -811,6 +846,7 @@ enum WorkChatPreflight {
             let answer = try await handoff.taskChatCall(args)
             let http = answer["httpStatus"]?.int ?? 0
             workChatLog.info("stop: assignment \(assignmentID, privacy: .public) \(args[0], privacy: .public) answered HTTP \(http)")
+            if (200..<300).contains(http) { stopNote = "Asked it to stop. The row shows when it has stopped." }
             if !(200..<300).contains(http) { error = answer["reasonCopy"]?.string ?? answer["error"]?.object?["message"]?.string ?? "The server could not stop it (HTTP \(http))." }
         } catch {
             self.error = "Stop did not reach the server: \(error.localizedDescription)"
@@ -1230,7 +1266,8 @@ struct WorkTaskChatView: View {
         return base + " · " + WorkContextMeter.format(WorkContextMeter.roundTokens(items: items, assignments: waiting)) + " tokens"
     }
     private static func stateLine(_ round: WorkChatRound) -> String {
-        let auto = round.sentWithoutReview == true ? " · sent without review" : ""
+        // 0.5.337 (loop audit N3): a round sent from the glasses says so.
+        let auto = round.sentFromGlasses == true ? " · sent from the glasses" : round.sentWithoutReview == true ? " · sent without review" : ""
         guard let label = WorkChatPolicy.plannerLabel(requested: round.planner, ran: round.plannerModel, effort: round.plannerEffort) else { return round.state + auto }
         return round.state + auto + " · " + label
     }
@@ -1284,7 +1321,7 @@ struct WorkTaskChatView: View {
                     Text(Self.stateLine(round)).font(COSType.body(11)).foregroundStyle(COSPalette.muted)
                     // 0.5.317: Ask each time, for the send just held; and what queued assignments wait on.
                     if chat.pendingHold?.roundID == round.id { WorkChatHoldChoices(chat: chat, handoff: handoff, source: source) }
-                    if round.assignments.contains(where: { $0.state == WorkChatHold.queuedState }) { WorkChatQueuedLine(chat: chat, handoff: handoff, source: source, round: round) }
+                    if round.assignments.contains(where: { $0.state == WorkChatHold.queuedState }) { WorkChatQueuedLine(chat: chat, handoff: handoff, source: source, round: round, onOpenSession: onOpenSession) }
                     if round.state == "Ready to send" {
                         // 0.5.308: nothing leaves until Miles sends it. Not now keeps every assignment as a saved draft.
                         HStack(spacing: 8) {
@@ -1318,6 +1355,7 @@ struct WorkTaskChatView: View {
             ForEach(scopedRecord?.rounds ?? []) { round in roundView(round) }
             if !chat.blockers.isEmpty, chat.pendingHold == nil, scopedRecord != nil { WorkChatBlockersView(chat: chat, handoff: handoff, source: source, onOpenSession: onOpenSession) }
             if let error = chat.error { Text(error).font(COSType.body(12)).foregroundStyle(COSPalette.danger).textSelection(.enabled) }
+            if let note = chat.stopNote, chat.error == nil { Text(note).font(COSType.body(12)).foregroundStyle(COSPalette.muted) }
             if chat.busy { HStack { ProgressView().controlSize(.small); Text(chat.phase).font(COSType.body(12)) } }
             WorkChatContextComposer(chat:chat,handoff:handoff,files:handoff.cardFiles,source:source)
             WorkChatSendControls(chat: chat, draft: chat.draft, handoff: handoff, source: source)
@@ -1469,7 +1507,7 @@ private struct WorkChatBlockersView: View {
     }
 }
 
-private struct WorkChatSendControls: View {
+struct WorkChatSendControls: View {
     @ObservedObject var chat: WorkTaskChatStore
     @ObservedObject var draft: WorkChatDraftState
     @ObservedObject var handoff: WorkHandoffStore
@@ -1487,8 +1525,11 @@ private struct WorkChatSendControls: View {
     private var cardAutoSend: Bool { WorkOrchestrator.autoSend(workID: source.id, raw: autoSendCards, settingDefault: autoSend) }
     @State private var confirmAutoSend = false
     private static let autoSendHelp = "Plans, then sends every assignment without stopping for review"
+    /// 0.5.337 (loop audit W15): a full card's Plan is off and says why.
+    private var full: Bool { WorkLensPlans.isFull(rounds: chat.record?.rounds.count ?? 0) }
     private var blocked: Bool {
         chat.busy || chat.refreshing || !(chat.enabled || handoff.isolated) || chat.record?.workID != source.id || draft.value.text.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty
+            || full
     }
     private func plan() { Task { await chat.send(source:source,handoff:handoff,planner:planner,effort:effort) } }
     /// Every Plan and send comes through here; the first one, from either button, asks once.
@@ -1496,29 +1537,38 @@ private struct WorkChatSendControls: View {
         if WorkChatPolicy.confirmBeforeAutoSend(acknowledged: autoSendAcknowledged) { confirmAutoSend = true; return }
         Task { await chat.send(source:source,handoff:handoff,planner:planner,effort:effort,autoSend:true) }
     }
-    var body: some View {
-        HStack {
-            Text(chat.refreshing ? "Refreshing receipts and updates… Your draft is preserved." : (cardAutoSend ? "⌘ Return to plan and send · Return adds a line" : "⌘ Return to plan · Return adds a line")).font(COSType.body(10)).foregroundStyle(COSPalette.muted)
-            Spacer()
-            Toggle("Auto-send", isOn: Binding(get: { cardAutoSend }, set: { autoSendCards = WorkOrchestrator.setting(workID: source.id, on: $0, raw: autoSendCards, settingDefault: autoSend) }))
-                .toggleStyle(COSSwitchStyle()).font(COSType.body(10)).disabled(chat.busy)
-                .help("This card only. On: plans are sent without review, each assignment with a Stop. Its default is Settings › Work › Send plans without review.")
-                .accessibilityIdentifier("work-chat-auto-send")
-            if !chat.planners.isEmpty {
-                // GOTCOS theme (0.5.251): COSDropdown, never a stock Picker.
-                COSDropdown("Plan with", selection: $planner, options: chat.planners.map { COSDropdownOption($0, WorkChatPolicy.plannerName($0)) })
-                    .frame(maxWidth: 190).disabled(chat.busy)
-                    .help(cardAutoSend ? "The model that plans." : "The model that plans. Plan never sends: you review every assignment first.")
-                    .accessibilityIdentifier("work-chat-planner")
-                if !chat.efforts.isEmpty {
-                    COSDropdown("Effort", selection: $effort, options: chat.efforts.map { COSDropdownOption($0, WorkChatPolicy.effortName($0)) })
-                        .frame(maxWidth: 170).disabled(chat.busy)
-                        .help("How hard the planner thinks. Higher takes longer and costs more per plan.")
-                        .accessibilityIdentifier("work-chat-effort")
-                }
-            } else if let notice = chat.plannerNotice {
-                Text(notice).font(COSType.body(10)).foregroundStyle(COSPalette.muted).help("COS could not read this server's planner choice. Plans use Sonnet until the next try.")
+    /// 0.5.337 (Miles 2026-10-22 21:11): the footer adapts. One row when it fits; else the settings on one row and the hint
+    /// with the buttons on the next. The pickers keep a minimum width so the chosen value shows, and the buttons never wrap.
+    private var hintText: String {
+        full ? WorkLensPlans.fullLine : chat.refreshing ? "Refreshing receipts and updates… Your draft is preserved." : (cardAutoSend ? "⌘ Return to plan and send · Return adds a line" : "⌘ Return to plan · Return adds a line")
+    }
+    private func hint(lines: Int) -> some View {
+        Text(hintText).font(COSType.body(10)).foregroundStyle(full ? COSPalette.amber : COSPalette.muted)
+            .lineLimit(lines).fixedSize(horizontal: false, vertical: true)
+    }
+    @ViewBuilder private var settings: some View {
+        Toggle("Auto-send", isOn: Binding(get: { cardAutoSend }, set: { autoSendCards = WorkOrchestrator.setting(workID: source.id, on: $0, raw: autoSendCards, settingDefault: autoSend) }))
+            .toggleStyle(COSSwitchStyle()).font(COSType.body(10)).disabled(chat.busy).fixedSize()
+            .help("This card only. On: plans are sent without review, each assignment with a Stop. Its default is Settings › Work › Send plans without review.")
+            .accessibilityIdentifier("work-chat-auto-send")
+        if !chat.planners.isEmpty {
+            // GOTCOS theme (0.5.251): COSDropdown, never a stock Picker.
+            COSDropdown("Plan with", selection: $planner, options: chat.planners.map { COSDropdownOption($0, WorkChatPolicy.plannerName($0)) })
+                .frame(minWidth: WorkChatPolicy.plannerPickerMinWidth, maxWidth: 190).disabled(chat.busy)
+                .help(cardAutoSend ? "The model that plans." : "The model that plans. Plan never sends: you review every assignment first.")
+                .accessibilityIdentifier("work-chat-planner")
+            if !chat.efforts.isEmpty {
+                COSDropdown("Effort", selection: $effort, options: chat.efforts.map { COSDropdownOption($0, WorkChatPolicy.effortName($0)) })
+                    .frame(minWidth: WorkChatPolicy.effortPickerMinWidth, maxWidth: 170).disabled(chat.busy)
+                    .help("How hard the planner thinks. Higher takes longer and costs more per plan.")
+                    .accessibilityIdentifier("work-chat-effort")
             }
+        } else if let notice = chat.plannerNotice {
+            Text(notice).font(COSType.body(10)).foregroundStyle(COSPalette.muted).lineLimit(2).help("COS could not read this server's planner choice. Plans use Sonnet until the next try.")
+        }
+    }
+    @ViewBuilder private var buttons: some View {
+        HStack(spacing: 8) {
             if cardAutoSend {
                 Button("Plan") { plan() }.buttonStyle(COSQuietButtonStyle()).disabled(blocked)
                     .help("Plans and stops for your review").accessibilityIdentifier("work-chat-send")
@@ -1531,6 +1581,16 @@ private struct WorkChatSendControls: View {
                     .buttonStyle(COSPrimaryButtonStyle()).keyboardShortcut(.return,modifiers:.command)
                     .disabled(blocked)
                     .accessibilityIdentifier("work-chat-send")
+            }
+        }
+        .fixedSize()
+    }
+    var body: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 8) { hint(lines: 1).fixedSize(); Spacer(minLength: 8); settings; buttons }
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 8) { settings; Spacer(minLength: 0) }
+                HStack(alignment: .center, spacing: 8) { hint(lines: 3).frame(maxWidth: .infinity, alignment: .leading); buttons }
             }
         }
         .confirmationDialog("Send plans without review?", isPresented: $confirmAutoSend) {
@@ -1764,7 +1824,7 @@ extension WorkTaskChatStore {
         guard !busy, !refreshing, WorkLensPlans.valid(lens), lens.workID == source.id, let current = record, current.workID == source.id,
               current.serverID == (handoff.taskChatServerID ?? "unverified") else { return false }
         if current.rounds.contains(where: { $0.lensRoundID == lens.roundId }) { return true }
-        guard current.rounds.count < 100 else { workChatLog.error("lens round not saved: this card's Work chat history is full"); return false }
+        guard !WorkLensPlans.isFull(rounds: current.rounds.count) else { workChatLog.error("lens round not saved: this card's Work chat history is full"); return false }
         busy = true; phase = "Saving a plan from the glasses…"
         defer { busy = false; phase = "" }
         do {

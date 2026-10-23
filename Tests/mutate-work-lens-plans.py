@@ -55,7 +55,7 @@ MUTANTS = [
  ("hub", "results never reported", P, "            await report(send.sendRequestId, results)\n", ""),
  ("hub", "progress never reported", P, "            let changed = results.filter { t.last[$0.id] != $0.state }", "            let changed: [WorkLensPlans.Result] = []"),
  ("hub", "lens stop never reaches Stop", C, "            await self.stop(roundID: round.id, assignmentID: a.receiptID, handoff: handoff)", "            _ = a"),
- ("hub", "no Stop on rounds sent from the glasses", C, "round.sentWithoutReview == true || round.sentFromGlasses == true,", "round.sentWithoutReview == true,"),
+ ("hub", "no Stop on rounds sent from the glasses", C, "round.sentWithoutReview == true || round.sentFromGlasses == true)", "round.sentWithoutReview == true)"),
  # QA on 6.10.651: Miles's own Send of a lens round on the Mac is reported, so the lens never sends it twice.
  ("hub", "Mac send never reported", C, "        if !lensDispatching, let lensRound = self.record?.rounds[index].lensRoundID { Self.onLensMacSend?(record.workID, lensRound) }\n", ""),
  ("hub", "Mac report includes lens sends", C, "lensIDs?.contains(id) ?? true, !macOnly || a.lensSendID == nil else { return nil }", "lensIDs?.contains(id) ?? true else { return nil }"),

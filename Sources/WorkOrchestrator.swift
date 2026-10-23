@@ -194,13 +194,21 @@ enum WorkOrchestrator {
         case .unqueue: return "Stop: this assignment is not sent"
         case .cancelJob: return "Stop the new session's run"
         case .cancelTurn: return "Stop the session's running turn"
+        case .cancelQueued: return "Stop: take it out of the session's queue before it is sent"
         case .unavailable(let why): return why
         case .none: return ""
         }
     }
-    enum StopAction: Equatable, Sendable { case unqueue, cancelJob(String), cancelTurn(provider: String, threadID: String), unavailable(String), none }
-    /// What Stop does for one auto-sent assignment, from its state and receipt.
-    static func stopAction(state: String, queuedState: String, receiptStatus: String?, channel: String?, jobID: String?, sessionID: String?) -> StopAction {
+    enum StopAction: Equatable, Sendable {
+        case unqueue, cancelJob(String), cancelTurn(provider: String, threadID: String)
+        /// 0.5.337 (loop audit W7): parked in a busy session's queue (channel "queue"); session-chat-queue-cancel takes it out.
+        case cancelQueued(provider: String, threadID: String, clientTurnID: String)
+        case unavailable(String), none
+    }
+    /// What Stop does for one auto-sent assignment, from its state and receipt. `receiptID` is a queued turn's client turn
+    /// id and `queueSessionID` the session it waits on (0.5.337).
+    static func stopAction(state: String, queuedState: String, receiptStatus: String?, channel: String?, jobID: String?, sessionID: String?,
+                           receiptID: String? = nil, queueSessionID: String? = nil) -> StopAction {
         if state == queuedState || state == "Not sent" { return .unqueue }
         guard let status = receiptStatus, ["running", "queued", "sending"].contains(status) else { return .none }
         switch channel {
@@ -208,8 +216,32 @@ enum WorkOrchestrator {
         case "turn":
             guard let id = sessionID, let colon = id.firstIndex(of: ":") else { return .unavailable("The session is not known yet.") }
             return .cancelTurn(provider: String(id[..<colon]), threadID: String(id[id.index(after: colon)...]))
+        case "queue":
+            guard let id = queueSessionID ?? sessionID, let colon = id.firstIndex(of: ":"), let turn = receiptID, !turn.isEmpty else {
+                return .unavailable("The session it waits on is not known yet. Try again in a moment.")
+            }
+            return .cancelQueued(provider: String(id[..<colon]), threadID: String(id[id.index(after: colon)...]), clientTurnID: turn)
         case "fork": return .unavailable("A fork in progress cannot be stopped from here. Stop its copy in Sessions once it appears.")
         default: return .unavailable("This handoff cannot be stopped from here.")
+        }
+    }
+    /// 0.5.337 (loop audit W6): a round sent after review gets Stop too, but only for what is running (a job, a turn, a
+    /// queued turn). Its unsent rows keep their own Send and review, and a "cannot stop" line is not offered there.
+    static func stopOffered(_ action: StopAction, sentWithoutReview: Bool) -> StopAction? {
+        if action == .none { return nil }
+        if sentWithoutReview { return action }
+        switch action {
+        case .cancelJob, .cancelTurn, .cancelQueued: return action
+        default: return nil
+        }
+    }
+    /// The queue cancel's answer (`state`): only "cancelled" stopped it; the rest say why, in plain words.
+    static func queueCancelLine(state: String) -> (stopped: Bool, line: String) {
+        switch state {
+        case "cancelled": return (true, "Stopped. It was taken out of the session's queue and was not sent.")
+        case "already_delivering": return (false, "Too late to stop: the session already has it.")
+        case "unknown_turn": return (false, "It is no longer in the session's queue. Check the session.")
+        default: return (false, "The server could not take it out of the queue. Update the COS server, or stop it in Sessions.")
         }
     }
 }

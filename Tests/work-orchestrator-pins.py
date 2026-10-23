@@ -50,10 +50,11 @@ pin("!WorkOrchestrator.isGuardian(" in chat[chat.index("    private func targets
 pin(store.count("row.forkChildID = child.id") == 1 and store.count("row.forkChildID = copy.id") == 1, "the fork child is journaled when it is known")
 pin("var forkChildID: String? = nil" in store, "the receipt carries the fork child")
 # Stop: visible only on rounds sent without review (0.5.333 lens plans: or sent from the glasses), on assignments that can stop.
-pin('round.sentWithoutReview == true || round.sentFromGlasses == true,' in chat[chat.index("    func stopAction(roundID"):chat.index("    /// Stop one assignment")], "Stop only on rounds sent without review or from the glasses")
+# 0.5.337 (loop audit W6): every running assignment has a Stop; Stop on an unsent row only for rounds sent without review or from the glasses.
+pin('WorkOrchestrator.stopOffered(action, sentWithoutReview: round.sentWithoutReview == true || round.sentFromGlasses == true)' in chat[chat.index("    func stopAction(roundID"):chat.index("    /// Stop one assignment")], "Stop only on rounds sent without review or from the glasses")
 pin('if let action = chat.stopAction(roundID: round.id, assignmentID: a.receiptID, handoff: handoff) {' in chat and 'accessibilityIdentifier("work-chat-stop")' in chat, "the Stop button is drawn from stopAction")
 # Auto-send per card: the Settings switch stays the default; the composer reads the card's value everywhere it read Settings.
-controls = chat[chat.index("private struct WorkChatSendControls: View {"):chat.index("// Native rich text stays local as RTF")]
+controls = chat[chat.index("struct WorkChatSendControls: View {"):chat.index("// Native rich text stays local as RTF")]
 pin("@AppStorage(WorkChatPolicy.autoSendKey) private var autoSend = WorkChatPolicy.autoSendDefault" in controls, "Settings is still the default")
 pin("WorkOrchestrator.autoSend(workID: source.id, raw: autoSendCards, settingDefault: autoSend)" in controls, "a card with no choice follows Settings")
 pin("if cardAutoSend {" in controls and "if autoSend {" not in controls and controls.count("cardAutoSend ?") == 2, "the composer reads the card's value")

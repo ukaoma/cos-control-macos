@@ -67,7 +67,7 @@ MUTANTS = [
  ("hub", "New session never started", C, "                    model = found; sendMode = .newSession", "                    model = found"),
  ("hub", "empty plan silent", C, "                self.record?.rounds[index].sessionsNote = WorkOrchestrator.emptyExplanation(", "                _ = WorkOrchestrator.emptyExplanation("),
  ("hub", "Stop never reaches the server", C, '            await requestStop(assignmentID: assignmentID, args: ["work-job-cancel", "--job-id", job], handoff: handoff)', '            _ = job'),
- ("hub", "Stop on rounds waiting for review", C, "        guard let round = record?.rounds.first(where: { $0.id == roundID }), round.sentWithoutReview == true || round.sentFromGlasses == true,", "        guard let round = record?.rounds.first(where: { $0.id == roundID }),"),
+ ("hub", "Stop on rounds waiting for review", C, "sentWithoutReview: round.sentWithoutReview == true || round.sentFromGlasses == true)", "sentWithoutReview: true)"),
  ("hub", "Guardian rows are targets", C, "        return handoff.observedSessions().filter { allowed.contains($0.id) && !WorkOrchestrator.isGuardian(id: $0.id, title: $0.title, summary: $0.summary) }", "        return handoff.observedSessions().filter { allowed.contains($0.id) || WorkOrchestrator.isGuardian(id: $0.id, title: $0.title, summary: $0.summary) }"),
 ]
 EXPECTED_SURVIVORS = {

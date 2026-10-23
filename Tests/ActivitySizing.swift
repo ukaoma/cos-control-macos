@@ -31,12 +31,14 @@ import SwiftUI
             UserDefaults.standard.set(true, forKey: TodayHome.enabledKey)
             for tab in tabs { failures += check(tab).map { "Today rail on: " + $0 } + railCheck(tab) }
             UserDefaults.standard.removeObject(forKey: TodayHome.enabledKey)
+            failures += composerCheck()
             if !failures.isEmpty {
                 for failure in failures { fputs("Activity sizing check FAILED: \(failure)\n", stderr) }
                 exit(1)
             }
             print("PASS: Activity window sizing (0.5.254): no hosting size tracking; home and \(tabs.count - 1) tabs hold 760x560 at the least, grow without a limit, and never go below what they need, with the Today rail off and on; the rail is icons at 1099 pt and full at 1100 pt on home and every tab")
         case "measure":
+            _ = composerCheck()
             for tab in tabs { measure(tab) }
             UserDefaults.standard.set(true, forKey: TodayHome.enabledKey)
             print("-- Today rail on --")
@@ -60,6 +62,43 @@ import SwiftUI
             fputs("usage: measure | render <folder> WxH ...\n", stderr); exit(2)
         }
     }
+
+    /// 0.5.337 (Miles 2026-10-22 21:11): the Work chat composer's footer at 700, 900 and 1200 pt, with both pickers. Wide,
+    /// it is one row; narrow, two (the settings, then the hint and the buttons), and never taller than two rows (a wrapped
+    /// button or a one-word column of hint text makes it taller).
+    static func composerHeights(refreshing: Bool = false) -> [(width: CGFloat, height: CGFloat)] {
+        let chat = WorkTaskChatStore()
+        chat.setPlannerChoicesForLayout(["opus", "sonnet"], efforts: ["low", "medium", "high"], refreshing: refreshing)
+        let handoff = WorkHandoffStore(isolated: true)
+        let source = WorkSource(id: "task:quilt:sizing", title: "Sizing card", revision: "1", project: "quilt", context: "")
+        return [700.0, 900.0, 1200.0].map { width in
+            let host = NSHostingView(rootView: WorkChatSendControls(chat: chat, draft: chat.draft, handoff: handoff, source: source).frame(width: width))
+            let window = NSWindow(contentRect: NSRect(x: -20000, y: -20000, width: width, height: 300), styleMask: [.borderless], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            window.contentView = host
+            host.layoutSubtreeIfNeeded()
+            let height = host.fittingSize.height
+            window.close()
+            return (width, height)
+        }
+    }
+    static func composerCheck() -> [String] {
+        var failures: [String] = []
+        let heights = composerHeights()
+        // The longest line the footer shows, "Refreshing receipts and updates… Your draft is preserved.", is the one that became
+        // a one-word column.
+        let refreshing = composerHeights(refreshing: true)
+        print("composer footer: " + heights.map { "\(Int($0.width)) pt \(Int($0.height.rounded())) pt" }.joined(separator: ", ")
+              + "; refreshing: " + refreshing.map { "\(Int($0.width)) pt \(Int($0.height.rounded())) pt" }.joined(separator: ", "))
+        for (width, height) in heights + refreshing {
+            if height > composerTwoRows { failures.append("the Work chat composer footer is \(Int(height)) pt tall at \(Int(width)) pt (two rows are at most \(Int(composerTwoRows))): something wraps") }
+        }
+        if let wide = heights.last, wide.height > composerOneRow { failures.append("the Work chat composer footer is \(Int(wide.height)) pt tall at 1200 pt (one row is at most \(Int(composerOneRow)))") }
+        if let narrow = heights.first, narrow.height <= composerOneRow { failures.append("at 700 pt the composer footer is one row (\(Int(narrow.height)) pt): it squeezes instead of taking two") }
+        return failures
+    }
+    static let composerOneRow: CGFloat = 40
+    static let composerTwoRows: CGFloat = 76
 
     static func name(_ tab: ActivitySection?) -> String { tab?.rawValue ?? "home" }
 

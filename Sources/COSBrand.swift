@@ -4,11 +4,20 @@ import SwiftUI
 
 /// Official COS lockup and gotcos.com typefaces (Fraunces, DM Sans, JetBrains Mono).
 enum COSBrand {
+    /// 0.5.337 (performance audit W3): each SVG is read and parsed from disk once, then shared. It was read on every
+    /// call, and the calls are in view bodies (the rail, the Sessions rows, the pet).
+    nonisolated(unsafe) private static var cache: [String: NSImage] = [:]
+    private static let cacheLock = NSLock()
+    /// Reads from disk so far (the checks count them).
+    nonisolated(unsafe) private(set) static var diskReads = 0
     static func svg(_ name: String) -> NSImage {
-        let empty = NSImage(size: NSSize(width: 1, height: 1))
+        cacheLock.lock(); defer { cacheLock.unlock() }
+        if let cached = cache[name] { return cached }
+        diskReads += 1
         guard let url = Bundle.main.url(forResource: name, withExtension: "svg"),
-              let image = NSImage(contentsOf: url) else { return empty }
+              let image = NSImage(contentsOf: url) else { return NSImage(size: NSSize(width: 1, height: 1)) }
         image.isTemplate = true
+        cache[name] = image
         return image
     }
 }
@@ -1360,13 +1369,16 @@ struct COSSpinner: View {
     var ink: Color = COSPalette.accent
     var track: Color = COSPalette.line
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// 0.5.337 (performance audit note): one repeating rotation the render server runs, not a 30 fps TimelineView that
+    /// rebuilt the view for every frame of every spinner on screen.
+    @State private var spinning = false
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: reduceMotion)) { timeline in
-            let turns = reduceMotion ? 0 : timeline.date.timeIntervalSinceReferenceDate / 0.9
-            arc.rotationEffect(.degrees(-60 + 360 * turns.truncatingRemainder(dividingBy: 1)))
-        }
-        .frame(width: size, height: size)
+        arc.rotationEffect(.degrees(spinning ? 300 : -60))
+            .animation(spinning ? Animation.linear(duration: 0.9).repeatForever(autoreverses: false) : nil, value: spinning)
+            .frame(width: size, height: size)
+            .onAppear { spinning = !reduceMotion }
+            .onChange(of: reduceMotion) { _, still in spinning = !still }
     }
 
     private var arc: some View {

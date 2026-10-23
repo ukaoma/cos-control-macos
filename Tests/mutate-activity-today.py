@@ -14,6 +14,8 @@ import filecmp, pathlib, shutil, subprocess, sys, time
 M = "Sources/Models.swift"
 W = "Sources/ActivityWindow.swift"
 H = "HelperSources/main.swift"
+CM = "Sources/ControllerModel.swift"
+WW = "Sources/WorkWorkspaceView.swift"
 MUTANTS = [
     # B1 tool-name guard (QA round 1 item 9: known names only, brands stay)
     ("guard: a known tool name passes", M, "        toolNames.contains(text.trimmingCharacters(in: .whitespacesAndNewlines))\n", "        false\n", "[a bare tool name is caught]"),
@@ -25,7 +27,7 @@ MUTANTS = [
     # D2 intake split and midnight
     ("split: today by producedAt day, not the filename", M, "if isToday(filename: item.meeting.filename, now: now, calendar: calendar) { split.today.append(item) } else { split.older.append(item) }",
      "if item.producedDate.map({ calendar.isDate($0, inSameDayAs: now) }) ?? true { split.today.append(item) } else { split.older.append(item) }", "[today's meetings own"),
-    ("split: closed items counted", M, "for item in items where isOpen(item) {", "for item in items {", "[today's meetings own"),
+    ("split: closed items counted", M, "isOpen(item) && !dismissed.contains(item.id) }", "!dismissed.contains(item.id) }", "[today's meetings own"),
     ("split: an undated card goes to Today", M, "guard let ref = card.meetingRefs.first else { return false }", "guard let ref = card.meetingRefs.first else { return true }", "[today's meetings own"),
     # Running
     ("running: a waiting session is running", M, 'return session.state == "running" || (session.state == "waiting" && session.heldByServer)', 'return session.state == "running" || session.state == "waiting"', "[grouped by platform"),
@@ -86,13 +88,47 @@ MUTANTS = [
     ("polling: the calendar every tick", W, "        let calendar = lastCalendar.map { now.timeIntervalSince($0) >= Self.slowSeconds } ?? true\n", "        let calendar = true\n", "[polling]"),
     ("states: checked after a failed tick", W, "            if reachable == true { checkedAt = Date() }\n", "            checkedAt = Date()\n", "[states]"),
     ("pet off: no session refresh", W, "        if !model.petEnabled { await model.loadClaudeSessions() }\n", "", "[pet off]"),
-    ("never dismiss: Today dismisses", W, "await model.resolveWorkIntake(item, accept: true)", "await model.resolveWorkIntake(item, accept: false)", "[never seen or dismiss]"),
+    ("create: Create task dismisses", W, "await model.resolveWorkIntake(item, accept: true)", "await model.resolveWorkIntake(item, accept: false)", "[create accepts]"),
     ("one at a time: two creates at once", W, "        guard model.workIntakeBusyIDs.isEmpty, !created.contains(item.id) else { return }\n", "        guard !created.contains(item.id) else { return }\n", "[one at a time]"),
     ("cost: a run before admission", W, "        guard admission == .allowed else {", "        guard admission == .allowed || true else {", "[cost guards]"),
     ("cost: an earlier receipt read as this one", W, "let receipt = handoff.receipts.first { $0.id == id }", "let receipt = handoff.receipts.first { $0.workID == target }", "[cost guards]"),
     ("capability: questions on an older server", W, "input.jobs = today.jobsSupported == true ? today.jobs : nil", "input.jobs = today.jobs", "[capability]"),
     ("reduce motion: the setting is read once", W, "            .onChange(of: reduceMotion) { _, still in animate(!still) }\n", "", "[reduce motion]"),
     ("voices: a stale result reused", W, "        model.heldNamingResult = nil\n        model.cancelHeldNamingPreview()\n", "        model.cancelHeldNamingPreview()\n", "[voices]"),
+    # 0.5.337 Dismiss on Today: the rules (Models, executed) and the wiring (pins)
+    ("dismiss: a refusal collapses the row", M, "        case .refused(let reason, _):\n            failures[item.id] = reason\n",
+     "        case .refused(let reason, _):\n            failures[item.id] = reason\n            rows[item.id] = Row(item: item, undo: nil, until: now.addingTimeInterval(Self.undoSeconds))\n", "[a failed dismiss keeps the row]"),
+    ("dismiss: the window never ends", M, "    static let undoSeconds: TimeInterval = 8\n", "    static let undoSeconds: TimeInterval = 80\n", "[after about 8 seconds the Dismissed line leaves]"),
+    ("dismiss: the window is 5 seconds", M, "    static let undoSeconds: TimeInterval = 8\n", "    static let undoSeconds: TimeInterval = 5\n", "[the Dismissed line stays for the undo window]"),
+    ("dismiss: expire ignores the window", M, "    mutating func expire(now: Date) { rows = rows.filter { $0.value.undoing || $0.value.until > now } }", "    mutating func expire(now: Date) { rows = [:] }", "[the Dismissed line stays for the undo window]"),
+    ("dismiss: one row twice in flight", M, "        guard !dismissing.contains(id), rows[id] == nil else { return false }", "        guard rows[id] == nil else { return false }", "[one dismiss per row in flight]"),
+    ("split: a dismissed id still counted", M, "isOpen(item) && !dismissed.contains(item.id) }", "isOpen(item) }", "[the count drops as soon as the dismiss is confirmed]"),
+    ("split: the split skips isShown", M, "        for item in items where isShown(item, dismissed: dismissed) {", "        for item in items where isOpen(item) {", "[the count drops as soon as the dismiss is confirmed]"),
+    ("undo: the line stays after a confirmed undo", M, "        guard let error else { rows[id] = nil; return }\n", "        guard let error else { return }\n", "[Undo restores the row and the count]"),
+    ("undo: the refusal's reason dropped", M, "        row.undoError = error\n", "", "[a refused undo keeps the line with the reason]"),
+    ("undo: sent twice", M, "        guard var row = rows[id], !row.undoing, let undo = row.undo else { return nil }", "        guard var row = rows[id], let undo = row.undo else { return nil }", "[Undo sends that row's own undo id, once]"),
+    ("resolve: an accept's undo offered on a dismiss", M, 'let undo: String? = decided == (accept ? "accept" : "dismiss") ? at.map { itemID + ":" + $0 } : nil',
+     'let undo: String? = at.map { itemID + ":" + $0 }', "[a dismiss answered with another decision offers no undo"),
+    ("resolve: an older server's 404 reads as dismissed", M, '        if details["unsupported"]?.bool == true { self = .refused(message, code: "unsupported"); return }\n', "", "[an older server's 404 changed nothing]"),
+    ("undo: the item stays hidden", M, '        dismissed.filter { !batchId.hasPrefix($0 + ":") }', "        dismissed", "[an undo gives back only its own item]"),
+    ("slots: the Dismissed line dropped", M, "map(SuggestionSlot.open) + live.map(SuggestionSlot.dismissed)", "map(SuggestionSlot.open)", "[the Dismissed line holds the row's place]"),
+    ("slots: the line moves to the end", M, "        return slots.sorted { key($0) < key($1) }\n", "        return slots\n", "[the Dismissed line holds the row's place]"),
+    ("slots: a stale open copy wins", M, "        let slots = open.filter { !collapsed.contains($0.id) }.map(SuggestionSlot.open)", "        let slots = open.map(SuggestionSlot.open)", "[the Dismissed line wins over an open copy"),
+    ("state: a failed dismiss reads ready", M, "        if let reason = dismissals.failures[id] { return .dismissFailed(reason) }\n", "", "[a failed dismiss keeps the row]"),
+    ("state: dismissing reads creating", M, "return dismissals.dismissing.contains(id) ? .dismissing : .creating", "return .creating", "[a dismissing row says Dismissing"),
+    ("label: no title", M, '"Dismiss suggestion: " + item.text', '"Dismiss"', "[VoiceOver names what Dismiss removes]"),
+    ("dismiss: two at once", W, "        guard model.workIntakeBusyIDs.isEmpty, !created.contains(item.id), dismissals.begin(item.id) else { return }", "        guard dismissals.begin(item.id) else { return }", "[one at a time]"),
+    ("dismiss: a refusal hides the panel", W, '            lastResolveError = model.workIntakeError\n            todayLog.error("dismiss refused', '            todayLog.error("dismiss refused', "[refusal keeps the row]"),
+    ("dismiss: the reason logged", W, 'todayLog.error("dismiss refused code=\\(code, privacy: .public)")', 'todayLog.error("dismiss refused \\(model.workIntakeError ?? "", privacy: .public)")', "[refusal keeps the row]"),
+    ("undo: Work's last decision instead", W, "        let error = await model.undoWorkIntake(batchId: undo)", "        await model.undoWorkIntake(); let error: String? = nil", "[undo its own row]"),
+    ("expiry: the line never leaves", W, "            self?.dismissals.expire(now: Date())\n", "            _ = self\n", "[collapsed line]"),
+    ("panel: dismissed rows vanish", W, "                    case .dismissed(let row): todayDismissedRow(row)\n", "                    case .dismissed: EmptyView()\n", "[collapsed line]"),
+    ("keyboard: Delete ignored", W, ".onKeyPress(keys: [.delete, .deleteForward], phases: .down)", ".onKeyPress(keys: [.return], phases: .down)", "[keyboard]"),
+    ("quiet: a filled Dismiss", W, ".buttonStyle(TodayLinkStyle(color: TodayInk.sub, size: 12.5))\n            .padding(.leading, 6)", ".buttonStyle(TodayButtonStyle(small: true))\n            .padding(.leading, 6)", "[quiet]"),
+    ("voiceover: Dismiss unnamed", W, "            .accessibilityLabel(TodayHome.dismissLabel(item))\n", "", "[voiceover]"),
+    ("model: an unconfirmed dismiss hides the item", CM, "            if !accept, case .changed = result { workIntakeDismissedIDs.insert(item.id) }", "            if !accept { workIntakeDismissedIDs.insert(item.id) }", "[same predicate]"),
+    ("model: undo keeps the item hidden", CM, "        workIntakeDismissedIDs = TodayDismissals.afterUndo(workIntakeDismissedIDs, batchId: batchId)\n", "", "[undo its own row]"),
+    ("split: Work's Sort ignores Today's dismissals", WW, ", now: Date(), dismissed: model.workIntakeDismissedIDs) : TodayHome.IntakeSplit()", ", now: Date()) : TodayHome.IntakeSplit()", "[same predicate]"),
     ("capability: detected by status code", H, 'return features?["activeQueryJobs"] as? Bool == true && jsonInt(features?["activeQueryJobsProtocol"]) == 1', "return health != nil", "[capability]"),
     ("disk: the question cached on disk", H, '"sessions": sessions.map { $0.filter { $0.key != "waitingQuestion" && $0.key != "waitingQuestionCount" } },', '"sessions": sessions,', "[disk]"),
 ]

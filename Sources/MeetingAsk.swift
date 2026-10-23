@@ -326,7 +326,7 @@ final class MeetingAskStore: ObservableObject {
         guard let files = model.workHandoffStore?.meetingFiles, files.enabled, WorkCardFiles.meetingID(forKey: key) != nil else {
             attachNotes[session] = MeetingAskText.attachUnavailable; return []
         }
-        let info = WorkMeetingInfo(recordId: "", title: "Live meeting", date: "")
+        let info = model.liveMeetingFileInfo(session)
         let before = Set(files.meetingFiles(keys: [key]).map(\.file.id))
         switch attachment {
         case .files(let urls): await files.intakeMeeting(urls: urls, key: key, info: info)
@@ -1784,7 +1784,8 @@ struct MeetingSidePanel<Ask: View>: View {
             }
             if cuesOffered && shown == .cues {
                 MeetingCuesPanel(store: store, session: session, polls: live, days: live ? CueVerdicts.liveDays : CueVerdicts.savedDays,
-                                 clock: model.clockStyle, run: CueReviewPane.run(model))
+                                 clock: model.clockStyle, run: CueReviewPane.run(model),
+                                 limits: model.meetingAsk.liveCues.settings?.limits, cuesOn: model.meetingAsk.liveCues.settings?.enabled)
             } else {
                 ask()
             }
@@ -1808,6 +1809,9 @@ struct MeetingCuesPanel: View {
     let days: Int
     let clock: ClockStyle
     let run: CueVerdictsStore.Run
+    /// 0.5.337 (loop audit W8): the server's limits and today's usage, and whether Live cues is on, for the lines below.
+    var limits: LiveCuesLimits? = nil
+    var cuesOn: Bool? = nil
 
     var body: some View {
         let meeting = store.meetings[session]
@@ -1824,8 +1828,10 @@ struct MeetingCuesPanel: View {
                 Text(line).font(COSType.body(11.5))
                     .foregroundStyle(state == .checking ? AnyShapeStyle(.secondary) : AnyShapeStyle(COSPalette.amber))
                     .fixedSize(horizontal: false, vertical: true)
+            } else if let line = CueVerdicts.limitLine(meeting?.count ?? CueVerdicts.MeetingCount(cues: cues.count, cap: nil), limits: polls ? limits : nil) {
+                Text(line).font(COSType.body(11.5)).foregroundStyle(COSPalette.amber).fixedSize(horizontal: false, vertical: true)
             } else if cues.isEmpty {
-                Text(polls ? "No cues yet in this meeting." : "No cues were shown in this meeting.")
+                Text(CueVerdicts.emptyLine(polls: polls, cuesOn: polls ? cuesOn : nil))
                     .font(COSType.body(12)).foregroundStyle(.secondary)
             }
             ScrollView {

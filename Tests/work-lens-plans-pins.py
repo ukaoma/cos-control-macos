@@ -43,7 +43,7 @@ pin('case "work-lens-mac-send": try emitWorkLensMacSend(args: args)' in helper a
 pin("if !lensDispatching, let lensRound = self.record?.rounds[index].lensRoundID { Self.onLensMacSend?(record.workID, lensRound) }" in chat, "Miles's own Send of a lens round is reported, a lens send is not reported twice")
 stop = ext[ext.index("    func stopLensAssignments("):]
 pin("await self.stop(roundID: round.id, assignmentID: a.receiptID, handoff: handoff)" in stop, "a lens stop uses the existing Stop")
-pin("round.sentWithoutReview == true || round.sentFromGlasses == true," in chat, "an assignment sent from the lens has a Stop")
+pin("round.sentWithoutReview == true || round.sentFromGlasses == true)" in chat, "an assignment sent from the lens has a Stop")
 
 # The view: the card open here is written and sent through this store; its rounds say From glasses with the time.
 loop = chat[chat.index("WorkChatQueuePump.show(source.id); defer { WorkChatQueuePump.hide(source.id) }"):chat.index('}.confirmationDialog("Check the connected session first"')]

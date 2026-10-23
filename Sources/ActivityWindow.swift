@@ -286,6 +286,8 @@ final class ActivityWindowPresenter: NSObject, ObservableObject, NSWindowDelegat
         model?.closeLibraryDetail()
         // 0.5.278: nobody is looking, so the live transcript stops polling.
         model?.liveTranscriptWindowClosed()
+        // 0.5.337 (performance audit W5): and the status refresh slows to its idle cadence.
+        model?.setLiveTranscriptWindowOnScreen(false)
         if let window = notification.object as? NSWindow {
             for name in [NSWindow.didChangeOcclusionStateNotification, NSWindow.didMiniaturizeNotification, NSWindow.didDeminiaturizeNotification] {
                 NotificationCenter.default.removeObserver(self, name: name, object: window)
@@ -2205,7 +2207,23 @@ struct ActivityWindow: View {
     }
 
     private var sessionsList: some View {
-        VStack(spacing: 0) {
+        // 0.5.337 (performance audit B1): the list and its duplicate titles once per redraw, never once per row.
+        let sessions = visibleSessions
+        // Titles that appear more than once on screen right now.
+        //
+        // A Claude fork is `claude -p --resume <id> --fork-session`, which inherits the
+        // parent's history — so `firstClaudeUserTitle` derives the SAME title and the fork
+        // renders as a second row with an identical name, workspace and state. Measured
+        // 2026-08-18: two live sessions both titled "COS-glasses Server work (meetings)"
+        // with distinct ids (31732572… and a4b2b4dd…), and 8 duplicate-title groups across
+        // 69 rows. Miles: "I forked that COS glass server work, and now I can't see any of
+        // the forks. I do see the original running, though." They were never missing; there
+        // was nothing on the row to tell them apart.
+        //
+        // Unions BOTH surfaces because `sessionRow` is shared by the list and by search.
+        // Over-inclusion is harmless: showing when a session was opened is never wrong.
+        let ambiguous = ClaudeSession.ambiguousTitles(in: sessions + model.visibleSessionSearchHits.map(\.session))
+        return VStack(spacing: 0) {
             sectionHeader(
                 section: .sessions,
                 title: "Sessions",
@@ -2224,23 +2242,23 @@ struct ActivityWindow: View {
             sessionsSearchBar
             sessionHooksBanner
             if model.isSessionQueryActive {
-                sessionsSearchResults
-            } else if model.claudeSessionsLoading && visibleSessions.isEmpty {
+                sessionsSearchResults(ambiguous: ambiguous)
+            } else if model.claudeSessionsLoading && sessions.isEmpty {
                 centeredProgress("Loading sessions…")
-            } else if let error = model.claudeSessionsError, visibleSessions.isEmpty {
+            } else if let error = model.claudeSessionsError, sessions.isEmpty {
                 emptyState(.sessions, text: error)
-            } else if !model.claudeSessionsEnabled && visibleSessions.isEmpty {
+            } else if !model.claudeSessionsEnabled && sessions.isEmpty {
                 // Off by default: the endpoint projects Claude Code's private 0700
                 // state dir over a LAN-bound socket, so it is opt-in. Showing the
                 // ordinary empty copy here made a switched-off feature look broken.
                 emptyState(.sessions, text: "Claude sessions are switched off. Turn them on in Advanced \u{2192} Show Claude sessions.")
-            } else if visibleSessions.isEmpty {
+            } else if sessions.isEmpty {
                 emptyState(.sessions, text: sessionsEmptyCopy)
             } else {
                 ScrollView {
                     LazyVStack(spacing: 6) {
-                        ForEach(visibleSessions) { session in
-                            sessionRow(session)
+                        ForEach(sessions) { session in
+                            sessionRow(session, ambiguous: ambiguous)
                         }
                         // 0.5.229: today's finished scheduled job runs, under the live list.
                         if model.sessionClock != .pinned && !model.scheduledJobRuns.isEmpty {
@@ -2590,7 +2608,7 @@ struct ActivityWindow: View {
     }
 
     @ViewBuilder
-    private var sessionsSearchResults: some View {
+    private func sessionsSearchResults(ambiguous: Set<String>) -> some View {
         if model.sessionSearching && model.sessionSearchHits.isEmpty && model.sessionSearchError == nil {
             centeredProgress("Looking up…")
         } else if let error = model.sessionSearchError, model.sessionSearchHits.isEmpty {
@@ -2601,7 +2619,7 @@ struct ActivityWindow: View {
             ScrollView {
                 LazyVStack(spacing: 0) {
                     ForEach(model.visibleSessionSearchHits) { hit in
-                        sessionRow(hit.session, snippet: hit.snippet, matchLabel: hit.matchLabel)
+                        sessionRow(hit.session, snippet: hit.snippet, matchLabel: hit.matchLabel, ambiguous: ambiguous)
                     }
                 }
                 .padding(.horizontal, 22)
@@ -2630,25 +2648,6 @@ struct ActivityWindow: View {
         }
     }
 
-    /// Titles that appear more than once on screen right now.
-    ///
-    /// A Claude fork is `claude -p --resume <id> --fork-session`, which inherits the
-    /// parent's history — so `firstClaudeUserTitle` derives the SAME title and the fork
-    /// renders as a second row with an identical name, workspace and state. Measured
-    /// 2026-08-18: two live sessions both titled "COS-glasses Server work (meetings)"
-    /// with distinct ids (31732572… and a4b2b4dd…), and 8 duplicate-title groups across
-    /// 69 rows. Miles: "I forked that COS glass server work, and now I can't see any of
-    /// the forks. I do see the original running, though." They were never missing; there
-    /// was nothing on the row to tell them apart.
-    ///
-    /// Unions BOTH surfaces because `sessionRow` is shared by the list and by search.
-    /// Over-inclusion is harmless: showing when a session was opened is never wrong.
-    private var ambiguousSessionTitles: Set<String> {
-        ClaudeSession.ambiguousTitles(
-            in: visibleSessions + model.visibleSessionSearchHits.map(\.session)
-        )
-    }
-
     private var sessionsEmptyCopy: String {
         switch model.sessionClock {
         case .updated:
@@ -2667,7 +2666,7 @@ struct ActivityWindow: View {
         session.clockHint(clock: model.sessionClock)
     }
 
-    private func sessionRow(_ session: ClaudeSession, snippet: String = "", matchLabel: String? = nil) -> some View {
+    private func sessionRow(_ session: ClaudeSession, snippet: String = "", matchLabel: String? = nil, ambiguous: Set<String>) -> some View {
         VStack(spacing: 0) {
             Button {
                 selectedSessionID = session.id
@@ -2712,7 +2711,7 @@ struct ActivityWindow: View {
                             // its parent. The updated clock now always prints a real
                             // date, but two forks can share that date too. Show when
                             // each was opened — the one field that actually differs.
-                            if ambiguousSessionTitles.contains(
+                            if ambiguous.contains(
                                 session.title.trimmingCharacters(in: .whitespacesAndNewlines)
                             ), let opened = session.createdDate {
                                 Text("Opened \(ClaudeSession.shortSessionDate(opened))")
@@ -6646,8 +6645,6 @@ struct SessionChatComposer: View {
 struct SessionActivityFeed: View {
     let feed: SessionLiveFeed?
     var queued: Int = 0
-    @State private var now = Date()
-    private let tick = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
     private var tint: Color {
         switch feed?.agentState ?? feed?.state {
@@ -6677,10 +6674,13 @@ struct SessionActivityFeed: View {
                             .lineLimit(2)
                     }
                     Spacer(minLength: 8)
-                    Text(feed.elapsed(now: now))
-                        .font(COSType.mono(11))
-                        .foregroundStyle(COSPalette.muted)
-                        .monospacedDigit()
+                    // 0.5.337 (performance audit note): the clock ticks only while the session works or waits; an idle
+                    // or finished session's time does not need a redraw every second (a 1 s timer ran for every feed).
+                    if ["Working", "Waiting"].contains(feed.stateWord) {
+                        TimelineView(.periodic(from: .now, by: 1)) { context in Self.elapsedText(feed, now: context.date) }
+                    } else {
+                        Self.elapsedText(feed, now: Date())
+                    }
                 }
                 if !feed.prompt.isEmpty {
                     Text(feed.prompt)
@@ -6725,7 +6725,10 @@ struct SessionActivityFeed: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(COSPalette.raised, in: RoundedRectangle(cornerRadius: 10))
         .overlay(RoundedRectangle(cornerRadius: 10).stroke(COSPalette.line, lineWidth: 1))
-        .onReceive(tick) { now = $0 }
+    }
+
+    static func elapsedText(_ feed: SessionLiveFeed, now: Date) -> some View {
+        Text(feed.elapsed(now: now)).font(COSType.mono(11)).foregroundStyle(COSPalette.muted).monospacedDigit()
     }
 
     private func fallbackLine(_ reason: String) -> String {
@@ -7626,6 +7629,15 @@ struct TodayLinkStyle: ButtonStyle {
     }
 }
 
+/// 0.5.337 (performance audit B2): the Today frame's 30 s clock, which stops while the window is off screen (one entry,
+/// then none). Coming back on screen makes a new schedule, which starts from now.
+struct TodayFrameSchedule: TimelineSchedule {
+    let paused: Bool
+    func entries(from startDate: Date, mode: TimelineScheduleMode) -> AnyIterator<Date> {
+        TodayHome.frameEntries(from: startDate, paused: paused)
+    }
+}
+
 /// The working dot. Under Reduce Motion it stays solid and still, and it follows the setting while shown.
 struct TodayPulse: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -7707,11 +7719,28 @@ let todayLog = Logger(subsystem: "com.gotcos.control", category: "activity-today
     @Published var lastError: String?
     @Published var created: Set<String> = []
     @Published var createdItems: [WorkIntakeItem] = []
+    /// 0.5.337 (loop audit W17): each created row's own undo id, for Undo beside "Created." where the server has undo.
+    @Published var createdUndo: [String: String] = [:]
+    @Published var createdUndoNote: [String: String] = [:]
     @Published var failures: [String: String] = [:]
+    /// 0.5.337: Today's Dismiss (TodayDismissals): the rows dismissed here, the one in flight and the refusals kept.
+    @Published var dismissals = TodayDismissals()
     /// The refusal the last Create task kept (ControllerModel puts it in workIntakeError, which is not a read failure).
     @Published var lastResolveError: String?
     @Published var voices: [String: VoiceState] = [:]
-    @Published var runNote: String?
+    /// 0.5.337 (loop audit W12): the last voice named from Today. Its group leaves Needs you at once (it is named), so the
+    /// confirmation and its Undo show on their own line for TodayHome.namedLineSeconds.
+    @Published var lastNaming: TodayHome.LastNaming?
+    /// 0.5.337 (loop audit N5): a note under the Ask box clears itself after a while (a pause note stayed up for good).
+    @Published var runNote: String? {
+        didSet {
+            guard let note = runNote, note != oldValue else { return }
+            Task { [weak self] in
+                try? await Task.sleep(for: .seconds(20))
+                if self?.runNote == note { self?.runNote = nil }
+            }
+        }
+    }
     @Published var runBusy = false
     @Published var captureBusy = false
     @Published var notice: String?
@@ -7820,7 +7849,8 @@ let todayLog = Logger(subsystem: "com.gotcos.control", category: "activity-today
     func createTask(_ item: WorkIntakeItem, model: ControllerModel) async {
         guard model.workIntakeBusyIDs.isEmpty, !created.contains(item.id) else { return }
         failures[item.id] = nil
-        await model.resolveWorkIntake(item, accept: true)
+        let result = await model.resolveWorkIntake(item, accept: true)
+        if case .changed(let undo?) = result { createdUndo[item.id] = undo; await model.probeWorkLoopIfNeeded() }
         if let error = model.workIntakeError {
             failures[item.id] = error
             lastResolveError = error
@@ -7829,6 +7859,58 @@ let todayLog = Logger(subsystem: "com.gotcos.control", category: "activity-today
             created.insert(item.id)
             createdItems.append(item)
             todayLog.info("create task accepted")
+        }
+    }
+
+    /// 0.5.337 (loop audit W17): Undo on a created row: that row's own undo id; only a confirmed undo puts the suggestion back.
+    func undoCreate(_ item: WorkIntakeItem, model: ControllerModel) async {
+        guard let undo = createdUndo[item.id] else { return }
+        createdUndoNote[item.id] = nil
+        if let error = await model.undoWorkIntake(batchId: undo) {
+            createdUndoNote[item.id] = error
+            todayLog.error("create undo refused")
+        } else {
+            created.remove(item.id); createdItems.removeAll { $0.id == item.id }; createdUndo[item.id] = nil
+            todayLog.info("create undone")
+        }
+    }
+
+    /// 0.5.337: Dismiss goes through Work's own resolve (ControllerModel.resolveWorkIntake, accept false), the path Work's
+    /// Sort Dismiss uses: one at a time (its busy ids), never seen, never a batch, no new route. Only the server's
+    /// confirmation collapses the row (TodayDismissals.finish); a refusal keeps the row with the server's reason, and only
+    /// its code is logged.
+    func dismiss(_ item: WorkIntakeItem, model: ControllerModel) async {
+        guard model.workIntakeBusyIDs.isEmpty, !created.contains(item.id), dismissals.begin(item.id) else { return }
+        let result = await model.resolveWorkIntake(item, accept: false)
+        dismissals.finish(item, result: result, now: Date())
+        switch result {
+        case .changed(let undo):
+            todayLog.info("dismiss accepted undo=\(undo != nil)")
+            expireDismissals()
+            // 0.5.337 (loop audit W1): Undo shows only on a server with the undo route (one read per server version).
+            await model.probeWorkLoopIfNeeded()
+        case .refused(_, let code):
+            // ControllerModel keeps the refusal in workIntakeError, which is not a read failure: the panel stays.
+            lastResolveError = model.workIntakeError
+            todayLog.error("dismiss refused code=\(code, privacy: .public)")
+        case .busy:
+            break
+        }
+    }
+
+    /// "Dismissed. Undo": that row's own undo id through `/api/work-intake/undo`, never whatever was decided last.
+    func undoDismiss(_ item: WorkIntakeItem, model: ControllerModel) async {
+        guard let undo = dismissals.beginUndo(item.id) else { return }
+        let error = await model.undoWorkIntake(batchId: undo)
+        dismissals.finishUndo(item.id, error: error, now: Date())
+        if error == nil { todayLog.info("dismiss undone") } else { todayLog.error("dismiss undo refused"); expireDismissals() }
+    }
+
+    /// The collapsed lines leave once their window has passed.
+    private func expireDismissals() {
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(TodayDismissals.undoSeconds + 0.25))
+            self?.dismissals.expire(now: Date())
         }
     }
 
@@ -7855,6 +7937,7 @@ let todayLog = Logger(subsystem: "com.gotcos.control", category: "activity-today
         await model.applyHeldNaming()
         if let result = model.heldNamingResult, result.kind == "applied", result.speaker == name {
             voices[group.id] = .named(name, result.batchId ?? result.undoHandle)
+            lastNaming = TodayHome.LastNaming(name: name, undo: result.batchId ?? result.undoHandle, at: Date())
             await model.loadHeldGroups()
         } else if model.heldNamingResult?.kind.contains("listen") == true {
             voices[group.id] = .listen
@@ -7909,6 +7992,23 @@ let todayLog = Logger(subsystem: "com.gotcos.control", category: "activity-today
         todayLog.info("run outcome: \(String(describing: outcome).prefix(60), privacy: .public) used=\(guardrail.used(now: Date()))")
     }
 
+    /// 0.5.337 (loop audit W5): Stop on a Work run Today shows. The server answers; only its 2xx says it stopped.
+    @Published var stopping: Set<String> = []
+    func stopRun(job: String, handoff: WorkHandoffStore) async {
+        guard !stopping.contains(job) else { return }
+        stopping.insert(job); defer { stopping.remove(job) }
+        do {
+            let answer = try await handoff.taskChatCall(["work-job-cancel", "--job-id", job])
+            let http = answer["httpStatus"]?.int ?? 0
+            flash((200..<300).contains(http) ? "Asked the server to stop it." : "The server could not stop it (HTTP \(http)).")
+            todayLog.info("run stop answered HTTP \(http)")
+        } catch {
+            flash("Stop did not reach the server.")
+            todayLog.error("run stop failed")
+        }
+        await handoff.refreshReceipts()
+    }
+
     /// A line that clears itself after a few seconds.
     func flash(_ text: String) {
         notice = text
@@ -7936,7 +8036,7 @@ extension ActivityWindow {
         input.workRuns = handoffStore.receipts.compactMap { r in
             guard r.mode == .newSession, r.channel == "job", r.blocksNewHandoff, r.status != "delivered" else { return nil }
             return TodayHome.WorkRun(id: r.id, title: r.workTitle, sessionID: r.sessionID, jobIDs: Set([r.id] + [r.jobID].compactMap { $0 }),
-                                     startedAt: Date(timeIntervalSince1970: r.createdAt))
+                                     startedAt: Date(timeIntervalSince1970: r.createdAt), jobID: r.jobID)
         }
         var recordings = model.liveTranscriptRows.filter { $0.phase == .live }.map {
             TodayHome.Recording(sessionId: $0.sessionId, start: $0.startTime, isMac: $0.sessionId == model.macRecording.manifest?.captureId)
@@ -7953,6 +8053,13 @@ extension ActivityWindow {
                 guard s.state == "recent", !s.isKeepWarm, !s.isScheduledJob, let at = ActivityHome.stamp(s.updatedAt) else { return nil }
                 return TodayHome.Finished(id: s.id, title: s.title, provider: s.provider, finishedAt: at)
             }
+        }
+        // 0.5.337 (loop audit W5): a run started from Today comes back to Today in the finished hour, opening its result.
+        for r in handoffStore.receipts where r.workID.hasPrefix("today:") && r.mode == .newSession && ["delivered", "completed"].contains(r.status) {
+            guard let sid = r.sessionID, let s = model.claudeSessions.first(where: { ClaudeSession.sameSession($0.id, sid) }),
+                  let at = ActivityHome.stamp(s.updatedAt) else { continue }
+            finished.removeAll { ClaudeSession.sameSession($0.id, s.id) }
+            finished.append(TodayHome.Finished(id: s.id, title: r.workTitle, provider: s.provider, finishedAt: at, openLabel: "Open result"))
         }
         input.finished = finished
         input.event = today.nextEvent
@@ -8021,7 +8128,7 @@ extension ActivityWindow {
 
     func todayIntakeSplit(now: Date) -> TodayHome.IntakeSplit? {
         guard model.workIntake.available else { return nil }
-        return TodayHome.intakeSplit(items: model.workIntake.items, tasks: model.workTasks, now: now)
+        return TodayHome.intakeSplit(items: model.workIntake.items, tasks: model.workTasks, now: now, dismissed: model.workIntakeDismissedIDs)
     }
 
     /// The one frame the rail, the home and every count read (TodayHome.compose).
@@ -8055,9 +8162,16 @@ extension ActivityWindow {
                 selectedSessionID = row.id
                 model.openClaudeSession(row)
             }
-        case .workRun:
+        case .workRun(let id):
+            // 0.5.337 (loop audit W5): the run's own session once the server names it; before that, Sessions as before.
             select(.sessions)
-            showingLinkedSession = true
+            if let sid = TodayHome.workRunSession(id: id, receipts: handoffStore.receipts.map { ($0.id, $0.sessionID) }),
+               let row = model.claudeSessions.first(where: { ClaudeSession.sameSession($0.id, sid) }) ?? model.petSession(id: sid) {
+                selectedSessionID = row.id
+                model.openClaudeSession(row)
+            } else {
+                showingLinkedSession = true
+            }
         case .liveView(let id):
             select(.meetings)
             if !id.isEmpty { model.openLiveTranscript(id) }
@@ -8113,11 +8227,14 @@ extension ActivityWindow {
 
     @ViewBuilder
     var todayFrameView: some View {
-        GeometryReader { geometry in
-            let width = geometry.size.width
-            let mode = TodayHome.railMode(windowWidth: width)
-            TimelineView(.periodic(from: .now, by: 30)) { timeline in
-                let frame = todayFrame(now: timeline.date)
+        // 0.5.337 (performance audit B2): the frame is composed per tick and per data change, never per resize step. The
+        // GeometryReader sits inside the TimelineView (it was around it, so every step of a resize composed the whole home
+        // again), and the 30 s clock stops while the window is off screen.
+        TimelineView(TodayFrameSchedule(paused: !today.windowVisible)) { timeline in
+            let frame = todayFrame(now: timeline.date)
+            GeometryReader { geometry in
+                let width = geometry.size.width
+                let mode = TodayHome.railMode(windowWidth: width)
                 HStack(spacing: 0) {
                     todayRail(mode: mode, frame: frame, now: timeline.date)
                     VStack(spacing: 0) {
@@ -8128,8 +8245,8 @@ extension ActivityWindow {
                     }
                     .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity, alignment: .top)
                 }
-                .onChange(of: ActivityHome.dayKey(timeline.date)) { _, _ in todayResetExpansions() }
             }
+            .onChange(of: ActivityHome.dayKey(timeline.date)) { _, _ in todayResetExpansions() }
         }
         .background(TodayInk.page)
         .background(TodayWindowWatcher { visible in if today.windowVisible != visible { today.windowVisible = visible } }.frame(width: 0, height: 0))
@@ -8453,6 +8570,16 @@ extension ActivityWindow {
                 }
             }
             .padding(.horizontal, 18).padding(.vertical, 16)
+            if let named = today.lastNaming, TodayHome.showsNamed(named, now: now) {
+                HStack(spacing: 8) {
+                    Text("Named \(named.name).").font(COSType.body(13)).foregroundStyle(TodayInk.ink)
+                    if let undo = named.undo {
+                        Button("Undo") { heldNamingUndoHandle = undo; today.lastNaming = nil }.buttonStyle(TodayLinkStyle(size: 13))
+                            .disabled(model.addVoiceBusy)
+                    }
+                }
+                .padding(.horizontal, 18).padding(.bottom, 10)
+            }
             switch line {
             case .rows:
                 ForEach(Array(visible.enumerated()), id: \.element.id) { index, row in
@@ -8668,12 +8795,21 @@ extension ActivityWindow {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .layoutPriority(1)
-            Button(compactOpen ? "Open" : row.openLabel) { todayOpen(row.open) }
-                .buttonStyle(TodayLinkStyle(color: TodayInk.runOpen, size: 12.5))
-                .fixedSize()
-                .padding(.top, 8)
-                .help(row.openLabel)
-                .disabled(model.platformOpening)
+            VStack(alignment: .trailing, spacing: 4) {
+                Button(compactOpen ? "Open" : row.openLabel) { todayOpen(row.open) }
+                    .buttonStyle(TodayLinkStyle(color: TodayInk.runOpen, size: 12.5))
+                    .fixedSize()
+                    .help(row.openLabel)
+                    .disabled(model.platformOpening)
+                // 0.5.337 (loop audit W5): a Work run on the server stops through its job (work-job-cancel).
+                if let job = row.stopJobID {
+                    Button(today.stopping.contains(job) ? "Stopping" : "Stop") { Task { await today.stopRun(job: job, handoff: handoffStore) } }
+                        .buttonStyle(TodayLinkStyle(color: TodayInk.runSub, size: 12.5))
+                        .fixedSize().disabled(today.stopping.contains(job))
+                        .accessibilityLabel("Stop " + row.title)
+                }
+            }
+            .padding(.top, 8)
         }
         .padding(.vertical, 12)
         .overlay(alignment: .top) { if rule { Rectangle().fill(TodayInk.runLine).frame(height: 1) } }
@@ -8682,6 +8818,9 @@ extension ActivityWindow {
         .accessibilityLabel(row.voiceLabel)
         .accessibilityAddTraits(.isButton)
         .accessibilityAction { todayOpen(row.open) }
+        .accessibilityActions {
+            if let job = row.stopJobID { Button("Stop") { Task { await today.stopRun(job: job, handoff: handoffStore) } } }
+        }
     }
 
     // MARK: Next up, From today's meetings
@@ -8741,9 +8880,12 @@ extension ActivityWindow {
                 }
                 .buttonStyle(TodayButtonStyle(primary: true, small: true)).disabled(today.runBusy)
             case .inFlight:
-                Button("Prep in Sessions") { todayOpen(.workRun("")) }.buttonStyle(TodayLinkStyle(size: 13))
+                Button("Prep in Sessions") { todayOpen(.workRun(handoffStore.receipts(for: target).first?.id ?? "")) }.buttonStyle(TodayLinkStyle(size: 13))
             case .switchOff:
-                EmptyView()
+                // 0.5.337 (loop audit N7): the switch off says where it is, rather than Prep me vanishing.
+                if !TodayHome.workRunsOn(.standard) {
+                    Text("Prep me is off: Settings, Start Work runs from Today").font(COSType.body(12.5)).foregroundStyle(TodayInk.sub).lineLimit(2)
+                }
             default:
                 if let line = TodayRunGuard.line(admission) { Text(line).font(COSType.body(12.5)).foregroundStyle(TodayInk.sub).lineLimit(2) }
             }
@@ -8753,8 +8895,12 @@ extension ActivityWindow {
 
     @ViewBuilder
     func todayMeetingsPanel(_ split: TodayHome.IntakeSplit?) -> some View {
-        let created = today.createdItems.filter { item in TodayHome.isToday(filename: item.meeting.filename, now: Date()) }
-        if let split, split.todayCount + created.count > 0 {
+        let now = Date()
+        let created = today.createdItems.filter { item in TodayHome.isToday(filename: item.meeting.filename, now: now) }
+        // 0.5.337: dismissed rows hold their place as "Dismissed. Undo" for a few seconds; the count already left them out.
+        let slots = split.map { TodayHome.suggestionSlots(open: $0.today, dismissals: today.dismissals, now: now) } ?? []
+        let collapsed = slots.filter(\.isDismissed).count
+        if let split, split.todayCount + created.count + collapsed > 0 {
             VStack(alignment: .leading, spacing: 0) {
                 HStack(alignment: .firstTextBaseline) {
                     HStack(alignment: .firstTextBaseline, spacing: 7) {
@@ -8766,7 +8912,12 @@ extension ActivityWindow {
                     Text("Moves to Work at midnight").font(COSType.body(12)).foregroundStyle(TodayInk.suggSrc)
                 }
                 ForEach(created.filter { c in !split.today.contains { $0.id == c.id } }, id: \.id) { item in todaySuggestionRow(item) }
-                ForEach(split.today, id: \.id) { item in todaySuggestionRow(item) }
+                ForEach(slots, id: \.id) { slot in
+                    switch slot {
+                    case .open(let item): todaySuggestionRow(item)
+                    case .dismissed(let row): todayDismissedRow(row)
+                    }
+                }
                 ForEach(split.todayCards, id: \.id) { card in
                     VStack(alignment: .leading, spacing: 8) {
                         Text(card.text.isEmpty ? card.title : card.text).font(COSType.body(14, weight: .semibold)).foregroundStyle(TodayInk.ink).lineLimit(2)
@@ -8793,7 +8944,8 @@ extension ActivityWindow {
     }
 
     func todaySuggestionRow(_ item: WorkIntakeItem) -> some View {
-        let state = TodayHome.suggestionState(item.id, busy: model.workIntakeBusyIDs, created: today.created, failures: today.failures)
+        let state = TodayHome.suggestionState(item.id, busy: model.workIntakeBusyIDs, created: today.created, failures: today.failures,
+                                              dismissals: today.dismissals)
         let action = TodayHome.suggestionAction(item, cardCreation: model.workIntake.cardCreation)
         let owner = item.ownerIsMiles ? "Yours, from " : ((item.owner.flatMap(TodayHome.guarded)).map { "\($0)'s, from " } ?? "From ")
         let source = item.kind == .link
@@ -8806,14 +8958,24 @@ extension ActivityWindow {
                 switch state {
                 case .creating:
                     ProgressView().controlSize(.small); Text("Creating").font(COSType.body(12.5)).foregroundStyle(TodayInk.sub)
+                case .dismissing:
+                    ProgressView().controlSize(.small); Text("Dismissing").font(COSType.body(12.5)).foregroundStyle(TodayInk.sub)
                 case .created:
                     Text("Created.").font(COSType.body(12.5)).foregroundStyle(TodayInk.ink)
                     Button("Open card") { todayOpenCard(item.text) }.buttonStyle(TodayLinkStyle(size: 12.5))
+                    if today.createdUndo[item.id] != nil, model.workUndoAvailable {
+                        Button("Undo") { Task { await today.undoCreate(item, model: model) } }.buttonStyle(TodayLinkStyle(color: TodayInk.sub, size: 12.5))
+                            .accessibilityLabel("Undo create task: " + item.text)
+                    }
+                    if let note = today.createdUndoNote[item.id] {
+                        Text(note).font(COSType.body(12.5)).foregroundStyle(TodayInk.hot).lineLimit(2)
+                    }
                 case .failed(let reason):
                     Text(reason).font(COSType.body(12.5)).foregroundStyle(TodayInk.hot).lineLimit(3).fixedSize(horizontal: false, vertical: true)
                     Button("Try again") { Task { await today.createTask(item, model: model) } }.buttonStyle(TodayLinkStyle(size: 12.5))
                         .disabled(!model.workIntakeBusyIDs.isEmpty)
-                case .ready:
+                    todayDismissButton(item)
+                case .ready, .dismissFailed:
                     switch action {
                     case .openCard(let title):
                         Button("Open card") { todayOpenCard(title) }.buttonStyle(TodayButtonStyle(small: true))
@@ -8825,11 +8987,54 @@ extension ActivityWindow {
                     case .unavailable:
                         Button("Open in Work") { select(.work) }.buttonStyle(TodayLinkStyle(size: 12.5))
                     }
+                    todayDismissButton(item)
                 }
+            }
+            if case .dismissFailed(let reason) = state {
+                Text(reason).font(COSType.body(12.5)).foregroundStyle(TodayInk.hot).lineLimit(3).fixedSize(horizontal: false, vertical: true)
             }
         }
         .padding(.vertical, 12).frame(maxWidth: .infinity, alignment: .leading)
         .overlay(alignment: .top) { Rectangle().fill(TodayInk.suggLine).frame(height: 1) }
+        // Delete on a row focused from the keyboard (Full Keyboard Access) dismisses it, as the link does.
+        .focusable(interactions: .activate)
+        .onKeyPress(keys: [.delete, .deleteForward], phases: .down) { _ in
+            guard model.workIntakeBusyIDs.isEmpty, !today.created.contains(item.id) else { return .ignored }
+            Task { await today.dismiss(item, model: model) }
+            return .handled
+        }
+    }
+
+    /// 0.5.337: the quiet Dismiss beside Create task and Open in Work, a link and never a third filled button.
+    func todayDismissButton(_ item: WorkIntakeItem) -> some View {
+        Button("Dismiss") { Task { await today.dismiss(item, model: model) } }
+            .buttonStyle(TodayLinkStyle(color: TodayInk.sub, size: 12.5))
+            .padding(.leading, 6)
+            .disabled(!model.workIntakeBusyIDs.isEmpty)
+            .help("Not a task: it leaves Today and does not move to Work at midnight")
+            .accessibilityLabel(TodayHome.dismissLabel(item))
+    }
+
+    /// 0.5.337: a dismissed suggestion's one line, "Dismissed. Undo", for TodayDismissals.undoSeconds, then it leaves.
+    func todayDismissedRow(_ row: TodayDismissals.Row) -> some View {
+        HStack(spacing: 6) {
+            if row.undoing {
+                ProgressView().controlSize(.small); Text("Undoing").font(COSType.body(12.5)).foregroundStyle(TodayInk.sub)
+            } else {
+                Text("Dismissed.").font(COSType.body(12.5)).foregroundStyle(TodayInk.sub)
+                if row.undo != nil, model.workUndoAvailable {
+                    Button("Undo") { Task { await today.undoDismiss(row.item, model: model) } }
+                        .buttonStyle(TodayLinkStyle(size: 12.5))
+                        .accessibilityLabel("Undo dismiss: " + row.item.text)
+                }
+                if let error = row.undoError {
+                    Text(error).font(COSType.body(12.5)).foregroundStyle(TodayInk.hot).lineLimit(2).truncationMode(.tail)
+                }
+            }
+        }
+        .padding(.vertical, 10).frame(maxWidth: .infinity, alignment: .leading)
+        .overlay(alignment: .top) { Rectangle().fill(TodayInk.suggLine).frame(height: 1) }
+        .help(row.item.text)
     }
 
     // MARK: Story cards

@@ -133,6 +133,10 @@ struct COSControlApp: App {
         model.showSettings = {
             SettingsOpener.open(model: model, window: settingsWindow) { section in activityWindow.show(model: model, section: section) }
         }
+        // 0.5.337 (loop audit W9): a live view's "Add a Jev or SubQ key" lands on Decision models, opened.
+        model.showDecisionKeySettings = {
+            SettingsOpener.open(model: model, window: settingsWindow, scroll: LiveCues.decisionKeysAnchor) { section in activityWindow.show(model: model, section: section) }
+        }
         // 0.5.317: a dictation card's "Open Transcription settings" lands on COS's Transcription card, never macOS Privacy.
         model.showTranscriptionSettings = {
             SettingsOpener.open(model: model, window: settingsWindow, scroll: "transcription") { section in activityWindow.show(model: model, section: section) }
