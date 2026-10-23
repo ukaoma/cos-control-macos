@@ -570,10 +570,12 @@ need("DictationEditLearning.reanchor(typed, in: baseline)" in watcher and "case 
      "the start finds a moved dictation again, a read re-anchors or ends cleared, and every watch (COS's own views too) writes its canary line")
 need("kAXValueAttribute" not in body(dictation, "    nonisolated static func fieldIdentity(") and "kAXValueAttribute" not in body(dictation, "    nonisolated static func focusedField("),
      "the field's identity is attributes only, never its text")
-need("learnedUndoID = item.id" in body(dictation, "    private func editLearned(") and "Task { await undoLearned(id) }" in body(dictation, "    func undoLearnedFromPill() {")
-     and "onUndo: store.learnedUndoID == nil ? nil : { store.undoLearnedFromPill() })" in dictation
-     and "onUndo: dictation.learnedUndoID == nil ? nil : { dictation.undoLearnedFromPill() })" in pet
-     and "panel.ignoresMouseEvents = store.card == nil && !fixing && store.fixOfferID == nil && store.learnedUndoID == nil" in dictation,
+need("learnedUndoID = item.id; learnedUndoPill = flash" in body(dictation, "    private func editLearned(") and "Task { await undoLearned(id) }" in body(dictation, "    func undoLearnedFromPill() {")
+     and "guard let id = pillUndoID else { return }" in body(dictation, "    func undoLearnedFromPill() {")
+     and "var pillUndoID: UUID? { pill == learnedUndoPill ? learnedUndoID : nil }" in dictation
+     and "onUndo: store.pillUndoID == nil ? nil : { store.undoLearnedFromPill() })" in dictation
+     and "onUndo: dictation.pillUndoID == nil ? nil : { dictation.undoLearnedFromPill() })" in pet
+     and "panel.ignoresMouseEvents = store.card == nil && !fixing && store.fixOfferID == nil && store.pillUndoID == nil" in dictation,
      "\"LEARNED\" on the pill offers Undo on both pills, the floating pill takes the click, and Undo is the Learned list's Undo")
 
 # ── 9. 0.5.318 Learn from my edits (Miles 13:31): Save automatically by default, native first, never secure, Undo.

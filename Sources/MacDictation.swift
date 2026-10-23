@@ -1826,6 +1826,9 @@ enum DictationSpareBuild: Sendable {
     @Published private(set) var fixOfferID: UUID?
     /// 0.5.338: what Learn from my edits just saved, while its pill offers Undo.
     @Published private(set) var learnedUndoID: UUID?
+    private var learnedUndoPill: DictationPill?
+    /// Undo shows only on that "✓ LEARNED" flash: any later pill (a new dictation) has none.
+    var pillUndoID: UUID? { pill == learnedUndoPill ? learnedUndoID : nil }
     /// After Save in Fix a word: put the corrected dictation back where COS inserted it, or copy it.
     @Published private(set) var replaceOffer: DictationReplaceOffer?
     /// While dictating: mute other apps (default), lower other audio, or off (0.5.313).
@@ -3412,19 +3415,20 @@ enum DictationSpareBuild: Sendable {
                 let flash = DictationPill.flash(label: "✓ LEARNED · " + item.written.uppercased(), confirmed: true)
                 pill = flash
                 // 0.5.338: Undo right on the pill, for as long as Fix would show; the Learned list keeps it 30 days.
-                learnedUndoID = item.id
+                learnedUndoID = item.id; learnedUndoPill = flash
                 flashTask?.cancel()
                 flashTask = Task {
                     try? await Task.sleep(for: .seconds(DictationQuickFix.offerSeconds))
-                    if !Task.isCancelled, pill == flash { pill = .hidden; learnedUndoID = nil }
+                    if !Task.isCancelled, pill == flash { pill = .hidden }
+                    if learnedUndoID == item.id { learnedUndoID = nil; learnedUndoPill = nil }
                 }
             }
         }
     }
     /// 0.5.338: the pill's Undo on "✓ LEARNED · WORD": the same Undo as the Learned list, then the pill goes.
     func undoLearnedFromPill() {
-        guard let id = learnedUndoID else { return }
-        learnedUndoID = nil
+        guard let id = pillUndoID else { return }
+        learnedUndoID = nil; learnedUndoPill = nil
         flashTask?.cancel()
         pill = .hidden
         Task { await undoLearned(id) }
@@ -3764,7 +3768,7 @@ private final class DictationHostingView<Content: View>: NSHostingView<Content> 
         let panel = existingPanel(store)
         host?.rootView = DictationOverlayRoot(store: store)
         // The pill's Fix (0.5.313) is the one control on a bare pill, so the panel takes clicks while it shows.
-        panel.ignoresMouseEvents = store.card == nil && !fixing && store.fixOfferID == nil && store.learnedUndoID == nil
+        panel.ignoresMouseEvents = store.card == nil && !fixing && store.fixOfferID == nil && store.pillUndoID == nil
         panel.allowsKey = fixing
         place(panel, size: host?.fittingSize ?? NSSize(width: 360, height: 60))
         if fixing { panel.makeKeyAndOrderFront(nil) } else { panel.orderFrontRegardless() }
@@ -3826,7 +3830,7 @@ struct DictationOverlayRoot: View {
             if store.pill != .hidden {
                 DictationListeningPill(pill: store.pill, meter: store.meter, floating: true, size: size, reduceMotion: reduceMotion,
                                        onFix: store.fixOfferID == nil ? nil : { store.quickFix() },
-                                       onUndo: store.learnedUndoID == nil ? nil : { store.undoLearnedFromPill() })
+                                       onUndo: store.pillUndoID == nil ? nil : { store.undoLearnedFromPill() })
             }
         }
         .padding(14)
