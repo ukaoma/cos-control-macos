@@ -139,6 +139,9 @@ need(recording.count("LiveAudiogramFeed") == 2 and "Task { @MainActor in LiveAud
      and "LiveAudiogramFeed.live.reset()" in recording, "MacRecordingStore only hands levels to the feed and resets it")
 need("@Published" not in between(recording, "@Published private(set) var liveCuesArm", "    private var previewTask") .replace("@Published private(set) var liveCuesArm", ""),
      "no level or grey text is published on MacRecordingStore")
+published_live = re.compile(r"@Published[^\n]*(\blevels?\b|Level\b|[Aa]udiogram|\brms\b|RMS|[Pp]rovisional|\bgrey|Grey)")
+published_preview = re.compile(r"@Published[^\n]*[Pp]review")
+need(not published_live.search(recording) and not published_preview.search(recording) and not published_live.search(model), "no level, audiogram or grey text is published on MacRecordingStore or ControllerModel")
 need(all_sources.count("@ObservedObject var feed: LiveAudiogramFeed") == 2, "only the audiogram and the rail glyph observe the levels")
 feed = body(meetings, "@MainActor final class LiveAudiogramFeed: ObservableObject {")
 need("static let live = LiveAudiogramFeed()" in feed and "private var meter = DictationLevelMeter()" in feed, "one feed, levels through DictationLevelMeter")

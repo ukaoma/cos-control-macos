@@ -5,7 +5,7 @@ Runs the unmutated lanes first and refuses on any failure (a red baseline would 
 match its target EXACTLY ONCE, and is killed only when its lane fails with a named check ("... FAILED: ...", an
 AssertionError naming the check, or the helper self-test's own failing expectation); a compile failure or any other
 exit is an infrastructure error, not a kill. Compiles go through the lanes, so through Tests/compile-guard.sh, one at a
-time. Usage: python3 Tests/mutate-live-meeting.py [--lane pins|models|helper|wiring]
+time. Usage: python3 Tests/mutate-live-meeting.py [--lane pins|models|helper|wiring] [--only M23,P21,H]
 """
 import os, subprocess, sys
 from pathlib import Path
@@ -117,7 +117,7 @@ def run(lane):
 
 def named(out):
     for line in out.splitlines():
-        if "FAILED:" in line or "FAILED (" in line or "AssertionError" in line or "check failed" in line or "below floor" in line:
+        if "FAILED:" in line or "FAILED (" in line or "self-test failed:" in line or "AssertionError" in line or "check failed" in line or "below floor" in line:
             return line.strip()
     return None
 
@@ -125,6 +125,11 @@ def named(out):
 only = sys.argv[sys.argv.index("--lane") + 1] if "--lane" in sys.argv else None
 lanes = [lane for lane in ("pins", "models", "wiring", "helper") if only in (None, lane)]
 mutants = [m for m in MUTANTS if m[1] in lanes]
+# --only M23,P21,H: re-run named mutants (an id, or a prefix letter); the lanes they need still get a green baseline.
+if "--only" in sys.argv:
+    wanted = sys.argv[sys.argv.index("--only") + 1].split(",")
+    mutants = [m for m in mutants if any(m[0].split(" ")[0] == w or (len(w) == 1 and m[0].startswith(w)) for w in wanted)]
+    lanes = [lane for lane in lanes if any(m[1] == lane for m in mutants)]
 for lane in lanes:
     base = run(lane)
     if base.returncode != 0:

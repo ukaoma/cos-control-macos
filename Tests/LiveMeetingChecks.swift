@@ -184,6 +184,9 @@ import Foundation
               && LiveMeeting.provisional(details(#"{"ok":true,"message":"x","details":{"transport":"unavailable"}}"#), sessionId: "s1") == nil
               && LiveMeeting.provisional(details(#"{"ok":true,"message":"x","details":{"transport":"answered","httpStatus":500}}"#), sessionId: "s1") == nil,
               "anything but an answered 200 changes nothing")
+        check(LiveMeeting.provisional(details(#"{"ok":true,"message":"x","details":{"transport":"answered","httpStatus":500,"live":true,"provisional":{"chunkIndex":7,"previewGen":3,"text":"fixture"}}}"#), sessionId: "s1") == nil
+              && LiveMeeting.provisional(details(#"{"ok":true,"message":"x","details":{"transport":"unsupported","httpStatus":200,"live":true,"provisional":{"chunkIndex":7,"previewGen":3,"text":"fixture"}}}"#), sessionId: "s1") == nil,
+              "a line riding on a failed or unsupported answer is never shown")
         let preview = details(#"{"ok":true,"message":"x","details":{"httpStatus":200,"chunkIndex":4,"previewGen":2,"text":"fixture words"}}"#)
         check(LiveMeeting.previewAnswer(preview, chunkIndex: 4, previewGen: 2)?.text == "fixture words", "the Mac preview's line")
         check(LiveMeeting.previewAnswer(preview, chunkIndex: 4, previewGen: 3) == nil && LiveMeeting.previewAnswer(preview, chunkIndex: 5, previewGen: 2) == nil,

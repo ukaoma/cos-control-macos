@@ -22585,7 +22585,8 @@ final class COSControlHelper {
         try expect(olderFields["liveMeetingProtocol"] is NSNull && olderFields["liveMeetingMacLiveCues"] as? Bool == false
                    && olderFields["liveMeetingProvisional"] as? Bool == false && (olderFields["liveCueKinds"] as? [String])?.isEmpty == true
                    && olderFields["liveCuesOn"] as? Bool == false, "an older server's health reads as no live meeting surface")
-        let oddFields = Self.liveMeetingStatusFields(["liveMeeting": ["protocol": true, "macLiveCues": 1, "provisional": ["route": "/elsewhere"]]])
+        // As JSONSerialization hands them over: NSNumber for both, which a bare `as? Int` or `as? Bool` would bridge.
+        let oddFields = Self.liveMeetingStatusFields(["liveMeeting": ["protocol": NSNumber(value: true), "macLiveCues": NSNumber(value: 1), "provisional": ["route": "/elsewhere"]]])
         try expect(oddFields["liveMeetingProtocol"] is NSNull && oddFields["liveMeetingMacLiveCues"] as? Bool == false
                    && oddFields["liveMeetingProvisional"] as? Bool == false, "a bool is not a protocol, a number is not a bool, another route is not the grey line")
         let provisionalAnswer = Self.liveProvisionalAnswer(status: 200, body: ["v": 1, "sessionId": "meeting_1", "live": true, "serverInstanceId": "SECRET",
