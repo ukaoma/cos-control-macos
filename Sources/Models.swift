@@ -13371,3 +13371,469 @@ enum TodayTickLoop {
         }
     }
 }
+
+
+// MARK: - Build-up, in place (0.5.343)
+
+/// The approved loading reveal (operations/personal/wk43_2026/mock-skeleton/skeleton-reveal.html, "BUILD-UP, IN PLACE").
+/// While a view waits on data, the wireframe of its final layout draws itself where the content will sit: (1) outlines
+/// trace on, (2) four corner nodes pop, (3) traces wire each component to a spine on the left with a junction node, (4) the
+/// text draws as outlined capsules. A short bright segment flows down the spine and each first corner node pings for a few
+/// cycles while the data loads. When it lands: (5) the fill wipes left to right, (6) the wire capsules go solid and fade
+/// ahead of the ink, (7) the real content inks on left to right, (8) the outline hands over to the real border, and the
+/// traces fade.
+///
+/// Rules from Miles's brief and the 6.10.654 QA, all executed by Tests/BuildUpChecks.swift:
+///   - data inside 150 ms never builds; Reduce Motion keeps that grace, then shows today's loading view, never a wire;
+///   - the build plays once per view per app session; a refresh, a poll or a reopen shows today's view as is;
+///   - the draw keeps its own clock through the landing, so a wire is never shown fully drawn that was not drawn;
+///   - arrived data starts inking within 40 ms and the whole landing ends within 600 ms, even for 8 components; the
+///     settle time is derived from the same steps the stage draws;
+///   - after 3 s with no data today's loading words show under the wire; the pulse stops after its cycles; after 20 s the
+///     wire hands over to today's view entirely; an error or empty answer fades the wire and shows today's view;
+///   - a view whose last load this session was empty draws no phantom rows; a new load mid-landing settles the old one.
+///
+/// This half is pure (Foundation only) so the checks run it with Models.swift alone. The SwiftUI half is `COSBuildUp` in
+/// COSMotion.swift, and it draws every frame from `COSBuildUpPlan.look` (the same numbers the checks read).
+enum COSBuildUpShape: Equatable, Sendable {
+    /// Card rows (`cosRowCard`): a title, a meta line and two trailing pills.
+    case rows(Int)
+    /// Plain rows on a divided list: a title and a meta line.
+    case list(Int)
+    /// A detail page: a header with chips, a summary card, then transcript turns.
+    case detail(turns: Int)
+    /// A detail page's body under a header that is already on screen: the summary card, then transcript turns.
+    case summary(turns: Int)
+    /// Transcript turns alone: a speaker capsule and a line each.
+    case turns(Int)
+    /// A Meeting Ask answer: sized to the common short answer (one line), re-fit to the real text's lines when it lands.
+    case answer
+    /// Rows inside a Today card (Needs you, Running). `badge`: a platform badge leads each row.
+    case cardRows(Int, badge: Bool)
+
+    /// The breadcrumb's name for the shape (no user text ever goes in a breadcrumb).
+    var kind: String {
+        switch self {
+        case .rows: return "rows"
+        case .list: return "list"
+        case .detail: return "detail"
+        case .summary: return "summary"
+        case .turns: return "turns"
+        case .answer: return "answer"
+        case .cardRows: return "cardRows"
+        }
+    }
+}
+
+struct COSBuildUpLine: Equatable, Sendable {
+    /// A fraction of the row's inner width.
+    var width: Double
+    var height: Double
+}
+
+/// One component of a placeholder, at the size the stage lays it out. Heights are points.
+struct COSBuildUpItem: Equatable, Sendable {
+    enum Style: String, Sendable { case card, plain }
+    var style: Style
+    var height: Double
+    var radius: Double
+    var padH: Double
+    var padV: Double
+    var lines: [COSBuildUpLine]
+    var lineGap: Double = 8
+    /// A row of chips under the lines (a detail header's facts), in points.
+    var chips: [Double] = []
+    var chipHeight: Double = 18
+    /// Pills on the trailing edge, vertically centred (a meeting row's status pills), in points.
+    var trailing: [Double] = []
+    /// A fixed capsule leading the row on the same line (a turn's speaker, a run's platform badge), in points.
+    var lead: Double? = nil
+}
+
+/// Where a stage's components sit inside the view, and where the spine runs.
+struct COSBuildUpLayout: Equatable, Sendable {
+    var top: Double
+    var leading: Double
+    var trailing: Double
+    var spacing: Double
+    /// The view fills its pane (a list, a detail). False: an inline component keeps its own height (an answer, a card).
+    var fills: Bool
+    /// The spine's x, from the view's leading edge. Nil: no traces.
+    var spineX: Double?
+}
+
+struct COSBuildUpStep: Equatable, Sendable {
+    var delay: Double
+    var duration: Double
+    var end: Double { delay + duration }
+}
+
+/// Every fraction one component draws at one moment: 0 to 1 (a node pop overshoots past 1 on its way in).
+struct COSBuildUpLook: Equatable, Sendable {
+    var outline: Double
+    var nodes: Double
+    var wireText: Double
+    var fill: Double
+    var solid: Double
+    var wireFade: Double
+    var ink: Double
+    var outlineFade: Double
+    var nodeFade: Double
+    /// What the outline actually shows: drawn so far, times what has not handed over yet.
+    var outlineShown: Double { outline * (1 - outlineFade) }
+}
+
+enum COSBuildUpPlan {
+    /// Never more placeholder components than this, and never more than fit the container.
+    static let maxItems = 8
+    /// Data inside this window after the load starts skips the build entirely (and under Reduce Motion, the spinner).
+    static let graceSeconds = 0.15
+    /// A view that opens before its load starts may still build when the load starts inside this window.
+    static let freshSeconds = 1.0
+    /// An error or empty answer (or the 20 s timeout) fades the wire this fast, then today's view shows.
+    static let handoffSeconds = 0.2
+    /// After this long with no data, today's loading words show under the wire.
+    static let wordsSeconds = 3.0
+    /// The spine flow and the node ping run for their cycles, then stop: 3 flows of 1.4 s after 0.7 s.
+    static let pulseSeconds = flowStart + 3 * flowPeriod
+    /// A load that has not answered by now hands over to today's view (its spinner and words), with no wire.
+    static let timeoutSeconds = 20.0
+
+    // Draw (the mock's numbers, seconds): from the moment the build starts, on its own clock through the landing.
+    static let outline = 0.64, nodes = 0.26, wireText = 0.44, trace = 0.52, junction = 0.24
+    static let drawStagger = 0.05, traceStagger = 0.045
+    static let flowStart = 0.70, flowPeriod = 1.40, flowLength = 0.06, pingStart = 0.90, pingStagger = 0.12, pingPeriod = 1.60
+    // Land (compressed by the 6.10.654 QA so arrived data is never hidden for long): ink starts 40 ms after the data, the
+    // whole landing ends by 600 ms for 8 components.
+    static let landStagger = 0.03, fill = 0.20, solid = 0.06, wireFade = 0.12, inkLead = 0.04, ink = 0.32
+    static let outlineFadeLead = 0.15, outlineFade = 0.24, nodeFade = 0.12, tracesFade = 0.30
+    /// ease-out cubic-bezier(.16,.84,.24,1); nodes pop on cubic-bezier(.3,1.6,.5,1).
+    static let easeOut = (0.16, 0.84, 0.24, 1.0)
+    static let pop = (0.3, 1.6, 0.5, 1.0)
+
+    static func outlineStep(_ i: Int) -> COSBuildUpStep { .init(delay: Double(i) * drawStagger, duration: outline) }
+    static func nodeStep(_ i: Int) -> COSBuildUpStep { .init(delay: Double(i) * drawStagger + 0.46, duration: nodes) }
+    static func wireTextStep(_ i: Int) -> COSBuildUpStep { .init(delay: Double(i) * drawStagger + 0.30, duration: wireText) }
+    static let spineStep = COSBuildUpStep(delay: 0, duration: trace)
+    static func branchStep(_ i: Int) -> COSBuildUpStep { .init(delay: Double(i) * traceStagger + 0.16, duration: trace) }
+    static func junctionStep(_ i: Int) -> COSBuildUpStep { .init(delay: Double(i) * traceStagger + 0.28, duration: junction) }
+    static func pingDelay(_ i: Int) -> Double { Double(i) * pingStagger + pingStart }
+
+    static func fillStep(_ i: Int) -> COSBuildUpStep { .init(delay: Double(i) * landStagger, duration: fill) }
+    static func solidStep(_ i: Int) -> COSBuildUpStep { .init(delay: Double(i) * landStagger, duration: solid) }
+    static func wireFadeStep(_ i: Int) -> COSBuildUpStep { .init(delay: Double(i) * landStagger + inkLead, duration: wireFade) }
+    static func inkStep(_ i: Int) -> COSBuildUpStep { .init(delay: Double(i) * landStagger + inkLead, duration: ink) }
+    static func outlineFadeStep(_ i: Int) -> COSBuildUpStep { .init(delay: Double(i) * landStagger + outlineFadeLead, duration: outlineFade) }
+    static func nodeFadeStep(_ i: Int) -> COSBuildUpStep { .init(delay: Double(i) * landStagger, duration: nodeFade) }
+    static let tracesFadeStep = COSBuildUpStep(delay: 0, duration: tracesFade)
+
+    /// Every step the landing draws for component `i` (the settle time is derived from exactly these).
+    static func landSteps(_ i: Int) -> [COSBuildUpStep] {
+        [fillStep(i), solidStep(i), wireFadeStep(i), inkStep(i), outlineFadeStep(i), nodeFadeStep(i), tracesFadeStep]
+    }
+    static func drawSteps(_ i: Int) -> [COSBuildUpStep] {
+        [outlineStep(i), nodeStep(i), wireTextStep(i), spineStep, branchStep(i), junctionStep(i)]
+    }
+    /// How long the landing runs for `count` components: the end of the last step of any of them.
+    static func landDuration(count: Int) -> Double {
+        (0..<max(1, min(count, maxItems))).flatMap(landSteps).map(\.end).max() ?? 0
+    }
+    /// How long the wire takes to finish drawing for `count` components.
+    static func drawDuration(count: Int) -> Double {
+        (0..<max(1, min(count, maxItems))).flatMap(drawSteps).map(\.end).max() ?? 0
+    }
+
+    /// The eased fraction of `step` at `t` seconds.
+    static func progress(_ step: COSBuildUpStep, at t: Double, curve: (Double, Double, Double, Double) = easeOut) -> Double {
+        guard step.duration > 0 else { return t >= step.delay ? 1 : 0 }
+        let x = min(max((t - step.delay) / step.duration, 0), 1)
+        if x <= 0 { return 0 }
+        if x >= 1 { return 1 }
+        return bezier(x, curve)
+    }
+
+    /// cubic-bezier(x1,y1,x2,y2) at x, solved by bisection (monotone in x for every curve used here).
+    static func bezier(_ x: Double, _ c: (Double, Double, Double, Double)) -> Double {
+        func sample(_ t: Double, _ a: Double, _ b: Double) -> Double {
+            let u = 1 - t
+            return 3 * u * u * t * a + 3 * u * t * t * b + t * t * t
+        }
+        var lo = 0.0, hi = 1.0, t = x
+        for _ in 0..<40 {
+            t = (lo + hi) / 2
+            if sample(t, c.0, c.2) < x { lo = t } else { hi = t }
+        }
+        return sample(t, c.1, c.3)
+    }
+
+    /// Component `i` at `drawT` seconds into the build and `landT` seconds into the landing (nil before it lands). The draw
+    /// never resets when the data lands: a wire the eye did not see drawn is never shown drawn.
+    static func look(_ i: Int, drawT: Double, landT: Double?) -> COSBuildUpLook {
+        func l(_ step: COSBuildUpStep) -> Double { landT.map { progress(step, at: $0) } ?? 0 }
+        return COSBuildUpLook(outline: progress(outlineStep(i), at: drawT), nodes: progress(nodeStep(i), at: drawT, curve: pop),
+                              wireText: progress(wireTextStep(i), at: drawT), fill: l(fillStep(i)), solid: l(solidStep(i)),
+                              wireFade: l(wireFadeStep(i)), ink: l(inkStep(i)), outlineFade: l(outlineFadeStep(i)), nodeFade: l(nodeFadeStep(i)))
+    }
+
+    /// Where the bright segment's head is on the spine (0 to 1), or nil once the pulse is over or before it starts.
+    static func flow(drawT: Double) -> Double? {
+        guard drawT >= flowStart, drawT < pulseSeconds else { return nil }
+        return (drawT - flowStart).truncatingRemainder(dividingBy: flowPeriod) / flowPeriod
+    }
+    /// How far component `i`'s first-node ping has spread (0 to 1), or nil outside its cycles.
+    static func ping(_ i: Int, drawT: Double) -> Double? {
+        guard drawT >= pingDelay(i), drawT < pulseSeconds else { return nil }
+        return (drawT - pingDelay(i)).truncatingRemainder(dividingBy: pingPeriod) / pingPeriod
+    }
+
+    static func layout(_ shape: COSBuildUpShape) -> COSBuildUpLayout {
+        switch shape {
+        case .rows: return .init(top: 12, leading: 22, trailing: 22, spacing: 6, fills: true, spineX: 10)
+        case .list: return .init(top: 8, leading: 22, trailing: 22, spacing: 6, fills: true, spineX: 10)
+        case .detail, .summary: return .init(top: 18, leading: 24, trailing: 24, spacing: 12, fills: true, spineX: 11)
+        case .turns: return .init(top: 16, leading: 24, trailing: 24, spacing: 12, fills: true, spineX: 11)
+        case .answer: return .init(top: 1, leading: 0, trailing: 0, spacing: 0, fills: false, spineX: -9)
+        case .cardRows(_, let badge): return .init(top: 2, leading: badge ? 0 : 18, trailing: badge ? 0 : 18, spacing: 4, fills: false,
+                                                   spineX: badge ? -9 : 8)
+        }
+    }
+
+    private static let titles = [0.62, 0.48, 0.56, 0.44, 0.52]
+    private static let metas = [0.40, 0.36, 0.30, 0.42, 0.34]
+    private static let says = [0.70, 0.62, 0.58, 0.66, 0.54]
+    /// A Meeting Ask answer line: the capsule and the pitch of 13 pt body text.
+    static let answerLine = 10.0, answerPitch = 17.5
+
+    /// The components a shape draws: at most `limit` (a remembered count) and `maxItems`, and never more than fit `fitting`
+    /// points of height. `measured`: the real content's height once it is on screen, for an answer to re-fit its lines.
+    static func items(_ shape: COSBuildUpShape, limit: Int? = nil, fitting height: Double? = nil, measured: Double? = nil) -> [COSBuildUpItem] {
+        let cap = min(maxItems, limit ?? maxItems)
+        func n(_ asked: Int) -> Int { max(0, min(asked, cap)) }
+        var all: [COSBuildUpItem]
+        switch shape {
+        case .rows(let count):
+            all = (0..<n(count)).map { i in
+                COSBuildUpItem(style: .card, height: 62, radius: 10, padH: 14, padV: 13,
+                               lines: [.init(width: titles[i % 5], height: 12), .init(width: metas[i % 5], height: 9)],
+                               lineGap: 9, trailing: [30, 30])
+            }
+        case .list(let count):
+            all = (0..<n(count)).map { i in
+                COSBuildUpItem(style: .plain, height: 48, radius: 8, padH: 10, padV: 10,
+                               lines: [.init(width: titles[i % 5], height: 11), .init(width: metas[i % 5], height: 8)], lineGap: 8)
+            }
+        case .detail(let turns):
+            let header = COSBuildUpItem(style: .plain, height: 54, radius: 6, padH: 0, padV: 4,
+                                        lines: [.init(width: 0.52, height: 16)], lineGap: 9, chips: [64, 44, 86, 56], chipHeight: 18)
+            all = Array(([header, summaryCard] + (0..<max(0, turns)).map(turn)).prefix(cap))
+        case .summary(let turns):
+            all = Array(([summaryCard] + (0..<max(0, turns)).map(turn)).prefix(cap))
+        case .turns(let count):
+            all = (0..<n(count)).map(turn)
+        case .answer:
+            // One line: the common short answer, never taller than the "Checking the meeting…" line it replaces by more
+            // than a few points. Landed, it re-fits to the real text's lines so the ink never crosses a capsule row.
+            let lines = measured.map { max(1, min(maxItems, Int(($0 + 2) / answerPitch))) } ?? 1
+            let widths = [0.92, 0.84, 0.88, 0.80, 0.86, 0.90, 0.82, 0.58]
+            all = cap < 1 ? [] : [COSBuildUpItem(style: .plain, height: measured ?? 18, radius: 4, padH: 0, padV: 4,
+                                                 lines: (0..<lines).map { .init(width: $0 == lines - 1 && lines > 1 ? 0.58 : widths[$0], height: answerLine) },
+                                                 lineGap: answerPitch - answerLine)]
+        case .cardRows(let count, let badge):
+            all = (0..<n(count)).map { i in
+                COSBuildUpItem(style: .plain, height: 46, radius: 8, padH: badge ? 8 : 0, padV: 8,
+                               lines: [.init(width: titles[i % 5] + 0.18, height: 11), .init(width: metas[i % 5] + 0.12, height: 8)],
+                               lineGap: 7, lead: badge ? 84 : nil)
+            }
+        }
+        guard let height else { return all }
+        let room = height - layout(shape).top
+        var used = 0.0
+        var fitted: [COSBuildUpItem] = []
+        for item in all {
+            let next = used + (fitted.isEmpty ? 0 : layout(shape).spacing) + item.height
+            if next > room, !fitted.isEmpty { break }
+            fitted.append(item)
+            used = next
+        }
+        return fitted
+    }
+
+    private static let summaryCard = COSBuildUpItem(style: .card, height: 78, radius: 9, padH: 12, padV: 12,
+                                                    lines: [.init(width: 0.22, height: 7), .init(width: 0.94, height: 10), .init(width: 0.76, height: 10)])
+
+    private static func turn(_ i: Int) -> COSBuildUpItem {
+        COSBuildUpItem(style: .plain, height: 24, radius: 4, padH: 0, padV: 6, lines: [.init(width: says[i % 5], height: 10)], lead: 58)
+    }
+
+    /// The top of component `index` from the view's top edge, and the y a trace meets it at (the mock's min(18, h/2)).
+    static func top(_ index: Int, in items: [COSBuildUpItem], layout: COSBuildUpLayout) -> Double {
+        layout.top + items.prefix(index).reduce(0) { $0 + $1.height + layout.spacing }
+    }
+    static func junctionY(_ index: Int, in items: [COSBuildUpItem], layout: COSBuildUpLayout) -> Double {
+        top(index, in: items, layout: layout) + min(18, items[index].height / 2)
+    }
+    /// The height a stage needs to show its components (an inline view reserves it while it builds).
+    static func height(_ items: [COSBuildUpItem], layout: COSBuildUpLayout) -> Double {
+        items.isEmpty ? 0 : top(items.count - 1, in: items, layout: layout) + items[items.count - 1].height
+    }
+
+    /// One log line per load the build was ready for: counts and verdicts only, never a label, a title or user text.
+    static func breadcrumb(_ shape: COSBuildUpShape, outcome: COSBuildUpMachine.Outcome, rows: Int, ms: Int) -> String {
+        "build-up \(shape.kind) outcome=\(outcome.rawValue) rows=\(rows) ms=\(ms)"
+    }
+}
+
+/// What this app session remembers per view (label plus key): a view seen once never builds again this session, so a
+/// reopen lands quietly; a view whose last load was empty never draws phantom rows.
+struct COSBuildUpMemory: Equatable, Sendable {
+    private(set) var seen: Set<String> = []
+    private(set) var empty: Set<String> = []
+
+    /// Whether the next open of `key` may build.
+    func builds(_ key: String) -> Bool { !seen.contains(key) && !empty.contains(key) }
+
+    mutating func record(_ key: String, _ outcome: COSBuildUpMachine.Outcome) {
+        seen.insert(key)
+        if outcome == .empty { empty.insert(key) } else if outcome == .landed || outcome == .direct { empty.remove(key) }
+    }
+}
+
+/// The build's state machine. Times are seconds on any monotonic clock.
+///
+///   fresh    the view is open and its load has not started: today's view shows, and a load that starts within
+///            `freshSeconds` may still build
+///   grace    the load started: nothing shows for `graceSeconds`, so a fast or cached load never flashes
+///   building the wire is on screen (today's loading words join it after `wordsSeconds`)
+///   landing  the data landed: fill, ink and hand-over, for `landDuration`
+///   handoff  no data (an error, an empty answer, or the timeout): the wire fades, then today's view shows
+///   settled  today's view, for good: a later refresh or poll swaps exactly as before and never builds again
+struct COSBuildUpMachine: Equatable, Sendable {
+    enum Phase: String, Equatable, Sendable { case fresh, grace, building, landing, handoff, settled }
+    /// How the load the build was ready for ended (the breadcrumb). `still`: Reduce Motion, today's view after the grace.
+    enum Outcome: String, Equatable, Sendable { case direct, landed, empty, timeout, still }
+
+    private(set) var phase: Phase
+    private(set) var since: Double
+    private(set) var opened: Double
+    /// The components the build drew (fitted to the container); the landing's length follows it.
+    private(set) var count: Int
+    let reduceMotion: Bool
+    private(set) var loadStarted: Double?
+    private(set) var builtAt: Double?
+    private(set) var landedAt: Double?
+    private(set) var outcome: Outcome?
+    private(set) var outcomeAt: Double?
+    /// Flags the machine sets as it passes each moment, so every change is a state change the view redraws on.
+    private(set) var drawDone = false
+    private(set) var wordsShown = false
+    private(set) var pulseDone = false
+
+    /// `quiet`: this session has seen this view (or its last load was empty): today's view, no build.
+    init(at t: Double, loading: Bool, landed: Bool, reduceMotion: Bool, count: Int, quiet: Bool = false) {
+        opened = t
+        since = t
+        self.count = max(0, min(count, COSBuildUpPlan.maxItems))
+        self.reduceMotion = reduceMotion
+        if landed || self.count == 0 || quiet { phase = .settled }
+        else if loading { phase = .grace; loadStarted = t }
+        else { phase = .fresh }
+    }
+
+    /// Hidden: the content is laid out and live but not drawn, while the wire (or, under Reduce Motion, nothing for the
+    /// grace) stands in for it.
+    var hidesContent: Bool { phase == .grace || phase == .handoff || (phase == .building && !wordsShown) }
+    var drawsWire: Bool { phase == .building || phase == .landing || phase == .handoff }
+    /// The spine flow and the node ping: only while building, only for their cycles, only while the window is active.
+    func pulses(windowActive: Bool) -> Bool { phase == .building && windowActive && !pulseDone }
+    /// Whether the stage needs a new frame at all: while the wire draws, while it pulses, while it lands or hands off.
+    /// Never once it stands still, so nothing redraws while a slow load waits.
+    func needsFrames(windowActive: Bool) -> Bool {
+        switch phase {
+        case .building: return !drawDone || pulses(windowActive: windowActive)
+        case .landing, .handoff: return true
+        default: return false
+        }
+    }
+
+    func drawT(at t: Double) -> Double? { builtAt.map { t - $0 } }
+    func landT(at t: Double) -> Double? { phase == .landing ? landedAt.map { t - $0 } : nil }
+    func handoffT(at t: Double) -> Double? { phase == .handoff ? t - since : nil }
+
+    /// The next moment the machine changes on its own after `t` (nil once it never will, so nothing keeps waking).
+    func deadline(after t: Double) -> Double? {
+        switch phase {
+        case .fresh: return opened + COSBuildUpPlan.freshSeconds
+        case .grace: return since + COSBuildUpPlan.graceSeconds
+        case .building:
+            let start = builtAt ?? since
+            var next = [start + COSBuildUpPlan.timeoutSeconds]
+            if !drawDone { next.append(start + COSBuildUpPlan.drawDuration(count: count)) }
+            if !wordsShown { next.append(start + COSBuildUpPlan.wordsSeconds) }
+            if !pulseDone { next.append(start + COSBuildUpPlan.pulseSeconds) }
+            return next.min()
+        case .landing: return (landedAt ?? since) + COSBuildUpPlan.landDuration(count: count)
+        case .handoff: return since + COSBuildUpPlan.handoffSeconds
+        case .settled: return nil
+        }
+    }
+
+    /// Feed every change: the clock, whether the view is loading, and whether data has landed.
+    @discardableResult
+    mutating func update(at t: Double, loading: Bool, landed: Bool, reduceMotion turnedOn: Bool = false) -> Phase {
+        if turnedOn, phase == .building || phase == .landing { settle(t, .still) }
+        switch phase {
+        case .fresh:
+            if landed { move(.settled, t) }
+            else if loading { move(.grace, t); loadStarted = t }
+            else if t >= opened + COSBuildUpPlan.freshSeconds { move(.settled, t) }
+        case .grace:
+            if !loading { settle(t, .direct) }
+            else if t >= since + COSBuildUpPlan.graceSeconds {
+                if reduceMotion || turnedOn { settle(t, .still) } else { move(.building, t); builtAt = t }
+            }
+        case .building:
+            let start = builtAt ?? since
+            if !loading {
+                if landed { move(.landing, t); landedAt = t; finish(t, .landed) } else { move(.handoff, t); finish(t, .empty) }
+            } else if t >= start + COSBuildUpPlan.timeoutSeconds {
+                move(.handoff, t); finish(t, .timeout)
+            } else {
+                if t >= start + COSBuildUpPlan.drawDuration(count: count) { drawDone = true }
+                if t >= start + COSBuildUpPlan.wordsSeconds { wordsShown = true }
+                if t >= start + COSBuildUpPlan.pulseSeconds { pulseDone = true }
+            }
+        case .landing:
+            // A new load mid-landing: settle the old one first, then today's view takes the new load.
+            if loading || t >= (landedAt ?? since) + COSBuildUpPlan.landDuration(count: count) { move(.settled, t) }
+        case .handoff:
+            if t >= since + COSBuildUpPlan.handoffSeconds { move(.settled, t) }
+        case .settled:
+            break
+        }
+        return phase
+    }
+
+    /// The container's room changed while building (a window resize): the wire follows it.
+    mutating func fit(_ n: Int) {
+        guard phase == .building || phase == .grace else { return }
+        count = max(1, min(n, COSBuildUpPlan.maxItems))
+    }
+
+    /// The view now shows something else (a different meeting in the same pane): start again as if it had just opened.
+    mutating func reopen(at t: Double, loading: Bool, landed: Bool, quiet: Bool) {
+        self = COSBuildUpMachine(at: t, loading: loading, landed: landed, reduceMotion: reduceMotion, count: count, quiet: quiet)
+    }
+
+    private mutating func settle(_ t: Double, _ how: Outcome) {
+        if outcome == nil { finish(t, how) }
+        move(.settled, t)
+    }
+    private mutating func finish(_ t: Double, _ how: Outcome) {
+        outcome = how
+        outcomeAt = t
+    }
+    private mutating func move(_ next: Phase, _ t: Double) {
+        phase = next
+        since = t
+    }
+}

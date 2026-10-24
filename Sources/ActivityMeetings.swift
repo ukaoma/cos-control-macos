@@ -222,8 +222,14 @@ struct MeetingLibraryBody: View {
         return open > 0 ? "Suggested merges · \(open)" : "Suggested merges"
     }
 
-    @ViewBuilder
+    /// 0.5.343: the list builds in place on its first load (COSBuildUp); the chain below is today's, untouched.
     private var content: some View {
+        COSBuildUp(.rows(6), loading: !model.isLibraryQueryActive && model.libraryLoading && model.libraryMeetings.isEmpty,
+                   landed: !model.libraryMeetings.isEmpty, label: "Loading meetings") { libraryContent }
+    }
+
+    @ViewBuilder
+    private var libraryContent: some View {
         if model.isLibraryQueryActive {
             searchResults
         } else if model.libraryLoading && model.libraryMeetings.isEmpty {
@@ -577,6 +583,10 @@ struct MeetingLibraryDetailPane: View {
                 Divider()
             }
 
+            // 0.5.343: the body builds in place under the header while the meeting loads (COSBuildUp); the chain is today's.
+            COSBuildUp(.summary(turns: 5), loading: model.libraryDetailLoading && model.libraryDetail == nil,
+                       landed: model.libraryDetail != nil, label: "Loading meeting", key: model.openLibraryRow.map { AnyHashable($0.id) }) {
+                VStack(alignment: .leading, spacing: 0) {
             if model.libraryDetailLoading && model.libraryDetail == nil {
                 ProgressView("Loading meeting…")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -725,6 +735,8 @@ struct MeetingLibraryDetailPane: View {
                 }
             } else {
                 Spacer()
+            }
+                }
             }
         }
         .background(COSPalette.panel)

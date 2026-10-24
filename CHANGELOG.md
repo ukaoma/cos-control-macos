@@ -1,3 +1,43 @@
+## 0.5.343 (build 397), Build-up, in place
+
+On top of 0.5.342 (build 396). Mock approved by Miles 2026-10-24
+(`operations/personal/wk43_2026/mock-skeleton/skeleton-reveal.html`, "BUILD-UP, IN PLACE"). Plus everything in 0.5.342.
+
+Views build in place while they load: the layout draws itself, then fills in with your meetings, answers and cards,
+instead of a spinner. Fast loads skip it, and Reduce Motion turns it off.
+
+- **One component.** `COSBuildUp` (COSMotion.swift) wraps a view's existing loading, error and empty chain untouched and
+  declares only the placeholder shape and the loading state. The pure half (`COSBuildUpShape`, `COSBuildUpPlan`,
+  `COSBuildUpMachine`) is in Models.swift. No new Sources file.
+- **The sequence, per component, at the final layout's coordinates.** (1) the outline traces on (640 ms), (2) four
+  corner nodes pop (260 ms), (3) traces wire it to a spine on the left with a junction node, (4) its text draws as
+  outlined capsules (440 ms), 50 ms apart, on cubic-bezier(.16,.84,.24,1). While loading, a short bright segment flows
+  down the spine and each first corner node pings, for three cycles, then the wire stands still. When the data lands:
+  (5) the fill wipes left to right, (6) the capsules go solid and fade ahead of the ink, (7) the real content inks on
+  left to right, (8) the outline hands over to the real border, and the traces fade: ink starts 40 ms after the data,
+  30 ms apart, and the whole landing ends within 600 ms even for 8 components (the 6.10.654 QA).
+- **One source of truth.** Every frame is `COSBuildUpPlan.look` at the machine's clocks; the draw keeps its own clock
+  through the landing, so a wire is never shown fully drawn that was not drawn; the settle time is derived from the
+  same steps. The stage has one clock (a TimelineView) that exists only while the wire is on screen and pauses whenever
+  nothing moves; no SwiftUI animation, nothing repeats.
+- **Where.** Meetings list and meeting detail; Sessions list and session detail; Tasks; Messages (recent turns, an
+  archived day, an archived chat); Speakers (voice directory, meetings to review, a meeting's transcript); Memories and
+  Threads lists, Recent learning and To review; record, lesson and entity details; a Meeting Ask answer; the Today home's
+  Needs you and Running cards, each on its own source.
+- **No regressions by construction.** The wrapped view is always laid out and live, so its loads, tasks, polling,
+  error and empty paths run exactly as before; while it builds it is only hidden (opacity, hit testing, accessibility).
+  The moment the data lands it is live and clickable; the wire is an overlay clicks pass through. Data inside 150 ms
+  shows directly. The build plays once per view per app session: a refresh, a poll or a reopen shows today's view as
+  is; a view whose last load was empty draws no rows. After 3 s with no data today's loading words show under the wire;
+  after 20 s, or on an error or an empty answer, the wire fades in 200 ms and today's view shows. A new load
+  mid-landing settles the old one first. Placeholders fit the container as it resizes, at most 8; an answer starts as
+  one line and re-fits to the real text's lines when it lands.
+- **Accessibility, cost and logs.** Placeholder layers are hidden from accessibility; the container reads "Loading
+  meetings" (and so on) while it builds. Reduce Motion: the 150 ms grace, then today's loading view, never a wire. One
+  breadcrumb per load in the app's log (`build-up`: shape, outcome, rows, milliseconds; no text).
+- Motion tokens (`Motion` in COSMotion.swift) and three animations that ran under Reduce Motion (the transcript fold,
+  the setup-guide scroll, the chat match scroll) now go through `Motion.gated`.
+
 ## 0.5.342 (build 396), Your edit, confirmed
 
 On top of 0.5.341 (build 395). Mock approved by Miles 2026-10-24

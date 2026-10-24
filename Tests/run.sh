@@ -1355,6 +1355,10 @@ zsh "$ROOT/Tests/run-hardening-337.sh"
 # 0.5.342 Your edit, confirmed: the wiring pins (with their in-memory mutants), then the rules against fixtures
 # (Tests/EditConfirmChecks.swift, MacDictationCore.swift alone). Hand-run: Tests/mutate-edit-confirm.py (the mutation lane).
 zsh "$ROOT/Tests/run-edit-confirm.sh"
+# 0.5.343 Build-up, in place: the wiring pins (with their in-memory mutants) and the motion-gate pins, then the rules
+# against fixtures (Tests/BuildUpChecks.swift, Models.swift alone). Hand-run: Tests/mutate-build-up.py (the mutation lane)
+# and Tests/run-build-up-render.sh (static PNGs, never a gate).
+zsh "$ROOT/Tests/run-build-up.sh"
 
 # ── 0.5.252: glasses requests (server 6.59.0 inbox) ─────────────────────────────
 # Behaviour: Tests/run-work-progress.sh test 22 (claim race, expiry, a late claim, a changed task, a missing destination,

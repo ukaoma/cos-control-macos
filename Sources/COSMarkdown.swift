@@ -366,6 +366,7 @@ private struct COSMarkdownDetails: View {
     let blocks: [COSMarkdownBlock]
     let bodySize: CGFloat
     @State private var expanded = true
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var count: String? {
         for block in blocks {
@@ -380,7 +381,7 @@ private struct COSMarkdownDetails: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             Button {
-                withAnimation(.easeInOut(duration: 0.15)) { expanded.toggle() }
+                withAnimation(Motion.gated(.easeInOut(duration: 0.15), reduceMotion: reduceMotion)) { expanded.toggle() }
             } label: {
                 HStack(spacing: 10) {
                     Image(systemName: "chevron.right")

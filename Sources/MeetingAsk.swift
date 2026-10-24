@@ -1126,9 +1126,14 @@ struct LiveAskPanel: View {
         VStack(alignment: .leading, spacing: 9) {
             Text(verbatim: exchange.question).font(COSType.body(12, weight: .semibold))
             // 0.5.283: bold-label rows, So what first, when the answer has labels; an older answer stays plain Markdown.
+            // 0.5.343: a new answer builds in place while COS reads the meeting (COSBuildUp); the chain is today's.
+            COSBuildUp(.answer, loading: !exchange.terminal && exchange.answer == nil && MeetingAskAnswerRows.rows(sections: exchange.sections?.items, answer: nil) == nil,
+                       landed: exchange.answer != nil || MeetingAskAnswerRows.rows(sections: exchange.sections?.items, answer: nil) != nil,
+                       label: "Checking the meeting", key: AnyHashable(exchange.id), background: COSPalette.raised) {
             if let rows = MeetingAskAnswerRows.rows(sections: exchange.sections?.items, answer: exchange.answer) { MeetingAskAnswerRowsView(rows: rows, bodySize: 13, citationIDs: Set(exchange.sources.map(\.id))) }
             else if let answer = exchange.answer { COSMarkdownView(text: answer, cacheID: exchange.id + exchange.updatedAt, bodySize: 13) }
             else { Text(exchange.terminal ? "No answer · " + exchange.status : "Checking the meeting…").font(COSType.body(12)).foregroundStyle(.secondary) }
+            }
             if let reason = exchange.error { Text(MeetingAskText.failure(reason)).font(COSType.body(11)).foregroundStyle(COSPalette.amber) }
             ForEach(exchange.sources) { source in sourceRow(source, exchangeID: exchange.id) }.font(COSType.body(11))
             ForEach(exchange.notices, id: \.self) { Text($0).font(COSType.body(11)).foregroundStyle(COSPalette.amber) }
