@@ -10,10 +10,17 @@ struct JediUpgradeContract {
         let scratch = fm.temporaryDirectory.appendingPathComponent("cos-jedi-upgrade-\(UUID().uuidString)")
         try fm.createDirectory(at: scratch, withIntermediateDirectories: true)
         defer { try? fm.removeItem(at: scratch) }
+        func referencedPNGs(_ value: Any) -> Set<String> {
+            if let d = value as? [String: Any] { return d.values.reduce(into: Set<String>()) { $0.formUnion(referencedPNGs($1)) } }
+            if let a = value as? [Any] { return a.reduce(into: Set<String>()) { $0.formUnion(referencedPNGs($1)) } }
+            if let s = value as? String, s.hasSuffix(".png") { return [s] }; return []
+        }
+        var retinaFiles = 0
         var migrations = 0
         var frames = 0
         var rotationLayers = 0
         for character in PetSpriteStore.bundledCharacters where character.id != PetSpriteStore.legacyDefaultCharacterID {
+            try autoreleasepool {
             let source = bundles.appendingPathComponent(character.id)
             let expected = PetSpriteStore.loadStateMap(in: source)
             let sourceState = try Data(contentsOf: source.appendingPathComponent(PetSpriteStore.stateFileName))
@@ -42,14 +49,25 @@ struct JediUpgradeContract {
                 precondition(try! Data(contentsOf: fresh.appendingPathComponent(file)) == Data(contentsOf: source.appendingPathComponent(file)))
             }
             rotationLayers += layers.count
+            let sourceJSON = try JSONSerialization.jsonObject(with: sourceState)
+            let allSourceFiles = referencedPNGs(sourceJSON)
+            let retinaSourceFiles = allSourceFiles.filter { $0.contains("-2x-") }
+            precondition(retinaSourceFiles.count >= 54, "all segmented Retina casts must ship")
+            retinaFiles += retinaSourceFiles.count
+            let retinaRotations = PetSpriteStore.loadRotations(in: fresh, displayScale: 2)
+            for pose in [PetSpritePose.duel, .trio, .swarm] {
+                let image = retinaRotations[pose]!.variants[0].full[0]
+                precondition(PetSpriteStrip.raster(image)!.width == 880, "Retina install silently fell back to 1x")
+            }
             for entry in maps {
+                try autoreleasepool {
                 let version = entry["version"] as! String
                 let state = entry["state"] as! [String: Any]
                 let poses = state["poses"] as! [String: [String: Any]]
                 let original = try JSONSerialization.data(withJSONObject: state, options: [.sortedKeys])
                 let dest = scratch.appendingPathComponent("\(character.id)-\(version)")
                 try fm.createDirectory(at: dest, withIntermediateDirectories: true)
-                for file in Set(poses.values.map { $0["file"] as! String }) {
+                for file in referencedPNGs(poses) {
                     try fm.copyItem(at: source.appendingPathComponent(file), to: dest.appendingPathComponent(file))
                 }
                 let stateURL = dest.appendingPathComponent(PetSpriteStore.stateFileName)
@@ -74,9 +92,19 @@ struct JediUpgradeContract {
                 precondition(try! Data(contentsOf: stateURL) == original)
                 try oldBytes.write(to: oldFile, options: .atomic)
 
+                // A user's alternate cast or high-resolution edit is also custom art.
+                for file in referencedPNGs(poses).filter({ $0.contains("body") || $0.contains("-2x") }).sorted().prefix(2) {
+                    let url = dest.appendingPathComponent(file), saved = try Data(contentsOf: dest.appendingPathComponent(file))
+                    try Data("custom layer".utf8).write(to: url, options: .atomic)
+                    precondition(PetSpriteStore.refreshRecognizedBundledCharacter(into: dest, sourceRootOverride: bundles) == .notApplicable,
+                                 "custom alternate/Retina layer was overwritten")
+                    precondition(try! Data(contentsOf: stateURL) == original)
+                    try saved.write(to: url, options: .atomic)
+                }
+
                 // New-file failures leave the old map intact. Map-only upgrades
                 // already have this file and do not take the new-file write path.
-                if !Set(poses.values.map { $0["file"] as! String }).contains(expected[.patrol]!.file) {
+                if !referencedPNGs(poses).contains(expected[.patrol]!.file) {
                     let blocked = dest.appendingPathComponent(expected[.patrol]!.file)
                     try fm.createDirectory(at: blocked, withIntermediateDirectories: true)
                     let blockedResult = PetSpriteStore.refreshRecognizedBundledCharacter(into: dest, sourceRootOverride: bundles)
@@ -88,7 +116,7 @@ struct JediUpgradeContract {
 
                 precondition(PetSpriteStore.refreshRecognizedBundledCharacter(into: dest, sourceRootOverride: bundles) == .refreshed(character.id))
                 precondition(try! Data(contentsOf: stateURL) == sourceState)
-                for file in layers {
+                for file in allSourceFiles {
                     precondition(try! Data(contentsOf: dest.appendingPathComponent(file)) == Data(contentsOf: source.appendingPathComponent(file)), "migration omitted a rotation layer")
                 }
                 for row in expected.values {
@@ -96,6 +124,7 @@ struct JediUpgradeContract {
                 }
                 precondition(PetSpriteStore.refreshRecognizedBundledCharacter(into: dest, sourceRootOverride: bundles) == .notApplicable, "repeat migration must be a no-op")
                 migrations += 1
+                }
             }
 
             // Corrupt replacement source: preflight must fail before map writes.
@@ -117,8 +146,16 @@ struct JediUpgradeContract {
             try original.write(to: stateURL, options: .atomic)
             precondition(PetSpriteStore.refreshRecognizedBundledCharacter(into: dest, sourceRootOverride: badRoot) == .failed)
             precondition(try! Data(contentsOf: stateURL) == original)
+            let missingEntry = rotations[.swarm]!.manifest.variants[1].entryFile
+            try fm.copyItem(at: source.appendingPathComponent(missingEntry), to: bad.appendingPathComponent(missingEntry))
+            let missingRetina = retinaSourceFiles.sorted().last!
+            try fm.removeItem(at: bad.appendingPathComponent(missingRetina))
+            precondition(PetSpriteStore.refreshRecognizedBundledCharacter(into: dest, sourceRootOverride: badRoot) == .failed,
+                         "missing Retina segment must fail before activation")
+            precondition(try! Data(contentsOf: stateURL) == original)
         }
-        precondition(migrations == 19 && frames == 921 && rotationLayers == 81)
-        print("Jedi upgrade contracts PASS: 19 stock histories, 921 native frames, 81 rotation layers, custom preservation, interrupted new-file writes, missing-source failure, retry and idempotence")
+        }
+        precondition(migrations == 22 && frames == 800 && rotationLayers == 81)
+        print("Jedi upgrade contracts PASS: 22 stock histories, 800 native frames, \(retinaFiles) Retina files, 81 rotation layers, custom preservation, interrupted new-file writes, missing-source failure, retry and idempotence")
     }
 }

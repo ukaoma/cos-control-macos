@@ -9,30 +9,85 @@
       "frames": 1
     },
     "duel": {
-      "file": "combat-20261018-duel-a-full.png",
-      "frames": 68,
+      "file": "jedi360-v2-elara-duel-a-full-1x.png",
+      "frames": 51,
       "interval": 0.06,
+      "renderScale": 1,
       "rotation": {
         "version": 1,
-        "handoffFrame": 51,
+        "handoffFrame": 32,
         "variants": [
           {
-            "id": "duel-a",
-            "file": "combat-20261018-duel-a-full.png",
-            "bodyFile": "combat-20261018-duel-a-body.png",
-            "entryFile": "combat-20261018-duel-a-entry.png"
+            "id": "elara-duel-a",
+            "file": "jedi360-v2-elara-duel-a-full-1x.png",
+            "bodyFile": "jedi360-v2-elara-duel-a-body-1x.png",
+            "entryFile": "jedi360-v2-elara-duel-a-entry-1x.png"
           },
           {
-            "id": "duel-b",
-            "file": "combat-20261018-duel-b-full.png",
-            "bodyFile": "combat-20261018-duel-b-body.png",
-            "entryFile": "combat-20261018-duel-b-entry.png"
+            "id": "elara-duel-b",
+            "file": "jedi360-v2-elara-duel-b-full-1x.png",
+            "bodyFile": "jedi360-v2-elara-duel-b-body-1x.png",
+            "entryFile": "jedi360-v2-elara-duel-b-entry-1x.png"
           },
           {
-            "id": "duel-c",
-            "file": "combat-20261018-duel-c-full.png",
-            "bodyFile": "combat-20261018-duel-c-body.png",
-            "entryFile": "combat-20261018-duel-c-entry.png"
+            "id": "elara-duel-c",
+            "file": "jedi360-v2-elara-duel-c-full-1x.png",
+            "bodyFile": "jedi360-v2-elara-duel-c-body-1x.png",
+            "entryFile": "jedi360-v2-elara-duel-c-entry-1x.png"
+          }
+        ]
+      },
+      "retina": {
+        "scale": 2,
+        "file": [
+          "jedi360-v2-elara-duel-a-full-2x-s1.png",
+          "jedi360-v2-elara-duel-a-full-2x-s2.png"
+        ],
+        "variants": [
+          {
+            "id": "elara-duel-a",
+            "file": [
+              "jedi360-v2-elara-duel-a-full-2x-s1.png",
+              "jedi360-v2-elara-duel-a-full-2x-s2.png"
+            ],
+            "bodyFile": [
+              "jedi360-v2-elara-duel-a-body-2x-s1.png",
+              "jedi360-v2-elara-duel-a-body-2x-s2.png"
+            ],
+            "entryFile": [
+              "jedi360-v2-elara-duel-a-entry-2x-s1.png",
+              "jedi360-v2-elara-duel-a-entry-2x-s2.png"
+            ]
+          },
+          {
+            "id": "elara-duel-b",
+            "file": [
+              "jedi360-v2-elara-duel-b-full-2x-s1.png",
+              "jedi360-v2-elara-duel-b-full-2x-s2.png"
+            ],
+            "bodyFile": [
+              "jedi360-v2-elara-duel-b-body-2x-s1.png",
+              "jedi360-v2-elara-duel-b-body-2x-s2.png"
+            ],
+            "entryFile": [
+              "jedi360-v2-elara-duel-b-entry-2x-s1.png",
+              "jedi360-v2-elara-duel-b-entry-2x-s2.png"
+            ]
+          },
+          {
+            "id": "elara-duel-c",
+            "file": [
+              "jedi360-v2-elara-duel-c-full-2x-s1.png",
+              "jedi360-v2-elara-duel-c-full-2x-s2.png"
+            ],
+            "bodyFile": [
+              "jedi360-v2-elara-duel-c-body-2x-s1.png",
+              "jedi360-v2-elara-duel-c-body-2x-s2.png"
+            ],
+            "entryFile": [
+              "jedi360-v2-elara-duel-c-entry-2x-s1.png",
+              "jedi360-v2-elara-duel-c-entry-2x-s2.png"
+            ]
           }
         ]
       }
@@ -54,59 +109,179 @@
       "renderScale": 1
     },
     "swarm": {
-      "file": "combat-20261018-swarm-a-full.png",
-      "frames": 90,
+      "file": "jedi360-v2-elara-swarm-a-full-1x.png",
+      "frames": 77,
       "interval": 0.06,
+      "renderScale": 1,
       "rotation": {
         "version": 1,
-        "handoffFrame": 73,
+        "handoffFrame": 58,
         "variants": [
           {
-            "id": "swarm-a",
-            "file": "combat-20261018-swarm-a-full.png",
-            "bodyFile": "combat-20261018-swarm-a-body.png",
-            "entryFile": "combat-20261018-swarm-a-entry.png"
+            "id": "elara-swarm-a",
+            "file": "jedi360-v2-elara-swarm-a-full-1x.png",
+            "bodyFile": "jedi360-v2-elara-swarm-a-body-1x.png",
+            "entryFile": "jedi360-v2-elara-swarm-a-entry-1x.png"
           },
           {
-            "id": "swarm-b",
-            "file": "combat-20261018-swarm-b-full.png",
-            "bodyFile": "combat-20261018-swarm-b-body.png",
-            "entryFile": "combat-20261018-swarm-b-entry.png"
+            "id": "elara-swarm-b",
+            "file": "jedi360-v2-elara-swarm-b-full-1x.png",
+            "bodyFile": "jedi360-v2-elara-swarm-b-body-1x.png",
+            "entryFile": "jedi360-v2-elara-swarm-b-entry-1x.png"
           },
           {
-            "id": "swarm-c",
-            "file": "combat-20261018-swarm-c-full.png",
-            "bodyFile": "combat-20261018-swarm-c-body.png",
-            "entryFile": "combat-20261018-swarm-c-entry.png"
+            "id": "elara-swarm-c",
+            "file": "jedi360-v2-elara-swarm-c-full-1x.png",
+            "bodyFile": "jedi360-v2-elara-swarm-c-body-1x.png",
+            "entryFile": "jedi360-v2-elara-swarm-c-entry-1x.png"
+          }
+        ]
+      },
+      "retina": {
+        "scale": 2,
+        "file": [
+          "jedi360-v2-elara-swarm-a-full-2x-s1.png",
+          "jedi360-v2-elara-swarm-a-full-2x-s2.png",
+          "jedi360-v2-elara-swarm-a-full-2x-s3.png"
+        ],
+        "variants": [
+          {
+            "id": "elara-swarm-a",
+            "file": [
+              "jedi360-v2-elara-swarm-a-full-2x-s1.png",
+              "jedi360-v2-elara-swarm-a-full-2x-s2.png",
+              "jedi360-v2-elara-swarm-a-full-2x-s3.png"
+            ],
+            "bodyFile": [
+              "jedi360-v2-elara-swarm-a-body-2x-s1.png",
+              "jedi360-v2-elara-swarm-a-body-2x-s2.png",
+              "jedi360-v2-elara-swarm-a-body-2x-s3.png"
+            ],
+            "entryFile": [
+              "jedi360-v2-elara-swarm-a-entry-2x-s1.png",
+              "jedi360-v2-elara-swarm-a-entry-2x-s2.png",
+              "jedi360-v2-elara-swarm-a-entry-2x-s3.png"
+            ]
+          },
+          {
+            "id": "elara-swarm-b",
+            "file": [
+              "jedi360-v2-elara-swarm-b-full-2x-s1.png",
+              "jedi360-v2-elara-swarm-b-full-2x-s2.png",
+              "jedi360-v2-elara-swarm-b-full-2x-s3.png"
+            ],
+            "bodyFile": [
+              "jedi360-v2-elara-swarm-b-body-2x-s1.png",
+              "jedi360-v2-elara-swarm-b-body-2x-s2.png",
+              "jedi360-v2-elara-swarm-b-body-2x-s3.png"
+            ],
+            "entryFile": [
+              "jedi360-v2-elara-swarm-b-entry-2x-s1.png",
+              "jedi360-v2-elara-swarm-b-entry-2x-s2.png",
+              "jedi360-v2-elara-swarm-b-entry-2x-s3.png"
+            ]
+          },
+          {
+            "id": "elara-swarm-c",
+            "file": [
+              "jedi360-v2-elara-swarm-c-full-2x-s1.png",
+              "jedi360-v2-elara-swarm-c-full-2x-s2.png",
+              "jedi360-v2-elara-swarm-c-full-2x-s3.png"
+            ],
+            "bodyFile": [
+              "jedi360-v2-elara-swarm-c-body-2x-s1.png",
+              "jedi360-v2-elara-swarm-c-body-2x-s2.png",
+              "jedi360-v2-elara-swarm-c-body-2x-s3.png"
+            ],
+            "entryFile": [
+              "jedi360-v2-elara-swarm-c-entry-2x-s1.png",
+              "jedi360-v2-elara-swarm-c-entry-2x-s2.png",
+              "jedi360-v2-elara-swarm-c-entry-2x-s3.png"
+            ]
           }
         ]
       }
     },
     "trio": {
-      "file": "combat-20261018-trio-a-full.png",
-      "frames": 84,
+      "file": "jedi360-v2-elara-trio-a-full-1x.png",
+      "frames": 59,
       "interval": 0.06,
+      "renderScale": 1,
       "rotation": {
         "version": 1,
-        "handoffFrame": 67,
+        "handoffFrame": 40,
         "variants": [
           {
-            "id": "trio-a",
-            "file": "combat-20261018-trio-a-full.png",
-            "bodyFile": "combat-20261018-trio-a-body.png",
-            "entryFile": "combat-20261018-trio-a-entry.png"
+            "id": "elara-trio-a",
+            "file": "jedi360-v2-elara-trio-a-full-1x.png",
+            "bodyFile": "jedi360-v2-elara-trio-a-body-1x.png",
+            "entryFile": "jedi360-v2-elara-trio-a-entry-1x.png"
           },
           {
-            "id": "trio-b",
-            "file": "combat-20261018-trio-b-full.png",
-            "bodyFile": "combat-20261018-trio-b-body.png",
-            "entryFile": "combat-20261018-trio-b-entry.png"
+            "id": "elara-trio-b",
+            "file": "jedi360-v2-elara-trio-b-full-1x.png",
+            "bodyFile": "jedi360-v2-elara-trio-b-body-1x.png",
+            "entryFile": "jedi360-v2-elara-trio-b-entry-1x.png"
           },
           {
-            "id": "trio-c",
-            "file": "combat-20261018-trio-c-full.png",
-            "bodyFile": "combat-20261018-trio-c-body.png",
-            "entryFile": "combat-20261018-trio-c-entry.png"
+            "id": "elara-trio-c",
+            "file": "jedi360-v2-elara-trio-c-full-1x.png",
+            "bodyFile": "jedi360-v2-elara-trio-c-body-1x.png",
+            "entryFile": "jedi360-v2-elara-trio-c-entry-1x.png"
+          }
+        ]
+      },
+      "retina": {
+        "scale": 2,
+        "file": [
+          "jedi360-v2-elara-trio-a-full-2x-s1.png",
+          "jedi360-v2-elara-trio-a-full-2x-s2.png"
+        ],
+        "variants": [
+          {
+            "id": "elara-trio-a",
+            "file": [
+              "jedi360-v2-elara-trio-a-full-2x-s1.png",
+              "jedi360-v2-elara-trio-a-full-2x-s2.png"
+            ],
+            "bodyFile": [
+              "jedi360-v2-elara-trio-a-body-2x-s1.png",
+              "jedi360-v2-elara-trio-a-body-2x-s2.png"
+            ],
+            "entryFile": [
+              "jedi360-v2-elara-trio-a-entry-2x-s1.png",
+              "jedi360-v2-elara-trio-a-entry-2x-s2.png"
+            ]
+          },
+          {
+            "id": "elara-trio-b",
+            "file": [
+              "jedi360-v2-elara-trio-b-full-2x-s1.png",
+              "jedi360-v2-elara-trio-b-full-2x-s2.png"
+            ],
+            "bodyFile": [
+              "jedi360-v2-elara-trio-b-body-2x-s1.png",
+              "jedi360-v2-elara-trio-b-body-2x-s2.png"
+            ],
+            "entryFile": [
+              "jedi360-v2-elara-trio-b-entry-2x-s1.png",
+              "jedi360-v2-elara-trio-b-entry-2x-s2.png"
+            ]
+          },
+          {
+            "id": "elara-trio-c",
+            "file": [
+              "jedi360-v2-elara-trio-c-full-2x-s1.png",
+              "jedi360-v2-elara-trio-c-full-2x-s2.png"
+            ],
+            "bodyFile": [
+              "jedi360-v2-elara-trio-c-body-2x-s1.png",
+              "jedi360-v2-elara-trio-c-body-2x-s2.png"
+            ],
+            "entryFile": [
+              "jedi360-v2-elara-trio-c-entry-2x-s1.png",
+              "jedi360-v2-elara-trio-c-entry-2x-s2.png"
+            ]
           }
         ]
       }

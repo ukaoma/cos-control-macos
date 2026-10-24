@@ -9,30 +9,85 @@
       "frames": 1
     },
     "duel": {
-      "file": "combat-20261018-duel-a-full.png",
-      "frames": 66,
-      "interval": 0.06,
+      "file": "jedi360-v2-rowan-duel-a-full-1x.png",
+      "frames": 54,
+      "interval": 0.065,
+      "renderScale": 1,
       "rotation": {
         "version": 1,
-        "handoffFrame": 49,
+        "handoffFrame": 35,
         "variants": [
           {
-            "id": "duel-a",
-            "file": "combat-20261018-duel-a-full.png",
-            "bodyFile": "combat-20261018-duel-a-body.png",
-            "entryFile": "combat-20261018-duel-a-entry.png"
+            "id": "rowan-duel-a",
+            "file": "jedi360-v2-rowan-duel-a-full-1x.png",
+            "bodyFile": "jedi360-v2-rowan-duel-a-body-1x.png",
+            "entryFile": "jedi360-v2-rowan-duel-a-entry-1x.png"
           },
           {
-            "id": "duel-b",
-            "file": "combat-20261018-duel-b-full.png",
-            "bodyFile": "combat-20261018-duel-b-body.png",
-            "entryFile": "combat-20261018-duel-b-entry.png"
+            "id": "rowan-duel-b",
+            "file": "jedi360-v2-rowan-duel-b-full-1x.png",
+            "bodyFile": "jedi360-v2-rowan-duel-b-body-1x.png",
+            "entryFile": "jedi360-v2-rowan-duel-b-entry-1x.png"
           },
           {
-            "id": "duel-c",
-            "file": "combat-20261018-duel-c-full.png",
-            "bodyFile": "combat-20261018-duel-c-body.png",
-            "entryFile": "combat-20261018-duel-c-entry.png"
+            "id": "rowan-duel-c",
+            "file": "jedi360-v2-rowan-duel-c-full-1x.png",
+            "bodyFile": "jedi360-v2-rowan-duel-c-body-1x.png",
+            "entryFile": "jedi360-v2-rowan-duel-c-entry-1x.png"
+          }
+        ]
+      },
+      "retina": {
+        "scale": 2,
+        "file": [
+          "jedi360-v2-rowan-duel-a-full-2x-s1.png",
+          "jedi360-v2-rowan-duel-a-full-2x-s2.png"
+        ],
+        "variants": [
+          {
+            "id": "rowan-duel-a",
+            "file": [
+              "jedi360-v2-rowan-duel-a-full-2x-s1.png",
+              "jedi360-v2-rowan-duel-a-full-2x-s2.png"
+            ],
+            "bodyFile": [
+              "jedi360-v2-rowan-duel-a-body-2x-s1.png",
+              "jedi360-v2-rowan-duel-a-body-2x-s2.png"
+            ],
+            "entryFile": [
+              "jedi360-v2-rowan-duel-a-entry-2x-s1.png",
+              "jedi360-v2-rowan-duel-a-entry-2x-s2.png"
+            ]
+          },
+          {
+            "id": "rowan-duel-b",
+            "file": [
+              "jedi360-v2-rowan-duel-b-full-2x-s1.png",
+              "jedi360-v2-rowan-duel-b-full-2x-s2.png"
+            ],
+            "bodyFile": [
+              "jedi360-v2-rowan-duel-b-body-2x-s1.png",
+              "jedi360-v2-rowan-duel-b-body-2x-s2.png"
+            ],
+            "entryFile": [
+              "jedi360-v2-rowan-duel-b-entry-2x-s1.png",
+              "jedi360-v2-rowan-duel-b-entry-2x-s2.png"
+            ]
+          },
+          {
+            "id": "rowan-duel-c",
+            "file": [
+              "jedi360-v2-rowan-duel-c-full-2x-s1.png",
+              "jedi360-v2-rowan-duel-c-full-2x-s2.png"
+            ],
+            "bodyFile": [
+              "jedi360-v2-rowan-duel-c-body-2x-s1.png",
+              "jedi360-v2-rowan-duel-c-body-2x-s2.png"
+            ],
+            "entryFile": [
+              "jedi360-v2-rowan-duel-c-entry-2x-s1.png",
+              "jedi360-v2-rowan-duel-c-entry-2x-s2.png"
+            ]
           }
         ]
       }
@@ -54,59 +109,179 @@
       "renderScale": 1
     },
     "swarm": {
-      "file": "combat-20261018-swarm-a-full.png",
-      "frames": 88,
-      "interval": 0.06,
+      "file": "jedi360-v2-rowan-swarm-a-full-1x.png",
+      "frames": 85,
+      "interval": 0.065,
+      "renderScale": 1,
       "rotation": {
         "version": 1,
-        "handoffFrame": 71,
+        "handoffFrame": 66,
         "variants": [
           {
-            "id": "swarm-a",
-            "file": "combat-20261018-swarm-a-full.png",
-            "bodyFile": "combat-20261018-swarm-a-body.png",
-            "entryFile": "combat-20261018-swarm-a-entry.png"
+            "id": "rowan-swarm-a",
+            "file": "jedi360-v2-rowan-swarm-a-full-1x.png",
+            "bodyFile": "jedi360-v2-rowan-swarm-a-body-1x.png",
+            "entryFile": "jedi360-v2-rowan-swarm-a-entry-1x.png"
           },
           {
-            "id": "swarm-b",
-            "file": "combat-20261018-swarm-b-full.png",
-            "bodyFile": "combat-20261018-swarm-b-body.png",
-            "entryFile": "combat-20261018-swarm-b-entry.png"
+            "id": "rowan-swarm-b",
+            "file": "jedi360-v2-rowan-swarm-b-full-1x.png",
+            "bodyFile": "jedi360-v2-rowan-swarm-b-body-1x.png",
+            "entryFile": "jedi360-v2-rowan-swarm-b-entry-1x.png"
           },
           {
-            "id": "swarm-c",
-            "file": "combat-20261018-swarm-c-full.png",
-            "bodyFile": "combat-20261018-swarm-c-body.png",
-            "entryFile": "combat-20261018-swarm-c-entry.png"
+            "id": "rowan-swarm-c",
+            "file": "jedi360-v2-rowan-swarm-c-full-1x.png",
+            "bodyFile": "jedi360-v2-rowan-swarm-c-body-1x.png",
+            "entryFile": "jedi360-v2-rowan-swarm-c-entry-1x.png"
+          }
+        ]
+      },
+      "retina": {
+        "scale": 2,
+        "file": [
+          "jedi360-v2-rowan-swarm-a-full-2x-s1.png",
+          "jedi360-v2-rowan-swarm-a-full-2x-s2.png",
+          "jedi360-v2-rowan-swarm-a-full-2x-s3.png"
+        ],
+        "variants": [
+          {
+            "id": "rowan-swarm-a",
+            "file": [
+              "jedi360-v2-rowan-swarm-a-full-2x-s1.png",
+              "jedi360-v2-rowan-swarm-a-full-2x-s2.png",
+              "jedi360-v2-rowan-swarm-a-full-2x-s3.png"
+            ],
+            "bodyFile": [
+              "jedi360-v2-rowan-swarm-a-body-2x-s1.png",
+              "jedi360-v2-rowan-swarm-a-body-2x-s2.png",
+              "jedi360-v2-rowan-swarm-a-body-2x-s3.png"
+            ],
+            "entryFile": [
+              "jedi360-v2-rowan-swarm-a-entry-2x-s1.png",
+              "jedi360-v2-rowan-swarm-a-entry-2x-s2.png",
+              "jedi360-v2-rowan-swarm-a-entry-2x-s3.png"
+            ]
+          },
+          {
+            "id": "rowan-swarm-b",
+            "file": [
+              "jedi360-v2-rowan-swarm-b-full-2x-s1.png",
+              "jedi360-v2-rowan-swarm-b-full-2x-s2.png",
+              "jedi360-v2-rowan-swarm-b-full-2x-s3.png"
+            ],
+            "bodyFile": [
+              "jedi360-v2-rowan-swarm-b-body-2x-s1.png",
+              "jedi360-v2-rowan-swarm-b-body-2x-s2.png",
+              "jedi360-v2-rowan-swarm-b-body-2x-s3.png"
+            ],
+            "entryFile": [
+              "jedi360-v2-rowan-swarm-b-entry-2x-s1.png",
+              "jedi360-v2-rowan-swarm-b-entry-2x-s2.png",
+              "jedi360-v2-rowan-swarm-b-entry-2x-s3.png"
+            ]
+          },
+          {
+            "id": "rowan-swarm-c",
+            "file": [
+              "jedi360-v2-rowan-swarm-c-full-2x-s1.png",
+              "jedi360-v2-rowan-swarm-c-full-2x-s2.png",
+              "jedi360-v2-rowan-swarm-c-full-2x-s3.png"
+            ],
+            "bodyFile": [
+              "jedi360-v2-rowan-swarm-c-body-2x-s1.png",
+              "jedi360-v2-rowan-swarm-c-body-2x-s2.png",
+              "jedi360-v2-rowan-swarm-c-body-2x-s3.png"
+            ],
+            "entryFile": [
+              "jedi360-v2-rowan-swarm-c-entry-2x-s1.png",
+              "jedi360-v2-rowan-swarm-c-entry-2x-s2.png",
+              "jedi360-v2-rowan-swarm-c-entry-2x-s3.png"
+            ]
           }
         ]
       }
     },
     "trio": {
-      "file": "combat-20261018-trio-a-full.png",
-      "frames": 82,
-      "interval": 0.06,
+      "file": "jedi360-v2-rowan-trio-a-full-1x.png",
+      "frames": 63,
+      "interval": 0.065,
+      "renderScale": 1,
       "rotation": {
         "version": 1,
-        "handoffFrame": 65,
+        "handoffFrame": 44,
         "variants": [
           {
-            "id": "trio-a",
-            "file": "combat-20261018-trio-a-full.png",
-            "bodyFile": "combat-20261018-trio-a-body.png",
-            "entryFile": "combat-20261018-trio-a-entry.png"
+            "id": "rowan-trio-a",
+            "file": "jedi360-v2-rowan-trio-a-full-1x.png",
+            "bodyFile": "jedi360-v2-rowan-trio-a-body-1x.png",
+            "entryFile": "jedi360-v2-rowan-trio-a-entry-1x.png"
           },
           {
-            "id": "trio-b",
-            "file": "combat-20261018-trio-b-full.png",
-            "bodyFile": "combat-20261018-trio-b-body.png",
-            "entryFile": "combat-20261018-trio-b-entry.png"
+            "id": "rowan-trio-b",
+            "file": "jedi360-v2-rowan-trio-b-full-1x.png",
+            "bodyFile": "jedi360-v2-rowan-trio-b-body-1x.png",
+            "entryFile": "jedi360-v2-rowan-trio-b-entry-1x.png"
           },
           {
-            "id": "trio-c",
-            "file": "combat-20261018-trio-c-full.png",
-            "bodyFile": "combat-20261018-trio-c-body.png",
-            "entryFile": "combat-20261018-trio-c-entry.png"
+            "id": "rowan-trio-c",
+            "file": "jedi360-v2-rowan-trio-c-full-1x.png",
+            "bodyFile": "jedi360-v2-rowan-trio-c-body-1x.png",
+            "entryFile": "jedi360-v2-rowan-trio-c-entry-1x.png"
+          }
+        ]
+      },
+      "retina": {
+        "scale": 2,
+        "file": [
+          "jedi360-v2-rowan-trio-a-full-2x-s1.png",
+          "jedi360-v2-rowan-trio-a-full-2x-s2.png"
+        ],
+        "variants": [
+          {
+            "id": "rowan-trio-a",
+            "file": [
+              "jedi360-v2-rowan-trio-a-full-2x-s1.png",
+              "jedi360-v2-rowan-trio-a-full-2x-s2.png"
+            ],
+            "bodyFile": [
+              "jedi360-v2-rowan-trio-a-body-2x-s1.png",
+              "jedi360-v2-rowan-trio-a-body-2x-s2.png"
+            ],
+            "entryFile": [
+              "jedi360-v2-rowan-trio-a-entry-2x-s1.png",
+              "jedi360-v2-rowan-trio-a-entry-2x-s2.png"
+            ]
+          },
+          {
+            "id": "rowan-trio-b",
+            "file": [
+              "jedi360-v2-rowan-trio-b-full-2x-s1.png",
+              "jedi360-v2-rowan-trio-b-full-2x-s2.png"
+            ],
+            "bodyFile": [
+              "jedi360-v2-rowan-trio-b-body-2x-s1.png",
+              "jedi360-v2-rowan-trio-b-body-2x-s2.png"
+            ],
+            "entryFile": [
+              "jedi360-v2-rowan-trio-b-entry-2x-s1.png",
+              "jedi360-v2-rowan-trio-b-entry-2x-s2.png"
+            ]
+          },
+          {
+            "id": "rowan-trio-c",
+            "file": [
+              "jedi360-v2-rowan-trio-c-full-2x-s1.png",
+              "jedi360-v2-rowan-trio-c-full-2x-s2.png"
+            ],
+            "bodyFile": [
+              "jedi360-v2-rowan-trio-c-body-2x-s1.png",
+              "jedi360-v2-rowan-trio-c-body-2x-s2.png"
+            ],
+            "entryFile": [
+              "jedi360-v2-rowan-trio-c-entry-2x-s1.png",
+              "jedi360-v2-rowan-trio-c-entry-2x-s2.png"
+            ]
           }
         ]
       }

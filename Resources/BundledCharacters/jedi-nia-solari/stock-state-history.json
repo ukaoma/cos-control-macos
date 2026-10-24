@@ -311,6 +311,135 @@
           }
         }
       }
+    },
+    {
+      "version": "combat-polish-0.5.324-0.5.340",
+      "state": {
+        "poses": {
+          "attention": {
+            "file": "combat-20261018-session-pet-idle.png",
+            "frames": 1
+          },
+          "done": {
+            "file": "combat-20261018-session-pet-idle.png",
+            "frames": 1
+          },
+          "duel": {
+            "file": "combat-20261018-duel-a-full.png",
+            "frames": 60,
+            "interval": 0.05,
+            "rotation": {
+              "version": 1,
+              "handoffFrame": 43,
+              "variants": [
+                {
+                  "id": "duel-a",
+                  "file": "combat-20261018-duel-a-full.png",
+                  "bodyFile": "combat-20261018-duel-a-body.png",
+                  "entryFile": "combat-20261018-duel-a-entry.png"
+                },
+                {
+                  "id": "duel-b",
+                  "file": "combat-20261018-duel-b-full.png",
+                  "bodyFile": "combat-20261018-duel-b-body.png",
+                  "entryFile": "combat-20261018-duel-b-entry.png"
+                },
+                {
+                  "id": "duel-c",
+                  "file": "combat-20261018-duel-c-full.png",
+                  "bodyFile": "combat-20261018-duel-c-body.png",
+                  "entryFile": "combat-20261018-duel-c-entry.png"
+                }
+              ]
+            }
+          },
+          "error": {
+            "file": "combat-20261018-session-pet-idle.png",
+            "frames": 1
+          },
+          "idle": {
+            "file": "combat-20261018-session-pet-idle-v2.png",
+            "frames": 8,
+            "interval": 0.24,
+            "renderScale": 1
+          },
+          "patrol": {
+            "file": "combat-20261018-session-pet-patrol-v3.png",
+            "frames": 8,
+            "interval": 0.14,
+            "renderScale": 1
+          },
+          "swarm": {
+            "file": "combat-20261018-swarm-a-full.png",
+            "frames": 82,
+            "interval": 0.05,
+            "rotation": {
+              "version": 1,
+              "handoffFrame": 65,
+              "variants": [
+                {
+                  "id": "swarm-a",
+                  "file": "combat-20261018-swarm-a-full.png",
+                  "bodyFile": "combat-20261018-swarm-a-body.png",
+                  "entryFile": "combat-20261018-swarm-a-entry.png"
+                },
+                {
+                  "id": "swarm-b",
+                  "file": "combat-20261018-swarm-b-full.png",
+                  "bodyFile": "combat-20261018-swarm-b-body.png",
+                  "entryFile": "combat-20261018-swarm-b-entry.png"
+                },
+                {
+                  "id": "swarm-c",
+                  "file": "combat-20261018-swarm-c-full.png",
+                  "bodyFile": "combat-20261018-swarm-c-body.png",
+                  "entryFile": "combat-20261018-swarm-c-entry.png"
+                }
+              ]
+            }
+          },
+          "trio": {
+            "file": "combat-20261018-trio-a-full.png",
+            "frames": 78,
+            "interval": 0.05,
+            "rotation": {
+              "version": 1,
+              "handoffFrame": 61,
+              "variants": [
+                {
+                  "id": "trio-a",
+                  "file": "combat-20261018-trio-a-full.png",
+                  "bodyFile": "combat-20261018-trio-a-body.png",
+                  "entryFile": "combat-20261018-trio-a-entry.png"
+                },
+                {
+                  "id": "trio-b",
+                  "file": "combat-20261018-trio-b-full.png",
+                  "bodyFile": "combat-20261018-trio-b-body.png",
+                  "entryFile": "combat-20261018-trio-b-entry.png"
+                },
+                {
+                  "id": "trio-c",
+                  "file": "combat-20261018-trio-c-full.png",
+                  "bodyFile": "combat-20261018-trio-c-body.png",
+                  "entryFile": "combat-20261018-trio-c-entry.png"
+                }
+              ]
+            }
+          },
+          "waiting": {
+            "file": "combat-20261018-session-pet-waiting-v3.png",
+            "frames": 8,
+            "interval": 0.24,
+            "renderScale": 1
+          },
+          "working": {
+            "file": "combat-20261018-working-a-full.png",
+            "frames": 28,
+            "interval": 0.08
+          }
+        }
+      }
     }
   ]
 }

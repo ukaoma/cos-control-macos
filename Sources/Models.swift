@@ -9513,7 +9513,20 @@ enum PetSpriteStore {
                   let oldPoses = state["poses"] as? [String: [String: Any]]
             else { continue }
 
-            let oldFiles = Set(oldPoses.values.compactMap { $0["file"] as? String })
+            // Every referenced layer participates in stock recognition. A custom
+            // rotation or Retina image must not be overwritten just because the
+            // first full strip still matches the shipped pack.
+            func referencedPNGs(_ value: Any) -> Set<String> {
+                if let object = value as? [String: Any] {
+                    return object.values.reduce(into: Set<String>()) { $0.formUnion(referencedPNGs($1)) }
+                }
+                if let list = value as? [Any] {
+                    return list.reduce(into: Set<String>()) { $0.formUnion(referencedPNGs($1)) }
+                }
+                if let file = value as? String, file.hasSuffix(".png") { return [file] }
+                return []
+            }
+            let oldFiles = referencedPNGs(oldPoses)
             guard oldFiles.count > 0,
                   oldFiles.allSatisfy({ file in
                       guard file == URL(fileURLWithPath: file).lastPathComponent,
@@ -9573,6 +9586,33 @@ enum PetSpriteStore {
                     for file in [variant.file, variant.bodyFile, variant.entryFile] {
                         guard file == URL(fileURLWithPath: file).lastPathComponent,
                               let data = try? Data(contentsOf: source.appendingPathComponent(file)),
+                              !oldFiles.contains(file) || (try? Data(contentsOf: directory.appendingPathComponent(file))) == data
+                        else { return .failed }
+                        replacements[file] = data
+                    }
+                }
+            }
+
+            // Retina is part of the transaction, not a best-effort fallback.
+            // Validate segmented cell counts, dimensions and cast identity before
+            // writing anything; the state map is still the final atomic write.
+            for (poseName, row) in sourceRows {
+                guard let retinaJSON = row["retina"] else { continue }
+                guard let pose = PetSpritePose(rawValue: poseName), let record = bundled[pose],
+                      let retina = PetRetinaRow(retinaJSON),
+                      let data = replacements[record.file],
+                      let raster = NSImage(data: data).flatMap(PetSpriteStrip.raster)
+                else { return .failed }
+                let cell = CGSize(width: raster.width / record.frames, height: raster.height)
+                if let rotation = rotations[pose],
+                   rotation.manifest.variants.map(\.id) != retina.variants.map(\.id) { return .failed }
+                for files in [retina.file] + retina.variants.flatMap({ [$0.file, $0.bodyFile, $0.entryFile] }) {
+                    guard files.allSatisfy({ $0 == URL(fileURLWithPath: $0).lastPathComponent }),
+                          PetSpriteStrip.retinaCells(files, frames: record.frames, cell: cell, scale: retina.scale,
+                                                    in: source, slicer: { _, count in Array(repeating: NSImage(), count: count) }) != nil
+                    else { return .failed }
+                    for file in files {
+                        guard let data = try? Data(contentsOf: source.appendingPathComponent(file)),
                               !oldFiles.contains(file) || (try? Data(contentsOf: directory.appendingPathComponent(file))) == data
                         else { return .failed }
                         replacements[file] = data

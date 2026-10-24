@@ -2134,8 +2134,8 @@ struct ModelsContract {
             ) == .refreshed(id), "\(id) must upgrade from retained four-frame art")
             let upgraded = PetSpriteStore.loadStateMap(in: legacyDest)
             let upgradedIntervals = PetSpriteStore.loadFrameIntervals(in: legacyDest)
-            let approvedCounts = id == "jedi-nia-solari" ? [28, 60, 78, 82]
-                : (id == "jedi-elara-vale" ? [67, 68, 84, 90] : [56, 66, 82, 88])
+            let approvedCounts = id == "jedi-nia-solari" ? [28, 52, 59, 77]
+                : (id == "jedi-elara-vale" ? [67, 51, 59, 77] : [56, 54, 63, 85])
             for (pose, count) in zip([PetSpritePose.working, .duel, .trio, .swarm], approvedCounts) {
                 precondition(upgraded[pose]?.frames == count,
                              "\(id) did not receive its approved story count")
@@ -2144,7 +2144,7 @@ struct ModelsContract {
                             && upgraded[.idle]?.frames == 8,
                          "\(id) migration must land the authored idle")
             let expectedWorkingInterval = id == "jedi-nia-solari" ? 0.08 : 0.06
-            let expectedSwarmInterval = id == "jedi-nia-solari" ? 0.05 : 0.06
+            let expectedSwarmInterval = id == "jedi-nia-solari" ? 0.055 : (id == "jedi-rowan-vale" ? 0.065 : 0.06)
             precondition(abs((upgradedIntervals[.working] ?? 0) - expectedWorkingInterval) < 0.000001
                             && abs((upgradedIntervals[.swarm] ?? 0) - expectedSwarmInterval) < 0.000001,
                          "\(id) did not preserve its authored story cadence")

@@ -253,6 +253,10 @@ zsh "$ROOT/Tests/run-transcription-settings.sh"
   "$ROOT/Sources/Models.swift" "$ROOT/Tests/JediUpgradeContract.swift" \
   -framework AppKit -o "$TMP/jedi-upgrade-contract"
 "$TMP/jedi-upgrade-contract" "$ROOT"
+/usr/bin/python3 "$ROOT/Tests/kit-compile.py" "$ROOT/Tests/compile-guard.sh" swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete \
+  "$ROOT/Sources/Models.swift" "$ROOT/Tests/JediV2MigrationCheck.swift" \
+  -framework AppKit -o "$TMP/jedi-v2-migration"
+"$TMP/jedi-v2-migration" "$ROOT"
 zsh "$ROOT/Tests/run-pet-rotation.sh"
 /usr/bin/python3 "$ROOT/Tests/kit-compile.py" "$ROOT/Tests/compile-guard.sh" swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \
   "$ROOT/Sources/Models.swift" "$ROOT/Tests/JediGalleryContract.swift" \
@@ -3197,11 +3201,11 @@ for bundled_id in bundled_ids:
     # 0.5.324 approved combat counts and exact artifact hashes; older files remain rollback evidence.
     prefix = "combat-20261018-"
     stories = {
-        "jedi-nia-solari": {"idle": (8,348,.24), "working": (28,440,.08), "duel": (60,440,.05), "trio": (78,440,.05), "swarm": (82,440,.05)},
-        "jedi-elara-vale": {"idle": (8,256,.24), "working": (67,440,.06), "duel": (68,440,.06), "trio": (84,440,.06), "swarm": (90,440,.06)},
-        "jedi-rowan-vale": {"idle": (8,320,.24), "working": (56,440,.06), "duel": (66,440,.06), "trio": (82,440,.06), "swarm": (88,440,.06)},
+        "jedi-nia-solari": {"idle": (8,348,.24), "working": (28,440,.08), "duel": (52,440,.055), "trio": (59,440,.055), "swarm": (77,440,.055)},
+        "jedi-elara-vale": {"idle": (8,256,.24), "working": (67,440,.06), "duel": (51,440,.06), "trio": (59,440,.06), "swarm": (77,440,.06)},
+        "jedi-rowan-vale": {"idle": (8,320,.24), "working": (56,440,.06), "duel": (54,440,.065), "trio": (63,440,.065), "swarm": (85,440,.065)},
     }[bundled_id]
-    approved = json.loads((pack / "approved-combat-20261018.json").read_text())["files"]
+    approved = json.loads((pack / "approved-jedi360-v2.json").read_text())["files"]
     referenced = set()
     for pose, row in poses.items():
         referenced.add(row["file"])
@@ -3217,7 +3221,9 @@ for bundled_id in bundled_ids:
             suffix = "session-pet-idle-v2.png" if pose == "idle" else (
                 ("working-a-full.png" if bundled_id == "jedi-nia-solari" else "working-motion-full.png")
                 if pose == "working" else f"{pose}-a-full.png")
-            need(row.get("file") == prefix + suffix and row.get("frames") == expected_frames
+            expected_file = (f"jedi360-v2-{bundled_id.split('-')[1]}-{pose}-a-full-1x.png"
+                             if pose in ("duel", "trio", "swarm") else prefix + suffix)
+            need(row.get("file") == expected_file and row.get("frames") == expected_frames
                  and abs(row.get("interval", 0) - expected_interval) < 0.000001,
                  f"{bundled_id}/{pose} must map to its approved story, got {row}")
             if pose in ("duel", "trio", "swarm"):
@@ -3230,6 +3236,11 @@ for bundled_id in bundled_ids:
         else:
             need(row.get("file") == prefix + "session-pet-idle.png" and row.get("frames") == 1,
                  f"{bundled_id}/{pose} is a still state and must map to the one canonical frame")
+    for row in poses.values():
+        retina = row.get("retina", {})
+        referenced.update(retina.get("file", []))
+        for variant in retina.get("variants", []):
+            for key in ("file", "bodyFile", "entryFile"): referenced.update(variant[key])
     need(referenced == set(approved), f"{bundled_id}: approved files differ from the runtime manifest")
     for file in referenced:
         need((pack / file).is_file() and hashlib.sha256((pack / file).read_bytes()).hexdigest() == approved[file],
@@ -3266,8 +3277,8 @@ for bundled_id in bundled_ids:
 # character is chosen, so those users are already at the current value.
 gen = re.search(r"petDefaultArtGeneration = (\d+)", model)
 need(gen is not None, "the art-generation constant is gone")
-need(int(gen.group(1)) >= 17,
-     "walking/meditation loops require art generation17 for existing users")
+need(int(gen.group(1)) >= 24,
+     "Jedi 360 V2 requires art generation24 for existing users")
 need("refreshRecognizedBundledCharacter(" in model,
      "launch must call the retained-stock Jedi migration")
 retained_fn = models_src[models_src.index("static func refreshRecognizedBundledCharacter("):]

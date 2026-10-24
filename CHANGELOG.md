@@ -1,3 +1,13 @@
+## 0.5.341 (build 395), Jedi 360 V2
+
+Includes all 0.5.340 changes below and pairs with server 6.90.0.
+
+- Nia, Elara and Rowan: approved V2 Session 2/3 choreography, Session 4 full-turn attacks, three shuffled opponent casts per combat state, complete entrance handoffs and corrected Nia boots/guard.
+- Baked saber cores, projectile paths and entrance feathering; 1x fallback plus segmented 2x Retina layers. Existing idle, patrol, waiting, Session 1 and signal poses retained.
+- Generation 24 upgrades exact retained stock Jedi packs, matching every old referenced PNG (including alternate and Retina layers). Custom packs and Windu remain untouched.
+- Migration validates and copies every Retina segment before atomically activating the new map. Incomplete layers fail closed and remain retryable.
+- Versioned old art stays bundled for recognition and rollback. Local V2 candidate and native 1800-loop evidence retained separately; public artifact requires its own release gates.
+
 ## 0.5.340 (build 394), Mac recording voices: Voice 1, Voice 2 and Rename voice; Learn from my edits in Slack
 
 On top of 0.5.339 (build 393). Scope approved by Miles 09:35, 2026-10-23 ("Voice 1/2 + rename"), split out of 0.5.339 at
