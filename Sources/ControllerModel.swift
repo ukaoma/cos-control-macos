@@ -443,6 +443,8 @@ final class ControllerModel: ObservableObject {
     /// Which voice row has its naming field open. One at a time: two open fields
     /// invite naming the wrong row.
     @Published var namingVoice: String?
+    /// 0.5.340: the voice a saved Mac meeting's Rename voice asked to name, applied once its review loads.
+    var pendingNameVoice: String?
 
     // ── Add a voice ────────────────────────────────────────────────────────
     // Held unrecognized audio, and the in-flight state of naming one of them.
@@ -9498,8 +9500,9 @@ final class ControllerModel: ObservableObject {
         openSpeakerReview(sessionId: meeting.sessionId)
     }
 
-    func openSpeakerReview(sessionId: String, recordId: String? = nil) {
+    func openSpeakerReview(sessionId: String, recordId: String? = nil, nameVoice: String? = nil) {
         reviewSelectionGeneration &+= 1
+        pendingNameVoice = nameVoice
         selectedReviewRecordID = recordId
         openContent = nil
         openMeetingNote = nil
@@ -9546,6 +9549,9 @@ final class ControllerModel: ObservableObject {
                 reviewError = "This review does not match the selected meeting. Reopen the saved meeting."; return
             }
             openReview = review
+            // 0.5.340 Rename voice: open straight onto naming the voice the meeting's Rename voice picked.
+            if let wanted = pendingNameVoice, review.voices.contains(where: { $0.label == wanted && $0.canRename }) { namingVoice = wanted }
+            pendingNameVoice = nil
             if voiceProfiles.isEmpty { await loadVoiceProfiles() }
             guard !Task.isCancelled, lastReviewSession == sessionId && reviewSelectionGeneration == generation else { return }
             await loadRetainedAudio(sessionId: sessionId)
@@ -9615,7 +9621,7 @@ final class ControllerModel: ObservableObject {
                 $0.recordVisit(
                     review.sessionId,
                     voices: review.voices.count,
-                    unattributedVoices: review.voices.filter(\.isNameAssignment).count
+                    unattributedVoices: review.unnamedVoiceCount
                 )
             }
         }
@@ -10202,7 +10208,11 @@ final class ControllerModel: ObservableObject {
         }
         let session = review.sessionId
         let generation = reviewSelectionGeneration
-        let createsProfile = !voiceProfiles.contains { $0.name.caseInsensitiveCompare(to) == .orderedSame }
+        // 0.5.340: a Mac recording renames in this meeting only. The global fold is a profile merge, and a Mac voice
+        // is never a profile.
+        let scope: CorrectionScope = review.isMacRecording ? .thisMeeting : scope
+        // 0.5.340: a Mac recording never makes a profile, so the card must never say it will.
+        let createsProfile = !review.isMacRecording && !voiceProfiles.contains { $0.name.caseInsensitiveCompare(to) == .orderedSame }
         mergeInFlight = true
         Task { [weak self] in
             guard let self else { return }
@@ -10431,7 +10441,8 @@ final class ControllerModel: ObservableObject {
                 } else if correction.isDeattribution {
                     notice = "Removed \(correction.from) from this meeting"
                 } else if correction.scope == .thisMeeting {
-                    let reason = (skipped?.isEmpty == false) ? " · profile not updated (\(skipped!))" : ""
+                    let reason = skipped == "mac_capture" ? " · text only, Mac recordings never train a voice profile"
+                        : (skipped?.isEmpty == false) ? " · profile not updated (\(skipped!))" : ""
                     notice = "\(correction.from) is now \(correction.to ?? "") in this meeting\(reason)"
                 } else {
                     notice = "Saved — \(correction.from) is now \(correction.to ?? "") everywhere"

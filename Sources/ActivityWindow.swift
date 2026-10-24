@@ -1965,6 +1965,7 @@ struct ActivityWindow: View {
 
     private var connectedMeetingDetailSurface: some View {
         MeetingLibraryDetailPane(model: model, onReviewVoices: openVoiceReviewFromLibrary,
+            onRenameVoice: { session, record, label in openVoiceReviewFromLibrary(session, record, nameVoice: label) },
             onOpenSource: openLibrarySource, onReviewFollowUp: meetingWorkReviewAction,
             onLinkTask: workConnectionsEnabled && !isolatedWorkPreview ? { meetingTaskCreate = false; meetingTaskLink = $0 } : nil,
             onCreateTask: workConnectionsEnabled && !isolatedWorkPreview ? { meetingTaskCreate = true; meetingTaskLink = $0 } : nil,
@@ -2895,10 +2896,14 @@ struct ActivityWindow: View {
     }
 
     private func openVoiceReviewFromLibrary(_ sessionId: String, _ recordId: String? = nil) {
+        openVoiceReviewFromLibrary(sessionId, recordId, nameVoice: nil)
+    }
+
+    private func openVoiceReviewFromLibrary(_ sessionId: String, _ recordId: String?, nameVoice: String?) {
         speakerSubview = .meetings
         selectedSpeakerSessionID = sessionId
         withOptionalAnimation { section = .speakers }
-        model.openSpeakerReview(sessionId: sessionId, recordId: recordId)
+        model.openSpeakerReview(sessionId: sessionId, recordId: recordId, nameVoice: nameVoice)
     }
 
     /// 0.5.259 (Miles, 2026-10-06: "We need the ability to get to a meeting from the speaker view."): the review's meeting
@@ -8083,10 +8088,13 @@ extension ActivityWindow {
                 input.groupStart[group.id] = ActivityHome.meetingDate(meeting)
             }
         }
+        var unnamed: [String: Int] = [:]
         input.meetingsToName = model.reviewableMeetings.filter { meeting in
             guard !grouped.contains(meeting.sessionId), case .needsNames(let n) = model.voiceTag(for: meeting) else { return false }
+            unnamed[meeting.sessionId] = n
             return n > 0
         }
+        input.meetingUnnamed = unnamed
         input.yourMove = model.workYourMoveAvailable ? model.workYourMove : nil
         input.memoriesToReview = model.status.learningToReview
         input.memoriesTotal = model.toReviewEvents.isEmpty ? nil : model.toReviewEvents.count

@@ -1,3 +1,45 @@
+## 0.5.340 (build 394), Mac recording voices: Voice 1, Voice 2 and Rename voice; Learn from my edits in Slack
+
+On top of 0.5.339 (build 393). Scope approved by Miles 09:35, 2026-10-23 ("Voice 1/2 + rename"), split out of 0.5.339 at
+10:06. Slack learning added at Miles's ask, 22:20. Pairs with COS server 6.90.0 for the voice labels; every other part
+works with 6.89.0.
+
+### Mac recording voices (server 6.90.0)
+
+- **Voice N shows as itself.** A saved Mac recording's `Voice 1`, `Voice 2` rows in Speakers read "Voice 1", not
+  "Unidentified voice", so two unnamed voices stay told apart (`ReviewVoice.displayName`, `MacVoiceLabel.isVoice`, the
+  server's exact `^Voice [1-9]\d?$`). `Ext` still reads "Unidentified voice".
+- **Rename voice** on a saved Mac meeting lists the `Voice N` labels its transcript turns carry, in order. Picking one
+  opens Speakers on that meeting with the voice already open for naming (`openSpeakerReview(nameVoice:)`), through the
+  existing per-meeting relabel. It shows only for a `mac_` session whose transcript has a Voice turn.
+- **Text only.** For a Mac recording the scope switch is replaced by "Mac recordings rename text only, in this meeting.
+  No voice profile is made or trained." The rename is always this meeting (never the global profile fold), the confirm
+  card never says it adds a profile, and the notice after it reads "text only, Mac recordings never train a voice
+  profile" when the server reports `mac_capture`. The review's "No one was identified" line explains a Mac recording
+  instead of blaming recovered audio.
+- **Counts never inflate for Ext.** Each `Voice N` is one voice to name; an `Ext` or `Unknown` bucket beside them is the
+  remainder of those voices, not one more (`MacVoiceLabel.unnamedCount`, used by the review header, the Speakers visit
+  and so Today). A meeting with no Voice label counts exactly as before. Today's "Name the voices in ..." row now reads
+  Speakers' count for a meeting the server list does not count (a saved Mac recording read "0 speakers").
+- A `Voice N` is never a person in Work's meeting people.
+
+### Learn from my edits in Slack
+
+- Slack (`com.tinyspeck.slackmacgap`) moves from measured to learning. Evidence, Miles's Mac,
+  `learn-canary.jsonl`: 3 Slack watches, all readable; one read 10 times with 8 edits inside the dictation, 0 rebinds,
+  0 reanchors, and stopped `cleared` when he sent it, the same pattern as Claude desktop.
+- Every guard is unchanged: the confidence rules, at most 2 pairs a dictation, the plain-English and link, email and
+  path blocks, Undo on the LEARNED pill, memory-only text. Cursor, ChatGPT and the Chrome and Comet rich editors stay
+  measured. Settings: "Works in native apps, Claude and Slack. Not available yet in Cursor, ChatGPT, or text boxes in
+  Chrome and Comet".
+
+### Tests
+
+- ModelsContract `checkMacVoiceLabels` (label shape, transcript voices, the count rule, the row, the review, the visit
+  tag, Work people, copy), ActivityTodayChecks (a Mac meeting is 2 voices to name, not 3), MacDictationChecks (Slack
+  learns, still skips secure fields and learning off; Cursor still measured; the Settings line), and
+  `Tests/mac-voice-pins.py` (13 call sites, each proven to fail when its line is deleted or commented out).
+
 ## 0.5.339 (build 393), One place for files in the live meeting, and a level strip for glasses meetings
 
 On top of 0.5.338 (build 392). Approved by Miles 09:08 (A) and 09:25 (B), 2026-10-23; split at 10:06 (Mac Voice N labels

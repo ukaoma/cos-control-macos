@@ -533,6 +533,8 @@ struct MeetingWorkConnections {
 struct MeetingLibraryDetailPane: View {
     @ObservedObject var model: ControllerModel
     var onReviewVoices: (String, String?) -> Void
+    /// 0.5.340: Rename voice on a saved Mac recording (session, record, the `Voice N` to name).
+    var onRenameVoice: ((String, String?, String) -> Void)? = nil
     var onOpenSource: (LibraryMeetingSource) -> Void = { _ in }
     var onReviewFollowUp: ((LibraryMeeting) -> Void)? = nil
     var onLinkTask: ((LibraryMeeting) -> Void)? = nil
@@ -687,6 +689,16 @@ struct MeetingLibraryDetailPane: View {
                             }
                         }
                         .buttonStyle(COSQuietButtonStyle(tone: isNew ? .featured : .standard))
+                        // 0.5.340: a saved Mac recording names its `Voice N` turns here, through the same
+                        // per-meeting relabel the review uses. Text only; see MacVoiceCopy.renameNote.
+                        let macVoices = MacVoiceLabel.isMacSession(row.sessionId) ? MacVoiceLabel.voices(inTranscript: detail.transcript) : []
+                        if let onRenameVoice, !macVoices.isEmpty {
+                            Menu(MacVoiceCopy.menuTitle) {
+                                ForEach(macVoices, id: \.self) { label in
+                                    Button(MacVoiceCopy.menuItem(label)) { onRenameVoice(row.sessionId, row.recordId, label) }
+                                }
+                            }.cosMenu()
+                        }
                         if row.g2SessionIds.count > 1 {
                             Menu("Other recordings") {
                                 ForEach(row.g2SessionIds.filter { $0 != row.sessionId }, id: \.self) { capture in

@@ -1806,8 +1806,13 @@ final class FakeDictationBoard: DictationPasteboardAccess {
                 EL.eligibility(mode: mode, secure: secure, terminal: terminal, electron: electron, chromium: chromium, setterWorked: setter, bundle: bundle)
             }
             expect(eligible338("com.anthropic.claudefordesktop") == .learn, "Claude desktop learns: its watches read the dictation back (canary 2026-10-22)")
-            expect(eligible338("com.tinyspeck.slackmacgap") == .probe && eligible338("com.todesktop.230313mzl4w4u92") == .probe,
-                   "Slack and Cursor are Electron with no canary: measured, never learned")
+            expect(eligible338("com.tinyspeck.slackmacgap") == .learn && EL.proven["com.tinyspeck.slackmacgap"] == "Slack"
+                   && !EL.notYet.contains(where: { $0.bundle == "com.tinyspeck.slackmacgap" }),
+                   "0.5.340: Slack learns: its watches read the dictation back and stopped cleared on send (canary 2026-10-23)")
+            expect(eligible338("com.tinyspeck.slackmacgap", secure: true) == .skip("secure") && eligible338("com.tinyspeck.slackmacgap", mode: .off) == .skip("off"),
+                   "0.5.340: Slack still never watches a password field or with learning off")
+            expect(eligible338("com.todesktop.230313mzl4w4u92") == .probe,
+                   "Cursor is Electron with no canary: measured, never learned")
             expect(eligible338("com.openai.codex", electron: false, chromium: false, setter: true) == .probe
                    && eligible338("com.openai.chat", electron: false, chromium: false, setter: true) == .probe,
                    "ChatGPT reads as native to the structure check but is Chromium: measured, never learned")
@@ -1820,9 +1825,9 @@ final class FakeDictationBoard: DictationPasteboardAccess {
                    && eligible338("com.anthropic.claudefordesktop", terminal: true) == .skip("terminal")
                    && eligible338("com.anthropic.claudefordesktop", mode: .off) == .skip("off"),
                    "a proven app still never watches a password field, a terminal, or with learning off")
-            expect(EL.notYetNames == ["Slack", "Cursor", "ChatGPT"], "Settings names each not-yet app once, in order")
-            expect(EL.settingNote.contains("Not available yet in Slack, Cursor, ChatGPT, or text boxes in Chrome and Comet")
-                   && EL.settingNote.contains("Works in native apps and Claude.") && !EL.settingNote.contains("\u{2014}") && !EL.settingNote.contains("\u{2192}"),
+            expect(EL.notYetNames == ["Cursor", "ChatGPT"], "Settings names each not-yet app once, in order")
+            expect(EL.settingNote.contains("Not available yet in Cursor, ChatGPT, or text boxes in Chrome and Comet")
+                   && EL.settingNote.contains("Works in native apps, Claude and Slack.") && !EL.settingNote.contains("\u{2014}") && !EL.settingNote.contains("\u{2192}"),
                    "the Settings line names where learning works and where it does not yet, from the same table, with no em dash or arrow")
             // Track the field, not the element.
             let watched = EL.FieldIdentity(pid: 42, role: "AXTextArea", identifier: nil, frame: CGRect(x: 100, y: 600, width: 500, height: 40))

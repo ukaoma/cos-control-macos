@@ -292,6 +292,19 @@ import Foundation
         let todayRows = TodayHome.things(today)
         check(todayRows.contains { $0.id == "voice:vt" } && !todayRows.contains { $0.id == "voice:vo" } && todayRows.contains { $0.kind == .heldVoices && $0.items == 1 },
               "an unnamed voice heard today stays its own row; an older one folds")
+        // 0.5.340: a saved Mac recording carries no server count; Speakers' visit says Voice 1 and Voice 2 need names, and
+        // the Ext remainder beside them is not a third (MacVoiceLabel.unnamedCount). Today reads that count.
+        var mac = needInputs(runningInputs()); mac.voiceGroups = []
+        let macMeeting = ReviewableMeeting(.object(["sessionId": .string("mac_0a1b2c3d-0000-4000-8000-000000000001"), "title": .string("Vendor call"),
+                                                    "date": .string("2026-10-21"), "time": .string("13:00")]))!
+        var memory = SpeakerListMemory()
+        memory.recordVisit(macMeeting.sessionId, voices: 3, unattributedVoices: MacVoiceLabel.unnamedCount(["Voice 1", "Voice 2", "Ext"]))
+        guard case .needsNames(let macCount) = memory.voiceTag(for: macMeeting) else { fatalError("the Mac meeting needs names") }
+        mac.meetingsToName = [macMeeting]; mac.meetingUnnamed = [macMeeting.sessionId: macCount]
+        let macRow = TodayHome.things(mac).first { $0.kind == .meetingVoices }
+        check(macRow?.why == "2 speakers have no name yet." && macRow?.items == 2, "0.5.340: a Mac recording's Voice 1 and Voice 2 are 2 voices to name, never 3 with Ext", macRow?.why ?? "none")
+        var macUnknown = mac; macUnknown.meetingUnnamed = [:]
+        check(TodayHome.things(macUnknown).first { $0.kind == .meetingVoices }?.why == "0 speakers have no name yet.", "without Speakers' count the row falls back to the server's, as before")
         let crowdFrame = TodayHome.compose(dayInputs(runningInputs(), crowd))
         check(crowdFrame.counts.voicesToName == 130 && crowdFrame.counts.needs == crowdRows.count, "Speakers still counts every voice; Today counts things", "\(String(describing: crowdFrame.counts.voicesToName))")
     }

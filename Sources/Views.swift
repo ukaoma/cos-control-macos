@@ -3462,11 +3462,19 @@ private struct VoiceRow: View {
                     // Scope, chosen BEFORE the name. Until 0.5.0 every rename was
                     // global, so this is the control that makes a correction mean
                     // "in this meeting" — Miles: "it should just be this call."
-                    COSViewSwitch("Correction scope", selection: $model.correctionScope,
-                                  options: CorrectionScope.allCases.map { COSViewOption($0, $0.label) })
-                    Text(model.correctionScope.detail)
-                        .font(.system(size: 10.5)).foregroundStyle(.tertiary)
-                        .fixedSize(horizontal: false, vertical: true)
+                    // 0.5.340: a Mac recording has no scope to choose. Its rename is
+                    // this meeting's text, and nothing reaches voice profiles.
+                    if model.openReview?.isMacRecording == true {
+                        Text(MacVoiceCopy.renameNote)
+                            .font(.system(size: 10.5)).foregroundStyle(.tertiary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    } else {
+                        COSViewSwitch("Correction scope", selection: $model.correctionScope,
+                                      options: CorrectionScope.allCases.map { COSViewOption($0, $0.label) })
+                        Text(model.correctionScope.detail)
+                            .font(.system(size: 10.5)).foregroundStyle(.tertiary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
 
                     ForEach(matches) { option in
                         Button {
@@ -3779,7 +3787,9 @@ struct SpeakerReviewPane: View {
                         if !review.attributed {
                             VStack(alignment: .leading, spacing: 6) {
                                 Text("No one was identified in this recording").font(.system(size: 13, weight: .semibold))
-                                Text("The audio was recovered after the session ended, so no voice matching ran while it played. The lines below are all that is left to go on.")
+                                // 0.5.340: a Mac recording never names anyone on purpose; its voices are told apart, not lost.
+                                Text(review.isMacRecording ? MacVoiceCopy.unattributedNote
+                                     : "The audio was recovered after the session ended, so no voice matching ran while it played. The lines below are all that is left to go on.")
                                     .font(.system(size: 11.5)).foregroundStyle(.secondary)
                                     .fixedSize(horizontal: false, vertical: true)
                             }
@@ -3898,6 +3908,11 @@ struct SpeakerReviewPane: View {
                     if correction.isNameAssignment && !correction.refused && correction.surfaces.sidecar > 0 {
                         Text("This voice was never matched to anyone, so nothing has established it is one person. "
                              + "Saving labels all \(correction.surfaces.sidecar) of its segments \(correction.to ?? "").")
+                            .font(.system(size: 10.5)).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    if model.openReview?.isMacRecording == true && !correction.refused && correction.to != nil {
+                        Text(MacVoiceCopy.renameNote)
                             .font(.system(size: 10.5)).foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }

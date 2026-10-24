@@ -2786,13 +2786,22 @@ enum DictationEditLearning {
 
     /// Apps whose watches proved real reads on Miles's Mac (log canary 2026-10-22: Claude desktop read the exact dictation
     /// back in 4 of 5 watches, and later reads matched the field). In this table an Electron or Chromium app learns.
-    static let proven: [String: String] = ["com.anthropic.claudefordesktop": "Claude"]
+    /// 0.5.340 Slack (Miles 2026-10-23 22:20): learn-canary.jsonl held 3 Slack watches, all readable; one read 10 times
+    /// with 8 edits inside the dictation, 0 rebinds, 0 reanchors, and stopped `cleared` when he sent it: Claude's pattern.
+    /// Every other guard is unchanged (confidence rules, 2 pairs a dictation, plain-English and link blocks, Undo).
+    static let proven: [String: String] = ["com.anthropic.claudefordesktop": "Claude", "com.tinyspeck.slackmacgap": "Slack"]
     /// Apps Miles dictates into that have no canary yet: watched, logged, never learned. ChatGPT is here because its
     /// Chromium engine ships "Codex (Renderer).app", which the structure check misses, so it would read as native.
     static let notYet: [(bundle: String, name: String)] = [
-        ("com.tinyspeck.slackmacgap", "Slack"), ("com.todesktop.230313mzl4w4u92", "Cursor"),
+        ("com.todesktop.230313mzl4w4u92", "Cursor"),
         ("com.openai.codex", "ChatGPT"), ("com.openai.chat", "ChatGPT"),
     ]
+    /// "Claude", "Claude and Slack", "A, B and C": the proven apps as Settings names them.
+    static var provenNames: String {
+        let names = proven.values.sorted()
+        guard names.count > 1 else { return names.first ?? "" }
+        return names.dropLast().joined(separator: ", ") + " and " + names.last!
+    }
     /// Settings names the apps where learning is not available yet, from the same table the rule reads.
     static var notYetNames: [String] {
         var seen: Set<String> = [], names: [String] = []
@@ -2801,8 +2810,8 @@ enum DictationEditLearning {
     }
     static var settingNote: String {
         "When you fix a word COS just typed, in that same field, COS learns it: until you leave the field or send the message, three minutes at most. "
-            + "It learns names and terms, never plain English words. Works in native apps and "
-            + proven.values.sorted().joined(separator: ", ")
+            + "It learns names and terms, never plain English words. Works in native apps, "
+            + provenNames
             + ". Not available yet in " + notYetNames.joined(separator: ", ")
             + ", or text boxes in Chrome and Comet: COS only measures there for now. Suggest only keeps them a week in Activity, Dictation for you to add. Never in terminals or password fields."
     }

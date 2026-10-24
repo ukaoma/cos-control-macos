@@ -4586,7 +4586,63 @@ struct ModelsContract {
                      "speakers miss note: with no day to read, nothing is claimed")
     }
 
+    /// 0.5.340 (server 6.90.0): a saved Mac recording's `Voice N` turns. Unnamed, told apart, never a profile, and the
+    /// Ext remainder beside them never counts as one more voice to name. Fictional names only.
+    private static func checkMacVoiceLabels() {
+        for label in ["Voice 1", "Voice 2", "Voice 10", "Voice 99"] { precondition(MacVoiceLabel.isVoice(label), "\(label) is a Mac voice label") }
+        for label in ["Voice 0", "Voice 01", "Voice 100", "voice 1", "Voice  1", "Voice 1 ", "Voiceover 1", "Voice", "Dana Reyes", "Ext", ""] {
+            precondition(!MacVoiceLabel.isVoice(label), "\(label) is not a Mac voice label")
+        }
+        let transcript = "[Voice 2]: First.\n[Ext]: Hm.\n[Voice 1]: Second.\n[Voice 2]: Third.\nVoice 3: not a turn\n[Voice 4] no colon\n[Dana Reyes]: Named."
+        precondition(MacVoiceLabel.voices(inTranscript: transcript) == ["Voice 2", "Voice 1"], "Rename voice lists each turn label once, in first-turn order")
+        precondition(MacVoiceLabel.voices(inTranscript: "[Ext]: only\n[Unknown]: x") == [], "an all-Ext Mac meeting offers no Rename voice")
+
+        // Counting: each Voice is one voice to name; Ext beside them is never one more; without Voices, as before.
+        precondition(MacVoiceLabel.unnamedCount(["Voice 1", "Voice 2", "Ext"]) == 2, "Voice N must never inflate voices to name for Ext")
+        precondition(MacVoiceLabel.unnamedCount(["Voice 1", "Ext", "Unknown"]) == 1)
+        precondition(MacVoiceLabel.unnamedCount(["Ext"]) == 1 && MacVoiceLabel.unnamedCount(["Ext", "Unidentified 2"]) == 2 && MacVoiceLabel.unnamedCount([]) == 0,
+                     "a meeting with no Voice label counts its placeholders exactly as before")
+
+        // The row: shown as itself while unnamed, nameable, an assignment, nothing to take back.
+        guard let row = voice(label: "Voice 2", reliability: "unattributed") else { preconditionFailure("voice row") }
+        precondition(row.displayName == "Voice 2", "a Mac Voice shows as itself, not as Unidentified voice")
+        precondition(row.canRename && row.isNameAssignment && !row.canDeattribute && !row.canConfirmCandidate)
+        precondition(voice(label: "Ext", reliability: "unattributed")?.displayName == "Unidentified voice", "Ext still reads as Unidentified voice")
+
+        // The review: a Mac session; its count follows the rule above.
+        func review(_ sessionId: String, _ labels: [String]) -> SpeakerReview? {
+            SpeakerReview(.object([
+                "sessionId": .string(sessionId), "title": .string("Vendor call"), "segments": .number(30), "attributed": .bool(false),
+                "durationMs": .number(1),
+                "voices": .array(labels.map { label in .object([
+                    "label": .string(label), "segments": .number(10), "reliability": .string("unattributed"),
+                    "nameAsserted": .bool(false), "isOwner": .bool(false), "phrases": .array([]),
+                ]) }),
+            ]))
+        }
+        guard let mac = review("mac_0a1b2c3d-0000-4000-8000-000000000001", ["Voice 1", "Voice 2", "Ext"]),
+              let glasses = review("meeting_glasses", ["Ext", "Unidentified 2"]) else { preconditionFailure("review parse") }
+        precondition(mac.isMacRecording && !glasses.isMacRecording)
+        precondition(mac.unnamedVoiceCount == 2, "a Mac review with two Voices and Ext needs two names")
+        precondition(glasses.unnamedVoiceCount == 2, "a glasses review counts as before")
+
+        // Needs names, from the visit the review records.
+        var memory = SpeakerListMemory()
+        memory.recordVisit(mac.sessionId, voices: mac.voices.count, unattributedVoices: mac.unnamedVoiceCount)
+        precondition(memory.voiceTag(sessionId: mac.sessionId) == .needsNames(2), "the meeting needs two names, not three")
+
+        // WorkMeetingPeople: a Voice label is a transcript label, never a person.
+        precondition(WorkMeetingPeople.isPlaceholder("voice 2") && WorkMeetingPeople.isPlaceholder("voice 12"), "a Voice label is not a person to link work to")
+        precondition(!WorkMeetingPeople.isPlaceholder("voiceover studio"))
+        // Copy: no em dash, no arrow.
+        for copy in [MacVoiceCopy.renameNote, MacVoiceCopy.menuTitle, MacVoiceCopy.menuItem("Voice 2"), MacVoiceCopy.unattributedNote] {
+            precondition(!copy.contains("\u{2014}") && !copy.contains("\u{2192}"), "Mac voice copy has no em dash or arrow")
+        }
+        precondition(MacVoiceCopy.renameNote.contains("text only") && MacVoiceCopy.renameNote.contains("No voice profile"))
+    }
+
     static func main() throws {
+        checkMacVoiceLabels()
         checkSpeakersMeetingLink()
         checkThreadBody()
         checkHotKeyCombo()

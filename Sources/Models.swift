@@ -2459,7 +2459,7 @@ struct WorkMeetingPeople: Sendable, Equatable {
     /// Transcript labels, not people: "Speaker 3" (G2 recordings list them as attendees), "Unknown speaker".
     static func isPlaceholder(_ lower: String) -> Bool {
         placeholders.contains(lower) || lower.hasPrefix("unknown") || lower.hasPrefix("unidentified")
-            || lower.range(of: #"^(speaker|participant|guest)\s*\d+$"#, options: .regularExpression) != nil
+            || lower.range(of: #"^(speaker|participant|guest|voice)\s*\d+$"#, options: .regularExpression) != nil
     }
     /// A calendar handle ("miles.ukaoma", from "**miles.ukaoma** (email)") is Miles too.
     static func isMiles(_ lower: String) -> Bool {
@@ -5832,6 +5832,48 @@ struct SpeakerThrashPair: Sendable, Hashable {
     }
 }
 
+/// 0.5.340 (server 6.90.0): a saved Mac recording's voices are labelled `Voice 1`, `Voice 2`, ... after save. Unnamed and
+/// stable for the meeting, never a profile name. Everywhere Control asks "is this a name", a Voice label is not one, and
+/// renaming it is text only: a Mac recording never makes or trains a voice profile.
+enum MacVoiceLabel {
+    /// Exactly the server's `^Voice [1-9]\d?$`.
+    static func isVoice(_ label: String) -> Bool {
+        label.range(of: #"\AVoice [1-9][0-9]?\z"#, options: .regularExpression) != nil
+    }
+
+    /// The Voice labels a transcript's `[Voice N]:` turns carry, in first-turn order, each once.
+    static func voices(inTranscript transcript: String) -> [String] {
+        var seen: Set<String> = [], out: [String] = []
+        for line in transcript.split(separator: "\n", omittingEmptySubsequences: true) {
+            guard line.hasPrefix("["), let close = line.firstIndex(of: "]"), line[line.index(after: close)...].hasPrefix(":") else { continue }
+            let label = String(line[line.index(after: line.startIndex)..<close])
+            if isVoice(label), seen.insert(label).inserted { out.append(label) }
+        }
+        return out
+    }
+
+    /// Voices still waiting for a name. Each `Voice N` is one voice to name; an `Ext` or `Unknown` bucket left beside
+    /// them is the low-confidence remainder of those same voices, never one more (Miles 2026-10-23: Voice N must never
+    /// inflate "voices to name" for Ext). A meeting with no Voice label counts its placeholders exactly as before.
+    static func unnamedCount(_ labels: [String]) -> Int {
+        let voices = labels.filter(isVoice).count
+        return voices > 0 ? voices : labels.count
+    }
+
+    /// A Mac recording's session id.
+    static func isMacSession(_ sessionId: String) -> Bool { sessionId.hasPrefix("mac_") }
+}
+
+/// 0.5.340 copy for Mac recording voices. No em dashes or arrows.
+enum MacVoiceCopy {
+    static let renameNote = "Mac recordings rename text only, in this meeting. No voice profile is made or trained."
+    static let menuTitle = "Rename voice"
+    /// The review's header line for a Mac recording, where nobody is named by design.
+    static let unattributedNote = "Mac recordings never name anyone from the call audio. With COS server 6.90.0 each voice is told apart as Voice 1, Voice 2 and so on. Name the ones you know."
+
+    static func menuItem(_ label: String) -> String { "Name \(label)" }
+}
+
 struct ReviewVoice: Identifiable, Sendable, Hashable {
     /// Voiced milliseconds for this voice. nil on a server that does not report it.
     var speakingMs: Int?
@@ -5861,7 +5903,8 @@ struct ReviewVoice: Identifiable, Sendable, Hashable {
     var id: String { label }
     /// What the row is allowed to CALL this voice. An unearned label is a
     /// candidate, not an identity.
-    var displayName: String { nameAsserted ? label : "Unidentified voice" }
+    /// 0.5.340: a Mac `Voice N` shows as itself, so Voice 1 and Voice 2 stay told apart while unnamed.
+    var displayName: String { nameAsserted || MacVoiceLabel.isVoice(label) ? label : "Unidentified voice" }
     /// Any voice but the wearer can be given a name — INCLUDING an unattributed
     /// cluster, which is the whole reason to review one.
     ///
@@ -6073,7 +6116,10 @@ struct SpeakerReview: Sendable {
         voices.first(where: { $0.label == label })?.displayName ?? label
     }
 
-    var unnamedVoiceCount: Int { voices.filter(\.isNameAssignment).count }
+    /// 0.5.340: counted by `MacVoiceLabel.unnamedCount`, so a Mac recording's Ext remainder never adds a voice.
+    var unnamedVoiceCount: Int { MacVoiceLabel.unnamedCount(voices.filter(\.isNameAssignment).map(\.label)) }
+    /// A Mac recording renames text only: no profile is made, trained or offered for a global fold.
+    var isMacRecording: Bool { MacVoiceLabel.isMacSession(sessionId) }
 
     /// Voice rows for the review list. Timeline stays in speaking order.
     var voicesForReview: [ReviewVoice] {
@@ -12535,6 +12581,9 @@ enum TodayHome {
         var groupMeeting: [String: String] = [:]
         var groupStart: [String: Date] = [:]
         var meetingsToName: [ReviewableMeeting] = []
+        /// 0.5.340: each meeting's voices to name as Speakers tags it (the server's list count, or the visit's). A saved
+        /// Mac recording has no server count, so without this its row read "0 speakers have no name yet".
+        var meetingUnnamed: [String: Int] = [:]
         var yourMove: [WorkYourMove]?
         var memoriesToReview: Int?
         var memoriesTotal: Int?
@@ -12589,10 +12638,11 @@ enum TodayHome {
             let today = ActivityHome.meetingDate(meeting, calendar: input.calendar).map { input.calendar.isDate($0, inSameDayAs: input.now) } ?? false
             guard meetingRows < voiceRowLimit, today else { olderMeetings.append(meeting); continue }
             meetingRows += 1
+            let unnamed = input.meetingUnnamed[meeting.sessionId] ?? meeting.unattributedVoices
             rows.append(NeedRow(id: "meeting-voices:" + meeting.sessionId, kind: .meetingVoices, tier: 2,
                                 title: "Name the voices in " + (guarded(meeting.title) ?? "a saved meeting"),
-                                why: (meeting.unattributedVoices ?? 0) == 1 ? "1 speaker has no name yet." : "\(meeting.unattributedVoices ?? 0) speakers have no name yet.",
-                                since: ActivityHome.meetingDate(meeting, calendar: input.calendar), items: max(1, meeting.unattributedVoices ?? 1), meeting: meeting))
+                                why: (unnamed ?? 0) == 1 ? "1 speaker has no name yet." : "\(unnamed ?? 0) speakers have no name yet.",
+                                since: ActivityHome.meetingDate(meeting, calendar: input.calendar), items: max(1, unnamed ?? 1), meeting: meeting))
         }
         if heldVoices > 0 || !olderMeetings.isEmpty {
             let parts = [heldVoices > 0 ? (heldVoices == 1 ? "1 held voice" : "\(heldVoices) held voices") : nil,
