@@ -408,8 +408,8 @@ need('Button("History…") { model.openDictationHistoryInActivity() }' in app, "
 pane = body(dictation, "struct DictationHistoryPane: View {")
 need("LazyVStack" in pane and "DictationHistory.days(DictationHistory.search(store.recent, search))" in pane
      and 'Button("Clear history…") { confirmingClear = true }' in pane and "isPresented: $confirmingClear," in pane
-     and "store.openFixFromHistory(record.id)" in pane and "store.deleteRecord(record.id)" in pane and "store.copy(record.text)" in pane,
-     "the history pane: lazy, grouped by day, searched locally; Copy, Fix a word, Delete; Clear history… asks first")
+     and "store.openFixFromHistory(record.id)" in pane and "store.deleteRecord(record.id)" in pane and "store.copy(record.finalText)" in pane,
+     "the history pane: lazy, grouped by day, searched locally; Copy (what was sent, 0.5.342), Fix a word, Delete; Clear history… asks first")
 need(".frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity, alignment: .top)" in pane and ".clipped()" in pane,
      "the history pane clamps itself so a long list never pushes the toolbar off")
 

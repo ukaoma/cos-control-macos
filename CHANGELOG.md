@@ -1,3 +1,41 @@
+## 0.5.342 (build 396), Your edit, confirmed
+
+On top of 0.5.341 (build 395). Mock approved by Miles 2026-10-24
+(`operations/personal/wk43_2026/mock-edit-confirm/edit-confirmation.html`). Plus everything in 0.5.341.
+
+When you edit text COS typed, the pill says Edit saved and the dictation card shows your edit, what changed, and whether
+a word went to your dictionary. One tap can tell COS to drop a filler like "kind of" from now on.
+
+Evidence: Miles's Mac, 08:30, Claude desktop, `learn-canary.jsonl`: eligibility learn, reads 4, inside 2, candidates 0,
+learned 0, stop focusLeft. He removed "kind of"; the watch saw it and COS said nothing, and the history still read
+"kind of".
+
+- **The final text is kept.** When a Learn from my edits watch ends (focus left, sent, cleared, a cap, the app quit) in
+  an app whose reads are proven (`eligibility == .learn`), with an edit inside the dictation, the dictation's words from
+  the last read go on its history record (`DictationRecord.edit`, `DictationUserEdit`: text, app, time, edit count,
+  learned words and their Learned ids), through the history's atomic write. Never after `lost`, `unreadable`, `secure`
+  or a cancelled watch, never when the words equal what COS typed, and never when the record no longer holds the text
+  the watch looked for (`DictationEditConfirm.captured`, `.edit`). Older records decode unchanged; an edit that does not
+  read is no edit. Fix a word and Apply polished drop a stale edit.
+- **The pill, once, when the watch ends.** "✓ EDIT SAVED" with View (the dictation's card on the pet, or Activity,
+  Dictation history when the pet is hidden). "✓ EDIT SAVED · LEARNED WORD" with Undo when a word was learned and more was
+  edited. A learned-only edit keeps today's "✓ LEARNED · WORD" with Undo (`DictationEditConfirm.pill`). Never over a
+  newer dictation's pill.
+- **The card.** The final text with a word diff against what COS typed (removed words struck through in the muted ink,
+  added words with a light gold tint and underline; `DictationWordDiff`, LCS on whitespace words with punctuation
+  attached, no marks past 600 words). "EDITED IN <APP>" in the header row, "· N edits" on the meta line, and one line on
+  the dictionary: "Added Kowalczyk to your dictionary. Next time COS writes it for you." or "You removed "kind of". Not
+  added to your dictionary: COS learns names and terms, not everyday words." Show original returns exactly what COS
+  typed; Copy copies whichever is shown. Undo learn replaces Fix a word only while a word this edit taught is still
+  learned. Activity's history row reads the edited text and copies it.
+- **Always drop "<phrase>" from my dictation.** Only when the whole edit removed one phrase of one to three words,
+  letters only, not a dictionary term, with polish instructions on this server and AI polish on. A tap appends
+  `Remove the filler "kind of".` to your polish instructions through the existing setting (no new server call), then
+  reads "Added to your polish instructions" with Undo, which takes out only that line. Never added twice, never past the
+  1,000 character cap, never without the tap.
+- **Privacy.** The edited text lives only in the local history record. Logs and the canary carry counts and verdicts
+  (`learn edit saved=... edits=... learned=... pill=...`, canary `edited`), never words.
+
 ## 0.5.341 (build 395), Jedi 360 V2
 
 Includes all 0.5.340 changes below and pairs with server 6.90.0.

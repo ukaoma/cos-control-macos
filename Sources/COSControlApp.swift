@@ -42,6 +42,8 @@ struct COSControlApp: App {
         // 0.5.329: AI polish's process started at the key press (server 6.79.2); called only from detached tasks.
         model.dictation.prewarmBridge = model.detachedHelper("dictation-polish-prewarm", timeout: DictationPolishPrewarm.helperTimeout)
         model.dictation.petFrame = { [weak sessionPet] in sessionPet?.visibleFrame }
+        // 0.5.342: View on "✓ EDIT SAVED" opens Dictation history in Activity when the pet is not showing.
+        model.dictation.openHistory = { [weak model] in model?.openDictationHistoryInActivity() }
         // 0.5.317: a failure card's one action, and the server version a dictation succeeded on (the Voice row's proof).
         model.dictation.installParakeet = { [weak model] in model?.installParakeet() }
         model.dictation.useWhisper = { [weak model] in await model?.useWhisperForDictation() ?? false }

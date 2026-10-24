@@ -217,6 +217,9 @@ struct DictationLearnCanary: Codable, Equatable, Sendable {
     var inside: Int
     var candidates: Int
     var learned: Int
+    /// 0.5.342: the person's own edit inside the dictation went on its history record (DictationEditConfirm.captured).
+    /// A verdict only, never the words. Absent on a watch that saw no edit inside the dictation.
+    var edited: Bool? = nil
     /// Why focus left, when it did: app, none, pid, role, identifier, window, frame, churn.
     var focusWhy: String?
 }
@@ -930,15 +933,25 @@ struct DictationRecord: Codable, Equatable, Identifiable, Sendable {
     /// it (haiku or sonnet). Both nil in older records and whenever polish was off, failed or changed nothing.
     let heard: String?
     let polishModel: String?
+    /// 0.5.342 Your edit, confirmed: what the person changed it to in the app, read back when the watch ended
+    /// (DictationUserEdit). nil in older records and whenever nothing inside the dictation was edited.
+    let edit: DictationUserEdit?
 
     init(id: UUID, text: String, createdAt: Date, delivery: Delivery, engine: String? = nil, fallbackReason: String? = nil,
-         heard: String? = nil, polishModel: String? = nil) {
+         heard: String? = nil, polishModel: String? = nil, edit: DictationUserEdit? = nil) {
         self.id = id; self.text = text; self.createdAt = createdAt; self.delivery = delivery
         self.engine = engine; self.fallbackReason = fallbackReason
         self.heard = heard; self.polishModel = polishModel
+        self.edit = edit
     }
 
     var wordCount: Int { text.split(whereSeparator: { $0.isWhitespace || $0.isNewline }).count }
+    /// 0.5.342: what was sent, as far as COS saw: the person's edit when there is one, else what COS typed.
+    var finalText: String { edit?.text ?? text }
+    var finalWordCount: Int { finalText.split(whereSeparator: { $0.isWhitespace || $0.isNewline }).count }
+    var finalFirstLine: String {
+        finalText.split(whereSeparator: \.isNewline).first.map { String($0).trimmingCharacters(in: .whitespaces) } ?? ""
+    }
     var firstLine: String {
         text.split(whereSeparator: \.isNewline).first.map { String($0).trimmingCharacters(in: .whitespaces) } ?? ""
     }
@@ -956,12 +969,16 @@ struct DictationRecord: Codable, Equatable, Identifiable, Sendable {
         guard heard != nil, let name = polishModel.flatMap(DictationPolishModel.init(rawValue:))?.shortName else { return nil }
         return "Polished · " + name
     }
+    /// 0.5.342: an edited dictation counts the words that were sent and ends with its edits ("· 1 edit").
     func metaLine(time: String) -> String {
-        "\(time) · \(wordCount) \(wordCount == 1 ? "word" : "words") · \(outcomeLabel)" + (polishLabel.map { " · " + $0 } ?? "")
+        let words = finalWordCount
+        let line = "\(time) · \(words) \(words == 1 ? "word" : "words") · \(outcomeLabel)" + (polishLabel.map { " · " + $0 } ?? "")
+        guard let edit else { return line }
+        return line + " · " + DictationEditConfirm.editsLabel(edit.edits)
     }
 
     // Stored as kind/app/reason. 0.5.309 files carry insertedApp/pasted instead and still load.
-    private enum Keys: String, CodingKey { case id, text, createdAt, kind, app, reason, viaPaste, insertedApp, pasted, engine, fallbackReason, heard, polishModel }
+    private enum Keys: String, CodingKey { case id, text, createdAt, kind, app, reason, viaPaste, insertedApp, pasted, engine, fallbackReason, heard, polishModel, edit }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: Keys.self)
         id = try c.decode(UUID.self, forKey: .id)
@@ -972,6 +989,8 @@ struct DictationRecord: Codable, Equatable, Identifiable, Sendable {
         // 0.5.325: absent before AI polish. A value of the wrong type reads as none rather than dropping the file.
         heard = (try? c.decodeIfPresent(String.self, forKey: .heard)) ?? nil
         polishModel = (try? c.decodeIfPresent(String.self, forKey: .polishModel)) ?? nil
+        // 0.5.342: absent before Your edit, confirmed. An edit that does not read is no edit, never a lost history.
+        edit = (try? c.decodeIfPresent(DictationUserEdit.self, forKey: .edit)) ?? nil
         if let kind = try c.decodeIfPresent(String.self, forKey: .kind) {
             let app = try c.decodeIfPresent(String.self, forKey: .app) ?? "the app"
             switch kind {
@@ -991,6 +1010,7 @@ struct DictationRecord: Codable, Equatable, Identifiable, Sendable {
         try c.encode(id, forKey: .id); try c.encode(text, forKey: .text); try c.encode(createdAt, forKey: .createdAt)
         try c.encodeIfPresent(engine, forKey: .engine); try c.encodeIfPresent(fallbackReason, forKey: .fallbackReason)
         try c.encodeIfPresent(heard, forKey: .heard); try c.encodeIfPresent(polishModel, forKey: .polishModel)
+        try c.encodeIfPresent(edit, forKey: .edit)
         switch delivery {
         case .inserted(let app): try c.encode("inserted", forKey: .kind); try c.encode(app, forKey: .app)
         case .unconfirmed(let app, let viaPaste):
@@ -1050,7 +1070,10 @@ enum DictationHistory {
     static func search(_ list: [DictationRecord], _ query: String) -> [DictationRecord] {
         let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !needle.isEmpty else { return list }
-        return list.filter { $0.text.range(of: needle, options: [.caseInsensitive, .diacriticInsensitive]) != nil }
+        // 0.5.342: an edited dictation is found by what was sent too.
+        return list.filter { record in
+            [record.text, record.edit?.text].compactMap { $0 }.contains { $0.range(of: needle, options: [.caseInsensitive, .diacriticInsensitive]) != nil }
+        }
     }
     /// One day of the history pane: its records, newest first.
     struct Day: Identifiable, Sendable {
@@ -1067,12 +1090,19 @@ enum DictationHistory {
     static func removing(_ id: UUID, from list: [DictationRecord]) -> [DictationRecord] { list.filter { $0.id != id } }
     /// Fix a word's Save corrects the dictation itself (0.5.318, Miles: Heard still read "Y joule 360" after he saved
     /// "Jewel360"): same id, time, place and order; only the text changes.
+    /// 0.5.342: the person's edit goes with it. It was a diff against the old text, so it would show changes nobody made.
     static func correcting(_ id: UUID, to text: String, in list: [DictationRecord]) -> [DictationRecord] {
         list.map { $0.id == id ? DictationRecord(id: $0.id, text: text, createdAt: $0.createdAt, delivery: $0.delivery, engine: $0.engine, fallbackReason: $0.fallbackReason,
                                                  heard: $0.heard, polishModel: $0.polishModel) : $0 }
     }
+    /// 0.5.342 Your edit, confirmed: the person's edit goes on the dictation. Same id, text, time, place and order.
+    static func editing(_ id: UUID, edit: DictationUserEdit, in list: [DictationRecord]) -> [DictationRecord] {
+        list.map { one in one.id == id ? DictationRecord(id: one.id, text: one.text, createdAt: one.createdAt, delivery: one.delivery, engine: one.engine,
+                                                         fallbackReason: one.fallbackReason, heard: one.heard, polishModel: one.polishModel, edit: edit) : one }
+    }
     /// 0.5.331 paste first, polish in place: Claude's version replaced the typed text in the field, so the dictation reads
     /// it, and keeps what was heard and the model, as a dictation polished before the paste does. Same id, time and place.
+    /// 0.5.342: a person's edit does not survive new text (Apply polished after an edit): its diff would be against words gone.
     static func polishing(_ id: UUID, to text: String, heard: String, model: String, in list: [DictationRecord]) -> [DictationRecord] {
         list.map { r in r.id == id ? DictationRecord(id: r.id, text: text, createdAt: r.createdAt, delivery: r.delivery, engine: r.engine, fallbackReason: r.fallbackReason,
                                                      heard: heard, polishModel: model) : r }
@@ -3068,6 +3098,315 @@ enum DictationSuggestions {
             throw NSError(domain: "COSDictation", code: 4, userInfo: [NSLocalizedDescriptionKey: "Dictation suggestions could not be saved."])
         }
     }
+}
+
+// MARK: - Your edit, confirmed (0.5.342)
+//
+// Miles, 2026-10-24 08:30, in Claude desktop: he removed the filler "kind of" from a dictation. The watch saw it (learn,
+// reads 4, inside 2, candidates 0, learned 0, stop focusLeft) and COS said nothing; the history still read "kind of".
+// That silence was the bug. Now a watch that ends with the person's own edit inside the dictation keeps the dictation's
+// final words on its history record, the pill says EDIT SAVED with View, and the dictation card shows the edit as a word
+// diff, whether anything went to the dictionary and why, and one tap to drop a filler from later dictations through the
+// person's polish instructions. Approved mock: operations/personal/wk43_2026/mock-edit-confirm/edit-confirmation.html.
+// Pure, so every rule runs and is mutated (Tests/EditConfirmChecks.swift, Tests/mutate-edit-confirm.py).
+
+/// The person's own edit to a dictation COS typed, read back when the watch ended. Kept on this Mac in the history file
+/// beside the dictated text, and never logged.
+struct DictationUserEdit: Codable, Equatable, Sendable {
+    /// The dictation's words as the field held them at the watch's last read.
+    let text: String
+    /// The app it was edited in, as the delivery names it ("Claude").
+    let app: String
+    let at: Date
+    /// Places the words changed (one removed phrase is one), or the watch's own count when the text is too long to diff.
+    let edits: Int
+    /// What Learn from my edits saved from this watch: the written forms, and their Learned list ids for Undo learn.
+    let learned: [String]
+    let learnedIDs: [UUID]
+
+    init(text: String, app: String, at: Date, edits: Int, learned: [String] = [], learnedIDs: [UUID] = []) {
+        self.text = text; self.app = app; self.at = at; self.edits = edits; self.learned = learned; self.learnedIDs = learnedIDs
+    }
+    private enum Keys: String, CodingKey { case text, app, at, edits, learned, learnedIDs }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: Keys.self)
+        text = try c.decode(String.self, forKey: .text)
+        app = try c.decodeIfPresent(String.self, forKey: .app) ?? "the app"
+        at = try c.decode(Date.self, forKey: .at)
+        let count = try c.decodeIfPresent(Int.self, forKey: .edits) ?? 1
+        edits = max(1, count)
+        learned = (try? c.decodeIfPresent([String].self, forKey: .learned)) ?? []
+        learnedIDs = (try? c.decodeIfPresent([UUID].self, forKey: .learnedIDs)) ?? []
+    }
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: Keys.self)
+        try c.encode(text, forKey: .text); try c.encode(app, forKey: .app); try c.encode(at, forKey: .at); try c.encode(edits, forKey: .edits)
+        if !learned.isEmpty { try c.encode(learned, forKey: .learned) }
+        if !learnedIDs.isEmpty { try c.encode(learnedIDs, forKey: .learnedIDs) }
+    }
+}
+
+/// A word-level diff between what COS typed and what the person left. Words split on whitespace with their punctuation
+/// attached ("of," is one word), matched by a longest common subsequence. Past `maximumWords` on either side it gives
+/// no diff at all, and the card shows the final text without marks.
+enum DictationWordDiff {
+    static let maximumWords = 600
+    struct Token: Equatable, Sendable {
+        let word: String
+        /// The whitespace after the word in its own text (a space, a line break, or nothing at the end).
+        var trailing: String
+    }
+    enum Kind: String, Equatable, Sendable { case same, removed, added }
+    /// A run of words of one kind. `text` is the run with its inner whitespace; `trailing` is the space after it.
+    struct Part: Equatable, Sendable {
+        let kind: Kind
+        let text: String
+        let trailing: String
+        let words: Int
+    }
+    /// One place the words changed: what went, what came, or both.
+    struct Region: Equatable, Sendable {
+        var removed = ""
+        var added = ""
+        var removedWords = 0
+        var addedWords = 0
+    }
+    static func tokens(_ text: String) -> [Token] {
+        var out: [Token] = [], word = ""
+        for ch in text {
+            if ch.isWhitespace {
+                if !word.isEmpty { out.append(Token(word: word, trailing: "")); word = "" }
+                if !out.isEmpty { out[out.count - 1].trailing.append(ch) }
+            } else {
+                word.append(ch)
+            }
+        }
+        if !word.isEmpty { out.append(Token(word: word, trailing: "")) }
+        return out
+    }
+    static func words(_ text: String) -> [String] { tokens(text).map(\.word) }
+    /// Removed words come before the added ones in the same place ("Kovalchik" struck, then "Kowalczyk"). Same and added
+    /// words keep the final text's spacing, removed words the original's.
+    static func diff(original: String, final: String) -> [Part]? {
+        let a = tokens(original), b = tokens(final)
+        guard a.count <= maximumWords, b.count <= maximumWords else { return nil }
+        let n = a.count, m = b.count
+        var lcs = [[Int]](repeating: [Int](repeating: 0, count: m + 1), count: n + 1)
+        for i in stride(from: n - 1, through: 0, by: -1) {
+            for j in stride(from: m - 1, through: 0, by: -1) {
+                lcs[i][j] = a[i].word == b[j].word ? lcs[i + 1][j + 1] + 1 : max(lcs[i + 1][j], lcs[i][j + 1])
+            }
+        }
+        var raw: [(Kind, Token)] = []
+        var i = 0, j = 0
+        while i < n || j < m {
+            if i < n, j < m, a[i].word == b[j].word {
+                raw.append((.same, b[j])); i += 1; j += 1
+            } else if i < n, j == m || lcs[i + 1][j] >= lcs[i][j + 1] {
+                raw.append((.removed, a[i])); i += 1
+            } else {
+                raw.append((.added, b[j])); j += 1
+            }
+        }
+        var parts: [Part] = []
+        for (kind, token) in raw {
+            if let last = parts.last, last.kind == kind {
+                parts[parts.count - 1] = Part(kind: kind, text: last.text + last.trailing + token.word, trailing: token.trailing, words: last.words + 1)
+            } else {
+                parts.append(Part(kind: kind, text: token.word, trailing: token.trailing, words: 1))
+            }
+        }
+        return parts
+    }
+    /// The places the words changed, in order. Unchanged words end a place.
+    static func regions(_ parts: [Part]) -> [Region] {
+        var out: [Region] = [], open = false
+        for part in parts {
+            if part.kind == .same { open = false; continue }
+            if !open { out.append(Region()); open = true }
+            let k = out.count - 1
+            if part.kind == .removed {
+                out[k].removed += (out[k].removed.isEmpty ? "" : " ") + part.text; out[k].removedWords += part.words
+            } else {
+                out[k].added += (out[k].added.isEmpty ? "" : " ") + part.text; out[k].addedWords += part.words
+            }
+        }
+        return out
+    }
+}
+
+/// How a watch ended, for the store (0.5.342). The words stay in memory: the store keeps them only on the record.
+struct DictationWatchEnd: Sendable {
+    /// The dictation the watch belonged to, given when it started; nil for a watch with no record.
+    let recordID: UUID?
+    let app: String
+    /// What the watch looked for: what COS typed, or Claude's version after a swap.
+    let typed: String
+    /// The dictation's final words, when DictationEditConfirm.captured kept them.
+    let finalText: String?
+    let inside: Int
+    let started: Date
+    /// The pairs this watch handed to Learn from my edits.
+    let candidates: [DictationEditLearning.Candidate]
+}
+
+/// Where the watch's last good read placed the dictation, and the pairs it handed on. Written only by the watch loop.
+struct DictationWatchTail: Sendable {
+    var window: String?
+    var start = 0
+    var length = 0
+    var candidates: [DictationEditLearning.Candidate] = []
+}
+
+enum DictationEditConfirm {
+    /// How a watch may end and still place the dictation exactly in its last read: focus left, the message sent or the
+    /// field cleared, a cap reached, the app quit. Never `lost` (an edit crossed the dictation's edge), `unreadable`,
+    /// `secure` (a password field took the keyboard) or `cancelled` (a newer dictation, Fix a word, AI polish or Apply
+    /// polished ended it, any of which may change the words under the watch).
+    static let keepsAfter: Set<String> = ["focusLeft", "cleared", "emptied", "cap", "reads", "appGone"]
+
+    /// The dictation's final words, or nil (store nothing, never guess). Only a learning watch (an app whose reads are
+    /// proven), whose first read held the dictation, that saw an edit inside it, that ended in `keepsAfter`, whose last
+    /// read still places the dictation inside the window, and whose words differ from what COS typed.
+    static func captured(typed: String, window: String?, start: Int, length: Int, inside: Int, readable: Bool, learning: Bool,
+                         stop: String) -> String? {
+        guard learning, readable, inside > 0, keepsAfter.contains(stop), let window else { return nil }
+        let ns = window as NSString
+        guard start >= 0, length > 0, start + length <= ns.length else { return nil }
+        let final = ns.substring(with: NSRange(location: start, length: length))
+        let words = DictationWordDiff.words(final)
+        guard !words.isEmpty, words != DictationWordDiff.words(typed) else { return nil }
+        return final
+    }
+
+    /// The edit for the record, or nil. The record must still hold the words the watch looked for (a swap or Fix a word
+    /// since would make the diff describe changes nobody made).
+    static func edit(typed: String, recordText: String, final: String, app: String, at: Date, inside: Int,
+                     learned: [DictationSuggestion]) -> DictationUserEdit? {
+        guard DictationWordDiff.words(typed) == DictationWordDiff.words(recordText) else { return nil }
+        let edits = DictationWordDiff.diff(original: recordText, final: final).map { DictationWordDiff.regions($0).count } ?? max(1, inside)
+        guard edits > 0 else { return nil }
+        return DictationUserEdit(text: final, app: app, at: at, edits: edits, learned: learned.map(\.written), learnedIDs: learned.map(\.id))
+    }
+
+    /// The pill when a watch ends. `learned`: the pairs saved to the dictionary from this watch.
+    enum Pill: Equatable, Sendable {
+        /// Nothing to show: no edit was kept.
+        case silent
+        /// Edits inside the dictation, nothing learned: "✓ EDIT SAVED" with View.
+        case saved
+        /// The whole edit was what got learned: its pill ("✓ LEARNED · WORD", with Undo) already showed when it was learned.
+        case learned(String)
+        /// Learned a word and edited more: "✓ EDIT SAVED · LEARNED WORD", Undo undoes the learn.
+        case savedAndLearned(String)
+        var logName: String {
+            switch self {
+            case .silent: "silent"
+            case .saved: "saved"
+            case .learned: "learned"
+            case .savedAndLearned: "savedAndLearned"
+            }
+        }
+    }
+    static func pill(typed: String, final: String?, learned: [(heard: String, written: String)]) -> Pill {
+        guard let final else { return .silent }
+        guard let last = learned.last else { return .saved }
+        var applied = typed
+        for pair in learned {
+            if let range = applied.range(of: pair.heard) { applied.replaceSubrange(range, with: pair.written) }
+        }
+        return DictationWordDiff.words(applied) == DictationWordDiff.words(final) ? .learned(last.written) : .savedAndLearned(last.written)
+    }
+    static func label(_ pill: Pill) -> String? {
+        switch pill {
+        case .silent: nil
+        case .saved: "✓ EDIT SAVED"
+        case .learned(let word): "✓ LEARNED · " + word.uppercased()
+        case .savedAndLearned(let word): "✓ EDIT SAVED · LEARNED " + word.uppercased()
+        }
+    }
+    /// Shown once, when the watch ends, only for more than what was learned: a learned-only edit had its pill already.
+    static func showsAtEnd(_ pill: Pill) -> Bool {
+        switch pill {
+        case .saved, .savedAndLearned: true
+        case .silent, .learned: false
+        }
+    }
+
+    /// The card's tag in its header row: "EDITED IN CLAUDE".
+    static func tag(app: String) -> String { "EDITED IN " + app.uppercased() }
+    static func editsLabel(_ n: Int) -> String { n == 1 ? "1 edit" : "\(n) edits" }
+    /// Copy on the card: the final words, or exactly what COS typed while Show original is on.
+    static func copyText(_ record: DictationRecord, showOriginal: Bool) -> String { showOriginal ? record.text : record.finalText }
+
+    /// A phrase as the reason line quotes it: without the punctuation around it.
+    static func quoted(_ text: String) -> String {
+        let trimmed = text.trimmingCharacters(in: CharacterSet.punctuationCharacters.union(.whitespacesAndNewlines))
+        return "\"" + (trimmed.isEmpty ? text : trimmed) + "\""
+    }
+    static let notEveryday = "Not added to your dictionary: COS learns names and terms, not everyday words."
+    static let nothingNew = "Nothing new for your dictionary."
+    /// The one line under the meta line. `learned`: the written forms still in the dictionary (an undone learn drops out).
+    static func reason(parts: [DictationWordDiff.Part]?, learned: [String]) -> String {
+        if let only = learned.first, learned.count == 1 { return "Added \(only) to your dictionary. Next time COS writes it for you." }
+        if learned.count > 1 {
+            return "Added " + learned.dropLast().joined(separator: ", ") + " and " + learned.last! + " to your dictionary. Next time COS writes them for you."
+        }
+        guard let parts else { return "You edited this dictation. " + nothingNew }
+        let regions = DictationWordDiff.regions(parts)
+        if regions.count == 1, let region = regions.first {
+            let small = { (n: Int) in (1...DictationEditConfirm.dropMaximumWords).contains(n) }
+            if region.addedWords == 0, small(region.removedWords) { return "You removed \(quoted(region.removed)). " + notEveryday }
+            if region.removedWords == 0, small(region.addedWords) { return "You added \(quoted(region.added)). " + nothingNew }
+            if small(region.removedWords), small(region.addedWords) {
+                return "You changed \(quoted(region.removed)) to \(quoted(region.added)). " + nothingNew
+            }
+        }
+        let n = regions.reduce(0) { $0 + $1.removedWords + $1.addedWords }
+        return "You edited \(n) \(n == 1 ? "word" : "words"). " + nothingNew
+    }
+
+    // MARK: Always drop "<phrase>" from my dictation
+
+    static let dropMaximumWords = 3
+    static let dropEdge = CharacterSet(charactersIn: ",.;:!?\u{2026}\"'()[]").union(.whitespacesAndNewlines)
+    /// The phrase the chip offers to drop from later dictations: the whole edit is one removal of one to three words,
+    /// letters only, and not a dictionary term. `isTerm` is the person's dictionary (vocabulary and written forms).
+    static func dropPhrase(parts: [DictationWordDiff.Part]?, isTerm: (String) -> Bool) -> String? {
+        guard let parts else { return nil }
+        let regions = DictationWordDiff.regions(parts)
+        guard regions.count == 1, let region = regions.first, region.addedWords == 0 else { return nil }
+        // Sentence punctuation around it goes ("um," is "um"); a handle or link mark stays, so "@sam" is never a filler.
+        let phrase = region.removed.trimmingCharacters(in: dropEdge)
+        let words = phrase.split(whereSeparator: \.isWhitespace).map(String.init)
+        guard (1...dropMaximumWords).contains(words.count),
+              words.allSatisfy({ !$0.isEmpty && $0.unicodeScalars.allSatisfy(CharacterSet.letters.contains) }) else { return nil }
+        guard !isTerm(phrase), !words.contains(where: isTerm) else { return nil }
+        return phrase.lowercased()
+    }
+    static func instruction(_ phrase: String) -> String { "Remove the filler \"\(phrase)\"." }
+    /// The instruction is already in the saved text (any case).
+    static func holds(_ phrase: String, in saved: String) -> Bool { saved.range(of: instruction(phrase), options: [.caseInsensitive]) != nil }
+    /// The person's instructions with the drop added on its own line, or nil: already there, or over the server's cap.
+    static func adding(_ phrase: String, to saved: String) -> String? {
+        let current = saved.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !holds(phrase, in: current) else { return nil }
+        let next = current.isEmpty ? instruction(phrase) : current + "\n" + instruction(phrase)
+        return DictationPolishInstructions.isOver(next) ? nil : next
+    }
+    /// Undo on the chip: the instruction's own line goes, everything else stays as the person has it now.
+    static func removing(_ phrase: String, from saved: String) -> String {
+        let line = instruction(phrase).lowercased()
+        return saved.components(separatedBy: "\n").filter { $0.trimmingCharacters(in: .whitespaces).lowercased() != line }
+            .joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    /// The chip shows only where it can work: a phrase, polish instructions on this server, AI polish on, and room to add it.
+    static func offersDrop(phrase: String?, available: Bool, polishOn: Bool, saved: String) -> Bool {
+        guard let phrase, available, polishOn else { return false }
+        return adding(phrase, to: saved) != nil
+    }
+    static func chipLabel(_ phrase: String) -> String { "Always drop \"\(phrase)\" from my dictation" }
+    static let chipAdded = "Added to your polish instructions"
 }
 
 // MARK: - The text around a dictation (0.5.323)

@@ -605,6 +605,7 @@ private struct SessionPetRoot: View {
                 DictationListeningPill(pill: dictation.pill, meter: dictation.meter, floating: false,
                                        size: size, reduceMotion: reduceMotion,
                                        onFix: dictation.fixOfferID == nil ? nil : { dictation.quickFix() },
+                                       onView: dictation.pillViewID == nil ? nil : { dictation.viewEditFromPill() },
                                        onUndo: dictation.pillUndoID == nil ? nil : { dictation.undoLearnedFromPill() })
                     .transition(.opacity)
             }
@@ -1993,6 +1994,8 @@ extension SessionPetRoot {
                 .kerning(0.5)
                 .foregroundStyle(.secondary)
             Spacer(minLength: 0)
+            // 0.5.342 Your edit, confirmed: the dictation was edited where COS typed it.
+            if let edit = record?.edit { DictationEditedTag(app: edit.app, size: size) }
         }
         .padding(.top, size.length(7))
         .padding(.bottom, size.length(3))

@@ -913,6 +913,12 @@ struct DictationOwnTarget: @unchecked Sendable {
     private var watching: UUID?
     /// 0.5.328: a watch is reading a field now (for the timing line's editWatchAtPress).
     var isWatching: Bool { task != nil }
+    /// 0.5.342 Your edit, confirmed: the dictation the next watch belongs to, set by the store just before it starts one,
+    /// and where every watch's ending goes (DictationWatchEnd). Each run takes its owner when it starts, so an ending
+    /// that lands after a newer watch began still names its own dictation.
+    var pendingRecord: UUID?
+    var finished: (@MainActor @Sendable (DictationWatchEnd) async -> Void)?
+    private var nextOwner: (record: UUID?, app: String)?
     func stop(_ why: String) {
         guard let task else { return }
         task.cancel(); self.task = nil; watching = nil
@@ -923,6 +929,7 @@ struct DictationOwnTarget: @unchecked Sendable {
     func start(_ target: DictationInsertTarget, mode: DictationLearnMode, context: DictationFieldContext.Applied? = nil,
                found: @escaping @MainActor @Sendable (DictationEditLearning.Candidate) -> Void) {
         stop("new dictation")
+        nextOwner = (pendingRecord, target.app); pendingRecord = nil
         let element = target.element
         // 0.5.338: the bundle id decides for the apps the canary proved (Claude) or has not measured yet (Slack, Cursor, ChatGPT).
         let eligibility = DictationEditLearning.eligibility(mode: mode, secure: DictationInsertion.secure(element), terminal: target.terminal,
@@ -962,6 +969,7 @@ struct DictationOwnTarget: @unchecked Sendable {
     /// main thread). 0.5.338: the same re-anchor and canary line; the view is one object, so it never rebinds.
     func startOwn(_ target: DictationOwnTarget, mode: DictationLearnMode, found: @escaping @MainActor @Sendable (DictationEditLearning.Candidate) -> Void) {
         stop("new dictation")
+        nextOwner = (pendingRecord, target.app); pendingRecord = nil
         let eligibility = DictationEditLearning.eligibility(mode: mode, secure: IsSecureEventInputEnabled(), terminal: false,
                                                             electron: false, chromium: false, setterWorked: true)
         let facts = "bundle=own route=ownWindow"
@@ -1006,16 +1014,29 @@ struct DictationOwnTarget: @unchecked Sendable {
                      context: DictationFieldContext.Applied?, found: @escaping @MainActor @Sendable (DictationEditLearning.Candidate) -> Void) {
         let id = UUID()
         watching = id
+        let owner = nextOwner, finished = self.finished
+        nextOwner = nil
         task = Task.detached(priority: .utility) { [weak self] in
-            let canary = await Self.watch(field, span: span, typed: typed, facts: facts, bundle: bundle, learning: learning, context: context, found: found)
+            let started = Date()
+            var tail = DictationWatchTail()
+            var canary = await Self.watch(field, span: span, typed: typed, facts: facts, bundle: bundle, learning: learning, context: context,
+                                          tail: &tail, found: found)
+            // 0.5.342: the dictation's final words when the watch saw the person's own edit inside it (the tested rule).
+            let final = DictationEditConfirm.captured(typed: typed, window: tail.window, start: tail.start, length: tail.length,
+                                                      inside: canary.inside, readable: canary.readable, learning: learning, stop: canary.stop)
+            if canary.inside > 0 { canary.edited = final != nil }
             Self.record(canary)
             await self?.ended(id)
+            if let finished, let owner {
+                await finished(DictationWatchEnd(recordID: owner.record, app: owner.app, typed: typed, finalText: final, inside: canary.inside,
+                                                 started: started, candidates: tail.candidates))
+            }
         }
     }
 
     /// The watch itself. Returns its counts-only canary line (0.5.338).
     nonisolated private static func watch(_ field: WatchField, span: DictationInsertedSpan, typed: String, facts: String, bundle: String, learning: Bool,
-                                          context: DictationFieldContext.Applied?,
+                                          context: DictationFieldContext.Applied?, tail: inout DictationWatchTail,
                                           found: @escaping @MainActor @Sendable (DictationEditLearning.Candidate) -> Void) async -> DictationLearnCanary {
             let started = Date()
             var canary = DictationLearnCanary(at: ISO8601DateFormatter().string(from: started), bundle: bundle,
@@ -1050,6 +1071,8 @@ struct DictationOwnTarget: @unchecked Sendable {
             var reads = 1, last = first
             var changedAt: Date?
             while !Task.isCancelled {
+                // 0.5.342: where the last good read placed the dictation. Every ending after this line keeps it.
+                tail.window = baseline; tail.start = start; tail.length = length
                 if let edit = pending {
                     pending = nil
                     canary.inside += 1
@@ -1057,6 +1080,7 @@ struct DictationOwnTarget: @unchecked Sendable {
                         ? await Self.consider(edit, window: baseline, start: start, length: length, context: context) : nil
                     if candidate != nil { canary.candidates += 1 }
                     dictationLog.notice("learn read=\(reads) track=edit words=\(edit.original.split(whereSeparator: \.isWhitespace).count)>\(edit.replacement.split(whereSeparator: \.isWhitespace).count) learning=\(learning) candidate=\(candidate != nil) evidence=\(candidate?.evidence != nil) learned=\(learnedHere)")
+                    if let candidate { tail.candidates.append(candidate) }
                     if let candidate { learnedHere += 1; canary.learned += 1; await found(candidate) }
                 }
                 try? await Task.sleep(for: .milliseconds(DictationEditLearning.pollMilliseconds))
@@ -1829,6 +1853,15 @@ enum DictationSpareBuild: Sendable {
     private var learnedUndoPill: DictationPill?
     /// Undo shows only on that "✓ LEARNED" flash: any later pill (a new dictation) has none.
     var pillUndoID: UUID? { pill == learnedUndoPill ? learnedUndoID : nil }
+    /// 0.5.342 Your edit, confirmed: the dictation "✓ EDIT SAVED" opens with View, only on that flash. Set before the pill,
+    /// so the overlay's pill sink reads it (no sink of its own).
+    private var editViewID: UUID?
+    private var editViewPill: DictationPill?
+    var pillViewID: UUID? { pill == editViewPill ? editViewID : nil }
+    /// Learn from my edits saves still running, which a watch's ending waits for.
+    private var learnSaves: [Task<Void, Never>] = []
+    /// Opens Activity, Dictation history (View when the pet is not showing). Set by the app.
+    var openHistory: (() -> Void)?
     /// After Save in Fix a word: put the corrected dictation back where COS inserted it, or copy it.
     @Published private(set) var replaceOffer: DictationReplaceOffer?
     /// While dictating: mute other apps (default), lower other audio, or off (0.5.313).
@@ -1984,6 +2017,7 @@ enum DictationSpareBuild: Sendable {
             })
         }
         overlay.bind(store: self)
+        editWatcher.finished = { [weak self] end in await self?.editWatchEnded(end) }
         if recent.count != (loaded?.records.count ?? 0) || !retention.writesToDisk { saveRecent() }
         // A volume COS lowered and never put back (a quit or crash mid-dictation) goes back now.
         quiet.restoreAfterInterruptedRun()
@@ -2788,6 +2822,8 @@ enum DictationSpareBuild: Sendable {
         lastEngine = nil; lastPolish = nil
         if !swapPending { if case .refused = outcome { recordTiming("copied") } else { recordTiming("typed") } }
         if let target { rememberTarget(target, for: record.id) }
+        // 0.5.342: the watch that starts below (or after the swap) belongs to this dictation.
+        editWatcher.pendingRecord = record.id
         // 0.5.318: watch the field it went into for the person's own fixes (native apps; Electron is only measured).
         if swapPending {
             editWatcher.stop("polish pending")
@@ -2906,6 +2942,7 @@ enum DictationSpareBuild: Sendable {
         dictationLog.notice("swap outcome=\(result.logName, privacy: .public) route=\(route.map(DictationPolishSwap.routeName) ?? "-", privacy: .public) ms=\(swapMs ?? -1)")
         // Learn from my edits starts once the swap settled, from what the field now holds, unless a newer dictation began.
         if generation == attempt, inserted, DictationPolishSwap.watches(result), let watchTarget {
+            editWatcher.pendingRecord = id
             editWatcher.start(watchTarget, mode: learnMode, context: watchContext) { [weak self] candidate in self?.editLearned(candidate, app: watchTarget.app) }
         }
         if let notice = DictationPolishSwap.notice(result, app: delivered.target?.app ?? "the app"), !busy {
@@ -3403,7 +3440,8 @@ enum DictationSpareBuild: Sendable {
             dictationLog.notice("learn suggested")
             return
         }
-        Task {
+        // 0.5.342: the watch's ending waits for this save, so its pill and card know what was learned.
+        learnSaves.append(Task {
             guard await TranscriptionDictionaryStore.shared.learn(heard: item.heard, written: item.written, source: "dictation") else {
                 // 0.5.337 (loop audit W14): a failed save keeps the edit as a suggestion, so Add in Dictation is the retry.
                 suggestions = DictationSuggestions.suggesting(item, in: suggestions, now: Date()); saveSuggestions()
@@ -3423,7 +3461,7 @@ enum DictationSpareBuild: Sendable {
                     if learnedUndoID == item.id { learnedUndoID = nil; learnedUndoPill = nil }
                 }
             }
-        }
+        })
     }
     /// 0.5.338: the pill's Undo on "✓ LEARNED · WORD": the same Undo as the Learned list, then the pill goes.
     func undoLearnedFromPill() {
@@ -3433,6 +3471,79 @@ enum DictationSpareBuild: Sendable {
         pill = .hidden
         Task { await undoLearned(id) }
     }
+    // MARK: Your edit, confirmed (0.5.342)
+
+    /// A watch ended. The person's own edit inside the dictation goes on its history record, and the pill says so once:
+    /// "✓ EDIT SAVED" with View, or "✓ EDIT SAVED · LEARNED WORD" with Undo when a word was learned and more was edited.
+    /// A learned-only edit keeps the pill it had when it was learned. The log has counts and verdicts, never the words.
+    private func editWatchEnded(_ end: DictationWatchEnd) async {
+        let saves = learnSaves; learnSaves = []
+        for save in saves { await save.value }
+        guard let id = end.recordID, let final = end.finalText, let record = record(id) else {
+            if end.inside > 0 { dictationLog.notice("learn edit saved=false inside=\(end.inside) read=\(end.finalText != nil)") }
+            return
+        }
+        let learned = suggestions.learned.filter { item in
+            item.at >= end.started && end.candidates.contains { $0.heard == item.heard && $0.written == item.written }
+        }
+        guard let edit = DictationEditConfirm.edit(typed: end.typed, recordText: record.text, final: final, app: end.app, at: Date(),
+                                                   inside: end.inside, learned: learned) else {
+            dictationLog.notice("learn edit saved=false inside=\(end.inside) record=changed"); return
+        }
+        recent = DictationHistory.editing(id, edit: edit, in: recent); saveRecent()
+        let shown = DictationEditConfirm.pill(typed: record.text, final: final, learned: learned.map { (heard: $0.heard, written: $0.written) })
+        dictationLog.notice("learn edit saved=true edits=\(edit.edits) learned=\(learned.count) pill=\(shown.logName, privacy: .public)")
+        // Never over a newer dictation's pill: only a hidden pill, or this watch's own LEARNED flash, gives way.
+        guard DictationEditConfirm.showsAtEnd(shown), let label = DictationEditConfirm.label(shown), !busy,
+              pill == .hidden || (learnedUndoPill != nil && pill == learnedUndoPill) else { return }
+        let flash = DictationPill.flash(label: label, confirmed: true)
+        if case .savedAndLearned = shown, let undo = learned.last {
+            editViewID = nil; editViewPill = nil
+            learnedUndoID = undo.id; learnedUndoPill = flash
+        } else {
+            learnedUndoID = nil; learnedUndoPill = nil
+            editViewID = id; editViewPill = flash
+        }
+        pill = flash
+        flashTask?.cancel()
+        flashTask = Task {
+            try? await Task.sleep(for: .seconds(DictationQuickFix.offerSeconds))
+            if !Task.isCancelled, pill == flash { pill = .hidden }
+            if editViewPill == flash { editViewID = nil; editViewPill = nil }
+            if learnedUndoPill == flash { learnedUndoID = nil; learnedUndoPill = nil }
+        }
+    }
+    /// View on "✓ EDIT SAVED": that dictation's card on the pet, or Activity, Dictation history when the pet is not showing.
+    func viewEditFromPill() {
+        guard let id = pillViewID else { return }
+        editViewID = nil; editViewPill = nil
+        flashTask?.cancel()
+        pill = .hidden
+        if petFrame?() != nil, !busy {
+            surface = .pet
+            openDetail(id)
+        } else {
+            openHistory?()
+        }
+    }
+    /// Undo learn on the card: the same Undo as the pill and the Learned list, for each word this edit taught.
+    func undoLearnedFromCard(_ record: DictationRecord) async {
+        for id in record.edit?.learnedIDs ?? [] where suggestions.learned.contains(where: { $0.id == id }) { await undoLearned(id) }
+    }
+    /// The written forms an edit taught that are still in the dictionary (an Undo takes one out).
+    func liveLearned(_ record: DictationRecord) -> [String] {
+        guard let edit = record.edit else { return [] }
+        return zip(edit.learnedIDs, edit.learned).filter { pair in suggestions.learned.contains { $0.id == pair.0 } }.map { $0.1 }
+    }
+    /// The chip's phrase for this card, from the tested rule and the person's dictionary.
+    func dropPhrase(_ record: DictationRecord) -> String? {
+        guard let edit = record.edit, edit.learned.isEmpty else { return nil }
+        let dictionary = TranscriptionDictionaryStore.shared
+        let terms = Set(dictionary.vocabulary.map { $0.lowercased() } + dictionary.corrections.map { $0.written.lowercased() })
+        return DictationEditConfirm.dropPhrase(parts: DictationWordDiff.diff(original: record.text, final: edit.text),
+                                               isTerm: { terms.contains($0.lowercased()) })
+    }
+
     /// Suggest only's review: Add one, or Add all. Only the ones the dictionary took leave the list.
     func applySuggestions(_ ids: Set<UUID>) async {
         var added: Set<UUID> = []
@@ -3768,7 +3879,7 @@ private final class DictationHostingView<Content: View>: NSHostingView<Content> 
         let panel = existingPanel(store)
         host?.rootView = DictationOverlayRoot(store: store)
         // The pill's Fix (0.5.313) is the one control on a bare pill, so the panel takes clicks while it shows.
-        panel.ignoresMouseEvents = store.card == nil && !fixing && store.fixOfferID == nil && store.pillUndoID == nil
+        panel.ignoresMouseEvents = store.card == nil && !fixing && store.fixOfferID == nil && store.pillUndoID == nil && store.pillViewID == nil
         panel.allowsKey = fixing
         place(panel, size: host?.fittingSize ?? NSSize(width: 360, height: 60))
         if fixing { panel.makeKeyAndOrderFront(nil) } else { panel.orderFrontRegardless() }
@@ -3830,6 +3941,7 @@ struct DictationOverlayRoot: View {
             if store.pill != .hidden {
                 DictationListeningPill(pill: store.pill, meter: store.meter, floating: true, size: size, reduceMotion: reduceMotion,
                                        onFix: store.fixOfferID == nil ? nil : { store.quickFix() },
+                                       onView: store.pillViewID == nil ? nil : { store.viewEditFromPill() },
                                        onUndo: store.pillUndoID == nil ? nil : { store.undoLearnedFromPill() })
             }
         }
@@ -3848,6 +3960,8 @@ struct DictationListeningPill: View {
     let reduceMotion: Bool
     /// 0.5.313: Fix on the flash, for DictationQuickFix.offerSeconds. Nil: no button.
     var onFix: (() -> Void)? = nil
+    /// 0.5.342: View on "✓ EDIT SAVED", for the same time: the dictation's card. Nil: no button.
+    var onView: (() -> Void)? = nil
     /// 0.5.338: Undo on "✓ LEARNED · WORD", for the same time. Nil: no button.
     var onUndo: (() -> Void)? = nil
 
@@ -3909,6 +4023,18 @@ struct DictationListeningPill: View {
                     .help("Remove this word from the dictionary")
                     .accessibilityLabel("Undo, remove this word from the dictionary")
                 }
+                if let onView {
+                    Button(action: onView) {
+                        Text("VIEW")
+                            .padding(.horizontal, size.length(7))
+                            .padding(.vertical, size.length(2))
+                            .background(Capsule().fill(ink.opacity(0.16)))
+                            .contentShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .help("See your edit on this dictation's card")
+                    .accessibilityLabel("View your edit")
+                }
             }
         }
         .font(COSType.mono(size.typeSize(8), weight: .bold))
@@ -3921,7 +4047,7 @@ struct DictationListeningPill: View {
         .background(Capsule().fill(fill))
         .overlay(Capsule().stroke(floating || done ? Color.clear : COSPalette.line, lineWidth: 1))
         .shadow(color: .black.opacity(floating ? 0.18 : 0), radius: 9, y: 6)
-        .accessibilityElement(children: onFix == nil && onUndo == nil ? .combine : .contain)
+        .accessibilityElement(children: onFix == nil && onUndo == nil && onView == nil ? .combine : .contain)
         .accessibilityLabel({ () -> String in
             switch pill {
             case .transcribing: return "Transcribing dictation"
@@ -4149,22 +4275,51 @@ struct DictationRecordRow: View {
 }
 
 /// One dictation, opened from its row: the full text, Copy, and Fix a word.
-struct DictationRecordDetail: View {
+/// 0.5.342 Your edit, confirmed (mock: wk43_2026/mock-edit-confirm): an edited dictation shows its final words with the
+/// edit marked (removed words struck through, added words tinted and underlined), the edits on the meta line, one line on
+/// whether anything went to the dictionary, Show original, Undo learn for a learned word, and the drop-a-filler chip.
+@MainActor struct DictationRecordDetail: View {
     @ObservedObject var store: MacDictationStore
     let record: DictationRecord
     let size: PetSize
+    @ObservedObject var instructions = DictationPolishInstructionsStore.shared
+    /// Show original: exactly what COS typed, no marks. Copy follows it.
+    @State private var showOriginal = false
+    /// The chip was tapped: the phrase it added, for Undo. Nil: not tapped (or undone).
+    @State private var dropped: String?
+    @State private var dropBusy = false
+
+    private var parts: [DictationWordDiff.Part]? {
+        record.edit.flatMap { DictationWordDiff.diff(original: record.text, final: $0.text) }
+    }
+    private var learnedLive: [String] { store.liveLearned(record) }
+    private var dropPhrase: String? { store.dropPhrase(record) }
+    private var offersDrop: Bool {
+        dropped != nil || DictationEditConfirm.offersDrop(phrase: dropPhrase, available: instructions.available,
+                                                          polishOn: store.polishModel != .off, saved: instructions.saved)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: size.length(7)) {
             ScrollView {
-                Text(record.text)
-                    .font(COSType.body(size.typeSize(11)))
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                Group {
+                    if let edit = record.edit, !showOriginal { Text(Self.marked(parts, final: edit.text)) } else { Text(record.text) }
+                }
+                .font(COSType.body(size.typeSize(11)))
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
             .frame(height: size.length(96))
             Text(record.metaLine(time: DictionaryLabels.when(record.createdAt, now: Date())))
                 .font(COSType.mono(size.typeSize(8), weight: .medium))
                 .foregroundStyle(.secondary)
+            if record.edit != nil {
+                Text(DictationEditConfirm.reason(parts: parts, learned: learnedLive))
+                    .font(COSType.body(size.typeSize(9)))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                if let phrase = dropped ?? dropPhrase, offersDrop { dropChip(phrase) }
+            }
             // 0.5.317: which engine ran, and why Automatic used Whisper when it did.
             if let engine = DictationEngineName.detailLine(engine: record.engine, fallbackReason: record.fallbackReason) {
                 Text(engine)
@@ -4187,22 +4342,139 @@ struct DictationRecordDetail: View {
                         .help("Copy what was heard, before AI polish")
                 }
             }
-            HStack(spacing: size.length(7)) {
-                Button("Copy") { store.copy(record.text) }
-                    .buttonStyle(DictationButtonStyle(primary: true, size: size))
-                Button("Fix a word") { store.openFix(record.id) }
-                    .buttonStyle(DictationButtonStyle(size: size))
-                Spacer(minLength: 0)
-                Button("Delete") { store.deleteRecord(record.id) }
-                    .buttonStyle(COSTextButtonStyle(tone: .destructive))
-                    .font(COSType.body(size.typeSize(10)))
-                Button("Back") { store.backToRecent() }
-                    .buttonStyle(COSTextButtonStyle())
-                    .font(COSType.body(size.typeSize(10)))
+            if record.edit != nil {
+                ViewThatFits(in: .horizontal) {
+                    actions(original: true)
+                    VStack(alignment: .leading, spacing: size.length(5)) { originalLink; actions(original: false) }
+                }
+            } else {
+                actions(original: false)
             }
         }
         .padding(.vertical, size.length(6))
         .padding(.trailing, size.length(8))
+        .onChange(of: record.id) { _, _ in showOriginal = false; dropped = nil }
+        .task(id: record.edit != nil) {
+            if record.edit != nil, !instructions.loaded, !instructions.busy { await instructions.load() }
+        }
+    }
+
+    private func actions(original: Bool) -> some View {
+        HStack(spacing: size.length(7)) {
+            Button("Copy") { store.copy(DictationEditConfirm.copyText(record, showOriginal: showOriginal)) }
+                .buttonStyle(DictationButtonStyle(primary: true, size: size))
+            if !learnedLive.isEmpty {
+                Button("Undo learn") { Task { await store.undoLearnedFromCard(record) } }
+                    .buttonStyle(DictationButtonStyle(size: size))
+                    .help("Remove what COS learned from this edit from your dictionary")
+            } else {
+                Button("Fix a word") { store.openFix(record.id) }
+                    .buttonStyle(DictationButtonStyle(size: size))
+            }
+            if original { originalLink }
+            Spacer(minLength: 0)
+            Button("Delete") { store.deleteRecord(record.id) }
+                .buttonStyle(COSTextButtonStyle(tone: .destructive))
+                .font(COSType.body(size.typeSize(10)))
+            Button("Back") { store.backToRecent() }
+                .buttonStyle(COSTextButtonStyle())
+                .font(COSType.body(size.typeSize(10)))
+        }
+    }
+
+    private var originalLink: some View {
+        Button(showOriginal ? "Show edit" : "Show original") { showOriginal.toggle() }
+            .buttonStyle(COSTextButtonStyle())
+            .font(COSType.body(size.typeSize(10)))
+            .help(showOriginal ? "Show the text with your edit" : "Show exactly what COS typed")
+            .fixedSize()
+    }
+
+    /// Always drop "<phrase>" from my dictation: one tap adds it to the polish instructions, through the same setting as
+    /// Settings, Dictation. Then it says so, with Undo. Never added without the tap.
+    @ViewBuilder private func dropChip(_ phrase: String) -> some View {
+        if dropped == phrase {
+            HStack(spacing: size.length(7)) {
+                Text(DictationEditConfirm.chipAdded)
+                    .font(COSType.body(size.typeSize(9)))
+                    .foregroundStyle(.secondary)
+                Button("Undo") {
+                    Task {
+                        dropBusy = true; defer { dropBusy = false }
+                        let next = DictationEditConfirm.removing(phrase, from: instructions.saved)
+                        let undone: Bool
+                        if next.isEmpty { undone = await instructions.clear() } else { undone = await instructions.save(next) }
+                        if undone { dropped = nil }
+                    }
+                }
+                .buttonStyle(COSTextButtonStyle())
+                .font(COSType.body(size.typeSize(9)))
+                .disabled(dropBusy)
+            }
+        } else {
+            Button {
+                Task {
+                    dropBusy = true; defer { dropBusy = false }
+                    guard let next = DictationEditConfirm.adding(phrase, to: instructions.saved) else { return }
+                    if await instructions.save(next) { dropped = phrase }
+                }
+            } label: {
+                (Text("Always drop ") + Text("\"\(phrase)\"").fontWeight(.semibold).foregroundColor(COSPalette.accent) + Text(" from my dictation"))
+                    .font(COSType.body(size.typeSize(9)))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, size.length(7))
+                    .padding(.vertical, size.length(4))
+                    .overlay(RoundedRectangle(cornerRadius: size.length(6), style: .continuous)
+                        .stroke(COSPalette.accent.opacity(0.5), style: StrokeStyle(lineWidth: 1, dash: [3, 2])))
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(dropBusy || instructions.busy)
+            .help("Adds this to your polish instructions, so AI polish drops it from later dictations")
+            .accessibilityLabel(DictationEditConfirm.chipLabel(phrase))
+        }
+    }
+
+    /// The final words with the edit marked: removed words struck through in the muted ink, added words with a light
+    /// gold tint and a gold underline. No diff (too long): the final words alone.
+    static func marked(_ parts: [DictationWordDiff.Part]?, final: String) -> AttributedString {
+        guard let parts else { return AttributedString(final) }
+        typealias UI = AttributeScopes.SwiftUIAttributes
+        var out = AttributedString()
+        for part in parts {
+            var run = AttributedString(part.text)
+            switch part.kind {
+            case .same:
+                break
+            case .removed:
+                run[UI.ForegroundColorAttribute.self] = COSPalette.muted
+                run[UI.StrikethroughStyleAttribute.self] = Text.LineStyle(pattern: .solid, color: COSPalette.muted)
+            case .added:
+                run[UI.BackgroundColorAttribute.self] = COSPalette.gold.opacity(0.22)
+                run[UI.UnderlineStyleAttribute.self] = Text.LineStyle(pattern: .solid, color: COSPalette.accent)
+            }
+            out += run
+            out += AttributedString(part.trailing)
+        }
+        return out
+    }
+}
+
+/// "EDITED IN CLAUDE" in the dictation card's header row (0.5.342): green, as in the mock.
+struct DictationEditedTag: View {
+    let app: String
+    let size: PetSize
+    var body: some View {
+        Text(DictationEditConfirm.tag(app: app))
+            .font(COSType.mono(size.typeSize(7), weight: .bold))
+            .kerning(0.4)
+            .lineLimit(1)
+            .foregroundStyle(COSPalette.green)
+            .padding(.horizontal, size.length(5))
+            .padding(.vertical, size.length(2))
+            .background(COSPalette.green.opacity(0.14), in: RoundedRectangle(cornerRadius: size.length(4), style: .continuous))
+            .padding(.trailing, size.length(8))
+            .accessibilityLabel("Edited in " + app)
     }
 }
 
@@ -4879,7 +5151,7 @@ struct DictationHistoryPane: View {
                         .padding(.top, 6)
                     ForEach(group.records) { record in
                         DictationHistoryRow(record: record, busy: store.busy,
-                                            onCopy: { store.copy(record.text) },
+                                            onCopy: { store.copy(record.finalText) },
                                             onFix: { store.openFixFromHistory(record.id) },
                                             onDelete: { store.deleteRecord(record.id) })
                         Divider()
@@ -4947,6 +5219,12 @@ private struct DictationHistoryRow: View {
     let onFix: () -> Void
     let onDelete: () -> Void
     @State private var copied = false
+    private var meta: String {
+        let words = record.finalWordCount
+        let line = "\(words) \(words == 1 ? "word" : "words") · \(record.outcomeLabel)" + (record.polishLabel.map { " · " + $0 } ?? "")
+        guard let edit = record.edit else { return line }
+        return line + " · edited in " + edit.app + " · " + DictationEditConfirm.editsLabel(edit.edits)
+    }
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 10) {
             Text(record.createdAt.formatted(date: .omitted, time: .shortened))
@@ -4954,12 +5232,13 @@ private struct DictationHistoryRow: View {
                 .foregroundStyle(.secondary)
                 .frame(width: 64, alignment: .leading)
             VStack(alignment: .leading, spacing: 2) {
-                Text(record.firstLine)
+                // 0.5.342: an edited dictation reads as it was sent, and says it was edited.
+                Text(record.finalFirstLine)
                     .font(COSType.body(12))
                     .lineLimit(2)
                     .truncationMode(.tail)
                     .textSelection(.enabled)
-                Text("\(record.wordCount) \(record.wordCount == 1 ? "word" : "words") · \(record.outcomeLabel)" + (record.polishLabel.map { " · " + $0 } ?? ""))
+                Text(meta)
                     .font(COSType.mono(9, weight: .medium))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
