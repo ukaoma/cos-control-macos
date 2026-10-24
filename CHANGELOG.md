@@ -6,6 +6,9 @@ On top of 0.5.341 (build 395). Mock approved by Miles 2026-10-24
 When you edit text COS typed, the pill says Edit saved and the dictation card shows your edit, what changed, and whether
 a word went to your dictionary. One tap can tell COS to drop a filler like "kind of" from now on.
 
+Fix: a build number with a dot (a local build stamped 394.2) read as build 0, so the panel offered the older public
+0.5.339 as an update. The app now keeps the leading whole number. Pinned by `Tests/build-number-pins.py`.
+
 Evidence: Miles's Mac, 08:30, Claude desktop, `learn-canary.jsonl`: eligibility learn, reads 4, inside 2, candidates 0,
 learned 0, stop focusLeft. He removed "kind of"; the watch saw it and COS said nothing, and the history still read
 "kind of".

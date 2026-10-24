@@ -11,6 +11,7 @@ BIN="$(mktemp /tmp/cos-edit-confirm.XXXXXX)"
 trap 'rm -f "$BIN"' EXIT
 if [[ "$LANE" == "all" || "$LANE" == "pins" ]]; then
   /usr/bin/python3 "$ROOT/Tests/edit-confirm-pins.py" "$ROOT"
+  /usr/bin/python3 "$ROOT/Tests/build-number-pins.py" "$ROOT"
 fi
 if [[ "$LANE" == "all" || "$LANE" == "checks" ]]; then
   /usr/bin/python3 "$ROOT/Tests/kit-compile.py" "$ROOT/Tests/compile-guard.sh" swiftc -target arm64-apple-macosx14.0 -swift-version 6 -strict-concurrency=complete -parse-as-library \

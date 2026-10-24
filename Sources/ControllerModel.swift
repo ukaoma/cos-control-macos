@@ -566,8 +566,11 @@ final class ControllerModel: ObservableObject {
     static var currentVersion: String {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0"
     }
-    static var currentBuild: Int {
-        Int(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "") ?? 0
+    static var currentBuild: Int { parseBuild(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String) }
+    /// 0.5.342: a local build stamped "394.2" read as build 0, so Update offered the older public 0.5.339 as an
+    /// upgrade. Keep the leading whole number ("394.2" is 394); only a string with no leading digits is 0.
+    static func parseBuild(_ raw: String?) -> Int {
+        Int((raw ?? "").trimmingCharacters(in: .whitespaces).prefix(while: \.isNumber)) ?? 0
     }
 
     let meetingAsk = MeetingAskStore()
