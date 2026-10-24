@@ -419,9 +419,11 @@ final class FakeDictationBoard: DictationPasteboardAccess {
         ]
         let packFiles = Dictionary(uniqueKeysWithValues: shippedPacks.map { ($0.id, $0.files) })
         let installed = { (id: String) in L.installedPack(packFiles[id]!, packs: shippedPacks) }
-        expect(installed("jedi-miles-windu") == L.winduPackID && installed("jedi-nia-solari") == "jedi-nia-solari"
-               && installed("jedi-elara-vale") == nil && installed("jedi-rowan-vale") == nil,
-               "Windu and Nia are recognized; Elara and Rowan share file names, so neither is named")
+        for pack in shippedPacks {
+            expect(installed(pack.id) == pack.id, "V2 character-specific filenames identify \(pack.id)")
+        }
+        expect(L.installedPack(["shared.png"], packs: [(id: "one", files: ["shared.png"]), (id: "two", files: ["shared.png"])]) == nil,
+               "ambiguous filenames never select a shipped pack")
         expect(L.installedPack([], packs: shippedPacks) == nil && L.installedPack(["session-pet-idle.png"], packs: shippedPacks) == nil
                && L.installedPack(packFiles["jedi-miles-windu"]!.union(["custom.png"]), packs: shippedPacks) == nil
                && L.installedPack([], packs: [(id: "empty", files: [])]) == nil, "an unknown, edited or empty pack is no shipped pack")
