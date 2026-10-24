@@ -561,6 +561,10 @@ final class ControllerModel: ObservableObject {
         openReview != nil || reviewLoading || (reviewError != nil && lastReviewSession != nil)
     }
 
+    /// 0.5.343: the meeting the review pane was last asked to show (read only), so its build-up treats the next meeting
+    /// as a new open.
+    var reviewRequest: String? { lastReviewSession }
+
     /// This build's identity, handed to the helper so the answer can never depend on
     /// WHICH helper copy ran (bundled vs stable, HelperClient.helperURL():55-64).
     static var currentVersion: String {

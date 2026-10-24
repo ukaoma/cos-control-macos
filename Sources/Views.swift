@@ -3749,8 +3749,8 @@ struct SpeakerReviewPane: View {
             Divider()
 
             // 0.5.343: the transcript builds in place on first open (COSBuildUp); the chain is today's.
-            COSBuildUp(.turns(6), loading: model.reviewLoading && model.openReview == nil, landed: model.openReview != nil,
-                       label: "Reading the transcript") {
+            COSBuildUp(.turns(6), loading: model.reviewLoading, landed: model.openReview != nil && !model.reviewLoading,
+                       label: "Reading the transcript", key: model.reviewRequest.map { AnyHashable($0) }) {
             if model.reviewLoading {
                 ProgressView("Reading the transcript…")
                     .font(.system(size: 12))
@@ -4084,10 +4084,6 @@ struct ContextDetailPane: View {
                 Spacer()
                 if model.contextDetailLoading { ProgressView().controlSize(.small) }
             }
-            // 0.5.343: the record builds in place on first open (COSBuildUp); what is inside is today's.
-            COSBuildUp(.detail(turns: 4), loading: model.contextDetailLoading && model.contextDetail == nil, landed: model.contextDetail != nil,
-                       label: "Loading record") {
-                VStack(alignment: .leading, spacing: 10) {
             if let record = model.contextDetail {
                 Text(record.title)
                     .font(COSType.display(18, weight: .medium))
@@ -4144,8 +4140,6 @@ struct ContextDetailPane: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 0)
-                }
-            }
         }
         .padding(16)
     }
@@ -4175,10 +4169,6 @@ struct LearningDetailPane: View {
                 Spacer()
                 if model.learningDetailLoading { ProgressView().controlSize(.small) }
             }
-            // 0.5.343: the lesson builds in place on first open (COSBuildUp); what is inside is today's.
-            COSBuildUp(.detail(turns: 4), loading: model.learningDetailLoading && model.learningDetail == nil, landed: model.learningDetail != nil,
-                       label: "Loading lesson") {
-                VStack(alignment: .leading, spacing: 10) {
             if let event = model.learningDetail {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 12) {
@@ -4269,8 +4259,6 @@ struct LearningDetailPane: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 0)
-                }
-            }
         }
         .padding(16)
     }
@@ -4376,10 +4364,6 @@ struct GraphEntityPane: View {
                 Spacer()
                 if model.graphEntityLoading { ProgressView().controlSize(.small) }
             }
-            // 0.5.343: the entity builds in place on first open (COSBuildUp); what is inside is today's.
-            COSBuildUp(.detail(turns: 4), loading: model.graphEntityLoading && model.graphEntity == nil, landed: model.graphEntity != nil,
-                       label: "Loading entity") {
-                VStack(alignment: .leading, spacing: 10) {
             if let entity = model.graphEntity {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 12) {
@@ -4482,8 +4466,6 @@ struct GraphEntityPane: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 0)
-                }
-            }
         }
         .padding(16)
     }

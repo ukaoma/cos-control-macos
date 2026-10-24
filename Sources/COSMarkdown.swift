@@ -381,7 +381,7 @@ private struct COSMarkdownDetails: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             Button {
-                withAnimation(Motion.gated(.easeInOut(duration: 0.15), reduceMotion: reduceMotion)) { expanded.toggle() }
+                withAnimation(Motion.gated(.easeInOut(duration: Motion.quick), reduceMotion: reduceMotion)) { expanded.toggle() }
             } label: {
                 HStack(spacing: 10) {
                     Image(systemName: "chevron.right")

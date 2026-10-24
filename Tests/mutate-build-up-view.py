@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""0.5.343 Build-up, in place: the mutation gate for the LIVE view (Sources/COSMotion.swift's COSBuildUp and its stage)
+"""0.5.343 Build-up, in place: the mutation gate for the LIVE view (COSBuildUp and its stage in Sources/COSMotion.swift, and what it reads from Models.swift)
 against Tests/BuildUpViewChecks.swift, which hosts the real view off screen and watches every frame it draws.
 
 SERIAL and slow by design: each run is one full app compile (the view needs every Source), through Tests/compile-guard.sh
@@ -12,14 +12,21 @@ import pathlib, re, shutil, subprocess, sys, tempfile
 
 root = pathlib.Path(sys.argv[1]).resolve()
 MOTION = "Sources/COSMotion.swift"
+MODELS = "Sources/Models.swift"
 
 # (name, old, new, the behaviour whose check must fail first)
 MUTANTS = [
-    ("the landing snaps the wire drawn", "let drawT = machine.drawT(at: t) ?? 0\n",
-     "let drawT = machine.phase == .landing ? 9 : (machine.drawT(at: t) ?? 0)\n", "landing continuous"),
-    ("the clock never pauses", "TimelineView(COSBuildUpSchedule(paused: !machine.needsFrames(windowActive: active)))",
+    ("the landing snaps the wire drawn", MOTION, "drawT: machine.drawT(at: t) ?? 0, landT: machine.landT(at: t),",
+     "drawT: machine.phase == .landing ? 9 : (machine.drawT(at: t) ?? 0), landT: machine.landT(at: t),", "landing continuous"),
+    ("the clock never pauses", MOTION, "TimelineView(COSBuildUpSchedule(paused: !machine.needsFrames(windowActive: active)))",
      "TimelineView(COSBuildUpSchedule(paused: false))", "frames stop"),
-    ("a seen view builds again", "quiet: frozen == nil && !COSBuildUpSession.memory.builds(memoryKey)", "quiet: false", "reopen quiet"),
+    ("an opaque tint", MOTION, "Rectangle().fill(background).opacity(curtain)", "Rectangle().fill(background).opacity(curtain > 0 ? 1 : 0)", "curtain light"),
+    ("the stage ignores the view's height", MOTION, "COSBuildUpPlan.items(shape, tune, limit: limit, fitting: height,",
+     "COSBuildUpPlan.items(shape, tune, limit: limit, fitting: nil,", "fit"),
+    ("the answer never re-fits", MOTION, "measured: shape == .answer && phase == .landing ? height : nil)", "measured: nil)", "answer refit"),
+    ("the hand-off hides the content", MODELS, "        phase == .grace || (phase == .building && !wordsShown)",
+     "        phase == .grace || phase == .handoff || (phase == .building && !wordsShown)", "never hides data"),
+    ("a seen view builds again", MOTION, "quiet: !COSBuildUpSession.memory.builds(memoryKey)", "quiet: false", "empty remembered"),
 ]
 FAILED = re.compile(r"check failed \[([^\]]+)\]")
 
@@ -41,23 +48,23 @@ work = pathlib.Path(tempfile.mkdtemp(prefix="cos-build-up-view-mutants-", dir="/
 try:
     for name in ("Sources", "Tests", "Resources"):
         shutil.copytree(root / name, work / name)
-    original = (work / MOTION).read_text()
-    for name, old, _, _ in MUTANTS:
-        if original.count(old) != 1:
-            sys.exit(f"mutant '{name}' targets {original.count(old)} sites; it must land exactly once")
+    originals = {path: (work / path).read_text() for path in (MOTION, MODELS)}
+    for name, path, old, _, _ in MUTANTS:
+        if originals[path].count(old) != 1:
+            sys.exit(f"mutant '{name}' targets {originals[path].count(old)} sites; it must land exactly once")
     verdict, detail = run(work)
     if verdict != "SURVIVED":
         sys.exit(f"baseline is not green ({verdict}: {detail})")
     print("baseline green", flush=True)
     bad = []
-    for name, old, new, expected in MUTANTS:
-        (work / MOTION).write_text(original.replace(old, new))
+    for name, path, old, new, expected in MUTANTS:
+        (work / path).write_text(originals[path].replace(old, new))
         verdict, detail = run(work)
         ok = verdict == "FAILED" and detail == expected
         print(f"{'KILLED' if ok else verdict:13} {name}  <- {detail or 'every view check passed'}", flush=True)
         if not ok:
             bad.append(name)
-        (work / MOTION).write_text(original)
+        (work / path).write_text(originals[path])
     if bad:
         sys.exit(f"view mutation gate FAILED: {bad}")
     print(f"PASS build up view mutation gate: {len(MUTANTS)} mutants, each killed by its named check, green baseline")

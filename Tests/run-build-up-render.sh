@@ -5,7 +5,7 @@
 # No window is ordered in and nothing is clicked, typed or activated.
 set -euo pipefail
 ROOT="${0:A:h:h}"
-OUT="${1:?usage: run-build-up-render.sh <folder for the PNGs>}"
+OUT="${1:?usage: run-build-up-render.sh <folder for the PNGs> [geometry]}"
 OUT="${OUT:A}"
 DIR="$(mktemp -d /tmp/cos-build-up-render.XXXXXX)"
 trap 'rm -rf "$DIR"' EXIT
@@ -18,4 +18,4 @@ HOME_DIR="$DIR/cos-build-up-render home.ü"
 mkdir -p "$DIR/Fonts" "$HOME_DIR"
 cp "$ROOT/Resources/Fonts/"*.ttf "$DIR/Fonts/"
 cp "$ROOT/Resources/"*.svg "$DIR/"
-CFFIXED_USER_HOME="$HOME_DIR" HOME="$HOME_DIR" COS_CONTROL_TEST_HOME="$HOME_DIR" "$DIR/build-up-render" "$OUT" 2>"$DIR/stderr.log" || { cat "$DIR/stderr.log" >&2; exit 1; }
+CFFIXED_USER_HOME="$HOME_DIR" HOME="$HOME_DIR" COS_CONTROL_TEST_HOME="$HOME_DIR" "$DIR/build-up-render" "$OUT" ${2:-} 2>"$DIR/stderr.log" || { cat "$DIR/stderr.log" >&2; exit 1; }

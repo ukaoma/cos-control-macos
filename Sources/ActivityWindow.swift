@@ -2243,8 +2243,8 @@ struct ActivityWindow: View {
             sessionsSearchBar
             sessionHooksBanner
             // 0.5.343: the list builds in place on first load (COSBuildUp); the chain is today's.
-            COSBuildUp(.rows(6), loading: !model.isSessionQueryActive && model.claudeSessionsLoading && sessions.isEmpty,
-                       landed: !sessions.isEmpty, label: "Loading sessions") {
+            COSBuildUp(.rows(6), tune: .sessions, loading: model.claudeSessionsLoading && sessions.isEmpty, landed: !sessions.isEmpty,
+                       interrupted: model.isSessionQueryActive, label: "Loading sessions") {
             if model.isSessionQueryActive {
                 sessionsSearchResults(ambiguous: ambiguous)
             } else if model.claudeSessionsLoading && sessions.isEmpty {
@@ -2356,7 +2356,7 @@ struct ActivityWindow: View {
             .padding(.horizontal, 22)
             .padding(.vertical, 12)
             // 0.5.343: the list builds in place on first load (COSBuildUp); the chain is today's.
-            COSBuildUp(.rows(6), loading: model.tasksLoading && model.tasks.isEmpty, landed: !model.tasks.isEmpty, label: "Loading tasks") {
+            COSBuildUp(.rows(6), tune: .tasks, loading: model.tasksLoading && model.tasks.isEmpty, landed: !model.tasks.isEmpty, label: "Loading tasks") {
             if model.tasksLoading && model.tasks.isEmpty {
                 centeredProgress("Loading tasks…")
             } else if let error = model.tasksError, model.tasks.isEmpty {
@@ -3171,8 +3171,8 @@ struct ActivityWindow: View {
                 .padding(.bottom, 8)
 
             // 0.5.343: the turns build in place on first load (COSBuildUp); the chain is today's.
-            COSBuildUp(.list(6), loading: messagesSubview != .archive && model.recentGlassesStatus == .loading,
-                       landed: !model.recentMessages.isEmpty, label: "Loading messages") {
+            COSBuildUp(.list(6), tune: .messages, loading: model.recentGlassesStatus == .loading, landed: !model.recentMessages.isEmpty,
+                       interrupted: messagesSubview == .archive, label: "Loading messages") {
                 VStack(spacing: 0) {
             if messagesSubview == .archive {
                 archiveBody
@@ -4030,7 +4030,7 @@ struct ActivityWindow: View {
     @ViewBuilder
     private var voiceDirectoryList: some View {
         // 0.5.343: the directory builds in place on first load (COSBuildUp); the chain is today's.
-        COSBuildUp(.list(6), loading: model.voiceDirectoryLoading && model.voiceDirectory.isEmpty, landed: !model.voiceDirectory.isEmpty,
+        COSBuildUp(.list(6), tune: .voices, loading: model.voiceDirectoryLoading && model.voiceDirectory.isEmpty, landed: !model.voiceDirectory.isEmpty,
                    label: "Building the voice directory") {
         if model.voiceDirectoryLoading && model.voiceDirectory.isEmpty {
             centeredProgress("Building the voice directory…")
@@ -4356,7 +4356,7 @@ struct ActivityWindow: View {
             )
             // 0.5.343: the events build in place on first load (COSBuildUp); the chain is today's.
             COSBuildUp(.list(6), loading: loading && events.isEmpty, landed: !events.isEmpty,
-                       label: toReview ? "Loading the review queue" : "Loading recent learning", key: AnyHashable(toReview)) {
+                       label: toReview ? "Loading the review queue" : "Loading recent learning") {
                 VStack(spacing: 0) {
             if loading, events.isEmpty {
                 centeredProgress(toReview ? "Loading review queue…" : "Loading recent learning…")
@@ -4764,8 +4764,8 @@ struct ActivityWindow: View {
                 contextSearchBar(kind: kind)
             }
             // 0.5.343: the records build in place on first load (COSBuildUp); the chain is today's.
-            COSBuildUp(.rows(6), loading: !queryActive && loading, landed: !records.isEmpty,
-                       label: "Loading \(item.title.lowercased())", key: AnyHashable(kind)) {
+            COSBuildUp(.rows(6), tune: isThread ? .threads : .memories, loading: loading, landed: !records.isEmpty, interrupted: queryActive,
+                       label: "Loading \(item.title.lowercased())") {
             if queryActive {
                 contextSearchResults(kind: kind, item: item)
             } else if loading {
@@ -5718,7 +5718,7 @@ struct ActivityWindow: View {
     private func jumpToMatch(step: Int, ids: [ArchiveMessage.ID], proxy: ScrollViewProxy) {
         guard !ids.isEmpty else { return }
         chatMatchCursor = ((chatMatchCursor + step) % ids.count + ids.count) % ids.count
-        withAnimation(Motion.gated(.easeInOut(duration: 0.25), reduceMotion: reduceMotion)) {
+        withAnimation(Motion.gated(.easeInOut(duration: Motion.fast), reduceMotion: reduceMotion)) {
             proxy.scrollTo(ids[chatMatchCursor], anchor: .center)
         }
     }

@@ -224,8 +224,8 @@ struct MeetingLibraryBody: View {
 
     /// 0.5.343: the list builds in place on its first load (COSBuildUp); the chain below is today's, untouched.
     private var content: some View {
-        COSBuildUp(.rows(6), loading: !model.isLibraryQueryActive && model.libraryLoading && model.libraryMeetings.isEmpty,
-                   landed: !model.libraryMeetings.isEmpty, label: "Loading meetings") { libraryContent }
+        COSBuildUp(.rows(6), loading: model.libraryLoading && model.libraryMeetings.isEmpty, landed: !model.libraryMeetings.isEmpty,
+                   interrupted: model.isLibraryQueryActive, label: "Loading meetings") { libraryContent }
     }
 
     @ViewBuilder

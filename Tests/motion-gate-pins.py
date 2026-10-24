@@ -34,13 +34,13 @@ win = read("Sources/ActivityWindow.swift")
 motion = body(mot, "enum Motion {", "extension COSPalette {")
 need("static func gated(_ animation: Animation, reduceMotion: Bool) -> Animation?" in motion, "[Motion] gated(_:reduceMotion:) exists")
 need("reduceMotion ? nil : animation" in motion, "[Motion] gated returns nil under Reduce Motion, so the change lands with no animation")
-need(".timingCurve(0.22, 1, 0.36, 1, duration: duration)" in motion, "[Motion] smoothOut is the shared ease-smooth-out curve")
-for name, value in (("quick", "0.15"), ("fast", "0.25"), ("medium", "0.35"), ("verySlow", "0.50"), ("stagger", "0.04")):
-    need(f"static let {name} = {value}" in motion, f"[Motion] {name} stays {value}s, the value gotcos and the companion use")
+need("static let quick = 0.15" in motion and "static let fast = 0.25" in motion, "[Motion] quick 0.15 s and fast 0.25 s, the values gotcos and the companion use")
+for unused in ("micro", "medium", "slow", "verySlow", "stagger", "distance", "smoothOut", "bounce"):
+    need(unused not in motion, f"[Motion] no unused token: {unused}")
 
 fold = body(md, "private struct COSMarkdownDetails: View {", "var body: some View")
 need("@Environment(\\.accessibilityReduceMotion) private var reduceMotion" in fold, "[fold] the transcript fold reads Reduce Motion")
-need("withAnimation(Motion.gated(.easeInOut(duration: 0.15), reduceMotion: reduceMotion)) { expanded.toggle() }" in md,
+need("withAnimation(Motion.gated(.easeInOut(duration: Motion.quick), reduceMotion: reduceMotion)) { expanded.toggle() }" in md,
      "[fold] the transcript fold toggles through Motion.gated")
 
 need('withAnimation(Motion.gated(.default, reduceMotion: reduceMotion)) { reader.scrollTo("setup-guide", anchor: .top) }' in views,
@@ -48,7 +48,7 @@ need('withAnimation(Motion.gated(.default, reduceMotion: reduceMotion)) { reader
 need('withAnimation { reader.scrollTo("setup-guide"' not in views, "[setup] no ungated scroll to the setup guide is left")
 
 jump = body(win, "private func jumpToMatch(", "private func messageDetail(")
-need("withAnimation(Motion.gated(.easeInOut(duration: 0.25), reduceMotion: reduceMotion))" in jump,
+need("withAnimation(Motion.gated(.easeInOut(duration: Motion.fast), reduceMotion: reduceMotion))" in jump,
      "[chat] the chat match scroll goes through Motion.gated")
 
 if fails:

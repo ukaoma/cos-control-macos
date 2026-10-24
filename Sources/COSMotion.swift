@@ -213,33 +213,14 @@ extension View {
 
 // MARK: - Motion tokens
 
-/// The shared motion scale gotcos.com and the Glasses companion use (transitions.dev,
-/// commit 54fbee8): `cos-starter/assets/motion.css` and the companion's `public/tokens.css`.
-/// Match a value on what the motion does, not on the nearest number. Opens are slower
-/// than closes, overshoot is for entrances only, and a stagger is 40 ms per item with the
-/// total kept under ~300 ms.
+/// The shared motion scale gotcos.com and the Glasses companion use (transitions.dev, commit 54fbee8): only the values
+/// Control uses so far. `quick` folds and dismisses, `fast` opens, routes and scrolls.
 enum Motion {
-    static let stagger = 0.04    // per-item offset
-    static let micro = 0.08      // intent delay, shake segment
-    static let quick = 0.15      // close, dismiss, text swap
-    static let fast = 0.25       // open, route change, accordion, list to detail
-    static let medium = 0.35     // panel close, notice arriving
-    static let slow = 0.40       // panel open, skeleton to content
-    static let verySlow = 0.50   // emphasis: counters, success check
-    static let distance: CGFloat = 8  // a side-by-side page travels this far, not full width
+    static let quick = 0.15
+    static let fast = 0.25
 
-    /// The default curve for anything that opens, closes, slides or resizes.
-    static func smoothOut(_ duration: Double) -> Animation {
-        .timingCurve(0.22, 1, 0.36, 1, duration: duration)
-    }
-
-    /// Overshoot for entrances only (a count arriving, a badge). Never for a close.
-    static func bounce(_ duration: Double) -> Animation {
-        .timingCurve(0.34, 1.36, 0.64, 1, duration: duration)
-    }
-
-    /// `nil` under Reduce Motion, so `withAnimation(Motion.gated(...))` changes state with
-    /// no animation at all. Every withAnimation that moves or scrolls goes through this.
+    /// `nil` under Reduce Motion, so `withAnimation(Motion.gated(...))` changes state with no animation at all. The
+    /// transcript fold, the setup-guide scroll and the chat match scroll go through it (0.5.343).
     static func gated(_ animation: Animation, reduceMotion: Bool) -> Animation? {
         reduceMotion ? nil : animation
     }
@@ -261,24 +242,22 @@ extension COSPalette {
 // MARK: - Build-up, in place (0.5.343)
 
 extension COSPalette {
-    /// The build-up's gold wire: rgba(137,102,45,.62) on Control's cream, the brand gold at the same weight on espresso.
-    static let wire = Color(nsColor: NSColor(name: nil) { appearance in
-        appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
-            ? NSColor(red: 0.79, green: 0.66, blue: 0.43, alpha: 0.62)
-            : NSColor(red: 137 / 255, green: 102 / 255, blue: 45 / 255, alpha: 0.62)
-    })
-    /// The node ping's ring (the mock's --wire-soft).
-    static let wireSoft = Color(nsColor: NSColor(name: nil) { appearance in
-        appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
-            ? NSColor(red: 0.79, green: 0.66, blue: 0.43, alpha: 0.30)
-            : NSColor(red: 137 / 255, green: 102 / 255, blue: 45 / 255, alpha: 0.28)
-    })
-    /// A wire capsule filled solid (the mock's --bone): ink at 10% on cream, cream at 10% on espresso.
-    static let wireBone = Color(nsColor: NSColor(name: nil) { appearance in
-        appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
-            ? NSColor(red: 0.96, green: 0.94, blue: 0.90, alpha: 0.10)
-            : NSColor(red: 31 / 255, green: 23 / 255, blue: 18 / 255, alpha: 0.10)
-    })
+    /// The build-up's wire on `background`: the mock's brown rgba(137,102,45,.62) on a light surface, the brand gold on a
+    /// dark one (COSBuildUpPlan.wire), chosen from the surface itself, so the Running card (dark in both appearances)
+    /// gets the gold in light mode too.
+    @MainActor static func wire(on background: Color, in environment: EnvironmentValues) -> Color {
+        let w = COSBuildUpPlan.wire(onLuminance: buildUpLuminance(background, environment))
+        return Color(.sRGB, red: w.r, green: w.g, blue: w.b, opacity: w.a)
+    }
+    /// A wire capsule filled solid (the mock's --bone): ink at 10% on a light surface, cream at 10% on a dark one.
+    @MainActor static func wireBone(on background: Color, in environment: EnvironmentValues) -> Color {
+        buildUpLuminance(background, environment) < 0.18 ? Color(.sRGB, red: 0.96, green: 0.94, blue: 0.90, opacity: 0.10)
+            : Color(.sRGB, red: 31.0 / 255, green: 23.0 / 255, blue: 18.0 / 255, opacity: 0.10)
+    }
+    @MainActor static func buildUpLuminance(_ color: Color, _ environment: EnvironmentValues) -> Double {
+        let resolved = color.resolve(in: environment)
+        return 0.2126 * Double(resolved.linearRed) + 0.7152 * Double(resolved.linearGreen) + 0.0722 * Double(resolved.linearBlue)
+    }
 }
 
 /// A frozen moment of the build, for static renders only: `phase`, `drawT` seconds into the build (its own clock, which
@@ -289,16 +268,39 @@ struct COSBuildUpFrame: Equatable {
     var phaseT: Double = 0
 }
 
-/// Test hooks, nil in the app: every live frame the stage draws (shape, phase, draw clock, the first outline as shown) and
-/// every breadcrumb. Tests/BuildUpViewChecks.swift sets them to watch the real view run.
-@MainActor enum COSBuildUpProbe {
-    static var frame: ((String, COSBuildUpMachine.Phase, Double, Double) -> Void)?
-    static var breadcrumb: ((String) -> Void)?
+/// What the stage drew on one frame, for the view checks: per component its look and the tint over the content.
+struct COSBuildUpProbeFrame {
+    var kind: String
+    var phase: COSBuildUpMachine.Phase
+    var drawT: Double
+    var size: CGSize
+    /// The wire's frame in the window (the view's own frame), and each component's rect inside it.
+    var frame: CGRect
+    var rects: [CGRect]
+    var looks: [COSBuildUpLook]
+    var curtains: [Double]
+    var lines: [Int]
+    var pulsing: Bool
 }
 
-/// What this app session remembers per view (COSBuildUpMemory): seen views reopen quietly, empty ones draw no rows.
+/// Test hooks, nil in the app. `stage`: every frame COSBuildUpStage draws, from inside its body. `wrapper`: whether the
+/// wrapper hides its content, each time it draws. `breadcrumb`: every breadcrumb. `freeze`: every COSBuildUp draws this
+/// frozen moment instead of its own clock (renders of the real call sites).
+@MainActor enum COSBuildUpProbe {
+    static var stage: ((COSBuildUpProbeFrame) -> Void)?
+    static var wrapper: ((String, Bool) -> Void)?
+    static var breadcrumb: ((String) -> Void)?
+    static var freeze: COSBuildUpFrame?
+}
+
+/// What COS remembers per view (COSBuildUpMemory). The empty list is kept across launches in UserDefaults, label keys
+/// only (a label is UI copy, never data), at most COSBuildUpMemory.emptyLimit of them.
 @MainActor enum COSBuildUpSession {
-    static var memory = COSBuildUpMemory()
+    static let emptyKey = "COSBuildUpEmptyViews"
+    static var memory = COSBuildUpMemory(empty: UserDefaults.standard.stringArray(forKey: emptyKey) ?? [])
+    static func record(_ key: String, _ outcome: COSBuildUpMachine.Outcome, persists: Bool) {
+        if memory.record(key, outcome, persists: persists) { UserDefaults.standard.set(memory.empty, forKey: emptyKey) }
+    }
 }
 
 private let buildUpLog = Logger(subsystem: "com.gotcos.control", category: "build-up")
@@ -310,28 +312,35 @@ private let buildUpLog = Logger(subsystem: "com.gotcos.control", category: "buil
 ///     COSBuildUp(.rows(6), loading: model.tasksLoading && model.tasks.isEmpty, landed: !model.tasks.isEmpty,
 ///                label: "Loading tasks") { …today's if / else chain, spinner, error and empty views included… }
 ///
-/// The wrapped view is ALWAYS laid out and live, so its loads, tasks, error and empty paths run exactly as before. While the
-/// first load builds it is only hidden (opacity, hit testing and accessibility), and the wire is an overlay that never
-/// takes a click. Once the data lands the content is live and clickable at once; the ink is a curtain over it that clicks
-/// pass through. After 3 s with no data today's loading words show under the wire.
+/// The wrapped view is ALWAYS laid out and live, so its loads, tasks, error and empty paths run exactly as before, and the
+/// wrapper never changes its size. While the first load builds it is only hidden (opacity, hit testing and accessibility),
+/// and the wire is an overlay clipped to the view that never takes a click. Landed data shows at once, readable and
+/// clickable, under a light tint. An error or empty answer shows at once, with the wire fading over it.
 struct COSBuildUp<Content: View>: View {
     let shape: COSBuildUpShape
+    let tune: COSBuildUpTune
     let loading: Bool
     let landed: Bool
+    let interrupted: Bool
     let label: String
     let key: AnyHashable?
     let background: Color
     let frozen: COSBuildUpFrame?
     @ViewBuilder let content: () -> Content
 
-    /// `label`: what VoiceOver hears while it builds ("Loading meetings"), and with `key` what the session remembers.
-    /// `key`: the thing the view shows (a meeting's id); when it changes the view counts as opened again. `background`: the
-    /// surface behind the content, which the ink wipes away as it reveals the content. `frozen`: static renders only.
-    init(_ shape: COSBuildUpShape, loading: Bool, landed: Bool, label: String, key: AnyHashable? = nil,
-         background: Color = COSPalette.panel, frozen: COSBuildUpFrame? = nil, @ViewBuilder content: @escaping () -> Content) {
+    /// `tune`: this site's own row geometry. `interrupted`: a search or tab switch has taken the view elsewhere (the first
+    /// load settles quietly and is not remembered as empty). `label`: what VoiceOver hears while it builds ("Loading
+    /// meetings"), and with `key` what COS remembers. `key`: the thing the view shows (a meeting's id); when it changes the
+    /// view counts as opened again. `background`: the surface behind the content (the tint and the wire's colour).
+    /// `frozen`: static renders only.
+    init(_ shape: COSBuildUpShape, tune: COSBuildUpTune = .none, loading: Bool, landed: Bool, interrupted: Bool = false, label: String,
+         key: AnyHashable? = nil, background: Color = COSPalette.panel, frozen: COSBuildUpFrame? = nil,
+         @ViewBuilder content: @escaping () -> Content) {
         self.shape = shape
+        self.tune = tune
         self.loading = loading
         self.landed = landed
+        self.interrupted = interrupted
         self.label = label
         self.key = key
         self.background = background
@@ -341,34 +350,32 @@ struct COSBuildUp<Content: View>: View {
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var machine: COSBuildUpMachine?
-    /// An inline view's real height once it lands (the answer re-fits its wire to the text's lines).
-    @State private var measured: Double?
 
     private static func now() -> Double { ProcessInfo.processInfo.systemUptime }
-    private var layout: COSBuildUpLayout { COSBuildUpPlan.layout(shape) }
+    private var layout: COSBuildUpLayout { COSBuildUpPlan.layout(shape, tune) }
     private var memoryKey: String { label + "|" + (key.map { String(describing: $0) } ?? "") }
 
     private func opened(at t: Double) -> COSBuildUpMachine {
-        COSBuildUpMachine(at: t, loading: loading, landed: landed, reduceMotion: reduceMotion, count: COSBuildUpPlan.items(shape).count,
-                          quiet: frozen == nil && !COSBuildUpSession.memory.builds(memoryKey))
+        COSBuildUpMachine(at: t, loading: loading && !interrupted, landed: landed, reduceMotion: reduceMotion,
+                          count: COSBuildUpPlan.items(shape, tune).count, quiet: !COSBuildUpSession.memory.builds(memoryKey),
+                          timeout: COSBuildUpPlan.timeoutSeconds(shape))
     }
 
     var body: some View {
         let now = Self.now()
-        let live = frozen == nil
+        let frozen = self.frozen ?? COSBuildUpProbe.freeze
         let current = machine ?? opened(at: now)
-        let phase = frozen?.phase ?? current.phase
-        let hide = frozen.map { $0.phase == .grace || $0.phase == .handoff || ($0.phase == .building && $0.drawT < COSBuildUpPlan.wordsSeconds) }
-            ?? current.hidesContent
-        let wire = phase == .building || phase == .landing || phase == .handoff
+        let hide = frozen.map { COSBuildUpPlan.hides($0.phase, wordsShown: $0.drawT >= COSBuildUpPlan.wordsSeconds) } ?? current.hidesContent
+        let wire = frozen.map { $0.phase == .building || $0.phase == .landing || $0.phase == .handoff } ?? current.drawsWire
+        let _ = COSBuildUpProbe.wrapper?(shape.kind, hide)
         sized(content()
             .opacity(hide ? 0 : 1)
             .allowsHitTesting(!hide)
-            .accessibilityHidden(hide), hide: hide, reserve: phase == .grace || phase == .building || phase == .handoff)
+            .accessibilityHidden(hide), hide: hide)
             .overlay(alignment: .topLeading) {
                 if wire {
-                    COSBuildUpLiveStage(shape: shape, machine: current, frozen: frozen, measured: measured, background: background,
-                                        onFit: fit)
+                    COSBuildUpLiveStage(shape: shape, tune: tune, machine: current, frozen: frozen, background: background, onFit: fit)
+                        .clipped()
                         .allowsHitTesting(false)
                         .accessibilityHidden(true)
                 }
@@ -380,40 +387,33 @@ struct COSBuildUp<Content: View>: View {
                         .accessibilityAddTraits(.updatesFrequently)
                 }
             }
-            .onAppear { if live, machine == nil { machine = opened(at: Self.now()) } }
+            .onAppear { if frozen == nil, machine == nil { machine = opened(at: Self.now()) } }
+            .onDisappear { abandon() }
             .onChange(of: loading) { _, _ in step() }
             .onChange(of: landed) { _, _ in step() }
+            .onChange(of: interrupted) { _, _ in step() }
             .onChange(of: reduceMotion) { _, _ in step() }
             .onChange(of: key) { _, _ in reopen() }
-            .task(id: live ? machine?.deadline(after: now) : nil) {
-                guard live, let deadline = machine?.deadline(after: Self.now()) else { return }
-                let wait = deadline - Self.now()
-                if wait > 0 { try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000) + 1_000_000) }
+            .task(id: frozen == nil ? machine?.deadline : nil) {
+                // Sleep until the machine's next moment (a wake can come early), then feed it the clock.
+                guard frozen == nil, let deadline = machine?.deadline else { return }
+                while !Task.isCancelled, Self.now() < deadline {
+                    try? await Task.sleep(nanoseconds: UInt64(max(0.001, deadline - Self.now()) * 1_000_000_000))
+                }
                 guard !Task.isCancelled else { return }
                 step()
             }
     }
 
-    /// A pane-filling view takes the whole container while it builds, so the wire is fitted to the room the content will
-    /// have, not to the loading view's own size. An inline component holds the space its short wire needs while it
-    /// builds, then takes its real height when it lands.
+    /// A pane-filling view takes the whole container while the wire stands in for it, so the wire fits the room the
+    /// content will have. An inline view (a Today card, an answer) is never resized: the wire draws inside today's view.
     @ViewBuilder
-    private func sized<V: View>(_ view: V, hide: Bool, reserve: Bool) -> some View {
+    private func sized<V: View>(_ view: V, hide: Bool) -> some View {
         if layout.fills {
             view.frame(maxWidth: hide ? .infinity : nil, maxHeight: hide ? .infinity : nil, alignment: .topLeading)
         } else {
             view
-                .background(GeometryReader { geometry in
-                    Color.clear.onChange(of: geometry.size.height, initial: true) { _, height in measure(Double(height)) }
-                })
-                .frame(maxWidth: reserve ? .infinity : nil, minHeight: reserve ? CGFloat(COSBuildUpPlan.height(COSBuildUpPlan.items(shape), layout: layout)) : nil,
-                       alignment: .topLeading)
         }
-    }
-
-    private func measure(_ height: Double) {
-        guard (frozen?.phase ?? machine?.phase) == .landing, abs(height - (measured ?? -1)) > 0.5 else { return }
-        measured = height
     }
 
     private func fit(_ count: Int) {
@@ -426,23 +426,30 @@ struct COSBuildUp<Content: View>: View {
         guard frozen == nil else { return }
         var next = machine ?? opened(at: Self.now())
         let before = next.outcome
-        next.update(at: Self.now(), loading: loading, landed: landed, reduceMotion: reduceMotion)
+        next.update(at: Self.now(), loading: loading && !interrupted, landed: landed, reduceMotion: reduceMotion, interrupted: interrupted)
         // Settled and unchanged (every refresh and poll after the first load): nothing is written, so nothing redraws.
         guard next != machine else { return }
         if before == nil, let outcome = next.outcome { remember(outcome, next) }
         machine = next
     }
 
+    /// The view went away, or shows something else, while it was still waiting: log it, never as empty.
+    private func abandon() {
+        guard frozen == nil, var next = machine, next.abandon(at: Self.now()) else { return }
+        remember(.abandoned, next)
+        machine = next
+    }
+
     private func reopen() {
         guard frozen == nil else { return }
+        abandon()
         let next = opened(at: Self.now())
-        measured = nil
         if next != machine { machine = next }
     }
 
     /// One breadcrumb per load the build was ready for, through the app's log: shape, outcome, rows and time, no text.
     private func remember(_ outcome: COSBuildUpMachine.Outcome, _ machine: COSBuildUpMachine) {
-        COSBuildUpSession.memory.record(memoryKey, outcome)
+        COSBuildUpSession.record(memoryKey, outcome, persists: key == nil)
         let started = machine.loadStarted ?? machine.opened
         let line = COSBuildUpPlan.breadcrumb(shape, outcome: outcome, rows: machine.count,
                                              ms: Int((((machine.outcomeAt ?? started) - started) * 1000).rounded()))
@@ -475,9 +482,9 @@ private struct COSBuildUpSchedule: TimelineSchedule {
 /// wrapped content), fits the wire to the container as it resizes, and draws a frame only while something moves.
 private struct COSBuildUpLiveStage: View {
     let shape: COSBuildUpShape
+    let tune: COSBuildUpTune
     let machine: COSBuildUpMachine
     let frozen: COSBuildUpFrame?
-    let measured: Double?
     let background: Color
     let onFit: (Int) -> Void
     @Environment(\.controlActiveState) private var activeState
@@ -487,18 +494,16 @@ private struct COSBuildUpLiveStage: View {
             let active = activeState != .inactive
             Group {
                 if let frozen {
-                    COSBuildUpStage(shape: shape, phase: frozen.phase, drawT: frozen.drawT,
+                    COSBuildUpStage(shape: shape, tune: tune, phase: frozen.phase, drawT: frozen.drawT,
                                     landT: frozen.phase == .landing ? frozen.phaseT : nil, handoffT: frozen.phase == .handoff ? frozen.phaseT : nil,
-                                    pulsing: frozen.phase == .building, limit: nil, measured: measured, size: geometry.size, background: background)
+                                    pulsing: frozen.phase == .building, limit: nil, size: geometry.size, frame: geometry.frame(in: .global),
+                                    background: background)
                 } else {
                     TimelineView(COSBuildUpSchedule(paused: !machine.needsFrames(windowActive: active))) { _ in
                         let t = ProcessInfo.processInfo.systemUptime
-                        let drawT = machine.drawT(at: t) ?? 0
-                        let _ = COSBuildUpProbe.frame?(shape.kind, machine.phase, drawT,
-                                                       COSBuildUpPlan.look(0, drawT: drawT, landT: machine.landT(at: t)).outlineShown)
-                        COSBuildUpStage(shape: shape, phase: machine.phase, drawT: drawT, landT: machine.landT(at: t), handoffT: machine.handoffT(at: t),
-                                        pulsing: machine.pulses(windowActive: active), limit: machine.count, measured: measured,
-                                        size: geometry.size, background: background)
+                        COSBuildUpStage(shape: shape, tune: tune, phase: machine.phase, drawT: machine.drawT(at: t) ?? 0, landT: machine.landT(at: t),
+                                        handoffT: machine.handoffT(at: t), pulsing: machine.pulses(windowActive: active), limit: machine.count,
+                                        size: geometry.size, frame: geometry.frame(in: .global), background: background)
                     }
                 }
             }
@@ -508,42 +513,54 @@ private struct COSBuildUpLiveStage: View {
     }
 
     private func fitted(_ height: CGFloat) -> Int {
-        COSBuildUpPlan.items(shape, fitting: COSBuildUpPlan.layout(shape).fills ? Double(height) : nil).count
+        COSBuildUpPlan.items(shape, tune, fitting: Double(height)).count
     }
 }
 
-/// The wire itself, drawn from COSBuildUpPlan.look at one moment: every layer at the coordinates the plan gives, so nothing
-/// ever moves position. No SwiftUI animation, no repeating animation: the clock is the frame.
+/// The wire itself, drawn from COSBuildUpPlan.look at one moment: every layer at the coordinates the plan gives, fitted
+/// to the view's own size every frame, so it follows a resize and never draws past the view. No SwiftUI animation and no
+/// repeating animation: the clock is the frame.
 private struct COSBuildUpStage: View {
     let shape: COSBuildUpShape
+    let tune: COSBuildUpTune
     let phase: COSBuildUpMachine.Phase
     let drawT: Double
     let landT: Double?
     let handoffT: Double?
     let pulsing: Bool
     let limit: Int?
-    let measured: Double?
     let size: CGSize
+    let frame: CGRect
     let background: Color
+    @Environment(\.self) private var environment
 
-    private var layout: COSBuildUpLayout { COSBuildUpPlan.layout(shape) }
+    private var layout: COSBuildUpLayout { COSBuildUpPlan.layout(shape, tune) }
 
     var body: some View {
-        // A filling view fits the container (and follows a resize); a landed inline view fits its real content, and an
-        // answer re-fits its lines to the real text before it inks.
-        let landedInline = phase == .landing && !layout.fills ? measured : nil
-        let items = COSBuildUpPlan.items(shape, limit: limit, fitting: layout.fills ? Double(size.height) : landedInline,
-                                         measured: shape == .answer ? landedInline : nil)
+        let height = Double(size.height)
+        let items = COSBuildUpPlan.items(shape, tune, limit: limit, fitting: height,
+                                         measured: shape == .answer && phase == .landing ? height : nil)
         let looks = items.indices.map { COSBuildUpPlan.look($0, drawT: drawT, landT: landT) }
+        let curtains = looks.map { COSBuildUpPlan.curtain($0, landing: phase == .landing) }
+        let wire = COSPalette.wire(on: background, in: environment)
+        let bone = COSPalette.wireBone(on: background, in: environment)
+        // The pulse fades with the traces when the data lands, rather than vanishing in one frame.
+        let pulse = pulsing || (phase == .landing && COSBuildUpPlan.flow(drawT: drawT) != nil)
+        let _ = COSBuildUpProbe.stage?(COSBuildUpProbeFrame(kind: shape.kind, phase: phase, drawT: drawT, size: size, frame: frame,
+                                                            rects: items.indices.map { rect($0, items[$0], items: items) }, looks: looks,
+                                                            curtains: curtains, lines: items.map(\.lines.count), pulsing: pulse))
         ZStack(alignment: .topLeading) {
             ForEach(Array(items.enumerated()), id: \.offset) { index, item in
-                curtain(index, item, looks[index], items: items)
+                band(index, item, looks[index], curtain: curtains[index], items: items, wire: wire, bone: bone)
             }
             ForEach(Array(items.enumerated()), id: \.offset) { index, item in
-                wireFrame(index, item, looks[index], items: items)
+                wireFrame(index, item, looks[index], items: items, wire: wire)
             }
-            traces(items)
-            if pulsing { pulse(items) }
+            ZStack(alignment: .topLeading) {
+                traces(items, wire: wire)
+                if pulse { pulseView(items, wire: wire) }
+            }
+            .opacity(1 - (landT.map { COSBuildUpPlan.progress(COSBuildUpPlan.tracesFadeStep, at: $0) } ?? 0))
         }
         .frame(width: size.width, height: size.height, alignment: .topLeading)
         .opacity(handoffT.map { max(0, 1 - $0 / COSBuildUpPlan.handoffSeconds) } ?? 1)
@@ -554,24 +571,26 @@ private struct COSBuildUpStage: View {
                width: max(0, Double(size.width) - layout.leading - layout.trailing), height: item.height)
     }
 
-    /// One band of the curtain over the content: the surface, the fill and the wire text, from this component's top (the
-    /// first also covers the inset above it) to the next one's (the last to the bottom), cut back to the right of its ink
-    /// edge. Clicks pass through it to the content, which is live the moment the data lands.
+    /// One band over the content, from this component's top (the first also covers the inset above it) to the next one's
+    /// (the last to the bottom), cut back to the right of its ink edge: a light tint of the surface and the fill, never
+    /// more than COSBuildUpPlan.curtainAlpha, and the wire text. Clicks pass through it to the content.
     @ViewBuilder
-    private func curtain(_ index: Int, _ item: COSBuildUpItem, _ look: COSBuildUpLook, items: [COSBuildUpItem]) -> some View {
+    private func band(_ index: Int, _ item: COSBuildUpItem, _ look: COSBuildUpLook, curtain: Double, items: [COSBuildUpItem],
+                      wire: Color, bone: Color) -> some View {
         let box = rect(index, item, items: items)
         let top = index == 0 ? 0 : box.minY
         let bottom = index == items.count - 1 ? max(Double(size.height), box.maxY) : COSBuildUpPlan.top(index + 1, in: items, layout: layout)
         ZStack(alignment: .topLeading) {
-            Rectangle().fill(background).opacity(phase == .landing ? 1 : 0)
+            Rectangle().fill(background).opacity(curtain)
             if item.style == .card {
                 RoundedRectangle(cornerRadius: item.radius, style: .continuous)
                     .fill(COSPalette.card)
+                    .opacity(curtain)
                     .frame(width: box.width, height: box.height)
                     .mask(alignment: .leading) { Rectangle().frame(width: box.width * look.fill) }
                     .offset(x: box.minX, y: box.minY - top)
             }
-            capsules(item, look, box: box)
+            capsules(item, look, box: box, wire: wire, bone: bone)
                 .offset(x: box.minX, y: box.minY - top)
         }
         .frame(width: size.width, height: max(0, bottom - top), alignment: .topLeading)
@@ -580,71 +599,64 @@ private struct COSBuildUpStage: View {
         .offset(y: top)
     }
 
-    /// Step 4 (the text as outlined capsules, left to right), then step 6 (solid, and gone ahead of the ink).
-    private func capsules(_ item: COSBuildUpItem, _ look: COSBuildUpLook, box: CGRect) -> some View {
+    /// Step 4 (the text as outlined capsules, left to right), then gone: when the words show, or ahead of the ink.
+    private func capsules(_ item: COSBuildUpItem, _ look: COSBuildUpLook, box: CGRect, wire: Color, bone: Color) -> some View {
         let inner = box.insetBy(dx: item.padH, dy: item.padV)
         let lead = item.lead.map { CGFloat($0) + 10 } ?? 0
         let trailingRoom = item.trailing.isEmpty ? 0 : CGFloat(item.trailing.reduce(0, +)) + CGFloat(item.trailing.count) * 6 + 12
         let room = max(0, inner.width - lead - trailingRoom)
         let block = item.lines.reduce(0) { $0 + $1.height } + Double(max(0, item.lines.count - 1)) * item.lineGap
-            + (item.chips.isEmpty ? 0 : item.lineGap + item.chipHeight)
         let y0 = max(0, (Double(inner.height) - block) / 2)
         return ZStack(alignment: .topLeading) {
             if let leadWidth = item.lead {
-                wireCapsule(width: CGFloat(leadWidth), height: CGFloat(item.lines.first?.height ?? 10) + (item.lines.count > 1 ? 6 : 0), look: look)
+                wireCapsule(width: CGFloat(leadWidth), height: CGFloat(min(Double(inner.height), (item.lines.first?.height ?? 10) + (item.lines.count > 1 ? 6 : 0))),
+                            look: look, wire: wire, bone: bone)
                     .offset(x: 0, y: CGFloat(y0))
             }
             VStack(alignment: .leading, spacing: CGFloat(item.lineGap)) {
                 ForEach(Array(item.lines.enumerated()), id: \.offset) { _, line in
-                    wireCapsule(width: room * CGFloat(line.width), height: CGFloat(line.height), look: look)
-                }
-                if !item.chips.isEmpty {
-                    HStack(spacing: 6) {
-                        ForEach(Array(item.chips.enumerated()), id: \.offset) { _, chip in
-                            wireCapsule(width: CGFloat(chip), height: CGFloat(item.chipHeight), look: look, radius: 5)
-                        }
-                    }
+                    wireCapsule(width: room * CGFloat(line.width), height: CGFloat(line.height), look: look, wire: wire, bone: bone)
                 }
             }
             .offset(x: lead, y: CGFloat(y0))
             if !item.trailing.isEmpty {
                 HStack(spacing: 6) {
                     ForEach(Array(item.trailing.enumerated()), id: \.offset) { _, pill in
-                        wireCapsule(width: CGFloat(pill), height: 16, look: look)
+                        wireCapsule(width: CGFloat(pill), height: min(16, inner.height), look: look, wire: wire, bone: bone)
                     }
                 }
                 .frame(width: inner.width, height: inner.height, alignment: .trailing)
                 .padding(.trailing, 12)
             }
         }
-        .frame(width: inner.width, height: inner.height, alignment: .topLeading)
+        .frame(width: inner.width, height: max(0, inner.height), alignment: .topLeading)
         .offset(x: CGFloat(item.padH), y: CGFloat(item.padV))
-        .opacity(1 - look.wireFade)
+        .opacity((1 - look.wordsFade) * (1 - look.wireFade))
     }
 
-    private func wireCapsule(width: CGFloat, height: CGFloat, look: COSBuildUpLook, radius: CGFloat? = nil) -> some View {
-        let shape = RoundedRectangle(cornerRadius: radius ?? height / 2, style: .continuous)
+    private func wireCapsule(width: CGFloat, height: CGFloat, look: COSBuildUpLook, wire: Color, bone: Color) -> some View {
+        let shape = RoundedRectangle(cornerRadius: max(0, height / 2), style: .continuous)
         return ZStack {
-            shape.fill(COSPalette.wireBone).opacity(look.solid)
-            shape.stroke(COSPalette.wire, lineWidth: 1).opacity(1 - look.solid)
+            shape.fill(bone).opacity(look.solid)
+            shape.stroke(wire, lineWidth: 1).opacity(1 - look.solid)
         }
-        .frame(width: max(0, width), height: height)
+        .frame(width: max(0, width), height: max(0, height))
         .mask(alignment: .leading) { Rectangle().frame(width: max(0, width) * look.wireText) }
     }
 
     /// Steps 1 and 2, then 8: the outline traces on, the four corner nodes pop, and both hand over to the real border.
-    private func wireFrame(_ index: Int, _ item: COSBuildUpItem, _ look: COSBuildUpLook, items: [COSBuildUpItem]) -> some View {
+    private func wireFrame(_ index: Int, _ item: COSBuildUpItem, _ look: COSBuildUpLook, items: [COSBuildUpItem], wire: Color) -> some View {
         let box = rect(index, item, items: items)
         let node = 7 * CGFloat(look.nodes)
         return ZStack(alignment: .topLeading) {
-            RoundedRectangle(cornerRadius: item.radius, style: .continuous)
+            RoundedRectangle(cornerRadius: min(item.radius, box.height / 2), style: .continuous)
                 .trim(from: 0, to: look.outline)
-                .stroke(COSPalette.wire, lineWidth: 1)
+                .stroke(wire, lineWidth: 1)
                 .opacity(1 - look.outlineFade)
                 .frame(width: box.width, height: box.height)
             ForEach(0..<4, id: \.self) { corner in
                 Circle().fill(background)
-                    .overlay(Circle().stroke(COSPalette.wire, lineWidth: 1.2))
+                    .overlay(Circle().stroke(wire, lineWidth: 1.2))
                     .frame(width: node, height: node)
                     .frame(width: 7, height: 7)
                     .opacity(1 - look.nodeFade)
@@ -656,47 +668,46 @@ private struct COSBuildUpStage: View {
 
     private func spine(_ items: [COSBuildUpItem]) -> (x: CGFloat, top: CGFloat, bottom: CGFloat)? {
         guard let x = layout.spineX, !items.isEmpty else { return nil }
-        return (CGFloat(x), CGFloat(COSBuildUpPlan.junctionY(0, in: items, layout: layout) - 10),
+        return (CGFloat(x), CGFloat(max(0, COSBuildUpPlan.junctionY(0, in: items, layout: layout) - 10)),
                 CGFloat(COSBuildUpPlan.junctionY(items.count - 1, in: items, layout: layout)))
     }
 
-    /// Step 3: the spine down the left, a branch and a junction node to each component; all of it fades once the data lands.
+    /// Step 3: the spine down the left, a branch and a junction node to each component.
     @ViewBuilder
-    private func traces(_ items: [COSBuildUpItem]) -> some View {
+    private func traces(_ items: [COSBuildUpItem], wire: Color) -> some View {
         if let spine = spine(items) {
             ZStack(alignment: .topLeading) {
                 Path { path in path.move(to: CGPoint(x: spine.x, y: spine.top)); path.addLine(to: CGPoint(x: spine.x, y: spine.bottom)) }
                     .trim(from: 0, to: COSBuildUpPlan.progress(COSBuildUpPlan.spineStep, at: drawT))
-                    .stroke(COSPalette.wire, lineWidth: 1)
+                    .stroke(wire, lineWidth: 1)
                 ForEach(items.indices, id: \.self) { index in
                     let y = CGFloat(COSBuildUpPlan.junctionY(index, in: items, layout: layout))
                     let pop = 6 * CGFloat(COSBuildUpPlan.progress(COSBuildUpPlan.junctionStep(index), at: drawT, curve: COSBuildUpPlan.pop))
                     Path { path in path.move(to: CGPoint(x: spine.x, y: y)); path.addLine(to: CGPoint(x: CGFloat(layout.leading) - 4, y: y)) }
                         .trim(from: 0, to: COSBuildUpPlan.progress(COSBuildUpPlan.branchStep(index), at: drawT))
-                        .stroke(COSPalette.wire, lineWidth: 1)
+                        .stroke(wire, lineWidth: 1)
                     Circle().fill(background)
-                        .overlay(Circle().stroke(COSPalette.wire, lineWidth: 1.2))
+                        .overlay(Circle().stroke(wire, lineWidth: 1.2))
                         .frame(width: pop, height: pop)
                         .frame(width: 6, height: 6)
                         .offset(x: spine.x - 3, y: y - 3)
                 }
             }
-            .opacity(1 - (landT.map { COSBuildUpPlan.progress(COSBuildUpPlan.tracesFadeStep, at: $0) } ?? 0))
         }
     }
 
     /// While it loads, for its cycles: a short bright segment flows down the spine and each first corner node pings.
     @ViewBuilder
-    private func pulse(_ items: [COSBuildUpItem]) -> some View {
+    private func pulseView(_ items: [COSBuildUpItem], wire: Color) -> some View {
         ZStack(alignment: .topLeading) {
             if let spine = spine(items), let head = COSBuildUpPlan.flow(drawT: drawT) {
                 Path { path in path.move(to: CGPoint(x: spine.x, y: spine.top)); path.addLine(to: CGPoint(x: spine.x, y: spine.bottom)) }
                     .trim(from: head, to: min(1, head + COSBuildUpPlan.flowLength))
-                    .stroke(COSPalette.wire, style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                    .stroke(wire, style: StrokeStyle(lineWidth: 2, lineCap: .round))
             }
             ForEach(items.indices, id: \.self) { index in
                 if let spread = COSBuildUpPlan.ping(index, drawT: drawT) {
-                    Circle().stroke(COSPalette.wireSoft, lineWidth: 2)
+                    Circle().stroke(wire.opacity(0.45), lineWidth: 2)
                         .frame(width: 7 + 10 * spread, height: 7 + 10 * spread)
                         .opacity(1 - spread)
                         .frame(width: 7, height: 7)
