@@ -2220,7 +2220,7 @@ struct ModelsContract {
         for pose in [PetSpritePose.working, .duel, .trio, .swarm] {
             precondition(elaraV1Refreshed[pose]?.file
                             == (pose == .working ? "combat-20261018-working-motion-full.png"
-                                : "combat-20261018-\(pose.rawValue)-a-full.png"),
+                                : "jedi360-v2-elara-\(pose.rawValue)-a-full-1x.png"),
                          "Elara combat migration did not replace \(pose.rawValue)")
         }
 
