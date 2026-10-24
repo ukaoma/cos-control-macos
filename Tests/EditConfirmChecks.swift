@@ -155,9 +155,11 @@ import Foundation
         let record = DictationRecord(id: id, text: "be able to kind of tell", createdAt: t0, delivery: .inserted(app: "Claude"), edit: edit)
         let round = (try? encoder.encode(record)).flatMap { try? decoder.decode(DictationRecord.self, from: $0) }
         check(round == record, "record round trip", "\(String(describing: round))")
-        check(record.metaLine(time: "now") == "now · 4 words · inserted · Claude · 1 edit" && record.finalText == "be able to tell",
+        check(record.metaLine(time: "now") == "now · 4 words · inserted · Claude · 1\u{00A0}edit" && record.finalText == "be able to tell",
               "record meta edits", record.metaLine(time: "now"))
-        check(C.editsLabel(1) == "1 edit" && C.editsLabel(2) == "2 edits" && C.tag(app: "Claude") == "EDITED IN CLAUDE", "record meta edits")
+        check(C.editsLabel(1) == "1\u{00A0}edit" && C.editsLabel(2) == "2\u{00A0}edits" && C.tag(app: "Claude") == "EDITED IN CLAUDE", "record meta edits")
+        // Miles 10:26: "1 edit" never breaks across lines on a narrow card; the meta line carries a no-break space.
+        check(record.metaLine(time: "now").contains("1\u{00A0}edit") && !record.metaLine(time: "now").contains("1 edit"), "meta keeps the edit count together")
 
         // Through the history's own save and load (atomic, private).
         let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("cos-edit-confirm-\(UUID().uuidString)")

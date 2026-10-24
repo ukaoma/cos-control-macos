@@ -86,6 +86,8 @@ MUTANTS = [
     ("record: meta line drops the edits", '        return line + " · " + DictationEditConfirm.editsLabel(edit.edits)\n',
      '        return line + String(edit.edits.description.prefix(0))\n', "record meta edits"),
     ("record: meta line counts what COS typed", "        let words = finalWordCount\n", "        let words = wordCount\n", "record meta edits"),
+    ("record: the edit count can break across lines", 'n == 1 ? "1\\u{00A0}edit" : "\\(n)\\u{00A0}edits"',
+     'n == 1 ? "1 edit" : "\\(n) edits"', "record meta edits"),
     ("record: tag keeps the app's case", 'static func tag(app: String) -> String { "EDITED IN " + app.uppercased() }',
      'static func tag(app: String) -> String { "EDITED IN " + app }', "record meta edits"),
     # The reason line.

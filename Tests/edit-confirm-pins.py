@@ -117,6 +117,22 @@ def check(src):
     task = body(detail, "        .task(id: record.edit != nil) {")
     pin("save(" not in task and "clear(" not in task, "chip tap only", "opening the card never changes the instructions")
     pin(pet.count("if let edit = record?.edit { DictationEditedTag(app: edit.app, size: size) }") == 1, "tag", "EDITED IN <APP> in the header row")
+    # Miles 10:26 (the mock card narrow): one row when it fits, else two rows, same actions, same order; no label ever
+    # wraps inside its control, and the chip stays one line.
+    row_view = body(detail, "    private var actionRow: some View {")
+    pin(row_view.count("ViewThatFits(in: .horizontal) {") == 1 and row_view.count("copyButton; learnOrFixButton") == 2
+        and row_view.count("deleteButton; backButton") == 2 and row_view.count("if record.edit != nil { originalLink }") == 2,
+        "action row fits", "one row as designed, else two rows with every action")
+    pin(detail.count("            actionRow\n") == 1, "action row fits", "the card uses the row")
+    for opener, labels in (("    private var copyButton: some View {", 1), ("    @ViewBuilder private var learnOrFixButton: some View {", 2),
+                           ("    private var deleteButton: some View {", 1), ("    private var backButton: some View {", 1),
+                           ("    private var originalLink: some View {", 1)):
+        part = body(detail, opener)
+        pin(part.count(".lineLimit(1)") == labels and part.count(".fixedSize(horizontal: true, vertical: false)") == labels,
+            "labels one line", f"{opener.strip()} keeps every label on one line at its own width")
+    chip = body(detail, "    @ViewBuilder private func dropChip(_ phrase: String) -> some View {")
+    pin(chip.count(".lineLimit(1)") == 3 and chip.count(".truncationMode(.middle)") == 2, "chip one line",
+        "the chip and its added line are one line, truncated in the middle only when they cannot fit")
     pin("Text(record.finalFirstLine)" in row and "store.copy(record.finalText)" in pane, "history row", "Activity reads and copies what was sent")
     for literal in re.findall(r'"((?:[^"\\]|\\.)*)"', detail + tag):
         pin("—" not in literal and "→" not in literal and " -> " not in literal, "copy", f"no em dash or arrow: {literal[:80]!r}")
@@ -145,12 +161,30 @@ MUTANTS = [
     ("history not wired", "app", "        model.dictation.openHistory = { [weak model] in model?.openDictationHistoryInActivity() }\n", ""),
     ("Copy ignores the toggle", "d", "store.copy(DictationEditConfirm.copyText(record, showOriginal: showOriginal))", "store.copy(record.text)"),
     ("Fix a word lost", "d", 'Button("Fix a word") { store.openFix(record.id) }', 'Button("Fix") { store.openFix(record.id) }'),
-    ("Undo learn always", "d", "            if !learnedLive.isEmpty {\n", "            if true {\n"),
+    ("Undo learn always", "d", "        if !learnedLive.isEmpty {\n", "        if true {\n"),
     ("no diff marks", "d", "Text(Self.marked(parts, final: edit.text))", "Text(edit.text)"),
     ("chip ignores polish off", "d", "polishOn: store.polishModel != .off, saved: instructions.saved)", "polishOn: true, saved: instructions.saved)"),
     ("chip added on open", "d", "if record.edit != nil, !instructions.loaded, !instructions.busy { await instructions.load() }",
      'if record.edit != nil, !instructions.loaded, !instructions.busy { await instructions.load(); _ = await instructions.save("x") }'),
     ("tag missing", "pet", "            if let edit = record?.edit { DictationEditedTag(app: edit.app, size: size) }\n", ""),
+    ("action row never falls back", "d", "        ViewThatFits(in: .horizontal) {\n            HStack(spacing: size.length(7)) {\n                copyButton; learnOrFixButton",
+     "        Group {\n            HStack(spacing: size.length(7)) {\n                copyButton; learnOrFixButton"),
+    ("fallback hides Delete and Back", "d", "                    Spacer(minLength: 0)\n                    deleteButton; backButton\n", "                    Spacer(minLength: 0)\n"),
+    ("Copy wraps", "d", ".buttonStyle(DictationButtonStyle(primary: true, size: size))\n            .lineLimit(1)\n", ".buttonStyle(DictationButtonStyle(primary: true, size: size))\n"),
+    ("Undo learn wraps", "d", '.help("Remove what COS learned from this edit from your dictionary")\n                .lineLimit(1)\n',
+     '.help("Remove what COS learned from this edit from your dictionary")\n'),
+    ("Fix a word wraps", "d", 'Button("Fix a word") { store.openFix(record.id) }\n                .buttonStyle(DictationButtonStyle(size: size))\n                .lineLimit(1)\n',
+     'Button("Fix a word") { store.openFix(record.id) }\n                .buttonStyle(DictationButtonStyle(size: size))\n'),
+    ("Fix a word squeezed", "d", 'Button("Fix a word") { store.openFix(record.id) }\n                .buttonStyle(DictationButtonStyle(size: size))\n                .lineLimit(1)\n                .fixedSize(horizontal: true, vertical: false)\n',
+     'Button("Fix a word") { store.openFix(record.id) }\n                .buttonStyle(DictationButtonStyle(size: size))\n                .lineLimit(1)\n'),
+    ("Delete wraps", "d", ".buttonStyle(COSTextButtonStyle(tone: .destructive))\n            .font(COSType.body(size.typeSize(10)))\n            .lineLimit(1)\n",
+     ".buttonStyle(COSTextButtonStyle(tone: .destructive))\n            .font(COSType.body(size.typeSize(10)))\n"),
+    ("Back wraps", "d", "Button(\"Back\") { store.backToRecent() }\n            .buttonStyle(COSTextButtonStyle())\n            .font(COSType.body(size.typeSize(10)))\n            .lineLimit(1)\n",
+     "Button(\"Back\") { store.backToRecent() }\n            .buttonStyle(COSTextButtonStyle())\n            .font(COSType.body(size.typeSize(10)))\n"),
+    ("Show original wraps", "d", '.help(showOriginal ? "Show the text with your edit" : "Show exactly what COS typed")\n            .lineLimit(1)\n',
+     '.help(showOriginal ? "Show the text with your edit" : "Show exactly what COS typed")\n'),
+    ("chip wraps", "d", 'Text(" from my dictation"))\n                    .font(COSType.body(size.typeSize(9)))\n                    .foregroundStyle(.secondary)\n                    .lineLimit(1)\n',
+     'Text(" from my dictation"))\n                    .font(COSType.body(size.typeSize(9)))\n                    .foregroundStyle(.secondary)\n'),
     ("an em dash on the card", "d", '"Show the text with your edit"', '"Show the text — with your edit"'),
 ]
 

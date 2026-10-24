@@ -3335,7 +3335,8 @@ enum DictationEditConfirm {
 
     /// The card's tag in its header row: "EDITED IN CLAUDE".
     static func tag(app: String) -> String { "EDITED IN " + app.uppercased() }
-    static func editsLabel(_ n: Int) -> String { n == 1 ? "1 edit" : "\(n) edits" }
+    /// The number and its word never part across a line break (Miles 10:26): a no-break space between them.
+    static func editsLabel(_ n: Int) -> String { n == 1 ? "1\u{00A0}edit" : "\(n)\u{00A0}edits" }
     /// Copy on the card: the final words, or exactly what COS typed while Show original is on.
     static func copyText(_ record: DictationRecord, showOriginal: Bool) -> String { showOriginal ? record.text : record.finalText }
 

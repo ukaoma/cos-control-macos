@@ -4342,14 +4342,7 @@ struct DictationRecordRow: View {
                         .help("Copy what was heard, before AI polish")
                 }
             }
-            if record.edit != nil {
-                ViewThatFits(in: .horizontal) {
-                    actions(original: true)
-                    VStack(alignment: .leading, spacing: size.length(5)) { originalLink; actions(original: false) }
-                }
-            } else {
-                actions(original: false)
-            }
+            actionRow
         }
         .padding(.vertical, size.length(6))
         .padding(.trailing, size.length(8))
@@ -4359,27 +4352,64 @@ struct DictationRecordRow: View {
         }
     }
 
-    private func actions(original: Bool) -> some View {
-        HStack(spacing: size.length(7)) {
-            Button("Copy") { store.copy(DictationEditConfirm.copyText(record, showOriginal: showOriginal)) }
-                .buttonStyle(DictationButtonStyle(primary: true, size: size))
-            if !learnedLive.isEmpty {
-                Button("Undo learn") { Task { await store.undoLearnedFromCard(record) } }
-                    .buttonStyle(DictationButtonStyle(size: size))
-                    .help("Remove what COS learned from this edit from your dictionary")
-            } else {
-                Button("Fix a word") { store.openFix(record.id) }
-                    .buttonStyle(DictationButtonStyle(size: size))
+    /// 0.5.342 (Miles 10:26, the mock card narrow: "Fix a word" broke inside its button, "Show original" wrapped beside
+    /// it): one row as designed when it fits, else two rows with the same actions in the same order, nothing hidden. No
+    /// label ever wraps inside its control: each is one line at its own width.
+    private var actionRow: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: size.length(7)) {
+                copyButton; learnOrFixButton
+                if record.edit != nil { originalLink }
+                Spacer(minLength: 0)
+                deleteButton; backButton
             }
-            if original { originalLink }
-            Spacer(minLength: 0)
-            Button("Delete") { store.deleteRecord(record.id) }
-                .buttonStyle(COSTextButtonStyle(tone: .destructive))
-                .font(COSType.body(size.typeSize(10)))
-            Button("Back") { store.backToRecent() }
-                .buttonStyle(COSTextButtonStyle())
-                .font(COSType.body(size.typeSize(10)))
+            VStack(alignment: .leading, spacing: size.length(5)) {
+                HStack(spacing: size.length(7)) { copyButton; learnOrFixButton; Spacer(minLength: 0) }
+                HStack(spacing: size.length(7)) {
+                    if record.edit != nil { originalLink }
+                    Spacer(minLength: 0)
+                    deleteButton; backButton
+                }
+            }
         }
+    }
+
+    private var copyButton: some View {
+        Button("Copy") { store.copy(DictationEditConfirm.copyText(record, showOriginal: showOriginal)) }
+            .buttonStyle(DictationButtonStyle(primary: true, size: size))
+            .lineLimit(1)
+            .fixedSize(horizontal: true, vertical: false)
+    }
+
+    @ViewBuilder private var learnOrFixButton: some View {
+        if !learnedLive.isEmpty {
+            Button("Undo learn") { Task { await store.undoLearnedFromCard(record) } }
+                .buttonStyle(DictationButtonStyle(size: size))
+                .help("Remove what COS learned from this edit from your dictionary")
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
+        } else {
+            Button("Fix a word") { store.openFix(record.id) }
+                .buttonStyle(DictationButtonStyle(size: size))
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
+        }
+    }
+
+    private var deleteButton: some View {
+        Button("Delete") { store.deleteRecord(record.id) }
+            .buttonStyle(COSTextButtonStyle(tone: .destructive))
+            .font(COSType.body(size.typeSize(10)))
+            .lineLimit(1)
+            .fixedSize(horizontal: true, vertical: false)
+    }
+
+    private var backButton: some View {
+        Button("Back") { store.backToRecent() }
+            .buttonStyle(COSTextButtonStyle())
+            .font(COSType.body(size.typeSize(10)))
+            .lineLimit(1)
+            .fixedSize(horizontal: true, vertical: false)
     }
 
     private var originalLink: some View {
@@ -4387,7 +4417,8 @@ struct DictationRecordRow: View {
             .buttonStyle(COSTextButtonStyle())
             .font(COSType.body(size.typeSize(10)))
             .help(showOriginal ? "Show the text with your edit" : "Show exactly what COS typed")
-            .fixedSize()
+            .lineLimit(1)
+            .fixedSize(horizontal: true, vertical: false)
     }
 
     /// Always drop "<phrase>" from my dictation: one tap adds it to the polish instructions, through the same setting as
@@ -4398,6 +4429,8 @@ struct DictationRecordRow: View {
                 Text(DictationEditConfirm.chipAdded)
                     .font(COSType.body(size.typeSize(9)))
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
                 Button("Undo") {
                     Task {
                         dropBusy = true; defer { dropBusy = false }
@@ -4409,6 +4442,8 @@ struct DictationRecordRow: View {
                 }
                 .buttonStyle(COSTextButtonStyle())
                 .font(COSType.body(size.typeSize(9)))
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
                 .disabled(dropBusy)
             }
         } else {
@@ -4422,6 +4457,8 @@ struct DictationRecordRow: View {
                 (Text("Always drop ") + Text("\"\(phrase)\"").fontWeight(.semibold).foregroundColor(COSPalette.accent) + Text(" from my dictation"))
                     .font(COSType.body(size.typeSize(9)))
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
                     .padding(.horizontal, size.length(7))
                     .padding(.vertical, size.length(4))
                     .overlay(RoundedRectangle(cornerRadius: size.length(6), style: .continuous)
