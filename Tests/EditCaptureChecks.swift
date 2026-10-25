@@ -60,7 +60,9 @@ import Foundation
         /// 0.5.344 part 2: key-downs other than Return (typedKey) and every key-down or click (input), by time.
         var keyTimes: [TimeInterval] = []
         var inputTimes: [TimeInterval] = []
-        func typedKey(_ t: TimeInterval) { keyTimes.append(t); inputTimes.append(t) }
+        func typedKey(_ t: TimeInterval) { keyTimes.append(t); inputTimes.append(t); lastKeyAt = max(lastKeyAt ?? t, t) }
+        /// 0.5.344 QA: the system's last key-down (any key, the Return that sends included), for a watch without the monitor.
+        var lastKeyAt: TimeInterval?
         init(_ text: String) { states = [(0, text, text.utf16.count)] }
         func at(_ t: TimeInterval, _ text: String, caret: Int? = nil) { states.append((t, text, caret ?? text.utf16.count)); states.sort { $0.at < $1.at } }
         func tap(_ t: TimeInterval, _ trigger: L.Trigger = .key) { triggers.append((t, trigger)) }
@@ -94,7 +96,8 @@ import Foundation
                         time = limit
                         return nil
                     },
-                    inputs: { [self] in inputTimes.filter { $0 <= time }.count }, keys: { [self] in keyTimes.filter { $0 <= time }.count })
+                    inputs: { [self] in inputTimes.filter { $0 <= time }.count }, keys: { [self] in keyTimes.filter { $0 <= time }.count },
+                    sinceLastKey: { [self] in lastKeyAt.flatMap { $0 <= time ? time - $0 : nil } })
         }
         func run(_ typed: String, learning: Bool = true, monitor: Bool = true) async -> W.Ending {
             await W.run(field(), span: DictationInsertedSpan(pid: 1, location: 0, length: typed.utf16.count), typed: typed, facts: "bundle=test",
@@ -484,20 +487,24 @@ import Foundation
     // MARK: The counts and the gap (0.5.344 part 2)
 
     static func countChecks() {
-        check(L.countsAsInput(keyDown: true, pointer: false, watching: true, learning: true, inApp: true)
-              && L.countsAsInput(keyDown: false, pointer: true, watching: true, learning: true, inApp: true), "counts input", "a key-down or a click")
-        check(!L.countsAsInput(keyDown: false, pointer: false, watching: true, learning: true, inApp: true), "counts input", "a modifier change is no input")
-        check(!L.countsAsInput(keyDown: true, pointer: true, watching: true, learning: true, inApp: false), "counts in the app", "another app's keys never count")
-        check(!L.countsAsInput(keyDown: true, pointer: true, watching: false, learning: true, inApp: true)
-              && !L.countsAsInput(keyDown: true, pointer: true, watching: true, learning: false, inApp: true), "counts while watching", "only during a watch, learning on")
+        // 0.5.344 QA (QA2 N5, QA1 N8): the "you typed it" input is a typed key: never Return or Enter, never a click.
         check(L.countsAsTypedKey(keyDown: true, keyCode: 0, watching: true, learning: true, inApp: true)
               && L.countsAsTypedKey(keyDown: true, keyCode: 51, watching: true, learning: true, inApp: true), "counts typed keys", "letters and Delete")
         check(!L.countsAsTypedKey(keyDown: true, keyCode: 36, watching: true, learning: true, inApp: true)
               && !L.countsAsTypedKey(keyDown: true, keyCode: 76, watching: true, learning: true, inApp: true), "counts typed keys", "Return and Enter are not typing")
-        check(!L.countsAsTypedKey(keyDown: false, keyCode: 0, watching: true, learning: true, inApp: true)
-              && !L.countsAsTypedKey(keyDown: true, keyCode: 0, watching: true, learning: true, inApp: false), "counts typed keys", "key-downs in the app only")
-        check(L.goneAfterTyping(.gone, keysSinceRead: 1) && !L.goneAfterTyping(.gone, keysSinceRead: 0) && !L.goneAfterTyping(.held, keysSinceRead: 3)
-              && !L.goneAfterTyping(.inconsistent, keysSinceRead: 3), "gap rule", "gone, after a key typed since the last read")
+        check(!L.countsAsTypedKey(keyDown: false, keyCode: 0, watching: true, learning: true, inApp: true), "counts typed keys", "a click or a modifier change is no key")
+        check(!L.countsAsTypedKey(keyDown: true, keyCode: 0, watching: true, learning: true, inApp: false), "counts in the app", "another app's keys never count")
+        check(!L.countsAsTypedKey(keyDown: true, keyCode: 0, watching: false, learning: true, inApp: true)
+              && !L.countsAsTypedKey(keyDown: true, keyCode: 0, watching: true, learning: false, inApp: true), "counts while watching", "only during a watch, learning on")
+        check(L.unreadAfterTyping(.gone, keysSinceRead: 1) && L.unreadAfterTyping(.inconsistent, keysSinceRead: 2) && !L.unreadAfterTyping(.gone, keysSinceRead: 0)
+              && !L.unreadAfterTyping(.held, keysSinceRead: 3), "gap rule", "gone or inconsistent, after a key typed since the last read")
+        check(L.keyAfterRead(.cleared, sinceLastKey: 0.1, sinceRead: 0.5) && L.keyAfterRead(.emptied, sinceLastKey: 0.2, sinceRead: 0.3)
+              && !L.keyAfterRead(.cleared, sinceLastKey: 0.6, sinceRead: 0.5) && !L.keyAfterRead(.cleared, sinceLastKey: nil, sinceRead: 0.5)
+              && !L.keyAfterRead(.focusLeft, sinceLastKey: 0.1, sinceRead: 0.5), "no monitor rule", "a key after the last read at a cleared or emptied stop")
+        check(L.trigger(keyDown: true, keyCode: 36, isRepeat: false, pointer: false, watching: true, learning: true, inApp: false) == nil
+              && L.trigger(keyDown: false, keyCode: 0, isRepeat: false, pointer: true, watching: true, learning: true, inApp: false) == nil
+              && L.trigger(keyDown: false, keyCode: 0, isRepeat: false, pointer: true, watching: true, learning: true, inApp: true) == .mouse,
+              "trigger in the app", "Return or a click in another app never spends a read")
         let signal = DictationWatchSignal()
         signal.count(input: true, typedKey: true); signal.count(input: true, typedKey: false); signal.count(input: false, typedKey: false)
         check(signal.inputs == 2 && signal.keys == 1, "signal counts", "inputs \(signal.inputs) keys \(signal.keys)")
@@ -539,5 +546,30 @@ import Foundation
         let re = await polished.run(typed)
         check(re.canary.reanchors == 1 && re.tail.startReanchor, "start reanchor marked", "reanchors \(re.canary.reanchors) mark \(re.tail.startReanchor)")
         check(!kept.tail.startReanchor, "start reanchor marked", "a dictation found where it was typed is not marked")
+        // QA2 W1: a key typed after the last read, then a final read the field changes under: inconsistent, so partial.
+        let shaky = World(typed)
+        shaky.at(1.05, edited); shaky.typedKey(2.3); shaky.tap(2.4); shaky.changeAfterText = (2.35, sent)
+        let torn = await shaky.run(typed)
+        check(torn.canary.finalRead == "inconsistent" && torn.final == nil && torn.canary.partial == 1, "inconsistent after typing keeps nothing",
+              "\(String(describing: torn.canary.finalRead)) final \(String(describing: torn.final)) partial \(String(describing: torn.canary.partial))")
+        // QA2 W1: no monitor, so no final read and no key count: the system's last key-down after the last read (the Return
+        // that sent it, here) means partial at the cleared stop.
+        let blind = World(typed)
+        blind.at(1.05, edited); blind.at(2.6, sent); blind.lastKeyAt = 2.55
+        let unseen = await blind.run(typed, monitor: false)
+        check(unseen.canary.trackerReads == 1 && unseen.canary.stop == "cleared" && unseen.final == nil && unseen.canary.partial == 1
+              && unseen.canary.keysAfterRead == 1, "no monitor key after read keeps nothing",
+              "stop \(unseen.canary.stop) final \(String(describing: unseen.final)) partial \(String(describing: unseen.canary.partial))")
+        // No monitor, the last key before the last read (sent with a click): the read edit is kept.
+        let clicked = World(typed)
+        clicked.at(1.05, edited); clicked.at(2.6, sent); clicked.lastKeyAt = 1.0
+        let sentByClick = await clicked.run(typed, monitor: false)
+        check(sentByClick.final == edited && sentByClick.canary.partial == 0 && sentByClick.canary.keysAfterRead == 0, "no monitor key before read keeps the edit",
+              "final \(String(describing: sentByClick.final)) partial \(String(describing: sentByClick.canary.partial))")
+        // With the monitor the counts decide, never the system's last key.
+        let counted = World(typed)
+        counted.at(1.05, edited); counted.at(2.6, sent); counted.lastKeyAt = 2.55
+        let withMonitor = await counted.run(typed)
+        check(withMonitor.final == edited && withMonitor.canary.partial == 0, "monitor ignores the last key", "final \(String(describing: withMonitor.final))")
     }
 }

@@ -69,7 +69,8 @@ def check(src):
     pin("editWatcher.monitor = false" in hot and "editWatcher.monitor = !keyMonitors.isEmpty" in hot
         and hot.index("editWatcher.monitor = false") < hot.index("editWatcher.monitor = !keyMonitors.isEmpty"), "monitor named",
         "the canary says present only while the monitors are installed")
-    pin("watching: editWatcher.isWatching, learning: learnMode != .off) else { return }" in trigger and "editWatcher.trigger(trigger)" in trigger
+    pin("guard editWatcher.isWatching, learnMode != .off else { return }" in trigger and "watching: true, learning: true, inApp: inApp) else { return }" in trigger
+        and "editWatcher.trigger(trigger)" in trigger
         and "DictationInsertion." not in trigger and "Task" not in trigger, "trigger on main is a signal only",
         "the tested rule decides; the main thread only fires the signal, never reads the field")
     pin("func trigger(_ trigger: DictationEditLearning.Trigger) { signal?.fire(trigger) }" in watcher
@@ -82,8 +83,10 @@ def check(src):
         and "sink: { Self.record($0) })" in run, "watch is the core loop", "the app keeps only the field closures; the loop and the canary are the tested ones")
     pin("finalText: ending.final" in run and "inside: ending.tail.sawInside" in run, "ending from the tracker",
         "the store gets what the capture tracker kept")
-    pin("let measure: @Sendable () async -> DictationFieldSnapshot" in loop and "let text: @Sendable (Int, Int) async -> String?" in loop,
-        "field closures sendable", "no field closure inherits the main actor from the method that built it")
+    # 0.5.344 QA (QA4 N13): all five field closures, not two.
+    pin("let measure: @Sendable () async -> DictationFieldSnapshot" in loop and "let text: @Sendable (Int, Int) async -> String?" in loop
+        and "let secure: @Sendable () async -> Bool" in loop and "let focus: @Sendable (Int) async -> (verdict: DictationEditLearning.Focus, characters: Int?)" in loop
+        and "let running: @Sendable () async -> Bool" in loop, "field closures sendable", "no field closure inherits the main actor from the method that built it")
     pin("Task.sleep" not in loop and watch.count("await clock.pause(") == 1, "injected sleep", "the loop sleeps only through the injected clock")
     pin(watch.count("baseline = current; baseCount = n") == 1 and len(re.findall(r"(?<!var )\bbaseline = ", watch)) == 1, "two states",
         "the learning baseline moves only on the learning read")
@@ -113,9 +116,12 @@ def check(src):
         "polish prompt", "the polish run carries the tested prompt version")
     pin('polish_prompt=\\(finished.polishPrompt ?? "-", privacy: .public)' in d, "polish prompt timing", "the log's timing line names the prompt")
     pin("heard: lastPolish?.heard, polishModel: lastPolish?.model.rawValue, polishPrompt: lastPolishPrompt," in finish
-        and "lastPolishPrompt = lastPolish == nil ? nil : polished?.prompt" in d, "polish prompt record", "a polished-first dictation keeps its prompt")
-    pin("model: model.rawValue, prompt: run?.prompt, styleHash: run?.learnedStyleHash, in: recent); saveRecent()" in deliver and "applies: DictationPolishSwap.offersApply(result), prompt: run?.prompt," in deliver
-        and "model: pending.model.rawValue, prompt: pending.prompt, styleHash: pending.styleHash, in: recent); saveRecent()" in d, "polish prompt record",
+        and "lastPolishPrompt = lastPolish == nil || lastPolishCleaned != nil ? nil : polished?.prompt" in d, "polish prompt record",
+        "a polished-first dictation keeps its prompt (never for cleaned text)")
+    pin("model: model.rawValue, prompt: run?.prompt, styleHash: run?.learnedStyleHash,\n                                                    cleaned: cleaned, in: recent); saveRecent()" in deliver
+        and "applies: DictationPolishSwap.offersApply(result), prompt: run?.prompt," in deliver
+        and "model: pending.model.rawValue, prompt: pending.prompt, styleHash: pending.styleHash,\n                                                    cleaned: pending.cleaned, in: recent); saveRecent()" in d,
+        "polish prompt record",
         "the swap and Apply polished keep the prompt")
 
     # 5. The dictionary source stays "dictation" on the wire (plan r2 cut the split: 6.90.0 answers 400 to anything else).
@@ -143,7 +149,8 @@ def check(src):
         "helper verbs", "both verbs are reachable")
     style = body(helper, "    private func emitDictationLearnedStyle() throws {")
     pin('let health = request("/api/health", timeout: 5)' in style and "DictationLearnedStyleBridge.advertised(health.body)" in style
-        and 'request(route, method: "DELETE", token: token, timeout: 10)' in style and 'request(route, method: "PUT", token: token, body: DictationLearnedStyleBridge.body(' in style,
+        and 'request(route, method: "DELETE", token: token, timeout: 10)' in style and 'request(route, method: "PUT", token: token, body: body, timeout: 10)' in style
+        and "let body = DictationLearnedStyleBridge.body(rules: rules, enabled: enabled, baseRevision: baseRevision)" in style,
         "helper learned-style route", "get asks the capability first; set PUTs and clear DELETEs the one route")
     options = body(helper, "    private func emitDictationPolishOptions() throws {")
     pin("DictationPolishOptionsBridge.advertised(health.body)" in options and 'request(route, method: "PUT", token: token, body: DictationPolishOptionsBridge.body(version), timeout: 10)' in options,
@@ -161,7 +168,7 @@ MUTANTS = [
      "                    self?.keyEvent(flags: flags, pointer: !isKey, keyCode: key, raw: raw, at: time)\n                    self?.editTrigger(keyDown: down, keyCode: key, isRepeat: again, pointer: !isKey)\n"),
     ("local monitor swallows", "d", "handler: { handle($0); return $0 })", "handler: { handle($0); return nil })"),
     ("monitor always present", "d", "            editWatcher.monitor = !keyMonitors.isEmpty\n", ""),
-    ("trigger ignores learning", "d", "watching: editWatcher.isWatching, learning: learnMode != .off) else { return }",
+    ("trigger ignores learning", "d", "        guard editWatcher.isWatching, learnMode != .off else { return }\n",
      "watching: editWatcher.isWatching, learning: true) else { return }"),
     ("trigger reads on main", "d", "        editWatcher.trigger(trigger)\n", "        editWatcher.trigger(trigger); _ = Task { }\n"),
     ("signal outlives the watch", "d", "        signal?.close(); signal = nil; watchedPID = nil\n", "        watchedPID = nil\n"),
@@ -169,6 +176,9 @@ MUTANTS = [
      "        task = Task { [weak self] in\n            let started = Date()\n            let ending = await DictationEditWatch.run("),
     ("ending ignores the tracker", "d", "inside: ending.tail.sawInside, started: started", "inside: ending.canary.inside, started: started"),
     ("field closures main", "core", "        let measure: @Sendable () async -> DictationFieldSnapshot\n", "        let measure: () async -> DictationFieldSnapshot\n"),
+    ("secure closure main", "core", "        let secure: @Sendable () async -> Bool\n", "        let secure: () async -> Bool\n"),
+    ("focus closure main", "core", "        let focus: @Sendable (Int) async -> (verdict:", "        let focus: (Int) async -> (verdict:"),
+    ("running closure main", "core", "        let running: @Sendable () async -> Bool\n", "        let running: () async -> Bool\n"),
     ("loop sleeps itself", "core", "            let trigger = await clock.pause(wait)\n", "            try? await Task.sleep(for: .milliseconds(wait)); let trigger = await clock.pause(0)\n"),
     ("fast read moves the baseline", "core", "                    tried = true; trackerReads += 1\n                    let read = await trackerRead(field, from: tracker, windowStart: bounds.location, measured: seen, calls: &calls)\n                    if let next = read.tracker { keep(next, seen: read.seen) }\n",
      "                    tried = true; trackerReads += 1\n                    let read = await trackerRead(field, from: tracker, windowStart: bounds.location, measured: seen, calls: &calls)\n                    if let next = read.tracker { keep(next, seen: read.seen); baseline = next.window }\n"),
@@ -193,7 +203,7 @@ MUTANTS = [
     ("polish prompt dropped", "d", "instructionsHash: instructions.hash).with(prompt: prompt)", "instructionsHash: instructions.hash)"),
     ("timing names no prompt", "d", ' polish_prompt=\\(finished.polishPrompt ?? "-", privacy: .public)', ""),
     ("record forgets the prompt", "d", "polishModel: lastPolish?.model.rawValue, polishPrompt: lastPolishPrompt,", "polishModel: lastPolish?.model.rawValue,"),
-    ("swap forgets the prompt", "d", "model: model.rawValue, prompt: run?.prompt, styleHash: run?.learnedStyleHash, in: recent); saveRecent()", "model: model.rawValue, styleHash: run?.learnedStyleHash, in: recent); saveRecent()"),
+    ("swap forgets the prompt", "d", "model: model.rawValue, prompt: run?.prompt, styleHash: run?.learnedStyleHash,\n                                                    cleaned: cleaned, in: recent); saveRecent()", "model: model.rawValue, styleHash: run?.learnedStyleHash, in: recent); saveRecent()"),
     ("helper hash open", "hcore", 'if let hash = body["learnedStyleHash"] as? String, DictationPolishInstructionsBridge.isHash(hash) {',
      'if let hash = body["learnedStyleHash"] as? String {'),
     ("stdin widened", "hcore", 'Set(object.keys).isSubset(of: ["text", "model", "app", "prewarmToken"])', 'Set(object.keys).isSubset(of: ["text", "model", "app", "prewarmToken", "style"])'),

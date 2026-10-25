@@ -45,7 +45,7 @@ class Handler(BaseHTTPRequestHandler):
             reply = health
             authenticated = True
         else:
-            reply = rules if self.path == '/api/dictation/polish/rules' else finalize if self.path == '/api/dictation/finalize' else setting
+            reply = rules if self.path.split('?')[0] == '/api/dictation/polish/rules' else finalize if self.path == '/api/dictation/finalize' else setting
             authenticated = self.headers.get('X-COS-Token') == token
         raw = json.dumps(reply['body'] if authenticated else {'error': 'unauthorized'}).encode() if reply['body'] is not None else b'not json'
         self.send_response(reply['status'] if authenticated else 401)
@@ -126,6 +126,14 @@ try:
           'rules answers the version, rolled back, the rules and the block')
     rules.update(body=dict(RULES, version='v2', rolledBack=True))
     check(run({'operation': 'rules'})['details']['rolledBack'] is True, 'rolled back passes through')
+    # 0.5.344 QA (QA3 W4, QA2 N2): the rules for the polish model in use, and the learned-style block as the model sees it.
+    rules.update(body=dict(RULES, version='v4', learnedStyleBlock='Drop the filler "honestly".'))
+    result = run({'operation': 'rules', 'model': 'haiku'})
+    check(seen[-1][1] == '/api/dictation/polish/rules?model=haiku' and result['details']['learnedStyleBlock'] == 'Drop the filler "honestly".',
+          'rules for a model, with its style block')
+    before = len(seen)
+    check(not run({'operation': 'rules', 'model': 'opus'})['ok'] and len(seen) == before, 'a model outside the set never reaches the network')
+    rules.update(body=RULES)
     for bad in [dict(RULES, version='v3; rm -rf'), dict(RULES, rules=''), dict(RULES, rules='x' * 20001), dict(RULES, rolledBack=None, version=7)]:
         rules.update(body=bad)
         result = run({'operation': 'rules'})

@@ -12,7 +12,8 @@ import pathlib, sys
 
 root = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else ".")
 read = lambda p: (root / p).read_text(encoding="utf-8")
-FILES = {"d": "Sources/MacDictation.swift", "app": "Sources/COSControlApp.swift", "core": "Sources/MacDictationCore.swift"}
+FILES = {"d": "Sources/MacDictation.swift", "app": "Sources/COSControlApp.swift", "core": "Sources/MacDictationCore.swift",
+         "model": "Sources/ControllerModel.swift"}
 
 
 class PinFailed(Exception):
@@ -44,7 +45,7 @@ def body(src, opener):
 
 
 def check(src):
-    d, app, core = (code(src[k]) for k in ("d", "app", "core"))
+    d, app, core, model = (code(src[k]) for k in ("d", "app", "core", "model"))
     ended = body(d, "    private func editWatchEnded(_ end: DictationWatchEnd) async {")
     pending = body(d, "    private func showPendingStylePill() {")
     undo = body(d, "    func undoLearnedFromPill() {")
@@ -55,63 +56,68 @@ def check(src):
     deliver = body(d, "    private func deliverThenPolish(_ heard: String, attempt: UUID) async {")
     finish = body(d, "    private func finish(_ text: String, outcome: DictationDeliveryOutcome")
     store = body(d, "@MainActor final class DictationStyleStore: ObservableObject {")
-    observe = body(store, "    func observe(_ evidence: DictationStyleClassifier.Evidence, polishOn: Bool, learnMode: DictationLearnMode, instructions: String) -> [String] {")
-    announce = body(store, "    func announce(_ id: String) -> DictationStyle.Key? {")
-    sync = body(store, "    func sync() async {")
-    apply = body(store, "    private func apply(_ answer: Answer) {")
-    enabled = body(store, "    func setEnabled(_ on: Bool) async {")
-    reset = body(store, "    func reset() async {")
     card = body(d, "struct DictationStyleCard: View {")
     settings = body(d, "struct MacDictationSettings: View {")
+    ctl = body(core, "@MainActor final class DictationStyleController {")
+    observe = body(ctl, "    func observe(_ evidence: DictationStyleClassifier.Evidence, model: DictationPolishModel, learnMode: DictationLearnMode, instructions: String) -> [String] {")
+    announce = body(ctl, "    func announce(_ id: String, model: DictationPolishModel) -> DictationStyle.Key? {")
+    sync_once = body(ctl, "    private func syncOnce() async {")
+    take = body(ctl, "    private func take(_ state: DictationStyle.Server) {")
+    reset = body(ctl, "    func reset() async {")
+    request = body(store, "    nonisolated static func request(_ call: DictationStyleController.Call) -> [String: Any] {")
 
-    # Evidence: only a saved edit, with the watch's own facts; the classifier decides.
+    # Evidence: only a saved edit, with the watch's own facts; the classifier decides, behind the not-used gate.
     saved = "        recent = DictationHistory.editing(id, edit: edit, in: recent); saveRecent()\n"
     pin(saved in ended and "DictationStyleStore.shared.observe(" in ended and ended.index(saved) < ended.index("DictationStyleStore.shared.observe("),
         "evidence is a saved edit", "the style observation follows the saved edit, never before it")
     for fact in ("complete: !end.partial", "inputEvents: end.inputEvents", "startReanchor: end.startReanchor", "appliedHash: record.polishStyleHash",
-                 "baselinePolished: record.heard != nil && record.polishModel != nil", "polishOn: polishModel != .off, learnMode: learnMode",
+                 "baselinePolished: record.polishedByClaude", "model: polishModel, learnMode: learnMode",
                  "instructions: DictationPolishInstructionsStore.shared.saved"):
         pin(fact in ended, "evidence facts", f"editWatchEnded passes {fact!r}")
-    pin("enabled: ledger.enabled, polishOn: polishOn, learnMode: learnMode, registers: registers,\n" in observe
+    pin("DictationStyleClassifier.Settings(enabled: ledger.enabled, learnMode: learnMode, notUsed: notUsed(model: model), registers: registers," in observe
         and "registersEnabled: registersEnabled, allowlist: allowlist, instructions: instructions)" in observe,
-        "evidence settings", "the store hands the classifier the switch, registers and the server's allowlist")
+        "evidence settings", "the controller hands the classifier the switch, the not-used gate, registers and the server's allowlist")
     pin("guard result.reason == nil else { return [] }" in observe and "ledger = next; save()" in observe
         and observe.index("guard result.reason == nil") < observe.index("ledger = next; save()"), "refused evidence leaves the ledger",
         "a refused edit is never saved")
-    pin("evidence.typed" not in observe and "evidence.final" not in observe and 'dictationLog.notice("style observe reason=' in observe,
+    pin("evidence.typed" not in observe and "evidence.final" not in observe and 'log?("style observe reason=' in observe,
         "no words in the log", "the observe log line has the reason and counts only")
-    pin("if self.available { await self.sync() } else { await self.load() }" in observe, "push after learning",
-        "a learned rule is pushed, or the capability is read again")
+    pin("Task { await self.sync() }" in observe, "push after learning", "a learned rule is pushed")
 
-    # The pill: after the edit pill, over a hidden pill only, once per rule id ever, with Undo.
+    # The pill: after the edit pill, over a hidden pill only, once per rule id ever, only where the rules apply, with Undo.
     pin("else { showPendingStylePill(); return }" in ended and "            if !Task.isCancelled { showPendingStylePill() }\n" in ended,
         "pill after the edit pill", "the style pill waits for EDIT SAVED and LEARNED to finish")
     pin("        guard !busy, pill == .hidden else { return }" in pending, "pill ranks below", "never over another pill")
-    pin("guard let key = DictationStyleStore.shared.announce(rule) else { continue }" in pending, "pill once ever", "every pill goes through announce")
-    pin("guard let key = key(id), DictationStyle.announce(&ledger, newlyActive: [id]) != nil else { return nil }" in announce and "save()" in announce,
-        "pill once ever", "announce marks the rule shown and saves it")
+    pin("guard let key = DictationStyleStore.shared.announce(rule, model: polishModel) else { continue }" in pending, "pill once ever",
+        "every pill goes through announce, with the polish model")
+    pin("guard notUsed(model: model) == nil, let key = key(id), DictationStyle.announce(&ledger, newlyActive: [id]) != nil else { return nil }" in announce
+        and "save()" in announce, "pill gated", "no pill where the rules are not used; announce marks it shown and saves it")
     pin("label: DictationStyle.pillLabel(key)" in pending and "styleUndoRule = rule; styleUndoToken = UUID(); styleUndoPill = flash" in pending,
         "pill undo", "the style pill carries its rule for Undo")
     pin("    var pillUndoID: UUID? { pill == learnedUndoPill ? learnedUndoID : pill == styleUndoPill ? styleUndoToken : nil }" in d,
         "pill undo", "both Undo surfaces (floating pill and pet) read pillUndoID")
     pin("if pill == styleUndoPill, let rule = styleUndoRule {" in undo and "Task { await DictationStyleStore.shared.remove(rule) }" in undo,
         "pill undo", "the style pill's Undo removes that rule")
+    pin(".help(styleUndo ? DictationStyleCopy.undoHelp : " in d and "return DictationStyle.isPillLabel(label)" in d, "pill undo label",
+        "the style pill's Undo says Remove this style rule")
 
     # Clear history clears the evidence.
-    pin("DictationStyleStore.shared.clearHistory()" in clear, "clear history", "Clear dictation history clears the style evidence")
+    pin("Task { await DictationStyleStore.shared.clearHistory() }" in clear, "clear history", "Clear dictation history clears the style evidence")
 
-    # Counts from the monitor, in the watched app only.
-    pin("if editWatcher.isWatching, learnMode != .off {" in trigger
+    # Counts from the monitor: typed keys in the watched app only; triggers in that app only.
+    pin("guard editWatcher.isWatching, learnMode != .off else { return }" in trigger
         and "let inApp = editWatcher.watchedPID == NSWorkspace.shared.frontmostApplication?.processIdentifier" in trigger
-        and "editWatcher.count(input: DictationEditLearning.countsAsInput(keyDown: keyDown, pointer: pointer, watching: true, learning: true, inApp: inApp)," in trigger
-        and "typedKey: DictationEditLearning.countsAsTypedKey(keyDown: keyDown, keyCode: keyCode, watching: true, learning: true, inApp: inApp))" in trigger,
-        "monitor counts", "key-downs and clicks are counted in the watched app, while a watch runs")
-    pin("inputs: { signal.inputs }, keys: { signal.keys })" in watcher, "monitor counts", "the watch's clock reads the counts")
+        and "let typed = DictationEditLearning.countsAsTypedKey(keyDown: keyDown, keyCode: keyCode, watching: true, learning: true, inApp: inApp)" in trigger
+        and "editWatcher.count(input: typed, typedKey: typed)" in trigger and "watching: true, learning: true, inApp: inApp) else { return }" in trigger,
+        "monitor counts", "typed keys and triggers in the watched app, while a watch runs")
+    pin("inputs: { signal.inputs }, keys: { signal.keys }," in watcher
+        and "sinceLastKey: { CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: .keyDown) })" in watcher,
+        "monitor counts", "the watch's clock reads the counts, and the system's last key-down for a watch without the monitor")
     pin("partial: ending.canary.partial == 1, inputEvents: ending.canary.inputEvents ?? 0," in watcher
         and "startReanchor: ending.tail.startReanchor))" in watcher, "watch end facts", "the store hears partial, the count and the re-anchor")
     pin("        signal?.close(); signal = nil; watchedPID = nil\n" in watcher, "watched app", "a stopped watch watches no app")
 
-    # The polish answer's codes reach the run, the record and the timing line.
+    # The polish answer's codes reach the run, the record and the timing line; cleaned text swaps in as cleaned.
     pin('server = DictationPolishRun.Server(guarded: response.details["polishOutcome"]?.string == "guarded",' in polish
         and 'guardKind: response.details["guard"]?.string, register: response.details["polishRegister"]?.string,' in polish
         and 'learnedStyle: response.details["learnedStyle"]?.bool == true,' in polish
@@ -120,33 +126,48 @@ def check(src):
     pin("if let run, run.guarded, record(id) != nil {" in deliver
         and "recent = DictationHistory.guarding(id, guard: run.guardKind, styleHash: run.learnedStyleHash, in: recent); saveRecent()" in deliver,
         "guarded record", "paste first: a guarded answer marks the record Kept as heard")
-    pin("polishGuard: lastPolishGuard, polishStyleHash: lastPolishStyleHash)" in finish, "guarded record", "polish first: the record keeps the codes")
+    pin("polishGuard: lastPolishGuard, polishStyleHash: lastPolishStyleHash, polishCleaned: lastPolishCleaned)" in finish, "guarded record",
+        "polish first: the record keeps the codes")
+    pin("if let polished = DictationPolishSwap.swapText(run?.outcome) { final = DictationInsertion.polishedFinal(" in deliver
+        and "let cleaned = DictationPolish.cleaned(run?.outcome)" in deliver and "styleHash: run?.learnedStyleHash, cleaned: cleaned)" in deliver,
+        "cleaned swap", "paste first swaps the server's cleaned text in (0.5.343 parity) and Apply polished keeps it")
     for field in (' polish_register=\\(finished.polishRegister ?? "-", privacy: .public)', ' polish_style=\\(finished.polishLearnedStyle.map { $0 ? "1" : "0" } ?? "-", privacy: .public)',
                   ' polish_guard=\\(finished.polishGuard ?? "-", privacy: .public)'):
         pin(field in d, "timing codes", f"the timing line carries {field.split('=')[0].strip()}")
 
-    # The server: only when it advertises learned style; Off sends only the switch.
-    pin("        guard available, let current = server else { return }" in sync, "capability gate", "nothing is pushed to an older server")
-    pin("        available = state.available != false\n        guard available else { return }" in apply, "capability gate",
+    # The server: only when it advertises learned style; the base is the revision; registers only from the flag.
+    pin("        guard available, var current = server else { return }" in sync_once, "capability gate", "nothing is pushed to an older server")
+    pin("        available = state.available != false\n        guard available else { server = nil; changed(); return }" in take, "capability gate",
         "an answer without the capability keeps the ledger local")
-    pin("        registersEnabled = state.registersEnabled ?? false\n" in apply and apply.count("registersEnabled =") == 1, "registers flag only",
+    pin("        registersEnabled = state.registersEnabled ?? false\n" in take and ctl.count("        registersEnabled = ") == 1 and "var registersEnabled = false" in ctl, "registers flag only",
         "literal apps are excluded only when the GET says registersEnabled, never inferred from the always-published map")
-    pin("        guard available else { return }" in enabled and 'var request: [String: Any] = ["operation": "set", "enabled": on]' in enabled
-        and '"rules"' not in enabled, "switch sends only enabled", "Off PUTs {enabled:false} and keeps the server's rules")
-    pin('if available, let answer = await send(["operation": "clear"]) { apply(answer) }' in reset, "capability gate", "Reset clears the server only when it has the setting")
-    pin('"rules": rules.map(Self.object)]' in sync and '"baseHash": base,' in sync, "push with base hash", "every PUT carries the hash it was based on")
+    pin("baseRevision: current.revision))" in sync_once and 'if let baseRevision { out["baseRevision"] = baseRevision }' in request
+        and '"baseHash"' not in request, "push with base", "every PUT carries the revision it was based on, never baseHash (bcdf083)")
+    pin('if let rules { out["rules"] = rules.map(object) }' in request and 'if let enabled { out["enabled"] = enabled }' in request,
+        "switch sends only enabled", "a PUT carries only what changed")
+    pin("        if available {\n            let reply = await transport?(.clear)" in reset, "capability gate", "Reset clears the server only when it has the setting")
+    pin("allowlist: allowlist)" in sync_once and "DictationStyle.ranked(ledger, suggestOnly: suggestOnly(), now: now(), allowlist: allowlist)" in sync_once,
+        "allowlist filter", "a rule the server no longer takes is never sent")
+    pin("willSet { if newValue.running, !status.running || status.version != newValue.version { DictationStyleStore.shared.serverCameBack() } }" in model,
+        "reload on return", "the server's return or a newer server reads Your style again")
+    pin("let loaded = url.map { DictationStyle.load(from: $0, now: Date()) }" in store and "controller = DictationStyleController(ledger: loaded.ledger, loaded: loaded.result)" in store,
+        "ledger load", "the store loads with the quarantine and tells the controller how")
 
     # The card: under AI polish in Settings, which the 390 pt panel and the Settings pane both show.
-    instructions = "DictationPolishInstructionsCard(store: DictationPolishInstructionsStore.shared, polishOn: store.polishModel != .off)"
+    instructions = "DictationPolishInstructionsCard(store: DictationPolishInstructionsStore.shared, polishOn: store.polishModel != .off, model: store.polishModel)"
     pin(instructions in settings and "DictationStyleCard(style: DictationStyleStore.shared, dictation: store)" in settings
         and settings.index(instructions) < settings.index("DictationStyleCard(style:"), "card placement", "Your style sits under the polish instructions")
-    for line in ("DictationStyleCopy.disclosureRules", "DictationStyleCopy.disclosureKeys", "DictationStyleCopy.switchTitle", "DictationStyleCopy.status(available:",
-                 "DictationStyleCopy.templates(allowlist: style.allowlist)", "DictationStyleCopy.previousPolish", "DictationStyleCopy.reset"):
+    for line in ("DictationStyleCopy.disclosureRules", "DictationStyleCopy.disclosureKeys", "DictationStyleCopy.switchTitle", "DictationStyleCopy.status(learnMode:",
+                 "DictationStyleCopy.templates(allowlist: style.allowlist)", "DictationStyleCopy.previousPolish", "DictationStyleCopy.reset",
+                 "DictationStyleCopy.rulesHeading(enabled: style.ledger.enabled, notUsed: notUsed)", "DictationStyleCopy.detail($0)"):
         pin(line in card, "card copy", f"the card shows {line}")
-    pin("await style.setPreviousPolish(on)" in card and "if let version = style.promptVersion {" in card, "previous polish",
-        "Previous polish (v3) shows only on a server with the option")
+    pin("let notUsed = style.notUsed(model: dictation.polishModel)" in card and "section(heading.heading, line: heading.line, active)" in card,
+        "card not used", "the rules sit under Paused or Not used with why, or Active")
+    pin("await style.setPreviousPolish(on)" in card and "if let version = style.options.promptVersion {" in card
+        and ".disabled(style.options.envOverride)" in card and "DictationStyleCopy.setOnServer" in card, "previous polish",
+        "Previous polish shows only on a server with the option, and is set on the server when the environment decides")
     pin("Task { await style.setEnabled(next) }" in card, "card switch", "the switch goes through setEnabled")
-    pin("learnMode: dictation.learnMode, monitor: dictation.editMonitor)" in card and "    var editMonitor: Bool { editWatcher.monitor }" in d,
+    pin("learnMode: dictation.learnMode, monitor: dictation.editMonitor" in card and "    var editMonitor: Bool { editWatcher.monitor }" in d,
         "card shortcut line", "the card knows whether the shortcut monitor can count typing")
     pin(card.count("styleRules") == 0 and d.count("styleRules: DictationStyleStore.shared.ruleCount(record.polishStyleHash)") == 4,
         "card style rules", "every dictation line counts the rules its hash names")
@@ -158,7 +179,8 @@ def check(src):
         "the polish options verb returns refusals as answers")
     pin("DictationStyleStore.shared.suggestOnly = { [weak model] in model?.dictation.learnMode == .suggest }" in app, "suggest only",
         "Suggest only reaches the store")
-    pin("Task { await DictationStyleStore.shared.load() }" in app, "push on launch", "launch reads the server and pushes a difference")
+    pin("Task { await DictationStyleStore.shared.load(); await DictationStyleStore.shared.loadOptions() }" in app, "push on launch",
+        "launch reads the server and its options, and pushes a difference")
 
 
 MUTANTS = [
@@ -168,50 +190,69 @@ MUTANTS = [
     ("partial counts", "d", "complete: !end.partial,", "complete: true,"),
     ("no input count", "d", "inputEvents: end.inputEvents, startReanchor: end.startReanchor, app: end.app,", "inputEvents: 1, startReanchor: end.startReanchor, app: end.app,"),
     ("hash dropped", "d", "appliedHash: record.polishStyleHash),", "appliedHash: nil),"),
-    ("polish ignored", "d", "polishOn: polishModel != .off, learnMode: learnMode, instructions:", "polishOn: true, learnMode: learnMode, instructions:"),
-    ("switch ignored", "d", "enabled: ledger.enabled, polishOn: polishOn, learnMode: learnMode, registers: registers,", "enabled: true, polishOn: polishOn, learnMode: learnMode, registers: registers,"),
-    ("refused saved", "d", "        guard result.reason == nil else { return [] }\n", ""),
-    ("words logged", "d", 'dictationLog.notice("style observe reason=\\(result.reason ?? "learned", privacy: .public) active=\\(result.newlyActive.count)")',
-     'dictationLog.notice("style observe reason=\\(result.reason ?? "learned", privacy: .public) final=\\(evidence.final, privacy: .public)")'),
-    ("no push", "d", "        Task { if self.available { await self.sync() } else { await self.load() } }\n", ""),
+    ("any baseline", "d", "baselinePolished: record.polishedByClaude,", "baselinePolished: record.heard != nil,"),
+    ("model not passed", "d", "            model: polishModel, learnMode: learnMode, instructions:", "            model: .sonnet, learnMode: learnMode, instructions:"),
+    ("gate dropped", "core", "learnMode: learnMode, notUsed: notUsed(model: model), registers: registers,", "learnMode: learnMode, notUsed: nil, registers: registers,"),
+    ("switch ignored", "core", "DictationStyleClassifier.Settings(enabled: ledger.enabled, learnMode:", "DictationStyleClassifier.Settings(enabled: true, learnMode:"),
+    ("refused saved", "core", "        guard result.reason == nil else { return [] }\n", ""),
+    ("words logged", "core", 'log?("style observe reason=\\(result.reason ?? "learned") active=\\(result.newlyActive.count)")',
+     'log?("style observe reason=\\(result.reason ?? "learned") final=\\(evidence.final)")'),
+    ("no push", "core", "        Task { await self.sync() }\n        return result.newlyActive", "        return result.newlyActive"),
     ("pill over another", "d", "        guard !busy, pill == .hidden else { return }\n        while let rule = pendingStyleRules.first {",
      "        guard !busy else { return }\n        while let rule = pendingStyleRules.first {"),
-    ("pill skips announce", "d", "            guard let key = DictationStyleStore.shared.announce(rule) else { continue }",
-     "            guard let key = DictationStyleStore.shared.key(rule) else { continue }"),
-    ("announce unsaved", "d", "        guard let key = key(id), DictationStyle.announce(&ledger, newlyActive: [id]) != nil else { return nil }\n        save()\n",
-     "        guard let key = key(id), DictationStyle.announce(&ledger, newlyActive: [id]) != nil else { return nil }\n"),
+    ("pill skips announce", "d", "            guard let key = DictationStyleStore.shared.announce(rule, model: polishModel) else { continue }",
+     "            guard let key = DictationStyle.Key?.none ?? DictationStyle.Key(kind: .contractions, param: rule) as DictationStyle.Key? else { continue }"),
+    ("pill where not used", "core", "        guard notUsed(model: model) == nil, let key = key(id),", "        guard let key = key(id),"),
+    ("announce unsaved", "core", "DictationStyle.announce(&ledger, newlyActive: [id]) != nil else { return nil }\n        save()\n",
+     "DictationStyle.announce(&ledger, newlyActive: [id]) != nil else { return nil }\n"),
     ("pill never after edit", "d", "            if !Task.isCancelled { showPendingStylePill() }\n", ""),
     ("undo on the pet only", "d", "pill == styleUndoPill ? styleUndoToken : nil }", "nil }"),
     ("undo keeps the rule", "d", "            Task { await DictationStyleStore.shared.remove(rule) }\n", ""),
-    ("clear keeps evidence", "d", "        DictationStyleStore.shared.clearHistory()\n", ""),
-    ("counts outside the app", "d", "            let inApp = editWatcher.watchedPID == NSWorkspace.shared.frontmostApplication?.processIdentifier",
-     "            let inApp = true"),
-    ("counts while learning off", "d", "        if editWatcher.isWatching, learnMode != .off {", "        if editWatcher.isWatching {"),
-    ("clock blind", "d", "inputs: { signal.inputs }, keys: { signal.keys })", "inputs: { 0 }, keys: { signal.keys })"),
+    ("undo says dictionary", "d", ".help(styleUndo ? DictationStyleCopy.undoHelp : ", ".help(styleUndo ? \"Remove this word from the dictionary\" : "),
+    ("clear keeps evidence", "d", "        Task { await DictationStyleStore.shared.clearHistory() }\n", ""),
+    ("counts outside the app", "d", "        let inApp = editWatcher.watchedPID == NSWorkspace.shared.frontmostApplication?.processIdentifier",
+     "        let inApp = true"),
+    ("counts clicks", "d", "        editWatcher.count(input: typed, typedKey: typed)", "        editWatcher.count(input: typed || pointer, typedKey: typed)"),
+    ("triggers in any app", "d", "watching: true, learning: true, inApp: inApp) else { return }", "watching: true, learning: true, inApp: true) else { return }"),
+    ("counts while learning off", "d", "        guard editWatcher.isWatching, learnMode != .off else { return }", "        guard editWatcher.isWatching else { return }"),
+    ("clock blind", "d", "inputs: { signal.inputs }, keys: { signal.keys },", "inputs: { 0 }, keys: { signal.keys },"),
+    ("no last key", "d", "sinceLastKey: { CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: .keyDown) })", "sinceLastKey: { nil })"),
     ("end loses the count", "d", "inputEvents: ending.canary.inputEvents ?? 0,", "inputEvents: 0,"),
     ("app kept after stop", "d", "        signal?.close(); signal = nil; watchedPID = nil\n", "        signal?.close(); signal = nil\n"),
     ("guard kind dropped", "d", 'guardKind: response.details["guard"]?.string, register:', "guardKind: nil, register:"),
     ("server codes dropped", "d", ".with(prompt: prompt).with(server: server)", ".with(prompt: prompt)"),
     ("guarded not recorded", "d", "            recent = DictationHistory.guarding(id, guard: run.guardKind, styleHash: run.learnedStyleHash, in: recent); saveRecent()\n", ""),
-    ("record loses the guard", "d", "polishGuard: lastPolishGuard, polishStyleHash: lastPolishStyleHash)", "polishStyleHash: lastPolishStyleHash)"),
+    ("record loses the guard", "d", "polishGuard: lastPolishGuard, polishStyleHash: lastPolishStyleHash, polishCleaned: lastPolishCleaned)",
+     "polishStyleHash: lastPolishStyleHash, polishCleaned: lastPolishCleaned)"),
+    ("record loses cleaned", "d", "polishStyleHash: lastPolishStyleHash, polishCleaned: lastPolishCleaned)", "polishStyleHash: lastPolishStyleHash)"),
+    ("cleaned never swapped", "d", "if let polished = DictationPolishSwap.swapText(run?.outcome) { final = DictationInsertion.polishedFinal(",
+     "if case .applied(let polished)? = run?.outcome { final = DictationInsertion.polishedFinal("),
+    ("pending loses cleaned", "d", "styleHash: run?.learnedStyleHash, cleaned: cleaned)", "styleHash: run?.learnedStyleHash)"),
     ("timing loses the guard", "d", ' polish_guard=\\(finished.polishGuard ?? "-", privacy: .public)', ""),
-    ("push to an older server", "d", "        guard available, let current = server else { return }", "        guard let current = server else { return }"),
-    ("unavailable counts as available", "d", "        available = state.available != false\n", "        available = true\n"),
-    ("registers inferred from the map", "d", "        registersEnabled = state.registersEnabled ?? false\n",
+    ("push to an older server", "core", "        guard available, var current = server else { return }", "        guard var current = server else { return }"),
+    ("unavailable counts as available", "core", "        available = state.available != false\n", "        available = true\n"),
+    ("registers inferred from the map", "core", "        registersEnabled = state.registersEnabled ?? false\n",
      "        registersEnabled = !(state.registers ?? [:]).isEmpty\n"),
-    ("registers on by default", "d", "        registersEnabled = state.registersEnabled ?? false\n", "        registersEnabled = state.registersEnabled ?? true\n"),
-    ("switch sends rules", "d", 'var request: [String: Any] = ["operation": "set", "enabled": on]', 'var request: [String: Any] = ["operation": "set", "enabled": on, "rules": []]'),
-    ("push without base", "d", '"enabled": enabled, "baseHash": base,', '"enabled": enabled,'),
+    ("registers on by default", "core", "        registersEnabled = state.registersEnabled ?? false\n", "        registersEnabled = state.registersEnabled ?? true\n"),
+    ("base never the revision", "core", "baseRevision: current.revision))", "baseRevision: nil))"),
+    ("revision not sent", "d", '            if let baseRevision { out["baseRevision"] = baseRevision }\n', ""),
+    ("baseHash sent", "d", '            if let baseRevision { out["baseRevision"] = baseRevision }\n', '            if let baseRevision { out["baseRevision"] = baseRevision; out["baseHash"] = baseRevision }\n'),
+    ("rules always sent", "d", 'if let rules { out["rules"] = rules.map(object) }', 'out["rules"] = (rules ?? []).map(object)'),
+    ("reset deletes on an older server", "core", "        if available {\n            let reply = await transport?(.clear)", "        if true {\n            let reply = await transport?(.clear)"),
+    ("no reload on return", "model", "willSet { if newValue.running, !status.running || status.version != newValue.version { DictationStyleStore.shared.serverCameBack() } }", "willSet { }"),
+    ("load without quarantine", "d", "let loaded = url.map { DictationStyle.load(from: $0, now: Date()) }", "let loaded = url.map { _ in (DictationStyle.Ledger(), DictationStyle.LoadResult.read) }"),
     ("card missing", "d", "                DictationStyleCard(style: DictationStyleStore.shared, dictation: store)\n", ""),
     ("key disclosure missing", "d", "            Text(DictationStyleCopy.disclosureKeys)", "            Text(DictationStyleCopy.disclosureRules)"),
-    ("card blind to the monitor", "d", "learnMode: dictation.learnMode, monitor: dictation.editMonitor)", "learnMode: dictation.learnMode)"),
-    ("previous polish always", "d", "            if let version = style.promptVersion {", "            if let version = Optional(style.promptVersion ?? \"default\") {"),
+    ("rules always active", "d", "section(heading.heading, line: heading.line, active)", "section(DictationStyleCopy.active, line: nil, active)"),
+    ("previous polish always", "d", "            if let version = style.options.promptVersion {", "            if let version = Optional(style.options.promptVersion ?? \"default\") {"),
+    ("env override ignored", "d", "                    .disabled(style.options.envOverride)\n", ""),
+    ("card blind to the monitor", "d", "learnMode: dictation.learnMode, monitor: dictation.editMonitor", "learnMode: dictation.learnMode, monitor: true"),
     ("card line without rules", "d", "            Text(record.metaLine(time: DictionaryLabels.when(record.createdAt, now: Date()), styleRules: DictationStyleStore.shared.ruleCount(record.polishStyleHash)))\n                .font(COSType.mono(size.typeSize(8)",
      "            Text(record.metaLine(time: DictionaryLabels.when(record.createdAt, now: Date())))\n                .font(COSType.mono(size.typeSize(8)"),
     ("refusals thrown", "app", 'model.runHelper(["dictation-learned-style"], timeout: 20, stdinData: request, answers: true)', 'model.runHelper(["dictation-learned-style"], timeout: 20, stdinData: request)'),
     ("options refusals thrown", "app", 'model.runHelper(["dictation-polish-options"], timeout: 20, stdinData: request, answers: true)', 'model.runHelper(["dictation-polish-options"], timeout: 20, stdinData: request)'),
     ("suggest lost", "app", "        DictationStyleStore.shared.suggestOnly = { [weak model] in model?.dictation.learnMode == .suggest }\n", ""),
-    ("no launch read", "app", "        Task { await DictationStyleStore.shared.load() }\n", ""),
+    ("no launch read", "app", "        Task { await DictationStyleStore.shared.load(); await DictationStyleStore.shared.loadOptions() }\n", ""),
 ]
 
 sources = {k: read(v) for k, v in FILES.items()}
@@ -230,6 +271,7 @@ for name, key, old, new in MUTANTS:
         print(f"KILLED  {name}  <- {e}")
         continue
     sys.exit(f"pin self-test: mutant '{name}' landed and every pin still passed")
-print(f"PASS voice style pins: saved-edit evidence and its facts, refused evidence unsaved, no words logged, the pill once ever after "
-      f"the edit pill with Undo on both surfaces, clear history, counts in the watched app, the polish codes on the run, record and "
-      f"timing line, the capability gate, the enabled-only switch, the card and its copy, the bridges; {caught} of {len(MUTANTS)} in-memory mutants caught")
+print(f"PASS voice style pins: saved-edit evidence and its facts behind the not-used gate, refused evidence unsaved, no words logged, the pill once "
+      f"ever after the edit pill, only where rules apply, with Undo on both surfaces, clear history, typed keys and triggers in the watched app, the "
+      f"polish codes and cleaned swap, the capability gate, the revision base, registers from the flag, reload on return, the quarantined load, "
+      f"the card and its copy, the bridges; {caught} of {len(MUTANTS)} in-memory mutants caught")

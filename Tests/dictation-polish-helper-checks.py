@@ -230,20 +230,20 @@ try:
     check(result['ok'] and result['details']['rules'] == [RULE] and result['details']['hash'] == '0a1b2c3d' and result['details']['serverEnabled'] is False
           and result['details']['registers'] == {'iTerm2': 'literal'} and method == 'GET' and path == '/api/dictation/learned-style'
           and headers.get('X-COS-Token') == token and len(seen) == before + 2, 'r2: get reads the capability, then the route, with the token')
-    result, _ = style({'operation': 'set', 'rules': [RULE], 'baseHash': '0a1b2c3d'})
+    result, _ = style({'operation': 'set', 'rules': [RULE], 'baseRevision': '0a1b2c3d'})
     method, path, headers, body = seen[-1]
-    check(result['ok'] and method == 'PUT' and path == '/api/dictation/learned-style' and json.loads(body) == {'rules': [RULE], 'baseHash': '0a1b2c3d'}
-          and headers.get('X-COS-Token') == token, 'r2: set PUTs the rules and baseHash, never text or a hash of its own')
+    check(result['ok'] and method == 'PUT' and path == '/api/dictation/learned-style' and json.loads(body) == {'rules': [RULE], 'baseRevision': '0a1b2c3d'}
+          and headers.get('X-COS-Token') == token, 'r2: set PUTs the rules and baseRevision, never text, a hash or a revision of its own')
     style_answer.update(status=409, body={'error': 'base_hash_mismatch'})
-    result, _ = style({'operation': 'set', 'rules': [RULE], 'baseHash': '0a1b2c3d'})
+    result, _ = style({'operation': 'set', 'rules': [RULE], 'baseRevision': '0a1b2c3d'})
     check(not result['ok'] and result['details']['reason'] == 'conflict', 'r2: a 409 is a conflict')
     style_answer.update(status=200, body=dict(STYLE, rules=[]))
     result, _ = style({'operation': 'clear'})
     check(result['ok'] and seen[-1][0] == 'DELETE' and seen[-1][1] == '/api/dictation/learned-style', 'r2: clear DELETEs the route')
-    # 0.5.344 part 2: the server's real contract (6.91.0 at 31c59dd): a null lastSeen, a rule without a count, the new GET
+    # 0.5.344 part 2: the server's real contract (6.91.0 at bcdf083): a null lastSeen, a rule without a count, the new GET
     # fields, the switch alone, an empty base hash, and the 409's hash passed on for the merge.
     REAL = dict(STYLE, rules=[dict(RULE, lastSeen=None), {k: v for k, v in RULE.items() if k != 'count'}][:1], hash='', text='',
-                registerValues=['all'], contractionParams=['use', 'avoid'], appliesTo=['message', 'prompt_draft', 'meeting'], maxChars=1500, maxRules=20,
+                registerValues=['all'], contractionParams=['use', 'avoid'], appliesTo=['message', 'prompt_draft'], maxChars=1500, maxRules=20,
                 serverEnabled=True, registersEnabled=False,
                 allowlist=['honestly', 'literally', 'pretty much', 'i guess', 'to be honest', 'frankly', 'obviously', 'kinda', 'sorta', 'you see',
                            'at the end of the day', 'if that makes sense'])
@@ -251,20 +251,36 @@ try:
     result, _ = style({'operation': 'get'})
     d = result['details']
     check(result['ok'] and d['rules'] == [{k: v for k, v in RULE.items() if k != 'lastSeen'}] and d['allowlist'] == REAL['allowlist']
-          and d['registerValues'] == ['all'] and d['contractionParams'] == ['use', 'avoid'] and d['appliesTo'] == ['message', 'prompt_draft', 'meeting']
+          and d['registerValues'] == ['all'] and d['contractionParams'] == ['use', 'avoid'] and d['appliesTo'] == ['message', 'prompt_draft']
           and d['registersEnabled'] is False and d['maxRules'] == 20, 'r2 part 2: the real GET, a null lastSeen, the new fields')
     style_answer.update(status=200, body=dict(REAL, rules=[{k: v for k, v in RULE.items() if k != 'count'}]))
     result, _ = style({'operation': 'get'})
     check(result['ok'] and result['details']['rules'][0]['count'] == 0, 'r2 part 2: a rule without a count reads as 0')
-    result, _ = style({'operation': 'set', 'enabled': False, 'baseHash': ''})
-    check(result['ok'] and seen[-1][0] == 'PUT' and json.loads(seen[-1][3]) == {'enabled': False, 'baseHash': ''},
-          'r2 part 2: Off PUTs the switch alone with an empty base hash, so the rules stay')
-    style_answer.update(status=409, body={'error': 'base_hash_mismatch', 'hash': '12345678'})
-    result, _ = style({'operation': 'set', 'rules': [RULE], 'baseHash': ''})
-    check(not result['ok'] and result['details']['reason'] == 'conflict' and result['details']['serverHash'] == '12345678' and result['details']['httpStatus'] == 409,
-          "r2 part 2: a 409 passes on the server's hash")
+    result, _ = style({'operation': 'set', 'enabled': False, 'baseRevision': '0a1b2c3d'})
+    check(result['ok'] and seen[-1][0] == 'PUT' and json.loads(seen[-1][3]) == {'enabled': False, 'baseRevision': '0a1b2c3d'},
+          'r2 part 2: Off PUTs the switch alone, so the rules stay')
+    before = len(seen)
+    for stale in [{'operation': 'set', 'enabled': False, 'baseHash': ''}, {'operation': 'set', 'enabled': False, 'revision': '0a1b2c3d'}]:
+        result, _ = style(stale)
+        check(not result['ok'] and result['details']['reason'] == 'invalid_request', f'qa: {list(stale)[-1]} never reaches the server (bcdf083 answers 400)')
+    check(len(seen) == before, 'qa: refused before the network')
+    style_answer.update(status=409, body={'error': 'base_revision_mismatch', 'revision': '12345678'})
+    result, _ = style({'operation': 'set', 'rules': [RULE], 'baseRevision': '0a1b2c3d'})
+    check(not result['ok'] and result['details']['reason'] == 'conflict' and 'serverHash' not in result['details'] and result['details']['httpStatus'] == 409,
+          "r2 part 2: a 409 is a conflict (the next GET is the truth)")
+    # 0.5.344 QA (QA2 W3): the base is the revision, passed through as baseRevision; the answer's revision comes back.
+    style_answer.update(status=200, body=dict(REAL, revision='89abcdef'))
+    result, _ = style({'operation': 'set', 'enabled': False, 'baseRevision': '12345678'})
+    check(result['ok'] and json.loads(seen[-1][3]) == {'enabled': False, 'baseRevision': '12345678'} and result['details']['revision'] == '89abcdef',
+          'qa: PUT carries baseRevision, the answer its revision')
+    # 0.5.344 QA (QA2 N3): a server rolled back to 6.90.0 answers 404 to a PUT or DELETE: unavailable, never saved.
+    style_answer.update(status=404, body={'error': 'not_found'})
+    result, _ = style({'operation': 'set', 'enabled': True, 'baseRevision': '12345678'})
+    check(not result['ok'] and result['details']['reason'] == 'unavailable' and result['details']['httpStatus'] == 404, 'qa: a 404 PUT is unavailable')
+    result, _ = style({'operation': 'clear'})
+    check(not result['ok'] and result['details']['reason'] == 'unavailable', 'qa: a 404 DELETE is unavailable')
     style_answer.update(status=413, body={'error': 'too_long'})
-    result, _ = style({'operation': 'set', 'rules': [RULE], 'baseHash': '12345678'})
+    result, _ = style({'operation': 'set', 'rules': [RULE], 'baseRevision': '12345678'})
     check(not result['ok'] and result['details']['reason'] == 'too_long' and result['details']['httpStatus'] == 413, 'r2 part 2: a 413 is too long, with its status')
     before = len(seen)
     result, _ = style({'operation': 'set'})
@@ -287,6 +303,13 @@ try:
         before = len(seen)
         result, _ = options(bad)
         check(not result['ok'] and result['details']['reason'] == 'invalid_request' and len(seen) == before, f'r2: options input refused: {bad}')
+    # 0.5.344 QA (QA2 N1): the prompt each model gets, and whether the server's environment decides it.
+    options_answer.update(status=200, body={'promptVersion': 'default', 'effectiveVersion': 'v3', 'envOverride': True,
+                                            'effectiveByModel': {'haiku': 'v3', 'sonnet': 'v3', 'luna-5.6-fast': 'v3'}, 'source': 'env', 'options': ['default', 'v3']})
+    result, _ = options({'operation': 'get'})
+    check(result['ok'] and result['details']['envOverride'] is True and result['details']['effectiveVersion'] == 'v3'
+          and result['details']['effectiveByModel'] == {'haiku': 'v3', 'sonnet': 'v3', 'luna-5.6-fast': 'v3'} and 'source' not in result['details'],
+          'qa: options pass on envOverride and the effective versions')
     health.clear(); health.update(ok=True)
     result, _ = options({'operation': 'get'})
     check(result['ok'] and result['details']['available'] is False, 'r2: an older server has no polish options')

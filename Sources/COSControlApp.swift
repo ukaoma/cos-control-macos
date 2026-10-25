@@ -95,7 +95,7 @@ struct COSControlApp: App {
             return try await model.runHelper(["dictation-polish-options"], timeout: 20, stdinData: request, answers: true)
         }
         DictationStyleStore.shared.suggestOnly = { [weak model] in model?.dictation.learnMode == .suggest }
-        Task { await DictationStyleStore.shared.load() }
+        Task { await DictationStyleStore.shared.load(); await DictationStyleStore.shared.loadOptions() }
         model.dictation.registerHotKeys()
         // 0.5.313: a meeting app on the microphone for 10 s gets a Record card on the pet. COS never records or stops
         // on its own: Record and Stop and save are the person's clicks.

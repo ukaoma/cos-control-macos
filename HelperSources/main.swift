@@ -16115,8 +16115,8 @@ final class COSControlHelper {
             guard DictationPolishInstructionsBridge.advertised(health.body) else { answer = DictationPolishInstructionsBridge.unavailable(); break }
             let response = request(route, token: token, timeout: 5)
             answer = DictationPolishInstructionsBridge.answer(status: response?.status, body: response?.body, operation: "get")
-        case .rules:
-            let response = request(DictationPolishInstructionsBridge.rulesRoute, token: token, timeout: 5)
+        case .rules(let model):
+            let response = request(DictationPolishInstructionsBridge.rulesPath(model: model), token: token, timeout: 5)
             answer = DictationPolishInstructionsBridge.rulesAnswer(status: response?.status, body: response?.body)
         case .clear:
             let response = request(route, method: "DELETE", token: token, timeout: 10)
@@ -16154,13 +16154,14 @@ final class COSControlHelper {
             }
             guard let capability = DictationLearnedStyleBridge.advertised(health.body) else { answer = DictationLearnedStyleBridge.unavailable(); break }
             let response = request(route, token: token, timeout: 5)
-            answer = DictationLearnedStyleBridge.answer(status: response?.status, body: response?.body, operation: "get")
-            if answer.ok { answer.details["serverEnabled"] = capability.enabled; answer.details["maxRules"] = capability.maxRules }
+            answer = DictationLearnedStyleBridge.answer(status: response?.status, body: response?.body, operation: "get", capability: capability)
+            if answer.ok { answer.details["serverEnabled"] = capability.enabled; answer.details["maxRules"] = capability.maxRules; answer.details["maxChars"] = capability.maxChars }
         case .clear:
             let response = request(route, method: "DELETE", token: token, timeout: 10)
             answer = DictationLearnedStyleBridge.answer(status: response?.status, body: response?.body, operation: "clear")
-        case .set(let rules, let enabled, let baseHash):
-            let response = request(route, method: "PUT", token: token, body: DictationLearnedStyleBridge.body(rules: rules, enabled: enabled, baseHash: baseHash), timeout: 10)
+        case .set(let rules, let enabled, let baseRevision):
+            let body = DictationLearnedStyleBridge.body(rules: rules, enabled: enabled, baseRevision: baseRevision)
+            let response = request(route, method: "PUT", token: token, body: body, timeout: 10)
             answer = DictationLearnedStyleBridge.answer(status: response?.status, body: response?.body, operation: "set")
         }
         emit(ok: answer.ok, message: answer.message, details: answer.details)

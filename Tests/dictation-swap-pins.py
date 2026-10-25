@@ -144,7 +144,7 @@ def check(d, core):
     # 7. Skips keep Claude's version for Apply polished, and say one line; a swap updates the record.
     pin("DictationPolishSwap.keepsPolished(result)" in first and "pendingPolish[id] = DictationPendingPolish(" in first
         and 'DictationPolishSwap.notice(result, app: delivered.target?.app ?? "the app")' in first, "skip", "a skip keeps the polished version and the pill says so")
-    pin("recent = DictationHistory.polishing(id, to: polished, heard: heard, model: model.rawValue, prompt: run?.prompt, styleHash: run?.learnedStyleHash, in: recent); saveRecent()" in first
+    pin("recent = DictationHistory.polishing(id, to: polished, heard: heard, model: model.rawValue, prompt: run?.prompt, styleHash: run?.learnedStyleHash,\n                                                    cleaned: cleaned, in: recent); saveRecent()" in first
         and "if result.swappedIn, let model = run?.model {" in first, "record", "a swap (confirmed or not) makes the dictation read the polished text")
     row = body(d, "                        if let pending = store.pendingPolish[record.id] {")
     pin(d.count('Button("Apply polished") { store.applyPolished(record.id) }') == 1 and "if pending.applies {" in row

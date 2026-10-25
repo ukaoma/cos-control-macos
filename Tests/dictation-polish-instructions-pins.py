@@ -52,7 +52,7 @@ def check(src):
     verb = body(helper, "    private func emitDictationPolishInstructions() throws {")
 
     # 1. The card sits under AI polish, inside the dictation settings, before the history retention row.
-    place = "DictationPolishInstructionsCard(store: DictationPolishInstructionsStore.shared, polishOn: store.polishModel != .off)"
+    place = "DictationPolishInstructionsCard(store: DictationPolishInstructionsStore.shared, polishOn: store.polishModel != .off, model: store.polishModel)"
     pin(settings.count(place) == 1, "placement", "Settings, Dictation shows the card once, with the shared store and whether polish is on")
     pin(settings.index('COSDropdown("AI polish"') < settings.index(place) < settings.index('COSDropdown("Keep dictations for"'),
         "placement", "the card is under the AI polish setting")
@@ -69,10 +69,10 @@ def check(src):
     pin(card.count("if draft.isEmpty {") == 1 and card.count("Text(DictationPolishInstructions.placeholder)") == 1, "placeholder", "examples show only in an empty box")
     # 4. The built-in rules, read-only, loaded when the disclosure opens.
     pin(card.count('DisclosureGroup("See the built-in rules", isExpanded: $rulesOpen) {') == 1
-        and card.count("if open, store.rules == nil { Task { await store.loadRules() } }") == 1, "rules", "the rules load when the disclosure opens")
+        and card.count("if open, store.rules == nil || store.rules?.model != model { Task { await store.loadRules(model: model) } }") == 1, "rules", "the rules load when the disclosure opens")
     pin("TextEditor(text: Binding(get: { rules" not in card and card.count("Text(rules.text)") == 1, "rules", "the rules are shown as text, not an editor")
     # 5. The words go only through the helper's stdin, built by the pure request.
-    pin(store.count("DictationPolishInstructions.request(operation, text: text)") == 1 and store.count('DictationPolishInstructions.request("rules")') == 1,
+    pin(store.count("DictationPolishInstructions.request(operation, text: text)") == 1 and store.count('DictationPolishInstructions.request("rules", model: model)') == 1,
         "stdin only", "every call is built by DictationPolishInstructions.request")
     wiring = 'DictationPolishInstructionsStore.shared.bridge = { [weak model] request in'
     pin(app.count(wiring) == 1 and app.count('return try await model.runHelper(["dictation-polish-instructions"], timeout: 20, stdinData: request)') == 1,
@@ -95,7 +95,7 @@ def check(src):
 
 
 MUTANTS = [
-    ("card not placed", "d", "                DictationPolishInstructionsCard(store: DictationPolishInstructionsStore.shared, polishOn: store.polishModel != .off)\n", ""),
+    ("card not placed", "d", "                DictationPolishInstructionsCard(store: DictationPolishInstructionsStore.shared, polishOn: store.polishModel != .off, model: store.polishModel)\n", ""),
     ("card shown on an older server", "d", "if DictationPolishInstructions.visible(available: store.available) {", "if true {"),
     ("store starts visible", "d", "no box.\n    @Published private(set) var available = false", "no box.\n    @Published private(set) var available = true"),
     ("availability not read", "d", "            available = state.available\n", ""),
@@ -103,7 +103,7 @@ MUTANTS = [
     ("save always on", "d", ".disabled(!DictationPolishInstructions.canSave(draft: draft, saved: store.saved, busy: store.busy))", ".disabled(false)"),
     ("clear always on", "d", ".disabled(!DictationPolishInstructions.canClear(draft: draft, saved: store.saved, busy: store.busy))", ".disabled(false)"),
     ("placeholder over typed text", "d", "                        if draft.isEmpty {\n", "                        if true {\n"),
-    ("rules never load", "d", "if open, store.rules == nil { Task { await store.loadRules() } }", "if open, store.rules == nil { }"),
+    ("rules never load", "d", "if open, store.rules == nil || store.rules?.model != model { Task { await store.loadRules(model: model) } }", "if open { }"),
     ("bridge not wired", "app", "        DictationPolishInstructionsStore.shared.bridge = { [weak model] request in", "        _ = { [weak model] (request: Data) in"),
     ("verb not dispatched", "helper", '        case "dictation-polish-instructions": try emitDictationPolishInstructions()\n', ""),
     ("setting asked without the capability", "helper",

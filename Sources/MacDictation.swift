@@ -1037,7 +1037,8 @@ struct DictationOwnTarget: @unchecked Sendable {
         let signal = DictationWatchSignal()
         self.signal = signal
         let clock = DictationEditWatch.Clock(now: { ProcessInfo.processInfo.systemUptime }, wall: { Date() }, pause: { await signal.pause($0) },
-                                             inputs: { signal.inputs }, keys: { signal.keys })
+                                             inputs: { signal.inputs }, keys: { signal.keys },
+                                             sinceLastKey: { CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: .keyDown) })
         let consider: DictationEditWatch.Consider = { edit, window, start, length in
             await Self.consider(edit, window: window, start: start, length: length, context: context)
         }
@@ -1856,6 +1857,8 @@ enum DictationSpareBuild: Sendable {
     /// 0.5.344 part 2: the guard that kept what was heard, and the learned-style hash, for the record (polish first).
     private var lastPolishGuard: String?
     private var lastPolishStyleHash: String?
+    /// 0.5.344 QA (W1): the server's own pass cleaned the text that went out (its outcome code); never Claude's polish.
+    private var lastPolishCleaned: String?
     /// 0.5.331: a delivery is typing into an app, and an automatic swap is editing one. Never both at once.
     private var deliveryInFlight = false
     private var swapEditing = false
@@ -2328,14 +2331,14 @@ enum DictationSpareBuild: Sendable {
     /// 0.5.344: Return or Enter (any modifier, not its auto-repeat) or a click, while a watch runs with learning on, asks
     /// that watch for one read now (DictationEditLearning.trigger). It never means sent and never changes the event.
     private func editTrigger(keyDown: Bool, keyCode: UInt16, isRepeat: Bool, pointer: Bool) {
-        // 0.5.344 part 2: counts only (style evidence, and the gap check after a final read), in the watched app.
-        if editWatcher.isWatching, learnMode != .off {
-            let inApp = editWatcher.watchedPID == NSWorkspace.shared.frontmostApplication?.processIdentifier
-            editWatcher.count(input: DictationEditLearning.countsAsInput(keyDown: keyDown, pointer: pointer, watching: true, learning: true, inApp: inApp),
-                              typedKey: DictationEditLearning.countsAsTypedKey(keyDown: keyDown, keyCode: keyCode, watching: true, learning: true, inApp: inApp))
-        }
+        guard editWatcher.isWatching, learnMode != .off else { return }
+        // 0.5.344 QA: only the app the watch reads counts or triggers (its pid is frontmost).
+        let inApp = editWatcher.watchedPID == NSWorkspace.shared.frontmostApplication?.processIdentifier
+        // 0.5.344 part 2: counts only (style evidence, and the gap check after a final read): typed keys, never Return or a click.
+        let typed = DictationEditLearning.countsAsTypedKey(keyDown: keyDown, keyCode: keyCode, watching: true, learning: true, inApp: inApp)
+        editWatcher.count(input: typed, typedKey: typed)
         guard let trigger = DictationEditLearning.trigger(keyDown: keyDown, keyCode: keyCode, isRepeat: isRepeat, pointer: pointer,
-                                                          watching: editWatcher.isWatching, learning: learnMode != .off) else { return }
+                                                          watching: true, learning: true, inApp: inApp) else { return }
         editWatcher.trigger(trigger)
     }
     private func keyEvent(flags: Bool, pointer: Bool, keyCode: UInt16, raw: UInt64, at time: TimeInterval) {
@@ -2696,8 +2699,10 @@ enum DictationSpareBuild: Sendable {
                 guard generation == attempt, !Task.isCancelled else { return }
                 timing?.includePolish(polished)
                 let said = polished?.outcome.text(heard: heard) ?? heard
-                if case .applied? = polished?.outcome, let model = polished?.model { lastPolish = (heard, model) } else { lastPolish = nil }
-                lastPolishPrompt = lastPolish == nil ? nil : polished?.prompt
+                // 0.5.344 QA (W1): text the server's own pass cleaned goes out too, and the record says Cleaned up.
+                if DictationPolishSwap.swapText(polished?.outcome) != nil, let model = polished?.model { lastPolish = (heard, model) } else { lastPolish = nil }
+                lastPolishCleaned = lastPolish == nil ? nil : DictationPolish.cleaned(polished?.outcome)
+                lastPolishPrompt = lastPolish == nil || lastPolishCleaned != nil ? nil : polished?.prompt
                 lastPolishGuard = polished.flatMap { $0.guarded ? ($0.guardKind ?? "guarded") : nil }
                 lastPolishStyleHash = lastPolish == nil ? nil : polished?.learnedStyleHash
                 let text = formatLists ? DictationListFormat.format(said) : said
@@ -2785,9 +2790,9 @@ enum DictationSpareBuild: Sendable {
         let record = DictationRecord(id: UUID(), text: text, createdAt: Date(), delivery: outcome.delivery,
                                      engine: lastEngine?.engine, fallbackReason: lastEngine?.fallback,
                                      heard: lastPolish?.heard, polishModel: lastPolish?.model.rawValue, polishPrompt: lastPolishPrompt,
-                                     polishGuard: lastPolishGuard, polishStyleHash: lastPolishStyleHash)
+                                     polishGuard: lastPolishGuard, polishStyleHash: lastPolishStyleHash, polishCleaned: lastPolishCleaned)
         lastEngine = nil; lastPolish = nil
-        lastPolishPrompt = nil; lastPolishGuard = nil; lastPolishStyleHash = nil
+        lastPolishPrompt = nil; lastPolishGuard = nil; lastPolishStyleHash = nil; lastPolishCleaned = nil
         if !swapPending { if case .refused = outcome { recordTiming("copied") } else { recordTiming("typed") } }
         if let target { rememberTarget(target, for: record.id) }
         // 0.5.342: the watch that starts below (or after the swap) belongs to this dictation.
@@ -2862,7 +2867,7 @@ enum DictationSpareBuild: Sendable {
         let polishing = Task { await self.polish(heard, attempt: attempt, showPill: false) }
         let lists = formatLists
         let text = lists ? DictationListFormat.format(heard) : heard
-        lastPolish = nil; lastPolishPrompt = nil; lastPolishGuard = nil; lastPolishStyleHash = nil
+        lastPolish = nil; lastPolishPrompt = nil; lastPolishGuard = nil; lastPolishStyleHash = nil; lastPolishCleaned = nil
         pendingAudio = nil; phase = "Ready"; message = nil
         await waitForSwapEdit()
         let delivering = ProcessInfo.processInfo.systemUptime
@@ -2888,7 +2893,9 @@ enum DictationSpareBuild: Sendable {
         var result = DictationPolishSwap.Result.notPolished, route: DictationReplace.Route?, swapMs: Int?
         var watchTarget = delivered.target, watchContext = delivered.context
         var final: (text: String, fixes: [DictationFieldContext.Fix])?
-        if case .applied(let polished)? = run?.outcome { final = DictationInsertion.polishedFinal(polished, formatLists: lists, context: delivered.context) }
+        // 0.5.344 QA (W1): Claude's polish, or text the server's own pass cleaned (0.5.343 swapped both).
+        if let polished = DictationPolishSwap.swapText(run?.outcome) { final = DictationInsertion.polishedFinal(polished, formatLists: lists, context: delivered.context) }
+        let cleaned = DictationPolish.cleaned(run?.outcome)
         switch DictationPolishSwap.want(outcome: run?.outcome, typed: typed, final: final?.text) {
         case .notPolished: result = .notPolished
         case .identical: result = .identical
@@ -2904,13 +2911,14 @@ enum DictationSpareBuild: Sendable {
             }
             if result.swappedIn, let model = run?.model {
                 // The dictation now reads what the field holds, and keeps what was heard (Fix a word, Heard, history).
-                recent = DictationHistory.polishing(id, to: polished, heard: heard, model: model.rawValue, prompt: run?.prompt, styleHash: run?.learnedStyleHash, in: recent); saveRecent()
+                recent = DictationHistory.polishing(id, to: polished, heard: heard, model: model.rawValue, prompt: run?.prompt, styleHash: run?.learnedStyleHash,
+                                                    cleaned: cleaned, in: recent); saveRecent()
                 if let watchTarget { rememberTarget(watchTarget, for: id) }
                 watchContext = delivered.context.map { DictationFieldContext.Applied(text: polished, fixes: final?.fixes ?? [], outside: $0.outside, terms: $0.terms) }
             } else if DictationPolishSwap.keepsPolished(result), let model = run?.model, record(id) != nil {
                 // 0.5.332: after a mismatch the row shows what was heard and Claude's version, with Copy, never Apply.
                 pendingPolish[id] = DictationPendingPolish(text: polished, heard: heard, model: model, applies: DictationPolishSwap.offersApply(result), prompt: run?.prompt,
-                                                           styleHash: run?.learnedStyleHash)
+                                                           styleHash: run?.learnedStyleHash, cleaned: cleaned)
             }
         }
         quiet?.stop()
@@ -2983,8 +2991,9 @@ enum DictationSpareBuild: Sendable {
             insertTargets[id] = replaced.target
             switch replaced.result {
             case .replaced:
-                recent = DictationHistory.polishing(id, to: pending.text, heard: pending.heard, model: pending.model.rawValue, prompt: pending.prompt, styleHash: pending.styleHash, in: recent); saveRecent()
-                polishNote = (id, "Polished it in \(target.app).")
+                recent = DictationHistory.polishing(id, to: pending.text, heard: pending.heard, model: pending.model.rawValue, prompt: pending.prompt, styleHash: pending.styleHash,
+                                                    cleaned: pending.cleaned, in: recent); saveRecent()
+                polishNote = (id, pending.cleaned == nil ? "Polished it in \(target.app)." : "Cleaned it up in \(target.app).")
             case .copied(let reason):
                 copy(pending.text); polishNote = (id, DictationReplace.copiedNote(reason, app: target.app))
             case .unverified(let pasted):
@@ -3216,7 +3225,7 @@ enum DictationSpareBuild: Sendable {
     func clearRecent() {
         recent = []
         // 0.5.344 part 2: the style evidence goes with the history, and the rules learned from it.
-        DictationStyleStore.shared.clearHistory()
+        Task { await DictationStyleStore.shared.clearHistory() }
         if card?.recordID != nil { dismissCard() }
         listRoute = nil; resetFix()
         saveRecent()
@@ -3486,10 +3495,10 @@ enum DictationSpareBuild: Sendable {
         // gets its pill once, after this ending's own pill.
         pendingStyleRules += DictationStyleStore.shared.observe(
             DictationStyleClassifier.Evidence(dictation: id, typed: end.typed, final: final,
-                                              baselinePolished: record.heard != nil && record.polishModel != nil, complete: !end.partial,
+                                              baselinePolished: record.polishedByClaude, complete: !end.partial,
                                               inputEvents: end.inputEvents, startReanchor: end.startReanchor, app: end.app,
                                               appliedHash: record.polishStyleHash),
-            polishOn: polishModel != .off, learnMode: learnMode, instructions: DictationPolishInstructionsStore.shared.saved)
+            model: polishModel, learnMode: learnMode, instructions: DictationPolishInstructionsStore.shared.saved)
         let shown = DictationEditConfirm.pill(typed: record.text, final: final, learned: learned.map { (heard: $0.heard, written: $0.written) })
         dictationLog.notice("learn edit saved=true edits=\(edit.edits) learned=\(learned.count) pill=\(shown.logName, privacy: .public)")
         // Never over a newer dictation's pill: only a hidden pill, or this watch's own LEARNED flash, gives way.
@@ -3518,7 +3527,8 @@ enum DictationSpareBuild: Sendable {
         guard !busy, pill == .hidden else { return }
         while let rule = pendingStyleRules.first {
             pendingStyleRules.removeFirst()
-            guard let key = DictationStyleStore.shared.announce(rule) else { continue }
+            // 0.5.344 QA (W3): only while the rules apply (Sonnet, the server's setting on, the new prompt).
+            guard let key = DictationStyleStore.shared.announce(rule, model: polishModel) else { continue }
             let flash = DictationPill.flash(label: DictationStyle.pillLabel(key), confirmed: true)
             styleUndoRule = rule; styleUndoToken = UUID(); styleUndoPill = flash
             pill = flash
@@ -3694,7 +3704,7 @@ struct MacDictationSettings: View {
                 Text(DictationPolishSwap.settingNote(store.polishModel))
                     .font(.caption2).foregroundStyle(.secondary)
                 // 0.5.335 (server 6.85.0): Your polish instructions, after the built-in rules. Absent on an older server.
-                DictationPolishInstructionsCard(store: DictationPolishInstructionsStore.shared, polishOn: store.polishModel != .off)
+                DictationPolishInstructionsCard(store: DictationPolishInstructionsStore.shared, polishOn: store.polishModel != .off, model: store.polishModel)
                 // 0.5.344 part 2 (server 6.91.0): Your style, inline under AI polish.
                 DictationStyleCard(style: DictationStyleStore.shared, dictation: store)
                 Text("Any shortcut: a modifier plus a key, a function key, or one modifier key by itself such as Fn 🌐 or Right ⌘. Fn and single-key shortcuts use Accessibility. Finished text drops into the text box that has the cursor; with no text box it is copied, and the pet shows it with a Copy button. Some apps, such as terminals and Electron editors, get ⌘V; COS shows Pasted when it can't confirm, then puts your clipboard back. COS never presses Send or Return.")
@@ -3987,6 +3997,8 @@ struct DictationListeningPill: View {
 
     /// Green with ✓ only for a measured insertion; an unconfirmed paste flashes in the neutral colors.
     private var done: Bool { if case .flash(_, true) = pill { return true }; return false }
+    /// 0.5.344 QA: the flash is "Learned your style: ...", whose Undo removes that rule.
+    private var styleUndo: Bool { if case .flash(let label, _) = pill { return DictationStyle.isPillLabel(label) }; return false }
     private var fill: Color { done ? COSPalette.green : (floating ? COSPalette.ink : COSPalette.card) }
     private var ink: Color { done ? .white : (floating ? COSPalette.cream : COSPalette.plateInk) }
 
@@ -4040,8 +4052,9 @@ struct DictationListeningPill: View {
                             .contentShape(Capsule())
                     }
                     .buttonStyle(.plain)
-                    .help("Remove this word from the dictionary")
-                    .accessibilityLabel("Undo, remove this word from the dictionary")
+                    // 0.5.344 QA (N4): the style pill's Undo removes a style rule, not a word.
+                    .help(styleUndo ? DictationStyleCopy.undoHelp : "Remove this word from the dictionary")
+                    .accessibilityLabel(styleUndo ? "Undo, " + DictationStyleCopy.undoHelp.lowercased() : "Undo, remove this word from the dictionary")
                 }
                 if let onView {
                     Button(action: onView) {
@@ -4944,7 +4957,7 @@ struct DictationActivityPane: View {
 /// `dictation-polish-instructions` verb; the words ride on stdin, never argv, and are never logged.
 @MainActor final class DictationPolishInstructionsStore: ObservableObject {
     static let shared = DictationPolishInstructionsStore()
-    struct Rules: Equatable { let heading: String; let text: String; let userBlock: String? }
+    struct Rules: Equatable { let heading: String; let text: String; let userBlock: String?; var learnedStyleBlock: String? = nil; var model: DictationPolishModel? = nil }
     /// False until a server says it has the setting (capabilities.dictationCleanup.customInstructions): no box.
     @Published private(set) var available = false
     @Published private(set) var saved = ""
@@ -4963,8 +4976,8 @@ struct DictationActivityPane: View {
     func load() async { loadFailed = !(await send("get")) }
     @discardableResult func save(_ text: String) async -> Bool { await send("set", text: text) }
     @discardableResult func clear() async -> Bool { await send("clear") }
-    func loadRules() async {
-        guard let bridge, let body = DictationPolishInstructions.request("rules") else { rulesMessage = "COS Control is not connected to its helper yet."; return }
+    func loadRules(model: DictationPolishModel? = nil) async {
+        guard let bridge, let body = DictationPolishInstructions.request("rules", model: model) else { rulesMessage = "COS Control is not connected to its helper yet."; return }
         do {
             let response = try await bridge(body)
             guard response.ok, let text = response.details["rules"]?.string else {
@@ -4972,7 +4985,8 @@ struct DictationActivityPane: View {
             }
             rules = Rules(heading: DictationPolishInstructions.rulesHeading(version: response.details["version"]?.string,
                                                                            rolledBack: response.details["rolledBack"]?.bool),
-                          text: text, userBlock: response.details["userBlock"]?.string)
+                          text: text, userBlock: response.details["userBlock"]?.string,
+                          learnedStyleBlock: response.details["learnedStyleBlock"]?.string.flatMap { $0.isEmpty ? nil : $0 }, model: model)
             rulesMessage = nil
         } catch {
             rulesMessage = error.localizedDescription
@@ -5010,6 +5024,8 @@ struct DictationActivityPane: View {
 struct DictationPolishInstructionsCard: View {
     @ObservedObject var store: DictationPolishInstructionsStore
     let polishOn: Bool
+    /// 0.5.344 QA (QA3 W4): the rules view shows this model's prompt and its learned-style block.
+    var model: DictationPolishModel = .off
     @State private var draft = ""
     /// The draft was typed in, so a reload never replaces what the person is writing.
     @State private var touched = false
@@ -5067,6 +5083,10 @@ struct DictationPolishInstructionsCard: View {
                                             Text("Your instructions go after the rules, in this block:").font(.caption2).foregroundStyle(.secondary)
                                             Text(block).font(COSType.mono(10)).textSelection(.enabled)
                                         }
+                                        if let block = rules.learnedStyleBlock {
+                                            Text("Your style rules, as the model sees them:").font(.caption2).foregroundStyle(.secondary)
+                                            Text(block).font(COSType.mono(10)).textSelection(.enabled)
+                                        }
                                     }.frame(maxWidth: .infinity, alignment: .leading)
                                 }
                                 .frame(minHeight: 0, maxHeight: 220)
@@ -5077,7 +5097,7 @@ struct DictationPolishInstructionsCard: View {
                     }
                     .font(.caption)
                     .onChange(of: rulesOpen) { _, open in
-                        if open, store.rules == nil { Task { await store.loadRules() } }
+                        if open, store.rules == nil || store.rules?.model != model { Task { await store.loadRules(model: model) } }
                     }
                 }
             }
@@ -5096,168 +5116,111 @@ struct DictationPolishInstructionsCard: View {
 /// server's capability (protocol 1, read by the helper from /api/health); on an older server the ledger stays here.
 @MainActor final class DictationStyleStore: ObservableObject {
     static let shared = DictationStyleStore()
-    @Published private(set) var ledger: DictationStyle.Ledger
-    /// The server advertises learned style; `checked`: a read answered, available or not.
-    @Published private(set) var available = false
-    @Published private(set) var checked = false
-    @Published private(set) var serverEnabled = true
-    @Published private(set) var allowlist = DictationStyle.defaultAllowlist
-    @Published private(set) var registers: [String: String] = [:]
-    @Published private(set) var registersEnabled = false
-    @Published private(set) var busy = false
-    @Published private(set) var message: String?
-    /// "default" or "v3" from /api/dictation/polish/options; nil on a server without the option.
-    @Published private(set) var promptVersion: String?
+    /// The state and the sync live in the core (DictationStyleController), where the checks run every interleaving.
+    let controller: DictationStyleController
     var bridge: (@MainActor (Data) async throws -> HelperResponse)?
     var optionsBridge: (@MainActor (Data) async throws -> HelperResponse)?
-    /// Suggest only proposes rules and never activates them on its own.
-    var suggestOnly: () -> Bool = { false }
-    private var server: DictationStyle.Server?
-    private let url: URL?
+    /// Previous polish's message, and whether its toggle is in flight.
+    @Published private(set) var optionsMessage: String?
 
     init(url: URL? = DictationStyleStore.defaultURL()) {
-        self.url = url
-        ledger = url.map(DictationStyle.load(from:)) ?? DictationStyle.Ledger()
+        let loaded = url.map { DictationStyle.load(from: $0, now: Date()) } ?? (DictationStyle.Ledger(), .missing)
+        controller = DictationStyleController(ledger: loaded.ledger, loaded: loaded.result)
+        if case .corrupt(let moved) = loaded.result {
+            // Codes only: where it went, never what was in it.
+            dictationLog.error("style ledger unreadable moved=\(moved != nil, privacy: .public)")
+        }
+        controller.persist = { ledger in
+            guard let url else { return }
+            do { try DictationStyle.save(ledger, to: url) }
+            catch { dictationLog.error("style ledger not saved: \(error.localizedDescription, privacy: .public)") }
+        }
+        controller.log = { line in dictationLog.notice("\(line, privacy: .public)") }
+        controller.onChange = { [weak self] in self?.objectWillChange.send() }
+        controller.transport = { [weak self] call in await self?.send(call) }
     }
     nonisolated static func defaultURL() -> URL? {
         MacDictationStore.defaultHistoryURL()?.deletingLastPathComponent().appendingPathComponent(DictationStyle.fileName)
     }
-    private func save() {
-        guard let url else { return }
-        do { try DictationStyle.save(ledger, to: url) }
-        catch { dictationLog.error("style ledger not saved: \(error.localizedDescription, privacy: .public)") }
-    }
-    var now: Date { Date() }
-    func rules(_ state: DictationStyle.State) -> [DictationStyle.Rule] {
-        let suggest = suggestOnly()
-        return ledger.rules.filter { DictationStyle.state($0, suggestOnly: suggest) == state && !DictationStyle.tombstoned($0.id, in: ledger, now: now) }
-    }
-    func ruleCount(_ hash: String?) -> Int { DictationStyle.ruleCount(hash: hash, in: ledger) }
-    func key(_ id: String) -> DictationStyle.Key? { ledger.rules.first { $0.id == id }?.key }
+    var suggestOnly: () -> Bool = { false } { didSet { let read = suggestOnly; controller.suggestOnly = { read() } } }
 
-    /// One saved edit, through the classifier's filters. Returns the ids that became active (for the pill).
-    func observe(_ evidence: DictationStyleClassifier.Evidence, polishOn: Bool, learnMode: DictationLearnMode, instructions: String) -> [String] {
-        let settings = DictationStyleClassifier.Settings(enabled: ledger.enabled, polishOn: polishOn, learnMode: learnMode, registers: registers,
-                                                         registersEnabled: registersEnabled, allowlist: allowlist, instructions: instructions)
-        var next = ledger
-        let result = DictationStyleClassifier.learn(&next, evidence: evidence, settings: settings, now: now)
-        // Counts and codes only: never the words.
-        dictationLog.notice("style observe reason=\(result.reason ?? "learned", privacy: .public) active=\(result.newlyActive.count)")
-        guard result.reason == nil else { return [] }
-        ledger = next; save()
-        // A server that gained the capability since launch is read now; otherwise only a change is sent.
-        Task { if self.available { await self.sync() } else { await self.load() } }
-        return result.newlyActive
+    var ledger: DictationStyle.Ledger { controller.ledger }
+    var available: Bool { controller.available }
+    var checked: Bool { controller.checked }
+    var allowlist: [String] { controller.allowlist }
+    var busy: Bool { controller.busy }
+    var message: String? { controller.message }
+    var options: DictationStyleController.Options { controller.options }
+    func notUsed(model: DictationPolishModel) -> DictationStyle.NotUsed? { controller.notUsed(model: model) }
+    func rules(_ state: DictationStyle.State) -> [DictationStyle.Rule] { controller.rules(state) }
+    func ruleCount(_ hash: String?) -> Int { controller.ruleCount(hash) }
+
+    func observe(_ evidence: DictationStyleClassifier.Evidence, model: DictationPolishModel, learnMode: DictationLearnMode, instructions: String) -> [String] {
+        controller.observe(evidence, model: model, learnMode: learnMode, instructions: instructions)
     }
-    /// The pill for one newly active rule, once per rule id ever: marks it announced and gives its key, or nil.
-    func announce(_ id: String) -> DictationStyle.Key? {
-        guard let key = key(id), DictationStyle.announce(&ledger, newlyActive: [id]) != nil else { return nil }
-        save()
-        return key
-    }
-    func add(_ key: DictationStyle.Key) async {
-        DictationStyle.add(&ledger, key, allowlist: allowlist, now: now); save(); await sync()
-    }
-    func accept(_ id: String) async { DictationStyle.accept(&ledger, id); save(); await sync() }
-    /// Remove, Dismiss and the pill's Undo: the rule goes with a 30-day tombstone.
-    func remove(_ id: String) async { DictationStyle.remove(&ledger, id, now: now); save(); await sync() }
-    /// Clear dictation history: the evidence goes, and the rules learned from it.
-    func clearHistory() { DictationStyle.clearHistory(&ledger); save(); Task { await sync() } }
-    /// Reset learned style: the server's DELETE (rules go, switch back on), then the ledger.
-    func reset() async {
-        busy = true; defer { busy = false }
-        if available, let answer = await send(["operation": "clear"]) { apply(answer) }
-        DictationStyle.reset(&ledger); ledger.enabled = true; save()
-        message = "Learned style reset."
-    }
-    /// The switch. Off stops learning and PUTs only {enabled: false}, which keeps the rules on the server.
-    func setEnabled(_ on: Bool) async {
-        ledger.enabled = on; save()
-        guard available else { return }
-        var request: [String: Any] = ["operation": "set", "enabled": on]
-        if let hash = server?.hash { request["baseHash"] = hash }
-        if let answer = await send(request), answer.status == 200 { apply(answer) } else { await load() }
+    func announce(_ id: String, model: DictationPolishModel) -> DictationStyle.Key? { controller.announce(id, model: model) }
+    func add(_ key: DictationStyle.Key) async { await controller.add(key) }
+    func accept(_ id: String) async { await controller.accept(id) }
+    func remove(_ id: String) async { await controller.remove(id) }
+    func clearHistory() async { await controller.clearHistory() }
+    func reset() async { await controller.reset() }
+    func setEnabled(_ on: Bool) async { await controller.setEnabled(on) }
+    func load() async { await controller.load() }
+    /// 0.5.344 QA (W5): the server answered again, or a newer one came up: read the setting (and send a pending Off).
+    func serverCameBack() {
+        guard controller.needsReload || controller.ledger.enabled != (controller.server?.enabled ?? controller.ledger.enabled) else { return }
+        Task { await load(); await loadOptions() }
     }
 
-    /// The server's setting (GET through the helper, which asks the capability first), then a sync when it differs.
-    func load() async {
-        guard let answer = await send(["operation": "get"]) else { return }
-        apply(answer)
-        if available { await sync() }
-    }
-    func sync() async {
-        guard available, let current = server else { return }
-        var next = ledger
-        let outcome = await DictationStyle.sync(&next, server: current, suggestOnly: suggestOnly(), now: now,
-                                                put: { rules, enabled, base in
-                                                    let request: [String: Any] = ["operation": "set", "enabled": enabled, "baseHash": base,
-                                                                                  "rules": rules.map(Self.object)]
-                                                    guard let answer = await self.send(request) else { return DictationStyle.PutResult() }
-                                                    if answer.status == 200 { self.apply(answer) }
-                                                    return DictationStyle.PutResult(status: answer.status, server: answer.server)
-                                                },
-                                                get: {
-                                                    guard let answer = await self.send(["operation": "get"]), answer.status == 200 else { return nil }
-                                                    self.apply(answer)
-                                                    return answer.server
-                                                })
-        ledger = next; save()
-        dictationLog.notice("style sync outcome=\(String(describing: outcome), privacy: .public)")
-        switch outcome {
-        case .saved(_, let dropped) where dropped > 0: message = "The server keeps fewer rules: \(dropped) left out."
-        case .conflict: message = "Your style changed on the server. COS reads it again next time."
-        case .failed(let reason): message = reason == "unreachable" ? "The COS server did not answer. Your style is kept on this Mac." : nil
-        default: break
-        }
-    }
     func loadOptions() async {
         guard let optionsBridge, let body = try? JSONSerialization.data(withJSONObject: ["operation": "get"]),
               let response = try? await optionsBridge(body) else { return }
-        promptVersion = response.ok && response.details["available"]?.bool == true ? response.details["promptVersion"]?.string : nil
+        controller.options = Self.options(response)
     }
     func setPreviousPolish(_ on: Bool) async {
         guard let optionsBridge, let body = try? JSONSerialization.data(withJSONObject: ["operation": "set", "promptVersion": on ? "v3" : "default"]),
-              let response = try? await optionsBridge(body) else { return }
-        if response.ok { promptVersion = response.details["promptVersion"]?.string } else { message = response.message }
+              let response = try? await optionsBridge(body) else { optionsMessage = DictationStyleCopy.notSaved("unreachable"); return }
+        if response.ok { controller.options = Self.options(response); optionsMessage = nil }
+        else { optionsMessage = DictationStyleCopy.notSaved(response.details["reason"]?.string ?? "failed") }
+    }
+    /// The options answer: the stored choice, the prompt Sonnet gets, and whether the server's environment decides.
+    private static func options(_ response: HelperResponse) -> DictationStyleController.Options {
+        guard response.ok, response.details["available"]?.bool == true else { return .init() }
+        let sonnet = response.details["effectiveByModel"]?.object?["sonnet"]?.string ?? response.details["effectiveVersion"]?.string
+        return .init(promptVersion: response.details["promptVersion"]?.string, sonnetPrompt: sonnet,
+                     envOverride: response.details["envOverride"]?.bool == true)
     }
 
-    private struct Answer { var status: Int?; var server: DictationStyle.Server? }
+    /// One helper call: the request as the verb takes it on stdin, the answer's details read as DictationStyle.Server.
+    private func send(_ call: DictationStyleController.Call) async -> DictationStyleController.Reply? {
+        guard let bridge, let body = try? JSONSerialization.data(withJSONObject: Self.request(call)) else { return nil }
+        guard let response = try? await bridge(body) else { return nil }
+        let data = (try? JSONEncoder().encode(response.details)) ?? Data("{}".utf8)
+        let decoded = try? JSONDecoder().decode(DictationStyle.Server.self, from: data)
+        return DictationStyleController.Reply(status: response.ok ? 200 : decoded?.httpStatus, server: decoded, message: response.message)
+    }
+    nonisolated static func request(_ call: DictationStyleController.Call) -> [String: Any] {
+        switch call {
+        case .get: return ["operation": "get"]
+        case .clear: return ["operation": "clear"]
+        case .put(let rules, let enabled, let baseRevision):
+            var out: [String: Any] = ["operation": "set"]
+            if let rules { out["rules"] = rules.map(object) }
+            if let enabled { out["enabled"] = enabled }
+            if let baseRevision { out["baseRevision"] = baseRevision }
+            return out
+        }
+    }
     nonisolated private static func object(_ rule: DictationStyle.ServerRule) -> [String: Any] {
         var out: [String: Any] = ["id": rule.id, "kind": rule.kind, "register": rule.register, "param": rule.param, "count": rule.count ?? 0]
         if let lastSeen = rule.lastSeen { out["lastSeen"] = lastSeen }
         return out
     }
-    /// One helper call. nil: no helper or no answer. The answer's details read as DictationStyle.Server.
-    private func send(_ request: [String: Any]) async -> Answer? {
-        guard let bridge, let body = try? JSONSerialization.data(withJSONObject: request) else { return nil }
-        do {
-            let response = try await bridge(body)
-            let data = (try? JSONEncoder().encode(response.details)) ?? Data("{}".utf8)
-            let decoded = try? JSONDecoder().decode(DictationStyle.Server.self, from: data)
-            let status: Int? = response.ok ? 200 : decoded?.httpStatus
-            if !response.ok, decoded?.httpStatus == nil { message = response.message }
-            return Answer(status: status, server: decoded)
-        } catch {
-            message = error.localizedDescription
-            return nil
-        }
-    }
-    private func apply(_ answer: Answer) {
-        guard answer.status == 200, let state = answer.server else { return }
-        checked = true
-        available = state.available != false
-        guard available else { return }
-        server = state
-        serverEnabled = state.serverEnabled ?? true
-        if let list = state.allowlist, !list.isEmpty { allowlist = list }
-        registers = state.registers ?? [:]
-        registersEnabled = state.registersEnabled ?? false
-    }
 }
 
 /// Settings, Dictation, under AI polish: Your style. Inline rows sized for the 390 pt panel (no pane, so no route of
-/// its own): the switch, the status lines, active, suggested and pending rules, Add a rule from closed templates,
-/// Reset, Previous polish and the two disclosure lines. Plain copy, no em dashes.
+/// its own): the switch, the status lines, the rules under Active, Not used (with why) or Paused, suggested and pending
+/// rules, Add a rule from closed templates, Reset, Previous polish and the two disclosure lines. Plain copy, no em dashes.
 struct DictationStyleCard: View {
     @ObservedObject var style: DictationStyleStore
     @ObservedObject var dictation: MacDictationStore
@@ -5265,28 +5228,36 @@ struct DictationStyleCard: View {
     @State private var confirmingReset = false
     private var templates: [DictationStyle.Key] { DictationStyleCopy.templates(allowlist: style.allowlist) }
     var body: some View {
+        let notUsed = style.notUsed(model: dictation.polishModel)
+        let heading = DictationStyleCopy.rulesHeading(enabled: style.ledger.enabled, notUsed: notUsed)
         VStack(alignment: .leading, spacing: 6) {
             Text(DictationStyleCopy.title).font(COSType.body(12.5))
             Toggle(DictationStyleCopy.switchTitle, isOn: Binding(get: { style.ledger.enabled }, set: { next in Task { await style.setEnabled(next) } }))
                 .toggleStyle(COSSwitchStyle())
-            ForEach(DictationStyleCopy.status(available: style.available, checked: style.checked, serverEnabled: style.serverEnabled,
-                                              model: dictation.polishModel, learnMode: dictation.learnMode, monitor: dictation.editMonitor), id: \.self) { line in
+            ForEach(DictationStyleCopy.status(learnMode: dictation.learnMode, monitor: dictation.editMonitor, notUsed: notUsed, enabled: style.ledger.enabled),
+                    id: \.self) { line in
                 Text(line).font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
-            let active = style.rules(.active), suggested = style.rules(.suggested), pending = style.rules(.pending)
+            let active = style.rules(.active), suggested = style.rules(.suggested), pending = style.rules(.pending) + style.rules(.replaced)
             if active.isEmpty, suggested.isEmpty, pending.isEmpty {
                 Text(DictationStyleCopy.empty).font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
-            if !active.isEmpty { section(DictationStyleCopy.active, active) { rule in
-                Button("Remove") { Task { await style.remove(rule.id) } }.buttonStyle(COSTextButtonStyle()).lineLimit(1)
-            } detail: { DictationStyleCopy.seen($0) } }
-            if !suggested.isEmpty { section(DictationStyleCopy.suggested, suggested) { rule in
+            if !active.isEmpty {
+                section(heading.heading, line: heading.line, active) { rule in
+                    Button("Remove") { Task { await style.remove(rule.id) } }.buttonStyle(COSTextButtonStyle()).lineLimit(1)
+                } detail: { DictationStyleCopy.detail($0) }
+            }
+            if !suggested.isEmpty { section(DictationStyleCopy.suggested, line: nil, suggested) { rule in
                 HStack(spacing: 6) {
                     Button("Add") { Task { await style.accept(rule.id) } }.buttonStyle(COSTextButtonStyle()).lineLimit(1)
                     Button("Dismiss") { Task { await style.remove(rule.id) } }.buttonStyle(COSTextButtonStyle()).lineLimit(1)
                 }
-            } detail: { DictationStyleCopy.seen($0) } }
-            if !pending.isEmpty { section(DictationStyleCopy.pending, pending) { _ in EmptyView() } detail: { DictationStyleCopy.pendingLine($0) } }
+            } detail: { DictationStyleCopy.detail($0) } }
+            if !pending.isEmpty {
+                section(DictationStyleCopy.pending, line: nil, pending) { _ in EmptyView() } detail: { rule in
+                    style.controller.state(rule) == .replaced ? DictationStyleCopy.replaced : DictationStyleCopy.pendingLine(rule)
+                }
+            }
             HStack(spacing: 8) {
                 COSDropdown(DictationStyleCopy.addTitle, selection: $adding,
                             options: [COSDropdownOption("", "Choose a rule")] + templates.map { COSDropdownOption($0.id, $0.title) })
@@ -5301,14 +5272,18 @@ struct DictationStyleCard: View {
             Button(DictationStyleCopy.reset) { confirmingReset = true }
                 .buttonStyle(COSTextButtonStyle()).lineLimit(1)
                 .disabled(style.busy || style.ledger.rules.isEmpty)
-            if let version = style.promptVersion {
+            if let version = style.options.promptVersion {
                 Toggle(DictationStyleCopy.previousPolish, isOn: Binding(get: { version == "v3" }, set: { on in Task { await style.setPreviousPolish(on) } }))
                     .toggleStyle(COSSwitchStyle())
-                Text(DictationStyleCopy.previousNote).font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    .disabled(style.options.envOverride)
+                Text(style.options.envOverride ? DictationStyleCopy.setOnServer : DictationStyleCopy.previousNote)
+                    .font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             Text(DictationStyleCopy.disclosureRules).font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             Text(DictationStyleCopy.disclosureKeys).font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            if let message = style.message { Text(message).font(.caption2).foregroundStyle(COSPalette.amber).fixedSize(horizontal: false, vertical: true) }
+            if let message = style.message ?? style.optionsMessage {
+                Text(message).font(.caption2).foregroundStyle(COSPalette.amber).fixedSize(horizontal: false, vertical: true)
+            }
         }
         .task {
             await style.load()
@@ -5317,19 +5292,20 @@ struct DictationStyleCard: View {
         .cosConfirm(
             "Reset learned style?",
             isPresented: $confirmingReset,
-            message: "Every style rule COS learned or you added goes, on this Mac and on the server. Your dictation history stays.",
+            message: "Every style rule COS learned or you added goes, on this Mac and on the server. The switch and your dictation history stay.",
             actions: [
                 .destructive(DictationStyleCopy.reset) { Task { await style.reset() } },
                 .cancel(),
             ]
         )
     }
-    /// One group of rules: its heading, then a row per rule (title, count, its buttons).
-    @ViewBuilder private func section<Trailing: View>(_ heading: String, _ rules: [DictationStyle.Rule],
+    /// One group of rules: its heading, its line (why they are not used, or paused), then a row per rule.
+    @ViewBuilder private func section<Trailing: View>(_ heading: String, line: String?, _ rules: [DictationStyle.Rule],
                                                       @ViewBuilder trailing: @escaping (DictationStyle.Rule) -> Trailing,
                                                       detail: @escaping (DictationStyle.Rule) -> String) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             Text(heading).font(.caption).foregroundStyle(.secondary)
+            if let line { Text(line).font(.caption2).foregroundStyle(COSPalette.amber).fixedSize(horizontal: false, vertical: true) }
             ForEach(rules, id: \.id) { rule in
                 HStack(spacing: 6) {
                     Text(rule.key.title).font(COSType.body(12)).lineLimit(1).truncationMode(.middle)

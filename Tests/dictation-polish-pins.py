@@ -54,8 +54,9 @@ pin(len(logs) == 1 and "model.rawValue" in logs[0] and "outcome.logName" in logs
     and not re.search(r"\\\((heard|text|request|response)\b", logs[0]), "no text logged", "one polish log line: model, outcome and time")
 
 # 3. The record keeps what was heard only when polish applied, and the setting is the dropdown with its honest line.
-pin("if case .applied? = polished?.outcome, let model = polished?.model { lastPolish = (heard, model) } else { lastPolish = nil }" in transcribe,
-    "heard only when applied", "what was heard is kept only when polish changed the text")
+pin("if DictationPolishSwap.swapText(polished?.outcome) != nil, let model = polished?.model { lastPolish = (heard, model) } else { lastPolish = nil }" in transcribe
+    and "lastPolishCleaned = lastPolish == nil ? nil : DictationPolish.cleaned(polished?.outcome)" in transcribe,
+    "heard only when applied", "what was heard is kept only when polish (or the server's own pass, 0.5.344 QA) changed the text, and cleaned text says so")
 pin("heard: lastPolish?.heard, polishModel: lastPolish?.model.rawValue, polishPrompt: lastPolishPrompt," in dictation and "lastEngine = nil; lastPolish = nil" in dictation,
     "record", "finish() stores what was heard and the model, then forgets them")
 pin(dictation.count('COSDropdown("AI polish", selection: $store.polishModel,') == 1 and "DictationPolish.settingNote(store.polishModel)" in dictation,

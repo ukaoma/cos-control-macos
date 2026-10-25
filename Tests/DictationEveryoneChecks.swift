@@ -229,14 +229,16 @@ struct DictationEveryoneChecks {
         check(LS.rule(styleWrongParam) == nil, "learned style param", "contractions take use or avoid only")
         check(LS.parse(json(["operation": "get"])) == .get && LS.parse(json(["operation": "clear"])) == .clear
               && LS.parse(json(["operation": "get", "x": 1])) == nil, "learned style parse", "get and clear take nothing else")
-        let styleSet = LS.parse(json(["operation": "set", "rules": [styleRule, styleContraction], "enabled": true, "baseHash": "0a1b2c3d"]))
-        check(styleSet == .set(rules: [LS.rule(styleRule)!, LS.rule(styleContraction)!], enabled: true, baseHash: "0a1b2c3d"), "learned style parse", "set with its rules")
-        check(LS.parse(json(["operation": "set", "rules": [styleRule, styleRule]])) == nil && LS.parse(json(["operation": "set", "rules": Array(repeating: styleRule, count: 21)])) == nil
+        let styleSet = LS.parse(json(["operation": "set", "rules": [styleRule, styleContraction], "enabled": true, "baseRevision": "0a1b2c3d"]))
+        check(styleSet == .set(rules: [LS.rule(styleRule)!, LS.rule(styleContraction)!], enabled: true, baseRevision: "0a1b2c3d"), "learned style parse", "set with its rules")
+        check(LS.parse(json(["operation": "set", "rules": [styleRule, styleRule]])) == nil
+              && LS.parse(json(["operation": "set", "rules": Array(repeating: styleRule, count: LS.maximumRules + 1)])) == nil
               && LS.parse(json(["operation": "set", "rules": [styleRule], "text": "x"])) == nil && LS.parse(json(["operation": "set", "rules": [styleRule], "hash": "0a1b2c3d"])) == nil
-              && LS.parse(json(["operation": "set", "rules": [styleRule], "enabled": 1])) == nil && LS.parse(json(["operation": "set", "rules": [styleRule], "baseHash": "nope"])) == nil,
+              && LS.parse(json(["operation": "set", "rules": [styleRule], "enabled": 1])) == nil && LS.parse(json(["operation": "set", "rules": [styleRule], "baseRevision": "nope"])) == nil
+              && LS.parse(json(["operation": "set", "rules": [styleRule], "revision": "0a1b2c3d"])) == nil,
               "learned style parse", "no duplicate ids, at most 20, never text or a hash of the client's own")
-        let styleBody = (try? JSONSerialization.jsonObject(with: Data(LS.body(rules: [LS.rule(styleRule)!], enabled: nil, baseHash: "0a1b2c3d").utf8))) as? [String: Any] ?? [:]
-        check(Set(styleBody.keys) == ["rules", "baseHash"] && (styleBody["rules"] as? [[String: Any]])?.first?["param"] as? String == "honestly", "learned style body", "rules and baseHash only")
+        let styleBody = (try? JSONSerialization.jsonObject(with: Data(LS.body(rules: [LS.rule(styleRule)!], enabled: nil, baseRevision: "0a1b2c3d").utf8))) as? [String: Any] ?? [:]
+        check(Set(styleBody.keys) == ["rules", "baseRevision"] && (styleBody["rules"] as? [[String: Any]])?.first?["param"] as? String == "honestly", "learned style body", "rules and baseRevision only")
         let styleHealth: [String: Any] = ["capabilities": ["dictationCleanup": ["learnedStyle": ["protocol": 1, "maxChars": 1500, "maxRules": 20, "enabled": false],
                                                                           "polishOptions": ["protocol": 1]]]]
         check(LS.advertised(styleHealth) == LS.Capability(maxChars: 1500, maxRules: 20, enabled: false), "learned style capability", "protocol 1 with its caps and switch")
@@ -252,20 +254,39 @@ struct DictationEveryoneChecks {
         check(styleGot.ok && (styleGot.details["rules"] as? [[String: Any]])?.count == 1 && styleGot.details["hash"] as? String == "0a1b2c3d"
               && styleGot.details["registers"] as? [String: String] == ["iTerm2": "literal"] && styleGot.details["kinds"] as? [String] == ["drop_phrase"]
               && styleGot.details["allowlist"] as? [String] == ["honestly"], "learned style answer", "each field from its closed set")
-        check(!LS.answer(status: 200, body: ["rules": [], "text": String(repeating: "x", count: 1_501)], operation: "get").ok, "learned style answer", "text over the cap is unreadable")
+        check(!LS.answer(status: 200, body: ["rules": [], "text": String(repeating: "x", count: LS.maximumCharacters + 1)], operation: "get").ok, "learned style answer", "text over the cap is unreadable")
+        // 0.5.344 QA (QA4 N11): the caps are the capability's, the constants only fallbacks.
+        let tight = LS.Capability(maxChars: 10, maxRules: 1, enabled: true)
+        check(!LS.answer(status: 200, body: ["rules": [], "text": String(repeating: "x", count: 11)], operation: "get", capability: tight).ok
+              && (LS.answer(status: 200, body: ["rules": [styleRule, styleContraction], "text": ""], operation: "get", capability: tight).details["rules"] as? [[String: Any]])?.count == 1,
+              "learned style caps", "maxChars and maxRules from the capability")
         check(LS.answer(status: 409, body: nil, operation: "set").details["reason"] as? String == "conflict"
               && LS.answer(status: 413, body: nil, operation: "set").details["reason"] as? String == "too_long"
               && LS.answer(status: 404, body: nil, operation: "get").details["available"] as? Bool == false, "learned style statuses", "409 conflict, 413 too long, 404 unavailable")
-        // 0.5.344 part 2: the server's real contract (6.91.0 at 31c59dd).
+        // 0.5.344 QA (QA2 N3): after a rollback to 6.90.0 a set or clear that gets a 404 is unavailable, never ok.
+        let rolledSet = LS.answer(status: 404, body: nil, operation: "set"), rolledClear = LS.answer(status: 404, body: nil, operation: "clear")
+        check(!rolledSet.ok && rolledSet.details["reason"] as? String == "unavailable" && rolledSet.details["httpStatus"] as? Int == 404 && !rolledClear.ok,
+              "learned style rollback", "a 404 on set or clear is never saved")
+        // 0.5.344 part 2: the server's real contract (6.91.0 at bcdf083).
         var styleNull = styleRule; styleNull["lastSeen"] = NSNull(); styleNull.removeValue(forKey: "count")
         check(LS.rule(styleNull) == LS.Rule(id: "drop-honestly", kind: "drop_phrase", register: "all", param: "honestly", count: 0, lastSeen: nil),
               "learned style rule", "lastSeen null and count absent read as never and 0")
-        check(LS.parse(json(["operation": "set", "enabled": false])) == .set(rules: nil, enabled: false, baseHash: nil)
-              && LS.parse(json(["operation": "set", "enabled": true, "baseHash": ""])) == .set(rules: nil, enabled: true, baseHash: "")
-              && LS.parse(json(["operation": "set"])) == nil && LS.parse(json(["operation": "set", "baseHash": "0a1b2c3d"])) == nil,
-              "learned style switch", "the switch alone, an empty base hash, never an empty set")
-        let switchBody = (try? JSONSerialization.jsonObject(with: Data(LS.body(rules: nil, enabled: false, baseHash: nil).utf8))) as? [String: Any] ?? [:]
+        check(LS.parse(json(["operation": "set", "enabled": false])) == .set(rules: nil, enabled: false, baseRevision: nil)
+              && LS.parse(json(["operation": "set"])) == nil && LS.parse(json(["operation": "set", "baseRevision": "0a1b2c3d"])) == nil,
+              "learned style switch", "the switch alone, never an empty set")
+        let switchBody = (try? JSONSerialization.jsonObject(with: Data(LS.body(rules: nil, enabled: false, baseRevision: nil).utf8))) as? [String: Any] ?? [:]
         check(Set(switchBody.keys) == ["enabled"] && switchBody["enabled"] as? Bool == false, "learned style switch", "Off sends only enabled, so the rules stay")
+        // 0.5.344 QA (QA2 W3): the base is the revision (text and switch); never both bases, never a revision that is not 8 hex.
+        check(LS.parse(json(["operation": "set", "enabled": false, "baseRevision": "0a1b2c3d"])) == .set(rules: nil, enabled: false, baseRevision: "0a1b2c3d")
+              && LS.parse(json(["operation": "set", "enabled": false, "baseRevision": ""])) == nil
+              && LS.parse(json(["operation": "set", "enabled": false, "baseHash": "0a1b2c3d"])) == nil
+              && LS.parse(json(["operation": "set", "enabled": false, "baseHash": ""])) == nil, "learned style revision",
+              "baseRevision is 8 hex; baseHash never reaches the server (bcdf083 answers 400)")
+        let revisionBody = (try? JSONSerialization.jsonObject(with: Data(LS.body(rules: nil, enabled: true, baseRevision: "0a1b2c3d").utf8))) as? [String: Any] ?? [:]
+        check(Set(revisionBody.keys) == ["enabled", "baseRevision"], "learned style revision", "the PUT names the revision")
+        check(LS.answer(status: 200, body: ["rules": [], "text": "", "revision": "12345678"], operation: "get").details["revision"] as? String == "12345678"
+              && LS.answer(status: 200, body: ["rules": [], "text": "", "revision": "../x"], operation: "get").details["revision"] == nil, "learned style revision",
+              "the answer's revision passes on, 8 hex only")
         let styleAllowlist = ["honestly", "literally", "pretty much", "i guess", "to be honest", "frankly", "obviously", "kinda", "sorta", "you see",
                               "at the end of the day", "if that makes sense"]
         let styleReal = LS.answer(status: 200, body: ["rules": [styleNull], "text": "", "hash": "", "registerValues": ["all", "chat"], "contractionParams": ["use", "avoid", "maybe"],
@@ -274,22 +295,38 @@ struct DictationEveryoneChecks {
         check(styleReal.ok && (styleReal.details["rules"] as? [[String: Any]])?.count == 1 && styleReal.details["allowlist"] as? [String] == styleAllowlist,
               "learned style real get", "a null lastSeen rule and the full 12-phrase allowlist")
         check(styleReal.details["registerValues"] as? [String] == ["all"] && styleReal.details["contractionParams"] as? [String] == ["use", "avoid"]
-              && styleReal.details["appliesTo"] as? [String] == ["message", "meeting"] && styleReal.details["maxChars"] as? Int == 1500
+              && styleReal.details["appliesTo"] as? [String] == ["message"] && styleReal.details["maxChars"] as? Int == 1500
               && styleReal.details["maxRules"] as? Int == 20 && styleReal.details["serverEnabled"] as? Bool == true
               && styleReal.details["registersEnabled"] as? Bool == false, "learned style real get", "each new field from its closed set")
         check(LS.answer(status: 200, body: ["rules": [], "text": "", "maxRules": true, "registersEnabled": "no"], operation: "get").details["maxRules"] == nil
               && LS.answer(status: 200, body: ["rules": [], "text": "", "registersEnabled": "no"], operation: "get").details["registersEnabled"] == nil,
               "learned style real get", "a boolean is no limit and a string is no switch")
-        check(LS.answer(status: 409, body: ["hash": "12345678"], operation: "set").details["serverHash"] as? String == "12345678"
-              && LS.answer(status: 409, body: ["hash": ""], operation: "set").details["serverHash"] as? String == ""
-              && LS.answer(status: 409, body: ["hash": "../x"], operation: "set").details["serverHash"] == nil, "learned style conflict hash",
-              "a 409 passes on the server's hash, empty or 8 hex, nothing else")
+        check(LS.answer(status: 409, body: ["hash": "12345678"], operation: "set").details["serverHash"] == nil, "learned style conflict",
+              "a 409 is a conflict, nothing else (the next GET is the truth; QA4 N10 dead field removed)")
         typealias PO = DictationPolishOptionsBridge
         check(PO.parse(json(["operation": "get"])) == .get && PO.parse(json(["operation": "set", "promptVersion": "v3"])) == .set("v3")
               && PO.parse(json(["operation": "set", "promptVersion": "v4"])) == nil && PO.parse(json(["operation": "set", "promptVersion": "v3", "x": 1])) == nil,
               "polish options parse", "default or v3 only")
         check(PO.answer(status: 200, body: ["promptVersion": "default"], operation: "get").details["promptVersion"] as? String == "default"
               && !PO.answer(status: 200, body: ["promptVersion": "v9"], operation: "get").ok, "polish options answer", "only default or v3 comes back")
+        // 0.5.344 QA (QA2 N1, QA3): the prompt each model gets, and whether the server's environment decides it.
+        let optionsReal = PO.answer(status: 200, body: ["promptVersion": "v3", "effectiveVersion": "v3", "envOverride": true,
+                                                        "effectiveByModel": ["haiku": "v3", "sonnet": "v3", "luna-5.6-fast": "v3", "gpt": "v4", "opus": "x"]], operation: "get")
+        check(optionsReal.details["envOverride"] as? Bool == true && optionsReal.details["effectiveVersion"] as? String == "v3"
+              && optionsReal.details["effectiveByModel"] as? [String: String] == ["haiku": "v3", "sonnet": "v3", "luna-5.6-fast": "v3"], "polish options effective",
+              "envOverride, effectiveVersion and the known models' versions")
+        check(PO.answer(status: 200, body: ["promptVersion": "default", "envOverride": 1, "effectiveVersion": "ten"], operation: "get").details["envOverride"] == nil
+              && PO.answer(status: 200, body: ["promptVersion": "default", "effectiveVersion": "ten"], operation: "get").details["effectiveVersion"] == nil,
+              "polish options effective", "a number is no flag and a word is no version")
+        // 0.5.344 QA (QA3 W4, QA2 N2): the rules view names its model.
+        typealias PI = DictationPolishInstructionsBridge
+        check(PI.parse(json(["operation": "rules"])) == .rules(model: nil) && PI.parse(json(["operation": "rules", "model": "sonnet"])) == .rules(model: "sonnet")
+              && PI.parse(json(["operation": "rules", "model": "opus"])) == nil && PI.parse(json(["operation": "rules", "x": 1])) == nil, "rules model",
+              "Haiku or Sonnet, nothing else")
+        check(PI.rulesPath(model: "haiku") == "/api/dictation/polish/rules?model=haiku" && PI.rulesPath(model: nil) == "/api/dictation/polish/rules", "rules model",
+              "the route asks for that model")
+        check(PI.rulesAnswer(status: 200, body: ["version": "v4", "rules": "Keep the meaning.", "learnedStyleBlock": "Drop the filler."]).details["learnedStyleBlock"] as? String
+              == "Drop the filler.", "rules style block", "the learned-style block passes on")
         let warmToken = "0a1b2c3d-4e5f-6a7b-8c9d-0e1f2a3b4c5d"
         let withToken = PB.parse(Data(#"{"text":"um hi","model":"haiku","prewarmToken":"\#(warmToken)"}"#.utf8))
         check(withToken?.prewarmToken == warmToken && withToken?.text == "um hi", "prewarm token", "a real token is accepted with the text")

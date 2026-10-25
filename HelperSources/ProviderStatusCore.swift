@@ -888,13 +888,21 @@ enum DictationPolishInstructionsBridge {
     /// The longest rules text Control shows. The server's v3 rules are about 4,000 characters.
     static let rulesLimit = 20_000
 
-    enum Request: Equatable { case get, rules, clear, set(String) }
+    /// 0.5.344 QA (QA3 W4, QA2 N2): `rules` may name the polish model, so the view shows that model's prompt and its
+    /// learned-style block.
+    enum Request: Equatable { case get, rules(model: String?), clear, set(String) }
+    static let rulesModels: Set<String> = ["haiku", "sonnet"]
     static func parse(_ data: Data) -> Request? {
         guard data.count <= inputLimit, let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
               let operation = object["operation"] as? String else { return nil }
         switch operation {
-        case "get", "rules", "clear":
-            return object.count == 1 ? (operation == "get" ? .get : operation == "rules" ? .rules : .clear) : nil
+        case "rules":
+            guard Set(object.keys).isSubset(of: ["operation", "model"]) else { return nil }
+            guard let raw = object["model"] else { return .rules(model: nil) }
+            guard let model = raw as? String, rulesModels.contains(model) else { return nil }
+            return .rules(model: model)
+        case "get", "clear":
+            return object.count == 1 ? (operation == "get" ? .get : .clear) : nil
         case "set":
             guard Set(object.keys) == ["operation", "customInstructions"], let text = object["customInstructions"] as? String,
                   text.utf16.count <= maximumRawCharacters,
@@ -941,6 +949,8 @@ enum DictationPolishInstructionsBridge {
         }
     }
     /// The read-only rules: the version label and the text, nothing else.
+    /// The rules route for one model (the server's ?model=), or the newest default without one.
+    static func rulesPath(model: String?) -> String { model.map { rulesRoute + "?model=" + $0 } ?? rulesRoute }
     static func rulesAnswer(status: Int?, body: [String: Any]?) -> DictationBridge.Answer {
         guard let status else { return refused("unreachable", "The COS server did not answer.") }
         guard status == 200 else {
@@ -953,6 +963,8 @@ enum DictationPolishInstructionsBridge {
         var details: [String: Any] = ["available": true, "version": version, "rules": rules,
                                       "rolledBack": (body["rolledBack"] as? NSNumber).map { CFGetTypeID($0) == CFBooleanGetTypeID() && $0.boolValue } ?? false]
         if let block = body["userBlock"] as? String, block.utf16.count <= rulesLimit { details["userBlock"] = block }
+        // 0.5.344 QA: the saved style rules as the model sees them ("" when none apply to this model).
+        if let block = body["learnedStyleBlock"] as? String, block.utf16.count <= rulesLimit { details["learnedStyleBlock"] = block }
         return DictationBridge.Answer(ok: true, message: "Built-in rules", details: details)
     }
     private static func refused(_ reason: String, _ message: String, status: Int? = nil) -> DictationBridge.Answer {
@@ -963,13 +975,15 @@ enum DictationPolishInstructionsBridge {
 }
 
 /// 0.5.344 (server 6.91.0, plan r2 contract): the learned-style setting, through the helper's `dictation-learned-style`.
-/// stdin is {operation: get | clear}, or {operation: set, rules, enabled?, baseHash?}. A rule is codes only: an id, a
+/// stdin is {operation: get | clear}, or {operation: set, rules?, enabled?, baseRevision?}. A rule is codes only: an id, a
 /// kind, a register, an allowlisted phrase or use/avoid, a count and a time; never dictated text. The server renders the
 /// text and owns the hash and updatedAt. `get` asks /api/health first, so an older server is answered available false
 /// without calling a route it lacks. Control's use of it waits for part 2 (the ledger and Your style).
 enum DictationLearnedStyleBridge {
     static let route = "/api/dictation/learned-style"
     static let inputLimit = 16_384
+    /// Fallbacks for the capability's maxRules and maxChars (0.5.344 QA: an answer is read against what the server
+    /// advertises). A set never takes more rules than this.
     static let maximumRules = 20
     /// The rendered text's cap on the server.
     static let maximumCharacters = 1_500
@@ -979,8 +993,8 @@ enum DictationLearnedStyleBridge {
     /// The app-to-register map the server publishes, and the most entries passed on.
     static let registers: Set<String> = ["literal", "default"]
     static let maximumListed = 200
-    /// 0.5.344 part 2: the surfaces the server applies learned style to.
-    static let appliesTo: Set<String> = ["message", "prompt_draft", "meeting"]
+    /// 0.5.344 part 2: the surfaces the server applies learned style to (never meeting lines).
+    static let appliesTo: Set<String> = ["message", "prompt_draft"]
 
     struct Rule: Equatable {
         let id: String
@@ -996,8 +1010,9 @@ enum DictationLearnedStyleBridge {
             return out
         }
     }
-    /// 0.5.344 part 2: a set may carry only the switch ({enabled}), which keeps the rules; baseHash "" matches an empty store.
-    enum Request: Equatable { case get, clear, set(rules: [Rule]?, enabled: Bool?, baseHash: String?) }
+    /// 0.5.344 part 2: a set may carry only the switch ({enabled}), which keeps the rules. 0.5.344 QA (QA2 W3, server
+    /// bcdf083): the base is the setting's revision (8 hex over the text and the switch); the server refuses baseHash.
+    enum Request: Equatable { case get, clear, set(rules: [Rule]?, enabled: Bool?, baseRevision: String?) }
     struct Capability: Equatable { let maxChars: Int; let maxRules: Int; let enabled: Bool }
 
     static func isID(_ value: String) -> Bool { value.range(of: "^[a-z0-9_-]{1,40}$", options: .regularExpression) != nil }
@@ -1038,7 +1053,7 @@ enum DictationLearnedStyleBridge {
         case "get", "clear":
             return object.count == 1 ? (operation == "get" ? .get : .clear) : nil
         case "set":
-            guard Set(object.keys).isSubset(of: ["operation", "rules", "enabled", "baseHash"]),
+            guard Set(object.keys).isSubset(of: ["operation", "rules", "enabled", "baseRevision"]),
                   object["rules"] != nil || object["enabled"] != nil else { return nil }
             var rules: [Rule]?
             if object["rules"] != nil {
@@ -1053,22 +1068,22 @@ enum DictationLearnedStyleBridge {
             guard Set((rules ?? []).map(\.id)).count == (rules ?? []).count else { return nil }
             var enabled: Bool?
             if object["enabled"] != nil { guard let flag = bool(object["enabled"]) else { return nil }; enabled = flag }
-            var baseHash: String?
-            if object["baseHash"] != nil {
-                guard let hash = object["baseHash"] as? String, hash.isEmpty || DictationPolishInstructionsBridge.isHash(hash) else { return nil }
-                baseHash = hash
+            var baseRevision: String?
+            if object["baseRevision"] != nil {
+                guard let revision = object["baseRevision"] as? String, DictationPolishInstructionsBridge.isHash(revision) else { return nil }
+                baseRevision = revision
             }
-            return .set(rules: rules, enabled: enabled, baseHash: baseHash)
+            return .set(rules: rules, enabled: enabled, baseRevision: baseRevision)
         default:
             return nil
         }
     }
-    /// The PUT body: the rules, and enabled and baseHash when given. Never text, a hash of its own or updatedAt.
-    static func body(rules: [Rule]?, enabled: Bool?, baseHash: String?) -> String {
+    /// The PUT body: the rules, and enabled and baseRevision when given. Never text, a hash, a revision of its own or updatedAt.
+    static func body(rules: [Rule]?, enabled: Bool?, baseRevision: String?) -> String {
         var object: [String: Any] = [:]
         if let rules { object["rules"] = rules.map(\.object) }
         if let enabled { object["enabled"] = enabled }
-        if let baseHash { object["baseHash"] = baseHash }
+        if let baseRevision { object["baseRevision"] = baseRevision }
         let data = (try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])) ?? Data("{}".utf8)
         return String(decoding: data, as: UTF8.self)
     }
@@ -1084,18 +1099,22 @@ enum DictationLearnedStyleBridge {
     static func unavailable() -> DictationBridge.Answer {
         DictationBridge.Answer(ok: true, message: "This COS server has no learned style.", details: ["available": false])
     }
-    /// A get, set or clear answer, every field from its closed set: rules the strict reader keeps, the rendered text
-    /// (at most the cap), the hash, the time, the app-to-register map, the kinds and the allowlist.
-    static func answer(status: Int?, body: [String: Any]?, operation: String) -> DictationBridge.Answer {
+    /// A get, set or clear answer, every field from its closed set: rules the strict reader keeps (at most the
+    /// capability's maxRules), the rendered text (at most its maxChars), the hash, the revision, the time, the
+    /// app-to-register map, the kinds and the allowlist. 0.5.344 QA (QA2 N3): a set or clear that gets a 404 (a server
+    /// rolled back to 6.90.0) is unavailable, never ok.
+    static func answer(status: Int?, body: [String: Any]?, operation: String, capability: Capability? = nil) -> DictationBridge.Answer {
         guard let status else { return refused("unreachable", "The COS server did not answer. Your style is unchanged.") }
+        let ruleCap = capability?.maxRules ?? maximumRules, charCap = capability?.maxChars ?? maximumCharacters
         switch status {
         case 200:
-            guard let body, let raw = body["rules"] as? [Any], let text = body["text"] as? String, text.utf16.count <= maximumCharacters else {
+            guard let body, let raw = body["rules"] as? [Any], let text = body["text"] as? String, text.utf16.count <= charCap else {
                 return refused("bad_answer", "The server's answer was not readable.", status: 200)
             }
-            var details: [String: Any] = ["available": true, "rules": raw.compactMap(rule).prefix(maximumRules).map(\.object), "text": text]
+            var details: [String: Any] = ["available": true, "rules": raw.compactMap(rule).prefix(ruleCap).map(\.object), "text": text]
             if let enabled = bool(body["enabled"]) { details["enabled"] = enabled }
             if let hash = body["hash"] as? String, DictationPolishInstructionsBridge.isHash(hash) { details["hash"] = hash }
+            if let revision = body["revision"] as? String, DictationPolishInstructionsBridge.isHash(revision) { details["revision"] = revision }
             if let updated = body["updatedAt"] as? String, isTime(updated) { details["updatedAt"] = updated }
             if let map = body["registers"] as? [String: Any] {
                 var kept: [String: String] = [:]
@@ -1118,11 +1137,9 @@ enum DictationLearnedStyleBridge {
             for key in ["serverEnabled", "registersEnabled"] { if let flag = bool(body[key]) { details[key] = flag } }
             let message = operation == "set" ? "Saved" : operation == "clear" ? "Cleared" : "Learned style"
             return DictationBridge.Answer(ok: true, message: message, details: details)
-        case 404: return unavailable()
-        case 409:
-            var answer = refused("conflict", "Your style changed on the server since COS last read it. Nothing was saved.", status: 409)
-            if let hash = body?["hash"] as? String, hash.isEmpty || DictationPolishInstructionsBridge.isHash(hash) { answer.details["serverHash"] = hash }
-            return answer
+        case 404:
+            return operation == "get" ? unavailable() : refused("unavailable", "This COS server has no learned style. Nothing was saved.", status: 404)
+        case 409: return refused("conflict", "Your style changed on the server since COS last read it. Nothing was saved.", status: 409)
         case 413: return refused("too_long", "Too many style rules for the server. Nothing was saved.", status: 413)
         case 400: return refused("invalid", "The server refused these style rules. Nothing was saved.", status: 400)
         case 401, 403: return refused("unauthorized", "The COS server refused the token. Your style is unchanged.", status: status)
@@ -1142,6 +1159,9 @@ enum DictationPolishOptionsBridge {
     static let route = "/api/dictation/polish/options"
     static let inputLimit = 256
     static let versions: Set<String> = ["default", "v3"]
+    /// The models the server names in effectiveByModel, and the prompt versions it may report.
+    static let models: Set<String> = ["haiku", "sonnet", "luna-5.6-fast"]
+    static func isPrompt(_ value: String) -> Bool { value.range(of: "^v[1-9]$", options: .regularExpression) != nil }
     enum Request: Equatable { case get, set(String) }
     static func parse(_ data: Data) -> Request? {
         guard data.count <= inputLimit, let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
@@ -1174,7 +1194,16 @@ enum DictationPolishOptionsBridge {
             guard let version = body?["promptVersion"] as? String, versions.contains(version) else {
                 return refused("bad_answer", "The server's answer was not readable.", status: 200)
             }
-            return DictationBridge.Answer(ok: true, message: operation == "set" ? "Saved" : "Polish options", details: ["available": true, "promptVersion": version])
+            var details: [String: Any] = ["available": true, "promptVersion": version]
+            // 0.5.344 QA (QA2 N1, QA3): the prompt each model gets, and whether the server's environment decides it.
+            if let effective = body?["effectiveVersion"] as? String, isPrompt(effective) { details["effectiveVersion"] = effective }
+            if let map = body?["effectiveByModel"] as? [String: Any] {
+                var kept: [String: String] = [:]
+                for (model, value) in map where models.contains(model) { if let version = value as? String, isPrompt(version) { kept[model] = version } }
+                details["effectiveByModel"] = kept
+            }
+            if let flag = body?["envOverride"] as? NSNumber, CFGetTypeID(flag) == CFBooleanGetTypeID() { details["envOverride"] = flag.boolValue }
+            return DictationBridge.Answer(ok: true, message: operation == "set" ? "Saved" : "Polish options", details: details)
         case 404: return unavailable()
         case 400: return refused("invalid", "The server refused this polish option. Nothing changed.", status: 400)
         case 401, 403: return refused("unauthorized", "The COS server refused the token. Polish is unchanged.", status: status)

@@ -1524,12 +1524,13 @@ final class FakeDictationBoard: DictationPasteboardAccess {
             expect(P.unswapped(pasteFirst: false, polished: true, copyOnly: true) == .off && P.unswapped(pasteFirst: false, polished: true, copyOnly: false) == .off,
                    "swap: the toggle off reads off")
             expect(P.unswapped(pasteFirst: true, polished: true, copyOnly: false) == .off, "swap: polished first with the toggle on (the model changed mid-dictation) reads off")
-            // Only Claude's applied polish swaps.
+            // Claude's applied polish swaps, and (0.5.344 QA W1, as 0.5.343 did) text the server's own pass cleaned.
             expect(P.want(outcome: .applied("Hi there."), typed: "um hi there", final: "Hi there.") == .swap("Hi there."), "swap: an applied polish that differs swaps")
             expect(P.want(outcome: .applied("Hi there."), typed: "Hi there.", final: "Hi there.") == .identical, "swap: identical text changes nothing")
             expect(P.want(outcome: .applied("x"), typed: "y", final: nil) == .notPolished, "swap: no final text is nothing to swap")
-            for (outcome, name) in [(DictationPolish.Outcome.unchanged, "unchanged"), (.timeout, "timeout"), (.failed("helper"), "failed"), (.skipped("daily_cap"), "skipped"),
-                                    (.fillersOnly("failed", text: "hi"), "fillers only")] {
+            expect(P.want(outcome: .fillersOnly("unchanged", text: "hi"), typed: "um hi", final: "hi") == .swap("hi")
+                   && P.want(outcome: .fillersOnly("failed", text: "hi"), typed: "um hi", final: "hi") == .swap("hi"), "swap: cleaned text swaps")
+            for (outcome, name) in [(DictationPolish.Outcome.unchanged, "unchanged"), (.timeout, "timeout"), (.failed("helper"), "failed"), (.skipped("daily_cap"), "skipped")] {
                 expect(P.want(outcome: outcome, typed: "um hi", final: "hi") == .notPolished, "swap: polish \(name) changes nothing")
             }
             expect(P.want(outcome: nil, typed: "a", final: "b") == .notPolished, "swap: polish that never ran changes nothing")

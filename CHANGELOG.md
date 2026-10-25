@@ -2,17 +2,18 @@
 
 On top of 0.5.343 (build 397). Plan: `operations/personal/wk43_2026/PLAN_dictation_voice_style_2026-10-24.md`, revision 2,
 section 1; the QA that found why no edit was ever captured: `QA_edit_learning_followup_2026-10-24.md` (fixes #1 to #5,
-W2 to W4), and section 2 for part 2 (Your style), built on server 6.91.0 (31c59dd) after its canaries: v4 is the
+W2 to W4), and section 2 for part 2 (Your style), built on server 6.91.0 (bcdf083) after its canaries: v4 is the
 default prompt for Sonnet, v3 for Haiku and Luna, and the literal register is opt-in (`registersEnabled`, off by default). Plus everything in 0.5.343.
 
-While Learn from my edits watches a dictation, COS reads the text box again when you press Return or click, and sooner
-after you stop typing. If your last change is sent or cleared before COS can read it, nothing is saved, never an older
-version. The Return and click read needs a single-key dictation shortcut such as Fn.
+While Learn from my edits watches a dictation, COS tries to read the text box again when you press Return or click, and
+sooner after you stop typing. If your last change may not have been read before it was sent or cleared, nothing is
+saved, never an older version. The Return and click read needs a single-key dictation shortcut such as Fn.
 
 With COS server 6.91.0 and AI polish on Claude Sonnet, COS can also learn a few style habits from the changes you make
 to text it typed: dropping a filler such as "honestly", and using or writing out contractions. A habit becomes a rule
 after the same change in two dictations; Settings, Dictation, Your style lists the rules, with Remove, Add a rule and a
-switch, and the pill says Learned your style with Undo. COS sends the rules, never your text, with each polish.
+switch, and the pill says Learned your style with Undo. Your COS server adds the rules, never your text, to each Sonnet
+polish. Sonnet now uses the new polish (v4); Previous polish (v3) goes back to the earlier one.
 
 - **The watch loop moved into the core.** `DictationEditWatch` (MacDictationCore.swift) is the loop that ran untested in
   MacDictation.swift (W4). The app keeps only the field's Accessibility closures, now `@Sendable`: a probe of the same
@@ -109,6 +110,45 @@ Part 2, Your style (plan r2 section 2, server 6.91.0):
   hash. Control calls both verbs with answers returned (`answers: true`), so 409 and 413 reach the store.
 - **Copy.** The polish instructions placeholder no longer names Slack; the Learn from my edits note no longer says it
   reads "until you leave the field or send the message", and mentions Your style.
+
+QA fix pass (`operations/personal/wk43_2026/qa-voice-style/`, QA1 to QA4 on cf42c33; server fix pass bcdf083):
+
+- **Cleaned text swaps in again (QA1 W1).** With paste first, text the server's own pass cleaned (the model gave its
+  input back after the deterministic pass, a skip, or a meaning-guard trip) is swapped in as 0.5.343 did, never called
+  Claude's polish: the record keeps `polishCleaned` (its code) and the card says Cleaned up, or Kept as heard with the
+  guard's word. Apply polished is back for it. Polish first records the same. Style evidence comes only from Claude's
+  own version (`polishedByClaude`).
+- **Learning only where the rules apply (QA1 W3, QA3 W2).** Nothing is collected, promoted or announced unless polish is
+  on Sonnet, the server advertises learned style with its switch on, and Sonnet's prompt is the new one (not Previous
+  polish, not the server's environment). Otherwise Settings lists the rules under Not used with the reason, or Paused
+  while learning is off.
+- **Copy.** "on G2 too, when it polishes with Sonnet"; "your COS server adds your style rules (never your text) to each
+  Sonnet polish"; What's New uses Settings' key-counting sentence, names Previous polish and v4, and softens capture
+  claims; the style pill's Undo says Remove this style rule; "Not active yet"; an added rule says added; "I guess"; "a
+  negation".
+- **The sync never writes a stale ledger back (QA2 W2, QA3 W1, QA4 W7).** `DictationStyleController` (core): one sync at a
+  time, one more when anything changed meanwhile, and after each await only what the sync owns (which rules a hash
+  names, rules a 409 merge brings) goes into the current ledger. Checks run every interleaving QA described.
+- **The revision (QA2 W3, server bcdf083).** PUTs carry `baseRevision` from the GET's `revision` (8 hex over the text and
+  the switch), never `baseHash` (bcdf083 answers 400 to it, and to a client's own `revision`). Off that cannot reach the
+  server stays in the ledger and is sent when the server is back (the model's status, a newer server) or at the next
+  launch. Reset keeps the switch (QA2 W7), as the server's DELETE now does.
+- **The ledger (QA2 W8, QA4 W8).** Every field reads with a default, entries one by one; a file that does not read is
+  moved aside as `.corrupt-<stamp>` (logged as a code); after that, or with no file, the server's rules are adopted,
+  never overwritten with an empty list.
+- **Messages (QA1 W5, QA4 W9).** Success clears the message; any failure says "Not saved on the server (<code>)"; a Reset
+  whose DELETE failed says so.
+- **Contractions (QA1 W4).** Add removes the opposite rule whatever made it, and keeps it quiet 30 days; ranking puts rules
+  the person chose first; use and avoid are never both active.
+- **The capture gap (QA2 W1).** An inconsistent final read after a typed key is partial too. Without the monitor, a
+  key-down after the last read (`CGEventSource.secondsSinceLastEventType`) at a cleared or emptied stop is partial, the
+  Return that sent it included. Return and click read only in the watched app. The "you typed it" count is typed keys
+  only: never Return, never a click (a click on COS's own pill among them).
+- **Rules view and options (QA3 W4, QA2 N1).** The rules view asks for the polish model (`?model=`) and shows the
+  learned-style block; Previous polish reads `envOverride` and the effective versions, and says Set on the server.
+- **Rollback (QA2 N3).** A PUT or DELETE that gets a 404 is unavailable, never ok. **Allowlist (QA2 N9).** Rules the
+  server's current allowlist dropped are never sent. **Truth (QA4).** appliesTo is message and prompt_draft; the answer's
+  caps are the capability's; all five field closures pinned `@Sendable`; the dead `serverHash` fields are gone.
 
 Tests (part 2): `Tests/run-voice-style.sh` (wired into run.sh): `voice-style-pins.py` (in-memory mutants, each caught)
 and `VoiceStyleChecks.swift` (MacDictationCore.swift alone: keys, the classifier and its filters, promotion,

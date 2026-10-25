@@ -155,6 +155,8 @@ final class ControllerModel: ObservableObject {
     static let managedServerInstallVersion = "latest"
 
     @Published var status = ServerStatus() {
+        // 0.5.344 QA (W5): the server is back, or a newer one came up: Your style reads it again (a pending Off goes).
+        willSet { if newValue.running, !status.running || status.version != newValue.version { DictationStyleStore.shared.serverCameBack() } }
         didSet { recordingCountChanged(); statusDetailsBytes = nil }
     }
     /// 0.5.337 (performance audit W5): the status answer `status` was built from, so an unchanged answer is not
