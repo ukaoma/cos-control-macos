@@ -144,7 +144,7 @@ def check(d, core):
     # 7. Skips keep Claude's version for Apply polished, and say one line; a swap updates the record.
     pin("DictationPolishSwap.keepsPolished(result)" in first and "pendingPolish[id] = DictationPendingPolish(" in first
         and 'DictationPolishSwap.notice(result, app: delivered.target?.app ?? "the app")' in first, "skip", "a skip keeps the polished version and the pill says so")
-    pin("recent = DictationHistory.polishing(id, to: polished, heard: heard, model: model.rawValue, in: recent); saveRecent()" in first
+    pin("recent = DictationHistory.polishing(id, to: polished, heard: heard, model: model.rawValue, prompt: run?.prompt, in: recent); saveRecent()" in first
         and "if result.swappedIn, let model = run?.model {" in first, "record", "a swap (confirmed or not) makes the dictation read the polished text")
     row = body(d, "                        if let pending = store.pendingPolish[record.id] {")
     pin(d.count('Button("Apply polished") { store.applyPolished(record.id) }') == 1 and "if pending.applies {" in row
@@ -206,7 +206,7 @@ def check(d, core):
     pin(replace.count("await paste(") == 1, "post-paste count", "never a second paste")
     pin("case .replacedUnconfirmed: return (.swappedUnconfirmed, replaced.route, replaced.target)" in swap and "case .mismatch: return (.mismatch, replaced.route, nil)" in swap,
         "unconfirmed labelling", "a swap landed by count reads swappedUnconfirmed, never skipped; a mismatch reads mismatch")
-    pin("applies: DictationPolishSwap.offersApply(result))" in first and "if generation == attempt, inserted, DictationPolishSwap.watches(result), let watchTarget {" in first,
+    pin("applies: DictationPolishSwap.offersApply(result), prompt: run?.prompt)" in first and "if generation == attempt, inserted, DictationPolishSwap.watches(result), let watchTarget {" in first,
         "unconfirmed labelling", "Apply polished only where the tested rule offers it; no watch after a mismatch")
 
 

@@ -1355,6 +1355,10 @@ zsh "$ROOT/Tests/run-hardening-337.sh"
 # 0.5.342 Your edit, confirmed: the wiring pins (with their in-memory mutants), then the rules against fixtures
 # (Tests/EditConfirmChecks.swift, MacDictationCore.swift alone). Hand-run: Tests/mutate-edit-confirm.py (the mutation lane).
 zsh "$ROOT/Tests/run-edit-confirm.sh"
+# 0.5.344 Capture every correction (plan r2): the wiring pins (with their in-memory mutants), then the watch loop itself
+# against a fake field and a fake clock (Tests/EditCaptureChecks.swift, MacDictationCore.swift alone). Hand-run:
+# Tests/mutate-edit-capture.py (the mutation lane).
+zsh "$ROOT/Tests/run-edit-capture.sh"
 # 0.5.343 Build-up, in place: the wiring pins (with their in-memory mutants) and the motion-gate pins, then the rules
 # against fixtures (Tests/BuildUpChecks.swift, Models.swift alone). Hand-run: Tests/mutate-build-up.py (the mutation lane)
 # and Tests/run-build-up-render.sh (static PNGs, never a gate).

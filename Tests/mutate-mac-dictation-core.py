@@ -389,7 +389,8 @@ MUTANTS = [
     ("polish: a refusal applies its text", '            return why == "timeout" ? .timeout : .failed(why)', '            return text.map { .applied($0) } ?? .failed(why)'),
     ("polish: any reason reaches the log", '$0.range(of: "^[a-z0-9_]{1,40}$", options: .regularExpression) != nil ? $0 : nil', "$0"),
     ("polish: the timeout reads as a failure", '            return why == "timeout" ? .timeout : .failed(why)', "            return .failed(why)"),
-    ("polish: the dictionary-only answer is applied", '        guard polished == true else { return skip.map { .skipped($0) } ?? .failed("not_polished") }\n', ""),
+    # Retargeted 0.5.344: the polished-false branch is a block now (the unchanged mapping, plan r2); the same two mutants.
+    ("polish: the dictionary-only answer is applied", '        guard polished == true else {\n            if let skip { return .skipped(skip) }', '        if false {\n            if let skip { return .skipped(skip) }'),
     ("polish: an empty answer is pasted", 'guard let text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return .failed("empty") }',
      'guard let text else { return .failed("empty") }'),
     ("polish: a runaway answer is pasted", '        guard Double(text.count) <= Double(heard.count) * maximumGrowth + Double(growthAllowance) else { return .failed("grew") }\n', ""),
@@ -402,7 +403,9 @@ MUTANTS = [
     ("polish: a label without what was heard", "        guard heard != nil, let name = polishModel", "        guard let name = polishModel"),
     ("polish: what was heard is not saved", "try c.encodeIfPresent(heard, forKey: .heard); ", ""),
     ("polish: a wrong-typed field drops the file", "        heard = (try? c.decodeIfPresent(String.self, forKey: .heard)) ?? nil", "        heard = try c.decodeIfPresent(String.self, forKey: .heard)"),
-    ("polish: Fix a word forgets what was heard", "heard: $0.heard, polishModel: $0.polishModel) : $0 }", "heard: nil, polishModel: $0.polishModel) : $0 }"),
+    # Retargeted 0.5.344: the record carries polishPrompt after polishModel now.
+    ("polish: Fix a word forgets what was heard", "heard: $0.heard, polishModel: $0.polishModel, polishPrompt: $0.polishPrompt) : $0 }",
+     "heard: nil, polishModel: $0.polishModel, polishPrompt: $0.polishPrompt) : $0 }"),
     ("polish: the meta line drops the label", '+ (polishLabel.map { " · " + $0 } ?? "")', ""),
     # 0.5.327 truthful start: the device choice, the first-audio stamp, the STARTING pill, the spare, codes and the line.
     ("start: no selection reads the list", "        guard !selectedUID.isEmpty else { return (.systemDefault, false) }",
@@ -444,8 +447,7 @@ MUTANTS = [
      "        quietBuildMs = start.quietBuildMs; quietStartMs = start.quietStartMs"),
     # 0.5.328 polish skip reasons (server 6.79.1 polishSkipped).
     ("polish: any skip word is believed", "        let skip = skipped.flatMap { skipReasons.contains($0) ? $0 : nil }", "        let skip = skipped"),
-    ("polish: a skip reads as not_polished", "        guard polished == true else { return skip.map { .skipped($0) } ?? .failed(\"not_polished\") }",
-     "        guard polished == true else { return .failed(\"not_polished\") }"),
+    ("polish: a skip reads as not_polished", "        guard polished == true else {\n            if let skip { return .skipped(skip) }\n", "        guard polished == true else {\n"),
     ("polish: a filler-only pass called applied", "        if let skip { return text == heard ? .skipped(skip) : .fillersOnly(skip, text: text) }\n", ""),
     ("polish: a filler-only text not pasted", "            if case .fillersOnly(_, let cleaned) = self { return cleaned }\n", ""),
     ("polish: fillers_only logged as skipped", '            case .fillersOnly(let code, _): "fillers_only:" + code', '            case .fillersOnly(let code, _): "skipped:" + code'),
@@ -596,7 +598,8 @@ MUTANTS = [
     ("swap: the line loses the swap time", "        swapOutcome = result.logName; swapMs = ms; swapRoute = route.map(DictationPolishSwap.routeName)",
      "        swapOutcome = result.logName; swapRoute = route.map(DictationPolishSwap.routeName)"),
     ("swap: the polish run never reaches the line", "        polishMs = run.ms; polishModel = run.model.rawValue; polishOutcome = run.outcome.logName\n", ""),
-    ("swap: the record forgets what was heard", "                                                     heard: heard, polishModel: model) : r }", "                                                     heard: r.heard, polishModel: model) : r }"),
+    ("swap: the record forgets what was heard", "                                                     heard: heard, polishModel: model, polishPrompt:",
+     "                                                     heard: r.heard, polishModel: model, polishPrompt:"),
     ("swap: the swap rewrites another dictation", "        list.map { r in r.id == id ? DictationRecord(", "        list.map { r in r.id != id ? DictationRecord("),
     # 0.5.334 (server 6.84.0): Learn from my edits keeps a link's lead mark; the correction-only note is shown plain.
     ("0334 written: trimmed at both ends again", "written = writtenSide(edit.replacement)", "written = edit.replacement.trimmingCharacters(in: edge)"),
@@ -688,7 +691,9 @@ MUTANTS = [
     ("learn338: the canary never rotates", "        DictationTimingLog.appendBounded(line, to: url, maximumBytes: maximumBytes, fileManager: fileManager)",
      "        DictationTimingLog.appendBounded(line, to: url, maximumBytes: Int.max, fileManager: fileManager)"),
     ("learn338: canary lines run together", "        line.append(0x0A)\n        return line", "        return line"),
-    ("learn338: the canary carries text", "    var focusWhy: String?\n}", "    var focusWhy: String?\n    var heard = \"x\"\n}"),
+    # Retargeted 0.5.344: the canary's 0.5.344 fields and helpers follow focusWhy now; the struct still ends in one place.
+    ("learn338: the canary carries text", "    static func recordsSkip(_ reason: String) -> Bool { reason != \"off\" }\n}",
+     "    static func recordsSkip(_ reason: String) -> Bool { reason != \"off\" }\n    var heard = \"x\"\n}"),
 ]
 
 

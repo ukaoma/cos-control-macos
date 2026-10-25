@@ -12,7 +12,8 @@ import pathlib, re, sys
 
 root = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else ".")
 read = lambda p: (root / p).read_text(encoding="utf-8")
-FILES = {"d": "Sources/MacDictation.swift", "pet": "Sources/SessionPet.swift", "app": "Sources/COSControlApp.swift"}
+FILES = {"d": "Sources/MacDictation.swift", "pet": "Sources/SessionPet.swift", "app": "Sources/COSControlApp.swift",
+         "core": "Sources/MacDictationCore.swift"}
 
 
 class PinFailed(Exception):
@@ -44,10 +45,13 @@ def body(src, opener):
 
 
 def check(src):
-    d, pet, app = code(src["d"]), code(src["pet"]), code(src["app"])
+    d, pet, app, core = code(src["d"]), code(src["pet"]), code(src["app"]), code(src["core"])
     watcher = body(d, "@MainActor final class DictationEditWatcher {")
-    run = body(d, "    private func run(_ field: WatchField,")
-    watch = body(d, "    nonisolated private static func watch(")
+    run = body(d, "    private func run(_ field: DictationEditWatch.Field,")
+    # 0.5.344: the loop and the capture rule moved into the core (DictationEditWatch), where EditCaptureChecks runs them.
+    loop = body(core, "enum DictationEditWatch {")
+    watch = body(loop, "    static func watch(")
+    ending = body(loop, "    static func run(")
     finish = body(d, "    private func finish(_ text: String, outcome: DictationDeliveryOutcome")
     ended = body(d, "    private func editWatchEnded(_ end: DictationWatchEnd) async {")
     view = body(d, "    func viewEditFromPill() {")
@@ -58,19 +62,21 @@ def check(src):
     row = body(d, "private struct DictationHistoryRow: View {")
 
     # 1. The watch keeps where its last good read placed the dictation, and reports how it ended to its own dictation.
-    pin("while !Task.isCancelled {\n                tail.window = baseline; tail.start = start; tail.length = length" in watch,
-        "tail", "the loop records the last good read before anything can end the watch")
+    pin("            tail.window = next.window; tail.start = next.start; tail.length = next.length; tail.sawInside = next.sawInside" in watch
+        and watch.index("keep(tracker, seen: nil)") < watch.index("while !Task.isCancelled {"),
+        "tail", "the tracker records every placing read, the first one before anything can end the watch")
     pin(watch.count("if let candidate { tail.candidates.append(candidate) }") == 1, "tail", "the pairs handed on are reported")
     pin(watcher.count("nextOwner = (pendingRecord, target.app); pendingRecord = nil") == 2, "owner",
         "start and startOwn each take the dictation the store named")
-    pin(run.count("let owner = nextOwner, finished = self.finished") == 1 and run.count("tail: &tail, found: found)") == 1, "owner",
-        "each run captures its owner when it starts")
+    pin(run.count("let owner = nextOwner, finished = self.finished, monitor = self.monitor") == 1 and ending.count("clock: clock, tail: &tail, log: log, consider: consider, found: found)") == 1,
+        "owner", "each run captures its owner when it starts")
     rule = "DictationEditConfirm.captured(typed: typed, window: tail.window, start: tail.start, length: tail.length,"
-    pin(run.count(rule) == 1 and "inside: canary.inside, readable: canary.readable, learning: learning, stop: canary.stop)" in run,
-        "captured", "the tested rule decides what is kept, from the watch's own counts")
-    pin(run.count("await finished(DictationWatchEnd(") == 1 and run.index("Self.record(canary)") < run.index("await finished(DictationWatchEnd("),
+    pin(ending.count(rule) == 1 and "inside: tail.sawInside, readable: canary.readable, learning: learning, stop: canary.stop," in ending,
+        "captured", "the tested rule decides what is kept, from the watch's own counts and its tracker")
+    pin(run.count("await finished(DictationWatchEnd(") == 1 and "sink: { Self.record($0) })" in run and ending.index("sink(canary)") < ending.index("return Ending(")
+        and run.index("let ending = await DictationEditWatch.run(") < run.index("await finished(DictationWatchEnd("),
         "ending", "every watch with an owner reports its ending, after its canary line")
-    pin("if canary.inside > 0 { canary.edited = final != nil }" in run, "canary", "the canary carries the verdict, never the words")
+    pin("if tail.sawInside > 0 { canary.edited = final != nil }" in ending, "canary", "the canary carries the verdict, never the words")
 
     # 2. The store names the dictation, and the ending is wired once.
     pin("editWatcher.pendingRecord = record.id" in finish and finish.index("editWatcher.pendingRecord = record.id") < finish.index("if swapPending {"),
@@ -139,12 +145,12 @@ def check(src):
 
 
 MUTANTS = [
-    ("tail never written", "d", "                tail.window = baseline; tail.start = start; tail.length = length\n", ""),
+    ("tail never written", "core", "            tail.window = next.window; tail.start = next.start; tail.length = next.length; tail.sawInside = next.sawInside\n", ""),
     ("no ending reported", "d", "await finished(DictationWatchEnd(", "_ = (DictationWatchEnd("),
     ("owner not taken for COS's own views", "d",
      "        nextOwner = (pendingRecord, target.app); pendingRecord = nil\n        let eligibility = DictationEditLearning.eligibility(mode: mode, secure: IsSecureEventInputEnabled()",
      "        let eligibility = DictationEditLearning.eligibility(mode: mode, secure: IsSecureEventInputEnabled()"),
-    ("captured rule bypassed", "d", "DictationEditConfirm.captured(typed: typed, window: tail.window,", "Optional(tail.window).map { _ in typed } ?? (typed: typed, window: tail.window,"),
+    ("captured rule bypassed", "core", "DictationEditConfirm.captured(typed: typed, window: tail.window,", "Optional(tail.window).map { _ in typed } ?? (typed: typed, window: tail.window,"),
     ("record not handed to the watch", "d", "        editWatcher.pendingRecord = record.id\n", ""),
     ("swap watch has no record", "d", "            editWatcher.pendingRecord = id\n", ""),
     ("ending not wired", "d", "        editWatcher.finished = { [weak self] end in await self?.editWatchEnded(end) }\n", ""),

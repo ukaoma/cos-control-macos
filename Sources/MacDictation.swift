@@ -911,8 +911,13 @@ struct DictationOwnTarget: @unchecked Sendable {
 @MainActor final class DictationEditWatcher {
     private var task: Task<Void, Never>?
     private var watching: UUID?
+    /// 0.5.344: the running watch's trigger stream (Return, Enter or a click, from the shortcut monitor).
+    private var signal: DictationWatchSignal?
     /// 0.5.328: a watch is reading a field now (for the timing line's editWatchAtPress).
     var isWatching: Bool { task != nil }
+    /// 0.5.344: the shortcut monitor is installed (only when a lone-modifier trigger such as Fn is set), so Return and
+    /// clicks can reach a watch. Set by the store when it installs or removes the monitors; on each canary line.
+    var monitor = false
     /// 0.5.342 Your edit, confirmed: the dictation the next watch belongs to, set by the store just before it starts one,
     /// and where every watch's ending goes (DictationWatchEnd). Each run takes its owner when it starts, so an ending
     /// that lands after a newer watch began still names its own dictation.
@@ -922,10 +927,21 @@ struct DictationOwnTarget: @unchecked Sendable {
     func stop(_ why: String) {
         guard let task else { return }
         task.cancel(); self.task = nil; watching = nil
+        signal?.close(); signal = nil
         dictationLog.notice("learn stop=\(why, privacy: .public)")
     }
     /// A watch that ended on its own clears only itself, never a newer one.
-    private func ended(_ id: UUID) { if watching == id { task = nil; watching = nil } }
+    private func ended(_ id: UUID) { if watching == id { task = nil; watching = nil; signal = nil } }
+    /// 0.5.344: the shortcut monitor heard Return, Enter or a click while this watch runs. One lock and one resume on the
+    /// main thread; the read itself runs inside the watch's own task. The event itself goes on untouched.
+    func trigger(_ trigger: DictationEditLearning.Trigger) { signal?.fire(trigger) }
+    /// 0.5.344: a typed dictation that got no watch writes its canary line too, with the reason (QA W3), off the main thread.
+    nonisolated static func skipped(_ reason: String, bundle: String?) {
+        guard DictationLearnCanary.recordsSkip(reason) else { return }
+        let row = DictationLearnCanary.skipped(reason, bundle: bundle ?? "-", at: Date())
+        dictationLog.notice("learn skip-row reason=\(reason, privacy: .public)")
+        Task.detached(priority: .utility) { Self.record(row) }
+    }
     func start(_ target: DictationInsertTarget, mode: DictationLearnMode, context: DictationFieldContext.Applied? = nil,
                found: @escaping @MainActor @Sendable (DictationEditLearning.Candidate) -> Void) {
         stop("new dictation")
@@ -938,28 +954,32 @@ struct DictationOwnTarget: @unchecked Sendable {
         let facts = "bundle=\(target.bundle ?? "-") electron=\(target.electron) chromium=\(target.chromium) setterWorked=\(target.setterWorked)"
         if case .skip(let reason) = eligibility {
             dictationLog.notice("learn skip=\(reason, privacy: .public) \(facts, privacy: .public)")
+            Self.skipped(reason, bundle: target.bundle)
             return
         }
         // 0.5.328: off the main actor. Each read is several Accessibility calls into the other app (0.25 s each at most
         // when it is busy), every 500 ms for up to three minutes; on the main actor they froze the pet, and a press that
         // landed during one waited for it (Miles: 1,052 ms from press to the dictation's own task, 2026-10-19). Only an
-        // ending, a learned candidate and the spell check hop to the main actor.
+        // ending, a learned candidate and the spell check hop to the main actor. 0.5.344: the field's closures are
+        // @Sendable (DictationEditWatch.Field), so none of them inherits the main actor from this method. A probe of the
+        // same shape (2026-10-24) showed the 0.5.338 to 0.5.343 closures, formed here without @Sendable, ran on the main
+        // thread even when awaited from the detached task.
         let pid = target.span.pid
         // 0.5.338: the field, not the element. Claude's composer is re-mounted (an empty composer filling, a first message
         // opening its chat), so the element the watch reads through is rebound when the focus rule says it is the same field.
         let box = AXField(element)
-        let field = WatchField(measure: { DictationInsertion.measure(box.element) },
-                               text: { DictationInsertion.text(box.element, location: $0, length: $1) },
-                               secure: { DictationInsertion.secure(box.element) },
-                               focus: { rebinds in
-                                   if box.identity == nil { box.identity = DictationInsertion.fieldIdentity(box.element, pid: pid) }
-                                   let seen = DictationInsertion.focusedField(pid: pid, watched: box.element)
-                                   let verdict = DictationEditLearning.focus(frontmost: seen.frontmost, sameElement: seen.sameElement, watched: box.identity,
-                                                                             now: seen.identity, sameWindow: seen.sameWindow, rebinds: rebinds)
-                                   if verdict == .rebound, let next = seen.element { box.element = next; box.identity = seen.identity }
-                                   return (verdict, seen.characters)
-                               },
-                               running: { NSRunningApplication(processIdentifier: pid).map { !$0.isTerminated } ?? false })
+        let field = DictationEditWatch.Field(measure: { DictationInsertion.measure(box.element) },
+                                             text: { DictationInsertion.text(box.element, location: $0, length: $1) },
+                                             secure: { DictationInsertion.secure(box.element) },
+                                             focus: { rebinds in
+                                                 if box.identity == nil { box.identity = DictationInsertion.fieldIdentity(box.element, pid: pid) }
+                                                 let seen = DictationInsertion.focusedField(pid: pid, watched: box.element)
+                                                 let verdict = DictationEditLearning.focus(frontmost: seen.frontmost, sameElement: seen.sameElement, watched: box.identity,
+                                                                                           now: seen.identity, sameWindow: seen.sameWindow, rebinds: rebinds)
+                                                 if verdict == .rebound, let next = seen.element { box.element = next; box.identity = seen.identity }
+                                                 return (verdict, seen.characters)
+                                             },
+                                             running: { NSRunningApplication(processIdentifier: pid).map { !$0.isTerminated } ?? false })
         run(field, span: target.span, typed: target.text, facts: facts, bundle: target.bundle ?? "-", learning: eligibility == .learn, context: context, found: found)
     }
 
@@ -975,167 +995,59 @@ struct DictationOwnTarget: @unchecked Sendable {
         let facts = "bundle=own route=ownWindow"
         if case .skip(let reason) = eligibility {
             dictationLog.notice("learn skip=\(reason, privacy: .public) \(facts, privacy: .public)")
+            Self.skipped(reason, bundle: "com.gotcos.control")
             return
         }
         let box = OwnView(target.view)
-        let field = WatchField(measure: { await MainActor.run { box.view.map { DictationOwnField.snapshot(text: $0.string, selection: $0.selectedRange()) } ?? DictationFieldSnapshot() } },
-                               text: { location, length in await MainActor.run { box.view.flatMap { DictationOwnField.read($0.string, location: location, length: length) } } },
-                               secure: { IsSecureEventInputEnabled() },
-                               focus: { _ in
-                                   let held = await MainActor.run { box.view.map { NSApp.isActive && $0.window?.firstResponder === $0 } ?? false }
-                                   return (held ? .same : .left("app"), nil)
-                               },
-                               running: { await MainActor.run { box.view != nil } })
+        let field = DictationEditWatch.Field(measure: { await MainActor.run { box.view.map { DictationOwnField.snapshot(text: $0.string, selection: $0.selectedRange()) } ?? DictationFieldSnapshot() } },
+                                             text: { location, length in await MainActor.run { box.view.flatMap { DictationOwnField.read($0.string, location: location, length: length) } } },
+                                             secure: { IsSecureEventInputEnabled() },
+                                             focus: { _ in
+                                                 let held = await MainActor.run { box.view.map { NSApp.isActive && $0.window?.firstResponder === $0 } ?? false }
+                                                 return (held ? .same : .left("app"), nil)
+                                             },
+                                             running: { await MainActor.run { box.view != nil } })
         run(field, span: target.span, typed: target.text, facts: facts, bundle: "com.gotcos.control", learning: eligibility == .learn, context: nil, found: found)
     }
 
-    /// One field the watch reads: Accessibility for another app's field, the view itself for COS's own.
-    struct WatchField: @unchecked Sendable {
-        let measure: () async -> DictationFieldSnapshot
-        let text: (Int, Int) async -> String?
-        let secure: () async -> Bool
-        /// 0.5.338: the tested focus rule's verdict (given the rebinds so far), and the focused element's count for the log.
-        let focus: (Int) async -> (verdict: DictationEditLearning.Focus, characters: Int?)
-        let running: () async -> Bool
-    }
     final class OwnView: @unchecked Sendable {
         weak var view: NSTextView?
         init(_ view: NSTextView?) { self.view = view }
     }
     /// 0.5.338: the element a watch reads through, and the field identity it was taken for. Touched only by the one watch
-    /// task, one call at a time.
+    /// task, one call at a time (the watch makes every read itself, a trigger's included: 0.5.344).
     final class AXField: @unchecked Sendable {
         var element: AXUIElement
         var identity: DictationEditLearning.FieldIdentity?
         init(_ element: AXUIElement) { self.element = element }
     }
 
-    private func run(_ field: WatchField, span: DictationInsertedSpan, typed: String, facts: String, bundle: String, learning: Bool,
+    private func run(_ field: DictationEditWatch.Field, span: DictationInsertedSpan, typed: String, facts: String, bundle: String, learning: Bool,
                      context: DictationFieldContext.Applied?, found: @escaping @MainActor @Sendable (DictationEditLearning.Candidate) -> Void) {
         let id = UUID()
         watching = id
-        let owner = nextOwner, finished = self.finished
+        let owner = nextOwner, finished = self.finished, monitor = self.monitor
         nextOwner = nil
+        // 0.5.344: this watch's own trigger stream, raced against its poll timer inside the watch.
+        let signal = DictationWatchSignal()
+        self.signal = signal
+        let clock = DictationEditWatch.Clock(now: { ProcessInfo.processInfo.systemUptime }, wall: { Date() }, pause: { await signal.pause($0) })
+        let consider: DictationEditWatch.Consider = { edit, window, start, length in
+            await Self.consider(edit, window: window, start: start, length: length, context: context)
+        }
         task = Task.detached(priority: .utility) { [weak self] in
             let started = Date()
-            var tail = DictationWatchTail()
-            var canary = await Self.watch(field, span: span, typed: typed, facts: facts, bundle: bundle, learning: learning, context: context,
-                                          tail: &tail, found: found)
-            // 0.5.342: the dictation's final words when the watch saw the person's own edit inside it (the tested rule).
-            let final = DictationEditConfirm.captured(typed: typed, window: tail.window, start: tail.start, length: tail.length,
-                                                      inside: canary.inside, readable: canary.readable, learning: learning, stop: canary.stop)
-            if canary.inside > 0 { canary.edited = final != nil }
-            Self.record(canary)
+            let ending = await DictationEditWatch.run(field, span: span, typed: typed, facts: facts, bundle: bundle, learning: learning, monitor: monitor,
+                                                      clock: clock, log: { dictationLog.notice("\($0, privacy: .public)") }, consider: consider,
+                                                      found: found, sink: { Self.record($0) })
             await self?.ended(id)
             if let finished, let owner {
-                await finished(DictationWatchEnd(recordID: owner.record, app: owner.app, typed: typed, finalText: final, inside: canary.inside,
-                                                 started: started, candidates: tail.candidates))
+                await finished(DictationWatchEnd(recordID: owner.record, app: owner.app, typed: typed, finalText: ending.final,
+                                                 inside: ending.tail.sawInside, started: started, candidates: ending.tail.candidates))
             }
         }
     }
 
-    /// The watch itself. Returns its counts-only canary line (0.5.338).
-    nonisolated private static func watch(_ field: WatchField, span: DictationInsertedSpan, typed: String, facts: String, bundle: String, learning: Bool,
-                                          context: DictationFieldContext.Applied?, tail: inout DictationWatchTail,
-                                          found: @escaping @MainActor @Sendable (DictationEditLearning.Candidate) -> Void) async -> DictationLearnCanary {
-            let started = Date()
-            var canary = DictationLearnCanary(at: ISO8601DateFormatter().string(from: started), bundle: bundle,
-                                              eligibility: learning ? "learn" : "probe", readable: false, reads: 1, stop: "cancelled",
-                                              rebinds: 0, reanchors: 0, inside: 0, candidates: 0, learned: 0, focusWhy: nil)
-            let first = await field.measure()
-            guard let n0 = first.characters else {
-                canary.stop = "unreadable"
-                dictationLog.notice("learn start readable=false \(facts, privacy: .public)"); return canary
-            }
-            let bounds = DictationReplace.window(span: span, currentLength: typed.utf16.count, fieldCharacters: n0)
-            guard var baseline = await field.text(bounds.location, bounds.length) else {
-                canary.stop = "unreadable"
-                dictationLog.notice("learn start readable=false \(facts, privacy: .public) learning=\(learning)"); return canary
-            }
-            var start = span.location - bounds.location, length = span.length
-            var learnedHere = 0
-            // The window must hold what COS typed where it typed it. 0.5.338: an edit made while AI polish ran moved it,
-            // so the dictation is found again by its words, and the edit found that way counts like any other.
-            var pending: DictationReplace.Edit?
-            if !DictationReplace.holds(baseline, at: span.location - bounds.location, typed) {
-                guard let anchored = DictationEditLearning.reanchor(typed, in: baseline) else {
-                    canary.stop = "unreadable"
-                    dictationLog.notice("learn start readable=false \(facts, privacy: .public) learning=\(learning) anchor=none"); return canary
-                }
-                start = anchored.start; length = anchored.length; canary.reanchors += 1
-                pending = DictationReplace.wordEdit(from: typed, to: (baseline as NSString).substring(with: NSRange(location: anchored.start, length: anchored.length)))
-            }
-            canary.readable = true
-            dictationLog.notice("learn start readable=true \(facts, privacy: .public) learning=\(learning) window=\(bounds.length) anchored=\(canary.reanchors > 0)")
-            var baseCount = n0
-            var reads = 1, last = first
-            var changedAt: Date?
-            while !Task.isCancelled {
-                // 0.5.342: where the last good read placed the dictation. Every ending after this line keeps it.
-                tail.window = baseline; tail.start = start; tail.length = length
-                if let edit = pending {
-                    pending = nil
-                    canary.inside += 1
-                    let candidate = learning && DictationEditLearning.allowsAnother(learned: learnedHere)
-                        ? await Self.consider(edit, window: baseline, start: start, length: length, context: context) : nil
-                    if candidate != nil { canary.candidates += 1 }
-                    dictationLog.notice("learn read=\(reads) track=edit words=\(edit.original.split(whereSeparator: \.isWhitespace).count)>\(edit.replacement.split(whereSeparator: \.isWhitespace).count) learning=\(learning) candidate=\(candidate != nil) evidence=\(candidate?.evidence != nil) learned=\(learnedHere)")
-                    if let candidate { tail.candidates.append(candidate) }
-                    if let candidate { learnedHere += 1; canary.learned += 1; await found(candidate) }
-                }
-                try? await Task.sleep(for: .milliseconds(DictationEditLearning.pollMilliseconds))
-                guard !Task.isCancelled else { return canary }
-                let running = await field.running()
-                let seen = await field.focus(canary.rebinds)
-                var focused = true, rebound = false
-                switch seen.verdict {
-                case .same: break
-                case .rebound:
-                    canary.rebinds += 1; rebound = true
-                    dictationLog.notice("learn focus=rebound rebinds=\(canary.rebinds) n=\(seen.characters.map(String.init) ?? "?", privacy: .public)")
-                case .left(let why):
-                    focused = false; canary.focusWhy = why
-                    dictationLog.notice("learn focus=left why=\(why, privacy: .public) n=\(seen.characters.map(String.init) ?? "?", privacy: .public)")
-                }
-                let now = await field.measure()
-                if let why = DictationEditLearning.stop(elapsed: Date().timeIntervalSince(started), reads: reads, appRunning: running,
-                                                        secure: await field.secure(),
-                                                        focused: focused, fieldCharacters: now.characters, dictationLength: length) {
-                    canary.stop = why.rawValue
-                    dictationLog.notice("learn stop=\(why.rawValue, privacy: .public) reads=\(reads)"); return canary
-                }
-                if now != last || rebound { last = now; changedAt = Date(); continue }
-                guard let changed = changedAt, Date().timeIntervalSince(changed) >= DictationEditLearning.debounceSeconds, let n = now.characters else { continue }
-                changedAt = nil
-                reads += 1; canary.reads = reads
-                let count = DictationEditLearning.readLength(baselineLength: baseline.utf16.count, baselineCharacters: baseCount, currentCharacters: n, start: bounds.location)
-                guard let current = await field.text(bounds.location, count) else {
-                    canary.stop = "unreadable"
-                    dictationLog.notice("learn stop=unreadable reads=\(reads) \(facts, privacy: .public)"); return canary
-                }
-                switch DictationEditLearning.follow(baseline: baseline, current: current, start: start, length: length) {
-                case .unchanged:
-                    dictationLog.notice("learn read=\(reads) track=unchanged")
-                case .moved(let s, let l):
-                    start = s; length = l
-                    dictationLog.notice("learn read=\(reads) track=moved")
-                case .inside(let edit, let l):
-                    length = l; pending = edit
-                    dictationLog.notice("learn read=\(reads) track=inside")
-                case .reanchored(let s, let l, let edit):
-                    start = s; length = l; pending = edit; canary.reanchors += 1
-                    dictationLog.notice("learn read=\(reads) track=reanchored edit=\(edit != nil)")
-                case .cleared:
-                    canary.stop = "cleared"
-                    dictationLog.notice("learn stop=cleared reads=\(reads)"); return canary
-                case .lost:
-                    canary.stop = "lost"
-                    dictationLog.notice("learn stop=lost reads=\(reads)"); return canary
-                }
-                baseline = current; baseCount = n
-            }
-            return canary
-    }
     /// 0.5.323: the field outside the dictation, in this read and in the one before typing, is evidence; an edit that
     /// undoes a spelling COS took from the field is not a pair to learn.
     nonisolated private static func consider(_ edit: DictationReplace.Edit, window: String, start: Int, length: Int,
@@ -1924,6 +1836,8 @@ enum DictationSpareBuild: Sendable {
     private var lastEngine: (engine: String, fallback: String?)?
     /// 0.5.325: what was heard and which model polished it, only when AI polish changed the text; kept until finish().
     private var lastPolish: (heard: String, model: DictationPolishModel)?
+    /// 0.5.344 (server 6.91.0): the prompt that applied polish used, v3 or v4, for the record's card label.
+    private var lastPolishPrompt: String?
     /// 0.5.331: a delivery is typing into an app, and an automatic swap is editing one. Never both at once.
     private var deliveryInFlight = false
     private var swapEditing = false
@@ -2331,6 +2245,7 @@ enum DictationSpareBuild: Sendable {
     func registerHotKeys() {
         registrations.forEach { UnregisterEventHotKey($0) }; registrations.removeAll()
         keyMonitors.forEach { NSEvent.removeMonitor($0) }; keyMonitors.removeAll()
+        editWatcher.monitor = false
         holdTracker = nil; toggleTracker = nil; fixTracker = nil
         guard enabled else { phase = "Off"; return }
         if handler == nil {
@@ -2367,14 +2282,21 @@ enum DictationSpareBuild: Sendable {
             // A click right after the modifier goes down (⌥-click, ⌘-click) is a chord, so the monitors take clicks too;
             // a later click (placing the cursor, dragging a window) is ignored and listening continues. keyCode is read
             // only from key events: NSEvent raises on a mouse event's keyCode.
+            // 0.5.344: the same events, observed only, also reach a running Learn from my edits watch: Return, Enter or a
+            // click asks it for one read now. Nothing is held, swallowed or posted; isARepeat is read from key-downs only.
             let handle: (NSEvent) -> Void = { [weak self] event in
                 let flags = event.type == .flagsChanged, isKey = flags || event.type == .keyDown
                 let key = isKey ? event.keyCode : 0, raw = UInt64(event.modifierFlags.rawValue), time = event.timestamp
-                MainActor.assumeIsolated { self?.keyEvent(flags: flags, pointer: !isKey, keyCode: key, raw: raw, at: time) }
+                let down = event.type == .keyDown, again = down && event.isARepeat
+                MainActor.assumeIsolated {
+                    self?.editTrigger(keyDown: down, keyCode: key, isRepeat: again, pointer: !isKey)
+                    self?.keyEvent(flags: flags, pointer: !isKey, keyCode: key, raw: raw, at: time)
+                }
             }
             let mask: NSEvent.EventTypeMask = [.flagsChanged, .keyDown, .leftMouseDown, .rightMouseDown, .otherMouseDown]
             if let global = NSEvent.addGlobalMonitorForEvents(matching: mask, handler: handle) { keyMonitors.append(global) }
             if let local = NSEvent.addLocalMonitorForEvents(matching: mask, handler: { handle($0); return $0 }) { keyMonitors.append(local) }
+            editWatcher.monitor = !keyMonitors.isEmpty
             if !AXIsProcessTrusted() {
                 message = "Fn and single-key shortcuts need Accessibility. Click Allow insertion into other apps…, then turn dictation off and on."
             }
@@ -2384,6 +2306,13 @@ enum DictationSpareBuild: Sendable {
         if fnConflictNow, message == nil { message = DictationFnUsage.note }
         // The first spare waits for launch to settle; it also takes the one-time cost of loading the audio components.
         if !busy { phase = "Ready"; prepareSpare(after: .seconds(5)) }
+    }
+    /// 0.5.344: Return or Enter (any modifier, not its auto-repeat) or a click, while a watch runs with learning on, asks
+    /// that watch for one read now (DictationEditLearning.trigger). It never means sent and never changes the event.
+    private func editTrigger(keyDown: Bool, keyCode: UInt16, isRepeat: Bool, pointer: Bool) {
+        guard let trigger = DictationEditLearning.trigger(keyDown: keyDown, keyCode: keyCode, isRepeat: isRepeat, pointer: pointer,
+                                                          watching: editWatcher.isWatching, learning: learnMode != .off) else { return }
+        editWatcher.trigger(trigger)
     }
     private func keyEvent(flags: Bool, pointer: Bool, keyCode: UInt16, raw: UInt64, at time: TimeInterval) {
         // A click while the hold key is down: if nothing was said, a slow ⌥-click or ⌘-click must not end in a card.
@@ -2744,6 +2673,7 @@ enum DictationSpareBuild: Sendable {
                 timing?.includePolish(polished)
                 let said = polished?.outcome.text(heard: heard) ?? heard
                 if case .applied? = polished?.outcome, let model = polished?.model { lastPolish = (heard, model) } else { lastPolish = nil }
+                lastPolishPrompt = lastPolish == nil ? nil : polished?.prompt
                 let text = formatLists ? DictationListFormat.format(said) : said
                 let copyOnly = pendingInterrupted
                 let clipboardMoved = interruptedChangeCount.map { $0 != NSPasteboard.general.changeCount } ?? false
@@ -2789,16 +2719,20 @@ enum DictationSpareBuild: Sendable {
                                                     prewarmToken: warm) else { return nil }
         var prewarm = DictationPolishPrewarm.outcome(sentToken: warm != nil, answer: nil)
         var instructions: (on: Bool, hash: String?) = (false, nil)
+        var prompt: String?
         let outcome: DictationPolish.Outcome
         do {
             let response = try await polishBridge(request, budget)
             prewarm = DictationPolishPrewarm.outcome(sentToken: warm != nil, answer: response.details["prewarm"]?.string)
             outcome = DictationPolish.choose(heard: heard, ok: response.ok, text: response.details["text"]?.string,
                                              polished: response.details["polished"]?.bool, reason: response.details["reason"]?.string,
-                                             skipped: response.details["polishSkipped"]?.string)
+                                             skipped: response.details["polishSkipped"]?.string,
+                                             polishOutcome: response.details["polishOutcome"]?.string)
             // 0.5.335 (server 6.85.0): whether the person's polish instructions went with it, for the timing line only.
             instructions = DictationPolishInstructions.used(flag: response.details["customInstructions"]?.bool,
                                                             hash: response.details["instructionsHash"]?.string)
+            // 0.5.344 (server 6.91.0): which prompt polished it, v3 or v4, for the timing line and the card.
+            prompt = DictationPolish.promptVersion(response.details["polishPrompt"]?.string)
         } catch HelperClientError.timedOut {
             outcome = .timeout
         } catch {
@@ -2808,7 +2742,7 @@ enum DictationSpareBuild: Sendable {
         dictationLog.notice("polish model=\(model.rawValue, privacy: .public) outcome=\(outcome.logName, privacy: .public) ms=\(elapsed)")
         notePolishPause(outcome)
         return DictationPolishRun(outcome: outcome, model: model, ms: elapsed, prewarm: prewarm, prewarmMs: warmMs,
-                                  customInstructions: instructions.on, instructionsHash: instructions.hash)
+                                  customInstructions: instructions.on, instructionsHash: instructions.hash).with(prompt: prompt)
     }
     /// The text is on the clipboard already. Measured or sent: flash the pill. Refused: the card, which never takes focus.
     /// 0.5.331 `swapPending`: Claude's version is still coming (paste first). Its timing line and its watch wait for the
@@ -2818,8 +2752,9 @@ enum DictationSpareBuild: Sendable {
                         swapPending: Bool = false, own: DictationOwnTarget? = nil) -> UUID {
         let record = DictationRecord(id: UUID(), text: text, createdAt: Date(), delivery: outcome.delivery,
                                      engine: lastEngine?.engine, fallbackReason: lastEngine?.fallback,
-                                     heard: lastPolish?.heard, polishModel: lastPolish?.model.rawValue)
+                                     heard: lastPolish?.heard, polishModel: lastPolish?.model.rawValue, polishPrompt: lastPolishPrompt)
         lastEngine = nil; lastPolish = nil
+        lastPolishPrompt = nil
         if !swapPending { if case .refused = outcome { recordTiming("copied") } else { recordTiming("typed") } }
         if let target { rememberTarget(target, for: record.id) }
         // 0.5.342: the watch that starts below (or after the swap) belongs to this dictation.
@@ -2834,6 +2769,10 @@ enum DictationSpareBuild: Sendable {
             editWatcher.startOwn(own, mode: learnMode) { [weak self] candidate in self?.editLearned(candidate, app: own.app) }
         } else {
             editWatcher.stop("not inserted")
+            // 0.5.344 (QA W3): a typed dictation that got no watch still writes its canary line, with the reason.
+            if let reason = DictationEditLearning.unwatched(learnOff: learnMode == .off, outcome: outcome, hasTarget: false) {
+                DictationEditWatcher.skipped(reason, bundle: target?.bundle)
+            }
         }
         if let flash = outcome.flash {
             pill = flash
@@ -2863,7 +2802,7 @@ enum DictationSpareBuild: Sendable {
         if line == nil { timing = nil }
         if finished.outcome == "pending" { finished.outcome = outcome }
         func n(_ value: Double?) -> String { value.map { String(format: "%.1f", $0) } ?? "-" }
-        dictationLog.notice("timing release_to_closed_ms=\(finished.releaseToClosedMs) tail_ms=\(finished.tailMs) captured_s=\(n(finished.capturedSeconds), privacy: .public) final_dbfs=\(n(finished.finalDBFS), privacy: .public) tail_dbfs=\(n(finished.tailDBFS), privacy: .public) engine=\(finished.engine ?? "-", privacy: .public) transcribe_ms=\(finished.transcribeMs ?? -1) polish_ms=\(finished.polishMs ?? -1) polish=\(finished.polishModel ?? "-", privacy: .public):\(finished.polishOutcome ?? "-", privacy: .public) first_text_ms=\(finished.releaseToFirstTextMs ?? -1) swap=\(finished.swapOutcome ?? "-", privacy: .public) swap_ms=\(finished.swapMs ?? -1) swap_route=\(finished.swapRoute ?? "-", privacy: .public) swap_why=\(finished.swapWhy ?? "-", privacy: .public) outcome=\(finished.outcome, privacy: .public)")
+        dictationLog.notice("timing release_to_closed_ms=\(finished.releaseToClosedMs) tail_ms=\(finished.tailMs) captured_s=\(n(finished.capturedSeconds), privacy: .public) final_dbfs=\(n(finished.finalDBFS), privacy: .public) tail_dbfs=\(n(finished.tailDBFS), privacy: .public) engine=\(finished.engine ?? "-", privacy: .public) transcribe_ms=\(finished.transcribeMs ?? -1) polish_ms=\(finished.polishMs ?? -1) polish=\(finished.polishModel ?? "-", privacy: .public):\(finished.polishOutcome ?? "-", privacy: .public) polish_prompt=\(finished.polishPrompt ?? "-", privacy: .public) first_text_ms=\(finished.releaseToFirstTextMs ?? -1) swap=\(finished.swapOutcome ?? "-", privacy: .public) swap_ms=\(finished.swapMs ?? -1) swap_route=\(finished.swapRoute ?? "-", privacy: .public) swap_why=\(finished.swapWhy ?? "-", privacy: .public) outcome=\(finished.outcome, privacy: .public)")
         if let url = Self.defaultHistoryURL()?.deletingLastPathComponent().appendingPathComponent(DictationTimingLog.fileName) {
             DictationTimingLog.append(finished, to: url)
         }
@@ -2890,7 +2829,7 @@ enum DictationSpareBuild: Sendable {
         let polishing = Task { await self.polish(heard, attempt: attempt, showPill: false) }
         let lists = formatLists
         let text = lists ? DictationListFormat.format(heard) : heard
-        lastPolish = nil
+        lastPolish = nil; lastPolishPrompt = nil
         pendingAudio = nil; phase = "Ready"; message = nil
         await waitForSwapEdit()
         let delivering = ProcessInfo.processInfo.systemUptime
@@ -2928,12 +2867,12 @@ enum DictationSpareBuild: Sendable {
             }
             if result.swappedIn, let model = run?.model {
                 // The dictation now reads what the field holds, and keeps what was heard (Fix a word, Heard, history).
-                recent = DictationHistory.polishing(id, to: polished, heard: heard, model: model.rawValue, in: recent); saveRecent()
+                recent = DictationHistory.polishing(id, to: polished, heard: heard, model: model.rawValue, prompt: run?.prompt, in: recent); saveRecent()
                 if let watchTarget { rememberTarget(watchTarget, for: id) }
                 watchContext = delivered.context.map { DictationFieldContext.Applied(text: polished, fixes: final?.fixes ?? [], outside: $0.outside, terms: $0.terms) }
             } else if DictationPolishSwap.keepsPolished(result), let model = run?.model, record(id) != nil {
                 // 0.5.332: after a mismatch the row shows what was heard and Claude's version, with Copy, never Apply.
-                pendingPolish[id] = DictationPendingPolish(text: polished, heard: heard, model: model, applies: DictationPolishSwap.offersApply(result))
+                pendingPolish[id] = DictationPendingPolish(text: polished, heard: heard, model: model, applies: DictationPolishSwap.offersApply(result), prompt: run?.prompt)
             }
         }
         quiet?.stop()
@@ -2944,6 +2883,10 @@ enum DictationSpareBuild: Sendable {
         if generation == attempt, inserted, DictationPolishSwap.watches(result), let watchTarget {
             editWatcher.pendingRecord = id
             editWatcher.start(watchTarget, mode: learnMode, context: watchContext) { [weak self] candidate in self?.editLearned(candidate, app: watchTarget.app) }
+        } else if let reason = DictationEditLearning.unwatched(learnOff: learnMode == .off, outcome: delivered.outcome, hasTarget: watchTarget != nil,
+                                                               newer: generation != attempt, swapWatches: DictationPolishSwap.watches(result)) {
+            // 0.5.344 (QA W3): the swap's mismatch, a newer dictation or no target: the canary says which.
+            DictationEditWatcher.skipped(reason, bundle: delivered.target?.bundle)
         }
         if let notice = DictationPolishSwap.notice(result, app: delivered.target?.app ?? "the app"), !busy {
             let flash = DictationPill.flash(label: notice, confirmed: false)
@@ -3002,7 +2945,7 @@ enum DictationSpareBuild: Sendable {
             insertTargets[id] = replaced.target
             switch replaced.result {
             case .replaced:
-                recent = DictationHistory.polishing(id, to: pending.text, heard: pending.heard, model: pending.model.rawValue, in: recent); saveRecent()
+                recent = DictationHistory.polishing(id, to: pending.text, heard: pending.heard, model: pending.model.rawValue, prompt: pending.prompt, in: recent); saveRecent()
                 polishNote = (id, "Polished it in \(target.app).")
             case .copied(let reason):
                 copy(pending.text); polishNote = (id, DictationReplace.copiedNote(reason, app: target.app))

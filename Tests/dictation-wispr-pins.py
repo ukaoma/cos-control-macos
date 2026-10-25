@@ -558,15 +558,18 @@ need('Button(offer.app.map { "Replace it in \\($0)" } ?? "Copy the corrected tex
 
 # ── 9a. 0.5.338 Learn from my edits in every app: the field, not the element; re-anchor; the canary; Undo on the pill.
 watcher = body(dictation, "@MainActor final class DictationEditWatcher {")
+# 0.5.344: the loop itself moved into the core (DictationEditWatch, run by Tests/EditCaptureChecks.swift); the app keeps
+# the field's Accessibility closures.
+loop = body(core, "enum DictationEditWatch {")
 need(watcher.count("let verdict = DictationEditLearning.focus(frontmost: seen.frontmost, sameElement: seen.sameElement, watched: box.identity,") == 1
      and "if verdict == .rebound, let next = seen.element { box.element = next; box.identity = seen.identity }" in watcher
      and "DictationInsertion.focusedField(pid: pid, watched: box.element)" in watcher
-     and "let seen = await field.focus(canary.rebinds)" in watcher
-     and "focused: focused, fieldCharacters: now.characters, dictationLength: length)" in watcher
+     and "let seen = await field.focus(canary.rebinds)" in loop
+     and "focused: focused, fieldCharacters: now.characters, dictationLength: length)" in loop
      and "measure: { DictationInsertion.measure(box.element) }" in watcher,
      "every poll asks the tested focus rule; a rebound field is read through the new element; the stop rule hears focus and the dictation's length")
-need("DictationEditLearning.reanchor(typed, in: baseline)" in watcher and "case .reanchored(let s, let l, let edit):" in watcher
-     and "case .cleared:" in watcher and "Self.record(canary)" in watcher and watcher.count("bundle: \"com.gotcos.control\"") == 1,
+need("DictationEditLearning.reanchor(typed, in: baseline)" in loop and "case .reanchored(let s, let l, let edit):" in loop
+     and "case .cleared:" in loop and "sink: { Self.record($0) })" in watcher and watcher.count("bundle: \"com.gotcos.control\", learning: eligibility == .learn") == 1,
      "the start finds a moved dictation again, a read re-anchors or ends cleared, and every watch (COS's own views too) writes its canary line")
 need("kAXValueAttribute" not in body(dictation, "    nonisolated static func fieldIdentity(") and "kAXValueAttribute" not in body(dictation, "    nonisolated static func focusedField("),
      "the field's identity is attributes only, never its text")
@@ -593,18 +596,19 @@ need('if learnMode == .off { editWatcher.stop("learning off") }' in dictation, "
 watcher = body(dictation, "@MainActor final class DictationEditWatcher {")
 need(watcher.count("DictationEditLearning.eligibility(mode: mode, secure: DictationInsertion.secure(element)") == 1
      and "if case .skip(let reason) = eligibility {" in watcher and watcher.count("learning: eligibility == .learn") == 2
-     and "let candidate = learning && DictationEditLearning.allowsAnother(learned: learnedHere)\n                        ? await Self.consider(edit, window: baseline, start: start, length: length, context: context) : nil" in watcher
+     and "let candidate = learning && DictationEditLearning.allowsAnother(learned: learnedHere)\n                    ? await consider(edit, baseline, start, length) : nil" in loop
+     and "await Self.consider(edit, window: window, start: start, length: length, context: context)" in watcher
      and "guard let candidate = await MainActor.run(body: { DictationEditWatcher.candidate(edit, outside: outside) }) else { return nil }" in watcher
      and "bundle: target.bundle)" in watcher,
      "the tested gate decides learn, probe or skip, and only .learn produces a candidate (Electron is probed only)")
-need("DictationEditLearning.stop(elapsed: Date().timeIntervalSince(started), reads: reads, appRunning: running,\n                                                        secure: await field.secure()," in watcher
-     and "secure: { DictationInsertion.secure(box.element) }," in watcher,
+need("DictationEditLearning.stop(elapsed: clock.now() - started, reads: reads, appRunning: running, secure: secure," in loop
+     and "let secure = await field.secure()" in loop and "secure: { DictationInsertion.secure(box.element) }," in watcher,
      "every poll asks the tested stop rule, secure input and password fields included")
-need("DictationReplace.holds(baseline, at: span.location - bounds.location, typed)" in watcher
-     and "DictationEditLearning.readLength(" in watcher and "DictationEditLearning.follow(" in watcher,
+need("DictationReplace.holds(baseline, at: span.location - bounds.location, typed)" in loop
+     and "DictationEditLearning.readLength(" in loop and "DictationEditLearning.follow(" in loop,
      "a watch starts only from proof of what COS typed, and reads the bounded window it planned")
-need("kAXValueAttribute" not in watcher and "AXObserver" not in watcher and "DictationInsertion.text(box.element, location: $0, length: $1)" in watcher
-     and "await field.text(bounds.location, bounds.length)" in watcher,
+need("kAXValueAttribute" not in watcher + loop and "AXObserver" not in watcher + loop and "DictationInsertion.text(box.element, location: $0, length: $1)" in watcher
+     and "await field.text(bounds.location, bounds.length)" in loop,
      "the watch reads only the bounded window, never AXValue")
 learned_fn = body(dictation, "    private func editLearned(")
 need(learned_fn.index("DictationSuggestions.isQuiet(") < learned_fn.index("if learnMode == .suggest {") < learned_fn.index("TranscriptionDictionaryStore.shared.learn(")
@@ -690,8 +694,8 @@ need("editWatcher.start(target, mode: learnMode, context: context)" in finish, "
 consider = body(dictation, "    nonisolated private static func consider(")
 need("let outside = DictationEditLearning.outside(window: window, start: start, length: length) + (context?.outside ?? [])" in consider
      and "return DictationEditLearning.undoesContextFix(candidate, fixes: context?.fixes ?? []) ? nil : candidate" in consider
-     and watcher.index("? await Self.consider(edit, window: baseline, start: start, length: length, context: context) : nil") < watcher.index("if let candidate { learnedHere += 1; canary.learned += 1; await found(candidate) }")
-     and "evidence=\\(candidate?.evidence != nil) learned=\\(learnedHere)" in watcher,
+     and loop.index("? await consider(edit, baseline, start, length) : nil") < loop.index("if let candidate { learnedHere += 1; canary.learned += 1; await found(candidate) }")
+     and "evidence=\\(candidate?.evidence != nil) learned=\\(learnedHere)" in loop,
      "the window around the dictation and the read before it are evidence; putting back what was heard is never learned")
 need("}, outside: outside)" in body(dictation, "    static func candidate(_ edit: DictationReplace.Edit, outside: [String]) -> DictationEditLearning.Candidate? {"),
      "the tested candidate rule sees the evidence")

@@ -56,7 +56,7 @@ pin(len(logs) == 1 and "model.rawValue" in logs[0] and "outcome.logName" in logs
 # 3. The record keeps what was heard only when polish applied, and the setting is the dropdown with its honest line.
 pin("if case .applied? = polished?.outcome, let model = polished?.model { lastPolish = (heard, model) } else { lastPolish = nil }" in transcribe,
     "heard only when applied", "what was heard is kept only when polish changed the text")
-pin("heard: lastPolish?.heard, polishModel: lastPolish?.model.rawValue)" in dictation and "lastEngine = nil; lastPolish = nil" in dictation,
+pin("heard: lastPolish?.heard, polishModel: lastPolish?.model.rawValue, polishPrompt: lastPolishPrompt)" in dictation and "lastEngine = nil; lastPolish = nil" in dictation,
     "record", "finish() stores what was heard and the model, then forgets them")
 pin(dictation.count('COSDropdown("AI polish", selection: $store.polishModel,') == 1 and "DictationPolish.settingNote(store.polishModel)" in dictation,
     "setting", "Settings, Dictation: AI polish with its one line")
@@ -68,7 +68,7 @@ pin(dictation.count('record.polishLabel.map { " · " + $0 }') == 1, "history lab
 # 4. The bridge: the helper verb, stdin only, the budget as the process timeout.
 pin(app.count('runHelper(["dictation-polish"], timeout: budget, stdinData: request, answers: true)') == 1, "bridge",
     "Control runs dictation-polish with the budget, and reads its refusals whole (0.5.328)")
-pin('skipped: response.details["polishSkipped"]?.string)' in dictation, "skip reason",
+pin('skipped: response.details["polishSkipped"]?.string,' in dictation, "skip reason",
     "the server's polishSkipped reaches DictationPolish.choose (0.5.328, server 6.79.1)")
 pin(helper.count('case "dictation-polish": try emitDictationPolish()') == 1, "helper verb", "the helper dispatches dictation-polish")
 emit = between(helper, "private func emitDictationPolish() throws {", "private func dictate(")

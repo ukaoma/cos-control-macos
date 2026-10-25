@@ -22,6 +22,10 @@ answer = {'status': 200, 'body': {'text': 'So the quarterly plan is ready, Niala
 # 0.5.329: the prewarm route's own answer (POST start, DELETE discard).
 WARM = '0a1b2c3d-4e5f-6a7b-8c9d-0e1f2a3b4c5d'
 warm_answer = {'status': 200, 'body': {'token': WARM, 'expiresMs': 150000}, 'delay': 0}
+# 0.5.344 (server 6.91.0): the health capabilities, and the learned-style and polish-options routes' own answers.
+health = {'ok': True}
+style_answer = {'status': 200, 'body': None, 'delay': 0}
+options_answer = {'status': 200, 'body': None, 'delay': 0}
 checks = 0
 
 
@@ -30,15 +34,17 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self): self.respond()
     def do_POST(self): self.respond()
     def do_DELETE(self): self.respond()
+    def do_PUT(self): self.respond()
     def respond(self):
         data = self.rfile.read(int(self.headers.get('Content-Length', 0)))
         seen.append((self.command, self.path, self.headers, data))
         if self.path == '/api/health':
             # Healthy, as the live server is: a health probe must be caught by the count below, not by a 401 here.
-            raw = b'{"ok": true}'
+            raw = json.dumps(health).encode()
             self.send_response(200); self.send_header('Content-Length', str(len(raw))); self.end_headers(); self.wfile.write(raw)
             return
-        reply = warm_answer if self.path.startswith('/api/dictation/polish/prewarm') else answer
+        reply = (warm_answer if self.path.startswith('/api/dictation/polish/prewarm') else style_answer if self.path == '/api/dictation/learned-style'
+                 else options_answer if self.path == '/api/dictation/polish/options' else answer)
         if reply['delay']:
             time.sleep(reply['delay'])
         authenticated = self.headers.get('X-COS-Token') == token
@@ -186,6 +192,76 @@ try:
     result, elapsed = prewarm({'model': 'haiku'}, dict(env, COS_CONTROL_TEST_API_PORT=str(closed)))
     check(not result['ok'] and result['details']['reason'] == 'unreachable' and elapsed < 2.5, 'prewarm: no server is unreachable, at once')
 
-    print(f'PASS dictation polish helper: {checks} checks; finalize contract, stdin only, deadline inside the budget, every failure a reason without text, early polish start and discard')
+    # 0.5.344 (server 6.91.0, plan r2 contract): the new finalize fields, each passed on only from its closed set.
+    answer.update(status=200, body={'text': 'So.', 'polished': True, 'polishOutcome': 'guarded', 'guard': 'negation', 'polishRegister': 'literal', 'polishPrompt': 'v4',
+                                    'learnedStyle': True, 'learnedStyleHash': '0a1b2c3d'}, delay=0)
+    result, _ = run({'text': SECRET, 'model': 'haiku'})
+    d = result['details']
+    check(result['ok'] and d.get('polishOutcome') == 'guarded' and d.get('guard') == 'negation' and d.get('polishRegister') == 'literal' and d.get('polishPrompt') == 'v4'
+          and d.get('learnedStyle') is True and d.get('learnedStyleHash') == '0a1b2c3d', 'r2: every new finalize field passes on')
+    for key, odd in [('polishOutcome', 'great'), ('polishOutcome', 1), ('guard', 'tone'), ('guard', ['number']), ('polishRegister', 'chat'), ('polishPrompt', 'v5'), ('polishPrompt', 'V4'),
+                     ('learnedStyle', 1), ('learnedStyle', 'true'), ('learnedStyleHash', 'XYZ12345'), ('learnedStyleHash', '0a1b2c3d9')]:
+        answer.update(body={'text': 'So.', 'polished': True, key: odd})
+        result, _ = run({'text': SECRET, 'model': 'haiku'})
+        check(result['ok'] and key not in result['details'], f'r2: {key}={odd!r} is outside its set and dropped')
+    before = len(seen)
+    result, _ = run({'text': SECRET, 'model': 'haiku', 'polishRegister': 'literal'})
+    check(not result['ok'] and result['details']['reason'] == 'invalid_request' and len(seen) == before, 'r2: the stdin allowlist is unchanged')
+
+    # 0.5.344: dictation-learned-style. get asks /api/health first; an older server is available false, with no route call.
+    def style(request, environment=None):
+        return run(request, environment, verb='dictation-learned-style')
+    def options(request, environment=None):
+        return run(request, environment, verb='dictation-polish-options')
+    RULE = {'id': 'drop-honestly', 'kind': 'drop_phrase', 'register': 'all', 'param': 'honestly', 'count': 2, 'lastSeen': '2026-10-24T22:00:00.000Z'}
+    STYLE = {'enabled': True, 'rules': [RULE], 'text': 'Drop the filler "honestly".', 'hash': '0a1b2c3d', 'updatedAt': '2026-10-24T22:00:00.000Z',
+             'registers': {'iTerm2': 'literal'}, 'kinds': ['drop_phrase', 'contractions'], 'allowlist': ['honestly', 'literally']}
+    health.clear(); health.update(ok=True)
+    before = len(seen)
+    result, _ = style({'operation': 'get'})
+    check(result['ok'] and result['details']['available'] is False and [s[1] for s in seen[before:]] == ['/api/health'],
+          'r2: an older server has no learned style, and its route is never called')
+    health.update(capabilities={'dictationCleanup': {'learnedStyle': {'protocol': 1, 'maxChars': 1500, 'maxRules': 20, 'enabled': False},
+                                                     'polishOptions': {'protocol': 1}}})
+    style_answer.update(status=200, body=STYLE)
+    before = len(seen)
+    result, _ = style({'operation': 'get'})
+    method, path, headers, body = seen[-1]
+    check(result['ok'] and result['details']['rules'] == [RULE] and result['details']['hash'] == '0a1b2c3d' and result['details']['serverEnabled'] is False
+          and result['details']['registers'] == {'iTerm2': 'literal'} and method == 'GET' and path == '/api/dictation/learned-style'
+          and headers.get('X-COS-Token') == token and len(seen) == before + 2, 'r2: get reads the capability, then the route, with the token')
+    result, _ = style({'operation': 'set', 'rules': [RULE], 'baseHash': '0a1b2c3d'})
+    method, path, headers, body = seen[-1]
+    check(result['ok'] and method == 'PUT' and path == '/api/dictation/learned-style' and json.loads(body) == {'rules': [RULE], 'baseHash': '0a1b2c3d'}
+          and headers.get('X-COS-Token') == token, 'r2: set PUTs the rules and baseHash, never text or a hash of its own')
+    style_answer.update(status=409, body={'error': 'base_hash_mismatch'})
+    result, _ = style({'operation': 'set', 'rules': [RULE], 'baseHash': '0a1b2c3d'})
+    check(not result['ok'] and result['details']['reason'] == 'conflict', 'r2: a 409 is a conflict')
+    style_answer.update(status=200, body=dict(STYLE, rules=[]))
+    result, _ = style({'operation': 'clear'})
+    check(result['ok'] and seen[-1][0] == 'DELETE' and seen[-1][1] == '/api/dictation/learned-style', 'r2: clear DELETEs the route')
+    for bad in [{'operation': 'set', 'rules': [dict(RULE, kind='tone')]}, {'operation': 'set', 'rules': [dict(RULE, param=SECRET)]},
+                {'operation': 'set', 'rules': [RULE], 'text': SECRET}, {'operation': 'set', 'rules': [RULE], 'hash': '0a1b2c3d'},
+                {'operation': 'get', 'rules': []}, b'not json']:
+        before = len(seen)
+        result, _ = style(bad)
+        check(not result['ok'] and result['details']['reason'] == 'invalid_request' and len(seen) == before, f'r2: learned-style input refused before the network: {str(bad)[:50]}')
+
+    # 0.5.344: dictation-polish-options (Previous polish): health first on get, default or v3 only.
+    options_answer.update(status=200, body={'promptVersion': 'default'})
+    result, _ = options({'operation': 'get'})
+    check(result['ok'] and result['details']['promptVersion'] == 'default' and seen[-1][1] == '/api/dictation/polish/options', 'r2: options get')
+    options_answer.update(status=200, body={'promptVersion': 'v3'})
+    result, _ = options({'operation': 'set', 'promptVersion': 'v3'})
+    check(result['ok'] and seen[-1][0] == 'PUT' and json.loads(seen[-1][3]) == {'promptVersion': 'v3'}, 'r2: options set PUTs v3')
+    for bad in [{'operation': 'set', 'promptVersion': 'v4'}, {'operation': 'set'}, {'operation': 'delete'}]:
+        before = len(seen)
+        result, _ = options(bad)
+        check(not result['ok'] and result['details']['reason'] == 'invalid_request' and len(seen) == before, f'r2: options input refused: {bad}')
+    health.clear(); health.update(ok=True)
+    result, _ = options({'operation': 'get'})
+    check(result['ok'] and result['details']['available'] is False, 'r2: an older server has no polish options')
+
+    print(f'PASS dictation polish helper: {checks} checks; finalize contract, stdin only, deadline inside the budget, every failure a reason without text, early polish start and discard, the r2 finalize fields, learned style and polish options')
 finally:
     server.shutdown(); shutil.rmtree(root)

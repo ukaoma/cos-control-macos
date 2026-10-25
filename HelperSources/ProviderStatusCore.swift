@@ -716,6 +716,13 @@ enum DictationPolishBridge {
     static let skipReasons: Set<String> = ["daily_cap", "breaker_open", "too_long", "disabled", "failed", "clean", "link_guard"]
     /// 0.5.329 (server 6.79.2): what became of a prewarmed process sent with finalize. Anything else is dropped.
     static let prewarmOutcomes: Set<String> = ["used", "missed", "discarded"]
+    /// 0.5.344 (server 6.91.0, plan r2 contract): the model step, the meaning guard's kind, the register, and the learned
+    /// style's hash, each passed on only as one of these closed sets (or 8 hex characters). Anything else is dropped.
+    static let polishOutcomes: Set<String> = ["polished", "unchanged", "guarded"]
+    static let guardKinds: Set<String> = ["negation", "number", "date", "name", "link", "literal"]
+    static let registers: Set<String> = ["literal", "default"]
+    /// 0.5.344 (contract addition): the prompt the server polished with (v4 for Sonnet, v3 for Haiku and Luna).
+    static let prompts: Set<String> = ["v3", "v4"]
 
     /// The request's deadline: Control's whole wait (DictationPolish.budget: 5 s Haiku, 9 s Sonnet) less half a second
     /// for the helper to start and answer, so a slow model ends as this helper's timeout, not a killed process.
@@ -786,6 +793,13 @@ enum DictationPolishBridge {
                 details["customInstructions"] = true
                 if let hash = body["instructionsHash"] as? String, DictationPolishInstructionsBridge.isHash(hash) { details["instructionsHash"] = hash }
             }
+            // 0.5.344 (server 6.91.0): what the model step did, which guard refused it, the register and the learned style.
+            if let outcome = body["polishOutcome"] as? String, polishOutcomes.contains(outcome) { details["polishOutcome"] = outcome }
+            if let kind = body["guard"] as? String, guardKinds.contains(kind) { details["guard"] = kind }
+            if let register = body["polishRegister"] as? String, registers.contains(register) { details["polishRegister"] = register }
+            if let prompt = body["polishPrompt"] as? String, prompts.contains(prompt) { details["polishPrompt"] = prompt }
+            if let flag = body["learnedStyle"] as? NSNumber, CFGetTypeID(flag) == CFBooleanGetTypeID() { details["learnedStyle"] = flag.boolValue }
+            if let hash = body["learnedStyleHash"] as? String, DictationPolishInstructionsBridge.isHash(hash) { details["learnedStyleHash"] = hash }
             return DictationBridge.Answer(ok: true, message: polished ? "Polished" : "Not polished", details: details)
         case 404: return refused("needs_server_update", "This COS server has no dictation polish. COS pastes what it heard.", status: 404)
         case 413: return refused("too_long", "Too long for AI polish. COS pastes what it heard.", status: 413)
@@ -940,6 +954,199 @@ enum DictationPolishInstructionsBridge {
                                       "rolledBack": (body["rolledBack"] as? NSNumber).map { CFGetTypeID($0) == CFBooleanGetTypeID() && $0.boolValue } ?? false]
         if let block = body["userBlock"] as? String, block.utf16.count <= rulesLimit { details["userBlock"] = block }
         return DictationBridge.Answer(ok: true, message: "Built-in rules", details: details)
+    }
+    private static func refused(_ reason: String, _ message: String, status: Int? = nil) -> DictationBridge.Answer {
+        var details: [String: Any] = ["reason": reason]
+        if let status { details["httpStatus"] = status }
+        return DictationBridge.Answer(ok: false, message: message, details: details)
+    }
+}
+
+/// 0.5.344 (server 6.91.0, plan r2 contract): the learned-style setting, through the helper's `dictation-learned-style`.
+/// stdin is {operation: get | clear}, or {operation: set, rules, enabled?, baseHash?}. A rule is codes only: an id, a
+/// kind, a register, an allowlisted phrase or use/avoid, a count and a time; never dictated text. The server renders the
+/// text and owns the hash and updatedAt. `get` asks /api/health first, so an older server is answered available false
+/// without calling a route it lacks. Control's use of it waits for part 2 (the ledger and Your style).
+enum DictationLearnedStyleBridge {
+    static let route = "/api/dictation/learned-style"
+    static let inputLimit = 16_384
+    static let maximumRules = 20
+    /// The rendered text's cap on the server.
+    static let maximumCharacters = 1_500
+    static let kinds: Set<String> = ["drop_phrase", "contractions"]
+    static let ruleRegisters: Set<String> = ["all"]
+    static let contractionParams: Set<String> = ["use", "avoid"]
+    /// The app-to-register map the server publishes, and the most entries passed on.
+    static let registers: Set<String> = ["literal", "default"]
+    static let maximumListed = 200
+
+    struct Rule: Equatable {
+        let id: String
+        let kind: String
+        let register: String
+        let param: String
+        let count: Int
+        let lastSeen: String
+        var object: [String: Any] { ["id": id, "kind": kind, "register": register, "param": param, "count": count, "lastSeen": lastSeen] }
+    }
+    enum Request: Equatable { case get, clear, set(rules: [Rule], enabled: Bool?, baseHash: String?) }
+    struct Capability: Equatable { let maxChars: Int; let maxRules: Int; let enabled: Bool }
+
+    static func isID(_ value: String) -> Bool { value.range(of: "^[a-z0-9_-]{1,40}$", options: .regularExpression) != nil }
+    /// A phrase as the server's allowlist writes it: lowercase words, apostrophes and hyphens, 40 at most. The server
+    /// checks its own list; this keeps anything else off the wire.
+    static func isPhrase(_ value: String) -> Bool { value.range(of: "^[a-z][a-z' -]{0,39}$", options: .regularExpression) != nil }
+    static func isTime(_ value: String) -> Bool {
+        value.count <= 40 && value.range(of: "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+(Z|[+-][0-9:]+)$", options: .regularExpression) != nil
+    }
+    private static func bool(_ value: Any?) -> Bool? {
+        guard let number = value as? NSNumber, CFGetTypeID(number) == CFBooleanGetTypeID() else { return nil }
+        return number.boolValue
+    }
+    /// One rule, strict: only these keys, every value from its closed set or pattern, or nil.
+    static func rule(_ raw: Any) -> Rule? {
+        guard let object = raw as? [String: Any], Set(object.keys).isSubset(of: ["id", "kind", "register", "param", "count", "lastSeen"]),
+              let id = object["id"] as? String, isID(id), let kind = object["kind"] as? String, kinds.contains(kind),
+              let register = object["register"] as? String, ruleRegisters.contains(register),
+              let param = object["param"] as? String,
+              let count = object["count"] as? NSNumber, CFGetTypeID(count) != CFBooleanGetTypeID(), count.doubleValue == Double(count.intValue),
+              (0...1_000_000).contains(count.intValue),
+              let lastSeen = object["lastSeen"] as? String, isTime(lastSeen) else { return nil }
+        guard kind == "drop_phrase" ? isPhrase(param) : contractionParams.contains(param) else { return nil }
+        return Rule(id: id, kind: kind, register: register, param: param, count: count.intValue, lastSeen: lastSeen)
+    }
+    static func parse(_ data: Data) -> Request? {
+        guard data.count <= inputLimit, let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let operation = object["operation"] as? String else { return nil }
+        switch operation {
+        case "get", "clear":
+            return object.count == 1 ? (operation == "get" ? .get : .clear) : nil
+        case "set":
+            guard Set(object.keys).isSubset(of: ["operation", "rules", "enabled", "baseHash"]), let raw = object["rules"] as? [Any],
+                  raw.count <= maximumRules else { return nil }
+            var rules: [Rule] = []
+            for item in raw {
+                guard let rule = rule(item) else { return nil }
+                rules.append(rule)
+            }
+            guard Set(rules.map(\.id)).count == rules.count else { return nil }
+            var enabled: Bool?
+            if object["enabled"] != nil { guard let flag = bool(object["enabled"]) else { return nil }; enabled = flag }
+            var baseHash: String?
+            if object["baseHash"] != nil {
+                guard let hash = object["baseHash"] as? String, DictationPolishInstructionsBridge.isHash(hash) else { return nil }
+                baseHash = hash
+            }
+            return .set(rules: rules, enabled: enabled, baseHash: baseHash)
+        default:
+            return nil
+        }
+    }
+    /// The PUT body: the rules, and enabled and baseHash when given. Never text, a hash of its own or updatedAt.
+    static func body(rules: [Rule], enabled: Bool?, baseHash: String?) -> String {
+        var object: [String: Any] = ["rules": rules.map(\.object)]
+        if let enabled { object["enabled"] = enabled }
+        if let baseHash { object["baseHash"] = baseHash }
+        let data = (try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])) ?? Data("{}".utf8)
+        return String(decoding: data, as: UTF8.self)
+    }
+    /// What /api/health advertises: protocol 1 under capabilities.dictationCleanup.learnedStyle, with positive caps, and
+    /// whether the server's own switch has it on. nil on an older server (never inferred from a status code).
+    static func advertised(_ health: [String: Any]?) -> Capability? {
+        guard let block = ((health?["capabilities"] as? [String: Any])?["dictationCleanup"] as? [String: Any])?["learnedStyle"] as? [String: Any],
+              let proto = block["protocol"] as? NSNumber, CFGetTypeID(proto) != CFBooleanGetTypeID(), proto.intValue == 1,
+              let chars = block["maxChars"] as? NSNumber, chars.intValue > 0,
+              let rules = block["maxRules"] as? NSNumber, rules.intValue > 0 else { return nil }
+        return Capability(maxChars: chars.intValue, maxRules: rules.intValue, enabled: bool(block["enabled"]) ?? false)
+    }
+    static func unavailable() -> DictationBridge.Answer {
+        DictationBridge.Answer(ok: true, message: "This COS server has no learned style.", details: ["available": false])
+    }
+    /// A get, set or clear answer, every field from its closed set: rules the strict reader keeps, the rendered text
+    /// (at most the cap), the hash, the time, the app-to-register map, the kinds and the allowlist.
+    static func answer(status: Int?, body: [String: Any]?, operation: String) -> DictationBridge.Answer {
+        guard let status else { return refused("unreachable", "The COS server did not answer. Your style is unchanged.") }
+        switch status {
+        case 200:
+            guard let body, let raw = body["rules"] as? [Any], let text = body["text"] as? String, text.utf16.count <= maximumCharacters else {
+                return refused("bad_answer", "The server's answer was not readable.", status: 200)
+            }
+            var details: [String: Any] = ["available": true, "rules": raw.compactMap(rule).prefix(maximumRules).map(\.object), "text": text]
+            if let enabled = bool(body["enabled"]) { details["enabled"] = enabled }
+            if let hash = body["hash"] as? String, DictationPolishInstructionsBridge.isHash(hash) { details["hash"] = hash }
+            if let updated = body["updatedAt"] as? String, isTime(updated) { details["updatedAt"] = updated }
+            if let map = body["registers"] as? [String: Any] {
+                var kept: [String: String] = [:]
+                for (app, value) in map where kept.count < maximumListed {
+                    guard let register = value as? String, registers.contains(register), !app.isEmpty, app.count <= 64,
+                          !app.contains(where: \.isNewline) else { continue }
+                    kept[app] = register
+                }
+                details["registers"] = kept
+            }
+            if let list = body["kinds"] as? [Any] { details["kinds"] = list.compactMap { $0 as? String }.filter(kinds.contains) }
+            if let list = body["allowlist"] as? [Any] { details["allowlist"] = Array(list.compactMap { $0 as? String }.filter(isPhrase).prefix(maximumListed)) }
+            let message = operation == "set" ? "Saved" : operation == "clear" ? "Cleared" : "Learned style"
+            return DictationBridge.Answer(ok: true, message: message, details: details)
+        case 404: return unavailable()
+        case 409: return refused("conflict", "Your style changed on the server since COS last read it. Nothing was saved.", status: 409)
+        case 413: return refused("too_long", "Too many style rules for the server. Nothing was saved.", status: 413)
+        case 400: return refused("invalid", "The server refused these style rules. Nothing was saved.", status: 400)
+        case 401, 403: return refused("unauthorized", "The COS server refused the token. Your style is unchanged.", status: status)
+        default: return refused("http_\(status)", "Your style is unchanged (HTTP \(status)).", status: status)
+        }
+    }
+    private static func refused(_ reason: String, _ message: String, status: Int? = nil) -> DictationBridge.Answer {
+        var details: [String: Any] = ["reason": reason]
+        if let status { details["httpStatus"] = status }
+        return DictationBridge.Answer(ok: false, message: message, details: details)
+    }
+}
+
+/// 0.5.344 (server 6.91.0, plan r2 contract): Previous polish, so going back to the v3 prompt needs no terminal. The
+/// helper's `dictation-polish-options` takes stdin {operation: get} or {operation: set, promptVersion: default | v3}.
+enum DictationPolishOptionsBridge {
+    static let route = "/api/dictation/polish/options"
+    static let inputLimit = 256
+    static let versions: Set<String> = ["default", "v3"]
+    enum Request: Equatable { case get, set(String) }
+    static func parse(_ data: Data) -> Request? {
+        guard data.count <= inputLimit, let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let operation = object["operation"] as? String else { return nil }
+        switch operation {
+        case "get": return object.count == 1 ? .get : nil
+        case "set":
+            guard Set(object.keys) == ["operation", "promptVersion"], let version = object["promptVersion"] as? String, versions.contains(version) else { return nil }
+            return .set(version)
+        default: return nil
+        }
+    }
+    static func body(_ version: String) -> String {
+        let data = (try? JSONSerialization.data(withJSONObject: ["promptVersion": version], options: [.sortedKeys])) ?? Data("{}".utf8)
+        return String(decoding: data, as: UTF8.self)
+    }
+    /// protocol 1 under capabilities.dictationCleanup.polishOptions; false on an older server.
+    static func advertised(_ health: [String: Any]?) -> Bool {
+        guard let block = ((health?["capabilities"] as? [String: Any])?["dictationCleanup"] as? [String: Any])?["polishOptions"] as? [String: Any],
+              let proto = block["protocol"] as? NSNumber, CFGetTypeID(proto) != CFBooleanGetTypeID(), proto.intValue == 1 else { return false }
+        return true
+    }
+    static func unavailable() -> DictationBridge.Answer {
+        DictationBridge.Answer(ok: true, message: "This COS server has no polish options.", details: ["available": false])
+    }
+    static func answer(status: Int?, body: [String: Any]?, operation: String) -> DictationBridge.Answer {
+        guard let status else { return refused("unreachable", "The COS server did not answer. Polish is unchanged.") }
+        switch status {
+        case 200:
+            guard let version = body?["promptVersion"] as? String, versions.contains(version) else {
+                return refused("bad_answer", "The server's answer was not readable.", status: 200)
+            }
+            return DictationBridge.Answer(ok: true, message: operation == "set" ? "Saved" : "Polish options", details: ["available": true, "promptVersion": version])
+        case 404: return unavailable()
+        case 400: return refused("invalid", "The server refused this polish option. Nothing changed.", status: 400)
+        case 401, 403: return refused("unauthorized", "The COS server refused the token. Polish is unchanged.", status: status)
+        default: return refused("http_\(status)", "Polish is unchanged (HTTP \(status)).", status: status)
+        }
     }
     private static func refused(_ reason: String, _ message: String, status: Int? = nil) -> DictationBridge.Answer {
         var details: [String: Any] = ["reason": reason]

@@ -666,6 +666,8 @@ final class COSControlHelper {
         case "dictation-polish": try emitDictationPolish()
         case "dictation-polish-prewarm": try emitDictationPolishPrewarm()
         case "dictation-polish-instructions": try emitDictationPolishInstructions()
+        case "dictation-learned-style": try emitDictationLearnedStyle()
+        case "dictation-polish-options": try emitDictationPolishOptions()
         case "dictation-check": try emitDictationCheck()
         case "dictation-benchmark": try emitDictationBenchmark()
         case "transcription-dictionary": try emitTranscriptionDictionary()
@@ -16122,6 +16124,76 @@ final class COSControlHelper {
         case .set(let text):
             let response = request(route, method: "PUT", token: token, body: DictationPolishInstructionsBridge.body(text), timeout: 10)
             answer = DictationPolishInstructionsBridge.answer(status: response?.status, body: response?.body, operation: "set")
+        }
+        emit(ok: answer.ok, message: answer.message, details: answer.details)
+    }
+
+    /// 0.5.344 (server 6.91.0): the learned style (DictationLearnedStyleBridge), the polish-instructions verb pattern. The
+    /// rules are codes, never dictated text. `get` asks the public health capability first, so an older server is
+    /// answered available false without calling a route it lacks, and says whether the server's own switch has it on.
+    private func emitDictationLearnedStyle() throws {
+        let limit = DictationLearnedStyleBridge.inputLimit
+        var input = Data()
+        while input.count <= limit {
+            let chunk = try FileHandle.standardInput.read(upToCount: min(16_384, limit + 1 - input.count)) ?? Data()
+            if chunk.isEmpty { break }; input.append(chunk)
+        }
+        guard let parsed = DictationLearnedStyleBridge.parse(input) else {
+            emit(ok: false, message: "Learned style takes get, clear, or set with up to 20 rules.", details: ["reason": "invalid_request"]); return
+        }
+        guard let token = try? readToken() else {
+            emit(ok: false, message: "Learned style needs the COS server on this Mac.", details: ["reason": "no_token"]); return
+        }
+        let route = DictationLearnedStyleBridge.route
+        var answer: DictationBridge.Answer
+        switch parsed {
+        case .get:
+            let health = request("/api/health", timeout: 5)
+            guard let health else {
+                answer = DictationLearnedStyleBridge.answer(status: nil, body: nil, operation: "get"); break
+            }
+            guard let capability = DictationLearnedStyleBridge.advertised(health.body) else { answer = DictationLearnedStyleBridge.unavailable(); break }
+            let response = request(route, token: token, timeout: 5)
+            answer = DictationLearnedStyleBridge.answer(status: response?.status, body: response?.body, operation: "get")
+            if answer.ok { answer.details["serverEnabled"] = capability.enabled; answer.details["maxRules"] = capability.maxRules }
+        case .clear:
+            let response = request(route, method: "DELETE", token: token, timeout: 10)
+            answer = DictationLearnedStyleBridge.answer(status: response?.status, body: response?.body, operation: "clear")
+        case .set(let rules, let enabled, let baseHash):
+            let response = request(route, method: "PUT", token: token, body: DictationLearnedStyleBridge.body(rules: rules, enabled: enabled, baseHash: baseHash), timeout: 10)
+            answer = DictationLearnedStyleBridge.answer(status: response?.status, body: response?.body, operation: "set")
+        }
+        emit(ok: answer.ok, message: answer.message, details: answer.details)
+    }
+
+    /// 0.5.344 (server 6.91.0): Previous polish (DictationPolishOptionsBridge), the same pattern: health first on get.
+    private func emitDictationPolishOptions() throws {
+        let limit = DictationPolishOptionsBridge.inputLimit
+        var input = Data()
+        while input.count <= limit {
+            let chunk = try FileHandle.standardInput.read(upToCount: limit + 1 - input.count) ?? Data()
+            if chunk.isEmpty { break }; input.append(chunk)
+        }
+        guard let parsed = DictationPolishOptionsBridge.parse(input) else {
+            emit(ok: false, message: "Polish options take get, or set with default or v3.", details: ["reason": "invalid_request"]); return
+        }
+        guard let token = try? readToken() else {
+            emit(ok: false, message: "Polish options need the COS server on this Mac.", details: ["reason": "no_token"]); return
+        }
+        let route = DictationPolishOptionsBridge.route
+        let answer: DictationBridge.Answer
+        switch parsed {
+        case .get:
+            let health = request("/api/health", timeout: 5)
+            guard let health else {
+                answer = DictationPolishOptionsBridge.answer(status: nil, body: nil, operation: "get"); break
+            }
+            guard DictationPolishOptionsBridge.advertised(health.body) else { answer = DictationPolishOptionsBridge.unavailable(); break }
+            let response = request(route, token: token, timeout: 5)
+            answer = DictationPolishOptionsBridge.answer(status: response?.status, body: response?.body, operation: "get")
+        case .set(let version):
+            let response = request(route, method: "PUT", token: token, body: DictationPolishOptionsBridge.body(version), timeout: 10)
+            answer = DictationPolishOptionsBridge.answer(status: response?.status, body: response?.body, operation: "set")
         }
         emit(ok: answer.ok, message: answer.message, details: answer.details)
     }

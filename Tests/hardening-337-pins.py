@@ -201,11 +201,13 @@ need("delivered.own = target" in dictation and "finish(delivered.context?.text ?
      "[own learn] a dictation into COS's own text view carries its target")
 fin = body(dictation, "    private func finish(_ text: String, outcome: DictationDeliveryOutcome", "\n        if let flash = outcome.flash {")
 need("} else if let own, case .inserted = outcome {" in fin and "editWatcher.startOwn(own, mode: learnMode)" in fin, "[own learn] the watch starts for COS's own fields")
-own_start = body(dictation, "    func startOwn(_ target: DictationOwnTarget,", "\n    struct WatchField: @unchecked Sendable {")
+own_start = body(dictation, "    func startOwn(_ target: DictationOwnTarget,", "\n    final class OwnView: @unchecked Sendable {")
 need("DictationEditLearning.eligibility(mode: mode," in own_start and "run(field, span: target.span, typed: target.text" in own_start
      and "DictationOwnField.read(" in own_start and "DictationOwnField.snapshot(" in own_start, "[own learn] the same rules and the same loop, reading the view itself")
-watcher = body(dictation, "    nonisolated private static func watch(", "\n    static func candidate(_ edit: DictationReplace.Edit")
-need(watcher.count("await field.measure()") == 2 and "await field.text(bounds.location, bounds.length)" in watcher and "await field.focus(canary.rebinds)" in watcher
+# 0.5.344: the loop is in the core (DictationEditWatch.watch). Three measures now: the first read, a fast tick (measure
+# only) and the 500 ms poll; the tracker read's own two are in trackerRead.
+watcher = body(read("Sources/MacDictationCore.swift"), "    static func watch(_ field: Field,", "\n    struct Ending: Sendable {")
+need(watcher.count("await field.measure()") == 3 and "await field.text(bounds.location, bounds.length)" in watcher and "await field.focus(canary.rebinds)" in watcher
      and "DictationEditLearning.stop(elapsed:" in watcher and "AXUIElement" not in watcher, "[own learn] one watch loop for both kinds of field")
 composer = body(chat, "struct WorkChatSendControls: View {", "\n        .confirmationDialog(\"Send plans without review?\"")
 need("ViewThatFits(in: .horizontal) {" in composer and ".frame(minWidth: WorkChatPolicy.plannerPickerMinWidth, maxWidth: 190)" in composer

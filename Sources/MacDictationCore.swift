@@ -96,6 +96,9 @@ struct DictationTiming: Codable, Equatable, Sendable {
     /// of them. Never the words. Absent when polish did not run.
     var polishCustom: Bool? = nil
     var polishInstructionsHash: String? = nil
+    /// 0.5.344 (server 6.91.0): the prompt the server polished with, v3 or v4 (DictationPolish.promptVersion). Absent from
+    /// an older server and when polish did not run.
+    var polishPrompt: String? = nil
     /// typed, copied, no_speech, failed, canceled.
     var outcome: String
     /// 0.5.327 truthful start (DictationStartMarks): the press to the microphone's first buffer, step by step, in ms.
@@ -209,7 +212,9 @@ struct DictationLearnCanary: Codable, Equatable, Sendable {
     /// The first read held the dictation (exactly, or found again).
     var readable: Bool
     var reads: Int
-    /// How the watch ended: cap, reads, focusLeft, cleared, emptied, lost, unreadable, secure, appGone, new.
+    /// How the watch ended: cap, reads, focusLeft, cleared, emptied, lost, unreadable, secure, appGone, cancelled.
+    /// 0.5.344: sentBeforeWatch (the field was already down to its empty newline when the watch began: the message went
+    /// before COS could read it), skipped (a typed dictation that got no watch; see `skip`).
     var stop: String
     var rebinds: Int
     var reanchors: Int
@@ -222,6 +227,58 @@ struct DictationLearnCanary: Codable, Equatable, Sendable {
     var edited: Bool? = nil
     /// Why focus left, when it did: app, none, pid, role, identifier, window, frame, churn.
     var focusWhy: String?
+    // 0.5.344 (QA_edit_learning_followup_2026-10-24 fix #1, plan r2): counts and codes only, never text or key codes, so
+    // "0 edited" becomes a miss rate. Every field below is absent on a line written before 0.5.344; a skipped line has
+    // only `skip`.
+    /// How long the watch ran, in milliseconds.
+    var ms: Int? = nil
+    /// The step that ended it: count, text or anchor (the first read: the count, the window, finding the dictation in
+    /// it), poll (a stop rule at a 500 ms poll), read (a learning read's verdict), cancel.
+    var step: String? = nil
+    /// Polls and ticks that saw a change (count or caret) since the capture tracker last moved, at the end.
+    var unreadChanges: Int? = nil
+    /// 1 when a change was still unread at the end: nothing was kept (W2). 0 otherwise.
+    var partial: Int? = nil
+    /// Milliseconds from the tracker's last move to the end.
+    var lastReadAgeMs: Int? = nil
+    /// 500 ms polls, fast ticks (measure only), and field calls (each an Accessibility read, or a few for focus).
+    var polls: Int? = nil
+    var fastTicks: Int? = nil
+    var axCalls: Int? = nil
+    /// Fast ticking stopped for this watch because a tick took more than 50 ms.
+    var fastBackoff: Bool? = nil
+    /// Tracker reads after a change, and reads at a trigger or an ending.
+    var trackerReads: Int? = nil
+    var finalReads: Int? = nil
+    /// The last final read: held (it placed the dictation), gone (the field was already sent or cleared), inconsistent
+    /// (the count moved during it, or the dictation could not be found: discarded), none (no final read); its trigger
+    /// (key, mouse, focus, cap) and how long it took from the moment the watch heard the trigger.
+    var finalRead: String? = nil
+    var finalReadMs: Int? = nil
+    var finalTrigger: String? = nil
+    /// present: the shortcut monitor runs (a lone-modifier trigger such as Fn is set), so Return and clicks reach the
+    /// watch; absent: they cannot. on: secure input was seen during the watch (nothing was read then).
+    var monitor: String? = nil
+    var secureInput: String? = nil
+    /// A typed dictation that got no watch (`stop` "skipped"): why. secure, terminal, mismatch, superseded, noTarget,
+    /// unconfirmed. Learning off writes no line.
+    var skip: String? = nil
+
+    /// 0.5.344: the start time with milliseconds (the 0.5.338 lines had whole seconds).
+    static func stamp(_ date: Date) -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter.string(from: date)
+    }
+    /// 0.5.344: the line for a typed dictation that got no watch (QA W3: a non-start wrote nothing).
+    static func skipped(_ reason: String, bundle: String, at date: Date) -> DictationLearnCanary {
+        var row = DictationLearnCanary(at: stamp(date), bundle: bundle, eligibility: "skip", readable: false, reads: 0, stop: "skipped",
+                                       rebinds: 0, reanchors: 0, inside: 0, candidates: 0, learned: 0, focusWhy: nil)
+        row.skip = reason
+        return row
+    }
+    /// Learning off is not a skipped watch: the person turned the feature off, so nothing about it is written.
+    static func recordsSkip(_ reason: String) -> Bool { reason != "off" }
 }
 
 /// `learn-canary.jsonl` next to the timing file, bounded the same way (one rotation, private).
@@ -933,15 +990,17 @@ struct DictationRecord: Codable, Equatable, Identifiable, Sendable {
     /// it (haiku or sonnet). Both nil in older records and whenever polish was off, failed or changed nothing.
     let heard: String?
     let polishModel: String?
+    /// 0.5.344 (server 6.91.0): the prompt that polished it, v3 or v4; nil in older records and from an older server.
+    let polishPrompt: String?
     /// 0.5.342 Your edit, confirmed: what the person changed it to in the app, read back when the watch ended
     /// (DictationUserEdit). nil in older records and whenever nothing inside the dictation was edited.
     let edit: DictationUserEdit?
 
     init(id: UUID, text: String, createdAt: Date, delivery: Delivery, engine: String? = nil, fallbackReason: String? = nil,
-         heard: String? = nil, polishModel: String? = nil, edit: DictationUserEdit? = nil) {
+         heard: String? = nil, polishModel: String? = nil, polishPrompt: String? = nil, edit: DictationUserEdit? = nil) {
         self.id = id; self.text = text; self.createdAt = createdAt; self.delivery = delivery
         self.engine = engine; self.fallbackReason = fallbackReason
-        self.heard = heard; self.polishModel = polishModel
+        self.heard = heard; self.polishModel = polishModel; self.polishPrompt = polishPrompt
         self.edit = edit
     }
 
@@ -965,9 +1024,10 @@ struct DictationRecord: Codable, Equatable, Identifiable, Sendable {
         }
     }
     /// "Polished · Haiku" when Claude's polish changed this dictation; nil otherwise (or for a model this build does not know).
+    /// 0.5.344: "Polished · Sonnet · v4" when server 6.91.0 polished it with its v4 prompt; v3 is never labelled.
     var polishLabel: String? {
         guard heard != nil, let name = polishModel.flatMap(DictationPolishModel.init(rawValue:))?.shortName else { return nil }
-        return "Polished · " + name
+        return "Polished · " + name + (polishPrompt == "v4" ? " · v4" : "")
     }
     /// 0.5.342: an edited dictation counts the words that were sent and ends with its edits ("· 1 edit").
     func metaLine(time: String) -> String {
@@ -978,7 +1038,7 @@ struct DictationRecord: Codable, Equatable, Identifiable, Sendable {
     }
 
     // Stored as kind/app/reason. 0.5.309 files carry insertedApp/pasted instead and still load.
-    private enum Keys: String, CodingKey { case id, text, createdAt, kind, app, reason, viaPaste, insertedApp, pasted, engine, fallbackReason, heard, polishModel, edit }
+    private enum Keys: String, CodingKey { case id, text, createdAt, kind, app, reason, viaPaste, insertedApp, pasted, engine, fallbackReason, heard, polishModel, polishPrompt, edit }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: Keys.self)
         id = try c.decode(UUID.self, forKey: .id)
@@ -989,6 +1049,8 @@ struct DictationRecord: Codable, Equatable, Identifiable, Sendable {
         // 0.5.325: absent before AI polish. A value of the wrong type reads as none rather than dropping the file.
         heard = (try? c.decodeIfPresent(String.self, forKey: .heard)) ?? nil
         polishModel = (try? c.decodeIfPresent(String.self, forKey: .polishModel)) ?? nil
+        // 0.5.344: absent before server 6.91.0's prompt versions; only v3 or v4 reads.
+        polishPrompt = DictationPolish.promptVersion((try? c.decodeIfPresent(String.self, forKey: .polishPrompt)) ?? nil)
         // 0.5.342: absent before Your edit, confirmed. An edit that does not read is no edit, never a lost history.
         edit = (try? c.decodeIfPresent(DictationUserEdit.self, forKey: .edit)) ?? nil
         if let kind = try c.decodeIfPresent(String.self, forKey: .kind) {
@@ -1010,6 +1072,7 @@ struct DictationRecord: Codable, Equatable, Identifiable, Sendable {
         try c.encode(id, forKey: .id); try c.encode(text, forKey: .text); try c.encode(createdAt, forKey: .createdAt)
         try c.encodeIfPresent(engine, forKey: .engine); try c.encodeIfPresent(fallbackReason, forKey: .fallbackReason)
         try c.encodeIfPresent(heard, forKey: .heard); try c.encodeIfPresent(polishModel, forKey: .polishModel)
+        try c.encodeIfPresent(polishPrompt, forKey: .polishPrompt)
         try c.encodeIfPresent(edit, forKey: .edit)
         switch delivery {
         case .inserted(let app): try c.encode("inserted", forKey: .kind); try c.encode(app, forKey: .app)
@@ -1093,19 +1156,19 @@ enum DictationHistory {
     /// 0.5.342: the person's edit goes with it. It was a diff against the old text, so it would show changes nobody made.
     static func correcting(_ id: UUID, to text: String, in list: [DictationRecord]) -> [DictationRecord] {
         list.map { $0.id == id ? DictationRecord(id: $0.id, text: text, createdAt: $0.createdAt, delivery: $0.delivery, engine: $0.engine, fallbackReason: $0.fallbackReason,
-                                                 heard: $0.heard, polishModel: $0.polishModel) : $0 }
+                                                 heard: $0.heard, polishModel: $0.polishModel, polishPrompt: $0.polishPrompt) : $0 }
     }
     /// 0.5.342 Your edit, confirmed: the person's edit goes on the dictation. Same id, text, time, place and order.
     static func editing(_ id: UUID, edit: DictationUserEdit, in list: [DictationRecord]) -> [DictationRecord] {
         list.map { one in one.id == id ? DictationRecord(id: one.id, text: one.text, createdAt: one.createdAt, delivery: one.delivery, engine: one.engine,
-                                                         fallbackReason: one.fallbackReason, heard: one.heard, polishModel: one.polishModel, edit: edit) : one }
+                                                         fallbackReason: one.fallbackReason, heard: one.heard, polishModel: one.polishModel, polishPrompt: one.polishPrompt, edit: edit) : one }
     }
     /// 0.5.331 paste first, polish in place: Claude's version replaced the typed text in the field, so the dictation reads
     /// it, and keeps what was heard and the model, as a dictation polished before the paste does. Same id, time and place.
     /// 0.5.342: a person's edit does not survive new text (Apply polished after an edit): its diff would be against words gone.
-    static func polishing(_ id: UUID, to text: String, heard: String, model: String, in list: [DictationRecord]) -> [DictationRecord] {
+    static func polishing(_ id: UUID, to text: String, heard: String, model: String, prompt: String? = nil, in list: [DictationRecord]) -> [DictationRecord] {
         list.map { r in r.id == id ? DictationRecord(id: r.id, text: text, createdAt: r.createdAt, delivery: r.delivery, engine: r.engine, fallbackReason: r.fallbackReason,
-                                                     heard: heard, polishModel: model) : r }
+                                                     heard: heard, polishModel: model, polishPrompt: DictationPolish.promptVersion(prompt)) : r }
     }
     /// A file that exists but does not read is moved aside to `<name>.corrupt-<UTC stamp>` before anything is saved
     /// over it, so a bad build can never silently erase someone's history. `writable` is false when it could not move.
@@ -2191,17 +2254,44 @@ enum DictationPolish {
     /// 0.5.328: `skipped`, the server's polishSkipped, read only when it is one of `skipReasons`. Polished false with one:
     /// skipped:<code>. Polished true with one: only the filler pass changed the text, fillers_only:<code> (pasted, under
     /// the same empty and growth guards). Without one, as before.
-    static func choose(heard: String, ok: Bool, text: String?, polished: Bool?, reason: String?, skipped: String? = nil) -> Outcome {
+    /// 0.5.344 (plan r2): `polishOutcome`, server 6.91.0's optional word for the model step (only `serverOutcomes` are
+    /// read). "unchanged" (the model gave back what it was sent) is `.unchanged` only when the text is what was heard;
+    /// after the server's filler pass changed it, it is `.fillersOnly("unchanged")`: the cleaned text goes out and it is
+    /// never called Claude's polish (as `.unchanged` it would paste the um and uh back). "guarded" with no skip code reads
+    /// as the skip "guarded" (6.91.0 sends polishSkipped "failed" with it, which wins). From a server that sends no
+    /// polishOutcome, polished false with no skip code and the same words back is `.unchanged` too: 0.5.343 logged it as
+    /// failed:not_polished. Any other polished false still is.
+    static func choose(heard: String, ok: Bool, text: String?, polished: Bool?, reason: String?, skipped: String? = nil,
+                       polishOutcome: String? = nil) -> Outcome {
         guard ok else {
             let why = reason.flatMap { $0.range(of: "^[a-z0-9_]{1,40}$", options: .regularExpression) != nil ? $0 : nil } ?? "refused"
             return why == "timeout" ? .timeout : .failed(why)
         }
-        let skip = skipped.flatMap { skipReasons.contains($0) ? $0 : nil }
-        guard polished == true else { return skip.map { .skipped($0) } ?? .failed("not_polished") }
+        let said = polishOutcome.flatMap { serverOutcomes.contains($0) ? $0 : nil }
+        let skip = skipped.flatMap { skipReasons.contains($0) ? $0 : nil } ?? (said == "guarded" ? "guarded" : nil)
+        guard polished == true else {
+            if let skip { return .skipped(skip) }
+            guard skipped == nil, said != "polished", let text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                return .failed("not_polished")
+            }
+            if sameWords(text, heard) { return .unchanged }
+            return said == "unchanged" ? .fillersOnly("unchanged", text: text) : .failed("not_polished")
+        }
         guard let text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return .failed("empty") }
         guard Double(text.count) <= Double(heard.count) * maximumGrowth + Double(growthAllowance) else { return .failed("grew") }
         if let skip { return text == heard ? .skipped(skip) : .fillersOnly(skip, text: text) }
+        if said == "unchanged" { return sameWords(text, heard) ? .unchanged : .fillersOnly("unchanged", text: text) }
         return text == heard ? .unchanged : .applied(text)
+    }
+    /// 0.5.344 (server 6.91.0): the finalize `polishOutcome` words Control reads. Anything else is ignored.
+    static let serverOutcomes: Set<String> = ["polished", "unchanged", "guarded"]
+    /// 0.5.344 (server 6.91.0): the prompt versions finalize names in `polishPrompt` (v4 for Sonnet, v3 for Haiku and
+    /// Luna, the server's choice). Anything else reads as none.
+    static let promptVersions: Set<String> = ["v3", "v4"]
+    static func promptVersion(_ raw: String?) -> String? { raw.flatMap { promptVersions.contains($0) ? $0 : nil } }
+    /// The same text, apart from the space around it (the server trims what it was sent before it compares).
+    static func sameWords(_ text: String, _ heard: String) -> Bool {
+        text.trimmingCharacters(in: .whitespacesAndNewlines) == heard.trimmingCharacters(in: .whitespacesAndNewlines)
     }
     /// Settings' one line under AI polish.
     static func settingNote(_ model: DictationPolishModel) -> String {
@@ -2292,6 +2382,13 @@ struct DictationPolishRun: Equatable, Sendable {
     /// (DictationPolishInstructions.used). Never the words.
     var customInstructions = false
     var instructionsHash: String? = nil
+    /// 0.5.344 (server 6.91.0): the prompt the server polished with, v3 or v4 (DictationPolish.promptVersion).
+    var prompt: String? = nil
+    func with(prompt: String?) -> DictationPolishRun {
+        var run = self
+        run.prompt = DictationPolish.promptVersion(prompt)
+        return run
+    }
 }
 
 // MARK: - Your polish instructions (0.5.335, server 6.85.0)
@@ -2398,6 +2495,7 @@ extension DictationTiming {
         if let ms = run.prewarmMs { prewarmMs = ms }
         polishCustom = run.customInstructions
         polishInstructionsHash = run.customInstructions ? run.instructionsHash : nil
+        polishPrompt = DictationPolish.promptVersion(run.prompt)
     }
     /// 0.5.331: what became of Claude's version, how long the swap took, and its route.
     mutating func settle(_ result: DictationPolishSwap.Result, ms: Int?, route: DictationReplace.Route?, why: DictationPolishSwap.Unmeasurable? = nil) {
@@ -2638,6 +2736,8 @@ struct DictationPendingPolish: Equatable, Sendable {
     let model: DictationPolishModel
     /// 0.5.332: false after a mismatch. The row shows what was heard and Claude's version, with Copy, never Apply.
     var applies = true
+    /// 0.5.344 (server 6.91.0): the prompt that made Claude's version, v3 or v4, for the record when it is applied.
+    var prompt: String? = nil
 }
 
 /// After COS types a dictation, it watches that one field until focus leaves it (three minutes at most) and learns a
@@ -3256,6 +3356,8 @@ struct DictationWatchTail: Sendable {
     var start = 0
     var length = 0
     var candidates: [DictationEditLearning.Candidate] = []
+    /// 0.5.344: reads that saw an edit inside the dictation, by the capture tracker's count.
+    var sawInside = 0
 }
 
 enum DictationEditConfirm {
@@ -3268,9 +3370,12 @@ enum DictationEditConfirm {
     /// The dictation's final words, or nil (store nothing, never guess). Only a learning watch (an app whose reads are
     /// proven), whose first read held the dictation, that saw an edit inside it, that ended in `keepsAfter`, whose last
     /// read still places the dictation inside the window, and whose words differ from what COS typed.
+    /// 0.5.344 (QA W2): and nothing changed after that last read. `unread` is the changes seen and the keys typed since
+    /// it (DictationEditWatch.unread); an earlier read is never saved as what was sent.
     static func captured(typed: String, window: String?, start: Int, length: Int, inside: Int, readable: Bool, learning: Bool,
-                         stop: String) -> String? {
+                         stop: String, unread: Int = 0) -> String? {
         guard learning, readable, inside > 0, keepsAfter.contains(stop), let window else { return nil }
+        guard unread == 0 else { return nil }
         let ns = window as NSString
         guard start >= 0, length > 0, start + length <= ns.length else { return nil }
         let final = ns.substring(with: NSRange(location: start, length: length))
@@ -3408,6 +3513,439 @@ enum DictationEditConfirm {
     }
     static func chipLabel(_ phrase: String) -> String { "Always drop \"\(phrase)\" from my dictation" }
     static let chipAdded = "Added to your polish instructions"
+}
+
+// MARK: - Capture every correction (0.5.344)
+//
+// QA_edit_learning_followup_2026-10-24 (Miles's Mac, 0.5.338 to 0.5.343): 0 of 442 dictations held an edit, and 28 of 34
+// Claude watches never read again after their first read. A read came only after 1.5 s with no change, the stop checks
+// ran before it, and Return cleared the field first. Plan r2 (PLAN_dictation_voice_style_2026-10-24.md, section 1):
+//   - Return or Enter (any modifier) or a click while a watch runs asks it for one read now. It means "read now", never
+//     "sent": only a later cleared or focusLeft ends the watch. The shortcut monitor only observes the event; the read
+//     runs inside the watch's own task (#2).
+//   - While a change is unread the watch ticks every 175 ms, measuring only, and reads about 0.4 s after the change (#3).
+//   - Two states: the learning baseline moves only on the 1.5 s read; the capture tracker moves on every read that
+//     places the dictation. What a watch keeps comes from the tracker.
+//   - A watch that ends with a change unread keeps nothing, never an earlier read (#4, W2: canary partial=1).
+//   - Focus leaving or a cap gets one last read first (#5).
+//   - Every watch, and every typed dictation that got none, writes its counts to the canary (#1, W3).
+// Learning keeps its own 1.5 s rule and its 20-read cap: a fast or final read is never learned from (a half-typed word
+// can pass the sound-alike score). The loop lives here, not in the app, so the checks run it against a fake field and a
+// fake clock (W4).
+
+extension DictationEditLearning {
+    /// What asked the watch for a read now: Return or Enter (`key`), a click (`mouse`).
+    enum Trigger: String, Sendable { case key, mouse }
+    /// Return and the keypad's Enter.
+    static let sendKeyCodes: Set<UInt16> = [36, 76]
+    /// The shortcut monitor's event as the watch hears it, or nil. Only while a watch runs with learning on. Return or
+    /// Enter with any modifier (Shift+Return, ⌘Return, an input method's commit), never its auto-repeat; any click. A
+    /// modifier change is never a trigger.
+    static func trigger(keyDown: Bool, keyCode: UInt16, isRepeat: Bool, pointer: Bool, watching: Bool, learning: Bool) -> Trigger? {
+        guard watching, learning else { return nil }
+        if pointer { return .mouse }
+        guard keyDown, !isRepeat, sendKeyCodes.contains(keyCode) else { return nil }
+        return .key
+    }
+    /// Final reads (at a trigger) come at most once per 300 ms, under a cap of their own, apart from learning's 20.
+    static let finalReadSpacing: TimeInterval = 0.3
+    static let maximumFinalReads = 20
+    static func finalReadAllowed(sinceLast: TimeInterval?, finalReads: Int) -> Bool {
+        guard finalReads < maximumFinalReads else { return false }
+        guard let sinceLast else { return true }
+        return sinceLast >= finalReadSpacing
+    }
+    /// While a change is unread the watch ticks this often (measure only), so its tracker read lands about
+    /// `quietSeconds` after the change. Focus, secure input and the app stay on the 500 ms poll.
+    static let fastTickMilliseconds = 175
+    static let quietSeconds: TimeInterval = 0.4
+    /// A tick slower than this means the app is busy: the watch stops ticking fast for the rest of the watch.
+    static let slowTickSeconds: TimeInterval = 0.05
+    /// At most this much fast ticking in one watch.
+    static let fastModeSeconds: TimeInterval = 10
+    /// The watch ticks fast only while a change is unread and its tracker read has not been tried, under the 10 s cap
+    /// and with no slow tick seen (0.5.337: no faster wakeups while nothing changes).
+    static func fastMode(unread: Int, tried: Bool, fastSeconds: TimeInterval, backedOff: Bool) -> Bool {
+        unread > 0 && !tried && !backedOff && fastSeconds < fastModeSeconds
+    }
+    /// How long the watch waits now: until its next 500 ms poll, or one fast tick if sooner.
+    static func wait(fastMode: Bool, sinceFullPoll: TimeInterval) -> Int {
+        let untilPoll = max(0, Int(((Double(pollMilliseconds) / 1000 - sinceFullPoll) * 1000).rounded()))
+        return fastMode ? min(fastTickMilliseconds, untilPoll) : untilPoll
+    }
+    /// A 500 ms poll is due (5 ms of slack for the timer).
+    static func fullPollDue(sinceFullPoll: TimeInterval) -> Bool { sinceFullPoll >= Double(pollMilliseconds) / 1000 - 0.005 }
+    /// The tracker read after a change: one per change, about 0.4 s after the field went quiet.
+    static func trackerReadDue(unread: Int, tried: Bool, quietFor: TimeInterval) -> Bool { unread > 0 && !tried && quietFor >= quietSeconds }
+    /// A field down to Chromium's empty newline (or empty) under a longer dictation: the message went, or was cleared.
+    static func looksSent(fieldCharacters: Int, dictationLength: Int) -> Bool { fieldCharacters <= 1 && dictationLength > 1 }
+    /// A change seen at the poll that ends the watch is an edit nobody read, except when it ended because the field was
+    /// sent or emptied: that change is the send itself.
+    static func changeCounts(at stop: Stop) -> Bool { stop != .cleared && stop != .emptied }
+    /// The stops that get one last read first: focus left or a cap, with a change unread and text still in the field.
+    /// Never cleared or emptied (the text is gone), secure, unreadable or appGone.
+    static func readsAtStop(_ stop: Stop, unread: Int, fieldCharacters: Int?) -> Bool {
+        guard [Stop.focusLeft, .cap, .reads].contains(stop), unread > 0, let fieldCharacters else { return false }
+        return fieldCharacters > 1
+    }
+    /// The canary's word for the last read's trigger at an ending.
+    static func finalTrigger(at stop: Stop) -> String { stop == .focusLeft ? "focus" : "cap" }
+    /// Why a typed dictation got no watch, for its canary line, or nil: it was watched, nothing was typed (copied), or
+    /// learning is off.
+    static func unwatched(learnOff: Bool, outcome: DictationDeliveryOutcome, hasTarget: Bool, newer: Bool = false,
+                          swapWatches: Bool = true) -> String? {
+        guard !learnOff else { return nil }
+        switch outcome {
+        case .refused: return nil
+        case .unconfirmed: return "unconfirmed"
+        case .inserted:
+            if !hasTarget { return "noTarget" }
+            if newer { return "superseded" }
+            return swapWatches ? nil : "mismatch"
+        }
+    }
+}
+
+/// 0.5.344: the shortcut monitor's triggers for one watch, from the main thread to the watch's own task. A trigger wakes
+/// a waiting pause at once (a continuation raced against the poll's timer); one that lands between pauses is kept for
+/// the next (the newest only). Nobody polls a flag. One lock, held for a few instructions; the caller never waits.
+final class DictationWatchSignal: Sendable {
+    private typealias Waiter = CheckedContinuation<DictationEditLearning.Trigger?, Never>
+    private struct State: Sendable {
+        var pending: DictationEditLearning.Trigger?
+        var waiter: Waiter?
+        var generation = 0
+        var closed = false
+    }
+    private enum Next: Sendable { case now(DictationEditLearning.Trigger?), wait(Int) }
+    private let state = OSAllocatedUnfairLock(initialState: State())
+    func fire(_ trigger: DictationEditLearning.Trigger) {
+        let waiting: Waiter? = state.withLock { s in
+            guard !s.closed else { return nil }
+            guard let waiter = s.waiter else { s.pending = trigger; return nil }
+            s.waiter = nil; s.generation += 1
+            return waiter
+        }
+        waiting?.resume(returning: trigger)
+    }
+    /// The watch ended: a waiting pause returns now, and nothing more is heard.
+    func close() {
+        let waiting: Waiter? = state.withLock { s in
+            s.closed = true
+            let waiter = s.waiter
+            s.waiter = nil; s.generation += 1
+            return waiter
+        }
+        waiting?.resume(returning: nil)
+    }
+    /// Waits up to `ms`, or less when a trigger comes, and returns it. One heard since the last pause returns at once.
+    func pause(_ ms: Int) async -> DictationEditLearning.Trigger? {
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: Waiter) in
+                let next: Next = state.withLock { s in
+                    if let ready = s.pending { s.pending = nil; return .now(ready) }
+                    if s.closed { return .now(nil) }
+                    s.generation += 1; s.waiter = continuation
+                    return .wait(s.generation)
+                }
+                switch next {
+                case .now(let trigger): continuation.resume(returning: trigger)
+                case .wait(let mine):
+                    DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + .milliseconds(max(0, ms))) { self.timedOut(mine) }
+                }
+            }
+        } onCancel: { self.close() }
+    }
+    private func timedOut(_ mine: Int) {
+        let waiting: Waiter? = state.withLock { s in
+            guard s.generation == mine, let waiter = s.waiter else { return nil }
+            s.waiter = nil
+            return waiter
+        }
+        waiting?.resume(returning: nil)
+    }
+}
+
+/// 0.5.344: the watch loop (until 0.5.343 in MacDictation.swift, where no test ran it: QA W4). The app gives it the
+/// field (Accessibility for another app's field, the view itself for COS's own), the clock, the trigger stream, the log
+/// and the learner. It measures the count and caret, never text, and reads the bounded window only after a change (a
+/// tracker read about 0.4 s after it, a learning read 1.5 s after it), at a trigger, and once at the end.
+enum DictationEditWatch {
+    struct Field: Sendable {
+        let measure: @Sendable () async -> DictationFieldSnapshot
+        let text: @Sendable (Int, Int) async -> String?
+        let secure: @Sendable () async -> Bool
+        /// The tested focus rule's verdict (given the rebinds so far), and the focused element's count for the log.
+        let focus: @Sendable (Int) async -> (verdict: DictationEditLearning.Focus, characters: Int?)
+        let running: @Sendable () async -> Bool
+    }
+    struct Clock: Sendable {
+        /// Seconds on a clock that never jumps.
+        let now: @Sendable () -> TimeInterval
+        /// The wall clock, for the canary's `at` only.
+        let wall: @Sendable () -> Date
+        /// The sleep raced against the trigger stream: waits up to the milliseconds given, or less when a trigger comes,
+        /// and returns it.
+        let pause: @Sendable (Int) async -> DictationEditLearning.Trigger?
+    }
+    /// The learner: an edit inside the dictation, the window it was read in, and where the dictation sits there.
+    typealias Consider = @Sendable (DictationReplace.Edit, String, Int, Int) async -> DictationEditLearning.Candidate?
+
+    /// The capture tracker: where the last read that placed the dictation put it, the field's count then, and how many
+    /// reads saw an edit inside it. Moved by fast, final and learning reads; never by anything else.
+    struct Tracker: Equatable, Sendable {
+        var window: String
+        var start: Int
+        var length: Int
+        var characters: Int
+        var sawInside: Int
+    }
+    /// What a tracker read found: held (it placed the dictation), gone (the field was sent or cleared), inconsistent
+    /// (the count moved during the read, the read failed, or the dictation could not be found in it: discarded).
+    enum Read: String, Sendable { case held, gone, inconsistent }
+
+    /// One tracker read: measure (or the tick's own measure), read the bounded window, measure again. Accepted only when
+    /// both counts agree and the window still places the dictation (follow); otherwise nothing moves. Never learned from.
+    static func trackerRead(_ field: Field, from tracker: Tracker, windowStart: Int, measured: DictationFieldSnapshot?, calls: inout Int) async
+        -> (tracker: Tracker?, read: Read, seen: DictationFieldSnapshot?) {
+        let before: DictationFieldSnapshot
+        if let measured { before = measured } else { calls += 1; before = await field.measure() }
+        guard let n = before.characters else { return (nil, .inconsistent, nil) }
+        if DictationEditLearning.looksSent(fieldCharacters: n, dictationLength: tracker.length) { return (nil, .gone, before) }
+        let count = DictationEditLearning.readLength(baselineLength: tracker.window.utf16.count, baselineCharacters: tracker.characters,
+                                                     currentCharacters: n, start: windowStart)
+        calls += 1
+        guard let current = await field.text(windowStart, count) else { return (nil, .inconsistent, before) }
+        calls += 1
+        let after = await field.measure()
+        guard after.characters == n else { return (nil, .inconsistent, after) }
+        var next = tracker
+        next.window = current; next.characters = n
+        switch DictationEditLearning.follow(baseline: tracker.window, current: current, start: tracker.start, length: tracker.length) {
+        case .unchanged: break
+        case .moved(let s, let l): next.start = s; next.length = l
+        case .inside(_, let l): next.length = l; next.sawInside += 1
+        case .reanchored(let s, let l, let edit): next.start = s; next.length = l; if edit != nil { next.sawInside += 1 }
+        case .cleared: return (nil, .gone, after)
+        case .lost: return (nil, .inconsistent, after)
+        }
+        return (next, .held, after)
+    }
+
+    /// The watch itself. Returns its counts-only canary line; `tail` is the capture tracker at the end.
+    static func watch(_ field: Field, span: DictationInsertedSpan, typed: String, facts: String, bundle: String, learning: Bool, monitor: Bool,
+                      clock: Clock, tail: inout DictationWatchTail, log: @Sendable (String) -> Void, consider: Consider,
+                      found: @escaping @MainActor @Sendable (DictationEditLearning.Candidate) -> Void) async -> DictationLearnCanary {
+        let started = clock.now()
+        var canary = DictationLearnCanary(at: DictationLearnCanary.stamp(clock.wall()), bundle: bundle, eligibility: learning ? "learn" : "probe",
+                                          readable: false, reads: 1, stop: "cancelled", rebinds: 0, reanchors: 0, inside: 0, candidates: 0,
+                                          learned: 0, focusWhy: nil)
+        canary.monitor = monitor ? "present" : "absent"
+        var calls = 0, polls = 0, fastTicks = 0, trackerReads = 0, finalReads = 0, unread = 0
+        var fastSeconds: TimeInterval = 0, backedOff = false, tried = false
+        var lastChange = started, lastPlaced = started, lastFull = started
+        var lastFinal: TimeInterval?
+        func ms(_ seconds: TimeInterval) -> Int { max(0, Int((seconds * 1000).rounded())) }
+        func ended(_ stop: String, _ step: String) -> DictationLearnCanary {
+            let now = clock.now()
+            var out = canary
+            out.stop = stop; out.step = step; out.ms = ms(now - started); out.polls = polls; out.axCalls = calls; out.fastTicks = fastTicks
+            out.unreadChanges = unread
+            if out.readable {
+                out.partial = unread > 0 ? 1 : 0
+                out.lastReadAgeMs = ms(now - lastPlaced)
+                out.trackerReads = trackerReads; out.finalReads = finalReads
+                if out.finalRead == nil { out.finalRead = "none" }
+            }
+            return out
+        }
+        calls += 1
+        let first = await field.measure()
+        guard let n0 = first.characters else {
+            log("learn start readable=false \(facts) step=count"); return ended("unreadable", "count")
+        }
+        // 0.5.344: the swap waited and the message went first. Nothing to read, and no read is spent finding that out.
+        if DictationEditLearning.looksSent(fieldCharacters: n0, dictationLength: span.length) {
+            log("learn start readable=false \(facts) learning=\(learning) sent=before"); return ended("sentBeforeWatch", "count")
+        }
+        let bounds = DictationReplace.window(span: span, currentLength: typed.utf16.count, fieldCharacters: n0)
+        calls += 1
+        guard var baseline = await field.text(bounds.location, bounds.length) else {
+            log("learn start readable=false \(facts) learning=\(learning) step=text"); return ended("unreadable", "text")
+        }
+        var start = span.location - bounds.location, length = span.length
+        var learnedHere = 0
+        // The window must hold what COS typed where it typed it. 0.5.338: an edit made while AI polish ran moved it,
+        // so the dictation is found again by its words, and the edit found that way counts like any other.
+        var pending: DictationReplace.Edit?
+        if !DictationReplace.holds(baseline, at: span.location - bounds.location, typed) {
+            guard let anchored = DictationEditLearning.reanchor(typed, in: baseline) else {
+                log("learn start readable=false \(facts) learning=\(learning) anchor=none"); return ended("unreadable", "anchor")
+            }
+            start = anchored.start; length = anchored.length; canary.reanchors += 1
+            pending = DictationReplace.wordEdit(from: typed, to: (baseline as NSString).substring(with: NSRange(location: anchored.start, length: anchored.length)))
+        }
+        canary.readable = true
+        log("learn start readable=true \(facts) learning=\(learning) window=\(bounds.length) anchored=\(canary.reanchors > 0) monitor=\(monitor)")
+        var baseCount = n0
+        var reads = 1, last = first
+        var learnSince: TimeInterval?
+        // The capture tracker starts where the first read placed the dictation (an edit found by re-anchoring counts).
+        var tracker = Tracker(window: baseline, start: start, length: length, characters: n0, sawInside: pending == nil ? 0 : 1)
+        func keep(_ next: Tracker, seen: DictationFieldSnapshot?) {
+            tracker = next
+            tail.window = next.window; tail.start = next.start; tail.length = next.length; tail.sawInside = next.sawInside
+            lastPlaced = clock.now(); unread = 0
+            if let seen { last = seen }
+        }
+        keep(tracker, seen: nil)
+        /// A read for the tracker at a trigger or an ending. Never a secure field.
+        func finalRead(_ why: String) async {
+            let heard = clock.now()
+            calls += 1
+            guard !(await field.secure()) else { canary.secureInput = "on"; return }
+            finalReads += 1; lastFinal = heard
+            let read = await trackerRead(field, from: tracker, windowStart: bounds.location, measured: nil, calls: &calls)
+            canary.finalTrigger = why; canary.finalRead = read.read.rawValue; canary.finalReadMs = ms(clock.now() - heard)
+            if let next = read.tracker { keep(next, seen: read.seen) }
+            log("learn final=\(why) read=\(read.read.rawValue) ms=\(canary.finalReadMs ?? -1)")
+        }
+        while !Task.isCancelled {
+            if let edit = pending {
+                pending = nil
+                canary.inside += 1
+                let candidate = learning && DictationEditLearning.allowsAnother(learned: learnedHere)
+                    ? await consider(edit, baseline, start, length) : nil
+                if candidate != nil { canary.candidates += 1 }
+                log("learn read=\(reads) track=edit words=\(edit.original.split(whereSeparator: \.isWhitespace).count)>\(edit.replacement.split(whereSeparator: \.isWhitespace).count) learning=\(learning) candidate=\(candidate != nil) evidence=\(candidate?.evidence != nil) learned=\(learnedHere)")
+                if let candidate { tail.candidates.append(candidate) }
+                if let candidate { learnedHere += 1; canary.learned += 1; await found(candidate) }
+            }
+            let fast = DictationEditLearning.fastMode(unread: unread, tried: tried, fastSeconds: fastSeconds, backedOff: backedOff)
+            let wait = DictationEditLearning.wait(fastMode: fast, sinceFullPoll: clock.now() - lastFull)
+            let trigger = await clock.pause(wait)
+            guard !Task.isCancelled else { return ended("cancelled", "cancel") }
+            if fast { fastSeconds += Double(wait) / 1000 }
+            // 0.5.344 (#2): Return, Enter or a click means read now, never sent. Spaced 300 ms, under its own cap.
+            if let trigger, DictationEditLearning.finalReadAllowed(sinceLast: lastFinal.map { clock.now() - $0 }, finalReads: finalReads) {
+                await finalRead(trigger.rawValue)
+            }
+            guard DictationEditLearning.fullPollDue(sinceFullPoll: clock.now() - lastFull) else {
+                // 0.5.344 (#3): a fast tick measures only. Focus, secure input and the app wait for the 500 ms poll.
+                guard fast else { continue }
+                let tickStart = clock.now()
+                calls += 1; fastTicks += 1
+                let seen = await field.measure()
+                if clock.now() - tickStart > DictationEditLearning.slowTickSeconds { backedOff = true; canary.fastBackoff = true }
+                if seen != last {
+                    last = seen; learnSince = clock.now(); lastChange = clock.now(); unread += 1; tried = false
+                } else if DictationEditLearning.trackerReadDue(unread: unread, tried: tried, quietFor: clock.now() - lastChange) {
+                    tried = true; trackerReads += 1
+                    let read = await trackerRead(field, from: tracker, windowStart: bounds.location, measured: seen, calls: &calls)
+                    if let next = read.tracker { keep(next, seen: read.seen) }
+                    log("learn fast read=\(read.read.rawValue)")
+                }
+                continue
+            }
+            lastFull = clock.now(); polls += 1
+            calls += 4
+            let running = await field.running()
+            let seen = await field.focus(canary.rebinds)
+            var focused = true, rebound = false
+            switch seen.verdict {
+            case .same: break
+            case .rebound:
+                canary.rebinds += 1; rebound = true
+                log("learn focus=rebound rebinds=\(canary.rebinds) n=\(seen.characters.map(String.init) ?? "?")")
+            case .left(let why):
+                focused = false; canary.focusWhy = why
+                log("learn focus=left why=\(why) n=\(seen.characters.map(String.init) ?? "?")")
+            }
+            let now = await field.measure()
+            let secure = await field.secure()
+            if secure { canary.secureInput = "on" }
+            let changed = now != last || rebound
+            if let why = DictationEditLearning.stop(elapsed: clock.now() - started, reads: reads, appRunning: running, secure: secure,
+                                                    focused: focused, fieldCharacters: now.characters, dictationLength: length) {
+                if changed, DictationEditLearning.changeCounts(at: why) { unread += 1 }
+                // 0.5.344 (#5): focus left or a cap with a change unread: one last read, so the tracker holds the field's last words.
+                if DictationEditLearning.readsAtStop(why, unread: unread, fieldCharacters: now.characters) {
+                    await finalRead(DictationEditLearning.finalTrigger(at: why))
+                }
+                log("learn stop=\(why.rawValue) reads=\(reads) unread=\(unread)"); return ended(why.rawValue, "poll")
+            }
+            if changed {
+                last = now; learnSince = clock.now(); lastChange = clock.now(); unread += 1; tried = false
+                continue
+            }
+            // The tracker read is owed even when fast ticking backed off or ran out: it waits for a quiet poll instead.
+            if DictationEditLearning.trackerReadDue(unread: unread, tried: tried, quietFor: clock.now() - lastChange) {
+                tried = true; trackerReads += 1
+                let read = await trackerRead(field, from: tracker, windowStart: bounds.location, measured: now, calls: &calls)
+                if let next = read.tracker { keep(next, seen: read.seen) }
+                log("learn fast read=\(read.read.rawValue)")
+            }
+            guard let since = learnSince, clock.now() - since >= DictationEditLearning.debounceSeconds, let n = now.characters else { continue }
+            learnSince = nil
+            reads += 1; canary.reads = reads
+            let count = DictationEditLearning.readLength(baselineLength: baseline.utf16.count, baselineCharacters: baseCount, currentCharacters: n, start: bounds.location)
+            calls += 1
+            guard let current = await field.text(bounds.location, count) else {
+                log("learn stop=unreadable reads=\(reads) \(facts)"); return ended("unreadable", "read")
+            }
+            var sawEdit = false
+            switch DictationEditLearning.follow(baseline: baseline, current: current, start: start, length: length) {
+            case .unchanged:
+                log("learn read=\(reads) track=unchanged")
+            case .moved(let s, let l):
+                start = s; length = l
+                log("learn read=\(reads) track=moved")
+            case .inside(let edit, let l):
+                length = l; pending = edit; sawEdit = true
+                log("learn read=\(reads) track=inside")
+            case .reanchored(let s, let l, let edit):
+                start = s; length = l; pending = edit; canary.reanchors += 1; sawEdit = edit != nil
+                log("learn read=\(reads) track=reanchored edit=\(edit != nil)")
+            case .cleared:
+                log("learn stop=cleared reads=\(reads)"); return ended("cleared", "read")
+            case .lost:
+                log("learn stop=lost reads=\(reads)"); return ended("lost", "read")
+            }
+            // The learning baseline moves here, and only here.
+            baseline = current; baseCount = n
+            // The tracker takes the learning read too, unless a tracker read already read these same words.
+            if tracker.window != current {
+                keep(Tracker(window: current, start: start, length: length, characters: n, sawInside: tracker.sawInside + (sawEdit ? 1 : 0)), seen: nil)
+            } else {
+                keep(tracker, seen: nil)
+            }
+        }
+        return ended("cancelled", "cancel")
+    }
+
+    /// What one watch ended with: its canary line (already handed to the sink) and the dictation's final words, if kept.
+    struct Ending: Sendable {
+        let canary: DictationLearnCanary
+        let final: String?
+        let tail: DictationWatchTail
+    }
+    /// The watch, then the tested capture rule on the tracker, then the canary line to `sink`. The app records the line
+    /// and hands the ending to the store.
+    static func run(_ field: Field, span: DictationInsertedSpan, typed: String, facts: String, bundle: String, learning: Bool, monitor: Bool,
+                    clock: Clock, log: @Sendable (String) -> Void, consider: Consider,
+                    found: @escaping @MainActor @Sendable (DictationEditLearning.Candidate) -> Void,
+                    sink: @Sendable (DictationLearnCanary) -> Void) async -> Ending {
+        var tail = DictationWatchTail()
+        var canary = await watch(field, span: span, typed: typed, facts: facts, bundle: bundle, learning: learning, monitor: monitor,
+                                 clock: clock, tail: &tail, log: log, consider: consider, found: found)
+        // 0.5.342/0.5.344: the dictation's final words when the tracker saw the person's own edit inside it, nothing unread.
+        let final = DictationEditConfirm.captured(typed: typed, window: tail.window, start: tail.start, length: tail.length,
+                                                  inside: tail.sawInside, readable: canary.readable, learning: learning, stop: canary.stop,
+                                                  unread: canary.unreadChanges ?? 0)
+        if tail.sawInside > 0 { canary.edited = final != nil }
+        sink(canary)
+        return Ending(canary: canary, final: final, tail: tail)
+    }
 }
 
 // MARK: - The text around a dictation (0.5.323)

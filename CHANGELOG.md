@@ -1,3 +1,71 @@
+## 0.5.344 (build 398), Capture every correction (part 1 of dictation that learns your voice)
+
+On top of 0.5.343 (build 397). Plan: `operations/personal/wk43_2026/PLAN_dictation_voice_style_2026-10-24.md`, revision 2,
+section 1; the QA that found why no edit was ever captured: `QA_edit_learning_followup_2026-10-24.md` (fixes #1 to #5,
+W2 to W4). Plus everything in 0.5.343. Part 2 (the style ledger, the classifier, the pill and Your style) waits for the
+server's canaries.
+
+While Learn from my edits watches a dictation, COS reads the text box again when you press Return or click, and sooner
+after you stop typing. If your last change is sent or cleared before COS can read it, nothing is saved, never an older
+version. The Return and click read needs a single-key dictation shortcut such as Fn.
+
+- **The watch loop moved into the core.** `DictationEditWatch` (MacDictationCore.swift) is the loop that ran untested in
+  MacDictation.swift (W4). The app keeps only the field's Accessibility closures, now `@Sendable`: a probe of the same
+  shape showed the 0.5.338 to 0.5.343 closures, built in a main-actor method, ran on the main thread even from the
+  detached task. Sleep, the clock, the trigger stream and the canary sink are injected, so the checks run the real loop
+  against a fake field and a fake clock.
+- **A read when you act (#2).** Return or Enter (keyCode 36 or 76, any modifier, never its auto-repeat) and any click,
+  heard through the existing listen-only shortcut monitor, only while a watch runs with learning on. It means "read now",
+  never "sent": only a later cleared or focusLeft ends the watch, so Shift+Return and Command-Return work. The main thread
+  only fires a signal (`DictationWatchSignal`, a continuation raced against the poll timer); the read runs inside the
+  watch's own task, measure, text, measure, kept only when both counts agree and the dictation is found in the window
+  (otherwise `finalRead=inconsistent`). At most one per 300 ms, under a cap of 20 of their own. No new monitor: users
+  with a key-combination shortcut get no final read, and the canary says `monitor=absent`.
+- **Fast reads while the field changes (#3).** While a change is unread the watch ticks every 175 ms, measuring only;
+  focus, secure input and the app stay on the 500 ms poll. About 0.4 s after the field goes quiet one tracker read
+  places the dictation. A tick slower than 50 ms ends fast ticking for that watch, and fast ticking is capped at 10 s a
+  watch. Nothing ticks fast while nothing changes, and a tracker read that failed is not retried at speed.
+- **Two states.** The learning baseline moves only on the 1.5 s learning read (its 20-read cap unchanged); the capture
+  tracker (window, start, length, reads that saw an edit inside) moves on every read that places the dictation. What a
+  watch keeps comes from the tracker; a fast or final read never ends the watch and is never learned from.
+- **Staleness guard (#4, W2).** A watch that ends with a change seen and not read saves nothing (canary `partial=1`),
+  never an earlier read as what was sent.
+- **One last read when focus leaves or a cap is hit (#5),** when a change is unread and the field still has text.
+- **The canary (#1, W3).** `learn-canary.jsonl` lines gain, counts and codes only: `ms`, `step` (count, text, anchor,
+  poll, read, cancel), `unreadChanges`, `partial`, `lastReadAgeMs`, `polls`, `fastTicks`, `axCalls`, `fastBackoff`,
+  `trackerReads`, `finalReads`, `finalRead` (held, gone, inconsistent, none), `finalReadMs`, `finalTrigger` (key, mouse,
+  focus, cap), `monitor` (present, absent), `secureInput`. `at` has milliseconds. A field already down to its empty
+  newline when the watch begins ends `sentBeforeWatch` (it was `unreadable`). Every typed dictation that got no watch
+  writes a `skipped` line with its reason (secure, terminal, mismatch, superseded, noTarget, unconfirmed); learning off
+  writes nothing.
+- **Polish "unchanged".** With server 6.91.0's `polishOutcome`, "unchanged" maps to `.unchanged` only when the text is
+  what was heard, else `.fillersOnly("unchanged")` (the filler pass's cleaned text, never called Claude's polish).
+  From an older server, polished false with no skip code and the same words back is `unchanged`, not
+  `failed:not_polished`. "guarded" with no skip code reads as the skip `guarded`.
+- **Helper passthrough (plan r2 contract, server 6.91.0).** Finalize answers pass on `polishOutcome` (polished,
+  unchanged, guarded), `guard` (negation, number, date, name, link, literal), `polishRegister` (literal, default),
+  `polishPrompt` (v3, v4; contract addition: the server picks v4 for Sonnet, v3 for Haiku and Luna),
+  `learnedStyle` (a JSON boolean) and `learnedStyleHash` (8 hex), each from its closed set; the stdin allowlist is
+  unchanged. New verbs `dictation-learned-style` (GET, PUT, DELETE `/api/dictation/learned-style`; strict rules, codes
+  only) and `dictation-polish-options` (GET, PUT `/api/dictation/polish/options`, default or v3), the polish-instructions
+  pattern: get asks `capabilities.dictationCleanup.learnedStyle` / `polishOptions` (protocol 1) on /api/health first.
+  Nothing in Control calls them yet (part 2).
+- **The polish prompt.** `polishPrompt` (v3 or v4) goes on the timing line (`polishPrompt`, and `polish_prompt=` in the
+  log) and on the dictation's record; the card and Activity history say `Polished · Sonnet · v4` only for v4, never v3.
+  An older record or server reads as before.
+- **The dictionary source is unchanged.** Fix a word, edit learning and Add keep `source: "dictation"`: server 6.90.0
+  answers 400 to any other source (plan r2 cut the split).
+- **Desktop safety.** `Tests/desktop-safety-check.py` now also fails when Sources create an event tap, or post a system
+  event anywhere but the reviewed sites (the ⌘V of paste delivery, Cursor's typed search), counted per file.
+
+Tests: `Tests/run-edit-capture.sh` (wired into run.sh): `edit-capture-pins.py` (in-memory mutants, each caught) and
+`EditCaptureChecks.swift` (MacDictationCore.swift alone: the six sequences of plan r2, the cadence and its idle stop,
+the learning baseline, the trigger, the signal, the polish mapping). Mutation: `Tests/mutate-edit-capture.py`. The
+helper's sets: `DictationEveryoneChecks.swift`, `dictation-polish-helper-checks.py`, and `mutate-dictation-everyone.py`
+(one mutant for each set). Updated to follow the loop into the core: edit-confirm-pins.py, dictation-wispr-pins.py,
+hardening-337-pins.py, dictation-smooth-pins.py (Task.detached census 5), dictation-polish-pins.py, and three retargeted
+mutants in mutate-mac-dictation-core.py.
+
 ## 0.5.343 (build 397), Build-up, in place
 
 On top of 0.5.342 (build 396). Mock approved by Miles 2026-10-24

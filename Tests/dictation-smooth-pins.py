@@ -138,10 +138,11 @@ pin("let stall = heartbeat.finish()" in body(store, "    private func fail(") an
 # 7. Census: every new off-main or timer site in MacDictation.swift was reviewed for isolation (0.5.328). A new one
 # changes a count and needs the same review before the count is updated.
 census = {r"DictationAudioQueues\.output\.async(?!After)": 5, r"DictationAudioQueues\.input\.async": 1, r"DictationAudioQueues\.perform\(": 3,
-          r"DictationAudioQueues\.output\.asyncAfter": 1, r"Task\.detached": 4, r"\bTimer\(": 1}
+          r"DictationAudioQueues\.output\.asyncAfter": 1, r"Task\.detached": 5, r"\bTimer\(": 1}
 # Task.detached, reviewed: the edit watch (0.5.328); the early polish start and its discard (0.5.329). Both 0.5.329 closures
 # capture only Sendable values (the @Sendable bridge, the request, the box, the start's task), never self. 0.5.331: the
 # swap's field-quiet watch (DictationFieldQuiet) captures only its lock and the @unchecked Sendable target, never self.
+# 0.5.344: the skipped-watch canary line (DictationEditWatcher.skipped) captures only the Sendable canary row, never self.
 for needle, n in census.items():
     found = len(re.findall(needle, d))
     pin(found == n, "census", f"{needle} appears {found} times, reviewed {n}")

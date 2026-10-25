@@ -59,9 +59,31 @@ def shell_lines(text):
         if not line.lstrip().startswith("#"):
             yield number, line
 
+# 0.5.344 (plan r2, capture every correction): the app itself never taps the event stream (an event tap can hold,
+# swallow or change what the person types), and it posts a system event only at its reviewed sites, counted per file:
+# the ⌘V of paste delivery (MacDictation.swift, a key down and up) and the typed search in Cursor (ControllerModel.swift,
+# a key down and up for each unit, and Escape). Learn from my edits only observes the shortcut monitor's events.
+SOURCE_TAP = r"CGEvent\s*\.\s*tapCreate|CGEventTapCreate|(?<![A-Za-z0-9_])tapCreate\s*\(|CGEventTapEnable"
+SOURCE_POST = r"\.\s*post\s*\(\s*tap\s*:|\.\s*postToPid\s*\(|CGEventPost"
+SOURCE_POSTS = {"Sources/MacDictation.swift": 2, "Sources/ControllerModel.swift": 4}
+
+def check_sources(root):
+    hits = []
+    files = sorted(list((root / "Sources").glob("*.swift")) + list((root / "HelperSources").glob("*.swift")))
+    for path in files:
+        rel = str(path.relative_to(root))
+        posts = 0
+        for number, line in code_lines(path.read_text(encoding="utf-8")):
+            if re.search(SOURCE_TAP, line):
+                hits.append(f"  {rel}:{number}: taps the system event stream (the app only observes events)")
+            posts += len(re.findall(SOURCE_POST, line))
+        if posts != SOURCE_POSTS.get(rel, 0):
+            hits.append(f"  {rel}: posts {posts} system events; the reviewed count is {SOURCE_POSTS.get(rel, 0)}")
+    return hits
+
 def check(root):
     tests = root / "Tests"
-    hits = []
+    hits = check_sources(root)
     for path in sorted(tests.rglob("*.swift")):
         rel = path.relative_to(root)
         canary = any(part in CANARIES for part in rel.parts)
@@ -129,6 +151,9 @@ def selftest(root):
         "an app window": (S, "import SwiftUI\nstruct Z: App { var body: some Scene { WindowGroup { Text(\"x\") } } }\n"),
         "a gate that sets the opt-in": ("Tests/zz-gate.sh", "#!/bin/zsh\nCOS_DESKTOP_CANARY=1 ./x\n"),
         "a gate that runs the canary": ("Tests/zz-gate.sh", "#!/bin/zsh\n\"$ROOT/Tests/fence-canary/run.sh\"\n"),
+        "an event tap in the app (0.5.344)": ("Sources/ZZDesk.swift",
+            "import AppKit\nfunc z() { _ = CGEvent.tapCreate(tap: .cgSessionEventTap, place: .headInsertEventTap, options: .listenOnly, eventsOfInterest: 0, callback: { _, _, e, _ in Unmanaged.passUnretained(e) }, userInfo: nil) }\n"),
+        "a new posted event in the app (0.5.344)": ("Sources/ZZDesk.swift", "import AppKit\nfunc z(e: CGEvent) { e.post(tap: .cghidEventTap) }\n"),
     }
     allowed = {
         "prose about activate and events": (S, "// NSApp.activate(ignoringOtherApps: true) and NSApp.sendEvent(e) took the focus\n/* w.orderFrontRegardless() */\nlet z = 1\n"),
@@ -149,6 +174,7 @@ def selftest(root):
             with tempfile.TemporaryDirectory(prefix="cos-desk-") as scratch:
                 copy = pathlib.Path(scratch)
                 shutil.copytree(root / "Tests", copy / "Tests")
+                (copy / rel).parent.mkdir(parents=True, exist_ok=True)
                 (copy / rel).write_text(body, encoding="utf-8")
                 hits = [h for h in check(copy) if "ZZDesk" in h or "zz-gate" in h]
                 if expect_hits and not hits:
@@ -168,4 +194,4 @@ if __name__ == "__main__":
         hits = check(root)
         if hits:
             sys.exit("a test can touch the desktop of whoever is using the Mac, or drive its UI:\n" + "\n".join(hits))
-        print("COS Control: no test activates an app, puts a window on screen, sends or posts an event, plays a sound, adds a status item, or opens an app, a link or Terminal (0.5.253, onboarding P1)")
+        print("COS Control: no test activates an app, puts a window on screen, sends or posts an event, plays a sound, adds a status item, or opens an app, a link or Terminal (0.5.253, onboarding P1); the app taps no event stream and posts events only at its reviewed sites (0.5.344)")
