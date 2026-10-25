@@ -979,6 +979,8 @@ enum DictationLearnedStyleBridge {
     /// The app-to-register map the server publishes, and the most entries passed on.
     static let registers: Set<String> = ["literal", "default"]
     static let maximumListed = 200
+    /// 0.5.344 part 2: the surfaces the server applies learned style to.
+    static let appliesTo: Set<String> = ["message", "prompt_draft", "meeting"]
 
     struct Rule: Equatable {
         let id: String
@@ -986,10 +988,16 @@ enum DictationLearnedStyleBridge {
         let register: String
         let param: String
         let count: Int
-        let lastSeen: String
-        var object: [String: Any] { ["id": id, "kind": kind, "register": register, "param": param, "count": count, "lastSeen": lastSeen] }
+        /// 0.5.344 part 2: the server answers lastSeen null for a rule never seen, and an absent count as 0.
+        let lastSeen: String?
+        var object: [String: Any] {
+            var out: [String: Any] = ["id": id, "kind": kind, "register": register, "param": param, "count": count]
+            if let lastSeen { out["lastSeen"] = lastSeen }
+            return out
+        }
     }
-    enum Request: Equatable { case get, clear, set(rules: [Rule], enabled: Bool?, baseHash: String?) }
+    /// 0.5.344 part 2: a set may carry only the switch ({enabled}), which keeps the rules; baseHash "" matches an empty store.
+    enum Request: Equatable { case get, clear, set(rules: [Rule]?, enabled: Bool?, baseHash: String?) }
     struct Capability: Equatable { let maxChars: Int; let maxRules: Int; let enabled: Bool }
 
     static func isID(_ value: String) -> Bool { value.range(of: "^[a-z0-9_-]{1,40}$", options: .regularExpression) != nil }
@@ -1008,12 +1016,20 @@ enum DictationLearnedStyleBridge {
         guard let object = raw as? [String: Any], Set(object.keys).isSubset(of: ["id", "kind", "register", "param", "count", "lastSeen"]),
               let id = object["id"] as? String, isID(id), let kind = object["kind"] as? String, kinds.contains(kind),
               let register = object["register"] as? String, ruleRegisters.contains(register),
-              let param = object["param"] as? String,
-              let count = object["count"] as? NSNumber, CFGetTypeID(count) != CFBooleanGetTypeID(), count.doubleValue == Double(count.intValue),
-              (0...1_000_000).contains(count.intValue),
-              let lastSeen = object["lastSeen"] as? String, isTime(lastSeen) else { return nil }
+              let param = object["param"] as? String else { return nil }
+        var count = 0
+        if let raw = object["count"] {
+            guard let number = raw as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(), number.doubleValue == Double(number.intValue),
+                  (0...1_000_000).contains(number.intValue) else { return nil }
+            count = number.intValue
+        }
+        var lastSeen: String?
+        if let raw = object["lastSeen"], !(raw is NSNull) {
+            guard let time = raw as? String, isTime(time) else { return nil }
+            lastSeen = time
+        }
         guard kind == "drop_phrase" ? isPhrase(param) : contractionParams.contains(param) else { return nil }
-        return Rule(id: id, kind: kind, register: register, param: param, count: count.intValue, lastSeen: lastSeen)
+        return Rule(id: id, kind: kind, register: register, param: param, count: count, lastSeen: lastSeen)
     }
     static func parse(_ data: Data) -> Request? {
         guard data.count <= inputLimit, let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
@@ -1022,19 +1038,24 @@ enum DictationLearnedStyleBridge {
         case "get", "clear":
             return object.count == 1 ? (operation == "get" ? .get : .clear) : nil
         case "set":
-            guard Set(object.keys).isSubset(of: ["operation", "rules", "enabled", "baseHash"]), let raw = object["rules"] as? [Any],
-                  raw.count <= maximumRules else { return nil }
-            var rules: [Rule] = []
-            for item in raw {
-                guard let rule = rule(item) else { return nil }
-                rules.append(rule)
+            guard Set(object.keys).isSubset(of: ["operation", "rules", "enabled", "baseHash"]),
+                  object["rules"] != nil || object["enabled"] != nil else { return nil }
+            var rules: [Rule]?
+            if object["rules"] != nil {
+                guard let raw = object["rules"] as? [Any], raw.count <= maximumRules else { return nil }
+                var list: [Rule] = []
+                for item in raw {
+                    guard let rule = rule(item) else { return nil }
+                    list.append(rule)
+                }
+                rules = list
             }
-            guard Set(rules.map(\.id)).count == rules.count else { return nil }
+            guard Set((rules ?? []).map(\.id)).count == (rules ?? []).count else { return nil }
             var enabled: Bool?
             if object["enabled"] != nil { guard let flag = bool(object["enabled"]) else { return nil }; enabled = flag }
             var baseHash: String?
             if object["baseHash"] != nil {
-                guard let hash = object["baseHash"] as? String, DictationPolishInstructionsBridge.isHash(hash) else { return nil }
+                guard let hash = object["baseHash"] as? String, hash.isEmpty || DictationPolishInstructionsBridge.isHash(hash) else { return nil }
                 baseHash = hash
             }
             return .set(rules: rules, enabled: enabled, baseHash: baseHash)
@@ -1043,8 +1064,9 @@ enum DictationLearnedStyleBridge {
         }
     }
     /// The PUT body: the rules, and enabled and baseHash when given. Never text, a hash of its own or updatedAt.
-    static func body(rules: [Rule], enabled: Bool?, baseHash: String?) -> String {
-        var object: [String: Any] = ["rules": rules.map(\.object)]
+    static func body(rules: [Rule]?, enabled: Bool?, baseHash: String?) -> String {
+        var object: [String: Any] = [:]
+        if let rules { object["rules"] = rules.map(\.object) }
         if let enabled { object["enabled"] = enabled }
         if let baseHash { object["baseHash"] = baseHash }
         let data = (try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])) ?? Data("{}".utf8)
@@ -1086,10 +1108,21 @@ enum DictationLearnedStyleBridge {
             }
             if let list = body["kinds"] as? [Any] { details["kinds"] = list.compactMap { $0 as? String }.filter(kinds.contains) }
             if let list = body["allowlist"] as? [Any] { details["allowlist"] = Array(list.compactMap { $0 as? String }.filter(isPhrase).prefix(maximumListed)) }
+            // 0.5.344 part 2 (the server's real GET): its limits, its switch, the register switch, and the closed sets.
+            if let list = body["registerValues"] as? [Any] { details["registerValues"] = list.compactMap { $0 as? String }.filter(ruleRegisters.contains) }
+            if let list = body["contractionParams"] as? [Any] { details["contractionParams"] = list.compactMap { $0 as? String }.filter(contractionParams.contains) }
+            if let list = body["appliesTo"] as? [Any] { details["appliesTo"] = list.compactMap { $0 as? String }.filter(appliesTo.contains) }
+            for key in ["maxChars", "maxRules"] {
+                if let number = body[key] as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(), (1...100_000).contains(number.intValue) { details[key] = number.intValue }
+            }
+            for key in ["serverEnabled", "registersEnabled"] { if let flag = bool(body[key]) { details[key] = flag } }
             let message = operation == "set" ? "Saved" : operation == "clear" ? "Cleared" : "Learned style"
             return DictationBridge.Answer(ok: true, message: message, details: details)
         case 404: return unavailable()
-        case 409: return refused("conflict", "Your style changed on the server since COS last read it. Nothing was saved.", status: 409)
+        case 409:
+            var answer = refused("conflict", "Your style changed on the server since COS last read it. Nothing was saved.", status: 409)
+            if let hash = body?["hash"] as? String, hash.isEmpty || DictationPolishInstructionsBridge.isHash(hash) { answer.details["serverHash"] = hash }
+            return answer
         case 413: return refused("too_long", "Too many style rules for the server. Nothing was saved.", status: 413)
         case 400: return refused("invalid", "The server refused these style rules. Nothing was saved.", status: 400)
         case 401, 403: return refused("unauthorized", "The COS server refused the token. Your style is unchanged.", status: status)

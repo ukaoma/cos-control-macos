@@ -240,6 +240,35 @@ try:
     style_answer.update(status=200, body=dict(STYLE, rules=[]))
     result, _ = style({'operation': 'clear'})
     check(result['ok'] and seen[-1][0] == 'DELETE' and seen[-1][1] == '/api/dictation/learned-style', 'r2: clear DELETEs the route')
+    # 0.5.344 part 2: the server's real contract (6.91.0 at 31c59dd): a null lastSeen, a rule without a count, the new GET
+    # fields, the switch alone, an empty base hash, and the 409's hash passed on for the merge.
+    REAL = dict(STYLE, rules=[dict(RULE, lastSeen=None), {k: v for k, v in RULE.items() if k != 'count'}][:1], hash='', text='',
+                registerValues=['all'], contractionParams=['use', 'avoid'], appliesTo=['message', 'prompt_draft', 'meeting'], maxChars=1500, maxRules=20,
+                serverEnabled=True, registersEnabled=False,
+                allowlist=['honestly', 'literally', 'pretty much', 'i guess', 'to be honest', 'frankly', 'obviously', 'kinda', 'sorta', 'you see',
+                           'at the end of the day', 'if that makes sense'])
+    style_answer.update(status=200, body=REAL)
+    result, _ = style({'operation': 'get'})
+    d = result['details']
+    check(result['ok'] and d['rules'] == [{k: v for k, v in RULE.items() if k != 'lastSeen'}] and d['allowlist'] == REAL['allowlist']
+          and d['registerValues'] == ['all'] and d['contractionParams'] == ['use', 'avoid'] and d['appliesTo'] == ['message', 'prompt_draft', 'meeting']
+          and d['registersEnabled'] is False and d['maxRules'] == 20, 'r2 part 2: the real GET, a null lastSeen, the new fields')
+    style_answer.update(status=200, body=dict(REAL, rules=[{k: v for k, v in RULE.items() if k != 'count'}]))
+    result, _ = style({'operation': 'get'})
+    check(result['ok'] and result['details']['rules'][0]['count'] == 0, 'r2 part 2: a rule without a count reads as 0')
+    result, _ = style({'operation': 'set', 'enabled': False, 'baseHash': ''})
+    check(result['ok'] and seen[-1][0] == 'PUT' and json.loads(seen[-1][3]) == {'enabled': False, 'baseHash': ''},
+          'r2 part 2: Off PUTs the switch alone with an empty base hash, so the rules stay')
+    style_answer.update(status=409, body={'error': 'base_hash_mismatch', 'hash': '12345678'})
+    result, _ = style({'operation': 'set', 'rules': [RULE], 'baseHash': ''})
+    check(not result['ok'] and result['details']['reason'] == 'conflict' and result['details']['serverHash'] == '12345678' and result['details']['httpStatus'] == 409,
+          "r2 part 2: a 409 passes on the server's hash")
+    style_answer.update(status=413, body={'error': 'too_long'})
+    result, _ = style({'operation': 'set', 'rules': [RULE], 'baseHash': '12345678'})
+    check(not result['ok'] and result['details']['reason'] == 'too_long' and result['details']['httpStatus'] == 413, 'r2 part 2: a 413 is too long, with its status')
+    before = len(seen)
+    result, _ = style({'operation': 'set'})
+    check(not result['ok'] and result['details']['reason'] == 'invalid_request' and len(seen) == before, 'r2 part 2: an empty set never reaches the network')
     for bad in [{'operation': 'set', 'rules': [dict(RULE, kind='tone')]}, {'operation': 'set', 'rules': [dict(RULE, param=SECRET)]},
                 {'operation': 'set', 'rules': [RULE], 'text': SECRET}, {'operation': 'set', 'rules': [RULE], 'hash': '0a1b2c3d'},
                 {'operation': 'get', 'rules': []}, b'not json']:

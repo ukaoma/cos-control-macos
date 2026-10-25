@@ -84,6 +84,18 @@ struct COSControlApp: App {
             guard let model else { throw HelperClientError.commandFailed("COS Control is closing.") }
             return try await model.runHelper(["dictation-polish-instructions"], timeout: 20, stdinData: request)
         }
+        // 0.5.344 part 2 (server 6.91.0): Your style, codes only on stdin; and Previous polish. Read at launch, so a server
+        // that holds other rules than this Mac's ledger gets them again.
+        DictationStyleStore.shared.bridge = { [weak model] request in
+            guard let model else { throw HelperClientError.commandFailed("COS Control is closing.") }
+            return try await model.runHelper(["dictation-learned-style"], timeout: 20, stdinData: request, answers: true)
+        }
+        DictationStyleStore.shared.optionsBridge = { [weak model] request in
+            guard let model else { throw HelperClientError.commandFailed("COS Control is closing.") }
+            return try await model.runHelper(["dictation-polish-options"], timeout: 20, stdinData: request, answers: true)
+        }
+        DictationStyleStore.shared.suggestOnly = { [weak model] in model?.dictation.learnMode == .suggest }
+        Task { await DictationStyleStore.shared.load() }
         model.dictation.registerHotKeys()
         // 0.5.313: a meeting app on the microphone for 10 s gets a Record card on the pet. COS never records or stops
         // on its own: Record and Stop and save are the person's clicks.

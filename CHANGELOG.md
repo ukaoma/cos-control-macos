@@ -1,13 +1,18 @@
-## 0.5.344 (build 398), Capture every correction (part 1 of dictation that learns your voice)
+## 0.5.344 (build 398), Capture every correction, and Your style (dictation that learns your voice)
 
 On top of 0.5.343 (build 397). Plan: `operations/personal/wk43_2026/PLAN_dictation_voice_style_2026-10-24.md`, revision 2,
 section 1; the QA that found why no edit was ever captured: `QA_edit_learning_followup_2026-10-24.md` (fixes #1 to #5,
-W2 to W4). Plus everything in 0.5.343. Part 2 (the style ledger, the classifier, the pill and Your style) waits for the
-server's canaries.
+W2 to W4), and section 2 for part 2 (Your style), built on server 6.91.0 (31c59dd) after its canaries: v4 is the
+default prompt for Sonnet, v3 for Haiku and Luna, and the literal register is opt-in (`registersEnabled`, off by default). Plus everything in 0.5.343.
 
 While Learn from my edits watches a dictation, COS reads the text box again when you press Return or click, and sooner
 after you stop typing. If your last change is sent or cleared before COS can read it, nothing is saved, never an older
 version. The Return and click read needs a single-key dictation shortcut such as Fn.
+
+With COS server 6.91.0 and AI polish on Claude Sonnet, COS can also learn a few style habits from the changes you make
+to text it typed: dropping a filler such as "honestly", and using or writing out contractions. A habit becomes a rule
+after the same change in two dictations; Settings, Dictation, Your style lists the rules, with Remove, Add a rule and a
+switch, and the pill says Learned your style with Undo. COS sends the rules, never your text, with each polish.
 
 - **The watch loop moved into the core.** `DictationEditWatch` (MacDictationCore.swift) is the loop that ran untested in
   MacDictation.swift (W4). The app keeps only the field's Accessibility closures, now `@Sendable`: a probe of the same
@@ -49,7 +54,7 @@ version. The Return and click read needs a single-key dictation shortcut such as
   unchanged. New verbs `dictation-learned-style` (GET, PUT, DELETE `/api/dictation/learned-style`; strict rules, codes
   only) and `dictation-polish-options` (GET, PUT `/api/dictation/polish/options`, default or v3), the polish-instructions
   pattern: get asks `capabilities.dictationCleanup.learnedStyle` / `polishOptions` (protocol 1) on /api/health first.
-  Nothing in Control calls them yet (part 2).
+  Part 2 calls them from Your style.
 - **The polish prompt.** `polishPrompt` (v3 or v4) goes on the timing line (`polishPrompt`, and `polish_prompt=` in the
   log) and on the dictation's record; the card and Activity history say `Polished · Sonnet · v4` only for v4, never v3.
   An older record or server reads as before.
@@ -57,6 +62,64 @@ version. The Return and click read needs a single-key dictation shortcut such as
   answers 400 to any other source (plan r2 cut the split).
 - **Desktop safety.** `Tests/desktop-safety-check.py` now also fails when Sources create an event tap, or post a system
   event anywhere but the reviewed sites (the ⌘V of paste delivery, Cursor's typed search), counted per file.
+
+Part 2, Your style (plan r2 section 2, server 6.91.0):
+
+- **The ledger.** `dictation-style.json` beside the dictation history (`~/Library/Application Support/COS Control/`),
+  written 0600 through a temp file and rename(2), default data protection (class C, never complete-unless-open). It
+  holds class codes, the closed param, counts, times, dictation ids, tombstones, the rule ids whose pill showed and the
+  server's hash with the rule ids it rendered: never text. Clear dictation history clears the evidence and the rules
+  learned from it (rules you added stay).
+- **The classifier (deterministic, `DictationStyleClassifier`).** Evidence is a saved, complete edit (never partial)
+  whose baseline was Claude's polish, where the shortcut monitor counted at least one key-down or click in that app,
+  never an edit found by re-anchoring at the start, never a literal-register app (only while the GET's `registersEnabled`
+  is true, off by default in 6.91.0; never inferred from the `registers` map, which is always published), and only a mostly English dictation (nine in ten letters a to z). An edit at the end that adds
+  more words than it removes is writing on, not a correction. Two classes: drop_phrase (a phrase from the server's
+  12-phrase allowlist, removed cleanly, and not already in your polish instructions or the Always drop line) and
+  contractions (use or avoid). One observation per class a dictation; a rule is active after two distinct dictations,
+  and Add a rule activates one at once. A rule retires when contradictions outnumber confirmations, with at least two;
+  a contradiction counts only where the dictation's learnedStyleHash shows the rule was applied. Ranked by net
+  support, then the latest seen; at most 20, one contractions rule. Remove and Undo leave a 30-day tombstone. Nothing is
+  collected while AI polish or Learn from my edits is off, or the Learn my style switch is off; Suggest only proposes
+  rules and never activates them.
+- **The gap (part 1's known one).** A final read that finds the field already sent, after a key other than Return was
+  typed since the last read that placed the dictation, saves nothing (`partial=1`). The monitor counts key-downs and
+  clicks in the watched app only, while a watch runs: counts, never key codes (canary `inputEvents`, `keysAfterRead`).
+- **The push.** Only when /api/health advertises `capabilities.dictationCleanup.learnedStyle.protocol == 1`: PUT with
+  the last hash as `baseHash` (empty for an empty store). A 409 reads the server again, merges its rules (never one you
+  removed) and sends once more; a second 409 is reported, never a loop. A 413 drops the lowest-ranked rule and sends
+  the rest. Launch reads the server and pushes a difference; so does each learned rule. Off sends only
+  `{enabled: false}`, which keeps the rules on the server. An older server keeps the ledger on this Mac and Settings
+  says Needs server 6.91.0.
+- **The pill.** "Learned your style: drop “honestly”" once per rule id, ever (Reset keeps that), after EDIT SAVED and
+  LEARNED and only over a hidden pill, with Undo on the floating pill and the pet.
+- **Settings, Dictation, Your style** (inline under the polish instructions, inside the 390 pt panel): the switch "Learn
+  my style from edits", Turned off on the server, the Sonnet line ("Your style rules apply when AI polish uses
+  Sonnet."), a line when the shortcut is a key combination (the monitor cannot count typing), active rules with their
+  counts and Remove, suggested rules with Add and Dismiss, pending ones ("seen 1 of 2"), Add a rule from closed
+  templates, Reset learned style (the server's DELETE, after a confirm), Previous polish (v3) through
+  `/api/dictation/polish/options` on a server that has it, and two disclosure lines.
+- **The card.** "Polished · Sonnet · v4 · 2 style rules" from the ledger's count for the dictation's hash; an answer the
+  meaning guard refused reads "Kept as heard: polish changed a number" (a date, a name, a link, a no or a not, the
+  words), or just "Kept as heard" without a kind, polish first and paste first. The timing line gains
+  `polish_register=`, `polish_style=` and `polish_guard=`, codes only.
+- **Helper, the real contract.** A rule's `lastSeen` may be null and its `count` absent (read as 0); a set may carry
+  only `enabled`; `baseHash` may be empty; the GET's `registerValues`, `contractionParams`, `appliesTo`, `maxChars`,
+  `maxRules`, `serverEnabled` and `registersEnabled` pass on, each from its closed set; a 409 passes on the server's
+  hash. Control calls both verbs with answers returned (`answers: true`), so 409 and 413 reach the store.
+- **Copy.** The polish instructions placeholder no longer names Slack; the Learn from my edits note no longer says it
+  reads "until you leave the field or send the message", and mentions Your style.
+
+Tests (part 2): `Tests/run-voice-style.sh` (wired into run.sh): `voice-style-pins.py` (in-memory mutants, each caught)
+and `VoiceStyleChecks.swift` (MacDictationCore.swift alone: keys, the classifier and its filters, promotion,
+retirement, tombstones, ranking, the pill once ever, the card's lines, the sync against a fake server, the ledger
+file). Mutation: `Tests/mutate-voice-style.py`. The gap and the counts: EditCaptureChecks.swift and
+mutate-edit-capture.py. The helper's real contract: DictationEveryoneChecks.swift and dictation-polish-helper-checks.py.
+Retargeted mutants that moved with the record's new fields: mutate-mac-dictation-core.py, mutate-edit-confirm.py,
+mutate-dictation-everyone.py, mutate-polish-instructions-helper.py.
+`build-up-pins.py` read 0.5.343 as the current release (Info.plist 0.5.343 (397)), which the 0.5.344 bump broke; it
+now keeps 0.5.343 as history: a build of 397 or later, its What's New section, its notes chained after the newer
+release's, its CHANGELOG entry. Static PNGs of Your style: `Tests/run-voice-style-render.sh` (never a gate).
 
 Tests: `Tests/run-edit-capture.sh` (wired into run.sh): `edit-capture-pins.py` (in-memory mutants, each caught) and
 `EditCaptureChecks.swift` (MacDictationCore.swift alone: the six sequences of plan r2, the cadence and its idle stop,

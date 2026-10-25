@@ -230,8 +230,8 @@ MUTANTS = [
     ("Dismiss and Undo forget the pair", "        for item in state.suggestions + state.learned where item.id == id { next.dismissed[key(item.heard, item.written)] = now }\n", ""),
     ("Undo leaves it learned", "        next.learned.removeAll { $0.id == id }\n", ""),
     ("Undo reverses the wrong entry", "        recent.first { $0.heard == item.heard && $0.written == item.written }?.id", "        recent.first { $0.heard == item.heard }?.id"),
-    ("suggestions world-readable", 'contents: data, attributes: [.posixPermissions: 0o600]) else {\n            throw NSError(domain: "COSDictation", code: 4,',
-     'contents: data, attributes: [.posixPermissions: 0o644]) else {\n            throw NSError(domain: "COSDictation", code: 4,'),
+    ("suggestions world-readable", 'contents: data, attributes: [.posixPermissions: 0o600]) else {\n            throw NSError(domain: "COSDictation", code: 4, userInfo: [NSLocalizedDescriptionKey: "Dictation suggestions',
+     'contents: data, attributes: [.posixPermissions: 0o644]) else {\n            throw NSError(domain: "COSDictation", code: 4, userInfo: [NSLocalizedDescriptionKey: "Dictation suggestions'),
     ("CEF apps taken for browsers", '$0 == "Electron Framework.framework" || $0 == "Chromium Embedded Framework.framework" }', '$0 == "Electron Framework.framework" }'),
     # 0.5.318 spoken lists: prose stays prose.
     ("markers anywhere in a sentence", "            guard atSentenceStart(match.range.location, in: ns, comma: kind != .cardinal) else { return nil }\n", ""),
@@ -404,9 +404,9 @@ MUTANTS = [
     ("polish: what was heard is not saved", "try c.encodeIfPresent(heard, forKey: .heard); ", ""),
     ("polish: a wrong-typed field drops the file", "        heard = (try? c.decodeIfPresent(String.self, forKey: .heard)) ?? nil", "        heard = try c.decodeIfPresent(String.self, forKey: .heard)"),
     # Retargeted 0.5.344: the record carries polishPrompt after polishModel now.
-    ("polish: Fix a word forgets what was heard", "heard: $0.heard, polishModel: $0.polishModel, polishPrompt: $0.polishPrompt) : $0 }",
-     "heard: nil, polishModel: $0.polishModel, polishPrompt: $0.polishPrompt) : $0 }"),
-    ("polish: the meta line drops the label", '+ (polishLabel.map { " · " + $0 } ?? "")', ""),
+    ("polish: Fix a word forgets what was heard", "heard: $0.heard, polishModel: $0.polishModel, polishPrompt: $0.polishPrompt,\n",
+     "heard: nil, polishModel: $0.polishModel, polishPrompt: $0.polishPrompt,\n"),
+    ("polish: the meta line drops the label", '+ (polishLine(styleRules: styleRules).map { " · " + $0 } ?? "")', ""),
     # 0.5.327 truthful start: the device choice, the first-audio stamp, the STARTING pill, the spare, codes and the line.
     ("start: no selection reads the list", "        guard !selectedUID.isEmpty else { return (.systemDefault, false) }",
      "        guard !selectedUID.isEmpty else { _ = enumerate(); return (.systemDefault, false) }"),
@@ -600,7 +600,7 @@ MUTANTS = [
     ("swap: the polish run never reaches the line", "        polishMs = run.ms; polishModel = run.model.rawValue; polishOutcome = run.outcome.logName\n", ""),
     ("swap: the record forgets what was heard", "                                                     heard: heard, polishModel: model, polishPrompt:",
      "                                                     heard: r.heard, polishModel: model, polishPrompt:"),
-    ("swap: the swap rewrites another dictation", "        list.map { r in r.id == id ? DictationRecord(", "        list.map { r in r.id != id ? DictationRecord("),
+    ("swap: the swap rewrites another dictation", "        list.map { r in r.id == id ? DictationRecord(id: r.id, text: text,", "        list.map { r in r.id != id ? DictationRecord(id: r.id, text: text,"),
     # 0.5.334 (server 6.84.0): Learn from my edits keeps a link's lead mark; the correction-only note is shown plain.
     ("0334 written: trimmed at both ends again", "written = writtenSide(edit.replacement)", "written = edit.replacement.trimmingCharacters(in: edge)"),
     ("0334 written: the lead mark is trimmed", "        while let c = s.first, !writtenLeadKeep.contains(c), c.unicodeScalars",

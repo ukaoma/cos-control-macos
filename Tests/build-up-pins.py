@@ -207,18 +207,26 @@ def check(src):
     pin("{ libraryContent }" in c["meetings"] and "private var libraryContent: some View {" in c["meetings"], "today inside",
         "the meetings list's chain is today's, renamed")
 
-    # 8. The version touchpoints the 0.5.342 commit touched, and the What's New copy.
-    pin("<string>0.5.343</string>" in src["plist"] and "<string>397</string>" in src["plist"], "version", "Info.plist 0.5.343 (397)")
+    # 8. The version touchpoints. 0.5.343 shipped as build 397; from 0.5.344 on it is history: a later build, its notes
+    # chained after the newer release's ("Plus everything in 0.5.343: ..."), its section and CHANGELOG entry kept.
+    build = re.search(r"<key>CFBundleVersion</key>\s*<string>(\d+)</string>", src["plist"])
+    short = re.search(r"<key>CFBundleShortVersionString</key>\s*<string>([0-9.]+)</string>", src["plist"])
+    pin(build is not None and int(build.group(1)) >= 397 and short is not None
+        and tuple(map(int, short.group(1).split("."))) >= (0, 5, 343), "version", "Info.plist at 0.5.343 (397) or later")
     notes = json.loads(src["whatsnew"])
-    pin(notes.get("version") == "0.5.343", "version", "WhatsNew.json version")
+    pin(short is not None and notes.get("version") == short.group(1), "version", "WhatsNew.json version matches Info.plist")
     summary = notes["whatsNew"]["summary"]
-    pin(summary.startswith("Views draw the outline of their rows while they load") and "Plus everything in 0.5.342: " in summary, "version",
-        "the summary leads with 0.5.343 and chains 0.5.342")
-    first = notes["whatsNew"]["sections"][0]
-    pin(first["title"] == "0.5.343" and len(first["items"]) >= 3, "version", "a 0.5.343 section first")
-    entry = src["changelog"].split("\n## ", 1)[0]
-    pin(entry.startswith("## 0.5.343 (build 397)"), "version", "CHANGELOG leads with 0.5.343 (build 397)")
-    for text in [summary.split(" Plus everything in 0.5.342: ")[0]] + first["items"] + [entry]:
+    lead = "Views draw the outline of their rows while they load"
+    pin((summary.startswith(lead) if notes.get("version") == "0.5.343" else ("Plus everything in 0.5.343: " + lead) in summary)
+        and "Plus everything in 0.5.342: " in summary, "version", "the summary leads with 0.5.343, or a later release chains it, and chains 0.5.342")
+    mine = [section for section in notes["whatsNew"]["sections"] if section["title"] == "0.5.343"]
+    pin(len(mine) == 1 and len(mine[0]["items"]) >= 3, "version", "a 0.5.343 section")
+    first = mine[0] if mine else {"items": []}
+    entries = src["changelog"].split("\n## ")
+    entry = next(("## " + e if i else e for i, e in enumerate(entries) if ("## " + e if i else e).startswith("## 0.5.343 (build 397)")), "")
+    pin(entry != "", "version", "CHANGELOG keeps 0.5.343 (build 397)")
+    ours = summary.split("Plus everything in 0.5.343: ", 1)[-1].split(" Plus everything in 0.5.342: ")[0]
+    for text in [ours] + first["items"] + [entry]:
         pin("—" not in text and "→" not in text, "copy", f"no em dash or arrow: {text[:80]!r}")
 
     # 9. The lane runs.
@@ -285,15 +293,16 @@ MUTANTS = [
     ("memories lose their geometry", "window", "tune: isThread ? .threads : .memories, ", ""),
     ("an em dash in a label", "window", 'label: "Loading tasks")', 'label: "Loading — tasks")'),
     ("meetings chain moved", "meetings", "{ libraryContent }", "{ EmptyView() }"),
-    ("version not bumped", "plist", "<string>397</string>", "<string>396</string>"),
+    ("version not bumped", "plist", "<key>CFBundleVersion</key>", "<key>CFBundleVersionNumber</key>"),
     ("What's New not chained", "whatsnew", "Plus everything in 0.5.342: ", "Plus 0.5.342: "),
     ("an em dash in What's New", "whatsnew", "Views draw the outline of their rows while they load, then fill in", "Views draw the outline of their rows while they load \\u2014 then fill in"),
     ("CHANGELOG not led", "changelog", "## 0.5.343 (build 397), Build-up, in place", "## 0.5.343, Build-up, in place"),
+    ("0.5.343 not chained by a later release", "whatsnew", "Plus everything in 0.5.343: Views draw", "Plus everything in 0.5.343: Rows draw"),
     ("lane not wired", "run", 'zsh "$ROOT/Tests/run-build-up.sh"', 'true "$ROOT/Tests/run-build-up.sh"'),
 ]
 
 # Each mutant must fail the pin that names what it breaks, not just any pin.
-EXPECTED = {'content removed while building': 'content always live', 'content shown under the wire': 'content always live', 'content not clickable after it lands': 'content always live', 'content read while building': 'content always live', 'the hand-off hides the content': 'never hides data', 'words never show': 'never hides data', 'an inline view reserves height': 'no extra height', 'the wire draws past the view': 'wire hidden', 'wire takes clicks': 'wire hidden', 'wire visible to accessibility': 'wire hidden', 'no loading label': 'loading label', "the stage ignores the view's height": 'fit', 'reduce motion ignored mid-build': 'reduce motion', 'landed never fed': 'machine fed', 'an interruption never fed': 'machine fed', 'an early wake gives up': 'machine fed', 'a seen view builds again': 'memory', 'keyed views kept across launches': 'memory', 'empty views forgotten at quit': 'memory', 'a view taken away is not logged': 'abandoned', 'the clock never pauses': 'no idle cost', 'pulse in an inactive window': 'pulse gated', 'pulse always': 'pulse gated', 'the stage repeats': 'no idle cost', 'the wrapper reads the window': 'no idle cost', 'a refresh rewrites state': 'no idle cost', 'the landing restarts the draw': 'tokens', 'the stage skips the plan': 'tokens', 'an opaque tint': 'curtain light', 'an opaque fill': 'curtain light', 'one wire colour for every surface': 'tokens', 'breadcrumb holds text': 'breadcrumb', 'breadcrumb every change': 'breadcrumb', 'a dead reopen comes back': 'no dead code', 'tasks unwrapped': 'call site', 'tasks spinner gone': 'today inside', 'tasks empty copy gone': 'today inside', 'answer shape wrong': 'call site', 'answer loading not declared': 'call site', 'Today running unwrapped': 'call site', 'a detail wrapper comes back': 'call site', 'speaker review lands on a spinner': 'call site', 'sessions forget the search': 'call site', 'memories lose their geometry': 'call site', 'an em dash in a label': 'call site', 'meetings chain moved': 'call site', 'version not bumped': 'version', "What's New not chained": 'version', "an em dash in What's New": 'copy', 'CHANGELOG not led': 'version', 'lane not wired': 'lane wired', 'a stacked fill': 'curtain light', 'data never clears the empty mark': 'empty cleared', 'errors kept as empty': 'failed', 'a tab switch is a refresh': 'relabel', 'the picker builds': 'call site', 'tasks give up before their helper': 'call site'}
+EXPECTED = {'content removed while building': 'content always live', 'content shown under the wire': 'content always live', 'content not clickable after it lands': 'content always live', 'content read while building': 'content always live', 'the hand-off hides the content': 'never hides data', 'words never show': 'never hides data', 'an inline view reserves height': 'no extra height', 'the wire draws past the view': 'wire hidden', 'wire takes clicks': 'wire hidden', 'wire visible to accessibility': 'wire hidden', 'no loading label': 'loading label', "the stage ignores the view's height": 'fit', 'reduce motion ignored mid-build': 'reduce motion', 'landed never fed': 'machine fed', 'an interruption never fed': 'machine fed', 'an early wake gives up': 'machine fed', 'a seen view builds again': 'memory', 'keyed views kept across launches': 'memory', 'empty views forgotten at quit': 'memory', 'a view taken away is not logged': 'abandoned', 'the clock never pauses': 'no idle cost', 'pulse in an inactive window': 'pulse gated', 'pulse always': 'pulse gated', 'the stage repeats': 'no idle cost', 'the wrapper reads the window': 'no idle cost', 'a refresh rewrites state': 'no idle cost', 'the landing restarts the draw': 'tokens', 'the stage skips the plan': 'tokens', 'an opaque tint': 'curtain light', 'an opaque fill': 'curtain light', 'one wire colour for every surface': 'tokens', 'breadcrumb holds text': 'breadcrumb', 'breadcrumb every change': 'breadcrumb', 'a dead reopen comes back': 'no dead code', 'tasks unwrapped': 'call site', 'tasks spinner gone': 'today inside', 'tasks empty copy gone': 'today inside', 'answer shape wrong': 'call site', 'answer loading not declared': 'call site', 'Today running unwrapped': 'call site', 'a detail wrapper comes back': 'call site', 'speaker review lands on a spinner': 'call site', 'sessions forget the search': 'call site', 'memories lose their geometry': 'call site', 'an em dash in a label': 'call site', 'meetings chain moved': 'call site', 'version not bumped': 'version', "What's New not chained": 'version', "an em dash in What's New": 'copy', 'CHANGELOG not led': 'version', '0.5.343 not chained by a later release': 'version', 'lane not wired': 'lane wired', 'a stacked fill': 'curtain light', 'data never clears the empty mark': 'empty cleared', 'errors kept as empty': 'failed', 'a tab switch is a refresh': 'relabel', 'the picker builds': 'call site', 'tasks give up before their helper': 'call site'}
 
 sources = {k: (root / v).read_text(encoding="utf-8") for k, v in FILES.items()}
 try:

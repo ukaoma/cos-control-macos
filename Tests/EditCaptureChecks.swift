@@ -30,7 +30,9 @@ import Foundation
         await sequenceChecks()
         await cadenceChecks()
         await baselineChecks()
-        print("PASS edit capture: \(ran) checks; the trigger, the rules, the polish mapping, the canary, the signal, the start, the six sequences, the cadence, the learning baseline")
+        countChecks()
+        await gapChecks()
+        print("PASS edit capture: \(ran) checks; the trigger, the rules, the polish mapping, the canary, the signal, the start, the six sequences, the cadence, the learning baseline, the counts, the gap")
     }
 
     // MARK: A fake field and a fake clock
@@ -55,6 +57,10 @@ import Foundation
         var considered = 0
         var logs: [String] = []
         var sunk: [DictationLearnCanary] = []
+        /// 0.5.344 part 2: key-downs other than Return (typedKey) and every key-down or click (input), by time.
+        var keyTimes: [TimeInterval] = []
+        var inputTimes: [TimeInterval] = []
+        func typedKey(_ t: TimeInterval) { keyTimes.append(t); inputTimes.append(t) }
         init(_ text: String) { states = [(0, text, text.utf16.count)] }
         func at(_ t: TimeInterval, _ text: String, caret: Int? = nil) { states.append((t, text, caret ?? text.utf16.count)); states.sort { $0.at < $1.at } }
         func tap(_ t: TimeInterval, _ trigger: L.Trigger = .key) { triggers.append((t, trigger)) }
@@ -87,7 +93,8 @@ import Foundation
                         }
                         time = limit
                         return nil
-                    })
+                    },
+                    inputs: { [self] in inputTimes.filter { $0 <= time }.count }, keys: { [self] in keyTimes.filter { $0 <= time }.count })
         }
         func run(_ typed: String, learning: Bool = true, monitor: Bool = true) async -> W.Ending {
             await W.run(field(), span: DictationInsertedSpan(pid: 1, location: 0, length: typed.utf16.count), typed: typed, facts: "bundle=test",
@@ -472,5 +479,65 @@ import Foundation
         for line in poll.logs + tick.logs {
             check(!line.contains("jordin") && !line.contains("Jordan") && !line.contains("deck"), "privacy", line)
         }
+    }
+
+    // MARK: The counts and the gap (0.5.344 part 2)
+
+    static func countChecks() {
+        check(L.countsAsInput(keyDown: true, pointer: false, watching: true, learning: true, inApp: true)
+              && L.countsAsInput(keyDown: false, pointer: true, watching: true, learning: true, inApp: true), "counts input", "a key-down or a click")
+        check(!L.countsAsInput(keyDown: false, pointer: false, watching: true, learning: true, inApp: true), "counts input", "a modifier change is no input")
+        check(!L.countsAsInput(keyDown: true, pointer: true, watching: true, learning: true, inApp: false), "counts in the app", "another app's keys never count")
+        check(!L.countsAsInput(keyDown: true, pointer: true, watching: false, learning: true, inApp: true)
+              && !L.countsAsInput(keyDown: true, pointer: true, watching: true, learning: false, inApp: true), "counts while watching", "only during a watch, learning on")
+        check(L.countsAsTypedKey(keyDown: true, keyCode: 0, watching: true, learning: true, inApp: true)
+              && L.countsAsTypedKey(keyDown: true, keyCode: 51, watching: true, learning: true, inApp: true), "counts typed keys", "letters and Delete")
+        check(!L.countsAsTypedKey(keyDown: true, keyCode: 36, watching: true, learning: true, inApp: true)
+              && !L.countsAsTypedKey(keyDown: true, keyCode: 76, watching: true, learning: true, inApp: true), "counts typed keys", "Return and Enter are not typing")
+        check(!L.countsAsTypedKey(keyDown: false, keyCode: 0, watching: true, learning: true, inApp: true)
+              && !L.countsAsTypedKey(keyDown: true, keyCode: 0, watching: true, learning: true, inApp: false), "counts typed keys", "key-downs in the app only")
+        check(L.goneAfterTyping(.gone, keysSinceRead: 1) && !L.goneAfterTyping(.gone, keysSinceRead: 0) && !L.goneAfterTyping(.held, keysSinceRead: 3)
+              && !L.goneAfterTyping(.inconsistent, keysSinceRead: 3), "gap rule", "gone, after a key typed since the last read")
+        let signal = DictationWatchSignal()
+        signal.count(input: true, typedKey: true); signal.count(input: true, typedKey: false); signal.count(input: false, typedKey: false)
+        check(signal.inputs == 2 && signal.keys == 1, "signal counts", "inputs \(signal.inputs) keys \(signal.keys)")
+        signal.close(); signal.count(input: true, typedKey: true)
+        check(signal.inputs == 2 && signal.keys == 1, "signal counts", "an ended watch counts nothing")
+    }
+
+    static func gapChecks() async {
+        // Keys typed after the last read that placed the dictation (the tracker read about 0.4 s after the poll saw the
+        // edit, near 1.9 s), then Return finds the message already sent: that typing may hold an edit no read saw, so
+        // nothing is kept (partial).
+        let typedOn = World(typed)
+        typedOn.at(1.05, edited); typedOn.typedKey(2.3); typedOn.typedKey(2.35); typedOn.at(2.6, sent); typedOn.tap(2.6)
+        let gap = await typedOn.run(typed)
+        check(gap.canary.trackerReads == 1 && gap.canary.finalRead == "gone" && gap.final == nil && gap.canary.partial == 1 && gap.canary.keysAfterRead == 2,
+              "gone after typing keeps nothing", "\(String(describing: gap.canary.finalRead)) final \(String(describing: gap.final)) partial \(String(describing: gap.canary.partial)) keys \(String(describing: gap.canary.keysAfterRead))")
+        check(gap.canary.inputEvents == 2, "watch counts inputs", "inputs \(String(describing: gap.canary.inputEvents))")
+        // The same ending with no typing after the read keeps the edit the read saw.
+        let still = World(typed)
+        still.at(1.05, edited); still.at(2.6, sent); still.tap(2.6)
+        let kept = await still.run(typed)
+        check(kept.canary.trackerReads == 1 && kept.canary.finalRead == "gone" && kept.final == edited && kept.canary.partial == 0 && kept.canary.keysAfterRead == 0,
+              "gone with no typing keeps the read edit", "\(String(describing: kept.canary.finalRead)) final \(String(describing: kept.final)) partial \(String(describing: kept.canary.partial)) stop \(kept.canary.stop) tracker \(String(describing: kept.canary.trackerReads)) unread \(String(describing: kept.canary.unreadChanges)) finals \(String(describing: kept.canary.finalReads)) age \(String(describing: kept.canary.lastReadAgeMs))")
+        // Typing before the read that placed the dictation is already in that read.
+        let early = World(typed)
+        early.typedKey(1.0); early.at(1.05, edited); early.at(2.6, sent); early.tap(2.6)
+        let before = await early.run(typed)
+        check(before.final == edited && before.canary.partial == 0 && before.canary.keysAfterRead == 0, "typing before the read counts nothing",
+              "final \(String(describing: before.final)) keys \(String(describing: before.canary.keysAfterRead))")
+        check(before.canary.inputEvents == 1, "watch counts inputs", "inputs \(String(describing: before.canary.inputEvents))")
+        // A read that holds after typing: the read saw it, so nothing is unread.
+        let heldAfter = World(typed)
+        heldAfter.at(1.05, edited); heldAfter.typedKey(2.3); heldAfter.tap(2.35); heldAfter.at(2.5, sent)
+        let held = await heldAfter.run(typed)
+        check(held.canary.finalRead == "held" && held.final == edited && held.canary.partial == 0, "held after typing keeps the edit",
+              "\(String(describing: held.canary.finalRead)) final \(String(describing: held.final))")
+        // An edit found by re-anchoring at the start (made while polish ran) is marked, so it is never style evidence.
+        let polished = World("send the deck over to jordin by friday"); polished.focusLeftAt = 1.0
+        let re = await polished.run(typed)
+        check(re.canary.reanchors == 1 && re.tail.startReanchor, "start reanchor marked", "reanchors \(re.canary.reanchors) mark \(re.tail.startReanchor)")
+        check(!kept.tail.startReanchor, "start reanchor marked", "a dictation found where it was typed is not marked")
     }
 }

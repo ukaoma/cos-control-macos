@@ -28,6 +28,26 @@ CHECKS = "Tests/EditCaptureChecks.swift"
 
 # (name, old, new, the behaviour whose check must fail first)
 MUTANTS = [
+    # 0.5.344 part 2: the counts and the gap.
+    ("gap: gone after typing kept", "            if DictationEditLearning.goneAfterTyping(read.read, keysSinceRead: clock.keys() - keysAtRead) { unread += 1 }\n", "",
+     "gone after typing keeps nothing"),
+    ("gap: keys never reset at a read", "            if let seen { last = seen }\n            keysAtRead = clock.keys()\n", "            if let seen { last = seen }\n",
+     "typing before the read counts nothing"),
+    ("gap rule: a held read counts", "    static func goneAfterTyping(_ read: DictationEditWatch.Read, keysSinceRead: Int) -> Bool { read == .gone && keysSinceRead > 0 }",
+     "    static func goneAfterTyping(_ read: DictationEditWatch.Read, keysSinceRead: Int) -> Bool { keysSinceRead > 0 }", "gap rule"),
+    ("counts: Return is typing", "        watching && learning && inApp && keyDown && !sendKeyCodes.contains(keyCode)", "        watching && learning && inApp && keyDown",
+     "counts typed keys"),
+    ("counts: typed keys in any app", "        watching && learning && inApp && keyDown && !sendKeyCodes.contains(keyCode)",
+     "        watching && learning && keyDown && !sendKeyCodes.contains(keyCode)", "counts typed keys"),
+    ("counts: inputs in any app", "        watching && learning && inApp && (keyDown || pointer)", "        watching && learning && (keyDown || pointer)", "counts in the app"),
+    ("counts: a modifier change is input", "        watching && learning && inApp && (keyDown || pointer)", "        watching && learning && inApp", "counts input"),
+    ("counts: without a watch", "        watching && learning && inApp && (keyDown || pointer)", "        inApp && (keyDown || pointer)", "counts while watching"),
+    ("signal: counts after the watch", "            guard !s.closed else { return }\n            if input { s.inputs += 1 }", "            if input { s.inputs += 1 }",
+     "signal counts"),
+    ("signal: inputs not counted", "            if input { s.inputs += 1 }\n", "", "signal counts"),
+    ("watch: inputs not reported", "            out.inputEvents = clock.inputs()\n", "", "watch counts inputs"),
+    ("watch: keys after the read not reported", "                out.keysAfterRead = max(0, clock.keys() - keysAtRead)\n", "", "gone after typing keeps nothing"),
+    ("watch: start re-anchor unmarked", "        tail.startReanchor = pending != nil\n", "", "start reanchor marked"),
     # The trigger.
     ("trigger: no watch needed", "        guard watching, learning else { return nil }\n        if pointer { return .mouse }",
      "        guard learning else { return nil }\n        if pointer { return .mouse }", "trigger needs a watch"),
@@ -83,7 +103,7 @@ MUTANTS = [
     ("card: v3 labelled", '(polishPrompt == "v4" ? " · v4" : "")', '(polishPrompt.map { " · " + $0 } ?? "")', "card label v3 unlabelled"),
     ("card: v4 unlabelled", '(polishPrompt == "v4" ? " · v4" : "")', '("")', "card label v4"),
     ("record: the prompt not written", "        try c.encodeIfPresent(polishPrompt, forKey: .polishPrompt)\n", "", "record prompt"),
-    ("history: Fix a word drops the prompt", "polishModel: $0.polishModel, polishPrompt: $0.polishPrompt) : $0 }", "polishModel: $0.polishModel) : $0 }",
+    ("history: Fix a word drops the prompt", "polishModel: $0.polishModel, polishPrompt: $0.polishPrompt,\n", "polishModel: $0.polishModel,\n",
      "history keeps the prompt"),
     ("timing: the prompt not recorded", "        polishPrompt = DictationPolish.promptVersion(run.prompt)\n", "", "timing prompt"),
     # The canary.

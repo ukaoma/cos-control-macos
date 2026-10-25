@@ -99,6 +99,11 @@ struct DictationTiming: Codable, Equatable, Sendable {
     /// 0.5.344 (server 6.91.0): the prompt the server polished with, v3 or v4 (DictationPolish.promptVersion). Absent from
     /// an older server and when polish did not run.
     var polishPrompt: String? = nil
+    /// 0.5.344 part 2 (server 6.91.0, plan r2 section 4): the register, whether learned style went with the polish, and
+    /// the guard that kept what was heard (its kind, or "guarded"). Codes only; absent from an older server.
+    var polishRegister: String? = nil
+    var polishLearnedStyle: Bool? = nil
+    var polishGuard: String? = nil
     /// typed, copied, no_speech, failed, canceled.
     var outcome: String
     /// 0.5.327 truthful start (DictationStartMarks): the press to the microphone's first buffer, step by step, in ms.
@@ -260,6 +265,10 @@ struct DictationLearnCanary: Codable, Equatable, Sendable {
     /// watch; absent: they cannot. on: secure input was seen during the watch (nothing was read then).
     var monitor: String? = nil
     var secureInput: String? = nil
+    /// 0.5.344 part 2: key-downs and clicks the monitor counted in the watched app, and typed keys after the last read
+    /// that placed the dictation. Counts only, never key codes.
+    var inputEvents: Int? = nil
+    var keysAfterRead: Int? = nil
     /// A typed dictation that got no watch (`stop` "skipped"): why. secure, terminal, mismatch, superseded, noTarget,
     /// unconfirmed. Learning off writes no line.
     var skip: String? = nil
@@ -992,15 +1001,21 @@ struct DictationRecord: Codable, Equatable, Identifiable, Sendable {
     let polishModel: String?
     /// 0.5.344 (server 6.91.0): the prompt that polished it, v3 or v4; nil in older records and from an older server.
     let polishPrompt: String?
+    /// 0.5.344 part 2 (server 6.91.0): the meaning guard kept what was heard ("guarded", or its kind: number, date, name,
+    /// link, negation, literal), and the learned-style hash its polish carried (8 hex). Codes only; nil otherwise.
+    let polishGuard: String?
+    let polishStyleHash: String?
     /// 0.5.342 Your edit, confirmed: what the person changed it to in the app, read back when the watch ended
     /// (DictationUserEdit). nil in older records and whenever nothing inside the dictation was edited.
     let edit: DictationUserEdit?
 
     init(id: UUID, text: String, createdAt: Date, delivery: Delivery, engine: String? = nil, fallbackReason: String? = nil,
-         heard: String? = nil, polishModel: String? = nil, polishPrompt: String? = nil, edit: DictationUserEdit? = nil) {
+         heard: String? = nil, polishModel: String? = nil, polishPrompt: String? = nil, polishGuard: String? = nil, polishStyleHash: String? = nil,
+         edit: DictationUserEdit? = nil) {
         self.id = id; self.text = text; self.createdAt = createdAt; self.delivery = delivery
         self.engine = engine; self.fallbackReason = fallbackReason
         self.heard = heard; self.polishModel = polishModel; self.polishPrompt = polishPrompt
+        self.polishGuard = DictationStyle.guardCode(polishGuard); self.polishStyleHash = DictationStyle.styleHash(polishStyleHash)
         self.edit = edit
     }
 
@@ -1029,16 +1044,26 @@ struct DictationRecord: Codable, Equatable, Identifiable, Sendable {
         guard heard != nil, let name = polishModel.flatMap(DictationPolishModel.init(rawValue:))?.shortName else { return nil }
         return "Polished · " + name + (polishPrompt == "v4" ? " · v4" : "")
     }
+    /// 0.5.344 part 2: the card's polish line: "Polished · Sonnet · v4 · 2 style rules", or "Kept as heard: polish changed
+    /// a number" when the meaning guard refused Claude's version. `styleRules` comes from the ledger (the hash's rules).
+    func polishLine(styleRules: Int) -> String? {
+        if let label = polishLabel {
+            guard styleRules > 0 else { return label }
+            return label + " · \(styleRules) style rule" + (styleRules == 1 ? "" : "s")
+        }
+        return polishGuard.map { DictationStyle.keptLine(guard: $0 == "guarded" ? nil : $0) }
+    }
     /// 0.5.342: an edited dictation counts the words that were sent and ends with its edits ("· 1 edit").
-    func metaLine(time: String) -> String {
+    /// 0.5.344 part 2: `styleRules`, the rules the dictation was polished with (the ledger's count for its hash).
+    func metaLine(time: String, styleRules: Int = 0) -> String {
         let words = finalWordCount
-        let line = "\(time) · \(words) \(words == 1 ? "word" : "words") · \(outcomeLabel)" + (polishLabel.map { " · " + $0 } ?? "")
+        let line = "\(time) · \(words) \(words == 1 ? "word" : "words") · \(outcomeLabel)" + (polishLine(styleRules: styleRules).map { " · " + $0 } ?? "")
         guard let edit else { return line }
         return line + " · " + DictationEditConfirm.editsLabel(edit.edits)
     }
 
     // Stored as kind/app/reason. 0.5.309 files carry insertedApp/pasted instead and still load.
-    private enum Keys: String, CodingKey { case id, text, createdAt, kind, app, reason, viaPaste, insertedApp, pasted, engine, fallbackReason, heard, polishModel, polishPrompt, edit }
+    private enum Keys: String, CodingKey { case id, text, createdAt, kind, app, reason, viaPaste, insertedApp, pasted, engine, fallbackReason, heard, polishModel, polishPrompt, polishGuard, polishStyleHash, edit }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: Keys.self)
         id = try c.decode(UUID.self, forKey: .id)
@@ -1051,6 +1076,8 @@ struct DictationRecord: Codable, Equatable, Identifiable, Sendable {
         polishModel = (try? c.decodeIfPresent(String.self, forKey: .polishModel)) ?? nil
         // 0.5.344: absent before server 6.91.0's prompt versions; only v3 or v4 reads.
         polishPrompt = DictationPolish.promptVersion((try? c.decodeIfPresent(String.self, forKey: .polishPrompt)) ?? nil)
+        polishGuard = DictationStyle.guardCode((try? c.decodeIfPresent(String.self, forKey: .polishGuard)) ?? nil)
+        polishStyleHash = DictationStyle.styleHash((try? c.decodeIfPresent(String.self, forKey: .polishStyleHash)) ?? nil)
         // 0.5.342: absent before Your edit, confirmed. An edit that does not read is no edit, never a lost history.
         edit = (try? c.decodeIfPresent(DictationUserEdit.self, forKey: .edit)) ?? nil
         if let kind = try c.decodeIfPresent(String.self, forKey: .kind) {
@@ -1073,6 +1100,7 @@ struct DictationRecord: Codable, Equatable, Identifiable, Sendable {
         try c.encodeIfPresent(engine, forKey: .engine); try c.encodeIfPresent(fallbackReason, forKey: .fallbackReason)
         try c.encodeIfPresent(heard, forKey: .heard); try c.encodeIfPresent(polishModel, forKey: .polishModel)
         try c.encodeIfPresent(polishPrompt, forKey: .polishPrompt)
+        try c.encodeIfPresent(polishGuard, forKey: .polishGuard); try c.encodeIfPresent(polishStyleHash, forKey: .polishStyleHash)
         try c.encodeIfPresent(edit, forKey: .edit)
         switch delivery {
         case .inserted(let app): try c.encode("inserted", forKey: .kind); try c.encode(app, forKey: .app)
@@ -1156,19 +1184,29 @@ enum DictationHistory {
     /// 0.5.342: the person's edit goes with it. It was a diff against the old text, so it would show changes nobody made.
     static func correcting(_ id: UUID, to text: String, in list: [DictationRecord]) -> [DictationRecord] {
         list.map { $0.id == id ? DictationRecord(id: $0.id, text: text, createdAt: $0.createdAt, delivery: $0.delivery, engine: $0.engine, fallbackReason: $0.fallbackReason,
-                                                 heard: $0.heard, polishModel: $0.polishModel, polishPrompt: $0.polishPrompt) : $0 }
+                                                 heard: $0.heard, polishModel: $0.polishModel, polishPrompt: $0.polishPrompt,
+                                                 polishGuard: $0.polishGuard, polishStyleHash: $0.polishStyleHash) : $0 }
     }
     /// 0.5.342 Your edit, confirmed: the person's edit goes on the dictation. Same id, text, time, place and order.
     static func editing(_ id: UUID, edit: DictationUserEdit, in list: [DictationRecord]) -> [DictationRecord] {
         list.map { one in one.id == id ? DictationRecord(id: one.id, text: one.text, createdAt: one.createdAt, delivery: one.delivery, engine: one.engine,
-                                                         fallbackReason: one.fallbackReason, heard: one.heard, polishModel: one.polishModel, polishPrompt: one.polishPrompt, edit: edit) : one }
+                                                         fallbackReason: one.fallbackReason, heard: one.heard, polishModel: one.polishModel, polishPrompt: one.polishPrompt,
+                                                         polishGuard: one.polishGuard, polishStyleHash: one.polishStyleHash, edit: edit) : one }
     }
     /// 0.5.331 paste first, polish in place: Claude's version replaced the typed text in the field, so the dictation reads
     /// it, and keeps what was heard and the model, as a dictation polished before the paste does. Same id, time and place.
     /// 0.5.342: a person's edit does not survive new text (Apply polished after an edit): its diff would be against words gone.
-    static func polishing(_ id: UUID, to text: String, heard: String, model: String, prompt: String? = nil, in list: [DictationRecord]) -> [DictationRecord] {
+    static func polishing(_ id: UUID, to text: String, heard: String, model: String, prompt: String? = nil, styleHash: String? = nil,
+                          in list: [DictationRecord]) -> [DictationRecord] {
         list.map { r in r.id == id ? DictationRecord(id: r.id, text: text, createdAt: r.createdAt, delivery: r.delivery, engine: r.engine, fallbackReason: r.fallbackReason,
-                                                     heard: heard, polishModel: model, polishPrompt: DictationPolish.promptVersion(prompt)) : r }
+                                                     heard: heard, polishModel: model, polishPrompt: DictationPolish.promptVersion(prompt),
+                                                     polishStyleHash: styleHash) : r }
+    }
+    /// 0.5.344 part 2 (paste first): the meaning guard kept what was typed, so the record says so. Same id, text and place.
+    static func guarding(_ id: UUID, guard kind: String?, styleHash: String?, in list: [DictationRecord]) -> [DictationRecord] {
+        list.map { r in r.id == id ? DictationRecord(id: r.id, text: r.text, createdAt: r.createdAt, delivery: r.delivery, engine: r.engine,
+                                                     fallbackReason: r.fallbackReason, heard: r.heard, polishModel: r.polishModel, polishPrompt: r.polishPrompt,
+                                                     polishGuard: kind ?? "guarded", polishStyleHash: styleHash ?? r.polishStyleHash, edit: r.edit) : r }
     }
     /// A file that exists but does not read is moved aside to `<name>.corrupt-<UTC stamp>` before anything is saved
     /// over it, so a bad build can never silently erase someone's history. `writable` is false when it could not move.
@@ -2384,6 +2422,28 @@ struct DictationPolishRun: Equatable, Sendable {
     var instructionsHash: String? = nil
     /// 0.5.344 (server 6.91.0): the prompt the server polished with, v3 or v4 (DictationPolish.promptVersion).
     var prompt: String? = nil
+    /// 0.5.344 part 2 (server 6.91.0): the meaning guard refused the answer (`guarded`, with its kind when the server
+    /// named one), the register, and whether learned style went with it (its 8-hex hash). Codes only.
+    var guarded = false
+    var guardKind: String? = nil
+    var register: String? = nil
+    var learnedStyle = false
+    var learnedStyleHash: String? = nil
+    /// 0.5.344 part 2: what finalize said about the model step, read once in polish(). Codes only.
+    struct Server: Equatable, Sendable {
+        var guarded = false
+        var guardKind: String? = nil
+        var register: String? = nil
+        var learnedStyle = false
+        var learnedStyleHash: String? = nil
+    }
+    func with(server: Server) -> DictationPolishRun {
+        var run = self
+        run.guarded = server.guarded; run.guardKind = DictationStyle.guardCode(server.guardKind)
+        run.register = DictationStyle.registerCode(server.register)
+        run.learnedStyle = server.learnedStyle; run.learnedStyleHash = DictationStyle.styleHash(server.learnedStyleHash)
+        return run
+    }
     func with(prompt: String?) -> DictationPolishRun {
         var run = self
         run.prompt = DictationPolish.promptVersion(prompt)
@@ -2407,7 +2467,8 @@ enum DictationPolishInstructions {
     /// for whitespace the server trims (it refuses more than 8,000 raw characters itself).
     static let inputLimit = 40_000
     /// Three short examples, shown in the empty box. Never saved: an empty box is off.
-    static let placeholder = "Use Oxford commas.\nWrite product names as Bottle POS and IT Retail.\nIn Slack, keep it casual and skip the closing period."
+    /// 0.5.344 part 2: no app-specific example (the model is not told which app it writes into).
+    static let placeholder = "Use Oxford commas.\nWrite product names as Bottle POS and IT Retail.\nKeep sentences short."
     static let title = "Your polish instructions"
     /// The line under the box. Plain copy: no em dash, no arrow.
     static let note = "Extra direction for AI polish, used after COS's built-in rules. The built-in rules still win: your instructions never change what you meant, and never change links, paths, numbers or names you said. Used for Mac and glasses dictation, not meeting transcripts."
@@ -2496,6 +2557,9 @@ extension DictationTiming {
         polishCustom = run.customInstructions
         polishInstructionsHash = run.customInstructions ? run.instructionsHash : nil
         polishPrompt = DictationPolish.promptVersion(run.prompt)
+        polishRegister = DictationStyle.registerCode(run.register)
+        polishLearnedStyle = run.learnedStyle
+        polishGuard = run.guarded ? (DictationStyle.guardCode(run.guardKind) ?? "guarded") : nil
     }
     /// 0.5.331: what became of Claude's version, how long the swap took, and its route.
     mutating func settle(_ result: DictationPolishSwap.Result, ms: Int?, route: DictationReplace.Route?, why: DictationPolishSwap.Unmeasurable? = nil) {
@@ -2738,6 +2802,8 @@ struct DictationPendingPolish: Equatable, Sendable {
     var applies = true
     /// 0.5.344 (server 6.91.0): the prompt that made Claude's version, v3 or v4, for the record when it is applied.
     var prompt: String? = nil
+    /// 0.5.344 part 2: its learned-style hash, for the card's rule count.
+    var styleHash: String? = nil
 }
 
 /// After COS types a dictation, it watches that one field until focus leaves it (three minutes at most) and learns a
@@ -2939,8 +3005,9 @@ enum DictationEditLearning {
         return names
     }
     static var settingNote: String {
-        "When you fix a word COS just typed, in that same field, COS learns it: until you leave the field or send the message, three minutes at most. "
-            + "It learns names and terms, never plain English words. Works in native apps, "
+        // 0.5.344 part 2 (QA W1): no promise about when it reads; style habits are named, and Your style is where they show.
+        "When you fix a word COS just typed, in that same field, COS can learn it: it reads that field while you edit, three minutes at most, and keeps nothing it could not read. "
+            + "It learns names and terms, never plain English words, and with AI polish on, a few style habits (Your style). Works in native apps, "
             + provenNames
             + ". Not available yet in " + notYetNames.joined(separator: ", ")
             + ", or text boxes in Chrome and Comet: COS only measures there for now. Suggest only keeps them a week in Activity, Dictation for you to add. Never in terminals or password fields."
@@ -3348,6 +3415,11 @@ struct DictationWatchEnd: Sendable {
     let started: Date
     /// The pairs this watch handed to Learn from my edits.
     let candidates: [DictationEditLearning.Candidate]
+    /// 0.5.344 part 2, for style evidence: something was unread at the end (nothing was kept), the inputs the monitor
+    /// counted in the app, and an edit found by re-anchoring at the start.
+    var partial = false
+    var inputEvents = 0
+    var startReanchor = false
 }
 
 /// Where the watch's last good read placed the dictation, and the pairs it handed on. Written only by the watch loop.
@@ -3358,6 +3430,8 @@ struct DictationWatchTail: Sendable {
     var candidates: [DictationEditLearning.Candidate] = []
     /// 0.5.344: reads that saw an edit inside the dictation, by the capture tracker's count.
     var sawInside = 0
+    /// 0.5.344 part 2: the first read found the dictation again with an edit in it (made while polish ran).
+    var startReanchor = false
 }
 
 enum DictationEditConfirm {
@@ -3547,6 +3621,18 @@ extension DictationEditLearning {
         guard keyDown, !isRepeat, sendKeyCodes.contains(keyCode) else { return nil }
         return .key
     }
+    /// 0.5.344 part 2: counts only, never key codes. An input is any key-down or click while the watched app is in front
+    /// (style learning needs at least one: the person typed the change). A typed key is a key-down other than Return or
+    /// Enter, auto-repeat included (the gap check: something was typed after the last read).
+    static func countsAsInput(keyDown: Bool, pointer: Bool, watching: Bool, learning: Bool, inApp: Bool) -> Bool {
+        watching && learning && inApp && (keyDown || pointer)
+    }
+    static func countsAsTypedKey(keyDown: Bool, keyCode: UInt16, watching: Bool, learning: Bool, inApp: Bool) -> Bool {
+        watching && learning && inApp && keyDown && !sendKeyCodes.contains(keyCode)
+    }
+    /// 0.5.344 part 2 (part 1's known gap): a final read that found the field already sent, with a key typed after the last
+    /// read that placed the dictation, may have missed that key's edit. The watch then keeps nothing (partial).
+    static func goneAfterTyping(_ read: DictationEditWatch.Read, keysSinceRead: Int) -> Bool { read == .gone && keysSinceRead > 0 }
     /// Final reads (at a trigger) come at most once per 300 ms, under a cap of their own, apart from learning's 20.
     static let finalReadSpacing: TimeInterval = 0.3
     static let maximumFinalReads = 20
@@ -3616,9 +3702,22 @@ final class DictationWatchSignal: Sendable {
         var waiter: Waiter?
         var generation = 0
         var closed = false
+        /// 0.5.344 part 2: inputs and typed keys seen while this watch ran, counts only.
+        var inputs = 0
+        var keys = 0
     }
     private enum Next: Sendable { case now(DictationEditLearning.Trigger?), wait(Int) }
     private let state = OSAllocatedUnfairLock(initialState: State())
+    var inputs: Int { state.withLock { $0.inputs } }
+    var keys: Int { state.withLock { $0.keys } }
+    /// One key-down or click in the watched app (DictationEditLearning.countsAsInput), and whether it was a typed key.
+    func count(input: Bool, typedKey: Bool) {
+        state.withLock { s in
+            guard !s.closed else { return }
+            if input { s.inputs += 1 }
+            if typedKey { s.keys += 1 }
+        }
+    }
     func fire(_ trigger: DictationEditLearning.Trigger) {
         let waiting: Waiter? = state.withLock { s in
             guard !s.closed else { return nil }
@@ -3687,6 +3786,9 @@ enum DictationEditWatch {
         /// The sleep raced against the trigger stream: waits up to the milliseconds given, or less when a trigger comes,
         /// and returns it.
         let pause: @Sendable (Int) async -> DictationEditLearning.Trigger?
+        /// 0.5.344 part 2: inputs and typed keys the shortcut monitor counted in the watched app (0 without it).
+        var inputs: @Sendable () -> Int = { 0 }
+        var keys: @Sendable () -> Int = { 0 }
     }
     /// The learner: an edit inside the dictation, the window it was read in, and where the dictation sits there.
     typealias Consider = @Sendable (DictationReplace.Edit, String, Int, Int) async -> DictationEditLearning.Candidate?
@@ -3745,13 +3847,16 @@ enum DictationEditWatch {
         var fastSeconds: TimeInterval = 0, backedOff = false, tried = false
         var lastChange = started, lastPlaced = started, lastFull = started
         var lastFinal: TimeInterval?
+        var keysAtRead = clock.keys()
         func ms(_ seconds: TimeInterval) -> Int { max(0, Int((seconds * 1000).rounded())) }
         func ended(_ stop: String, _ step: String) -> DictationLearnCanary {
             let now = clock.now()
             var out = canary
             out.stop = stop; out.step = step; out.ms = ms(now - started); out.polls = polls; out.axCalls = calls; out.fastTicks = fastTicks
             out.unreadChanges = unread
+            out.inputEvents = clock.inputs()
             if out.readable {
+                out.keysAfterRead = max(0, clock.keys() - keysAtRead)
                 out.partial = unread > 0 ? 1 : 0
                 out.lastReadAgeMs = ms(now - lastPlaced)
                 out.trackerReads = trackerReads; out.finalReads = finalReads
@@ -3797,8 +3902,11 @@ enum DictationEditWatch {
             tail.window = next.window; tail.start = next.start; tail.length = next.length; tail.sawInside = next.sawInside
             lastPlaced = clock.now(); unread = 0
             if let seen { last = seen }
+            keysAtRead = clock.keys()
         }
         keep(tracker, seen: nil)
+        // 0.5.344 part 2: an edit found by re-anchoring at the start (made while polish ran) is never style evidence.
+        tail.startReanchor = pending != nil
         /// A read for the tracker at a trigger or an ending. Never a secure field.
         func finalRead(_ why: String) async {
             let heard = clock.now()
@@ -3807,6 +3915,7 @@ enum DictationEditWatch {
             finalReads += 1; lastFinal = heard
             let read = await trackerRead(field, from: tracker, windowStart: bounds.location, measured: nil, calls: &calls)
             canary.finalTrigger = why; canary.finalRead = read.read.rawValue; canary.finalReadMs = ms(clock.now() - heard)
+            if DictationEditLearning.goneAfterTyping(read.read, keysSinceRead: clock.keys() - keysAtRead) { unread += 1 }
             if let next = read.tracker { keep(next, seen: read.seen) }
             log("learn final=\(why) read=\(read.read.rawValue) ms=\(canary.finalReadMs ?? -1)")
         }
@@ -3945,6 +4054,515 @@ enum DictationEditWatch {
         if tail.sawInside > 0 { canary.edited = final != nil }
         sink(canary)
         return Ending(canary: canary, final: final, tail: tail)
+    }
+}
+
+// MARK: - Your style (0.5.344 part 2)
+//
+// Plan r2 section 2 (PLAN_dictation_voice_style_2026-10-24.md): COS learns a few style habits from the corrections the
+// person types into their own dictation, deterministically, on this Mac, and pushes the active rules to the server's
+// learned-style setting (6.91.0), which renders them from its own templates. Two classes in the MVP: dropping a phrase
+// from the server's closed allowlist, and contractions (use or avoid). Evidence is only a saved, complete edit whose
+// baseline was Claude's polish, typed in the app (the monitor counted an input), never a re-anchor edit, never a
+// literal-register app while registers are on, and only a mostly English dictation. The ledger keeps class codes,
+// counts, times, dictation ids and tombstones: never text.
+
+enum DictationStyle {
+    /// The server's closed list (6.91.0 LEARNED_STYLE_ALLOWLIST), used until a server answers with its own.
+    static let defaultAllowlist = ["honestly", "literally", "pretty much", "i guess", "to be honest", "frankly", "obviously",
+                                   "kinda", "sorta", "you see", "at the end of the day", "if that makes sense"]
+    static let maximumRules = 20
+    /// A rule becomes active after this many distinct dictations; Add a rule activates it at once.
+    static let promoteAfter = 2
+    static let tombstoneSeconds: TimeInterval = 30 * 24 * 3600
+    static let maximumSeen = 300
+    static let maximumIDs = 50
+    static let maximumApplied = 20
+    static let fileName = "dictation-style.json"
+
+    enum Kind: String, Codable, Sendable { case dropPhrase = "drop_phrase", contractions }
+    struct Key: Hashable, Codable, Sendable {
+        var kind: Kind
+        var param: String
+        /// The server's id rule: ^[a-z0-9_-]{1,40}$.
+        var id: String {
+            guard kind == .dropPhrase else { return "contractions-" + param }
+            return "drop-" + String(param.lowercased().replacingOccurrences(of: " ", with: "-")
+                .filter { ($0.isASCII && ($0.isLetter || $0.isNumber)) || $0 == "-" }.prefix(35))
+        }
+        /// Settings' words for the rule.
+        var title: String {
+            kind == .dropPhrase ? "Drop \u{201C}\(param)\u{201D}" : param == "use" ? "Use contractions" : "Write contractions out"
+        }
+        var opposite: Key? { kind == .contractions ? Key(kind: .contractions, param: param == "use" ? "avoid" : "use") : nil }
+        func valid(allowlist: [String]) -> Bool { kind == .dropPhrase ? allowlist.contains(param) : ["use", "avoid"].contains(param) }
+    }
+    struct Rule: Codable, Equatable, Sendable {
+        var kind: Kind
+        var param: String
+        /// Distinct dictations that showed it, and distinct ones that reversed it where it was applied.
+        var confirmations: [UUID] = []
+        var contradictions: [UUID] = []
+        /// Add a rule: active at once. accepted: Suggest only's Add.
+        var explicit = false
+        var accepted = false
+        var firstSeen: Date
+        var lastSeen: Date
+        var key: Key { Key(kind: kind, param: param) }
+        var id: String { key.id }
+        /// A rule the person added counts one.
+        var support: Int { confirmations.count + (explicit ? 1 : 0) }
+        var net: Int { support - contradictions.count }
+        /// Contradictions outnumber confirmations, with at least two.
+        var retired: Bool { contradictions.count >= 2 && contradictions.count > support }
+    }
+    struct Tombstone: Codable, Equatable, Sendable { var id: String; var until: Date }
+    /// The rules the server rendered under one hash, so a dictation's hash says which rules it was polished with.
+    struct Applied: Codable, Equatable, Sendable { var hash: String; var ids: [String] }
+    struct Seen: Codable, Equatable, Sendable { var dictation: UUID; var kinds: [Kind]; var at: Date }
+    struct Ledger: Codable, Equatable, Sendable {
+        var version = 1
+        /// Learn my style from edits.
+        var enabled = true
+        var rules: [Rule] = []
+        var tombstones: [Tombstone] = []
+        /// Rule ids whose pill showed: once per rule id, ever.
+        var announced: [String] = []
+        var applied: [Applied] = []
+        var seen: [Seen] = []
+        var serverHash: String? = nil
+    }
+    struct Observation: Equatable, Sendable {
+        var key: Key
+        /// A dropped phrase put back (a contradiction where that rule was applied).
+        var added = false
+    }
+
+    enum State: String, Sendable { case active, suggested, pending, retired }
+    static func state(_ rule: Rule, suggestOnly: Bool) -> State {
+        if rule.retired { return .retired }
+        if rule.explicit || rule.accepted { return .active }
+        guard rule.confirmations.count >= promoteAfter else { return .pending }
+        return suggestOnly ? .suggested : .active
+    }
+    static func tombstoned(_ id: String, in ledger: Ledger, now: Date) -> Bool { ledger.tombstones.contains { $0.id == id && $0.until > now } }
+    static func activeIDs(_ ledger: Ledger, suggestOnly: Bool, now: Date) -> Set<String> {
+        Set(ledger.rules.filter { state($0, suggestOnly: suggestOnly) == .active && !tombstoned($0.id, in: ledger, now: now) }.map(\.id))
+    }
+    /// The active rules, best first: net support, then the latest seen, then the id. One contractions rule at most.
+    static func ranked(_ ledger: Ledger, suggestOnly: Bool, now: Date) -> [Rule] {
+        let active = activeIDs(ledger, suggestOnly: suggestOnly, now: now)
+        let sorted = ledger.rules.filter { active.contains($0.id) }.sorted { a, b in
+            if a.net != b.net { return a.net > b.net }
+            if a.lastSeen != b.lastSeen { return a.lastSeen > b.lastSeen }
+            return a.id < b.id
+        }
+        var out: [Rule] = [], contraction = false
+        for rule in sorted {
+            if rule.kind == .contractions { if contraction { continue }; contraction = true }
+            out.append(rule)
+        }
+        return Array(out.prefix(maximumRules))
+    }
+    /// Expired tombstones go; the evidence and applied sets stay bounded.
+    static func pruned(_ ledger: Ledger, now: Date) -> Ledger {
+        var next = ledger
+        next.tombstones = ledger.tombstones.filter { $0.until > now }
+        next.seen = Array(ledger.seen.suffix(maximumSeen))
+        next.applied = Array(ledger.applied.suffix(maximumApplied))
+        return next
+    }
+
+    /// One dictation's observations, at most one per kind (a later edit of the same dictation adds nothing for a kind it
+    /// already showed). Returns the ids that became active.
+    @discardableResult
+    static func observe(_ ledger: inout Ledger, dictation: UUID, observations: [Observation], appliedHash: String?, suggestOnly: Bool, now: Date) -> [String] {
+        let before = activeIDs(ledger, suggestOnly: suggestOnly, now: now)
+        var kinds = ledger.seen.first { $0.dictation == dictation }?.kinds ?? []
+        let applied = Set(appliedHash.flatMap { hash in ledger.applied.last { $0.hash == hash }?.ids } ?? [])
+        for observation in observations where !kinds.contains(observation.key.kind) {
+            kinds.append(observation.key.kind)
+            if observation.added {
+                contradict(&ledger, observation.key, dictation: dictation, applied: applied)
+            } else {
+                confirm(&ledger, observation.key, dictation: dictation, now: now)
+                if let opposite = observation.key.opposite { contradict(&ledger, opposite, dictation: dictation, applied: applied) }
+            }
+        }
+        if let i = ledger.seen.firstIndex(where: { $0.dictation == dictation }) { ledger.seen[i].kinds = kinds }
+        else { ledger.seen.append(Seen(dictation: dictation, kinds: kinds, at: now)) }
+        ledger = pruned(ledger, now: now)
+        return activeIDs(ledger, suggestOnly: suggestOnly, now: now).subtracting(before).sorted()
+    }
+    private static func confirm(_ ledger: inout Ledger, _ key: Key, dictation: UUID, now: Date) {
+        guard !tombstoned(key.id, in: ledger, now: now) else { return }
+        if let i = ledger.rules.firstIndex(where: { $0.key == key }) {
+            if !ledger.rules[i].confirmations.contains(dictation) {
+                ledger.rules[i].confirmations = Array((ledger.rules[i].confirmations + [dictation]).suffix(maximumIDs))
+            }
+            ledger.rules[i].lastSeen = now
+        } else {
+            ledger.rules.append(Rule(kind: key.kind, param: key.param, confirmations: [dictation], firstSeen: now, lastSeen: now))
+        }
+    }
+    /// A contradiction counts only where the dictation's polish applied that rule (its learned-style hash).
+    private static func contradict(_ ledger: inout Ledger, _ key: Key, dictation: UUID, applied: Set<String>) {
+        guard applied.contains(key.id), let i = ledger.rules.firstIndex(where: { $0.key == key }),
+              !ledger.rules[i].contradictions.contains(dictation) else { return }
+        ledger.rules[i].contradictions = Array((ledger.rules[i].contradictions + [dictation]).suffix(maximumIDs))
+    }
+
+    /// Add a rule (closed templates only): active at once, and a tombstone for it goes.
+    static func add(_ ledger: inout Ledger, _ key: Key, allowlist: [String], now: Date) {
+        guard key.valid(allowlist: allowlist) else { return }
+        ledger.tombstones.removeAll { $0.id == key.id }
+        if let opposite = key.opposite { ledger.rules.removeAll { $0.key == opposite && ($0.explicit || $0.accepted) } }
+        if let i = ledger.rules.firstIndex(where: { $0.key == key }) {
+            ledger.rules[i].explicit = true; ledger.rules[i].lastSeen = now
+        } else {
+            ledger.rules.append(Rule(kind: key.kind, param: key.param, explicit: true, firstSeen: now, lastSeen: now))
+        }
+    }
+    /// Suggest only's Add: the person accepts a proposed rule.
+    static func accept(_ ledger: inout Ledger, _ id: String) {
+        if let i = ledger.rules.firstIndex(where: { $0.id == id }) { ledger.rules[i].accepted = true }
+    }
+    /// Remove, the pill's Undo and Suggest only's Dismiss: the rule goes and stays quiet 30 days.
+    static func remove(_ ledger: inout Ledger, _ id: String, now: Date) {
+        ledger.rules.removeAll { $0.id == id }
+        ledger.tombstones.removeAll { $0.id == id }
+        ledger.tombstones.append(Tombstone(id: id, until: now.addingTimeInterval(tombstoneSeconds)))
+    }
+    /// Reset learned style: every rule, tombstone and piece of evidence goes; the switch and the pills already shown stay.
+    static func reset(_ ledger: inout Ledger) {
+        ledger.rules = []; ledger.tombstones = []; ledger.seen = []; ledger.applied = []; ledger.serverHash = nil
+    }
+    /// Clear dictation history: the evidence goes, so rules learned from it go too. Rules the person added stay.
+    static func clearHistory(_ ledger: inout Ledger) {
+        ledger.rules = ledger.rules.filter { $0.explicit || $0.accepted }.map { rule in
+            var kept = rule; kept.confirmations = []; kept.contradictions = []; return kept
+        }
+        ledger.seen = []
+    }
+    /// The rule a pill names, once per rule id, ever: the first newly active id never announced. Marks it announced.
+    static func announce(_ ledger: inout Ledger, newlyActive: [String]) -> String? {
+        guard let id = newlyActive.first(where: { !ledger.announced.contains($0) }) else { return nil }
+        ledger.announced.append(id)
+        return id
+    }
+    /// The guard's code as Control keeps it: one of the server's kinds, or "guarded"; anything else reads as none.
+    static let guardCodes: Set<String> = ["guarded", "negation", "number", "date", "name", "link", "literal"]
+    static func guardCode(_ raw: String?) -> String? { raw.flatMap { guardCodes.contains($0) ? $0 : nil } }
+    static func styleHash(_ raw: String?) -> String? { raw.flatMap { $0.range(of: "^[0-9a-f]{8}$", options: .regularExpression) != nil ? $0 : nil } }
+    static func registerCode(_ raw: String?) -> String? { raw.flatMap { ["literal", "default"].contains($0) ? $0 : nil } }
+    static func pillLabel(_ key: Key) -> String {
+        let title = key.title
+        return "Learned your style: " + title.prefix(1).lowercased() + title.dropFirst()
+    }
+    /// How many rules a dictation was polished with, from its learned-style hash.
+    static func ruleCount(hash: String?, in ledger: Ledger) -> Int {
+        guard let hash, !hash.isEmpty else { return 0 }
+        return ledger.applied.last { $0.hash == hash }?.ids.count ?? 0
+    }
+    /// The card's line for an answer the meaning guard refused, by its kind; just "Kept as heard" without one.
+    static func keptLine(guard kind: String?) -> String {
+        let what: String? = switch kind {
+        case "number": "a number"
+        case "date": "a date"
+        case "name": "a name"
+        case "link": "a link"
+        case "negation": "a no or a not"
+        case "literal": "the words"
+        default: nil
+        }
+        return what.map { "Kept as heard: polish changed " + $0 } ?? "Kept as heard"
+    }
+
+    // MARK: The server (6.91.0 GET/PUT/DELETE /api/dictation/learned-style, through the helper)
+
+    struct ServerRule: Codable, Equatable, Sendable {
+        var id: String
+        var kind: String
+        var register: String
+        var param: String
+        var count: Int?
+        var lastSeen: String?
+    }
+    /// What the helper passes on from the server: the setting and its limits. `available` false: an older server.
+    struct Server: Codable, Equatable, Sendable {
+        var available: Bool?
+        var enabled: Bool?
+        var serverEnabled: Bool?
+        var rules: [ServerRule]?
+        var hash: String?
+        var allowlist: [String]?
+        var registers: [String: String]?
+        var registersEnabled: Bool?
+        var maxRules: Int?
+        var reason: String?
+        var httpStatus: Int?
+        var serverHash: String?
+    }
+    static func serverRules(_ rules: [Rule]) -> [ServerRule] {
+        let formatter = ISO8601DateFormatter()
+        return rules.map { ServerRule(id: $0.id, kind: $0.kind.rawValue, register: "all", param: $0.param, count: $0.support,
+                                      lastSeen: formatter.string(from: $0.lastSeen)) }
+    }
+    /// The server already holds these rules (by id and param) and the switch: nothing to send.
+    static func needsPush(_ desired: [ServerRule], enabled: Bool, server: Server) -> Bool {
+        let mine = desired.map { $0.id + "=" + $0.param }.sorted(), theirs = (server.rules ?? []).map { $0.id + "=" + $0.param }.sorted()
+        return mine != theirs || (server.enabled ?? true) != enabled
+    }
+    /// After a 409: the server's rules this Mac does not know join as rules the person added, unless removed here.
+    static func merge(_ ledger: inout Ledger, server: [ServerRule], allowlist: [String], now: Date) {
+        for rule in server {
+            guard let kind = Kind(rawValue: rule.kind) else { continue }
+            let key = Key(kind: kind, param: rule.param)
+            guard key.valid(allowlist: allowlist), !tombstoned(key.id, in: ledger, now: now), !ledger.rules.contains(where: { $0.key == key }) else { continue }
+            if let opposite = key.opposite, ledger.rules.contains(where: { $0.key == opposite }) { continue }
+            ledger.rules.append(Rule(kind: kind, param: rule.param, explicit: true, firstSeen: now, lastSeen: now))
+        }
+    }
+    static func remember(_ ledger: inout Ledger, hash: String?, ids: [String]) {
+        guard let hash, !hash.isEmpty else { return }
+        ledger.applied.removeAll { $0.hash == hash }
+        ledger.applied.append(Applied(hash: hash, ids: ids))
+        ledger.applied = Array(ledger.applied.suffix(maximumApplied))
+    }
+    struct PutResult: Sendable {
+        /// nil: no answer (the server is not reachable).
+        var status: Int?
+        var server: Server?
+    }
+    enum SyncOutcome: Equatable, Sendable { case unchanged, saved(rules: Int, dropped: Int), conflict, failed(String) }
+    /// Send the active rules (best first, at most the server's cap) with the last hash. A 409 re-reads the server, merges
+    /// and sends once more; a 413 drops the lowest-ranked rule and tries again. Nothing is sent when the server already
+    /// holds the same rules and switch.
+    @MainActor static func sync(_ ledger: inout Ledger, server: Server, suggestOnly: Bool, now: Date,
+                     put: (_ rules: [ServerRule], _ enabled: Bool, _ baseHash: String) async -> PutResult,
+                     get: () async -> Server?) async -> SyncOutcome {
+        let limit = min(server.maxRules ?? maximumRules, maximumRules)
+        var rules = serverRules(Array(ranked(ledger, suggestOnly: suggestOnly, now: now).prefix(limit)))
+        guard needsPush(rules, enabled: ledger.enabled, server: server) else {
+            ledger.serverHash = server.hash
+            remember(&ledger, hash: server.hash, ids: (server.rules ?? []).map(\.id))
+            return .unchanged
+        }
+        var base = server.hash ?? "", merged = false, dropped = 0
+        for _ in 0...(2 * maximumRules + 2) {
+            let answer = await put(rules, ledger.enabled, base)
+            switch answer.status {
+            case 200?:
+                ledger.serverHash = answer.server?.hash
+                remember(&ledger, hash: answer.server?.hash, ids: (answer.server?.rules ?? rules).map(\.id))
+                return .saved(rules: rules.count, dropped: dropped)
+            case 409?:
+                guard !merged, let fresh = await get(), fresh.available != false else { return .conflict }
+                merged = true
+                merge(&ledger, server: fresh.rules ?? [], allowlist: fresh.allowlist ?? defaultAllowlist, now: now)
+                rules = serverRules(Array(ranked(ledger, suggestOnly: suggestOnly, now: now).prefix(limit)))
+                base = fresh.hash ?? ""; dropped = 0
+            case 413?:
+                guard !rules.isEmpty else { return .failed("too_long") }
+                rules.removeLast(); dropped += 1
+            default:
+                return .failed(answer.server?.reason ?? answer.status.map { "http_\($0)" } ?? "unreachable")
+            }
+        }
+        return .failed("retries")
+    }
+
+    // MARK: The ledger file
+
+    static func load(from url: URL) -> Ledger {
+        guard let data = try? Data(contentsOf: url) else { return Ledger() }
+        let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
+        return (try? decoder.decode(Ledger.self, from: data)) ?? Ledger()
+    }
+    /// Atomic and private, like the dictation history: a 0600 temp file in the same folder, then rename(2). Default data
+    /// protection (class C), never complete-unless-open.
+    static func save(_ ledger: Ledger, to url: URL) throws {
+        let directory = url.deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .iso8601; encoder.outputFormatting = [.sortedKeys]
+        let data = try encoder.encode(ledger)
+        let temp = directory.appendingPathComponent(".\(url.lastPathComponent).\(UUID().uuidString).tmp")
+        guard FileManager.default.createFile(atPath: temp.path, contents: data, attributes: [.posixPermissions: 0o600]) else {
+            throw NSError(domain: "COSDictation", code: 4, userInfo: [NSLocalizedDescriptionKey: "Your style could not be saved."])
+        }
+        guard rename(temp.path, url.path) == 0 else {
+            try? FileManager.default.removeItem(at: temp)
+            throw NSError(domain: "COSDictation", code: 4, userInfo: [NSLocalizedDescriptionKey: "Your style could not be saved."])
+        }
+    }
+}
+
+/// Settings, Dictation, Your style: the words, here so the checks read them. Plain copy, no em dashes or arrows.
+enum DictationStyleCopy {
+    static let title = "Your style"
+    static let switchTitle = "Learn my style from edits"
+    static let needsServer = "Needs server 6.91.0. Your style stays on this Mac until then."
+    static let serverOff = "Turned off on the server."
+    static let notSonnet = "Your style rules apply when AI polish uses Sonnet."
+    static let needsPolish = "Learning needs AI polish on and Learn from my edits set to Save automatically or Suggest only."
+    /// Style evidence needs the shortcut monitor's count (the person typed the change), which only a single-key shortcut installs.
+    static let needsShortcut = "Learning your style needs a single-key dictation shortcut such as Fn, so COS can count that you typed the change."
+    static let empty = "No style rules yet. COS adds one after you make the same change in two dictations."
+    static let active = "Active"
+    static let suggested = "Suggested"
+    static let pending = "Seen once"
+    static let addTitle = "Add a rule"
+    static let reset = "Reset learned style"
+    static let previousPolish = "Previous polish (v3)"
+    static let previousNote = "Goes back to the earlier polish prompt on every model. Your style rules apply only with the newer prompt."
+    static let disclosureRules = "COS sends your style rules (never your text) with each polish, on G2 too."
+    static let disclosureKeys = "While COS watches your edit, it notices Return, clicks and other key presses in the app it typed into, as counts only. It never records which keys."
+    static func seen(_ rule: DictationStyle.Rule) -> String { "seen \(rule.support)" }
+    static func pendingLine(_ rule: DictationStyle.Rule) -> String { "seen \(rule.confirmations.count) of \(DictationStyle.promoteAfter)" }
+    /// The status lines, in order: the server, the server's switch, the model, the switches that stop collecting.
+    static func status(available: Bool, checked: Bool, serverEnabled: Bool, model: DictationPolishModel, learnMode: DictationLearnMode,
+                       monitor: Bool = true) -> [String] {
+        var lines: [String] = []
+        if checked, !available { lines.append(needsServer) }
+        if available, !serverEnabled { lines.append(serverOff) }
+        if model != .off, model != .sonnet { lines.append(notSonnet) }
+        if model == .off || learnMode == .off { lines.append(needsPolish) }
+        else if !monitor { lines.append(needsShortcut) }
+        return lines
+    }
+    /// Add a rule's closed templates: each allowlisted phrase, and contractions use or avoid. Never free text.
+    static func templates(allowlist: [String]) -> [DictationStyle.Key] {
+        allowlist.map { DictationStyle.Key(kind: .dropPhrase, param: $0) }
+            + [DictationStyle.Key(kind: .contractions, param: "use"), DictationStyle.Key(kind: .contractions, param: "avoid")]
+    }
+}
+
+/// The deterministic classifier: what one saved edit shows about the person's style. Words only, compared without case
+/// and the punctuation at their edges.
+enum DictationStyleClassifier {
+    /// One saved edit, as evidence. Never stored: the ledger keeps only what `observations` returns.
+    struct Evidence: Sendable {
+        var dictation: UUID
+        /// What COS typed (Claude's version) and what was sent.
+        var typed: String
+        var final: String
+        /// Claude's polish was the baseline: the swap landed, or polish came first.
+        var baselinePolished: Bool
+        /// Nothing was unread at the end (a partial watch keeps no edit anyway).
+        var complete: Bool
+        /// Key-downs and clicks the monitor counted in the app during the watch.
+        var inputEvents: Int
+        var startReanchor: Bool
+        var app: String
+        /// The dictation's learned-style hash (8 hex) from its polish, or nil.
+        var appliedHash: String?
+    }
+    struct Settings: Sendable {
+        var enabled: Bool
+        var polishOn: Bool
+        var learnMode: DictationLearnMode
+        var registers: [String: String] = [:]
+        var registersEnabled = false
+        var allowlist = DictationStyle.defaultAllowlist
+        /// The person's polish instructions (the Always drop chip writes there): a phrase already there is not a rule.
+        var instructions = ""
+    }
+    /// Why an edit is not style evidence, or nil when it is.
+    static func excluded(_ evidence: Evidence, _ settings: Settings) -> String? {
+        guard settings.enabled else { return "off" }
+        guard settings.polishOn else { return "polishOff" }
+        guard settings.learnMode != .off else { return "learnOff" }
+        guard evidence.complete else { return "partial" }
+        guard evidence.baselinePolished else { return "notPolished" }
+        guard evidence.inputEvents >= 1 else { return "noInput" }
+        guard !evidence.startReanchor else { return "reanchor" }
+        if settings.registersEnabled, literal(app: evidence.app, registers: settings.registers) { return "literal" }
+        guard mostlyEnglish(evidence.typed), mostlyEnglish(evidence.final) else { return "language" }
+        return nil
+    }
+    /// The server's app-to-register map, matched on the exact name, case and surrounding space ignored.
+    static func literal(app: String, registers: [String: String]) -> Bool {
+        let name = app.trimmingCharacters(in: .whitespaces).lowercased()
+        return registers.contains { $0.key.trimmingCharacters(in: .whitespaces).lowercased() == name && $0.value == "literal" }
+    }
+    /// Letters, at least nine in ten of them a to z.
+    static func mostlyEnglish(_ text: String) -> Bool {
+        let letters = text.unicodeScalars.filter { CharacterSet.letters.contains($0) }
+        guard letters.count >= 4 else { return false }
+        return Double(letters.filter(\.isASCII).count) / Double(letters.count) >= 0.9
+    }
+    static func normalize(_ word: String) -> String {
+        let plain = word.lowercased().replacingOccurrences(of: "\u{2019}", with: "'").replacingOccurrences(of: "\u{2018}", with: "'")
+        return plain.trimmingCharacters(in: CharacterSet.punctuationCharacters.union(.symbols))
+    }
+    static func words(_ text: String) -> [String] { DictationWordDiff.words(text).map(normalize).filter { !$0.isEmpty } }
+    /// Contractions, by their words in full. One or two words in full become one contracted word.
+    static let contractions: [String: String] = [
+        "i am": "i'm", "i have": "i've", "i will": "i'll", "you are": "you're", "you have": "you've", "you will": "you'll",
+        "we are": "we're", "we have": "we've", "we will": "we'll", "they are": "they're", "they have": "they've", "they will": "they'll",
+        "it is": "it's", "that is": "that's", "there is": "there's", "what is": "what's",
+        "do not": "don't", "does not": "doesn't", "did not": "didn't", "is not": "isn't", "are not": "aren't", "was not": "wasn't",
+        "were not": "weren't", "have not": "haven't", "has not": "hasn't", "had not": "hadn't", "will not": "won't",
+        "would not": "wouldn't", "could not": "couldn't", "should not": "shouldn't", "cannot": "can't", "can not": "can't",
+    ]
+    static func contracted(_ words: [String]) -> [String] {
+        var out: [String] = [], i = 0
+        while i < words.count {
+            if i + 1 < words.count, let one = contractions[words[i] + " " + words[i + 1]] { out.append(one); i += 2; continue }
+            out.append(contractions[words[i]] ?? words[i]); i += 1
+        }
+        return out
+    }
+    /// "use" when the person contracted words in full, "avoid" when they wrote a contraction out, else nil.
+    static func direction(removed: [String], added: [String]) -> String? {
+        guard !removed.isEmpty, !added.isEmpty, removed != added else { return nil }
+        if contracted(removed) == added { return "use" }
+        if contracted(added) == removed { return "avoid" }
+        return nil
+    }
+    /// `longer` is `shorter` with `phrase` put in at one place, and nothing else changed.
+    static func spliced(_ longer: [String], _ shorter: [String], phrase: [String]) -> Bool {
+        guard !phrase.isEmpty, longer.count == shorter.count + phrase.count else { return false }
+        for k in 0...shorter.count where Array(longer[k..<(k + phrase.count)]) == phrase {
+            if Array(longer[..<k]) == Array(shorter[..<k]), Array(longer[(k + phrase.count)...]) == Array(shorter[k...]) { return true }
+        }
+        return false
+    }
+    /// What one edit shows: at most one drop_phrase and one contractions observation. An edit at the end of the
+    /// dictation that adds more words than it removes is the person writing on, not a style correction.
+    static func observations(typed: String, final: String, allowlist: [String], instructions: String) -> [DictationStyle.Observation] {
+        guard let parts = DictationWordDiff.diff(original: typed, final: final) else { return [] }
+        var regions = DictationWordDiff.regions(parts)
+        if let last = parts.last, last.kind != .same, let edge = regions.last, edge.addedWords > edge.removedWords { regions.removeLast() }
+        let phrases = allowlist.map { words($0) }.filter { !$0.isEmpty }.sorted { $0.count > $1.count }
+        var drop: DictationStyle.Observation?, contraction: DictationStyle.Observation?
+        for region in regions {
+            let removed = words(region.removed), added = words(region.added)
+            if drop == nil {
+                if let phrase = phrases.first(where: { spliced(removed, added, phrase: $0) }) {
+                    let param = phrase.joined(separator: " ")
+                    if !DictationEditConfirm.holds(param, in: instructions) {
+                        drop = DictationStyle.Observation(key: DictationStyle.Key(kind: .dropPhrase, param: param))
+                    }
+                } else if let phrase = phrases.first(where: { spliced(added, removed, phrase: $0) }) {
+                    drop = DictationStyle.Observation(key: DictationStyle.Key(kind: .dropPhrase, param: phrase.joined(separator: " ")), added: true)
+                }
+            }
+            if contraction == nil, let way = direction(removed: removed, added: added) {
+                contraction = DictationStyle.Observation(key: DictationStyle.Key(kind: .contractions, param: way))
+            }
+        }
+        return [drop, contraction].compactMap { $0 }
+    }
+    /// The whole step for one saved edit: the filters, the classes, the ledger. Returns the ids that became active, and
+    /// why nothing was learned when nothing was.
+    static func learn(_ ledger: inout DictationStyle.Ledger, evidence: Evidence, settings: Settings, now: Date) -> (newlyActive: [String], reason: String?) {
+        if let reason = excluded(evidence, settings) { return ([], reason) }
+        let found = observations(typed: evidence.typed, final: evidence.final, allowlist: settings.allowlist, instructions: settings.instructions)
+        guard !found.isEmpty else { return ([], "noClass") }
+        let newly = DictationStyle.observe(&ledger, dictation: evidence.dictation, observations: found, appliedHash: evidence.appliedHash,
+                                           suggestOnly: settings.learnMode == .suggest, now: now)
+        return (newly, nil)
     }
 }
 

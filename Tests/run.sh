@@ -1359,6 +1359,11 @@ zsh "$ROOT/Tests/run-edit-confirm.sh"
 # against a fake field and a fake clock (Tests/EditCaptureChecks.swift, MacDictationCore.swift alone). Hand-run:
 # Tests/mutate-edit-capture.py (the mutation lane).
 zsh "$ROOT/Tests/run-edit-capture.sh"
+# 0.5.344 part 2, Your style (plan r2 section 2): the wiring pins (with their in-memory mutants), then the ledger, the
+# classifier, promotion, retirement, tombstones, ranking, the pill once ever and the sync against a fake server
+# (Tests/VoiceStyleChecks.swift, MacDictationCore.swift alone). Hand-run: Tests/mutate-voice-style.py (the mutation lane)
+# and Tests/run-voice-style-render.sh (static PNGs, never a gate).
+zsh "$ROOT/Tests/run-voice-style.sh"
 # 0.5.343 Build-up, in place: the wiring pins (with their in-memory mutants) and the motion-gate pins, then the rules
 # against fixtures (Tests/BuildUpChecks.swift, Models.swift alone). Hand-run: Tests/mutate-build-up.py (the mutation lane)
 # and Tests/run-build-up-render.sh (static PNGs, never a gate).

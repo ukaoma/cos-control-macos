@@ -575,7 +575,7 @@ need("kAXValueAttribute" not in body(dictation, "    nonisolated static func fie
      "the field's identity is attributes only, never its text")
 need("learnedUndoID = item.id; learnedUndoPill = flash" in body(dictation, "    private func editLearned(") and "Task { await undoLearned(id) }" in body(dictation, "    func undoLearnedFromPill() {")
      and "guard let id = pillUndoID else { return }" in body(dictation, "    func undoLearnedFromPill() {")
-     and "var pillUndoID: UUID? { pill == learnedUndoPill ? learnedUndoID : nil }" in dictation
+     and "var pillUndoID: UUID? { pill == learnedUndoPill ? learnedUndoID : pill == styleUndoPill ? styleUndoToken : nil }" in dictation
      and "onUndo: store.pillUndoID == nil ? nil : { store.undoLearnedFromPill() })" in dictation
      and "onUndo: dictation.pillUndoID == nil ? nil : { dictation.undoLearnedFromPill() })" in pet
      and "panel.ignoresMouseEvents = store.card == nil && !fixing && store.fixOfferID == nil && store.pillUndoID == nil" in dictation,

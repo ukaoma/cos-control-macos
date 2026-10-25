@@ -30,8 +30,8 @@ MUTANTS = [
      "                if let hash = body[\"instructionsHash\"] as? String { details[\"instructionsHash\"] = hash }"),
     ("get skips the capability", M,
      "            guard DictationPolishInstructionsBridge.advertised(health.body) else { answer = DictationPolishInstructionsBridge.unavailable(); break }\n", ""),
-    ("clear is a PUT", M, "            let response = request(route, method: \"DELETE\", token: token, timeout: 10)",
-     "            let response = request(route, method: \"PUT\", token: token, body: DictationPolishInstructionsBridge.body(\"\"), timeout: 10)"),
+    ("clear is a PUT", M, "            let response = request(route, method: \"DELETE\", token: token, timeout: 10)\n            answer = DictationPolishInstructionsBridge.answer(",
+     "            let response = request(route, method: \"PUT\", token: token, body: DictationPolishInstructionsBridge.body(\"\"), timeout: 10)\n            answer = DictationPolishInstructionsBridge.answer("),
 ]
 FILES = ("HelperSources/main.swift", "HelperSources/ProviderStatusCore.swift", "HelperSources/PairingCore.swift", "Sources/WorkSessionLinks.swift")
 

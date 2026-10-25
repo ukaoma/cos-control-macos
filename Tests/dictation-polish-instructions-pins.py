@@ -97,7 +97,7 @@ def check(src):
 MUTANTS = [
     ("card not placed", "d", "                DictationPolishInstructionsCard(store: DictationPolishInstructionsStore.shared, polishOn: store.polishModel != .off)\n", ""),
     ("card shown on an older server", "d", "if DictationPolishInstructions.visible(available: store.available) {", "if true {"),
-    ("store starts visible", "d", "@Published private(set) var available = false", "@Published private(set) var available = true"),
+    ("store starts visible", "d", "no box.\n    @Published private(set) var available = false", "no box.\n    @Published private(set) var available = true"),
     ("availability not read", "d", "            available = state.available\n", ""),
     ("no counter", "d", "Text(DictationPolishInstructions.counter(draft))", 'Text("")'),
     ("save always on", "d", ".disabled(!DictationPolishInstructions.canSave(draft: draft, saved: store.saved, busy: store.busy))", ".disabled(false)"),

@@ -256,6 +256,34 @@ struct DictationEveryoneChecks {
         check(LS.answer(status: 409, body: nil, operation: "set").details["reason"] as? String == "conflict"
               && LS.answer(status: 413, body: nil, operation: "set").details["reason"] as? String == "too_long"
               && LS.answer(status: 404, body: nil, operation: "get").details["available"] as? Bool == false, "learned style statuses", "409 conflict, 413 too long, 404 unavailable")
+        // 0.5.344 part 2: the server's real contract (6.91.0 at 31c59dd).
+        var styleNull = styleRule; styleNull["lastSeen"] = NSNull(); styleNull.removeValue(forKey: "count")
+        check(LS.rule(styleNull) == LS.Rule(id: "drop-honestly", kind: "drop_phrase", register: "all", param: "honestly", count: 0, lastSeen: nil),
+              "learned style rule", "lastSeen null and count absent read as never and 0")
+        check(LS.parse(json(["operation": "set", "enabled": false])) == .set(rules: nil, enabled: false, baseHash: nil)
+              && LS.parse(json(["operation": "set", "enabled": true, "baseHash": ""])) == .set(rules: nil, enabled: true, baseHash: "")
+              && LS.parse(json(["operation": "set"])) == nil && LS.parse(json(["operation": "set", "baseHash": "0a1b2c3d"])) == nil,
+              "learned style switch", "the switch alone, an empty base hash, never an empty set")
+        let switchBody = (try? JSONSerialization.jsonObject(with: Data(LS.body(rules: nil, enabled: false, baseHash: nil).utf8))) as? [String: Any] ?? [:]
+        check(Set(switchBody.keys) == ["enabled"] && switchBody["enabled"] as? Bool == false, "learned style switch", "Off sends only enabled, so the rules stay")
+        let styleAllowlist = ["honestly", "literally", "pretty much", "i guess", "to be honest", "frankly", "obviously", "kinda", "sorta", "you see",
+                              "at the end of the day", "if that makes sense"]
+        let styleReal = LS.answer(status: 200, body: ["rules": [styleNull], "text": "", "hash": "", "registerValues": ["all", "chat"], "contractionParams": ["use", "avoid", "maybe"],
+                                                     "appliesTo": ["message", "meeting", "email"], "maxChars": 1500, "maxRules": 20, "serverEnabled": true,
+                                                     "registersEnabled": false, "allowlist": styleAllowlist], operation: "get")
+        check(styleReal.ok && (styleReal.details["rules"] as? [[String: Any]])?.count == 1 && styleReal.details["allowlist"] as? [String] == styleAllowlist,
+              "learned style real get", "a null lastSeen rule and the full 12-phrase allowlist")
+        check(styleReal.details["registerValues"] as? [String] == ["all"] && styleReal.details["contractionParams"] as? [String] == ["use", "avoid"]
+              && styleReal.details["appliesTo"] as? [String] == ["message", "meeting"] && styleReal.details["maxChars"] as? Int == 1500
+              && styleReal.details["maxRules"] as? Int == 20 && styleReal.details["serverEnabled"] as? Bool == true
+              && styleReal.details["registersEnabled"] as? Bool == false, "learned style real get", "each new field from its closed set")
+        check(LS.answer(status: 200, body: ["rules": [], "text": "", "maxRules": true, "registersEnabled": "no"], operation: "get").details["maxRules"] == nil
+              && LS.answer(status: 200, body: ["rules": [], "text": "", "registersEnabled": "no"], operation: "get").details["registersEnabled"] == nil,
+              "learned style real get", "a boolean is no limit and a string is no switch")
+        check(LS.answer(status: 409, body: ["hash": "12345678"], operation: "set").details["serverHash"] as? String == "12345678"
+              && LS.answer(status: 409, body: ["hash": ""], operation: "set").details["serverHash"] as? String == ""
+              && LS.answer(status: 409, body: ["hash": "../x"], operation: "set").details["serverHash"] == nil, "learned style conflict hash",
+              "a 409 passes on the server's hash, empty or 8 hex, nothing else")
         typealias PO = DictationPolishOptionsBridge
         check(PO.parse(json(["operation": "get"])) == .get && PO.parse(json(["operation": "set", "promptVersion": "v3"])) == .set("v3")
               && PO.parse(json(["operation": "set", "promptVersion": "v4"])) == nil && PO.parse(json(["operation": "set", "promptVersion": "v3", "x": 1])) == nil,

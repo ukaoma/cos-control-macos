@@ -1781,7 +1781,8 @@ final class FakeDictationBoard: DictationPasteboardAccess {
                    && I.rulesHeading(version: "v3; rm", rolledBack: false) == "Built-in rules" && I.rulesHeading(version: nil, rolledBack: nil) == "Built-in rules",
                    "instructions: the rules heading names the version, or nothing it cannot read")
             expect(I.placeholder.split(separator: "\n").count == 3 && I.placeholder.contains("Use Oxford commas.")
-                   && I.placeholder.contains("Bottle POS and IT Retail") && I.placeholder.contains("In Slack, keep it casual"), "instructions: three example lines")
+                   && I.placeholder.contains("Bottle POS and IT Retail") && I.placeholder.contains("Keep sentences short.") && !I.placeholder.contains("Slack"),
+                   "instructions: three example lines, none about an app the model cannot see (0.5.344)")
             for copy in [I.title, I.note, I.offNote, I.placeholder, I.counter(over), I.rulesHeading(version: "v2", rolledBack: true)] {
                 expect(!copy.contains("\u{2014}") && !copy.contains("\u{2192}") && !copy.contains("->"), "instructions: copy has no em dash or arrow")
             }
@@ -1829,7 +1830,8 @@ final class FakeDictationBoard: DictationPasteboardAccess {
                    "a proven app still never watches a password field, a terminal, or with learning off")
             expect(EL.notYetNames == ["Cursor", "ChatGPT"], "Settings names each not-yet app once, in order")
             expect(EL.settingNote.contains("Not available yet in Cursor, ChatGPT, or text boxes in Chrome and Comet")
-                   && EL.settingNote.contains("Works in native apps, Claude and Slack.") && !EL.settingNote.contains("\u{2014}") && !EL.settingNote.contains("\u{2192}"),
+                   && EL.settingNote.contains("Works in native apps, Claude and Slack.") && !EL.settingNote.contains("\u{2014}") && !EL.settingNote.contains("\u{2192}")
+                   && !EL.settingNote.contains("until you leave the field or send the message") && EL.settingNote.contains("a few style habits (Your style)"),
                    "the Settings line names where learning works and where it does not yet, from the same table, with no em dash or arrow")
             // Track the field, not the element.
             let watched = EL.FieldIdentity(pid: 42, role: "AXTextArea", identifier: nil, frame: CGRect(x: 100, y: 600, width: 500, height: 40))

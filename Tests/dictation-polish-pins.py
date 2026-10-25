@@ -56,14 +56,14 @@ pin(len(logs) == 1 and "model.rawValue" in logs[0] and "outcome.logName" in logs
 # 3. The record keeps what was heard only when polish applied, and the setting is the dropdown with its honest line.
 pin("if case .applied? = polished?.outcome, let model = polished?.model { lastPolish = (heard, model) } else { lastPolish = nil }" in transcribe,
     "heard only when applied", "what was heard is kept only when polish changed the text")
-pin("heard: lastPolish?.heard, polishModel: lastPolish?.model.rawValue, polishPrompt: lastPolishPrompt)" in dictation and "lastEngine = nil; lastPolish = nil" in dictation,
+pin("heard: lastPolish?.heard, polishModel: lastPolish?.model.rawValue, polishPrompt: lastPolishPrompt," in dictation and "lastEngine = nil; lastPolish = nil" in dictation,
     "record", "finish() stores what was heard and the model, then forgets them")
 pin(dictation.count('COSDropdown("AI polish", selection: $store.polishModel,') == 1 and "DictationPolish.settingNote(store.polishModel)" in dictation,
     "setting", "Settings, Dictation: AI polish with its one line")
 pin("DictationPolishModel.stored(UserDefaults.standard.string(forKey: DictationPolishModel.defaultsKey))" in dictation
     and "UserDefaults.standard.set(polishModel.rawValue, forKey: DictationPolishModel.defaultsKey)" in dictation, "setting", "the model persists under its key")
 pin(dictation.count('"What was heard: " + heard') == 2 and "store.copy(heard)" in dictation, "what was heard", "the detail and the history row offer what was heard")
-pin(dictation.count('record.polishLabel.map { " · " + $0 }') == 1, "history label", "the Activity history row says Polished and the model")
+pin(dictation.count('record.polishLine(styleRules: DictationStyleStore.shared.ruleCount(record.polishStyleHash)).map { " · " + $0 }') == 1, "history label", "the Activity history row says Polished and the model")
 
 # 4. The bridge: the helper verb, stdin only, the budget as the process timeout.
 pin(app.count('runHelper(["dictation-polish"], timeout: budget, stdinData: request, answers: true)') == 1, "bridge",

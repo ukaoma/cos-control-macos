@@ -112,10 +112,10 @@ def check(src):
     pin('prompt = DictationPolish.promptVersion(response.details["polishPrompt"]?.string)' in polish and "instructionsHash: instructions.hash).with(prompt: prompt)" in polish,
         "polish prompt", "the polish run carries the tested prompt version")
     pin('polish_prompt=\\(finished.polishPrompt ?? "-", privacy: .public)' in d, "polish prompt timing", "the log's timing line names the prompt")
-    pin("heard: lastPolish?.heard, polishModel: lastPolish?.model.rawValue, polishPrompt: lastPolishPrompt)" in finish
+    pin("heard: lastPolish?.heard, polishModel: lastPolish?.model.rawValue, polishPrompt: lastPolishPrompt," in finish
         and "lastPolishPrompt = lastPolish == nil ? nil : polished?.prompt" in d, "polish prompt record", "a polished-first dictation keeps its prompt")
-    pin("model: model.rawValue, prompt: run?.prompt, in: recent); saveRecent()" in deliver and "applies: DictationPolishSwap.offersApply(result), prompt: run?.prompt)" in deliver
-        and "model: pending.model.rawValue, prompt: pending.prompt, in: recent); saveRecent()" in d, "polish prompt record",
+    pin("model: model.rawValue, prompt: run?.prompt, styleHash: run?.learnedStyleHash, in: recent); saveRecent()" in deliver and "applies: DictationPolishSwap.offersApply(result), prompt: run?.prompt," in deliver
+        and "model: pending.model.rawValue, prompt: pending.prompt, styleHash: pending.styleHash, in: recent); saveRecent()" in d, "polish prompt record",
         "the swap and Apply polished keep the prompt")
 
     # 5. The dictionary source stays "dictation" on the wire (plan r2 cut the split: 6.90.0 answers 400 to anything else).
@@ -164,7 +164,7 @@ MUTANTS = [
     ("trigger ignores learning", "d", "watching: editWatcher.isWatching, learning: learnMode != .off) else { return }",
      "watching: editWatcher.isWatching, learning: true) else { return }"),
     ("trigger reads on main", "d", "        editWatcher.trigger(trigger)\n", "        editWatcher.trigger(trigger); _ = Task { }\n"),
-    ("signal outlives the watch", "d", "        signal?.close(); signal = nil\n", ""),
+    ("signal outlives the watch", "d", "        signal?.close(); signal = nil; watchedPID = nil\n", "        watchedPID = nil\n"),
     ("watch on main", "d", "        task = Task.detached(priority: .utility) { [weak self] in\n            let started = Date()\n            let ending = await DictationEditWatch.run(",
      "        task = Task { [weak self] in\n            let started = Date()\n            let ending = await DictationEditWatch.run("),
     ("ending ignores the tracker", "d", "inside: ending.tail.sawInside, started: started", "inside: ending.canary.inside, started: started"),
@@ -192,8 +192,8 @@ MUTANTS = [
     ("helper prompt open", "hcore", 'if let prompt = body["polishPrompt"] as? String, prompts.contains(prompt) {', 'if let prompt = body["polishPrompt"] as? String {'),
     ("polish prompt dropped", "d", "instructionsHash: instructions.hash).with(prompt: prompt)", "instructionsHash: instructions.hash)"),
     ("timing names no prompt", "d", ' polish_prompt=\\(finished.polishPrompt ?? "-", privacy: .public)', ""),
-    ("record forgets the prompt", "d", "polishModel: lastPolish?.model.rawValue, polishPrompt: lastPolishPrompt)", "polishModel: lastPolish?.model.rawValue)"),
-    ("swap forgets the prompt", "d", "model: model.rawValue, prompt: run?.prompt, in: recent); saveRecent()", "model: model.rawValue, in: recent); saveRecent()"),
+    ("record forgets the prompt", "d", "polishModel: lastPolish?.model.rawValue, polishPrompt: lastPolishPrompt,", "polishModel: lastPolish?.model.rawValue,"),
+    ("swap forgets the prompt", "d", "model: model.rawValue, prompt: run?.prompt, styleHash: run?.learnedStyleHash, in: recent); saveRecent()", "model: model.rawValue, styleHash: run?.learnedStyleHash, in: recent); saveRecent()"),
     ("helper hash open", "hcore", 'if let hash = body["learnedStyleHash"] as? String, DictationPolishInstructionsBridge.isHash(hash) {',
      'if let hash = body["learnedStyleHash"] as? String {'),
     ("stdin widened", "hcore", 'Set(object.keys).isSubset(of: ["text", "model", "app", "prewarmToken"])', 'Set(object.keys).isSubset(of: ["text", "model", "app", "prewarmToken", "style"])'),
