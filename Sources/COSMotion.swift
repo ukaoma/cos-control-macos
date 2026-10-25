@@ -322,6 +322,9 @@ struct COSBuildUp<Content: View>: View {
     let loading: Bool
     let landed: Bool
     let interrupted: Bool
+    let failed: Bool
+    let enabled: Bool
+    let timeout: Double
     let label: String
     let key: AnyHashable?
     let background: Color
@@ -329,18 +332,23 @@ struct COSBuildUp<Content: View>: View {
     @ViewBuilder let content: () -> Content
 
     /// `tune`: this site's own row geometry. `interrupted`: a search or tab switch has taken the view elsewhere (the first
-    /// load settles quietly and is not remembered as empty). `label`: what VoiceOver hears while it builds ("Loading
-    /// meetings"), and with `key` what COS remembers. `key`: the thing the view shows (a meeting's id); when it changes the
-    /// view counts as opened again. `background`: the surface behind the content (the tint and the wire's colour).
-    /// `frozen`: static renders only.
-    init(_ shape: COSBuildUpShape, tune: COSBuildUpTune = .none, loading: Bool, landed: Bool, interrupted: Bool = false, label: String,
-         key: AnyHashable? = nil, background: Color = COSPalette.panel, frozen: COSBuildUpFrame? = nil,
-         @ViewBuilder content: @escaping () -> Content) {
+    /// load settles quietly and is not remembered as empty). `failed`: the site's error flag (an error is never remembered
+    /// as empty). `enabled`: false where this view never builds (Work's meeting picker). `timeout`: the site's own helper
+    /// timeout plus COSBuildUpPlan.helperMargin (default COSBuildUpPlan.defaultTimeout). `label`: what VoiceOver hears
+    /// while it builds ("Loading meetings"), and with `key` what COS remembers; a new label is a new view (a tab switch).
+    /// `key`: the thing the view shows (a meeting's id); when it changes the view counts as opened again. `background`:
+    /// the surface behind the content (the tint and the wire's colour). `frozen`: static renders only.
+    init(_ shape: COSBuildUpShape, tune: COSBuildUpTune = .none, loading: Bool, landed: Bool, interrupted: Bool = false, failed: Bool = false,
+         enabled: Bool = true, timeout: Double = COSBuildUpPlan.defaultTimeout, label: String, key: AnyHashable? = nil,
+         background: Color = COSPalette.panel, frozen: COSBuildUpFrame? = nil, @ViewBuilder content: @escaping () -> Content) {
         self.shape = shape
         self.tune = tune
         self.loading = loading
         self.landed = landed
         self.interrupted = interrupted
+        self.failed = failed
+        self.enabled = enabled
+        self.timeout = timeout
         self.label = label
         self.key = key
         self.background = background
@@ -357,8 +365,8 @@ struct COSBuildUp<Content: View>: View {
 
     private func opened(at t: Double) -> COSBuildUpMachine {
         COSBuildUpMachine(at: t, loading: loading && !interrupted, landed: landed, reduceMotion: reduceMotion,
-                          count: COSBuildUpPlan.items(shape, tune).count, quiet: !COSBuildUpSession.memory.builds(memoryKey),
-                          timeout: COSBuildUpPlan.timeoutSeconds(shape))
+                          count: COSBuildUpPlan.items(shape, tune).count, quiet: !enabled || !COSBuildUpSession.memory.builds(memoryKey),
+                          timeout: timeout)
     }
 
     var body: some View {
@@ -387,8 +395,13 @@ struct COSBuildUp<Content: View>: View {
                         .accessibilityAddTraits(.updatesFrequently)
                 }
             }
-            .onAppear { if frozen == nil, machine == nil { machine = opened(at: Self.now()) } }
+            .onAppear {
+                if frozen == nil, machine == nil { machine = opened(at: Self.now()) }
+                clearEmptyOnData()
+            }
             .onDisappear { abandon() }
+            .onChange(of: label) { _, _ in relabel() }
+            .onChange(of: failed) { _, _ in step() }
             .onChange(of: loading) { _, _ in step() }
             .onChange(of: landed) { _, _ in step() }
             .onChange(of: interrupted) { _, _ in step() }
@@ -424,13 +437,34 @@ struct COSBuildUp<Content: View>: View {
 
     private func step() {
         guard frozen == nil else { return }
+        clearEmptyOnData()
         var next = machine ?? opened(at: Self.now())
         let before = next.outcome
-        next.update(at: Self.now(), loading: loading && !interrupted, landed: landed, reduceMotion: reduceMotion, interrupted: interrupted)
+        next.update(at: Self.now(), loading: loading && !interrupted, landed: landed, reduceMotion: reduceMotion, interrupted: interrupted,
+                    failed: failed)
         // Settled and unchanged (every refresh and poll after the first load): nothing is written, so nothing redraws.
         guard next != machine else { return }
         if before == nil, let outcome = next.outcome { remember(outcome, next) }
         machine = next
+    }
+
+    /// A view remembered as empty has data again (it opened quiet, so its machine never lands): clear it, so the next
+    /// launch builds again.
+    private func clearEmptyOnData() {
+        guard frozen == nil, landed, key == nil, COSBuildUpSession.memory.empty.contains(memoryKey) else { return }
+        COSBuildUpSession.record(memoryKey, .landed, persists: true)
+    }
+
+    /// A new label is a new view in the same place (To review and Recent learning): a load still waiting for the old one
+    /// settles quietly as interrupted, never remembered as empty, and the new one opens.
+    private func relabel() {
+        guard frozen == nil else { return }
+        if var old = machine, old.phase == .grace || old.phase == .building {
+            old.update(at: Self.now(), loading: true, landed: false, interrupted: true)
+            if let outcome = old.outcome { remember(outcome, old) }
+        }
+        let next = opened(at: Self.now())
+        if next != machine { machine = next }
     }
 
     /// The view went away, or shows something else, while it was still waiting: log it, never as empty.
@@ -449,7 +483,8 @@ struct COSBuildUp<Content: View>: View {
 
     /// One breadcrumb per load the build was ready for, through the app's log: shape, outcome, rows and time, no text.
     private func remember(_ outcome: COSBuildUpMachine.Outcome, _ machine: COSBuildUpMachine) {
-        COSBuildUpSession.record(memoryKey, outcome, persists: key == nil)
+        // An interrupted load is not recorded under any key (the label may already be the next view's).
+        if outcome != .interrupted { COSBuildUpSession.record(memoryKey, outcome, persists: key == nil) }
         let started = machine.loadStarted ?? machine.opened
         let line = COSBuildUpPlan.breadcrumb(shape, outcome: outcome, rows: machine.count,
                                              ms: Int((((machine.outcomeAt ?? started) - started) * 1000).rounded()))
@@ -581,15 +616,19 @@ private struct COSBuildUpStage: View {
         let top = index == 0 ? 0 : box.minY
         let bottom = index == items.count - 1 ? max(Double(size.height), box.maxY) : COSBuildUpPlan.top(index + 1, in: items, layout: layout)
         ZStack(alignment: .topLeading) {
-            Rectangle().fill(background).opacity(curtain)
-            if item.style == .card {
-                RoundedRectangle(cornerRadius: item.radius, style: .continuous)
-                    .fill(COSPalette.card)
-                    .opacity(curtain)
-                    .frame(width: box.width, height: box.height)
-                    .mask(alignment: .leading) { Rectangle().frame(width: box.width * look.fill) }
-                    .offset(x: box.minX, y: box.minY - top)
+            // The surface and the card fill as ONE layer at the tint's alpha, so the cover drawn never passes it.
+            ZStack(alignment: .topLeading) {
+                Rectangle().fill(background)
+                if item.style == .card {
+                    RoundedRectangle(cornerRadius: item.radius, style: .continuous)
+                        .fill(COSPalette.card)
+                        .frame(width: box.width, height: box.height)
+                        .mask(alignment: .leading) { Rectangle().frame(width: box.width * look.fill) }
+                        .offset(x: box.minX, y: box.minY - top)
+                }
             }
+            .compositingGroup()
+            .opacity(curtain)
             capsules(item, look, box: box, wire: wire, bone: bone)
                 .offset(x: box.minX, y: box.minY - top)
         }
@@ -660,11 +699,16 @@ private struct COSBuildUpStage: View {
                     .frame(width: node, height: node)
                     .frame(width: 7, height: 7)
                     .opacity(1 - look.nodeFade)
-                    .offset(x: (corner % 2 == 0 ? 0 : box.width) - 3.5, y: (corner < 2 ? 0 : box.height) - 3.5)
+                    // Kept inside the view, so the clip never cuts a node in half (a row as tall as an inline view).
+                    .offset(x: nodeX(box.minX + (corner % 2 == 0 ? 0 : box.width)) - box.minX - 3.5,
+                            y: nodeY(box.minY + (corner < 2 ? 0 : box.height)) - box.minY - 3.5)
             }
         }
         .offset(x: box.minX, y: box.minY)
     }
+
+    private func nodeX(_ x: CGFloat) -> CGFloat { min(max(x, 4), max(4, size.width - 4)) }
+    private func nodeY(_ y: CGFloat) -> CGFloat { min(max(y, 4), max(4, size.height - 4)) }
 
     private func spine(_ items: [COSBuildUpItem]) -> (x: CGFloat, top: CGFloat, bottom: CGFloat)? {
         guard let x = layout.spineX, !items.isEmpty else { return nil }

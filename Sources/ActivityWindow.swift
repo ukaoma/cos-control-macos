@@ -2244,7 +2244,8 @@ struct ActivityWindow: View {
             sessionHooksBanner
             // 0.5.343: the list builds in place on first load (COSBuildUp); the chain is today's.
             COSBuildUp(.rows(6), tune: .sessions, loading: model.claudeSessionsLoading && sessions.isEmpty, landed: !sessions.isEmpty,
-                       interrupted: model.isSessionQueryActive, label: "Loading sessions") {
+                       interrupted: model.isSessionQueryActive, failed: model.claudeSessionsError != nil,
+                       timeout: ControllerModel.claudeSessionsFreshTimeout + COSBuildUpPlan.helperMargin, label: "Loading sessions") {
             if model.isSessionQueryActive {
                 sessionsSearchResults(ambiguous: ambiguous)
             } else if model.claudeSessionsLoading && sessions.isEmpty {
@@ -2356,7 +2357,8 @@ struct ActivityWindow: View {
             .padding(.horizontal, 22)
             .padding(.vertical, 12)
             // 0.5.343: the list builds in place on first load (COSBuildUp); the chain is today's.
-            COSBuildUp(.rows(6), tune: .tasks, loading: model.tasksLoading && model.tasks.isEmpty, landed: !model.tasks.isEmpty, label: "Loading tasks") {
+            COSBuildUp(.rows(6), tune: .tasks, loading: model.tasksLoading && model.tasks.isEmpty, landed: !model.tasks.isEmpty, failed: model.tasksError != nil,
+                       timeout: ControllerModel.tasksHelperTimeout + COSBuildUpPlan.helperMargin, label: "Loading tasks") {
             if model.tasksLoading && model.tasks.isEmpty {
                 centeredProgress("Loading tasks…")
             } else if let error = model.tasksError, model.tasks.isEmpty {
@@ -3172,7 +3174,7 @@ struct ActivityWindow: View {
 
             // 0.5.343: the turns build in place on first load (COSBuildUp); the chain is today's.
             COSBuildUp(.list(6), tune: .messages, loading: model.recentGlassesStatus == .loading, landed: !model.recentMessages.isEmpty,
-                       interrupted: messagesSubview == .archive, label: "Loading messages") {
+                       interrupted: messagesSubview == .archive, failed: [.error, .unauthorized, .serverStopped].contains(model.recentGlassesStatus), label: "Loading messages") {
                 VStack(spacing: 0) {
             if messagesSubview == .archive {
                 archiveBody
@@ -4031,7 +4033,7 @@ struct ActivityWindow: View {
     private var voiceDirectoryList: some View {
         // 0.5.343: the directory builds in place on first load (COSBuildUp); the chain is today's.
         COSBuildUp(.list(6), tune: .voices, loading: model.voiceDirectoryLoading && model.voiceDirectory.isEmpty, landed: !model.voiceDirectory.isEmpty,
-                   label: "Building the voice directory") {
+                   failed: model.voiceDirectoryError != nil, label: "Building the voice directory") {
         if model.voiceDirectoryLoading && model.voiceDirectory.isEmpty {
             centeredProgress("Building the voice directory…")
         } else if model.voiceDirectory.isEmpty {
@@ -4178,7 +4180,7 @@ struct ActivityWindow: View {
     private var meetingsToReviewList: some View {
         Group {
             // 0.5.343: the meetings build in place on first load (COSBuildUp); the chain is today's.
-            COSBuildUp(.list(6), loading: model.meetingsLoading, landed: !model.reviewableMeetings.isEmpty, label: "Loading meetings to review") {
+            COSBuildUp(.list(6), loading: model.meetingsLoading, landed: !model.reviewableMeetings.isEmpty, failed: model.reviewError != nil, label: "Loading meetings to review") {
             if model.meetingsLoading {
                 centeredProgress("Loading meetings…")
             } else if model.reviewableMeetings.isEmpty {
@@ -4356,7 +4358,8 @@ struct ActivityWindow: View {
             )
             // 0.5.343: the events build in place on first load (COSBuildUp); the chain is today's.
             COSBuildUp(.list(6), loading: loading && events.isEmpty, landed: !events.isEmpty,
-                       label: toReview ? "Loading the review queue" : "Loading recent learning") {
+                       failed: error != nil,
+                       timeout: ControllerModel.helperTimeout + COSBuildUpPlan.helperMargin, label: toReview ? "Loading the review queue" : "Loading recent learning") {
                 VStack(spacing: 0) {
             if loading, events.isEmpty {
                 centeredProgress(toReview ? "Loading review queue…" : "Loading recent learning…")
@@ -4765,7 +4768,7 @@ struct ActivityWindow: View {
             }
             // 0.5.343: the records build in place on first load (COSBuildUp); the chain is today's.
             COSBuildUp(.rows(6), tune: isThread ? .threads : .memories, loading: loading, landed: !records.isEmpty, interrupted: queryActive,
-                       label: "Loading \(item.title.lowercased())") {
+                       failed: error != nil, label: "Loading \(item.title.lowercased())") {
             if queryActive {
                 contextSearchResults(kind: kind, item: item)
             } else if loading {
@@ -5383,7 +5386,7 @@ struct ActivityWindow: View {
 
             // 0.5.343: the day's chats build in place on first open (COSBuildUp); the chain is today's.
             COSBuildUp(.list(6), loading: model.archiveChatsLoading, landed: !model.archiveChats.isEmpty,
-                       label: "Reading \(date)", key: AnyHashable(date)) {
+                       failed: model.archiveChatsNotice != nil, label: "Reading \(date)", key: AnyHashable(date)) {
                 VStack(spacing: 0) {
             if model.archiveChatsLoading {
                 centeredProgress("Reading \(date)…")
@@ -5510,7 +5513,7 @@ struct ActivityWindow: View {
     @ViewBuilder private func archiveChatDetail(date: String, index: Int) -> some View {
         // 0.5.343: the chat builds in place on first open (COSBuildUp); the chain is today's.
         COSBuildUp(.turns(6), loading: model.archiveMessagesLoading, landed: !model.archiveMessages.isEmpty,
-                   label: "Reading chat \(index + 1)", key: AnyHashable(date + "#" + String(index))) {
+                   failed: model.archiveMessagesNotice != nil, label: "Reading chat \(index + 1)", key: AnyHashable(date + "#" + String(index))) {
         if model.archiveMessagesLoading {
             centeredProgress("Reading chat \(index + 1)…")
         } else if let notice = model.archiveMessagesNotice {
@@ -6289,7 +6292,7 @@ struct ClaudeSessionDetailPane: View {
 
             // 0.5.343: the conversation builds in place on first open (COSBuildUp); the chain is today's.
             COSBuildUp(.turns(6), loading: !(model.openClaudeRow?.isScheduledJob ?? false) && model.claudeSessionDetailLoading && model.claudeSessionDetail == nil,
-                       landed: model.claudeSessionDetail != nil, label: "Loading session", key: model.openClaudeRow.map { AnyHashable($0.id) }) {
+                       landed: model.claudeSessionDetail != nil, failed: model.claudeSessionDetailError != nil, label: "Loading session", key: model.openClaudeRow.map { AnyHashable($0.id) }) {
                 VStack(alignment: .leading, spacing: 0) {
             if let row = model.openClaudeRow, row.isScheduledJob {
                 // 0.5.229: a scheduled job keeps no conversation; show what COS knows about the run.
@@ -8636,7 +8639,7 @@ extension ActivityWindow {
             }
             // 0.5.343: until the sources answer, the rows build in place (COSBuildUp); the switch is today's.
             COSBuildUp(.cardRows(2, badge: false), loading: line == .loading && frame.reachable && TodayHome.failed(states).isEmpty,
-                       landed: line == .rows, label: "Reading sessions and Work", background: TodayInk.panel) {
+                       landed: line == .rows, failed: !frame.reachable || !TodayHome.failed(states).isEmpty, label: "Reading sessions and Work", background: TodayInk.panel) {
                 VStack(alignment: .leading, spacing: 0) {
             switch line {
             case .rows:
@@ -8673,6 +8676,7 @@ extension ActivityWindow {
                 }
             }
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
             if !frame.reachable {
                 todayRetryLine(TodayHome.unreachableLine)
@@ -8798,7 +8802,8 @@ extension ActivityWindow {
             .padding(.bottom, 6)
             // 0.5.343: the first session read builds the rows in place (COSBuildUp); what is inside is today's.
             COSBuildUp(.cardRows(1, badge: true), loading: model.claudeSessionsEnabled && !sessionsKnown && run.shown.isEmpty && run.finished.isEmpty,
-                       landed: !run.shown.isEmpty || !run.finished.isEmpty, label: "Reading sessions", background: TodayInk.runBg) {
+                       landed: !run.shown.isEmpty || !run.finished.isEmpty, failed: model.claudeSessionsError != nil,
+                       timeout: ControllerModel.claudeSessionsFreshTimeout + COSBuildUpPlan.helperMargin, label: "Reading sessions", background: TodayInk.runBg) {
                 VStack(alignment: .leading, spacing: 0) {
             if run.shown.isEmpty && run.finished.isEmpty {
                 if model.claudeSessionsEnabled && !sessionsKnown {
@@ -8822,6 +8827,7 @@ extension ActivityWindow {
                 ForEach(Array(run.finished.enumerated()), id: \.element.id) { index, row in todayRunRow(row, compactOpen: compactOpen, rule: index > 0) }
             }
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
             if let more = run.moreLabel {
                 Button(more + ". All sessions") { select(.sessions) }.buttonStyle(TodayLinkStyle(color: TodayInk.runOpen, size: 13))

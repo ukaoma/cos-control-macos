@@ -6,11 +6,12 @@ SERIAL and slow by design: each run is one full app compile (the view needs ever
 inside Tests/run-build-up.sh, on a scratch copy of the checkout. A GREEN baseline first, then each mutant must fail the
 view lane with the behaviour it names ("check failed [<behaviour>]").
 
-Usage: python3 Tests/mutate-build-up-view.py <repo root>
+Usage: python3 Tests/mutate-build-up-view.py <repo root> [--only <name prefix>]
 """
 import pathlib, re, shutil, subprocess, sys, tempfile
 
 root = pathlib.Path(sys.argv[1]).resolve()
+only = sys.argv[sys.argv.index("--only") + 1] if "--only" in sys.argv else ""
 MOTION = "Sources/COSMotion.swift"
 MODELS = "Sources/Models.swift"
 
@@ -20,13 +21,18 @@ MUTANTS = [
      "drawT: machine.phase == .landing ? 9 : (machine.drawT(at: t) ?? 0), landT: machine.landT(at: t),", "landing continuous"),
     ("the clock never pauses", MOTION, "TimelineView(COSBuildUpSchedule(paused: !machine.needsFrames(windowActive: active)))",
      "TimelineView(COSBuildUpSchedule(paused: false))", "frames stop"),
-    ("an opaque tint", MOTION, "Rectangle().fill(background).opacity(curtain)", "Rectangle().fill(background).opacity(curtain > 0 ? 1 : 0)", "curtain light"),
+    ("an opaque tint", MOTION, "            .compositingGroup()\n            .opacity(curtain)\n", "            .compositingGroup()\n            .opacity(curtain > 0 ? 1 : 0)\n",
+     "curtain light"),
+    ("a stacked fill (0.5.343 at 32debce)", MOTION, "            ZStack(alignment: .topLeading) {\n                Rectangle().fill(background)\n                if item.style == .card {\n                    RoundedRectangle(cornerRadius: item.radius, style: .continuous)\n                        .fill(COSPalette.card)\n                        .frame(width: box.width, height: box.height)\n                        .mask(alignment: .leading) { Rectangle().frame(width: box.width * look.fill) }\n                        .offset(x: box.minX, y: box.minY - top)\n                }\n            }\n            .compositingGroup()\n            .opacity(curtain)\n",
+     "            ZStack(alignment: .topLeading) {\n                Rectangle().fill(background).opacity(curtain)\n                if item.style == .card {\n                    RoundedRectangle(cornerRadius: item.radius, style: .continuous)\n                        .fill(COSPalette.card)\n                        .opacity(curtain)\n                        .frame(width: box.width, height: box.height)\n                        .mask(alignment: .leading) { Rectangle().frame(width: box.width * look.fill) }\n                        .offset(x: box.minX, y: box.minY - top)\n                }\n            }\n", "curtain light"),
+    ("data never clears the empty mark", MOTION, "        guard frozen == nil, landed, key == nil, COSBuildUpSession.memory.empty.contains(memoryKey) else { return }",
+     "        guard frozen == nil, landed, key == nil, COSBuildUpSession.memory.empty.contains(memoryKey), false else { return }", "empty cleared"),
     ("the stage ignores the view's height", MOTION, "COSBuildUpPlan.items(shape, tune, limit: limit, fitting: height,",
      "COSBuildUpPlan.items(shape, tune, limit: limit, fitting: nil,", "fit"),
     ("the answer never re-fits", MOTION, "measured: shape == .answer && phase == .landing ? height : nil)", "measured: nil)", "answer refit"),
     ("the hand-off hides the content", MODELS, "        phase == .grace || (phase == .building && !wordsShown)",
      "        phase == .grace || phase == .handoff || (phase == .building && !wordsShown)", "never hides data"),
-    ("a seen view builds again", MOTION, "quiet: !COSBuildUpSession.memory.builds(memoryKey)", "quiet: false", "empty remembered"),
+    ("a seen view builds again", MOTION, "quiet: !enabled || !COSBuildUpSession.memory.builds(memoryKey)", "quiet: !enabled || false", "empty remembered"),
 ]
 FAILED = re.compile(r"check failed \[([^\]]+)\]")
 
@@ -57,7 +63,7 @@ try:
         sys.exit(f"baseline is not green ({verdict}: {detail})")
     print("baseline green", flush=True)
     bad = []
-    for name, path, old, new, expected in MUTANTS:
+    for name, path, old, new, expected in [m for m in MUTANTS if m[0].startswith(only)]:
         (work / path).write_text(originals[path].replace(old, new))
         verdict, detail = run(work)
         ok = verdict == "FAILED" and detail == expected
@@ -67,6 +73,8 @@ try:
         (work / path).write_text(originals[path])
     if bad:
         sys.exit(f"view mutation gate FAILED: {bad}")
-    print(f"PASS build up view mutation gate: {len(MUTANTS)} mutants, each killed by its named check, green baseline")
+    selected = len([m for m in MUTANTS if m[0].startswith(only)])
+    print(f"PASS build up view mutation gate: {selected} mutants" + (f" (of {len(MUTANTS)}, named {only!r})" if only else "")
+          + ", each killed by its named check, green baseline")
 finally:
     shutil.rmtree(work, ignore_errors=True)

@@ -4841,11 +4841,14 @@ final class ControllerModel: ObservableObject {
         }
     }
 
+    /// The tasks read's helper timeout (0.5.343: named, so the Tasks build-up waits at least this long).
+    static let tasksHelperTimeout: TimeInterval = 30
+
     private func performLoadTasks() async {
         tasksLoading = true
         defer { tasksLoading = false }
         do {
-            let response = try await helper.run(["tasks", "--limit", "30"], timeout: 30)
+            let response = try await helper.run(["tasks", "--limit", "30"], timeout: Self.tasksHelperTimeout)
             tasks = (response.details["tasks"]?.array ?? []).compactMap(TaskRow.init)
             tasksError = nil
         } catch {
@@ -5007,7 +5010,7 @@ final class ControllerModel: ObservableObject {
     /// `/api/claude-sessions` (timeout+2). It no longer waits on the 7-day walk.
     private static let petLiveHelperTimeout: TimeInterval = 12 + 2 + 5
     private static let claudeSessionsQuickTimeout: TimeInterval = 8
-    private static let claudeSessionsFreshTimeout: TimeInterval = 60
+    static let claudeSessionsFreshTimeout: TimeInterval = 60
     private var claudeSessionsLoadInFlight: Task<Void, Never>?
     private var claudeSessionsCacheSavedAt: Date?
 
@@ -8785,7 +8788,7 @@ final class ControllerModel: ObservableObject {
     @Published var graphBuildState: String?
     @Published var graphBuildNote: String?
     private var graphBuildTask: Task<Void, Never>?
-    private static let helperTimeout: TimeInterval = 30
+    static let helperTimeout: TimeInterval = 30
 
     var graphRouteActive: Bool {
         graphEntity != nil || graphEntityLoading || graphEntityError != nil

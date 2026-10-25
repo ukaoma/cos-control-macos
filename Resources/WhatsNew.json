@@ -8,7 +8,7 @@
         "items": [
           "Meetings, Sessions, Tasks, Memories, Threads, Speakers, Messages, a meeting's page, a session and Today's Needs you and Running cards draw the outline of their rows while they load, then fill in with your data.",
           "A Meeting Ask answer draws its outline in the line where it will appear while COS reads the meeting.",
-          "Your data shows the moment it arrives, readable and ready to click. Loads that finish quickly show it directly. A view you already opened this session updates as before, and a view that was empty last time shows its usual loading line.",
+          "Your data shows the moment it arrives, readable and ready to click. Loads that finish quickly show it directly, and a view you already opened this session updates as before. A view whose last load came back empty shows its usual loading line next time, until it has data again; an error is never counted as empty.",
           "If a load takes more than a few seconds, the usual loading words show. Errors and empty results show at once, with the same message and buttons as before.",
           "Nothing changes size while it loads. Reduce Motion turns the outline off, and VoiceOver hears what is loading."
         ]

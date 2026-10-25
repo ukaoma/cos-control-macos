@@ -16,28 +16,33 @@ spinner. Fast loads skip it, and Reduce Motion turns it off.
   Running cards. Record, lesson and entity details are not wrapped: their data is set at once, so they never waited.
 - **The sequence.** While loading: (1) the outline traces on (640 ms), (2) four corner nodes pop (260 ms), (3) traces wire
   each row to a spine on the left, (4) the text draws as outlined capsules (440 ms), 50 ms apart, on
-  cubic-bezier(.16,.84,.24,1); a bright segment flows down the spine and the first corner nodes ping for three cycles,
-  then the wire stands still. After 3 s today's loading words show and the capsules fade from them. When the data
+  cubic-bezier(.16,.84,.24,1); a bright segment flows down the spine three times and the first corner nodes ping until it
+  stops (three times for the first row), then the wire stands still. After 3 s today's loading words show and the capsules fade from them. When the data
   lands it shows at once, readable and clickable, under a tint of the surface (at most 35%) that wipes away left to
   right from the data and is gone by 300 ms; the outline hands over to the real borders and the traces fade (all done
   by 450 ms). The draw keeps its own clock through the landing; the settle is derived from the same steps.
-- **Rows where the rows are.** Each list's wire uses that list's measured geometry (Sessions, Tasks, Memories,
-  Threads, Messages, the voice directory); the Meetings, Sessions, Memories and Threads wires sit within 1 pt of the
-  real rows. The wire fits the view (at most 8 rows) and follows a resize.
+- **Rows where the rows are.** Each list's wire uses that list's own geometry (`COSBuildUpTune`). For Meetings,
+  Sessions, Memories, Threads and Messages it is measured: the view lane checks the wire's rows are within 1 pt of the
+  real rows on the pixels of the real Activity window. Tasks and the voice directory take theirs from the row layout
+  code. The wire fits the view (at most 8 rows) and follows a resize. The Today cards' wire spans the card.
 - **No extra height.** An inline view (the answer, the two Today cards) is never resized: the wire draws inside
   today's loading line. A pane fills its own space and the wire is clipped to it.
 - **No regressions by construction.** The wrapped view is always laid out and live, so its loads, tasks, polling,
   error and empty paths run exactly as before; while the wire stands in for it, it is only hidden. An error, an empty
-  answer or the timeout (20 s, 35 s for an answer, past Meeting Ask's 30 s) shows today's view at once and the wire
-  fades over it in 200 ms. Data inside 150 ms shows directly. The build plays once per view per app session; a view
-  whose last load was empty (kept across launches, by label only) shows today's loading line with no wire; a search
-  or tab switch during the first load settles quietly and is not remembered. A new load mid-landing settles first.
+  answer or the timeout (each site's helper timeout plus 5 s: Tasks 35 s, Sessions 65 s, Meeting Ask 35 s, learning
+  35 s, otherwise 35 s) shows today's view at once and the wire fades over it in 200 ms. Data inside 150 ms shows
+  directly. The build plays once per view per app session. A view whose last load came back empty (kept across
+  launches, by label only, never for an error) shows today's loading line with no wire until it has data again, which
+  clears it. A search or tab switch during the first load (including To review and Recent learning) settles quietly
+  and is not remembered. A new load mid-landing settles first. Work's meeting picker never builds.
 - **Accessibility, cost and logs.** Placeholder layers are hidden from accessibility; the container reads "Loading
-  meetings" (and so on) while it builds. Reduce Motion: the 150 ms grace, then today's loading view, never a wire. One
-  clock (a TimelineView) exists only while the wire is on screen and pauses whenever nothing moves. The wire's colour
+  meetings" (and so on) while it builds. Reduce Motion (latched once seen): the 150 ms grace, then today's loading
+  view, never a wire. One clock (a TimelineView) exists only while the wire is on screen and pauses whenever nothing
+  moves (it keeps running through the 300 ms fade of the wire text at 3 s, even in an inactive window). The tint is one
+  layer (surface and card fill composited), so what is drawn never passes 35%. The wire's colour
   follows the surface it is on, so the dark Running card gets the gold in light mode too. One breadcrumb per load in
-  the app's log (`build-up`: shape, outcome, rows, milliseconds; outcomes landed, direct, empty, timeout, still,
-  interrupted, abandoned; never text).
+  the app's log (`build-up`: shape, outcome, rows, milliseconds; outcomes landed, direct, empty, failed, timeout,
+  still, interrupted, abandoned; never text; a load that never started logs nothing).
 - Motion tokens (`Motion.quick`, `Motion.fast`, `Motion.gated` in COSMotion.swift): the transcript fold, the
   setup-guide scroll and the chat match scroll no longer animate under Reduce Motion.
 

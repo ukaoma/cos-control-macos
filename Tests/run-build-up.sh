@@ -30,7 +30,10 @@ if [[ "$LANE" == "all" || "$LANE" == "view" ]]; then
   trap 'rm -f "$BIN"; rm -rf "$VIEW"' EXIT
   /usr/bin/python3 "$ROOT/Tests/kit-compile.py" "$ROOT/Tests/compile-guard.sh" swiftc -target arm64-apple-macosx14.0 -swift-version 6 -strict-concurrency=complete -parse-as-library \
     "${SOURCES[@]}" "$ROOT/Tests/BuildUpViewChecks.swift" -framework SwiftUI -framework AppKit -framework ServiceManagement -framework WebKit -o "$VIEW/view-checks"
-  mkdir -p "$VIEW/home"
+  mkdir -p "$VIEW/home" "$VIEW/Fonts"
+  # The app's fonts and marks beside the binary, as in the app bundle, so rows measure as they ship.
+  cp "$ROOT/Resources/Fonts/"*.ttf "$VIEW/Fonts/"
+  cp "$ROOT/Resources/"*.svg "$VIEW/"
   OUT="$(CFFIXED_USER_HOME="$VIEW/home" HOME="$VIEW/home" COS_CONTROL_TEST_HOME="$VIEW/home" "$VIEW/view-checks")" || { print -r -- "$OUT"; exit 1; }
   print -r -- "$OUT"
   COUNT="${${OUT##*build up view: }%% checks*}"

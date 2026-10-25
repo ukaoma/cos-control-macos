@@ -30,6 +30,8 @@ import SwiftUI
         @Published var interrupted = false
         @Published var height: CGFloat = 420
         @Published var gone = false
+        @Published var failed = false
+        @Published var label = ""
     }
 
     /// A pane whose content can be taken away (a navigation mid-build).
@@ -45,7 +47,8 @@ import SwiftUI
         let shape: COSBuildUpShape
         let label: String
         var body: some View {
-            COSBuildUp(shape, loading: loader.loading && !loader.landed, landed: loader.landed, interrupted: loader.interrupted, label: label) {
+            COSBuildUp(shape, loading: loader.loading && !loader.landed, landed: loader.landed, interrupted: loader.interrupted, failed: loader.failed,
+                       label: loader.label.isEmpty ? label : loader.label) {
                 if loader.landed {
                     VStack(spacing: 6) { ForEach(0..<4, id: \.self) { Text("Row \($0)").frame(maxWidth: .infinity).cosRowCard() } }
                         .padding(22)
@@ -129,6 +132,8 @@ import SwiftUI
         fitting()
         answer()
         heights()
+        cover()
+        geometry()
         print("build up view: \(ran) checks; the real stage and a real Sessions list drew, landed readable with no jump and stopped; "
               + "the pulse, the hand-off, the grace, interrupted, empty across a relaunch, abandoned, the fit, the answer, the heights")
     }
@@ -323,9 +328,46 @@ import SwiftUI
         }
         check(abandoned.crumbs.count == 1 && abandoned.crumbs[0].hasPrefix("build-up rows outcome=abandoned"), "abandoned", "\(abandoned.crumbs)")
 
-        // A view this session has seen (the fast one, after the relaunch) reopens quietly.
+        // The empty view has data again: it opened quiet (no frames), and its data clears the mark, so the next launch builds.
+        let back = Loader()
+        let data = run(Host(loader: back, shape: .rows(4), label: "Loading rows empty"), for: 0.9) { t in
+            if t >= 0.4, back.loading { back.landed = true }
+        }
+        check(data.frames.isEmpty, "empty remembered", "the remembered view stayed quiet: \(data.frames.count) frames")
+        check(!(UserDefaults.standard.stringArray(forKey: COSBuildUpSession.emptyKey) ?? []).contains("Loading rows empty|"), "empty cleared",
+              "data clears the mark: \(String(describing: UserDefaults.standard.stringArray(forKey: COSBuildUpSession.emptyKey)))")
+        COSBuildUpSession.memory = COSBuildUpMemory(empty: UserDefaults.standard.stringArray(forKey: COSBuildUpSession.emptyKey) ?? [])
+        let rebuilt = Loader()
+        let builds = run(Host(loader: rebuilt, shape: .rows(4), label: "Loading rows empty"), for: 1.2) { t in
+            if t >= 0.6, !rebuilt.landed { rebuilt.landed = true }
+        }
+        check(!builds.frames.isEmpty && builds.crumbs.first?.hasPrefix("build-up rows outcome=landed") == true, "empty cleared",
+              "the next launch builds again: \(builds.frames.count) frames, \(builds.crumbs)")
+
+        // A failed load: handed off as failed, never kept as empty.
+        let broken = Loader()
+        let failed = run(Host(loader: broken, shape: .rows(4), label: "Loading rows failed"), for: 1.2) { t in
+            if t >= 0.6, broken.loading { broken.failed = true; broken.loading = false }
+        }
+        check(failed.crumbs.count == 1 && failed.crumbs[0].hasPrefix("build-up rows outcome=failed"), "failed", "\(failed.crumbs)")
+        check(!(UserDefaults.standard.stringArray(forKey: COSBuildUpSession.emptyKey) ?? []).contains("Loading rows failed|"), "failed",
+              "an error is never kept as empty")
+
+        // A tab switch mid-build (To review and Recent learning share a place): the old load is interrupted, the new one opens.
+        let tabs = Loader()
+        tabs.label = "Loading tab one"
+        let switched = run(Host(loader: tabs, shape: .rows(4), label: ""), for: 1.4) { t in
+            if t >= 0.5, tabs.label == "Loading tab one" { tabs.label = "Loading tab two" }
+            if t >= 1.0, !tabs.landed { tabs.landed = true }
+        }
+        check(switched.crumbs.first?.hasPrefix("build-up rows outcome=interrupted") == true && switched.crumbs.count == 2
+              && switched.crumbs[1].hasPrefix("build-up rows outcome=landed"), "relabel", "\(switched.crumbs)")
+        check(!(UserDefaults.standard.stringArray(forKey: COSBuildUpSession.emptyKey) ?? []).contains { $0.hasPrefix("Loading tab") }, "relabel",
+              "a switch is never kept as empty")
+
+        // A view this session has seen (the one that just built again after the relaunch) reopens quietly.
         let seen = Loader()
-        let quiet = run(Host(loader: seen, shape: .rows(4), label: "Loading rows fast"), for: 1.0) { t in
+        let quiet = run(Host(loader: seen, shape: .rows(4), label: "Loading rows empty"), for: 1.0) { t in
             if t >= 0.6, !seen.landed { seen.landed = true }
         }
         check(quiet.frames.isEmpty && quiet.crumbs.isEmpty, "reopen quiet", "a seen view built again: \(quiet.frames.count) frames, \(quiet.crumbs)")
@@ -373,14 +415,14 @@ import SwiftUI
                 ("typical", AnyView(Text(String(repeating: "The offer stays live through October 31. ", count: 5)).font(COSType.body(13)).fixedSize(horizontal: false, vertical: true))),
             ]),
             ("needs you", .cardRows(2, badge: false), COSPalette.card, [
-                ("loading", AnyView(VStack(alignment: .leading, spacing: 0) { Text(TodayHome.loadingLine).font(COSType.body(13.5)).padding(.horizontal, 18).padding(.bottom, 18) })),
-                ("empty", AnyView(VStack(alignment: .leading, spacing: 6) { Text(TodayHome.caughtUpLine).font(COSType.display(20)); Text("Checked at 9:41.").font(COSType.body(12)) }.padding(.horizontal, 18).padding(.bottom, 18))),
-                ("typical", AnyView(VStack(alignment: .leading, spacing: 0) { ForEach(0..<3, id: \.self) { _ in VStack(alignment: .leading, spacing: 3) { Text("Name 2 voices").font(COSType.body(14, weight: .semibold)); Text("Speakers").font(COSType.body(12.5)) }.padding(.horizontal, 18).padding(.vertical, 12) } })),
+                ("loading", AnyView(VStack(alignment: .leading, spacing: 0) { Text(TodayHome.loadingLine).font(COSType.body(13.5)).padding(.horizontal, 18).padding(.bottom, 18) }.frame(maxWidth: .infinity, alignment: .leading))),
+                ("empty", AnyView(VStack(alignment: .leading, spacing: 0) { VStack(alignment: .leading, spacing: 6) { Text(TodayHome.caughtUpLine).font(COSType.display(20)); Text("Checked at 9:41.").font(COSType.body(12)) }.padding(.horizontal, 18).padding(.bottom, 18) }.frame(maxWidth: .infinity, alignment: .leading))),
+                ("typical", AnyView(VStack(alignment: .leading, spacing: 0) { ForEach(0..<3, id: \.self) { _ in VStack(alignment: .leading, spacing: 3) { Text("Name 2 voices").font(COSType.body(14, weight: .semibold)); Text("Speakers").font(COSType.body(12.5)) }.padding(.horizontal, 18).padding(.vertical, 12) } }.frame(maxWidth: .infinity, alignment: .leading))),
             ]),
             ("running", .cardRows(1, badge: true), COSPalette.ink, [
-                ("loading", AnyView(Text("Reading sessions").font(COSType.body(13.5)).padding(.top, 4).padding(.bottom, 10))),
-                ("empty", AnyView(Text("Nothing is running.").font(COSType.body(13.5)).padding(.top, 4).padding(.bottom, 10))),
-                ("typical", AnyView(VStack(spacing: 0) { ForEach(0..<2, id: \.self) { _ in HStack { Text("CLAUDE").frame(width: 84); Text("Holiday promo landing page").font(COSType.body(14, weight: .semibold)) }.padding(.vertical, 10) } })),
+                ("loading", AnyView(VStack(alignment: .leading, spacing: 0) { Text("Reading sessions").font(COSType.body(13.5)).padding(.top, 4).padding(.bottom, 10) }.frame(maxWidth: .infinity, alignment: .leading))),
+                ("empty", AnyView(VStack(alignment: .leading, spacing: 0) { Text("Nothing is running.").font(COSType.body(13.5)).padding(.top, 4).padding(.bottom, 10) }.frame(maxWidth: .infinity, alignment: .leading))),
+                ("typical", AnyView(VStack(alignment: .leading, spacing: 0) { ForEach(0..<2, id: \.self) { _ in HStack { Text("CLAUDE").frame(width: 84); Text("Holiday promo landing page").font(COSType.body(14, weight: .semibold)) }.padding(.vertical, 10) } }.frame(maxWidth: .infinity, alignment: .leading))),
             ]),
         ]
         for (name, shape, background, states) in sites {
@@ -393,8 +435,178 @@ import SwiftUI
                     check(abs(built - today) < 0.5, "no extra height", "\(name) \(state) \(frame.phase): 0.5.342 \(today) pt, 0.5.343 \(built) pt")
                     seen.append(built)
                 }
+                if name == "needs you", state == "loading" {
+                    var width: CGFloat = 0
+                    COSBuildUpProbe.stage = { width = $0.rects.first?.width ?? 0 }
+                    _ = bitmap(COSBuildUp(shape, loading: true, landed: false, label: "Heights", background: background, frozen: .init(phase: .building, drawT: 1.4)) { content }
+                        .frame(width: 480).frame(maxHeight: .infinity, alignment: .top), size: CGSize(width: 480, height: 200))
+                    COSBuildUpProbe.stage = nil
+                    check(width > 400, "needs you width", "the Needs you wire spans the card, not just its words: \(width) pt")
+                }
                 print("height \(name) \(state): 0.5.342 \(String(format: "%.1f", today)) pt; 0.5.343 \(seen.map { String(format: "%.1f", $0) }.joined(separator: " / ")) pt (grace / wire / words / landing / hand-off)")
             }
         }
     }
+
+    // MARK: The tint as drawn: one layer, never more than 35%, read on the pixels at landT 0.03 s
+
+    static func cover() {
+        // Black content under a white surface: a grey pixel's luminance is the cover drawn over the content there.
+        let host = COSBuildUp(.rows(4), loading: true, landed: false, label: "Cover", background: .white,
+                              frozen: COSBuildUpFrame(phase: .landing, drawT: 2, phaseT: 0.03)) { Color.black }
+        let view = AnyView(host.frame(width: 520, height: 420).environment(\.colorScheme, .light))
+        let hosting = NSHostingView(rootView: view)
+        let window = NSWindow(contentRect: NSRect(x: -20000, y: -20000, width: 520, height: 420), styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.appearance = NSAppearance(named: .aqua); hosting.appearance = NSAppearance(named: .aqua)
+        window.contentView = hosting
+        hosting.frame = NSRect(x: 0, y: 0, width: 520, height: 420)
+        for _ in 0..<6 { RunLoop.main.run(until: Date().addingTimeInterval(0.08)); hosting.layoutSubtreeIfNeeded() }
+        hosting.displayIfNeeded()
+        let rep = hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds)!
+        hosting.cacheDisplay(in: hosting.bounds, to: rep)
+        window.contentView = nil
+        window.close()
+        var most = 0.0, grey = 0
+        var buckets = [Int](repeating: 0, count: 10)
+        let scale = CGFloat(rep.pixelsWide) / 520
+        // Clear of the corner nodes and the spine: from 30 pt inside the rows' left edge to 30 pt inside their right.
+        let x0 = Int((22 + 30) * scale), x1 = Int((520 - 22 - 30) * scale)
+        for y in stride(from: 0, to: rep.pixelsHigh, by: 2) {
+            for x in stride(from: x0, to: x1, by: 2) {
+                guard let c = rep.colorAt(x: x, y: y)?.usingColorSpace(.sRGB) else { continue }
+                // The wire's lines are tinted gold or brown; the tint over black is grey.
+                guard abs(c.redComponent - c.blueComponent) < 0.02, abs(c.redComponent - c.greenComponent) < 0.02 else { continue }
+                let lum = Double(0.2126 * c.redComponent + 0.7152 * c.greenComponent + 0.0722 * c.blueComponent)
+                // The wire's corner and junction nodes are filled with the surface (white here): left out.
+                guard lum < 0.9 else { continue }
+                grey += 1
+                buckets[min(9, Int(lum * 10))] += 1
+                most = max(most, lum)
+            }
+        }
+        // The reference: the same pipeline drawing ONE white layer at the tint's alpha over black. Two layers stacked (the
+        // surface and the card fill each at 35%) would draw about 58% instead.
+        let reference = bitmap(ZStack { Color.black; Color.white.opacity(COSBuildUpPlan.curtainAlpha) }, size: CGSize(width: 40, height: 40))
+        let one = luminance(reference, reference.pixelsWide / 2, reference.pixelsHigh / 2)
+        let limit = one + 0.03
+        check(grey > 1000 && most > one - 0.05 && most <= limit, "curtain light", "the cover drawn reaches \(most) (one layer at the tint draws \(one), limit \(limit)) over \(grey) grey pixels; by tenths \(buckets)")
+    }
+
+    // MARK: Geometry parity: the wire's rows against the real rows, on the pixels of the real Activity window
+
+    struct Site { let name: String; let section: ActivitySection; let kind: String; let fill: (ControllerModel) -> Void; let dividers: Bool }
+
+    static func geometry() {
+        UserDefaults.standard.set(false, forKey: TodayHome.enabledKey)
+        let now = Date()
+        func iso(_ m: Double) -> String { ISO8601DateFormatter().string(from: now.addingTimeInterval(-m * 60)) }
+        let day = String(iso(0).prefix(10))
+        let sites = [
+            Site(name: "meetings", section: .meetings, kind: "rows", fill: { model in
+                model.libraryMonth = String(day.prefix(7))
+                model.libraryMeetings = (0..<8).compactMap { LibraryMeeting(.object(["filename": .string("\(day)_M_\($0).md"), "month": .string(String(day.prefix(7))),
+                                                                                       "domain": .string("quilt"), "title": .string("Meeting \($0)"), "date": .string(day)])) }
+            }, dividers: false),
+            Site(name: "sessions", section: .sessions, kind: "rows", fill: { model in
+                model.claudeSessionsEnabled = true
+                model.claudeSessions = (0..<8).compactMap { ClaudeSession(.object(["id": .string("s\($0)"), "provider": .string("claude"), "name": .string("Session \($0)"),
+                                                                                    "state": .string("recent"), "updatedAt": .string(iso(Double($0 * 30))), "workspace": .string("MU-Chief-Staff")])) }
+            }, dividers: false),
+            Site(name: "memories", section: .memories, kind: "rows", fill: { model in
+                model.memoryRecords = (0..<8).map { ContextRecord.memory(["id": .string("m\($0)"), "content": .string("Memory number \($0) about the October offer"),
+                                                                          "created_at": .string(iso(Double($0 * 60)))]) }
+            }, dividers: false),
+            Site(name: "threads", section: .threads, kind: "rows", fill: { model in
+                model.threadRecords = (0..<8).map { ContextRecord.thread(["id": .string("th\($0)"), "name": .string("Thread \($0)"), "last_seen": .string(iso(Double($0 * 90)))]) }
+            }, dividers: false),
+            Site(name: "messages", section: .messages, kind: "list", fill: { model in
+                model.recentMessages = (0..<8).map { GlassesTurn(id: "g\($0)", no: 300 - $0, timestamp: now.addingTimeInterval(Double(-$0) * 3600).timeIntervalSince1970,
+                                                                 query: "Question \($0)", text: "", sessionId: "s", source: "G2") }
+                model.recentGlassesStatus = .ready
+            }, dividers: true),
+        ]
+        for site in sites {
+            func window() -> some View {
+                let model = ControllerModel(startBackgroundWork: false)
+                model.petEnabled = false
+                var status = model.status
+                status.running = true; status.memoryAvailable = true; status.memoryCount = 412; status.threadsAvailable = true; status.threadCount = 66
+                model.status = status
+                site.fill(model)
+                model.activityOpenSection = site.section
+                return ActivityWindow(model: model).frame(width: 900, height: 1100)
+            }
+            var probe: COSBuildUpProbeFrame?
+            COSBuildUpProbe.stage = { if $0.kind == site.kind { probe = $0 } }
+            COSBuildUpProbe.freeze = COSBuildUpFrame(phase: .landing, drawT: 2, phaseT: 0)
+            _ = bitmap(window(), size: CGSize(width: 900, height: 1100))
+            COSBuildUpProbe.freeze = nil
+            COSBuildUpProbe.stage = nil
+            let rep = bitmap(window(), size: CGSize(width: 900, height: 1100))
+            guard let probe else { check(false, "geometry parity", "\(site.name): no build-up on screen"); continue }
+            let scale = CGFloat(rep.pixelsWide) / 900
+            let wire = probe.rects.prefix(4).map { (Double($0.minY), Double($0.height)) }
+            let real = site.dividers ? dividedRows(rep, scale: scale, frame: probe.frame) : cardRows(rep, scale: scale, frame: probe.frame)
+            func fmt(_ list: [(Double, Double)]) -> String { list.prefix(4).map { "y\(Int($0.0.rounded())) h\(Int($0.1.rounded()))" }.joined(separator: ", ") }
+            print("geometry \(site.name): real \(fmt(real)) | wire \(fmt(wire))")
+            check(real.count >= 4 && wire.count >= 3, "geometry parity", "\(site.name): rows found \(real.count), wire \(wire.count)")
+            for (r, w) in zip(real, wire) {
+                check(abs(r.0 - w.0) <= 1.01 && abs(r.1 - w.1) <= 1.01, "geometry parity", "\(site.name): real \(fmt(real)) vs wire \(fmt(wire))")
+            }
+        }
+    }
+
+    static func bitmap(_ view: some View, size: CGSize) -> NSBitmapImageRep {
+        let host = NSHostingView(rootView: AnyView(view.background(COSPalette.panel)))
+        let window = NSWindow(contentRect: NSRect(x: -20000, y: -20000, width: size.width, height: size.height), styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.appearance = NSAppearance(named: .aqua); host.appearance = NSAppearance(named: .aqua)
+        window.contentView = host
+        host.frame = NSRect(origin: .zero, size: size)
+        for _ in 0..<8 { RunLoop.main.run(until: Date().addingTimeInterval(0.1)); host.layoutSubtreeIfNeeded() }
+        host.displayIfNeeded()
+        let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds)!
+        host.cacheDisplay(in: host.bounds, to: rep)
+        window.contentView = nil
+        window.close()
+        return rep
+    }
+
+    /// Runs of card fill down the middle of the wire's frame: each run is a row card (top and height in points from the
+    /// frame's top).
+    static func cardRows(_ rep: NSBitmapImageRep, scale: CGFloat, frame: CGRect) -> [(Double, Double)] {
+        let x = Int((frame.minX + frame.width * 0.5) * scale)
+        let top = Int(frame.minY * scale)
+        var rows: [(Double, Double)] = []
+        var start: Int?
+        for y in top..<min(rep.pixelsHigh, Int(frame.maxY * scale)) {
+            let c = rep.colorAt(x: x, y: y)?.usingColorSpace(.sRGB)
+            let white = (c?.redComponent ?? 0) > 0.985 && (c?.greenComponent ?? 0) > 0.985 && (c?.blueComponent ?? 0) > 0.985
+            if white, start == nil { start = y }
+            if !white, let s = start { rows.append((Double(CGFloat(s - top) / scale), Double(CGFloat(y - s) / scale))); start = nil }
+        }
+        return rows.filter { $0.1 > 12 }
+    }
+
+    /// A divided list: the 1 pt rules between rows, found where three points across the right half are all a little darker
+    /// than the surface. Each row runs from the rule above it (or the first rule less a row) to the rule below.
+    static func dividedRows(_ rep: NSBitmapImageRep, scale: CGFloat, frame: CGRect) -> [(Double, Double)] {
+        let top = Int(frame.minY * scale)
+        let xs = [0.62, 0.75, 0.88].map { Int((frame.minX + frame.width * $0) * scale) }
+        let surface = luminance(rep, xs[0], top + 2)
+        var rules: [Double] = []
+        var last = -10
+        for y in top..<min(rep.pixelsHigh, Int(frame.maxY * scale)) {
+            let dim = xs.allSatisfy { luminance(rep, $0, y) < surface - 0.03 && luminance(rep, $0, y) > surface - 0.35 }
+            if dim, y - last > 4 { rules.append(Double(CGFloat(y - top) / scale)) }
+            if dim { last = y }
+        }
+        guard rules.count >= 2 else { return [] }
+        let pitch = rules[1] - rules[0]
+        var rows: [(Double, Double)] = [(rules[0] - (pitch - 1), pitch - 1)]
+        for k in 0..<(rules.count - 1) { rows.append((rules[k] + 1, rules[k + 1] - rules[k] - 1)) }
+        return rows
+    }
+
 }

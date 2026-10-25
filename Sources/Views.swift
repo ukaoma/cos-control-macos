@@ -3750,7 +3750,7 @@ struct SpeakerReviewPane: View {
 
             // 0.5.343: the transcript builds in place on first open (COSBuildUp); the chain is today's.
             COSBuildUp(.turns(6), loading: model.reviewLoading, landed: model.openReview != nil && !model.reviewLoading,
-                       label: "Reading the transcript", key: model.reviewRequest.map { AnyHashable($0) }) {
+                       failed: model.reviewError != nil, label: "Reading the transcript", key: model.reviewRequest.map { AnyHashable($0) }) {
             if model.reviewLoading {
                 ProgressView("Reading the transcript…")
                     .font(.system(size: 12))

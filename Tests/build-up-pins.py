@@ -55,11 +55,13 @@ def body(src, opener):
 # Every class-A call site: (file, the label it declares, the shape, today's loading view that must stay inside it, today's
 # error or empty copy that must stay inside it, what else its arguments must say).
 SITES = [
-    ("meetings", '"Loading meetings") { libraryContent }', ".rows(6)", None, None, ["interrupted: model.isLibraryQueryActive"]),
+    ("meetings", '"Loading meetings") { libraryContent }', ".rows(6)", None, None, ["interrupted: model.isLibraryQueryActive", "enabled: !selectionOnly",
+                                                                                "failed: model.libraryError != nil"]),
     ("meetings", 'label: "Loading meeting", key:', ".summary(turns: 5)", 'ProgressView("Loading meeting…")', 'Button("Retry") { model.openLibraryMeeting(row) }', []),
     ("window", 'label: "Loading sessions")', ".rows(6)", 'centeredProgress("Loading sessions…")', "emptyState(.sessions, text: sessionsEmptyCopy)",
-     ["tune: .sessions", "interrupted: model.isSessionQueryActive"]),
-    ("window", 'label: "Loading tasks")', ".rows(6)", 'centeredProgress("Loading tasks…")', 'emptyState(.tasks, text: "No open tasks.', ["tune: .tasks"]),
+     ["tune: .sessions", "interrupted: model.isSessionQueryActive", "timeout: ControllerModel.claudeSessionsFreshTimeout + COSBuildUpPlan.helperMargin"]),
+    ("window", 'label: "Loading tasks")', ".rows(6)", 'centeredProgress("Loading tasks…")', 'emptyState(.tasks, text: "No open tasks.',
+     ["tune: .tasks", "failed: model.tasksError != nil", "timeout: ControllerModel.tasksHelperTimeout + COSBuildUpPlan.helperMargin"]),
     ("window", 'label: "Loading messages")', ".list(6)", 'centeredProgress("Loading messages…")', "emptyState(.messages, text: messagesEmptyCopy)",
      ["tune: .messages", "interrupted: messagesSubview == .archive"]),
     ("window", 'label: "Building the voice directory")', ".list(6)", 'centeredProgress("Building the voice directory…")', None, ["tune: .voices"]),
@@ -72,11 +74,12 @@ SITES = [
     ("window", 'label: "Reading chat \\(index + 1)"', ".turns(6)", 'centeredProgress("Reading chat \\(index + 1)…")', '"That chat holds no messages."', []),
     ("window", 'label: "Loading session", key:', ".turns(6)", 'ProgressView("Loading session…")', "ScheduledJobFacts(row: row)", []),
     ("window", 'label: "Reading sessions and Work", background: TodayInk.panel)', ".cardRows(2, badge: false)", "Text(TodayHome.loadingLine)",
-     "Text(TodayHome.caughtUpLine)", []),
+     "Text(TodayHome.caughtUpLine)", ["failed: !frame.reachable || !TodayHome.failed(states).isEmpty"]),
     ("window", 'label: "Reading sessions", background: TodayInk.runBg)', ".cardRows(1, badge: true)", 'Text("Reading sessions")', 'Text("Nothing is running.")', []),
     ("views", 'label: "Reading the transcript", key: model.reviewRequest.map { AnyHashable($0) })', ".turns(6)", 'ProgressView("Reading the transcript…")',
      'Button("Try again") { model.retryOpenReview() }', ["loading: model.reviewLoading, landed: model.openReview != nil && !model.reviewLoading"]),
-    ("ask", 'label: "Checking the meeting", key: AnyHashable(exchange.id), background: COSPalette.raised)', ".answer", '"Checking the meeting…"', '"No answer · "', []),
+    ("ask", 'label: "Checking the meeting", key: AnyHashable(exchange.id), background: COSPalette.raised)', ".answer", '"Checking the meeting…"', '"No answer · "',
+     ["failed: exchange.error != nil", "timeout: MeetingAskStore.helperTimeout + COSBuildUpPlan.helperMargin"]),
 ]
 
 
@@ -84,7 +87,7 @@ def site_body(src, label):
     pin(src.count(label) == 1, "call site", f"{label!r} must appear exactly once")
     at = src.index(label)
     start = src.rindex("COSBuildUp(", 0, at)
-    pin(at - start < 400, "call site", f"{label!r} is not an argument of a COSBuildUp call")
+    pin(at - start < 700, "call site", f"{label!r} is not an argument of a COSBuildUp call")
     close = src.index(") {", at)
     return src[start:close], braced(src, close + 2)
 
@@ -131,13 +134,22 @@ def check(src):
     # 4. Reduce Motion, the memory, interruptions and the machine.
     pin("@Environment(\\.accessibilityReduceMotion) private var reduceMotion" in component, "reduce motion", "the component reads it")
     pin("reduceMotion: reduceMotion," in component and ".onChange(of: reduceMotion) { _, _ in step() }" in view
-        and "reduceMotion: reduceMotion, interrupted: interrupted)" in component, "reduce motion", "every machine sees it, and a change mid-build settles")
+        and "reduceMotion: reduceMotion, interrupted: interrupted," in component, "reduce motion",
+        "every machine sees it, and a change mid-build settles")
+    pin(".onChange(of: failed) { _, _ in step() }" in view and "interrupted: interrupted,\n                    failed: failed)" in body(component, "    private func step() {"), "failed",
+        "the site's error flag reaches the machine, so an error is never kept as empty")
+    clear = body(component, "    private func clearEmptyOnData() {")
+    pin("landed, key == nil, COSBuildUpSession.memory.empty.contains(memoryKey)" in clear and "COSBuildUpSession.record(memoryKey, .landed, persists: true)" in clear
+        and component.count("clearEmptyOnData()") == 3, "empty cleared", "a remembered empty view that has data again is cleared, on open and on every change")
+    pin(".onChange(of: label) { _, _ in relabel() }" in view and "old.update(at: Self.now(), loading: true, landed: false, interrupted: true)" in component,
+        "relabel", "a new label mid-build interrupts the old load")
+    pin("quiet: !enabled ||" in component, "enabled", "a disabled site never builds")
     pin(".onChange(of: loading) { _, _ in step() }" in view and ".onChange(of: landed) { _, _ in step() }" in view
         and ".onChange(of: interrupted) { _, _ in step() }" in view and ".onChange(of: key) { _, _ in reopen() }" in view, "machine fed",
         "loading, landed, an interruption and the shown thing drive the machine")
     task = view[view.index(".task(id: frozen == nil ? machine?.deadline : nil) {"):]
     pin("while !Task.isCancelled, Self.now() < deadline {" in task, "machine fed", "the wake sleeps until the deadline has passed, however early it wakes")
-    pin("quiet: !COSBuildUpSession.memory.builds(memoryKey)" in component and "COSBuildUpSession.record(memoryKey, outcome, persists: key == nil)" in component,
+    pin("|| !COSBuildUpSession.memory.builds(memoryKey)" in component and "COSBuildUpSession.record(memoryKey, outcome, persists: key == nil)" in component,
         "memory", "a view seen this session, or empty last time, opens quietly; only label keys are kept")
     session = body(motion, "@MainActor enum COSBuildUpSession {")
     pin('UserDefaults.standard.stringArray(forKey: emptyKey)' in session and "UserDefaults.standard.set(memory.empty, forKey: emptyKey)" in session,
@@ -166,8 +178,8 @@ def check(src):
     pin("COSBuildUpPlan.look($0, drawT: drawT, landT: landT)" in stage_src and "drawT: machine.drawT(at: t) ?? 0, landT: machine.landT(at: t)," in live,
         "tokens", "the stage draws the plan's look on the machine's clocks")
     pin("let curtains = looks.map { COSBuildUpPlan.curtain($0, landing: phase == .landing) }" in stage_src
-        and "Rectangle().fill(background).opacity(curtain)" in stage_src and ".fill(COSPalette.card)\n                    .opacity(curtain)" in stage_src,
-        "curtain light", "the tint and the fill are the plan's tint, never opaque")
+        and "            .compositingGroup()\n            .opacity(curtain)\n" in stage_src and "Rectangle().fill(background)\n" in stage_src
+        and stage_src.count(".opacity(curtain)") == 1, "curtain light", "the surface and the fill are one layer at the plan's tint, never stacked or opaque")
     pin("let wire = COSPalette.wire(on: background, in: environment)" in stage_src and "COSBuildUpPlan.wire(onLuminance: buildUpLuminance(background, environment))" in section,
         "tokens", "the wire's colour comes from the surface behind it")
     remember = body(component, "    private func remember(")
@@ -233,7 +245,7 @@ MUTANTS = [
     ("landed never fed", "motion", "            .onChange(of: landed) { _, _ in step() }\n", ""),
     ("an interruption never fed", "motion", "            .onChange(of: interrupted) { _, _ in step() }\n", ""),
     ("an early wake gives up", "motion", "                while !Task.isCancelled, Self.now() < deadline {", "                if !Task.isCancelled, Self.now() < deadline {"),
-    ("a seen view builds again", "motion", "quiet: !COSBuildUpSession.memory.builds(memoryKey)", "quiet: false"),
+    ("a seen view builds again", "motion", "quiet: !enabled || !COSBuildUpSession.memory.builds(memoryKey)", "quiet: !enabled || false"),
     ("keyed views kept across launches", "motion", "COSBuildUpSession.record(memoryKey, outcome, persists: key == nil)", "COSBuildUpSession.record(memoryKey, outcome, persists: true)"),
     ("empty views forgotten at quit", "motion", "        if memory.record(key, outcome, persists: persists) { UserDefaults.standard.set(memory.empty, forKey: emptyKey) }\n",
      "        memory.record(key, outcome, persists: persists)\n"),
@@ -248,13 +260,19 @@ MUTANTS = [
     ("a refresh rewrites state", "motion", "        guard next != machine else { return }\n", ""),
     ("the landing restarts the draw", "motion", "drawT: machine.drawT(at: t) ?? 0, landT: machine.landT(at: t),", "drawT: machine.landT(at: t) ?? (machine.drawT(at: t) ?? 0), landT: machine.landT(at: t),"),
     ("the stage skips the plan", "motion", "COSBuildUpPlan.look($0, drawT: drawT, landT: landT)", "COSBuildUpPlan.look($0, drawT: 9, landT: landT)"),
-    ("an opaque tint", "motion", "Rectangle().fill(background).opacity(curtain)", "Rectangle().fill(background).opacity(curtain > 0 ? 1 : 0)"),
-    ("an opaque fill", "motion", ".fill(COSPalette.card)\n                    .opacity(curtain)", ".fill(COSPalette.card)"),
+    ("an opaque tint", "motion", "            .compositingGroup()\n            .opacity(curtain)\n", "            .compositingGroup()\n            .opacity(curtain > 0 ? 1 : 0)\n"),
+    ("a stacked fill", "motion", "                        .fill(COSPalette.card)\n                        .frame(width: box.width, height: box.height)",
+     "                        .fill(COSPalette.card)\n                        .opacity(curtain)\n                        .frame(width: box.width, height: box.height)"),
+    ("data never clears the empty mark", "motion", "        guard frozen == nil else { return }\n        clearEmptyOnData()\n", "        guard frozen == nil else { return }\n"),
+    ("errors kept as empty", "motion", "interrupted: interrupted,\n                    failed: failed)", "interrupted: interrupted,\n                    failed: false)"),
+    ("a tab switch is a refresh", "motion", "            .onChange(of: label) { _, _ in relabel() }\n", ""),
+    ("the picker builds", "meetings", "enabled: !selectionOnly,", ""),
+    ("tasks give up before their helper", "window", "timeout: ControllerModel.tasksHelperTimeout + COSBuildUpPlan.helperMargin, ", ""),
     ("one wire colour for every surface", "motion", "let wire = COSPalette.wire(on: background, in: environment)", "let wire = COSPalette.wire(on: COSPalette.panel, in: environment)"),
     ("breadcrumb holds text", "motion", 'buildUpLog.notice("\\(line, privacy: .public)")', 'buildUpLog.notice("\\(line) \\(label, privacy: .public)")'),
     ("breadcrumb every change", "motion", "if before == nil, let outcome = next.outcome { remember(outcome, next) }", "if let outcome = next.outcome { remember(outcome, next) }"),
     ("a dead reopen comes back", "models", "    /// The container's room changed while building", "    mutating func reopen(at t: Double) { self.phase = .fresh }\n    /// The container's room changed while building"),
-    ("tasks unwrapped", "window", '            COSBuildUp(.rows(6), tune: .tasks, loading: model.tasksLoading && model.tasks.isEmpty, landed: !model.tasks.isEmpty, label: "Loading tasks") {\n',
+    ("tasks unwrapped", "window", '            COSBuildUp(.rows(6), tune: .tasks, loading: model.tasksLoading && model.tasks.isEmpty, landed: !model.tasks.isEmpty, failed: model.tasksError != nil,\n                       timeout: ControllerModel.tasksHelperTimeout + COSBuildUpPlan.helperMargin, label: "Loading tasks") {\n',
      "            Group {\n"),
     ("tasks spinner gone", "window", 'centeredProgress("Loading tasks…")', "ProgressView()"),
     ("tasks empty copy gone", "window", 'emptyState(.tasks, text: "No open tasks.', 'emptyState(.tasks, text: "Nothing.'),
@@ -263,7 +281,7 @@ MUTANTS = [
     ("Today running unwrapped", "window", 'label: "Reading sessions", background: TodayInk.runBg)', 'label: "Reading", background: TodayInk.runBg)'),
     ("a detail wrapper comes back", "views", 'ProgressView("Reading the transcript…")', 'ProgressView("Reading the transcript…"); let _ = #"label: "Loading record")"#'),
     ("speaker review lands on a spinner", "views", "landed: model.openReview != nil && !model.reviewLoading,", "landed: model.openReview != nil,"),
-    ("sessions forget the search", "window", "interrupted: model.isSessionQueryActive, label:", "label:"),
+    ("sessions forget the search", "window", "interrupted: model.isSessionQueryActive, ", ""),
     ("memories lose their geometry", "window", "tune: isThread ? .threads : .memories, ", ""),
     ("an em dash in a label", "window", 'label: "Loading tasks")', 'label: "Loading — tasks")'),
     ("meetings chain moved", "meetings", "{ libraryContent }", "{ EmptyView() }"),
@@ -275,7 +293,7 @@ MUTANTS = [
 ]
 
 # Each mutant must fail the pin that names what it breaks, not just any pin.
-EXPECTED = {'content removed while building': 'content always live', 'content shown under the wire': 'content always live', 'content not clickable after it lands': 'content always live', 'content read while building': 'content always live', 'the hand-off hides the content': 'never hides data', 'words never show': 'never hides data', 'an inline view reserves height': 'no extra height', 'the wire draws past the view': 'wire hidden', 'wire takes clicks': 'wire hidden', 'wire visible to accessibility': 'wire hidden', 'no loading label': 'loading label', "the stage ignores the view's height": 'fit', 'reduce motion ignored mid-build': 'reduce motion', 'landed never fed': 'machine fed', 'an interruption never fed': 'machine fed', 'an early wake gives up': 'machine fed', 'a seen view builds again': 'memory', 'keyed views kept across launches': 'memory', 'empty views forgotten at quit': 'memory', 'a view taken away is not logged': 'abandoned', 'the clock never pauses': 'no idle cost', 'pulse in an inactive window': 'pulse gated', 'pulse always': 'pulse gated', 'the stage repeats': 'no idle cost', 'the wrapper reads the window': 'no idle cost', 'a refresh rewrites state': 'no idle cost', 'the landing restarts the draw': 'tokens', 'the stage skips the plan': 'tokens', 'an opaque tint': 'curtain light', 'an opaque fill': 'curtain light', 'one wire colour for every surface': 'tokens', 'breadcrumb holds text': 'breadcrumb', 'breadcrumb every change': 'breadcrumb', 'a dead reopen comes back': 'no dead code', 'tasks unwrapped': 'call site', 'tasks spinner gone': 'today inside', 'tasks empty copy gone': 'today inside', 'answer shape wrong': 'call site', 'answer loading not declared': 'call site', 'Today running unwrapped': 'call site', 'a detail wrapper comes back': 'call site', 'speaker review lands on a spinner': 'call site', 'sessions forget the search': 'call site', 'memories lose their geometry': 'call site', 'an em dash in a label': 'call site', 'meetings chain moved': 'call site', 'version not bumped': 'version', "What's New not chained": 'version', "an em dash in What's New": 'copy', 'CHANGELOG not led': 'version', 'lane not wired': 'lane wired'}
+EXPECTED = {'content removed while building': 'content always live', 'content shown under the wire': 'content always live', 'content not clickable after it lands': 'content always live', 'content read while building': 'content always live', 'the hand-off hides the content': 'never hides data', 'words never show': 'never hides data', 'an inline view reserves height': 'no extra height', 'the wire draws past the view': 'wire hidden', 'wire takes clicks': 'wire hidden', 'wire visible to accessibility': 'wire hidden', 'no loading label': 'loading label', "the stage ignores the view's height": 'fit', 'reduce motion ignored mid-build': 'reduce motion', 'landed never fed': 'machine fed', 'an interruption never fed': 'machine fed', 'an early wake gives up': 'machine fed', 'a seen view builds again': 'memory', 'keyed views kept across launches': 'memory', 'empty views forgotten at quit': 'memory', 'a view taken away is not logged': 'abandoned', 'the clock never pauses': 'no idle cost', 'pulse in an inactive window': 'pulse gated', 'pulse always': 'pulse gated', 'the stage repeats': 'no idle cost', 'the wrapper reads the window': 'no idle cost', 'a refresh rewrites state': 'no idle cost', 'the landing restarts the draw': 'tokens', 'the stage skips the plan': 'tokens', 'an opaque tint': 'curtain light', 'an opaque fill': 'curtain light', 'one wire colour for every surface': 'tokens', 'breadcrumb holds text': 'breadcrumb', 'breadcrumb every change': 'breadcrumb', 'a dead reopen comes back': 'no dead code', 'tasks unwrapped': 'call site', 'tasks spinner gone': 'today inside', 'tasks empty copy gone': 'today inside', 'answer shape wrong': 'call site', 'answer loading not declared': 'call site', 'Today running unwrapped': 'call site', 'a detail wrapper comes back': 'call site', 'speaker review lands on a spinner': 'call site', 'sessions forget the search': 'call site', 'memories lose their geometry': 'call site', 'an em dash in a label': 'call site', 'meetings chain moved': 'call site', 'version not bumped': 'version', "What's New not chained": 'version', "an em dash in What's New": 'copy', 'CHANGELOG not led': 'version', 'lane not wired': 'lane wired', 'a stacked fill': 'curtain light', 'data never clears the empty mark': 'empty cleared', 'errors kept as empty': 'failed', 'a tab switch is a refresh': 'relabel', 'the picker builds': 'call site', 'tasks give up before their helper': 'call site'}
 
 sources = {k: (root / v).read_text(encoding="utf-8") for k, v in FILES.items()}
 try:

@@ -13430,12 +13430,13 @@ struct COSBuildUpTune: Equatable, Sendable {
     var spacing: Double? = nil
     var rowHeight: Double? = nil
     static let none = COSBuildUpTune()
-    // Measured from the real rows (Tests/BuildUpRender.swift prints the table).
+    // Meetings (the shape's default), Sessions, Memories, Threads and Messages: measured on the real rows, and held there by
+    // the geometry parity check in Tests/BuildUpViewChecks.swift. Tasks and the voice directory: from their row layout code.
     static let sessions = COSBuildUpTune(top: 0)
     static let tasks = COSBuildUpTune(top: 0)
     static let memories = COSBuildUpTune(top: 1, spacing: 7, rowHeight: 78)
     static let threads = COSBuildUpTune(top: 1, spacing: 7, rowHeight: 60)
-    static let messages = COSBuildUpTune(top: 14, spacing: 6, rowHeight: 74)
+    static let messages = COSBuildUpTune(top: 21, spacing: 1, rowHeight: 79)
     /// The voice directory: its column header (about 32 pt), then 62 pt rows with a 1 pt rule (from the row's code).
     static let voices = COSBuildUpTune(top: 32, spacing: 1, rowHeight: 62)
 }
@@ -13512,9 +13513,11 @@ enum COSBuildUpPlan {
     static let wordsFadeStep = COSBuildUpStep(delay: wordsSeconds, duration: 0.3)
     /// The spine flow and the node ping run for three flows, then stop.
     static let pulseSeconds = flowStart + 3 * flowPeriod
-    /// A load that has not answered by then hands over to today's view. Meeting Ask's helper allows 30 s
-    /// (MeetingAsk.swift), so an answer waits 35 s.
-    static func timeoutSeconds(_ shape: COSBuildUpShape) -> Double { shape == .answer ? 35 : 20 }
+    /// A load that has not answered by its timeout hands over to today's view. A call site passes its own helper's
+    /// timeout plus `helperMargin` (Tasks, Sessions, Meeting Ask, learning); the rest wait `defaultTimeout`, the common
+    /// 30 s helper timeout plus the margin.
+    static let helperMargin = 5.0
+    static let defaultTimeout = 30 + helperMargin
     /// The tint over landed content: never more than this, so the real text reads from the first frame.
     static let curtainAlpha = 0.35
 
@@ -13755,8 +13758,9 @@ enum COSBuildUpPlan {
 }
 
 /// What COS remembers per view. `seen` (this app session, per label and key): a view seen once reopens quietly. `empty`
-/// (kept across launches by the view layer, label keys only, at most `emptyLimit`): a view whose last load was empty shows
-/// today's loading view with no wire, so it never draws rows that will not come.
+/// (kept across launches by the view layer, label keys only, at most `emptyLimit`): a view whose last load came back
+/// empty (never an error) shows today's loading view with no wire, so it never draws rows that will not come; the first
+/// time it has data again, it is cleared (the view records .landed even when it opened quiet).
 struct COSBuildUpMemory: Equatable, Sendable {
     static let emptyLimit = 64
     private(set) var seen: Set<String> = []
@@ -13781,6 +13785,7 @@ struct COSBuildUpMemory: Equatable, Sendable {
         case .landed, .direct:
             empty.removeAll { $0 == key }
         default:
+            // An error, a timeout, Reduce Motion, an interruption or an abandoned build says nothing about emptiness.
             break
         }
         return empty != before
@@ -13799,15 +13804,17 @@ struct COSBuildUpMemory: Equatable, Sendable {
 struct COSBuildUpMachine: Equatable, Sendable {
     enum Phase: String, Equatable, Sendable { case fresh, grace, building, landing, handoff, settled }
     /// How the load the build was ready for ended (the breadcrumb). `still`: Reduce Motion. `interrupted`: a search or tab
-    /// switch took the view elsewhere. `abandoned`: the view went away or showed something else mid-build.
-    enum Outcome: String, Equatable, Sendable { case direct, landed, empty, timeout, still, interrupted, abandoned }
+    /// switch took the view elsewhere. `abandoned`: the view went away or showed something else mid-build. `failed`: the
+    /// load ended with an error (never remembered as empty).
+    enum Outcome: String, Equatable, Sendable { case direct, landed, empty, failed, timeout, still, interrupted, abandoned }
 
     private(set) var phase: Phase
     private(set) var since: Double
     private(set) var opened: Double
     /// The components the build drew (fitted to the container); the landing's length follows it.
     private(set) var count: Int
-    let reduceMotion: Bool
+    /// Reduce Motion, latched: once on, this machine never draws a wire again.
+    private(set) var reduced: Bool
     let timeout: Double
     private(set) var loadStarted: Double?
     private(set) var builtAt: Double?
@@ -13817,14 +13824,15 @@ struct COSBuildUpMachine: Equatable, Sendable {
     /// Flags the machine sets as it passes each moment, so every change is a state change the view redraws on.
     private(set) var drawDone = false
     private(set) var wordsShown = false
+    private(set) var wordsFaded = false
     private(set) var pulseDone = false
 
     /// `quiet`: this session has seen this view, or its last load was empty: today's view, no build.
-    init(at t: Double, loading: Bool, landed: Bool, reduceMotion: Bool, count: Int, quiet: Bool = false, timeout: Double = 20) {
+    init(at t: Double, loading: Bool, landed: Bool, reduceMotion: Bool, count: Int, quiet: Bool = false, timeout: Double = COSBuildUpPlan.defaultTimeout) {
         opened = t
         since = t
         self.count = max(0, min(count, COSBuildUpPlan.maxItems))
-        self.reduceMotion = reduceMotion
+        self.reduced = reduceMotion
         self.timeout = timeout
         if landed || self.count == 0 || quiet { phase = .settled }
         else if loading { phase = .grace; loadStarted = t }
@@ -13835,11 +13843,12 @@ struct COSBuildUpMachine: Equatable, Sendable {
     var drawsWire: Bool { phase == .building || phase == .landing || phase == .handoff }
     /// The spine flow and the node ping: only while building, only for their cycles, only while the window is active.
     func pulses(windowActive: Bool) -> Bool { phase == .building && windowActive && !pulseDone }
-    /// Whether the stage needs a new frame at all: while the wire draws, while it pulses, while it lands or hands off.
-    /// Never once it stands still, so nothing redraws while a slow load waits.
+    /// Whether the stage needs a new frame at all: while the wire draws, while it pulses, while the wire text fades from
+    /// the words (in any window), while it lands or hands off. Never once it stands still, so nothing redraws while a
+    /// slow load waits.
     func needsFrames(windowActive: Bool) -> Bool {
         switch phase {
-        case .building: return !drawDone || pulses(windowActive: windowActive)
+        case .building: return !drawDone || pulses(windowActive: windowActive) || (wordsShown && !wordsFaded)
         case .landing, .handoff: return true
         default: return false
         }
@@ -13860,6 +13869,7 @@ struct COSBuildUpMachine: Equatable, Sendable {
             var next = [start + timeout]
             if !drawDone { next.append(start + COSBuildUpPlan.drawDuration(count: count)) }
             if !wordsShown { next.append(start + COSBuildUpPlan.wordsSeconds) }
+            if !wordsFaded { next.append(start + COSBuildUpPlan.wordsFadeStep.end) }
             if !pulseDone { next.append(start + COSBuildUpPlan.pulseSeconds) }
             return next.min()
         case .landing: return (landedAt ?? since) + COSBuildUpPlan.landDuration(count: count)
@@ -13868,14 +13878,21 @@ struct COSBuildUpMachine: Equatable, Sendable {
         }
     }
 
-    /// Feed every change: the clock, whether the view is loading, whether data has landed, Reduce Motion, and whether a
-    /// search or tab switch has taken the view elsewhere.
+    /// Feed every change: the clock, whether the view is loading, whether data has landed, Reduce Motion, whether a search
+    /// or tab switch has taken the view elsewhere, and whether the load failed (an error is never an empty answer).
     @discardableResult
-    mutating func update(at t: Double, loading: Bool, landed: Bool, reduceMotion turnedOn: Bool = false, interrupted: Bool = false) -> Phase {
-        if interrupted, phase == .fresh || phase == .grace || phase == .building || phase == .landing {
+    mutating func update(at t: Double, loading: Bool, landed: Bool, reduceMotion turnedOn: Bool = false, interrupted: Bool = false,
+                         failed: Bool = false) -> Phase {
+        if interrupted, phase == .fresh {
+            // The load never started: nothing to log.
+            move(.settled, t)
+            return phase
+        }
+        if interrupted, phase == .grace || phase == .building || phase == .landing {
             settle(t, .interrupted)
             return phase
         }
+        if turnedOn { reduced = true }
         if turnedOn, phase == .building || phase == .landing { settle(t, .still) }
         switch phase {
         case .fresh:
@@ -13883,19 +13900,20 @@ struct COSBuildUpMachine: Equatable, Sendable {
             else if loading { move(.grace, t); loadStarted = t }
             else if t >= opened + COSBuildUpPlan.freshSeconds { move(.settled, t) }
         case .grace:
-            if !loading { settle(t, landed ? .direct : .empty) }
+            if !loading { settle(t, landed ? .direct : (failed ? .failed : .empty)) }
             else if t >= since + COSBuildUpPlan.graceSeconds {
-                if reduceMotion || turnedOn { settle(t, .still) } else { move(.building, t); builtAt = t }
+                if reduced { settle(t, .still) } else { move(.building, t); builtAt = t }
             }
         case .building:
             let start = builtAt ?? since
             if !loading {
-                if landed { move(.landing, t); landedAt = t; finish(t, .landed) } else { move(.handoff, t); finish(t, .empty) }
+                if landed { move(.landing, t); landedAt = t; finish(t, .landed) } else { move(.handoff, t); finish(t, failed ? .failed : .empty) }
             } else if t >= start + timeout {
                 move(.handoff, t); finish(t, .timeout)
             } else {
                 if t >= start + COSBuildUpPlan.drawDuration(count: count) { drawDone = true }
                 if t >= start + COSBuildUpPlan.wordsSeconds { wordsShown = true }
+                if t >= start + COSBuildUpPlan.wordsFadeStep.end { wordsFaded = true }
                 if t >= start + COSBuildUpPlan.pulseSeconds { pulseDone = true }
             }
         case .landing:

@@ -98,7 +98,7 @@ import Foundation
         check(P.layout(.answer).spineX == nil && P.layout(.cardRows(1, badge: true)).spineX == nil && P.layout(.cardRows(2, badge: false)).spineX == 8,
               "layout", "no spine where there is no room inside the view")
         for (tune, top, row, spacing) in [(COSBuildUpTune.sessions, 0.0, 62.0, 6.0), (.tasks, 0, 62, 6), (.memories, 1, 78, 7), (.threads, 1, 60, 7),
-                                          (.messages, 14, 74, 6), (.voices, 32, 62, 1)] {
+                                          (.messages, 21, 79, 1), (.voices, 32, 62, 1)] {
             let l = P.layout(.rows(4), tune), i = P.items(.rows(4), tune)
             check(near(l.top, top) && i.allSatisfy { near($0.height, row) } && near(l.spacing, spacing), "site geometry",
                   "\(tune): top \(l.top), rows \(i.map(\.height)), spacing \(l.spacing)")
@@ -134,8 +134,7 @@ import Foundation
         let one = P.items(.answer, measured: 17)[0], four = P.items(.answer, measured: 70)[0], tall = P.items(.answer, measured: 900)[0]
         check(one.lines.count == 1 && four.lines.count == 4 && near(four.height, 70) && tall.lines.count == 8, "answer refit",
               "lines follow the real text: \(one.lines.count) \(four.lines.count) \(tall.lines.count)")
-        check(near(P.timeoutSeconds(.answer), 35) && P.timeoutSeconds(.answer) >= 30 + 5 && near(P.timeoutSeconds(.rows(1)), 20), "timeout",
-              "an answer outlasts Meeting Ask's 30 s helper")
+        check(near(P.helperMargin, 5) && near(P.defaultTimeout, 35), "timeout", "a site waits its helper's timeout plus 5 s; the default covers the common 30 s helper")
     }
 
     // MARK: The timing table
@@ -309,6 +308,11 @@ import Foundation
         var mid = building()
         mid.update(at: t0 + 0.4, loading: true, landed: false, reduceMotion: true)
         check(mid.phase == .settled && !mid.hidesContent, "reduce motion mid-build", "turning it on mid-build shows today's view: \(mid.phase)")
+        // Turned on during the grace, then a stale capture says off: the machine stays reduced (the latch).
+        var latch = M(at: t0, loading: true, landed: false, reduceMotion: false, count: 6)
+        latch.update(at: t0 + 0.05, loading: true, landed: false, reduceMotion: true)
+        latch.update(at: t0 + 0.15, loading: true, landed: false, reduceMotion: false)
+        check(latch.reduced && latch.phase == .settled && latch.outcome == .still, "reduce motion latch", "no wire after Reduce Motion was seen: \(latch.phase)")
     }
 
     // MARK: The build and the landing
@@ -356,6 +360,11 @@ import Foundation
         m.update(at: t0 + 0.15 + P.drawDuration(count: 4) + 0.01, loading: true, landed: false)
         check(m.drawDone && !m.needsFrames(windowActive: false) && m.needsFrames(windowActive: true), "loop stops",
               "drawn: an inactive window needs no frames, an active one still pulses")
+        m.update(at: t0 + 0.15 + P.wordsSeconds + 0.01, loading: true, landed: false)
+        check(m.wordsShown && !m.wordsFaded && m.needsFrames(windowActive: false), "words fade frames",
+              "even an inactive window draws the wire text fading from the words")
+        m.update(at: t0 + 0.15 + P.wordsFadeStep.end + 0.01, loading: true, landed: false)
+        check(m.wordsFaded && !m.needsFrames(windowActive: false), "words fade frames", "then it stops")
         m.update(at: t0 + 0.15 + P.pulseSeconds + 0.01, loading: true, landed: false)
         check(m.pulseDone && !m.pulses(windowActive: true) && !m.needsFrames(windowActive: true), "pulse cap",
               "after its cycles the wire stands still and nothing redraws")
@@ -370,9 +379,11 @@ import Foundation
             wakes.append(next - t0)
             m.update(at: next, loading: true, landed: false)
             if near(next - t0, 0.15 + P.wordsSeconds, 1e-6) { check(m.wordsShown, "deadline wakes", "the words show at the 3 s wake itself") }
+            if near(next - t0, 0.15 + P.wordsFadeStep.end, 1e-6) { check(m.wordsFaded && !m.needsFrames(windowActive: false), "deadline wakes", "the fade ends at its wake") }
             if near(next - t0, 0.15 + P.pulseSeconds, 1e-6) { check(m.pulseDone && !m.needsFrames(windowActive: true), "deadline wakes", "the pulse stops at its wake") }
         }
-        let expected = [0.15, 0.15 + P.drawDuration(count: 4), 0.15 + P.wordsSeconds, 0.15 + P.pulseSeconds, 0.15 + 20, 0.15 + 20 + P.handoffSeconds]
+        let expected = [0.15, 0.15 + P.drawDuration(count: 4), 0.15 + P.wordsSeconds, 0.15 + P.wordsFadeStep.end, 0.15 + P.pulseSeconds, 0.15 + 20,
+                        0.15 + 20 + P.handoffSeconds]
         check(wakes.count == expected.count && zip(wakes, expected).allSatisfy { near($0, $1, 1e-6) }, "deadline wakes", "woke at \(wakes), expected \(expected)")
         check(m.phase == .settled && m.outcome == .timeout && m.deadline == nil, "deadline wakes", "it ends settled on the timeout, with nothing left to wake")
     }
@@ -387,9 +398,10 @@ import Foundation
         check(m.phase == .handoff && m.outcome == .timeout && !m.hidesContent, "timeout", "no stuck wire, and today's view shows at once: \(m.phase)")
         m.update(at: t0 + 0.15 + 20.3, loading: true, landed: false)
         check(m.phase == .settled && !m.hidesContent && !m.drawsWire, "timeout", "today's spinner and words, as before")
-        var ask = building(1, timeout: P.timeoutSeconds(.answer))
+        var ask = M(at: t0, loading: true, landed: false, reduceMotion: false, count: 1)
+        ask.update(at: t0 + 0.15, loading: true, landed: false)
         ask.update(at: t0 + 0.15 + 30.5, loading: true, landed: false)
-        check(ask.phase == .building, "timeout", "an answer still waits past the helper's 30 s")
+        check(ask.phase == .building && near(ask.timeout, P.defaultTimeout), "timeout", "by default a load still waits past a 30 s helper")
     }
 
     // MARK: An error or an empty answer: today's view at once, the wire fades over it
@@ -423,6 +435,15 @@ import Foundation
     // MARK: A search or tab switch during the first load; a view taken away
 
     static func interruptChecks() {
+        var fresh = M(at: t0, loading: false, landed: false, reduceMotion: false, count: 6)
+        fresh.update(at: t0 + 0.2, loading: false, landed: false, interrupted: true)
+        check(fresh.phase == .settled && fresh.outcome == nil, "interrupted", "a load that never started logs nothing")
+        var failed = building()
+        failed.update(at: t0 + 1, loading: false, landed: false, failed: true)
+        check(failed.phase == .handoff && failed.outcome == .failed && !failed.hidesContent, "failed", "an error hands off as failed, never empty")
+        var fastFail = M(at: t0, loading: true, landed: false, reduceMotion: false, count: 6)
+        fastFail.update(at: t0 + 0.05, loading: false, landed: false, failed: true)
+        check(fastFail.outcome == .failed, "failed", "even inside the grace")
         var m = building()
         m.update(at: t0 + 1, loading: false, landed: false, interrupted: true)
         check(m.phase == .settled && m.outcome == .interrupted && !m.hidesContent, "interrupted", "settles quietly: \(m.phase) \(String(describing: m.outcome))")
@@ -457,6 +478,9 @@ import Foundation
         check(bounded.empty.count == COSBuildUpMemory.emptyLimit && bounded.empty.last == "View 99|" && !bounded.empty.contains("View 0|"), "memory",
               "bounded to the newest \(COSBuildUpMemory.emptyLimit)")
         check(COSBuildUpMemory(empty: (0..<100).map { "V\($0)" }).empty.count == COSBuildUpMemory.emptyLimit, "memory", "bounded when read back")
+        var errors = COSBuildUpMemory()
+        check(!errors.record("Loading tasks|", .failed, persists: true) && errors.empty.isEmpty && !errors.builds("Loading tasks|")
+              && COSBuildUpMemory(empty: errors.empty).builds("Loading tasks|"), "memory", "an error is never kept as empty; the next launch builds")
         var quiet = COSBuildUpMemory()
         quiet.record("Loading sessions|", .interrupted, persists: true)
         quiet.record("Loading sessions|", .abandoned, persists: true)
