@@ -57,7 +57,10 @@ struct JediGalleryContract {
             let retained = character.id == PetSpriteStore.legacyDefaultCharacterID
                 ? resources.appendingPathComponent("DefaultPet") : folder
             let old = NSImage(data: try Data(contentsOf: retained.appendingPathComponent(PetSpriteStore.poseFileName(.idle))))!
-            if visible(try rgba(PetSpriteStrip.slice(old, frames: row.frames).first!).2) == 0 {
+            // Reproduce the OLD failure with its own declared grid. New ambient
+            // art may use a different count (Windu now has 80 idle frames).
+            let retainedFrames = PetSpriteStore.loadStateMap(in: retained)[.idle]?.frames ?? row.frames
+            if visible(try rgba(PetSpriteStrip.slice(old, frames: retainedFrames).first!).2) == 0 {
                 oldBlankCount += 1
             }
             thumbnails.append((character.displayName, thumb))
