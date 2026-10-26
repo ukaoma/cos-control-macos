@@ -1,3 +1,5 @@
+> Superseded: Miles rejected V1 idle/meditation as effectively static on 2026-10-26. Historical QA below does not authorize publication. See ../windu-ambient-v2 for the visually approved replacement.
+
 # Windu illustrated ambient hotfix
 
 Miles requested polishing the idle states and publishing a hotfix after Control 0.5.348. This candidate is based on the released main revision f827477. COS Product Work owns 0.5.349/build 403 integration and publication.

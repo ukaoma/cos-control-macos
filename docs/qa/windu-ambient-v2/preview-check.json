@@ -1,0 +1,35 @@
+{
+  "kind": "script harness and actual HTTP assets; not browser visual approval",
+  "results": {
+    "idle": {
+      "sampledSpriteOffsets": [
+        0,
+        1536,
+        3840,
+        7680,
+        10240
+      ],
+      "frameStepping": true
+    },
+    "waiting": {
+      "sampledSpriteOffsets": [
+        0,
+        1920,
+        4800,
+        9600,
+        640
+      ],
+      "frameStepping": true
+    },
+    "patrol": {
+      "sampledSpriteOffsets": [
+        0,
+        480,
+        0,
+        160,
+        960
+      ],
+      "frameStepping": true
+    }
+  }
+}

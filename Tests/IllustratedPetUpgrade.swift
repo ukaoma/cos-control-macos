@@ -65,18 +65,18 @@ import CryptoKit
   precondition(refresh348() == .notApplicable,"custom 348 idle art must survive")
   try oldIdleData.write(to:oldIdle)
   try fm.createDirectory(at:partial,withIntermediateDirectories:true)
-  let missingIdle="windu-ambient-illustrated-v1-idle-1x.png"
+  let missingIdle="windu-ambient-illustrated-v2-idle-1x.png"
   for file in try fm.contentsOfDirectory(at:candidate,includingPropertiesForKeys:nil) where file.lastPathComponent != missingIdle {
    try fm.linkItem(at:file,to:partial.appendingPathComponent(file.lastPathComponent))
   }
   precondition(refresh348(partialRoot) == .failed && (try! Data(contentsOf:state348))==previousData,"incomplete ambient pack must refuse whole upgrade")
-  precondition(!fm.fileExists(atPath:installed348.appendingPathComponent("windu-ambient-illustrated-v1-waiting-1x.png").path),"no partial ambient files before validation")
+  precondition(!fm.fileExists(atPath:installed348.appendingPathComponent("windu-ambient-illustrated-v2-waiting-1x.png").path),"no partial ambient files before validation")
   try fm.removeItem(at:partialRoot)
   precondition(refresh348() == .refreshed("jedi-miles-windu"),"exact stock 348 must upgrade to ambient generation")
   precondition((try! Data(contentsOf:state348))==next)
   for f in previousFiles {precondition((try! Data(contentsOf:installed348.appendingPathComponent(f))) == (try! Data(contentsOf:candidate.appendingPathComponent(f))),"348 rollback changed")}
   let currentMap=PetSpriteStore.loadStateMap(in:installed348),cadence=PetSpriteStore.loadFrameIntervals(in:installed348)
-  for (pose,frames,interval) in [(PetSpritePose.idle,80,0.04),(.waiting,100,0.04),(.patrol,8,0.14)] {
+  for (pose,frames,interval) in [(PetSpritePose.idle,82,0.04),(.waiting,76,0.04),(.patrol,8,0.14)] {
    precondition(currentMap[pose]?.frames==frames && cadence[pose]==interval)
    let image=NSImage(contentsOf:installed348.appendingPathComponent(currentMap[pose]!.file))!
    precondition(PetSpriteStrip.slice(image,frames:frames).count==frames,"native ambient cells must all decode")

@@ -1,0 +1,8 @@
+import fs from'node:fs/promises';import{createRequire}from'node:module';import crypto from'node:crypto';const req=createRequire('/Users/ukaoma/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/package.json'),sharp=req('sharp');const rows=JSON.parse(await fs.readFile('pack/ambient-rows.json')),results={};
+for(const[state,row]of Object.entries(rows)){
+ const p='pack/'+row.file,{data,info}=await sharp(p).ensureAlpha().raw().toBuffer({resolveWithObject:true}),w=info.width/row.frames,h=info.height;if(!Number.isInteger(w)||row.frames>256)throw Error('Invalid frame contract');let hashes=[],badEdges=0,ground=[],first,last;
+ for(let f=0;f<row.frames;f++){const b=Buffer.alloc(w*h*4);let bottom=0;for(let y=0;y<h;y++)for(let x=0;x<w;x++){const src=(y*info.width+f*w+x)*4,dst=(y*w+x)*4;data.copy(b,dst,src,src+4);if(data[src+3]>220)bottom=Math.max(bottom,y);if((x===0||y===0||x===w-1||y===h-1)&&data[src+3]>2)badEdges++;}hashes.push(crypto.createHash('sha256').update(b).digest('hex'));ground.push(bottom);if(f===0)first=b;if(f===row.frames-1)last=b;}
+ let diff=0;for(let i=0;i<first.length;i++)diff+=Math.abs(first[i]-last[i]);if(badEdges)throw Error(state+' clipped cell edges');if(new Set(hashes).size<8)throw Error(state+' fewer than eight distinct frames');
+ results[state]={frames:row.frames,distinctRasterFrames:new Set(hashes).size,cell:[w,h],interval:row.interval,loopSeconds:row.frames*row.interval,outerEdgePixels:badEdges,bottomRange:[Math.min(...ground),Math.max(...ground)],seamMeanByteDelta:diff/first.length};
+}
+await fs.writeFile('evidence/raster-audit.json',JSON.stringify(results,null,2));console.log(JSON.stringify(results,null,2));

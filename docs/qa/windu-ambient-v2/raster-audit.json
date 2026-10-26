@@ -1,0 +1,50 @@
+{
+  "idle": {
+    "frames": 82,
+    "distinctRasterFrames": 9,
+    "cell": [
+      128,
+      256
+    ],
+    "interval": 0.04,
+    "loopSeconds": 3.2800000000000002,
+    "outerEdgePixels": 0,
+    "bottomRange": [
+      230,
+      230
+    ],
+    "seamMeanByteDelta": 2.5427398681640625
+  },
+  "waiting": {
+    "frames": 76,
+    "distinctRasterFrames": 76,
+    "cell": [
+      160,
+      256
+    ],
+    "interval": 0.04,
+    "loopSeconds": 3.04,
+    "outerEdgePixels": 0,
+    "bottomRange": [
+      230,
+      230
+    ],
+    "seamMeanByteDelta": 4.941729736328125
+  },
+  "patrol": {
+    "frames": 8,
+    "distinctRasterFrames": 8,
+    "cell": [
+      160,
+      256
+    ],
+    "interval": 0.14,
+    "loopSeconds": 1.12,
+    "outerEdgePixels": 0,
+    "bottomRange": [
+      230,
+      230
+    ],
+    "seamMeanByteDelta": 6.607794189453125
+  }
+}

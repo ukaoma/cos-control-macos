@@ -20,8 +20,8 @@ for f,digest in pins.items(): assert hashlib.sha256((pack/f).read_bytes()).hexdi
 assert hashlib.sha256((root/'Resources/DefaultPet/session-pet-states.json').read_bytes()).hexdigest()=='af4fc61df77344d955633563cef7b0c55fd7dc39a02753c443d26d9f16f4d134'
 ambient=json.loads((root/'Tests/ambient-pack-sha256.json').read_text());assert len(ambient)==6
 for f,digest in ambient.items(): assert hashlib.sha256((pack/f).read_bytes()).hexdigest()==digest,f
-assert hashlib.sha256((pack/'session-pet-states.json').read_bytes()).hexdigest()=='b88fecaaa10a9367aa804caf88d8cb237b745379950282de2c5bf75e9f5fd403'
-for pose,(count,interval,width) in {'idle':(80,.04,128),'waiting':(100,.04,128),'patrol':(8,.14,160)}.items():
+assert hashlib.sha256((pack/'session-pet-states.json').read_bytes()).hexdigest()=='2e020116b0c78da9346f07091c5514c92936c1f3b84af52a6a397fb2ef306500'
+for pose,(count,interval,width) in {'idle':(82,.04,128),'waiting':(76,.04,160),'patrol':(8,.14,160)}.items():
  row=rows[pose];assert row['frames']==count and row['interval']==interval and row['renderScale']==1
  for filename,scale in [(row['file'],1),(row['retina']['file'][0],2)]:
   assert filename in ambient

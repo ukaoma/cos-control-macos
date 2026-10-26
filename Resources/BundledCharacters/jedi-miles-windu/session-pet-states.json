@@ -127,14 +127,14 @@
       }
     },
     "idle": {
-      "file": "windu-ambient-illustrated-v1-idle-1x.png",
-      "frames": 80,
+      "file": "windu-ambient-illustrated-v2-idle-1x.png",
+      "frames": 82,
       "interval": 0.04,
       "renderScale": 1,
       "retina": {
         "scale": 2,
         "file": [
-          "windu-ambient-illustrated-v1-idle-2x.png"
+          "windu-ambient-illustrated-v2-idle-2x.png"
         ]
       }
     },
@@ -367,14 +367,14 @@
       }
     },
     "waiting": {
-      "file": "windu-ambient-illustrated-v1-waiting-1x.png",
-      "frames": 100,
+      "file": "windu-ambient-illustrated-v2-waiting-1x.png",
+      "frames": 76,
       "interval": 0.04,
       "renderScale": 1,
       "retina": {
         "scale": 2,
         "file": [
-          "windu-ambient-illustrated-v1-waiting-2x.png"
+          "windu-ambient-illustrated-v2-waiting-2x.png"
         ]
       }
     },
