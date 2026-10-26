@@ -614,14 +614,14 @@ struct MeetingLibraryDetailPane: View {
                     VStack(alignment: .leading, spacing: 16) {
                         // 0.5.258: screenshots, slides and files dropped on the meeting, sent with every linked card.
                         if let files = model.workHandoffStore?.meetingFiles, let row = model.openLibraryRow {
-                            let keys = detail.contextKeys.isEmpty ? row.contextKeys : detail.contextKeys
-                            MeetingFilesSection(files: files, keys: keys, supported: detail.contextSupported ?? row.contextSupported,
+                            let keys = row.resolvedContextKeys(detail: detail)
+                            MeetingFilesSection(files: files, keys: keys, supported: row.resolvedContextSupported(detail: detail),
                                                 ambiguous: detail.contextAmbiguous || row.contextAmbiguous,
                                                 reason: detail.contextReason.isEmpty ? row.contextReason : detail.contextReason,
                                                 info: WorkMeetingInfo(recordId: row.recordId, title: row.title, date: row.date))
                         }
                         if let row = model.openLibraryRow {
-                            let keys = detail.contextKeys.isEmpty ? row.contextKeys : detail.contextKeys
+                            let keys = row.resolvedContextKeys(detail: detail)
                             if row.sourceSessionId != nil { Text("Ask history covers the whole original capture, including its other split pieces.").font(COSType.body(12)).foregroundStyle(.secondary) }
                             ForEach(Array(row.meetingAskSessions(keys: keys).enumerated()), id: \.element) { captureIndex, session in
                                 // 0.5.327: a saved glasses recording shows its cues beside Meeting Ask (the server keeps them 30 days).

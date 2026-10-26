@@ -103,3 +103,38 @@ qualified Xcode/iPhoneOS SDK; do not switch toolchains during current Swift lane
 The Even-hosted microphone JavaScript candidate does not need a native iOS build.
 Ship only as a coordinated future companion/server/Control release after these
 source, native and physical gates pass; no public activation from this branch.
+
+## Prepared real WorkCardFiles intake/reopen lane (not run)
+
+Independent review found that detail keys could override a selected phone row,
+while a valid phone key on a row missing its source could enter files. The narrow
+correction requires explicit row source and exact phone identity, binds phone
+detail to the selected record, and uses that resolution for Files/Ask render,
+remembered routes, grounded copy and file blocks. A rejected phone detail disables
+intake and clears its stale remembered route. Legacy merged G2/Fireflies keys
+retain their existing behavior.
+
+`Tests/run-phone-meeting-files.sh` selects only the new synthetic plain-text
+fixture in the existing WorkCardFiles harness. It runs actual WorkCardFileStore
+intake, physical snapshot/manifest reads, saved/retitled aliases and store reopen;
+it checks same-UUID G2/Mac/phone separation, source/foreign-detail refusal,
+invalid aliases and preservation of existing attachment identity/bytes. No OCR,
+pasteboard, UI, helper, network, audio or model code is called by this selection.
+
+The existing harness needs the shared **app type test kit** (all Sources except
+COSControlApp), so this command includes a cold kit compile; it does not build a
+shipping app or execute app startup. Cold runtime is unmeasured. It uses the
+bounded compiler's 8 GiB owned-tree cap/16 GiB start floor and a 600-second outer
+scheduler deadline, one native job at a time, without overrides. Root must grant
+this exact compile scope before execution:
+
+```sh
+python3 '/Users/ukaoma/Documents/GitHub/Ukaoma Chief Of Staff/MU-Chief-Staff/.agents/skills/cos-glasses/scripts/release_lane.py' --receipt /Users/ukaoma/cos-release-candidates/control-iphone-microphone-20261026/files.json --timeout-seconds 600 -- env COS_COMPILE_PROFILE=bounded COS_TEST_KIT_DIR=/Users/ukaoma/cos-release-candidates/control-iphone-microphone-20261026/kits zsh Tests/run-phone-meeting-files.sh
+```
+
+New static pins 51 and existing transcript147/live338/G2Stop28/Macvoice13/files
+wiring passed in `/tmp/control-phone-files-static.json`. These are preparation
+checks, not evidence that the new executable fixture has passed. The preceding
+43 model/965 self-test/53 helper results apply to the earlier production source;
+requalify affected models after this narrow correction. No native run occurred
+while preparing this lane.
