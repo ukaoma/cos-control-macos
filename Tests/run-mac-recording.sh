@@ -11,7 +11,7 @@ COS_COMPILE_PROFILE=bounded /usr/bin/python3 "$ROOT/Tests/kit-compile.py" "$ROOT
 OUT="$("$DIR/checks")" || { print -r -- "$OUT"; exit 1; }
 print -r -- "$OUT"
 COUNT="${${OUT##*checks: }%% passed*}"
-(( COUNT >= 12384 )) || { print -u2 "Mac recording core checks ran only $COUNT"; exit 1; }
+(( COUNT >= 12425 )) || { print -u2 "Mac recording core checks ran only $COUNT"; exit 1; }
 fi
 if [[ "$LANE" == "core" ]]; then exit 0; fi
 # 0.5.334: the hearing check, the fail-fast and Discard, wired (rules above, wiring here).
@@ -19,6 +19,11 @@ OUT="$(/usr/bin/python3 "$ROOT/Tests/mac-recording-robust-pins.py" "$ROOT")" || 
 print -r -- "$OUT"
 COUNT="${${OUT##*pins: }%% passed*}"
 (( COUNT >= 60 )) || { print -u2 "mac recording robust pins ran only $COUNT (expected at least 60)"; exit 1; }
+# 0.5.351 (mac_b0bd6732): the capture stall fix's wiring (writer off the main actor, watchdog, SIGTERM). Mutants: Tests/mutate-capture-stall.py.
+OUT="$(/usr/bin/python3 "$ROOT/Tests/capture-stall-pins.py" "$ROOT")" || { print -r -- "$OUT"; exit 1; }
+print -r -- "$OUT"
+COUNT="${${OUT##*pins: }%% passed*}"
+(( COUNT >= 30 )) || { print -u2 "capture stall pins ran only $COUNT (expected at least 30)"; exit 1; }
 if [[ "$LANE" == "pins" ]]; then exit 0; fi
 # 0.5.310: the Meetings row reads the store's paused state (the label rule itself is checked above). Source pins only:
 # the store needs the full app to run, so these prove the wiring exists, not its runtime behaviour.

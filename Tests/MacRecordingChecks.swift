@@ -564,6 +564,144 @@ import Darwin
             let folder = try fm.attributesOfItem(atPath: movedTo.deletingLastPathComponent().path)
             check((folder[.posixPermissions] as? NSNumber)?.intValue == 0o700, "discard: the discarded folder is owner only")
         }
+        // MARK: 0.5.351, the capture stall (mac_b0bd6732): the watchdog's timing, a writer that outlives the main actor, and SIGTERM
+        do {
+            let w = MacRecordingWatchdog.self
+            check(w.chunkSeconds == 6 && w.stallChunks == 5 && w.stallSeconds == w.chunkSeconds * w.stallChunks && w.pollSeconds == w.chunkSeconds,
+                  "watchdog: the stall time is five chunk lengths, derived from the chunk size, and it looks once per chunk")
+            check(w.restartSeconds > w.chunkSeconds && w.restartSeconds < 60 && w.maxRestartsPerRecording >= 1, "watchdog: one restart is bounded and the count is capped")
+            let t0 = Date(timeIntervalSince1970: 1_793_000_000)
+            // Healthy: a chunk every chunk length never acts and never shows a line.
+            var healthy = w.State(), healthyActions = 0
+            for tick in 1...2_000 {
+                let now = t0.addingTimeInterval(Double(tick * w.pollSeconds))
+                if w.step(&healthy, now: now, lastChunk: now.addingTimeInterval(-Double(w.chunkSeconds)), restartInFlight: false) != .none { healthyActions += 1 }
+            }
+            check(healthyActions == 0 && healthy.stalledSince == nil && w.line(healthy) == nil, "watchdog: a healthy recording is never touched")
+            var s1 = w.State()
+            check(w.step(&s1, now: t0.addingTimeInterval(Double(w.stallSeconds) - 0.001), lastChunk: t0, restartInFlight: false) == .none, "watchdog: just under the stall time does nothing")
+            check(w.step(&s1, now: t0.addingTimeInterval(Double(w.stallSeconds)), lastChunk: t0, restartInFlight: false) == .restart && s1.totalRestarts == 1, "watchdog: at the stall time it restarts the tap once")
+            check(s1.stalledSince == t0, "watchdog: the stall is dated by the last chunk written, not by when it was noticed")
+            check(w.line(s1, calendar: Calendar(identifier: .gregorian)) != nil && w.line(s1)!.hasSuffix("Restarting.") && w.line(s1)!.hasPrefix("Recording stopped receiving audio at "),
+                  "watchdog: the panel says it is restarting")
+            check(w.step(&s1, now: t0.addingTimeInterval(Double(w.stallSeconds) + 1), lastChunk: t0, restartInFlight: true) == .none, "watchdog: no second restart while one is running")
+            check(w.step(&s1, now: t0.addingTimeInterval(Double(w.stallSeconds) * 2 - 0.001), lastChunk: t0, restartInFlight: false) == .none, "watchdog: the restart gets a whole stall time to bring audio back")
+            var running = s1
+            check(w.step(&running, now: t0.addingTimeInterval(Double(w.stallSeconds) * 2), lastChunk: t0, restartInFlight: true) == .none && !running.gaveUp,
+                  "watchdog: while a restart is still running it neither gives up nor starts another")
+            check(w.step(&s1, now: t0.addingTimeInterval(Double(w.stallSeconds) * 2), lastChunk: t0, restartInFlight: false) == .giveUp && s1.gaveUp && s1.totalRestarts == 1, "watchdog: when it does not, it says so once and tries nothing more")
+            check(w.line(s1)!.hasSuffix("Stop and save keeps everything up to then."), "watchdog: the failure line tells the person Stop and save keeps what was recorded")
+            check(w.step(&s1, now: t0.addingTimeInterval(10_000), lastChunk: t0, restartInFlight: false) == .none, "watchdog: after giving up it stays quiet")
+            // A chunk after the stall ends it, and a later stall gets its own restart.
+            let t1 = t0.addingTimeInterval(500)
+            check(w.step(&s1, now: t1.addingTimeInterval(1), lastChunk: t1, restartInFlight: false) == .none && s1.stalledSince == nil && !s1.gaveUp && w.line(s1) == nil,
+                  "watchdog: a chunk after the stall clears the line")
+            check(w.step(&s1, now: t1.addingTimeInterval(Double(w.stallSeconds)), lastChunk: t1, restartInFlight: false) == .restart && s1.totalRestarts == 2, "watchdog: the next stall gets its own restart")
+            // The cap per recording.
+            var capped = w.State(), lastChunk = t0, restarts = 0, gaveUp = false
+            for round in 0..<(w.maxRestartsPerRecording + 1) {
+                let base = t0.addingTimeInterval(Double(round) * 1_000)
+                lastChunk = base
+                _ = w.step(&capped, now: base.addingTimeInterval(1), lastChunk: lastChunk, restartInFlight: false)
+                if w.step(&capped, now: base.addingTimeInterval(Double(w.stallSeconds)), lastChunk: lastChunk, restartInFlight: false) == .restart { restarts += 1 }
+                else { gaveUp = capped.gaveUp }
+            }
+            check(restarts == w.maxRestartsPerRecording && gaveUp, "watchdog: restarts are capped for a whole recording; the next stall is reported, not retried")
+            var failed = w.State()
+            _ = w.step(&failed, now: t0.addingTimeInterval(Double(w.stallSeconds)), lastChunk: t0, restartInFlight: false)
+            failed.restartFailed()
+            check(failed.gaveUp && w.line(failed)!.hasSuffix("keeps everything up to then."), "watchdog: a restart that fails is reported at once")
+            var utc = Calendar(identifier: .gregorian); utc.timeZone = TimeZone(identifier: "UTC")!
+            check(w.clock(Date(timeIntervalSince1970: 45_540), calendar: utc) == "12:39 PM", "watchdog: the time is shown as a clock time")
+            var exactState = w.State(); exactState.stalledSince = Date(timeIntervalSince1970: 45_540)
+            check(w.line(exactState, calendar: utc) == "Recording stopped receiving audio at 12:39 PM. Restarting.", "watchdog: the panel line, exactly")
+            exactState.gaveUp = true
+            check(w.line(exactState, calendar: utc) == "Recording stopped receiving audio at 12:39 PM. Stop and save keeps everything up to then.", "watchdog: the failure line, exactly")
+            check(!(w.line(exactState, calendar: utc) ?? "").contains("\u{2014}") && !(w.line(exactState, calendar: utc) ?? "").contains("\u{2192}"), "watchdog: no em dash or arrow in the copy")
+            let progress = MacRecordingProgress(t0)
+            progress.mark(t0.addingTimeInterval(10)); progress.mark(t0.addingTimeInterval(5))
+            check(progress.lastWrite == t0.addingTimeInterval(10), "progress: the last write never moves backward")
+
+            // The writer: one unbroken sequence across a restarted tap, and nothing stored is ever rewritten.
+            let wroot = scratch.appendingPathComponent("stall-home/cos-data/mac-recordings")
+            let wspool = MacRecordingSpool(root: wroot)
+            let wjournal = MacRecordingManifest(captureId: "mac_00000001-bbbb-4bbb-8bbb-123456789abc", startTime: 1_793_000_000_000, serverInstanceId: "fixture-server",
+                                                sourceName: MacAudioSource.allMacAudio.name, title: "Teams meeting", stopped: false, saved: false, acknowledged: 0, chunks: [])
+            try await wspool.write(wjournal)
+            let tone = Data((0..<MacRecordingWAV.framesPerChunk).flatMap { i -> [UInt8] in let v = Int16(truncatingIfNeeded: 1_000 + (i % 7)); return [UInt8(v & 0xff), UInt8((v >> 8) & 0xff)] })
+            let tail = Data(tone.prefix(4_000))
+            var sequence = MacRecordingSequencer()
+            // First tap: indexes 0, 1, 2 and its tail; second tap (after a restart) counts from zero again.
+            let taps: [[MacRecordingChunk]] = [
+                [.init(index: 0, pcm: tone, endFrame: 96_000), .init(index: 1, pcm: tone, endFrame: 192_000), .init(index: 2, pcm: tail, endFrame: 194_000)],
+                [.init(index: 0, pcm: tone, endFrame: 96_000), .init(index: 1, pcm: tone, endFrame: 192_000)]]
+            var latest = wjournal
+            for tap in taps { for raw in tap {
+                do { latest = try await wspool.append(sequence.next(raw), captureId: wjournal.id); sequence.stored(latest) }
+                catch { check(false, "writer: the journal refused a restarted tap's chunk (\(error.localizedDescription))") }
+            } }
+            check(latest.chunks.map(\.index) == [0, 1, 2, 3, 4], "writer: a restarted tap continues the journal's index sequence")
+            check(latest.chunks.map(\.endFrame) == [96_000, 192_000, 194_000, 290_000, 386_000], "writer: and its end frames, so the transcript timeline stays one line")
+            let firstFile = wroot.appendingPathComponent(wjournal.id).appendingPathComponent("000000.wav")
+            let firstBytes = try Data(contentsOf: firstFile)
+            await rejects("a chunk is never appended twice") { _ = try await wspool.append(.init(index: 1, pcm: tone, endFrame: 192_000), captureId: wjournal.id) }
+            let afterRefusal = try await wspool.snapshot(wjournal.id)
+            check((try? Data(contentsOf: firstFile)) == firstBytes && afterRefusal.chunks.count == 5, "writer: a refused chunk changes nothing already stored")
+            check(MacRecordingSequencer(from: latest).next(.init(index: 0, pcm: tone, endFrame: 96_000)).index == 5, "writer: a sequence resumes from an existing journal")
+            let slim = MacRecordingWriterEvent.slim(.init(index: 7, pcm: tone, endFrame: 700, rawSignal: true))
+            check(slim.pcm.isEmpty && !slim.digitalSilence && slim.index == 7 && slim.endFrame == 700, "writer: the main actor gets a chunk without its audio")
+            let zeroSlim = MacRecordingWriterEvent.slim(.init(index: 8, pcm: Data(count: 192_000), endFrame: 800, rawSignal: false))
+            check(zeroSlim.pcm.count == 2 && zeroSlim.digitalSilence, "writer: exact zeros stay exact zeros for the hearing check")
+
+            // Bounded: an answer comes back; a hung call is given up on within its time.
+            let quick: Int? = await MacRecordingBounded.run(seconds: 5) { 41 + 1 }
+            check(quick == 42, "bounded: a quick operation returns its answer")
+            let began = Date()
+            let hung: Int? = await MacRecordingBounded.run(seconds: 0.3) { try? await Task.sleep(nanoseconds: 4_000_000_000); return 1 }
+            let waited = Date().timeIntervalSince(began)
+            check(hung == nil && waited >= 0.25 && waited < 1.5, "bounded: a hung operation is given up on at its time")
+
+            // SIGTERM: the work, its time bound, and the real signal path.
+            check(MacRecordingSigterm.waitSeconds <= 1.0 && MacRecordingSigterm.waitSeconds > 0, "sigterm: the wait is at most one second")
+            let none = MacRecordingSigterm.flush(ids: []) { _ in true }
+            check(none == MacRecordingSigterm.Result(total: 0, finished: 0, timedOut: false, elapsedMs: 0), "sigterm: with nothing recording it returns at once")
+            let fast = MacRecordingSigterm.flush(ids: ["a", "b", "c"], wait: 2) { $0 != "b" }
+            check(fast.total == 3 && fast.finished == 2 && !fast.timedOut, "sigterm: every capture is attempted and counted")
+            let slow = MacRecordingSigterm.flush(ids: ["a"], wait: 0.3) { _ in try? await Task.sleep(nanoseconds: 4_000_000_000); return true }
+            check(slow.timedOut && slow.finished == 0 && slow.elapsedMs >= 250 && slow.elapsedMs < 1_000, "sigterm: a flush that hangs is given up on inside the bound")
+            let open = MacRecordingOpenCaptures()
+            let sroot = scratch.appendingPathComponent("sigterm-home/cos-data/mac-recordings")
+            let sspool = MacRecordingSpool(root: sroot)
+            let live = MacRecordingManifest(captureId: "mac_00000002-bbbb-4bbb-8bbb-123456789abc", startTime: 1_793_000_000_000, serverInstanceId: "fixture-server",
+                                            sourceName: MacAudioSource.allMacAudio.name, title: "Teams meeting", stopped: false, saved: false, acknowledged: 0, chunks: [])
+            try await sspool.write(live)
+            var sjournal = live
+            var sseq = MacRecordingSequencer()
+            for _ in 0..<3 {
+                do { sjournal = try await sspool.append(sseq.next(.init(index: 0, pcm: tone, endFrame: 0)), captureId: live.id); sseq.stored(sjournal) }
+                catch { check(false, "sigterm: the fixture journal refused a chunk (\(error.localizedDescription))") }
+            }
+            let storedFile = sroot.appendingPathComponent(live.id).appendingPathComponent("000001.wav")
+            let storedBytes = try Data(contentsOf: storedFile)
+            open.add(live.id, spool: sspool)
+            check(open.ids == [live.id], "sigterm: an open capture is registered")
+            final class Holder: @unchecked Sendable { var source: DispatchSourceSignal? }
+            let holder = Holder()
+            let signalled: MacRecordingSigterm.Result? = await MacRecordingBounded.run(seconds: 10) {
+                await withCheckedContinuation { (continuation: CheckedContinuation<MacRecordingSigterm.Result, Never>) in
+                    holder.source = MacRecordingSigterm.install(signalNumber: SIGUSR2, open: open) { continuation.resume(returning: $0) }
+                    kill(getpid(), SIGUSR2)
+                }
+            }
+            holder.source?.cancel(); signal(SIGUSR2, SIG_DFL)
+            check(signalled?.total == 1 && signalled?.finished == 1 && signalled?.timedOut == false && (signalled?.elapsedMs ?? 9_999) < 1_000, "sigterm: the signal closes the open capture in under a second")
+            let closed = try await MacRecordingSpool(root: sroot).snapshot(live.id)
+            check(closed.stopped && !closed.saved && closed.interruption == MacRecordingSigterm.reason, "sigterm: the journal on disk is stopped and says why")
+            check(closed.chunks.count == 3 && closed.chunks == sjournal.chunks && (try? Data(contentsOf: storedFile)) == storedBytes, "sigterm: every chunk already written is kept, untouched")
+            check(!MacRecordingSigterm.reason.contains("\u{2014}") && !MacRecordingSigterm.reason.contains("\u{2192}"), "sigterm: no em dash or arrow in the copy")
+            open.remove(live.id)
+            check(open.ids.isEmpty, "sigterm: a finished capture is no longer registered")
+        }
         print("Mac recording core checks: \(checks) passed (fixture bytes only)")
     }
 }

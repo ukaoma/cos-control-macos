@@ -163,6 +163,7 @@ struct COSControlApp: App {
         COSAppDelegate.onOpenRecording = { model.showRecordingTranscript() }
         COSAppDelegate.onTerminate = { model.dictation.cancel(); model.dictation.flushAudio(); model.meetingAsk.flushAll() }
         MacRecordingTermination.prepare = { await model.macRecording.prepareToQuit() }
+        MacRecordingSigtermWiring.install()
         MacRecordingTermination.needsPrepare = { model.macRecording.needsQuitTeardown }
         model.recordingStatusChanged = { [weak model] _ in NSApp.dockTile.badgeLabel = model?.recordingDockBadge }
         // A Dock click opens Welcome while COS is not set up, else Activity.
