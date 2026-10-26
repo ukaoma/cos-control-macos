@@ -198,7 +198,7 @@ need("WorkProgress WorkCardFiles WorkProgressTracker" in work_runner
      "run-work.sh compiles WorkCardFiles explicitly or through the unexcluded source inventory")
 
 # 0.5.258: the context-key rule lives twice (Models compiles without WorkCardFiles in some lists); the two must agree.
-key_rule = '"^(g2|ff|mac):[A-Za-z0-9:_-]{3,96}$"'
+key_rule = 'PhoneMeetingCapture.validContextKey(key)'
 need(key_rule in body(files, "    nonisolated static func validMeetingKey(", "    nonisolated static func meetingID(")
      and key_rule in body(code("Sources/Models.swift"), "    nonisolated static func validContextKey(", "    let recordId: String"), "the two context-key rules are the same")
 

@@ -1156,7 +1156,7 @@ extension WorkCardFiles {
     nonisolated static let meetingIDPrefix = "meetingctx:"
     /// A key as the server sends it: the server's own marker grammar behind `g2:` or `ff:`.
     nonisolated static func validMeetingKey(_ key: String) -> Bool {
-        key.range(of: "^(g2|ff|mac):[A-Za-z0-9:_-]{3,96}$", options: .regularExpression) != nil
+        PhoneMeetingCapture.validContextKey(key)
     }
     nonisolated static func meetingID(forKey key: String) -> String? { validMeetingKey(key) ? meetingIDPrefix + key : nil }
     nonisolated static func meetingKey(of id: String) -> String? {

@@ -343,7 +343,7 @@ final class MeetingAskStore: ObservableObject {
         fileObserver = files.$manifests.debounce(for: .milliseconds(600), scheduler: RunLoop.main).sink { [weak self, weak model] manifests in
             guard let self, let model else { return }
             let sessions = manifests.keys.compactMap { key -> String? in
-                for prefix in ["meetingctx:g2:", "meetingctx:mac:"] where key.hasPrefix(prefix) {
+                for prefix in ["meetingctx:g2:", "meetingctx:mac:", "meetingctx:phone:"] where key.hasPrefix(prefix) {
                     return String(key.dropFirst(prefix.count))
                 }
                 return nil

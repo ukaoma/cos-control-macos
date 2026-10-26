@@ -30,6 +30,8 @@ struct LiveTranscriptFileRow: Codable, Equatable, Sendable {
     let sessionId: String
     let mtimeMs: Double
     let stamp: String
+    var sourceType: String? = nil
+    var speakerPolicy: String? = nil
 }
 
 /// One session read. `ended`: the file is gone. `unchanged`: the same file as `stamp` (no chunks).
@@ -44,6 +46,8 @@ struct LiveTranscriptRead: Codable, Equatable, Sendable {
     var turns: [LiveTranscriptChunk]? = nil
     /// 0.5.339 (server 6.87.0): the newest chunks' levels from the file's `chunkLevels`, in index order. Two numbers a
     /// chunk, never text. nil when the file has none (an older server).
+    var sourceType: String? = nil
+    var speakerPolicy: String? = nil
     var levels: [LiveChunkLevel]? = nil
 }
 
@@ -125,6 +129,10 @@ struct LiveTranscriptFeed: Equatable, Sendable {
     mutating func apply(_ read: LiveTranscriptRead, now: Date) -> Bool {
         guard read.sessionId == sessionId else { return false }
         if read.ended { return markEnded(now: now) }
+        if PhoneMeetingCapture.protected(sessionId, sourceType: read.sourceType) {
+            guard PhoneMeetingCapture.validID(sessionId), read.sourceType == "iphone_microphone", read.speakerPolicy == "anonymous",
+                  (read.turns ?? []).allSatisfy({ $0.speaker == "Ext" }) else { return false }
+        }
         // A leftover's file is still there: a read of it is not the file coming back (see `fileWrittenAfterVerdict`).
         if leftover { return false }
         var changed = false
@@ -317,7 +325,7 @@ enum LiveTranscript {
 
     /// 0.5.313: names a live source in the switcher: "Mac recording 10:39 PM" or "Glasses meeting 10:10 PM".
     static func sourceLabel(_ sessionId: String, start: Date?, timeZone: TimeZone = .current) -> String {
-        let kind = sessionId.hasPrefix("mac_") ? "Mac recording" : "Glasses meeting"
+        let kind = PhoneMeetingCapture.protected(sessionId) ? "iPhone microphone" : sessionId.hasPrefix("mac_") ? "Mac recording" : "Glasses meeting"
         guard let start else { return kind }
         let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX"); f.timeZone = timeZone; f.dateFormat = "h:mm a"
         return kind + " " + f.string(from: start)
@@ -454,6 +462,7 @@ enum LiveTranscript {
     /// The close control on a Live now row: a stopped Mac capture finishes delivering; a glasses recording with no audio
     /// for `quietAfterSeconds` can be ended and saved. A row still receiving audio, or no longer live, offers nothing.
     static func endActionTitle(row: LiveTranscriptRow, now: Date) -> String? {
+        guard !PhoneMeetingCapture.protected(row.sessionId) else { return nil }
         guard row.phase == .live else { return nil }
         if row.deliveryLabel != nil { return "Finish saving" }
         guard let last = row.lastActivity, now.timeIntervalSince(last) >= quietAfterSeconds else { return nil }
@@ -606,7 +615,7 @@ enum G2MeetingStop {
 
     /// A glasses session COS Control may ask about: never a Mac recording (those stop from Record on Mac).
     static func isGlassesSession(_ sessionId: String) -> Bool {
-        !sessionId.hasPrefix("mac_") && sessionId.range(of: "\\A[A-Za-z0-9:_-]{3,96}\\z", options: .regularExpression) != nil
+        !PhoneMeetingCapture.protected(sessionId) && !sessionId.hasPrefix("mac_") && sessionId.range(of: "\\A[A-Za-z0-9:_-]{3,96}\\z", options: .regularExpression) != nil
     }
 
     enum Phase: Equatable, Sendable {
@@ -983,6 +992,13 @@ enum LiveMeeting {
 
     /// The line under the title. Live: "Recording on this Mac · 2 decisions and 1 promise so far". Ended: the counts
     /// alone, or nil. `kinds` is nil when the server does not list its kinds: then no counts at all.
+    static func statusLine(sessionId: String, ended: Bool, kinds: [String]?) -> String? {
+        guard PhoneMeetingCapture.protected(sessionId) else { return statusLine(mac: sessionId.hasPrefix("mac_"), ended: ended, kinds: kinds) }
+        let counts = kinds.flatMap(countsPhrase)
+        if ended { return counts.map { "iPhone microphone · " + $0 } ?? "iPhone microphone recording ended" }
+        return counts.map { "Recording on iPhone microphone · " + $0 + " so far" } ?? "Recording on iPhone microphone"
+    }
+
     static func statusLine(mac: Bool, ended: Bool, kinds: [String]?) -> String? {
         let counts = kinds.flatMap(countsPhrase)
         if ended { return counts }

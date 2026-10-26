@@ -1321,6 +1321,8 @@ struct FenceRecord: Identifiable, Equatable {
 /// corrections on already-saved meetings. This is unsaved capture recovery.
 struct OrphanCapture: Identifiable, Sendable {
     let sessionId: String
+    let sourceType: String?
+    let provenanceState: String?
     let chunkFiles: Int
     let ageHours: Double?
     let recovered: Bool
@@ -1331,12 +1333,13 @@ struct OrphanCapture: Identifiable, Sendable {
     var id: String { sessionId }
 
     var label: String {
+        let source = PhoneMeetingCapture.protected(sessionId, sourceType: sourceType) ? "iPhone microphone · " : ""
         let chunks = chunkFiles == 1 ? "1 chunk" : "\(chunkFiles) chunks"
-        if recovering { return "\(shortId) · recovering · \(chunks)" }
+        if recovering { return "\(source)\(shortId) · recovering · \(chunks)" }
         if let ageHours {
-            return "\(shortId) · \(chunks) · \(ageHours)h"
+            return "\(source)\(shortId) · \(chunks) · \(ageHours)h"
         }
-        return "\(shortId) · \(chunks)"
+        return "\(source)\(shortId) · \(chunks)"
     }
 
     var shortId: String {
@@ -1346,11 +1349,13 @@ struct OrphanCapture: Identifiable, Sendable {
     init?(_ value: JSONValue?) {
         guard let o = value?.object, let sessionId = o["sessionId"]?.string, !sessionId.isEmpty else { return nil }
         self.sessionId = sessionId
+        sourceType = o["sourceType"]?.string
+        provenanceState = o["provenanceState"]?.string
         chunkFiles = o["chunkFiles"]?.int ?? Int(o["chunkFiles"]?.string ?? "") ?? 0
         ageHours = o["ageHours"]?.double
         recovered = o["recovered"]?.bool ?? false
         recovering = o["recovering"]?.bool ?? false
-        recoverable = o["recoverable"]?.bool ?? (!recovered && chunkFiles >= 2)
+        recoverable = (!PhoneMeetingCapture.protected(sessionId, sourceType: sourceType) || (PhoneMeetingCapture.validID(sessionId) && sourceType == "iphone_microphone" && provenanceState == "admitted")) && (o["recoverable"]?.bool ?? (!recovered && chunkFiles >= 2))
         expiresAt = o["expiresAt"]?.string ?? ""
     }
 }
@@ -1496,6 +1501,8 @@ struct StrandedCapture: Identifiable, Sendable {
     /// or it was not idle yet); it is not offered again.
     static func shown(_ rows: [StrandedCapture], discarded: Set<String>) -> [StrandedCapture] { rows.filter { !discarded.contains($0.sessionId) } }
     let sessionId: String
+    let sourceType: String?
+    let speakerPolicy: String?
     let idleMinutes: Int
     let capturedMinutes: Int
     let chunks: Int
@@ -1505,6 +1512,7 @@ struct StrandedCapture: Identifiable, Sendable {
     var id: String { sessionId }
 
     var label: String {
+        if PhoneMeetingCapture.protected(sessionId, sourceType: sourceType) { return "iPhone microphone · audio retained · finish on iPhone" }
         let idle = idleMinutes == 1 ? "1 min idle" : "\(idleMinutes) min idle"
         if transcriptState == "no_speech" { return "\(shortId) · No usable speech detected; audio retained" }
         if !canSave { return "\(shortId) · Transcript unavailable; audio retained" }
@@ -1518,10 +1526,12 @@ struct StrandedCapture: Identifiable, Sendable {
     init?(_ value: JSONValue?) {
         guard let o = value?.object, let sessionId = o["sessionId"]?.string, !sessionId.isEmpty else { return nil }
         self.sessionId = sessionId
+        sourceType = o["sourceType"]?.string
+        speakerPolicy = o["speakerPolicy"]?.string
         idleMinutes = o["idleMinutes"]?.int ?? Int(o["idleMinutes"]?.string ?? "") ?? 0
         capturedMinutes = o["capturedMinutes"]?.int ?? Int(o["capturedMinutes"]?.string ?? "") ?? 0
         chunks = o["chunks"]?.int ?? Int(o["chunks"]?.string ?? "") ?? 0
-        canSave = o["canSave"]?.bool ?? (chunks > 0)
+        canSave = !PhoneMeetingCapture.protected(sessionId, sourceType: sourceType) && (o["canSave"]?.bool ?? (chunks > 0))
         transcriptState = o["transcriptState"]?.string ?? (chunks > 0 ? "ready" : "unknown")
     }
 }
@@ -5365,6 +5375,37 @@ enum ClockStyle: String, CaseIterable, Sendable {
     }
 }
 
+/// Future phone consumer boundary. IDs are immutable and namespaces never cross sources.
+enum PhoneMeetingCapture {
+    static let idPattern = #"\Aphone_(?:[0-9]{13}_)?[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\z"#
+    static let contextPattern = #"\A(?:(?:g2|ff|mac):(?!phone_)[A-Za-z0-9:_-]{3,96}|phone:phone_(?:[0-9]{13}_)?[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})\z"#
+    static let anonymousNote = "iPhone microphone recordings are anonymous. Names and voice training are unavailable."
+    static let stopNote = "Stop on iPhone"
+    nonisolated static func validID(_ id: String) -> Bool { id.range(of: idPattern, options: .regularExpression) != nil }
+    /// Prefix detection also fences malformed phone input; it must never become a glasses or Mac action.
+    nonisolated static func protected(_ id: String, sourceType: String? = nil) -> Bool {
+        id.hasPrefix("phone_") || sourceType == "iphone_microphone"
+    }
+    nonisolated static func validContextKey(_ key: String) -> Bool { key.range(of: contextPattern, options: .regularExpression) != nil }
+    nonisolated static func contextKeys(_ keys: [String], sessionId: String, sourceType: String?) -> [String] {
+        keys.filter { key in
+            guard validContextKey(key) else { return false }
+            if protected(sessionId, sourceType: sourceType) { return validID(sessionId) && key == "phone:" + sessionId }
+            return !key.hasPrefix("phone:")
+        }
+    }
+    nonisolated static func askSession(forKey key: String) -> String? {
+        guard validContextKey(key), let colon = key.firstIndex(of: ":") else { return nil }
+        let prefix = String(key[..<colon]), id = String(key[key.index(after: colon)...])
+        switch prefix {
+        case "phone": return validID(id) ? id : nil
+        case "mac": return id.range(of: #"\Amac_[A-Fa-f0-9]{8}(?:-[A-Fa-f0-9]{4}){3}-[A-Fa-f0-9]{12}\z"#, options: .regularExpression) != nil ? id : nil
+        case "g2": return id.range(of: #"\Ameeting_[A-Za-z0-9_-]{1,89}\z"#, options: .regularExpression) != nil ? id : nil
+        default: return nil
+        }
+    }
+}
+
 /// A saved meeting in the Activity library. sessionId is optional — Granola and
 /// Fireflies rows still open transcript and summary.
 struct LibraryMeeting: Identifiable, Sendable, Hashable {
@@ -5372,7 +5413,7 @@ struct LibraryMeeting: Identifiable, Sendable, Hashable {
     /// `WorkCardFiles.validMeetingKey`, kept here because some compile lists build the models without the card files
     /// (Tests/work-card-files-pins.py pins the two patterns equal).
     nonisolated static func validContextKey(_ key: String) -> Bool {
-        key.range(of: "^(g2|ff|mac):[A-Za-z0-9:_-]{3,96}$", options: .regularExpression) != nil
+        PhoneMeetingCapture.validContextKey(key)
     }
     let recordId: String
     let sessionId: String
@@ -5387,6 +5428,7 @@ struct LibraryMeeting: Identifiable, Sendable, Hashable {
     let filename: String
     let source: String
     let sourceType: String?
+    let speakerPolicy: String?
     /// One of five values from 6.47.0 on: `cos_operations`, `direct_library`,
     /// `standalone_recordings`, `imported`, `blended`. Empty on an older server.
     let librarySource: String
@@ -5404,15 +5446,21 @@ struct LibraryMeeting: Identifiable, Sendable, Hashable {
     /// Original recording identities survive renames and Fireflies merges. Older/direct rows may carry only sessionId.
     func meetingAskSessions(keys: [String]) -> [String] {
         var seen = Set<String>()
-        let candidates = keys.filter { $0.hasPrefix("g2:") || $0.hasPrefix("mac:") }.map { String($0.dropFirst($0.hasPrefix("mac:") ? 4 : 3)) }
+        let candidates = keys.compactMap(PhoneMeetingCapture.askSession(forKey:))
             + g2SessionIds + (sourceSessionId.map { [$0] } ?? [sessionId])
-        return candidates.filter {
-            $0.range(of: "^(meeting_[A-Za-z0-9_-]{1,89}|mac_[A-Fa-f0-9]{8}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{12})$", options: .regularExpression) != nil && seen.insert($0).inserted
+        return candidates.filter { id in
+            if PhoneMeetingCapture.protected(sessionId, sourceType: sourceType) && !PhoneMeetingCapture.protected(id) { return false }
+            if PhoneMeetingCapture.protected(id) {
+                return sourceType == "iphone_microphone" && id == sessionId && PhoneMeetingCapture.validID(id) && seen.insert(id).inserted
+            }
+            return PhoneMeetingCapture.askSession(forKey: Self.captureContextKey(id)) != nil && seen.insert(id).inserted
         }
     }
     nonisolated static func captureContextKey(_ session: String) -> String {
-        (session.hasPrefix("mac_") ? "mac:" : "g2:") + session
+        if PhoneMeetingCapture.protected(session) { return PhoneMeetingCapture.validID(session) ? "phone:" + session : "" }
+        return (session.hasPrefix("mac_") ? "mac:" : "g2:") + session
     }
+
     /// Which piece of that recording this is. Nil on anything but a split.
     let pieceIndex: Int?
     /// Where an imported or derived meeting actually came from.
@@ -5457,7 +5505,8 @@ struct LibraryMeeting: Identifiable, Sendable, Hashable {
         if !domainLabel.isEmpty { parts.append(domainLabel) }
         if !duration.isEmpty { parts.append(duration) }
         else if durationMinutes > 0 { parts.append("\(durationMinutes) min") }
-        if !source.isEmpty { parts.append(source) }
+        if PhoneMeetingCapture.protected(sessionId, sourceType: sourceType) { parts.append("iPhone Microphone") }
+        else if !source.isEmpty { parts.append(source) }
         return parts.joined(separator: " · ")
     }
 
@@ -5470,7 +5519,7 @@ struct LibraryMeeting: Identifiable, Sendable, Hashable {
     /// different and deliberately allowed: its `sessionId` is the earliest G2
     /// capture it holds, that capture is a real recording with real audio, and
     /// relabelling it is how its voice profile gets better.
-    var canReviewVoices: Bool { !sessionId.isEmpty && !isImported && !isSplitPiece }
+    var canReviewVoices: Bool { !sessionId.isEmpty && !isImported && !isSplitPiece && !PhoneMeetingCapture.protected(sessionId, sourceType: sourceType) }
 
     init?(_ value: JSONValue?) {
         guard let o = value?.object else { return nil }
@@ -5492,6 +5541,7 @@ struct LibraryMeeting: Identifiable, Sendable, Hashable {
         self.filename = filename
         source = o["source"]?.string ?? ""
         sourceType = o["sourceType"]?.string
+        speakerPolicy = o["speakerPolicy"]?.string
         librarySource = o["librarySource"]?.string ?? ""
         topicCount = o["topicCount"]?.int ?? Int(o["topicCount"]?.string ?? "") ?? 0
         decisionCount = o["decisionCount"]?.int ?? Int(o["decisionCount"]?.string ?? "") ?? 0
@@ -5500,7 +5550,7 @@ struct LibraryMeeting: Identifiable, Sendable, Hashable {
         derivedKind = o["derivedKind"]?.string
         actionId = o["actionId"]?.string
         g2SessionIds = o["g2SessionIds"]?.array?.compactMap(\.string) ?? []
-        contextKeys = (o["contextKeys"]?.array?.compactMap(\.string) ?? []).filter(LibraryMeeting.validContextKey)
+        contextKeys = PhoneMeetingCapture.contextKeys(o["contextKeys"]?.array?.compactMap(\.string) ?? [], sessionId: o["sessionId"]?.string ?? "", sourceType: o["sourceType"]?.string)
         contextSupported = o["contextSupported"]?.bool
         contextAmbiguous = o["contextAmbiguous"]?.bool ?? false
         contextReason = o["contextReason"]?.string ?? ""
@@ -12337,6 +12387,7 @@ enum TodayHome {
         let sessionId: String
         let start: Date?
         let isMac: Bool
+        var isPhone: Bool { PhoneMeetingCapture.protected(sessionId) }
     }
     /// One in-flight job from GET /api/query-jobs/active (server 6.84.1).
     struct ActiveJob: Equatable, Sendable {
@@ -12475,7 +12526,7 @@ enum TodayHome {
             var title = start.map { "Recording from " + clock($0, calendar: input.calendar) } ?? "Recording now"
             if let event = input.event, let start, abs(event.start.timeIntervalSince(start)) <= 15 * 60 { title = event.title }
             rows.append(RunRow(id: "recording:" + recording.sessionId, platform: .glasses, title: title,
-                               detail: (recording.isMac ? "recording on this Mac, live transcript" : "glasses recording, live transcript")
+                               detail: (recording.isPhone ? "iPhone microphone recording, live transcript" : recording.isMac ? "recording on this Mac, live transcript" : "glasses recording, live transcript")
                                    + (start.map { ", " + duration(input.now.timeIntervalSince($0)) } ?? ""),
                                openLabel: "Live view", open: .liveView(recording.sessionId), working: true, finished: false, started: start))
         }
