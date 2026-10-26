@@ -7980,7 +7980,7 @@ enum PetSpriteStrip {
     static let minFrames = 1
     // Longer authored stories need their exact count for cell slicing. Keep a
     // bounded import limit without truncating the longer recovery/entrance stories.
-    static let maxFrames = 128
+    static let maxFrames = 256
 
     static func clampFrames(_ value: Int) -> Int {
         min(max(value, minFrames), maxFrames)
@@ -8959,8 +8959,10 @@ enum PetSpriteStore {
                   let fallback = NSImage(contentsOf: directory.appendingPathComponent(fallbackFile)),
                   let raster = PetSpriteStrip.raster(fallback), raster.width % frames == 0 else { continue }
             let width = raster.width, height = raster.height
+            // The 256-frame illustrated swarm is 79,616 x 256 (20.4M pixels).
+            // Retain a finite decoded-strip budget; per-file bytes and cell dimensions stay bounded.
             guard height > 0, height <= 1024, width / frames > 0, width / frames <= 1024,
-                  width * height <= 16_777_216 else { continue }
+                  width * height <= 33_554_432 else { continue }
             // Version 15: on a display of scale 2 or more, the retina casts when every one of their layers is valid;
             // otherwise the 1x casts below. Either way the cells measure the 1x strip's points.
             if let retina = PetRetinaRow.chosen(row["retina"], displayScale: displayScale),

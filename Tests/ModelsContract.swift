@@ -1947,7 +1947,10 @@ struct ModelsContract {
                         && PetSpriteStrip.clampFrames(52) == 52
                         && PetSpriteStrip.clampFrames(64) == 64
                         && PetSpriteStrip.clampFrames(99) == 99
-                        && PetSpriteStrip.clampFrames(129) == 128,
+                        && PetSpriteStrip.clampFrames(129) == 129
+                        && PetSpriteStrip.clampFrames(184) == 184
+                        && PetSpriteStrip.clampFrames(256) == 256
+                        && PetSpriteStrip.clampFrames(257) == 256,
                      "authored counts above 16 must survive the bounded frame contract")
         // 0.5.328: Version 15 (V15), approved 2026-10-19 (installation-v1-5): each session's pose strip is its first cast's full
         // strip, four shuffled casts on Session 1 and three on Sessions 2 to 4. 0.5.325 to 0.5.327 shipped V14 timing-v2,

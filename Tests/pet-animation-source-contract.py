@@ -69,7 +69,7 @@ def validate(root: pathlib.Path, models: str, controller: str, motion: str, pet:
         need(state.get(pose) == row, f"{pose} does not point at the approved V15 strip, count, cadence and scale")
     need(set(state) == set(approved_state), "the shipped Miles map has a pose V15 does not declare")
     frame_cap = int(re.search(r"static let maxFrames = (\d+)", models).group(1))
-    need(frame_cap == 128, "runtime frame limit must preserve complete Jedi recovery and entrance frames")
+    need(frame_cap == 256, "runtime frame limit must preserve complete Jedi recovery and entrance frames")
     # V15 widens done from 99 to 199: the A1 to A3 bridge sabers were cut at the 99 px edge, and the 0.5.329 re-fit of
     # the see-through F9 to F11 bridges (scaled up to the standing frames' height) needs the extra room (figure the same size).
     cell_widths = {"attention": 121, "done": 199, "duel": 304, "error": 224, "idle": 83, "patrol": 128,
@@ -235,8 +235,8 @@ def main() -> None:
     validate(root, models, controller, motion, pet)
 
     must_fail(
-        "sixteen-frame cap truncates longer stories",
-        root, models.replace("static let maxFrames = 128", "static let maxFrames = 32"),
+        "legacy 128-frame cap truncates illustrated stories",
+        root, models.replace("static let maxFrames = 256", "static let maxFrames = 128"),
         controller, motion, pet,
     )
 

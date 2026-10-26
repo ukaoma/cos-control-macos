@@ -24,7 +24,7 @@ struct PetRotationChecks {
         bank.sample(pose: pose, rotation: art, now: time, speed: speed, interval: 0.08, paused: paused)!
     }
     static func main() throws {
-        for (frames, handoff) in [(37,28),(43,31),(64,55),(78,61),(82,65),(88,71),(128,111)] {
+        for (frames, handoff) in [(37,28),(43,31),(64,55),(78,61),(82,65),(88,71),(128,111),(148,109),(172,121),(184,145),(256,217)] {
             for seed in UInt64(0)..<10 {
                 var a = PetEncounterSequence(count: 3, frames: frames, handoffFrame: handoff, seed: seed)
                 var b = a
@@ -45,6 +45,24 @@ struct PetRotationChecks {
                     check(Set(choices[start..<start+3]).count == 3, "complete shuffle bags")
                 }
             }
+        }
+        // Real illustrated export cadence and handoff boundaries. Each reserved cast must
+        // finish its entrance before becoming current at the exact 50 fps wrap.
+        for (frames, handoff) in [(184,145),(148,109),(172,121),(256,217)] {
+            let illustrated = art(frames: frames, handoff: handoff, fingerprint: "illustrated-\(frames)")
+            let clock = PetEncounterPlayback(seed: 19)
+            let first = clock.sample(pose: .swarm, rotation: illustrated, now: 0, speed: 1, interval: 0.02, paused: false)!
+            for frame in 1..<frames {
+                let sample = clock.sample(pose: .swarm, rotation: illustrated, now: Double(frame) * 0.02 + 0.000001,
+                                          speed: 1, interval: 0.02, paused: false)!
+                check(sample.frame == frame, "50 fps keeps every illustrated frame")
+                check(sample.current == first.current && sample.incoming == first.incoming, "cast stays reserved at 50 fps")
+                check(illustrated.layers(for: sample).count == (frame + 1 >= handoff ? 2 : 1), "illustrated entrance boundary")
+            }
+            let wrapped = clock.sample(pose: .swarm, rotation: illustrated, now: Double(frames) * 0.02 + 0.000001,
+                                       speed: 1, interval: 0.02, paused: false)!
+            check(wrapped.frame == 0 && wrapped.current == first.incoming && wrapped.incoming != wrapped.current,
+                  "50 fps wrap commits incoming without repeat")
         }
         let pack = art(), bank = PetEncounterPlayback(seed: 8)
         let initial = sample(bank, pack, 0)
