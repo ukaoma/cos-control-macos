@@ -937,3 +937,190 @@ enum MacCaptureStateFile {
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
     }
 }
+
+// MARK: Capture that survives a stalled app, a watchdog and a quit that keeps the recording (0.5.351)
+//
+// The incident (mac_b0bd6732, 2026-10-26): the last chunk was written at 12:39:02, the tap was torn down at 12:40:02 and
+// nothing was logged or shown. The main thread was busy or blocked from about 12:39:05 (its last log line was 12:39:01,
+// and the CPU report for 12:38 to 12:40 shows it inside one SwiftUI update that read the disk's free space). The chunk
+// consumer ran on the main actor, so it stopped; the tap's 8-chunk buffer then filled (one chunk in flight plus eight
+// queued is ten chunks, 60 s), and the capture queue failed with "storage fell behind", whose report also needs the main
+// actor. The pieces below make each of those steps independent of the main actor.
+
+/// A chunk once the writer has stored it, on its way to the main actor for the live checks and delivery. The PCM is
+/// replaced: the main actor needs only the exact-zero flag, never the audio.
+struct MacRecordingWriterEvent: Sendable {
+    var chunk: MacRecordingChunk?
+    /// MacRecordingSignal.isSilent of the chunk's own audio, read where the audio still was.
+    var silent = false
+    var manifest: MacRecordingManifest?
+    /// Set instead of the others when the spool refused the chunk (disk, free space, the two-hour limit).
+    var failure: String?
+
+    /// Keeps `digitalSilence` and `index`/`endFrame` and nothing else.
+    static func slim(_ chunk: MacRecordingChunk) -> MacRecordingChunk {
+        chunk.digitalSilence ? .init(index: chunk.index, pcm: Data(count: 2), endFrame: chunk.endFrame, rawSignal: false)
+                             : .init(index: chunk.index, pcm: Data(), endFrame: chunk.endFrame, rawSignal: true)
+    }
+}
+
+/// Gives every stored chunk the next index and the next end frame of the JOURNAL, whichever tap produced it. A tap that
+/// is restarted counts from zero again; the journal's own sequence is the one that must stay unbroken.
+struct MacRecordingSequencer: Sendable {
+    private(set) var count = 0
+    private(set) var lastEnd = 0
+    init(from manifest: MacRecordingManifest? = nil) { if let manifest { stored(manifest) } }
+    func next(_ raw: MacRecordingChunk) -> MacRecordingChunk {
+        .init(index: count, pcm: raw.pcm, endFrame: lastEnd + raw.pcm.count / 2, rawSignal: raw.rawSignal)
+    }
+    mutating func stored(_ manifest: MacRecordingManifest) {
+        count = manifest.chunks.count; lastEnd = manifest.chunks.last?.endFrame ?? 0
+    }
+}
+
+/// When the writer last stored a chunk. Written by the writer, read by the watchdog; never behind the main actor.
+final class MacRecordingProgress: @unchecked Sendable {
+    private let lock = NSLock()
+    private var last: Date
+    init(_ start: Date = Date()) { last = start }
+    func mark(_ date: Date = Date()) { lock.lock(); last = max(last, date); lock.unlock() }
+    var lastWrite: Date { lock.lock(); defer { lock.unlock() }; return last }
+}
+
+/// No chunk written for five chunk lengths while the recording says it is recording.
+enum MacRecordingWatchdog {
+    static let chunkSeconds = MacRecordingWAV.framesPerChunk / MacRecordingWAV.sampleRate
+    static let stallChunks = 5
+    static var stallSeconds: Int { chunkSeconds * stallChunks }
+    /// One look per chunk length.
+    static var pollSeconds: Int { chunkSeconds }
+    /// One restart per stall; this many in a whole recording.
+    static let maxRestartsPerRecording = 3
+
+    enum Action: Equatable, Sendable { case none, restart, giveUp }
+    struct State: Equatable, Sendable {
+        /// When the last chunk before the stall was written (the time the panel names). nil while chunks are arriving.
+        var stalledSince: Date?
+        var restartAttemptAt: Date?
+        var attemptsThisStall = 0
+        var totalRestarts = 0
+        var gaveUp = false
+        mutating func restartFailed() { gaveUp = true }
+    }
+
+    static func step(_ state: inout State, now: Date, lastChunk: Date, restartInFlight: Bool) -> Action {
+        if let since = state.stalledSince, lastChunk > since {   // a chunk arrived after the stall: it is over
+            state.stalledSince = nil; state.restartAttemptAt = nil; state.attemptsThisStall = 0; state.gaveUp = false
+        }
+        guard !state.gaveUp, !restartInFlight else { return .none }
+        let reference = max(lastChunk, state.restartAttemptAt ?? .distantPast)
+        guard now.timeIntervalSince(reference) >= TimeInterval(stallSeconds) else { return .none }
+        if state.stalledSince == nil { state.stalledSince = lastChunk }
+        if state.attemptsThisStall < 1, state.totalRestarts < maxRestartsPerRecording {
+            state.attemptsThisStall += 1; state.totalRestarts += 1; state.restartAttemptAt = now
+            return .restart
+        }
+        state.gaveUp = true
+        return .giveUp
+    }
+
+    static func clock(_ date: Date, calendar: Calendar = .current) -> String {
+        let f = DateFormatter(); f.calendar = calendar; f.timeZone = calendar.timeZone
+        f.locale = Locale(identifier: "en_US_POSIX"); f.dateFormat = "h:mm a"
+        return f.string(from: date)
+    }
+    /// The panel's line while a stall is open.
+    static func line(_ state: State, calendar: Calendar = .current) -> String? {
+        guard let since = state.stalledSince else { return nil }
+        let at = clock(since, calendar: calendar)
+        return state.gaveUp ? "Recording stopped receiving audio at \(at). Stop and save keeps everything up to then."
+                            : "Recording stopped receiving audio at \(at). Restarting."
+    }
+}
+
+/// The captures being written right now, readable from any thread: what a termination signal has to close.
+final class MacRecordingOpenCaptures: @unchecked Sendable {
+    static let shared = MacRecordingOpenCaptures()
+    private let lock = NSLock()
+    private var spools: [String: MacRecordingSpool] = [:]
+    func add(_ id: String, spool: MacRecordingSpool) { lock.lock(); spools[id] = spool; lock.unlock() }
+    func remove(_ id: String) { lock.lock(); spools[id] = nil; lock.unlock() }
+    var ids: [String] { lock.lock(); defer { lock.unlock() }; return spools.keys.sorted() }
+    private func spool(for id: String) -> MacRecordingSpool? { lock.lock(); defer { lock.unlock() }; return spools[id] }
+    /// Notes the interruption and marks the journal stopped. Chunks already written are never touched.
+    func closeForExit(_ id: String) async -> Bool {
+        guard let spool = spool(for: id) else { return false }
+        _ = try? await spool.interrupt(id, reason: MacRecordingSigterm.reason)
+        return (try? await spool.markStopped(id)) != nil
+    }
+}
+
+/// SIGTERM (an update's quit, `kill`, a logout) skips applicationShouldTerminate, so a recording was never marked stopped.
+enum MacRecordingSigterm {
+    /// Under one second: a signal must not hold the process up.
+    static let waitSeconds: TimeInterval = 0.8
+    static let reason = "COS Control was quit while recording. Everything recorded up to then is kept."
+    struct Result: Equatable, Sendable { var total: Int; var finished: Int; var timedOut: Bool; var elapsedMs: Int }
+
+    /// Runs `work` for every id at once and waits at most `wait` for all of them.
+    static func flush(ids: [String], wait: TimeInterval = waitSeconds, work: @escaping @Sendable (String) async -> Bool) -> Result {
+        guard !ids.isEmpty else { return Result(total: 0, finished: 0, timedOut: false, elapsedMs: 0) }
+        let began = DispatchTime.now()
+        final class Tally: @unchecked Sendable {
+            private let lock = NSLock(); private var count = 0
+            func add() { lock.lock(); count += 1; lock.unlock() }
+            var finished: Int { lock.lock(); defer { lock.unlock() }; return count }
+        }
+        let tally = Tally(), group = DispatchGroup()
+        for id in ids {
+            group.enter()
+            Task.detached {
+                if await work(id) { tally.add() }
+                group.leave()
+            }
+        }
+        let timedOut = group.wait(timeout: .now() + wait) == .timedOut
+        let finished = tally.finished
+        let ms = Int(Double(DispatchTime.now().uptimeNanoseconds - began.uptimeNanoseconds) / 1_000_000)
+        return Result(total: ids.count, finished: finished, timedOut: timedOut, elapsedMs: ms)
+    }
+
+    /// Takes over `signalNumber` (the default action would end the process at once), closes every open capture within
+    /// `wait`, then calls `finish` on the signal queue. The caller keeps the returned source alive.
+    static func install(signalNumber: Int32 = SIGTERM, open: MacRecordingOpenCaptures = .shared, wait: TimeInterval = waitSeconds,
+                        finish: @escaping @Sendable (Result) -> Void) -> DispatchSourceSignal {
+        signal(signalNumber, SIG_IGN)
+        let source = DispatchSource.makeSignalSource(signal: signalNumber, queue: DispatchQueue(label: "com.gotcos.control.sigterm", qos: .userInitiated))
+        source.setEventHandler {
+            finish(flush(ids: open.ids, wait: wait) { await open.closeForExit($0) })
+        }
+        source.resume()
+        return source
+    }
+}
+
+extension MacRecordingWatchdog {
+    /// One restart is allowed two chunk lengths.
+    static var restartSeconds: Int { chunkSeconds * 2 }
+}
+
+/// Runs an operation and gives up waiting after `seconds`. The operation is not cancelled (a stuck tap call cannot be);
+/// its answer is simply no longer waited for.
+enum MacRecordingBounded {
+    private final class Once<T: Sendable>: @unchecked Sendable {
+        private let lock = NSLock()
+        private var continuation: CheckedContinuation<T?, Never>?
+        init(_ continuation: CheckedContinuation<T?, Never>) { self.continuation = continuation }
+        func resume(_ value: T?) {
+            lock.lock(); let next = continuation; continuation = nil; lock.unlock()
+            next?.resume(returning: value)
+        }
+    }
+    static func run<T: Sendable>(seconds: TimeInterval, _ operation: @escaping @Sendable () async -> T) async -> T? {
+        await withCheckedContinuation { (continuation: CheckedContinuation<T?, Never>) in
+            let once = Once<T>(continuation)
+            Task { once.resume(await operation()) }
+            Task { try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000)); once.resume(nil) }
+        }
+    }
+}

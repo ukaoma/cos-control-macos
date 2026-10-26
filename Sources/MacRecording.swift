@@ -25,6 +25,20 @@ private let recordingLog = Logger(subsystem: "com.gotcos.control", category: "ma
     }
 }
 
+/// 0.5.351: SIGTERM skips applicationShouldTerminate, so a recording was never marked stopped (mac_b0bd6732). The handler
+/// closes every open capture's journal within MacRecordingSigterm.waitSeconds, then lets the signal end the process as it
+/// always did.
+enum MacRecordingSigtermWiring {
+    nonisolated(unsafe) private static var source: DispatchSourceSignal?
+    static func install() {
+        guard source == nil else { return }
+        source = MacRecordingSigterm.install { result in
+            recordingLog.notice("sigterm: open=\(result.total) closed=\(result.finished) timedOut=\(result.timedOut) ms=\(result.elapsedMs)")
+            signal(SIGTERM, SIG_DFL); raise(SIGTERM)
+        }
+    }
+}
+
 @MainActor extension COSAppDelegate {
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard let prepare = MacRecordingTermination.prepare,
@@ -102,6 +116,7 @@ final class MacRecordingStore: ObservableObject {
     /// stopped and saved). Once stopped, a silent capture is reported by the save (noSpeech), not by this live check.
     var signalWarning: String? {
         guard isRecording else { return nil }
+        if let stall = stallLine { return stall }
         if let line = MacRecordingHearing.line(hearing, recording: isRecording) { return line }
         return MacRecordingSignal.warning(silentChunks: silentChunks, source: manifest?.sourceName ?? "the selected source")
     }
@@ -128,6 +143,15 @@ final class MacRecordingStore: ObservableObject {
     private let spool: MacRecordingSpool
     private var capture: (any MacCaptureSession)?
     private var chunksTask: Task<Void, Never>?
+    /// 0.5.351: stores chunks on its own executor, never the main actor (see MacRecordingWriterEvent); `chunksTask` only
+    /// reads what it stored.
+    private var writerTask: Task<Void, Never>?
+    private var progress: MacRecordingProgress?
+    private var watchdogTask: Task<Void, Never>?
+    private var watchdog = MacRecordingWatchdog.State()
+    private var restartInFlight = false
+    /// 0.5.351: the watchdog's line while no chunk is being written (MacRecordingWatchdog.line); nil otherwise.
+    @Published private(set) var stallLine: String?
     private var streamContinuation: AsyncStream<MacRecordingChunk>.Continuation?
     private var deliveryTask: Task<Void, Never>?
     private var deliveryWake = false
@@ -236,6 +260,7 @@ final class MacRecordingStore: ObservableObject {
         LiveAudiogramFeed.live.reset()
         hearing = MacRecordingHearing.State(); cannotHear = false; failFast = false; cannotHearTitle = nil
         let attempt = UUID(); startAttempt = attempt
+        watchdog = MacRecordingWatchdog.State(); stallLine = nil; restartInFlight = false
         installStopObservers()
         var localCapture: MacAudioCapture?
         var localContinuation: AsyncStream<MacRecordingChunk>.Continuation?
@@ -265,59 +290,68 @@ final class MacRecordingStore: ObservableObject {
             let (stream, continuation) = AsyncStream<MacRecordingChunk>.makeStream(bufferingPolicy: .bufferingOldest(8))
             localContinuation = continuation
             streamContinuation = continuation
-            chunksTask = Task { [weak self] in
-                for await chunk in stream {
-                    guard let self else { break }
-                    let silent = MacRecordingSignal.isSilent(chunk.pcm)
+            // 0.5.351: the writer stores every chunk on its own executor and keeps storing while the main actor is busy or
+            // blocked. Before, the main actor stored them, so a stalled app let the tap's 8-chunk buffer fill and the
+            // capture failed without a word (mac_b0bd6732, 12:39 to 12:40). The index and end frame are the journal's own,
+            // so a restarted tap continues the same sequence.
+            let progress = MacRecordingProgress(); self.progress = progress
+            let (stored, storedContinuation) = AsyncStream<MacRecordingWriterEvent>.makeStream(bufferingPolicy: .unbounded)
+            let spool = self.spool
+            MacRecordingOpenCaptures.shared.add(id, spool: spool)
+            writerTask = Task.detached(priority: .userInitiated) {
+                var sequence = MacRecordingSequencer()
+                for await raw in stream {
+                    let silent = MacRecordingSignal.isSilent(raw.pcm)
+                    let chunk = sequence.next(raw)
                     do {
-                        self.manifest = try await self.spool.append(chunk, captureId: id)
-                        if silent { self.silentChunks += 1 } else { self.silentChunks = 0; self.heardSound = true }
-                        if self.silentChunks == MacRecordingSignal.warnAfterSilentChunks {
-                            let count = self.silentChunks, source = self.manifest?.sourceName ?? "?"
-                            recordingLog.warning("silent capture: \(count) chunks below the peak floor from \(source, privacy: .public)")
-                        }
-                        // 0.5.334: exact zeros from All Mac audio while another app plays is macOS not letting COS record.
-                        if await self.hearingCheck(chunk, allMacAudio: source.isAllMacAudio) == .cannotHear {
-                            Task { await self.stopCannotHear(id) }; break
-                        }
-                        self.deliverPending()
-                    }
-                    catch {
+                        let journal = try await spool.append(chunk, captureId: id)
+                        sequence.stored(journal); progress.mark()
+                        storedContinuation.yield(.init(chunk: MacRecordingWriterEvent.slim(chunk), silent: silent, manifest: journal))
+                    } catch {
                         let reason = error.localizedDescription
                         recordingLog.error("append failed: \(reason, privacy: .public)")
-                        self.captureInterruption = reason; Task { await self.stop() }; break
+                        storedContinuation.yield(.init(failure: reason)); break
                     }
                 }
+                storedContinuation.finish()
             }
-            let engine = MacAudioCapture(chunk: { value in
-                if case .enqueued = continuation.yield(value) { return true }
-                return false
-            }, failure: { [weak self] reason in
-                Task { @MainActor in
-                    recordingLog.error("capture failed: \(reason, privacy: .public)")
-                    self?.captureInterruption = reason; await self?.stop()
+            chunksTask = Task { [weak self] in
+                for await event in stored {
+                    guard let self else { break }
+                    if let reason = event.failure { self.captureInterruption = reason; Task { await self.stop() }; break }
+                    guard let chunk = event.chunk, let journal = event.manifest else { continue }
+                    self.takeStored(journal)
+                    if event.silent { self.silentChunks += 1 } else { self.silentChunks = 0; self.heardSound = true }
+                    if self.silentChunks == MacRecordingSignal.warnAfterSilentChunks {
+                        let count = self.silentChunks, source = self.manifest?.sourceName ?? "?"
+                        recordingLog.warning("silent capture: \(count) chunks below the peak floor from \(source, privacy: .public)")
+                    }
+                    // 0.5.334: exact zeros from All Mac audio while another app plays is macOS not letting COS record.
+                    if await self.hearingCheck(chunk, allMacAudio: source.isAllMacAudio) == .cannotHear {
+                        Task { await self.stopCannotHear(id) }; break
+                    }
+                    self.deliverPending()
                 }
-            }, probe: { [weak self] sawSignal in
-                Task { @MainActor in await self?.hearingProbe(sawSignal, captureId: id, allMacAudio: source.isAllMacAudio) }
-            }, level: { rms in
-                // 0.5.336: the audiogram. A number, ten a second, into its own feed (never this store or the model).
-                Task { @MainActor in LiveAudiogramFeed.live.push(rms: rms) }
-            })
+            }
+            let engine = makeEngine(id: id, source: source, continuation: continuation)
             localCapture = engine; capture = engine
             try await engine.start(source: source)
             guard startAttempt == attempt, phase == "starting" else { _ = await engine.stop(); throw CancellationError() }
             phase = "recording"
+            startWatchdog(id: id, source: source)
             startPreviews(id)
             recordingLog.notice("start ok source=\(source.isAllMacAudio ? "all Mac audio" : "one app", privacy: .public) cues=\(asksCues ? (self.liveCuesArm?.armed == true ? "armed" : "refused") : "not asked", privacy: .public)")
             message = source.isAllMacAudio ? "Recording everything this Mac plays. Microphone off." : "Recording \(source.name) playback only. Microphone off."
         } catch {
+            MacRecordingOpenCaptures.shared.remove(id)
+            watchdogTask?.cancel(); watchdogTask = nil; stallLine = nil
             let interruption = await localCapture?.stop(); localContinuation?.finish()
             let reason = error is CancellationError ? "cancelled" : error.localizedDescription
             recordingLog.error("start failed: \(reason, privacy: .public)")
             guard startAttempt == attempt else { return }
             capture = nil
-            streamContinuation?.finish(); await chunksTask?.value
-            streamContinuation = nil; chunksTask = nil
+            streamContinuation?.finish(); await writerTask?.value; await chunksTask?.value
+            streamContinuation = nil; writerTask = nil; chunksTask = nil
             for observer in observers { NSWorkspace.shared.notificationCenter.removeObserver(observer) }; observers.removeAll()
             if manifest?.captureId == id {
                 if let reason = interruption ?? captureInterruption { _ = try? await spool.interrupt(id, reason: reason) }
@@ -328,6 +362,82 @@ final class MacRecordingStore: ObservableObject {
             if manifest?.captureId == id { phase = "pending" } else { phase = manifest?.saved == true ? "saved" : "idle" }
             self.error = error.localizedDescription
         }
+    }
+    /// The tap with this store's callbacks. Used by the start and by the watchdog's restart.
+    @available(macOS 14.2, *)
+    private func makeEngine(id: String, source: MacAudioSource, continuation: AsyncStream<MacRecordingChunk>.Continuation) -> MacAudioCapture {
+        MacAudioCapture(chunk: { value in
+            if case .enqueued = continuation.yield(value) { return true }
+            return false
+        }, failure: { [weak self] reason in
+            Task { @MainActor in
+                recordingLog.error("capture failed: \(reason, privacy: .public)")
+                self?.captureInterruption = reason; await self?.stop()
+            }
+        }, probe: { [weak self] sawSignal in
+            Task { @MainActor in await self?.hearingProbe(sawSignal, captureId: id, allMacAudio: source.isAllMacAudio) }
+        }, level: { rms in
+            // 0.5.336: the audiogram. A number, ten a second, into its own feed (never this store or the model).
+            Task { @MainActor in LiveAudiogramFeed.live.push(rms: rms) }
+        })
+    }
+    /// What the writer stored, into the panel's manifest. Never older than what is shown, never fewer acknowledgements.
+    private func takeStored(_ journal: MacRecordingManifest) {
+        guard let current = manifest, current.captureId == journal.captureId else { manifest = journal; return }
+        if current.chunks.count > journal.chunks.count { return }
+        var next = journal; next.acknowledged = max(next.acknowledged, current.acknowledged); manifest = next
+    }
+
+    // MARK: Watchdog (0.5.351)
+    //
+    // Every chunk length it looks at when the writer last stored a chunk (MacRecordingProgress). Five chunk lengths of
+    // nothing: one bounded tap restart, said on the panel; if that does not bring audio back, the panel says Stop and save
+    // keeps everything up to then. It never stops the recording itself (the person may be mid-call) and never touches a
+    // stored chunk. The restart's chunks continue the journal's own sequence (MacRecordingSequencer).
+
+    private func startWatchdog(id: String, source: MacAudioSource) {
+        watchdogTask?.cancel()
+        guard let progress else { return }
+        watchdogTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: UInt64(MacRecordingWatchdog.pollSeconds) * 1_000_000_000)
+                guard !Task.isCancelled, let self else { return }
+                await self.watchdogTick(id: id, source: source, progress: progress)
+            }
+        }
+    }
+    private func watchdogTick(id: String, source: MacAudioSource, progress: MacRecordingProgress) async {
+        guard phase == "recording", manifest?.captureId == id else { return }
+        let now = Date(), last = progress.lastWrite
+        let action = MacRecordingWatchdog.step(&watchdog, now: now, lastChunk: last, restartInFlight: restartInFlight)
+        stallLine = MacRecordingWatchdog.line(watchdog)
+        let quiet = Int(now.timeIntervalSince(last))
+        switch action {
+        case .none: break
+        case .giveUp:
+            recordingLog.error("watchdog: no chunk for \(quiet)s after \(self.watchdog.totalRestarts) restart(s); the recording keeps what it has")
+        case .restart:
+            recordingLog.error("watchdog: no chunk for \(quiet)s; restarting the tap (restart \(self.watchdog.totalRestarts) of \(MacRecordingWatchdog.maxRestartsPerRecording))")
+            restartInFlight = true
+            let worked = await MacRecordingBounded.run(seconds: TimeInterval(MacRecordingWatchdog.restartSeconds)) { [weak self] in
+                await self?.restartTap(id: id, source: source) ?? false
+            }
+            restartInFlight = false
+            recordingLog.notice("watchdog: restart \(worked == true ? "ok" : (worked == nil ? "timed out" : "failed"), privacy: .public)")
+            if worked != true { watchdog.restartFailed(); stallLine = MacRecordingWatchdog.line(watchdog) }
+        }
+    }
+    /// Stops the tap (its tail goes to the writer like any chunk), then starts a new one on the same stream.
+    private func restartTap(id: String, source: MacAudioSource) async -> Bool {
+        guard #available(macOS 14.2, *), let continuation = streamContinuation, let old = capture else { return false }
+        _ = await old.stop()
+        guard phase == "recording", manifest?.captureId == id else { return false }
+        let engine = makeEngine(id: id, source: source, continuation: continuation)
+        do { try await engine.start(source: source) }
+        catch { recordingLog.error("watchdog: the new tap did not start: \(error.localizedDescription, privacy: .public)"); return false }
+        guard phase == "recording", manifest?.captureId == id else { _ = await engine.stop(); return false }
+        capture = engine
+        return true
     }
     private func installStopObservers() {
         guard observers.isEmpty else { return }
@@ -349,11 +459,14 @@ final class MacRecordingStore: ObservableObject {
         phase = "stopping"
         recordingLog.notice("stop")
         previewTask?.cancel(); previewTask = nil
+        watchdogTask?.cancel(); watchdogTask = nil; stallLine = nil
         // QA 0.5.313: an interruption is written to the journal and shown once, by MacRecordingInterruption.line (muted for
         // the two-hour limit). Copying it into `error` too showed the same news again in red, and nothing cleared it.
         if let reason = await capture?.stop() { captureInterruption = reason }
         capture = nil
         streamContinuation?.finish(); streamContinuation = nil
+        // The writer first: every chunk the tap handed over is stored before the journal is marked stopped.
+        await writerTask?.value; writerTask = nil
         await chunksTask?.value; chunksTask = nil
         for observer in observers { NSWorkspace.shared.notificationCenter.removeObserver(observer) }; observers.removeAll()
         if let id = manifest?.captureId {
@@ -367,6 +480,7 @@ final class MacRecordingStore: ObservableObject {
                 recordingLog.error("markStopped failed: \(reason, privacy: .public)")
                 self.error = reason
             }
+            MacRecordingOpenCaptures.shared.remove(id)
         }
         phase = "pending"
         message = manifest?.chunks.isEmpty == true ? "Capture stopped before any audio was stored. There is nothing to save."
