@@ -9366,7 +9366,7 @@ enum PetSpriteStore {
             displayName: "Jedi Miles Windu",
             summary: "Ten animated states. Purple saber and escalating droid fights.",
             searchTerms: "Miles Windu Black male Jedi purple lightsaber action RPG droids",
-            folderName: "DefaultPet",
+            folderName: "BundledCharacters/jedi-miles-windu",
             isAdvanced: true
         ),
         BundledPetCharacter(
@@ -9437,8 +9437,8 @@ enum PetSpriteStore {
     }
 
     static func bundledDefaultURL(bundle: Bundle = .main) -> URL? {
-        guard let character = bundledCharacter(id: legacyDefaultCharacterID) else { return nil }
-        return bundledCharacterURL(character, bundle: bundle)
+        // Retained V15 is the legacy upgrade checkpoint and rollback pack.
+        bundle.resourceURL?.appendingPathComponent("DefaultPet", isDirectory: true)
     }
 
     /// Copies the bundled character in only when the user has none of their
@@ -9450,7 +9450,7 @@ enum PetSpriteStore {
         bundle: Bundle = .main,
         fileManager: FileManager = .default
     ) -> Bool {
-        installDefault(into: directory, from: bundledDefaultURL(bundle: bundle), fileManager: fileManager)
+        installBundledCharacter(id: legacyDefaultCharacterID, into: directory, bundle: bundle, fileManager: fileManager)
     }
 
     @discardableResult
@@ -9477,6 +9477,7 @@ enum PetSpriteStore {
     static func refreshRecognizedBundledCharacter(
         into directory: URL,
         sourceRootOverride: URL? = nil,
+        retainedMilesOverride: URL? = nil,
         bundle: Bundle = .main,
         fileManager: FileManager = .default
     ) -> BundledCharacterRefreshResult {
@@ -9495,7 +9496,7 @@ enum PetSpriteStore {
               let installedState = canonicalState(installedData)
         else { return .notApplicable }
 
-        for character in bundledCharacters where character.id != legacyDefaultCharacterID {
+        for character in bundledCharacters {
             let source: URL? = if let sourceRootOverride {
                 sourceRootOverride.appendingPathComponent(character.id, isDirectory: true)
             } else {
@@ -9528,12 +9529,16 @@ enum PetSpriteStore {
                 if let file = value as? String, file.hasSuffix(".png") { return [file] }
                 return []
             }
+            // Miles V15 stays in DefaultPet for rollback; other Jedi retain
+            // their prior assets beside the new generation.
+            let retainedSource = character.id == legacyDefaultCharacterID
+                ? (retainedMilesOverride ?? bundledDefaultURL(bundle: bundle) ?? source) : source
             let oldFiles = referencedPNGs(oldPoses)
             guard oldFiles.count > 0,
                   oldFiles.allSatisfy({ file in
                       guard file == URL(fileURLWithPath: file).lastPathComponent,
                             let installed = try? Data(contentsOf: directory.appendingPathComponent(file)),
-                            let retained = try? Data(contentsOf: source.appendingPathComponent(file))
+                            let retained = try? Data(contentsOf: retainedSource.appendingPathComponent(file))
                       else { return false }
                       return installed == retained
                   })
@@ -9546,7 +9551,7 @@ enum PetSpriteStore {
                   animated.allSatisfy({ pose in
                       guard let row = bundled[pose] else { return false }
                       return row.frames > 1 && row.frames <= PetSpriteStrip.maxFrames
-                          && (intervals[pose] ?? 0) > 0
+                          && (intervals[pose] ?? pose.frameInterval(forFrames: row.frames)) > 0
                   }),
                   let sourceState = try? Data(contentsOf: source.appendingPathComponent(stateFileName))
             else { return .failed }
@@ -9579,12 +9584,17 @@ enum PetSpriteStore {
             guard let sourceJSON = try? JSONSerialization.jsonObject(with: sourceState) as? [String: Any],
                   let sourceRows = sourceJSON["poses"] as? [String: [String: Any]]
             else { return .failed }
-            let rotations = loadRotations(in: source, fileManager: fileManager)
+            // Validate one pose at a time. The illustrated pack contains up
+            // to 256 frames; retaining all four decoded casts here wastes RAM.
+            var rotationManifests: [PetSpritePose: PetRotationManifest] = [:]
             for (poseName, row) in sourceRows where row["rotation"] != nil {
                 guard let pose = PetSpritePose(rawValue: poseName),
-                      let rotation = rotations[pose]
+                      let manifest = autoreleasepool(invoking: {
+                          loadRotations(in: source, fileManager: fileManager, only: [pose])[pose]?.manifest
+                      })
                 else { return .failed }
-                for variant in rotation.manifest.variants {
+                rotationManifests[pose] = manifest
+                for variant in manifest.variants {
                     for file in [variant.file, variant.bodyFile, variant.entryFile] {
                         guard file == URL(fileURLWithPath: file).lastPathComponent,
                               let data = try? Data(contentsOf: source.appendingPathComponent(file)),
@@ -9606,8 +9616,8 @@ enum PetSpriteStore {
                       let raster = NSImage(data: data).flatMap(PetSpriteStrip.raster)
                 else { return .failed }
                 let cell = CGSize(width: raster.width / record.frames, height: raster.height)
-                if let rotation = rotations[pose],
-                   rotation.manifest.variants.map(\.id) != retina.variants.map(\.id) { return .failed }
+                if let rotation = rotationManifests[pose],
+                   rotation.variants.map(\.id) != retina.variants.map(\.id) { return .failed }
                 for files in [retina.file] + retina.variants.flatMap({ [$0.file, $0.bodyFile, $0.entryFile] }) {
                     guard files.allSatisfy({ $0 == URL(fileURLWithPath: $0).lastPathComponent }),
                           PetSpriteStrip.retinaCells(files, frames: record.frames, cell: cell, scale: retina.scale,

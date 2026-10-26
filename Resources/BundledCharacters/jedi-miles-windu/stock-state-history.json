@@ -1,0 +1,380 @@
+{
+  "maps": [
+    {
+      "name": "approved-v15-retained",
+      "state": {
+        "poses": {
+          "attention": {
+            "file": "windu-pack15-attention-1x.png",
+            "frames": 18,
+            "interval": 0.12,
+            "retina": {
+              "file": [
+                "windu-pack15-attention-2x.png"
+              ],
+              "scale": 2
+            }
+          },
+          "done": {
+            "file": "windu-pack15-done-1x.png",
+            "frames": 14,
+            "interval": 0.14,
+            "retina": {
+              "file": [
+                "windu-pack15-done-2x.png"
+              ],
+              "scale": 2
+            }
+          },
+          "duel": {
+            "file": "windu-pack15-duel-a-full-1x.png",
+            "frames": 37,
+            "interval": 0.08,
+            "retina": {
+              "file": [
+                "windu-pack15-duel-a-full-2x.png"
+              ],
+              "scale": 2,
+              "variants": [
+                {
+                  "bodyFile": [
+                    "windu-pack15-duel-a-body-2x.png"
+                  ],
+                  "entryFile": [
+                    "windu-pack15-duel-a-entry-2x.png"
+                  ],
+                  "file": [
+                    "windu-pack15-duel-a-full-2x.png"
+                  ],
+                  "id": "duel-a"
+                },
+                {
+                  "bodyFile": [
+                    "windu-pack15-duel-b-body-2x.png"
+                  ],
+                  "entryFile": [
+                    "windu-pack15-duel-b-entry-2x.png"
+                  ],
+                  "file": [
+                    "windu-pack15-duel-b-full-2x.png"
+                  ],
+                  "id": "duel-b"
+                },
+                {
+                  "bodyFile": [
+                    "windu-pack15-duel-c-body-2x.png"
+                  ],
+                  "entryFile": [
+                    "windu-pack15-duel-c-entry-2x.png"
+                  ],
+                  "file": [
+                    "windu-pack15-duel-c-full-2x.png"
+                  ],
+                  "id": "duel-c"
+                }
+              ]
+            },
+            "rotation": {
+              "handoffFrame": 28,
+              "variants": [
+                {
+                  "bodyFile": "windu-pack15-duel-a-body-1x.png",
+                  "entryFile": "windu-pack15-duel-a-entry-1x.png",
+                  "file": "windu-pack15-duel-a-full-1x.png",
+                  "id": "duel-a"
+                },
+                {
+                  "bodyFile": "windu-pack15-duel-b-body-1x.png",
+                  "entryFile": "windu-pack15-duel-b-entry-1x.png",
+                  "file": "windu-pack15-duel-b-full-1x.png",
+                  "id": "duel-b"
+                },
+                {
+                  "bodyFile": "windu-pack15-duel-c-body-1x.png",
+                  "entryFile": "windu-pack15-duel-c-entry-1x.png",
+                  "file": "windu-pack15-duel-c-full-1x.png",
+                  "id": "duel-c"
+                }
+              ],
+              "version": 1
+            }
+          },
+          "error": {
+            "file": "windu-pack15-error-1x.png",
+            "frames": 8,
+            "interval": 0.14,
+            "retina": {
+              "file": [
+                "windu-pack15-error-2x.png"
+              ],
+              "scale": 2
+            }
+          },
+          "idle": {
+            "file": "session-pet-idle-cutouts-v2.png",
+            "frames": 8,
+            "renderScale": 1.0
+          },
+          "patrol": {
+            "file": "session-pet-patrol-polish-v3.png",
+            "frames": 8,
+            "interval": 0.14
+          },
+          "swarm": {
+            "file": "windu-pack15-swarm-a-full-1x.png",
+            "frames": 64,
+            "interval": 0.08,
+            "retina": {
+              "file": [
+                "windu-pack15-swarm-a-full-2x-s1.png",
+                "windu-pack15-swarm-a-full-2x-s2.png"
+              ],
+              "scale": 2,
+              "variants": [
+                {
+                  "bodyFile": [
+                    "windu-pack15-swarm-a-body-2x-s1.png",
+                    "windu-pack15-swarm-a-body-2x-s2.png"
+                  ],
+                  "entryFile": [
+                    "windu-pack15-swarm-a-entry-2x-s1.png",
+                    "windu-pack15-swarm-a-entry-2x-s2.png"
+                  ],
+                  "file": [
+                    "windu-pack15-swarm-a-full-2x-s1.png",
+                    "windu-pack15-swarm-a-full-2x-s2.png"
+                  ],
+                  "id": "swarm-a"
+                },
+                {
+                  "bodyFile": [
+                    "windu-pack15-swarm-b-body-2x-s1.png",
+                    "windu-pack15-swarm-b-body-2x-s2.png"
+                  ],
+                  "entryFile": [
+                    "windu-pack15-swarm-b-entry-2x-s1.png",
+                    "windu-pack15-swarm-b-entry-2x-s2.png"
+                  ],
+                  "file": [
+                    "windu-pack15-swarm-b-full-2x-s1.png",
+                    "windu-pack15-swarm-b-full-2x-s2.png"
+                  ],
+                  "id": "swarm-b"
+                },
+                {
+                  "bodyFile": [
+                    "windu-pack15-swarm-c-body-2x-s1.png",
+                    "windu-pack15-swarm-c-body-2x-s2.png"
+                  ],
+                  "entryFile": [
+                    "windu-pack15-swarm-c-entry-2x-s1.png",
+                    "windu-pack15-swarm-c-entry-2x-s2.png"
+                  ],
+                  "file": [
+                    "windu-pack15-swarm-c-full-2x-s1.png",
+                    "windu-pack15-swarm-c-full-2x-s2.png"
+                  ],
+                  "id": "swarm-c"
+                }
+              ]
+            },
+            "rotation": {
+              "handoffFrame": 55,
+              "variants": [
+                {
+                  "bodyFile": "windu-pack15-swarm-a-body-1x.png",
+                  "entryFile": "windu-pack15-swarm-a-entry-1x.png",
+                  "file": "windu-pack15-swarm-a-full-1x.png",
+                  "id": "swarm-a"
+                },
+                {
+                  "bodyFile": "windu-pack15-swarm-b-body-1x.png",
+                  "entryFile": "windu-pack15-swarm-b-entry-1x.png",
+                  "file": "windu-pack15-swarm-b-full-1x.png",
+                  "id": "swarm-b"
+                },
+                {
+                  "bodyFile": "windu-pack15-swarm-c-body-1x.png",
+                  "entryFile": "windu-pack15-swarm-c-entry-1x.png",
+                  "file": "windu-pack15-swarm-c-full-1x.png",
+                  "id": "swarm-c"
+                }
+              ],
+              "version": 1
+            }
+          },
+          "trio": {
+            "file": "windu-pack15-trio-a-full-1x.png",
+            "frames": 43,
+            "interval": 0.08,
+            "retina": {
+              "file": [
+                "windu-pack15-trio-a-full-2x.png"
+              ],
+              "scale": 2,
+              "variants": [
+                {
+                  "bodyFile": [
+                    "windu-pack15-trio-a-body-2x.png"
+                  ],
+                  "entryFile": [
+                    "windu-pack15-trio-a-entry-2x.png"
+                  ],
+                  "file": [
+                    "windu-pack15-trio-a-full-2x.png"
+                  ],
+                  "id": "trio-a"
+                },
+                {
+                  "bodyFile": [
+                    "windu-pack15-trio-b-body-2x.png"
+                  ],
+                  "entryFile": [
+                    "windu-pack15-trio-b-entry-2x.png"
+                  ],
+                  "file": [
+                    "windu-pack15-trio-b-full-2x.png"
+                  ],
+                  "id": "trio-b"
+                },
+                {
+                  "bodyFile": [
+                    "windu-pack15-trio-c-body-2x.png"
+                  ],
+                  "entryFile": [
+                    "windu-pack15-trio-c-entry-2x.png"
+                  ],
+                  "file": [
+                    "windu-pack15-trio-c-full-2x.png"
+                  ],
+                  "id": "trio-c"
+                }
+              ]
+            },
+            "rotation": {
+              "handoffFrame": 31,
+              "variants": [
+                {
+                  "bodyFile": "windu-pack15-trio-a-body-1x.png",
+                  "entryFile": "windu-pack15-trio-a-entry-1x.png",
+                  "file": "windu-pack15-trio-a-full-1x.png",
+                  "id": "trio-a"
+                },
+                {
+                  "bodyFile": "windu-pack15-trio-b-body-1x.png",
+                  "entryFile": "windu-pack15-trio-b-entry-1x.png",
+                  "file": "windu-pack15-trio-b-full-1x.png",
+                  "id": "trio-b"
+                },
+                {
+                  "bodyFile": "windu-pack15-trio-c-body-1x.png",
+                  "entryFile": "windu-pack15-trio-c-entry-1x.png",
+                  "file": "windu-pack15-trio-c-full-1x.png",
+                  "id": "trio-c"
+                }
+              ],
+              "version": 1
+            }
+          },
+          "waiting": {
+            "file": "session-pet-waiting-release-v1.png",
+            "frames": 11,
+            "interval": 0.18
+          },
+          "working": {
+            "file": "windu-pack15-working-a-full-1x.png",
+            "frames": 46,
+            "interval": 0.08,
+            "renderScale": 0.75,
+            "retina": {
+              "file": [
+                "windu-pack15-working-a-full-2x.png"
+              ],
+              "scale": 2,
+              "variants": [
+                {
+                  "bodyFile": [
+                    "windu-pack15-working-a-body-2x.png"
+                  ],
+                  "entryFile": [
+                    "windu-pack15-working-a-entry-2x.png"
+                  ],
+                  "file": [
+                    "windu-pack15-working-a-full-2x.png"
+                  ],
+                  "id": "working-a"
+                },
+                {
+                  "bodyFile": [
+                    "windu-pack15-working-b-body-2x.png"
+                  ],
+                  "entryFile": [
+                    "windu-pack15-working-b-entry-2x.png"
+                  ],
+                  "file": [
+                    "windu-pack15-working-b-full-2x.png"
+                  ],
+                  "id": "working-b"
+                },
+                {
+                  "bodyFile": [
+                    "windu-pack15-working-c-body-2x.png"
+                  ],
+                  "entryFile": [
+                    "windu-pack15-working-c-entry-2x.png"
+                  ],
+                  "file": [
+                    "windu-pack15-working-c-full-2x.png"
+                  ],
+                  "id": "working-c"
+                },
+                {
+                  "bodyFile": [
+                    "windu-pack15-working-d-body-2x.png"
+                  ],
+                  "entryFile": [
+                    "windu-pack15-working-d-entry-2x.png"
+                  ],
+                  "file": [
+                    "windu-pack15-working-d-full-2x.png"
+                  ],
+                  "id": "working-d"
+                }
+              ]
+            },
+            "rotation": {
+              "handoffFrame": 37,
+              "variants": [
+                {
+                  "bodyFile": "windu-pack15-working-a-body-1x.png",
+                  "entryFile": "windu-pack15-working-a-entry-1x.png",
+                  "file": "windu-pack15-working-a-full-1x.png",
+                  "id": "working-a"
+                },
+                {
+                  "bodyFile": "windu-pack15-working-b-body-1x.png",
+                  "entryFile": "windu-pack15-working-b-entry-1x.png",
+                  "file": "windu-pack15-working-b-full-1x.png",
+                  "id": "working-b"
+                },
+                {
+                  "bodyFile": "windu-pack15-working-c-body-1x.png",
+                  "entryFile": "windu-pack15-working-c-entry-1x.png",
+                  "file": "windu-pack15-working-c-full-1x.png",
+                  "id": "working-c"
+                },
+                {
+                  "bodyFile": "windu-pack15-working-d-body-1x.png",
+                  "entryFile": "windu-pack15-working-d-entry-1x.png",
+                  "file": "windu-pack15-working-d-full-1x.png",
+                  "id": "working-d"
+                }
+              ],
+              "version": 1
+            }
+          }
+        }
+      }
+    }
+  ]
+}

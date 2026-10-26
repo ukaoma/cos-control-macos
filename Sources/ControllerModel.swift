@@ -403,7 +403,7 @@ final class ControllerModel: ObservableObject {
     private static let petDefaultSeededKey = "cos.sessionPetDefaultSeeded"
     private static let petDismissedKey = "cos.sessionPetDismissed"
     private static let petDefaultArtGenerationKey = "cos.sessionPetDefaultArtGeneration"
-    private static let petDefaultArtGeneration = 24
+    private static let petDefaultArtGeneration = 25
 
     private static func loadPetCharacterPercent(defaults: UserDefaults = .standard) -> Int {
         PetCharacterScale.loadPersistedPercent(
@@ -5253,6 +5253,8 @@ final class ControllerModel: ObservableObject {
             // 18/14-frame signal bridges. Nothing is deleted; V14's files stay on disk. V1.5 already installed is .current.
             // Generation 24 (0.5.341) promotes exact stock Nia, Elara and Rowan to Jedi 360 V2,
             // including validated Retina rotation layers. Custom art, cadence and Windu stay chosen.
+            // Generation 25 promotes exact stock Miles V15 to Illustrated V1.1,
+            // with all thirteen casts and full 50fps recovery/entrance timing.
             let bundledRefresh = PetSpriteStore.refreshRecognizedBundledCharacter(
                 into: directory
             )

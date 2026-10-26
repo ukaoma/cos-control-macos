@@ -54,7 +54,9 @@ struct JediGalleryContract {
             try check(pixels > 100, "\(character.id): invisible gallery thumbnail")
 
             // Reproduce the shipped failure using its real retained portrait, not a mock.
-            let old = NSImage(data: try Data(contentsOf: folder.appendingPathComponent(PetSpriteStore.poseFileName(.idle))))!
+            let retained = character.id == PetSpriteStore.legacyDefaultCharacterID
+                ? resources.appendingPathComponent("DefaultPet") : folder
+            let old = NSImage(data: try Data(contentsOf: retained.appendingPathComponent(PetSpriteStore.poseFileName(.idle))))!
             if visible(try rgba(PetSpriteStrip.slice(old, frames: row.frames).first!).2) == 0 {
                 oldBlankCount += 1
             }

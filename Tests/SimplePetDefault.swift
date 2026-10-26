@@ -176,6 +176,8 @@ import SwiftUI
         // its bytes. A V14 with its own speed is the person's pack and stays untouched, and an installed V15 is current.
         let fm = FileManager.default
         let miles = PetSpriteStore.bundledDefaultURL()!
+        let illustrated = PetSpriteStore.bundledCharacterURL(PetSpriteStore.bundledCharacter(id: PetSpriteStore.legacyDefaultCharacterID)!)!
+        let illustratedMap = PetSpriteStore.loadStateMap(in: illustrated)
         let bundledMap = PetSpriteStore.loadStateMap(in: miles)
         let bundledRows = (try JSONSerialization.jsonObject(with: Data(contentsOf: miles.appendingPathComponent(PetSpriteStore.stateFileName))) as! [String: Any])["poses"] as! [String: [String: Any]]
         let retinaFiles = Set(bundledRows.values.compactMap { PetRetinaRow($0["retina"]) }.flatMap(\.files))
@@ -235,14 +237,14 @@ import SwiftUI
                         path.hasSuffix(PetSpriteStore.stateFileName) || after[path]?.0 == entry.0
                     }, "the upgrade deleted or changed a V14 file (\(what))")
                     let installedMap = PetSpriteStore.loadStateMap(in: directory)
-                    precondition(installedMap.count == bundledMap.count && bundledMap.allSatisfy { pose, row in
+                    precondition(installedMap.count == illustratedMap.count && illustratedMap.allSatisfy { pose, row in
                         installedMap[pose]?.file == row.file && installedMap[pose]?.frames == row.frames
-                    }, "\(what) did not move to the V15 map")
+                    }, "\(what) did not move through V15 to the illustrated map")
                     precondition(v15Files.allSatisfy { file in
                         (try? Data(contentsOf: directory.appendingPathComponent(file))) == (try? Data(contentsOf: miles.appendingPathComponent(file)))
                     }, "\(what): a V15 file did not land byte for byte")
-                    precondition(PetSpriteStore.loadFrameIntervals(in: directory) == PetSpriteStore.loadFrameIntervals(in: miles)
-                                 && PetSpriteStore.loadRenderScales(in: directory) == PetSpriteStore.loadRenderScales(in: miles),
+                    precondition(PetSpriteStore.loadFrameIntervals(in: directory) == PetSpriteStore.loadFrameIntervals(in: illustrated)
+                                 && PetSpriteStore.loadRenderScales(in: directory) == PetSpriteStore.loadRenderScales(in: illustrated),
                                  "\(what): V15 cadence and pack scales")
                     precondition(castCounts() == [.working: 4, .duel: 3, .trio: 3, .swarm: 3],
                                  "\(what) plays four Session 1 casts and three on Sessions 2 to 4")
@@ -265,7 +267,15 @@ import SwiftUI
         for file in v15Files.union([PetSpriteStore.stateFileName]) {
             try fm.copyItem(at: miles.appendingPathComponent(file), to: directory.appendingPathComponent(file))
         }
+        let retainedV15 = state()
+        launch(24)
         let installedV15 = state()
+        precondition(retainedV15.allSatisfy { path, entry in
+            path.hasSuffix(PetSpriteStore.stateFileName) || installedV15[path]?.0 == entry.0
+        }, "V15 upgrade retains every original asset")
+        precondition(PetSpriteStore.loadStateMap(in: directory).allSatisfy { pose, row in
+            illustratedMap[pose]?.file == row.file && illustratedMap[pose]?.frames == row.frames
+        }, "generation 24 upgrades to complete illustrated stories")
         Thread.sleep(forTimeInterval: 1.1)
         for generation in [nil, 21, 22, 23] as [Int?] {
             launch(generation)
@@ -275,7 +285,7 @@ import SwiftUI
             }, "a launch rewrote the installed V15 (generation \(String(describing: generation)))")
             precondition(castCounts() == [.working: 4, .duel: 3, .trio: 3, .swarm: 3])
         }
-        print("PASS: installed Version 15 survives first, post-0.5.324, post-0.5.327 and repeat launches untouched")
+        print("PASS: V15 upgrades once; illustrated pack survives repeat launches untouched")
         mark("installed Version 15 survives firs")
         // Retina vs 1x: the pack's 2x strips decode to the same point sizes with twice the pixels (store level), and
         // the live pet plays them only up to ControllerModel.petRetinaArtScaleCeiling (0.5.329: 1, the memory gate).
