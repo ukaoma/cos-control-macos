@@ -87,6 +87,7 @@ import Foundation
         // including after the collector restarts in the middle of the oversized row.
         let huge = String(repeating:"x",count:8*1024*1024+1024)
         try (huge + "\n" + claude("after-image","2026-10-04T12:00:00Z")).write(to:boundedFile,atomically:true,encoding:.utf8)
+        try FileManager.default.setAttributes([.modificationDate:Date(timeIntervalSince1970:1_792_987_063.1234567)],ofItemAtPath:boundedFile.path)
         let skipped = try bounded.refresh()
         check(skipped.pendingFiles == 1 && skipped.unreadableFiles == 1,"oversized row is a reported pending gap")
         let resumedLarge = try SessionUsageCollector(home:boundedHome)

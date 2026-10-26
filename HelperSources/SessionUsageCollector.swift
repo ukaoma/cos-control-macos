@@ -78,7 +78,11 @@ final class SessionUsageCollector {
             if status == SQLITE_DONE { break }
             guard status == SQLITE_ROW else { throw Failure(message: "Could not read usage history.") }
             rows.append((0..<sqlite3_column_count(s)).map { i in
-                sqlite3_column_text(s,i).map { String(cString: $0) } ?? ""
+                // SQLite's text conversion rounds REAL values to fifteen digits.
+                // Preserve the stored Double so unchanged file mtimes compare exactly;
+                // rounding them can reset every large-file checkpoint on each pass.
+                if sqlite3_column_type(s,i) == SQLITE_FLOAT { return String(sqlite3_column_double(s,i)) }
+                return sqlite3_column_text(s,i).map { String(cString: $0) } ?? ""
             })
         }
         return rows

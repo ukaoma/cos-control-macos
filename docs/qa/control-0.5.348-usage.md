@@ -17,6 +17,7 @@ The current0.5.345 release proceeds separately. Shared release coordination rese
 - Privacy: fixture checks inspect both SQLite and WAL for the prompt sentinel; production import stores counts/identities/checkpoints only. Source session files are read-only.
 - Persistence: optional large-row checkpoint state preserves prior checkpoints. Same-size rewritten files are rescanned; event identities deduplicate repeat imports. Deleted source logs leave the ledger intact.
 - Attribution: Codex rows without provider metadata remain Unknown provider instead of being assumed to be OpenAI.
+- BLOCKER found by the oversized-row restart test: SQLite's REAL-to-text conversion rounded modification timestamps, so unchanged files could repeatedly reset their cursors. Reading REAL columns through sqlite3_column_double preserves comparison precision. Focused fixtures pass after this correction; the large-row fixture pins a fractional modification timestamp to prevent recurrence.
 
 ## Gates
 
@@ -25,7 +26,7 @@ The current0.5.345 release proceeds separately. Shared release coordination rese
 - Source desktop-safety scan: passed; no native input/window automation.
 - Desktop-safety mutation self-test: passed (35 disallowed forms rejected, six allowed forms accepted).
 - Pricing: standard API rates rechecked against official Anthropic and OpenAI documentation on October25; this remains a snapshot estimate, not actual billing.
-- Usage fixtures: pending on final candidate.
+- Usage fixtures: passed after the timestamp correction (compile.vKje8z); complete suite repeats the final fixture.
 - Complete Tests/run.sh, including run-mac-dictation, run-voice-style and run-dictation-parity: pending compiler handoff.
 - Native offscreen month/history renders at800/1200points in light/dark: pending final candidate.
 - Bounded real-log canary and packaged-helper private-home contract: pending final candidate.
