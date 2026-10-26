@@ -48,20 +48,35 @@ Companion candidate: `9fe6d0b8` (after `4e49cd8c` / `b34f1632`). Server candidat
   recovery DTO/old-server status refinements. An earlier runner attempted a
   nonexistent Mac guard filename; the corrected final run above passed.
 
-## Prepared native fixture lane (not run)
+## Bounded native fixture qualification
 
-After the release owner grants this lane, from this worktree use an isolated
-kit/evidence directory; run sequentially through the common release scheduler:
+Root granted these two sequential fixture lanes after continuous36v2 released
+compilation. Production source is `dfd2bad`; test-only commit `62a97ab` fixes the
+new fixture's attempted mutation of a `let` property. With explicit bounded
+profile and isolated kit/home data, both final runs passed:
+
+- Initial models attempt: production meeting-core compiled, then the new fixture
+  failed to compile. `models.json`: 23.563 seconds, exit 1.
+- Corrected models run: 43 compiled checks passed. `models-rerun.json`: 2.187
+  seconds, exit 0, reusing the already compiled unchanged production core.
+- Helper compile, 965 deterministic self-tests and 53 live-transcript helper
+  checks passed. `helper.json`: 72.922 seconds, exit 0. Existing unrelated
+  `Any?`-to-`Any` warning at `HelperSources/main.swift:14180` remains.
+
+All receipts are under
+`/Users/ukaoma/cos-release-candidates/control-iphone-microphone-20261026`.
+Native lane explicitly relinquished after helper completion. Exact final
+commands (do not rerun without the release owner's lane):
 
 ```sh
-python3 '/Users/ukaoma/Documents/GitHub/Ukaoma Chief Of Staff/MU-Chief-Staff/.agents/skills/cos-glasses/scripts/release_lane.py' --receipt /Users/ukaoma/cos-release-candidates/control-iphone-microphone-20261026/models.json --timeout-seconds 600 -- env COS_TEST_KIT_DIR=/Users/ukaoma/cos-release-candidates/control-iphone-microphone-20261026/kits zsh Tests/run-phone-meeting.sh
-python3 '/Users/ukaoma/Documents/GitHub/Ukaoma Chief Of Staff/MU-Chief-Staff/.agents/skills/cos-glasses/scripts/release_lane.py' --receipt /Users/ukaoma/cos-release-candidates/control-iphone-microphone-20261026/helper.json --timeout-seconds 600 -- env COS_TEST_KIT_DIR=/Users/ukaoma/cos-release-candidates/control-iphone-microphone-20261026/kits COS_LIVE_TRANSCRIPT_LANE=helper zsh Tests/run-live-transcript.sh
+python3 '/Users/ukaoma/Documents/GitHub/Ukaoma Chief Of Staff/MU-Chief-Staff/.agents/skills/cos-glasses/scripts/release_lane.py' --receipt /Users/ukaoma/cos-release-candidates/control-iphone-microphone-20261026/models-rerun.json --timeout-seconds 600 -- env COS_COMPILE_PROFILE=bounded COS_TEST_KIT_DIR=/Users/ukaoma/cos-release-candidates/control-iphone-microphone-20261026/kits zsh Tests/run-phone-meeting.sh
+python3 '/Users/ukaoma/Documents/GitHub/Ukaoma Chief Of Staff/MU-Chief-Staff/.agents/skills/cos-glasses/scripts/release_lane.py' --receipt /Users/ukaoma/cos-release-candidates/control-iphone-microphone-20261026/helper.json --timeout-seconds 600 -- env COS_COMPILE_PROFILE=bounded COS_TEST_KIT_DIR=/Users/ukaoma/cos-release-candidates/control-iphone-microphone-20261026/kits COS_LIVE_TRANSCRIPT_LANE=helper zsh Tests/run-live-transcript.sh
 ```
 
-Both scripts already route Swift jobs through `kit-compile.py` and
+Both scripts route Swift jobs through `kit-compile.py` and
 `compile-guard.sh`; no global lock override. The first checks source DTOs, same
 UUID history/file caches, live-to-saved reopen, anonymous reducer refusal and
-source-aware Stop/status rules using temporary data. The second adds synthetic
+source-aware Stop/status rules using temporary data. The second executes synthetic
 phone registry/policy/journal fixtures to existing helper tests, including no
 registry, forged names, policy change despite matching stamp, symlink metadata,
 foreign status, and pre-network mutation/Stop refusal. No model or capture runs.
@@ -69,7 +84,7 @@ foreign status, and pre-network mutation/Stop refusal. No model or capture runs.
 A later full app build/full existing regressions are still required for modified
 SwiftUI/model integration. Work card file intake/reopen must also be exercised
 with the compiled source, rather than inferred from grammar pins. Static checks
-are not native acceptance. Independent source review should use the final commit.
+are not native acceptance. Independent source review uses production `dfd2bad`; the subsequent `62a97ab` changes only the fixture. Source review remains separate from native qualification.
 
 ## Physical and release gates
 
