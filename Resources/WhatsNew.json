@@ -1,14 +1,26 @@
 {
-  "version": "0.5.345",
+  "version": "0.5.348",
   "whatsNew": {
-    "summary": "COS no longer types um and uh on their own, and a dictation at the start of a text box or sentence starts with a capital. When Claude's polish is ready, a \u2318 or \u2303 you are still holding no longer cancels the swap, and Undo polish puts back what COS typed. Under AI polish, Settings says which polish your COS server runs for the model you chose. If your microphone fails to start, COS tries one that worked before and says which, and a stuck sound or mute no longer holds up dictation. When you fix something polish had already fixed, the card says so and what happens next time. Plus everything in 0.5.344: COS reads your change once more when you press Return or click, and with Sonnet learns style habits from your edits.",
+    "summary": "Sessions now includes Usage: tokens by model and provider, daily charts, monthly history and estimated API value. COS reads the session records already on this Mac and keeps a local history. Choose All history for totals across the available records. Includes the dictation fixes from 0.5.345.",
     "sections": [
+      {
+        "title": "0.5.348",
+        "items": [
+          "Open Sessions, then Usage. Compare a month or All history by provider and model, with input, output and cache tokens shown separately.",
+          "Switch between daily usage and monthly history, and between tokens and estimated API value. The model table shows which models account for the most tokens.",
+          "COS backfills Claude Code and Codex session records stored on this Mac, including archived Codex sessions and subagents. Large histories import in bounded passes; partial totals and coverage gaps are shown.",
+          "Usage history stays on this Mac and survives deletion of previously imported session logs. Pause tracking at any time. COS stores counts and model names, not conversation text.",
+          "Cost is a standard API-equivalent estimate, not your subscription bill. It applies the October 25 rate snapshot to all dates. Unknown prices stay unavailable; browser-only sessions, Cursor and other Macs are not included.",
+          "Longer custom pet animations retain their approved timing, including 256-frame casts. Your installed artwork is preserved.",
+          "Includes 0.5.345 dictation improvements and its fix for learning edits to capitalized dictations."
+        ]
+      },
       {
         "title": "0.5.345",
         "items": [
           "COS leaves out um, uh, er and hmm said on their own before it types or copies, also with AI polish off. Text in another language, file names such as um.py, and handles such as @uh keep them. Settings, Dictation, Remove filler sounds turns it off. What was heard stays on the card.",
           "A dictation at the start of a text box, or after a full stop, question mark or new line, starts with a capital when COS can read the text box. Never in terminals or password fields, and never for words like iPhone, @handles, paths or a lowercase word in your dictionary. Settings, Dictation, Capitalize the start of a sentence.",
-          "When you are still holding \u2318 or \u2303 as Claude's polish arrives, COS waits up to 1.2 seconds for you to let go, then a moment of no typing, before it swaps the polished text in. Shift and Option still count as typing. Settings can turn the wait off.",
+          "When you are still holding ⌘ or ⌃ as Claude's polish arrives, COS waits up to 1.2 seconds for you to let go, then a moment of no typing, before it swaps the polished text in. Shift and Option still count as typing. Settings can turn the wait off.",
           "Undo polish, on the pill after a swap and on the dictation's card, puts back exactly what COS typed. Apply polished in Activity puts Claude's version back again.",
           "Under AI polish, one line says which polish your COS server runs for the model you chose: the newest polish, the earlier one, or Previous polish you picked. COS reads it again when the server is updated or rolled back.",
           "If the microphone fails to start with System default, COS tries a microphone that delivered sound before (never Bluetooth or an iPhone) and says which it used. A sound or a mute that hits an audio error pauses for 10 minutes instead of holding up dictation, with Play sounds again and Mute again in Settings.",
@@ -24,7 +36,7 @@
           "COS checks for your change sooner after you stop typing. Your dictionary still learns a word only after a longer pause.",
           "If your last change may not have been read before the text was sent or cleared, nothing is saved. COS never keeps an older version as what you sent.",
           "When AI polish gives back your words unchanged, COS records it as unchanged, not as a failed polish. When the server cleaned up filler or spellings on its own, COS still puts the cleaned text in, and the card says Cleaned up.",
-          "With COS server 6.91.0, Sonnet now uses the new polish (v4), and its card says so, for example Polished \u00b7 Sonnet \u00b7 v4. Previous polish (v3) in Settings, Dictation goes back to the earlier prompt.",
+          "With COS server 6.91.0, Sonnet now uses the new polish (v4), and its card says so, for example Polished · Sonnet · v4. Previous polish (v3) in Settings, Dictation goes back to the earlier prompt.",
           "With AI polish on Claude Sonnet, COS can learn two style habits from changes you make to text it typed: dropping a filler such as \"honestly\" or \"to be honest\", and using or writing out contractions. A habit becomes a rule after you make the same change in two dictations.",
           "Your style rules apply only to Sonnet polish with the new prompt. On Haiku, with Previous polish, or with learning off, Settings lists them as Not used or Paused, and COS learns nothing new.",
           "When COS adds a rule, the pill says Learned your style, with Undo, once for each rule. Settings, Dictation, Your style lists your rules with Remove, lets you add one or reset them, and has a switch to stop learning. Suggest only proposes rules instead of adding them.",
@@ -199,7 +211,7 @@
           "Reset pause, Use for answers, Remove and Remove all keys are buttons, each confirmed first. Saved keys can still be removed after going back to an older COS.",
           "Sessions that ran on a key cannot be continued, forked or opened in their app from Control, so they never resume on your plan.",
           "New installs get an optional Add your own key step at the end of setup. Skip is the default and sends nothing.",
-          "Dictation: if your Mac misses the moment you let go of the dictation key, COS now notices and finishes the dictation normally, typing the text instead of copying it. If the \ud83c\udf10 key also has a job in macOS, COS tells you and opens Keyboard settings. A press while the last dictation is still finishing now says so. Dictation settings now live in Activity, Dictation, Settings.",
+          "Dictation: if your Mac misses the moment you let go of the dictation key, COS now notices and finishes the dictation normally, typing the text instead of copying it. If the 🌐 key also has a job in macOS, COS tells you and opens Keyboard settings. A press while the last dictation is still finishing now says so. Dictation settings now live in Activity, Dictation, Settings.",
           "Dictation no longer quits COS Control when you switch to a microphone with a different audio format, like the Studio Display Microphone."
         ]
       },
@@ -239,7 +251,7 @@
           "With a model chosen, Claude cleans each dictation before COS pastes it: filler words like um, punctuation, doubled words and spellings from your COS dictionary. It does not reliably fix a word the speech engine misheard, and Sonnet sometimes guesses wrong.",
           "The pill says POLISHING while Claude works. COS waits at most 5 seconds for Haiku and 9 for Sonnet; if Claude is slower, unavailable or fails, COS pastes what it heard, with no error card.",
           "Uses your Claude plan through the COS server, with the server's own daily limit. Dictations over 8,000 characters are pasted as heard.",
-          "Dictation history marks a polished dictation Polished \u00b7 Haiku or Polished \u00b7 Sonnet, and its detail shows What was heard, with Copy.",
+          "Dictation history marks a polished dictation Polished · Haiku or Polished · Sonnet, and its detail shows What was heard, with Copy.",
           "Jedi Miles Windu, the default pet, now fights shuffled opponent casts like Nia, Elara and Rowan: two, three and four sessions each rotate three casts without an immediate repeat, and one session keeps the slower sprint.",
           "A Miles Windu pet that was never changed updates by itself. A pet you changed or installed yourself stays exactly as it is.",
           "Use on a shipped character now needs a click: Return no longer confirms it, and a confirm left open is withdrawn when the panel closes, so a stray key cannot replace your pet."
@@ -266,7 +278,7 @@
         "items": [
           "If COS Control does not close for an update within 20 seconds, the update closes it and reopens the new version. You no longer need Force Quit.",
           "A Mac recording is never cut off: the update stops, says \"Finish the Mac recording, then choose Try again\", and installs nothing until you do.",
-          "While it installs, the window says \"Closing COS Control\u2026\", then the new version opens.",
+          "While it installs, the window says \"Closing COS Control…\", then the new version opens.",
           "If an update could not close COS Control, the next launch offers Finish installing, with nothing to download again.",
           "A Live cues switch in Settings, in the Meeting assistant card under Home city. Turn live cues on or off here; nobody edits the server's files by hand.",
           "The line under the switch says what cues use, like On. Cues use Claude Sonnet 5.5, SubQ, and your notes. Or what stops them, in words, and what to do.",
@@ -281,7 +293,7 @@
           "Stop and save a glasses meeting from COS Control. It is in the live meeting header, and in the panel when one glasses meeting is recording. Confirm, and COS asks the glasses to stop.",
           "The glasses stop and save the meeting themselves, so the lens shows Saving and Saved and no audio is split into a second meeting.",
           "COS says what happened: Saving the meeting, then Saved with its name. If the glasses are not connected, the server is unreachable or the meeting already stopped, it says so and nothing stops.",
-          "Meeting Ask\u2019s copied context shows where in the meeting each answer reached, as Through 3:30, and how long the answer took when the server measured it, as Answer time: 6.4 s. It no longer prints a meeting position in milliseconds that read like a wait.",
+          "Meeting Ask’s copied context shows where in the meeting each answer reached, as Through 3:30, and how long the answer took when the server measured it, as Answer time: 6.4 s. It no longer prints a meeting position in milliseconds that read like a wait.",
           "Needs COS Glasses 6.10.644 and server 6.76.1."
         ]
       },
@@ -364,8 +376,8 @@
       {
         "title": "Fix dictation faster",
         "items": [
-          "Fix a dictation the moment it lands: Fix on the pill for 5 seconds, or \u2303\u2325F (set in Settings).",
-          "Click, drag and move windows while you hold the dictation key: COS keeps listening, and the text lands where your cursor ends up. A click right after the press is still \u2325-click or \u2318-click.",
+          "Fix a dictation the moment it lands: Fix on the pill for 5 seconds, or ⌃⌥F (set in Settings).",
+          "Click, drag and move windows while you hold the dictation key: COS keeps listening, and the text lands where your cursor ends up. A click right after the press is still ⌥-click or ⌘-click.",
           "If a dictation is cut short (another key while you hold the shortcut, or sleep), COS still transcribes what you said and copies it; a card shows the text with Copy. If you copied something meanwhile, your clipboard is left alone. Under a second is dropped.",
           "After you fix a word, Replace it in the app puts the corrected text back where COS typed it, when that spot hasn't changed; otherwise COS copies the corrected text.",
           "Fix a word selects the whole misheard phrase and suggests the spelling from your dictionary. Return saves.",
@@ -410,8 +422,8 @@
         "title": "Dictation, Wispr-style",
         "items": [
           "Hold your shortcut and the bar under your pet becomes a listening pill with a live waveform that moves for quiet speech too. No window opens, and nothing takes focus from the app you are typing in. With the pet hidden, the same pill sits above the Dock.",
-          "Release and COS transcribes, copies the text, and drops it into whatever text box has your cursor when it finishes, so you can click somewhere else while it works. The pill flashes \u2713 Inserted with the app's name only when COS sees the text land. The text stays on the clipboard, so \u2318V works again anywhere.",
-          "Some apps, such as terminals and Electron editors, get \u2318V; COS shows Pasted when it can't confirm. COS sends \u2318V once and never asks you to paste again; the text stays on the clipboard and in Recent dictations with Copy.",
+          "Release and COS transcribes, copies the text, and drops it into whatever text box has your cursor when it finishes, so you can click somewhere else while it works. The pill flashes ✓ Inserted with the app's name only when COS sees the text land. The text stays on the clipboard, so ⌘V works again anywhere.",
+          "Some apps, such as terminals and Electron editors, get ⌘V; COS shows Pasted when it can't confirm. COS sends ⌘V once and never asks you to paste again; the text stays on the clipboard and in Recent dictations with Copy.",
           "No text box selected? A card pops over the pet with the text and a Copy button. It folds away after 20 seconds; hover to keep it.",
           "The DICTATIONS pill on the pet opens Recent dictations, kept on this Mac, each with where it went and a Copy button.",
           "Still refused: password fields, and secure keyboard input held by another app (its own card). COS never presses Send or Return, and line breaks become spaces in a terminal.",
@@ -424,16 +436,16 @@
         "items": [
           "Open a dictation and choose Fix a word: tap what COS got wrong, type the right spelling, Save. It joins the one COS dictionary your G2 meetings, Mac recordings and dictation already use, from the next sentence on.",
           "Recent corrections show what COS learned, from where and when, and each one can be undone.",
-          "Meetings \u2192 Dictionary in COS Activity shows the whole dictionary: recent corrections, vocabulary and every correction, searchable, with add and remove. Fix a word, Undo and single-word edits need server 6.73.12; on an older server the dictionary still reads and takes hand-added corrections."
+          "Meetings → Dictionary in COS Activity shows the whole dictionary: recent corrections, vocabulary and every correction, searchable, with add and remove. Fix a word, Undo and single-word edits need server 6.73.12; on an older server the dictionary still reads and takes hand-added corrections."
         ]
       },
       {
         "title": "Dictate into any Mac app",
         "items": [
           "Turn on Dictate into Mac apps in Settings, choose a microphone, and set Push to talk and Start / stop shortcuts. Speech runs through Parakeet Ultra on this Mac with your COS dictionary.",
-          "Any key can be the shortcut: a modifier plus a key, a function key, or one modifier key by itself such as Fn \ud83c\udf10 or Right \u2318. Fn+arrow and other chords never start dictation.",
-          "To use Fn, set System Settings \u2192 Keyboard \u2192 Press \ud83c\udf10 key to Do Nothing, and move Wispr Flow off Fn. Fn and single-key shortcuts use Accessibility, which insertion already needs.",
-          "A click right after you press your shortcut modifier (\u2325-click, \u2318-click) counts as a chord and never starts dictation; later clicks keep dictating."
+          "Any key can be the shortcut: a modifier plus a key, a function key, or one modifier key by itself such as Fn 🌐 or Right ⌘. Fn+arrow and other chords never start dictation.",
+          "To use Fn, set System Settings → Keyboard → Press 🌐 key to Do Nothing, and move Wispr Flow off Fn. Fn and single-key shortcuts use Accessibility, which insertion already needs.",
+          "A click right after you press your shortcut modifier (⌥-click, ⌘-click) counts as a chord and never starts dictation; later clicks keep dictating."
         ]
       },
       {
@@ -445,7 +457,7 @@
           "The panel checks every chunk for sound. If nothing reaches COS for 12 seconds it says so, instead of only counting chunks received.",
           "A red menu bar indicator and Stop control stay available while recording. Local audio is retained for explicit recovery if delivery is interrupted; a silent capture can be kept while you record again.",
           "Work requests blocked before sending can be reviewed and sent to another connected session, or a new or forked session, after confirmation.",
-          "A Mac recording that stopped while its audio still uploads reads \"Capture stopped \u00b7 saving N/M\" on Meetings, with Finish saving, instead of Live now."
+          "A Mac recording that stopped while its audio still uploads reads \"Capture stopped · saving N/M\" on Meetings, with Finish saving, instead of Live now."
         ]
       },
       {
@@ -509,7 +521,7 @@
           "Choose Opus or Sonnet to plan, beside the composer. Opus is the default; the choice stays on this Mac. Needs server 6.73.10; older servers plan with Sonnet.",
           "If an earlier handoff on the card is still unresolved, COS lists it first, with Mark reviewed, Acknowledge or Check status, instead of refusing partway through a plan.",
           "A refused assignment shows its reason and the others stay sendable. If the task, its files or its sessions change after planning, COS asks you to plan again.",
-          "Read each session\u2019s delivery status and results together in the task conversation. Shared task completion remains your decision; Cursor and app-owned sessions keep manual continuation.",
+          "Read each session’s delivery status and results together in the task conversation. Shared task completion remains your decision; Cursor and app-owned sessions keep manual continuation.",
           "Choose how hard the planner thinks: Low, Medium or High (default). Each round names the model and effort that planned it, and says Dispatched only when a session received an assignment."
         ]
       },

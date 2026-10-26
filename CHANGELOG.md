@@ -1,3 +1,14 @@
+## 0.5.348 (build 402), Sessions Usage and historical model activity
+
+Built on Control 0.5.345 QA fixes at 4570a8d; pairs with published server 6.92.0. No server endpoint or feature-flag changes.
+
+- Sessions → Usage adds provider/model filters, monthly and all-history totals, daily stacked charts and monthly trends in millions of tokens.
+- A local SQLite ledger backfills available Claude Code/Codex records, including archives/subagents; it deduplicates repeated observations and resumes bounded imports. Counts persist after source logs are removed. No prompts or responses are stored or uploaded.
+- Input, output, cache reads and cache writes are disjoint. Costs use a documented October 25 API-equivalent snapshot, not subscription invoices. Unknown pricing and missing coverage remain explicit.
+- Import passes distinguish incomplete EOF from a budget cutoff, and skip oversized image rows incrementally without stranding later usage. Gaps remain visible.
+- Includes 990ef13 pet compatibility (256-frame casts, bounded32M rotation raster); no new artwork. Preserves0.5.345 capitalization/edit-learning fix.
+- Details, limits and focused evidence: docs/session-usage.md. Final release gates recorded separately.
+
 ## 0.5.345 (build 399), Dictation parity, Wave A: fillers, the capital, the swap that lands, Undo polish, honest polish copy, audio that survives a stuck device
 
 On top of 0.5.344 (build 398). Pairs with COS server 6.92.0 (Wave A, `claude/server-6.92.0-parity-a` at a1eafa0; the fillers fixture a531d0a9 first
