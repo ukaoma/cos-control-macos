@@ -403,7 +403,7 @@ final class ControllerModel: ObservableObject {
     private static let petDefaultSeededKey = "cos.sessionPetDefaultSeeded"
     private static let petDismissedKey = "cos.sessionPetDismissed"
     private static let petDefaultArtGenerationKey = "cos.sessionPetDefaultArtGeneration"
-    private static let petDefaultArtGeneration = 26
+    private static let petDefaultArtGeneration = 27
 
     private static func loadPetCharacterPercent(defaults: UserDefaults = .standard) -> Int {
         PetCharacterScale.loadPersistedPercent(
@@ -2603,6 +2603,7 @@ final class ControllerModel: ObservableObject {
     private(set) var petRotationPose: PetSpritePose?
     private var petRotationLoad: Task<Void, Never>?
     private var petRotationGeneration = 0
+    private var petRotationRetryAfter = 0.0
     /// The pose the sprite draws. It follows `petSpritePose`, except that a change to a cast state waits for that state's
     /// casts: the old state keeps animating until they are decoded (about 0.4 s at 1x, 1.8 s for swarm at 2x).
     @Published private(set) var petShownPose: PetSpritePose?
@@ -2611,13 +2612,17 @@ final class ControllerModel: ObservableObject {
     /// Called whenever the pet may have changed pose. `synchronously` is for tests.
     func ensurePetRotation(for pose: PetSpritePose, synchronously: Bool = false) {
         let want: PetSpritePose? = petCastPoses.contains(pose) ? pose : nil
-        if want == petRotationPose {
-            if petShownPose != pose && (want == nil || petSpriteKit.rotations[pose] != nil) { petShownPose = pose }
+        let hasArt = petSpriteKit.rotations[pose] != nil
+        guard PetRotationLoadPolicy.shouldRequest(wanted: want, requested: petRotationPose, hasArt: hasArt,
+            loading: petRotationLoad != nil, retryAfter: petRotationRetryAfter, now: ProcessInfo.processInfo.systemUptime) else {
+            if petShownPose != pose && (want == nil || hasArt) { petShownPose = pose }
             return
         }
         petRotationLoad?.cancel()
         petRotationGeneration += 1
         petRotationPose = want
+        petRotationLoad = nil
+        petRotationRetryAfter = 0
         guard let want else {
             // A state without casts shows at once and holds none.
             if !petSpriteKit.rotations.isEmpty { petSpriteKit.rotations = [:] }
@@ -2629,6 +2634,7 @@ final class ControllerModel: ObservableObject {
         if synchronously {
             petSpriteKit.rotations = [:]
             petSpriteKit.rotations = PetSpriteStore.loadRotations(in: directory, displayScale: scale, only: [want])
+            if petSpriteKit.rotations[want] == nil { petRotationRetryAfter = ProcessInfo.processInfo.systemUptime + 5 }
             petShownPose = want
             return
         }
@@ -2643,6 +2649,11 @@ final class ControllerModel: ObservableObject {
     /// state's casts are released by this assignment, and the sprite switches state in the same update.
     private func applyPetRotation(_ loaded: PetRotationBox, pose: PetSpritePose, generation: Int) {
         guard !Task.isCancelled, petRotationGeneration == generation else { return }
+        petRotationLoad = nil
+        petRotationRetryAfter = loaded.value[pose] == nil ? ProcessInfo.processInfo.systemUptime + 5 : 0
+        if loaded.value[pose] == nil {
+            NSLog("COSControl pet rotation unavailable for %@; keeping fallback and retrying on a later refresh", pose.rawValue)
+        }
         petSpriteKit.rotations = loaded.value
         petShownPose = pose
     }
@@ -5257,6 +5268,8 @@ final class ControllerModel: ObservableObject {
             // with all thirteen casts and full 50fps recovery/entrance timing.
             // Generation 26 refreshes exact stock Illustrated V1.1 with the
             // matching illustrated idle, meditation and relaxed patrol art.
+            // Generation 27 retimes the two Windu run bursts as one consistent cadence;
+            // the impact, recovery, cast entrances, and ambient art remain unchanged.
             let bundledRefresh = PetSpriteStore.refreshRecognizedBundledCharacter(
                 into: directory
             )
@@ -5295,6 +5308,8 @@ final class ControllerModel: ObservableObject {
         petRotationLoad?.cancel()
         petRotationGeneration += 1
         petRotationPose = nil
+        petRotationLoad = nil
+        petRotationRetryAfter = 0
         petShownPose = nil
         petSpriteKit = PetSpriteKit(fallback: petCustomSprite, poses: poses, cinematic: cinematic, rotations: [:])
         ensurePetRotation(for: petSpritePose)

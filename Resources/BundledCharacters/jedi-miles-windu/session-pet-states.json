@@ -381,12 +381,12 @@
     "working": {
       "frames": 184,
       "interval": 0.02,
-      "file": "windu-illustrated-v1-working-a-full-1x.png",
+      "file": "windu-motion-v1-working-a-full-1x.png",
       "retina": {
         "scale": 2,
         "file": [
-          "windu-illustrated-v1-working-a-full-2x-s1.png",
-          "windu-illustrated-v1-working-a-full-2x-s2.png",
+          "windu-motion-v1-working-a-full-2x-s1.png",
+          "windu-motion-v1-working-a-full-2x-s2.png",
           "windu-illustrated-v1-working-a-full-2x-s3.png",
           "windu-illustrated-v1-working-a-full-2x-s4.png"
         ],
@@ -394,8 +394,8 @@
           {
             "id": "working-a",
             "file": [
-              "windu-illustrated-v1-working-a-full-2x-s1.png",
-              "windu-illustrated-v1-working-a-full-2x-s2.png",
+              "windu-motion-v1-working-a-full-2x-s1.png",
+              "windu-motion-v1-working-a-full-2x-s2.png",
               "windu-illustrated-v1-working-a-full-2x-s3.png",
               "windu-illustrated-v1-working-a-full-2x-s4.png"
             ],
@@ -415,8 +415,8 @@
           {
             "id": "working-b",
             "file": [
-              "windu-illustrated-v1-working-b-full-2x-s1.png",
-              "windu-illustrated-v1-working-b-full-2x-s2.png",
+              "windu-motion-v1-working-b-full-2x-s1.png",
+              "windu-motion-v1-working-b-full-2x-s2.png",
               "windu-illustrated-v1-working-b-full-2x-s3.png",
               "windu-illustrated-v1-working-b-full-2x-s4.png"
             ],
@@ -436,8 +436,8 @@
           {
             "id": "working-c",
             "file": [
-              "windu-illustrated-v1-working-c-full-2x-s1.png",
-              "windu-illustrated-v1-working-c-full-2x-s2.png",
+              "windu-motion-v1-working-c-full-2x-s1.png",
+              "windu-motion-v1-working-c-full-2x-s2.png",
               "windu-illustrated-v1-working-c-full-2x-s3.png",
               "windu-illustrated-v1-working-c-full-2x-s4.png"
             ],
@@ -457,8 +457,8 @@
           {
             "id": "working-d",
             "file": [
-              "windu-illustrated-v1-working-d-full-2x-s1.png",
-              "windu-illustrated-v1-working-d-full-2x-s2.png",
+              "windu-motion-v1-working-d-full-2x-s1.png",
+              "windu-motion-v1-working-d-full-2x-s2.png",
               "windu-illustrated-v1-working-d-full-2x-s3.png",
               "windu-illustrated-v1-working-d-full-2x-s4.png"
             ],
@@ -483,25 +483,25 @@
         "variants": [
           {
             "id": "working-a",
-            "file": "windu-illustrated-v1-working-a-full-1x.png",
+            "file": "windu-motion-v1-working-a-full-1x.png",
             "bodyFile": "windu-illustrated-v1-working-a-body-1x.png",
             "entryFile": "windu-illustrated-v1-working-a-entry-1x.png"
           },
           {
             "id": "working-b",
-            "file": "windu-illustrated-v1-working-b-full-1x.png",
+            "file": "windu-motion-v1-working-b-full-1x.png",
             "bodyFile": "windu-illustrated-v1-working-b-body-1x.png",
             "entryFile": "windu-illustrated-v1-working-b-entry-1x.png"
           },
           {
             "id": "working-c",
-            "file": "windu-illustrated-v1-working-c-full-1x.png",
+            "file": "windu-motion-v1-working-c-full-1x.png",
             "bodyFile": "windu-illustrated-v1-working-c-body-1x.png",
             "entryFile": "windu-illustrated-v1-working-c-entry-1x.png"
           },
           {
             "id": "working-d",
-            "file": "windu-illustrated-v1-working-d-full-1x.png",
+            "file": "windu-motion-v1-working-d-full-1x.png",
             "bodyFile": "windu-illustrated-v1-working-d-body-1x.png",
             "entryFile": "windu-illustrated-v1-working-d-entry-1x.png"
           }

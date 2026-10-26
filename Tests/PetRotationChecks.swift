@@ -23,7 +23,7 @@ struct PetRotationChecks {
     static func sample(_ bank: PetEncounterPlayback, _ art: PetEncounterRotation, _ time: Double, speed: Double = 1, paused: Bool = false, pose: PetSpritePose = .duel) -> PetEncounterPlayback.Snapshot {
         bank.sample(pose: pose, rotation: art, now: time, speed: speed, interval: 0.08, paused: paused)!
     }
-    static func main() throws {
+    static func main() async throws {
         for (frames, handoff) in [(37,28),(43,31),(64,55),(78,61),(82,65),(88,71),(128,111),(148,109),(172,121),(184,145),(256,217)] {
             for seed in UInt64(0)..<10 {
                 var a = PetEncounterSequence(count: 3, frames: frames, handoffFrame: handoff, seed: seed)
@@ -130,6 +130,8 @@ struct PetRotationChecks {
         try loader()
         try retina()
         try memoryRelease()
+        try await PetRotationRecoveryChecks.run(root: URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent())
+        try WinduMotionChecks.run(root: URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent())
         print("PASS: PetRotationChecks \(checks) assertions; 21000 loops; real scheduler, clock, layer selector, loader and legacy fallback")
     }
     static func loader() throws {

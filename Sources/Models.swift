@@ -7841,6 +7841,16 @@ final class PetEncounterPlayback {
     }
 }
 
+/// A failed cast decode must not permanently pin the fallback's first cast.
+/// Retry on a later panel refresh; never launch concurrent decodes or reload healthy art.
+enum PetRotationLoadPolicy {
+    static func shouldRequest(wanted: PetSpritePose?, requested: PetSpritePose?, hasArt: Bool,
+                              loading: Bool, retryAfter: Double, now: Double) -> Bool {
+        if wanted != requested { return true }
+        return wanted != nil && !hasArt && !loading && now >= retryAfter
+    }
+}
+
 struct PetSpriteKit {
     var fallback: NSImage?
     var poses: [PetSpritePose: [NSImage]] = [:]

@@ -83,6 +83,30 @@ import CryptoKit
   }
   let stamp348=try fm.attributesOfItem(atPath:state348.path)[.modificationDate] as! Date
   precondition(refresh348() == .notApplicable && (try! fm.attributesOfItem(atPath:state348.path)[.modificationDate] as! Date)==stamp348)
-  print("PASS: V15 and 348 upgrades, custom timing/scale/art protection, missing-asset atomic failure, ambient native slicing/cadence, 13 unchanged casts and both rollback generations")
+  // A 349 installation receives only the new full-strip timing; custom casts or intervals remain untouched.
+  let data349=try Data(contentsOf:candidate.appendingPathComponent("ambient-v2-state-map.json"))
+  let json349=try JSONSerialization.jsonObject(with:data349)
+  let stock349=temp.appendingPathComponent("stock349")
+  try fm.createDirectory(at:stock349,withIntermediateDirectories:true)
+  let files349=refs(json349)
+  for f in files349 {try fm.copyItem(at:candidate.appendingPathComponent(f),to:stock349.appendingPathComponent(f))}
+  let map349=stock349.appendingPathComponent(PetSpriteStore.stateFileName)
+  try data349.write(to:map349)
+  func refresh349()->PetSpriteStore.BundledCharacterRefreshResult {autoreleasepool{PetSpriteStore.refreshRecognizedBundledCharacter(into:stock349,sourceRootOverride:sources,retainedMilesOverride:old)}}
+  var custom349=json349 as! [String:Any];var customRows349=custom349["poses"] as! [String:[String:Any]]
+  customRows349["working"]!["interval"]=0.021;custom349["poses"]=customRows349
+  let customBytes349=try JSONSerialization.data(withJSONObject:custom349);try customBytes349.write(to:map349)
+  precondition(refresh349() == .notApplicable && (try! Data(contentsOf:map349))==customBytes349,"custom 349 cadence must survive")
+  try data349.write(to:map349)
+  let customized349=stock349.appendingPathComponent("windu-illustrated-v1-working-b-full-1x.png"),original349=try Data(contentsOf:customized349)
+  try (original349+Data([1])).write(to:customized349)
+  precondition(refresh349() == .notApplicable,"custom second cast must survive")
+  try original349.write(to:customized349)
+  precondition(refresh349() == .refreshed("jedi-miles-windu"),"349 stock must receive timing polish")
+  precondition((try! Data(contentsOf:map349))==next)
+  for f in files349 {precondition((try! Data(contentsOf:stock349.appendingPathComponent(f))) == (try! Data(contentsOf:candidate.appendingPathComponent(f))),"349 rollback asset changed")}
+  let stamp349=try fm.attributesOfItem(atPath:map349.path)[.modificationDate] as! Date
+  precondition(refresh349() == .notApplicable && (try! fm.attributesOfItem(atPath:map349.path)[.modificationDate] as! Date)==stamp349,"349 upgrade must be idempotent")
+  print("PASS: V15, 348 and 349 upgrades, custom timing/scale/art protection, missing-asset atomic failure, ambient native slicing/cadence, 13 unchanged casts and both rollback generations")
  }
 }
