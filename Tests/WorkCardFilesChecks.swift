@@ -17,6 +17,11 @@ import UniformTypeIdentifiers
         let home = FileManager.default.temporaryDirectory.appendingPathComponent("cos card.files \u{00FC}-\(UUID().uuidString.prefix(8))", isDirectory: true)
         try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: home) }
+        if CommandLine.arguments.dropFirst().contains("--phone-meeting-only") {
+            let count = try await phoneMeetingStoreChecks(home)
+            print("phone WorkCardFiles intake/reopen checks: \(count) passed (real store, synthetic text only)")
+            return
+        }
         nameChecks()
         suggestionChecks()
         sniffChecks()
@@ -1488,6 +1493,117 @@ extension WorkCardFilesChecks {
     }
 
     // MARK: The store
+
+    /// Real source and disk store: no helper, network, UI, OCR, audio or model calls.
+    /// The existing harness compiles app types, but this selected lane executes only this fixture.
+    static func phoneMeetingStoreChecks(_ home: URL) async throws -> Int {
+        var count = 0
+        func assertPhone(_ condition: Bool, _ behavior: String) { check(condition, "phone meeting files", behavior); count += 1 }
+        let uuid = "abcdef01-2345-6789-abcd-0123456789ab"
+        let phone = "phone_1700000000000_" + uuid, g2 = "meeting_" + uuid, mac = "mac_" + uuid
+        let sessions = [g2, mac, phone]
+        let keys = sessions.map(LibraryMeeting.captureContextKey)
+        let ids = keys.map { WorkCardFiles.meetingID(forKey: $0)! }
+        let root = home.appendingPathComponent("cos-data/phone-meeting-context", isDirectory: true)
+        let incoming = home.appendingPathComponent("incoming", isDirectory: true)
+        try FileManager.default.createDirectory(at: incoming, withIntermediateDirectories: true)
+        let store = WorkCardFileStore(root: root, isolated: true, policy: .meeting)
+        var incomingURLs: [URL] = []
+        // Seed legacy attachments first; adding phone must preserve them exactly.
+        for (index, session) in sessions.enumerated() {
+            let url = incoming.appendingPathComponent(["Legacy G2.txt", "Legacy Mac.txt", "Phone first.txt"][index])
+            try Data("Synthetic reference for \(session)".utf8).write(to: url)
+            incomingURLs.append(url)
+            await store.intakeMeeting(urls: [url], key: keys[index], info: WorkMeetingInfo(recordId: "standalone:" + session, title: "Live " + session, date: "2026-10-26"))
+            assertPhone(store.files(for: ids[index]).count == 1 && store.flashes[ids[index]] == nil, "real intake succeeds for each source")
+        }
+        let folders = ids.map { WorkCardFiles.folder(root: root, workID: $0) }
+        assertPhone(Set(ids).count == 3 && Set(folders.map(\.path)).count == 3, "same UUID yields three physical source stores")
+        var initialFiles: [WorkContextFile] = [], initialBytes: [Data] = []
+        for index in sessions.indices {
+            let file = store.files(for: ids[index])[0]
+            initialFiles.append(file)
+            initialBytes.append(try Data(contentsOf: folders[index].appendingPathComponent(file.stored)))
+            let rows = store.meetingFiles(keys: [keys[index]])
+            assertPhone(rows.count == 1 && rows[0].id == ids[index] && rows[0].file.id == file.id, "key returns only its source attachment")
+            assertPhone(String(data: initialBytes[index], encoding: .utf8)?.contains(sessions[index]) == true, "stored snapshot belongs to exact source")
+        }
+        // The row's source-aware filter is the same one the saved meeting uses.
+        let foreignPhone = "phone_1700000000000_11111111-1111-4111-8111-111111111111"
+        let saved = LibraryMeeting(.object([
+            "recordId": .string("ops:personal:2026-10:phone_saved.md"), "sessionId": .string(phone),
+            "sourceType": .string("iphone_microphone"), "speakerPolicy": .string("anonymous"),
+            "month": .string("2026-10"), "filename": .string("phone_saved.md"),
+            "contextKeys": .array([keys[2], keys[0], keys[1], "phone:" + foreignPhone, "g2:" + phone].map(JSONValue.string)),
+        ]))!
+        assertPhone(saved.contextKeys == [keys[2]] && saved.meetingAskSessions(keys: saved.contextKeys) == [phone], "saved row binds exact live phone context")
+        func detail(_ candidates: [String], record: String? = nil) -> LibraryMeetingDetail {
+            LibraryMeetingDetail(.object(["recordId": .string(record ?? saved.recordId), "contextKeys": .array(candidates.map(JSONValue.string)), "contextSupported": .bool(true)]))!
+        }
+        assertPhone(saved.resolvedContextKeys(detail: detail([keys[2]])) == [keys[2]], "matching saved row/detail routes live phone files")
+        for foreignKeys in [["phone:" + foreignPhone], [keys[0]], [keys[1]]] {
+            let rejected = detail(foreignKeys)
+            let resolved = saved.resolvedContextKeys(detail: rejected)
+            assertPhone(resolved.isEmpty && saved.resolvedContextSupported(detail: rejected) == false && store.meetingFiles(keys: resolved).isEmpty, "foreign detail cannot display, attach or link another capture")
+        }
+        assertPhone(saved.resolvedContextKeys(detail: detail([keys[2]], record: "another-record")).isEmpty, "foreign detail record cannot claim phone context")
+        for source in [nil, "mac_system_audio"] as [String?] {
+            var object: [String: JSONValue] = ["recordId": .string(saved.recordId), "sessionId": .string(phone), "month": .string("2026-10"), "filename": .string("unproven.md"), "contextKeys": .array([.string(keys[2])]), "contextSupported": .bool(true)]
+            if let source { object["sourceType"] = .string(source) }
+            let unproven = LibraryMeeting(.object(object))!
+            assertPhone(unproven.contextKeys.isEmpty && unproven.resolvedContextKeys(detail: detail([keys[2]])).isEmpty && unproven.resolvedContextSupported(detail: nil) == false, "missing or wrong phone source refuses files despite valid key")
+        }
+        let mergedG2 = LibraryMeeting(.object(["sessionId": .string(g2), "month": .string("2026-10"), "filename": .string("merged.md"), "contextKeys": .array([.string(keys[0])])]))!
+        let mergedKeys = mergedG2.resolvedContextKeys(detail: detail([keys[0], "ff:legacy_merged_123", "g2:meeting_other_capture"]))
+        assertPhone(mergedKeys == [keys[0], "ff:legacy_merged_123", "g2:meeting_other_capture"], "legitimate merged legacy G2 keys preserved")
+        store.rememberRecordKeys("previously-unsafe-phone", keys: [keys[0]], supported: true)
+        let denied = detail([keys[0]])
+        store.rememberRecordKeys("previously-unsafe-phone", keys: saved.resolvedContextKeys(detail: denied), supported: saved.resolvedContextSupported(detail: denied))
+        assertPhone(store.recordKeys("previously-unsafe-phone").isEmpty, "rejected detail clears stale remembered foreign route without deleting attachments")
+        let savedInfo = WorkMeetingInfo(recordId: saved.recordId, title: "Saved phone review", date: "2026-10-26")
+        store.rememberRecordKeys(saved.recordId, keys: saved.contextKeys, supported: true)
+        store.noteMeeting(keys: saved.contextKeys, info: savedInfo)
+        // Changing the original is not changing a retained attachment snapshot.
+        try Data("Changed original outside the store".utf8).write(to: incomingURLs[2])
+        let second = incoming.appendingPathComponent("Phone second.txt")
+        try Data("Second synthetic phone reference".utf8).write(to: second)
+        await store.intakeMeeting(urls: [second], key: saved.contextKeys[0], info: savedInfo)
+        let phoneFiles = store.files(for: ids[2])
+        assertPhone(phoneFiles.count == 2 && phoneFiles[0].id == initialFiles[2].id && phoneFiles[0].sha256 == initialFiles[2].sha256, "saved intake preserves original live attachment identity")
+        let originalPhone = try Data(contentsOf: folders[2].appendingPathComponent(initialFiles[2].stored))
+        assertPhone(originalPhone == initialBytes[2], "live attachment copy survives original edit and saved intake")
+        assertPhone(store.meetingFiles(keys: saved.contextKeys).allSatisfy { $0.id == ids[2] }, "saved file query cannot join same-UUID G2 or Mac")
+        let invalid = ["g2:" + phone, "mac:" + phone, "ff:" + phone, "phone:" + g2, "phone:" + mac, "phone:" + phone + "\n", "phone:phone_bad"]
+        let manifestBefore = try folders.map { try Data(contentsOf: $0.appendingPathComponent("manifest.json")) }
+        for key in invalid {
+            await store.intakeMeeting(urls: [second], key: key, info: WorkMeetingInfo(recordId: "invalid-alias", title: "Rejected", date: ""))
+            store.noteMeeting(keys: [key], info: WorkMeetingInfo(recordId: "invalid-alias", title: "Rejected", date: ""))
+            store.rememberRecordKeys("invalid:" + key, keys: [key], supported: true)
+            assertPhone(WorkCardFiles.meetingID(forKey: key) == nil && store.meetingFiles(keys: [key]).isEmpty && store.recordKeys("invalid:" + key).isEmpty, "invalid alias cannot intake, read or persist a file route")
+        }
+        assertPhone(store.manifests.count == 3, "invalid aliases create no fourth store")
+        let manifestAfter = try folders.map { try Data(contentsOf: $0.appendingPathComponent("manifest.json")) }
+        assertPhone(manifestAfter == manifestBefore, "invalid aliases preserve every existing attachment manifest byte")
+        let renamed = WorkMeetingInfo(recordId: "ops:personal:2026-10:phone_renamed.md", title: "Renamed phone review", date: "2026-10-26")
+        store.rememberRecordKeys(renamed.recordId, keys: saved.contextKeys, supported: true)
+        store.noteMeeting(keys: saved.contextKeys, info: renamed)
+        let reopened = WorkCardFileStore(root: root, isolated: true, policy: .meeting)
+        reopened.loadIfNeeded()
+        assertPhone(reopened.recordKeys(saved.recordId) == [keys[2]] && reopened.recordKeys(renamed.recordId) == [keys[2]], "saved and retitled record routes survive real store reopening")
+        assertPhone(reopened.files(for: ids[2]).map(\.id) == phoneFiles.map(\.id), "phone attachment identities survive real manifest reopening")
+        let ref = WorkMeetingReference(.object(["recordId": .string(renamed.recordId), "domain": .string("personal"), "month": .string("2026-10"), "filename": .string("phone_renamed.md"), "title": .string(renamed.title)]))!
+        let groups = reopened.meetingGroups(for: [ref])
+        assertPhone(groups.count == 1 && groups[0].folder == folders[2] && groups[0].files.map(\.id) == phoneFiles.map(\.id), "linked saved meeting resolves only phone files after reopening")
+        let byLiveAlias = WorkMeetingReference(.object(["recordId": .string("standalone:" + phone), "domain": .string("personal"), "month": .string("2026-10"), "filename": .string("live.md"), "title": .string("Live")]))!
+        assertPhone(reopened.meetingGroups(for: [byLiveAlias]).first?.files.map(\.id) == phoneFiles.map(\.id), "original live record alias retains attachments through save and retitle")
+        for index in sessions.indices {
+            let manifest = WorkCardFiles.readManifest(folders[index])!
+            let bytes = try Data(contentsOf: folders[index].appendingPathComponent(initialFiles[index].stored))
+            assertPhone(manifest.workSourceID == ids[index] && bytes == initialBytes[index], "existing attachment bytes and owner remain unchanged across sources")
+            if index < 2 { assertPhone(reopened.files(for: ids[index]) == [initialFiles[index]], "existing legacy attachment metadata preserved") }
+        }
+        return count
+    }
 
     static func meetingStoreChecks(_ home: URL, _ fx: Fixtures) async throws {
         let root = home.appendingPathComponent("cos-data/meeting-context", isDirectory: true)

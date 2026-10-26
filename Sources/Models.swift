@@ -5390,7 +5390,7 @@ enum PhoneMeetingCapture {
     nonisolated static func contextKeys(_ keys: [String], sessionId: String, sourceType: String?) -> [String] {
         keys.filter { key in
             guard validContextKey(key) else { return false }
-            if protected(sessionId, sourceType: sourceType) { return validID(sessionId) && key == "phone:" + sessionId }
+            if protected(sessionId, sourceType: sourceType) { return sourceType == "iphone_microphone" && validID(sessionId) && key == "phone:" + sessionId }
             return !key.hasPrefix("phone:")
         }
     }
@@ -5455,6 +5455,16 @@ struct LibraryMeeting: Identifiable, Sendable, Hashable {
             }
             return PhoneMeetingCapture.askSession(forKey: Self.captureContextKey(id)) != nil && seen.insert(id).inserted
         }
+    }
+    /// Detail keys are suggestions bound to the selected row, never authority to another phone capture.
+    func resolvedContextKeys(detail: LibraryMeetingDetail?) -> [String] {
+        if PhoneMeetingCapture.protected(sessionId, sourceType: sourceType), let detail, detail.recordId != recordId { return [] }
+        let candidates = detail?.contextKeys.isEmpty == false ? detail!.contextKeys : contextKeys
+        return PhoneMeetingCapture.contextKeys(candidates, sessionId: sessionId, sourceType: sourceType)
+    }
+    func resolvedContextSupported(detail: LibraryMeetingDetail?) -> Bool? {
+        if PhoneMeetingCapture.protected(sessionId, sourceType: sourceType), resolvedContextKeys(detail: detail).isEmpty { return false }
+        return detail?.contextSupported ?? contextSupported
     }
     nonisolated static func captureContextKey(_ session: String) -> String {
         if PhoneMeetingCapture.protected(session) { return PhoneMeetingCapture.validID(session) ? "phone:" + session : "" }
