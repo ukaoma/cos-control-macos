@@ -17,6 +17,7 @@ final class SessionUsageCollector {
         var scannedAt: Double = 0
         var waitingForAppend = false
         var oversizedRows = 0
+        var skippingLongLine: Bool? // Optional so existing checkpoints decode unchanged.
     }
     struct Event {
         var id: String
@@ -184,18 +185,36 @@ final class SessionUsageCollector {
             cursor.prefix = signature
             cursor.waitingForAppend = false
             try handle.seek(toOffset: cursor.offset)
-            // Up to 8 MiB per file/pass. No transcript text survives the function.
-            let bytes = try handle.read(upToCount:min(8*1024*1024,remaining)) ?? Data()
+            // Bound memory even for image-heavy JSONL rows. A budget boundary is not EOF.
+            let rowLimit = 8*1024*1024
+            var bytes = try handle.read(upToCount:min(rowLimit,remaining)) ?? Data()
             remaining -= bytes.count
+            if cursor.skippingLongLine == true {
+                if let newline = bytes.firstIndex(of:10) {
+                    let skipped = newline + 1
+                    cursor.offset += UInt64(skipped)
+                    bytes = Data(bytes.dropFirst(skipped))
+                    cursor.skippingLongLine = false
+                } else {
+                    cursor.offset += UInt64(bytes.count)
+                    bytes = Data()
+                }
+            }
             guard let end = bytes.lastIndex(of:10) else {
-                // Retry an incomplete tail only after the file changes. It must not starve older history
-                // or keep the importer running every 15 seconds forever. Oversized rows remain recoverable.
-                cursor.waitingForAppend = true
+                let atEOF = cursor.offset + UInt64(bytes.count) >= UInt64(size)
+                if bytes.count >= rowLimit {
+                    cursor.oversizedRows += 1
+                    cursor.skippingLongLine = true
+                    cursor.offset += UInt64(bytes.count)
+                }
+                // Leave a short budget-cut row at its start for the next full slice. Only a
+                // genuine incomplete EOF waits for an append. Oversized rows are skipped
+                // through their newline across passes so later usage remains reachable.
+                cursor.waitingForAppend = atEOF
                 cursor.scannedAt = Date().timeIntervalSince1970
-                if bytes.count >= 8*1024*1024 { cursor.oversizedRows = 1 }
                 let encoded = String(decoding:try JSONEncoder().encode(cursor),as:UTF8.self)
                 try run("INSERT OR REPLACE INTO files VALUES(?,?,?,?)",[file.path,String(size),String(modified),encoded])
-                completed += 1
+                if atEOF { completed += 1 }
                 continue
             }
             let full = bytes.prefix(through:end)
@@ -216,6 +235,6 @@ final class SessionUsageCollector {
         let rows = try query("SELECT day,provider,model,SUM(input),SUM(output),SUM(cache_read),SUM(cache_write),COUNT(*),COUNT(usd),COALESCE(SUM(usd),0) FROM events GROUP BY day,provider,model ORDER BY day,provider,model")
         let buckets = rows.map { r in SessionUsageBucket(day:r[0],provider:r[1],model:r[2],counts:SessionUsageCounts(input:Int64(r[3]) ?? 0,output:Int64(r[4]) ?? 0,cacheRead:Int64(r[5]) ?? 0,cacheWrite:Int64(r[6]) ?? 0),events:Int(r[7]) ?? 0,pricedEvents:Int(r[8]) ?? 0,estimatedUSD:Double(r[9]) ?? 0) }
         let cursors = try query("SELECT state FROM files").compactMap { $0[0].data(using:.utf8) }.compactMap { try? JSONDecoder().decode(Cursor.self,from:$0) }
-        return SessionUsageReport(buckets:buckets,updatedAt:iso.string(from:Date()),timeZone:zone.identifier,filesIndexed:cursors.count,pendingFiles:max(0,pending.count-completed),unreadableFiles:unreadable+cursors.reduce(0){$0+$1.oversizedRows},malformedRows:cursors.reduce(0){$0+$1.malformed},missingBaselineEvents:cursors.reduce(0){$0+$1.gaps},coverage:["Claude Code and Codex local session logs, including archived sessions and subagents.","Cursor, browser-only chats, other Macs and providers without token records are not included.","History starts at the earliest usage still present on this Mac. Deleted logs cannot be backfilled. Incomplete final lines wait for the next write.","Input, cache read, cache write and output are disjoint. Reasoning is included in output."],pricingVersion:SessionUsagePricing.version)
+        return SessionUsageReport(buckets:buckets,updatedAt:iso.string(from:Date()),timeZone:zone.identifier,filesIndexed:cursors.count,pendingFiles:max(0,pending.count-completed),unreadableFiles:unreadable+cursors.reduce(0){$0+$1.oversizedRows},malformedRows:cursors.reduce(0){$0+$1.malformed},missingBaselineEvents:cursors.reduce(0){$0+$1.gaps},coverage:["Claude Code and Codex local session logs, including archived sessions and subagents.","Cursor, browser-only chats, other Macs and providers without token records are not included.","History starts at the earliest usage still present on this Mac. Deleted logs cannot be backfilled. Incomplete final lines wait for the next write; rows larger than 8 MiB are skipped and reported as coverage gaps.","Input, cache read, cache write and output are disjoint. Reasoning is included in output."],pricingVersion:SessionUsagePricing.version)
     }
 }

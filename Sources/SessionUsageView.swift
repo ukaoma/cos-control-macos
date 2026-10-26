@@ -44,6 +44,11 @@ struct SessionUsageView: View {
     @State private var monthly = false
     @State private var costChart = false
     @State private var selectedDate: Date?
+    init(store: SessionUsageStore, initialPeriod: String? = nil) {
+        self.store = store
+        _month = State(initialValue: initialPeriod ?? Self.monthKey(Date()))
+        _monthly = State(initialValue: initialPeriod == "All history")
+    }
     private static func monthKey(_ date: Date) -> String {
         let f = DateFormatter(); f.locale = Locale(identifier:"en_US_POSIX"); f.dateFormat = "yyyy-MM"; return f.string(from:date)
     }
@@ -54,7 +59,7 @@ struct SessionUsageView: View {
     private var filtered: [SessionUsageBucket] {
         buckets.filter { (provider == "All providers" || $0.provider == provider) && (model == "All models" || $0.model == model) }
     }
-    private var selected: [SessionUsageBucket] { filtered.filter { $0.day.hasPrefix(month) } }
+    private var selected: [SessionUsageBucket] { filtered.filter { month == "All history" || $0.day.hasPrefix(month) } }
     private var counts: SessionUsageCounts { selected.reduce(SessionUsageCounts()) { $0+$1.counts } }
     private var unpriced: Int { selected.reduce(0) { $0+$1.events-$1.pricedEvents } }
     private var priced: Int { selected.reduce(0) { $0+$1.pricedEvents } }
@@ -76,7 +81,7 @@ struct SessionUsageView: View {
     }
     private var points: [Point] {
         let rows = monthly ? filtered : selected
-        let top = Set(Dictionary(grouping:rows,by: { $0.model }).map { ($0.key,$0.value.reduce(Int64(0)){$0+$1.counts.total}) }.sorted { $0.1 > $1.1 }.prefix(6).map(\.0))
+        let top = Set(Dictionary(grouping:rows,by: { $0.model }).map { ($0.key,$0.value.reduce(Int64(0)){$0+$1.counts.total}) }.sorted { $0.1 == $1.1 ? $0.0 < $1.0 : $0.1 > $1.1 }.prefix(6).map(\.0))
         let grouped = Dictionary(grouping:rows,by: { (monthly ? String($0.day.prefix(7))+"-01" : $0.day) + "|" + (top.contains($0.model) ? $0.model : "Other models") })
         return grouped.compactMap { key, rows in
             let parts = key.split(separator:"|",maxSplits:1)
@@ -88,13 +93,18 @@ struct SessionUsageView: View {
         ScrollView {
             VStack(alignment:.leading,spacing:18) {
                 HStack {
-                    Picker("Month",selection:$month) { ForEach(months,id:\.self) { Text($0).tag($0) } }.frame(width:180)
+                    Picker("Period",selection:$month) { Text("All history").tag("All history"); ForEach(months,id:\.self) { Text($0).tag($0) } }.frame(width:180)
                     Picker("Provider",selection:$provider) { Text("All providers").tag("All providers"); ForEach(providers,id:\.self){ Text($0).tag($0) } }.frame(maxWidth:230)
                     Picker("Model",selection:$model) { Text("All models").tag("All models"); ForEach(models,id:\.self){ Text($0).tag($0) } }.frame(maxWidth:290)
                     Spacer()
                     Button { Task { await store.refresh() } } label: { Label("Refresh",systemImage:"arrow.clockwise") }.disabled(store.loading)
                 }
                 .onChange(of:provider) { _,_ in model = "All models" }
+                .onChange(of:month) { _, value in if value == "All history" { monthly = true } }
+                if let earliest = buckets.map(\.day).min(), let latest = buckets.map(\.day).max() {
+                    Text("Recorded history: \(earliest) – \(latest). Select All history for lifetime totals, or a month to compare models.")
+                        .font(COSType.body(12)).foregroundStyle(.secondary)
+                }
                 HStack(alignment:.top,spacing:28) {
                     metric("Tokens processed",SessionUsagePricing.tokens(counts.total))
                     metric("Input / output",SessionUsagePricing.tokens(counts.input)+" / "+SessionUsagePricing.tokens(counts.output))
@@ -154,7 +164,7 @@ struct SessionUsageView: View {
                     Text("\(report.filesIndexed) files indexed · Time zone: \(report.timeZone) · Updated \(report.updatedAt)").font(COSType.mono(10)).foregroundStyle(.secondary)
                     ForEach(report.coverage,id:\.self) { Text($0).font(COSType.body(12)).foregroundStyle(.secondary) }
                     if report.unreadableFiles+report.malformedRows+report.missingBaselineEvents > 0 {
-                        Text("Coverage gaps: \(report.unreadableFiles) unreadable files, \(report.malformedRows) malformed rows, \(report.missingBaselineEvents) missing usage baselines. Totals reflect available evidence.").font(COSType.body(12)).foregroundStyle(.orange)
+                        Text("Coverage gaps: \(report.unreadableFiles) unreadable files / oversized rows, \(report.malformedRows) malformed rows, \(report.missingBaselineEvents) missing usage baselines. Totals reflect available evidence.").font(COSType.body(12)).foregroundStyle(.orange)
                     }
                     if unpriced > 0 { Text("\(unpriced) usage records have no verified price. Their tokens are included; their cost is unknown.").font(COSType.body(12)).foregroundStyle(.secondary) }
                 }

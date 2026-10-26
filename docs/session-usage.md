@@ -2,7 +2,7 @@
 
 Implementation baseline: Control 0.5.344 (build 398, ce9b71c), server 6.91.1. This feature is local to Control and its bundled helper; it requires no new server endpoint, account credentials, or subscription.
 
-The native Sessions page gains a Usage tab with month, provider and model filters; daily stacked token/cost charts; monthly history; a model-share table; disjoint input/output/cache totals; and API-equivalent value. It uses the current COS typography and palette, including dark mode. Tracking starts when Control runs, backfills in bounded slices, then refreshes every five minutes. Users can pause tracking while retaining history or refresh manually.
+The native Sessions page gains a Usage tab with All history or month, provider and model filters; daily stacked token/cost charts; monthly history; a model-share table; disjoint input/output/cache totals; and API-equivalent value. It uses the current COS typography and palette, including dark mode. Tracking starts when Control runs, backfills in bounded slices, then refreshes every five minutes. Users can pause tracking while retaining history or refresh manually.
 
 ## Coverage and storage
 
@@ -11,7 +11,7 @@ The native Sessions page gains a Usage tab with month, provider and model filter
 - Cursor, browser-only chats, remote Macs and calls without usable token records are not covered. Missing evidence is not displayed as zero usage. Unknown model prices remain unavailable; token counts still contribute.
 - One ledger per macOS user: `~/Library/Application Support/COS Control/usage/session-usage-v1.sqlite`. It stores counts, dates, provider/model names, hashed event identities and file checkpoints, not prompts, responses, credentials or full log lines. No usage is uploaded. File mode is 0600 and directory mode is 0700.
 - History remains after source logs are deleted or moved. Logs deleted before first collection cannot be backfilled. The ledger pins its reporting time zone on creation, preventing travel from moving existing monthly totals.
-- Imports run in the helper, never in text-entry/render callbacks. Passes are bounded to 64 MiB and a 12-second scheduling deadline; each file reads at most 8 MiB. Transactions couple inserted events and checkpoints. The deadline is checked between files. Fair rotation prevents a busy session from starving older history. Partial final lines wait for a file change; oversized rows and malformed records surface coverage gaps.
+- Imports run in the helper, never in text-entry/render callbacks. Passes are bounded to 64 MiB and a 12-second scheduling deadline; each file reads at most 8 MiB. Transactions couple inserted events and checkpoints. The deadline is checked between files. Fair rotation prevents a busy session from starving older history. Partial final lines wait for a file change; a budget-cut row resumes on the next pass without requiring a source write. Oversized rows are skipped incrementally through their newline so later usage remains reachable, and surface coverage gaps along with malformed records.
 
 ## Accounting and costs
 
@@ -32,7 +32,7 @@ Sources: [Anthropic pricing](https://platform.claude.com/docs/en/about-claude/pr
 - `Tests/SessionUsageRender.swift`: offscreen light/dark renders at 800 and 1200 points. Never activates or orders in a window.
 - `Tests/SessionUsageCanary.swift`: bounded real-log import with the database restricted to `/tmp`; prints aggregates only. It does not modify source sessions.
 
-No release version bump, signing, installation, appcast change, npm publication, server restart, recording change or transcription/cue flag change is part of this worktree.
+Release integration: merged Control 0.5.345 dictation parity QA fixes (4570a8d). Public release version and final QA/signing receipts are recorded separately. Server 6.92.0 is the matching published server. Transcription/cue flags remain unchanged.
 
 ## Validation on October 25, 2026
 

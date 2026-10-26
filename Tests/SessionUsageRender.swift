@@ -17,11 +17,18 @@ import SwiftUI
                     events: 10, pricedEvents: index == 2 ? 0 : 10, estimatedUSD: index == 2 ? 0 : Double(day)*0.21))
             }
         }
+        let historyRows = rows.map { row -> SessionUsageBucket in
+            var copy = row
+            copy.day = "2026-08-" + row.day.suffix(2)
+            return copy
+        }
+        rows += historyRows
         store.report = SessionUsageReport(buckets: rows, updatedAt: "2026-10-25T21:00:00Z", timeZone: "America/Chicago", filesIndexed: 120, pendingFiles: 0, unreadableFiles: 0, malformedRows: 0, missingBaselineEvents: 0,
             coverage: ["Claude Code and Codex local session logs, including archived sessions and subagents.", "Cursor, browser-only chats and other Macs are not included."], pricingVersion: SessionUsagePricing.version)
         for width in [1200.0, 800.0] {
             for dark in [false, true] {
-                let host = NSHostingView(rootView: SessionUsageView(store: store).frame(width: width, height: 1100).background(COSPalette.panel))
+              for history in [false, true] {
+                let host = NSHostingView(rootView: SessionUsageView(store: store, initialPeriod: history ? "All history" : nil).frame(width: width, height: 1100).background(COSPalette.panel))
                 let window = NSWindow(contentRect: NSRect(x: -20000, y: -20000, width: width, height: 1100), styleMask: [.borderless], backing: .buffered, defer: false)
                 window.isReleasedWhenClosed = false
                 window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
@@ -34,8 +41,9 @@ import SwiftUI
                     host.cacheDisplay(in: host.bounds, to: rep)
                     return rep.representation(using: .png, properties: [:])
                 }() else { throw CocoaError(.fileWriteUnknown) }
-                try data.write(to: out.appendingPathComponent("usage-\(Int(width))-\(dark ? "dark" : "light").png"))
+                try data.write(to: out.appendingPathComponent("usage-\(Int(width))-\(dark ? "dark" : "light")-\(history ? "history" : "month").png"))
                 window.close()
+              }
             }
         }
         print("PASS: offscreen light/dark Usage renders at 800 and 1200 points")
