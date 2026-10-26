@@ -50,8 +50,9 @@ import Foundation
         read.turns = [LiveTranscriptChunk(i: 1, elapsedMs: 6000, speaker: "Named person", text: "Rejected")]
         check(!feed.apply(read, now: Date()) && feed.chunkCount == 1 && feed.cursor == 0, "wrong source policy cannot advance data or cursor")
         _ = feed.markEnded(now: Date())
-        read.unchanged = true
-        check(!feed.apply(read, now: Date()) && feed.ended, "rejected unchanged read cannot revive phone feed")
+        var rejectedUnchanged = LiveTranscriptRead(sessionId: phone, ended: false, unchanged: true)
+        rejectedUnchanged.sourceType = "iphone_microphone"; rejectedUnchanged.speakerPolicy = "standard"
+        check(!feed.apply(rejectedUnchanged, now: Date()) && feed.ended, "rejected unchanged read cannot revive phone feed")
         func orphan(_ id: String, source: String? = nil, admitted: Bool = false) -> OrphanCapture {
             var object: [String: JSONValue] = ["sessionId": .string(id), "chunkFiles": .number(2), "recoverable": .bool(true)]
             if let source { object["sourceType"] = .string(source) }
