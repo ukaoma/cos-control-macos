@@ -127,14 +127,28 @@
       }
     },
     "idle": {
-      "file": "session-pet-idle-cutouts-v2.png",
-      "frames": 8,
-      "renderScale": 1.0
+      "file": "windu-ambient-illustrated-v1-idle-1x.png",
+      "frames": 80,
+      "interval": 0.04,
+      "renderScale": 1,
+      "retina": {
+        "scale": 2,
+        "file": [
+          "windu-ambient-illustrated-v1-idle-2x.png"
+        ]
+      }
     },
     "patrol": {
-      "file": "session-pet-patrol-polish-v3.png",
+      "file": "windu-ambient-illustrated-v1-patrol-1x.png",
       "frames": 8,
-      "interval": 0.14
+      "interval": 0.14,
+      "renderScale": 1,
+      "retina": {
+        "scale": 2,
+        "file": [
+          "windu-ambient-illustrated-v1-patrol-2x.png"
+        ]
+      }
     },
     "swarm": {
       "frames": 256,
@@ -353,9 +367,16 @@
       }
     },
     "waiting": {
-      "file": "session-pet-waiting-release-v1.png",
-      "frames": 11,
-      "interval": 0.18
+      "file": "windu-ambient-illustrated-v1-waiting-1x.png",
+      "frames": 100,
+      "interval": 0.04,
+      "renderScale": 1,
+      "retina": {
+        "scale": 2,
+        "file": [
+          "windu-ambient-illustrated-v1-waiting-2x.png"
+        ]
+      }
     },
     "working": {
       "frames": 184,

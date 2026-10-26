@@ -9529,9 +9529,11 @@ enum PetSpriteStore {
                 if let file = value as? String, file.hasSuffix(".png") { return [file] }
                 return []
             }
-            // Miles V15 stays in DefaultPet for rollback; other Jedi retain
-            // their prior assets beside the new generation.
-            let retainedSource = character.id == legacyDefaultCharacterID
+            // Miles V15 stays in DefaultPet. The illustrated 348 checkpoint
+            // and other Jedi retain all prior assets beside the new generation.
+            // This bundled metadata selects a fixed root, never an external path.
+            let retainedInCharacter = match["retainedSource"] as? String == "bundled-character"
+            let retainedSource = character.id == legacyDefaultCharacterID && !retainedInCharacter
                 ? (retainedMilesOverride ?? bundledDefaultURL(bundle: bundle) ?? source) : source
             let oldFiles = referencedPNGs(oldPoses)
             guard oldFiles.count > 0,

@@ -1,0 +1,45 @@
+self-check: fade exempt, eaten garment and small eaten patch caught, listed edge only, entering pair owned, spill caught, 8 px stray reported as a speck
+  DefaultPet/attention holes  0.01% (gated  0.01%)  margin 11px  swing   5%
+  DefaultPet/done holes  0.01% (gated  0.01%)  margin  8px  swing  26%
+  DefaultPet/duel holes  4.15% (gated  2.76%)  margin  6px  swing  42%  pre-existing: V15 duel-a 2.76%: the heavy droid wreck fades out (F25 to F28) under Windu at one alpha per frame; V14 timing-v2 casts carry the same fade (more raw holes: 4.89% vs 4.15%), never gated before 0.5.328 because the pose strip was V13's
+  DefaultPet/error holes  0.01% (gated  0.01%)  margin 24px  swing  12%
+  DefaultPet/idle holes  0.00% (gated  0.00%)  margin  8px  swing   1%
+  DefaultPet/patrol holes  0.01% (gated  0.01%)  margin 10px  swing   1%
+  DefaultPet/swarm holes  2.67% (gated  1.89%)  margin  4px  swing  51%  pre-existing: V15 swarm-a 1.89%: the heavy droid wreck fade (F57 to F60) under Windu, as in V14 timing-v2 casts
+  DefaultPet/trio holes  2.09% (gated  1.73%)  margin  4px  swing  33%  pre-existing: V15 trio-a 1.73%: the heavy droid wreck fade (F33 to F34) under Windu, as in V14 timing-v2 casts
+  DefaultPet/waiting holes  1.49% (gated  0.06%)  margin  9px  swing  37%  pre-existing: 1.04% after the aura-release fade; the remaining holes are in the V10/V11 Waiting base art (0.5.314 shipped it at 1.28%), not V12
+  DefaultPet/working holes  0.39% (gated  0.39%)  margin  6px  swing  47%
+  jedi-elara-vale/duel holes  4.19% (gated  0.17%)  margin  3px  swing  42%
+  jedi-elara-vale/idle holes  0.00% (gated  0.00%)  margin 18px  swing   2%
+  jedi-elara-vale/patrol holes  0.02% (gated  0.02%)  margin 17px  swing   2%
+  jedi-elara-vale/swarm holes  3.27% (gated  0.22%)  margin  3px  swing  42%
+  jedi-elara-vale/trio holes  4.63% (gated  0.20%)  margin  3px  swing  34%
+  jedi-elara-vale/waiting holes  0.00% (gated  0.00%)  margin 18px  swing   2%
+  jedi-elara-vale/working holes  1.66% (gated  0.42%)  margin  6px  swing  50%
+  jedi-miles-windu/attention holes  0.01% (gated  0.01%)  margin 11px  swing   5%
+  jedi-miles-windu/done holes  0.01% (gated  0.01%)  margin  8px  swing  26%
+  jedi-miles-windu/duel holes  4.25% (gated  0.53%)  margin  6px  swing  44%
+  jedi-miles-windu/error holes  0.01% (gated  0.01%)  margin 24px  swing  12%
+  jedi-miles-windu/idle holes  0.00% (gated  0.00%)  margin 25px  swing   1%
+  jedi-miles-windu/patrol holes  0.02% (gated  0.02%)  margin 17px  swing   1%
+  jedi-miles-windu/swarm holes  2.36% (gated  0.54%)  margin  0px  swing  54%
+  jedi-miles-windu/trio holes  1.60% (gated  0.35%)  margin  4px  swing  33%
+  jedi-miles-windu/waiting holes  0.00% (gated  0.00%)  margin  8px  swing   0%
+  jedi-miles-windu/working holes  0.27% (gated  0.11%)  margin  0px  swing  47%
+  jedi-nia-solari/duel holes  5.84% (gated  0.99%)  margin  3px  swing  35%
+  jedi-nia-solari/idle holes  0.24% (gated  0.24%)  margin 19px  swing   3%
+  jedi-nia-solari/patrol holes  0.06% (gated  0.06%)  margin 17px  swing   1%
+  jedi-nia-solari/swarm holes  4.34% (gated  0.92%)  margin  3px  swing  34%
+  jedi-nia-solari/trio holes  5.54% (gated  0.98%)  margin  3px  swing  34%
+  jedi-nia-solari/waiting holes  0.52% (gated  0.52%)  margin 16px  swing  18%
+  jedi-nia-solari/working holes  3.58% (gated  0.57%)  margin  6px  swing  28%
+  jedi-rowan-vale/duel holes  2.17% (gated  0.17%)  margin  3px  swing  41%
+  jedi-rowan-vale/idle holes  0.00% (gated  0.00%)  margin 18px  swing   0%
+  jedi-rowan-vale/patrol holes  0.00% (gated  0.00%)  margin 17px  swing   3%
+  jedi-rowan-vale/swarm holes  3.16% (gated  0.31%)  margin  3px  swing  41%
+  jedi-rowan-vale/trio holes  2.03% (gated  0.25%)  margin  3px  swing  41%
+  jedi-rowan-vale/waiting holes  0.00% (gated  0.00%)  margin 18px  swing   0%
+  jedi-rowan-vale/working holes  2.13% (gated  0.27%)  margin  6px  swing  38%
+
+checked 41 strips
+COS Control: every shipped strip is opaque where it should be and clear of its edges

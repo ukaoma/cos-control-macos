@@ -3310,8 +3310,8 @@ for bundled_id in legacy_story_ids:
 # character is chosen, so those users are already at the current value.
 gen = re.search(r"petDefaultArtGeneration = (\d+)", model)
 need(gen is not None, "the art-generation constant is gone")
-need(int(gen.group(1)) >= 25,
-     "illustrated Windu requires art generation25 for existing users")
+need(int(gen.group(1)) >= 26,
+     "illustrated Windu ambient update requires art generation26 for existing users")
 need("refreshRecognizedBundledCharacter(" in model,
      "launch must call the retained-stock Jedi migration")
 retained_fn = models_src[models_src.index("static func refreshRecognizedBundledCharacter("):]

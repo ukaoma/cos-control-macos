@@ -403,7 +403,7 @@ final class ControllerModel: ObservableObject {
     private static let petDefaultSeededKey = "cos.sessionPetDefaultSeeded"
     private static let petDismissedKey = "cos.sessionPetDismissed"
     private static let petDefaultArtGenerationKey = "cos.sessionPetDefaultArtGeneration"
-    private static let petDefaultArtGeneration = 25
+    private static let petDefaultArtGeneration = 26
 
     private static func loadPetCharacterPercent(defaults: UserDefaults = .standard) -> Int {
         PetCharacterScale.loadPersistedPercent(
@@ -5255,6 +5255,8 @@ final class ControllerModel: ObservableObject {
             // including validated Retina rotation layers. Custom art, cadence and Windu stay chosen.
             // Generation 25 promotes exact stock Miles V15 to Illustrated V1.1,
             // with all thirteen casts and full 50fps recovery/entrance timing.
+            // Generation 26 refreshes exact stock Illustrated V1.1 with the
+            // matching illustrated idle, meditation and relaxed patrol art.
             let bundledRefresh = PetSpriteStore.refreshRecognizedBundledCharacter(
                 into: directory
             )

@@ -1,0 +1,3 @@
+PASS exact native SessionPetSprite: idle, 80 frames at 0.04s, all frame selections and wrap, light/dark 80pt at210%
+PASS exact native SessionPetSprite: waiting, 100 frames at 0.04s, all frame selections and wrap, light/dark 80pt at210%
+PASS exact native SessionPetSprite: patrol, 8 frames at 0.14s, all frame selections and wrap, light/dark 80pt at210%

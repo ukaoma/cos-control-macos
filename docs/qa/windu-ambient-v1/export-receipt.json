@@ -1,0 +1,94 @@
+{
+  "version": "ambient-illustrated-v1",
+  "states": {
+    "idle": {
+      "frames": 80,
+      "interval": 0.04,
+      "w": 256,
+      "h": 512,
+      "hip": 340,
+      "shoulder": 215,
+      "rise": 2.2,
+      "duration": 3.2,
+      "seamMeanByteDelta": 0.01056671142578125,
+      "firstStepMeanByteDelta": 0.01056671142578125
+    },
+    "waiting": {
+      "frames": 100,
+      "interval": 0.04,
+      "w": 256,
+      "h": 512,
+      "hip": 401,
+      "shoulder": 310,
+      "rise": 1.7,
+      "duration": 4,
+      "seamMeanByteDelta": 0.00342559814453125,
+      "firstStepMeanByteDelta": 0.00342559814453125
+    },
+    "patrol": {
+      "frames": 8,
+      "interval": 0.14,
+      "w": 320,
+      "h": 512,
+      "duration": 1.12,
+      "seamMeanByteDelta": 6.607794189453125,
+      "firstStepMeanByteDelta": 6.1683349609375
+    }
+  },
+  "files": [
+    {
+      "name": "windu-ambient-illustrated-v1-idle-2x.png",
+      "sha256": "11531880217e38880a4a6310e56d9c88474c96687de1fdf84126913b41b1ae63",
+      "frames": 80,
+      "width": 20480,
+      "height": 512,
+      "bytes": 2161455,
+      "lossless": true
+    },
+    {
+      "name": "windu-ambient-illustrated-v1-idle-1x.png",
+      "sha256": "fa23d694c38e7fad0991732690331f35083e92fcf14c43193ca4284a0e02ce2c",
+      "frames": 80,
+      "width": 10240,
+      "height": 256,
+      "bytes": 447526,
+      "lossless": true
+    },
+    {
+      "name": "windu-ambient-illustrated-v1-waiting-2x.png",
+      "sha256": "e259a3f9b6b2de11debd245b10d4073e91cfc29d22c7e463178960a7fa94cddc",
+      "frames": 100,
+      "width": 25600,
+      "height": 512,
+      "bytes": 2390296,
+      "lossless": true
+    },
+    {
+      "name": "windu-ambient-illustrated-v1-waiting-1x.png",
+      "sha256": "f5ac1c8fcc0f86c5dfbee9f701af9c5e20db80c52089254adf1eb8bb458f5e96",
+      "frames": 100,
+      "width": 12800,
+      "height": 256,
+      "bytes": 528986,
+      "lossless": true
+    },
+    {
+      "name": "windu-ambient-illustrated-v1-patrol-2x.png",
+      "sha256": "53c4da7ba5a505c52c3dc84c9319ccf1288459a0b702b2f1938c1266033f8fd1",
+      "frames": 8,
+      "width": 2560,
+      "height": 512,
+      "bytes": 707789,
+      "lossless": true
+    },
+    {
+      "name": "windu-ambient-illustrated-v1-patrol-1x.png",
+      "sha256": "b5b17ed6a0885d0720db3db3bac29a0720191291caa024af257c328bedcea69e",
+      "frames": 8,
+      "width": 1280,
+      "height": 256,
+      "bytes": 189190,
+      "lossless": true
+    }
+  ]
+}

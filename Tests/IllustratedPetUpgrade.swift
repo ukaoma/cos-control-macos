@@ -42,6 +42,47 @@ import CryptoKit
    precondition(r.variants.count == (pose == .working ? 4 : 3))
    precondition(r.frames == (pose == .working ? 184 : pose == .duel ? 148 : pose == .trio ? 172 : 256))
   }}
-  print("PASS: illustrated migration, custom timing/body protection, all 204 assets, 96 retained V15 assets, repeat no-op, 13 native casts")
+  // Existing 0.5.348 users must receive the ambient pass, while a custom
+  // interval, render scale, image, or missing incoming row refuses mutation.
+  let previousData=try Data(contentsOf:candidate.appendingPathComponent("illustrated-v1-1-state-map.json"))
+  let previousJSON=try JSONSerialization.jsonObject(with:previousData)
+  let previousFiles=refs(previousJSON)
+  let installed348=temp.appendingPathComponent("stock348")
+  try fm.createDirectory(at:installed348,withIntermediateDirectories:true)
+  for f in previousFiles {try fm.copyItem(at:candidate.appendingPathComponent(f),to:installed348.appendingPathComponent(f))}
+  let state348=installed348.appendingPathComponent(PetSpriteStore.stateFileName)
+  try previousData.write(to:state348)
+  func refresh348(_ from:URL?=nil)->PetSpriteStore.BundledCharacterRefreshResult {autoreleasepool {PetSpriteStore.refreshRecognizedBundledCharacter(into:installed348,sourceRootOverride:from ?? sources,retainedMilesOverride:old)}}
+  for (key,value) in [("interval",0.21),("renderScale",1.1)] {
+   var customState=previousJSON as! [String:Any];var customRows=customState["poses"] as! [String:[String:Any]]
+   customRows["idle"]![key]=value;customState["poses"]=customRows
+   let bytes=try JSONSerialization.data(withJSONObject:customState);try bytes.write(to:state348)
+   precondition(refresh348() == .notApplicable && (try! Data(contentsOf:state348))==bytes,"custom 348 idle setting must survive")
+  }
+  try previousData.write(to:state348)
+  let oldIdle=installed348.appendingPathComponent("session-pet-idle-cutouts-v2.png"),oldIdleData=try Data(contentsOf:oldIdle)
+  try (oldIdleData+Data([1])).write(to:oldIdle)
+  precondition(refresh348() == .notApplicable,"custom 348 idle art must survive")
+  try oldIdleData.write(to:oldIdle)
+  try fm.createDirectory(at:partial,withIntermediateDirectories:true)
+  let missingIdle="windu-ambient-illustrated-v1-idle-1x.png"
+  for file in try fm.contentsOfDirectory(at:candidate,includingPropertiesForKeys:nil) where file.lastPathComponent != missingIdle {
+   try fm.linkItem(at:file,to:partial.appendingPathComponent(file.lastPathComponent))
+  }
+  precondition(refresh348(partialRoot) == .failed && (try! Data(contentsOf:state348))==previousData,"incomplete ambient pack must refuse whole upgrade")
+  precondition(!fm.fileExists(atPath:installed348.appendingPathComponent("windu-ambient-illustrated-v1-waiting-1x.png").path),"no partial ambient files before validation")
+  try fm.removeItem(at:partialRoot)
+  precondition(refresh348() == .refreshed("jedi-miles-windu"),"exact stock 348 must upgrade to ambient generation")
+  precondition((try! Data(contentsOf:state348))==next)
+  for f in previousFiles {precondition((try! Data(contentsOf:installed348.appendingPathComponent(f))) == (try! Data(contentsOf:candidate.appendingPathComponent(f))),"348 rollback changed")}
+  let currentMap=PetSpriteStore.loadStateMap(in:installed348),cadence=PetSpriteStore.loadFrameIntervals(in:installed348)
+  for (pose,frames,interval) in [(PetSpritePose.idle,80,0.04),(.waiting,100,0.04),(.patrol,8,0.14)] {
+   precondition(currentMap[pose]?.frames==frames && cadence[pose]==interval)
+   let image=NSImage(contentsOf:installed348.appendingPathComponent(currentMap[pose]!.file))!
+   precondition(PetSpriteStrip.slice(image,frames:frames).count==frames,"native ambient cells must all decode")
+  }
+  let stamp348=try fm.attributesOfItem(atPath:state348.path)[.modificationDate] as! Date
+  precondition(refresh348() == .notApplicable && (try! fm.attributesOfItem(atPath:state348.path)[.modificationDate] as! Date)==stamp348)
+  print("PASS: V15 and 348 upgrades, custom timing/scale/art protection, missing-asset atomic failure, ambient native slicing/cadence, 13 unchanged casts and both rollback generations")
  }
 }

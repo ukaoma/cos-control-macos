@@ -1,0 +1,33 @@
+{
+  "tool": "built-in image_gen",
+  "mode": "identity-preserving edit",
+  "generations": [
+    {
+      "state": "idle",
+      "prompt": "Use case: identity-preserve. Edit target: first image is the existing Miles Windu idle sprite. Style reference: second image is his approved sharp illustrated combat drawing. Create a production sprite sheet on genuine transparent alpha: 4 full-body frontal idle breathing key poses in one horizontal row, each isolated with generous empty gutters. Preserve EXACT character identity, high-top black hair, brown skin, stern eyes, black fitted leather long coat, gold shoulder plates and narrow gold piping, quilted purple shirt, square gold belt buckle, purple coat lining, natural adult proportions and modest boots from the sharp reference. Improve old pixelated drawing to the same crisp detailed illustrated rendering as the second image. Blade OFF; no glowing saber, no effects, no floor shadow, no labels. Arms relaxed naturally beside coat, hands closed, clean transparent gaps between arms and waist, no white wedges. Pose1 relaxed exhale; pose2 gentle half inhale; pose3 gentle full inhale; pose4 gentle half exhale. Feet and hip position remain exactly fixed, head stays facing front, no dramatic head turns, knees relaxed. The four drawings should differ very subtly in shoulder and chest breathing and tiny coat settle only, not scale, facial identity or proportions. All feet same baseline, identical character size, full hair and boots visible. Sharp clean controlled edges, true transparent background with NO white or colored matte and no isolated pixels. Render a wide high-resolution sheet, four evenly spaced characters.",
+      "source": "references/idle-redrawn-v1.png",
+      "accepted": true
+    },
+    {
+      "state": "waiting",
+      "prompt": "Use case identity-preserve. Refine the first image (existing seated meditation sprite) into the crisp illustrated style of the second approved combat character. Produce 4 isolated full-body seated cross-legged breathing poses in ONE horizontal row on genuine transparent alpha. SAME Miles Windu identity: brown skin, flat high-top black hair, strong brows and face, black leather long coat with gold shoulder plates/narrow gold piping, purple quilted shirt and purple coat lining, gold belt. Eyes calmly closed, serene composed face; gloved hands lightly clasped in lap, arms physically natural, shoulders relaxed. Preserve the original dignified meditation seated silhouette, no floating. Four subtle phases of a quiet breath: exhale, half inhale, full inhale, half exhale. Hips/knees/boots remain at EXACT same size/position and baseline; chest/shoulders rise only a little; no pose jump. Clean detailed rendering consistent with second image, not pixel art. IMPORTANT NO flame, NO aura, NO saber, NO light trails, NO labels, NO ground/shadow. Just the four full characters on transparent alpha so we can separately animate a restrained optional glow. All four same character scale, equal cells, large transparent margins. No white backing behind arms or coat, no outline halos, no detached pixels.",
+      "source": "references/waiting-redrawn-v1.png",
+      "accepted": true
+    },
+    {
+      "state": "patrol",
+      "prompt": "Use case identity-preserve. Production animation sprite-sheet edit. First reference is existing relaxed Miles Windu walking pose; second is approved detailed illustrated character quality. Redraw a COMPLETE FORWARD WALK CYCLE in EIGHT chronologically ordered full-body poses, a precise 4 columns x 2 rows sprite sheet, genuine transparent alpha background, generous transparent gutters, no labels/no floor/no props or effects. SAME character in all cells, same high-top black hair/brown skin/gold shoulders/purple quilted shirt/black gold-trimmed long coat, modest boots. Camera fixed three-quarter side view, facing SCREEN RIGHT throughout. He walks confidently and casually, relaxed cool swagger, LOW toe clearance, subtle counter-swing of arms CLOSE to torso, no stiff soldier march or high knee kicks. Saber OFF and holstered. Keep hips/scale/camera identical; feet share same ground baseline. Eight distinct phases: 1 near foot forward heel contact, far foot behind toe-off; 2 near foot accepting weight and far foot beginning swing; 3 near foot planted under hip, far foot passing low; 4 far foot reaching forward low; 5 far foot forward heel contact, near foot behind toe-off; 6 far foot accepting weight, near foot beginning swing; 7 far foot planted under hip, near foot passing low; 8 near foot reaching forward low leading seamlessly to pose1. Do not duplicate first half in second half: legs must exchange roles. Torso bob and coat swing very restrained. Full body visible in every cell. Clean sharp illustrated lines and detail like reference2, no pixel art, no white matte around hair or arms, no stray pixels. Keep all eight cells equally sized and spaced, large high resolution landscape sheet.",
+      "source": "references/patrol-rejected-v1.png",
+      "accepted": false,
+      "reason": "Repeated leg role and unwanted faint background; never packaged."
+    },
+    {
+      "state": "patrol",
+      "prompt": "Edit target image1: the existing 4 by 2 walk animation sheet. Upgrade its raster drawing quality to match image2 (approved character illustration), preserving EACH of its EIGHT DIFFERENT leg phases and arm positions exactly in their respective cells. Keep the SAME low-foot walking sequence and facing screen-right throughout. Do not redraw the same walking pose eight times. In the bottom row the near and far leg/arm roles are reversed relative to the top row. Preserve that full-cycle continuity. Render the same Miles Windu character with crisp illustrated leather, gold and purple details, same face and flat-top haircut. NO lighting/background whatsoever. MUST output actual transparent alpha including between limbs. NO black, brown, white or checkerboard background, NO shadow, NO aura or colored haze, NO text. Keep every foot and hair within its cell, same character size and camera angle all eight cells. Modest natural boots; smooth relaxed stride, no high stepping. You are refining existing sprites, not inventing different poses or redesigning the character.",
+      "source": "references/patrol-redrawn-v2.png",
+      "accepted": true
+    }
+  ],
+  "animation": "Idle and meditation use one stable approved drawing each with an anchored continuous breathing deformation; no pose crossfades. Patrol preserves all eight original authored gait phases at .14 seconds per frame.",
+  "preservation": "Original 348 combat PNGs and ambient PNGs retained; new images use new versioned filenames."
+}

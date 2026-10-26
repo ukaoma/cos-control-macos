@@ -1,0 +1,38 @@
+{
+  "idle": {
+    "frames": 80,
+    "duration": 3.2,
+    "minimumInkMargin": 25,
+    "groundBottomRange": [
+      230,
+      230
+    ],
+    "nearWhiteMaterialHighlightPixels": 480,
+    "whitePixelsInArmAndWaistBand": 0,
+    "anchoredIdleFootMaximumByteChange": 0
+  },
+  "waiting": {
+    "frames": 100,
+    "duration": 4,
+    "minimumInkMargin": 8,
+    "groundBottomRange": [
+      231,
+      231
+    ],
+    "nearWhiteMaterialHighlightPixels": 49,
+    "whitePixelsInArmAndWaistBand": 0,
+    "anchoredIdleFootMaximumByteChange": null
+  },
+  "patrol": {
+    "frames": 8,
+    "duration": 1.12,
+    "minimumInkMargin": 17,
+    "groundBottomRange": [
+      230,
+      231
+    ],
+    "nearWhiteMaterialHighlightPixels": 17,
+    "whitePixelsInArmAndWaistBand": 0,
+    "anchoredIdleFootMaximumByteChange": null
+  }
+}

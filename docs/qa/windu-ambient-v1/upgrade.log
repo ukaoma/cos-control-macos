@@ -1,0 +1,4 @@
+PASS: 204 preserved illustrated PNGs, 6 new ambient PNGs, 13 unchanged casts, V15 and 348 rollback, exact ambient cadence/RGBA
+compile-bounded: passed; receipt /tmp/cos-control-compile-receipts-501/compile.VkdYxi
+2026-10-26 07:01:54.680 check[66944:31929971] COSControl Jedi upgrade rejected incomplete art: jedi-miles-windu/windu-ambient-illustrated-v1-idle-1x.png
+PASS: V15 and 348 upgrades, custom timing/scale/art protection, missing-asset atomic failure, ambient native slicing/cadence, 13 unchanged casts and both rollback generations
