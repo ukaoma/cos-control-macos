@@ -176,7 +176,7 @@ final class SessionUsageCollector {
         for (source,file,size,modified) in pending {
             if remaining <= 0 || Date() >= deadline { break }
             let handle: FileHandle
-            do { handle = try FileHandle(forReadingFrom:file) } catch { unreadable += 1; continue }
+            do { handle = try FileHandle(forReadingFrom:file) } catch { unreadable += 1; completed += 1; continue }
             defer { try? handle.close() }
             var cursor = state[file.path].flatMap { $0[3].data(using:.utf8) }.flatMap { try? JSONDecoder().decode(Cursor.self,from:$0) } ?? Cursor()
             let prefix = try handle.read(upToCount: min(size,256)) ?? Data()
