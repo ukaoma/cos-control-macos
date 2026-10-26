@@ -59,7 +59,10 @@ press = start[:task]
 pin("pill = .starting" in press and "phase = \"Starting\"" in press, "starting on press", "the press shows STARTING")
 pin("playSound(" not in press and "pill = .listening" not in press and "quiet.begin(" not in press, "nothing on press",
     "the press plays no sound, shows no LISTENING and builds no mute")
-first = at(start, "switch await awaitFirstAudio(next, attempt: attempt) {", "first buffer")
+# 0.5.345 (A-W1): the first-buffer result is read into `first` (a fallback may replace it), then switched on.
+first = at(start, "            switch first {", "first buffer")
+pin(start.count("var first = await awaitFirstAudio(next, attempt: attempt)") == 1
+    and start.index("var first = await awaitFirstAudio(next, attempt: attempt)") < first, "first buffer", "the wait's result is what the switch reads")
 arrived = at(start, "            case .arrived(let at):", "first buffer")
 listening = at(start, 'phase = "Listening"; pill = .listening(since: Date())', "listening after first buffer")
 sound = at(start, "            playSound(.start)", "sound after first buffer")
@@ -104,13 +107,44 @@ pin(d.count(".warm(deviceID:") == 1 and ".warm(deviceID:" in body(d, "    privat
 prep = body(d, "    func prepareSpare(after delay: Duration = .seconds(1)) {")
 pin("guard let self, !Task.isCancelled, self.capture == nil, !self.busy else { return }" in prep, "spare only when idle",
     "a spare is built only while no microphone is open and nothing is dictating")
-take = body(d, "    private func takeSpare(device: AudioDeviceID?) -> DictationMicrophoneCapture? {")
-order(take, ["spare = nil", "DictationSpare.check(", "if case .discard"], "spare taken once",
-      "the press takes the spare once and uses it only when the check passes")
-pin(d.count("takeSpare(") == 2 and "(try? warm.start(deviceID: deviceID)) != nil" in start and "let fresh = DictationMicrophoneCapture()" in start,
+# 0.5.345 (A-W1): the press takes the spare on the main actor (no HAL read); the check's HAL reads run in the input
+# queue's closure (vetSpare), with the default input read there too.
+take = body(d, "    private func takeSpare() -> (capture: DictationMicrophoneCapture, warmed: DictationSpare.Warmed)? {")
+vet = body(d, "    private nonisolated static func vetSpare(")
+pin("spare = nil" in take and "DictationAudioDevices" not in take and "DictationSpare.check(" not in take, "spare taken once", "taking the spare reads no device")
+order(vet, ["DictationSpare.check(", "if case .discard"], "spare taken once", "the spare is used only when the check passes")
+opening = start[start.index("let opened = try await DictationAudioQueues.perform(on: DictationAudioQueues.input) {"):start.index("next = opened.0")]
+pin("let device = deviceID ?? DictationAudioDevices.defaultInput()" in opening and "Self.vetSpare(held, selectedUID: selected, device: device)" in opening
+    and "DictationAudioDevices.defaultInput()" not in start.replace(opening, ""), "spare off main",
+    "the default input, its rate and its transport are read on the input queue, never on the press's main actor")
+pin(d.count("takeSpare(") == 2 and "(try? warm.start(deviceID: deviceID)) != nil" in start and start.count("let fresh = DictationMicrophoneCapture()") == 1,
     "spare falls back", "a spare that will not start gives way to a fresh engine on the same press")
 pin("guard let device = deviceID ?? DictationAudioDevices.defaultInput(),\n                      DictationSpare.mayWarm(" in body(d, "    private func warmSpare() async {"),
     "spare rules", "warming asks DictationSpare.mayWarm (allowed, enabled, not Bluetooth)")
+
+# 4b. 0.5.345 (A-W1, plan r3): the microphone fallback. System default only, with the setting on; an engine start that
+# threw or a first-buffer failure (never a timeout); only remembered microphones, opened on the input queue; the mapped
+# words, never the raw error; the device names never reach a log.
+fb = body(d, "    private func fallBack(failed: DictationMicFallback.Device?, allowed: Bool, firstMs: Int, continuity: Bool, attempt: UUID) async -> DictationMicrophoneCapture? {")
+pin("let mayFallBack = deviceID == nil && micFallback" in start and start.count("allowed: mayFallBack") == 2, "fallback scope",
+    "a chosen microphone is never overridden: the fallback runs only for System default with the setting on")
+pin("if first == .failed, startFailure == nil, DictationMicFallback.triggers(engineStartThrew: false, firstAudio: first) {" in start
+    and ".timedOut" not in start[start.index("if first == .failed"):start.index("            switch first {")], "fallback trigger",
+    "a first-buffer failure tries another microphone; a timeout does not")
+pin("guard DictationMicFallback.mayRetry(firstAttemptMs: firstMs) else {" in fb and "DictationMicFallback.candidates(good: good, devices: devices.map(\\.device), failedUID: failed?.uid, lidClosed: lid)" in fb
+    and "let opened = try? await DictationAudioQueues.perform(on: DictationAudioQueues.input) {" in fb
+    and fb.index("DictationAudioQueues.perform(on: DictationAudioQueues.input)") < fb.index("DictationAudioDevices.fallbackInputs()")
+    and "if arrived, await firstSound(fresh, attempt: attempt, deadline: deadline + 0.4) {" in fb, "fallback rules",
+    "a fast failure only, the tested candidate order, every HAL read on the input queue, and accepted only with sound in its first 300 ms")
+logs = [line for line in fb.splitlines() + start.splitlines() if "dictationLog" in line and ("fallback" in line or "start failed: engine_start" in line)]
+pin(len(logs) == 3 and not any(".name" in line or "uid" in line.lower().replace("transport", "") for line in logs), "fallback logs",
+    "the fallback and start-failure lines carry the transport code, never a device name or UID")
+pin("fail(DictationMicFallback.stuckMessage(continuityPresent: startFailure?.continuityPresent ?? false), code: DictationFailReason.engineStart.code())" in start
+    and "error.localizedDescription; dictationLog" not in start, "fallback messages", "a failed engine start shows the mapped words, never the raw avfaudio error")
+remember = body(d, "    private func rememberIfSounding(_ capture: DictationMicrophoneCapture, device: DictationMicFallback.Device) {")
+pin("DictationMicFallback.remembering(device, nonSilent: sounding, in: self.micGood)" in remember
+    and "if startFailure == nil, let openedDevice { rememberIfSounding(next, device: openedDevice) }" in start, "fallback memory",
+    "a microphone joins the remembered set only through the tested rule (non-silent, never Bluetooth)")
 
 # 5. The timing line: each start number is stamped where its step ends, and every failure names its code.
 for field, after in [("pressToTaskMs", "task = Task {"), ("permissionMs", "default: permission = false"),
@@ -119,7 +153,7 @@ for field, after in [("pressToTaskMs", "task = Task {"), ("permissionMs", "defau
     stamp = at(start, f"startMarks?.{field} = ", "timing fields")
     order(start, [after, f"startMarks?.{field} = "], "timing fields", f"{field} is stamped after its step ({after!r})")
 # 0.5.328: the mute's and the sound's times are measured on the output queue and come back through lateMarks.
-pin("self?.lateMarks(attempt) { $0.quietMs = total; $0.quietBuildMs = times.buildMs; $0.quietStartMs = times.startMs }" in start
+pin("self?.lateMarks(attempt) { $0.quietMs = total; $0.quietBuildMs = times.buildMs; $0.quietStartMs = times.startMs; $0.muteOwnObject = times.ownObject }" in start
     and "playSound(.start) { [weak self] took in self?.lateMarks(attempt) { $0.soundMs = took } }" in start, "timing fields",
     "the mute's total, build and start times and the sound's start time reach the line")
 pin("startMarks?.pressToFirstBufferMs = DictationStartMarks.ms(pressed, at)" in start, "timing fields",

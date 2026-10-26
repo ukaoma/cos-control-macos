@@ -1,6 +1,7 @@
 import CoreAudio
 import CoreGraphics
 import Foundation
+import NaturalLanguage
 import os
 
 /// Desktop dictation is a user gesture, separate from meeting recording and glasses gestures.
@@ -160,6 +161,28 @@ struct DictationTiming: Codable, Equatable, Sendable {
     /// 0.5.332: why a paste-first dictation was polished first instead (DictationPolishSwap.Unmeasurable: canvasEditor,
     /// unreadableField), beside swapOutcome=unmeasurable.
     var swapWhy: String? = nil
+    /// 0.5.345 Wave A (plan r3), codes and numbers only. preUploadMs: the helper's time before the upload started (the
+    /// token and the capability gate; A-W0d's D1). postCloseStallMs: the longest main-thread gap from the microphone
+    /// closing to the first text (A-W1 freeze instrumentation; mainThreadStallMs keeps its press-side meaning).
+    /// slowListenerCalls: meeting-detection listener calls on the main thread over 100 ms in that window.
+    var preUploadMs: Int? = nil
+    var postCloseStallMs: Int? = nil
+    var slowListenerCalls: Int? = nil
+    /// The microphone fallback's DictationMicFallback.Outcome, and whether the mute could exclude COS's own process.
+    var micFallback: String? = nil
+    var muteOwnObject: String? = nil
+    /// A-W3b: the held key classes (cmd, ctrl, shift, opt), how long they stayed down, the whole wait, whether the
+    /// frontmost app changed during it, and the three safety counters (DictationSwapCounters).
+    var swapHeldKeys: String? = nil
+    var swapHeldMs: Int? = nil
+    var swapWaitMs: Int? = nil
+    var swapFrontmostChanged: Bool? = nil
+    var swapFrontmostAtPostMismatch: Int? = nil
+    var swapClipboardNewerKept: Int? = nil
+    var swapIntoClearedField: Int? = nil
+    /// A-W9a's field shadow: the start rule would capitalize (whether or not the setting is on). A-W10: fillers came out.
+    var wouldCapitalize: Bool? = nil
+    var fillersRemoved: Bool? = nil
     static let finalWindowMilliseconds = 250
     /// The release-side numbers from the captured PCM and the byte count at the release.
     static func measure(pcm: Data, releaseBytes: Int, tailMs: Int, releaseToClosedMs: Int, at: Date) -> DictationTiming {
@@ -355,6 +378,9 @@ struct DictationStartMarks: Equatable, Sendable {
     var placementMs: Int?
     var soundMs: Int?
     var editWatchAtPress: Bool?
+    /// 0.5.345 (A-W1): the microphone fallback's outcome and whether the mute could exclude COS's own process.
+    var micFallback: String?
+    var muteOwnObject: String?
     init(pressed: TimeInterval) { self.pressed = pressed }
     /// Whole milliseconds from one uptime to another, never negative.
     static func ms(_ from: TimeInterval, _ to: TimeInterval) -> Int { max(0, Int(((to - from) * 1000).rounded())) }
@@ -369,6 +395,7 @@ extension DictationTiming {
         engineStartMs = start.engineStartMs; pressToFirstBufferMs = start.pressToFirstBufferMs; pressToSoundMs = start.pressToSoundMs
         mainThreadStallMs = start.mainThreadStallMs; quietBuildMs = start.quietBuildMs; quietStartMs = start.quietStartMs
         placementMs = start.placementMs; soundMs = start.soundMs; editWatchAtPress = start.editWatchAtPress
+        micFallback = start.micFallback; muteOwnObject = start.muteOwnObject
     }
     /// A dictation that failed before the microphone captured anything: the start's numbers and nothing captured.
     static func startFailure(_ start: DictationStartMarks, at: Date) -> DictationTiming {
@@ -453,6 +480,9 @@ enum DictationAudioQueues {
     /// Other apps' quiet (mute or lower volume) and COS's own start and stop sounds. The start sound is queued before the
     /// mute, so COS's own audio object exists when the mute excludes it, and every end follows its begin.
     static let output = DispatchQueue(label: "com.gotcos.control.dictation.output", qos: .userInitiated)
+    /// 0.5.345 (A-W1): COS's own start and stop sounds, on their own queue: a sound stuck in a wedged HAL never holds up
+    /// the mute, its end, the volume restore or quit (10/25: both waited 5.1 s on one queue, 10.4 s in all).
+    static let sound = DispatchQueue(label: "com.gotcos.control.dictation.sound", qos: .userInitiated)
     /// `work` on `queue`; the caller (the main actor) is free until it returns.
     static func perform<T: Sendable>(on queue: DispatchQueue, _ work: @escaping @Sendable () throws -> T) async throws -> T {
         try await withCheckedThrowingContinuation { (done: CheckedContinuation<T, Error>) in
@@ -465,6 +495,10 @@ enum DictationAudioQueues {
 struct DictationQuietTimes: Equatable, Sendable {
     var buildMs: Int?
     var startMs: Int?
+    /// 0.5.345 (A-W1): "present" when the mute excluded COS's own process object, "absent" when it built without it;
+    /// nil when no mute was built. `breakerOpen`: the mute is paused after an error, so the volume was lowered instead.
+    var ownObject: String? = nil
+    var breakerOpen = false
 }
 
 /// The main thread's heartbeat: a 16 ms timer on the main run loop calls `tick`. The longest gap between beats (or from
@@ -1012,17 +1046,26 @@ struct DictationRecord: Codable, Equatable, Identifiable, Sendable {
     /// 0.5.342 Your edit, confirmed: what the person changed it to in the app, read back when the watch ended
     /// (DictationUserEdit). nil in older records and whenever nothing inside the dictation was edited.
     let edit: DictationUserEdit?
+    /// 0.5.345 (A-W7): what COS typed before a swap put Claude's version in, when it differs from what was heard (lists,
+    /// spellings, casing, the filler strip). Undo polish puts `typed ?? heard` back. nil in older records.
+    let typed: String?
+    /// 0.5.345 (A-W10): what the engine heard, when the filler strip changed what COS typed and no polish kept `heard`.
+    /// "What was heard" shows it. nil in older records and whenever nothing was stripped.
+    let rawHeard: String?
 
     init(id: UUID, text: String, createdAt: Date, delivery: Delivery, engine: String? = nil, fallbackReason: String? = nil,
          heard: String? = nil, polishModel: String? = nil, polishPrompt: String? = nil, polishGuard: String? = nil, polishStyleHash: String? = nil,
-         polishCleaned: String? = nil, edit: DictationUserEdit? = nil) {
+         polishCleaned: String? = nil, edit: DictationUserEdit? = nil, typed: String? = nil, rawHeard: String? = nil) {
         self.id = id; self.text = text; self.createdAt = createdAt; self.delivery = delivery
         self.engine = engine; self.fallbackReason = fallbackReason
         self.heard = heard; self.polishModel = polishModel; self.polishPrompt = polishPrompt
         self.polishGuard = DictationStyle.guardCode(polishGuard); self.polishStyleHash = DictationStyle.styleHash(polishStyleHash)
         self.polishCleaned = DictationPolish.cleanedCode(polishCleaned)
         self.edit = edit
+        self.typed = typed; self.rawHeard = rawHeard
     }
+    /// 0.5.345: "What was heard" reads the polish's own `heard`, else what the filler strip took from (rawHeard).
+    var heardShown: String? { heard ?? rawHeard }
 
     var wordCount: Int { text.split(whereSeparator: { $0.isWhitespace || $0.isNewline }).count }
     /// 0.5.342: what was sent, as far as COS saw: the person's edit when there is one, else what COS typed.
@@ -1049,7 +1092,7 @@ struct DictationRecord: Codable, Equatable, Identifiable, Sendable {
         guard heard != nil, let name = polishModel.flatMap(DictationPolishModel.init(rawValue:))?.shortName else { return nil }
         return "Polished · " + name + (polishPrompt == "v4" ? " · v4" : "")
     }
-    /// 0.5.344 part 2: the card's polish line: "Polished · Sonnet · v4 · 2 style rules", or "Kept as heard: polish changed
+    /// 0.5.344 part 2: the card's polish line: "Polished · Sonnet · v4 · 2 style rules", or "Kept COS's cleaned text: polish changed
     /// a number" when the meaning guard refused Claude's version. `styleRules` comes from the ledger (the hash's rules).
     func polishLine(styleRules: Int) -> String? {
         // 0.5.344 QA: the meaning guard's word wins; then text the server's own pass cleaned; then Claude's polish.
@@ -1075,7 +1118,7 @@ struct DictationRecord: Codable, Equatable, Identifiable, Sendable {
     }
 
     // Stored as kind/app/reason. 0.5.309 files carry insertedApp/pasted instead and still load.
-    private enum Keys: String, CodingKey { case id, text, createdAt, kind, app, reason, viaPaste, insertedApp, pasted, engine, fallbackReason, heard, polishModel, polishPrompt, polishGuard, polishStyleHash, polishCleaned, edit }
+    private enum Keys: String, CodingKey { case id, text, createdAt, kind, app, reason, viaPaste, insertedApp, pasted, engine, fallbackReason, heard, polishModel, polishPrompt, polishGuard, polishStyleHash, polishCleaned, edit, typed, rawHeard }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: Keys.self)
         id = try c.decode(UUID.self, forKey: .id)
@@ -1093,6 +1136,9 @@ struct DictationRecord: Codable, Equatable, Identifiable, Sendable {
         polishCleaned = DictationPolish.cleanedCode((try? c.decodeIfPresent(String.self, forKey: .polishCleaned)) ?? nil)
         // 0.5.342: absent before Your edit, confirmed. An edit that does not read is no edit, never a lost history.
         edit = (try? c.decodeIfPresent(DictationUserEdit.self, forKey: .edit)) ?? nil
+        // 0.5.345: absent before Undo polish and the filler strip; a wrong type reads as none, never a lost history.
+        typed = (try? c.decodeIfPresent(String.self, forKey: .typed)) ?? nil
+        rawHeard = (try? c.decodeIfPresent(String.self, forKey: .rawHeard)) ?? nil
         if let kind = try c.decodeIfPresent(String.self, forKey: .kind) {
             let app = try c.decodeIfPresent(String.self, forKey: .app) ?? "the app"
             switch kind {
@@ -1116,6 +1162,7 @@ struct DictationRecord: Codable, Equatable, Identifiable, Sendable {
         try c.encodeIfPresent(polishGuard, forKey: .polishGuard); try c.encodeIfPresent(polishStyleHash, forKey: .polishStyleHash)
         try c.encodeIfPresent(polishCleaned, forKey: .polishCleaned)
         try c.encodeIfPresent(edit, forKey: .edit)
+        try c.encodeIfPresent(typed, forKey: .typed); try c.encodeIfPresent(rawHeard, forKey: .rawHeard)
         switch delivery {
         case .inserted(let app): try c.encode("inserted", forKey: .kind); try c.encode(app, forKey: .app)
         case .unconfirmed(let app, let viaPaste):
@@ -1199,31 +1246,39 @@ enum DictationHistory {
     static func correcting(_ id: UUID, to text: String, in list: [DictationRecord]) -> [DictationRecord] {
         list.map { $0.id == id ? DictationRecord(id: $0.id, text: text, createdAt: $0.createdAt, delivery: $0.delivery, engine: $0.engine, fallbackReason: $0.fallbackReason,
                                                  heard: $0.heard, polishModel: $0.polishModel, polishPrompt: $0.polishPrompt,
-                                                 polishGuard: $0.polishGuard, polishStyleHash: $0.polishStyleHash, polishCleaned: $0.polishCleaned) : $0 }
+                                                 polishGuard: $0.polishGuard, polishStyleHash: $0.polishStyleHash, polishCleaned: $0.polishCleaned,
+                                                 typed: $0.typed, rawHeard: $0.rawHeard) : $0 }
     }
     /// 0.5.342 Your edit, confirmed: the person's edit goes on the dictation. Same id, text, time, place and order.
     static func editing(_ id: UUID, edit: DictationUserEdit, in list: [DictationRecord]) -> [DictationRecord] {
         list.map { one in one.id == id ? DictationRecord(id: one.id, text: one.text, createdAt: one.createdAt, delivery: one.delivery, engine: one.engine,
                                                          fallbackReason: one.fallbackReason, heard: one.heard, polishModel: one.polishModel, polishPrompt: one.polishPrompt,
-                                                         polishGuard: one.polishGuard, polishStyleHash: one.polishStyleHash, polishCleaned: one.polishCleaned, edit: edit) : one }
+                                                         polishGuard: one.polishGuard, polishStyleHash: one.polishStyleHash, polishCleaned: one.polishCleaned, edit: edit,
+                                                         typed: one.typed, rawHeard: one.rawHeard) : one }
     }
     /// 0.5.331 paste first, polish in place: Claude's version replaced the typed text in the field, so the dictation reads
     /// it, and keeps what was heard and the model, as a dictation polished before the paste does. Same id, time and place.
     /// 0.5.342: a person's edit does not survive new text (Apply polished after an edit): its diff would be against words gone.
     /// 0.5.344 QA (W1): `cleaned`, text the server's own pass cleaned (paste first swaps it in as 0.5.343 did), keeps the
     /// meaning guard's word when it refused Claude's version.
+    /// 0.5.345 (A-W7): `typed`, what the swap replaced, kept when it differs from what was heard, for Undo polish.
     static func polishing(_ id: UUID, to text: String, heard: String, model: String, prompt: String? = nil, styleHash: String? = nil,
-                          cleaned: String? = nil, in list: [DictationRecord]) -> [DictationRecord] {
+                          cleaned: String? = nil, typed: String? = nil, in list: [DictationRecord]) -> [DictationRecord] {
         list.map { r in r.id == id ? DictationRecord(id: r.id, text: text, createdAt: r.createdAt, delivery: r.delivery, engine: r.engine, fallbackReason: r.fallbackReason,
                                                      heard: heard, polishModel: model, polishPrompt: cleaned == nil ? DictationPolish.promptVersion(prompt) : nil,
-                                                     polishGuard: cleaned == nil ? nil : r.polishGuard, polishStyleHash: styleHash, polishCleaned: cleaned) : r }
+                                                     polishGuard: cleaned == nil ? nil : r.polishGuard, polishStyleHash: styleHash, polishCleaned: cleaned,
+                                                     typed: (typed ?? r.typed ?? r.text) == heard ? nil : (typed ?? r.typed ?? r.text), rawHeard: nil) : r }
+    }
+    /// 0.5.345 (A-W7): Undo polish landed: the record reads what COS typed again (DictationUndoPolish.unpolished).
+    static func unpolishing(_ id: UUID, in list: [DictationRecord]) -> [DictationRecord] {
+        list.map { r in r.id == id ? (DictationUndoPolish.unpolished(r) ?? r) : r }
     }
     /// 0.5.344 part 2 (paste first): the meaning guard kept what was typed, so the record says so. Same id, text and place.
     static func guarding(_ id: UUID, guard kind: String?, styleHash: String?, in list: [DictationRecord]) -> [DictationRecord] {
         list.map { r in r.id == id ? DictationRecord(id: r.id, text: r.text, createdAt: r.createdAt, delivery: r.delivery, engine: r.engine,
                                                      fallbackReason: r.fallbackReason, heard: r.heard, polishModel: r.polishModel, polishPrompt: r.polishPrompt,
                                                      polishGuard: kind ?? "guarded", polishStyleHash: styleHash ?? r.polishStyleHash, polishCleaned: r.polishCleaned,
-                                                     edit: r.edit) : r }
+                                                     edit: r.edit, typed: r.typed, rawHeard: r.rawHeard) : r }
     }
     /// A file that exists but does not read is moved aside to `<name>.corrupt-<UTC stamp>` before anything is saved
     /// over it, so a bad build can never silently erase someone's history. `writable` is false when it could not move.
@@ -2366,6 +2421,12 @@ enum DictationPolish {
         }
         return "Claude cleans filler, punctuation and dictionary spellings before COS pastes. It does not reliably fix misheard words. Uses your Claude plan. If it takes longer than \(Int(budget)) seconds, COS pastes what it heard."
     }
+    /// 0.5.345 (A-W2, plan r3): paste first is the default, so the note says what happens then. Polish first keeps the
+    /// note above, word for word.
+    static func settingNote(_ model: DictationPolishModel, pasteFirst: Bool) -> String {
+        guard pasteFirst, let budget = budget(for: model) else { return settingNote(model) }
+        return "COS types what it heard right away, then swaps in Claude's version if you haven't moved on. It does not reliably fix misheard words. Uses your Claude plan. If it takes longer than \(Int(budget)) seconds, COS keeps what it typed."
+    }
 }
 
 /// 0.5.337 (Miles 2026-10-22 21:11): Learn from my edits reading one of COS Control's own text views: its count and caret,
@@ -2618,7 +2679,9 @@ enum DictationPolishSwap {
     static let quietMilliseconds = 600
     static let quietPollMilliseconds = 100
     /// A delivery waits at most this long for a swap that is editing a field right now.
-    static let deliveryWaitMilliseconds = 2_000
+    /// 0.5.345 (A-W3b): 4,000, so the whole swap (the wait for ⌘ or ⌃, the quiet moment, the proof and the paste) fits
+    /// inside it and the next dictation never overlaps the clipboard.
+    static let deliveryWaitMilliseconds = 4_000
     /// The pill's one line, only when a swap was skipped.
     static let skippedNotice = "POLISHED VERSION IN ACTIVITY"
 
@@ -3332,11 +3395,20 @@ struct DictationUserEdit: Codable, Equatable, Sendable {
     /// What Learn from my edits saved from this watch: the written forms, and their Learned list ids for Undo learn.
     let learned: [String]
     let learnedIDs: [UUID]
+    /// 0.5.345 (A-W11): every change was one Claude's unswapped polish had already made ("polish already fixed this").
+    let matchedPolish: Bool
+    /// 0.5.345 (A-W12): the Your style rule ids this edit counted toward (codes only), for the card's "next time" line.
+    let styleKeys: [String]
 
-    init(text: String, app: String, at: Date, edits: Int, learned: [String] = [], learnedIDs: [UUID] = []) {
+    init(text: String, app: String, at: Date, edits: Int, learned: [String] = [], learnedIDs: [UUID] = [], matchedPolish: Bool = false,
+         styleKeys: [String] = []) {
         self.text = text; self.app = app; self.at = at; self.edits = edits; self.learned = learned; self.learnedIDs = learnedIDs
+        self.matchedPolish = matchedPolish; self.styleKeys = styleKeys
     }
-    private enum Keys: String, CodingKey { case text, app, at, edits, learned, learnedIDs }
+    func with(styleKeys keys: [String]) -> DictationUserEdit {
+        DictationUserEdit(text: text, app: app, at: at, edits: edits, learned: learned, learnedIDs: learnedIDs, matchedPolish: matchedPolish, styleKeys: keys)
+    }
+    private enum Keys: String, CodingKey { case text, app, at, edits, learned, learnedIDs, matchedPolish, styleKeys }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: Keys.self)
         text = try c.decode(String.self, forKey: .text)
@@ -3346,12 +3418,16 @@ struct DictationUserEdit: Codable, Equatable, Sendable {
         edits = max(1, count)
         learned = (try? c.decodeIfPresent([String].self, forKey: .learned)) ?? []
         learnedIDs = (try? c.decodeIfPresent([UUID].self, forKey: .learnedIDs)) ?? []
+        matchedPolish = (try? c.decodeIfPresent(Bool.self, forKey: .matchedPolish)) ?? false
+        styleKeys = (try? c.decodeIfPresent([String].self, forKey: .styleKeys)) ?? []
     }
     func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: Keys.self)
         try c.encode(text, forKey: .text); try c.encode(app, forKey: .app); try c.encode(at, forKey: .at); try c.encode(edits, forKey: .edits)
         if !learned.isEmpty { try c.encode(learned, forKey: .learned) }
         if !learnedIDs.isEmpty { try c.encode(learnedIDs, forKey: .learnedIDs) }
+        if matchedPolish { try c.encode(true, forKey: .matchedPolish) }
+        if !styleKeys.isEmpty { try c.encode(styleKeys, forKey: .styleKeys) }
     }
 }
 
@@ -3503,11 +3579,12 @@ enum DictationEditConfirm {
     /// The edit for the record, or nil. The record must still hold the words the watch looked for (a swap or Fix a word
     /// since would make the diff describe changes nobody made).
     static func edit(typed: String, recordText: String, final: String, app: String, at: Date, inside: Int,
-                     learned: [DictationSuggestion]) -> DictationUserEdit? {
+                     learned: [DictationSuggestion], matchedPolish: Bool = false) -> DictationUserEdit? {
         guard DictationWordDiff.words(typed) == DictationWordDiff.words(recordText) else { return nil }
         let edits = DictationWordDiff.diff(original: recordText, final: final).map { DictationWordDiff.regions($0).count } ?? max(1, inside)
         guard edits > 0 else { return nil }
-        return DictationUserEdit(text: final, app: app, at: at, edits: edits, learned: learned.map(\.written), learnedIDs: learned.map(\.id))
+        return DictationUserEdit(text: final, app: app, at: at, edits: edits, learned: learned.map(\.written), learnedIDs: learned.map(\.id),
+                                 matchedPolish: matchedPolish)
     }
 
     /// The pill when a watch ends. `learned`: the pairs saved to the dictionary from this watch.
@@ -3588,6 +3665,8 @@ enum DictationEditConfirm {
         return "You edited \(n) \(n == 1 ? "word" : "words"). " + nothingNew
     }
 
+    static let matchedPill = "✓ EDIT SAVED · POLISH HAD THIS"
+
     // MARK: Always drop "<phrase>" from my dictation
 
     static let dropMaximumWords = 3
@@ -3604,6 +3683,8 @@ enum DictationEditConfirm {
         guard (1...dropMaximumWords).contains(words.count),
               words.allSatisfy({ !$0.isEmpty && $0.unicodeScalars.allSatisfy(CharacterSet.letters.contains) }) else { return nil }
         guard !isTerm(phrase), !words.contains(where: isTerm) else { return nil }
+        // 0.5.345 (A-W11): never a built-in filler sound (DictationFillers): those are removed before typing already.
+        guard !words.allSatisfy(DictationFillers.isBuiltIn) else { return nil }
         return phrase.lowercased()
     }
     static func instruction(_ phrase: String) -> String { "Remove the filler \"\(phrase)\"." }
@@ -4349,7 +4430,9 @@ enum DictationStyle {
         guard let hash, !hash.isEmpty else { return 0 }
         return ledger.applied.last { $0.hash == hash }?.ids.count ?? 0
     }
-    /// The card's line for an answer the meaning guard refused, by its kind; just "Kept as heard" without one.
+    /// The card's line for an answer the meaning guard refused, by its kind; just "Kept COS's cleaned text" without one.
+    /// 0.5.345 (QA4): the guard keeps COS's own cleaned text (fillers out), not the raw audio and not Claude's answer, so
+    /// the card no longer says "Kept as heard".
     static func keptLine(guard kind: String?) -> String {
         let what: String? = switch kind {
         case "number": "a number"
@@ -4360,7 +4443,7 @@ enum DictationStyle {
         case "literal": "the words"
         default: nil
         }
-        return what.map { "Kept as heard: polish changed " + $0 } ?? "Kept as heard"
+        return what.map { "Kept COS's cleaned text: polish changed " + $0 } ?? "Kept COS's cleaned text"
     }
 
     /// 0.5.344 QA (W3): why the rules are not used now, in the order Settings names them. nil: they apply (Sonnet, the
@@ -4519,6 +4602,20 @@ extension DictationStyle.Ledger {
         var sonnetPrompt: String?
         /// The server's environment names the prompt, so the option has no effect.
         var envOverride = false
+        /// 0.5.345 (A-W2, server 6.92.0): the prompt Haiku gets, the meaning guard's switch and the (model, prompt) pairs
+        /// Your style applies to. Absent from an older server (nil); a 6.91.x guard is on unless its env turned it off.
+        var haikuPrompt: String? = nil
+        var meaningGuard: Bool? = nil
+        var stylePairs: [String: String]? = nil
+        var available = false
+        /// What the picker's line reads (DictationPolishPicker.line).
+        var picker: DictationPolishPicker.Server {
+            var map: [String: String] = [:]
+            if let sonnetPrompt { map["sonnet"] = sonnetPrompt }
+            if let haikuPrompt { map["haiku"] = haikuPrompt }
+            return DictationPolishPicker.Server(available: available && !map.isEmpty, promptVersion: promptVersion, effectiveByModel: map,
+                                                envOverride: envOverride, meaningGuard: meaningGuard, stylePairs: stylePairs)
+        }
     }
 
     private(set) var ledger: DictationStyle.Ledger
@@ -4582,10 +4679,23 @@ extension DictationStyle.Ledger {
         let result = DictationStyleClassifier.learn(&next, evidence: evidence, settings: settings, now: now())
         // Counts and codes only: never the words.
         log?("style observe reason=\(result.reason ?? "learned") active=\(result.newlyActive.count)")
-        guard result.reason == nil else { return [] }
+        guard result.reason == nil else { lastObserved = []; return [] }
         ledger = next; save()
+        // 0.5.345 (A-W12): the rule ids this edit counted toward (a put-back word is a contradiction, never counted).
+        lastObserved = counted(evidence, instructions: instructions)
         Task { await self.sync() }
         return result.newlyActive
+    }
+    /// The rule ids an accepted edit counted toward: never logged (the words stay in the evidence).
+    private func counted(_ evidence: DictationStyleClassifier.Evidence, instructions: String) -> [String] {
+        DictationStyleClassifier.observations(typed: evidence.typed, final: evidence.final, allowlist: allowlist, instructions: instructions)
+            .filter { !$0.added }.map(\.key.id)
+    }
+    /// 0.5.345 (A-W12): what the last observe counted, and one rule's place on the way to active, for the card.
+    private(set) var lastObserved: [String] = []
+    func progress(_ id: String) -> DictationNextTime.Style? {
+        guard let rule = ledger.rules.first(where: { $0.id == id }) else { return nil }
+        return DictationNextTime.Style(title: rule.key.title, support: rule.support, active: state(rule) == .active)
     }
     /// The pill for one newly active rule, once per rule id ever, only while the rules apply: marks it announced and
     /// gives its key, or nil.
@@ -5337,6 +5447,696 @@ enum DictationMuteIO {
 enum DictationMedia {
     enum Action: Equatable, Sendable { case leave, pause }
     static func decide(playing: Bool?) -> Action { playing == true ? .pause : .leave }
+}
+
+// 0.5.345 Wave A sits here, above the 0.5.317 section, whose copy lint reads ordinary string literals to the end of
+// the file (these rules carry regular expressions in raw strings).
+// MARK: - 0.5.345 Wave A (plan r3): filler sounds are never typed (A-W10)
+
+/// The server's own filler pass (server/lib/dictation-fillers.ts `stripDisfluencies`, 6.92.0), ported rule for rule so
+/// the shared fixture (Tests/fixtures/dictation-fillers.json, sha256 pinned in both repos) reads the same here. Offsets
+/// are UTF-16, as JavaScript's are, and every pattern is the server's with `$` written `\z` and `\s`/`\d` spelled out as
+/// JavaScript defines them (ICU's `$` also matches before a final line break; its `\d` is any script's digit).
+/// Plus the r3 token exemptions (a filler touching a path, handle or file mark is kept) and, on Control only, a language
+/// gate (NLLanguageRecognizer). What was heard still goes to polish raw; this is only what COS types or copies.
+enum DictationFillers {
+    static let defaultsKey = "dictation.removeFillers"
+    static func stored(_ value: Any?) -> Bool { (value as? Bool) ?? true }
+    static let settingTitle = "Remove filler sounds (um, uh) before typing"
+    static let settingNote = "COS leaves out um, uh, er and hmm on their own before it types, also with AI polish off. Text in another language, file names and handles keep them."
+    /// The built-in filler tokens (the Always drop chip is never offered for these; A-W11).
+    static let tokens: Set<String> = ["um", "umm", "uh", "uhh", "uhm", "er", "erm", "ah", "ahh", "hm", "hmm", "mm", "mhm"]
+    static func isBuiltIn(_ phrase: String) -> Bool {
+        let p = phrase.lowercased()
+        return regex(#"\A(?:um+|uhm|uh+|erm?|ah+|hm+|mm+|mhm)\z"#).firstMatch(in: p, range: NSRange(location: 0, length: (p as NSString).length)) != nil
+    }
+
+    private static let jsSpace = #"[\t\n\u000B\f\r    -     　﻿]"#
+    nonisolated(unsafe) private static var cache: [String: NSRegularExpression] = [:]
+    private static let cacheLock = NSLock()
+    static func regex(_ pattern: String, _ options: NSRegularExpression.Options = []) -> NSRegularExpression {
+        let key = pattern + "#\(options.rawValue)"
+        cacheLock.lock(); defer { cacheLock.unlock() }
+        if let hit = cache[key] { return hit }
+        let made = try! NSRegularExpression(pattern: pattern, options: options)
+        cache[key] = made
+        return made
+    }
+    private static func test(_ pattern: String, _ s: String, _ options: NSRegularExpression.Options = []) -> Bool {
+        regex(pattern, options).firstMatch(in: s, range: NSRange(location: 0, length: (s as NSString).length)) != nil
+    }
+    /// JavaScript's `s.replace(pattern, replacement)` without the g flag: the first match only.
+    private static func replaceFirst(_ pattern: String, in s: String, with replacement: String = "") -> String {
+        let ns = s as NSString
+        guard let m = regex(pattern).firstMatch(in: s, range: NSRange(location: 0, length: ns.length)) else { return s }
+        return ns.replacingCharacters(in: m.range, with: replacement)
+    }
+    private static let filler = #"(?<![\p{L}\p{N}'’-])(um+|uhm|uh+|erm?|ah+|hm+|mm+|mhm)(?![\p{L}\p{N}'’-])"#
+    private static let trailingPause = #"^[ \t]*(?:,|\.{2,}|…|--|\u2014|\u2013)?[ \t]*"#
+    private static let ownSentenceEnd = #"^[ \t]*[.?!]+[ \t]*"#
+    private static let closesClause = #"^(?:[.?!;:)\]}"”’]|\z|\n)"#
+    private static let abbreviation = #"(?:^|[\s(“"‘'])(?:mrs?|ms|dr|prof|st|jr|sr|vs|etc|e\.g|i\.e|a\.m|p\.m|u\.s)\.["”’)]*\z"#
+    private static let initial = #"(?:^|[\s(“"‘'])[A-Z]\.["”’)]*\z"#
+    private static let quoteOpen = #"["“”'‘’]\z"#
+    private static let quoteClose = #"^["“”'‘’]"#
+    private static let pauseAfter = #"^[ \t]*(?:,|\.{2,}|…)"#
+    /// 6.92.0 (r3): a filler touching a path, handle or code character is part of that token ("src/um.txt", "~/uh",
+    /// "@uh", "um.py", "um:8080"): the server's TOUCH_BEFORE on out + before and TOUCH_AFTER on what follows. A
+    /// sentence-final "um." or "um:" still goes. (A leading "-" is already outside the token pattern.)
+    private static let touchBefore = #"[/.@_:#$]\z"#
+    private static let touchAfter = #"^(?:[/@_#$]|[.:][\p{L}\p{N}])"#
+    static func touches(before: String, after: String) -> Bool { test(touchBefore, before) || test(touchAfter, after) }
+
+    private static func trimTrailingSpaceTab(_ s: String) -> String { replaceFirst(#"[ \t]+\z"#, in: s) }
+    private static func afterAbbreviation(_ before: String) -> Bool {
+        let trimmed = trimTrailingSpaceTab(before)
+        return test(abbreviation, trimmed, [.caseInsensitive]) || test(initial, trimmed)
+    }
+    private static func sentenceStart(_ before: String) -> Bool {
+        let trimmed = trimTrailingSpaceTab(before)
+        if trimmed.isEmpty || trimmed.hasSuffix("\n") { return true }
+        if !test(#"[.?!]["”’)]*\z"#, trimmed) { return false }
+        return !test(#"(?:\.{2,}|…)["”’)]*\z"#, trimmed)
+    }
+    private static func utf16Upper(_ s: String) -> String { s.uppercased() }
+
+    /// The server's stripDisfluencies, plus the token exemptions. Never empties the text: nothing but fillers comes back unchanged.
+    static func strip(_ text: String) -> String {
+        var out = ""
+        var rest = text
+        var removed = false
+        while true {
+            let ns = rest as NSString
+            guard let match = regex(filler, [.caseInsensitive]).firstMatch(in: rest, range: NSRange(location: 0, length: ns.length)) else { break }
+            let token = ns.substring(with: match.range)
+            var before = ns.substring(to: match.range.location)
+            var after = ns.substring(from: match.range.location + match.range.length)
+            let atStart = sentenceStart(out + before)
+            let titled = test(#"^[A-Z]"#, token)
+            let keep = ((token as NSString).length > 1 && token == token.uppercased())
+                || (test(#"^mm+$"#, token, [.caseInsensitive]) && test(#"[0-9][ \t]*\z"#, out + before))
+                || (!atStart && titled && !test(pauseAfter, after))
+                || (titled && afterAbbreviation(out + before))
+                || (test(quoteOpen, out + before) && test(quoteClose, after))
+                || (test(#"^uh$"#, token, [.caseInsensitive]) && test(#"^[ \t]+(huh|oh)(?![\p{L}\p{N}'’-])"#, after, [.caseInsensitive]))
+                || (test(#"^mm$"#, token, [.caseInsensitive]) && test(#"^[ \t]+hm+(?![\p{L}\p{N}'’-])"#, after, [.caseInsensitive]))
+                || (test(#"^hm+$"#, token, [.caseInsensitive]) && test(#"(?<![\p{L}\p{N}'’-])mm[ \t]+\z"#, out + before, [.caseInsensitive]))
+                || touches(before: out + before, after: after)
+            if keep {
+                out += before + token
+                rest = after
+                continue
+            }
+            removed = true
+            let spaceBefore = test(#"[ \t]\z"#, before) || (before.isEmpty && test(#"[ \t]\z"#, out))
+            after = atStart && test(ownSentenceEnd, after) ? replaceFirst(ownSentenceEnd, in: after) : replaceFirst(trailingPause, in: after)
+            before = trimTrailingSpaceTab(before)
+            if before.isEmpty { out = trimTrailingSpaceTab(out) }
+            if test(closesClause, after) {
+                before = replaceFirst(#"[ \t]*[,;]\z"#, in: before)
+                if before.isEmpty { out = replaceFirst(#"[ \t]*[,;]\z"#, in: out) }
+            }
+            out += before
+            if atStart && titled && !after.isEmpty {
+                let a = after as NSString
+                if let m = regex(#"^(["“'‘(]?)(\p{Ll})"#).firstMatch(in: after, range: NSRange(location: 0, length: a.length)) {
+                    let open = a.substring(with: m.range(at: 1)), ch = a.substring(with: m.range(at: 2))
+                    after = a.replacingCharacters(in: m.range, with: open + utf16Upper(ch))
+                }
+            }
+            if !out.isEmpty && spaceBefore && !after.isEmpty && !test(#"^(?:"# + jsSpace + #"|[.,?!;:)\]}"”’])"#, after) && !test(jsSpace + #"\z"#, out) { out += " " }
+            rest = after
+        }
+        if !removed { return text }
+        let result = replaceFirst(#"^[ \t]*[,;][ \t]*"#, in: out + rest)
+        return test(#"\A"# + jsSpace + #"*\z"#, result) ? text : result
+    }
+
+    /// The text the language gate reads: the candidate filler tokens taken out (they are Portuguese, German and
+    /// Icelandic words, so left in they decide the language themselves).
+    static func gateText(_ text: String) -> String {
+        regex(filler, [.caseInsensitive]).stringByReplacingMatches(in: text, range: NSRange(location: 0, length: (text as NSString).length), withTemplate: " ")
+    }
+    /// Strip only English. Four words or more: NLLanguageRecognizer's dominant language is English at 0.8 or higher.
+    /// Fewer: no sign of another language: no letter outside a to z, and the recognizer's top guess is English or under
+    /// `shortSignal` (it is unsure of "um ok" and "Uh no", sure of "um 5 Uhr", "Er kommt", "um carro" and "Det er fint").
+    static let shortSignal = 0.35
+    /// The server's short-reply list (6.92.0 dictation-fillers.ts fillerTextLooksEnglish, "may" left out), English evidence
+    /// in the short branch. The rest of the server's gate (function-word counts) is not ported: Control decides with
+    /// NLLanguageRecognizer, and the shared fixture's "both" language rows (sr001 to sr005) hold through clean().
+    static let shortReplies: Set<String> = ["yes", "no", "yeah", "yep", "ok", "okay", "sure", "thanks", "thank", "please", "sorry", "hi", "hey",
+                                            "hello", "good", "great", "fine", "cool", "done", "right", "maybe", "sounds", "call", "send", "tell",
+                                            "ask", "am", "pm", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
+                                            "january", "february", "march", "april", "june", "july", "august", "september", "october",
+                                            "november", "december"]
+    static func englishEnough(_ text: String, hypotheses: (String) -> [String: Double]) -> Bool {
+        let gate = gateText(text)
+        let words = gate.split { !($0.isLetter || $0.isNumber || $0 == "'" || $0 == "’") }.filter { $0.contains(where: \.isLetter) }
+        guard !words.isEmpty else { return false }
+        let guesses = hypotheses(gate)
+        if words.count >= 4 {
+            let top = guesses.max { $0.value < $1.value }
+            return top?.key == "en" && (top?.value ?? 0) >= 0.8
+        }
+        if gate.unicodeScalars.contains(where: { CharacterSet.letters.contains($0) && !$0.isASCII }) { return false }
+        // A common short reply ("um yes", "er no", "um thanks Dana") is English evidence the recognizer cannot give for
+        // one or two words (6.92.0 server QA: "hi" reads Catalan, "fine" Italian).
+        if words.contains(where: { shortReplies.contains($0.lowercased()) }) { return true }
+        guard let top = guesses.max(by: { $0.value < $1.value }) else { return true }
+        return top.key == "en" || top.value < shortSignal
+    }
+    /// What COS types or copies: the fillers taken out when the setting is on and the text is English. `removed` says
+    /// whether anything changed (the record keeps what was heard as rawHeard then).
+    /// NLLanguageRecognizer's guesses, by language code.
+    static func recognized(_ text: String) -> [String: Double] {
+        let recognizer = NLLanguageRecognizer()
+        recognizer.processString(text)
+        return Dictionary(uniqueKeysWithValues: recognizer.languageHypotheses(withMaximum: 3).map { ($0.key.rawValue, $0.value) })
+    }
+    static func clean(_ text: String, enabled: Bool, hypotheses: (String) -> [String: Double] = recognized) -> (text: String, removed: Bool) {
+        guard enabled, test(filler, text, [.caseInsensitive]), englishEnough(text, hypotheses: hypotheses) else { return (text, false) }
+        let stripped = strip(text)
+        return (stripped, stripped != text)
+    }
+}
+
+// MARK: - 0.5.345 Wave A: capitalize the start of a sentence (A-W9a)
+
+/// Uppercases the first letter of a dictation that lands at the start of a field or of a sentence. Never lowercases.
+/// COS reads a short window before the caret itself (one AXStringForRange, independent of the field-context setting),
+/// never in a password field or a terminal. Abbreviations ("e.g.", "Dr.", "p.m.", an initial) and an ellipsis are not
+/// sentence ends: the server's ABBREVIATION and INITIAL rules (dictation-fillers.ts), which need more than two
+/// characters, so the window is `windowUnits` long.
+enum DictationCasing {
+    static let defaultsKey = "dictation.capitalizeStart"
+    static func stored(_ value: Any?) -> Bool { (value as? Bool) ?? true }
+    static let settingTitle = "Capitalize the start of a sentence"
+    static let settingNote = "When COS can read the text box, a dictation at the start of it or after a full stop starts with a capital. Never in terminals, and never for iPhone, @handles, paths or a lowercase dictionary term."
+    static let windowUnits = 16
+    /// What the caret sits after. `before` is up to `windowUnits` UTF-16 units read before it; `reachesStart` says that
+    /// read began at the field's first character (or the field was measured empty).
+    struct Before: Equatable, Sendable {
+        var text: String
+        var reachesStart: Bool
+    }
+    private static func test(_ pattern: String, _ s: String, _ options: NSRegularExpression.Options = []) -> Bool {
+        DictationFillers.regex(pattern, options).firstMatch(in: s, range: NSRange(location: 0, length: (s as NSString).length)) != nil
+    }
+    /// A sentence starts here: the field's start, a line break, or `.`, `!`, `?` (closing quotes allowed after them) that
+    /// is not an ellipsis, an abbreviation or an initial.
+    static func startsSentence(_ before: Before) -> Bool {
+        let trimmed = before.text.replacingOccurrences(of: #"[ \t]+\z"#, with: "", options: .regularExpression)
+        if trimmed.isEmpty { return before.reachesStart }
+        if trimmed.hasSuffix("\n") || trimmed.hasSuffix("\r") || trimmed.hasSuffix("\u{2028}") || trimmed.hasSuffix("\u{2029}") { return true }
+        guard test(#"[.?!]["”’)]*\z"#, trimmed) else { return false }
+        if test(#"(?:\.{2,}|…)["”’)]*\z"#, trimmed) { return false }
+        if test(#"(?:^|[\s(“"‘'])(?:mrs?|ms|dr|prof|st|jr|sr|vs|etc|e\.g|i\.e|a\.m|p\.m|u\.s)\.["”’)]*\z"#, trimmed, [.caseInsensitive]) { return false }
+        if test(#"(?:^|[\s(“"‘'])[A-Z]\.["”’)]*\z"#, trimmed) { return false }
+        return true
+    }
+    /// The first word, without an opening quote or bracket.
+    static func firstToken(_ text: String) -> (open: Substring, word: Substring)? {
+        let start = text.firstIndex { !$0.isWhitespace } ?? text.endIndex
+        guard start < text.endIndex else { return nil }
+        let token = text[start...].prefix { !$0.isWhitespace }
+        let open = token.prefix { "\"“'‘(".contains($0) }
+        let word = token.dropFirst(open.count)
+        return word.isEmpty ? nil : (open, word)
+    }
+    /// Command words that are never English words, so "npm run build" stays as said.
+    static let commands: Set<String> = ["npm", "npx", "pnpm", "git", "cd", "ls", "sudo", "brew", "curl", "ssh", "grep", "vim", "pip", "kubectl"]
+    /// Why the first word keeps its case, or nil when it may be capitalized.
+    static func exemption(_ word: Substring, isTerm: (String) -> Bool) -> String? {
+        guard let first = word.first, first.isLetter, first.isLowercase else { return "notLowercase" }
+        // Latin script only: a letter whose uppercase is itself, or any non-Latin letter, is left alone.
+        guard first.unicodeScalars.allSatisfy({ $0.properties.isAlphabetic && $0.value < 0x0250 }) else { return "script" }
+        if word.contains(where: { "/.@_:".contains($0) }) { return "mark" }
+        // A first token starting with "-", "#" or "$" never starts with a letter, so the first guard keeps it (the 0.5.345
+        // mutation gate showed a separate check for them was unreachable).
+        if word.dropFirst().contains(where: { $0.isUppercase }) { return "innerCapital" }
+        let bare = String(word).trimmingCharacters(in: CharacterSet.punctuationCharacters)
+        if commands.contains(bare) { return "command" }
+        if isTerm(bare) || isTerm(String(word)) { return "term" }
+        return nil
+    }
+    /// What delivery needs to apply the rule: the setting, the polish instructions, and the person's dictionary terms.
+    struct Request: Sendable {
+        var enabled = true
+        var instructions = ""
+        var terms: Set<String> = []
+        /// The dictionary's lowercase-first terms, held lowercased ("bottlepos", "jewel360x").
+        func isTerm(_ word: String) -> Bool { terms.contains(word.lowercased()) }
+    }
+    /// The window to read before the caret: up to `windowUnits`, ending at it. nil when the field gave no count or caret.
+    static func readRange(fieldCharacters: Int?, location: Int?) -> (location: Int, length: Int)? {
+        guard let n = fieldCharacters, let at = location, at >= 0, at <= n else { return nil }
+        let start = max(0, at - windowUnits)
+        return (start, at - start)
+    }
+    /// The read, as the rule takes it. A measured empty field (or the caret at its start) is the start of the field.
+    static func before(read: String?, range: (location: Int, length: Int), fieldCharacters: Int) -> Before? {
+        if fieldCharacters == 0 || range.length == 0 { return Before(text: "", reachesStart: range.location == 0) }
+        guard let read else { return nil }
+        return Before(text: read, reachesStart: range.location == 0)
+    }
+    /// The polish instructions ask for lowercase ("all lowercase", "lower case", "no capitals"): COS never capitalizes.
+    static func lowercaseAsked(_ instructions: String) -> Bool {
+        test(#"\b(?:all\s+)?lower[\s-]?case\b|\bno\s+capital"#, instructions, [.caseInsensitive])
+    }
+    /// The text with its first letter uppercased, or nil when the rule does not apply (`would` is the field shadow count:
+    /// whether it would have applied, even with the setting off).
+    static func apply(_ text: String, before: Before?, terminal: Bool, secure: Bool, instructions: String,
+                      isTerm: (String) -> Bool) -> String? {
+        guard !terminal, !secure, let before, !lowercaseAsked(instructions), startsSentence(before),
+              let (open, word) = firstToken(text), exemption(word, isTerm: isTerm) == nil, let first = word.first else { return nil }
+        let index = word.startIndex
+        var out = text
+        _ = open
+        out.replaceSubrange(index...index, with: String(first).uppercased())
+        return out
+    }
+}
+
+// MARK: - 0.5.345 Wave A: Undo polish (A-W7)
+
+enum DictationUndoPolish {
+    static let label = "Undo polish"
+    static let pillLabel = "✓ POLISHED"
+    static let help = "Put back what COS typed before polish"
+    /// What a swap replaced: what COS typed (lists, spellings, casing and the filler strip applied), else what was heard.
+    static func restoreText(_ record: DictationRecord) -> String? {
+        guard record.heard != nil, record.polishModel != nil else { return nil }
+        return record.typed ?? record.heard
+    }
+    /// The card's actions, in order. Swapped: Undo polish, Show original. Not swapped: Apply polished (Activity), Show
+    /// original. Undo polish only while COS still knows where the dictation is.
+    enum Action: String, Equatable, Sendable { case undoPolish, applyPolished, showOriginal }
+    static func actions(swapped: Bool, tracked: Bool, pendingApplies: Bool, record: DictationRecord) -> [Action] {
+        if swapped, tracked, restoreText(record) != nil { return [.undoPolish, .showOriginal] }
+        return (pendingApplies ? [.applyPolished] : []) + [.showOriginal]
+    }
+    /// The record after Undo polish: it reads what was typed again and is no longer polished; Claude's version waits as
+    /// the pending polish (Apply polished redoes it). What was heard stays readable as rawHeard when it differs.
+    static func unpolished(_ record: DictationRecord) -> DictationRecord? {
+        guard let restored = restoreText(record) else { return nil }
+        let raw = record.rawHeard ?? (record.heard != restored ? record.heard : nil)
+        return DictationRecord(id: record.id, text: restored, createdAt: record.createdAt, delivery: record.delivery, engine: record.engine,
+                               fallbackReason: record.fallbackReason, rawHeard: raw)
+    }
+    /// Undo polish replaces the whole polished dictation exactly where it is, or nothing: a moved span (found
+    /// elsewhere, or only some of its words) refuses with a reason.
+    static func placed(_ plan: DictationReplace.Plan, span: DictationInsertedSpan) -> DictationReplace.Reason? {
+        switch plan {
+        case .edit(_, let at): at == span.location ? nil : .textMoved
+        case .copy(let reason): reason
+        }
+    }
+    /// Why Undo polish left the text alone. It never copies: the person's field keeps what is there.
+    static func refusedNote(_ reason: DictationReplace.Reason, app: String) -> String {
+        switch reason {
+        case .appGone: "\(app) is no longer open, so COS left the polished text."
+        case .terminal: "COS can't swap words inside a terminal."
+        case .noChange: "\(app) already has what COS typed."
+        default: "The text in \(app) changed since COS put it there, so COS left it alone."
+        }
+    }
+    static let uncheckedNote = "COS couldn't confirm the change. Check the text there."
+}
+
+// MARK: - 0.5.345 Wave A: "polish already fixed this" (A-W11)
+
+/// A saved edit, compared with Claude's version that could not be swapped in (pendingPolish). Words are compared the way
+/// Your style compares them (lowercase, punctuation trimmed), position by position against what COS typed.
+enum DictationPolishMatch {
+    struct Ops: Equatable, Sendable {
+        var deleted: Set<Int> = []
+        /// Words put in before typed word `anchor` (typed.count for the end), in order.
+        var inserted: [Int: [String]] = [:]
+        var isEmpty: Bool { deleted.isEmpty && inserted.values.allSatisfy(\.isEmpty) }
+    }
+    static func words(_ text: String) -> [String] { DictationStyleClassifier.words(text) }
+    static let maximumWords = 600
+    static func ops(_ a: [String], _ b: [String]) -> Ops? {
+        guard max(a.count, b.count) <= maximumWords else { return nil }
+        let n = a.count, m = b.count
+        var lcs = [[Int]](repeating: [Int](repeating: 0, count: m + 1), count: n + 1)
+        for i in stride(from: n - 1, through: 0, by: -1) {
+            for j in stride(from: m - 1, through: 0, by: -1) {
+                lcs[i][j] = a[i] == b[j] ? lcs[i + 1][j + 1] + 1 : max(lcs[i + 1][j], lcs[i][j + 1])
+            }
+        }
+        var out = Ops(), i = 0, j = 0
+        while i < n || j < m {
+            if i < n, j < m, a[i] == b[j] { i += 1; j += 1 }
+            else if i < n, j == m || lcs[i][j + 1] <= lcs[i + 1][j] { out.deleted.insert(i); i += 1 }
+            else { out.inserted[i, default: []].append(b[j]); j += 1 }
+        }
+        return out
+    }
+    /// The person changed words, and every change is one polish made too: the same typed words gone, the same words put
+    /// in at the same place.
+    static func subset(typed: String, final: String, polished: String) -> Bool {
+        let t = words(typed)
+        guard let user = ops(t, words(final)), let polish = ops(t, words(polished)), !user.isEmpty else { return false }
+        guard user.deleted.isSubset(of: polish.deleted) else { return false }
+        for (anchor, added) in user.inserted where !added.isEmpty {
+            guard let theirs = polish.inserted[anchor], isSubsequence(added, of: theirs) else { return false }
+        }
+        return true
+    }
+    private static func isSubsequence(_ a: [String], of b: [String]) -> Bool {
+        var k = 0
+        for word in b where k < a.count && word == a[k] { k += 1 }
+        return k == a.count
+    }
+    /// The baseline for Your style when the polish was not swapped in: what COS typed, with the changes the person and
+    /// polish BOTH made already applied, so only what the person did beyond polish is evidence (and nothing polish did
+    /// that the person never saw reads as the person undoing it). Typed words keep their own spelling and punctuation.
+    static func baseline(typed: String, final: String, polished: String) -> String? {
+        let tokens = DictationWordDiff.words(typed)
+        var normal: [String] = [], raw: [String] = []
+        for token in tokens { let w = DictationStyleClassifier.normalize(token); if !w.isEmpty { normal.append(w); raw.append(token) } }
+        guard let user = ops(normal, words(final)), let polish = ops(normal, words(polished)) else { return nil }
+        var out: [String] = []
+        for index in 0...normal.count {
+            if let mine = user.inserted[index], let theirs = polish.inserted[index] {
+                out += mine.filter { theirs.contains($0) }
+            }
+            if index < normal.count, !(user.deleted.contains(index) && polish.deleted.contains(index)) { out.append(raw[index]) }
+        }
+        return out.joined(separator: " ")
+    }
+}
+
+/// 0.5.345 (A-W11): one line per saved edit, the edit-capture log: whether polish had already made it, and which
+/// baseline Your style read (pending, record or none). Codes and the bundle id only, never text.
+struct DictationEditCaptureLine: Codable, Equatable, Sendable {
+    var at: String
+    var bundle: String
+    var editMatchedPolish: Bool
+    var styleBaseline: String
+    static let fileName = "edit-capture.jsonl"
+    static let maximumBytes = 64 * 1024
+    static func append(_ line: DictationEditCaptureLine, to url: URL) {
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        guard var data = try? encoder.encode(line) else { return }
+        data.append(0x0A)
+        DictationTimingLog.appendBounded(data, to: url, maximumBytes: maximumBytes)
+    }
+}
+
+// MARK: - 0.5.345 Wave A: the card's "next time" lines (A-W12, Miles 19:01)
+
+/// What a saved edit means for the next dictation, one line per outcome, chosen deterministically (no model). At most
+/// `maximumLines` lines; the rest is "+N more". No em dash or arrow: "to" between before and after.
+enum DictationNextTime {
+    struct Style: Equatable, Sendable {
+        var title: String
+        var support: Int
+        var active: Bool
+    }
+    static let maximumLines = 3
+    static let polishLine = "Polish had already fixed this. Its version couldn't swap in in time."
+    static let fillerLine = "COS removes um and uh before typing now."
+    static let nothingLine = "Nothing to learn. One-off changes don't become rules."
+    static func learnedLine(_ written: String) -> String { "Next time COS writes \(written)." }
+    static func styleLine(_ style: Style) -> String {
+        let rule = style.title.prefix(1).lowercased() + style.title.dropFirst()
+        if style.active { return "Style rule now active: \(rule)." }
+        let seen = min(style.support, DictationStyle.promoteAfter - 1)
+        return "Style: seen \(seen) of \(DictationStyle.promoteAfter). One more and COS will \(rule)."
+    }
+    static func moreLabel(_ n: Int) -> String { "+\(n) more" }
+    /// "clicked the to click to", "removed um", "added please": one change in short form.
+    static func short(_ region: DictationWordDiff.Region) -> String {
+        if region.addedWords == 0 { return "removed " + region.removed }
+        if region.removedWords == 0 { return "added " + region.added }
+        return region.removed + " to " + region.added
+    }
+    /// A region that only took out built-in filler sounds (A-W10's tokens).
+    static func fillerOnly(_ region: DictationWordDiff.Region) -> Bool {
+        guard region.addedWords == 0, region.removedWords > 0 else { return false }
+        let words = region.removed.split(whereSeparator: \.isWhitespace).map { $0.trimmingCharacters(in: DictationEditConfirm.dropEdge) }
+        return !words.isEmpty && words.allSatisfy(DictationFillers.isBuiltIn)
+    }
+    /// The lines, in order: words learned, polish had it, Your style, the filler note; "Nothing to learn" alone otherwise.
+    static func lines(parts: [DictationWordDiff.Part]?, learned: [String], matchedPolish: Bool, styles: [Style], fillersOn: Bool,
+                      limit: Int = maximumLines) -> (lines: [String], more: Int) {
+        let regions = parts.map(DictationWordDiff.regions) ?? []
+        var out = learned.map(learnedLine)
+        if matchedPolish {
+            let changes = regions.map(short)
+            out.append(!changes.isEmpty && changes.count <= 3
+                       ? "Polish had already fixed this (" + changes.joined(separator: ", ") + "). Its version couldn't swap in in time."
+                       : polishLine)
+        }
+        out += styles.map(styleLine)
+        if fillersOn, !matchedPolish, regions.contains(where: fillerOnly) { out.append(fillerLine) }
+        if out.isEmpty { return ([nothingLine], 0) }
+        return (Array(out.prefix(limit)), max(0, out.count - limit))
+    }
+    /// The card's first line: what the person did, without the old "nothing new" tail (the next-time lines say it now).
+    static func didLine(parts: [DictationWordDiff.Part]?, learned: [String]) -> String {
+        if !learned.isEmpty {
+            let names = learned.count == 1 ? learned[0] : learned.dropLast().joined(separator: ", ") + " and " + learned.last!
+            return "Added \(names) to your dictionary."
+        }
+        let line = DictationEditConfirm.reason(parts: parts, learned: learned)
+        for tail in [" " + DictationEditConfirm.nothingNew, " " + DictationEditConfirm.notEveryday] where line.hasSuffix(tail) {
+            return String(line.dropLast(tail.count))
+        }
+        return line
+    }
+}
+
+// MARK: - 0.5.345 Wave A: the AI polish picker tells the truth (A-W2)
+
+enum DictationPolishPicker {
+    /// What the server says, from GET /api/dictation/polish/options (6.91.0+). nil fields: the server did not say.
+    struct Server: Equatable, Sendable {
+        var available = false
+        /// The stored choice: "default" or "v3" (Previous polish).
+        var promptVersion: String?
+        var effectiveByModel: [String: String] = [:]
+        var envOverride = false
+        /// 6.92.0: COS_DICTATION_MEANING_GUARD; absent from 6.91.x, where it is on unless turned off (its default).
+        var meaningGuard: Bool?
+        /// The (model, prompt) pairs Your style and registers apply to; nil when the answer did not carry them.
+        var stylePairs: [String: String]?
+    }
+    static let newest = "The newest polish. Better at self-corrections (\"five, actually six\", \"never mind\"), is told not to add em dashes, and checks the numbers, names and \"not\" you said: if polish would drop one, COS keeps its cleaned text instead."
+    static let newestNoGuard = "The newest polish. Better at self-corrections (\"five, actually six\", \"never mind\") and is told not to add em dashes. The meaning check is turned off on this COS server."
+    static let otherModelNewest = "The newest polish prompt. The meaning check and Your style run only with Claude Sonnet."
+    static let previous = "You chose Previous polish (the earlier prompt)."
+    static let earlier = "The earlier polish: removes fillers, false starts and stutters, and fixes punctuation. The meaning check and Your style need Claude Sonnet."
+    static let earlierSonnet = "The earlier polish: removes fillers, false starts and stutters, and fixes punctuation. The meaning check and Your style need the newest polish."
+    static let glasses = "Glasses dictation has its own polish setting (Haiku by default)."
+    static func off(fillers: Bool) -> String { "Pastes what was heard" + (fillers ? ", without um and uh." : ".") }
+    static func styleSuffix(_ rules: Int) -> String? { rules > 0 ? "Applies your \(rules) style rule" + (rules == 1 ? "." : "s.") : nil }
+    /// The prompt this model gets: effectiveByModel, else nothing known.
+    static func prompt(_ model: DictationPolishModel, _ server: Server) -> String? { server.effectiveByModel[model.rawValue] }
+    /// 0.5.345 (QA4 15): the server came back. Options and the rules are read again whenever its version or generation
+    /// changed (an upgrade or a rollback), not only when the cache says it needs it.
+    static func reloads(versionChanged: Bool, needsReload: Bool, enabledDiffers: Bool) -> Bool { versionChanged || needsReload || enabledDiffers }
+    static func styled(_ model: DictationPolishModel, _ server: Server) -> Bool {
+        if let pairs = server.stylePairs { return pairs[model.rawValue] == "v4" && prompt(model, server) == "v4" }
+        return model == .sonnet && prompt(model, server) == "v4"
+    }
+    /// The one line under the picker, chosen from the server's own answer for the SELECTED model; nil on a server
+    /// without the options (6.90.0 and older), where the setting's note alone shows, as before.
+    static func line(model: DictationPolishModel, server: Server, fillers: Bool, styleRules: Int) -> String? {
+        if model == .off { return off(fillers: fillers) }
+        guard server.available, let prompt = prompt(model, server) else { return nil }
+        if prompt == "v4" {
+            guard model == .sonnet else { return otherModelNewest }
+            let base = server.meaningGuard ?? true ? newest : newestNoGuard
+            return [base, styled(model, server) ? styleSuffix(styleRules) : nil].compactMap { $0 }.joined(separator: " ")
+        }
+        if server.promptVersion == "v3", !server.envOverride { return previous }
+        return model == .sonnet ? earlierSonnet : earlier
+    }
+    /// Everything under the picker, at most `maximumCharacters`: the line, then the glasses note.
+    static let maximumCharacters = 400
+    static func text(model: DictationPolishModel, server: Server, fillers: Bool, styleRules: Int) -> String? {
+        guard let line = line(model: model, server: server, fillers: fillers, styleRules: styleRules) else { return nil }
+        return model == .off ? line : line + " " + glasses
+    }
+}
+
+// MARK: - 0.5.345 Wave A: polished text lands more often (A-W3b)
+
+/// An automatic swap on the paste route, when a modifier is down: Shift or Option is typing (skip, keysHeld, no wait);
+/// only ⌘ or ⌃ waits up to `releaseMilliseconds` for the release, then for `quietMilliseconds` with no key down, before
+/// the span is selected or the clipboard written. The caller then re-runs the focus gate and the since-key check.
+enum DictationSwapWait {
+    static let defaultsKey = "dictation.swapWaitForKeys"
+    static func stored(_ value: Any?) -> Bool { (value as? Bool) ?? true }
+    static let settingTitle = "Wait for ⌘ or ⌃ to be released before swapping in polish"
+    static let settingNote = "A shortcut you are still holding no longer cancels the swap: COS waits up to 1.2 seconds, then a moment of no typing."
+    static let releaseMilliseconds = 1_200
+    static let quietMilliseconds = 300
+    static let pollMilliseconds = 30
+    enum Key: String, CaseIterable, Sendable { case cmd, ctrl, shift, opt }
+    static let keyCodes: [Key: [UInt16]] = [.cmd: [55, 54], .ctrl: [59, 62], .shift: [56, 60], .opt: [58, 61]]
+    static func held(isDown: (UInt16) -> Bool) -> Set<Key> {
+        Set(Key.allCases.filter { keyCodes[$0, default: []].contains(where: isDown) })
+    }
+    /// "cmd", "cmd+ctrl", "shift": a class code for the timing line, never a key name the person chose.
+    static func code(_ keys: Set<Key>) -> String? {
+        keys.isEmpty ? nil : Key.allCases.filter(keys.contains).map(\.rawValue).joined(separator: "+")
+    }
+    enum Step: Equatable, Sendable { case go, wait, skip(DictationPolishSwap.Skip) }
+    /// One poll. `releasedAtMs`: when the held keys went up (nil while still down, or when none was ever down).
+    static func step(held: Set<Key>, enabled: Bool, everHeld: Bool, waitedMs: Int, sinceKeyDownMs: Int, releasedAtMs: Int?) -> Step {
+        if !held.isEmpty {
+            if held.contains(.shift) || held.contains(.opt) || !enabled { return .skip(.keysHeld) }
+            return waitedMs >= releaseMilliseconds ? .skip(.keysHeld) : .wait
+        }
+        guard everHeld else { return .go }
+        if sinceKeyDownMs >= quietMilliseconds { return .go }
+        let since = releasedAtMs ?? waitedMs
+        return waitedMs - since >= releaseMilliseconds ? .skip(.typing) : .wait
+    }
+    /// What the wait saw, for the timing line (codes and milliseconds only).
+    struct Report: Equatable, Sendable {
+        var heldKeys: String?
+        var heldMs: Int?
+        var waitMs: Int?
+        var frontmostChanged: Bool?
+    }
+}
+
+/// 0.5.345 (A-W3b): counters the safety rules write when they fire. Each is expected to stay 0 in the field except
+/// clipboardNewerKept, which means COS left the person's own newer copy alone.
+struct DictationSwapCounters: Equatable, Sendable {
+    var frontmostAtPostMismatch = 0
+    var clipboardNewerKept = 0
+    var intoClearedField = 0
+}
+
+extension DictationTiming {
+    /// 0.5.345 (A-W3b): the swap's wait and counters on this dictation's line. A counter is written only when it fired.
+    mutating func includeSwap(wait: DictationSwapWait.Report?, counters: DictationSwapCounters) {
+        swapHeldKeys = wait?.heldKeys; swapHeldMs = wait?.heldMs; swapWaitMs = wait?.waitMs; swapFrontmostChanged = wait?.frontmostChanged
+        swapFrontmostAtPostMismatch = counters.frontmostAtPostMismatch > 0 ? counters.frontmostAtPostMismatch : nil
+        swapClipboardNewerKept = counters.clipboardNewerKept > 0 ? counters.clipboardNewerKept : nil
+        swapIntoClearedField = counters.intoClearedField > 0 ? counters.intoClearedField : nil
+    }
+}
+
+extension DictationClipboard {
+    /// Every paste path (0.5.345, MD:548): the person's clipboard goes back only while COS's own write is still the
+    /// newest. A newer changeCount is the person's copy: it is kept.
+    static func restoresOver(setChangeCount: Int, currentChangeCount: Int) -> Bool { currentChangeCount == setChangeCount }
+}
+
+// MARK: - 0.5.345 Wave A: audio survives a stuck device (A-W1)
+
+/// A breaker that trips on an observed error status (any sound start or play error, `'what'` included; any mute step's
+/// error) and skips that work for `pauseSeconds`. A slow call alone never trips it; its time is only logged. Reset by the
+/// Settings button ("Play sounds again", "Mute again") or when the pause runs out.
+struct DictationAudioBreaker: Equatable, Sendable {
+    static let pauseSeconds: TimeInterval = 600
+    private(set) var until: TimeInterval?
+    private(set) var lastStatus: Int32?
+    func open(now: TimeInterval) -> Bool { until.map { now < $0 } ?? false }
+    mutating func record(status: Int32, now: TimeInterval) {
+        guard status != 0 else { return }
+        until = now + Self.pauseSeconds; lastStatus = status
+    }
+    mutating func reset() { until = nil; lastStatus = nil }
+}
+
+enum DictationAudioCopy {
+    static let soundsPaused = "Sounds paused after an audio error."
+    static let playAgain = "Play sounds again"
+    static let mutePaused = "Muting paused after an audio error. COS lowers the volume instead for now."
+    static let muteAgain = "Mute again"
+    /// 'what' (kAudioHardwareUnspecifiedError) and the other HAL codes are a device that did not respond, not permission.
+    static let deviceNotResponding = "A device didn't respond. COS lowered the volume instead."
+    static func isPermission(status: Int32) -> Bool { status == -50 || status == 560_492_391 /* '!pri' */ || status == 1_852_797_029 /* 'nope' */ }
+}
+
+/// A sound waiting on its own queue. A new sound is dropped while a start is still outstanding; one dequeued more than
+/// `lateMilliseconds` after it was asked for is dropped; none plays while the breaker is open. Nothing waits on a sound.
+enum DictationSoundGate {
+    static let lateMilliseconds = 300
+    enum Verdict: String, Equatable, Sendable { case play, dropBusy, dropLate, dropBreaker }
+    static func enqueue(outstanding: Bool, breakerOpen: Bool) -> Verdict {
+        if breakerOpen { return .dropBreaker }
+        return outstanding ? .dropBusy : .play
+    }
+    static func dequeue(askedAt: TimeInterval, now: TimeInterval, breakerOpen: Bool) -> Verdict {
+        if breakerOpen { return .dropBreaker }
+        return (now - askedAt) * 1000 > Double(lateMilliseconds) ? .dropLate : .play
+    }
+}
+
+/// 0.5.345 (A-W1): an engine start that threw, with the device it was opening (its name never reaches a log).
+struct DictationStartFailure: Error, Sendable {
+    let underlying: String
+    let device: DictationMicFallback.Device?
+    let continuityPresent: Bool
+}
+
+/// The microphone fallback (System default only; a chosen microphone is never overridden). Pure: the store reads the HAL
+/// on the input queue and calls these.
+enum DictationMicFallback {
+    static let defaultsKey = "dictation.micFallback"
+    static func stored(_ value: Any?) -> Bool { (value as? Bool) ?? true }
+    static let settingTitle = "If the microphone fails, try another one"
+    static let settingNote = "With System default, COS tries a microphone that worked before (never Bluetooth or an iPhone) and says which it used."
+    static let goodKey = "dictation.micGoodUIDs"
+    static let maximumGood = 8
+    /// The first 300 ms of a fallback must carry sound above this, or it is not accepted.
+    static let silenceDBFS = -70.0
+    static let acceptMilliseconds = 300
+    /// The whole wait, first attempt included, stays under this.
+    static let maximumWaitMilliseconds = 3_000
+    /// A retry only when the first attempt failed fast (a stuck HAL would double the wait).
+    static let retryUnderMilliseconds = 2_000
+    struct Device: Equatable, Sendable {
+        var uid: String
+        var name: String
+        /// kAudioDevicePropertyTransportType as its four characters ("bltn", "usb ", "blue", "ccwd"...).
+        var transport: String
+    }
+    static let excludedTransports: Set<String> = ["blue", "btle", "virt", "grup", "ccwd", "ccwl", "airp", "cntn", ""]
+    static let continuity: Set<String> = ["ccwd", "ccwl"]
+    static func fourCC(_ value: UInt32) -> String {
+        guard value != 0 else { return "" }
+        let bytes = [UInt8((value >> 24) & 0xFF), UInt8((value >> 16) & 0xFF), UInt8((value >> 8) & 0xFF), UInt8(value & 0xFF)]
+        return String(bytes: bytes, encoding: .ascii) ?? ""
+    }
+    static func eligible(_ device: Device) -> Bool { !excludedTransports.contains(device.transport) }
+    /// Only these failures try another microphone: the engine's start threw, or the first-buffer wait failed (a
+    /// configuration change). A timeout is not a trigger: the first-buffer wait is already 3 s.
+    static func triggers(engineStartThrew: Bool, firstAudio: DictationStart.FirstAudio?) -> Bool {
+        engineStartThrew || firstAudio == .failed
+    }
+    static func mayRetry(firstAttemptMs: Int) -> Bool { firstAttemptMs < retryUnderMilliseconds }
+    /// The order to try: microphones that delivered sound before (most recent first), present now, eligible, not the
+    /// one that just failed, and not the built-in microphone while the lid is closed.
+    static func candidates(good: [String], devices: [Device], failedUID: String?, lidClosed: Bool) -> [Device] {
+        good.compactMap { uid in devices.first { $0.uid == uid } }
+            .filter { eligible($0) && $0.uid != failedUID && !(lidClosed && $0.transport == "bltn") }
+    }
+    /// A microphone that delivered sound joins the remembered set (most recent first, at most `maximumGood`). Bluetooth,
+    /// Continuity and virtual devices are never remembered.
+    static func remembering(_ device: Device, nonSilent: Bool, in good: [String]) -> [String] {
+        guard nonSilent, eligible(device) else { return good }
+        return Array(([device.uid] + good.filter { $0 != device.uid }).prefix(maximumGood))
+    }
+    static func nonSilent(dBFS: Double?) -> Bool { (dBFS ?? -.infinity) > silenceDBFS }
+    /// The card's words, never the raw `avfaudio error 2003329396`.
+    static func usedMessage(failed: String, used: String) -> String { "macOS couldn't start \(failed), so COS used \(used)." }
+    static func stuckMessage(continuityPresent: Bool) -> String {
+        continuityPresent
+            ? "macOS audio isn't responding. An iPhone Continuity microphone may be stuck: turn off Continuity Camera on the iPhone, or restart the Mac."
+            : "macOS audio isn't responding. Try again, or restart the Mac."
+    }
+    /// The timing line's micFallback code.
+    enum Outcome: String, Sendable { case used, silent, none, stuck, off, chosen }
 }
 
 // MARK: - Dictation for everyone (0.5.317, server 6.74.0)

@@ -44,7 +44,9 @@ pin("engine: lastEngine?.engine, fallbackReason: lastEngine?.fallback" in dictat
 pin("DictationProof.record(engine: engine" in transcribe, "proof recorded", "a transcribed dictation is the Voice row's proof")
 
 # 2. The helper routes through the one gate, for both the dictation and its check.
-pin(helper.count("DictationBridge.route(capabilities.body)") == 1 and "requiredEngine=parakeet-ultra" not in helper and "requiredEngine=local" not in helper,
+# 0.5.345 (A-W0d): the capabilities answer is optional now (no answer is "Server stopped", DictationBridge.capabilityRefusal).
+pin(helper.count("DictationBridge.route(capabilities?.body)") == 1 and helper.count("DictationBridge.capabilityRefusal(status: capabilities?.status, body: capabilities?.body)") == 1
+    and "requiredEngine=parakeet-ultra" not in helper and "requiredEngine=local" not in helper,
     "one gate", "mac-dictation and dictation-check share dictate(); the routes live only in DictationBridge")
 pin(between(helper, "private func emitMacDictation() throws {", "private func dictate(").count("try dictate(audio)") == 1, "one gate", "mac-dictation uses dictate()")
 pin("let answer = try dictate(utterance)" in helper and "DictationCheckSample.singleUtterance(try Data(contentsOf: sample))" in helper, "check is real", "dictation-check posts one utterance of the pinned sample through the same round trip")

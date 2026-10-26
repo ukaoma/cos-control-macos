@@ -183,7 +183,9 @@ order(cap_start, ["try select(deviceID)", "let format = input.inputFormat(forBus
 pin("outputFormat(" not in cap_start and 'throw error("The microphone format is unavailable.")' in cap_start, "tap format",
     "no stale outputFormat in start(), and an unusable format is the existing error, never a tap")
 pin("_ = engine.inputNode.inputFormat(forBus: 0)" in body(d, "    func warm(deviceID: AudioDeviceID?) throws {"), "tap format", "the spare primes the same hardware format")
-take_spare = body(d, "    private func takeSpare(device: AudioDeviceID?) -> DictationMicrophoneCapture? {")
-pin("DictationSpare.check(held.warmed, selectedUID: microphoneUID, device: device," in take_spare and "if case .discard" in take_spare, "spare device",
+# 0.5.345 (A-W1): the check runs in vetSpare, on the input queue, with the selection read on the main actor first.
+take_spare = body(d, "    private nonisolated static func vetSpare(")
+pin("DictationSpare.check(held.warmed, selectedUID: selectedUID, device: device," in take_spare and "if case .discard" in take_spare
+    and "let held = takeSpare(), selected = microphoneUID" in d, "spare device",
     "a spare is used only when the device it was built for is the device this press opens")
 print("PASS dictation lock pins: refused, canceled, chord and reconciled presses written; the keyboard watched while held; STILL FINISHING; settings in the Dictation tab; the recorder finishes a swallowed release; the tap uses the device\'s own format")

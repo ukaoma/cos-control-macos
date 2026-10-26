@@ -922,6 +922,10 @@ struct MeetingCard: Equatable, Identifiable {
 
     private func processesChanged() {
         guard #available(macOS 14.2, *), suggestEnabled else { return }
+        // 0.5.345 (A-W1 freeze instrumentation): a call that held the main thread over 100 ms is counted, so a
+        // dictation's timing line can say whether meeting detection was what stalled it. A count, never a process name.
+        let began = ProcessInfo.processInfo.systemUptime
+        defer { MeetingListenerStats.note(ms: Int((ProcessInfo.processInfo.systemUptime - began) * 1000)) }
         let ids = Self.processObjects()
         if !listenersUnavailable { bindInputs(ids) }
         evaluate(ids)
@@ -1294,4 +1298,12 @@ struct MeetingSuggestSettings: View {
             }
         }
     }
+}
+
+/// 0.5.345 (A-W1): meeting-detection work on the main thread that took over `slowMilliseconds`, counted since launch.
+/// Dictation reads the count at the microphone's close and at the first text (DictationTiming.slowListenerCalls).
+@MainActor enum MeetingListenerStats {
+    static let slowMilliseconds = 100
+    private(set) static var slowCalls = 0
+    static func note(ms: Int) { if ms > slowMilliseconds { slowCalls += 1 } }
 }

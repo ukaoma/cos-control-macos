@@ -23,15 +23,15 @@ let dictationLog = Logger(subsystem: "com.gotcos.control.tests", category: "dict
         }
         let player = DictationSoundPlayer()
         for round in 1...2 {  // twice: the second play reuses the connected engine
-            // 0.5.328: the player lives on DictationAudioQueues.output, as the app drives it.
-            DictationAudioQueues.output.sync { player.play(url, volume: 0, semitones: 0) }
-            guard DictationAudioQueues.output.sync(execute: { player.isRunning }) else {
+            // 0.5.345: the player lives on DictationAudioQueues.sound, as the app drives it (0.5.328 to 0.5.344: output).
+            DictationAudioQueues.sound.sync { player.play(url, volume: 0, semitones: 0) }
+            guard DictationAudioQueues.sound.sync(execute: { player.isRunning }) else {
                 FileHandle.standardError.write("FAIL: sound engine did not start (no output device?); the check proves nothing\n".data(using: .utf8)!)
                 exit(1)
             }
             var waited = 0
-            while DictationAudioQueues.output.sync(execute: { player.isRunning }) && waited < 60 { try await Task.sleep(nanoseconds: 50_000_000); waited += 1 }
-            guard !DictationAudioQueues.output.sync(execute: { player.isRunning }) else {
+            while DictationAudioQueues.sound.sync(execute: { player.isRunning }) && waited < 60 { try await Task.sleep(nanoseconds: 50_000_000); waited += 1 }
+            guard !DictationAudioQueues.sound.sync(execute: { player.isRunning }) else {
                 FileHandle.standardError.write("FAIL: round \(round): the sound's completion never stopped the engine\n".data(using: .utf8)!)
                 exit(1)
             }

@@ -45,14 +45,14 @@ def body(src, opener):
 def check(d, core):
     d = code(d); core = code(core)
     transcribe = body(d, "    private func transcribe(_ wav: Data, attempt: UUID) {")
-    first = body(d, "    private func deliverThenPolish(_ heard: String, attempt: UUID) async {")
+    first = body(d, "    private func deliverThenPolish(_ heard: String, typing: String, attempt: UUID) async {")
     swap = body(d, "    private func swapPolished(id: UUID, target: DictationInsertTarget?, inserted: Bool, polished: String, budgetMs: Int,")
-    replace = body(d, "    static func replace(_ target: DictationInsertTarget, corrected: String, restoreClipboard: Bool, automatic: Bool = false) async -> Replaced {")
+    replace = body(d, "    static func replace(_ target: DictationInsertTarget, corrected: String, restoreClipboard: Bool, wholeOnly: Bool = false,\n                        waitForKeys: Bool = false, automatic: Bool = false) async -> Replaced {")
     apply = body(d, "    func applyPolished(_ id: UUID) {")
     finish = body(d, "    private func finish(")
 
     # 1. The toggle decides the order at the one call site; off is today's order, untouched below the branch.
-    branch = "if sequence == .deliverThenPolish { await deliverThenPolish(heard, attempt: attempt); return }"
+    branch = "if sequence == .deliverThenPolish { await deliverThenPolish(heard, typing: spoken.text, attempt: attempt); return }"
     pin(transcribe.count("let polishes = polishBridge != nil && DictationPolish.shouldPolish(text: heard, model: polishModel)") == 1
         and transcribe.count("DictationPolishSwap.sequence(pasteFirst: pasteThenPolish, polishes: polishes,") == 1
         and "copyOnly: pendingInterrupted, unmeasurable: unmeasurable)" in transcribe and transcribe.count(branch) == 1, "toggle",
@@ -78,15 +78,15 @@ def check(d, core):
     pin(d.count('Toggle("Paste right away, then polish in place", isOn: $store.pasteThenPolish)') == 1
         and "DictationPolishSwap.stored(UserDefaults.standard.object(forKey: DictationPolishSwap.defaultsKey))" in d
         and "UserDefaults.standard.set(pasteThenPolish, forKey: DictationPolishSwap.defaultsKey)" in d
-        and d.count("pasteThenPolish") == 6, "toggle", "the setting is shown, read with its tested default, stored, and read only at the two call sites")
+        and d.count("pasteThenPolish") == 8, "toggle", "the setting is shown, read with its tested default, stored, and read only at the two call sites (0.5.345: plus the paste-first note and the ⌘/⌃ wait row's disabled state, both Settings only)")
 
     # 2. Paste first: the polish starts before the delivery, without its pill, and the delivery is the heard text.
     pin(first.index("let polishing = Task { await self.polish(heard, attempt: attempt, showPill: false) }")
-        < first.index("await DictationInsertion.deliver(text, restoreClipboard: restoreClipboard, fieldContext: useFieldContext)")
+        < first.index("await DictationInsertion.deliver(text, restoreClipboard: restoreClipboard, fieldContext: useFieldContext, casing: casingRequest())")
         < first.index("let run = await polishing.value"), "parallel", "polish runs while what was heard is typed")
-    pin("let text = lists ? DictationListFormat.format(heard) : heard" in first and first.count("DictationInsertion.deliver(") == 1, "heard first",
-        "the heard text is formatted and delivered once")
-    pin("final = DictationInsertion.polishedFinal(polished, formatLists: lists, context: delivered.context)" in first
+    pin("let text = lists ? DictationListFormat.format(typing) : typing" in first and first.count("DictationInsertion.deliver(") == 1, "heard first",
+        "the heard text (0.5.345: its filler sounds out) is formatted and delivered once")
+    pin("final = DictationInsertion.polishedFinal(polished, formatLists: lists, context: delivered.context, casing: delivered.casing, request: casingRequest())" in first
         and "DictationPolishSwap.want(outcome: run?.outcome, typed: typed, final: final?.text)" in first, "final text",
         "Claude's version gets the same lists and field spellings, and swaps only when it differs (want)")
 
@@ -100,7 +100,7 @@ def check(d, core):
     for name, src in (("deliverThenPolish", first), ("swapPolished", swap)):
         pin(not any(bad in src for bad in (".activate(", "orderOut(", "orderFront", "makeKey", "NSApp.activate")), "never activate",
             f"{name} never activates an app or moves a window")
-    pin(swap.count("DictationInsertion.replace(target, corrected: polished, restoreClipboard: restoreClipboard, automatic: true)") == 1
+    pin(swap.count("DictationInsertion.replace(target, corrected: polished, restoreClipboard: restoreClipboard, waitForKeys: swapWaitForKeys, automatic: true)") == 1
         and d.count("automatic: true") == 1, "never activate", "the automatic swap is the one replace called with automatic: true")
     pin("automatic" not in apply and "DictationInsertion.replace(target, corrected: pending.text, restoreClipboard: restoreClipboard)" in apply,
         "apply polished", "Apply polished is the person's own action: Fix a word's full path")
@@ -159,10 +159,10 @@ def check(d, core):
     pin(all(f"var {f}" in core for f in ("releaseToFirstTextMs: Int?", "swapOutcome: String?", "swapMs: Int?", "swapRoute: String?")), "timing", "the four fields")
     pin("swapOutcome = result.logName; swapMs = ms; swapRoute = route.map(DictationPolishSwap.routeName)" in core and "swapWhy = why?.rawValue" in core,
         "timing", "settle writes codes only")
-    pin(transcribe.count("timing?.releaseToFirstTextMs = firstTextMs()") == 1
+    pin(transcribe.count("timing?.releaseToFirstTextMs = firstTextMs(); markFirstText()") == 1
         and "timing?.settle(DictationPolishSwap.unswapped(pasteFirst: pasteThenPolish, polished: polished != nil, copyOnly: copyOnly, unmeasurable: unmeasurable != nil)," in transcribe,
         "timing", "the one-delivery path writes first text and off, notPolished or skipped:copyOnly")
-    pin(first.count("timing?.releaseToFirstTextMs = firstTextMs()") == 1 and "var line = timing; timing = nil" in first
+    pin(first.count("timing?.releaseToFirstTextMs = firstTextMs(); markFirstText()") == 1 and "var line = timing; timing = nil" in first
         and "line?.settle(result, ms: swapMs, route: route)" in first and 'recordTiming("typed", line: line)' in first
         and first.index("line?.settle(") < first.index('recordTiming("typed", line: line)'), "timing",
         "the paste-first line is this dictation's own, settled, then written once")
@@ -204,10 +204,29 @@ def check(d, core):
     mm = tail[tail.index("case .mismatch, .pending:"):tail.index("return done(.mismatch, nil)")] if "case .mismatch, .pending:" in tail and "return done(.mismatch, nil)" in tail else ".replaced"
     pin("return" not in mm and ".replaced" not in mm, "post-paste count", "a mismatch goes straight from its log line to mismatch, never reported as replaced")
     pin(replace.count("await paste(") == 1, "post-paste count", "never a second paste")
-    pin("case .replacedUnconfirmed: return (.swappedUnconfirmed, replaced.route, replaced.target)" in swap and "case .mismatch: return (.mismatch, replaced.route, nil)" in swap,
+    pin("case .replacedUnconfirmed: return (.swappedUnconfirmed, replaced.route, replaced.target, replaced)" in swap and "case .mismatch: return (.mismatch, replaced.route, nil, replaced)" in swap,
         "unconfirmed labelling", "a swap landed by count reads swappedUnconfirmed, never skipped; a mismatch reads mismatch")
     pin("applies: DictationPolishSwap.offersApply(result), prompt: run?.prompt," in first and "if generation == attempt, inserted, DictationPolishSwap.watches(result), let watchTarget {" in first,
         "unconfirmed labelling", "Apply polished only where the tested rule offers it; no watch after a mismatch")
+
+    # 12. 0.5.345 (A-W3b, plan r3): the ⌘ or ⌃ wait, BEFORE the span is selected or the clipboard written, then the focus
+    # gate again on what is true now; Shift or Option skips as keysHeld at once; the setting switches the wait off.
+    wait = "        if automatic, waitForKeys {"
+    pin(replace.count(wait) == 1 and replace.index(wait) < replace.index("let frontmost = NSWorkspace.shared.frontmostApplication?.processIdentifier == target.span.pid")
+        < replace.index(g) < replace.index("if frontmost, focusedIsTarget, select(element, location: edit.location") < replace.index("guard board.writeTranscript(edit.replacement"),
+        "wait before select", "the wait runs before the frontmost and focus gate, the selection and the clipboard write")
+    pin("verdict = DictationSwapWait.step(held: keys, enabled: true, everHeld: everHeld, waitedMs: waited, sinceKeyDownMs: msSinceKeyDown(), releasedAtMs: released)" in replace
+        and "if case .skip(let why) = verdict { return done(.copied(.notFocused), target, skip: why) }" in replace
+        and "waitForKeys: swapWaitForKeys, automatic: true)" in swap and "Toggle(DictationSwapWait.settingTitle, isOn: $store.swapWaitForKeys)" in d,
+        "wait rule", "the tested step decides, a skip posts nothing, and the setting reaches the swap")
+    pin("counters.frontmostAtPostMismatch += 1" in rp and "return .notFrontmost" in rp and rp.index("return .notFrontmost") < rp.index("DictationPolishSwap.reproof("),
+        "frontmost at post", "at the ⌘V the frontmost app must be the target, or nothing is posted and the counter says so")
+    refused = replace[replace.index("if let stop = await paste(changeCount: changeCount, recheck: reproof) {"):replace.index("            switch stop {")]
+    pin("DictationClipboard.restoresOver(setChangeCount: changeCount, currentChangeCount: board.changeCount)" in refused
+        and "counters.clipboardNewerKept += 1" in refused and "DictationClipboard.restore(saved, to: board)" in refused,
+        "newer clipboard kept", "a refused swap puts the clipboard back only while COS's own write is still the newest (MD:548)")
+    pin("static let deliveryWaitMilliseconds = 4_000" in core and "line?.includeSwap(wait: replaced.wait, counters: replaced.counters)" in first,
+        "delivery cap", "the next delivery waits up to 4 s for a swap, and the swap's wait and counters reach its line")
 
 
 MUTANTS = [
@@ -215,13 +234,13 @@ MUTANTS = [
     ("activation guard ignores automatic", "if DictationPolishSwap.mayActivate(automatic: automatic) {", "if DictationPolishSwap.mayActivate(automatic: false) {"),
     ("an activation outside the guard", "        let frontmost = NSWorkspace.shared.frontmostApplication?.processIdentifier == target.span.pid\n",
      "        NSRunningApplication(processIdentifier: target.span.pid)?.activate()\n        let frontmost = NSWorkspace.shared.frontmostApplication?.processIdentifier == target.span.pid\n"),
-    ("automatic swap runs as Fix a word", "restoreClipboard: restoreClipboard, automatic: true)", "restoreClipboard: restoreClipboard, automatic: false)"),
+    ("automatic swap runs as Fix a word", "waitForKeys: swapWaitForKeys, automatic: true)", "waitForKeys: swapWaitForKeys, automatic: false)"),
     ("paste-route focus gate disabled", "if automatic, let skip = DictationPolishSwap.gate(route: route,", "if false, let skip = DictationPolishSwap.gate(route: route,"),
     ("partial plan accepted", "if automatic, let skip = DictationPolishSwap.placed(plan) {", "if false, let skip = DictationPolishSwap.placed(plan) {"),
     ("clipboard kept on an unconfirmed swap", "if landed || automatic {", "if landed {"),
     ("watch starts before the swap", "context: delivered.context, swapPending: true)", "context: delivered.context, swapPending: false)"),
     ("swap outcome never written", "        line?.settle(result, ms: swapMs, route: route)\n", ""),
-    ("first text not measured on paste first", "        timing?.releaseToFirstTextMs = firstTextMs()\n        // This dictation's own line", "        // This dictation's own line"),
+    ("first text not measured on paste first", "        timing?.releaseToFirstTextMs = firstTextMs(); markFirstText()\n        // This dictation's own line", "        // This dictation's own line"),
     ("delivery does not wait for a swap edit", "        await waitForSwapEdit()\n        let delivering", "        let delivering"),
     ("typing ignored", "sinceFieldChangeMs: quiet?.sinceChangeMs,", "sinceFieldChangeMs: nil,"),
     ("Apply polished leaves the watch on", '        editWatcher.stop("apply polished")\n', ""),
@@ -234,9 +253,14 @@ MUTANTS = [
     ("0.5.332 keys held read as notFocused", "skip: automatic ? DictationPolishSwap.skip(forPaste: refusal) : nil)", "skip: automatic ? .notFocused : nil)"),
     ("0.5.332 count never checked", "            if automatic, let proofCount {", "            if false, let proofCount = selection.characters {"),
     ("0.5.332 mismatch reported as swapped", "            case .mismatch, .pending:\n                dictationLog.notice(", "            case .mismatch, .pending:\n                return done(.replaced, next)\n                dictationLog.notice("),
-    ("0.5.332 unconfirmed read as skipped", "case .replacedUnconfirmed: return (.swappedUnconfirmed, replaced.route, replaced.target)", "case .replacedUnconfirmed: return (.skipped(.unverified), replaced.route, nil)"),
+    ("0.5.332 unconfirmed read as skipped", "case .replacedUnconfirmed: return (.swappedUnconfirmed, replaced.route, replaced.target, replaced)", "case .replacedUnconfirmed: return (.skipped(.unverified), replaced.route, nil, replaced)"),
     ("0.5.332 Apply polished after a mismatch", "guard let pending = pendingPolish[id], pending.applies, record(id) != nil else { return }", "guard let pending = pendingPolish[id], record(id) != nil else { return }"),
     ("0.5.332 learner watches a mismatch", "if generation == attempt, inserted, DictationPolishSwap.watches(result), let watchTarget {", "if generation == attempt, inserted, let watchTarget {"),
+    ("0.5.345 wait after the selection", "        if automatic, waitForKeys {", "        if false, waitForKeys {"),
+    ("0.5.345 refused swap restores over a newer copy", "                if DictationClipboard.restoresOver(setChangeCount: changeCount, currentChangeCount: board.changeCount) { _ = DictationClipboard.restore(saved, to: board) }",
+     "                if true { _ = DictationClipboard.restore(saved, to: board) }"),
+    ("0.5.345 posted with another app frontmost", "                counters.frontmostAtPostMismatch += 1\n                facts += \" reproof=notFrontmost\"\n                return .notFrontmost",
+     "                counters.frontmostAtPostMismatch += 1"),
     ("another press's token taken", "guard let held = prewarm, held.attempt == attempt else { return (nil, nil) }", "guard let held = prewarm else { return (nil, nil) }"),
 ]
 

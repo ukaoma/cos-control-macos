@@ -217,16 +217,18 @@ def check(src):
     pin(short is not None and notes.get("version") == short.group(1), "version", "WhatsNew.json version matches Info.plist")
     summary = notes["whatsNew"]["summary"]
     lead = "Views draw the outline of their rows while they load"
-    pin((summary.startswith(lead) if notes.get("version") == "0.5.343" else ("Plus everything in 0.5.343: " + lead) in summary)
-        and "Plus everything in 0.5.342: " in summary, "version", "the summary leads with 0.5.343, or a later release chains it, and chains 0.5.342")
+    # 0.5.345 (plan r3): the summary is capped at 1,200 characters (the window's cap) and chains only the release before
+    # it, so 0.5.343's words are read from its own section from 0.5.345 on.
     mine = [section for section in notes["whatsNew"]["sections"] if section["title"] == "0.5.343"]
+    pin((summary.startswith(lead) and "Plus everything in 0.5.342: " in summary) if notes.get("version") == "0.5.343"
+        else (len(mine) == 1 and any("draw the outline of their rows while they load" in item for item in mine[0]["items"])),
+        "version", "the summary leads with 0.5.343, or a later release keeps 0.5.343's own section describing it")
     pin(len(mine) == 1 and len(mine[0]["items"]) >= 3, "version", "a 0.5.343 section")
     first = mine[0] if mine else {"items": []}
     entries = src["changelog"].split("\n## ")
     entry = next(("## " + e if i else e for i, e in enumerate(entries) if ("## " + e if i else e).startswith("## 0.5.343 (build 397)")), "")
     pin(entry != "", "version", "CHANGELOG keeps 0.5.343 (build 397)")
-    ours = summary.split("Plus everything in 0.5.343: ", 1)[-1].split(" Plus everything in 0.5.342: ")[0]
-    for text in [ours] + first["items"] + [entry]:
+    for text in first["items"] + [entry]:
         pin("—" not in text and "→" not in text, "copy", f"no em dash or arrow: {text[:80]!r}")
 
     # 9. The lane runs.
@@ -294,10 +296,11 @@ MUTANTS = [
     ("an em dash in a label", "window", 'label: "Loading tasks")', 'label: "Loading — tasks")'),
     ("meetings chain moved", "meetings", "{ libraryContent }", "{ EmptyView() }"),
     ("version not bumped", "plist", "<key>CFBundleVersion</key>", "<key>CFBundleVersionNumber</key>"),
-    ("What's New not chained", "whatsnew", "Plus everything in 0.5.342: ", "Plus 0.5.342: "),
-    ("an em dash in What's New", "whatsnew", "Views draw the outline of their rows while they load, then fill in", "Views draw the outline of their rows while they load \\u2014 then fill in"),
+    # 0.5.345 (plan r3): the capped summary chains only 0.5.344, so these now act on 0.5.343's own section.
+    ("What's New not chained", "whatsnew", "cards draw the outline of their rows while they load, then fill in", "cards fill in"),
+    ("an em dash in What's New", "whatsnew", "cards draw the outline of their rows while they load, then fill in", "cards draw the outline of their rows while they load \\u2014 then fill in"),
     ("CHANGELOG not led", "changelog", "## 0.5.343 (build 397), Build-up, in place", "## 0.5.343, Build-up, in place"),
-    ("0.5.343 not chained by a later release", "whatsnew", "Plus everything in 0.5.343: Views draw", "Plus everything in 0.5.343: Rows draw"),
+    ("0.5.343 not chained by a later release", "whatsnew", '"title": "0.5.343"', '"title": "0.5.343 build-up"'),
     ("lane not wired", "run", 'zsh "$ROOT/Tests/run-build-up.sh"', 'true "$ROOT/Tests/run-build-up.sh"'),
 ]
 

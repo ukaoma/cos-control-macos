@@ -16074,17 +16074,23 @@ final class COSControlHelper {
 
     /// One dictation round trip: the capability gate, then the route this server takes (DictationBridge). Shared by
     /// mac-dictation and dictation-check, so the check proves exactly the path a dictation uses.
+    /// 0.5.345 (A-W0d): the token file alone, without speakerReviewToken's /api/health probe (one round trip less per
+    /// dictation). The capabilities answer already tells a stopped server (no answer: Server stopped, Retry kept) from a
+    /// refused token (Unauthorized) and an unmatched server (Update), DictationBridge.capabilityRefusal. preUploadMs is the
+    /// time spent before the upload starts, for the timing line (a number, never text).
     private func dictate(_ audio: Data) throws -> DictationBridge.Answer {
-        let token = try speakerReviewToken()
-        guard let capabilities = request("/api/transcribe/capabilities", token: token, timeout: 5), capabilities.status == 200,
-              let route = DictationBridge.route(capabilities.body) else {
-            return DictationBridge.Answer(ok: false, message: "Update to the matched COS server before using Mac dictation. No audio was sent.",
-                                          details: ["action": "none"])
-        }
+        let started = ProcessInfo.processInfo.systemUptime
+        let token: String
+        do { token = try readToken() } catch { throw HelperError.message("Unauthorized") }
+        let capabilities = request("/api/transcribe/capabilities", token: token, timeout: 5)
+        if let refusal = DictationBridge.capabilityRefusal(status: capabilities?.status, body: capabilities?.body) { return refusal }
+        guard let route = DictationBridge.route(capabilities?.body) else { return DictationBridge.unmatched() }
         let local = route == DictationBridge.localRoute
+        let preUploadMs = Int(((ProcessInfo.processInfo.systemUptime - started) * 1000).rounded())
         let response = request(route, method: "POST", token: token, rawBody: audio, timeout: 35)
         var answer = DictationBridge.answer(status: response?.status, body: response?.body, local: local)
         answer.details["localRoute"] = local
+        answer.details["preUploadMs"] = preUploadMs
         return answer
     }
 

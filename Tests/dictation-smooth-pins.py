@@ -55,10 +55,12 @@ for name in ("DictationQuietController", "DictationSoundPlayer", "DictationMicro
     pin(f"@MainActor final class {name}" not in d and f"final class {name}: @unchecked Sendable {{" in d, "audio off main",
         f"{name} is not a main-actor class (it lives on a DictationAudioQueues queue)")
 queues = body(core, "enum DictationAudioQueues {")
+# 0.5.345 (A-W1): a third serial queue, the sound's own, so a sound stuck in a wedged HAL never holds up the mute.
 pin('DispatchQueue(label: "com.gotcos.control.dictation.input", qos: .userInteractive)' in queues
     and 'DispatchQueue(label: "com.gotcos.control.dictation.output", qos: .userInitiated)' in queues
+    and 'DispatchQueue(label: "com.gotcos.control.dictation.sound", qos: .userInitiated)' in queues
     and "queue.async { done.resume(with: Result { try work() }) }" in queues, "audio off main",
-    "two serial queues, and perform runs its work on the queue it names")
+    "three serial queues (input, output, sound), and perform runs its work on the queue it names")
 
 store = body(d, "@MainActor final class MacDictationStore: ObservableObject {")
 start = body(store, "    func start() {")
@@ -73,13 +75,22 @@ for method, call in (("begin", "controller.begin(mode: mode, macRecording: macRe
     fn = body(handle, f"    func {method}(")
     order(fn, ["DictationAudioQueues.output.async {", call], "quiet queued",
           f"the handle's {method} queues the controller's {method} on the output queue and returns")
-pin(handle.count("DictationAudioQueues.output.sync") == 1 and "func flush() { DictationAudioQueues.output.sync {} }" in handle
+# 0.5.345 (A-W1): quit waits for the queued end and volume restore at most a second, and never for a sound.
+flush = body(handle, "    func flush() {")
+pin(handle.count("DictationAudioQueues.output.sync") == 0 and "DictationAudioQueues.output.async { done.signal() }" in flush
+    and "_ = done.wait(timeout: .now() + Self.flushSeconds)" in flush and "static let flushSeconds = 1.0" in handle and "sound" not in flush
     and "COSAppDelegate.onTerminate = { model.dictation.cancel(); model.dictation.flushAudio();" in app
-    and "    func flushAudio() { quiet.flush() }" in store, "quit restores",
-    "only quit waits on the output queue, after cancel, so a queued unmute or volume restore runs before exit")
+    and "    func flushAudio() { quiet.flush() }" in store and "DictationAudioQueues.sound.sync" not in d, "quit restores",
+    "only quit waits on the output queue, after cancel and at most a second, so a queued unmute or volume restore runs before exit; never on the sound queue")
 play = body(store, "    private func play(_ url: URL, volume: Float, played: (@MainActor @Sendable (Int) -> Void)? = nil) {")
-order(play, ["DictationAudioQueues.output.async {", "player.play(url, volume: volume, semitones: pitch)"], "sound queued",
-      "every sound is played on the output queue")
+order(play, ["let verdict = player.ask(now: asked)", "guard verdict == .play else {", "DictationAudioQueues.sound.async {",
+             "player.play(url, volume: volume, semitones: pitch, askedAt: asked)"], "sound queued",
+      "every sound is gated (outstanding start, the breaker), then played on its own queue, never the mute's")
+pin("DictationAudioQueues.sound.async { owner.finished(id) }" in body(d, "final class DictationSoundPlayer: @unchecked Sendable {"), "sound queued",
+    "the sound's completion hops back to the sound queue it lives on")
+close = body(store, "    private func closeMicrophone() {")
+order(close, ["quiet.end()", "quiet.afterQueued { [weak self] in self?.playSound(.stop) }"], "stop after unmute",
+      "the stop sound is asked for only after the queued mute end has run, so other apps are back first")
 pin(len(re.findall(r"(?<![\w.])play\(url, volume:", store)) == 2 and "playSound(" not in handle, "sound queued", "the store plays sounds only through play(_:volume:played:)")
 
 # 3. The engine opens on the input queue; a press that was released meanwhile closes what opened, off the main actor.
@@ -137,8 +148,15 @@ pin("let stall = heartbeat.finish()" in body(store, "    private func fail(") an
 
 # 7. Census: every new off-main or timer site in MacDictation.swift was reviewed for isolation (0.5.328). A new one
 # changes a count and needs the same review before the count is updated.
-census = {r"DictationAudioQueues\.output\.async(?!After)": 5, r"DictationAudioQueues\.input\.async": 1, r"DictationAudioQueues\.perform\(": 3,
-          r"DictationAudioQueues\.output\.asyncAfter": 1, r"Task\.detached": 5, r"\bTimer\(": 1}
+OUTPUT_ASYNC = 6
+census = {r"DictationAudioQueues\.output\.async(?!After)": OUTPUT_ASYNC, r"DictationAudioQueues\.input\.async": 2, r"DictationAudioQueues\.perform\(": 4,
+          r"DictationAudioQueues\.output\.asyncAfter": 1, r"DictationAudioQueues\.sound\.async": 2, r"Task\.detached": 5, r"\bTimer\(": 1}
+# 0.5.345 (A-W1), reviewed: perform +1 and input.async +1 are the microphone fallback's open and its orphan close (both
+# capture only Sendable values: the remembered UIDs, the lid flag, the deadline, the failed device; never self).
+# sound.async: the store's play (captures the @unchecked Sendable player, Sendable url and numbers; its Task hops to the
+# main actor with [weak self]) and the player's completion hop (built in the nonisolated playedBack). output.async: the
+# play and the completion hop moved to the sound queue (-2); afterQueued (its Task hops to the main actor), resetBreaker
+# and the bounded flush's signal (+3).
 # Task.detached, reviewed: the edit watch (0.5.328); the early polish start and its discard (0.5.329). Both 0.5.329 closures
 # capture only Sendable values (the @Sendable bridge, the request, the box, the start's task), never self. 0.5.331: the
 # swap's field-quiet watch (DictationFieldQuiet) captures only its lock and the @unchecked Sendable target, never self.

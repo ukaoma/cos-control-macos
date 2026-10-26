@@ -53,7 +53,7 @@ def check(src):
     trigger = body(d, "    private func editTrigger(keyDown: Bool, keyCode: UInt16, isRepeat: Bool, pointer: Bool) {")
     watcher = body(d, "@MainActor final class DictationEditWatcher {")
     polish = body(d, "    private func polish(_ heard: String, attempt: UUID, showPill: Bool = true) async -> DictationPolishRun? {")
-    deliver = body(d, "    private func deliverThenPolish(_ heard: String, attempt: UUID) async {")
+    deliver = body(d, "    private func deliverThenPolish(_ heard: String, typing: String, attempt: UUID) async {")
     finish = body(d, "    private func finish(_ text: String, outcome: DictationDeliveryOutcome")
     store = body(d, "@MainActor final class DictationStyleStore: ObservableObject {")
     card = body(d, "struct DictationStyleCard: View {")
@@ -70,14 +70,18 @@ def check(src):
     saved = "        recent = DictationHistory.editing(id, edit: edit, in: recent); saveRecent()\n"
     pin(saved in ended and "DictationStyleStore.shared.observe(" in ended and ended.index(saved) < ended.index("DictationStyleStore.shared.observe("),
         "evidence is a saved edit", "the style observation follows the saved edit, never before it")
-    for fact in ("complete: !end.partial", "inputEvents: end.inputEvents", "startReanchor: end.startReanchor", "appliedHash: record.polishStyleHash",
-                 "baselinePolished: record.polishedByClaude", "model: polishModel, learnMode: learnMode",
-                 "instructions: DictationPolishInstructionsStore.shared.saved"):
+    # 0.5.345 (A-W11): with Claude's unswapped version still held, the baseline is the pending polish (typed with the
+    # changes the person and polish both made applied, DictationPolishMatch.baseline); otherwise the record's, as before.
+    for fact in ("complete: !end.partial", "inputEvents: end.inputEvents", "startReanchor: end.startReanchor",
+                 "appliedHash: baseline != nil ? pending?.styleHash : record.polishStyleHash",
+                 "baselinePolished: baseline != nil || record.polishedByClaude", "typed: baseline ?? end.typed, final: final,",
+                 "model: polishModel, learnMode: learnMode", "instructions: DictationPolishInstructionsStore.shared.saved",
+                 "let pending = pendingPolish[id].flatMap { $0.cleaned == nil ? $0 : nil }", "if !matched {"):
         pin(fact in ended, "evidence facts", f"editWatchEnded passes {fact!r}")
     pin("DictationStyleClassifier.Settings(enabled: ledger.enabled, learnMode: learnMode, notUsed: notUsed(model: model), registers: registers," in observe
         and "registersEnabled: registersEnabled, allowlist: allowlist, instructions: instructions)" in observe,
         "evidence settings", "the controller hands the classifier the switch, the not-used gate, registers and the server's allowlist")
-    pin("guard result.reason == nil else { return [] }" in observe and "ledger = next; save()" in observe
+    pin("guard result.reason == nil else { lastObserved = []; return [] }" in observe and "ledger = next; save()" in observe
         and observe.index("guard result.reason == nil") < observe.index("ledger = next; save()"), "refused evidence leaves the ledger",
         "a refused edit is never saved")
     pin("evidence.typed" not in observe and "evidence.final" not in observe and 'log?("style observe reason=' in observe,
@@ -125,10 +129,10 @@ def check(src):
         "polish codes", "the guard, register and learned-style hash reach the run")
     pin("if let run, run.guarded, record(id) != nil {" in deliver
         and "recent = DictationHistory.guarding(id, guard: run.guardKind, styleHash: run.learnedStyleHash, in: recent); saveRecent()" in deliver,
-        "guarded record", "paste first: a guarded answer marks the record Kept as heard")
-    pin("polishGuard: lastPolishGuard, polishStyleHash: lastPolishStyleHash, polishCleaned: lastPolishCleaned)" in finish, "guarded record",
+        "guarded record", "paste first: a guarded answer marks the record (Kept COS's cleaned text)")
+    pin("polishGuard: lastPolishGuard, polishStyleHash: lastPolishStyleHash, polishCleaned: lastPolishCleaned," in finish, "guarded record",
         "polish first: the record keeps the codes")
-    pin("if let polished = DictationPolishSwap.swapText(run?.outcome) { final = DictationInsertion.polishedFinal(" in deliver
+    pin("if let polished = DictationPolishSwap.swapText(run?.outcome) {\n            final = DictationInsertion.polishedFinal(" in deliver
         and "let cleaned = DictationPolish.cleaned(run?.outcome)" in deliver and "styleHash: run?.learnedStyleHash, cleaned: cleaned)" in deliver,
         "cleaned swap", "paste first swaps the server's cleaned text in (0.5.343 parity) and Apply polished keeps it")
     for field in (' polish_register=\\(finished.polishRegister ?? "-", privacy: .public)', ' polish_style=\\(finished.polishLearnedStyle.map { $0 ? "1" : "0" } ?? "-", privacy: .public)',
@@ -148,8 +152,10 @@ def check(src):
     pin("        if available {\n            let reply = await transport?(.clear)" in reset, "capability gate", "Reset clears the server only when it has the setting")
     pin("allowlist: allowlist)" in sync_once and "DictationStyle.ranked(ledger, suggestOnly: suggestOnly(), now: now(), allowlist: allowlist)" in sync_once,
         "allowlist filter", "a rule the server no longer takes is never sent")
-    pin("willSet { if newValue.running, !status.running || status.version != newValue.version { DictationStyleStore.shared.serverCameBack() } }" in model,
-        "reload on return", "the server's return or a newer server reads Your style again")
+    # 0.5.345 (QA4 15): a changed version or runtime generation always reloads (serverCameBack(changed:)).
+    pin("if newValue.running, !status.running || changed { DictationStyleStore.shared.serverCameBack(changed: changed) }" in model
+        and "let changed = status.version != newValue.version || status.activeWorkDirectory != newValue.activeWorkDirectory" in model,
+        "reload on return", "the server's return or a newer server (or generation) reads Your style and the options again")
     pin("let loaded = url.map { DictationStyle.load(from: $0, now: Date()) }" in store and "controller = DictationStyleController(ledger: loaded.ledger, loaded: loaded.result)" in store,
         "ledger load", "the store loads with the quarantine and tells the controller how")
 
@@ -189,12 +195,12 @@ MUTANTS = [
      "        // 0.5.344 part 2: the saved edit as style evidence"),
     ("partial counts", "d", "complete: !end.partial,", "complete: true,"),
     ("no input count", "d", "inputEvents: end.inputEvents, startReanchor: end.startReanchor, app: end.app,", "inputEvents: 1, startReanchor: end.startReanchor, app: end.app,"),
-    ("hash dropped", "d", "appliedHash: record.polishStyleHash),", "appliedHash: nil),"),
-    ("any baseline", "d", "baselinePolished: record.polishedByClaude,", "baselinePolished: record.heard != nil,"),
+    ("hash dropped", "d", "appliedHash: baseline != nil ? pending?.styleHash : record.polishStyleHash),", "appliedHash: nil),"),
+    ("any baseline", "d", "baselinePolished: baseline != nil || record.polishedByClaude,", "baselinePolished: record.heard != nil,"),
     ("model not passed", "d", "            model: polishModel, learnMode: learnMode, instructions:", "            model: .sonnet, learnMode: learnMode, instructions:"),
     ("gate dropped", "core", "learnMode: learnMode, notUsed: notUsed(model: model), registers: registers,", "learnMode: learnMode, notUsed: nil, registers: registers,"),
     ("switch ignored", "core", "DictationStyleClassifier.Settings(enabled: ledger.enabled, learnMode:", "DictationStyleClassifier.Settings(enabled: true, learnMode:"),
-    ("refused saved", "core", "        guard result.reason == nil else { return [] }\n", ""),
+    ("refused saved", "core", "        guard result.reason == nil else { lastObserved = []; return [] }\n", ""),
     ("words logged", "core", 'log?("style observe reason=\\(result.reason ?? "learned") active=\\(result.newlyActive.count)")',
      'log?("style observe reason=\\(result.reason ?? "learned") final=\\(evidence.final)")'),
     ("no push", "core", "        Task { await self.sync() }\n        return result.newlyActive", "        return result.newlyActive"),
@@ -222,11 +228,11 @@ MUTANTS = [
     ("guard kind dropped", "d", 'guardKind: response.details["guard"]?.string, register:', "guardKind: nil, register:"),
     ("server codes dropped", "d", ".with(prompt: prompt).with(server: server)", ".with(prompt: prompt)"),
     ("guarded not recorded", "d", "            recent = DictationHistory.guarding(id, guard: run.guardKind, styleHash: run.learnedStyleHash, in: recent); saveRecent()\n", ""),
-    ("record loses the guard", "d", "polishGuard: lastPolishGuard, polishStyleHash: lastPolishStyleHash, polishCleaned: lastPolishCleaned)",
-     "polishStyleHash: lastPolishStyleHash, polishCleaned: lastPolishCleaned)"),
-    ("record loses cleaned", "d", "polishStyleHash: lastPolishStyleHash, polishCleaned: lastPolishCleaned)", "polishStyleHash: lastPolishStyleHash)"),
-    ("cleaned never swapped", "d", "if let polished = DictationPolishSwap.swapText(run?.outcome) { final = DictationInsertion.polishedFinal(",
-     "if case .applied(let polished)? = run?.outcome { final = DictationInsertion.polishedFinal("),
+    ("record loses the guard", "d", "polishGuard: lastPolishGuard, polishStyleHash: lastPolishStyleHash, polishCleaned: lastPolishCleaned,",
+     "polishStyleHash: lastPolishStyleHash, polishCleaned: lastPolishCleaned,"),
+    ("record loses cleaned", "d", "polishStyleHash: lastPolishStyleHash, polishCleaned: lastPolishCleaned,", "polishStyleHash: lastPolishStyleHash,"),
+    ("cleaned never swapped", "d", "if let polished = DictationPolishSwap.swapText(run?.outcome) {\n            final = DictationInsertion.polishedFinal(",
+     "if case .applied(let polished)? = run?.outcome {\n            final = DictationInsertion.polishedFinal("),
     ("pending loses cleaned", "d", "styleHash: run?.learnedStyleHash, cleaned: cleaned)", "styleHash: run?.learnedStyleHash)"),
     ("timing loses the guard", "d", ' polish_guard=\\(finished.polishGuard ?? "-", privacy: .public)', ""),
     ("push to an older server", "core", "        guard available, var current = server else { return }", "        guard var current = server else { return }"),
@@ -239,7 +245,7 @@ MUTANTS = [
     ("baseHash sent", "d", '            if let baseRevision { out["baseRevision"] = baseRevision }\n', '            if let baseRevision { out["baseRevision"] = baseRevision; out["baseHash"] = baseRevision }\n'),
     ("rules always sent", "d", 'if let rules { out["rules"] = rules.map(object) }', 'out["rules"] = (rules ?? []).map(object)'),
     ("reset deletes on an older server", "core", "        if available {\n            let reply = await transport?(.clear)", "        if true {\n            let reply = await transport?(.clear)"),
-    ("no reload on return", "model", "willSet { if newValue.running, !status.running || status.version != newValue.version { DictationStyleStore.shared.serverCameBack() } }", "willSet { }"),
+    ("no reload on return", "model", "if newValue.running, !status.running || changed { DictationStyleStore.shared.serverCameBack(changed: changed) }", "if false { }"),
     ("load without quarantine", "d", "let loaded = url.map { DictationStyle.load(from: $0, now: Date()) }", "let loaded = url.map { _ in (DictationStyle.Ledger(), DictationStyle.LoadResult.read) }"),
     ("card missing", "d", "                DictationStyleCard(style: DictationStyleStore.shared, dictation: store)\n", ""),
     ("key disclosure missing", "d", "            Text(DictationStyleCopy.disclosureKeys)", "            Text(DictationStyleCopy.disclosureRules)"),

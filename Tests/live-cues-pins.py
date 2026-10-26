@@ -141,13 +141,15 @@ plist = read("Resources/Info.plist")
 whats = json.loads(read("Resources/WhatsNew.json"))
 sec322 = next((s for s in whats["whatsNew"]["sections"] if s["title"] == "0.5.322"), None)
 check(sec322 is not None, "What's New keeps the 0.5.322 section")
-check("a live cues switch in settings" in whats["whatsNew"]["summary"].lower(), "the summary names the new switch")
+# 0.5.345 (plan r3): the capped summary no longer chains back to 0.5.322; its own section names the switch.
+check(sec322 is not None and any("a live cues switch in settings" in item.lower() for item in sec322["items"]),
+      "the 0.5.322 section names the new switch")
 check(sec322 is not None and any("Live cues switch" in item for item in sec322["items"]), "the 0.5.322 items describe the switch")
 changelog = read("CHANGELOG.md")
 entry = changelog[changelog.index("## 0.5.322 (build 375)"):] if "## 0.5.322 (build 375)" in changelog else ""
 entry = entry.split("\n## 0.5.321", 1)[0]
 check(bool(entry) and "6.76.2" in entry and "6.10.644" in entry, "CHANGELOG 0.5.322 pairs with server 6.76.2 and glasses 6.10.644")
-for text in [entry] + (sec322["items"] if sec322 else []) + whats["whatsNew"]["sections"][0]["items"] + [whats["whatsNew"]["summary"].split(" Plus everything in 0.5.321")[0]]:
+for text in [entry] + (sec322["items"] if sec322 else []) + whats["whatsNew"]["sections"][0]["items"] + [whats["whatsNew"]["summary"]]:
     check("—" not in text and "→" not in text, "no em dash or arrow in the release words")
 
 print(f"live cues pins: {passed} passed")

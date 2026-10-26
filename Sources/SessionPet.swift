@@ -606,7 +606,8 @@ private struct SessionPetRoot: View {
                                        size: size, reduceMotion: reduceMotion,
                                        onFix: dictation.fixOfferID == nil ? nil : { dictation.quickFix() },
                                        onView: dictation.pillViewID == nil ? nil : { dictation.viewEditFromPill() },
-                                       onUndo: dictation.pillUndoID == nil ? nil : { dictation.undoLearnedFromPill() })
+                                       onUndo: dictation.pillUndoID == nil ? nil : { dictation.undoLearnedFromPill() },
+                                       onUndoPolish: dictation.pillUndoPolishID == nil ? nil : { dictation.undoPolishFromPill() })
                     .transition(.opacity)
             }
         }

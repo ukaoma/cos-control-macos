@@ -78,10 +78,11 @@ MUTANTS = [
     ("record: an edit needs learned keys", "learned = (try? c.decodeIfPresent([String].self, forKey: .learned)) ?? []",
      "learned = try c.decode([String].self, forKey: .learned)", "record edit decodes"),
     # Retargeted 0.5.344: the record carries polishPrompt after polishModel now.
-    ("record: Fix a word keeps a stale edit", "polishStyleHash: $0.polishStyleHash, polishCleaned: $0.polishCleaned) : $0 }",
-     "polishStyleHash: $0.polishStyleHash, polishCleaned: $0.polishCleaned, edit: $0.edit) : $0 }", "record correcting drops edit"),
-    ("record: editing drops the edit", "polishStyleHash: one.polishStyleHash, polishCleaned: one.polishCleaned, edit: edit) : one }",
-     "polishStyleHash: one.polishStyleHash, polishCleaned: one.polishCleaned) : one }", "record editing"),
+    # 0.5.345: the history transforms carry typed and rawHeard too (A-W7, A-W10).
+    ("record: Fix a word keeps a stale edit", "polishStyleHash: $0.polishStyleHash, polishCleaned: $0.polishCleaned,\n                                                 typed: $0.typed, rawHeard: $0.rawHeard) : $0 }",
+     "polishStyleHash: $0.polishStyleHash, polishCleaned: $0.polishCleaned, edit: $0.edit,\n                                                 typed: $0.typed, rawHeard: $0.rawHeard) : $0 }", "record correcting drops edit"),
+    ("record: editing drops the edit", "polishStyleHash: one.polishStyleHash, polishCleaned: one.polishCleaned, edit: edit,\n",
+     "polishStyleHash: one.polishStyleHash, polishCleaned: one.polishCleaned,\n", "record editing"),
     ("record: search ignores what was sent", "[record.text, record.edit?.text].compactMap { $0 }", "[record.text].compactMap { $0 }",
      "record search edited"),
     ("record: meta line drops the edits", '        return line + " · " + DictationEditConfirm.editsLabel(edit.edits)\n',

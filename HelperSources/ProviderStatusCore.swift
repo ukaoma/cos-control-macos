@@ -627,6 +627,20 @@ enum DictationBridge {
 
     struct Answer { var ok: Bool; var message: String; var details: [String: Any] }
 
+    /// 0.5.345 (A-W0d, plan r3): what the capabilities request means before any audio is sent, now that dictate() asks no
+    /// /api/health first. No transport answer: the server is stopped, and the dictation keeps its Retry. 401 or 403: the
+    /// token is refused. Anything else that is not a usable 200 is an unmatched server (unmatched()). nil: go on.
+    static func capabilityRefusal(status: Int?, body: [String: Any]?) -> Answer? {
+        guard let status else { return Answer(ok: false, message: "Server stopped", details: ["action": "retry", "retryable": true]) }
+        if status == 401 || status == 403 { return Answer(ok: false, message: "Unauthorized", details: ["action": "none", "httpStatus": status]) }
+        if status != 200 || route(body) == nil { return unmatched() }
+        return nil
+    }
+
+    static func unmatched() -> Answer {
+        Answer(ok: false, message: "Update to the matched COS server before using Mac dictation. No audio was sent.", details: ["action": "none"])
+    }
+
     static func id(_ value: Any?, _ allowed: Set<String>) -> String? { (value as? String).flatMap { allowed.contains($0) ? $0 : nil } }
 
     /// A server sentence fit for the card: one line, at most 200 characters, never empty.
@@ -1203,6 +1217,15 @@ enum DictationPolishOptionsBridge {
                 details["effectiveByModel"] = kept
             }
             if let flag = body?["envOverride"] as? NSNumber, CFGetTypeID(flag) == CFBooleanGetTypeID() { details["envOverride"] = flag.boolValue }
+            // 0.5.345 (server 6.92.0): the meaning guard's switch and the pairs Your style applies to, checked as the rest.
+            if let flag = body?["meaningGuard"] as? NSNumber, CFGetTypeID(flag) == CFBooleanGetTypeID() { details["meaningGuard"] = flag.boolValue }
+            if let pairs = body?["stylePairs"] as? [Any] {
+                var kept: [String: String] = [:]
+                for case let pair as [String: Any] in pairs {
+                    if let model = pair["model"] as? String, models.contains(model), let prompt = pair["prompt"] as? String, isPrompt(prompt) { kept[model] = prompt }
+                }
+                details["stylePairs"] = kept
+            }
             return DictationBridge.Answer(ok: true, message: operation == "set" ? "Saved" : "Polish options", details: details)
         case 404: return unavailable()
         case 400: return refused("invalid", "The server refused this polish option. Nothing changed.", status: 400)

@@ -76,7 +76,7 @@ need("styleMask: [.borderless, .nonactivatingPanel]" in dictation and ".titled" 
      "the only dictation window is the borderless nonactivating overlay")
 
 # ── 2. Delivery (0.5.310, clipboard 0.5.312): MEASURED. ✓ only for a measured change (Miles 20:07, iTerm2).
-deliver = body(dictation, "static func deliver(_ raw: String, restoreClipboard: Bool, fieldContext: Bool = false) async -> DictationDelivered {")
+deliver = body(dictation, "static func deliver(_ raw: String, restoreClipboard: Bool, fieldContext: Bool = false,\n                        casing request: DictationCasing.Request = DictationCasing.Request(enabled: false)) async -> DictationDelivered {")
 # 0.5.312 (Miles 21:23): the clipboard is written only for a posted ⌘V (then restored) or for the card. Accessibility
 # insertion never touches it.
 ax_at = deliver.index("if route == .accessibility, let target {")
@@ -94,7 +94,7 @@ need("DictationClipboard.keepWaiting(elapsedMilliseconds:" in restore and "Dicta
      and "currentChangeCount: board.changeCount" in restore and "DictationClipboard.restore($0, to: board)" in restore,
      "after the ⌘V the clipboard is put back only by the tested decision")
 need('dictationLog.notice("clipboard not restored: \\(reason, privacy: .public)")' in restore, "every skip is logged with its reason")
-need("deliver(text, restoreClipboard: restoreClipboard, fieldContext: useFieldContext)" in dictation and 'forKey: "dictation.restoreClipboard") as? Bool ?? true' in dictation
+need("deliver(text, restoreClipboard: restoreClipboard, fieldContext: useFieldContext, casing: casingRequest())" in dictation and 'forKey: "dictation.restoreClipboard") as? Bool ?? true' in dictation
      and 'Toggle("Restore my clipboard after pasting", isOn: $store.restoreClipboard)' in dictation, "the setting is on by default and reaches delivery")
 need("DictationInsertPolicy.refusal(" in deliver and "DictationDelivery.decide(" in deliver and "DictationDelivery.route(" in deliver,
      "delivery goes through the tested policy, route and decision")
@@ -145,7 +145,7 @@ need(hosts is not None and terminals is not None and set(re.findall(r'"([^"]+)"'
 
 # ── 3. Store flow: the pill, the flash, the card; text stays private.
 transcribe = body(dictation, "private func transcribe(_ wav: Data, attempt: UUID) {")
-need("let delivered = copyOnly ? DictationInsertion.copyOnly(text, clipboardMoved: clipboardMoved)\n                    : await DictationInsertion.deliver(text, restoreClipboard: restoreClipboard, fieldContext: useFieldContext)" in transcribe
+need("let delivered = copyOnly ? DictationInsertion.copyOnly(text, clipboardMoved: clipboardMoved)\n                    : await DictationInsertion.deliver(text, restoreClipboard: restoreClipboard, fieldContext: useFieldContext, casing: casingRequest())" in transcribe
      and "finish(delivered.context?.text ?? text, outcome: delivered.outcome, target: delivered.target, context: delivered.context, own: delivered.own)" in transcribe,
      "a finished transcript must be delivered and recorded")
 # 0.5.313 (Miles 2026-10-15): an interrupted dictation is transcribed and copied, never thrown away and never typed.
@@ -240,7 +240,7 @@ need('forKey: "dictation.sound.start") ?? "pet"' in dictation and 'forKey: "dict
 need("macRecording: macRecordingActive?() ?? false" in dictation and "model.dictation.macRecordingActive = { [weak model] in (model?.recordingCount ?? 0) > 0 }" in read("Sources/COSControlApp.swift"),
      "sounds and quiet know about any live COS recording (Mac or glasses)")
 need('forKey: "dictation.sound.pitch") as? Double ?? 0' in dictation and "Slider(value: $store.soundPitch, in: DictationSoundLibrary.pitchRange, step: 1)" in dictation
-     and "let player = soundPlayer, pitch = soundPitch" in dictation and "player.play(url, volume: volume, semitones: pitch)" in dictation
+     and "let player = soundPlayer, pitch = soundPitch" in dictation and "player.play(url, volume: volume, semitones: pitch, askedAt: asked)" in dictation
      and "AVAudioUnitTimePitch()" in dictation and "pitch.pitch = Float(DictationSoundLibrary.cents(semitones))" in dictation
      and "static let pitchRange = -12.0...6.0" in core, "Pitch: -12 to +6 st, default 0, applied at playback to every sound")
 need("laptop speakers reproduce little of it" in dictation, "the caption says the saber is mostly bass")
@@ -499,7 +499,7 @@ need('forKey: "dictation.quiet") ?? "") ?? .default' in dictation and "Dictation
 media = ("NX_KEYTYPE", "systemDefined", "MRMediaRemote", "MediaRemote.framework", "MPRemoteCommand", "keyCode: 16, keyDown")
 need(not any(m in src for src in sources.values() for m in media),
      "no media key and no MediaRemote: a blind play/pause can START playback (0.5.313 finding)")
-replace = body(dictation, "    static func replace(_ target: DictationInsertTarget, corrected: String, restoreClipboard: Bool, automatic: Bool = false) async -> Replaced {")
+replace = body(dictation, "    static func replace(_ target: DictationInsertTarget, corrected: String, restoreClipboard: Bool, wholeOnly: Bool = false,\n                        waitForKeys: Bool = false, automatic: Bool = false) async -> Replaced {")
 need("CGEvent" not in replace and ".post(" not in replace and "kAXValueAttribute" not in replace,
      "Replace posts no key of its own (only paste's ⌘V, below) and never reads the field's whole value")
 need("DictationReplace.plan(" in replace and "DictationReplace.route(setterWorked: target.setterWorked)" in replace
@@ -535,7 +535,7 @@ need(replace_ui.count("copy(offer.corrected)") == 4 and 'fixNote = "Copied the c
 need("DictationReplace.span(pid: app.processIdentifier, baseline: baseline, after: after, count: count)" in deliver
      and "baseline: beforePaste, after: measuredAfterPaste, count: count)" in deliver,
      "the inserted range is recorded from the measurement, on the Accessibility and ⌘V routes")
-need("if case .inserted = outcome { return DictationDelivered(outcome: outcome, target: landed, context: context) }" in deliver,
+need("if case .inserted = outcome { return DictationDelivered(outcome: outcome, target: landed, context: context, casing: casing, wouldCapitalize: would) }" in deliver,
      "only a measured insertion carries a target")
 finish = body(dictation, "    private func finish(")
 need("fixOfferID = offer ? record.id : nil" in finish and "DictationQuickFix.offerSeconds" in finish, "the flash carries Fix for 5 s")
@@ -576,10 +576,17 @@ need("kAXValueAttribute" not in body(dictation, "    nonisolated static func fie
 need("learnedUndoID = item.id; learnedUndoPill = flash" in body(dictation, "    private func editLearned(") and "Task { await undoLearned(id) }" in body(dictation, "    func undoLearnedFromPill() {")
      and "guard let id = pillUndoID else { return }" in body(dictation, "    func undoLearnedFromPill() {")
      and "var pillUndoID: UUID? { pill == learnedUndoPill ? learnedUndoID : pill == styleUndoPill ? styleUndoToken : nil }" in dictation
-     and "onUndo: store.pillUndoID == nil ? nil : { store.undoLearnedFromPill() })" in dictation
-     and "onUndo: dictation.pillUndoID == nil ? nil : { dictation.undoLearnedFromPill() })" in pet
+     and "onUndo: store.pillUndoID == nil ? nil : { store.undoLearnedFromPill() }," in dictation
+     and "onUndo: dictation.pillUndoID == nil ? nil : { dictation.undoLearnedFromPill() }," in pet
      and "panel.ignoresMouseEvents = store.card == nil && !fixing && store.fixOfferID == nil && store.pillUndoID == nil" in dictation,
      "\"LEARNED\" on the pill offers Undo on both pills, the floating pill takes the click, and Undo is the Learned list's Undo")
+# 0.5.345 (A-W7): "✓ POLISHED" offers Undo polish on both pills, with its own label (never the word or style Undo), and
+# the floating pill takes its click.
+need("onUndoPolish: store.pillUndoPolishID == nil ? nil : { store.undoPolishFromPill() })" in dictation
+     and "onUndoPolish: dictation.pillUndoPolishID == nil ? nil : { dictation.undoPolishFromPill() })" in pet
+     and "&& store.pillUndoPolishID == nil" in dictation and "Text(DictationUndoPolish.label.uppercased())" in dictation
+     and "var pillUndoPolishID: UUID? { pill == polishUndoPill ? polishUndoID : nil }" in dictation,
+     "Undo polish shows on both pills with its own label, and the floating pill takes the click")
 
 # ── 9. 0.5.318 Learn from my edits (Miles 13:31): Save automatically by default, native first, never secure, Undo.
 need('UserDefaults.standard.string(forKey: "dictation.learnMode") ?? "") ?? .default' in dictation
@@ -663,7 +670,7 @@ need(deliver.count("readContext(") == 1 and all(step in deliver for step in step
      "the field is read after it is measured and before anything is typed, and what is typed (and counted) is the respelled text")
 need("var text = terminal ? DictationDelivery.terminalText(raw) : raw" in deliver and "var count = text.utf16.count" in deliver
      and deliver.index("var context: DictationFieldContext.Applied?") < deliver.index("func done(_ outcome: DictationDeliveryOutcome) -> DictationDelivered {")
-     and "return DictationDelivered(outcome: outcome, target: nil, context: context)" in deliver,
+     and "return DictationDelivered(outcome: outcome, target: nil, context: context, casing: casing, wouldCapitalize: would)" in deliver,
      "every outcome after the read carries it, so the record keeps what was typed")
 need("DictationFieldContext.plan(enabled: enabled, secure: secure(target), terminal: terminal," in read_ctx
      and "guard case .read(let before, let after) = plan else {" in read_ctx,
@@ -686,6 +693,22 @@ need(dictation.count("DictationFieldContext.Applied(") == 2 and dictation.count(
      and dictation.count("watchContext = delivered.context.map { DictationFieldContext.Applied(text: polished, fixes: final?.fixes ?? [], outside: $0.outside, terms: $0.terms) }") == 1
      and dictation.count("editWatcher.start(watchTarget, mode: learnMode, context: watchContext)") == 1,
      "the field's text reaches only the watch that follows")
+# 0.5.345 (A-W9a, plan r3): the start-of-sentence capital. Its own short read (independent of the field-context setting),
+# after the field-context respelling and before anything is typed, never in a terminal or a password field; the swap's
+# final text takes the same rule; the log says only what happened, never the text.
+read_before = body(dictation, "    private static func readBefore(_ target: AXUIElement, baseline: DictationFieldSnapshot, terminal: Bool) -> DictationCasing.Before? {")
+need(read_before.count("string(target, location:") == 1 and "kAXValueAttribute" not in read_before and "kAXSelectedTextAttribute" not in read_before
+     and "guard !terminal, !secure(target)" in read_before and "AXUIElementSetMessagingTimeout(target, DictationFieldContext.readTimeoutSeconds)" in read_before
+     and "defer { AXUIElementSetMessagingTimeout(target, 0.25) }" in read_before and "useFieldContext" not in read_before and "enabled" not in read_before,
+     "casing reads one bounded window before the caret, never in a terminal or password field, whatever the field-context setting")
+need(deliver.count("readBefore(") == 1
+     and deliver.index("if let context { text = context.text; count = text.utf16.count }") < deliver.index("casing = readBefore(target, baseline: baseline, terminal: terminal)")
+     < deliver.index("if request.enabled { text = capped; count = text.utf16.count }") < deliver.index("if route == .accessibility, let target {"),
+     "the capital goes on after the respelling and before anything is typed, and what is counted is the capitalized text")
+casing_facts = [line for line in deliver.splitlines() if "casing=" in line]
+need(len(casing_facts) == 1 and "text" not in casing_facts[0].split("casing=")[1].replace("capitalized", ""), "the casing log says capitalized, shadow, kept or unread, never text")
+need(dictation.count("casing: delivered.casing, request: casingRequest())") == 1 and dictation.count("casing: casingRequest())") == 2,
+     "the swap's final text takes the same capital as the typed text, and both deliveries pass the setting")
 need('forKey: "dictation.fieldContext") as? Bool ?? true' in dictation
      and 'Toggle("Spell words the way the text box has them", isOn: $store.useFieldContext)' in dictation
      and "never saves or sends it" in dictation and "Never in terminals or password fields." in dictation,
