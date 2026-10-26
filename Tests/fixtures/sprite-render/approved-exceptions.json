@@ -1447,5 +1447,13 @@
       ],
       "width": 22
     }
+  ],
+  "effectLayers": [
+    {
+      "strip": "jedi-miles-windu/waiting",
+      "sourceFile": "windu-ambient-v2-waiting-body-1x.png",
+      "sourceSHA256": "d08c0d8f3269e602d69634c23116e67c05c14bdead133bb5881642b1fb0cfa00",
+      "expectedSHA256": "b59af3b10460bf45ad3436b41771c65fce1977d1693bb5ea20da549def20f8d4"
+    }
   ]
 }

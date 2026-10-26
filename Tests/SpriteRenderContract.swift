@@ -91,11 +91,21 @@ enum SpriteRenderContract {
         let width: Int
     }
 
+    // Independently pinned pre-effect artwork. A background aura may be
+    // translucent; its presence never permits alpha damage in the character.
+    struct EffectLayer: Decodable {
+        let strip: String
+        let sourceFile: String
+        let sourceSHA256: String
+        let expectedSHA256: String
+    }
+
     struct Fixture: Decodable {
         let edgeFrames: [String: [Int]]
         let smear: [Smear]
         let preExisting: [String: KnownViolation]
         var edgeFades: [EdgeFade]? = nil
+        var effectLayers: [EffectLayer]? = nil
     }
 
     static let maxHolesPercent = 1.0
@@ -181,12 +191,28 @@ enum SpriteRenderContract {
             else { return nil } // Authored-region evidence applies only to the reviewed bytes.
         }
         guard let image = NSImage(contentsOf: url) else { return nil }
-        return measure(image: image, frames: frames, label: label, fixture: fixture)
+        var protectedCells: [Plane]? = nil
+        if let evidence = fixture.effectLayers?.first(where: { $0.strip == label }) {
+            let sourceURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+                .appendingPathComponent("Tests/fixtures/sprite-render").appendingPathComponent(evidence.sourceFile)
+            guard evidence.sourceFile == URL(fileURLWithPath: evidence.sourceFile).lastPathComponent,
+                  let actual = try? Data(contentsOf: url), let original = try? Data(contentsOf: sourceURL),
+                  SHA256.hash(data: actual).map({ String(format: "%02x", $0) }).joined() == evidence.expectedSHA256,
+                  SHA256.hash(data: original).map({ String(format: "%02x", $0) }).joined() == evidence.sourceSHA256,
+                  let source = NSImage(data: original),
+                  let sourceMeasure = measure(image: source, frames: frames, label: label,
+                      fixture: Fixture(edgeFrames: [:], smear: [], preExisting: [:])),
+                  sourceMeasure.gatedHolesPercent <= maxHolesPercent,
+                  sourceMeasure.minMargin >= minEdgeMargin, sourceMeasure.slivers.isEmpty
+            else { return nil }
+            protectedCells = PetSpriteStrip.slice(source, frames: frames).compactMap { PetSpriteStrip.raster($0) }.map(plane)
+        }
+        return measure(image: image, frames: frames, label: label, fixture: fixture, protectedCells: protectedCells)
     }
 
-    static func measure(image: NSImage, frames: Int, label: String, fixture: Fixture) -> Measure? {
+    static func measure(image: NSImage, frames: Int, label: String, fixture: Fixture, protectedCells: [Plane]? = nil) -> Measure? {
         let cells = PetSpriteStrip.slice(image, frames: frames).compactMap { PetSpriteStrip.raster($0) }.map(plane)
-        guard !cells.isEmpty else { return nil }
+        guard !cells.isEmpty, protectedCells == nil || protectedCells?.count == cells.count else { return nil }
         let smear = fixture.smear.first { $0.strip == label }
         let edgeFade = fixture.edgeFades?.first { $0.strip == label }
 
@@ -195,11 +221,11 @@ enum SpriteRenderContract {
         var edgeFrames: [Int] = []
         var heights: [Int] = []
 
-        for (index, p) in cells.enumerated() {
-            let w = p.width, h = p.height
+        for (index, full) in cells.enumerated() {
+            let w = full.width, h = full.height
             var top = h, bottom = -1, left = w, right = -1
             for y in 0..<h {
-                for x in 0..<w where p.a(x, y) > 40 {
+                for x in 0..<w where full.a(x, y) > 40 {
                     if y < top { top = y }
                     if y > bottom { bottom = y }
                     if x < left { left = x }
@@ -212,6 +238,19 @@ enum SpriteRenderContract {
                 minMargin = min(minMargin, margin)
                 if margin < minEdgeMargin { edgeFrames.append(index + 1) }
             }
+
+            let p: Plane
+            if let source = protectedCells?[index] {
+                guard source.width == w, source.height == h else { return nil }
+                // Fail closed even for a fully punched-out pixel (which the
+                // semi-transparent-hole statistic alone cannot detect).
+                for i in source.alpha.indices where source.alpha[i] > 235 {
+                    guard Int(full.alpha[i]) + 2 >= Int(source.alpha[i]) else { return nil }
+                }
+                p = Plane(width: w, height: h, alpha: source.alpha.indices.map {
+                    min(source.alpha[$0], full.alpha[$0])
+                })
+            } else { p = full }
 
             // A 1–3 px antialiased fringe/glow can have four inked neighbours.
             // It is still an outside edge, not a hole in a garment. Only exempt
@@ -403,6 +442,32 @@ enum SpriteRenderContract {
             expect(measured.gatedHolesPercent == em.gatedHolesPercent,
                    "bounded debris fade must not mask other positions or frames")
         }
+        // Intentional nonuniform aura: only a separately protected opaque
+        // character permits it. Interior damage still fails, including alpha 0.
+        let aura = strip(cells: 2, width: W, height: H) { ctx in
+            for cell in 0..<2 {
+                for x in 6..<54 { fill(ctx, height: H, x: cell*W+x, y: 6, w: 1, h: 48, alpha: CGFloat(50+x)/255) }
+                fill(ctx, height: H, x: cell*W+18, y: 18, w: 24, h: 24, alpha: 1, copy: true)
+            }
+        }
+        let body = strip(cells: 2, width: W, height: H) { ctx in
+            for cell in 0..<2 { fill(ctx, height: H, x: cell*W+18, y: 18, w: 24, h: 24, alpha: 1) }
+        }
+        let bodyPlanes = PetSpriteStrip.slice(body, frames: 2).compactMap { PetSpriteStrip.raster($0) }.map(plane)
+        let auraChecked = measure(image: aura, frames: 2, label: "synthetic/aura", fixture: none, protectedCells: bodyPlanes)
+        expect(auraChecked != nil && auraChecked!.gatedHolesPercent == 0, "background aura keeps opaque character protected")
+        for alpha in [CGFloat(0), CGFloat(0.5)] {
+            let damaged = strip(cells: 2, width: W, height: H) { ctx in
+                for cell in 0..<2 {
+                    fill(ctx, height: H, x: cell*W+18, y: 18, w: 24, h: 24, alpha: 1)
+                    fill(ctx, height: H, x: cell*W+24, y: 24, w: 8, h: 8, alpha: alpha, copy: true)
+                }
+            }
+            expect(measure(image: damaged, frames: 2, label: "synthetic/aura", fixture: none, protectedCells: bodyPlanes) == nil,
+                   "aura never excuses transparent or semi-transparent character damage")
+        }
+        expect(measure(image: aura, frames: 2, label: "synthetic/aura", fixture: none, protectedCells: []) == nil,
+               "mismatched aura source evidence fails closed")
         // A small patch eaten at ONE alpha inside the garment (under fadeMinHoles): still a hole, not a fade.
         let patch = strip(cells: 2, width: W, height: H) { ctx in
             for cell in 0..<2 {
