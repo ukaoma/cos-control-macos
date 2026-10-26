@@ -777,9 +777,12 @@ struct LiveProvisionalLine: Equatable, Sendable {
 struct LiveMeetingParticipant: Equatable, Identifiable, Sendable {
     let name: String
     let initials: String
-    /// Not a recognized voice ("Speaker", "Ext", "Unidentified 2"): one chip stands for all of them.
+    /// Unattributed audio ("Speaker", "Ext", "Unidentified 2") shares one chip.
+    /// A stable Voice N cluster is anonymous but distinct, so it retains its own chip.
     let unidentified: Bool
     var id: String { unidentified ? "?unidentified" : name }
+    var anonymous: Bool { unidentified || MacVoiceLabel.isVoice(name) }
+    var accessibilityName: String { MacVoiceLabel.isVoice(name) ? name + ", unnamed speaker" : name }
 }
 
 /// The Mac recording start's answer about live cues (server 6.86.0).
@@ -1024,7 +1027,8 @@ enum LiveMeeting {
     }
 
     /// The strip: each voice heard so far, in the order first heard, and which one spoke last. On a Mac recording "You"
-    /// never shows (the global tap leaves the microphone out). Unrecognized voices share one chip.
+    /// never shows (the global tap leaves the microphone out). Unattributed audio shares one chip;
+    /// stable Voice N clusters retain their labels without being presented as recognized identities.
     static func participants(_ turns: [LiveTranscriptTurn], mac: Bool) -> (people: [LiveMeetingParticipant], lastHeard: String?) {
         var people: [LiveMeetingParticipant] = []
         var seen = Set<String>()
@@ -1033,7 +1037,7 @@ enum LiveMeeting {
             let name = turn.speaker.trimmingCharacters(in: .whitespacesAndNewlines)
             if mac, name.lowercased() == "you" { continue }
             let person = unidentified(name) ? LiveMeetingParticipant(name: "Unidentified", initials: "?", unidentified: true)
-                                            : LiveMeetingParticipant(name: name, initials: initials(name), unidentified: false)
+                                            : LiveMeetingParticipant(name: name, initials: MacVoiceLabel.isVoice(name) ? String(name.dropFirst(6)) : initials(name), unidentified: false)
             lastHeard = person.id
             if seen.insert(person.id).inserted { people.append(person) }
         }

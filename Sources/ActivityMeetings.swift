@@ -3099,9 +3099,9 @@ struct LiveParticipantStrip: View {
                     HStack(spacing: 7) {
                         Text(verbatim: person.initials)
                             .font(COSType.body(10.5, weight: .semibold))
-                            .foregroundStyle(person.unidentified ? COSPalette.muted : COSPalette.ink)
+                            .foregroundStyle(person.anonymous ? COSPalette.muted : COSPalette.ink)
                             .frame(width: 24, height: 24)
-                            .background(Circle().fill(person.unidentified ? COSPalette.raised : COSPalette.gold.opacity(0.55)))
+                            .background(Circle().fill(person.anonymous ? COSPalette.raised : COSPalette.gold.opacity(0.55)))
                         VStack(alignment: .leading, spacing: 3) {
                             Text(verbatim: person.name).font(COSType.body(11.5, weight: last ? .semibold : .regular))
                                 .foregroundStyle(last ? .primary : .secondary).lineLimit(1)
@@ -3109,7 +3109,7 @@ struct LiveParticipantStrip: View {
                         }
                     }
                     .accessibilityElement(children: .ignore)
-                    .accessibilityLabel(last ? person.name + ", heard last" : person.name)
+                    .accessibilityLabel(last ? person.accessibilityName + ", heard last" : person.accessibilityName)
                 }
             }
             .padding(.horizontal, 24)

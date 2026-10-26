@@ -95,6 +95,19 @@ import Foundation
         check(["Speaker", "ext", "Unidentified 2", "speaker 3", "Unknown", ""].allSatisfy(LiveMeeting.unidentified) && !LiveMeeting.unidentified("Extra Person"),
               "unidentified labels")
 
+        // Anonymous acoustic clusters must stay separate without being presented as named people.
+        let clustered = LiveMeeting.participants([turn(0, "Voice 2", ms: 0), turn(1, "Ext", ms: 6_000),
+            turn(2, "Voice 1", ms: 12_000), turn(3, "Voice 2", ms: 18_000)], mac: true)
+        check(clustered.people.map(\.name) == ["Voice 2", "Voice 1", "Unidentified"],
+              "distinct live voice clusters preserve first-heard order; unattributed audio stays separate")
+        check(clustered.people.map(\.id) == ["Voice 2", "Voice 1", "?unidentified"] && clustered.lastHeard == "Voice 2",
+              "repeated cluster reuses its chip and last-heard identity")
+        check(clustered.people.allSatisfy(\.anonymous) && clustered.people.map(\.initials) == ["2", "1", "?"],
+              "numbered clusters remain anonymous and have distinct badges")
+        check(clustered.people.first?.accessibilityName == "Voice 2, unnamed speaker"
+              && !mac.people[0].anonymous && mac.people[0].accessibilityName == "Priya Raman",
+              "accessibility distinguishes an unnamed cluster from an identified person")
+
         // ── The title.
         let utc = TimeZone(identifier: "UTC")!
         let event = (title: "Quarterly planning with Northwind", start: start.addingTimeInterval(-5 * 60))
