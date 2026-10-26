@@ -280,7 +280,7 @@ need("DictationSoundLibrary.installedPack(" in app and "PetSpriteStore.bundledCh
      and "pack: petPack?()" in dictation and dictation.count("petPack?()") == 2, "the app tells dictation which pack is installed, for both the sound and its name")
 # The checks' pack file sets must be the shipped state maps', or the Windu test proves nothing about the real packs.
 checks_src = read("Tests/MacDictationChecks.swift")
-for folder, pack_id in (("DefaultPet", "jedi-miles-windu"), ("BundledCharacters/jedi-nia-solari", "jedi-nia-solari"),
+for folder, pack_id in (("BundledCharacters/jedi-miles-windu", "jedi-miles-windu"), ("BundledCharacters/jedi-nia-solari", "jedi-nia-solari"),
                         ("BundledCharacters/jedi-elara-vale", "jedi-elara-vale"), ("BundledCharacters/jedi-rowan-vale", "jedi-rowan-vale")):
     shipped = sorted({v["file"] for v in json.loads((root / "Resources" / folder / "session-pet-states.json").read_text())["poses"].values()})
     need(f'(id: "{pack_id}", files: ["' + '", "'.join(shipped) + '"])' in checks_src, f"the checks list {pack_id}'s shipped pose files")

@@ -3202,7 +3202,8 @@ need('static let bundledCharacters' in models_src,
      "shipped characters fell back to a one-off default instead of a selectable catalog")
 need('id: "jedi-miles-windu"' in models_src,
      "Miles Windu is no longer registered as a bundled character")
-bundled_ids = ["jedi-nia-solari", "jedi-elara-vale", "jedi-rowan-vale"]
+legacy_story_ids = ["jedi-nia-solari", "jedi-elara-vale", "jedi-rowan-vale"]
+bundled_ids = legacy_story_ids + ["jedi-miles-windu"]
 # The list lives in Models.swift, on disk, and twice in this file. Pin disk
 # against the registry so a fifth character cannot ship untested and a deleted
 # folder cannot surface only at runtime as "This build does not carry X".
@@ -3212,7 +3213,14 @@ need(on_disk == set(bundled_ids),
 for bundled_id in sorted(on_disk):
     need(f'id: "{bundled_id}"' in models_src,
          f"{bundled_id} ships on disk but is not in the bundledCharacters registry")
-for bundled_id in bundled_ids:
+# The illustrated pack has a different approved manifest and frame grid.
+# Run its dedicated hash/cadence/alpha contract instead of the Jedi360 schema.
+need(re.search(r'id: "jedi-miles-windu",[\s\S]*?folderName: "BundledCharacters/jedi-miles-windu"', models_src) is not None,
+     "Miles gallery must resolve the illustrated bundle, not the retained V15 rollback")
+subprocess.run([sys.executable, str(root / "Tests/illustrated-pack-pins.py"), str(root)], check=True)
+need('zsh "$ROOT/Tests/run-illustrated-pet.sh"' in (root / "Tests/run.sh").read_text(),
+     "illustrated native stock-upgrade and rotation contract must run in the full suite")
+for bundled_id in legacy_story_ids:
     need(f'id: "{bundled_id}"' in models_src,
          f"{bundled_id} is missing from the bundled-character registry")
     pack = root / "Resources/BundledCharacters" / bundled_id
@@ -3302,16 +3310,18 @@ for bundled_id in bundled_ids:
 # character is chosen, so those users are already at the current value.
 gen = re.search(r"petDefaultArtGeneration = (\d+)", model)
 need(gen is not None, "the art-generation constant is gone")
-need(int(gen.group(1)) >= 24,
-     "Jedi 360 V2 requires art generation24 for existing users")
+need(int(gen.group(1)) >= 25,
+     "illustrated Windu requires art generation25 for existing users")
 need("refreshRecognizedBundledCharacter(" in model,
      "launch must call the retained-stock Jedi migration")
 retained_fn = models_src[models_src.index("static func refreshRecognizedBundledCharacter("):]
 retained_fn = retained_fn[:retained_fn.index("\n    static func installDefault(")]
 need("canonicalState(data) == installedState" in retained_fn and "installed == retained" in retained_fn,
      "Jedi migration must match complete metadata and retained image bytes")
-need("character.id != legacyDefaultCharacterID" in retained_fn,
-     "the Jedi migration must not target Miles")
+need("for character in bundledCharacters {" in retained_fn
+     and "character.id == legacyDefaultCharacterID" in retained_fn
+     and "retainedMilesOverride ?? bundledDefaultURL(bundle: bundle)" in retained_fn,
+     "Miles must use exact-stock recognition against the retained V15 bytes")
 need("removeAll(" not in retained_fn,
      "stock upgrade must not clear the active character before landing files")
 need(retained_fn.index("try data.write") < retained_fn.index("try sourceState.write"),
