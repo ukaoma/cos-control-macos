@@ -74,7 +74,7 @@ pin(d.count("pill = .listening(") == 1 and d.count('phase = "Listening"') == 1 a
     "one way to listen", "LISTENING and the start sound are set in exactly one place")
 
 # 2. Waiting for the first buffer: superseded returns quietly; a failure or silence closes the microphone and says why.
-wait = body(d, "    private func awaitFirstAudio(_ capture: DictationMicrophoneCapture, attempt: UUID) async -> DictationStart.FirstAudio {")
+wait = body(d, "    private func awaitFirstAudio(_ capture: DictationMicrophoneCapture, attempt: UUID, until limit: TimeInterval? = nil) async -> DictationStart.FirstAudio {")
 pin("while generation == attempt, !Task.isCancelled {" in wait and "if let at = capture.firstAudioUptime { return .arrived(at) }" in wait
     and "if ProcessInfo.processInfo.systemUptime >= deadline { return .timedOut }" in wait and "return .superseded" in wait,
     "first buffer wait", "the wait ends at the first audio, a failure, the deadline, or a newer dictation")
@@ -134,10 +134,11 @@ pin("if first == .failed, startFailure == nil, DictationMicFallback.triggers(eng
 pin("guard DictationMicFallback.mayRetry(firstAttemptMs: firstMs) else {" in fb and "DictationMicFallback.candidates(good: good, devices: devices.map(\\.device), failedUID: failed?.uid, lidClosed: lid)" in fb
     and "let opened = try? await DictationAudioQueues.perform(on: DictationAudioQueues.input) {" in fb
     and fb.index("DictationAudioQueues.perform(on: DictationAudioQueues.input)") < fb.index("DictationAudioDevices.fallbackInputs()")
-    and "if arrived, await firstSound(fresh, attempt: attempt, deadline: deadline + 0.4) {" in fb, "fallback rules",
+    and "if arrived, await firstSound(fresh, attempt: attempt, deadline: deadline + 0.4) {" in fb
+    and "await awaitFirstAudio(fresh, attempt: attempt, until: deadline)" in fb and "min(limit ?? .infinity," in wait, "fallback rules",
     "a fast failure only, the tested candidate order, every HAL read on the input queue, and accepted only with sound in its first 300 ms")
 logs = [line for line in fb.splitlines() + start.splitlines() if "dictationLog" in line and ("fallback" in line or "start failed: engine_start" in line)]
-pin(len(logs) == 3 and not any(".name" in line or "uid" in line.lower().replace("transport", "") for line in logs), "fallback logs",
+pin(len(logs) == 4 and not any(".name" in line or "uid" in line.lower().replace("transport", "") for line in logs), "fallback logs",
     "the fallback and start-failure lines carry the transport code, never a device name or UID")
 pin("fail(DictationMicFallback.stuckMessage(continuityPresent: startFailure?.continuityPresent ?? false), code: DictationFailReason.engineStart.code())" in start
     and "error.localizedDescription; dictationLog" not in start, "fallback messages", "a failed engine start shows the mapped words, never the raw avfaudio error")

@@ -66,6 +66,16 @@ import Foundation
         }
         // F1 (r3): the port matches the server function on every shared row, 100%.
         check(wrong.isEmpty, "fillers fixture both", wrong.prefix(5).joined(separator: "; "))
+        // Control's gate on the server's own language rows: reported, not required to agree (the detectors differ). A
+        // floor keeps it from getting worse; the known differences are in the CHANGELOG.
+        let serverRows = rows.filter { $0["scope"] as? String == "server" }
+        var agree = 0, differ: [String] = []
+        for row in serverRows {
+            guard let input = row["input"] as? String, let expected = row["expected"] as? String else { continue }
+            if DictationFillers.clean(input, enabled: true).text == expected { agree += 1 } else { differ.append(row["id"] as? String ?? "?") }
+        }
+        print("fillers gate parity: Control agrees with the server's gate on \(agree) of \(serverRows.count) server-only rows; differs on \(differ.joined(separator: ", "))")
+        check(serverRows.count >= 32 && agree >= serverRows.count - 3, "fillers gate parity", "\(agree) of \(serverRows.count)")
     }
 
     static func fillerClient() {
@@ -136,6 +146,7 @@ import Foundation
             ("after a bang", "next one", at("great! "), "Next one"),
             ("after a question", "next one", at("ready? "), "Next one"),
             ("after a line break", "next one", at("first line\n"), "Next one"),
+            ("after a closed fence", "next one", at("```\ncode\n```\nok.\n"), "Next one"),
             ("period inside a quote", "next one", at("he said \"done.\" "), "Next one"),
             ("i alone", "i think so", start, "I think so"),
             ("open quote", "\"hello\" she said", start, "\"Hello\" she said"),
@@ -153,6 +164,8 @@ import Foundation
             ("an initial", "smith", at("ask J. "), "casing initial"),
             ("ellipsis", "maybe", at("well... "), "casing ellipsis"),
             ("ellipsis glyph", "maybe", at("well… "), "casing ellipsis"),
+            ("code fence", "echo hi", at("text\n```\n"), "casing code fence"),
+            ("code fence with a language", "make build", at("```sh\n"), "casing code fence"),
             ("iPhone", "iPhone is ready", start, "casing inner capital"),
             ("eBay", "eBay listing is up", start, "casing inner capital"),
             ("handle", "@dana can you look", start, "casing mark"),
@@ -374,7 +387,15 @@ import Foundation
         check(W.step(held: [.cmd], enabled: false, everHeld: true, waitedMs: 0, sinceKeyDownMs: 5_000, releasedAtMs: nil) == .skip(.keysHeld), "wait toggle off")
         check(W.step(held: [], enabled: true, everHeld: false, waitedMs: 0, sinceKeyDownMs: 0, releasedAtMs: nil) == .go, "wait nothing held goes")
         check(W.step(held: [], enabled: true, everHeld: true, waitedMs: 700, sinceKeyDownMs: 100, releasedAtMs: 650) == .wait, "wait quiet after release")
-        check(W.step(held: [], enabled: true, everHeld: true, waitedMs: 1_000, sinceKeyDownMs: 300, releasedAtMs: 650) == .go, "wait quiet after release")
+        check(W.step(held: [], enabled: true, everHeld: true, waitedMs: 1_000, sinceKeyDownMs: 300, releasedAtMs: 650) == .wait
+              && W.step(held: [], enabled: true, everHeld: true, waitedMs: 1_250, sinceKeyDownMs: 600, releasedAtMs: 650) == .go, "wait quiet after release")
+        // QA W-1: the wait's quiet is the re-proof's, so a swap the wait lets through is never skipped as typing at ⌘V.
+        check(W.quietMilliseconds == DictationPolishSwap.quietMilliseconds
+              && DictationPolishSwap.reproof(planCount: 10, proofCount: 10, now: DictationFieldSnapshot(characters: 10, location: 0, length: 4),
+                                             selectedText: "abcd", edit: DictationReplace.Edit(location: 0, length: 4, original: "abcd", replacement: "x"),
+                                             sinceKeyMs: W.quietMilliseconds) == nil, "wait quiet matches the re-proof")
+        check(W.step(held: [], enabled: true, everHeld: true, waitedMs: 1_249, sinceKeyDownMs: 10, releasedAtMs: 650) == .wait
+              && W.step(held: [], enabled: true, everHeld: true, waitedMs: 1_250, sinceKeyDownMs: 10, releasedAtMs: 650) == .skip(.typing), "wait quiet bound")
         check(W.step(held: [], enabled: true, everHeld: true, waitedMs: 1_900, sinceKeyDownMs: 50, releasedAtMs: 650) == .skip(.typing), "wait quiet bound")
         // The pure decision driven like the store drives it: a fake keyboard, a fake frontmost app, a fake clipboard.
         struct Fake { var downUntil: Int; var lastKeyDown: Int; var frontmost: Int32; var changeCount: Int }
@@ -403,8 +424,22 @@ import Foundation
         // A newer clipboard is never written over, on every paste path.
         check(DictationClipboard.restoresOver(setChangeCount: 5, currentChangeCount: 5) && !DictationClipboard.restoresOver(setChangeCount: 5, currentChangeCount: 6),
               "wait newer clipboard kept")
-        check(DictationPolishSwap.deliveryWaitMilliseconds == 4_000 && DictationPolishSwap.deliveryWaitMilliseconds >= 600 + W.releaseMilliseconds + W.quietMilliseconds + 1_400,
-              "wait delivery cap covers the swap")
+        // QA W-2: the worst wait, found by driving the step adversarially (held to the bound, then typing on), plus what
+        // the swap spends after it while it holds swapEditing, must fit under the next delivery's cap.
+        var worst = 0
+        for releaseAt in stride(from: 0, through: 3_000, by: 30) {
+            var waited = 0, released: Int?
+            while true {
+                let keys: Set<W.Key> = waited < releaseAt ? [.cmd] : []
+                if keys.isEmpty, released == nil { released = waited }
+                if W.step(held: keys, enabled: true, everHeld: true, waitedMs: waited, sinceKeyDownMs: 0, releasedAtMs: released) != .wait { break }
+                waited += W.pollMilliseconds
+            }
+            worst = max(worst, waited)
+        }
+        let after = (DictationDelivery.pollMilliseconds.last ?? 0) + DictationDelivery.modifierWaitMilliseconds + (DictationPolishSwap.landingPollMilliseconds.last ?? 0)
+        check(worst <= W.maximumWaitMilliseconds && DictationPolishSwap.deliveryWaitMilliseconds >= worst + after + 1_000,
+              "wait delivery cap covers the swap", "worst wait \(worst) ms + \(after) ms against \(DictationPolishSwap.deliveryWaitMilliseconds)")
         check(W.stored(nil) && !W.stored(false), "wait default on")
     }
 
@@ -426,7 +461,8 @@ import Foundation
         check(G.enqueue(outstanding: false, breakerOpen: false) == .play, "sound plays")
         check(G.enqueue(outstanding: false, breakerOpen: true) == .dropBreaker && G.dequeue(askedAt: 0, now: 0.1, breakerOpen: true) == .dropBreaker, "sound breaker")
         check(G.dequeue(askedAt: 10, now: 10.31, breakerOpen: false) == .dropLate && G.dequeue(askedAt: 10, now: 10.29, breakerOpen: false) == .play, "sound drop late")
-        check(!DictationAudioCopy.isPermission(status: 2_003_329_396) && DictationAudioCopy.deviceNotResponding.contains("didn't respond"), "audio what is not permission")
+        check(!DictationAudioCopy.isPermission(status: 2_003_329_396) && !DictationAudioCopy.isPermission(status: -50) && DictationAudioCopy.isPermission(status: 0x2168_6F67)
+              && DictationAudioCopy.deviceNotResponding.contains("didn't respond"), "audio what is not permission")
         // The microphone fallback.
         typealias F = DictationMicFallback
         check(F.fourCC(0x626C_746E) == "bltn" && F.fourCC(0x7573_6220) == "usb " && F.fourCC(0x6363_7764) == "ccwd" && F.fourCC(0) == "", "fallback transport codes")

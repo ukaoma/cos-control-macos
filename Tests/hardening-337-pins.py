@@ -197,7 +197,7 @@ overlay = body(dictation, "@MainActor final class DictationOverlayPresenter {", 
 need("DictationOverlayFrame.place(size: size, caret: nil, screen: screen)" in overlay and "NSWindow.didResizeNotification" in overlay
      and "self?.panelResized()" in overlay and "y: screen.minY + 8, width: size.width" not in overlay,
      "[fix frame] the floating panel is placed inside its screen, again whenever its content resizes it")
-need("delivered.own = target" in dictation and "finish(delivered.context?.text ?? text, outcome: delivered.outcome, target: delivered.target, context: delivered.context, own: delivered.own)" in dictation,
+need("delivered.own = target" in dictation and "finish(delivered.typed, outcome: delivered.outcome, target: delivered.target, context: delivered.context, own: delivered.own)" in dictation,
      "[own learn] a dictation into COS's own text view carries its target")
 fin = body(dictation, "    private func finish(_ text: String, outcome: DictationDeliveryOutcome", "\n        if let flash = outcome.flash {")
 need("} else if let own, case .inserted = outcome {" in fin and "editWatcher.startOwn(own, mode: learnMode)" in fin, "[own learn] the watch starts for COS's own fields")

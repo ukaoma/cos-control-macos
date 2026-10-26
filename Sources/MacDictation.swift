@@ -260,6 +260,10 @@ struct DictationDelivered: Sendable {
     /// whether the rule would capitalize this dictation, with the setting on or off. Memory only; never logged as text.
     var casing: DictationCasing.Before? = nil
     var wouldCapitalize = false
+    /// 0.5.345 (QA B1): exactly what COS typed or copied: the field's own spellings and the start-of-sentence capital
+    /// applied (and a terminal's line breaks flattened). The record, the edit watch and Undo polish all read this, so
+    /// they agree with the field. Every construction sets it.
+    var typed = ""
 }
 
 /// 0.5.337: a dictation typed into one of COS Control's own text views (the Work task editor, the Ask box). Held weakly:
@@ -302,8 +306,8 @@ struct DictationOwnTarget: @unchecked Sendable {
             }
             let ms = Int(Date().timeIntervalSince(started) * 1000), span = landed != nil ? "measured" : "none"
             dictationLog.notice("delivery \(facts, privacy: .public) outcome=\(String(describing: outcome), privacy: .public) ms=\(ms) span=\(span, privacy: .public)")
-            if case .inserted = outcome { return DictationDelivered(outcome: outcome, target: landed, context: context, casing: casing, wouldCapitalize: would) }
-            return DictationDelivered(outcome: outcome, target: nil, context: context, casing: casing, wouldCapitalize: would)
+            if case .inserted = outcome { return DictationDelivered(outcome: outcome, target: landed, context: context, casing: casing, wouldCapitalize: would, typed: text) }
+            return DictationDelivered(outcome: outcome, target: nil, context: context, casing: casing, wouldCapitalize: would, typed: text)
         }
 
         let trusted = AXIsProcessTrusted()
@@ -647,7 +651,7 @@ struct DictationOwnTarget: @unchecked Sendable {
         let postedAt = Date()
         var landed = false, waited = 0
         var landing = DictationPolishSwap.Landing.pending
-        let polls = [80, 200, 400, 700]
+        let polls = DictationPolishSwap.landingPollMilliseconds
         for ms in polls {
             try? await Task.sleep(for: .milliseconds(ms - waited)); waited = ms
             let after = snapshot(element), back = string(element, location: edit.location, length: edit.replacement.utf16.count)
@@ -769,12 +773,12 @@ struct DictationOwnTarget: @unchecked Sendable {
     static func copyOnly(_ text: String, clipboardMoved: Bool) -> DictationDelivered {
         if clipboardMoved {
             dictationLog.notice("delivery route=interrupted outcome=clipboard kept")
-            return DictationDelivered(outcome: .refused(.interruptedClipboardKept), target: nil)
+            return DictationDelivered(outcome: .refused(.interruptedClipboardKept), target: nil, typed: text)
         }
         let wrote = SystemDictationPasteboard(NSPasteboard.general).writeTranscript(text, markerTypes: [])
         let outcome: DictationDeliveryOutcome = .refused(wrote ? .interrupted : .clipboardFailed)
         dictationLog.notice("delivery route=interrupted outcome=\(String(describing: outcome), privacy: .public)")
-        return DictationDelivered(outcome: outcome, target: nil)
+        return DictationDelivered(outcome: outcome, target: nil, typed: text)
     }
 
     private static func ownWindow(_ text: String, app: String) -> (DictationDeliveryOutcome, DictationOwnTarget?) {
@@ -1723,7 +1727,7 @@ final class DictationSoundPlayer: @unchecked Sendable {
     /// 0.5.314: AVAudioPlayerNode calls this on its own completion queue. A closure written inside this @MainActor
     /// class inherits main-actor isolation, and Swift 6 checks that on entry: 0.5.313 trapped (EXC_BREAKPOINT in
     /// dispatch_assert_queue) the moment a start or stop sound finished. Built here, outside any actor, the closure
-    /// carries no isolation and only hops to the output queue the player lives on (0.5.328; it hopped to the main actor).
+    /// carries no isolation and only hops to the sound queue the player lives on (0.5.345; 0.5.328 to 0.5.344: the output queue; before that the main actor).
     private nonisolated static func playedBack(_ owner: DictationSoundPlayer, id: Int) -> @Sendable (AVAudioPlayerNodeCompletionCallbackType) -> Void {
         { [weak owner] _ in
             guard let owner else { return }
@@ -2284,14 +2288,21 @@ enum DictationSpareBuild: Sendable {
         guard let (fresh, used) = opened else { startMarks?.micFallback = DictationMicFallback.Outcome.none.rawValue; return nil }
         capture = fresh
         let arrived: Bool
-        if case .arrived = await awaitFirstAudio(fresh, attempt: attempt) { arrived = true } else { arrived = false }
+        if case .arrived = await awaitFirstAudio(fresh, attempt: attempt, until: deadline) { arrived = true } else { arrived = false }
+        if !arrived, generation == attempt {
+            // No first buffer before the fallback's deadline: macOS audio is stuck, not this microphone silent.
+            capture = nil; DictationAudioQueues.input.async { _ = try? fresh.stop() }
+            startMarks?.micFallback = DictationMicFallback.Outcome.stuck.rawValue
+            dictationLog.notice("microphone fallback no first buffer transport=\(used.transport, privacy: .public)")
+            return nil
+        }
         if arrived, await firstSound(fresh, attempt: attempt, deadline: deadline + 0.4) {
             startMarks?.micFallback = DictationMicFallback.Outcome.used.rawValue
             micNote = DictationMicFallback.usedMessage(failed: failed?.name ?? "the default microphone", used: used.name)
             dictationLog.notice("microphone fallback used transport=\(used.transport, privacy: .public)")
             return fresh
         }
-        capture = nil; _ = try? fresh.stop()
+        capture = nil; DictationAudioQueues.input.async { _ = try? fresh.stop() }
         startMarks?.micFallback = DictationMicFallback.Outcome.silent.rawValue
         dictationLog.notice("microphone fallback silent transport=\(used.transport, privacy: .public)")
         _ = continuity
@@ -2454,8 +2465,9 @@ enum DictationSpareBuild: Sendable {
         if let v = late.quietStartMs { timing?.quietStartMs = v }
     }
     /// 0.5.327: STARTING waits here for the microphone's first buffer, the moment COS can truly hear the person.
-    private func awaitFirstAudio(_ capture: DictationMicrophoneCapture, attempt: UUID) async -> DictationStart.FirstAudio {
-        let deadline = ProcessInfo.processInfo.systemUptime + Double(DictationStart.firstBufferTimeoutMs) / 1000
+    /// 0.5.345 (QA): `until`, a fallback's own deadline, so its first-buffer wait stays inside the fallback's bound.
+    private func awaitFirstAudio(_ capture: DictationMicrophoneCapture, attempt: UUID, until limit: TimeInterval? = nil) async -> DictationStart.FirstAudio {
+        let deadline = min(limit ?? .infinity, ProcessInfo.processInfo.systemUptime + Double(DictationStart.firstBufferTimeoutMs) / 1000)
         while generation == attempt, !Task.isCancelled {
             if let at = capture.firstAudioUptime { return .arrived(at) }
             if capture.failure != nil { return .failed }
@@ -3036,7 +3048,7 @@ enum DictationSpareBuild: Sendable {
                 timing?.settle(DictationPolishSwap.unswapped(pasteFirst: pasteThenPolish, polished: polished != nil, copyOnly: copyOnly, unmeasurable: unmeasurable != nil),
                                ms: nil, route: nil, why: unmeasurable)
                 // What was typed, after the field's own words respelled it (0.5.323), is what is kept and watched.
-                finish(delivered.context?.text ?? text, outcome: delivered.outcome, target: delivered.target, context: delivered.context, own: delivered.own)
+                finish(delivered.typed, outcome: delivered.outcome, target: delivered.target, context: delivered.context, own: delivered.own)
             } catch {
                 guard generation == attempt else { return }; let reason = error.localizedDescription; dictationLog.error("transcribe failed: \(reason, privacy: .public)")
                 // 0.5.327: how long the helper ran before it failed, and which way it failed (a code, not its words).
@@ -3207,7 +3219,7 @@ enum DictationSpareBuild: Sendable {
         timing?.releaseToFirstTextMs = firstTextMs(); markFirstText()
         // This dictation's own line from here: a newer press stops and measures a line of its own.
         var line = timing; timing = nil
-        let typed = delivered.context?.text ?? text
+        let typed = delivered.typed
         let id = finish(typed, outcome: delivered.outcome, target: delivered.target, context: delivered.context, swapPending: true)
         var inserted = false
         if case .inserted = delivered.outcome { inserted = true }
@@ -3786,6 +3798,8 @@ enum DictationSpareBuild: Sendable {
             insertTargets[offer.recordID] = replaced.target
             switch replaced.result {
             case .replaced:
+                // 0.5.345 (QA): the field now holds the fix; Undo polish would put back text from before it.
+                swappedIDs.remove(offer.recordID)
                 fixNote = "Replaced it in \(target.app)."
             case .copied(let reason):
                 copy(offer.corrected); fixNote = DictationReplace.copiedNote(reason, app: target.app)

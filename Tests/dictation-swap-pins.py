@@ -225,8 +225,11 @@ def check(d, core):
     pin("DictationClipboard.restoresOver(setChangeCount: changeCount, currentChangeCount: board.changeCount)" in refused
         and "counters.clipboardNewerKept += 1" in refused and "DictationClipboard.restore(saved, to: board)" in refused,
         "newer clipboard kept", "a refused swap puts the clipboard back only while COS's own write is still the newest (MD:548)")
-    pin("static let deliveryWaitMilliseconds = 4_000" in core and "line?.includeSwap(wait: replaced.wait, counters: replaced.counters)" in first,
-        "delivery cap", "the next delivery waits up to 4 s for a swap, and the swap's wait and counters reach its line")
+    # QA W-2: the cap is derived from what the swap can spend (the checks drive the wait to its worst case against it).
+    pin("static let deliveryWaitMilliseconds = DictationSwapWait.maximumWaitMilliseconds + (DictationDelivery.pollMilliseconds.last ?? 0)" in core
+        and "let polls = DictationPolishSwap.landingPollMilliseconds" in replace
+        and "line?.includeSwap(wait: replaced.wait, counters: replaced.counters)" in first,
+        "delivery cap", "the next delivery waits for the swap's derived worst case, the landing polls are that constant, and the swap's wait and counters reach its line")
 
 
 MUTANTS = [

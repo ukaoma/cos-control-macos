@@ -146,7 +146,7 @@ need(hosts is not None and terminals is not None and set(re.findall(r'"([^"]+)"'
 # ── 3. Store flow: the pill, the flash, the card; text stays private.
 transcribe = body(dictation, "private func transcribe(_ wav: Data, attempt: UUID) {")
 need("let delivered = copyOnly ? DictationInsertion.copyOnly(text, clipboardMoved: clipboardMoved)\n                    : await DictationInsertion.deliver(text, restoreClipboard: restoreClipboard, fieldContext: useFieldContext, casing: casingRequest())" in transcribe
-     and "finish(delivered.context?.text ?? text, outcome: delivered.outcome, target: delivered.target, context: delivered.context, own: delivered.own)" in transcribe,
+     and "finish(delivered.typed, outcome: delivered.outcome, target: delivered.target, context: delivered.context, own: delivered.own)" in transcribe,
      "a finished transcript must be delivered and recorded")
 # 0.5.313 (Miles 2026-10-15): an interrupted dictation is transcribed and copied, never thrown away and never typed.
 need("let copyOnly = pendingInterrupted\n                let clipboardMoved = interruptedChangeCount.map { $0 != NSPasteboard.general.changeCount } ?? false\n                pendingAudio = nil" in transcribe,
@@ -535,7 +535,7 @@ need(replace_ui.count("copy(offer.corrected)") == 4 and 'fixNote = "Copied the c
 need("DictationReplace.span(pid: app.processIdentifier, baseline: baseline, after: after, count: count)" in deliver
      and "baseline: beforePaste, after: measuredAfterPaste, count: count)" in deliver,
      "the inserted range is recorded from the measurement, on the Accessibility and ⌘V routes")
-need("if case .inserted = outcome { return DictationDelivered(outcome: outcome, target: landed, context: context, casing: casing, wouldCapitalize: would) }" in deliver,
+need("if case .inserted = outcome { return DictationDelivered(outcome: outcome, target: landed, context: context, casing: casing, wouldCapitalize: would, typed: text) }" in deliver,
      "only a measured insertion carries a target")
 finish = body(dictation, "    private func finish(")
 need("fixOfferID = offer ? record.id : nil" in finish and "DictationQuickFix.offerSeconds" in finish, "the flash carries Fix for 5 s")
@@ -670,7 +670,7 @@ need(deliver.count("readContext(") == 1 and all(step in deliver for step in step
      "the field is read after it is measured and before anything is typed, and what is typed (and counted) is the respelled text")
 need("var text = terminal ? DictationDelivery.terminalText(raw) : raw" in deliver and "var count = text.utf16.count" in deliver
      and deliver.index("var context: DictationFieldContext.Applied?") < deliver.index("func done(_ outcome: DictationDeliveryOutcome) -> DictationDelivered {")
-     and "return DictationDelivered(outcome: outcome, target: nil, context: context, casing: casing, wouldCapitalize: would)" in deliver,
+     and "return DictationDelivered(outcome: outcome, target: nil, context: context, casing: casing, wouldCapitalize: would, typed: text)" in deliver,
      "every outcome after the read carries it, so the record keeps what was typed")
 need("DictationFieldContext.plan(enabled: enabled, secure: secure(target), terminal: terminal," in read_ctx
      and "guard case .read(let before, let after) = plan else {" in read_ctx,

@@ -61,6 +61,15 @@ def check(src, fixture):
         and "rawHeard: lastPolish == nil ? lastRawHeard : nil)" in d, "fillers once",
         "one strip for every typed or copied path, never in Mac recording, and what was heard is kept when it changed")
 
+    # 2b. QA B1: what is recorded is exactly what was typed (respelled and capitalized), on both delivery paths, and every
+    # DictationDelivered carries it; the landed target holds the same text, so the watch and the record agree.
+    deliver = body(d, "    static func deliver(_ raw: String, restoreClipboard: Bool, fieldContext: Bool = false,\n                        casing request: DictationCasing.Request = DictationCasing.Request(enabled: false)) async -> DictationDelivered {")
+    pin(d.count("DictationDelivered(outcome:") == 4 and d.count("typed: text)") >= 4
+        and "finish(delivered.typed, outcome: delivered.outcome, target: delivered.target, context: delivered.context, own: delivered.own)" in transcribe
+        and "        let typed = delivered.typed\n" in d and "delivered.context?.text ?? text" not in d
+        and deliver.count("terminal: terminal, app: name, text: text,") == 2 and "if request.enabled { text = capped; count = text.utf16.count }" in deliver,
+        "record what was typed", "the record and the paste-first baseline are delivered.typed, the same text the landed target and the field hold")
+
     # 3. The six settings: shown in Settings, read with their tested default, stored under their key.
     for name, title, key, stored in (("removeFillers", "DictationFillers.settingTitle", "DictationFillers.defaultsKey", "DictationFillers.stored("),
                                      ("capitalizeStart", "DictationCasing.settingTitle", "DictationCasing.defaultsKey", "DictationCasing.stored("),
@@ -93,6 +102,8 @@ def check(src, fixture):
         "the watch stops, the whole span is replaced without automatic, Claude's version waits for Apply polished, nothing is copied")
     replace_fn = body(d, "    static func replace(_ target: DictationInsertTarget, corrected: String, restoreClipboard: Bool, wholeOnly: Bool = false,\n                        waitForKeys: Bool = false, automatic: Bool = false) async -> Replaced {")
     pin("if wholeOnly, let reason = DictationUndoPolish.placed(plan, span: target.span) {" in replace_fn, "undo polish", "a moved span refuses through the tested rule")
+    pin(body(d, "    func replaceCorrected() {").count("swappedIDs.remove(offer.recordID)") == 1, "undo polish",
+        "a Fix a word replace clears Undo polish, so it never puts back text from before the fix")
     pin("swappedIDs.insert(id)" in d and "polishUndoID = id; polishUndoPill = flash" in d and "DictationHistory.polishing(id, to: polished, heard: heard," in d,
         "undo polish", "a landed swap offers Undo polish on the pill and the card")
 
@@ -185,6 +196,11 @@ MUTANTS = [
     ("summary chains twice", "whatsnew", "Plus everything in 0.5.344: ", "Plus everything in 0.5.343: and Plus everything in 0.5.344: ", "summary cap"),
     ("an em dash in the entry", "changelog", "## 0.5.345 (build 399), Dictation parity, Wave A:", "## 0.5.345 (build 399), Dictation parity — Wave A:", "copy"),
     ("no 6.91.1 pairing", "changelog", "Pairs with COS server 6.91.1", "Pairs with COS server 6.91.0", "pairing"),
+    ("B1 back: record the respelled text only", "d", "finish(delivered.typed, outcome: delivered.outcome,", "finish(delivered.context?.text ?? text, outcome: delivered.outcome,", "record what was typed"),
+    ("B1 back: swap baseline without the capital", "d", "        let typed = delivered.typed\n", "        let typed = delivered.context?.text ?? text\n", "record what was typed"),
+    ("B1 back: a delivery without what it typed", "d", "            return DictationDelivered(outcome: outcome, target: nil, context: context, casing: casing, wouldCapitalize: would, typed: text)",
+     "            return DictationDelivered(outcome: outcome, target: nil, context: context, casing: casing, wouldCapitalize: would)", "record what was typed"),
+    ("Undo polish survives Fix a word", "d", "                swappedIDs.remove(offer.recordID)\n", "", "undo polish"),
     ("parity lane not wired", "run", 'zsh "$ROOT/Tests/run-dictation-parity.sh"', 'true "$ROOT/Tests/run-dictation-parity.sh"', "lanes wired"),
     ("picker never reads the guard", "d", 'meaningGuard: response.details["meaningGuard"]?.bool, stylePairs: pairs, available: true)', 'meaningGuard: nil, stylePairs: pairs, available: true)', "picker options"),
 ]

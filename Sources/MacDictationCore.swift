@@ -477,8 +477,8 @@ enum DictationAudioQueues {
     /// serialises its own engine calls), so the 0.5.326 release tail closes exactly when it did.
     /// User-interactive: the press waits on it, as it used to wait on the main thread.
     static let input = DispatchQueue(label: "com.gotcos.control.dictation.input", qos: .userInteractive)
-    /// Other apps' quiet (mute or lower volume) and COS's own start and stop sounds. The start sound is queued before the
-    /// mute, so COS's own audio object exists when the mute excludes it, and every end follows its begin.
+    /// Other apps' quiet (mute or lower volume): every end follows its begin. 0.5.345: COS's own start and stop sounds
+    /// moved to `sound`; the mute finds COS's own audio object through the running microphone (muteOwnObject says so).
     static let output = DispatchQueue(label: "com.gotcos.control.dictation.output", qos: .userInitiated)
     /// 0.5.345 (A-W1): COS's own start and stop sounds, on their own queue: a sound stuck in a wedged HAL never holds up
     /// the mute, its end, the volume restore or quit (10/25: both waited 5.1 s on one queue, 10.4 s in all).
@@ -2679,9 +2679,13 @@ enum DictationPolishSwap {
     static let quietMilliseconds = 600
     static let quietPollMilliseconds = 100
     /// A delivery waits at most this long for a swap that is editing a field right now.
-    /// 0.5.345 (A-W3b): 4,000, so the whole swap (the wait for ⌘ or ⌃, the quiet moment, the proof and the paste) fits
-    /// inside it and the next dictation never overlaps the clipboard.
-    static let deliveryWaitMilliseconds = 4_000
+    /// 0.5.345 (A-W3b, QA W-2): derived from what the swap can spend while `swapEditing` is held, so the next delivery
+    /// never overlaps it: the ⌘/⌃ wait, the selection poll, paste()'s modifier wait, the landing polls, and a bound for
+    /// the Accessibility reads in between (each under a 0.25 s timeout).
+    static let landingPollMilliseconds = [80, 200, 400, 700]
+    static let accessibilityReadAllowanceMilliseconds = 1_500
+    static let deliveryWaitMilliseconds = DictationSwapWait.maximumWaitMilliseconds + (DictationDelivery.pollMilliseconds.last ?? 0)
+        + DictationDelivery.modifierWaitMilliseconds + (landingPollMilliseconds.last ?? 0) + accessibilityReadAllowanceMilliseconds
     /// The pill's one line, only when a swap was skipped.
     static let skippedNotice = "POLISHED VERSION IN ACTIVITY"
 
@@ -5495,8 +5499,8 @@ enum DictationFillers {
     private static let trailingPause = #"^[ \t]*(?:,|\.{2,}|…|--|\u2014|\u2013)?[ \t]*"#
     private static let ownSentenceEnd = #"^[ \t]*[.?!]+[ \t]*"#
     private static let closesClause = #"^(?:[.?!;:)\]}"”’]|\z|\n)"#
-    private static let abbreviation = #"(?:^|[\s(“"‘'])(?:mrs?|ms|dr|prof|st|jr|sr|vs|etc|e\.g|i\.e|a\.m|p\.m|u\.s)\.["”’)]*\z"#
-    private static let initial = #"(?:^|[\s(“"‘'])[A-Z]\.["”’)]*\z"#
+    static let abbreviation = #"(?:^|[\s(“"‘'])(?:mrs?|ms|dr|prof|st|jr|sr|vs|etc|e\.g|i\.e|a\.m|p\.m|u\.s)\.["”’)]*\z"#
+    static let initial = #"(?:^|[\s(“"‘'])[A-Z]\.["”’)]*\z"#
     private static let quoteOpen = #"["“”'‘’]\z"#
     private static let quoteClose = #"^["“”'‘’]"#
     private static let pauseAfter = #"^[ \t]*(?:,|\.{2,}|…)"#
@@ -5647,13 +5651,17 @@ enum DictationCasing {
     static func startsSentence(_ before: Before) -> Bool {
         let trimmed = before.text.replacingOccurrences(of: #"[ \t]+\z"#, with: "", options: .regularExpression)
         if trimmed.isEmpty { return before.reachesStart }
+        // A code fence line ("```" or "```swift") before the caret: the dictation is code, so no capital (QA 0.5.345).
+        if test(#"(?:^|\n)[ \t]*```[^\n]*\n\z"#, trimmed) { return false }
         if trimmed.hasSuffix("\n") || trimmed.hasSuffix("\r") || trimmed.hasSuffix("\u{2028}") || trimmed.hasSuffix("\u{2029}") { return true }
         guard test(#"[.?!]["”’)]*\z"#, trimmed) else { return false }
-        if test(#"(?:\.{2,}|…)["”’)]*\z"#, trimmed) { return false }
-        if test(#"(?:^|[\s(“"‘'])(?:mrs?|ms|dr|prof|st|jr|sr|vs|etc|e\.g|i\.e|a\.m|p\.m|u\.s)\.["”’)]*\z"#, trimmed, [.caseInsensitive]) { return false }
-        if test(#"(?:^|[\s(“"‘'])[A-Z]\.["”’)]*\z"#, trimmed) { return false }
+        if test(ellipsisEnd, trimmed) { return false }
+        // The server's own ABBREVIATION and INITIAL rules (DictationFillers), not copies of them.
+        if test(DictationFillers.abbreviation, trimmed, [.caseInsensitive]) { return false }
+        if test(DictationFillers.initial, trimmed) { return false }
         return true
     }
+    static let ellipsisEnd = #"(?:\.{2,}|…)["”’)]*\z"#
     /// The first word, without an opening quote or bracket.
     static func firstToken(_ text: String) -> (open: Substring, word: Substring)? {
         let start = text.firstIndex { !$0.isWhitespace } ?? text.endIndex
@@ -5974,7 +5982,9 @@ enum DictationSwapWait {
     static let settingTitle = "Wait for ⌘ or ⌃ to be released before swapping in polish"
     static let settingNote = "A shortcut you are still holding no longer cancels the swap: COS waits up to 1.2 seconds, then a moment of no typing."
     static let releaseMilliseconds = 1_200
-    static let quietMilliseconds = 300
+    /// QA W-1: the same quiet the swap's re-proof requires (DictationPolishSwap.quietMilliseconds) right before ⌘V, so
+    /// a wait that ends here is never skipped there as typing.
+    static let quietMilliseconds = DictationPolishSwap.quietMilliseconds
     static let pollMilliseconds = 30
     enum Key: String, CaseIterable, Sendable { case cmd, ctrl, shift, opt }
     static let keyCodes: [Key: [UInt16]] = [.cmd: [55, 54], .ctrl: [59, 62], .shift: [56, 60], .opt: [58, 61]]
@@ -5995,8 +6005,11 @@ enum DictationSwapWait {
         guard everHeld else { return .go }
         if sinceKeyDownMs >= quietMilliseconds { return .go }
         let since = releasedAtMs ?? waitedMs
-        return waitedMs - since >= releaseMilliseconds ? .skip(.typing) : .wait
+        // QA W-2: after the release, at most one more quiet period; still typing then is typing.
+        return waitedMs - since >= quietMilliseconds ? .skip(.typing) : .wait
     }
+    /// The longest the wait can take: held to the bound, then one quiet period after the release.
+    static let maximumWaitMilliseconds = releaseMilliseconds + quietMilliseconds
     /// What the wait saw, for the timing line (codes and milliseconds only).
     struct Report: Equatable, Sendable {
         var heldKeys: String?
@@ -6054,7 +6067,9 @@ enum DictationAudioCopy {
     static let muteAgain = "Mute again"
     /// 'what' (kAudioHardwareUnspecifiedError) and the other HAL codes are a device that did not respond, not permission.
     static let deviceNotResponding = "A device didn't respond. COS lowered the volume instead."
-    static func isPermission(status: Int32) -> Bool { status == -50 || status == 560_492_391 /* '!pri' */ || status == 1_852_797_029 /* 'nope' */ }
+    /// kAudioDevicePermissionsError ('!hog', 0x21686F67) and kAudioHardwareIllegalOperationError ('nope'), the statuses a
+    /// refused System Audio Recording start plausibly returns; 'what' and every other code are a device.
+    static func isPermission(status: Int32) -> Bool { status == 560_492_391 /* '!hog' */ || status == 1_852_797_029 /* 'nope' */ }
 }
 
 /// A sound waiting on its own queue. A new sound is dropped while a start is still outstanding; one dequeued more than

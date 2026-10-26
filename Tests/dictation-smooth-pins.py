@@ -149,9 +149,10 @@ pin("let stall = heartbeat.finish()" in body(store, "    private func fail(") an
 # 7. Census: every new off-main or timer site in MacDictation.swift was reviewed for isolation (0.5.328). A new one
 # changes a count and needs the same review before the count is updated.
 OUTPUT_ASYNC = 6
-census = {r"DictationAudioQueues\.output\.async(?!After)": OUTPUT_ASYNC, r"DictationAudioQueues\.input\.async": 2, r"DictationAudioQueues\.perform\(": 4,
+census = {r"DictationAudioQueues\.output\.async(?!After)": OUTPUT_ASYNC, r"DictationAudioQueues\.input\.async": 4, r"DictationAudioQueues\.perform\(": 4,
           r"DictationAudioQueues\.output\.asyncAfter": 1, r"DictationAudioQueues\.sound\.async": 2, r"Task\.detached": 5, r"\bTimer\(": 1}
-# 0.5.345 (A-W1), reviewed: perform +1 and input.async +1 are the microphone fallback's open and its orphan close (both
+# 0.5.345 (A-W1), reviewed: perform +1 and input.async +3 are the microphone fallback's open, its orphan close, and (QA)
+# closing a fallback that sent no first buffer or no sound off the main thread (each
 # capture only Sendable values: the remembered UIDs, the lid flag, the deadline, the failed device; never self).
 # sound.async: the store's play (captures the @unchecked Sendable player, Sendable url and numbers; its Task hops to the
 # main actor with [weak self]) and the player's completion hop (built in the nonisolated playedBack). output.async: the
