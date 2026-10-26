@@ -9,7 +9,7 @@ final class SessionUsageCollector {
         var offset: UInt64 = 0
         var prefix: String = ""
         var model = "Unknown model"
-        var provider = "OpenAI"
+        var provider = "Unknown provider"
         var session = ""
         var cumulative: [String: Int64] = [:]
         var malformed = 0

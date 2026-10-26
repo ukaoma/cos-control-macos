@@ -45,6 +45,7 @@ import Foundation
         var resumed = SessionUsageCollector.Cursor()
         check(SessionUsageCollector.event(codex(1000,100,0,20,"2026-10-01T00:03:00Z"),source:"codex",cursor:&resumed)!.counts.total == 30,"inherited first cumulative not invented usage")
         check(resumed.gaps == 1,"missing baseline surfaced")
+        check(resumed.provider == "Unknown provider","missing provider metadata is not attributed to OpenAI")
         check(SessionUsagePricing.estimate(provider:"OpenAI",model:"unknown",counts:e1.counts) == nil,"unknown price")
         check(SessionUsageCounts.number(true) == 0 && SessionUsageCounts.number(-1) == 0,"invalid counts")
         // Partial writes must not lose their final line. A small append changes the prefix; dedup absorbs rescan.
