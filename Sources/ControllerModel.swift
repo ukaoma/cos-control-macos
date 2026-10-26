@@ -695,9 +695,9 @@ final class ControllerModel: ObservableObject {
             self.recordingCountChanged()
         }
         guard startBackgroundWork else { return }
-        sessionUsage.start()
         // 0.5.322: the detached swap reads the Mac recording's phase before it may force a quit.
         recordMacCaptureState(to: MacCaptureStateFile.url())
+        sessionUsage.start()
         whatsNewSeen = WhatsNewSeenStore(defaults: .standard)
         beginPostUpdateWhatsNew()
         try? Self.pruneMediaHandoffs()
