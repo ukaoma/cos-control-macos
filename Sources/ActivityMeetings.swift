@@ -2420,7 +2420,7 @@ struct LiveTranscriptPane: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             if model.liveTranscriptOpenID?.hasPrefix("mac_") == true {
-                Text("Mac playback · microphone off · speaker names only at high confidence").font(COSType.body(11)).foregroundStyle(.secondary)
+                Text("Mac playback · microphone off · voice numbers do not identify people").font(COSType.body(11)).foregroundStyle(.secondary)
                 // An empty feed reads the same whether nothing was said or nothing reached COS; say which (2026-10-15).
                 if model.macRecording.manifest?.captureId == model.liveTranscriptOpenID, let warning = model.macRecording.signalWarning {
                     Text(warning).font(COSType.body(11, weight: .semibold)).foregroundStyle(COSPalette.danger)
