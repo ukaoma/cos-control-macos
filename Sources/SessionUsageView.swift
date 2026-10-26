@@ -80,14 +80,34 @@ struct SessionUsageView: View {
         var id: String { String(date.timeIntervalSince1970)+series }
     }
     private var points: [Point] {
-        let rows = monthly ? filtered : selected
-        let top = Set(Dictionary(grouping:rows,by: { $0.model }).map { ($0.key,$0.value.reduce(Int64(0)){$0+$1.counts.total}) }.sorted { $0.1 == $1.1 ? $0.0 < $1.0 : $0.1 > $1.1 }.prefix(6).map(\.0))
-        let grouped = Dictionary(grouping:rows,by: { (monthly ? String($0.day.prefix(7))+"-01" : $0.day) + "|" + (top.contains($0.model) ? $0.model : "Other models") })
-        return grouped.compactMap { key, rows in
+        let rows: [SessionUsageBucket] = monthly ? filtered : selected
+        var modelTotals: [String: Int64] = [:]
+        for row in rows { modelTotals[row.model, default: 0] += row.counts.total }
+        let orderedModels = modelTotals.keys.sorted { a, b in
+            let left = modelTotals[a, default: 0], right = modelTotals[b, default: 0]
+            if left == right { return a < b }
+            return left > right
+        }
+        let top = Set(orderedModels.prefix(6))
+        var grouped: [String: [SessionUsageBucket]] = [:]
+        for row in rows {
+            let day = monthly ? String(row.day.prefix(7)) + "-01" : row.day
+            let series = top.contains(row.model) ? row.model : "Other models"
+            grouped[day + "|" + series, default: []].append(row)
+        }
+        var result: [Point] = []
+        let formatter = dateFormatter
+        for (key, group) in grouped {
             let parts = key.split(separator:"|",maxSplits:1)
-            guard let date = dateFormatter.date(from:String(parts[0])) else { return nil }
-            return Point(date:date,series:String(parts[1]),tokens:rows.reduce(0){$0+$1.counts.total},usd:rows.reduce(0){$0+$1.estimatedUSD})
-        }.sorted { $0.date == $1.date ? $0.series < $1.series : $0.date < $1.date }
+            guard parts.count == 2, let date = formatter.date(from: String(parts[0])) else { continue }
+            let tokens = group.reduce(Int64(0)) { $0 + $1.counts.total }
+            let usd = group.reduce(0.0) { $0 + $1.estimatedUSD }
+            result.append(Point(date: date, series: String(parts[1]), tokens: tokens, usd: usd))
+        }
+        return result.sorted { a, b in
+            if a.date == b.date { return a.series < b.series }
+            return a.date < b.date
+        }
     }
     var body: some View {
         ScrollView {
