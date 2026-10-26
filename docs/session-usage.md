@@ -44,3 +44,11 @@ Release integration: merged Control 0.5.345 dictation parity QA fixes (4570a8d).
 - Desktop safety, shell syntax, integration source assertions and whitespace checks passed. No test activated an app or interrupted the user's desktop.
 
 This is feature validation, not a signed release/install approval. The complete release suite and signed packaging gates remain part of integration into the next Control release.
+
+## 0.5.349 refinements
+
+Token share compares the selected local token records; it is not a provider subscription allowance or percentage of a plan used. Within provider compares each model to all models from its provider in the selected period, even when a single model is filtered. Exclude cache reads changes the token bars, ranking and both share columns; it retains input, output and cache writes and never changes estimated API value.
+
+Last 7 days includes today and the six preceding reporting-zone dates. Last weekend is the most recently completed Saturday/Sunday pair. Hover a daily/monthly bar for its breakdown; click to keep the full breakdown below the chart, or use the keyboard-accessible Inspect period selector and Previous/Next controls. Monthly history spans all recorded months with current provider/model filters; the model table keeps the selected period. Colors stay stable as filters change.
+
+See docs/usage-refinement-349.md for the audit, design rationale and QA scope. No source logs, ledger records or provider pricing were altered by these presentation changes.

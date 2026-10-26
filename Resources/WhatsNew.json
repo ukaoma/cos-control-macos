@@ -1,11 +1,14 @@
 {
   "version": "0.5.349",
   "whatsNew": {
-    "summary": "Windu now has illustrated idle, meditation and patrol animations to match his combat artwork. Exact stock pets update automatically, while your custom artwork, timing and scale stay intact. Plus everything in 0.5.348: Sessions Usage, illustrated combat casts and the previous dictation fixes.",
+    "summary": "Explore Usage with bar breakdowns, weekend comparisons and clearer token shares. Windu gains illustrated idle states. Plus everything in 0.5.348: historical Sessions Usage, illustrated combat casts and the previous dictation fixes.",
     "sections": [
       {
         "title": "0.5.349",
         "items": [
+          "Hover a Usage bar to see its period and model breakdown. Click to keep it open, or use Inspect period and Previous/Next with the keyboard.",
+          "Compare Last weekend or Last 7 days. Selection share and Within provider show their token denominators; neither is your subscription allowance.",
+          "Exclude repeated cache reads from token comparisons. Estimated API value stays separate and unknown prices remain visible.",
           "Windu breathes gently while idle and meditating, with sharper illustrated patrol frames.",
           "The thirteen combat casts keep their artwork, timing and handoffs. Previous artwork remains available for rollback.",
           "Exact stock packs update automatically. Custom artwork, timing and scale stay intact. Sessions Usage remains available under Sessions."

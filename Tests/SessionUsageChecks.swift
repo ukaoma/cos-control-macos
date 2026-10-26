@@ -111,6 +111,41 @@ import Foundation
             let raw = try Data(contentsOf:path)
             check(!String(decoding:raw,as:UTF8.self).contains("SECRET_PROMPT"),"database and journal are content-free")
         }
+        // Presentation keeps token comparisons separate from provider allowance and API pricing.
+        let displayCounts = SessionUsageCounts(input: 10, output: 20, cacheRead: 900, cacheWrite: 70)
+        check(SessionUsagePresentation.tokenCount(displayCounts, excludingCacheReads: false) == 1000, "all token categories retained")
+        check(SessionUsagePresentation.tokenCount(displayCounts, excludingCacheReads: true) == 100, "exclude only cache reads, retain cache writes")
+        check(SessionUsagePricing.tokens(34_102_960_000) == "34.10B", "billions remain readable")
+        check(SessionUsagePricing.tokens(989_390_000) == "989.39M", "million precision retained")
+        check(SessionUsagePresentation.share(310_000_000, of: 400_000_000) == "77.5%", "synthetic provider denominator")
+        check(SessionUsagePresentation.share(1, of: 10000) == "<0.1%", "small recorded use not rounded to zero")
+        check(SessionUsagePresentation.share(0, of: 0) == "Unavailable", "missing denominator is not zero usage")
+        let utc = ISO8601DateFormatter()
+        let monday = utc.date(from: "2026-10-26T13:23:00Z")!
+        let chicago = TimeZone(identifier: "America/Chicago")!
+        func inside(_ day: String, _ period: String, _ now: Date = monday) -> Bool {
+            SessionUsagePresentation.includes(day: day, period: period, now: now, timeZone: chicago)
+        }
+        check(inside("2026-10-24", "Last weekend") && inside("2026-10-25", "Last weekend") && !inside("2026-10-23", "Last weekend") && !inside("2026-10-26", "Last weekend"), "last completed weekend boundaries")
+        check(inside("2026-10-18", "Last weekend", utc.date(from: "2026-10-25T15:00:00Z")!) && !inside("2026-10-24", "Last weekend", utc.date(from: "2026-10-25T15:00:00Z")!), "Sunday uses previous completed weekend")
+        check(inside("2026-10-20", "Last 7 days") && !inside("2026-10-19", "Last 7 days") && !inside("2026-10-27", "Last 7 days"), "seven days includes today, excludes future")
+        check(!inside("2026-10-26", "Last 7 days", utc.date(from: "2026-10-26T04:30:00Z")!), "reporting timezone controls day rollover")
+        check(inside("2026-09-20", "All history") && !inside("2026-09-20", "2026-10"), "history and month selection")
+        let pricedRow = SessionUsageBucket(day: "2026-10-24", provider: "OpenAI", model: "gpt-6-astra", counts: displayCounts, events: 2, pricedEvents: 2, estimatedUSD: 3)
+        var nextRow = pricedRow; nextRow.day = "2026-10-25"; nextRow.pricedEvents = 0; nextRow.estimatedUSD = 0
+        var outsideWeekend = pricedRow; outsideWeekend.day = "2026-10-23"
+        let weekendRows = SessionUsagePresentation.selectPeriod([pricedRow, nextRow, outsideWeekend], period: "Last weekend", now: monday, timeZone: chicago)
+        check(weekendRows.map(\.day) == ["2026-10-24", "2026-10-25"], "batch selection uses the same completed weekend")
+        let groups = SessionUsagePresentation.aggregate([pricedRow, nextRow])
+        check(groups.count == 1 && groups[0].counts.total == 2000 && groups[0].events == 4 && groups[0].pricedEvents == 2, "period tooltip aggregates days and partial pricing")
+        check(SessionUsagePresentation.costLabel([pricedRow, nextRow]).contains("unknown"), "partial prices visible in tooltip")
+        check(SessionUsagePresentation.costLabel([nextRow]) == "Unavailable" && SessionUsagePresentation.costLabel([]) == "Unavailable", "unknown cost never shown as free")
+        var anotherProvider = pricedRow; anotherProvider.provider = "Other provider"
+        check(SessionUsagePresentation.aggregate([pricedRow, anotherProvider]).count == 2, "same model across providers not merged")
+        var outputHeavy = pricedRow; outputHeavy.model = "output-heavy"; outputHeavy.counts = SessionUsageCounts(input: 100, output: 200)
+        check(SessionUsagePresentation.aggregate([pricedRow, outputHeavy]).first?.model == "gpt-6-astra", "all-token ranking includes cache")
+        check(SessionUsagePresentation.aggregate([pricedRow, outputHeavy], excludingCacheReads: true).first?.model == "output-heavy", "cache-free ranking uses same measure as bars and shares")
+        print("PASS: usage period boundaries, timezone, token/category shares, tooltip aggregation and unknown-price handling")
         print("PASS: usage parsing, deduplication, cache pricing, local dates, reset, partial append, retention and unknown coverage")
     }
 }
