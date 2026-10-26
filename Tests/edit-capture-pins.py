@@ -54,7 +54,7 @@ def check(src):
     stop = body(watcher, "    func stop(_ why: String) {")
     skipped = body(watcher, "    nonisolated static func skipped(_ reason: String, bundle: String?) {")
     finish = body(d, "    private func finish(_ text: String, outcome: DictationDeliveryOutcome")
-    deliver = body(d, "    private func deliverThenPolish(_ heard: String, attempt: UUID) async {")
+    deliver = body(d, "    private func deliverThenPolish(_ heard: String, typing: String, attempt: UUID) async {")
     polish = body(d, "    private func polish(_ heard: String, attempt: UUID, showPill: Bool = true) async -> DictationPolishRun? {")
     loop = body(core, "enum DictationEditWatch {")
     watch = body(loop, "    static func watch(")

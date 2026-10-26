@@ -42,7 +42,7 @@ new_items = between(models, "    func newItems(now: Date = Date()) -> [WorkIntak
 pin("ISO8601DateFormatter()" not in new_items and "row.producedDate" in new_items, "intake dates at decode",
     "newItems must use the date parsed when the row was decoded")
 pin("producedDate = Self.stamp(producedAt)" in models, "intake dates at decode", "the row parses its date once")
-# 0.5.328: the player lives on DictationAudioQueues.output, not the main actor.
+# 0.5.328: the player lives on a dictation audio queue (0.5.345: its own, DictationAudioQueues.sound), not the main actor.
 player = between(dictation, "final class DictationSoundPlayer: @unchecked Sendable {", "struct DictationSoundImport {")
 # 0.5.314: the completion is built by the nonisolated playedBack (a closure formed inside the @MainActor player trapped
 # on AVAudioPlayerNode's queue in 0.5.313), so the pin follows the signal through it: every sound is scheduled with
@@ -50,7 +50,7 @@ player = between(dictation, "final class DictationSoundPlayer: @unchecked Sendab
 played_back = between(player, "    private nonisolated static func playedBack(_ owner: DictationSoundPlayer, id: Int)", "    var isRunning: Bool")
 pin(player.count("scheduleFile(") == 1
     and player.count("node.scheduleFile(file, at: nil, completionCallbackType: .dataPlayedBack, completionHandler: Self.playedBack(self, id: id))") == 1
-    and "DictationAudioQueues.output.async { owner.finished(id) }" in played_back,
+    and "DictationAudioQueues.sound.async { owner.finished(id) }" in played_back,
     "sound engine stops", "the player must learn when its sound has played (scheduleFile's completion is playedBack, which reports finished(id))")
 pin("node.stop(); engine.stop()" in between(player, "    private func finished(_ id: Int) {", "    nonisolated static func stopsAfter"),
     "sound engine stops", "the output engine must stop after the newest sound (no audio IO while idle)")

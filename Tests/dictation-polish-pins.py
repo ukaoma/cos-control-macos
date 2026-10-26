@@ -35,11 +35,19 @@ app = code(read("Sources/COSControlApp.swift"))
 transcribe = between(dictation, "private func transcribe(_ wav: Data, attempt: UUID) {", "private func polish(_ heard: String,")
 call = "let polished = await polish(heard, attempt: attempt)\n                guard generation == attempt, !Task.isCancelled else { return }"
 pin(transcribe.count(call) == 1, "current after polish", "the await on polish is followed at once by the generation and cancellation check")
-order = [transcribe.find(s) for s in ["DictationEngineName.title(engine) != nil", "if sequence == .deliverThenPolish { await deliverThenPolish(heard, attempt: attempt); return }",
+# 0.5.345 (A-W10): the filler strip comes out once, after the engine guard and before the order is chosen; polish still
+# gets what was heard, raw, and every path that types or copies takes the stripped text (spoken.text).
+order = [transcribe.find(s) for s in ["DictationEngineName.title(engine) != nil", "let spoken = DictationFillers.clean(heard, enabled: removeFillers)",
+                                      "if sequence == .deliverThenPolish { await deliverThenPolish(heard, typing: spoken.text, attempt: attempt); return }",
                                       "let polished = await polish(heard, attempt: attempt)",
+                                      "let said = polished?.outcome.text(heard: spoken.text) ?? spoken.text",
                                       "DictationListFormat.format(said)", "DictationInsertion.deliver(text"]]
-pin(-1 not in order and order == sorted(order), "before paste", "engine guard, then (0.5.331) the paste-first branch, then polish, then lists, then delivery")
-pin("let said = polished?.outcome.text(heard: heard) ?? heard" in transcribe, "heard on failure", "every outcome but applied pastes what was heard")
+pin(-1 not in order and order == sorted(order), "before paste", "engine guard, the filler strip, then (0.5.331) the paste-first branch, then polish, then lists, then delivery")
+pin(dictation.count("DictationFillers.clean(") == 1 and "DictationFillers" not in code(read("Sources/MacRecording.swift"))
+    and "let text = lists ? DictationListFormat.format(typing) : typing" in dictation and "polish(heard, attempt: attempt, showPill: false)" in dictation,
+    "fillers once", "one strip for every typed or copied path (paste first, polish first and its fallbacks, Off, copy only), never in Mac recording; polish gets the raw words")
+pin("let said = polished?.outcome.text(heard: spoken.text) ?? spoken.text" in transcribe, "heard on failure",
+    "every outcome but applied pastes what was heard (0.5.345: with the filler sounds out, A-W10)")
 
 # 2. The polish step: its own pill, a bounded helper call, a timeout outcome, a log line without text, and never a card.
 step = between(dictation, "private func polish(_ heard: String, attempt: UUID, showPill: Bool = true) async -> DictationPolishRun? {",
@@ -59,11 +67,15 @@ pin("if DictationPolishSwap.swapText(polished?.outcome) != nil, let model = poli
     "heard only when applied", "what was heard is kept only when polish (or the server's own pass, 0.5.344 QA) changed the text, and cleaned text says so")
 pin("heard: lastPolish?.heard, polishModel: lastPolish?.model.rawValue, polishPrompt: lastPolishPrompt," in dictation and "lastEngine = nil; lastPolish = nil" in dictation,
     "record", "finish() stores what was heard and the model, then forgets them")
-pin(dictation.count('COSDropdown("AI polish", selection: $store.polishModel,') == 1 and "DictationPolish.settingNote(store.polishModel)" in dictation,
-    "setting", "Settings, Dictation: AI polish with its one line")
+# 0.5.345 (A-W2): the line for the selected model from the server's options, then the paste-first note.
+pin(dictation.count('COSDropdown("AI polish", selection: $store.polishModel,') == 1
+    and "DictationPolish.settingNote(store.polishModel, pasteFirst: store.pasteThenPolish)" in dictation
+    and "DictationPolishPicker.text(model: store.polishModel, server: style.options.picker, fillers: store.removeFillers," in dictation,
+    "setting", "Settings, Dictation: AI polish with the server's line for the chosen model and its note")
 pin("DictationPolishModel.stored(UserDefaults.standard.string(forKey: DictationPolishModel.defaultsKey))" in dictation
     and "UserDefaults.standard.set(polishModel.rawValue, forKey: DictationPolishModel.defaultsKey)" in dictation, "setting", "the model persists under its key")
-pin(dictation.count('"What was heard: " + heard') == 2 and "store.copy(heard)" in dictation, "what was heard", "the detail and the history row offer what was heard")
+pin(dictation.count('"What was heard: " + heard') == 2 and "store.copy(heard)" in dictation and dictation.count("if let heard = record.heardShown {") == 2,
+    "what was heard", "the detail and the history row offer what was heard (0.5.345: also what the filler strip took from)")
 pin(dictation.count('record.polishLine(styleRules: DictationStyleStore.shared.ruleCount(record.polishStyleHash)).map { " · " + $0 }') == 1, "history label", "the Activity history row says Polished and the model")
 
 # 4. The bridge: the helper verb, stdin only, the budget as the process timeout.

@@ -171,8 +171,9 @@ check(shipped is not None and int(shipped.group(1)) >= 327, "Info.plist is 0.5.3
 whats = json.loads(read("Resources/WhatsNew.json"))
 section = next((s for s in whats["whatsNew"]["sections"] if s["title"] == "0.5.327"), None)
 check(section is not None, "What's New keeps its 0.5.327 section")
-summary327 = whats["whatsNew"]["summary"].split("Plus everything in 0.5.327: ", 1)[-1].split(" Plus everything in 0.5.326")[0]
-check("rate" in summary327.lower(), "the 0.5.327 summary names rating cues")
+# 0.5.345 (plan r3): the capped summary no longer chains back to 0.5.327; its own section's words are read instead.
+summary327 = " ".join(section["items"]) if section else ""
+check("rate" in summary327.lower(), "the 0.5.327 section names rating cues")
 changelog = read("CHANGELOG.md")
 check("\n## 0.5.327 (build " in "\n" + changelog, "CHANGELOG keeps its 0.5.327 entry")
 entry = ("\n" + changelog).split("\n## 0.5.327 (build ", 1)[-1].split("\n## 0.5.326", 1)[0]

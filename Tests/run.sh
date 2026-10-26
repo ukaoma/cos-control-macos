@@ -1365,6 +1365,13 @@ zsh "$ROOT/Tests/run-edit-capture.sh"
 # (Tests/VoiceStyleChecks.swift, MacDictationCore.swift alone). Hand-run: Tests/mutate-voice-style.py (the mutation lane)
 # and Tests/run-voice-style-render.sh (static PNGs, never a gate).
 zsh "$ROOT/Tests/run-voice-style.sh"
+# 0.5.345 Wave A (plan r3): the wiring pins (with their in-memory mutants), then the filler strip against the canonical
+# fixture (sha256 pinned in both repos), casing, Undo polish, polish already fixed this, the next-time lines, the picker,
+# the swap wait, the audio breakers and the microphone fallback (Tests/DictationParityChecks.swift, the core alone).
+# Hand-run: Tests/mutate-dictation-parity.py (the mutation lane, serial, green baseline first).
+zsh "$ROOT/Tests/run-dictation-parity.sh"
+# 0.5.345: 0.5.344 (ce9b71c) reads what 0.5.345 writes into dictation history (rollback safety).
+zsh "$ROOT/Tests/run-history-backcompat.sh"
 # 0.5.343 Build-up, in place: the wiring pins (with their in-memory mutants) and the motion-gate pins, then the rules
 # against fixtures (Tests/BuildUpChecks.swift, Models.swift alone). Hand-run: Tests/mutate-build-up.py (the mutation lane)
 # and Tests/run-build-up-render.sh (static PNGs, never a gate).

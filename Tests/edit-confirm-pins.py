@@ -113,9 +113,16 @@ def check(src):
     pin('if !learnedLive.isEmpty {' in detail and detail.index('if !learnedLive.isEmpty {') < detail.index('Button("Undo learn")'), "undo learn",
         "Undo learn only while a learned word is still learned")
     pin('Button(showOriginal ? "Show edit" : "Show original") { showOriginal.toggle() }' in detail, "show original", "the toggle")
-    pin("if let edit = record.edit, !showOriginal { Text(Self.marked(parts, final: edit.text)) } else { Text(record.text) }" in detail,
-        "diff", "the marked final text, or exactly what COS typed")
-    pin("Text(DictationEditConfirm.reason(parts: parts, learned: learnedLive))" in detail, "reason", "the tested reason line")
+    # 0.5.345 (A-W7): an unedited polished dictation's Show original shows what polish changed, in the same marks.
+    pin("if let edit = record.edit, !showOriginal { Text(Self.marked(parts, final: edit.text)) }" in detail
+        and "Text(Self.marked(DictationWordDiff.diff(original: heard, final: record.text), final: record.text))" in detail
+        and "} else { Text(record.text) }" in detail,
+        "diff", "the marked final text, what polish changed, or exactly what COS typed")
+    # 0.5.345 (A-W11, A-W12): what the person did, then at most three tested next-time lines and "+N more".
+    pin("Text(DictationNextTime.didLine(parts: parts, learned: learnedLive))" in detail
+        and "let next = DictationNextTime.lines(parts: parts, learned: learnedLive, matchedPolish: record.edit?.matchedPolish == true," in detail
+        and "fillersOn: store.removeFillers)" in detail and "Button(DictationNextTime.moreLabel(next.more)) { showAllNext = true }" in detail, "reason",
+        "the tested reason line, then the tested next-time lines (polish had it, words learned, Your style, the filler note)")
     pin("DictationEditConfirm.offersDrop(phrase: dropPhrase, available: instructions.available," in detail
         and "polishOn: store.polishModel != .off, saved: instructions.saved)" in detail, "chip", "the chip only where it can work")
     pin(detail.count("instructions.save(") == 2 and detail.count("DictationEditConfirm.adding(phrase, to: instructions.saved)") == 1
@@ -127,7 +134,9 @@ def check(src):
     # wraps inside its control, and the chip stays one line.
     row_view = body(detail, "    private var actionRow: some View {")
     pin(row_view.count("ViewThatFits(in: .horizontal) {") == 1 and row_view.count("copyButton; learnOrFixButton") == 2
-        and row_view.count("deleteButton; backButton") == 2 and row_view.count("if record.edit != nil { originalLink }") == 2,
+        and row_view.count("deleteButton; backButton") == 2 and row_view.count("if record.edit != nil || record.heard != nil { originalLink }") == 2
+        and row_view.count("if store.offersUndoPolish(record) { undoPolishButton }") == 2
+        and row_view.index("if store.offersUndoPolish(record) { undoPolishButton }") < row_view.index("if record.edit != nil || record.heard != nil { originalLink }"),
         "action row fits", "one row as designed, else two rows with every action")
     pin(detail.count("            actionRow\n") == 1, "action row fits", "the card uses the row")
     for opener, labels in (("    private var copyButton: some View {", 1), ("    @ViewBuilder private var learnOrFixButton: some View {", 2),
@@ -162,7 +171,7 @@ MUTANTS = [
     ("View not on the floating pill", "d", "                                       onView: store.pillViewID == nil ? nil : { store.viewEditFromPill() },",
      "                                       onView: nil,"),
     ("View not on the pet pill", "pet", "onView: dictation.pillViewID == nil ? nil : { dictation.viewEditFromPill() },", "onView: nil,"),
-    ("floating pill ignores View", "d", " && store.pillViewID == nil\n", "\n"),
+    ("floating pill ignores View", "d", " && store.pillViewID == nil && store.pillUndoPolishID == nil\n", " && store.pillUndoPolishID == nil\n"),
     ("View has no fallback", "d", "            openHistory?()\n", ""),
     ("history not wired", "app", "        model.dictation.openHistory = { [weak model] in model?.openDictationHistoryInActivity() }\n", ""),
     ("Copy ignores the toggle", "d", "store.copy(DictationEditConfirm.copyText(record, showOriginal: showOriginal))", "store.copy(record.text)"),
@@ -187,8 +196,8 @@ MUTANTS = [
      ".buttonStyle(COSTextButtonStyle(tone: .destructive))\n            .font(COSType.body(size.typeSize(10)))\n"),
     ("Back wraps", "d", "Button(\"Back\") { store.backToRecent() }\n            .buttonStyle(COSTextButtonStyle())\n            .font(COSType.body(size.typeSize(10)))\n            .lineLimit(1)\n",
      "Button(\"Back\") { store.backToRecent() }\n            .buttonStyle(COSTextButtonStyle())\n            .font(COSType.body(size.typeSize(10)))\n"),
-    ("Show original wraps", "d", '.help(showOriginal ? "Show the text with your edit" : "Show exactly what COS typed")\n            .lineLimit(1)\n',
-     '.help(showOriginal ? "Show the text with your edit" : "Show exactly what COS typed")\n'),
+    ("Show original wraps", "d", ': "Show what polish changed"))\n            .lineLimit(1)\n',
+     ': "Show what polish changed"))\n'),
     ("chip wraps", "d", 'Text(" from my dictation"))\n                    .font(COSType.body(size.typeSize(9)))\n                    .foregroundStyle(.secondary)\n                    .lineLimit(1)\n',
      'Text(" from my dictation"))\n                    .font(COSType.body(size.typeSize(9)))\n                    .foregroundStyle(.secondary)\n'),
     ("an em dash on the card", "d", '"Show the text with your edit"', '"Show the text — with your edit"'),

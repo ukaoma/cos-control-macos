@@ -310,6 +310,20 @@ try:
     check(result['ok'] and result['details']['envOverride'] is True and result['details']['effectiveVersion'] == 'v3'
           and result['details']['effectiveByModel'] == {'haiku': 'v3', 'sonnet': 'v3', 'luna-5.6-fast': 'v3'} and 'source' not in result['details'],
           'qa: options pass on envOverride and the effective versions')
+    # 0.5.345 (A-W2, server 6.92.0): the meaning guard's switch and the style pairs pass through, checked like the rest;
+    # an older server's answer has neither, and a malformed pair or a non-boolean guard never reaches Control.
+    options_answer.update(status=200, body={'promptVersion': 'default', 'meaningGuard': False,
+                                            'effectiveByModel': {'haiku': 'v3', 'sonnet': 'v4', 'luna-5.6-fast': 'v3'},
+                                            'stylePairs': [{'model': 'sonnet', 'prompt': 'v4'}, {'model': 'gpt', 'prompt': 'v4'}, {'model': 'haiku', 'prompt': 'x'}, 'junk']})
+    result, _ = options({'operation': 'get'})
+    check(result['ok'] and result['details']['meaningGuard'] is False and result['details']['stylePairs'] == {'sonnet': 'v4'},
+          '0.5.345: options pass on meaningGuard and the valid style pairs only')
+    options_answer.update(status=200, body={'promptVersion': 'default', 'meaningGuard': 'yes', 'stylePairs': 'sonnet'})
+    result, _ = options({'operation': 'get'})
+    check(result['ok'] and 'meaningGuard' not in result['details'] and 'stylePairs' not in result['details'], '0.5.345: a malformed guard or pairs are dropped')
+    options_answer.update(status=200, body={'promptVersion': 'default'})
+    result, _ = options({'operation': 'get'})
+    check(result['ok'] and 'meaningGuard' not in result['details'] and 'stylePairs' not in result['details'], '0.5.345: an older server sends neither')
     health.clear(); health.update(ok=True)
     result, _ = options({'operation': 'get'})
     check(result['ok'] and result['details']['available'] is False, 'r2: an older server has no polish options')

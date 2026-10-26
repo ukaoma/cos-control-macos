@@ -308,14 +308,14 @@ import Foundation
               && polished.polishLine(styleRules: 0) == "Polished · Sonnet · v4", "card style rules", "\(String(describing: polished.polishLine(styleRules: 2)))")
         let guarded = DictationRecord(id: UUID(), text: "Ship 5 units.", createdAt: t0, delivery: .inserted(app: "Fixture"), polishGuard: "number")
         let bare = DictationRecord(id: UUID(), text: "Ship it.", createdAt: t0, delivery: .inserted(app: "Fixture"), polishGuard: "guarded")
-        check(guarded.polishLine(styleRules: 0) == "Kept as heard: polish changed a number" && bare.polishLine(styleRules: 3) == "Kept as heard", "card kept",
+        check(guarded.polishLine(styleRules: 0) == "Kept COS's cleaned text: polish changed a number" && bare.polishLine(styleRules: 3) == "Kept COS's cleaned text", "card kept",
               "by guard kind, plain without one")
-        check(S.keptLine(guard: "negation") == "Kept as heard: polish changed a negation" && S.keptLine(guard: "date") == "Kept as heard: polish changed a date"
-              && S.keptLine(guard: nil) == "Kept as heard" && S.keptLine(guard: "weird") == "Kept as heard", "card kept", "every kind")
+        check(S.keptLine(guard: "negation") == "Kept COS's cleaned text: polish changed a negation" && S.keptLine(guard: "date") == "Kept COS's cleaned text: polish changed a date"
+              && S.keptLine(guard: nil) == "Kept COS's cleaned text" && S.keptLine(guard: "weird") == "Kept COS's cleaned text", "card kept", "every kind")
         check(S.guardCode("number") == "number" && S.guardCode("guarded") == "guarded" && S.guardCode("drop table") == nil
               && S.styleHash("0a1b2c3d") == "0a1b2c3d" && S.styleHash("0A1B2C3D") == nil, "record codes", "only codes reach the record")
         let round = (try? JSONEncoder().encode(guarded)).flatMap { try? JSONDecoder().decode(DictationRecord.self, from: $0) }
-        check(round?.polishGuard == "number" && round?.polishLine(styleRules: 0) == "Kept as heard: polish changed a number", "record guard", "survives the file")
+        check(round?.polishGuard == "number" && round?.polishLine(styleRules: 0) == "Kept COS's cleaned text: polish changed a number", "record guard", "survives the file")
         let marked = DictationHistory.guarding(bare.id, guard: "date", styleHash: "0a1b2c3d", in: [bare])
         check(marked.first?.polishGuard == "date" && marked.first?.polishStyleHash == "0a1b2c3d" && marked.first?.text == "Ship it.", "record guarding", "paste first")
         let edited = DictationHistory.editing(guarded.id, edit: DictationUserEdit(text: "Ship 6 units.", app: "Fixture", at: t0, edits: 1), in: [guarded])
@@ -328,7 +328,7 @@ import Foundation
               && cleaned?.polishedByClaude == true, "card cleaned", "Cleaned up, never Polished; the model's own answer is still Claude's baseline")
         let tripped = DictationHistory.polishing(typed.id, to: "So the plan works.", heard: "um so the plan works", model: "sonnet",
                                                  cleaned: "failed", in: DictationHistory.guarding(typed.id, guard: "number", styleHash: nil, in: [typed])).first
-        check(tripped?.polishLine(styleRules: 0) == "Kept as heard: polish changed a number" && tripped?.polishCleaned == "failed" && tripped?.polishedByClaude == false,
+        check(tripped?.polishLine(styleRules: 0) == "Kept COS's cleaned text: polish changed a number" && tripped?.polishCleaned == "failed" && tripped?.polishedByClaude == false,
               "card cleaned", "a guard trip swaps the cleaned text in and keeps its word")
         let cleanRound = cleaned.flatMap { try? JSONEncoder().encode($0) }.flatMap { try? JSONDecoder().decode(DictationRecord.self, from: $0) }
         check(cleanRound?.polishCleaned == "unchanged" && DictationPolish.cleanedCode("daily_cap") == "daily_cap" && DictationPolish.cleanedCode("polished") == nil

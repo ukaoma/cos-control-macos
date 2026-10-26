@@ -1,6 +1,92 @@
+## 0.5.345 (build 399), Dictation parity, Wave A: fillers, the capital, the swap that lands, Undo polish, honest polish copy, audio that survives a stuck device
+
+On top of 0.5.344 (build 398). Pairs with COS server 6.92.0 (Wave A, `claude/server-6.92.0-parity-a` at a1eafa0; the fillers fixture a531d0a9 first
+exists at 4bbc50b); every
+new field is optional, so a 6.91.1 server keeps working (no picker line, no meaning-guard switch, today's behaviour).
+Plan: `operations/personal/wk43_2026/PLAN_dictation_parity_2026-10-25.md`, r2 with the r3 amendments, plus A-W12
+(Miles 19:01). Plus everything in 0.5.344.
+
+- **Filler sounds are never typed (A-W10).** `DictationFillers` is the server's `stripDisfluencies` (6.92.0) ported rule
+  for rule, with the 6.92.0 token exemptions (a filler touching `/ . @ _ : # $` is part of a path, handle or file name).
+  The canonical fixture `Tests/fixtures/dictation-fillers.json` is a byte-identical copy of the server's, its sha256
+  pinned here and there (a531d0a9...); all 108 shared rows match (the five "language" rows through the whole step). On this Mac only a language gate runs first
+  (NLLanguageRecognizer on the text without its filler tokens: four words or more need English at 0.8; fewer need no
+  sign of another language, where a common short reply such as yes, no, okay or thanks, the server's own list, is
+  English evidence), so "um 5 Uhr", "Er kommt", "um carro" and "Det er fint" are untouched and "um yes" is not. The
+  gate is not the server's (it counts function words); the checks report Control's agreement on the server's own
+  language rows. Known differences: Control strips "um Dana" (the server keeps it), and keeps the um in "um, the Rain
+  POS demo" (English below 0.8 for four words with brand names) and in "Send the deck to Dana, um, por favor" (the
+  server strips both). One strip, right
+  after transcription, for every path that types or copies (paste first, polish first and its fallbacks, Off, copy
+  only); polish still gets the raw words; never in Mac recording. The record keeps `rawHeard` when the strip changed
+  what was typed, so What was heard shows it. Setting: Remove filler sounds (um, uh) before typing, on.
+- **Capitalize the start of a sentence (A-W9a).** Its own read of up to 16 UTF-16 units before the caret (one
+  AXStringForRange, independent of the field-context setting, never in a terminal or password field; 16, not 2, because
+  the server's ABBREVIATION and INITIAL rules need "Dr. " and "e.g. " to be seen). A field's start, a measured empty field,
+  or `.`, `!`, `?` and a line break capitalize the first letter, never after an ellipsis, an abbreviation or an initial;
+  never iPhone-like words, marks (`/ . @ _ :`, a leading `-`, `#`, `$`), command words (npm, git), a lowercase dictionary
+  term, or when the polish instructions ask for lowercase. The swap's final text takes the same capital. Field shadow:
+  `wouldCapitalize`. Setting, on.
+- **Polished text lands more often (A-W3b).** On the paste route, with Shift or Option down the swap skips at once
+  (keysHeld); with only ⌘ or ⌃ it waits up to 1.2 s for the release, then for the re-proof's own quiet (600 ms with no
+  key down, at most one more such period: QA W-1, the plan's 300 ms would always have been skipped as typing at the
+  ⌘V), BEFORE the span is selected or the clipboard written, then the focus gate and the re-proof run again. Counters
+  of REFUSALS, so a non-zero value is a near miss caught before the ⌘V, never a paste: `swapFrontmostAtPostMismatch`
+  (the frontmost app at the ⌘V was not the target: nothing was posted), `swapIntoClearedField` (the field was emptied
+  under the swap: nothing was posted), `swapClipboardNewerKept` (the person's newer copy was left alone); and
+  `swapHeldKeys`, `swapHeldMs`, `swapWaitMs`, `swapFrontmostChanged`. The refused-swap clipboard restore (MD:548) now
+  honours the changeCount rule. `deliveryWaitMilliseconds` 2,000 to 4,900, derived from the wait, the selection poll,
+  paste()'s modifier wait, the landing polls and an Accessibility read allowance (QA W-2). Setting, on.
+- **Undo polish (A-W7).** On the pill after a swap ("✓ POLISHED", its own label) and on the card: what COS typed
+  (`typed ?? heard`; `DictationRecord.typed` is new, optional, set when it differs from heard) goes back exactly where
+  the polished text is, through Fix a word's non-automatic replace, the edit watch stopped first. A moved span refuses
+  with a reason and copies nothing. Claude's version waits as the pending polish, so Apply polished redoes it. Show
+  original on an unedited polished card shows what polish changed, in the 0.5.342 word marks.
+- **The picker tells the truth (A-W2).** One line under AI polish, chosen from the server's options for the selected
+  model (Options gains `haikuPrompt`, `meaningGuard` and `stylePairs`, passed through the helper): the newest polish
+  (Sonnet on v4 with the guard on, plus "Applies your N style rules"), the guard turned off, another model on v4, Previous
+  polish, the earlier polish, or Off ("Pastes what was heard, without um and uh."). None on a 6.90.0 server. The note
+  under it is the paste-first one now. `serverCameBack(changed:)` reloads whenever the server's version or runtime
+  generation changes (it returned early while the cache was healthy). At most 400 characters, no speed words.
+- **Polish already fixed this, and the card's next time (A-W11, A-W12).** An edit whose changes are all ones Claude's
+  unswapped polish had made (`DictationPolishMatch.subset`, word by word) learns nothing: no dictionary attempt, no
+  chip, not style evidence; `editMatchedPolish` goes to the new `edit-capture.jsonl` (codes and the bundle id). Any
+  other edit is Your style evidence against the pending polish (typed with the changes both made applied, so a change
+  polish made that you never saw is never read as you undoing it); this unlocks style learning for unswapped
+  dictations. The Always drop chip is never offered for a built-in filler. Every edited card now says what happens
+  next time (`DictationNextTime`, at most three lines and "+N more"): a word COS will write, polish had it (with up to
+  three changes in short form), "Style: seen 1 of 2", the filler note, or "Nothing to learn".
+- **Audio survives a stuck device (A-W1).** Sounds have their own queue (`DictationAudioQueues.sound`); a new sound is
+  dropped while a start is outstanding, one dequeued 300 ms late is dropped, and an error status from a sound or any
+  mute step pauses that for 10 minutes (Play sounds again, Mute again). The mute logs `muteOwnObject=present|absent`.
+  A `'what'` reads as "A device didn't respond", never permission. The stop sound plays after the mute's end. Quit waits
+  at most a second for the volume restore and never for a sound. With System default, an engine start that threw or
+  a first-buffer failure (never a timeout) tries a microphone that delivered sound before (a remembered set, never
+  Bluetooth, Continuity, virtual or aggregate; never the one that failed; the built-in one not while the lid is closed),
+  only after a fast first failure, within 3 s of the press's first attempt (the fallback's first-buffer wait included)
+  plus 400 ms to hear its first 300 ms, accepted only if those carry sound; the card never shows the raw
+  avfaudio error. The spare's HAL reads moved into the input queue. Setting: If the microphone fails, try another one.
+  Instrumentation only for the freeze: `postCloseStallMs` (the heartbeat from close to first text) and
+  `slowListenerCalls` (meeting-detection work on main over 100 ms).
+- **One less round trip (A-W0d).** The helper's `dictate()` reads the token itself: no `/api/health` before the
+  capability gate. No answer is "Server stopped" with the dictation's Retry, 401 or 403 "Unauthorized", anything else
+  the Update copy. `preUploadMs` on the timing line.
+- **Final QA fixes.** The record holds exactly what was typed, the start-of-sentence capital included
+  (`DictationDelivered.typed`; QA B1: the capital never reached the record, so edits on a capitalized dictation were
+  dropped and a capital-only polish became a swap). A Fix a word replace ends Undo polish for that dictation. No capital
+  after a code fence line. The casing rule reads the filler pass's own ABBREVIATION and INITIAL patterns. The permission
+  statuses are '!hog' and 'nope' (paramErr no longer counts).
+- **Copy (QA4).** The card line for an answer the meaning guard refused reads "Kept COS's cleaned text" (it was "Kept as
+  heard", but the guard keeps COS's own filler-cleaned text, not the raw audio and not Claude's answer), and What's New
+  says so; the 0.5.342 item now says Show original shows exactly what COS typed (Undo polish is what puts it back).
+- **Tests.** `Tests/run-dictation-parity.sh` (pins, then 400+ checks against the core alone), `Tests/mutate-dictation-parity.py`,
+  `Tests/run-history-backcompat.sh` (ce9b71c's core decodes a 0.5.345 history), the helper checks count `/api/health`
+  hits, and every pin the plan lists re-justified.
+
 ## 0.5.344 (build 398), Capture every correction, and Your style (dictation that learns your voice)
 
-On top of 0.5.343 (build 397). Plan: `operations/personal/wk43_2026/PLAN_dictation_voice_style_2026-10-24.md`, revision 2,
+On top of 0.5.343 (build 397). Pairs with COS server 6.91.1 (npm latest, the meaning guard reads clock times); built
+and first published against 6.91.0. Plan: `operations/personal/wk43_2026/PLAN_dictation_voice_style_2026-10-24.md`, revision 2,
 section 1; the QA that found why no edit was ever captured: `QA_edit_learning_followup_2026-10-24.md` (fixes #1 to #5,
 W2 to W4), and section 2 for part 2 (Your style), built on server 6.91.0 (bcdf083) after its canaries: v4 is the
 default prompt for Sonnet, v3 for Haiku and Luna, and the literal register is opt-in (`registersEnabled`, off by default). Plus everything in 0.5.343.

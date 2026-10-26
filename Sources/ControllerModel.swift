@@ -156,7 +156,11 @@ final class ControllerModel: ObservableObject {
 
     @Published var status = ServerStatus() {
         // 0.5.344 QA (W5): the server is back, or a newer one came up: Your style reads it again (a pending Off goes).
-        willSet { if newValue.running, !status.running || status.version != newValue.version { DictationStyleStore.shared.serverCameBack() } }
+        // 0.5.345 (QA4 15): a changed version or runtime generation always reloads the options (the picker's line).
+        willSet {
+            let changed = status.version != newValue.version || status.activeWorkDirectory != newValue.activeWorkDirectory
+            if newValue.running, !status.running || changed { DictationStyleStore.shared.serverCameBack(changed: changed) }
+        }
         didSet { recordingCountChanged(); statusDetailsBytes = nil }
     }
     /// 0.5.337 (performance audit W5): the status answer `status` was built from, so an unchanged answer is not

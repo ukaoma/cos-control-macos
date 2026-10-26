@@ -224,7 +224,9 @@ import Foundation
             C.dropPhrase(parts: D.diff(original: a, final: b), isTerm: terms)
         }
         check(phrase("be able to kind of tell", "be able to tell") == "kind of", "chip single removal")
-        check(phrase("So, um, we go", "So, we go") == "um", "chip single removal", "punctuation around the phrase is trimmed, case folded")
+        check(phrase("So, Honestly, we go", "So, we go") == "honestly", "chip single removal", "punctuation around the phrase is trimmed, case folded")
+        // 0.5.345 (A-W11): the built-in filler sounds are removed before typing (A-W10), so they are never offered as a chip.
+        check(phrase("So, um, we go", "So, we go") == nil && phrase("well uh then", "well then") == nil, "chip not a built-in filler")
         check(phrase("um I think we should um go", "I think we should go") == nil, "chip one place", "two removals are two edits")
         check(phrase("see you their", "see you there") == nil, "chip removal only", "a replacement is not a filler")
         check(phrase("send it now", "send it over now") == nil, "chip removal only", "an insertion is not a filler")
