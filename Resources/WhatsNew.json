@@ -1,8 +1,16 @@
 {
-  "version": "0.5.348",
+  "version": "0.5.349",
   "whatsNew": {
-    "summary": "Sessions now includes Usage: tokens by model and provider, daily charts, monthly history and estimated API value. COS reads the session records already on this Mac and keeps a local history. Choose All history for totals across the available records. Jedi Miles Windu gains thirteen illustrated combat casts, with existing custom packs preserved. Plus everything in 0.5.345: dictation fillers, sentence capitals, Undo polish and learning from edits.",
+    "summary": "Windu now has illustrated idle, meditation and patrol animations to match his combat artwork. Exact stock pets update automatically, while your custom artwork, timing and scale stay intact. Sessions Usage and the previous dictation fixes are included.",
     "sections": [
+      {
+        "title": "0.5.349",
+        "items": [
+          "Windu breathes gently while idle and meditating, with sharper illustrated patrol frames.",
+          "The thirteen combat casts keep their artwork, timing and handoffs. Previous artwork remains available for rollback.",
+          "Exact stock packs update automatically. Custom artwork, timing and scale stay intact. Sessions Usage remains available under Sessions."
+        ]
+      },
       {
         "title": "0.5.348",
         "items": [
