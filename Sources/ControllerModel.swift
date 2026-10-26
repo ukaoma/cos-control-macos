@@ -603,7 +603,9 @@ final class ControllerModel: ObservableObject {
         { [weak self] operation, payload in
             guard let self else { throw HelperClientError.commandFailed("COS Control is closing.") }
             let data = try JSONEncoder().encode(JSONValue.object(["operation": .string(operation), "payload": .object(payload)]))
-            return try await self.runHelper(["mac-recording"], timeout: 90, stdinData: data)
+            // 0.5.351: answers, so a refusal reaches MacRecordingStore.invoke with its status and reason (quick save's
+            // transient test, 0.5.334's nothing_to_save and discard answers); a helper that exits non-zero still throws.
+            return try await self.runHelper(["mac-recording"], timeout: 90, stdinData: data, answers: true)
         }
     }
     func runHelper(_ arguments: [String], timeout: TimeInterval, stdinData: Data? = nil, answers: Bool = false) async throws -> HelperResponse {
@@ -3734,7 +3736,7 @@ final class ControllerModel: ObservableObject {
                                        now: Date()).filter { !MacRecordingNoMeeting.endsHandoff(sessionId: $0.sessionId, noMeeting: noMeeting) }
         guard let mac = macRecording.manifest,
               let label = MacRecordingLiveRow.label(stopped: mac.stopped, saved: mac.saved, acknowledged: mac.acknowledged, chunks: mac.chunks.count,
-                                                    paused: macRecording.deliveryPaused)
+                                                    paused: macRecording.deliveryPaused, slow: macRecording.slowSave)
         else { return rows }
         return rows.map { row in
             guard row.sessionId == mac.captureId else { return row }
