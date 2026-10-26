@@ -98,7 +98,7 @@ row = body(meetings, "struct LiveInlineCueRow: View {")
 need("CueVerdictButtons(selected: cue.verdict, disabled: saving)" in row and "if let label = LiveMeeting.kindLabel(cue.kind) {" in row
      and "} else {\n                    Text(verbatim: cue.detail)" in row, "a known kind leads with its label; an unknown kind is a plain cue")
 follow = body(pane, "private func followInlineCues(_ session: String?) async {")
-need("guard let session, model.liveMeetingCapability.inlineCues" in follow and "LiveMeeting.inlineCueCheckSeconds" in follow
+need("guard let session, !PhoneMeetingCapture.protected(session), model.liveMeetingCapability.inlineCues" in follow and "LiveMeeting.inlineCueCheckSeconds" in follow
      and "force" not in follow and "await cueStore.loadMeeting(session, days: CueVerdicts.liveDays, run: CueReviewPane.run(model))" in follow,
      "the inline cues re-ask through the store's 15 s floor, never forced, only on the surface")
 need("@ObservedObject private var cueStore: CueVerdictsStore" in pane and "_cueStore = ObservedObject(wrappedValue: model.meetingAsk.cueVerdicts)" in pane,

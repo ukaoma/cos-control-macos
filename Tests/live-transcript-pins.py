@@ -65,7 +65,7 @@ for banned, why in (("progress(", "stderr progress"), ("print(", "print"), ("Fil
                     ("appendHelperLog", "the helper log"), ("helperLog", "the helper log"), ("fputs", "stderr"), ("debugPrint", "print")):
     need(banned not in helper_live, "the helper's live transcript code never writes to " + why + " (" + banned + ")")
 need("providerCandidates" not in helper_live, "the helper's live transcript code never reads providerCandidates")
-need('object["chunksIndexed"]' in helper_live and 'object["chunks"]' not in helper_live, "the helper reads chunksIndexed, never the dense chunks array")
+need('object["chunksIndexed"]' in body(helper, "static func liveTranscriptParse(") and 'object["chunks"]' not in body(helper, "static func liveTranscriptParse("), "the helper projects chunksIndexed, never the dense chunks array; phone provenance validation may reject dense named evidence")
 need("open(file.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)" in helper_live and "fstat(descriptor, &opened) == 0, (opened.st_mode & S_IFMT) == S_IFREG" in helper_live,
      "the session file is opened with O_NOFOLLOW and checked with fstat on the descriptor it reads")
 need("return liveTranscriptContained(file, in: dir) ? file.standardizedFileURL : nil" in helper_live, "the resolved session path must sit directly in active-sessions")

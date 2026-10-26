@@ -15534,6 +15534,8 @@ final class COSControlHelper {
         guard let sessionId = row["sessionId"] as? String, !sessionId.isEmpty else { return nil }
         return [
             "sessionId": sessionId,
+            "sourceType": row["sourceType"] as? String ?? "",
+            "provenanceState": row["provenanceState"] as? String ?? "",
             "dirName": row["dirName"] as? String ?? "",
             "chunkFiles": Self.meetingCount(row["chunkFiles"]),
             "bytes": Self.meetingCount(row["bytes"]),
@@ -15546,7 +15548,9 @@ final class COSControlHelper {
     }
 
     static func isRecoverableOrphan(_ row: [String: Any]) -> Bool {
-        (row["recovered"] as? Bool ?? false) == false
+        if let id = row["sessionId"] as? String, id.hasPrefix("phone_") || row["sourceType"] as? String == "iphone_microphone",
+           !(phoneMeetingValidID(id) && row["sourceType"] as? String == "iphone_microphone" && row["provenanceState"] as? String == "admitted") { return false }
+        return (row["recovered"] as? Bool ?? false) == false
             && Self.meetingCount(row["chunkFiles"]) >= minRecoverableOrphanChunks
     }
 
@@ -15554,10 +15558,12 @@ final class COSControlHelper {
         guard let sessionId = row["sessionId"] as? String, !sessionId.isEmpty else { return nil }
         return [
             "sessionId": sessionId,
+            "sourceType": row["sourceType"] as? String ?? "",
+            "speakerPolicy": row["speakerPolicy"] as? String ?? "",
             "idleMinutes": Self.meetingCount(row["idleMinutes"]),
             "capturedMinutes": Self.meetingCount(row["capturedMinutes"]),
             "chunks": Self.meetingCount(row["chunks"]),
-            "canSave": row["canSave"] as? Bool ?? (Self.meetingCount(row["chunks"]) > 0),
+            "canSave": !sessionId.hasPrefix("phone_") && row["sourceType"] as? String != "iphone_microphone" && (row["canSave"] as? Bool ?? (Self.meetingCount(row["chunks"]) > 0)),
             "transcriptState": row["transcriptState"] as? String ?? (Self.meetingCount(row["chunks"]) > 0 ? "ready" : "unknown"),
             "promotesAt": row["promotesAt"] as? String ?? "",
         ]
@@ -15849,7 +15855,53 @@ final class COSControlHelper {
 
     /// The server's session-id grammar, `^[A-Za-z0-9:_-]{3,96}$`, checked by hand: a `$` in an ICU pattern also
     /// matches before a final newline, which the server's JavaScript `$` does not.
+    static func phoneMeetingValidID(_ id: String) -> Bool {
+        id.range(of: #"\Aphone_(?:[0-9]{13}_)?[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\z"#, options: .regularExpression) != nil
+    }
+
+    /// Bounded, no-follow phone metadata; never adopt a rejected journal as a glasses recording.
+    static func phoneMeetingMetadata(_ url: URL) -> [String: Any]? {
+        let fd = open(url.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
+        guard fd >= 0 else { return nil }
+        defer { close(fd) }
+        var info = stat()
+        guard fstat(fd, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG, info.st_size > 0, info.st_size <= 4096 else { return nil }
+        var bytes = [UInt8](repeating: 0, count: Int(info.st_size))
+        var offset = 0
+        while offset < bytes.count {
+            let count = bytes.withUnsafeMutableBytes { read(fd, $0.baseAddress!.advanced(by: offset), $0.count - offset) }
+            if count < 0 && errno == EINTR { continue }
+            guard count > 0 else { return nil }
+            offset += count
+        }
+        return (try? JSONSerialization.jsonObject(with: Data(bytes))) as? [String: Any]
+    }
+
+    static func phoneMeetingSourceValid(_ object: [String: Any], sessionId: String) -> Bool {
+        guard phoneMeetingValidID(sessionId), object["sessionId"] as? String == sessionId,
+              object["sourceType"] as? String == "iphone_microphone", object["speakerPolicy"] as? String == "anonymous",
+              let start = object["startTime"] as? NSNumber, CFGetTypeID(start) != CFBooleanGetTypeID(), start.doubleValue.isFinite, start.doubleValue > 0,
+              start.doubleValue <= 9_007_199_254_740_991, start.doubleValue.rounded() == start.doubleValue,
+              let capture = object["captureSource"] as? [String: Any], let version = capture["version"] as? NSNumber,
+              CFGetTypeID(version) != CFBooleanGetTypeID(), version.intValue == 1, version.doubleValue == 1,
+              capture["captureId"] as? String == sessionId, capture["sessionId"] as? String == sessionId,
+              capture["sourceType"] as? String == "iphone_microphone", capture["speakerPolicy"] as? String == "anonymous",
+              let captureStart = capture["startTime"] as? NSNumber, CFGetTypeID(captureStart) != CFBooleanGetTypeID(),
+              captureStart.doubleValue == start.doubleValue else { return false }
+        if sessionId.count > 42, let epoch = Double(sessionId.dropFirst(6).prefix(13)), sessionId.dropFirst(19).first == "_", epoch != start.doubleValue { return false }
+        guard let chunks = object["chunksIndexed"] as? [[String: Any]] else { return false }
+        if let dense = object["chunks"] {
+            guard let rows = dense as? [[String: Any]], rows.allSatisfy({ $0["speaker"] as? String == "Ext" && $0["speakerPolicy"] as? String == "anonymous" }) else { return false }
+        }
+        return chunks.allSatisfy { row in
+            guard let c = row["c"] as? [String: Any], c["speaker"] as? String == "Ext", c["speakerPolicy"] as? String == "anonymous" else { return false }
+            if let segments = c["segments"] { return (segments as? [[String: Any]])?.allSatisfy { $0["speaker"] as? String == "Ext" } == true }
+            return true
+        }
+    }
+
     static func liveTranscriptValidId(_ id: String) -> Bool {
+        if id.hasPrefix("phone_") { return phoneMeetingValidID(id) }
         let scalars = Array(id.unicodeScalars)
         guard (3...96).contains(scalars.count) else { return false }
         return scalars.allSatisfy { s in
@@ -15930,6 +15982,9 @@ final class COSControlHelper {
             throw LiveTranscriptFailure(reason: "parse_failed")
         }
         if let named = object["sessionId"] as? String, named != sessionId { throw LiveTranscriptFailure(reason: "session_mismatch") }
+        if sessionId.hasPrefix("phone_") || object["sourceType"] as? String == "iphone_microphone" {
+            guard phoneMeetingSourceValid(object, sessionId: sessionId) else { throw LiveTranscriptFailure(reason: "phone_capture_provenance_unreadable") }
+        }
         var chunks: [Int: [String: Any]] = [:]
         for entry in (object["chunksIndexed"] as? [Any]) ?? [] {
             guard let row = entry as? [String: Any], let index = liveTranscriptIndexes([row["i"] as Any]).first,
@@ -15971,6 +16026,7 @@ final class COSControlHelper {
             "settledThrough": settledThrough,
             "turns": turns,
         ]
+        if sessionId.hasPrefix("phone_") { read["sourceType"] = "iphone_microphone"; read["speakerPolicy"] = "anonymous" }
         if let levels = liveTranscriptLevels(object["chunkLevels"]) { read["levels"] = levels }
         return read
     }
@@ -16012,8 +16068,24 @@ final class COSControlHelper {
         var opened = stat()
         guard fstat(descriptor, &opened) == 0, (opened.st_mode & S_IFMT) == S_IFREG else { throw LiveTranscriptFailure(reason: "unsafe_file") }
         let stamp = liveTranscriptStamp(opened)
+        var phoneRegistry: [String: Any]?
+        if sessionId.hasPrefix("phone_") {
+            let path = dataDir.appendingPathComponent("phone-recordings", isDirectory: true).appendingPathComponent(sessionId + ".json")
+            let policyName = SHA256.hash(data: Data(sessionId.utf8)).map { String(format: "%02x", $0) }.joined() + ".json"
+            let policyPath = dataDir.appendingPathComponent("speaker-policy", isDirectory: true).appendingPathComponent(policyName)
+            guard let registry = phoneMeetingMetadata(path), let policy = phoneMeetingMetadata(policyPath),
+                  policy["sessionId"] as? String == sessionId, policy["mode"] as? String == "anonymous", registry["closedAt"] == nil,
+                  phoneMeetingSourceValid(["sessionId": sessionId, "sourceType": registry["sourceType"] as Any,
+                    "speakerPolicy": registry["speakerPolicy"] as Any, "startTime": registry["startTime"] as Any,
+                    "captureSource": registry, "chunksIndexed": []], sessionId: sessionId) else {
+                throw LiveTranscriptFailure(reason: "phone_capture_provenance_unreadable")
+            }
+            phoneRegistry = registry
+        }
         if let knownStamp, knownStamp == stamp {
-            return ["sessionId": sessionId, "ended": false, "unchanged": true, "stamp": knownStamp]
+            var unchanged: [String: Any] = ["sessionId": sessionId, "ended": false, "unchanged": true, "stamp": knownStamp]
+            if phoneRegistry != nil { unchanged["sourceType"] = "iphone_microphone"; unchanged["speakerPolicy"] = "anonymous" }
+            return unchanged
         }
         guard opened.st_size <= liveTranscriptMaxFileBytes else { throw LiveTranscriptFailure(reason: "too_large") }
         // The server replaces the file by rename, so the opened inode never grows; read what fstat said, no more.
@@ -16028,6 +16100,12 @@ final class COSControlHelper {
             }
             if count == 0 { break }
             data.append(contentsOf: buffer[0..<count])
+        }
+        if let phoneRegistry {
+            guard let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any], phoneMeetingSourceValid(object, sessionId: sessionId),
+                  let capture = object["captureSource"] as? [String: Any], NSDictionary(dictionary: phoneRegistry).isEqual(to: capture) else {
+                throw LiveTranscriptFailure(reason: "phone_capture_provenance_unreadable")
+            }
         }
         return try liveTranscriptParse(data, sessionId: sessionId, since: since, stamp: stamp)
     }
@@ -16849,16 +16927,24 @@ final class COSControlHelper {
     /// `GET /api/meeting/sessions/:id/status`): `saved` with the receipt's filename, `active`, `closed` or `missing`.
     /// Only the state and the filename leave; a 404 is an older server (`route_absent`).
     static func liveTranscriptStatusProjection(sessionId: String, status: Int, body: [String: Any]) -> (ok: Bool, details: [String: Any]) {
+        if sessionId.hasPrefix("phone_"), status == 404 { return (false, ["sessionId": sessionId, "reason": "phone_source_unavailable"]) }
         if status == 404 { return (true, ["sessionId": sessionId, "state": "unknown", "reason": "route_absent"]) }
         if status == 401 || status == 403 { return (false, ["sessionId": sessionId, "reason": "unauthorized"]) }
         guard status == 200 else { return (false, ["sessionId": sessionId, "reason": "http_\(status)"]) }
+        if sessionId.hasPrefix("phone_") {
+            guard phoneMeetingValidID(sessionId), body["sessionId"] as? String == sessionId,
+                  body["sourceType"] as? String == "iphone_microphone", body["speakerPolicy"] as? String == "anonymous",
+                  body["provenanceState"] as? String == "admitted" else { return (false, ["sessionId": sessionId, "reason": "phone_capture_provenance_unreadable"]) }
+        }
         let state = body["state"] as? String ?? "unknown"
         // 0.5.288: server 6.71.14 adds terminal states: receipted (finished with no meeting, e.g. no speech), recovered
         // (saved by recovery) and quarantined (held while it recovers). Anything else is still "unknown".
         let known: Set<String> = ["saved", "active", "closed", "missing", "receipted", "recovered", "quarantined"]
         // Only the state: the saved meeting is found by session id, never by the receipt's filename (a retitle
         // renames the file; canary C3, 2026-10-10).
-        return (true, ["sessionId": sessionId, "state": known.contains(state) ? state : "unknown"])
+        var details: [String: Any] = ["sessionId": sessionId, "state": known.contains(state) ? state : "unknown"]
+        if sessionId.hasPrefix("phone_") { details["sourceType"] = "iphone_microphone"; details["speakerPolicy"] = "anonymous" }
+        return (true, details)
     }
 
     private func emitLiveTranscriptStatus(args: [String]) throws {
@@ -16872,7 +16958,7 @@ final class COSControlHelper {
             emit(ok: false, message: "Live transcript status unavailable (\(reason))", details: ["reason": reason])
             exit(1)
         }
-        guard let response = request("/api/meeting/sessions/\(sessionId)/status", token: token, timeout: 8) else {
+        guard let response = request("/api/meeting/sessions/\(sessionId)/status" + (sessionId.hasPrefix("phone_") ? "?sourceType=iphone_microphone&speakerPolicy=anonymous" : ""), token: token, timeout: 8) else {
             emit(ok: false, message: "Live transcript status unavailable (server_stopped)", details: ["reason": "server_stopped"])
             exit(1)
         }
@@ -17004,6 +17090,7 @@ final class COSControlHelper {
     }
 
     private func postMeetingSave(sessionId: String) throws -> (status: Int, body: [String: Any]) {
+        guard !sessionId.hasPrefix("phone_") else { throw HelperError.message("Stop on iPhone. Its retained uploads finish there.") }
         guard sessionId.range(of: "^[A-Za-z0-9:_-]{3,96}$", options: .regularExpression) != nil else {
             throw HelperError.message("Invalid capture id")
         }
@@ -17372,6 +17459,7 @@ final class COSControlHelper {
     }
 
     private func emitLiveProvisional(args: [String]) throws {
+        guard option("--session", in: args)?.hasPrefix("phone_") != true else { throw HelperError.message("iPhone microphone preview is unavailable; transcription runs on COS.") }
         guard let session = option("--session", in: args), Self.liveCueSessionValid(session) else {
             throw HelperError.message("Use --session and a meeting session id")
         }
@@ -17437,7 +17525,7 @@ final class COSControlHelper {
     /// this emits the server's status and body as they are: `transport` is `answered`, or `unavailable` when nothing
     /// answered. A Mac recording is refused here: it stops from Record on Mac.
     static func meetingStopRequestPath(sessionId: String, requestId: String?) -> String? {
-        guard sessionId.range(of: "\\A[A-Za-z0-9:_-]{3,96}\\z", options: .regularExpression) != nil, !sessionId.hasPrefix("mac_") else { return nil }
+        guard sessionId.range(of: "\\A[A-Za-z0-9:_-]{3,96}\\z", options: .regularExpression) != nil, !sessionId.hasPrefix("mac_"), !sessionId.hasPrefix("phone_") else { return nil }
         if let requestId {
             guard requestId.range(of: "\\A[A-Za-z0-9_-]{3,96}\\z", options: .regularExpression) != nil else { return nil }
             return "/api/meeting/sessions/\(sessionId)/stop-request/\(requestId)"
@@ -17496,10 +17584,11 @@ final class COSControlHelper {
         let saveable = stranded.filter { $0["canSave"] as? Bool == true }.compactMap { $0["sessionId"] as? String }
         // 0.5.313 (QA): a Mac capture saves only through Control's delivery (the server refuses a Mac save without its
         // identity pin), so Save all skipped nothing and reported "1 failed" every time. Mac captures are left to Recover.
-        let ids = saveable.filter { !$0.hasPrefix("mac_") }
-        let macLeft = saveable.count - ids.count
+        let ids = saveable.filter { !$0.hasPrefix("mac_") && !$0.hasPrefix("phone_") }
+        let macLeft = saveable.filter { $0.hasPrefix("mac_") }.count
+        let phoneLeft = stranded.filter { ($0["sessionId"] as? String)?.hasPrefix("phone_") == true }.count
         if ids.isEmpty {
-            emit(ok: true, message: macLeft > 0 ? "Mac recordings finish from Record on Mac → Recover." : "No still-live captures", details: [
+            emit(ok: true, message: phoneLeft > 0 ? "Stop on iPhone. Its retained uploads finish there." : macLeft > 0 ? "Mac recordings finish from Record on Mac → Recover." : "No still-live captures", details: [
                 "saved": 0, "failed": [] as [String],
             ])
             return
@@ -17523,6 +17612,7 @@ final class COSControlHelper {
         if failed.isEmpty {
             message = (saved == 1 ? "Saved 1 capture as a meeting." : "Saved \(saved) captures as meetings.")
                 + (macLeft > 0 ? " Mac recordings finish from Record on Mac → Recover." : "")
+                + (phoneLeft > 0 ? " iPhone microphone captures finish on iPhone." : "")
         } else {
             message = "Saved \(saved). \(failed.count) failed. Session files were not deleted."
         }
@@ -20003,6 +20093,7 @@ final class COSControlHelper {
         guard let session = option("--session", in: args), !session.isEmpty else {
             throw HelperError.message("--session is required; enrolling every held session as one person is not offered")
         }
+        guard !session.hasPrefix("phone_") else { throw HelperError.message("iPhone microphone recordings are anonymous. Names and voice training are unavailable.") }
         let payload: [String: Any] = ["name": name, "sessionId": session]
         let json = String(data: try JSONSerialization.data(withJSONObject: payload), encoding: .utf8) ?? "{}"
 
@@ -20200,6 +20291,7 @@ final class COSControlHelper {
             throw HelperError.message("--name is required (min 2 characters)")
         }
         let members = try Self.heldMembersPayload(option("--members", in: args))
+        guard !members.contains(where: { ($0["sessionId"] as? String)?.hasPrefix("phone_") == true }) else { throw HelperError.message("iPhone microphone recordings are anonymous. Names and voice training are unavailable.") }
         let payload = try Self.heldNamingPayload(name: name, members: members,
             hash: option("--preview-hash", in: args), apply: args.first == "voice-held-apply",
             confirmed: args.contains("--confirm"), ownerAck: args.contains("--owner-ack"), listened: args.contains("--listened"))
@@ -20290,6 +20382,7 @@ final class COSControlHelper {
               let to = option("--to", in: args), !to.isEmpty else {
             throw HelperError.message("--session, --from and --to are required")
         }
+        guard !session.hasPrefix("phone_") else { throw HelperError.message("iPhone microphone recordings are anonymous. Names and voice training are unavailable.") }
         var payload: [String: Any] = ["from": from, "to": to]
         if let recordId = option("--record-id", in: args), !recordId.isEmpty { payload["recordId"] = recordId }
         if let revision = option("--expected-revision", in: args), !revision.isEmpty { payload["expectedRevision"] = revision }
@@ -20308,6 +20401,7 @@ final class COSControlHelper {
         guard let session = option("--session", in: args), validSessionID(session) else {
             throw HelperError.message("--session is required")
         }
+        guard !session.hasPrefix("phone_") else { throw HelperError.message("iPhone microphone recordings are anonymous. Names and voice training are unavailable.") }
         let path = "/api/meeting/\(escapedSessionID(session))/speaker-policy"
         var payload: [String: Any] = [:]
         if let mode = option("--mode", in: args) {

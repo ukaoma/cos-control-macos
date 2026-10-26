@@ -2177,6 +2177,7 @@ final class ControllerModel: ObservableObject {
     }
 
     func saveStranded(_ sessionId: String) {
+        guard !PhoneMeetingCapture.protected(sessionId) else { notice = "Stop on iPhone. Its retained uploads finish there."; return }
         guard !sessionId.isEmpty, !busy, !orphanBusy else { return }
         // A Mac capture saves only once every chunk on this Mac has reached the server; a server-side save of what
         // arrived so far would be partial (2026-10-15: 52 of 1,200). Finish delivering it instead.
@@ -4158,7 +4159,7 @@ final class ControllerModel: ObservableObject {
     /// The open glasses meeting's grey line: one read, only when the setting is on, the server advertises the line and
     /// the view is open on a session still live. A Mac recording's line comes from its own previews instead.
     func pollLiveProvisionalOnce() async {
-        guard liveTranscriptEnabled, liveMeetingCapability.greyLine, let open = liveTranscriptOpenID, !open.hasPrefix("mac_"),
+        guard liveTranscriptEnabled, liveMeetingCapability.greyLine, let open = liveTranscriptOpenID, !open.hasPrefix("mac_"), !PhoneMeetingCapture.protected(open),
               liveTranscriptFeeds[open]?.ended != true else { return }
         guard let response = try? await helper.run(["live-provisional", "--session", open], timeout: 6),
               liveTranscriptEnabled, liveTranscriptOpenID == open else { return }
@@ -9540,6 +9541,7 @@ final class ControllerModel: ObservableObject {
     }
 
     func openSpeakerReview(sessionId: String, recordId: String? = nil, nameVoice: String? = nil) {
+        guard !PhoneMeetingCapture.protected(sessionId) else { notice = PhoneMeetingCapture.anonymousNote; return }
         reviewSelectionGeneration &+= 1
         pendingNameVoice = nameVoice
         selectedReviewRecordID = recordId
@@ -9765,6 +9767,7 @@ final class ControllerModel: ObservableObject {
 
     /// Every Add/Name starts a read-only preview, including a high-tier suggestion.
     func nameHeld(_ members: [HeldSampleRef], as name: String) async {
+        guard !members.contains(where: { PhoneMeetingCapture.protected($0.sessionId) }) else { addVoiceResult = PhoneMeetingCapture.anonymousNote; return }
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard heldNamingAvailable else { addVoiceResult = "Update the COS server to 6.46.0 or newer to preview and apply meeting labels."; return }
         guard trimmed.count >= 2 else { addVoiceResult = "A name needs at least two characters."; return }
@@ -10245,6 +10248,10 @@ final class ControllerModel: ObservableObject {
             reviewError = "This review is read-only or needs a newer server to verify the selected meeting. Reopen it after updating."
             return
         }
+        guard !PhoneMeetingCapture.protected(review.sessionId) else {
+            reviewError = PhoneMeetingCapture.anonymousNote
+            return
+        }
         let session = review.sessionId
         let generation = reviewSelectionGeneration
         // 0.5.340: a Mac recording renames in this meeting only. The global fold is a profile merge, and a Mac voice
@@ -10426,6 +10433,7 @@ final class ControllerModel: ObservableObject {
             reviewError = "This review is read-only or needs a newer server to verify the selected meeting. Reopen it after updating."
             return
         }
+        guard !PhoneMeetingCapture.protected(review.sessionId) else { reviewError = PhoneMeetingCapture.anonymousNote; pendingCorrection = nil; return }
         let session = review.sessionId
         let generation = reviewSelectionGeneration
         mergeInFlight = true
