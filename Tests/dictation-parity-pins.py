@@ -153,20 +153,29 @@ def check(src, fixture):
     pin(len(added) >= 9 and not any(bad in l for l in added for bad in ("restored", "candidate.", ".name", "heard", "text)", "used.uid", "target.app")),
         "no text logged", f"{len(added)} new log lines, codes and counts only")
 
-    # 11. The release words: 0.5.345 everywhere, the summary within the window's cap, the 6.91.1 pairing line.
+    # 11. Preserve Wave A's historical release notes on later versions, while the current
+    # plist/notes/changelog agree and the current summary stays within the window cap.
     notes = json.loads(src["whatsnew"])
     build = re.search(r"<key>CFBundleVersion</key>\s*<string>(\d+)</string>", src["plist"])
     short = re.search(r"<key>CFBundleShortVersionString</key>\s*<string>([0-9.]+)</string>", src["plist"])
-    pin(short is not None and short.group(1) == "0.5.345" and build is not None and build.group(1) == "399" and notes.get("version") == "0.5.345"
-        and src["changelog"].startswith("## 0.5.345 (build 399)"), "version", "Info.plist, WhatsNew.json and CHANGELOG are 0.5.345 (399)")
+    pin(short is not None and tuple(map(int, short.group(1).split("."))) >= (0,5,345)
+        and build is not None and int(build.group(1)) >= 399 and notes.get("version") == short.group(1)
+        and src["changelog"].startswith(f"## {short.group(1)} (build {build.group(1)})"),
+        "version", "current plist, notes and changelog agree at 0.5.345 (399) or later")
     summary = notes["whatsNew"]["summary"]
-    pin(len(summary) <= 1200 and summary.count("Plus everything in") == 1 and "Plus everything in 0.5.344: " in summary, "summary cap",
-        f"the summary fits the window's 1,200 characters and chains 0.5.344 in one sentence ({len(summary)})")
-    first = notes["whatsNew"]["sections"][0]
-    entry = src["changelog"].split("\n## 0.5.344", 1)[0]
+    pin(len(summary) <= 1200 and summary.count("Plus everything in") == 1
+        and ("Plus everything in 0.5.344: " in summary if notes.get("version") == "0.5.345" else True),
+        "summary cap", f"the summary fits 1,200 characters and chains one prior release ({len(summary)})")
+    mine = [section for section in notes["whatsNew"]["sections"] if section["title"] == "0.5.345"]
+    pin(len(mine) == 1, "version", "keep exactly one 0.5.345 section")
+    first = mine[0]
+    entries = src["changelog"].split("\n## ")
+    entry = next(("## " + e if i else e for i,e in enumerate(entries)
+                  if ("## " + e if i else e).startswith("## 0.5.345 (build 399)")), "")
     for text in [summary, entry] + first["items"]:
         pin("—" not in text and "→" not in text and " -> " not in text, "copy", f"no em dash or arrow: {text[:60]!r}")
-    pin(first["title"] == "0.5.345" and len(first["items"]) <= 12 and "6.92.0" in entry, "version", "the 0.5.345 section leads and the entry pairs with 6.92.0")
+    pin(entry != "" and 1 <= len(first["items"]) <= 12 and "6.92.0" in entry,
+        "version", "the preserved 0.5.345 entry pairs with 6.92.0")
     e344 = src["changelog"].split("\n## 0.5.344 (build 398)", 1)[-1].split("\n## 0.5.343", 1)[0]
     pin("Pairs with COS server 6.91.1" in e344, "pairing", "the 0.5.344 entry pairs with 6.91.1")
     block = src["core"][src["core"].index("// MARK: - 0.5.345 Wave A (plan r3): filler sounds are never typed (A-W10)"):src["core"].index("// MARK: - Dictation for everyone (0.5.317, server 6.74.0)")]
@@ -192,7 +201,7 @@ MUTANTS = [
     ("health probe back", "helper", "        do { token = try readToken() } catch { throw HelperError.message(\"Unauthorized\") }\n        let capabilities = request(\"/api/transcribe/capabilities\"",
      "        token = try speakerReviewToken()\n        let capabilities = request(\"/api/transcribe/capabilities\"", "one round trip less"),
     ("text in a log", "d", 'dictationLog.notice("undo polish result=replaced")', 'dictationLog.notice("undo polish result=replaced \\(restored, privacy: .public)")', "no text logged"),
-    ("summary over the cap", "whatsnew", "Plus everything in 0.5.344: ", "Plus everything in 0.5.344: " + "x" * 600 + " ", "summary cap"),
+    ("summary over the cap", "whatsnew", "Plus everything in 0.5.344: ", "Plus everything in 0.5.344: " + "x" * 1201 + " ", "summary cap"),
     ("summary chains twice", "whatsnew", "Plus everything in 0.5.344: ", "Plus everything in 0.5.343: and Plus everything in 0.5.344: ", "summary cap"),
     ("an em dash in the entry", "changelog", "## 0.5.345 (build 399), Dictation parity, Wave A:", "## 0.5.345 (build 399), Dictation parity — Wave A:", "copy"),
     ("no 6.91.1 pairing", "changelog", "Pairs with COS server 6.91.1", "Pairs with COS server 6.91.0", "pairing"),
@@ -213,6 +222,11 @@ except PinFailed as e:
     sys.exit(str(e))
 caught = 0
 for name, key, old, new, expected in MUTANTS:
+    if name in ("summary over the cap", "summary chains twice"):
+        current_summary = json.loads(sources["whatsnew"])["whatsNew"]["summary"]
+        chain = re.search(r"Plus everything in [0-9.]+: ", current_summary).group(0)
+        old = chain
+        new = chain + "x" * 1201 if name == "summary over the cap" else chain + "Plus everything in 0.5.344: "
     if sources[key].count(old) != 1:
         sys.exit(f"pin self-test: mutant '{name}' lands {sources[key].count(old)} times in {FILES[key]}; it must land exactly once")
     try:

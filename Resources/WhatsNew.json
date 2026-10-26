@@ -1,7 +1,7 @@
 {
   "version": "0.5.348",
   "whatsNew": {
-    "summary": "Sessions now includes Usage: tokens by model and provider, daily charts, monthly history and estimated API value. COS reads the session records already on this Mac and keeps a local history. Choose All history for totals across the available records. Includes the dictation fixes from 0.5.345.",
+    "summary": "Sessions now includes Usage: tokens by model and provider, daily charts, monthly history and estimated API value. COS reads the session records already on this Mac and keeps a local history. Choose All history for totals across the available records. Plus everything in 0.5.345: dictation fillers, sentence capitals, Undo polish and learning from edits.",
     "sections": [
       {
         "title": "0.5.348",
