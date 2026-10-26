@@ -41,6 +41,27 @@ PINS = [
      'the notice after a Mac rename says it was text only'),
     ('Sources/Views.swift', 'if model.openReview?.isMacRecording == true {',
      'the naming row shows the text-only note instead of the scope switch'),
+    # 0.5.351 (server 6.93.0): a Mac voice assigned to an existing voice profile.
+    ('Sources/Views.swift', 'assignVoiceProfile: model.openReview?.isMacRecording == true)',
+     'picking an existing person for a Mac voice asks the server to add its audio to that profile'),
+    ('Sources/Views.swift', 'ForEach(correction.assignLines, id: \\.self) { line in',
+     'the confirm card shows the voice samples the server would add'),
+    ('Sources/Views.swift', 'Text(MacVoiceCopy.typedNote)',
+     'a typed Mac name says it adds no voice sample'),
+    ('Sources/Views.swift', 'Text(model.openReview?.isMacRecording == true ? "text only" : "new name")',
+     'a typed new name on a Mac recording says text only'),
+    ('Sources/ControllerModel.swift', 'let assigned = assignVoiceProfile && review.isMacRecording ? voiceProfiles.first { $0.name == to }?.name : nil',
+     'only an enrolled person, by exact name, on a Mac recording, can receive a Mac voice'),
+    ('Sources/ControllerModel.swift', '+ reviewRevisionArgs(review) + (assigned != nil ? ["--assign-voice-profile"] : [])',
+     'the preview asks the server what assigning would add'),
+    ('Sources/ControllerModel.swift', 'assignRequested: assigned != nil',
+     'the preview card is told an assignment was asked for'),
+    ('Sources/ControllerModel.swift', 'if correction.addsVoiceSamples { args.append("--assign-voice-profile") }',
+     'Save adds the samples only when the preview said some would be added'),
+    ('HelperSources/main.swift', 'if args.contains("--assign-voice-profile") { payload["assignVoiceProfile"] = true }',
+     'the helper sends assignVoiceProfile to the relabel route'),
+    ('HelperSources/main.swift', 'let unknownProfile = response.status == 404 && (response.body?["reason"] as? String) == "unknown_profile"',
+     'a 404 for an unenrolled name is a decline, not a missing route'),
     ('Sources/Views.swift', 'Text(review.isMacRecording ? MacVoiceCopy.unattributedNote',
      'a Mac review explains why nobody is named instead of blaming recovered audio'),
     ('Sources/ActivityWindow.swift', 'input.meetingUnnamed = unnamed',
@@ -80,7 +101,7 @@ def main() -> int:
                     print(f'FAIL mac voice pins self-test: {label} line was not caught: {why}', file=sys.stderr)
                     return 1
         print(f'PASS mac voice pins self-test: each of {len(PINS)} pins fails when its line is deleted or commented out')
-    print(f'PASS mac voice pins: {len(PINS)} call sites (Rename voice, text-only Mac renames, the Voice N count)')
+    print(f'PASS mac voice pins: {len(PINS)} call sites (Rename voice, text-only Mac renames, Mac voice to profile, the Voice N count)')
     return 0
 
 

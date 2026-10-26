@@ -10243,7 +10243,9 @@ final class ControllerModel: ObservableObject {
         review.sourceRevision.map { ["--expected-revision", $0] } ?? []
     }
 
-    func previewRename(from: String, to: String, scope: CorrectionScope, isNameAssignment: Bool = false) {
+    /// `assignVoiceProfile` (0.5.351, server 6.93.0) is honored for a Mac recording only: `to` is then an enrolled person, and the
+    /// preview reports the voice samples that would go to that profile. A typed new name never sets it.
+    func previewRename(from: String, to: String, scope: CorrectionScope, isNameAssignment: Bool = false, assignVoiceProfile: Bool = false) {
         guard from != to else { return }
         guard let review = openReview, review.mutable, selectedReviewRecordID == nil || (review.identityVersion == 1 && review.sourceRevision?.count == 64) else {
             reviewError = "This review is read-only or needs a newer server to verify the selected meeting. Reopen it after updating."
@@ -10260,19 +10262,22 @@ final class ControllerModel: ObservableObject {
         let scope: CorrectionScope = review.isMacRecording ? .thisMeeting : scope
         // 0.5.340: a Mac recording never makes a profile, so the card must never say it will.
         let createsProfile = !review.isMacRecording && !voiceProfiles.contains { $0.name.caseInsensitiveCompare(to) == .orderedSame }
+        // 0.5.351: only an existing enrolled person can receive a Mac voice's samples; the exact stored name is what the server matches.
+        let assigned = assignVoiceProfile && review.isMacRecording ? voiceProfiles.first { $0.name == to }?.name : nil
         mergeInFlight = true
         Task { [weak self] in
             guard let self else { return }
             defer { if reviewSelectionGeneration == generation { mergeInFlight = false } }
             do {
                 let args: [String] = scope == .thisMeeting
-                    ? ["meeting-relabel", "--session", session, "--record-id", review.recordId, "--from", from, "--to", to] + reviewRevisionArgs(review)
+                    ? ["meeting-relabel", "--session", session, "--record-id", review.recordId, "--from", from, "--to", to] + reviewRevisionArgs(review) + (assigned != nil ? ["--assign-voice-profile"] : [])
                     : ["voice-merge", "--into", to, "--from", from]
                 let response = try await helper.run(args)
                 guard reviewSelectionGeneration == generation, lastReviewSession == session else { return }
                 pendingCorrection = Self.correction(
                     from: from, to: to, scope: scope, response: response,
-                    isNameAssignment: isNameAssignment, createsProfile: createsProfile
+                    isNameAssignment: isNameAssignment, createsProfile: createsProfile,
+                    assignRequested: assigned != nil
                 )
                 namingVoice = nil
                 reviewError = nil
@@ -10363,7 +10368,8 @@ final class ControllerModel: ObservableObject {
         scope: CorrectionScope,
         response: HelperResponse,
         isNameAssignment: Bool = false,
-        createsProfile: Bool = false
+        createsProfile: Bool = false,
+        assignRequested: Bool = false
     ) -> PendingCorrection {
         let state = response.details["state"]?.string ?? ""
         let result = response.details["result"]?.object
@@ -10411,7 +10417,9 @@ final class ControllerModel: ObservableObject {
             isNameAssignment: isNameAssignment,
             createsProfile: createsProfile,
             wouldRetract: training?["wouldRetract"]?.int ?? 0,
-            untraceable: training?["untraceable"]?.int ?? 0
+            untraceable: training?["untraceable"]?.int ?? 0,
+            macAssignment: assignRequested && !(refused || pendingEarlier) ? MacVoiceAssignment(result?["enrolment"]) : nil,
+            macAssignUnsupported: assignRequested && !(refused || pendingEarlier) && MacVoiceAssignment(result?["enrolment"]) == nil
         )
     }
 
@@ -10448,6 +10456,8 @@ final class ControllerModel: ObservableObject {
                 } else if correction.scope == .thisMeeting {
                     args = ["meeting-relabel", "--session", session, "--record-id", review.recordId,
                             "--from", correction.from, "--to", correction.to ?? "", "--confirm"]
+                    // 0.5.351: the samples go to the profile only when the preview said some would. Otherwise this is the text rename it was.
+                    if correction.addsVoiceSamples { args.append("--assign-voice-profile") }
                 } else {
                     args = ["voice-merge", "--into", correction.to ?? "", "--from", correction.from, "--confirm"]
                 }

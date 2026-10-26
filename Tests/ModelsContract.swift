@@ -4641,7 +4641,61 @@ struct ModelsContract {
         for copy in [MacVoiceCopy.renameNote, MacVoiceCopy.menuTitle, MacVoiceCopy.menuItem("Voice 2"), MacVoiceCopy.unattributedNote] {
             precondition(!copy.contains("\u{2014}") && !copy.contains("\u{2192}"), "Mac voice copy has no em dash or arrow")
         }
-        precondition(MacVoiceCopy.renameNote.contains("text only") && MacVoiceCopy.renameNote.contains("No voice profile"))
+        precondition(MacVoiceCopy.renameNote.contains("text only") && MacVoiceCopy.renameNote.contains("pick the person"),
+                     "the picker note says a typed name is text only and a picked person is how a profile is taught")
+        precondition(MacVoiceCopy.typedNote.contains("text only") && MacVoiceCopy.typedNote.contains("No voice sample"))
+
+        // 0.5.351 (server 6.93.0): a Mac voice assigned to an existing voice profile, read from the relabel preview.
+        func enrolment(_ over: [String: JSONValue] = [:]) -> JSONValue {
+            var o: [String: JSONValue] = ["person": .string("Dana Reyes"), "enrolled": .number(3), "attempted": .number(5),
+                                          "similarity": .number(0.81), "belowFloor": .bool(false), "floor": .number(0.55), "skipped": .null]
+            for (k, v) in over { o[k] = v }
+            return .object(o)
+        }
+        guard let ready = MacVoiceAssignment(enrolment()) else { preconditionFailure("an enrolment preview parses") }
+        precondition(ready.canAdd && ready.samples == 3 && ready.attempted == 5 && ready.person == "Dana Reyes" && ready.skipped == nil)
+        let readyLines = ready.lines(from: "Voice 2")
+        precondition(readyLines.count == 2, "the card shows the samples and the similarity")
+        precondition(readyLines[0] == "Adds up to 3 voice samples of Voice 2 to Dana Reyes's profile. Nothing is added until you save.", readyLines[0])
+        precondition(readyLines[1] == "Similarity to Dana Reyes's stored profile: 0.81.", readyLines[1])
+        precondition(MacVoiceAssignment(enrolment(["enrolled": .number(1)]))!.lines(from: "Voice 2")[0].contains("1 voice sample of"), "one sample is singular")
+        // A voice that sounds unlike the profile is flagged, and the person still decides.
+        guard let low = MacVoiceAssignment(enrolment(["similarity": .number(0.31), "belowFloor": .bool(true)])) else { preconditionFailure("below floor parses") }
+        precondition(low.canAdd, "a low similarity is a warning, not a refusal")
+        let lowLines = low.lines(from: "Voice 2")
+        precondition(lowLines[1].contains("sounds unlike") && lowLines[1].contains("0.31") && lowLines[1].contains("0.55") && lowLines[1].contains("Save only if you know it is them"), lowLines[1])
+        // No similarity reported: no similarity line.
+        precondition(MacVoiceAssignment(enrolment(["similarity": .null]))!.lines(from: "Voice 2").count == 1)
+        // Nothing to add: the reason is plain and the text rename is still said to apply.
+        guard let none = MacVoiceAssignment(enrolment(["enrolled": .number(0), "skipped": .string("audio_not_retained")])) else { preconditionFailure("refusal parses") }
+        precondition(!none.canAdd)
+        let noneLines = none.lines(from: "Voice 2")
+        precondition(noneLines.count == 1 && noneLines[0].contains("No voice samples will be added to Dana Reyes") && noneLines[0].contains("no longer kept") && noneLines[0].contains("applied to this meeting as text"), noneLines[0])
+        precondition(!MacVoiceAssignment(enrolment(["enrolled": .number(0)]))!.canAdd, "no samples is nothing to add even with no reason")
+        precondition(!MacVoiceAssignment(enrolment(["skipped": .string("no_usable_audio")]))!.canAdd, "a reason wins over a count")
+        precondition(MacVoiceAssignment(enrolment(["skipped": .string("")]))!.canAdd, "an empty reason is no reason")
+        precondition(MacVoiceAssignment(nil) == nil && MacVoiceAssignment(.null) == nil && MacVoiceAssignment(.object([:])) == nil
+                     && MacVoiceAssignment(enrolment(["person": .string("")])) == nil, "no enrolment block means the server did not preview an assignment")
+        for code in ["audio_not_retained", "no_usable_audio", "store_unavailable", "disabled", "no_index_mapping", "something_new", ""] {
+            precondition(!MacVoiceAssignment.reason(code).isEmpty)
+        }
+        precondition(MacVoiceAssignment.reason("something_new").contains("something_new"), "an unknown code is shown, not hidden")
+        // The pending correction: the assignment is confirmed only when the server said samples would be added.
+        func pending(_ assignment: MacVoiceAssignment?, unsupported: Bool = false) -> PendingCorrection {
+            PendingCorrection(from: "Voice 2", to: "Dana Reyes", scope: .thisMeeting, message: "", surfaces: CorrectionSurfaces(nil), similarity: nil,
+                              refused: false, forceable: false, proseStale: false, isNameAssignment: true, createsProfile: false,
+                              wouldRetract: 0, untraceable: 0, macAssignment: assignment, macAssignUnsupported: unsupported)
+        }
+        precondition(pending(ready).addsVoiceSamples && pending(ready).assignLines == readyLines)
+        precondition(!pending(none).addsVoiceSamples && pending(none).assignLines == noneLines, "a refused preview confirms as text only")
+        precondition(!pending(nil).addsVoiceSamples && pending(nil).assignLines.isEmpty, "a typed name has no voice lines")
+        precondition(!pending(nil, unsupported: true).addsVoiceSamples && pending(nil, unsupported: true).assignLines == [MacVoiceAssignment.unsupported],
+                     "an older server is told so, and confirms as text only")
+        precondition(MacVoiceAssignment.unsupported.contains("6.93.0"))
+        for line in readyLines + lowLines + noneLines + [MacVoiceAssignment.unsupported] + ["audio_not_retained", "no_usable_audio", "store_unavailable", "disabled", "no_index_mapping", "x"].map(MacVoiceAssignment.reason) {
+            precondition(!line.contains("\u{2014}") && !line.contains("\u{2192}"), "Mac assignment copy has no em dash or arrow: \(line)")
+        }
+        precondition(!MacVoiceCopy.typedNote.contains("\u{2014}") && !MacVoiceCopy.typedNote.contains("\u{2192}"))
     }
 
     static func main() throws {
