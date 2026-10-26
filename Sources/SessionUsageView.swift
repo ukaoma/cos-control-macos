@@ -112,10 +112,10 @@ struct SessionUsageView: View {
     var body: some View {
         ScrollView {
             VStack(alignment:.leading,spacing:18) {
-                HStack {
-                    Picker("Period",selection:$month) { Text("All history").tag("All history"); ForEach(months,id:\.self) { Text($0).tag($0) } }.frame(width:180)
-                    Picker("Provider",selection:$provider) { Text("All providers").tag("All providers"); ForEach(providers,id:\.self){ Text($0).tag($0) } }.frame(maxWidth:230)
-                    Picker("Model",selection:$model) { Text("All models").tag("All models"); ForEach(models,id:\.self){ Text($0).tag($0) } }.frame(maxWidth:290)
+                HStack(alignment:.bottom,spacing:12) {
+                    filter("Period",selection:$month,values:["All history"]+months).frame(width:150)
+                    filter("Provider",selection:$provider,values:["All providers"]+providers).frame(maxWidth:190)
+                    filter("Model",selection:$model,values:["All models"]+models).frame(maxWidth:290)
                     Spacer()
                     Button { Task { await store.refresh() } } label: { Label("Refresh",systemImage:"arrow.clockwise") }.disabled(store.loading)
                 }
@@ -141,8 +141,8 @@ struct SessionUsageView: View {
                 HStack {
                     Text(monthly ? "Usage over time" : "Daily usage · \(month)").font(COSType.body(16,weight:.semibold))
                     Spacer()
-                    Picker("Time scale",selection:$monthly) { Text("Daily").tag(false); Text("Monthly history").tag(true) }.pickerStyle(.segmented).labelsHidden().frame(width:240)
-                    Picker("Measure",selection:$costChart) { Text("Tokens").tag(false); Text("Est. USD").tag(true) }.pickerStyle(.segmented).labelsHidden().frame(width:160)
+                    COSViewSwitch("Time scale",selection:$monthly,options:[COSViewOption(false,"Daily"),COSViewOption(true,"Monthly history")])
+                    COSViewSwitch("Measure",selection:$costChart,options:[COSViewOption(false,"Tokens"),COSViewOption(true,"Est. USD")])
                 }
                 if costChart && (monthly ? filtered : selected).allSatisfy({ $0.pricedEvents == 0 }) {
                     Text("Cost unavailable: no verified prices for this selection.").frame(maxWidth:.infinity,minHeight:220).foregroundStyle(.secondary)
@@ -178,7 +178,7 @@ struct SessionUsageView: View {
                     }
                 }.font(COSType.body(13))
                 Divider()
-                Toggle("Track session usage on this Mac",isOn:$store.enabled)
+                Toggle("Track session usage on this Mac",isOn:$store.enabled).toggleStyle(COSCheckStyle())
                 Text("While COS Control is running, it refreshes local history every five minutes. Pausing keeps existing history. Manual Refresh imports available records. Only counts, dates, model names and local file checkpoints are stored; nothing is uploaded.").font(COSType.body(12)).foregroundStyle(.secondary)
                 if let report = store.report {
                     Text("\(report.filesIndexed) files indexed · Time zone: \(report.timeZone) · Updated \(report.updatedAt)").font(COSType.mono(10)).foregroundStyle(.secondary)
@@ -195,5 +195,11 @@ struct SessionUsageView: View {
     }
     private func metric(_ label: String,_ value: String) -> some View {
         VStack(alignment:.leading,spacing:6) { Text(value).font(COSType.body(22,weight:.semibold)).monospacedDigit(); Text(label).font(COSType.body(12)).foregroundStyle(.secondary) }.frame(maxWidth:.infinity,alignment:.leading)
+    }
+    private func filter(_ title: String,selection: Binding<String>,values: [String]) -> some View {
+        VStack(alignment:.leading,spacing:5) {
+            Text(title).font(COSType.body(12)).foregroundStyle(.secondary)
+            COSDropdown(title,selection:selection,options:values.map { COSDropdownOption($0,$0) },showsLabel:false)
+        }
     }
 }

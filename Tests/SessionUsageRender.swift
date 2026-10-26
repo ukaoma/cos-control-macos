@@ -28,7 +28,7 @@ import SwiftUI
         for width in [1200.0, 800.0] {
             for dark in [false, true] {
               for history in [false, true] {
-                let host = NSHostingView(rootView: SessionUsageView(store: store, initialPeriod: history ? "All history" : nil).frame(width: width, height: 1100).background(COSPalette.panel))
+                let host = NSHostingView(rootView: SessionUsageView(store: store, initialPeriod: history ? "All history" : nil).cosControlTheme().frame(width: width, height: 1100).background(COSPalette.panel))
                 let window = NSWindow(contentRect: NSRect(x: -20000, y: -20000, width: width, height: 1100), styleMask: [.borderless], backing: .buffered, defer: false)
                 window.isReleasedWhenClosed = false
                 window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)

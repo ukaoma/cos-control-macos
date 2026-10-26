@@ -6,7 +6,7 @@ Status: IN PROGRESS. Not signed, installed, or published.
 
 Sessions Usage over the 0.5.345 dictation QA baseline (4570a8d), with the tested pet compatibility commit990ef13. Approved illustrated artwork and the stock-pack upgrade are integrated from588fb1b (local796a5e4); the owner passed focused upgrade/39offscreen-render checks, and this candidate still requires its complete suite. No server code changes, recording activity, transcription/cue flag changes, or keyboard automation. Server6.92.0 is already published and installed by its release owner.
 
-The current0.5.345 release proceeds separately. Shared release coordination reserves348/build402 for Usage. This branch must not publish until the current release owner releases the appcast/site and this candidate passes its own gates.
+Control0.5.345 is live and installed; its owner released the appcast/site. Shared coordination reserves348/build402 for Usage. This candidate must pass its own gates before promotion.
 
 ## Review findings and fixes
 
@@ -27,9 +27,9 @@ The current0.5.345 release proceeds separately. Shared release coordination rese
 - Desktop-safety mutation self-test: passed (35 disallowed forms rejected, six allowed forms accepted).
 - Pricing: standard API rates rechecked against official Anthropic and OpenAI documentation on October25; this remains a snapshot estimate, not actual billing.
 - Usage fixtures: passed after the timestamp correction (compile.vKje8z); complete suite repeats the final fixture.
-- Complete Tests/run.sh attempt1 stopped at the chart compiler complexity limit; typed accumulation loops corrected it (0b684cb). Attempt2 compiled app/helper and passed the preceding native lanes, then stopped at six illustrated-pack appearance checks (three transparency and three edge-frame findings). The pet owner is investigating bounded effect metadata; publication remains blocked until the exact merged suite passes.
+- Complete Tests/run.sh attempt1 stopped at the chart compiler complexity limit; typed accumulation loops corrected it (0b684cb). Attempt2 compiled app/helper and passed the preceding native lanes, then stopped at six illustrated-pack appearance checks (three transparency and three edge-frame findings). The pet owner supplied bounded effect metadata and pixel evidence in f595b0c (local602a0a0); attempt3 passed all41 strips and protected upgrade checks. It then stopped at the shared-control guard: Usage introduced six stock pickers and an unstyled tracking toggle. These now use COSDropdown, COSViewSwitch and COSCheckStyle. The isolated guard and15 banned-form mutations pass; the offscreen harness also applies the same root theme as Activity. A complete rerun remains required.
 - Native offscreen month/history renders at800/1200points in light/dark: all eight generated successfully (compile.l7vASb); narrow/light and narrow/dark plus wide/light reviewed for legibility and no clipped controls. No windows were ordered or activated.
-- Bounded real-log canary: two passes against read-only local session files advanced from12 to29 completed files and1409 to2590 usage events, with no malformed/unreadable rows in those passes. The second partial report contains959,561,173 disjoint tokens;2928 files remain pending, so this is NOT a full account/month total. Scratch ledger only (/tmp/cos-usage-348-canary). Packaged-helper private-home contract remains pending final signed artifact.
+- Bounded real-log canary: two passes advanced checkpoints and added usage events without parse/read failures in the sampled files. Backfill remains partial and is labeled as such. Detailed aggregate evidence stays in the private candidate directory; source logs were read-only and the ledger was disposable. Packaged-helper private-home contract remains pending final signed artifact.
 - DeveloperID signing, notarization, extracted artifact and served-byte checks: pending.
 
 ## Limits to preserve in release copy

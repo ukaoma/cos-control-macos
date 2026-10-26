@@ -2245,10 +2245,8 @@ struct ActivityWindow: View {
                 }
             )
             HStack {
-                Picker("Sessions view", selection: $showingSessionUsage) {
-                    Text("Sessions").tag(false)
-                    Text("Usage").tag(true)
-                }.pickerStyle(.segmented).frame(width: 240)
+                COSViewSwitch("Sessions view", selection: $showingSessionUsage,
+                              options: [COSViewOption(false, "Sessions"), COSViewOption(true, "Usage")])
                 Spacer()
             }.padding(.horizontal, 22).padding(.vertical, 10)
             if showingSessionUsage {
