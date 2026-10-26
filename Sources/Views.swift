@@ -3480,7 +3480,8 @@ private struct VoiceRow: View {
                         Button {
                             model.previewRename(from: voice.label, to: option.name,
                                                scope: model.correctionScope,
-                                               isNameAssignment: voice.isNameAssignment)
+                                               isNameAssignment: voice.isNameAssignment,
+                                               assignVoiceProfile: model.openReview?.isMacRecording == true)
                         } label: {
                             HStack {
                                 Text(option.name).font(.system(size: 12))
@@ -3510,7 +3511,7 @@ private struct VoiceRow: View {
                             HStack {
                                 Text("Use \u{201C}\(newName)\u{201D}").font(.system(size: 12))
                                 Spacer()
-                                Text("new name")
+                                Text(model.openReview?.isMacRecording == true ? "text only" : "new name")
                                     .font(.system(size: 9.5, design: .monospaced))
                                     .foregroundStyle(.secondary)
                             }
@@ -3916,9 +3917,17 @@ struct SpeakerReviewPane: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
                     if model.openReview?.isMacRecording == true && !correction.refused && correction.to != nil {
-                        Text(MacVoiceCopy.renameNote)
-                            .font(.system(size: 10.5)).foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
+                        // 0.5.351: a picked profile shows the voice samples the server would add; a typed name stays text only.
+                        ForEach(correction.assignLines, id: \.self) { line in
+                            Text(line)
+                                .font(.system(size: 10.5)).foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        if correction.assignLines.isEmpty {
+                            Text(MacVoiceCopy.typedNote)
+                                .font(.system(size: 10.5)).foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
                     }
                     if correction.createsProfile && !correction.refused {
                         Text("This name is not in voice profiles yet. Saving adds it so other segments in this meeting can use it.")

@@ -20386,6 +20386,8 @@ final class COSControlHelper {
         var payload: [String: Any] = ["from": from, "to": to]
         if let recordId = option("--record-id", in: args), !recordId.isEmpty { payload["recordId"] = recordId }
         if let revision = option("--expected-revision", in: args), !revision.isEmpty { payload["expectedRevision"] = revision }
+        // 0.5.351 (server 6.93.0): a Mac recording voice assigned to an existing voice profile. The server refuses it for anything else.
+        if args.contains("--assign-voice-profile") { payload["assignVoiceProfile"] = true }
         if args.contains("--confirm") { payload["confirm"] = true } else { payload["dryRun"] = true }
         if args.contains("--force") { payload["force"] = true }
         try emitMeetingCorrection(
@@ -20488,7 +20490,9 @@ final class COSControlHelper {
         // 6.21.18 has no such route, and Express's default 404 is HTML — parsing
         // that as JSON yielded nil and reported "Server stopped" for a perfectly
         // healthy server, sending the user off to restart it.
-        if response.status == 404 {
+        // 0.5.351: the one 404 that is an answer, not a missing route: the picked name is not an enrolled profile.
+        let unknownProfile = response.status == 404 && (response.body?["reason"] as? String) == "unknown_profile"
+        if response.status == 404 && !unknownProfile {
             emit(ok: true, message: "This needs a newer glasses-server", details: [
                 "state": "route_missing",
                 "httpStatus": 404,
@@ -20502,7 +20506,7 @@ final class COSControlHelper {
         // 422 = the server declined, e.g. the label is not in this meeting.
         let gated = response.status == 400
         let pending = response.status == 409
-        let declined = response.status == 422
+        let declined = response.status == 422 || unknownProfile
         if response.status != 200 && !gated && !pending && !declined {
             let reason = (body["message"] as? String) ?? (body["error"] as? String)
                 ?? "Request failed (\(response.status))"

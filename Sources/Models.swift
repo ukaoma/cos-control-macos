@@ -5925,13 +5925,78 @@ enum MacVoiceLabel {
 }
 
 /// 0.5.340 copy for Mac recording voices. No em dashes or arrows.
+/// 0.5.351 (server 6.93.0): a Mac voice can be assigned to an existing voice profile; a typed name stays text only.
 enum MacVoiceCopy {
-    static let renameNote = "Mac recordings rename text only, in this meeting. No voice profile is made or trained."
+    static let renameNote = "A typed name renames text only, in this meeting. To add this voice's audio to a voice profile, pick the person from the list."
+    /// On the confirm card when no voice sample is involved (a typed name).
+    static let typedNote = "Renames text only, in this meeting. No voice sample is added to any profile."
     static let menuTitle = "Rename voice"
     /// Voice numbers are anonymous; confirmed names and meeting-only renames remain separate.
     static let unattributedNote = "Voice numbers do not identify people. When voices can be distinguished, they appear as Voice 1, Voice 2 and so on; names appear only at high confidence. Name the ones you know; this changes this meeting only."
 
     static func menuItem(_ label: String) -> String { "Name \(label)" }
+}
+
+/// 0.5.351 (server 6.93.0): what assigning a Mac recording voice to an EXISTING voice profile would add. Read from the
+/// `enrolment` block of the relabel preview, never computed here: the server holds the audio and the profile.
+struct MacVoiceAssignment: Sendable, Hashable {
+    let person: String
+    /// The most samples that would be added (the store's near-duplicate gate can still drop some).
+    let samples: Int
+    /// Audio stretches the server embedded for this voice before its coherence gate.
+    let attempted: Int
+    /// Cosine of this voice against the person's stored profile. A suggestion, not a verdict.
+    let similarity: Double?
+    let belowFloor: Bool
+    let floor: Double
+    /// The server's reason nothing can be added, nil when samples can be.
+    let skipped: String?
+
+    init?(_ value: JSONValue?) {
+        guard let o = value?.object, let person = o["person"]?.string, !person.isEmpty else { return nil }
+        self.person = person
+        samples = max(0, o["enrolled"]?.int ?? 0)
+        attempted = max(0, o["attempted"]?.int ?? 0)
+        similarity = o["similarity"]?.double
+        belowFloor = o["belowFloor"]?.bool ?? false
+        floor = o["floor"]?.double ?? 0.55
+        let reason = o["skipped"]?.string
+        skipped = (reason?.isEmpty == false) ? reason : nil
+    }
+
+    /// True only when the server would add at least one sample. Confirm sends the assignment only then.
+    var canAdd: Bool { skipped == nil && samples > 0 }
+
+    /// A server too old to know the flag answers a preview with no `enrolment` block.
+    static let unsupported = "This server cannot add voice samples yet; it needs glasses-server 6.93.0 or newer. The name is applied as text only."
+
+    static func reason(_ code: String?) -> String {
+        switch code {
+        case "audio_not_retained": return "the audio for this recording is no longer kept"
+        case "no_usable_audio": return "no clean stretch of this voice on its own was found"
+        case "store_unavailable": return "the voice model is not available"
+        case "disabled": return "voice samples are switched off on this server"
+        case "no_index_mapping": return "this recording has no audio index"
+        case .some(let other) where !other.isEmpty: return "the server could not use this audio (\(other))"
+        default: return "the server could not use this audio"
+        }
+    }
+
+    /// The lines the confirm card shows. Plain sentences: no em dash, no arrow.
+    func lines(from voice: String) -> [String] {
+        guard canAdd else {
+            return ["No voice samples will be added to \(person): \(Self.reason(skipped)). The name is still applied to this meeting as text."]
+        }
+        var out = ["Adds up to \(samples) voice sample\(samples == 1 ? "" : "s") of \(voice) to \(person)'s profile. Nothing is added until you save."]
+        if let similarity {
+            if belowFloor {
+                out.append("This voice sounds unlike \(person)'s stored profile (similarity \(String(format: "%.2f", similarity)), usual match floor \(String(format: "%.2f", floor))). Call audio often does. Save only if you know it is them.")
+            } else {
+                out.append("Similarity to \(person)'s stored profile: \(String(format: "%.2f", similarity)).")
+            }
+        }
+        return out
+    }
 }
 
 struct ReviewVoice: Identifiable, Sendable, Hashable {
@@ -6948,9 +7013,20 @@ struct PendingCorrection: Identifiable, Sendable {
     let wouldRetract: Int
     /// Samples that predate meeting-level provenance and cannot be retracted.
     let untraceable: Int
+    /// 0.5.351: a Mac recording voice assigned to an existing profile, as the server previewed it. nil for every other correction.
+    var macAssignment: MacVoiceAssignment? = nil
+    /// 0.5.351: the Mac assignment was asked for and the server did not answer with a preview of it (an older server).
+    var macAssignUnsupported: Bool = false
 
     var id: String { "\(from)->\(to ?? "«unidentified»")@\(scope.rawValue)" }
     var isDeattribution: Bool { to == nil }
+    /// Confirm sends the assignment only when the server said it would add samples.
+    var addsVoiceSamples: Bool { macAssignment?.canAdd == true }
+    /// What the card says about voice samples, empty when none were asked for.
+    var assignLines: [String] {
+        if macAssignUnsupported { return [MacVoiceAssignment.unsupported] }
+        return macAssignment?.lines(from: from) ?? []
+    }
 }
 
 /// Desktop pet figure size. Medium is the original 64 px sprite. Small and
