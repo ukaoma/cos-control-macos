@@ -1,6 +1,6 @@
 # Control 0.5.348 / build 402 release QA
 
-Status: IN PROGRESS. Not signed, installed, or published.
+Status: Full suite PASS at a7a49b423b3bf145333ccf4b80ec67567ab654c5 (2026-10-26, 1513.8 seconds). Signing and artifact verification pending; not installed or published.
 
 ## Scope
 
@@ -35,3 +35,11 @@ Control0.5.345 is live and installed; its owner released the appcast/site. Share
 ## Limits to preserve in release copy
 
 This is local recorded usage, not provider-account billing or subscription-limit reporting. Claude Code and Codex local logs are supported; Cursor, browser-only chats, other Macs and unrecorded calls are not. Missing historical logs cannot be reconstructed. Large rows skipped during bounded import create visible gaps. Model prices use the verified October25 snapshot across all dates, with unknown models left unpriced. No clean physical second-Mac test or interactive typing test is claimed. Tests stay terminal/offscreen because the user reported duplicated keystrokes from Computer Use.
+
+## Final source verification
+
+- Attempt4 found Usage startup preceded the mandatory recording-state write; 9a640bf restores recording safety first.
+- Attempt5 found the new Windu folder absent from the old route inventory; a7a49b4 explicitly covers all four folders and invokes the approved illustrated manifest/native contracts. Existing legacy pixel checks remain. The sound fixture now uses the active Windu filenames.
+- 2de9186 pins the intended header split: Sessions retains session statistics; Usage renders its own token totals and history. The entire remaining static suffix passed independently before the final run.
+- Attempt6: complete Tests/run.sh exit0, 1513.8s, a7a49b423b3bf145333ccf4b80ec67567ab654c5. Evidence is in the private release candidate fullsuite-attempt6 log and result.
+- Final themed Usage renders: all eight light/dark month/history previews at800/1200points passed (compile.aPEwmP, compile.3fRg3X); narrow dark history and wide light month inspected. Fixture data is synthetic.
