@@ -81,10 +81,10 @@ phone registry/policy/journal fixtures to existing helper tests, including no
 registry, forged names, policy change despite matching stamp, symlink metadata,
 foreign status, and pre-network mutation/Stop refusal. No model or capture runs.
 
-A later full app build/full existing regressions are still required for modified
-SwiftUI/model integration. Work card file intake/reopen must also be exercised
-with the compiled source, rather than inferred from grammar pins. Static checks
-are not native acceptance. Independent source review uses production `dfd2bad`; the subsequent `62a97ab` changes only the fixture. Source review remains separate from native qualification.
+A later shipping app build/full existing regressions are still required for
+application acceptance. The later WorkCardFiles lane below compiles the 54-file
+app type test kit and proves actual intake/reopen without executing app startup
+or UI. Static checks alone are not native acceptance. Independent source review uses production `dfd2bad`; the subsequent `62a97ab` changes only the fixture. Source review remains separate from native qualification.
 
 ## Physical and release gates
 
@@ -104,7 +104,7 @@ The Even-hosted microphone JavaScript candidate does not need a native iOS build
 Ship only as a coordinated future companion/server/Control release after these
 source, native and physical gates pass; no public activation from this branch.
 
-## Prepared real WorkCardFiles intake/reopen lane (not run)
+## Qualified real WorkCardFiles intake/reopen lane
 
 Independent review found that detail keys could override a selected phone row,
 while a valid phone key on a row missing its source could enter files. The narrow
@@ -123,18 +123,34 @@ pasteboard, UI, helper, network, audio or model code is called by this selection
 
 The existing harness needs the shared **app type test kit** (all Sources except
 COSControlApp), so this command includes a cold kit compile; it does not build a
-shipping app or execute app startup. Cold runtime is unmeasured. It uses the
-bounded compiler's 8 GiB owned-tree cap/16 GiB start floor and a 600-second outer
-scheduler deadline, one native job at a time, without overrides. Root must grant
-this exact compile scope before execution:
+shipping app or execute app startup. Root granted this exact scope at source
+`33cac0a7ab730dab30df81639a4a5c6f18c1ddb5`, followed sequentially by the affected
+phone model fixture. Both used the bounded compiler's 8 GiB owned-tree cap/16 GiB
+start floor and a 600-second outer scheduler deadline, one native job at a time,
+without overrides:
+
+- `files.json`: **41 real store checks passed**, 261.749 seconds including the
+  cold app type kit and harness compile. Kit compile receipt
+  `/tmp/cos-control-compile-receipts-501/compile.DnxqhA`: 253.13 seconds,
+  peak owned RSS 960,741,376 bytes, no observed swap growth, exit 0.
+- `models-after-files-fix.json`: **43 model checks passed**, 22.947 seconds;
+  51 source/grammar pins also passed. This requalifies the affected model source.
+- Existing nil-coalescing/string-decoding warnings in ControllerModel and a
+  return-layout warning in SessionPet remain. No warning came from this phone
+  correction.
+- Native lane explicitly relinquished after both completions. No shipping app
+  build/full suite/artifact/UI/OCR/pasteboard/audio/helper runtime/model call.
+
+Exact granted commands; any further execution requires a fresh lane:
 
 ```sh
 python3 '/Users/ukaoma/Documents/GitHub/Ukaoma Chief Of Staff/MU-Chief-Staff/.agents/skills/cos-glasses/scripts/release_lane.py' --receipt /Users/ukaoma/cos-release-candidates/control-iphone-microphone-20261026/files.json --timeout-seconds 600 -- env COS_COMPILE_PROFILE=bounded COS_TEST_KIT_DIR=/Users/ukaoma/cos-release-candidates/control-iphone-microphone-20261026/kits zsh Tests/run-phone-meeting-files.sh
+python3 '/Users/ukaoma/Documents/GitHub/Ukaoma Chief Of Staff/MU-Chief-Staff/.agents/skills/cos-glasses/scripts/release_lane.py' --receipt /Users/ukaoma/cos-release-candidates/control-iphone-microphone-20261026/models-after-files-fix.json --timeout-seconds 600 -- env COS_COMPILE_PROFILE=bounded COS_TEST_KIT_DIR=/Users/ukaoma/cos-release-candidates/control-iphone-microphone-20261026/kits zsh Tests/run-phone-meeting.sh
 ```
 
 New static pins 51 and existing transcript147/live338/G2Stop28/Macvoice13/files
-wiring passed in `/tmp/control-phone-files-static.json`. These are preparation
-checks, not evidence that the new executable fixture has passed. The preceding
-43 model/965 self-test/53 helper results apply to the earlier production source;
-requalify affected models after this narrow correction. No native run occurred
-while preparing this lane.
+wiring passed in `/tmp/control-phone-files-static.json`. The earlier 965 self-test
+and 53 helper results still apply because HelperSources is unchanged by the file
+correction. Independent read-only review of `33cac0a` confirmed this saved-files
+finding closed, with no further actionable issue in the bounded changed paths.
+Physical iPhone gates and full application acceptance remain outstanding.
