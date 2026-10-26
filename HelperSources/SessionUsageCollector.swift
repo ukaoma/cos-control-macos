@@ -181,7 +181,8 @@ final class SessionUsageCollector {
             var cursor = state[file.path].flatMap { $0[3].data(using:.utf8) }.flatMap { try? JSONDecoder().decode(Cursor.self,from:$0) } ?? Cursor()
             let prefix = try handle.read(upToCount: min(size,256)) ?? Data()
             let signature = Self.digest(prefix.base64EncodedString())
-            if cursor.offset > UInt64(size) || (!cursor.prefix.isEmpty && cursor.prefix != signature) { cursor = Cursor() }
+            let rewritten = state[file.path].map { size <= (Int($0[1]) ?? 0) && modified != Double($0[2]) } ?? false
+            if cursor.offset > UInt64(size) || rewritten || (!cursor.prefix.isEmpty && cursor.prefix != signature) { cursor = Cursor() }
             cursor.prefix = signature
             cursor.waitingForAppend = false
             try handle.seek(toOffset: cursor.offset)

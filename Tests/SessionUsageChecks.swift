@@ -92,8 +92,15 @@ import Foundation
         let afterLarge = try resumedLarge.refresh()
         check(afterLarge.buckets.reduce(0){$0+$1.events} == 2,"usage after oversized row imported across restart")
         check(afterLarge.unreadableFiles == 1 && afterLarge.pendingFiles == 0,"oversized gap counted once and scan finishes")
-        let raw = try Data(contentsOf:db)
-        check(!String(decoding:raw,as:UTF8.self).contains("SECRET_PROMPT"),"content-free ledger")
+        // Existing checkpoints gain the optional large-row state without losing progress.
+        var oldCheckpoint = try JSONSerialization.jsonObject(with:JSONEncoder().encode(cursor)) as! [String:Any]
+        oldCheckpoint.removeValue(forKey:"skippingLongLine")
+        let compatible = try JSONDecoder().decode(SessionUsageCollector.Cursor.self,from:JSONSerialization.data(withJSONObject:oldCheckpoint))
+        check(compatible.cumulative == cursor.cumulative,"old checkpoint preserves accounting baseline")
+        for path in [db, URL(fileURLWithPath:db.path+"-wal")] where FileManager.default.fileExists(atPath:path.path) {
+            let raw = try Data(contentsOf:path)
+            check(!String(decoding:raw,as:UTF8.self).contains("SECRET_PROMPT"),"database and journal are content-free")
+        }
         print("PASS: usage parsing, deduplication, cache pricing, local dates, reset, partial append, retention and unknown coverage")
     }
 }
