@@ -1,7 +1,7 @@
 {
   "version": "0.5.348",
   "whatsNew": {
-    "summary": "Sessions now includes Usage: tokens by model and provider, daily charts, monthly history and estimated API value. COS reads the session records already on this Mac and keeps a local history. Choose All history for totals across the available records. Plus everything in 0.5.345: dictation fillers, sentence capitals, Undo polish and learning from edits.",
+    "summary": "Sessions now includes Usage: tokens by model and provider, daily charts, monthly history and estimated API value. COS reads the session records already on this Mac and keeps a local history. Choose All history for totals across the available records. Jedi Miles Windu gains thirteen illustrated combat casts, with existing custom packs preserved. Plus everything in 0.5.345: dictation fillers, sentence capitals, Undo polish and learning from edits.",
     "sections": [
       {
         "title": "0.5.348",
@@ -12,7 +12,8 @@
           "Usage history stays on this Mac and survives deletion of previously imported session logs. Pause tracking at any time. COS stores counts and model names, not conversation text.",
           "Cost is a standard API-equivalent estimate, not your subscription bill. It applies the October 25 rate snapshot to all dates. Unknown prices stay unavailable; browser-only sessions, Cursor and other Macs are not included.",
           "Longer custom pet animations retain their approved timing, including 256-frame casts. Your installed artwork is preserved.",
-          "Includes 0.5.345 dictation improvements and its fix for learning edits to capitalized dictations."
+          "Includes 0.5.345 dictation improvements and its fix for learning edits to capitalized dictations.",
+          "Jedi Miles Windu gains thirteen illustrated combat casts across Sessions 1–4. Exact stock packs update; custom artwork and playback settings stay yours."
         ]
       },
       {

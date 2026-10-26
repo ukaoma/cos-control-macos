@@ -4,7 +4,7 @@ Status: IN PROGRESS. Not signed, installed, or published.
 
 ## Scope
 
-Sessions Usage over the 0.5.345 dictation QA baseline (4570a8d), with the tested pet compatibility commit990ef13. The pet owner is preparing the approved illustrated artwork and stock-pack upgrade for integration before this candidate's full suite. No server code changes, recording activity, transcription/cue flag changes, or keyboard automation. Server6.92.0 is already published and installed by its release owner.
+Sessions Usage over the 0.5.345 dictation QA baseline (4570a8d), with the tested pet compatibility commit990ef13. Approved illustrated artwork and the stock-pack upgrade are integrated from588fb1b (local796a5e4); the owner passed focused upgrade/39offscreen-render checks, and this candidate still requires its complete suite. No server code changes, recording activity, transcription/cue flag changes, or keyboard automation. Server6.92.0 is already published and installed by its release owner.
 
 The current0.5.345 release proceeds separately. Shared release coordination reserves348/build402 for Usage. This branch must not publish until the current release owner releases the appcast/site and this candidate passes its own gates.
 

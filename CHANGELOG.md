@@ -6,7 +6,7 @@ Built on Control 0.5.345 QA fixes at 4570a8d; pairs with published server 6.92.0
 - A local SQLite ledger backfills available Claude Code/Codex records, including archives/subagents; it deduplicates repeated observations and resumes bounded imports. Counts persist after source logs are removed. No prompts or responses are stored or uploaded.
 - Input, output, cache reads and cache writes are disjoint. Costs use a documented October 25 API-equivalent snapshot, not subscription invoices. Unknown pricing and missing coverage remain explicit.
 - Import passes distinguish incomplete EOF from a budget cutoff, and skip oversized image rows incrementally without stranding later usage. Gaps remain visible.
-- Includes 990ef13 pet compatibility (256-frame casts, bounded32M rotation raster); no new artwork. Preserves0.5.345 capitalization/edit-learning fix.
+- Includes thirteen approved illustrated Miles Windu combat casts and the protected stock-pack upgrade. Custom artwork/cadence and retained V15 rollback assets remain intact. Compatibility supports 256-frame casts and bounded32M rotation rasters. Preserves0.5.345 capitalization/edit-learning fix.
 - Details, limits and focused evidence: docs/session-usage.md. Final release gates recorded separately.
 
 ## 0.5.345 (build 399), Dictation parity, Wave A: fillers, the capital, the swap that lands, Undo polish, honest polish copy, audio that survives a stuck device
