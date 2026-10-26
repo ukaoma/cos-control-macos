@@ -254,9 +254,16 @@ def validate(map_bytes: bytes, read: Callable[[str], bytes | None], listing: set
     need("petRotationLoad = Task.detached(priority: .userInitiated) { [weak self] in" in ensure
          and "petRotationLoad?.cancel()" in ensure and "petRotationGeneration += 1" in ensure,
          "a cast state decodes off the main thread and supersedes any decode in flight")
-    need("guard !Task.isCancelled, petRotationGeneration == generation else { return }\n"
-         "        petSpriteKit.rotations = loaded.value\n        petShownPose = pose" in controller,
+    apply = controller.split("    private func applyPetRotation(", 1)[1].split("\n    }\n", 1)[0]
+    generation_guard = "guard !Task.isCancelled, petRotationGeneration == generation else { return }"
+    landing = "petSpriteKit.rotations = loaded.value\n        petShownPose = pose"
+    need(generation_guard in apply and landing in apply
+         and apply.index(generation_guard) < apply.index(landing)
+         and "await " not in apply,
          "only the newest decode lands, and the state switches in the same update its casts land")
+    need("petRotationLoad = nil" in apply
+         and apply.index(generation_guard) < apply.index("petRotationLoad = nil") < apply.index(landing),
+         "the current completed decode clears its task before landing; a stale decode cannot clear a newer task")
     need("var petDisplayPose: PetSpritePose { petShownPose ?? petSpritePose }" in controller
          and pet.count("model.petDisplayPose") >= 3,
          "the sprite draws the shown pose, so the old state animates until the new one's casts are decoded")
@@ -356,6 +363,12 @@ def main() -> None:
         ("a stale decode lands", with_(controller=controller.replace(
             "guard !Task.isCancelled, petRotationGeneration == generation else { return }",
             "guard !Task.isCancelled else { return }", 1))),
+        ("a completed decode keeps its task", with_(controller=controller.replace(
+            "        petRotationLoad = nil\n        petRotationRetryAfter = loaded.value[pose]",
+            "        petRotationRetryAfter = loaded.value[pose]", 1))),
+        ("a stale decode clears the current task", with_(controller=controller.replace(
+            "        guard !Task.isCancelled, petRotationGeneration == generation else { return }\n        petRotationLoad = nil",
+            "        petRotationLoad = nil\n        guard !Task.isCancelled, petRotationGeneration == generation else { return }", 1))),
         ("the state switches before its casts land", with_(controller=controller.replace(
             "var petDisplayPose: PetSpritePose { petShownPose ?? petSpritePose }",
             "var petDisplayPose: PetSpritePose { petSpritePose }", 1))),
