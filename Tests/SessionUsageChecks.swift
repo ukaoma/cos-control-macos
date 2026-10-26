@@ -92,6 +92,14 @@ import Foundation
         let afterLarge = try resumedLarge.refresh()
         check(afterLarge.buckets.reduce(0){$0+$1.events} == 2,"usage after oversized row imported across restart")
         check(afterLarge.unreadableFiles == 1 && afterLarge.pendingFiles == 0,"oversized gap counted once and scan finishes")
+        // A same-size rewrite beyond the prefix is rescanned, without charging the first row twice.
+        let rewrittenFile = boundedFile.deletingLastPathComponent().appendingPathComponent("rewrite.jsonl")
+        try (a + claude("rewritten","2026-10-05T12:00:00Z",20)).write(to:rewrittenFile,atomically:true,encoding:.utf8)
+        _ = try resumedLarge.refresh()
+        try (a + claude("rewritten","2026-10-05T12:00:00Z",40)).write(to:rewrittenFile,atomically:true,encoding:.utf8)
+        try FileManager.default.setAttributes([.modificationDate:Date().addingTimeInterval(2)],ofItemAtPath:rewrittenFile.path)
+        let afterRewrite = try resumedLarge.refresh()
+        check(afterRewrite.buckets.first{$0.day == "2026-10-05"}?.counts.total == 190,"same-size rewrite revises usage beyond prefix")
         // Existing checkpoints gain the optional large-row state without losing progress.
         var oldCheckpoint = try JSONSerialization.jsonObject(with:JSONEncoder().encode(cursor)) as! [String:Any]
         oldCheckpoint.removeValue(forKey:"skippingLongLine")
