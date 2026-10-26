@@ -1,7 +1,7 @@
-## 0.5.350 (build 404), usage exploration and anonymous live voices
+## 0.5.350 (build 404), Usage exploration and Windu motion
 
 - Usage adds 7/30/90-day and custom inclusive calendar-date filters, provider/model line or stacked charts, provider totals, disjoint token mix, daily breakdowns and richer period inspection. Unknown costs and local-history coverage remain explicit; these are not account quotas or invoices.
-- Live Mac participant strips retain distinct server-generated Voice N labels. Server 6.92.1 adds conservative capture-local acoustic continuity and preserves established labels through finalization; uncertain audio remains unidentified. Named recognition and meeting-only rename/no-training policy remain unchanged.
+- Pairs with existing server 6.92.0. Persistent live Mac speaker continuity is deferred to a separate qualified release; no new diarization engine or training behavior is advertised. Existing display-only anonymous-label safeguards remain compatible.
 - Windu Session 1 running bursts share a consistent cadence. Failed cast decoding retries after a bounded delay on refresh; healthy art and custom packs are retained. The reported live-instance repeated opponents were not reproduced; the failure recovery path is independently exercised.
 - iPhone microphone work remains a separate gated candidate, pending server provenance support and physical-device acceptance. No iPhone system-audio capture is claimed.
 - Full-suite, signing, publication and installed acceptance are recorded in the release receipt; focused tests alone do not establish release readiness.
