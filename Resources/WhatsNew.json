@@ -1,8 +1,19 @@
 {
-  "version": "0.5.349",
+  "version": "0.5.350",
   "whatsNew": {
-    "summary": "Explore Usage with bar breakdowns, weekend comparisons and clearer token shares. Windu gains illustrated idle states. Plus everything in 0.5.348: historical Sessions Usage, illustrated combat casts and the previous dictation fixes.",
+    "summary": "Explore Usage with date ranges, provider trends and daily breakdowns. Mac meetings keep distinct anonymous voice labels when the server has enough evidence. Windu gets smoother running and recovery from failed cast loads.",
     "sections": [
+      {
+        "title": "0.5.350",
+        "items": [
+          "Compare Last 7, 30 or 90 days, a completed weekend, custom dates or all history. Charts and totals follow the same filters.",
+          "Choose provider or model series, lines or stacked bars. Inspect a period for its breakdown, and compare provider totals, token categories and daily records.",
+          "Usage records are not sessions. Token share and estimated API value do not measure your subscription allowance; missing prices and coverage remain visible.",
+          "With server 6.92.1, sufficiently clear repeated voices can appear as Voice 1, Voice 2 and so on during a Mac meeting. Uncertain speech stays unidentified; anonymous voice numbers do not identify people.",
+          "Naming a Mac voice changes this meeting only; it does not train a voice profile. Existing high-confidence name recognition remains separate.",
+          "Windu uses a consistent cadence for both running bursts before his strike. Failed combat-art loads can retry on a later refresh. Custom artwork and settings stay intact."
+        ]
+      },
       {
         "title": "0.5.349",
         "items": [
@@ -32,7 +43,7 @@
         "items": [
           "COS leaves out um, uh, er and hmm said on their own before it types or copies, also with AI polish off. Text in another language, file names such as um.py, and handles such as @uh keep them. Settings, Dictation, Remove filler sounds turns it off. What was heard stays on the card.",
           "A dictation at the start of a text box, or after a full stop, question mark or new line, starts with a capital when COS can read the text box. Never in terminals or password fields, and never for words like iPhone, @handles, paths or a lowercase word in your dictionary. Settings, Dictation, Capitalize the start of a sentence.",
-          "When you are still holding ⌘ or ⌃ as Claude's polish arrives, COS waits up to 1.2 seconds for you to let go, then a moment of no typing, before it swaps the polished text in. Shift and Option still count as typing. Settings can turn the wait off.",
+          "When you are still holding ⌘ or ⌃ as Claude's polish arrives, COS waits up to 1.2 seconds for you to let go, then a moment of no typing, before it swaps the polished text in. Shift and Option cancel the pending swap immediately. Settings can turn the wait off.",
           "Undo polish, on the pill after a swap and on the dictation's card, puts back exactly what COS typed. Apply polished in Activity puts Claude's version back again.",
           "Under AI polish, one line says which polish your COS server runs for the model you chose: the newest polish, the earlier one, or Previous polish you picked. COS reads it again when the server is updated or rolled back.",
           "If the microphone fails to start with System default, COS tries a microphone that delivered sound before (never Bluetooth or an iPhone) and says which it used. A sound or a mute that hits an audio error pauses for 10 minutes instead of holding up dictation, with Play sounds again and Mute again in Settings.",
