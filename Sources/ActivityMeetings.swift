@@ -614,14 +614,14 @@ struct MeetingLibraryDetailPane: View {
                     VStack(alignment: .leading, spacing: 16) {
                         // 0.5.258: screenshots, slides and files dropped on the meeting, sent with every linked card.
                         if let files = model.workHandoffStore?.meetingFiles, let row = model.openLibraryRow {
-                            let keys = detail.contextKeys.isEmpty ? row.contextKeys : detail.contextKeys
-                            MeetingFilesSection(files: files, keys: keys, supported: detail.contextSupported ?? row.contextSupported,
+                            let keys = row.resolvedContextKeys(detail: detail)
+                            MeetingFilesSection(files: files, keys: keys, supported: row.resolvedContextSupported(detail: detail),
                                                 ambiguous: detail.contextAmbiguous || row.contextAmbiguous,
                                                 reason: detail.contextReason.isEmpty ? row.contextReason : detail.contextReason,
                                                 info: WorkMeetingInfo(recordId: row.recordId, title: row.title, date: row.date))
                         }
                         if let row = model.openLibraryRow {
-                            let keys = detail.contextKeys.isEmpty ? row.contextKeys : detail.contextKeys
+                            let keys = row.resolvedContextKeys(detail: detail)
                             if row.sourceSessionId != nil { Text("Ask history covers the whole original capture, including its other split pieces.").font(COSType.body(12)).foregroundStyle(.secondary) }
                             ForEach(Array(row.meetingAskSessions(keys: keys).enumerated()), id: \.element) { captureIndex, session in
                                 // 0.5.327: a saved glasses recording shows its cues beside Meeting Ask (the server keeps them 30 days).
@@ -2129,6 +2129,8 @@ struct LiveNowRows: View {
                                 }
                                 .controlSize(.small)
                                 .disabled(model.busy || model.orphanBusy)
+                            } else if row.phase == .live, PhoneMeetingCapture.protected(row.sessionId) {
+                                Text(PhoneMeetingCapture.stopNote).font(COSType.body(11)).foregroundStyle(.secondary)
                             } else if row.phase == .live, G2MeetingStop.isGlassesSession(row.sessionId) {
                                 // 0.5.321: a glasses meeting still receiving audio stops on the glasses, asked from here.
                                 Button(G2MeetingStop.buttonLabel) { glassesStopTarget = row.sessionId }
@@ -2308,8 +2310,11 @@ struct LiveTranscriptPane: View {
         let mac = session?.hasPrefix("mac_") == true
         return VStack(alignment: .leading, spacing: 0) {
             TimelineView(.periodic(from: .now, by: 15)) { context in header(feed, now: context.date) }
-            if let session, !session.hasPrefix("mac_"), feed?.ended != true {
+            if let session, !session.hasPrefix("mac_"), !PhoneMeetingCapture.protected(session), feed?.ended != true {
                 MeetingSpeakerPolicyView(model: model, sessionId: session).id(session).padding(.horizontal, 22).padding(.bottom, 10)
+            }
+            if let session, PhoneMeetingCapture.protected(session) {
+                Text(PhoneMeetingCapture.anonymousNote).font(COSType.body(11)).foregroundStyle(.secondary).padding(.horizontal, 22).padding(.bottom, 10)
             }
             // 0.5.336: the voices heard so far, with the one heard last.
             if let feed, !feed.turns.isEmpty {
@@ -2327,7 +2332,7 @@ struct LiveTranscriptPane: View {
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
                         .frame(maxWidth: 420)
-                    if let session, feed?.ended != true, model.liveMeetingCapability.greyLine || mac {
+                    if let session, !PhoneMeetingCapture.protected(session), feed?.ended != true, model.liveMeetingCapability.greyLine || mac {
                         LiveProvisionalLineView(feed: model.liveProvisional, sessionId: session, lastFinalChunk: LiveMeeting.lastFinalChunk(feed)) {}
                             .frame(maxWidth: 560)
                     }
@@ -2396,7 +2401,7 @@ struct LiveTranscriptPane: View {
             }
             // 0.5.336: where it records and, on a server that lists its cue kinds, what the cues found so far.
             if let id = model.liveTranscriptOpenID,
-               let status = LiveMeeting.statusLine(mac: id.hasPrefix("mac_"), ended: feed?.ended == true,
+               let status = LiveMeeting.statusLine(sessionId: id, ended: feed?.ended == true,
                                                    kinds: model.liveMeetingCapability.counts ? inlineCues(id).map(\.kind) : nil) {
                 Text(status).font(COSType.body(12.5, weight: .medium)).foregroundStyle(.primary)
             }
@@ -2551,7 +2556,7 @@ struct LiveTranscriptPane: View {
                         }
                     }
                     // 0.5.336: the words still being transcribed, greyed, replaced by the final text.
-                    if feed.ended != true, model.liveMeetingCapability.greyLine || feed.sessionId.hasPrefix("mac_") {
+                    if !PhoneMeetingCapture.protected(feed.sessionId), feed.ended != true, model.liveMeetingCapability.greyLine || feed.sessionId.hasPrefix("mac_") {
                         LiveProvisionalLineView(feed: model.liveProvisional, sessionId: feed.sessionId, lastFinalChunk: LiveMeeting.lastFinalChunk(feed)) {
                             if follow.contentChanged(now: Date()) { proxy.scrollTo(LiveTranscriptPane.bottomID, anchor: .bottom) }
                         }
@@ -2594,7 +2599,7 @@ struct LiveTranscriptPane: View {
     /// While a meeting with inline cues is live: re-ask the cue history every few seconds; the store reads no more than
     /// once per 15 s per meeting, and one read at a time.
     private func followInlineCues(_ session: String?) async {
-        guard let session, model.liveMeetingCapability.inlineCues, model.openLiveTranscriptFeed?.ended != true,
+        guard let session, !PhoneMeetingCapture.protected(session), model.liveMeetingCapability.inlineCues, model.openLiveTranscriptFeed?.ended != true,
               G2MeetingStop.isGlassesSession(session) || model.liveMeetingCapability.macCues else { return }
         while !Task.isCancelled {
             await cueStore.loadMeeting(session, days: CueVerdicts.liveDays, run: CueReviewPane.run(model))
@@ -2615,6 +2620,9 @@ struct LiveTranscriptPane: View {
         if model.macRecording.isRecording, model.macRecording.manifest?.captureId == model.liveTranscriptOpenID {
             Button("Stop and save") { Task { await model.macRecording.stop() } }.buttonStyle(COSQuietButtonStyle())
                 .help("Stop and save (Command-Shift-R)")
+        }
+        if let id = model.liveTranscriptOpenID, PhoneMeetingCapture.protected(id), feed?.ended != true {
+            Text(PhoneMeetingCapture.stopNote).font(COSType.body(11)).foregroundStyle(.secondary)
         }
         // 0.5.321: a live glasses meeting stops on the glasses, asked from here after an inline confirmation.
         if let id = model.liveTranscriptOpenID, G2MeetingStop.isGlassesSession(id), feed?.ended != true {

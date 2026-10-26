@@ -8,7 +8,7 @@ index in emptyCompletions, an index still in Whisper, a non-ASCII speaker and te
 into a scratch data directory and passed with --data-dir; the real ~/.cos-glasses/data is never read. The session
 status runs against a loopback stand-in server with a scratch /tmp home. Prints "live-transcript helper checks: N passed".
 """
-import json, os, pathlib, shutil, subprocess, sys, tempfile, threading
+import hashlib, json, os, pathlib, shutil, subprocess, sys, tempfile, threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 helper = sys.argv[1]
@@ -178,6 +178,51 @@ try:
     before = len(seen_paths)
     code, refused, _, _ = run("live-transcript-status", "--session", "../etc")
     check(code != 0 and "invalid_session_id" in refused["message"] and len(seen_paths) == before, "a bad id never reaches the server")
+    # Future phone consumer: synthetic, isolated registry/policy/journal only.
+    phone = json.loads((ROOT / "Tests/fixtures/phone-meeting/session.json").read_text())
+    phone_id = phone["sessionId"]
+    phone_path = sessions / (phone_id + ".json")
+    registry_dir = data_dir / "phone-recordings"; registry_dir.mkdir()
+    policy_dir = data_dir / "speaker-policy"; policy_dir.mkdir()
+    registry_path = registry_dir / (phone_id + ".json")
+    policy_path = policy_dir / (hashlib.sha256(phone_id.encode()).hexdigest() + ".json")
+    phone_path.write_text(json.dumps(phone))
+    code, refused, out, err = run("live-transcript", "--data-dir", str(data_dir), "--session", phone_id)
+    check(code != 0 and "phone_capture_provenance_unreadable" in refused["message"] and "Synthetic fixture" not in out + err,
+          "unadmitted phone journal never becomes glasses or transcript evidence")
+    registry_path.write_text(json.dumps(phone["captureSource"]))
+    policy_path.write_text(json.dumps({"sessionId": phone_id, "mode": "anonymous"}))
+    code, admitted, out, err = run("live-transcript", "--data-dir", str(data_dir), "--session", phone_id)
+    check(code == 0 and admitted["details"]["read"]["sourceType"] == "iphone_microphone" and admitted["details"]["read"]["speakerPolicy"] == "anonymous",
+          "admitted phone provenance is retained in live DTO")
+    check(admitted["details"]["read"]["turns"][0]["speaker"] == "Ext", "phone is anonymous in Control")
+    stamp = admitted["details"]["read"]["stamp"]
+    code, same, _, _ = run("live-transcript", "--data-dir", str(data_dir), "--session", phone_id, "--stamp", stamp)
+    check(code == 0 and same["details"]["read"]["unchanged"] is True, "phone retains bounded unchanged fast path")
+    policy_path.write_text(json.dumps({"sessionId": phone_id, "mode": "standard"}))
+    code, refused, _, _ = run("live-transcript", "--data-dir", str(data_dir), "--session", phone_id, "--stamp", stamp)
+    check(code != 0 and "phone_capture_provenance_unreadable" in refused["message"], "same stamp cannot bypass changed phone policy")
+    policy_path.write_text(json.dumps({"sessionId": phone_id, "mode": "anonymous"}))
+    phone["chunksIndexed"][0]["c"]["speaker"] = "Forged name"
+    phone_path.write_text(json.dumps(phone))
+    code, refused, out, err = run("live-transcript", "--data-dir", str(data_dir), "--session", phone_id)
+    check(code != 0 and "Forged name" not in out + err, "named phone journal rejected without content leakage")
+    phone["chunksIndexed"][0]["c"]["speaker"] = "Ext"; phone_path.write_text(json.dumps(phone))
+    registry_path.unlink(); registry_path.symlink_to(phone_path)
+    code, refused, _, _ = run("live-transcript", "--data-dir", str(data_dir), "--session", phone_id)
+    check(code != 0 and phone_path.exists(), "phone metadata symlink refused; evidence retained")
+    registry_path.unlink(); registry_path.write_text(json.dumps(phone["captureSource"]))
+    status_answer.update(code=200, body={"sessionId": phone_id, "state": "saved", "sourceType": "iphone_microphone", "speakerPolicy": "anonymous", "provenanceState": "admitted"})
+    code, saved, _, _ = run("live-transcript-status", "--session", phone_id)
+    check(code == 0 and saved["details"]["sourceType"] == "iphone_microphone", "phone status retains source")
+    check(seen_paths[-1].endswith("/status?sourceType=iphone_microphone&speakerPolicy=anonymous"), "phone status query is explicit")
+    status_answer["body"]["sourceType"] = "mac_system_audio"
+    code, refused, _, _ = run("live-transcript-status", "--session", phone_id)
+    check(code != 0, "foreign source status cannot reclassify phone")
+    before = len(seen_paths)
+    for verb, args in [("meeting-stop-request", []), ("meeting-stranded-save", []), ("meeting-speaker-policy", ["--mode", "standard", "--policy-revision", "unset"]), ("meeting-relabel", ["--from", "Ext", "--to", "A name"]), ("voice-enroll-ext", ["--name", "A name"])]:
+        code, refused, _, _ = run(verb, "--session", phone_id, *args)
+        check(code != 0 and len(seen_paths) == before, verb + " refuses phone before a server request")
     print("live-transcript helper checks: %d passed" % passed)
 finally:
     server.shutdown()

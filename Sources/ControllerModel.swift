@@ -2177,6 +2177,7 @@ final class ControllerModel: ObservableObject {
     }
 
     func saveStranded(_ sessionId: String) {
+        guard !PhoneMeetingCapture.protected(sessionId) else { notice = "Stop on iPhone. Its retained uploads finish there."; return }
         guard !sessionId.isEmpty, !busy, !orphanBusy else { return }
         // A Mac capture saves only once every chunk on this Mac has reached the server; a server-side save of what
         // arrived so far would be partial (2026-10-15: 52 of 1,200). Finish delivering it instead.
@@ -4158,7 +4159,7 @@ final class ControllerModel: ObservableObject {
     /// The open glasses meeting's grey line: one read, only when the setting is on, the server advertises the line and
     /// the view is open on a session still live. A Mac recording's line comes from its own previews instead.
     func pollLiveProvisionalOnce() async {
-        guard liveTranscriptEnabled, liveMeetingCapability.greyLine, let open = liveTranscriptOpenID, !open.hasPrefix("mac_"),
+        guard liveTranscriptEnabled, liveMeetingCapability.greyLine, let open = liveTranscriptOpenID, !open.hasPrefix("mac_"), !PhoneMeetingCapture.protected(open),
               liveTranscriptFeeds[open]?.ended != true else { return }
         guard let response = try? await helper.run(["live-provisional", "--session", open], timeout: 6),
               liveTranscriptEnabled, liveTranscriptOpenID == open else { return }
@@ -8513,7 +8514,7 @@ final class ControllerModel: ObservableObject {
             libraryMeetings = (response.details["meetings"]?.array ?? []).compactMap(LibraryMeeting.init)
             // Only keys files may be added under: an ambiguous meeting's are never kept (QA B2).
             if let files = workHandoffStore?.meetingFiles, files.hasAnyMeetingFiles {
-                files.rememberRecordKeys(libraryMeetings.map { (recordId: $0.recordId, keys: $0.contextKeys, supported: $0.contextSupported) })
+                files.rememberRecordKeys(libraryMeetings.map { (recordId: $0.recordId, keys: $0.resolvedContextKeys(detail: nil), supported: $0.resolvedContextSupported(detail: nil)) })
             }
             let months = response.details["months"]?.array?.compactMap(\.string) ?? []
             libraryMonths = months.isEmpty
@@ -8610,7 +8611,8 @@ final class ControllerModel: ObservableObject {
                 return
             }
             libraryDetail = detail
-            workHandoffStore?.meetingFiles.rememberRecordKeys(detail.recordId, keys: detail.contextKeys, supported: detail.contextSupported)
+            let fileRecord = PhoneMeetingCapture.protected(meeting.sessionId, sourceType: meeting.sourceType) ? meeting.recordId : detail.recordId
+            workHandoffStore?.meetingFiles.rememberRecordKeys(fileRecord, keys: meeting.resolvedContextKeys(detail: detail), supported: meeting.resolvedContextSupported(detail: detail))
         } catch {
             guard !Task.isCancelled, openLibraryRow?.id == meeting.id else { return }
             libraryDetailError = error.localizedDescription
@@ -8644,7 +8646,7 @@ final class ControllerModel: ObservableObject {
         case .transcript:
             body = MeetingAskText.transcript(detail?.transcript ?? "").text
         case .context:
-            let keys = detail?.contextKeys.isEmpty == false ? detail!.contextKeys : row.contextKeys
+            let keys = row.resolvedContextKeys(detail: detail)
             let sessions = row.meetingAskSessions(keys: keys)
             let source = MeetingAskText.transcript(detail?.transcript ?? "")
             guard let snapshot = meetingAsk.captureCopy(title: row.title + (source.document ? " · meeting document" : "") + (row.derivedKind == "split" ? " · Ask history covers the whole original capture" : ""), transcript: source.text, sessions: sessions, localFiles: meetingAskFileSnapshots(keys: keys)) else { copyNote = meetingAsk.notice; return }
@@ -8668,7 +8670,7 @@ final class ControllerModel: ObservableObject {
     /// The open meeting's files as one block, with the guards a send applies (WorkCardFiles.meetingBlock), or "".
     func meetingFilesBlock(row: LibraryMeeting, detail: LibraryMeetingDetail?) -> String {
         guard let store = workHandoffStore?.meetingFiles else { return "" }
-        let keys = detail?.contextKeys.isEmpty == false ? detail!.contextKeys : row.contextKeys
+        let keys = row.resolvedContextKeys(detail: detail)
         return WorkCardFiles.meetingBlock(title: row.title, date: row.date, files: store.meetingFiles(keys: keys).map { ($0.file, $0.folder) })
     }
 
@@ -9540,6 +9542,7 @@ final class ControllerModel: ObservableObject {
     }
 
     func openSpeakerReview(sessionId: String, recordId: String? = nil, nameVoice: String? = nil) {
+        guard !PhoneMeetingCapture.protected(sessionId) else { notice = PhoneMeetingCapture.anonymousNote; return }
         reviewSelectionGeneration &+= 1
         pendingNameVoice = nameVoice
         selectedReviewRecordID = recordId
@@ -9765,6 +9768,7 @@ final class ControllerModel: ObservableObject {
 
     /// Every Add/Name starts a read-only preview, including a high-tier suggestion.
     func nameHeld(_ members: [HeldSampleRef], as name: String) async {
+        guard !members.contains(where: { PhoneMeetingCapture.protected($0.sessionId) }) else { addVoiceResult = PhoneMeetingCapture.anonymousNote; return }
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard heldNamingAvailable else { addVoiceResult = "Update the COS server to 6.46.0 or newer to preview and apply meeting labels."; return }
         guard trimmed.count >= 2 else { addVoiceResult = "A name needs at least two characters."; return }
@@ -10245,6 +10249,10 @@ final class ControllerModel: ObservableObject {
             reviewError = "This review is read-only or needs a newer server to verify the selected meeting. Reopen it after updating."
             return
         }
+        guard !PhoneMeetingCapture.protected(review.sessionId) else {
+            reviewError = PhoneMeetingCapture.anonymousNote
+            return
+        }
         let session = review.sessionId
         let generation = reviewSelectionGeneration
         // 0.5.340: a Mac recording renames in this meeting only. The global fold is a profile merge, and a Mac voice
@@ -10426,6 +10434,7 @@ final class ControllerModel: ObservableObject {
             reviewError = "This review is read-only or needs a newer server to verify the selected meeting. Reopen it after updating."
             return
         }
+        guard !PhoneMeetingCapture.protected(review.sessionId) else { reviewError = PhoneMeetingCapture.anonymousNote; pendingCorrection = nil; return }
         let session = review.sessionId
         let generation = reviewSelectionGeneration
         mergeInFlight = true
