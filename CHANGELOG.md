@@ -1,6 +1,6 @@
 ## 0.5.349 (build 403), clearer usage comparisons and illustrated Windu idle states
 
-- Windu now breathes gently while idle and meditating, with sharper illustrated patrol frames.
+- Windu turns his head while idle and moves through meditation poses with a violet power-up aura, alongside illustrated patrol frames.
 - Existing combat animations remain unchanged. Exact stock pets update automatically; custom artwork, timing and scale stay intact.
 - Sessions Usage distinguishes token shares from subscription allowance, adds within-provider shares and a cache-read exclusion view, and keeps API value separate.
 - Last weekend and Last 7 days filters, stable model colors, hover breakdowns, keyboard-accessible period inspection and billion-token formatting make historical comparisons easier.

@@ -9,7 +9,7 @@ This candidate fixes the effectively static V1 idle and meditation. Miles approv
 
 Run `node build.mjs`, `node audit.mjs`, then `node preview-check.mjs` with the preview server running. The latter checks the playback script and actual HTTP assets in a harness; it is not browser visual approval or native app QA.
 
-Raster checks: transparent outer cell borders, distinct poses, lossless packing, and fixed opaque ground baseline. Preview has normal/quarter speed, dark/light/checker backgrounds, scrub/restart, and a 168px pet-scale view. Compare character consistency, visible motion, head-turn/return transitions, and aura power-up through the full loop before release. Native integration and perceptual sign-off remain pending.
+Raster checks: transparent outer cell borders, distinct poses, lossless packing, and fixed opaque ground baseline. Preview has normal/quarter speed, dark/light/checker backgrounds, scrub/restart, and a 168px pet-scale view. Compare character consistency, visible motion, head-turn/return transitions, and aura power-up through the full loop before release. Perceptual sign-off is recorded above; native integration remains pending.
 
 Image source provenance: built-in image generation; local generated originals retained in /Users/ukaoma/.codex/generated_images/01a141de-2178-7292-9a0c-b1cf9cd23603. Exact image bytes copied into references. The initial pose sheets are retained as development references; only increments-v2, idle-early-turn and aura-v2 enter this build. Generation was based on the V1 illustrated identities, not a new character design.
 
