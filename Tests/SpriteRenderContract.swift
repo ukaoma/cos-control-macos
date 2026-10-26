@@ -51,6 +51,7 @@
 // Tests/run.sh runs it right after models-contract (0.5.316).
 
 import AppKit
+import CryptoKit
 
 enum SpriteRenderContract {
     struct Measure {
@@ -72,6 +73,10 @@ enum SpriteRenderContract {
         let frames: [Int]
         let maxMedianAlpha: Int
         let minX: Int
+        var maxX: Int? = nil
+        var minY: Int? = nil
+        var maxY: Int? = nil
+        var expectedSHA256: String? = nil
     }
 
     struct KnownViolation: Decodable {
@@ -170,6 +175,11 @@ enum SpriteRenderContract {
     }
 
     static func measure(strip url: URL, frames: Int, label: String, fixture: Fixture) -> Measure? {
+        if let expected = fixture.smear.first(where: { $0.strip == label })?.expectedSHA256 {
+            guard let data = try? Data(contentsOf: url),
+                  SHA256.hash(data: data).map({ String(format: "%02x", $0) }).joined() == expected
+            else { return nil } // Authored-region evidence applies only to the reviewed bytes.
+        }
         guard let image = NSImage(contentsOf: url) else { return nil }
         return measure(image: image, frames: frames, label: label, fixture: fixture)
     }
@@ -263,7 +273,12 @@ enum SpriteRenderContract {
                     let alphas = component.map { Int(p.alpha[$0]) }.sorted()
                     let median = alphas[alphas.count / 2]
                     let minX = component.map { $0 % w }.min()!
-                    if median <= smear.maxMedianAlpha, minX >= smear.minX { smeared += holes.count }
+                    let maxX = component.map { $0 % w }.max()!
+                    let minY = component.map { $0 / w }.min()!
+                    let maxY = component.map { $0 / w }.max()!
+                    if median <= smear.maxMedianAlpha, minX >= smear.minX,
+                       maxX <= (smear.maxX ?? w - 1), minY >= (smear.minY ?? 0),
+                       maxY <= (smear.maxY ?? h - 1) { smeared += holes.count }
                 }
             }
         }
@@ -376,6 +391,18 @@ enum SpriteRenderContract {
         let em = measure(image: eaten, frames: 2, label: "synthetic/eaten", fixture: none)!
         expect(!violations(em, label: "synthetic/eaten", fixture: none).isEmpty && em.fadeHolesPercent == 0,
                "an unevenly eaten garment must still fail the hole gate")
+        // The reviewed wreck region cannot excuse damage in a garment above
+        // it, beyond its right boundary, or outside its documented frame range.
+        for region in [
+            Smear(strip: "synthetic/eaten", frames: [1,2], maxMedianAlpha: 205, minX: 0, maxX: 63, minY: 45, maxY: 63),
+            Smear(strip: "synthetic/eaten", frames: [1,2], maxMedianAlpha: 205, minX: 0, maxX: 20, minY: 0, maxY: 63),
+            Smear(strip: "synthetic/eaten", frames: [3], maxMedianAlpha: 205, minX: 0, maxX: 63, minY: 0, maxY: 63)
+        ] {
+            let bounded = Fixture(edgeFrames: [:], smear: [region], preExisting: [:])
+            let measured = measure(image: eaten, frames: 2, label: "synthetic/eaten", fixture: bounded)!
+            expect(measured.gatedHolesPercent == em.gatedHolesPercent,
+                   "bounded debris fade must not mask other positions or frames")
+        }
         // A small patch eaten at ONE alpha inside the garment (under fadeMinHoles): still a hole, not a fade.
         let patch = strip(cells: 2, width: W, height: H) { ctx in
             for cell in 0..<2 {
