@@ -141,8 +141,9 @@ bridge = between(model, "    var macRecordingBridge: MacRecordingStore.Bridge {"
 pin('self.runHelper(["mac-recording"], timeout: 90, stdinData: data, answers: true)' in bridge, "bridge answers",
     "a helper refusal reaches invoke with its status and reason, so a passing failure can be told from a real one")
 inv = between(store, "    private func invoke(", "    var noticeAcknowledged: Bool {")
-pin(inv.index("lastFailure = (nil, nil)") < inv.index("try await bridge(operation, payload)") < inv.index('lastFailure = (response.details["httpStatus"]?.int, response.details["reason"]?.string)')
-    < inv.index("throw MacRecordingError.unavailable(response.message)"), "failure recorded", "every call clears the last failure, a refusal records its status and reason before throwing")
+marks = ("lastFailure = (nil, nil)", "try await bridge(operation, payload)", 'lastFailure = (response.details["httpStatus"]?.int, response.details["reason"]?.string)',
+         "throw MacRecordingError.unavailable(response.message)")
+pin(all(m in inv for m in marks) and [inv.index(m) for m in marks] == sorted(inv.index(m) for m in marks), "failure recorded", "every call clears the last failure, a refusal records its status and reason before throwing")
 pin('case .timedOut: "The COS operation took too long."' in client and '"The COS operation took too long."]' in core, "timeout sentence",
     "the retry rule's timeout sentence is the helper client's own")
 call = between(store, "    private func deliveryCall(", "    private func armSlowSave() {")
