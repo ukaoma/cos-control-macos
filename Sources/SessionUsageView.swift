@@ -49,11 +49,21 @@ struct SessionUsageView: View {
     @State private var costChart = false
     @State private var excludeCacheReads = false
     @State private var inspectedPeriod: String?
-    init(store: SessionUsageStore, initialPeriod: String? = nil, initialInspection: String? = nil) {
+    @State private var dayBreakdownExpanded = false
+    init(store: SessionUsageStore, initialPeriod: String? = nil, initialInspection: String? = nil,
+         initialDates: (Date, Date)? = nil, initialCostChart: Bool = false,
+         initialExcludeCacheReads: Bool = false, initialDayBreakdownExpanded: Bool = false) {
         self.store = store
         _month = State(initialValue: initialPeriod ?? "Last 30 days")
         _monthly = State(initialValue: initialPeriod == "All history")
         _inspectedPeriod = State(initialValue: initialInspection)
+        if let initialDates {
+            _customStart = State(initialValue: initialDates.0)
+            _customEnd = State(initialValue: initialDates.1)
+        }
+        _costChart = State(initialValue: initialCostChart)
+        _excludeCacheReads = State(initialValue: initialExcludeCacheReads)
+        _dayBreakdownExpanded = State(initialValue: initialDayBreakdownExpanded)
     }
     private static func monthKey(_ date: Date) -> String {
         let f = DateFormatter(); f.locale = Locale(identifier:"en_US_POSIX"); f.dateFormat = "yyyy-MM"; return f.string(from:date)
@@ -140,6 +150,9 @@ struct SessionUsageView: View {
                 .onChange(of:provider) { _, _ in clearInspection() }
                 .onChange(of:model) { _, _ in clearInspection() }
                 .onChange(of:monthly) { _, _ in clearInspection() }
+                .onChange(of:periodKeys) { _, keys in
+                    if let inspectedPeriod, !keys.contains(inspectedPeriod) { clearInspection() }
+                }
                 .onChange(of:customStart) { _, _ in clearInspection() }
                 .onChange(of:customEnd) { _, _ in clearInspection() }
                 if month == "Custom dates" { customDates }
@@ -227,7 +240,7 @@ struct SessionUsageView: View {
                 Spacer()
                 Text("Hover or inspect a period for its breakdown").font(COSType.body(12)).foregroundStyle(COSPalette.subtle)
             }
-            if costChart && chartRows.allSatisfy({ $0.pricedEvents == 0 }) {
+            if costChart && !chartRows.isEmpty && chartRows.allSatisfy({ $0.pricedEvents == 0 }) {
                 Text("Cost unavailable: no verified prices for this selection.").frame(maxWidth: .infinity, minHeight: 220).foregroundStyle(.secondary)
             } else if points.isEmpty {
                 Text("No recorded usage for this selection. A missing provider is not zero usage.").frame(maxWidth: .infinity, minHeight: 220).foregroundStyle(.secondary)
@@ -318,7 +331,7 @@ struct SessionUsageView: View {
         }
     }
     private var dayBreakdown: some View {
-        DisclosureGroup("Daily breakdown · \(Set(selected.map(\.day)).count) recorded days") {
+        DisclosureGroup("Daily breakdown · \(Set(selected.map(\.day)).count) recorded days", isExpanded: $dayBreakdownExpanded) {
             VStack(alignment: .leading, spacing: 10) {
                 ForEach(SessionUsagePresentation.summarize(selected, by: \.day).sorted { $0.id > $1.id }) { row in
                     HStack {

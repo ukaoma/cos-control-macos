@@ -25,23 +25,62 @@ import SwiftUI
         rows += historyRows
         store.report = SessionUsageReport(buckets: rows, updatedAt: "2026-10-25T21:00:00Z", timeZone: "America/Chicago", filesIndexed: 120, pendingFiles: 0, unreadableFiles: 0, malformedRows: 0, missingBaselineEvents: 0,
             coverage: ["Claude Code and Codex local session logs, including archived sessions and subagents.", "Cursor, browser-only chats and other Macs are not included."], pricingVersion: SessionUsagePricing.version)
-        for width in [1200.0, 800.0] {
+        let fixtureReport = store.report!
+        struct PageCase {
+            var name: String
+            var period = "Last 30 days"
+            var inspection: String? = nil
+            var cost = false
+            var cacheExcluded = false
+            var expanded = false
+            var reversed = false
+            var empty = false
+            var failed = false
+            var pending = false
+            var minimumOnly = false
+        }
+        let cases: [PageCase] = [
+            PageCase(name: "range"),
+            PageCase(name: "history", period: "All history", inspection: "2026-08"),
+            PageCase(name: "custom", period: "Custom dates", inspection: month + "-24"),
+            PageCase(name: "90days", period: "Last 90 days"),
+            PageCase(name: "empty", empty: true, minimumOnly: true),
+            PageCase(name: "empty-cost", cost: true, empty: true, minimumOnly: true),
+            PageCase(name: "error", failed: true, minimumOnly: true),
+            PageCase(name: "backfill", pending: true, minimumOnly: true),
+            PageCase(name: "reversed-custom", period: "Custom dates", cost: true, reversed: true, minimumOnly: true),
+            PageCase(name: "api-cost", inspection: month + "-24", cost: true, minimumOnly: true),
+            PageCase(name: "cache-excluded", inspection: month + "-24", cacheExcluded: true, minimumOnly: true),
+            PageCase(name: "expanded-days", expanded: true, minimumOnly: true),
+        ]
+        for width in [1200.0, 800.0, 760.0] {
             for dark in [false, true] {
-              for (name, period, inspection) in [("range", "Last 30 days", nil), ("history", "All history", "2026-08"), ("custom", "Custom dates", month + "-24"), ("90days", "Last 90 days", nil)] as [(String, String, String?)] {
-                let host = NSHostingView(rootView: SessionUsageView(store: store, initialPeriod: period, initialInspection: inspection).cosControlTheme().frame(width: width, height: 2000).background(COSPalette.panel))
-                let window = NSWindow(contentRect: NSRect(x: -20000, y: -20000, width: width, height: 2000), styleMask: [.borderless], backing: .buffered, defer: false)
+              for fixture in cases where !fixture.minimumOnly || width == 760 {
+                let pageStore = SessionUsageStore()
+                var report = fixtureReport
+                if fixture.empty { report.buckets = []; report.filesIndexed = 0 }
+                if fixture.pending { report.pendingFiles = 37 }
+                pageStore.report = report
+                if fixture.failed { pageStore.error = "Usage could not refresh: fixture helper unavailable. Showing the last recorded history." }
+                let dates = fixture.reversed ? (Date(), Calendar.current.date(byAdding: .day, value: -1, to: Date())!) : nil
+                let height = fixture.expanded ? 3200.0 : 2000.0
+                let page = SessionUsageView(store: pageStore, initialPeriod: fixture.period, initialInspection: fixture.inspection,
+                    initialDates: dates, initialCostChart: fixture.cost, initialExcludeCacheReads: fixture.cacheExcluded,
+                    initialDayBreakdownExpanded: fixture.expanded)
+                let host = NSHostingView(rootView: page.cosControlTheme().frame(width: width, height: height).background(COSPalette.panel))
+                let window = NSWindow(contentRect: NSRect(x: -20000, y: -20000, width: width, height: height), styleMask: [.borderless], backing: .buffered, defer: false)
                 window.isReleasedWhenClosed = false
                 window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
                 host.appearance = window.appearance
                 window.contentView = host
-                host.frame = NSRect(x: 0, y: 0, width: width, height: 2000)
+                host.frame = NSRect(x: 0, y: 0, width: width, height: height)
                 let until = Date().addingTimeInterval(1)
                 while Date() < until { RunLoop.main.run(until: Date().addingTimeInterval(0.05)); host.layoutSubtreeIfNeeded() }
                 guard let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds), let data = {
                     host.cacheDisplay(in: host.bounds, to: rep)
                     return rep.representation(using: .png, properties: [:])
                 }() else { throw CocoaError(.fileWriteUnknown) }
-                try data.write(to: out.appendingPathComponent("usage-\(Int(width))-\(dark ? "dark" : "light")-\(name).png"))
+                try data.write(to: out.appendingPathComponent("usage-\(Int(width))-\(dark ? "dark" : "light")-\(fixture.name).png"))
                 window.close()
               }
             }
@@ -80,6 +119,6 @@ import SwiftUI
             window.close()
           }
         }
-        print("PASS: offscreen light/dark Usage renders at 800 and 1200 points")
+        print("PASS: offscreen light/dark Usage renders at 760, 800 and 1200 points, including empty/error/backfill/reversed dates/API/cache/day states")
     }
 }
