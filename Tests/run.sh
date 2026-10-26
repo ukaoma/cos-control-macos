@@ -20,6 +20,7 @@ export COS_TEST_KIT_DIR="${COS_TEST_KIT_DIR:-$TMP/kits}"
 # opted in by hand. The self-test proves each rule can fail.
 /usr/bin/python3 "$ROOT/Tests/desktop-safety-check.py" "$ROOT"
 /usr/bin/python3 "$ROOT/Tests/desktop-safety-check.py" "$ROOT" --selftest
+"$ROOT/Tests/run-session-usage.sh"
 "$ROOT/Tests/run-onboarding.sh"
 # Onboarding P1, Connect your AI: provider-status against fixtures, the app model alone, and the wiring pins.
 "$ROOT/Tests/run-provider-connect.sh"
@@ -62,7 +63,7 @@ node "$ROOT/Tests/MemoriesQuarantineCanary.cjs"
 node "$ROOT/Tests/MemoriesCuesCanary.cjs"
 
 /usr/bin/python3 "$ROOT/Tests/kit-compile.py" "$ROOT/Tests/compile-guard.sh" swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete \
-  "$ROOT/HelperSources/main.swift" "$ROOT/HelperSources/ProviderStatusCore.swift" "$ROOT/HelperSources/PairingCore.swift" "$ROOT/Sources/WorkSessionLinks.swift" \
+  "$ROOT/HelperSources/main.swift" "$ROOT/HelperSources/ProviderStatusCore.swift" "$ROOT/HelperSources/PairingCore.swift" "$ROOT/HelperSources/SessionUsageCollector.swift" "$ROOT/Sources/SessionUsageCore.swift" "$ROOT/Sources/WorkSessionLinks.swift" \
   -framework Security -framework AppKit \
   -o "$TMP/cos-control-helper"
 
@@ -170,7 +171,7 @@ python3 "$ROOT/Tests/reuse-compile.py" --root "$ROOT" --receipt "$TMP/app-compil
 "$ROOT/Tests/compile-guard.sh" swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \
   "$ROOT/Sources/Models.swift" \
   "$ROOT/Sources/HelperClient.swift" \
-  "$ROOT/Sources/ControllerModel.swift" \
+  "$ROOT/Sources/ControllerModel.swift" "$ROOT/Sources/SessionUsageCore.swift" "$ROOT/Sources/SessionUsageView.swift" \
   "$ROOT/Sources/AppQuit.swift" "$ROOT/Sources/MacRecordingCore.swift" "$ROOT/Sources/MacAudioCapture.swift" "$ROOT/Sources/MacRecording.swift" "$ROOT/Sources/MacDictationCore.swift" "$ROOT/Sources/MacDictation.swift" \
   "$ROOT/Sources/COSBrand.swift" \
   "$ROOT/Sources/COSMotion.swift" \
@@ -263,7 +264,7 @@ zsh "$ROOT/Tests/run-pet-rotation.sh"
   -framework AppKit -o "$TMP/jedi-gallery-contract"
 "$TMP/jedi-gallery-contract" "$ROOT/Resources"
 /usr/bin/python3 "$ROOT/Tests/kit-compile.py" "$ROOT/Tests/compile-guard.sh" swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \
-  "$ROOT/Sources/Models.swift" "$ROOT/Sources/HelperClient.swift" "$ROOT/Sources/ControllerModel.swift" \
+  "$ROOT/Sources/Models.swift" "$ROOT/Sources/HelperClient.swift" "$ROOT/Sources/ControllerModel.swift" "$ROOT/Sources/SessionUsageCore.swift" "$ROOT/Sources/SessionUsageView.swift" \
   "$ROOT/Sources/AppQuit.swift" "$ROOT/Sources/MacRecordingCore.swift" "$ROOT/Sources/MacAudioCapture.swift" "$ROOT/Sources/MacRecording.swift" "$ROOT/Sources/MacDictationCore.swift" "$ROOT/Sources/MacDictation.swift" \
   "$ROOT/Sources/COSBrand.swift" "$ROOT/Sources/COSMotion.swift" "$ROOT/Sources/COSConfirm.swift" \
   "$ROOT/Sources/Views.swift" "$ROOT/Sources/Control2Foundation.swift" "$ROOT/Sources/WorkHandoffStore.swift" "$ROOT/Sources/KeyLanes.swift" "$ROOT/Sources/KeyLanesViews.swift" "$ROOT/Sources/WorkSessionLinks.swift" "$ROOT/Sources/WorkProgress.swift" "$ROOT/Sources/WorkCardFiles.swift" "$ROOT/Sources/WorkProgressTracker.swift" "$ROOT/Sources/WorkTrackingViews.swift" "$ROOT/Sources/WorkHandoffView.swift" "$ROOT/Sources/WorkReviewStore.swift" "$ROOT/Sources/WorkWorkspaceView.swift" "$ROOT/Sources/WorkTaskChat.swift" "$ROOT/Sources/WorkOrchestrator.swift" "$ROOT/Sources/WorkLensPlans.swift" "$ROOT/Sources/WorkLensPlansPump.swift" "$ROOT/Sources/WorkChatQueue.swift" "$ROOT/Sources/WorkReferences.swift" "$ROOT/Sources/WorkTaskContext.swift" "$ROOT/Sources/WorkContextMeter.swift" "$ROOT/Sources/PermissionGuideModel.swift" "$ROOT/Sources/PermissionGuideSystem.swift" "$ROOT/Sources/PermissionFlowVendored.swift" "$ROOT/Sources/PermissionDragFlow.swift" "$ROOT/Sources/PermissionGuideViews.swift" "$ROOT/Sources/ProviderConnectModel.swift" "$ROOT/Sources/ProviderConnectViews.swift" "$ROOT/Sources/ActivityWindow.swift" "$ROOT/Sources/ActivityMeetings.swift" "$ROOT/Sources/MeetingSpeakerPolicy.swift" "$ROOT/Sources/MeetingAskCore.swift" "$ROOT/Sources/MeetingAsk.swift" \
@@ -2759,7 +2760,7 @@ python3 "$ROOT/Tests/reuse-compile.py" --root "$ROOT" --receipt "$TMP/app-compil
 "$ROOT/Tests/compile-guard.sh" swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \
   "$ROOT/Sources/Models.swift" \
   "$ROOT/Sources/HelperClient.swift" \
-  "$ROOT/Sources/ControllerModel.swift" \
+  "$ROOT/Sources/ControllerModel.swift" "$ROOT/Sources/SessionUsageCore.swift" "$ROOT/Sources/SessionUsageView.swift" \
   "$ROOT/Sources/AppQuit.swift" "$ROOT/Sources/MacRecordingCore.swift" "$ROOT/Sources/MacAudioCapture.swift" "$ROOT/Sources/MacRecording.swift" "$ROOT/Sources/MacDictationCore.swift" "$ROOT/Sources/MacDictation.swift" \
   "$ROOT/Sources/COSBrand.swift" \
   "$ROOT/Sources/COSMotion.swift" \

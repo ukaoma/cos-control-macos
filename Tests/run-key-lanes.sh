@@ -75,7 +75,7 @@ fi
 # By hand and for the mutation gate only (Tests/run.sh already builds the helper and runs this script against it).
 if [[ "$LANE" == "helper" ]]; then
   /usr/bin/python3 "$ROOT/Tests/kit-compile.py" "$ROOT/Tests/compile-guard.sh" "${SWIFTC[@]}" \
-    "$ROOT/HelperSources/main.swift" "$ROOT/HelperSources/ProviderStatusCore.swift" "$ROOT/HelperSources/PairingCore.swift" "$ROOT/Sources/WorkSessionLinks.swift" \
+    "$ROOT/HelperSources/main.swift" "$ROOT/HelperSources/ProviderStatusCore.swift" "$ROOT/HelperSources/PairingCore.swift" "$ROOT/HelperSources/SessionUsageCollector.swift" "$ROOT/Sources/SessionUsageCore.swift" "$ROOT/Sources/WorkSessionLinks.swift" \
     -framework Security -framework AppKit -o "$DIR/cos-control-helper"
   /usr/bin/python3 "$ROOT/Tests/key-lanes-helper-checks.py" "$DIR/cos-control-helper"
 fi

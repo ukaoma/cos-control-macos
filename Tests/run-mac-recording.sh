@@ -22,7 +22,7 @@ COUNT="${${OUT##*pins: }%% passed*}"
 if [[ "$LANE" == "pins" ]]; then exit 0; fi
 # 0.5.310: the Meetings row reads the store's paused state (the label rule itself is checked above). Source pins only:
 # the store needs the full app to run, so these prove the wiring exists, not its runtime behaviour.
-python3 - "$ROOT/Sources/MacRecording.swift" "$ROOT/Sources/ControllerModel.swift" <<'PY'
+python3 - "$ROOT/Sources/MacRecording.swift" "$ROOT/Sources/ControllerModel.swift" "$ROOT/Sources/SessionUsageCore.swift" "$ROOT/Sources/SessionUsageView.swift" <<'PY'
 import sys
 store, model = (open(p).read() for p in sys.argv[1:3])
 catch = store[store.index("    func deliverPending() {"):store.index("protocol MacCaptureSession")]
@@ -47,7 +47,7 @@ PY
 # QA 0.5.313 pass 2: an interruption is shown once (the journal's line), never copied into the red error; a stop
 # nobody made posts a notification; Recover is occupied before its first await and takes the transport from callers
 # outside Meetings; a stranded Save re-reads the spool before saying the audio is not on this Mac. Comments stripped.
-python3 - "$ROOT/Sources/MacRecording.swift" "$ROOT/Sources/ControllerModel.swift" <<'PY'
+python3 - "$ROOT/Sources/MacRecording.swift" "$ROOT/Sources/ControllerModel.swift" "$ROOT/Sources/SessionUsageCore.swift" "$ROOT/Sources/SessionUsageView.swift" <<'PY'
 import sys
 strip = lambda p: "\n".join(l for l in open(p).read().splitlines() if not l.lstrip().startswith("//"))
 store, model = strip(sys.argv[1]), strip(sys.argv[2])

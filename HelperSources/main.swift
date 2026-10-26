@@ -442,6 +442,10 @@ final class COSControlHelper {
         case "foundation-draft": try emitControl2Foundation(action: "draft", args: args)
         case "self-test": try selfTest()
         case "self-test-lock-crash": try selfTestLockCrash()
+        case "session-usage":
+            let report = try SessionUsageCollector(home: home).refresh(maxBytes: args.contains("--read-only") ? 0 : 64*1024*1024)
+            let details = try JSONSerialization.jsonObject(with: JSONEncoder().encode(report)) as? [String: Any] ?? [:]
+            emit(ok: true, message: "Local usage refreshed", details: details)
         case "status": emit(ok: true, message: "Status refreshed", details: statusDetails())
         case "setup": try withMutationLock {
             // First run must never turn into adoption, repair or an update after

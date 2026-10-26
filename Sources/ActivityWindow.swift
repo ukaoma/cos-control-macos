@@ -513,6 +513,7 @@ struct ActivityWindow: View {
     /// 0.5.278: Settings, "Show live meeting transcript" (the Meetings tab's live dot reads it).
     @AppStorage(LiveTranscript.enabledKey) private var showLiveTranscript = true
     @State private var showingSettings = false
+    @State private var showingSessionUsage = false
     @State private var workSubview: ActivityWorkSubview = .tasks
     @State private var selectedTurnID: String?
     /// The archive drill-through: a date, then a chat index inside that date.
@@ -2228,18 +2229,31 @@ struct ActivityWindow: View {
             sectionHeader(
                 section: .sessions,
                 title: "Sessions",
-                detail: sessionsStatus,
-                refresh: { Task { await model.loadClaudeSessions(force: true) } },
-                refreshDisabled: model.claudeSessionsLoading,
-                stats: sessionsStats,
+                detail: showingSessionUsage ? "Local token usage and estimated API value" : sessionsStatus,
+                refresh: { Task {
+                    if showingSessionUsage { await model.sessionUsage.refresh() }
+                    else { await model.loadClaudeSessions(force: true) }
+                } },
+                refreshDisabled: showingSessionUsage ? false : model.claudeSessionsLoading,
+                stats: showingSessionUsage ? [] : sessionsStats,
                 accessory: {
-                    if !model.isSessionQueryActive {
+                    if !showingSessionUsage && !model.isSessionQueryActive {
                         COSViewSwitch("Clock", selection: $model.sessionClock,
                                       options: SessionClock.allCases.map { COSViewOption($0, $0.title) })
                         .frame(maxWidth: 278)
                     }
                 }
             )
+            HStack {
+                Picker("Sessions view", selection: $showingSessionUsage) {
+                    Text("Sessions").tag(false)
+                    Text("Usage").tag(true)
+                }.pickerStyle(.segmented).frame(width: 240)
+                Spacer()
+            }.padding(.horizontal, 22).padding(.vertical, 10)
+            if showingSessionUsage {
+                SessionUsageView(store: model.sessionUsage)
+            } else {
             sessionsSearchBar
             sessionHooksBanner
             // 0.5.343: the list builds in place on first load (COSBuildUp); the chain is today's.
@@ -2273,6 +2287,7 @@ struct ActivityWindow: View {
                     .padding(.horizontal, 22)
                     .padding(.bottom, 22)
                 }
+            }
             }
             }
         }

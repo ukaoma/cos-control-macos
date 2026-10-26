@@ -51,7 +51,7 @@ fi
 # which carries the --set grammar and the key whitelist, then the compiled helper against a loopback fixture.
 if [[ "$LANE" == "helper" ]]; then
   /usr/bin/python3 "$ROOT/Tests/kit-compile.py" "$ROOT/Tests/compile-guard.sh" "${SWIFTC[@]}" \
-    "$ROOT/HelperSources/main.swift" "$ROOT/HelperSources/ProviderStatusCore.swift" "$ROOT/HelperSources/PairingCore.swift" "$ROOT/Sources/WorkSessionLinks.swift" \
+    "$ROOT/HelperSources/main.swift" "$ROOT/HelperSources/ProviderStatusCore.swift" "$ROOT/HelperSources/PairingCore.swift" "$ROOT/HelperSources/SessionUsageCollector.swift" "$ROOT/Sources/SessionUsageCore.swift" "$ROOT/Sources/WorkSessionLinks.swift" \
     -framework Security -framework AppKit -o "$DIR/cos-control-helper"
   OUT="$(env COS_CONTROL_TEST_HOME="$DIR/home" "$DIR/cos-control-helper" self-test 2>"$DIR/self-test.err")" || true
   FLOOR="$(/usr/bin/sed -n 's/^if count < \([0-9][0-9]*\):$/\1/p' "$ROOT/Tests/run.sh" | /usr/bin/head -1)"

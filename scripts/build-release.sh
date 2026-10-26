@@ -30,14 +30,14 @@ rm -rf "$ZIP" "$ZIP.sha256"
 mkdir -p "$BUILD_DIR" "$APP/Contents/MacOS" "$APP/Contents/Resources" "$DIST_DIR"
 
 "$ROOT/Tests/compile-guard.sh" swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete \
-  "$ROOT/HelperSources/main.swift" "$ROOT/HelperSources/ProviderStatusCore.swift" "$ROOT/HelperSources/PairingCore.swift" "$ROOT/Sources/WorkSessionLinks.swift" \
+  "$ROOT/HelperSources/main.swift" "$ROOT/HelperSources/ProviderStatusCore.swift" "$ROOT/HelperSources/PairingCore.swift" "$ROOT/HelperSources/SessionUsageCollector.swift" "$ROOT/Sources/SessionUsageCore.swift" "$ROOT/Sources/WorkSessionLinks.swift" \
   -framework Security -framework AppKit \
   -o "$APP/Contents/Resources/cos-control-helper"
 
 "$ROOT/Tests/compile-guard.sh" swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \
   "$ROOT/Sources/Models.swift" \
   "$ROOT/Sources/HelperClient.swift" \
-  "$ROOT/Sources/ControllerModel.swift" \
+  "$ROOT/Sources/ControllerModel.swift" "$ROOT/Sources/SessionUsageCore.swift" "$ROOT/Sources/SessionUsageView.swift" \
   "$ROOT/Sources/AppQuit.swift" "$ROOT/Sources/MacRecordingCore.swift" "$ROOT/Sources/MacAudioCapture.swift" "$ROOT/Sources/MacRecording.swift" "$ROOT/Sources/MacDictationCore.swift" "$ROOT/Sources/MacDictation.swift" \
   "$ROOT/Sources/COSBrand.swift" \
   "$ROOT/Sources/COSMotion.swift" \

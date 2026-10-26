@@ -7,10 +7,10 @@ LAB_NAME="${COS_FOUNDATION_NAME:-COS Control Work Preview $LAB_VERSION}"; LAB_ID
 APP="${COS_FOUNDATION_APP_PATH:-${COS_FOUNDATION_APP_DIR:-$HOME/Library/Caches/COS Control Work Preview 0.1.9}/COS Control Foundation Lab.app}"
 mkdir -p "$OUT" "$APP/Contents/MacOS" "$APP/Contents/Resources"
 "$ROOT/Tests/compile-guard.sh" swiftc -target arm64-apple-macosx14.0 -swift-version 6 -strict-concurrency=complete \
-  "$ROOT/HelperSources/main.swift" "$ROOT/HelperSources/ProviderStatusCore.swift" "$ROOT/HelperSources/PairingCore.swift" "$ROOT/Sources/WorkSessionLinks.swift" -framework Security -framework AppKit \
+  "$ROOT/HelperSources/main.swift" "$ROOT/HelperSources/ProviderStatusCore.swift" "$ROOT/HelperSources/PairingCore.swift" "$ROOT/HelperSources/SessionUsageCollector.swift" "$ROOT/Sources/SessionUsageCore.swift" "$ROOT/Sources/WorkSessionLinks.swift" -framework Security -framework AppKit \
   -o "$APP/Contents/Resources/cos-control-helper"
 "$ROOT/Tests/compile-guard.sh" swiftc -target arm64-apple-macosx14.0 -swift-version 6 -strict-concurrency=complete -parse-as-library \
-  "$ROOT/Sources/Models.swift" "$ROOT/Sources/HelperClient.swift" "$ROOT/Sources/ControllerModel.swift" \
+  "$ROOT/Sources/Models.swift" "$ROOT/Sources/HelperClient.swift" "$ROOT/Sources/ControllerModel.swift" "$ROOT/Sources/SessionUsageCore.swift" "$ROOT/Sources/SessionUsageView.swift" \
   "$ROOT/Sources/AppQuit.swift" "$ROOT/Sources/MacRecordingCore.swift" "$ROOT/Sources/MacAudioCapture.swift" "$ROOT/Sources/MacRecording.swift" "$ROOT/Sources/MacDictationCore.swift" "$ROOT/Sources/MacDictation.swift" \
   "$ROOT/Sources/COSBrand.swift" "$ROOT/Sources/COSMotion.swift" "$ROOT/Sources/COSConfirm.swift" \
   "$ROOT/Sources/Views.swift" "$ROOT/Sources/ActivityWindow.swift" "$ROOT/Sources/ActivityMeetings.swift" "$ROOT/Sources/MeetingSpeakerPolicy.swift" "$ROOT/Sources/MeetingAskCore.swift" "$ROOT/Sources/MeetingAsk.swift" \

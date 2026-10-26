@@ -589,6 +589,7 @@ final class ControllerModel: ObservableObject {
     let transcriptionSettings = TranscriptionSettingsStore()
     @Published var meetingAskOpenRecordID: String?
     @Published var meetingAskOpenMemory: ContextRecord?
+    let sessionUsage = SessionUsageStore()
     private let helper: HelperClient
 
     /// The Memories web host runs the same helper commands the native panes do,
@@ -690,6 +691,7 @@ final class ControllerModel: ObservableObject {
             self.recordingCountChanged()
         }
         guard startBackgroundWork else { return }
+        sessionUsage.start()
         // 0.5.322: the detached swap reads the Mac recording's phase before it may force a quit.
         recordMacCaptureState(to: MacCaptureStateFile.url())
         whatsNewSeen = WhatsNewSeenStore(defaults: .standard)
