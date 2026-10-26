@@ -133,4 +133,66 @@ pin('guard payload["confirm"] as? Bool == true, (payload["confirm"] as? NSNumber
     "helper confirm", "the helper sends a discard only with confirm: true, a real boolean")
 pin('path = "/api/meeting/sessions/" + capture + "/discard"; method = "POST"' in case and '["confirm": true, "serverInstanceId": instance]' in case,
     "helper route", "the discard goes to the server's route with confirm and the pin")
+
+# 7. Quick save (0.5.351, Miles 2026-10-26: "We should just show like a quick save."). The rules run in
+# Tests/MacRecordingChecks.swift; these pins prove the store and panel use them.
+client, core = code("Sources/HelperClient.swift"), code("Sources/MacRecordingCore.swift")
+bridge = between(model, "    var macRecordingBridge: MacRecordingStore.Bridge {", "    func runHelper(")
+pin('self.runHelper(["mac-recording"], timeout: 90, stdinData: data, answers: true)' in bridge, "bridge answers",
+    "a helper refusal reaches invoke with its status and reason, so a passing failure can be told from a real one")
+inv = between(store, "    private func invoke(", "    var noticeAcknowledged: Bool {")
+pin(inv.index("lastFailure = (nil, nil)") < inv.index("try await bridge(operation, payload)") < inv.index('lastFailure = (response.details["httpStatus"]?.int, response.details["reason"]?.string)')
+    < inv.index("throw MacRecordingError.unavailable(response.message)"), "failure recorded", "every call clears the last failure, a refusal records its status and reason before throwing")
+pin('case .timedOut: "The COS operation took too long."' in client and '"The COS operation took too long."]' in core, "timeout sentence",
+    "the retry rule's timeout sentence is the helper client's own")
+call = between(store, "    private func deliveryCall(", "    private func armSlowSave() {")
+pin("MacRecordingSaveRetry.transient(httpStatus: lastFailure.httpStatus, reason: lastFailure.reason, message: error.localizedDescription)" in call
+    and call.index("MacRecordingSaveRetry.transient(") < call.index("await spool.snapshot(id)"), "transient read first",
+    "the failure is classified before the next await, so no other call can overwrite it")
+pin('guard !Task.isCancelled, phase == "pending", manifest?.captureId == id, attempt < retryDelays.count,' in call
+    and "MacRecordingSaveRetry.delay(afterAttempt: attempt, stopped: stopped, transient: transient) != nil else { throw error }" in call,
+    "retry only after stop", "a quiet try only for the current, stopped, pending capture, bounded by the policy")
+pin(call.count("try? await Task.sleep(") == 1 and call.index("waitingToRetry = true") < call.index("try? await Task.sleep(") < call.index("waitingToRetry = false")
+    and 'guard !Task.isCancelled, phase == "pending", manifest?.captureId == id else { throw error }' in call.split("waitingToRetry = false", 1)[1],
+    "retry stops on change", "the wait is marked, and a discard, cancel or phase change after it ends the tries")
+pin("deliveryFailureTransient = false\n                return answer" in call, "success clears", "a call that succeeds is never read as a passing failure")
+deliver = between(store, "    func deliverPending() {", "    private func deliveryCall(")
+pin(deliver.count('self.deliveryCall("chunk", captureId: id,') == 1 and deliver.count('self.deliveryCall("save", captureId: id,') == 1
+    and "self.invoke(" not in deliver, "delivery uses the quiet call", "both chunk and save go through the bounded quiet tries")
+pin("if manifest?.stopped == true, manifest?.saved == false { armSlowSave() }" in deliver
+    and deliver.index("armSlowSave()") < deliver.index("if deliveryTask != nil { deliveryWake = true; return }"), "slow timer armed",
+    "every save after Stop, and every Retry, starts the slow-save clock, even when a delivery is already running")
+pin('self.error = self.isRecording && self.deliveryFailureTransient ? nil : "Delivery paused:' in deliver, "quiet while recording",
+    "a passing failure while recording never paints the red line; a real one and any failure after Stop still do")
+pin("self.slowTask?.cancel(); self.slowTask = nil; self.slowSave = false" in deliver and deliver.index("markSaved(id)") < deliver.index("self.slowSave = false"),
+    "saved clears slow", "a saved capture is never shown as slow")
+pin("MacRecordingDiscard.retryOffered(noSpeech: noSpeech, allZero: manifest?.allDigitalSilence == true, pending: phase == \"pending\",\n                                         hasChunks: manifest?.chunks.isEmpty == false, delivering: deliveryTask != nil)" in store,
+    "retry hidden while saving", "Retry saving is never offered while the save runs")
+pin("delivering: deliveryTask != nil, paused: deliveryPaused, waiting: waitingToRetry, slow: slowSave," in store, "status inputs",
+    "the panel's line reads the store's own delivery, pause, wait and slow state")
+pin("let line = store.saveLine" in panel and "Text(line.headline)" in panel and "if let progress = line.progress" in panel
+    and "audio chunks received" not in panel and "Text(store.message)" not in panel, "panel reads the line",
+    "the panel shows the quick-save line, never the raw counter and phase word")
+pin("if line.showsActions, store.phase == \"pending\", !value.chunks.isEmpty {" in panel, "actions gated",
+    "the retained-recording line and its buttons only where the line allows")
+pin("paused: macRecording.deliveryPaused, slow: macRecording.slowSave)" in model, "row reads slow", "the Meetings row's label knows when the save is slow")
+
+# 8. Reconcile before Recover (0.5.351, mac_b0bd6732) and a grayed-out Recover says why (Miles 2026-10-26).
+prep = between(store, "    func prepare(bridge: @escaping Bridge) async {", "    private func invoke(")
+pin("recoverable = await reconciled(recoverable)" in prep and prep.index('serverDiscard = result["discard"]?.bool == true') < prep.index("reconciled(recoverable)"),
+    "reconcile after the server answered", "retained captures are checked against the server only once capabilities answered")
+rec_fn = between(store, "    private func reconciled(", "    func refreshRecoverable() async {")
+pin("guard MacRecordingReconcile.shouldAsk(value, current: manifest?.captureId), await savedOnServer(value) else { kept.append(value); continue }" in rec_fn,
+    "reconcile keeps by default", "a capture is dropped only when the policy asks and the server verified it saved")
+pin("_ = try await spool.markSavedOnServer(value.captureId)" in rec_fn and rec_fn.count("kept.append(value)") == 2, "reconcile marks the journal",
+    "a dropped capture is marked saved in its journal; a failed mark keeps the row")
+pin('bridge("status", ["captureId": .string(value.captureId), "serverInstanceId": .string(value.serverInstanceId)])' in rec_fn
+    and "MacRecordingReconcile.savedOnServer(captureId: value.captureId," in rec_fn and "ok: response.ok" in rec_fn, "reconcile reads the receipt",
+    "the helper's status op is asked with the capture's own pin and its answer goes through the tested rule")
+pin("removeItem" not in rec_fn and "discard" not in rec_fn, "reconcile never removes", "reconcile only marks a journal; audio stays")
+pin("MacRecordingRecoveryPolicy.recoverUnavailable(phase: phase, delivering: deliveryTask != nil," in store
+    and "currentUnsaved: manifest.map { !$0.saved && !$0.chunks.isEmpty } ?? false)" in store, "recover reason inputs",
+    "the reason reads the same state as canStart")
+pin("if !retained.isEmpty, !store.canStart, let reason = store.recoverUnavailable {" in panel and panel.count("Text(reason)") == 1, "recover says why",
+    "a grayed-out Recover shows its reason once under the buttons")
 print(f"mac recording robust pins: {passed} passed")

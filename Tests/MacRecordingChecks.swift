@@ -82,11 +82,14 @@ import Darwin
         check(allWarning != nil && allWarning?.contains("record All Mac audio") == false, "All Mac audio is never told to switch to itself")
         check(allWarning?.contains("not muted") == true, "All Mac audio points at the call's own output")
         // 2026-10-15: a stopped capture with 51/1,200 delivered still read "Live now".
-        check(MacRecordingLiveRow.label(stopped: true, saved: false, acknowledged: 51, chunks: 1_200) == "Capture stopped · saving 51/1200", "a stopped, unsaved capture says it is saving, with progress")
+        // 0.5.351 (quick save): an ordinary save is "Saving…" with no counter; the count shows once it is slow.
+        check(MacRecordingLiveRow.label(stopped: true, saved: false, acknowledged: 51, chunks: 1_200) == "Saving…", "a stopped, unsaved capture says Saving…, no counter")
+        check(MacRecordingLiveRow.label(stopped: true, saved: false, acknowledged: 51, chunks: 1_200, slow: true) == "Saving · 51 of 1200 audio chunks sent", "a slow save shows how far it got")
         check(MacRecordingLiveRow.label(stopped: false, saved: false, acknowledged: 51, chunks: 60) == nil, "a running capture stays Live now")
         check(MacRecordingLiveRow.label(stopped: true, saved: true, acknowledged: 60, chunks: 60) == nil, "a saved capture leaves the row to the saved hand-off")
         // 0.5.310: delivery stopped on an error; the row must not claim it is still saving.
-        check(MacRecordingLiveRow.label(stopped: true, saved: false, acknowledged: 51, chunks: 1_200, paused: true) == "Capture stopped · delivery paused 51/1200", "a paused delivery says paused, with progress")
+        check(MacRecordingLiveRow.label(stopped: true, saved: false, acknowledged: 51, chunks: 1_200, paused: true) == "Not saved yet · 51 of 1200 audio chunks reached COS", "a paused delivery says not saved, with progress")
+        check(MacRecordingLiveRow.label(stopped: true, saved: false, acknowledged: 51, chunks: 1_200, paused: true, slow: true) == "Not saved yet · 51 of 1200 audio chunks reached COS", "paused wins over slow")
         check(MacRecordingLiveRow.label(stopped: false, saved: false, acknowledged: 51, chunks: 60, paused: true) == nil, "a running capture stays Live now even while delivery is paused")
         check(MacRecordingLiveRow.label(stopped: true, saved: true, acknowledged: 60, chunks: 60, paused: true) == nil, "a saved capture is never shown as paused")
         check(MacAudioSource.allMacAudio.isAllMacAudio && MacAudioSource.allMacAudio.id == UInt32.max, "All Mac audio is a fixed sentinel")
@@ -472,8 +475,10 @@ import Darwin
                 check(MacRecordingDiscard.offered(noSpeech: noSpeech, allZero: allZero, pending: pending, stopped: stopped, delivering: delivering)
                       == ((noSpeech || allZero) && pending && stopped && !delivering), "Discard: only for a stopped, idle capture with no sound")
                 for hasChunks in [false, true] {
-                    check(MacRecordingDiscard.retryOffered(noSpeech: noSpeech, allZero: allZero, pending: pending, hasChunks: hasChunks)
-                          == (pending && hasChunks && !noSpeech && !allZero), "Retry saving: never for no sound (it cannot work)")
+                    check(MacRecordingDiscard.retryOffered(noSpeech: noSpeech, allZero: allZero, pending: pending, hasChunks: hasChunks, delivering: delivering)
+                          == (pending && hasChunks && !noSpeech && !allZero && !delivering), "Retry saving: never for no sound (it cannot work)")
+                    // 0.5.351: the button showed through every ordinary save and read as "retrying chunks".
+                    if delivering { check(!MacRecordingDiscard.retryOffered(noSpeech: noSpeech, allZero: allZero, pending: pending, hasChunks: hasChunks, delivering: true), "Retry saving: never while the save is running") }
                 }
             } } } } }
             check(MacRecordingDiscard.strandedOffersDiscard(sessionId: "mac_x", transcriptState: "no_speech", canSave: false), "stranded: a no-speech Mac row offers Discard")
@@ -563,6 +568,163 @@ import Darwin
             await rejects("discard refuses an invalid capture id") { _ = try await dspool.discard("../escape") }
             let folder = try fm.attributesOfItem(atPath: movedTo.deletingLastPathComponent().path)
             check((folder[.posixPermissions] as? NSNumber)?.intValue == 0o700, "discard: the discarded folder is owner only")
+        }
+        // MARK: 0.5.351, quick save (Miles 2026-10-26: "We should just show like a quick save.")
+        do {
+            typealias Q = MacRecordingSaveStatus
+            let msg = "Some message"
+            func line(_ phase: String, chunks: Int = 345, ack: Int = 340, delivering: Bool = false, paused: Bool = false, waiting: Bool = false,
+                      slow: Bool = false, noSpeech: Bool = false, allZero: Bool = false) -> Q.Line {
+                Q.line(phase: phase, message: msg, chunks: chunks, acknowledged: ack, delivering: delivering, paused: paused, waiting: waiting,
+                       slow: slow, noSpeech: noSpeech, allZero: allZero)
+            }
+            // The ordinary save: Saving…, nothing else, from Stop until the receipt.
+            let stopping = line("stopping")
+            check(stopping.headline == "Saving…" && stopping.detail == nil && stopping.progress == nil && !stopping.showsActions, "quick save: Stop says Saving… at once")
+            let saving = line("pending", delivering: true)
+            check(saving.headline == "Saving…" && saving.detail == nil && saving.progress == nil && !saving.showsActions && saving.tone == .quiet,
+                  "quick save: an ordinary save shows no counter, no retained-recording line and no buttons")
+            let quietRetry = line("pending", delivering: true, paused: false, waiting: true)
+            check(quietRetry == saving, "quick save: a quiet try in the first seconds looks exactly like an ordinary save")
+            let slow = line("pending", delivering: true, slow: true)
+            check(slow.headline == "Saving…" && slow.detail == "Still saving. 340 of 345 audio chunks have reached COS." && !slow.showsActions,
+                  "quick save: a slow save says how far it got")
+            let down = line("pending", delivering: true, waiting: true, slow: true)
+            check(down.headline == "Saving…" && down.detail == Q.notAnswering && !down.showsActions, "quick save: COS not answering is said once the save is slow")
+            let saved = line("saved", ack: 345)
+            check(saved.headline == "Saved" && saved.detail == "Open Meetings to review the transcript." && saved.progress == nil && saved.tone == .done && !saved.showsActions,
+                  "quick save: Saved, with no 345/345 counter")
+            // A real failure stays honest: Not saved yet, how far, and the buttons.
+            let failed = line("pending", paused: true)
+            check(failed.headline == Q.notSaved && failed.progress == "340 of 345 audio chunks reached COS." && failed.tone == .problem && failed.showsActions,
+                  "quick save: a stopped delivery says Not saved yet, how far, and offers the buttons")
+            check(line("pending", paused: true, slow: true) == failed && line("pending", paused: true, waiting: true) == failed, "quick save: paused is paused, slow or not")
+            let idle = line("pending")
+            check(idle.headline == msg && idle.progress == "340 of 345 audio chunks reached COS." && idle.tone == .quiet && idle.showsActions,
+                  "quick save: a retained capture not being saved keeps its message, count and buttons")
+            // No sound and an empty capture are unchanged (0.5.334): their message and their own buttons.
+            for (noSpeech, allZero) in [(true, false), (false, true), (true, true)] {
+                for delivering in [false, true] {
+                    let none = line("pending", delivering: delivering, noSpeech: noSpeech, allZero: allZero)
+                    check(none.headline == msg && none.progress == nil && none.showsActions, "quick save: no sound keeps its own message and Discard")
+                }
+            }
+            check(line("pending", chunks: 0, ack: 0, delivering: true).headline == msg, "quick save: nothing stored keeps its message")
+            // Recording: the count only when COS is behind; the not-answering line only then.
+            let live = line("recording", chunks: 20, ack: 19)
+            check(live.headline == msg && live.progress == nil && live.detail == nil && !live.showsActions, "quick save: recording in step shows no counter")
+            check(line("recording", chunks: 20, ack: 18).progress == nil, "quick save: two chunks behind is in step")
+            let behind = line("recording", chunks: 20, ack: 17)
+            check(behind.progress == "Sending audio to COS: 17 of 20 chunks received." && behind.detail == nil, "quick save: three chunks behind shows the count")
+            check(line("recording", chunks: 20, ack: 17, paused: true).detail == Q.notAnsweringWhileRecording, "quick save: behind and paused says COS is not answering")
+            check(line("recording", chunks: 20, ack: 19, paused: true).detail == nil, "quick save: a pause that has not left COS behind says nothing")
+            for phase in ["idle", "starting", "recovering", "discarding"] {
+                let other = line(phase)
+                check(other.headline == msg && other.progress == nil && other.detail == nil, "quick save: other phases keep their message, no counter")
+            }
+            // Copy rules.
+            for text in [Q.saving, Q.saved, Q.savedDetail, Q.notSaved, Q.notAnswering, Q.notAnsweringWhileRecording, Q.stillSaving(1, of: 2), Q.reached(1, of: 2), Q.sending(1, of: 2),
+                         MacRecordingLiveRow.label(stopped: true, saved: false, acknowledged: 1, chunks: 2, paused: true) ?? "",
+                         MacRecordingLiveRow.label(stopped: true, saved: false, acknowledged: 1, chunks: 2, slow: true) ?? ""] {
+                check(!text.contains("—") && !text.contains("→") && !text.lowercased().contains("retry"), "quick save: no em dash, arrow or retry in the copy")
+            }
+            check(Q.slowAfterSeconds == 20 && Q.behindChunks == 3, "quick save: thresholds")
+
+            typealias R = MacRecordingSaveRetry
+            // Passing failures only.
+            check(R.transient(httpStatus: nil, reason: nil, message: "Server stopped"), "retry: the helper's health probe failing is passing")
+            check(R.transient(httpStatus: nil, reason: nil, message: "The COS operation took too long."), "retry: a helper timeout is passing")
+            check(R.transient(httpStatus: nil, reason: "server_unavailable", message: "x"), "retry: server unreachable is passing")
+            check(R.transient(httpStatus: 409, reason: "mac_chunk_in_progress", message: "x"), "retry: a chunk still in flight is passing")
+            check(R.transient(httpStatus: 409, reason: "save_in_progress", message: "x"), "retry: a save still in flight is passing")
+            for status in [502, 503, 504] { check(R.transient(httpStatus: status, reason: nil, message: "x"), "retry: a gateway or busy status is passing") }
+            check(R.transient(httpStatus: 503, reason: "mac_parakeet_cli_failed", message: "x"), "retry: a busy ASR is passing")
+            check(!R.transient(httpStatus: 503, reason: "openai_whisper_budget_exhausted", message: "x"), "retry: an exhausted budget is not passing")
+            for (status, reason) in [(409, "server_instance_mismatch"), (409, "mac_chunk_conflict"), (410, "session_closed"), (404, "nothing_to_save"),
+                                     (400, "invalid_elapsed"), (401, nil), (413, nil), (500, "meeting_save_error"), (404, nil)] as [(Int, String?)] {
+                check(!R.transient(httpStatus: status, reason: reason, message: "Server stopped"), "retry: a real refusal is never retried, whatever its text")
+            }
+            for message in ["The server did not acknowledge this exact audio chunk. Its local copy is retained.",
+                            "A saved-meeting receipt was not verified. Audio is retained for recovery.",
+                            "The recording journal or private storage is invalid. Existing audio is retained.", "Unauthorized", ""] {
+                check(!R.transient(httpStatus: nil, reason: nil, message: message), "retry: verification, spool and auth failures are never retried")
+            }
+            // Bounded, and only after Stop.
+            check(R.delays == [1, 2, 4, 8, 15, 30] && R.delays.reduce(0, +) == 60, "retry: six quiet tries in about a minute")
+            for attempt in -1...8 {
+                for stopped in [false, true] { for transient in [false, true] {
+                    let wait = R.delay(afterAttempt: attempt, stopped: stopped, transient: transient)
+                    check(wait == (stopped && transient && attempt >= 0 && attempt < 6 ? R.delays[attempt] : nil), "retry: only after Stop, only passing, at most six")
+                } }
+            }
+        }
+        // MARK: 0.5.351, Recover says why it is unavailable (Miles 2026-10-26: grayed out during a live recording, no reason)
+        do {
+            let occupiedPhases: Set<String> = ["starting", "recording", "stopping", "recovering", "discarding"]
+            for phase in ["idle", "saved", "pending", "starting", "recording", "stopping", "recovering", "discarding"] {
+                for delivering in [false, true] { for currentUnsaved in [false, true] {
+                    // MacRecordingStore.canStart: !occupied && deliveryTask == nil && (manifest nil, saved or empty).
+                    let canStart = !occupiedPhases.contains(phase) && !delivering && !currentUnsaved
+                    let reason = MacRecordingRecoveryPolicy.recoverUnavailable(phase: phase, delivering: delivering, currentUnsaved: currentUnsaved)
+                    check((reason == nil) == canStart, "Recover: a reason exactly when it is grayed out")
+                    if let reason { check(reason.hasPrefix("Recover is available ") && !reason.contains("—") && !reason.contains("→"), "Recover: the reason's copy") }
+                } }
+            }
+            check(MacRecordingRecoveryPolicy.recoverUnavailable(phase: "recording", delivering: true, currentUnsaved: true) == "Recover is available after this recording.",
+                  "Recover: during a live recording it says after this recording")
+            check(MacRecordingRecoveryPolicy.recoverUnavailable(phase: "pending", delivering: true, currentUnsaved: true) == "Recover is available once this recording is saved.",
+                  "Recover: during a save it says once this recording is saved")
+            check(MacRecordingRecoveryPolicy.recoverUnavailable(phase: "pending", delivering: false, currentUnsaved: true) == "Recover is available once the recording above is saved or kept for later.",
+                  "Recover: behind a paused recording it names what to do")
+        }
+        // MARK: 0.5.351, reconcile a retained capture the server already saved (mac_b0bd6732)
+        do {
+            typealias C = MacRecordingReconcile
+            let id = "mac_0000b0bd-d95a-4276-8b3d-af4c32719e24"
+            let value = MacRecordingManifest(captureId: id, startTime: 1_792_026_000_000, serverInstanceId: "fixture-server", sourceName: "All Mac audio",
+                                         title: "Fixture recording", stopped: false, saved: false, acknowledged: 3, chunks: (0..<3).map { .init(index: $0, filename: String(format: "%06d.wav", $0), endFrame: ($0 + 1) * 160) })
+            check(C.shouldAsk(value, current: nil), "reconcile: a retained capture fully acknowledged is worth asking about")
+            check(!C.shouldAsk(value, current: id), "reconcile: never the current capture")
+            var partial = value; partial.acknowledged = 2
+            check(!C.shouldAsk(partial, current: nil), "reconcile: a capture with audio only this Mac holds is never hidden")
+            var done = value; done.stopped = true; done.saved = true
+            check(!C.shouldAsk(done, current: nil), "reconcile: a saved journal is not asked about")
+            var empty = value; empty.chunks = []; empty.acknowledged = 0
+            check(!C.shouldAsk(empty, current: nil), "reconcile: an empty journal is not asked about")
+            let good = C.Answer(ok: true, state: "saved", sessionId: id, receiptSaved: true, receiptVersion: 1, receiptSessionId: id, receiptCaptureId: id, receiptSourceType: "mac_system_audio")
+            check(C.savedOnServer(captureId: id, good), "reconcile: a verified receipt for this capture is saved")
+            var variants: [(String, C.Answer)] = []
+            var a = good; a.ok = false; variants.append(("a refusal", a))
+            a = good; a.state = "active"; variants.append(("a live session", a))
+            a = good; a.state = "missing"; variants.append(("missing", a))
+            a = good; a.state = nil; variants.append(("no state", a))
+            a = good; a.sessionId = "mac_other"; variants.append(("another session", a))
+            a = good; a.receiptSaved = nil; variants.append(("no receipt", a))
+            a = good; a.receiptSaved = false; variants.append(("an unsaved receipt", a))
+            a = good; a.receiptVersion = 2; variants.append(("another receipt version", a))
+            a = good; a.receiptSessionId = "mac_other"; variants.append(("a receipt for another session", a))
+            a = good; a.receiptCaptureId = nil; variants.append(("a receipt with no capture", a))
+            a = good; a.receiptSourceType = nil; variants.append(("a receipt that is not a Mac capture", a))
+            for (name, answer) in variants { check(!C.savedOnServer(captureId: id, answer), "reconcile: \(name) keeps the row") }
+            // The spool marks only a fully acknowledged journal, and never touches its audio.
+            let rroot = scratch.appendingPathComponent("reconcile-home/cos-data/mac-recordings")
+            let rspool = MacRecordingSpool(root: rroot)
+            let start = MacRecordingManifest(captureId: id, startTime: 1_792_026_000_000, serverInstanceId: "fixture-server", sourceName: "All Mac audio",
+                                             title: "Fixture recording", stopped: false, saved: false, acknowledged: 0, chunks: [])
+            try await rspool.write(start)
+            let tiny = Data((0..<320).map { UInt8(truncatingIfNeeded: $0 + 1) })
+            for index in 0..<3 { _ = try await rspool.append(.init(index: index, pcm: tiny, endFrame: (index + 1) * 160), captureId: id) }
+            _ = try await rspool.acknowledge(id, index: 0); _ = try await rspool.acknowledge(id, index: 1)
+            await rejects("reconcile: a journal with an unacknowledged chunk is never marked saved") { _ = try await rspool.markSavedOnServer(id) }
+            check(try await MacRecordingSpool(root: rroot).snapshot(id).saved == false, "reconcile: the refused mark changed nothing on disk")
+            _ = try await rspool.acknowledge(id, index: 2)
+            let wavs = try fm.contentsOfDirectory(atPath: rroot.appendingPathComponent(id).path).filter { $0.hasSuffix(".wav") }.sorted()
+            let marked = try await rspool.markSavedOnServer(id)
+            check(marked.saved && marked.stopped && marked.acknowledged == 3 && marked.chunks.count == 3, "reconcile: an unstopped, fully acknowledged journal is marked stopped and saved")
+            check(try await MacRecordingSpool(root: rroot).recoverable().isEmpty, "reconcile: a marked journal is no longer offered for Recover, after a restart too")
+            check(try fm.contentsOfDirectory(atPath: rroot.appendingPathComponent(id).path).filter { $0.hasSuffix(".wav") }.sorted() == wavs && wavs.count == 3,
+                  "reconcile: the audio files are untouched")
+            await rejects("reconcile: an invalid id is refused") { _ = try await rspool.markSavedOnServer("../escape") }
         }
         print("Mac recording core checks: \(checks) passed (fixture bytes only)")
     }
