@@ -1,3 +1,9 @@
+## 0.5.349 (build 403), illustrated Windu idle states
+
+- Windu now breathes gently while idle and meditating, with sharper illustrated patrol frames.
+- Existing combat animations and Sessions Usage remain unchanged. Exact stock pets update automatically; custom artwork, timing and scale stay intact.
+- Server compatibility remains 6.92.0.
+
 ## 0.5.348 (build 402), Sessions Usage and historical model activity
 
 Built on Control 0.5.345 QA fixes at 4570a8d; pairs with published server 6.92.0. No server endpoint or feature-flag changes.
