@@ -1,7 +1,7 @@
 {
   "version": "0.5.350",
   "whatsNew": {
-    "summary": "Explore Usage with date ranges, provider trends and daily breakdowns. Mac meetings keep distinct anonymous voice labels when the server has enough evidence. Windu gets smoother running and recovery from failed cast loads.",
+    "summary": "Explore Usage with date ranges, provider trends and daily breakdowns. Mac meetings keep distinct anonymous voice labels when the server has enough evidence. Windu gets smoother running and recovery from failed cast loads. Plus everything in 0.5.349: Usage tooltips, cache-aware comparisons and Windu idle motion.",
     "sections": [
       {
         "title": "0.5.350",
