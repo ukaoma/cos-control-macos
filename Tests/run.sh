@@ -5274,7 +5274,12 @@ for name, start, end in (("sessionRow", "    private func sessionRow(", "    pri
     row = between(activity, start, end)
     need(".cosRowCard()" in row, f"{name} is not a card")
     need(row.count(".font(.system(size:") == row.count('Image(systemName: "chevron.right")'), f"{name} still sets prose in the system font")
-need("stats: meetingsStats" in activity and "stats: sessionsStats" in activity and "stats: tasksStats" in activity, "each pane must pass its stat strip")
+need("stats: meetingsStats" in activity and "stats: tasksStats" in activity, "each pane must pass its stat strip")
+sessions_pane = between(activity, "    private var sessionsList: some View {", "    private var sessionsStatus: String {")
+need("stats: showingSessionUsage ? [] : sessionsStats" in sessions_pane,
+     "Sessions keeps its session stat strip; Usage shows its own token totals instead")
+need("if showingSessionUsage {\n                SessionUsageView(store: model.sessionUsage)" in sessions_pane,
+     "the Usage selection must render its own totals and history")
 meetings_src = (root / "Sources/ActivityMeetings.swift").read_text()
 # 3 from 0.5.230: the library row, the search hit, and the suggestion row; 4 from 0.5.278 with the Live now row. The
 # rule is "cards in a shared scroll list, never a List"; the count is how it is
