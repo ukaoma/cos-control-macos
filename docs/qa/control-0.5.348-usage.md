@@ -1,6 +1,6 @@
 # Control 0.5.348 / build 402 release QA
 
-Status: Full suite PASS at a7a49b423b3bf145333ccf4b80ec67567ab654c5 (2026-10-26, 1513.8 seconds). Signing and artifact verification pending; not installed or published.
+Status: Full suite PASS at a7a49b423b3bf145333ccf4b80ec67567ab654c5 (2026-10-26, 1513.8 seconds). Developer ID signing, Apple notarization, Gatekeeper and packaged-helper checks passed. Publication and managed installation pending.
 
 ## Scope
 
@@ -43,3 +43,13 @@ This is local recorded usage, not provider-account billing or subscription-limit
 - 2de9186 pins the intended header split: Sessions retains session statistics; Usage renders its own token totals and history. The entire remaining static suffix passed independently before the final run.
 - Attempt6: complete Tests/run.sh exit0, 1513.8s, a7a49b423b3bf145333ccf4b80ec67567ab654c5. Evidence is in the private release candidate fullsuite-attempt6 log and result.
 - Final themed Usage renders: all eight light/dark month/history previews at800/1200points passed (compile.aPEwmP, compile.3fRg3X); narrow dark history and wide light month inspected. Fixture data is synthetic.
+
+## Signed artifact
+
+- Build source:9ba9926 (QA documentation only after the tested a7a49b4).
+- Apple notarization27da0102-babe-4443-83c9-2f3c3480e60f:Accepted; staple validation, strict/deep signature, Gatekeeper Notarized Developer ID and release entitlements passed.
+- Final archive:1,199,879,388bytes; SHA256 `82e8c29ee58fcb29e2110513428d059e971bb5d5c978890c233dda516893dbfe`. Latest alias is byte-identical.
+- Packaged Usage helper in an isolated fixture home: import, duplicate suppression, pause/read-only, incremental refresh, 0700/0600 permissions, no conversation content in SQLite/WAL, original log preservation and no network/live-home writes all passed.
+- Independent packaged Windu review:204PNG hashes,13casts,frame counts/cadence/handoffs and142retained V15 files matched the approved source in both ZIP and extraction. Signature, Gatekeeper and staple independently passed.
+- Website:43frontend tests and46version-contract tests passed; local artifact/site/appcast version and checksum consistency passed.
+- Packaging first attempt refused a missing ignored transcription binary. Second attempt used the exact pre-existing pinned FluidAudio0.17.4 binary (SHA2564567ddbdb6ecb259e8b37d566158fffafe45d31bbecdd75f36d36a3a48c495e5); no runtime source or engine setting changed.
