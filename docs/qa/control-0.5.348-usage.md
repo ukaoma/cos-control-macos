@@ -10,8 +10,8 @@ The current0.5.345 release proceeds separately. Shared release coordination rese
 
 ## Review findings and fixes
 
-- BLOCKER resolved in source; regression execution pending: a pass budget ending before a row newline marked the source as waiting for append. A complete but unchanged file then never imported. A budget cutoff now stays pending and retries from the row start.
-- BLOCKER resolved in source; regression execution pending: a row larger than8MiB blocked every later record. The importer now skips the oversized row incrementally, persists its skip state across restarts, and reports a coverage gap. It never stores the row text.
+- BLOCKER resolved in source; focused regression passed: a pass budget ending before a row newline marked the source as waiting for append. A complete but unchanged file then never imported. A budget cutoff now stays pending and retries from the row start.
+- BLOCKER resolved in source; focused regression passed: a row larger than8MiB blocked every later record. The importer now skips the oversized row incrementally, persists its skip state across restarts, and reports a coverage gap. It never stores the row text.
 - Version integration: WaveA pins assumed345 would always be current. They now require matching current plist/notes/changelog, a nonregressing version/build, preserved345 release notes and server pairing. All24 source mutants passed after the adaptation.
 - Historical view: All history selects lifetime available totals and model ranking; monthly history charts show the trend. Earliest/latest evidence dates, partial backfill and unknown-cost records are visible.
 - Privacy: fixture checks inspect both SQLite and WAL for the prompt sentinel; production import stores counts/identities/checkpoints only. Source session files are read-only.
@@ -27,9 +27,9 @@ The current0.5.345 release proceeds separately. Shared release coordination rese
 - Desktop-safety mutation self-test: passed (35 disallowed forms rejected, six allowed forms accepted).
 - Pricing: standard API rates rechecked against official Anthropic and OpenAI documentation on October25; this remains a snapshot estimate, not actual billing.
 - Usage fixtures: passed after the timestamp correction (compile.vKje8z); complete suite repeats the final fixture.
-- Complete Tests/run.sh, including run-mac-dictation, run-voice-style and run-dictation-parity: pending compiler handoff.
-- Native offscreen month/history renders at800/1200points in light/dark: pending final candidate.
-- Bounded real-log canary and packaged-helper private-home contract: pending final candidate.
+- Complete Tests/run.sh attempt1 stopped at the chart compiler complexity limit; typed accumulation loops corrected it (0b684cb). Attempt2 compiled app/helper and passed the preceding native lanes, then stopped at six illustrated-pack appearance checks (three transparency and three edge-frame findings). The pet owner is investigating bounded effect metadata; publication remains blocked until the exact merged suite passes.
+- Native offscreen month/history renders at800/1200points in light/dark: all eight generated successfully (compile.l7vASb); narrow/light and narrow/dark plus wide/light reviewed for legibility and no clipped controls. No windows were ordered or activated.
+- Bounded real-log canary: two passes against read-only local session files advanced from12 to29 completed files and1409 to2590 usage events, with no malformed/unreadable rows in those passes. The second partial report contains959,561,173 disjoint tokens;2928 files remain pending, so this is NOT a full account/month total. Scratch ledger only (/tmp/cos-usage-348-canary). Packaged-helper private-home contract remains pending final signed artifact.
 - DeveloperID signing, notarization, extracted artifact and served-byte checks: pending.
 
 ## Limits to preserve in release copy
