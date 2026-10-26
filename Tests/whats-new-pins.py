@@ -133,6 +133,12 @@ bundle_version = plistlib.loads((root / "Resources/Info.plist").read_bytes()).ge
 pin(isinstance(notes_version, str) and notes_version == bundle_version, "notes version",
     f"Resources/WhatsNew.json version {notes_version!r} must equal Info.plist CFBundleShortVersionString {bundle_version!r}")
 
+# 0.5.351: the update summary stays short enough to read at a glance: at most 722 characters, and it chains exactly one
+# prior release ("Plus everything in X: ..."), so it never grows into a changelog.
+notes_summary = json.loads((root / "Resources/WhatsNew.json").read_text(encoding="utf-8"))["whatsNew"]["summary"]
+pin(isinstance(notes_summary, str) and 0 < len(notes_summary) <= 722 and notes_summary.count("Plus everything in") == 1, "notes summary cap",
+    f"Resources/WhatsNew.json summary must be 722 characters or fewer and chain one prior release ({len(notes_summary)} characters)")
+
 # The helper never says a stage staged when it did not, and apply proves the stage before Control quits.
 stage_verb = code(between(helper, "private func emitStageAppUpdate(args: [String]) throws {", "private func bundleHasRunningProcess"))
 pin(stage_verb.count("emit(ok: true") == 1 and 'details["reason"] = "staged"' in stage_verb, "stage refuses",

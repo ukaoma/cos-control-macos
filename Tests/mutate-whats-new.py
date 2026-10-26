@@ -100,6 +100,7 @@ MUTANTS = [
     ("stale What's New version", W, f'  "version": "{NOTES_VERSION}",', '  "version": "0.0.0",', "[notes version]", "pins"),
     ("Info.plist bumped, notes not", I, f"<key>CFBundleShortVersionString</key>\n\t<string>{BUNDLE_VERSION}</string>",
      "<key>CFBundleShortVersionString</key>\n\t<string>9.9.9</string>", "[notes version]", "pins"),
+    ("summary over 722 characters", W, '    "summary": "', '    "summary": "' + "x" * 800, "[notes summary cap]", "pins"),
     ("release ships no notes", B, "cp \"$ROOT/Resources/WhatsNew.json\" \"$APP/Contents/Resources/\"\n", "", "[bundled notes]", "pins"),
     # The helper copy of the sanitizer.
     ("helper passes whatsNew raw", H, "if let whatsNew = Self.sanitizedWhatsNew(stable[\"whatsNew\"]) { details[\"whatsNew\"] = whatsNew }",
