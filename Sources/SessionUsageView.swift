@@ -38,7 +38,11 @@ final class SessionUsageStore: ObservableObject {
 
 struct SessionUsageView: View {
     @ObservedObject var store: SessionUsageStore
-    @State private var month = Self.monthKey(Date())
+    @State private var month = "Last 30 days"
+    @State private var customStart = Calendar.current.date(byAdding: .day, value: -29, to: Date())!
+    @State private var customEnd = Date()
+    @State private var providerSeries = true
+    @State private var lineChart = true
     @State private var provider = "All providers"
     @State private var model = "All models"
     @State private var monthly = false
@@ -47,7 +51,7 @@ struct SessionUsageView: View {
     @State private var inspectedPeriod: String?
     init(store: SessionUsageStore, initialPeriod: String? = nil, initialInspection: String? = nil) {
         self.store = store
-        _month = State(initialValue: initialPeriod ?? Self.monthKey(Date()))
+        _month = State(initialValue: initialPeriod ?? "Last 30 days")
         _monthly = State(initialValue: initialPeriod == "All history")
         _inspectedPeriod = State(initialValue: initialInspection)
     }
@@ -58,17 +62,14 @@ struct SessionUsageView: View {
     private var providers: [String] { Array(Set(buckets.map(\.provider))).sorted() }
     private var models: [String] { Array(Set(buckets.filter { provider == "All providers" || $0.provider == provider }.map(\.model))).sorted() }
     private var months: [String] { Array(Set(buckets.map { String($0.day.prefix(7)) } + [Self.monthKey(Date())])).sorted(by: >) }
-    private var filtered: [SessionUsageBucket] {
-        buckets.filter { (provider == "All providers" || $0.provider == provider) && (model == "All models" || $0.model == model) }
-    }
     private var reportingZone: TimeZone { TimeZone(identifier: store.report?.timeZone ?? "") ?? .current }
     private var periodRows: [SessionUsageBucket] {
-        SessionUsagePresentation.selectPeriod(buckets, period: month, now: Date(), timeZone: reportingZone)
+        SessionUsagePresentation.selectPeriod(buckets, period: month, now: Date(), timeZone: reportingZone, customStart: customStart, customEnd: customEnd)
     }
     private var selected: [SessionUsageBucket] {
         periodRows.filter { (provider == "All providers" || $0.provider == provider) && (model == "All models" || $0.model == model) }
     }
-    private var chartRows: [SessionUsageBucket] { monthly ? filtered : selected }
+    private var chartRows: [SessionUsageBucket] { selected }
     private var periodKeys: [String] { Array(Set(chartRows.map { String($0.day.prefix(monthly ? 7 : 10)) })).sorted() }
     private func measured(_ counts: SessionUsageCounts) -> Int64 { SessionUsagePresentation.tokenCount(counts, excludingCacheReads: excludeCacheReads) }
     private func periodValues(_ key: String) -> [SessionUsageBucket] { chartRows.filter { $0.day.hasPrefix(key) } }
@@ -89,6 +90,8 @@ struct SessionUsageView: View {
     private var ranking: [SessionUsageBucket] { SessionUsagePresentation.aggregate(selected, excludingCacheReads: excludeCacheReads) }
     struct Point: Identifiable {
         var date: Date; var series: String; var tokens: Int64; var usd: Double
+        var pricedEvents: Int = 1
+        var events: Int = 1
         var id: String { String(date.timeIntervalSince1970)+series }
     }
     private var points: [Point] {
@@ -104,7 +107,7 @@ struct SessionUsageView: View {
         var grouped: [String: [SessionUsageBucket]] = [:]
         for row in rows {
             let day = monthly ? String(row.day.prefix(7)) + "-01" : row.day
-            let series = top.contains(row.model) ? row.model : "Other models"
+            let series = providerSeries ? row.provider : top.contains(row.model) ? row.model : "Other models"
             grouped[day + "|" + series, default: []].append(row)
         }
         var result: [Point] = []
@@ -114,7 +117,8 @@ struct SessionUsageView: View {
             guard parts.count == 2, let date = formatter.date(from: String(parts[0])) else { continue }
             let tokens = group.reduce(Int64(0)) { $0 + measured($1.counts) }
             let usd = group.reduce(0.0) { $0 + $1.estimatedUSD }
-            result.append(Point(date: date, series: String(parts[1]), tokens: tokens, usd: usd))
+            result.append(Point(date: date, series: String(parts[1]), tokens: tokens, usd: usd,
+                pricedEvents: group.reduce(0) { $0 + $1.pricedEvents }, events: group.reduce(0) { $0 + $1.events }))
         }
         return result.sorted { a, b in
             if a.date == b.date { return a.series < b.series }
@@ -125,7 +129,7 @@ struct SessionUsageView: View {
         ScrollView {
             VStack(alignment:.leading,spacing:18) {
                 HStack(alignment:.bottom,spacing:12) {
-                    filter("Period",selection:$month,values:["Last 7 days", "Last weekend", "All history"]+months).frame(width:150)
+                    filter("Period",selection:$month,values:["Last 7 days", "Last 30 days", "Last 90 days", "Last weekend", "Custom dates", "All history"]+months).frame(width:150)
                     filter("Provider",selection:$provider,values:["All providers"]+providers).frame(maxWidth:190)
                     filter("Model",selection:$model,values:["All models"]+models).frame(maxWidth:290)
                     Spacer()
@@ -136,14 +140,19 @@ struct SessionUsageView: View {
                 .onChange(of:provider) { _, _ in clearInspection() }
                 .onChange(of:model) { _, _ in clearInspection() }
                 .onChange(of:monthly) { _, _ in clearInspection() }
+                .onChange(of:customStart) { _, _ in clearInspection() }
+                .onChange(of:customEnd) { _, _ in clearInspection() }
+                if month == "Custom dates" { customDates }
+                Text("Calendar dates in \(reportingZone.identifier). Includes today for Last 7/30/90 days. Daily records cannot resolve a rolling 24-hour window.")
+                    .font(COSType.body(12)).foregroundStyle(COSPalette.subtle)
                 if let earliest = buckets.map(\.day).min(), let latest = buckets.map(\.day).max() {
-                    Text("Recorded history: \(earliest) – \(latest). Select All history for lifetime totals, or a month to compare models.")
+                    Text("Recorded history: \(earliest) – \(latest). All totals, charts and breakdowns follow the selected period and filters.")
                         .font(COSType.body(12)).foregroundStyle(.secondary)
                 }
                 HStack(alignment:.top,spacing:28) {
-                    metric("Recorded tokens",SessionUsagePricing.tokens(counts.total))
-                    metric("Input / output",SessionUsagePricing.tokens(counts.input)+" / "+SessionUsagePricing.tokens(counts.output))
-                    metric("Cache read / write",SessionUsagePricing.tokens(counts.cacheRead)+" / "+SessionUsagePricing.tokens(counts.cacheWrite))
+                    metric("All recorded tokens",SessionUsagePricing.tokens(counts.total))
+                    metric("Usage records",selected.reduce(0) { $0 + $1.events }.formatted())
+                    metric("Recorded days",Set(selected.map(\.day)).count.formatted())
                     metric("Estimated API value",priced == 0 ? "Unavailable" : cost.formatted(.currency(code:"USD")) + (unpriced > 0 ? " + unknown" : ""))
                 }
                 Label(SessionUsagePresentation.allowanceNote, systemImage: "info.circle")
@@ -156,7 +165,10 @@ struct SessionUsageView: View {
                 if let report = store.report, report.pendingFiles > 0 {
                     Text("Backfilling history: \(report.pendingFiles) files remaining. Totals are partial and update as the import continues.").foregroundStyle(.secondary)
                 }
+                limitsNote
                 chartSection.zIndex(1)
+                providerBreakdown
+                tokenMix
                 Text("Models · \(month)").font(COSType.body(16,weight:.semibold))
                 Grid(alignment:.leading,horizontalSpacing:24,verticalSpacing:12) {
                     GridRow {
@@ -178,6 +190,7 @@ struct SessionUsageView: View {
                         Divider()
                     }
                 }.font(COSType.body(13))
+                dayBreakdown
                 Divider()
                 Toggle("Track session usage on this Mac",isOn:$store.enabled).toggleStyle(COSCheckStyle())
                 Text("While COS Control is running, it refreshes local history every five minutes. Pausing keeps existing history. Manual Refresh imports available records. Only counts, dates, model names and local file checkpoints are stored; nothing is uploaded.").font(COSType.body(12)).foregroundStyle(.secondary)
@@ -199,20 +212,20 @@ struct SessionUsageView: View {
         VStack(alignment: .leading, spacing: 12) {
             ViewThatFits(in: .horizontal) {
                 HStack {
-                    Text(monthly ? "All recorded months" : "Daily usage").font(COSType.body(16, weight: .semibold))
+                    Text(monthly ? "Monthly usage" : "Daily usage").font(COSType.body(16, weight: .semibold))
                     Spacer()
                     chartControls
                 }
                 VStack(alignment: .leading, spacing: 8) {
-                    Text(monthly ? "All recorded months" : "Daily usage").font(COSType.body(16, weight: .semibold))
+                    Text(monthly ? "Monthly usage" : "Daily usage").font(COSType.body(16, weight: .semibold))
                     chartControls
                 }
             }
             HStack {
                 Toggle("Exclude cache reads", isOn: $excludeCacheReads).toggleStyle(COSCheckStyle())
-                    .help("Compare input, output and cache writes without repeated cache reads. Changes token bars and table shares, not API value.")
+                    .help("Compare input, output and cache writes without repeated cache reads. Changes chart tokens, token mix and table shares, not API value.")
                 Spacer()
-                Text("Hover a bar for its breakdown").font(COSType.body(12)).foregroundStyle(COSPalette.subtle)
+                Text("Hover or inspect a period for its breakdown").font(COSType.body(12)).foregroundStyle(COSPalette.subtle)
             }
             if costChart && chartRows.allSatisfy({ $0.pricedEvents == 0 }) {
                 Text("Cost unavailable: no verified prices for this selection.").frame(maxWidth: .infinity, minHeight: 220).foregroundStyle(.secondary)
@@ -220,16 +233,105 @@ struct SessionUsageView: View {
                 Text("No recorded usage for this selection. A missing provider is not zero usage.").frame(maxWidth: .infinity, minHeight: 220).foregroundStyle(.secondary)
             } else {
                 SessionUsageChart(points: points, rows: chartRows, monthly: monthly, costChart: costChart,
-                    excludeCacheReads: excludeCacheReads, timeZone: reportingZone, inspectedPeriod: $inspectedPeriod).zIndex(2)
+                    excludeCacheReads: excludeCacheReads, timeZone: reportingZone, inspectedPeriod: $inspectedPeriod, lineChart: lineChart).zIndex(2)
+                if monthly {
+                    Text("Monthly buckets include only selected dates; boundary months may be partial.")
+                        .font(COSType.body(11)).foregroundStyle(COSPalette.subtle)
+                }
+                if !providerSeries {
+                    Text("The six largest models by selected tokens are shown separately; remaining models are combined.")
+                        .font(COSType.body(11)).foregroundStyle(COSPalette.subtle)
+                }
+                Text(lineChart ? "Lines connect recorded dates only; missing dates are not zero usage." : "Stacked bars show recorded dates only; missing dates are not zero usage.")
+                    .font(COSType.body(11)).foregroundStyle(COSPalette.subtle)
+                if costChart && chartRows.contains(where: { $0.pricedEvents < $0.events }) {
+                    Text("API values include priced records only. Unpriced provider/model periods are omitted; partial values exclude unknown costs.")
+                        .font(COSType.body(11)).foregroundStyle(COSPalette.subtle)
+                }
                 periodInspector.zIndex(1)
             }
         }
     }
     private var chartControls: some View {
-        HStack {
-            COSViewSwitch("Time scale", selection: $monthly, options: [COSViewOption(false,"Daily"), COSViewOption(true,"Monthly history")])
-            COSViewSwitch("Measure", selection: $costChart, options: [COSViewOption(false,"Tokens"), COSViewOption(true,"Est. USD")])
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                COSViewSwitch("Time scale", selection: $monthly, options: [COSViewOption(false,"Daily"), COSViewOption(true,"Monthly")])
+                COSViewSwitch("Measure", selection: $costChart, options: [COSViewOption(false,"Tokens"), COSViewOption(true,"API value")])
+            }
+            HStack {
+                COSViewSwitch("Series", selection: $providerSeries, options: [COSViewOption(true,"Providers"), COSViewOption(false,"Models")])
+                COSViewSwitch("Chart style", selection: $lineChart, options: [COSViewOption(true,"Lines"), COSViewOption(false,"Stacked bars")])
+            }
         }
+    }
+    private var customDates: some View {
+        HStack(spacing: 16) {
+            DatePicker("From", selection: $customStart, displayedComponents: .date)
+            DatePicker("Through", selection: $customEnd, displayedComponents: .date)
+            if dateFormatter.string(from: customStart) > dateFormatter.string(from: customEnd) {
+                Text("Choose an end date on or after the start.").foregroundStyle(.red)
+            }
+        }.environment(\.timeZone, reportingZone).font(COSType.body(12))
+    }
+    private var limitsNote: some View {
+        DisclosureGroup("Subscription limits and coverage") {
+            Text("Plan balances and reset times are unavailable here. Token totals and API value do not measure subscription utilization. Records are deduplicated usage observations, not sessions or messages. Environment is not recorded; these totals cover supported logs on this Mac.")
+                .font(COSType.body(12)).foregroundStyle(COSPalette.subtle).padding(.top, 6)
+        }.font(COSType.body(12))
+    }
+    private var providerBreakdown: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Providers · \(month)").font(COSType.body(16, weight: .semibold))
+            Grid(alignment: .leading, horizontalSpacing: 24, verticalSpacing: 10) {
+                GridRow {
+                    Text("Provider"); Text(excludeCacheReads ? "Without cache reads" : "All tokens")
+                    Text("Selection share"); Text("Usage records"); Text("Estimated API value")
+                }.font(COSType.body(12, weight: .semibold)).foregroundStyle(COSPalette.subtle)
+                ForEach(SessionUsagePresentation.summarize(selected, by: \.provider, excludingCacheReads: excludeCacheReads)) { row in
+                    GridRow {
+                        Text(row.id).frame(maxWidth: .infinity, alignment: .leading)
+                        Text(SessionUsagePricing.tokens(measured(row.counts)))
+                        Text(SessionUsagePresentation.share(measured(row.counts), of: measured(counts)))
+                        Text(row.events.formatted()).help("Deduplicated usage observations, not sessions or messages.")
+                        Text(row.costLabel)
+                    }
+                    Divider()
+                }
+            }.font(COSType.body(13)).monospacedDigit()
+        }
+    }
+    private var tokenMix: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(excludeCacheReads ? "Token mix · cache reads excluded" : "Token mix · all recorded tokens")
+                .font(COSType.body(16, weight: .semibold))
+            HStack(alignment: .top, spacing: 20) {
+                ForEach(SessionUsagePresentation.tokenMix(counts, excludingCacheReads: excludeCacheReads)) { category in
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text(category.id).font(COSType.body(12)).foregroundStyle(COSPalette.subtle)
+                        Text(SessionUsagePricing.tokens(category.count)).font(COSType.body(18, weight: .semibold)).monospacedDigit()
+                        Text(SessionUsagePresentation.share(category.count, of: measured(counts))).font(COSType.body(12)).foregroundStyle(COSPalette.subtle)
+                    }.frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            Text("Disjoint categories; reasoning is included in output. Shares use the displayed token total. Cache reads are repeated context, not cache savings.")
+                .font(COSType.body(11)).foregroundStyle(COSPalette.subtle)
+        }
+    }
+    private var dayBreakdown: some View {
+        DisclosureGroup("Daily breakdown · \(Set(selected.map(\.day)).count) recorded days") {
+            VStack(alignment: .leading, spacing: 10) {
+                ForEach(SessionUsagePresentation.summarize(selected, by: \.day).sorted { $0.id > $1.id }) { row in
+                    HStack {
+                        Text(row.id)
+                        Spacer()
+                        Text(SessionUsagePricing.tokens(measured(row.counts)) + " tokens")
+                        Text("\(row.events.formatted()) records").foregroundStyle(COSPalette.subtle)
+                        Text(row.costLabel).frame(minWidth: 110, alignment: .trailing)
+                    }.font(COSType.body(12)).monospacedDigit()
+                    Divider()
+                }
+            }.padding(.top, 10)
+        }.font(COSType.body(14, weight: .semibold))
     }
     private var periodInspector: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -276,14 +378,16 @@ struct SessionUsageChart: View {
     let costChart: Bool
     let excludeCacheReads: Bool
     let timeZone: TimeZone
+    let lineChart: Bool
     @Binding var inspectedPeriod: String?
     @State private var hoveredPeriod: String?
     @State private var hoverX: CGFloat = 0
     init(points: [SessionUsageView.Point], rows: [SessionUsageBucket], monthly: Bool, costChart: Bool,
-         excludeCacheReads: Bool, timeZone: TimeZone, inspectedPeriod: Binding<String?>, initialHover: String? = nil) {
+         excludeCacheReads: Bool, timeZone: TimeZone, inspectedPeriod: Binding<String?>, initialHover: String? = nil, lineChart: Bool = false) {
         self.points = points; self.rows = rows; self.monthly = monthly; self.costChart = costChart
         self.excludeCacheReads = excludeCacheReads; self.timeZone = timeZone; self._inspectedPeriod = inspectedPeriod
         self._hoveredPeriod = State(initialValue: initialHover)
+        self.lineChart = lineChart
     }
     private var reportingCalendar: Calendar { var c = Calendar(identifier: .gregorian); c.timeZone = timeZone; return c }
     private var dateFormatter: DateFormatter {
@@ -302,6 +406,9 @@ struct SessionUsageChart: View {
         case "claude-opus-5-5": return Color(red: 0.86, green: 0.43, blue: 0.16)
         case "gpt-6-astra": return Color(red: 0.02, green: 0.59, blue: 0.62)
         case "gpt-6.1-sol": return Color(red: 0.53, green: 0.40, blue: 0.77)
+        case "Anthropic": return COSPalette.gold
+        case "OpenAI": return Color(red: 0.02, green: 0.59, blue: 0.62)
+        case "Ollama": return Color(red: 0.53, green: 0.40, blue: 0.77)
         case "Other models": return .gray
         default:
             let colors: [Color] = [.blue, .green, .pink, .indigo, .brown]
@@ -309,15 +416,29 @@ struct SessionUsageChart: View {
             return colors[index]
         }
     }
+    private func value(_ point: SessionUsageView.Point) -> Double { costChart ? point.usd : Double(point.tokens)/1e6 }
+    private func accessibleValue(_ point: SessionUsageView.Point) -> String {
+        let label = costChart ? point.usd.formatted(.currency(code: "USD")) + (point.pricedEvents < point.events ? " plus unknown cost" : " API value") : SessionUsagePricing.tokens(point.tokens) + " tokens"
+        return label + ", \(point.events) usage records"
+    }
     private var seriesNames: [String] { Array(Set(points.map(\.series))).sorted() }
     var body: some View {
         Chart {
-            ForEach(points) { point in
-                BarMark(x: .value("Date", point.date, unit: monthly ? .month : .day),
-                    y: .value(costChart ? "Estimated USD" : "Million tokens", costChart ? point.usd : Double(point.tokens)/1e6))
-                    .foregroundStyle(by: .value("Model", point.series))
-                    .accessibilityLabel("\(dateFormatter.string(from: point.date)), \(point.series)")
-                    .accessibilityValue(costChart ? point.usd.formatted(.currency(code: "USD")) : SessionUsagePricing.tokens(point.tokens) + " tokens")
+            ForEach(points.filter { !costChart || $0.pricedEvents > 0 }) { point in
+                if lineChart {
+                    LineMark(x: .value("Date", point.date, unit: monthly ? .month : .day),
+                        y: .value(costChart ? "Estimated USD" : "Million tokens", value(point)))
+                        .foregroundStyle(by: .value("Series", point.series))
+                        .symbol(.circle)
+                        .accessibilityLabel("\(dateFormatter.string(from: point.date)), \(point.series)")
+                        .accessibilityValue(accessibleValue(point))
+                } else {
+                    BarMark(x: .value("Date", point.date, unit: monthly ? .month : .day),
+                        y: .value(costChart ? "Estimated USD" : "Million tokens", value(point)))
+                        .foregroundStyle(by: .value("Series", point.series))
+                        .accessibilityLabel("\(dateFormatter.string(from: point.date)), \(point.series)")
+                        .accessibilityValue(accessibleValue(point))
+                }
             }
             if let key = hoveredPeriod ?? inspectedPeriod,
                let date = dateFormatter.date(from: key.count == 7 ? key + "-01" : key) {
@@ -381,11 +502,22 @@ struct SessionUsagePeriodDetail: View {
             Text(title).font(COSType.body(14, weight: .semibold))
             HStack {
                 Text(tokens(counts) + " tokens").font(COSType.body(18, weight: .semibold)).monospacedDigit()
+                    .help(SessionUsagePresentation.tokenCount(counts, excludingCacheReads: excludingCacheReads).formatted() + " tokens")
                 Spacer()
                 Text(SessionUsagePresentation.costLabel(rows)).font(COSType.body(13, weight: .semibold)).monospacedDigit()
             }
             Text(excludingCacheReads ? "Cache reads excluded from token totals. API value includes all priced tokens." : "All token categories included. Estimated API value, not your bill.")
                 .font(COSType.body(11)).foregroundStyle(COSPalette.subtle)
+            Text("\(rows.reduce(0) { $0 + $1.events }.formatted()) usage records · \(rows.reduce(0) { $0 + $1.pricedEvents }.formatted()) priced").foregroundStyle(COSPalette.subtle)
+            ForEach(SessionUsagePresentation.summarize(rows, by: \.provider, excludingCacheReads: excludingCacheReads)) { provider in
+                HStack {
+                    Text(provider.id).fontWeight(.semibold)
+                    Spacer()
+                    Text(tokens(provider.counts)).monospacedDigit()
+                    Text(SessionUsagePresentation.share(SessionUsagePresentation.tokenCount(provider.counts, excludingCacheReads: excludingCacheReads), of: SessionUsagePresentation.tokenCount(counts, excludingCacheReads: excludingCacheReads)))
+                    Text(provider.costLabel).foregroundStyle(COSPalette.subtle)
+                }.font(COSType.body(11))
+            }
             Divider()
             ForEach(compact ? Array(models.prefix(6)) : models) { row in
                 HStack(alignment: .firstTextBaseline) {
@@ -399,7 +531,7 @@ struct SessionUsagePeriodDetail: View {
                 }.font(COSType.body(12))
             }
             if compact && models.count > 6 {
-                Text("\(models.count - 6) more models included. Click the bar for all models.").font(COSType.body(11)).foregroundStyle(COSPalette.subtle)
+                Text("\(models.count - 6) more models included. Click the chart for all models.").font(COSType.body(11)).foregroundStyle(COSPalette.subtle)
             }
             Divider()
             Text("Input \(SessionUsagePricing.tokens(counts.input))  ·  Output \(SessionUsagePricing.tokens(counts.output))")

@@ -2,7 +2,7 @@
 
 Implementation baseline: Control 0.5.344 (build 398, ce9b71c), server 6.91.1. This feature is local to Control and its bundled helper; it requires no new server endpoint, account credentials, or subscription.
 
-The native Sessions page gains a Usage tab with All history or month, provider and model filters; daily stacked token/cost charts; monthly history; a model-share table; disjoint input/output/cache totals; and API-equivalent value. It uses the current COS typography and palette, including dark mode. Tracking starts when Control runs, backfills in bounded slices, then refreshes every five minutes. Users can pause tracking while retaining history or refresh manually.
+The native Sessions page has a Usage tab with calendar-date windows, custom inclusive dates, All history or month, provider and model filters; provider/model lines or stacked bars; daily/monthly buckets; provider/model/day breakdowns; a disjoint token mix; and API-equivalent value. It uses the current COS typography and palette, including dark mode. Tracking starts when Control runs, backfills in bounded slices, then refreshes every five minutes. Users can pause tracking while retaining history or refresh manually.
 
 ## Coverage and storage
 
@@ -52,3 +52,14 @@ Token share compares the selected local token records; it is not a provider subs
 Last 7 days includes today and the six preceding reporting-zone dates. Last weekend is the most recently completed Saturday/Sunday pair. Hover a daily/monthly bar for its breakdown; click to keep the full breakdown below the chart, or use the keyboard-accessible Inspect period selector and Previous/Next controls. Monthly history spans all recorded months with current provider/model filters; the model table keeps the selected period. Colors stay stable as filters change.
 
 See docs/usage-refinement-349.md for the audit, design rationale and QA scope. No source logs, ledger records or provider pricing were altered by these presentation changes.
+
+## Next-release Usage refinements (October 26, 2026)
+
+- Default to Last 30 days. Last 7/30/90 days include today and the preceding 6/29/89 calendar dates in the ledger reporting timezone. These are calendar-date windows, not rolling elapsed-hour windows. Custom dates include both endpoints; a reversed date range returns no records with an inline correction. Hidden times in date pickers do not invalidate a same-day range. Last weekend and explicit month/history selections remain available.
+- Daily and monthly charts now use the same selected date/provider/model rows as every summary and table. Monthly buckets can be partial at selection boundaries. All history plus Monthly reproduces the full historical view.
+- Providers are the default chart series, with line markers for observed dates. Model series and stacked bars remain available. Models preserve the existing top-six-plus-other grouping. Lines connect observed dates; missing dates are not filled or claimed as zero use. Unknown-priced provider/model periods are omitted from the API-value plot. Partial points include only priced records, with unknown cost called out in the plot note, hover and detail.
+- Provider totals reconcile tokens, selected-token share, deduplicated usage-record counts and API value. Model shares retain their existing period-wide provider denominator. The daily breakdown totals tokens, records and API value for every observed day under the current filters. Hover/keyboard period details add provider totals/shares, pricing-coverage record counts, models and all token categories.
+- Token mix exposes uncached input, output, cache read and cache write with shares of the displayed token denominator. Exclude cache reads removes only reads from this mix, charts, table tokens and shares. The top All recorded tokens summary intentionally remains inclusive; API values always retain every priced category. Cache counts are not described as monetary savings.
+- Subscription limits and coverage explicitly state that balances/reset times, environments and distinct session counts are unavailable. Usage records are observations after ledger deduplication, not messages or sessions. The daily ledger cannot supply an accurate rolling 24-hour filter. No schema, collector source roots, privacy boundaries or pricing rates changed.
+
+Validation for this change is recorded in `docs/usage-refinement-20261026.md`. The superseded 0.5.349 note above describes that release's historical monthly scope.

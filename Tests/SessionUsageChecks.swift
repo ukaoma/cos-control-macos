@@ -145,6 +145,31 @@ import Foundation
         var outputHeavy = pricedRow; outputHeavy.model = "output-heavy"; outputHeavy.counts = SessionUsageCounts(input: 100, output: 200)
         check(SessionUsagePresentation.aggregate([pricedRow, outputHeavy]).first?.model == "gpt-6-astra", "all-token ranking includes cache")
         check(SessionUsagePresentation.aggregate([pricedRow, outputHeavy], excludingCacheReads: true).first?.model == "output-heavy", "cache-free ranking uses same measure as bars and shares")
+        check(inside("2026-09-27", "Last 30 days") && !inside("2026-09-26", "Last 30 days") && inside("2026-10-26", "Last 30 days") && !inside("2026-10-27", "Last 30 days"), "thirty calendar dates cross month boundary")
+        check(inside("2026-07-29", "Last 90 days") && !inside("2026-07-28", "Last 90 days"), "ninety calendar dates cross months")
+        let afterDST = utc.date(from: "2026-11-02T14:00:00Z")!
+        check(inside("2026-10-04", "Last 30 days", afterDST) && !inside("2026-10-03", "Last 30 days", afterDST), "calendar window survives fall DST rather than subtracting seconds")
+        let leapDay = utc.date(from: "2024-03-01T14:00:00Z")!
+        check(inside("2024-02-01", "Last 30 days", leapDay) && !inside("2024-01-31", "Last 30 days", leapDay), "thirty calendar dates across leap February")
+        let customStart = utc.date(from: "2026-10-24T23:30:00Z")!, customEnd = utc.date(from: "2026-10-25T06:00:00Z")!
+        let customRows = SessionUsagePresentation.selectPeriod([pricedRow, nextRow, outsideWeekend], period: "Custom dates", now: monday, timeZone: chicago, customStart: customStart, customEnd: customEnd)
+        check(customRows.map(\.day) == ["2026-10-24", "2026-10-25"], "custom dates include both reporting-zone boundary days")
+        let sameDayEarlier = utc.date(from: "2026-10-24T06:00:00Z")!
+        check(SessionUsagePresentation.selectPeriod([pricedRow], period: "Custom dates", now: monday, timeZone: chicago, customStart: customStart, customEnd: sameDayEarlier).count == 1, "same calendar day remains valid regardless of hidden picker time")
+        check(SessionUsagePresentation.selectPeriod([pricedRow], period: "Custom dates", now: monday, timeZone: chicago, customStart: customEnd, customEnd: customStart).isEmpty, "reversed custom dates return no records")
+        check(SessionUsagePresentation.selectPeriod([pricedRow], period: "Custom dates", now: monday, timeZone: chicago).isEmpty, "incomplete custom dates are not all history")
+        let providerSummary = SessionUsagePresentation.summarize([pricedRow, nextRow, anotherProvider], by: \.provider)
+        let openai = providerSummary.first { $0.id == "OpenAI" }!
+        check(providerSummary.count == 2 && openai.counts.total == 2000 && openai.events == 4 && openai.pricedEvents == 2, "provider totals retain records and pricing coverage without inventing sessions")
+        check(openai.estimatedUSD == 3 && openai.costLabel.contains("unknown"), "provider summary preserves partial cost")
+        let days = SessionUsagePresentation.summarize([pricedRow, nextRow, anotherProvider], by: \.day)
+        check(days.count == 2 && days.first { $0.id == "2026-10-24" }?.events == 4, "daily breakdown sums across providers")
+        check(SessionUsagePresentation.summarize([nextRow], by: \.provider).first?.costLabel == "Unavailable", "unpriced provider never appears free")
+        let mix = SessionUsagePresentation.tokenMix(displayCounts, excludingCacheReads: false)
+        let noReads = SessionUsagePresentation.tokenMix(displayCounts, excludingCacheReads: true)
+        check(mix.map(\.id) == ["Uncached input", "Output", "Cache read", "Cache write"] && mix.reduce(0) { $0 + $1.count } == displayCounts.total, "token mix is disjoint and reconciles to total")
+        check(noReads.map(\.id) == ["Uncached input", "Output", "Cache write"] && noReads.reduce(0) { $0 + $1.count } == 100, "token mix exclusion retains cache writes and reconciles to displayed denominator")
+        print("PASS: 30/90/custom dates, DST/leap/calendar boundaries, provider/day summaries and token mix")
         print("PASS: usage period boundaries, timezone, token/category shares, tooltip aggregation and unknown-price handling")
         print("PASS: usage parsing, deduplication, cache pricing, local dates, reset, partial append, retention and unknown coverage")
     }

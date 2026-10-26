@@ -27,21 +27,21 @@ import SwiftUI
             coverage: ["Claude Code and Codex local session logs, including archived sessions and subagents.", "Cursor, browser-only chats and other Macs are not included."], pricingVersion: SessionUsagePricing.version)
         for width in [1200.0, 800.0] {
             for dark in [false, true] {
-              for history in [false, true] {
-                let host = NSHostingView(rootView: SessionUsageView(store: store, initialPeriod: history ? "All history" : nil, initialInspection: history ? "2026-08" : nil).cosControlTheme().frame(width: width, height: 1100).background(COSPalette.panel))
-                let window = NSWindow(contentRect: NSRect(x: -20000, y: -20000, width: width, height: 1100), styleMask: [.borderless], backing: .buffered, defer: false)
+              for (name, period, inspection) in [("range", "Last 30 days", nil), ("history", "All history", "2026-08"), ("custom", "Custom dates", month + "-24"), ("90days", "Last 90 days", nil)] as [(String, String, String?)] {
+                let host = NSHostingView(rootView: SessionUsageView(store: store, initialPeriod: period, initialInspection: inspection).cosControlTheme().frame(width: width, height: 2000).background(COSPalette.panel))
+                let window = NSWindow(contentRect: NSRect(x: -20000, y: -20000, width: width, height: 2000), styleMask: [.borderless], backing: .buffered, defer: false)
                 window.isReleasedWhenClosed = false
                 window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
                 host.appearance = window.appearance
                 window.contentView = host
-                host.frame = NSRect(x: 0, y: 0, width: width, height: 1100)
+                host.frame = NSRect(x: 0, y: 0, width: width, height: 2000)
                 let until = Date().addingTimeInterval(1)
                 while Date() < until { RunLoop.main.run(until: Date().addingTimeInterval(0.05)); host.layoutSubtreeIfNeeded() }
                 guard let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds), let data = {
                     host.cacheDisplay(in: host.bounds, to: rep)
                     return rep.representation(using: .png, properties: [:])
                 }() else { throw CocoaError(.fileWriteUnknown) }
-                try data.write(to: out.appendingPathComponent("usage-\(Int(width))-\(dark ? "dark" : "light")-\(history ? "history" : "month").png"))
+                try data.write(to: out.appendingPathComponent("usage-\(Int(width))-\(dark ? "dark" : "light")-\(name).png"))
                 window.close()
               }
             }
@@ -50,7 +50,7 @@ import SwiftUI
             let detail = SessionUsagePeriodDetail(title: "Saturday, Oct 24, 2026", rows: rows.filter { $0.day == month + "-24" }, excludingCacheReads: false, compact: true)
             let host = NSHostingView(rootView: detail.padding(14).frame(width: 418).background(COSPalette.card).cosControlTheme())
             host.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
-            host.frame = NSRect(x: 0, y: 0, width: 418, height: 340)
+            host.frame = NSRect(x: 0, y: 0, width: 418, height: 440)
             host.layoutSubtreeIfNeeded()
             guard let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds) else { fatalError("tooltip bitmap unavailable") }
             host.cacheDisplay(in: host.bounds, to: rep)
@@ -64,8 +64,9 @@ import SwiftUI
             SessionUsageView.Point(date: formatter.date(from: row.day)!, series: row.model, tokens: row.counts.total, usd: row.estimatedUSD)
         }
         for dark in [false, true] {
+          for lines in [false, true] {
             let chart = SessionUsageChart(points: chartPoints, rows: chartRows, monthly: false, costChart: false,
-                excludeCacheReads: false, timeZone: zone, inspectedPeriod: .constant(nil), initialHover: month + "-24")
+                excludeCacheReads: false, timeZone: zone, inspectedPeriod: .constant(nil), initialHover: month + "-24", lineChart: lines)
             let host = NSHostingView(rootView: chart.padding(22).frame(width: 800, height: 480, alignment: .top).background(COSPalette.panel).cosControlTheme())
             let window = NSWindow(contentRect: NSRect(x: -20000, y: -20000, width: 800, height: 480), styleMask: [.borderless], backing: .buffered, defer: false)
             window.isReleasedWhenClosed = false
@@ -75,8 +76,9 @@ import SwiftUI
             while Date() < until { RunLoop.main.run(until: Date().addingTimeInterval(0.05)); host.layoutSubtreeIfNeeded() }
             guard let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds) else { fatalError("chart overlay bitmap unavailable") }
             host.cacheDisplay(in: host.bounds, to: rep)
-            try rep.representation(using: .png, properties: [:])!.write(to: out.appendingPathComponent("usage-chart-hover-\(dark ? "dark" : "light").png"))
+            try rep.representation(using: .png, properties: [:])!.write(to: out.appendingPathComponent("usage-chart-hover-\(dark ? "dark" : "light")-\(lines ? "lines" : "bars").png"))
             window.close()
+          }
         }
         print("PASS: offscreen light/dark Usage renders at 800 and 1200 points")
     }

@@ -119,7 +119,15 @@ enum SessionUsagePresentation {
         guard priced > 0 else { return "Unavailable" }
         return rows.reduce(0) { $0 + $1.estimatedUSD }.formatted(.currency(code: "USD")) + (priced < events ? " + unknown" : "")
     }
-    static func selectPeriod(_ rows: [SessionUsageBucket], period: String, now: Date, timeZone: TimeZone) -> [SessionUsageBucket] {
+    static func selectPeriod(_ rows: [SessionUsageBucket], period: String, now: Date, timeZone: TimeZone, customStart: Date? = nil, customEnd: Date? = nil) -> [SessionUsageBucket] {
+        if period == "Custom dates" {
+            guard let start = customStart, let end = customEnd else { return [] }
+            let f = dayFormatter(timeZone: timeZone)
+            let first = f.string(from: start), last = f.string(from: end)
+            guard first <= last else { return [] }
+            let bounds = first...last
+            return rows.filter { bounds.contains($0.day) }
+        }
         if period == "All history" { return rows }
         guard let bounds = dayBounds(period: period, now: now, timeZone: timeZone) else {
             return rows.filter { $0.day.hasPrefix(period) }
@@ -131,13 +139,52 @@ enum SessionUsagePresentation {
         if period == "All history" { return true }
         return dayBounds(period: period, now: now, timeZone: timeZone)?.contains(day) ?? day.hasPrefix(period)
     }
+    static func dayFormatter(timeZone: TimeZone) -> DateFormatter {
+        let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX")
+        var calendar = Calendar(identifier: .gregorian); calendar.timeZone = timeZone
+        f.calendar = calendar; f.timeZone = timeZone; f.dateFormat = "yyyy-MM-dd"
+        return f
+    }
+    struct Summary: Identifiable {
+        let id: String
+        let counts: SessionUsageCounts
+        let events: Int
+        let pricedEvents: Int
+        let estimatedUSD: Double
+        var costLabel: String {
+            guard pricedEvents > 0 else { return "Unavailable" }
+            return estimatedUSD.formatted(.currency(code: "USD")) + (pricedEvents < events ? " + unknown" : "")
+        }
+    }
+    static func summarize(_ rows: [SessionUsageBucket], by key: KeyPath<SessionUsageBucket, String>, excludingCacheReads: Bool = false) -> [Summary] {
+        Dictionary(grouping: rows, by: { $0[keyPath: key] }).map { name, group in
+            Summary(id: name, counts: group.reduce(SessionUsageCounts()) { $0 + $1.counts },
+                events: group.reduce(0) { $0 + $1.events }, pricedEvents: group.reduce(0) { $0 + $1.pricedEvents },
+                estimatedUSD: group.reduce(0) { $0 + $1.estimatedUSD })
+        }.sorted {
+            let a = tokenCount($0.counts, excludingCacheReads: excludingCacheReads)
+            let b = tokenCount($1.counts, excludingCacheReads: excludingCacheReads)
+            return a == b ? $0.id < $1.id : a > b
+        }
+    }
+    struct TokenCategory: Identifiable {
+        let id: String
+        let count: Int64
+    }
+    static func tokenMix(_ counts: SessionUsageCounts, excludingCacheReads: Bool) -> [TokenCategory] {
+        var categories = [TokenCategory(id: "Uncached input", count: counts.input), TokenCategory(id: "Output", count: counts.output)]
+        if !excludingCacheReads { categories.append(TokenCategory(id: "Cache read", count: counts.cacheRead)) }
+        categories.append(TokenCategory(id: "Cache write", count: counts.cacheWrite))
+        return categories
+    }
     private static func dayBounds(period: String, now: Date, timeZone: TimeZone) -> ClosedRange<String>? {
-        guard period == "Last 7 days" || period == "Last weekend" else { return nil }
+        let days = ["Last 7 days": 7, "Last 30 days": 30, "Last 90 days": 90]
+        guard days[period] != nil || period == "Last weekend" else { return nil }
         var calendar = Calendar(identifier: .gregorian); calendar.timeZone = timeZone
         let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX"); f.calendar = calendar; f.timeZone = timeZone; f.dateFormat = "yyyy-MM-dd"
         let today = calendar.startOfDay(for: now)
-        if period == "Last 7 days" {
-            return f.string(from: calendar.date(byAdding: .day, value: -6, to: today)!)...f.string(from: today)
+        if let count = days[period] {
+            return f.string(from: calendar.date(byAdding: .day, value: 1-count, to: today)!)...f.string(from: today)
         }
         // Most recent completed Saturday/Sunday pair; on a weekend use the previous one.
         let daysSinceMonday = (calendar.component(.weekday, from: today) + 5) % 7
