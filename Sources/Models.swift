@@ -5868,8 +5868,8 @@ enum MacVoiceLabel {
 enum MacVoiceCopy {
     static let renameNote = "Mac recordings rename text only, in this meeting. No voice profile is made or trained."
     static let menuTitle = "Rename voice"
-    /// The review's header line for a Mac recording, where nobody is named by design.
-    static let unattributedNote = "Mac recordings do not identify people from call audio. When voices can be distinguished, they appear as Voice 1, Voice 2 and so on. Name the ones you know; this changes this meeting only."
+    /// Voice numbers are anonymous; confirmed names and meeting-only renames remain separate.
+    static let unattributedNote = "Voice numbers do not identify people. When voices can be distinguished, they appear as Voice 1, Voice 2 and so on; names appear only at high confidence. Name the ones you know; this changes this meeting only."
 
     static func menuItem(_ label: String) -> String { "Name \(label)" }
 }
