@@ -128,7 +128,7 @@ need("if let recording { recording.resetNotice() } else { acknowledged = false }
      "Settings' Show the recording notice again calls the store's resetNotice, so every view reading it updates")
 
 # ── 1b. QA 0.5.313: refusal text by cause, the panel notice follows the acknowledgement, the Recover list, telemetry.
-need("switch MacRecordingRefusal.decide(available: available, currentError: error, live: occupied, pendingCapture: pendingCapture) {" in gate
+need("switch MacRecordingRefusal.decide(available: available, currentError: error, live: occupied, pendingCapture: pendingCapture, stillSaving: stillSaving) {" in gate
      and "case .keep: break" in gate and "case .set(let text): error = text" in gate and 'error = "A Mac recording is waiting' not in gate,
      "Record's refusal says the real cause and never paints a live recording red")
 need("MacRecordingNotice.panelShowsNotice(requested: showingNotice, acknowledged: acknowledged, occupied: store.occupied)" in panel
