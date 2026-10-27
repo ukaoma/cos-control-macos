@@ -82,6 +82,15 @@ PINS = [
      'a 404 for an unenrolled name is a decline, not a missing route'),
     ('Sources/Views.swift', 'Text(review.isMacRecording ? MacVoiceCopy.unattributedNote',
      'a Mac review explains why nobody is named instead of blaming recovered audio'),
+    # 0.5.351 polish: no server sentence that tells the caller to pass `{ force: true }` reaches the person.
+    ('Sources/ControllerModel.swift', 'let serverMessage = MacVoiceCopy.withoutForceJargon(',
+     'the preview card never shows a server sentence that tells the caller to force'),
+    ('Sources/ControllerModel.swift', 'message = MacVoiceCopy.earlierCorrectionNote',
+     'a stalled earlier correction on the preview card uses the one Control line'),
+    ('Sources/ControllerModel.swift', 'let detailText = MacVoiceCopy.withoutForceJargon(rawDetail, fallback: "")',
+     'the confirm-time server text never tells the person to force something Control does not offer'),
+    ('Sources/ControllerModel.swift', 'reviewError = MacVoiceCopy.earlierCorrectionNote',
+     'a stalled earlier correction at confirm says what happened and offers no force'),
     ('Sources/ActivityWindow.swift', 'input.meetingUnnamed = unnamed',
      "Today's meeting rows read Speakers' count"),
 ]

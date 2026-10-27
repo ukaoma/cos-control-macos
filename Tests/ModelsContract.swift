@@ -4640,9 +4640,23 @@ struct ModelsContract {
         // Copy: no em dash, no arrow.
         for copy in [MacVoiceCopy.renameNote, MacVoiceCopy.renameNoteNotVoice, MacVoiceCopy.menuTitle, MacVoiceCopy.menuItem("Voice 2"), MacVoiceCopy.unattributedNote,
                      MacVoiceCopy.renameOnlyTitle, MacVoiceCopy.addAnywayTitle, MacVoiceCopy.addAnywayConfirmTitle, MacVoiceCopy.backTitle,
-                     MacVoiceCopy.holdNote(person: "Dana Reyes"), MacVoiceCopy.addAnywayConfirmNote(person: "Dana Reyes", samples: 3)] {
+                     MacVoiceCopy.holdNote(person: "Dana Reyes"), MacVoiceCopy.addAnywayConfirmNote(person: "Dana Reyes", samples: 3),
+                     MacVoiceCopy.earlierCorrectionNote] {
             precondition(!copy.contains("\u{2014}") && !copy.contains("\u{2192}"), "Mac voice copy has no em dash or arrow")
         }
+        // 0.5.351 polish: a server sentence that tells the caller to force is API wording. Control drops it; its own buttons say "Add anyway".
+        let serverForce = "Its files may be partly rewritten. Re-check the meeting, then pass { force: true } to proceed."
+        let serverForceAssign = "Its files may be partly rewritten. Re-check the meeting, or do a text-only rename with { force: true } first."
+        let serverMerge = "These centroids are further apart than the threshold. Pass { force: true } only if you know they are the same person."
+        for text in [serverForce, serverForceAssign, serverMerge, "Use --force", "FORCE it", "{force:true}"] {
+            precondition(MacVoiceCopy.withoutForceJargon(text, fallback: "") == "", "force wording is dropped: \(text)")
+            precondition(MacVoiceCopy.withoutForceJargon(text, fallback: "X") == "X", "the fallback replaces it")
+        }
+        precondition(MacVoiceCopy.withoutForceJargon("Nothing was changed. The voice sounds unlike Dana Reyes. Add it anyway only if you are sure", fallback: "") != "", "the gate wording names a button that exists, so it stays")
+        precondition(MacVoiceCopy.withoutForceJargon("The reinforcement and the enforcer are fine", fallback: "") != "", "a word that merely contains force is not force wording")
+        precondition(MacVoiceCopy.withoutForceJargon(nil, fallback: "Y") == "Y" && MacVoiceCopy.withoutForceJargon("", fallback: "Y") == "Y")
+        precondition(!MacVoiceCopy.earlierCorrectionNote.lowercased().contains("force") && MacVoiceCopy.earlierCorrectionNote.contains("Nothing was changed"),
+                     "the stalled-correction line says what happened and offers nothing Control cannot do")
         precondition(MacVoiceCopy.renameNote.contains("text only") && MacVoiceCopy.renameNote.contains("pick the person"),
                      "the picker note says a typed name is text only and a picked person is how a profile is taught")
         precondition(MacVoiceCopy.typedNote.contains("text only") && MacVoiceCopy.typedNote.contains("No voice sample"))

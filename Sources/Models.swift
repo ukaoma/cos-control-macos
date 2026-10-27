@@ -5944,6 +5944,19 @@ enum MacVoiceCopy {
 
     static func menuItem(_ label: String) -> String { "Name \(label)" }
 
+    /// 0.5.351 polish: one line for a correction the server held back because an earlier one on this meeting never finished.
+    /// The server words this for an API caller ("pass { force: true }"). Control has no such action on this path, so it never repeats it.
+    static let earlierCorrectionNote = "An earlier correction on this meeting never finished, so its files may be part-written. Nothing was changed. Re-open it before trying again."
+
+    /// Server text is written for a caller that can send `{ force: true }`. The only forced actions Control offers are its own
+    /// buttons ("Add anyway", "Apply anyway"), so any server sentence that tells the person to force something is dropped and
+    /// `fallback` is shown instead. Pass "" to get "nothing" back and let the caller choose its own line.
+    static func withoutForceJargon(_ text: String?, fallback: String) -> String {
+        guard let text, !text.isEmpty else { return fallback }
+        let words = text.lowercased().split(whereSeparator: { !$0.isLetter })
+        return words.contains("force") ? fallback : text
+    }
+
     /// Why Save is not offered: the server holds the samples back unless the person adds them anyway.
     static func holdNote(person: String) -> String {
         "The server holds these samples back. \(person)'s profile also drives who is recognised in future meetings, so a voice that is not theirs would stay in it until you remove it."
