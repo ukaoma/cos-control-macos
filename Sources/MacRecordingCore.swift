@@ -81,6 +81,15 @@ final class MacAudioRing: @unchecked Sendable {
     }
 }
 
+/// 0.5.351 (quick-save QA N2): a helper refusal carries its own status and reason, so a delivery reads exactly the answer
+/// it got and no other call can overwrite it.
+struct MacRecordingHelperRefusal: LocalizedError, Equatable {
+    let message: String
+    let httpStatus: Int?
+    let reason: String?
+    var errorDescription: String? { message }
+}
+
 enum MacRecordingError: LocalizedError {
     case unavailable(String)
     var errorDescription: String? { if case .unavailable(let reason) = self { return reason }; return nil }
@@ -486,8 +495,11 @@ enum MacRecordingRecoveryPolicy {
     /// Record hostage; the audio stays in the spool and is listed with Recover.
     /// 0.5.334 (Miles 2026-10-21): not for no speech. Audio the server found no speech in, or exact zeros, saves no
     /// better later; Discard (MacRecordingDiscard) releases the composer for those instead.
-    static func canKeepForLater(noSpeech: Bool, paused: Bool = false, pending: Bool, stopped: Bool, delivering: Bool) -> Bool {
-        paused && !noSpeech && pending && stopped && !delivering
+    /// 0.5.351 (quick-save QA W4): `waiting` is a quiet retry that has gone on long enough to show its controls
+    /// (MacRecordingSaveStatus.offersControls); Keep is then offered although the delivery is still running, so Record is
+    /// never blocked behind an invisible "Saving…".
+    static func canKeepForLater(noSpeech: Bool, paused: Bool = false, pending: Bool, stopped: Bool, delivering: Bool, waiting: Bool = false) -> Bool {
+        (paused && !delivering || waiting) && !noSpeech && pending && stopped
     }
     /// What the panel offers to Recover: retained captures with audio, other than the current one. A journal with no
     /// chunks (a start that failed after its manifest was written) has nothing to recover; it is hidden, never deleted.
@@ -496,7 +508,9 @@ enum MacRecordingRecoveryPolicy {
     }
     /// 0.5.351 (Miles 2026-10-26: Recover was grayed out during a live recording with no reason). Why Recover is not
     /// available right now, in the panel's words, or nil when it is.
-    static func recoverUnavailable(phase: String, delivering: Bool, currentUnsaved: Bool) -> String? {
+    /// `nothingToKeep`: the capture above has no sound (the server's no speech, or exact zeros); the only action the panel
+    /// offers for it is Discard, so the reason names that (quick-save QA W3).
+    static func recoverUnavailable(phase: String, delivering: Bool, currentUnsaved: Bool, nothingToKeep: Bool = false) -> String? {
         switch phase {
         case "starting", "recording", "stopping": return "Recover is available after this recording."
         case "recovering": return "Recover is available after the recovery in progress."
@@ -504,7 +518,9 @@ enum MacRecordingRecoveryPolicy {
         default: break
         }
         if delivering { return "Recover is available once this recording is saved." }
-        if currentUnsaved { return "Recover is available once the recording above is saved or kept for later." }
+        if currentUnsaved {
+            return nothingToKeep ? "Recover is available once the recording above is discarded." : "Recover is available once the recording above is saved or kept for later."
+        }
         return nil
     }
 }
@@ -530,12 +546,27 @@ enum MacRecordingReconcile {
         var receiptSessionId: String?
         var receiptCaptureId: String?
         var receiptSourceType: String?
+        /// 0.5.351 (quick-save QA N3): the receipt's own server instance, and its transfer integrity when it has one.
+        var receiptServerInstanceId: String?
+        var integrity: Integrity?
+        struct Integrity: Equatable, Sendable {
+            var expected: Int?
+            var missingChunks: Int?
+        }
     }
     /// Saved on the server, by a receipt for this exact Mac capture. Everything else (a refusal, unreachable, active,
     /// missing, a receipt for another session or source) is not.
-    static func savedOnServer(captureId: String, _ answer: Answer) -> Bool {
-        answer.ok && answer.state == "saved" && answer.sessionId == captureId && answer.receiptSaved == true && answer.receiptVersion == 1
+    /// `serverInstanceId` and `chunkCount` are the journal's: the receipt must come from the instance the audio was pinned
+    /// to, and a receipt that reports transfer integrity must say every one of this journal's chunks arrived. A receipt
+    /// with no integrity block (an older server) is judged on the rest.
+    static func savedOnServer(captureId: String, serverInstanceId: String, chunkCount: Int, _ answer: Answer) -> Bool {
+        guard answer.ok && answer.state == "saved" && answer.sessionId == captureId && answer.receiptSaved == true && answer.receiptVersion == 1
             && answer.receiptSessionId == captureId && answer.receiptCaptureId == captureId && answer.receiptSourceType == "mac_system_audio"
+            && answer.receiptServerInstanceId == serverInstanceId else { return false }
+        if let integrity = answer.integrity {
+            return integrity.missingChunks == 0 && integrity.expected == chunkCount
+        }
+        return true
     }
 }
 
@@ -545,14 +576,17 @@ enum MacRecordingRefusal: Equatable, Sendable {
     case keep
     case set(String)
     static let pending = "A Mac recording is waiting to be saved. Open Meetings to finish it before recording another."
-    static func decide(available: Bool, currentError: String?, live: Bool, pendingCapture: Bool) -> MacRecordingRefusal {
+    /// 0.5.351 (quick-save QA W4): while the save is still running and Meetings offers nothing to press, Record does not
+    /// point at a control that is not there.
+    static let stillSaving = "The last recording is still saving. Try again in a moment."
+    static func decide(available: Bool, currentError: String?, live: Bool, pendingCapture: Bool, stillSaving saving: Bool = false) -> MacRecordingRefusal {
         if live { return .keep }
         if !available {
             // prepare() just ran and said why; keep that reason rather than replacing it.
             if let currentError, !currentError.isEmpty { return .set(currentError) }
             return .set("Mac recording isn't available: COS Control couldn't reach its recording helper. Try again in a moment.")
         }
-        if pendingCapture { return .set(pending) }
+        if pendingCapture { return .set(saving ? stillSaving : pending) }
         return .set("Mac recording couldn't start. Try again in a moment.")
     }
 }
@@ -631,8 +665,9 @@ enum MacRecordingDiscard {
     }
     /// "Retry saving retained audio" only where a retry can work: never for no speech or exact zeros, and never while a
     /// save is already running (0.5.351: the button showed through every ordinary save and read as "retrying chunks").
-    static func retryOffered(noSpeech: Bool, allZero: Bool, pending: Bool, hasChunks: Bool, delivering: Bool) -> Bool {
-        pending && hasChunks && !noSpeech && !allZero && !delivering
+    /// 0.5.351 (quick-save QA W4): also during a quiet retry that shows its controls (`waiting`): Retry now.
+    static func retryOffered(noSpeech: Bool, allZero: Bool, pending: Bool, hasChunks: Bool, delivering: Bool, waiting: Bool = false) -> Bool {
+        pending && hasChunks && !noSpeech && !allZero && (!delivering || waiting)
     }
     /// A stranded row on Meetings: Discard instead of Save for a Mac capture the server says has no speech.
     static func strandedOffersDiscard(sessionId: String, transcriptState: String, canSave: Bool) -> Bool {
@@ -681,8 +716,6 @@ enum MacRecordingDiscard {
     static let retries = 2
 }
 
-/// The discard itself, with its two sides as seams so the checks run it against a fake helper (MacRecordingChecks).
-/// The local spool moves first: it is on this Mac and cannot fail for a network reason.
 /// 0.5.351 (Miles 2026-10-26: "There's many times when you click save and it shows as like retrying chunks. We should
 /// just show like a quick save."). On this Mac a stopped capture is saved about 5 s after Stop (median of 14 saves,
 /// Oct 19-26, 3.4 to 8.0 s for 13 of them): the server keeps up live, so only the last chunk is left. The panel showed
@@ -702,15 +735,25 @@ enum MacRecordingSaveStatus {
     static let saved = "Saved"
     static let savedDetail = "Open Meetings to review the transcript."
     static let notSaved = "Not saved yet. Audio is safe on this Mac."
-    static let notAnswering = "COS is not answering yet. Audio is safe on this Mac, and COS keeps trying for a minute."
+    static let notAnswering = "COS is not answering yet. Audio is safe on this Mac, and COS keeps trying for about a minute."
     static let notAnsweringWhileRecording = "COS is not answering. Audio is safe on this Mac and sends when COS is back."
     /// A save still running this long after Stop says how far it got (the slowest ordinary save measured 8.0 s).
     static let slowAfterSeconds: Double = 20
     /// While recording, the count appears only when COS is this many chunks (6 s each) behind.
     static let behindChunks = 3
-    static func stillSaving(_ acknowledged: Int, of chunks: Int) -> String { "Still saving. \(acknowledged) of \(chunks) audio chunks have reached COS." }
-    static func reached(_ acknowledged: Int, of chunks: Int) -> String { "\(acknowledged) of \(chunks) audio chunks reached COS." }
-    static func sending(_ acknowledged: Int, of chunks: Int) -> String { "Sending audio to COS: \(acknowledged) of \(chunks) chunks received." }
+    /// 1,200, not 1200 (quick-save QA N8): thousands grouped, in one fixed locale.
+    static func count(_ value: Int) -> String {
+        let formatter = NumberFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX"); formatter.numberStyle = .decimal
+        formatter.usesGroupingSeparator = true; formatter.groupingSeparator = ","; formatter.groupingSize = 3
+        return formatter.string(from: NSNumber(value: value)) ?? String(value)
+    }
+    static func stillSaving(_ acknowledged: Int, of chunks: Int) -> String { "Still saving. \(count(acknowledged)) of \(count(chunks)) audio chunks have reached COS." }
+    static func reached(_ acknowledged: Int, of chunks: Int) -> String { "\(count(acknowledged)) of \(count(chunks)) audio chunks reached COS." }
+    static func sending(_ acknowledged: Int, of chunks: Int) -> String { "Sending audio to COS: \(count(acknowledged)) of \(count(chunks)) chunks received." }
+    /// 0.5.351 (quick-save QA W4): a quiet retry that has outlasted an ordinary save shows Keep and Retry, so nothing hides
+    /// behind "Saving…" while Record is blocked.
+    static func offersControls(delivering: Bool, waiting: Bool, slow: Bool) -> Bool { delivering && waiting && slow }
 
     /// `delivering`: a delivery task is running, including a quiet wait to try again. `waiting`: that wait follows a
     /// transient failure. `paused`: delivery stopped on an error. `slow`: Stop was at least slowAfterSeconds ago.
@@ -728,7 +771,7 @@ enum MacRecordingSaveStatus {
         case "pending" where chunks > 0 && !noSpeech && !allZero:
             if delivering {
                 let detail: String? = !slow ? nil : waiting ? notAnswering : stillSaving(acknowledged, of: chunks)
-                return Line(headline: saving, detail: detail, progress: nil, tone: .quiet, showsActions: false)
+                return Line(headline: saving, detail: detail, progress: nil, tone: .quiet, showsActions: offersControls(delivering: delivering, waiting: waiting, slow: slow))
             }
             return Line(headline: paused ? notSaved : message, detail: nil, progress: reached(acknowledged, of: chunks),
                         tone: paused ? .problem : .quiet, showsActions: true)
@@ -755,6 +798,17 @@ enum MacRecordingSaveRetry {
         if let httpStatus, [502, 503, 504].contains(httpStatus) { return true }
         return reason == nil && httpStatus == nil && transientMessages.contains(message)
     }
+    /// 0.5.351 (quick-save QA W4): the quiet tries also have a wall-clock end, counted from the first wait. A try already in
+    /// flight finishes (the helper's own timeouts bound it); no new wait starts past the window, and the last wait is cut
+    /// short to end with it.
+    static let windowSeconds: Double = 75
+    /// The wait before the next quiet try with the window applied, or nil to stop and say so.
+    static func pause(delays table: [Double] = delays, attempt: Int, stopped: Bool, transient: Bool, since: Date?, now: Date, window: Double = windowSeconds) -> Double? {
+        guard stopped, transient, attempt >= 0, attempt < table.count else { return nil }
+        let elapsed = since.map { now.timeIntervalSince($0) } ?? 0
+        guard elapsed < window else { return nil }
+        return min(table[attempt], window - elapsed)
+    }
     /// The wait before the next quiet try, or nil to stop and say so.
     static func delay(afterAttempt attempt: Int, stopped: Bool, transient: Bool) -> Double? {
         guard stopped, transient, attempt >= 0, attempt < delays.count else { return nil }
@@ -762,6 +816,8 @@ enum MacRecordingSaveRetry {
     }
 }
 
+/// The discard itself, with its two sides as seams so the checks run it against a fake helper (MacRecordingChecks).
+/// The local spool moves first: it is on this Mac and cannot fail for a network reason.
 struct MacRecordingDiscarder: Sendable {
     typealias Server = @Sendable (_ captureId: String, _ serverInstanceId: String) async -> MacRecordingDiscard.Server
     let spool: MacRecordingSpool

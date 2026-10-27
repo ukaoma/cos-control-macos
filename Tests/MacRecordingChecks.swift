@@ -70,6 +70,9 @@ func blockMainThread(timeout: TimeInterval, until condition: @escaping @Sendable
                             let permitted = MacRecordingRecoveryPolicy.canKeepForLater(noSpeech: noSpeech, paused: paused, pending: pending, stopped: stopped, delivering: delivering)
                             check(permitted == (paused && !noSpeech && pending && stopped && !delivering),
                                   "Keep audio for later only for a paused delivery, never for no speech (Discard is offered there), with no delivery in flight")
+                            // Quick-save QA W4: during a quiet wait that shows its controls, Keep is offered although delivery is running.
+                            let waited = MacRecordingRecoveryPolicy.canKeepForLater(noSpeech: noSpeech, paused: paused, pending: pending, stopped: stopped, delivering: delivering, waiting: true)
+                            check(waited == (!noSpeech && pending && stopped), "Keep audio for later: a quiet wait offers it while the delivery runs, still never for no speech")
                         }
                     }
                 }
@@ -381,6 +384,12 @@ func blockMainThread(timeout: TimeInterval, until condition: @escaping @Sendable
             } else { check(false, "unavailable is never silent") }
             check(MacRecordingRefusal.decide(available: true, currentError: "Recording stopped because this Mac slept", live: false, pendingCapture: true)
                   == .set(MacRecordingRefusal.pending), "a pending capture says so, replacing a stale unrelated line")
+            // Quick-save QA W4: while the save is still running with nothing to press, Record says so instead of pointing at Meetings.
+            check(MacRecordingRefusal.decide(available: true, currentError: nil, live: false, pendingCapture: true, stillSaving: true) == .set(MacRecordingRefusal.stillSaving)
+                  && MacRecordingRefusal.decide(available: true, currentError: nil, live: false, pendingCapture: true, stillSaving: false) == .set(MacRecordingRefusal.pending)
+                  && MacRecordingRefusal.decide(available: true, currentError: nil, live: true, pendingCapture: true, stillSaving: true) == .keep,
+                  "Record: a save still running says so; Meetings is named only where it offers a control")
+            check(!MacRecordingRefusal.stillSaving.contains("Open Meetings") && MacRecordingRefusal.pending.contains("Open Meetings") && !MacRecordingRefusal.stillSaving.contains("—"), "Record: the still-saving copy names no control")
             // The Recover list hides journals with nothing in them.
             var withAudio = manifest(7); withAudio.stopped = true
             withAudio.chunks = [MacRecordingManifest.Chunk(index: 0, filename: "000000.wav", endFrame: 0)]
@@ -494,6 +503,9 @@ func blockMainThread(timeout: TimeInterval, until condition: @escaping @Sendable
                           == (pending && hasChunks && !noSpeech && !allZero && !delivering), "Retry saving: never for no sound (it cannot work)")
                     // 0.5.351: the button showed through every ordinary save and read as "retrying chunks".
                     if delivering { check(!MacRecordingDiscard.retryOffered(noSpeech: noSpeech, allZero: allZero, pending: pending, hasChunks: hasChunks, delivering: true), "Retry saving: never while the save is running") }
+                    // Quick-save QA W4: except in a quiet wait that shows its controls, and still never for no sound.
+                    check(MacRecordingDiscard.retryOffered(noSpeech: noSpeech, allZero: allZero, pending: pending, hasChunks: hasChunks, delivering: delivering, waiting: true)
+                          == (pending && hasChunks && !noSpeech && !allZero), "Retry saving: offered in a quiet wait, never for no sound")
                 }
             } } } } }
             check(MacRecordingDiscard.strandedOffersDiscard(sessionId: "mac_x", transcriptState: "no_speech", canSave: false), "stranded: a no-speech Mac row offers Discard")
@@ -863,7 +875,14 @@ func blockMainThread(timeout: TimeInterval, until condition: @escaping @Sendable
             check(slow.headline == "Saving…" && slow.detail == "Still saving. 340 of 345 audio chunks have reached COS." && !slow.showsActions,
                   "quick save: a slow save says how far it got")
             let down = line("pending", delivering: true, waiting: true, slow: true)
-            check(down.headline == "Saving…" && down.detail == Q.notAnswering && !down.showsActions, "quick save: COS not answering is said once the save is slow")
+            check(down.headline == "Saving…" && down.detail == Q.notAnswering && down.showsActions, "quick save: COS not answering is said once the save is slow, and Keep and Retry appear")
+            for delivering in [false, true] { for waiting in [false, true] { for slowFlag in [false, true] {
+                check(Q.offersControls(delivering: delivering, waiting: waiting, slow: slowFlag) == (delivering && waiting && slowFlag), "quick save: controls only for a slow quiet wait")
+                if delivering { check(line("pending", delivering: true, waiting: waiting, slow: slowFlag).showsActions == (waiting && slowFlag), "quick save: the line shows the controls exactly then") }
+            } } }
+            check(Q.stillSaving(1_199, of: 1_200) == "Still saving. 1,199 of 1,200 audio chunks have reached COS." && Q.reached(5, of: 1_201) == "5 of 1,201 audio chunks reached COS."
+                  && Q.sending(999, of: 1_000) == "Sending audio to COS: 999 of 1,000 chunks received." && Q.count(0) == "0" && Q.count(345) == "345",
+                  "quick save: thousands are grouped")
             let saved = line("saved", ack: 345)
             check(saved.headline == "Saved" && saved.detail == "Open Meetings to review the transcript." && saved.progress == nil && saved.tone == .done && !saved.showsActions,
                   "quick save: Saved, with no 345/345 counter")
@@ -924,6 +943,20 @@ func blockMainThread(timeout: TimeInterval, until condition: @escaping @Sendable
             }
             // Bounded, and only after Stop.
             check(R.delays == [1, 2, 4, 8, 15, 30] && R.delays.reduce(0, +) == 60, "retry: six quiet tries in about a minute")
+            // Quick-save QA W4: and a wall-clock end, from the first wait.
+            let began1 = Date(timeIntervalSince1970: 1_793_000_000)
+            check(R.windowSeconds == 75 && R.windowSeconds >= 60 && R.windowSeconds <= 90, "retry: the window is about a minute and a quarter")
+            check(R.pause(attempt: 0, stopped: true, transient: true, since: nil, now: began1) == 1, "retry: the first wait has no clock yet")
+            check(R.pause(attempt: 3, stopped: true, transient: true, since: began1, now: began1.addingTimeInterval(20)) == 8, "retry: inside the window the table decides")
+            check(R.pause(attempt: 5, stopped: true, transient: true, since: began1, now: began1.addingTimeInterval(60)) == 15, "retry: the last wait is cut to end with the window")
+            check(R.pause(attempt: 1, stopped: true, transient: true, since: began1, now: began1.addingTimeInterval(75)) == nil
+                  && R.pause(attempt: 1, stopped: true, transient: true, since: began1, now: began1.addingTimeInterval(500)) == nil, "retry: past the window there is no next wait")
+            check(R.pause(attempt: 0, stopped: false, transient: true, since: nil, now: began1) == nil && R.pause(attempt: 0, stopped: true, transient: false, since: nil, now: began1) == nil
+                  && R.pause(attempt: 6, stopped: true, transient: true, since: nil, now: began1) == nil && R.pause(delays: [0.01], attempt: 0, stopped: true, transient: true, since: nil, now: began1) == 0.01,
+                  "retry: the window never loosens the other rules")
+            var total = 0.0, clock = began1, since: Date? = nil
+            for attempt in 0..<6 { if let wait = R.pause(attempt: attempt, stopped: true, transient: true, since: since, now: clock) { if since == nil { since = clock }; total += wait; clock = clock.addingTimeInterval(wait + 30) } }
+            check(since != nil && total < 75, "retry: waits plus 30 s tries stop early rather than run the table out")
             for attempt in -1...8 {
                 for stopped in [false, true] { for transient in [false, true] {
                     let wait = R.delay(afterAttempt: attempt, stopped: stopped, transient: transient)
@@ -949,6 +982,16 @@ func blockMainThread(timeout: TimeInterval, until condition: @escaping @Sendable
                   "Recover: during a save it says once this recording is saved")
             check(MacRecordingRecoveryPolicy.recoverUnavailable(phase: "pending", delivering: false, currentUnsaved: true) == "Recover is available once the recording above is saved or kept for later.",
                   "Recover: behind a paused recording it names what to do")
+            // Quick-save QA W3: behind a recording with no sound the only action is Discard, and the reason says so.
+            check(MacRecordingRecoveryPolicy.recoverUnavailable(phase: "pending", delivering: false, currentUnsaved: true, nothingToKeep: true) == "Recover is available once the recording above is discarded.",
+                  "Recover: behind a no-sound recording it names Discard")
+            for phase in ["idle", "saved", "pending", "starting", "recording", "stopping", "recovering", "discarding"] { for delivering in [false, true] { for unsaved in [false, true] {
+                let plain = MacRecordingRecoveryPolicy.recoverUnavailable(phase: phase, delivering: delivering, currentUnsaved: unsaved)
+                let none = MacRecordingRecoveryPolicy.recoverUnavailable(phase: phase, delivering: delivering, currentUnsaved: unsaved, nothingToKeep: true)
+                check((plain == nil) == (none == nil) && (plain == none || (unsaved && !delivering && !["starting", "recording", "stopping", "recovering", "discarding"].contains(phase))),
+                      "Recover: no sound changes only the wording behind a settled unsaved recording")
+                if let none, none.contains("discarded") { check(unsaved && !delivering, "Recover: Discard is named only where the recording above is what blocks") }
+            } } }
         }
         // MARK: 0.5.351, reconcile a retained capture the server already saved (mac_b0bd6732)
         do {
@@ -964,8 +1007,12 @@ func blockMainThread(timeout: TimeInterval, until condition: @escaping @Sendable
             check(!C.shouldAsk(done, current: nil), "reconcile: a saved journal is not asked about")
             var empty = value; empty.chunks = []; empty.acknowledged = 0
             check(!C.shouldAsk(empty, current: nil), "reconcile: an empty journal is not asked about")
-            let good = C.Answer(ok: true, state: "saved", sessionId: id, receiptSaved: true, receiptVersion: 1, receiptSessionId: id, receiptCaptureId: id, receiptSourceType: "mac_system_audio")
-            check(C.savedOnServer(captureId: id, good), "reconcile: a verified receipt for this capture is saved")
+            let good = C.Answer(ok: true, state: "saved", sessionId: id, receiptSaved: true, receiptVersion: 1, receiptSessionId: id, receiptCaptureId: id, receiptSourceType: "mac_system_audio",
+                                receiptServerInstanceId: "fixture-server", integrity: .init(expected: 3, missingChunks: 0))
+            func savedOn(_ answer: C.Answer, instance: String = "fixture-server", chunks: Int = 3) -> Bool { C.savedOnServer(captureId: id, serverInstanceId: instance, chunkCount: chunks, answer) }
+            check(savedOn(good), "reconcile: a verified receipt for this capture is saved")
+            var noIntegrity = good; noIntegrity.integrity = nil
+            check(savedOn(noIntegrity), "reconcile: a receipt with no integrity block (an older server) is judged on the rest")
             var variants: [(String, C.Answer)] = []
             var a = good; a.ok = false; variants.append(("a refusal", a))
             a = good; a.state = "active"; variants.append(("a live session", a))
@@ -978,7 +1025,15 @@ func blockMainThread(timeout: TimeInterval, until condition: @escaping @Sendable
             a = good; a.receiptSessionId = "mac_other"; variants.append(("a receipt for another session", a))
             a = good; a.receiptCaptureId = nil; variants.append(("a receipt with no capture", a))
             a = good; a.receiptSourceType = nil; variants.append(("a receipt that is not a Mac capture", a))
-            for (name, answer) in variants { check(!C.savedOnServer(captureId: id, answer), "reconcile: \(name) keeps the row") }
+            a = good; a.receiptServerInstanceId = nil; variants.append(("a receipt with no server instance", a))
+            a = good; a.receiptServerInstanceId = "another-server"; variants.append(("a receipt from another server instance", a))
+            a = good; a.integrity = .init(expected: 3, missingChunks: 1); variants.append(("a receipt that lost a chunk", a))
+            a = good; a.integrity = .init(expected: 2, missingChunks: 0); variants.append(("a receipt for fewer chunks than the journal holds", a))
+            a = good; a.integrity = .init(expected: 4, missingChunks: 0); variants.append(("a receipt for more chunks than the journal holds", a))
+            a = good; a.integrity = .init(expected: 3, missingChunks: nil); variants.append(("a receipt that does not say what is missing", a))
+            a = good; a.integrity = .init(expected: nil, missingChunks: 0); variants.append(("a receipt that does not say how many it expected", a))
+            for (name, answer) in variants { check(!savedOn(answer), "reconcile: \(name) keeps the row") }
+            check(!savedOn(good, instance: "another-server") && !savedOn(good, chunks: 4), "reconcile: the journal's own instance and chunk count are what the receipt is held to")
             // The spool marks only a fully acknowledged journal, and never touches its audio.
             let rroot = scratch.appendingPathComponent("reconcile-home/cos-data/mac-recordings")
             let rspool = MacRecordingSpool(root: rroot)
