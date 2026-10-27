@@ -106,6 +106,41 @@ MUTANTS = [
     ("no Dock switch", V, '            Toggle("Show in menu bar only"', '            Toggle("Hide from Dock"', "[dock]", "pins"),
     ("release build without the views", R, ' "$ROOT/Sources/ProviderConnectViews.swift"', "", "[source lists]", "pins"),
     ("the old label is back", V, "            AgentCliDetailLine(guide: model.providerGuide, model: model, allReady: agentCliAllReady)", "            Text(\"x\")", "[label fix]", "pins"),
+    # 0.5.352 Work suggestions: the row (model lane).
+    ("checking draws Skip", M, "            row.status = WorkKeyWords.checking\n            row.awaitsServer = true\n", "            row.status = WorkKeyWords.checking\n", "[work checking]", "model"),
+    ("checking offers Add a key", M, "            row.awaitsServer = true\n            return row\n        case .unreachable:",
+     "            row.awaitsServer = true\n            row.action = .openWorkKeySettings; row.actionTitle = \"Add a key\"\n            return row\n        case .unreachable:", "[work checking]", "model"),
+    ("unreachable reads Checking", M, "            row.status = WorkKeyWords.unreachableStatus\n", "            row.status = WorkKeyWords.checking\n", "[work unreachable]", "model"),
+    ("Add a key with one key saved", M, "        guard !saved.isEmpty else {", "        guard saved.count == 2 else {", "[work subq only]", "model"),
+    ("SubQ never in use", M, "        guard let inUse else { return [\"jev\"] }\n", "        guard let inUse = Optional<[String: String]>.none else { return [\"jev\"] }\n", "[work subq only]", "model"),
+    ("no also saved", M, "(spare.isEmpty ? \"\" : \" (\\(names(spare)) key also saved)\")", "\"\"", "[work both keys]", "model"),
+    ("a selected provider without its key reads in use", M, "        guard missing.isEmpty else {", "        guard true else {", "[work selected without key]", "model"),
+    ("decision map ignored for SubQ", M, "subq = route(\"subq-status\")?[\"configured\"] as? Bool ?? configured?[\"subq\"] as? Bool", "subq = route(\"subq-status\")?[\"configured\"] as? Bool", "[work keys decode]", "model"),
+    ("decision map wins over the key routes", M, "jev = route(\"jev-status\")?[\"configured\"] as? Bool ?? configured?[\"jev\"] as? Bool", "jev = configured?[\"jev\"] as? Bool ?? route(\"jev-status\")?[\"configured\"] as? Bool", "[work keys decode]", "model"),
+    ("settings says unavailable while asking", M, "        case .checking: return checking\n", "        case .checking: return \"SubQ key status unavailable.\"\n", "[settings pending]", "model"),
+    ("settings Checking forever", M, "        case .unreachable: return \"The COS server did not answer. COS asks again when it does.\"", "        case .unreachable: return checking", "[settings pending]", "model"),
+    # 0.5.352 Work suggestions: when it asks (model lane, executed against a stand-in helper).
+    ("asks while the server is down", M, "        guard running, !checking else { return false }", "        guard !checking else { return false }", "[work check waits for server]", "model"),
+    ("server coming back not asked", M, "        if cameUp { return true }\n", "", "[work check after server up]", "model"),
+    ("no retry after no answer", M, "        return now.timeIntervalSince(lastAttempt) >= retryAfter", "        return now.timeIntervalSince(lastAttempt) >= retryAfter * 1000", "[work check retry]", "model"),
+    ("tight polling", M, "        return now.timeIntervalSince(lastAttempt) >= retryAfter", "        return now.timeIntervalSince(lastAttempt) >= 0", "[work check bounded]", "model"),
+    ("an old answer is kept forever", M, "return now.timeIntervalSince(answeredAt) >= refreshAfter }", "return false }", "[work check stale]", "model"),
+    ("two asks at once", M, "        guard !running else { return nil }\n        return start(now: now)", "        return start(now: now)", "[work check once]", "model"),
+    ("a re-ask shows Checking", M, "        if facts.check != .answered { facts.check = .checking }", "        facts.check = .checking", "[work check once]", "model"),
+    ("a failed re-ask drops the answer", M, "        } else if facts.check != .answered {\n            facts.check = .unreachable", "        } else {\n            facts.check = .unreachable", "[work check keeps answer]", "model"),
+    ("no answer stays Checking", M, "        } else if facts.check != .answered {\n            facts.check = .unreachable\n        }", "        }", "[work check unreachable]", "model"),
+    # 0.5.352 Work suggestions: the wiring (pins lane).
+    ("a waiting row draws Skip", W, "                    } else if row.awaitsServer {\n                        EmptyView()\n", "", "[work checking]", "pins"),
+    ("a waiting row draws a button row", W, " && (!row.awaitsServer || row.action != .none) {", " {", "[work checking]", "pins"),
+    ("refresh never asks", C, "        workKeys.serverStatus(running: status.running)\n    }\n", "    }\n", "[work keys refresh]", "pins"),
+    ("the guide asks once on appear again", W, "            model.workKeys.serverStatus(running: model.status.running)\n", "            if model.jevStatus == nil, model.status.running { await model.loadJevStatus() }\n", "[work keys refresh]", "pins"),
+    ("the app never reads the keys", C, "        check.read = workKeysRead(helper)\n", "", "[work keys publish]", "pins"),
+    ("Settings SubQ line back to unavailable", V, "        Text(model.subQKeyStatus?.summary ?? WorkKeyWords.settingsPending(model.workKeyFacts.check, failed: model.subQKeyMessage != nil))",
+     "        Text(model.subQKeyStatus?.summary ?? \"SubQ key status unavailable.\")", "[settings refresh]", "pins"),
+    ("a saved SubQ key leaves the guide stale", C, "            subQKeyMessage = \"Key accepted and saved. Provider choices were not changed.\"\n            workKeys.checkNow()\n",
+     "            subQKeyMessage = \"Key accepted and saved. Provider choices were not changed.\"\n", "[work keys follow settings]", "pins"),
+    ("Add a key opens plain Settings", W, "        case .openWorkKeySettings: (model.showDecisionKeySettings ?? model.showSettings)?()", "        case .openWorkKeySettings: model.showSettings?()", "[jev row]", "pins"),
+    ("Check again does nothing", W, "        case .checkWorkKeys: model.workKeys.checkNow()", "        case .checkWorkKeys: break", "[work keys check again]", "pins"),
 ]
 
 
@@ -164,6 +199,7 @@ def main():
         if only and name not in only:
             continue
         path = copy / rel
+        before_bytes = path.read_bytes()
         text = path.read_text(encoding="utf-8")
         n = text.count(original)
         if n != 1:
@@ -177,6 +213,9 @@ def main():
             code, out = run(lane, copy)
         finally:
             path.write_text(text, encoding="utf-8")
+            # 0.5.352: the restore is checked byte for byte, like cmp, before the next mutant.
+            if path.read_bytes() != before_bytes:
+                sys.exit(f"restore of {rel} after {name} is not byte-identical; stopping")
         took = time.time() - started
         if code == 137:
             sys.exit(f"compile guard stopped the run at mutant {name}; stopping the lane")

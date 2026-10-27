@@ -48,7 +48,7 @@ MUTANTS = [
     ("failure hidden while offered", M, "        case .failed:\n            if !available { phase = .none }", "        case .failed:\n            phase = available ? .ready : .none", "[flow failed]", "checks"),
     ("stale offer ready", M, "        let available = info.shouldSurface && AppUpdateVersion.isNewer(", "        let available = info.shouldSurface || AppUpdateVersion.isNewer(", "[flow", "checks"),
     ("staged from ready", M, "    mutating func staged() {\n        guard case .staging = phase else { return }", "    mutating func staged() {", "[flow install gate]", "checks"),
-    ("fail from ready", M, "        case .staging, .applying:\n            let trimmed", "        case .staging, .applying, .ready:\n            let trimmed", "[flow install gate]", "checks"),
+    ("fail from ready", M, "        case .staging, .applying:\n            if case .staging = phase", "        case .staging, .applying, .ready:\n            if case .staging = phase", "[flow install gate]", "checks"),
     # The icon.
     ("icon tints only when ready", M, "        phase == .none ? .normal : .updateReady", "        phase == .ready ? .updateReady : .normal", "[icon follows state]", "checks"),
     ("ready icon is a template", M, "        composed.isTemplate = !ready", "        composed.isTemplate = true", "[icon", "checks"),
@@ -93,6 +93,18 @@ MUTANTS = [
     ("appUpdate does not move the flow", C, "            appUpdateFlow.offer(appUpdate, currentVersion: Self.currentVersion, currentBuild: Self.currentBuild)\n            restoreRecentUpdateFailure()\n", "            restoreRecentUpdateFailure()\n", "[model wiring]", "pins"),
     ("install failure never restored", C, "            appUpdateFlow.offer(appUpdate, currentVersion: Self.currentVersion, currentBuild: Self.currentBuild)\n            restoreRecentUpdateFailure()\n", "            appUpdateFlow.offer(appUpdate, currentVersion: Self.currentVersion, currentBuild: Self.currentBuild)\n", "[failure restored]", "pins"),
     ("label reads the raw result", A, "let variant = MenuBarIcon.variant(for: model.appUpdateFlow.phase)", "let variant: MenuBarIcon.Variant = model.appUpdate.shouldSurface ? .updateReady : .normal", "[icon follows state]", "pins"),
+    # 0.5.352 Unstuck on a failed or timed-out download.
+    ("a download failure has no Unstuck", M, "            if case .staging = phase { failedDownloading = true } else { failedDownloading = false }", "            failedDownloading = false", "[unstuck download]", "checks"),
+    ("an install failure offers Unstuck", M, "            if case .staging = phase { failedDownloading = true } else { failedDownloading = false }", "            failedDownloading = true", "[unstuck download only]", "checks"),
+    ("a restored refusal keeps Unstuck", M, "        if !trimmed.isEmpty { phase = .failed(trimmed); failedDownloading = false }", "        if !trimmed.isEmpty { phase = .failed(trimmed) }", "[unstuck download only]", "checks"),
+    ("Unstuck outlives its failure", M, "        if case .failed = phase { return failedDownloading }\n        return false", "        return failedDownloading", "[unstuck retry]", "checks"),  # Try again: staging, so Unstuck must be gone
+    ("banner words drop Unstuck", M, "        unstuck = flow.offersUnstuck\n", "        unstuck = false\n", "[unstuck download]", "checks"),
+    ("window footer drops Unstuck", M, "failed: true, working: false, showsReassurance: true, unstuck: unstuck)", "failed: true, working: false, showsReassurance: true)", "[unstuck download]", "checks"),
+    ("window never told", M, "finishesStaged: flow.finishesStaged, unstuck: flow.offersUnstuck))", "finishesStaged: flow.finishesStaged))", "[unstuck download]", "checks"),
+    ("Unstuck opens the page top", M, 'URL(string: "https://www.gotcos.com/control/#unstuck")!', 'URL(string: "https://www.gotcos.com/control/")!', "[unstuck link]", "checks"),
+    ("banner never shows Unstuck", V, "                if words.unstuck {\n", "                if !words.unstuck {\n", "[unstuck banner]", "pins"),
+    ("banner loses Try again", V, '            Button("Try again", action: onUpdate)\n', '            Button("Retry", action: onUpdate)\n', "[unstuck banner]", "pins"),
+    ("window shows Unstuck on every failure", V, "                if footer.unstuck {\n", "                if footer.failed {\n", "[unstuck window]", "pins"),
 ]
 
 
@@ -157,6 +169,7 @@ def main():
             survived.append(name)
             print(results[-1], flush=True)
             continue
+        before_bytes = path.read_bytes()
         mutated = text
         for o, m in edits:
             mutated = mutated.replace(o, m)
@@ -166,6 +179,9 @@ def main():
             code, out = run(lane, copy)
         finally:
             path.write_text(text, encoding="utf-8")
+            # 0.5.352: the restore is checked byte for byte, like cmp, before the next mutant.
+            if path.read_bytes() != before_bytes:
+                sys.exit(f"restore of {rel} after {name} is not byte-identical; stopping")
         took = time.time() - started
         if code == 137:
             sys.exit(f"compile guard stopped the run at mutant {name}; stopping the lane")

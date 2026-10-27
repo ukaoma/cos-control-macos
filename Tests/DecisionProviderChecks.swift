@@ -87,6 +87,40 @@ import Foundation
         try fixture("decision-provider-status", [:], ok: false, message: "HTTP 503")
         await model.loadDecisionSettings()
         precondition(model.decisionSettings == nil && model.decisionSettingsAvailable == nil && model.decisionMessage?.contains("503") == true)
-        print("PASS decision provider: known identities, inheritance/null clears, revision conflict without write retry, accurate provenance, key save never selects SubQ, old/unavailable servers")
+        // 0.5.352: Work suggestions and Settings' key lines, through the model's real read and refresh(). A status refresh
+        // that finds the server down asks nothing; the next one that finds it running asks all three, with no restart and
+        // with Settings never opened, and fills the guide's facts and Settings' Jev and SubQ lines.
+        let keysModel = ControllerModel(startBackgroundWork: false, helper: HelperClient(executableOverride: helper))
+        keysModel.workKeys.read = keysModel.workKeysRead(HelperClient(executableOverride: helper))
+        func keyCalls() -> [Substring] {
+            ((try? String(contentsOfFile: helper.path + ".calls", encoding: .utf8)) ?? "").split(separator: "\n")
+                .filter { ["decision-provider-status", "jev-status", "subq-status"].contains($0) }
+        }
+        var both = details(provider: "subq"); both["configured"] = .object(["jev": .bool(true), "subq": .bool(true)])
+        try fixture("decision-provider-status", both)
+        try fixture("jev-status", ["configured": .bool(true), "source": .string("scripts-env"), "usedToday": .number(0), "dailyCap": .number(1_000_000)])
+        try fixture("subq-status", ["available": .bool(true), "configured": .bool(true), "source": .string("config"), "savedAt": .string("2026-10-15T14:00:00Z")])
+        try fixture("status", ["running": .bool(false)])
+        let before = keyCalls().count
+        await keysModel.refresh(quiet: true)
+        try await Task.sleep(for: .milliseconds(200))
+        precondition(keyCalls().count == before && keysModel.workKeyFacts.check == .notYet && keysModel.subQKeyStatus == nil,
+                     "A server that is down is not asked about Work's keys")
+        try fixture("status", ["running": .bool(true)])
+        await keysModel.refresh(quiet: true)
+        for _ in 0..<200 where keysModel.workKeyFacts.check != .answered { try await Task.sleep(for: .milliseconds(25)) }
+        precondition(keyCalls().count == before + 3, "The server coming up asks the three key routes once")
+        var expected = WorkKeyFacts(); expected.check = .answered; expected.jev = true; expected.subq = true
+        expected.inUse = ["session": "subq", "completion": "subq", "search": "subq"]
+        precondition(keysModel.workKeyFacts == expected, "The guide reads the server's answer: \(keysModel.workKeyFacts)")
+        precondition(keysModel.subQKeyStatus?.configured == true && keysModel.subQKeyStatus?.source == "config"
+                     && keysModel.jevStatus?.configured == true && keysModel.jevStatus?.source == "scripts-env",
+                     "Settings' SubQ and Jev lines are filled without opening Settings")
+        var guideFacts = SetupFacts(); guideFacts.serverRunning = true; guideFacts.workKeys = keysModel.workKeyFacts
+        precondition(SetupGuideRules.workSuggestions(guideFacts, skipped: false).status == "SubQ in use (Jev key also saved)")
+        await keysModel.refresh(quiet: true)
+        try await Task.sleep(for: .milliseconds(200))
+        precondition(keyCalls().count == before + 3, "A later refresh keeps a fresh answer instead of asking again")
+        print("PASS decision provider: known identities, inheritance/null clears, revision conflict without write retry, accurate provenance, key save never selects SubQ, old/unavailable servers, Work keys asked when the server comes up")
     }
 }

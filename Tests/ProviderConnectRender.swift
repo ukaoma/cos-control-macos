@@ -157,6 +157,7 @@ let allIn = data(row("claude", path: "/opt/homebrew/bin/claude", version: "2.1.2
             m.status.livePreviewModel = "Small.en"; m.status.liveCommitModel = "Large-v3-Turbo"; m.status.hqPolishModel = "Large-v3"
             m.jevStatus = JevStatus(details: ["available": .bool(true), "configured": .bool(true), "source": .string("config")])
         }
+        await done.workKeys.answer(subqAndJev)
         try render(VStack(alignment: .leading) {
             FinishSetupCard(model: done, provider: done.providerGuide, guide: done.setupGuide, permissions: done.permissionGuide) {}
             Text("(all done: the card is gone)").font(COSType.body(11)).foregroundStyle(.secondary)
@@ -178,6 +179,15 @@ let allIn = data(row("claude", path: "/opt/homebrew/bin/claude", version: "2.1.2
         try render(SetupRowView(model: busy, guide: busy.setupGuide, row: busyRow).padding(.horizontal, 16).background(COSPalette.card),
                    width: panelWidth + 32, height: 200, name: "voice-downloading", out: out)
         busy.setupGuide.cancelVoiceSetup()
+        // 0.5.352: the Work suggestions row: checking (no buttons), the server did not answer, no key, SubQ with a Jev key.
+        for (name, answer) in [("work-keys-checking", nil), ("work-keys-unreachable", [String: Data]()), ("work-keys-none", noKeys),
+                               ("work-keys-subq-and-jev", subqAndJev)] as [(String, [String: Data]?)] {
+            let m = await readyModel(allIn, voice: ready)
+            if let answer { await m.workKeys.answer(answer) } else { m.workKeys.read = { @MainActor _ in try await Task.sleep(for: .seconds(60)); return Data() }; m.workKeys.checkNow() }
+            let row = SetupGuideRules.rows(m.setupFacts(provider: m.providerGuide, guide: m.setupGuide), skipped: []).first { $0.id == .jev }!
+            try render(SetupRowView(model: m, guide: m.setupGuide, row: row).padding(.horizontal, 16).background(COSPalette.card),
+                       width: panelWidth + 32, height: 150, name: name, out: out)
+        }
         // The panel with the setup guide open in place.
         let open = await readyModel(mixed, voice: download, skipped: [.cursor])
         open.providerGuide.panelRouteActive = true
@@ -260,5 +270,28 @@ let allIn = data(row("claude", path: "/opt/homebrew/bin/claude", version: "2.1.2
         document.cacheDisplay(in: document.bounds, to: rep)
         let word = appearance == .darkAqua ? "dark" : "light"
         try rep.representation(using: .png, properties: [:])!.write(to: out.appendingPathComponent("\(name)-\(word).png"))
+    }
+}
+
+// 0.5.352: Work's keys as the helper answers them, for the Work suggestions renders.
+let subqAndJev: [String: Data] = [
+    "decision-provider-status": Data(#"{"available":true,"configured":{"jev":true,"subq":true},"effective":{"session":"subq","completion":"subq","search":"subq"}}"#.utf8),
+    "jev-status": Data(#"{"available":true,"configured":true,"source":"scripts-env"}"#.utf8),
+    "subq-status": Data(#"{"available":true,"configured":true,"source":"config"}"#.utf8),
+]
+let noKeys: [String: Data] = [
+    "decision-provider-status": Data(#"{"available":true,"configured":{"jev":false,"subq":false},"effective":{"session":"jev","completion":"jev","search":"jev"}}"#.utf8),
+    "jev-status": Data(#"{"available":true,"configured":false,"source":"none"}"#.utf8),
+    "subq-status": Data(#"{"available":true,"configured":false,"source":"none"}"#.utf8),
+]
+
+extension WorkKeysCheck {
+    /// Answers from fixtures (an empty map: no answer at all), then waits for the check to finish.
+    func answer(_ answers: [String: Data]) async {
+        read = { @MainActor command in
+            guard let data = answers[command] else { throw ProviderGuideError.unreadable }
+            return data
+        }
+        await checkNow()?.value
     }
 }

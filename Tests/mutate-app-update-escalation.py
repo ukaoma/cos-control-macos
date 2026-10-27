@@ -104,7 +104,7 @@ MUTANTS = [
      "            downloadFirstAt = nil; downloadFirstBytes = 0; applyingStartedAt = nil; quitWaitingOn = nil\n", ["[finish flow]"], "checks"),
     ("footer has no Finish installing", M, "        case .ready where finishesStaged:\n            self.init(primary: .finish,", "        case .none where finishesStaged:\n            self.init(primary: .finish,",
      ["[finish words]"], "checks"),
-    ("presentation drops the staged offer", M, ",\n                                                           finishesStaged: flow.finishesStaged))", "))", ["[finish words]"], "checks"),
+    ("presentation drops the staged offer", M, ",\n                                                           finishesStaged: flow.finishesStaged, unstuck: flow.offersUnstuck))", ", unstuck: flow.offersUnstuck))", ["[finish words]"], "checks"),
     ("old installing words", M, '    static let installingWords = "Closing COS Control\\u{2026}"', '    static let installingWords = "Installing. COS Control closes and reopens, usually within a minute."',
      ["[applying words]"], "checks"),
     ("banner applying words", M, "            detail = flow.applyingWords\n", "            detail = \"\\(flow.versionLine). Control quits and reopens by itself. The glasses server keeps running.\"\n",

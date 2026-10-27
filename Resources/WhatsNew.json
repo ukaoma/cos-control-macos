@@ -1,8 +1,17 @@
 {
-  "version": "0.5.351",
+  "version": "0.5.352",
   "whatsNew": {
-    "summary": "Stopping a Mac recording now shows Saving, then Saved, and a short COS hiccup is retried for you. A recording that stops receiving audio says when, and Control tries one restart. Recover checks the server first. Speaker ID is on by default for Mac recordings, and you can assign a Voice to a person in your voice profiles. You can record meetings from your iPhone microphone once your server enables it. Plus everything in 0.5.350: Usage date ranges and provider trends, and smoother Windu running.",
+    "summary": "The Work suggestions card in setup now checks again when the COS server comes up, so it no longer says Checking until you restart. It shows which key Work uses, Jev or SubQ, and offers Add a key only when neither is saved. If an update download fails or times out, Unstuck opens the steps for updating by hand. Plus everything in 0.5.351: quick save for Mac recordings, stall recovery and the iPhone microphone.",
     "sections": [
+      {
+        "title": "0.5.352",
+        "items": [
+          "The Work suggestions card (it was Jev) checks the COS server again when the server comes up or after a refresh, with no restart. While it checks it says so and shows no buttons.",
+          "It says which key Work uses, such as SubQ in use (Jev key also saved). Add a key appears only when neither a Jev nor a SubQ key is saved, and opens Settings on Decision models.",
+          "If the server does not answer, the card says so and offers Check again. In Settings, the Jev and SubQ key lines fill in without opening Decision models first.",
+          "When an update download fails or times out, Unstuck sits next to the error. It opens gotcos.com with steps to update by hand, or to hand those steps to Claude, Codex or Cursor. Try again works as before."
+        ]
+      },
       {
         "title": "0.5.351",
         "items": [

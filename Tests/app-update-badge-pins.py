@@ -64,4 +64,14 @@ ready = label.split("if variant != .normal {", 1)[-1].split("} else {", 1)[0]
 pin("MenuBarIcon.variant(for: model.appUpdateFlow.phase, recording: model.recordingCount > 0 || model.macRecordingActive)" in label and "MenuBarIcon.image(systemName:" in ready
     and ".original" in ready, "icon follows state", "the menu-bar label draws the update flow with either glasses or Mac recording, as an original image")
 pin("appUpdate.shouldSurface" not in label, "icon follows state", "the label reads the flow, not the raw check result")
+# 0.5.352: a failed or timed-out download offers Unstuck beside its words, in the banner and in What's New, opening
+# gotcos.com/control/#unstuck. The words decide (AppUpdateBannerWords.unstuck, WhatsNewFooter.unstuck); Try again stays.
+update_banner = code(views[views.index("struct AppUpdateBanner: View {"):views.index("private struct AppUpdateBannerButtonStyle")])
+open_unstuck = "Button(AppUpdateFlow.unstuckTitle) { NSWorkspace.shared.open(AppUpdateFlow.unstuckURL) }"
+pin("if words.unstuck {" in update_banner and open_unstuck in update_banner.split("if words.unstuck {", 1)[-1].split("}\n", 1)[0] + "}"
+    and 'Button("Try again", action: onUpdate)' in update_banner, "unstuck banner", "the failed banner offers Unstuck under its words and keeps Try again")
+footer_bar = code(views[views.index("private func footerBar(_ footer: WhatsNewFooter)"):views.index("private struct WhatsNewSection")])
+pin("if footer.unstuck {" in footer_bar and open_unstuck in footer_bar.split("if footer.unstuck {", 1)[-1], "unstuck window",
+    "What's New offers Unstuck beside a failed download")
+pin(views.count("AppUpdateFlow.unstuckURL") == 2, "unstuck link", "Unstuck opens only the gotcos.com Unstuck section, from those two places")
 print("PASS: update-ready badge pins")

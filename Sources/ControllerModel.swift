@@ -673,6 +673,11 @@ final class ControllerModel: ObservableObject {
     lazy var setupGuide: SetupGuideState = makeSetupGuide()
     /// The setup guide's Glasses section (Tailscale rows and the pairing QR). Inert in a model built by a check.
     lazy var glassesPairing: GlassesPairingState = makeGlassesPairing()
+    /// 0.5.352: which decision keys Work's suggestions have and which one is in use. Asked on the status refreshes
+    /// (WorkKeysCheck), so it never waits for a restart. Inert in a model built by a check.
+    lazy var workKeys: WorkKeysCheck = makeWorkKeysCheck()
+    /// WorkKeysCheck's answer, published for the setup guide and Settings. Only workKeys writes it.
+    @Published private(set) var workKeyFacts = WorkKeyFacts()
     /// Opens the setup guide window (the Welcome window, which shows the full guide once COS is set up).
     var showSetupGuide: (() -> Void)?
     /// Opens the menu-bar panel on its settings (the pet's and the Dock's Settings…).
@@ -817,6 +822,27 @@ final class ControllerModel: ObservableObject {
             } catch { return false }
         }
         return guide
+    }
+
+    private func makeWorkKeysCheck() -> WorkKeysCheck {
+        let check = WorkKeysCheck()
+        check.onChange = { [weak self] facts in self?.workKeyFacts = facts }
+        let bundleURL = Bundle.main.bundleURL.standardizedFileURL
+        guard bundleURL.pathExtension == "app", Bundle.main.bundleIdentifier != nil, backgroundWorkEnabled else { return check }
+        check.read = workKeysRead(helper)
+        return check
+    }
+
+    /// WorkKeysCheck's helper read. Settings shows the same answers, so its Jev and SubQ lines are filled before its
+    /// section opens. A check passes its own stand-in helper (Tests/DecisionProviderChecks.swift).
+    func workKeysRead(_ helper: HelperClient) -> @MainActor (String) async throws -> Data {
+        { [weak self] command in
+            let response = try await helper.run([command], timeout: 20)
+            guard response.ok else { throw HelperClientError.commandFailed(response.message) }
+            if command == "jev-status" { self?.jevStatus = JevStatus(details: response.details) }
+            if command == "subq-status", response.details["available"]?.bool != false { self?.subQKeyStatus = SubQKeyStatus(details: response.details) }
+            return try JSONEncoder().encode(response.details)
+        }
     }
 
     private func makeSetupGuide() -> SetupGuideState {
@@ -1514,6 +1540,8 @@ final class ControllerModel: ObservableObject {
             meetingAudio = []
             if !quiet { self.error = error.localizedDescription }
         }
+        // 0.5.352: Work's keys are asked when the server comes up, again after a failed ask, and when the answer is old.
+        workKeys.serverStatus(running: status.running)
     }
 
     func setRecentGlassesExpanded(_ expanded: Bool) {
@@ -4658,6 +4686,7 @@ final class ControllerModel: ObservableObject {
             }
             decisionReadGeneration = UUID(); decisionSettings = saved; decisionSettingsAvailable = true
             decisionMessage = "Saved. The next decision request uses these settings. Existing assessments keep their original source."
+            workKeys.checkNow()
         } catch {
             await loadDecisionSettings()
             decisionMessage = "Could not confirm the change: " + error.localizedDescription
@@ -4685,6 +4714,7 @@ final class ControllerModel: ObservableObject {
             subQKeyStatus = SubQKeyStatus(details: response.details)
             await loadDecisionSettings()
             subQKeyMessage = "Key accepted and saved. Provider choices were not changed."
+            workKeys.checkNow()
             return true
         } catch { subQKeyMessage = error.localizedDescription; return false }
     }
@@ -4699,6 +4729,7 @@ final class ControllerModel: ObservableObject {
             subQKeyStatus = SubQKeyStatus(details: response.details)
             await loadDecisionSettings()
             subQKeyMessage = subQKeyStatus?.configured == true ? "Saved key removed. A server environment key is still active." : "Saved SubQ key removed."
+            workKeys.checkNow()
         } catch { subQKeyMessage = error.localizedDescription }
     }
 
@@ -4729,6 +4760,7 @@ final class ControllerModel: ObservableObject {
             // Server 6.57.0: a saved key wins over any .env, so a successful save is the key in use.
             jevMessage = jevStatus?.source == "config" ? "Key accepted and saved. It is in use now."
                 : "Key accepted and saved, but the server reports another key in use."
+            workKeys.checkNow()
             return true
         } catch { jevMessage = error.localizedDescription; return false }
     }
@@ -4741,6 +4773,7 @@ final class ControllerModel: ObservableObject {
             guard response.ok else { throw HelperClientError.commandFailed(response.message) }
             jevStatus = JevStatus(details: response.details.merging(["available": .bool(true)]) { old, _ in old })
             jevMessage = jevStatus?.configured == true ? "Saved key removed. A key from a .env file is in use now." : "Saved key removed."
+            workKeys.checkNow()
         } catch { jevMessage = error.localizedDescription }
     }
 

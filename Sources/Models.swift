@@ -4169,6 +4169,12 @@ struct AppUpdateFlow: Equatable, Sendable {
     /// 0.5.322: the ready offer is a build already downloaded and checked (updates/pending.json) whose install could not
     /// close Control last time (AppUpdateFinishOffer). Finish installing applies it with no download.
     private(set) var finishesStaged = false
+    /// 0.5.352: the failure came while the update was downloading (a failed or timed-out download). The failure then
+    /// offers Unstuck, gotcos.com's steps for updating by hand, beside Try again.
+    private(set) var failedDownloading = false
+    /// The Unstuck section on gotcos.com: manual steps, and a runbook it hands to Claude, Codex or Cursor.
+    static let unstuckURL = URL(string: "https://www.gotcos.com/control/#unstuck")!
+    static let unstuckTitle = "Unstuck"
     /// The detached swap gives Control 20 s to quit, then (no Mac recording in flight) SIGTERM, 10 s, SIGKILL, 5 s; it
     /// waits up to 60 s without a signal when the recording state cannot be read, and 10 s more in case Control quits
     /// after all. 75 s covers all of it: still here then means nothing was installed.
@@ -4281,12 +4287,13 @@ struct AppUpdateFlow: Equatable, Sendable {
         // 0.5.322: Finish installing already answers that failure, with a button that fixes it.
         guard phase == .ready, !finishesStaged else { return }
         let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmed.isEmpty { phase = .failed(trimmed) }
+        if !trimmed.isEmpty { phase = .failed(trimmed); failedDownloading = false }
     }
 
     mutating func fail(_ message: String) {
         switch phase {
         case .staging, .applying:
+            if case .staging = phase { failedDownloading = true } else { failedDownloading = false }
             let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines)
             phase = .failed(trimmed.isEmpty ? "The update did not install." : trimmed)
             applyingStartedAt = nil; quitWaitingOn = nil
@@ -4296,6 +4303,11 @@ struct AppUpdateFlow: Equatable, Sendable {
     }
 
     var showsBanner: Bool { phase != .none }
+    /// 0.5.352: a download that failed or timed out offers Unstuck. Only while that failure is on screen.
+    var offersUnstuck: Bool {
+        if case .failed = phase { return failedDownloading }
+        return false
+    }
     var installing: Bool {
         switch phase {
         case .staging, .applying: return true
@@ -4323,8 +4335,11 @@ struct AppUpdateBannerWords: Equatable, Sendable {
     let detail: String
     /// The button: Update, Install (a staged build), Try again; nil while an install runs.
     let action: String?
+    /// 0.5.352: a failed download also offers Unstuck (AppUpdateFlow.unstuckURL).
+    let unstuck: Bool
 
     init(_ flow: AppUpdateFlow) {
+        unstuck = flow.offersUnstuck
         switch flow.phase {
         case .ready where flow.finishesStaged:
             title = "Finish installing \(flow.version ?? "the update")"
@@ -4608,6 +4623,8 @@ struct WhatsNewFooter: Equatable, Sendable {
     let working: Bool
     /// The reassurance line under the buttons; not on the window after an update.
     let showsReassurance: Bool
+    /// 0.5.352: a failed download offers Unstuck beside the failure (AppUpdateFlow.offersUnstuck).
+    let unstuck: Bool
 
     var primaryTitle: String? {
         switch primary {
@@ -4619,10 +4636,11 @@ struct WhatsNewFooter: Equatable, Sendable {
     }
 
     private init(primary: Primary, primaryEnabled: Bool, cancelTitle: String, cancelEnabled: Bool, status: String?,
-                 failed: Bool, working: Bool, showsReassurance: Bool) {
+                 failed: Bool, working: Bool, showsReassurance: Bool, unstuck: Bool = false) {
         self.primary = primary; self.primaryEnabled = primaryEnabled
         self.cancelTitle = cancelTitle; self.cancelEnabled = cancelEnabled
         self.status = status; self.failed = failed; self.working = working; self.showsReassurance = showsReassurance
+        self.unstuck = unstuck
     }
 
     /// The window after an update: Done, and nothing to install.
@@ -4634,7 +4652,7 @@ struct WhatsNewFooter: Equatable, Sendable {
     static let installingWords = "Closing COS Control\u{2026}"
 
     init(_ phase: AppUpdatePhase, busy: Bool, reason: String? = nil, minMacOS: String? = nil, quitWaitingOn: String? = nil,
-         finishesStaged: Bool = false) {
+         finishesStaged: Bool = false, unstuck: Bool = false) {
         let waiting = "COS Control is finishing another task. Download and install is available when it is done."
         switch phase {
         case .none:
@@ -4656,7 +4674,7 @@ struct WhatsNewFooter: Equatable, Sendable {
                       failed: false, working: true, showsReassurance: true)
         case .failed(let message):
             self.init(primary: .tryAgain, primaryEnabled: !busy, cancelTitle: "Cancel", cancelEnabled: true,
-                      status: Self.words(message), failed: true, working: false, showsReassurance: true)
+                      status: Self.words(message), failed: true, working: false, showsReassurance: true, unstuck: unstuck)
         }
     }
 
@@ -4737,7 +4755,7 @@ struct WhatsNewPresentation: Equatable, Sendable {
         let content = flow.installing ? (frozen ?? WhatsNewContent(info)) : WhatsNewContent(info)
         return WhatsNewPresentation(title: title(flow.version), byline: flow.build.map { "Build \($0)" }, content: content,
                                     footer: WhatsNewFooter(flow.phase, busy: busy, reason: info.reason, minMacOS: info.minMacOS, quitWaitingOn: flow.quitWaitingOn,
-                                                           finishesStaged: flow.finishesStaged))
+                                                           finishesStaged: flow.finishesStaged, unstuck: flow.offersUnstuck))
     }
 
     static func present(_ mode: WhatsNewMode, info: AppUpdateInfo, flow: AppUpdateFlow, frozen: WhatsNewContent?, busy: Bool) -> WhatsNewPresentation {

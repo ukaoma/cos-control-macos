@@ -103,7 +103,29 @@ pin("<key>LSUIElement</key>\n\t<true/>" in read("Resources/Info.plist"), "dock",
 pin("PetIntroLine(model: model)" in main_panel and "PetIntroLine(model: model)" in setup, "pet intro", "panel and Welcome")
 init = body(model, "    init(startBackgroundWork: Bool = true", "\n    }\n")
 pin(before(init, "guard startBackgroundWork else { return }", "evaluatePetIntro()"), "pet intro", "evaluated only in the running app")
-pin("case .addJevKey: model.showSettings?()" in connect_views and 'rows.append(SetupRow(id: .jev' in connect, "jev row", "the guide shows Jev and sends the key to Settings")
+guide_view_src = body(connect_views, "struct SetupGuideView: View {", "\n/// \"Finish setup")
+pin("case .openWorkKeySettings: (model.showDecisionKeySettings ?? model.showSettings)?()" in connect_views
+    and "rows.append(workSuggestions(facts, skipped: skipped.contains(.jev)))" in connect, "jev row", "the guide shows Work suggestions and sends a key to Decision models")
+# 0.5.352 Work suggestions: asked on the status refreshes, never once at first appearance; Settings reads the same answers.
+refresh_fn = body(model, "    func refresh(quiet: Bool = false) async {", "\n    func ")
+pin(refresh_fn.rstrip().endswith("workKeys.serverStatus(running: status.running)\n    }"), "work keys refresh",
+    "refresh() asks WorkKeysCheck after the do/catch, so a failed status read (server down) counts too")
+pin("loadJevStatus" not in connect_views and "model.workKeys.serverStatus(running: model.status.running)" in guide_view_src, "work keys refresh",
+    "the setup guide no longer asks once on appear; it asks the schedule")
+pin("facts.workKeys = workKeyFacts" in connect_views and "jevConfigured" not in connect + connect_views, "work keys facts", "the row reads WorkKeysCheck's answer")
+pin("case .checkWorkKeys: model.workKeys.checkNow()" in connect_views, "work keys check again", "Check again asks now")
+make = body(model, "    private func makeWorkKeysCheck() -> WorkKeysCheck {", "\n    }\n")
+pin("check.onChange = { [weak self] facts in self?.workKeyFacts = facts }" in make and "check.read = workKeysRead(helper)" in make,
+    "work keys publish", "the answer reaches the views, through the read Tests/DecisionProviderChecks.swift executes")
+pin(len(re.findall(r"(?<!var )workKeyFacts = ", code_only(model))) == 1, "work keys publish", "only WorkKeysCheck writes workKeyFacts")
+pin(views.count("WorkKeyWords.settingsPending(model.workKeyFacts.check") == 2 and "SubQ key status unavailable." not in code_only(views),
+    "settings refresh", "Settings says Checking while asking and names a server that did not answer, for Jev and SubQ")
+for fn in ("func saveJevKey(", "func removeJevKey(", "func saveSubQKey(", "func removeSubQKey(", "func setDecisionProvider("):
+    pin("workKeys.checkNow()" in body(model, fn, "\n    }\n"), "work keys follow settings", f"{fn} asks again so the guide follows")
+row_view = body(connect_views, "struct SetupRowView: View {", "/// Balanced or Max in plain words")
+pin("if !row.done && !row.afterSetup && (!row.awaitsServer || row.action != .none) {" in row_view
+    and before(row_view, "} else if row.awaitsServer {\n                        EmptyView()", 'Button("Skip for now")'), "work checking",
+    "a row waiting on the server draws no Skip, and no button row unless it has its own action")
 pin("jevKey" not in connect_views, "jev row", "the guide never touches the key")
 # Glasses section (contract 2026-10-09): replaces GlassesGuideRow, polls only as its own view task, never counted.
 pin("GlassesGuideRow" not in connect_views and "gotcos.com/wizard/#glasses-setup" in connect and "GuideExtras.glassesWizardURL" in connect_views, "glasses row", "the section replaces the link-only row and keeps the wizard link")

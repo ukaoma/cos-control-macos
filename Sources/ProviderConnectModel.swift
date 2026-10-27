@@ -878,7 +878,10 @@ enum SetupAction: Sendable, Equatable {
     case useEngine(String)             // 0.5.317: the Dictation engine setting (auto, parakeet-ultra, whisper)
     case turnOnSessions
     case turnOnContinue
-    case addJevKey
+    /// 0.5.352: Settings, on Decision models, where the Jev and SubQ key fields are (Add a key, Open Settings).
+    case openWorkKeySettings
+    /// 0.5.352: ask the server about Work's keys again (Check again, after the server did not answer).
+    case checkWorkKeys
     case openPermissions
     case getTailscale                  // the Mac download page
     case openTailscale                 // the installed app, to sign in
@@ -902,6 +905,9 @@ struct SetupRow: Identifiable, Sendable, Equatable {
     /// 0.5.317: not done, but fine as it is (Automatic dictating with Whisper): drawn neutral, never amber. Amber stays
     /// for real problems.
     var calm = false
+    /// 0.5.352: the row waits on the server (a check running, or a server that did not answer): drawn neutral, never
+    /// amber, and with no Skip. Only its own action, if any, is drawn.
+    var awaitsServer = false
     var handled: Bool { done || skipped }
 }
 
@@ -915,7 +921,8 @@ struct SetupFacts: Sendable, Equatable {
     var claudeSessionsEnabled: Bool?
     var threadAttachSupported = false
     var threadAttachEnabled: Bool?
-    var jevConfigured: Bool?
+    /// 0.5.352: which decision keys the server has and which one each Work workflow uses (WorkKeysCheck).
+    var workKeys = WorkKeyFacts()
     var permissionsNeedCount: Int?
     var ollamaPinnedModel: String?
     /// voice-status failed: the voice row falls back to the server's own whisperReady.
@@ -976,17 +983,7 @@ enum SetupGuideRules {
                                  detail: nil, done: on, skipped: skipped.contains(.continueThreads),
                                  action: on ? .none : .turnOnContinue, actionTitle: on ? nil : "Turn on"))
         }
-        if facts.serverRunning {
-            let set = facts.jevConfigured == true
-            rows.append(SetupRow(id: .jev, title: "Jev (TypeSafe)", status: facts.jevConfigured == nil ? "Checking…" : set ? "Key saved" : "No key yet",
-                                 unlocks: "Work's suggestions: Continue, Fork or New for a task, and sorting meetings into Intake.",
-                                 detail: set ? nil : "Optional. Keys come from typesafe.ai; paste one in Settings, under Jev (TypeSafe).",
-                                 done: set, skipped: skipped.contains(.jev), action: set ? .none : .addJevKey, actionTitle: set ? nil : "Add a key", counted: false))
-        } else {
-            var jev = after(.jev, "Jev (TypeSafe)", "Work's suggestions and meeting sorting.", skipped)
-            jev.counted = false
-            rows.append(jev)
-        }
+        rows.append(workSuggestions(facts, skipped: skipped.contains(.jev)))
         if let need = facts.permissionsNeedCount {
             rows.append(SetupRow(id: .permissions, title: "Permissions", status: need == 0 ? "All set" : need == 1 ? "1 needs you" : "\(need) need you",
                                  unlocks: "Jump to a session from the pet, meeting alerts, open at login.",
@@ -995,6 +992,62 @@ enum SetupGuideRules {
         }
         rows += GlassesRules.rows(facts.glasses)
         return rows
+    }
+
+    /// 0.5.352: the Work suggestions row (it was "Jev (TypeSafe)", and knew only Jev). It reads the server's answer:
+    /// which keys are saved and which provider each Work workflow uses. While that answer is on its way it says so and
+    /// offers nothing; a server that did not answer is named; Add a key only when neither key is saved. Never counted.
+    static func workSuggestions(_ facts: SetupFacts, skipped: Bool) -> SetupRow {
+        let title = WorkKeyWords.rowTitle
+        guard facts.serverRunning else {
+            var row = after(.jev, title, "Suggestions, search and done checks in Work.", skipped ? [.jev] : [])
+            row.counted = false
+            return row
+        }
+        var row = SetupRow(id: .jev, title: title, status: "", unlocks: WorkKeyWords.unlocks, detail: nil, done: false,
+                           skipped: skipped, counted: false)
+        let keys = facts.workKeys
+        switch keys.check {
+        case .notYet, .checking:
+            row.status = WorkKeyWords.checking
+            row.awaitsServer = true
+            return row
+        case .unreachable:
+            row.status = WorkKeyWords.unreachableStatus
+            row.detail = WorkKeyWords.unreachableDetail
+            row.awaitsServer = true
+            row.action = .checkWorkKeys
+            row.actionTitle = "Check again"
+            return row
+        case .answered:
+            break
+        }
+        guard keys.jev != nil || keys.subq != nil || keys.inUse != nil else {
+            // Neither status nor decision settings from this server (before Jev, 6.57.0).
+            row.status = "Needs a newer COS server"
+            row.awaitsServer = true
+            return row
+        }
+        let saved = WorkKeyFacts.providers.filter { keys.saved($0) }
+        guard !saved.isEmpty else {
+            row.status = "No key yet"
+            row.detail = "Optional. Paste a Jev key (typesafe.ai) or a SubQ key in Settings, under Decision models."
+            row.action = .openWorkKeySettings
+            row.actionTitle = "Add a key"
+            return row
+        }
+        let used = keys.used
+        let missing = used.filter { !keys.saved($0) }
+        guard missing.isEmpty else {
+            row.status = "\(WorkKeyWords.names(missing)) selected, no key"
+            row.detail = "Work suggestions that use \(WorkKeyWords.names(missing)) are off until its key is saved, or until you choose \(WorkKeyWords.names(saved)) in Settings, under Decision models."
+            row.action = .openWorkKeySettings
+            row.actionTitle = "Open Settings"
+            return row
+        }
+        row.done = true
+        row.status = WorkKeyWords.inUse(used: used, saved: saved)
+        return row
     }
 
     private static func after(_ id: SetupRowID, _ title: String, _ unlocks: String, _ skipped: Set<SetupRowID>) -> SetupRow {
@@ -1437,6 +1490,171 @@ enum VoiceSetupGate {
     static func canStart(_ voice: VoiceFacts?, tier: String) -> Bool {
         guard let voice, !voice.usesParakeet, tier == "auto" || VoiceTier.all.contains(tier) else { return false }
         return (voice.runtimeDownloadAvailable || (voice.whisperCli && voice.whisperServer)) && voice.setupAvailable && voice.enoughDisk[tier == "auto" ? (voice.explicitTier ?? "balanced") : tier] != false
+    }
+}
+
+// MARK: - Work suggestions keys (0.5.352)
+//
+// The setup guide's Jev row asked the server about the key once, when the guide first appeared, and only if the server
+// already read as running. Right after a launch or an update the status had not arrived yet, so it never asked, and the
+// row said "Checking…" (with Add a key and Skip) until Control restarted. It also knew only Jev, while the server's
+// decision settings can send every Work workflow to SubQ. WorkKeysCheck asks on the status refreshes: when the server
+// comes up, when the last ask got no answer (after retryAfter), and when the answer is older than refreshAfter. Never
+// two at once, and nothing while the server is down.
+
+/// What the server says about Work's decision keys (decision-provider-status, jev-status, subq-status).
+struct WorkKeyFacts: Sendable, Equatable {
+    enum Check: Sendable, Equatable {
+        /// Never asked.
+        case notYet
+        /// Asking, with no answer yet.
+        case checking
+        /// The server answered (a later ask keeps this answer until the next one arrives).
+        case answered
+        /// The last ask got no answer and there is no earlier one.
+        case unreachable
+    }
+    static let providers = ["jev", "subq"]
+    static let workflows = ["session", "completion", "search"]
+    var check: Check = .notYet
+    /// A key is saved for the provider. nil: this server did not say.
+    var jev: Bool?
+    var subq: Bool?
+    /// session, completion and search to "jev" or "subq", from the server's decision settings. nil: an older server
+    /// without them, where Work's suggestions use Jev.
+    var inUse: [String: String]?
+
+    func saved(_ provider: String) -> Bool { (provider == "jev" ? jev : provider == "subq" ? subq : nil) == true }
+    /// The providers Work's workflows use, Jev first.
+    var used: [String] {
+        guard let inUse else { return ["jev"] }
+        let chosen = Set(Self.workflows.compactMap { inUse[$0] })
+        return Self.providers.filter { chosen.contains($0) }
+    }
+
+    init() {}
+
+    /// The helper's `details` per command. nil when none answered. An answer with `available: false` is a server that
+    /// does not have that route; it is an answer, not a failure.
+    init?(answers: [String: [String: Any]]) {
+        guard !answers.isEmpty else { return nil }
+        func route(_ command: String) -> [String: Any]? {
+            guard let details = answers[command], details["available"] as? Bool != false else { return nil }
+            return details
+        }
+        let decision = route("decision-provider-status")
+        let configured = decision?["configured"] as? [String: Any]
+        check = .answered
+        jev = route("jev-status")?["configured"] as? Bool ?? configured?["jev"] as? Bool
+        subq = route("subq-status")?["configured"] as? Bool ?? configured?["subq"] as? Bool
+        if let effective = decision?["effective"] as? [String: Any] {
+            var chosen: [String: String] = [:]
+            for workflow in Self.workflows {
+                if let provider = effective[workflow] as? String, Self.providers.contains(provider) { chosen[workflow] = provider }
+            }
+            inUse = chosen
+        }
+    }
+}
+
+/// The words for Work's keys, in the setup guide and in Settings. No em dashes, no arrows.
+enum WorkKeyWords {
+    static let rowTitle = "Work suggestions"
+    static let unlocks = "Suggests Continue, Fork or New for a task, searches Work by meaning and checks replies for done."
+    static let checking = "Checking…"
+    static let unreachableStatus = "Server did not answer"
+    static let unreachableDetail = "COS could not ask the server which key is saved. It asks again when the server answers."
+
+    static func title(_ provider: String) -> String { provider == "subq" ? "SubQ" : "Jev" }
+    static func names(_ providers: [String]) -> String { providers.map(title).joined(separator: " and ") }
+
+    /// "SubQ in use (Jev key also saved)", "Jev in use", "Jev and SubQ in use".
+    static func inUse(used: [String], saved: [String]) -> String {
+        let spare = saved.filter { !used.contains($0) }
+        return "\(names(used)) in use" + (spare.isEmpty ? "" : " (\(names(spare)) key also saved)")
+    }
+
+    /// Settings' Jev and SubQ key lines when there is no status to show: still asking, the server did not answer, or
+    /// asked and this server does not report it. `failed`: Settings' own read of it failed (its message shows below).
+    static func settingsPending(_ check: WorkKeyFacts.Check, failed: Bool) -> String {
+        switch check {
+        case .checking: return checking
+        case .unreachable: return "The COS server did not answer. COS asks again when it does."
+        case .notYet: return failed ? "Status unavailable." : checking
+        case .answered: return failed ? "Status unavailable." : "This server does not report it."
+        }
+    }
+}
+
+/// When to ask the server about Work's keys again. Pure, so the checks run it.
+enum WorkKeySchedule {
+    /// A failed ask waits this long before the next status refresh tries again.
+    static let retryAfter: TimeInterval = 30
+    /// An answer this old is asked again on the next status refresh (a key saved from the phone or a .env).
+    static let refreshAfter: TimeInterval = 10 * 60
+
+    static func due(running: Bool, cameUp: Bool, checking: Bool, answeredAt: Date?, lastAttempt: Date?, now: Date) -> Bool {
+        guard running, !checking else { return false }
+        if cameUp { return true }
+        if let answeredAt, lastAttempt.map({ $0 <= answeredAt }) ?? true { return now.timeIntervalSince(answeredAt) >= refreshAfter }
+        guard let lastAttempt else { return true }
+        return now.timeIntervalSince(lastAttempt) >= retryAfter
+    }
+}
+
+/// Asks the server about Work's keys (decision-provider-status, jev-status, subq-status) and keeps the answer.
+@MainActor
+final class WorkKeysCheck {
+    static let commands = ["decision-provider-status", "jev-status", "subq-status"]
+    private(set) var facts = WorkKeyFacts() { didSet { if facts != oldValue { onChange(facts) } } }
+    private(set) var running = false
+    private(set) var lastAttempt: Date?
+    private(set) var answeredAt: Date?
+    private var serverWasRunning = false
+    /// One helper command, its `details` as JSON. Throws when the server did not answer.
+    var read: @MainActor (String) async throws -> Data = { _ in throw ProviderGuideError.unreadable }
+    var onChange: @MainActor (WorkKeyFacts) -> Void = { _ in }
+
+    init() {}
+
+    /// Every status refresh: asks when WorkKeySchedule says it is due. The task is for the checks.
+    @discardableResult
+    func serverStatus(running serverRunning: Bool, now: Date = Date()) -> Task<Void, Never>? {
+        let cameUp = serverRunning && !serverWasRunning
+        serverWasRunning = serverRunning
+        guard WorkKeySchedule.due(running: serverRunning, cameUp: cameUp, checking: running, answeredAt: answeredAt,
+                                  lastAttempt: lastAttempt, now: now) else { return nil }
+        return start(now: now)
+    }
+
+    /// Check again, Settings opened, a key saved or removed, a provider chosen. Never two at once.
+    @discardableResult
+    func checkNow(now: Date = Date()) -> Task<Void, Never>? {
+        guard !running else { return nil }
+        return start(now: now)
+    }
+
+    private func start(now: Date) -> Task<Void, Never> {
+        running = true
+        lastAttempt = now
+        if facts.check != .answered { facts.check = .checking }
+        return Task { await self.ask(at: now) }
+    }
+
+    private func ask(at now: Date) async {
+        var answers: [String: [String: Any]] = [:]
+        for command in Self.commands {
+            guard let data = try? await read(command),
+                  let details = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { continue }
+            answers[command] = details
+        }
+        running = false
+        if let answer = WorkKeyFacts(answers: answers) {
+            facts = answer
+            answeredAt = now
+        } else if facts.check != .answered {
+            facts.check = .unreachable
+        }
     }
 }
 

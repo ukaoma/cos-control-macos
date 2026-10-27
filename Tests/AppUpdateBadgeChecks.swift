@@ -24,6 +24,7 @@ import Foundation
         icon()
         progressAndDeadline()
         finishAndEscalation()
+        unstuck()
         print("PASS: update-ready badge, \(passed) checks (version rule, schedule, phases, menu-bar icon, finish installing)")
     }
 
@@ -274,6 +275,47 @@ import Foundation
     }
 
     // MARK: phases
+
+    // MARK: 0.5.352 Unstuck
+
+    /// A download that failed or timed out offers Unstuck (gotcos.com/control/#unstuck) beside Try again. A failure
+    /// after the download (installing, a refusal recorded after a relaunch) does not: Unstuck is about the download.
+    static func unstuck() {
+        let v = "0.5.351", b = 405
+        check(AppUpdateFlow.unstuckURL.absoluteString == "https://www.gotcos.com/control/#unstuck" && AppUpdateFlow.unstuckTitle == "Unstuck",
+              "unstuck link", AppUpdateFlow.unstuckURL.absoluteString)
+        var f = AppUpdateFlow()
+        f.offer(info(true, "0.5.352", 406), currentVersion: v, currentBuild: b)
+        check(!f.offersUnstuck && !AppUpdateBannerWords(f).unstuck, "unstuck only on failure", "an offer has no Unstuck")
+        check(f.beginInstall(), "unstuck download", "Update")
+        f.progress("Downloading 120.0 of 1300.0 MB")
+        check(!f.offersUnstuck && !AppUpdateBannerWords(f).unstuck, "unstuck only on failure", "a running download has no Unstuck")
+        f.fail("Download timed out.")
+        let words = AppUpdateBannerWords(f)
+        check(f.offersUnstuck && words.unstuck && words.action == "Try again" && words.detail == "Download timed out.",
+              "unstuck download", "a timed-out download offers Unstuck and keeps Try again: \(words)")
+        let footer = WhatsNewPresentation.offer(info(true, "0.5.352", 406), flow: f, frozen: nil, busy: false).footer
+        check(footer.unstuck && footer.primary == .tryAgain && footer.failed, "unstuck download", "the What's New window offers it too, beside Try again")
+        check(WhatsNewFooter(f.phase, busy: false).unstuck == false, "unstuck only when asked", "the footer shows it only when the flow says so")
+        // Try again: the download runs again, Unstuck goes until that one fails too.
+        check(f.beginInstall() && !f.offersUnstuck && !AppUpdateBannerWords(f).unstuck, "unstuck retry", "Try again keeps retry behaviour and clears Unstuck")
+        // A failure while installing (after the download) does not offer it.
+        f.staged()
+        f.fail("Control did not quit.")
+        check(!f.offersUnstuck && !AppUpdateBannerWords(f).unstuck && AppUpdateBannerWords(f).action == "Try again", "unstuck download only",
+              "an install failure keeps Try again without Unstuck")
+        check(!WhatsNewPresentation.offer(info(true, "0.5.352", 406), flow: f, frozen: nil, busy: false).footer.unstuck, "unstuck download only", "nor in the window")
+        // A download failure, then a refusal restored after a relaunch on a fresh flow: no Unstuck.
+        var g = AppUpdateFlow()
+        g.offer(info(true, "0.5.352", 406), currentVersion: v, currentBuild: b)
+        _ = g.beginInstall(); g.fail("Download timed out.")
+        check(g.offersUnstuck, "unstuck download", "set up")
+        g.offer(info(false, nil, nil), currentVersion: v, currentBuild: b)
+        check(!g.offersUnstuck && g.phase == .none, "unstuck only on failure", "the offer went: the failure and Unstuck go")
+        g.offer(info(true, "0.5.352", 406), currentVersion: v, currentBuild: b)
+        g.restoreFailure("Finish your meeting first, then install.")
+        check(!g.offersUnstuck, "unstuck download only", "a restored install refusal is not a download failure")
+    }
 
     static func flow() {
         let v = "0.5.273", b = 326

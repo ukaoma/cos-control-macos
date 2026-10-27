@@ -99,6 +99,14 @@ struct EncodableReport: Encodable {
     enum Key: String, CodingKey { case checkedAt, providers, provider, installed, binaryPath, version, signIn, daemon, models, candidates, path, source, executable, chosen }
 }
 
+/// 0.5.352: an answered WorkKeyFacts. `inUse` nil: a server without decision settings.
+func keys(jev: Bool?, subq: Bool?, inUse: [String: String]? = nil) -> WorkKeyFacts {
+    var k = WorkKeyFacts(); k.check = .answered; k.jev = jev; k.subq = subq; k.inUse = inUse
+    return k
+}
+
+func allUse(_ provider: String) -> [String: String] { ["session": provider, "completion": provider, "search": provider] }
+
 @main @MainActor
 struct ProviderConnectChecks {
     static func main() async {
@@ -126,6 +134,8 @@ struct ProviderConnectChecks {
         await glassesQA()
         dictationEveryone()
         await dictationEveryoneFlow()
+        workSuggestionRows()
+        await workKeysFlow()
         if failures > 0 {
             FileHandle.standardError.write(Data("Connect your AI checks: \(failures) failed, \(passes) passed\n".utf8))
             exit(1)
@@ -445,7 +455,7 @@ struct ProviderConnectChecks {
         // 0.5.317: these fixtures are a Mac that has dictated on this server; dictationEveryone() covers the rest.
         f.serverVersion = "6.74.0"; f.dictationProof = DictationProof(engine: "parakeet-ultra", serverVersion: "6.74.0", at: Date(timeIntervalSince1970: 1_760_000_000))
         f.claudeSessionsEnabled = running ? false : nil; f.threadAttachSupported = running; f.threadAttachEnabled = running ? true : nil
-        f.jevConfigured = running ? false : nil; f.permissionsNeedCount = 1
+        f.workKeys = running ? keys(jev: false, subq: false) : WorkKeyFacts(); f.permissionsNeedCount = 1
         return f
     }
 
@@ -468,17 +478,16 @@ struct ProviderConnectChecks {
         check(SetupRowID.allCases.count == 13 && mid.filter { !$0.counted }.map(\.id) == [.dictationEngine, .jev, .tailscaleMac, .tailscalePhone, .glassesPair], "glasses uncounted", "\(mid.filter { !$0.counted }.map(\.id))")
         // Done: everything done or skipped.
         var allDone = facts(allIn, voice: voiceReady())
-        allDone.claudeSessionsEnabled = true; allDone.jevConfigured = true; allDone.permissionsNeedCount = 0
+        allDone.claudeSessionsEnabled = true; allDone.workKeys = keys(jev: true, subq: false); allDone.permissionsNeedCount = 0
         let done = SetupGuideRules.rows(allDone, skipped: [])
         check(SetupGuideRules.progress(done) == (8, 8) && !SetupGuideRules.showFinishCard(done, hidden: false), "finish card done", "\(SetupGuideRules.progress(done))")
-        // Jev is optional. An unset or still-checking key never keeps Finish setup alive.
-        for configured: Bool? in [false, nil] {
-            allDone.jevConfigured = configured
+        // Work's keys are optional. An unset or still-checking key never keeps Finish setup alive.
+        for state in [keys(jev: false, subq: false), WorkKeyFacts()] {
+            allDone.workKeys = state
             let optional = SetupGuideRules.rows(allDone, skipped: [])
             check(SetupGuideRules.progress(optional) == (8, 8) && !SetupGuideRules.showFinishCard(optional, hidden: false) && SetupGuideRules.next(optional) == nil,
                   "optional Jev", "No reminder when only the optional key is missing")
-            check(optional.first { $0.id == .jev }?.action == .addJevKey && optional.first { $0.id == .jev }?.handled == false,
-                  "optional Jev", "Key remains available in the guide, without claiming it is configured")
+            check(optional.first { $0.id == .jev }?.handled == false, "optional Jev", "never claims a key is configured")
         }
         var allSkipped = facts(mixed, voice: voiceReady()); allSkipped.providerSkipped = Set(AIProvider.agents)
         let skippedAll = SetupGuideRules.rows(allSkipped, skipped: Set(SetupRowID.allCases))
@@ -891,7 +900,7 @@ extension ProviderConnectChecks {
         }
         // Everything else done: the card ends even though Tailscale is missing and nothing is paired.
         var allDone = facts(allIn, voice: voiceReady())
-        allDone.claudeSessionsEnabled = true; allDone.jevConfigured = true; allDone.permissionsNeedCount = 0
+        allDone.claudeSessionsEnabled = true; allDone.workKeys = keys(jev: true, subq: false); allDone.permissionsNeedCount = 0
         allDone.glasses = gfacts(tailscale: tailscaleDetails(installed: false, running: false, backend: nil))
         let done = SetupGuideRules.rows(allDone, skipped: [])
         check(SetupGuideRules.progress(done) == (8, 8) && !SetupGuideRules.showFinishCard(done, hidden: false) && SetupGuideRules.next(done) == nil,
@@ -1338,5 +1347,145 @@ extension ProviderConnectChecks {
         guide.testDictation()
         try? await Task.sleep(for: .milliseconds(50))
         check(checks == 2 && !guide.dictationChecking && guide.engineMessage == "Dictation works on this Mac.", "test dictation", "on demand, any time")
+    }
+
+    // MARK: 0.5.352 Work suggestions
+
+    static func workRow(_ k: WorkKeyFacts, running: Bool = true, skipped: Set<SetupRowID> = []) -> SetupRow {
+        var f = facts(allIn, running: running); f.workKeys = k
+        return SetupGuideRules.rows(f, skipped: skipped).first { $0.id == .jev }!
+    }
+
+    static func workSuggestionRows() {
+        // (b) While the answer is on its way: a neutral Checking line, no action and no Skip (awaitsServer hides Skip).
+        for state in [WorkKeyFacts(), { var k = WorkKeyFacts(); k.check = .checking; return k }()] {
+            let row = workRow(state)
+            check(row.title == "Work suggestions" && row.status == "Checking…", "work checking", "\(row.title): \(row.status)")
+            check(row.action == .none && row.actionTitle == nil && row.awaitsServer && !row.done,
+                  "work checking", "no Add a key and no Skip while checking: \(row.action) \(row.actionTitle ?? "nil") awaits=\(row.awaitsServer)")
+        }
+        // A skipped row that is still checking still waits, with no Skip or Set up now to press.
+        check(workRow(WorkKeyFacts(), skipped: [.jev]).awaitsServer, "work checking", "skipped and checking still waits")
+        // The server did not answer: said so, Check again, no Add a key.
+        var gone = WorkKeyFacts(); gone.check = .unreachable
+        let unreachable = workRow(gone)
+        check(unreachable.status == "Server did not answer" && unreachable.detail?.contains("asks again") == true
+              && unreachable.action == .checkWorkKeys && unreachable.actionTitle == "Check again" && unreachable.awaitsServer,
+              "work unreachable", "\(unreachable.status) \(unreachable.action)")
+        // (c) SubQ only, and both keys (Miles's Mac: SubQ for all three workflows, Jev key also saved).
+        let subqOnly = workRow(keys(jev: false, subq: true, inUse: allUse("subq")))
+        check(subqOnly.done && subqOnly.status == "SubQ in use" && subqOnly.action == .none, "work subq only", "\(subqOnly.status) \(subqOnly.action)")
+        let both = workRow(keys(jev: true, subq: true, inUse: allUse("subq")))
+        check(both.done && both.status == "SubQ in use (Jev key also saved)" && both.action == .none, "work both keys", both.status)
+        let bothJev = workRow(keys(jev: true, subq: true, inUse: allUse("jev")))
+        check(bothJev.done && bothJev.status == "Jev in use (SubQ key also saved)", "work both keys", bothJev.status)
+        let mixed = workRow(keys(jev: true, subq: true, inUse: ["session": "jev", "completion": "subq", "search": "subq"]))
+        check(mixed.done && mixed.status == "Jev and SubQ in use", "work both keys", mixed.status)
+        // An older server without decision settings: Jev only.
+        let oldJev = workRow(keys(jev: true, subq: nil))
+        check(oldJev.done && oldJev.status == "Jev in use", "work old server", oldJev.status)
+        // (d) Add a key only when neither key is saved.
+        let none = workRow(keys(jev: false, subq: false, inUse: allUse("jev")))
+        check(!none.done && none.action == .openWorkKeySettings && none.actionTitle == "Add a key" && !none.awaitsServer,
+              "work add key", "\(none.status) \(none.actionTitle ?? "nil")")
+        for k in [keys(jev: true, subq: false, inUse: allUse("jev")), keys(jev: false, subq: true, inUse: allUse("subq")),
+                  keys(jev: true, subq: true, inUse: allUse("subq")), keys(jev: true, subq: false, inUse: allUse("subq"))] {
+            check(workRow(k).actionTitle != "Add a key", "work add key", "a saved key never offers Add a key: \(workRow(k).status)")
+        }
+        // SubQ chosen with only a Jev key: named, Open Settings, not Add a key, not done.
+        let mismatch = workRow(keys(jev: true, subq: false, inUse: allUse("subq")))
+        check(!mismatch.done && mismatch.status == "SubQ selected, no key" && mismatch.action == .openWorkKeySettings
+              && mismatch.actionTitle == "Open Settings", "work selected without key", "\(mismatch.status) \(mismatch.actionTitle ?? "nil")")
+        // A server with no Jev or decision routes.
+        let ancient = workRow(keys(jev: nil, subq: nil))
+        check(ancient.status == "Needs a newer COS server" && ancient.action == .none && ancient.awaitsServer, "work old server", ancient.status)
+        // Before the server runs: waits for Get started, never counted.
+        let before = workRow(keys(jev: true, subq: true), running: false)
+        check(before.afterSetup && !before.counted && before.title == "Work suggestions", "work before server", before.status)
+        // Copy rules: no em dashes or arrows anywhere the row or Settings can say.
+        var lines: [String] = [WorkKeyWords.unlocks, WorkKeyWords.unreachableDetail]
+        for k in [WorkKeyFacts(), gone, keys(jev: false, subq: false), keys(jev: true, subq: false, inUse: allUse("subq")), keys(jev: true, subq: true, inUse: allUse("subq"))] {
+            let r = workRow(k); lines += [r.title, r.status, r.unlocks, r.detail ?? "", r.actionTitle ?? ""]
+        }
+        for c in [WorkKeyFacts.Check.notYet, .checking, .answered, .unreachable] { for f in [true, false] { lines.append(WorkKeyWords.settingsPending(c, failed: f)) } }
+        check(!lines.contains { $0.contains("\u{2014}") || $0.contains("\u{2192}") || $0.contains("->") }, "work copy", "no em dash or arrow")
+        // (e) Settings' key lines while there is no status: Checking while asking, the server named when it did not answer.
+        check(WorkKeyWords.settingsPending(.checking, failed: false) == "Checking…" && WorkKeyWords.settingsPending(.notYet, failed: false) == "Checking…",
+              "settings pending", "asking reads Checking")
+        check(WorkKeyWords.settingsPending(.unreachable, failed: false).contains("did not answer"), "settings pending", "the server is named")
+        check(WorkKeyWords.settingsPending(.notYet, failed: true) == "Status unavailable.", "settings pending", "a failed read of its own")
+        // Decoding the three answers.
+        let decision: [String: Any] = ["available": true, "configured": ["jev": true, "subq": true],
+                                       "effective": ["session": "subq", "completion": "subq", "search": "subq", "other": "jev"]]
+        let full = WorkKeyFacts(answers: ["decision-provider-status": decision, "jev-status": ["available": true, "configured": true],
+                                          "subq-status": ["available": true, "configured": true]])
+        check(full == keys(jev: true, subq: true, inUse: allUse("subq")), "work keys decode", "\(String(describing: full))")
+        let old = WorkKeyFacts(answers: ["decision-provider-status": ["available": false], "jev-status": ["available": true, "configured": true],
+                                         "subq-status": ["available": false]])
+        check(old == keys(jev: true, subq: nil), "work keys decode", "an older server: Jev only \(String(describing: old))")
+        check(WorkKeyFacts(answers: [:]) == nil, "work keys decode", "no answer is not an answer")
+        // Only the decision settings answered (the key routes did not): the keys come from its configured map.
+        let decisionOnly = WorkKeyFacts(answers: ["decision-provider-status": decision])
+        check(decisionOnly == keys(jev: true, subq: true, inUse: allUse("subq")), "work keys decode", "decision settings alone: \(String(describing: decisionOnly))")
+        // The key routes win over the decision map when they disagree (they are the keys' own status).
+        let keyRoutes = WorkKeyFacts(answers: ["decision-provider-status": decision, "jev-status": ["configured": false], "subq-status": ["configured": false]])
+        check(keyRoutes?.jev == false && keyRoutes?.subq == false, "work keys decode", "the key routes decide: \(String(describing: keyRoutes))")
+    }
+
+    /// The check against a stand-in helper: what it asks, when, and what the row then says. No helper, no server.
+    static func workKeysFlow() async {
+        // The stand-in helper's log and switch live in a reference, so the @MainActor closures share them.
+        final class Helper { var calls: [String] = []; var answering = false; var published: [WorkKeyFacts] = [] }
+        let helper = Helper()
+        let store = WorkKeysCheck()
+        store.onChange = { helper.published.append($0) }
+        store.read = { command in
+            helper.calls.append(command)
+            guard helper.answering else { throw ProviderGuideError.unreadable }
+            switch command {
+            case "decision-provider-status":
+                return Data(#"{"available":true,"configured":{"jev":true,"subq":true},"effective":{"session":"subq","completion":"subq","search":"subq"}}"#.utf8)
+            case "jev-status": return Data(#"{"available":true,"configured":true,"source":"scripts-env","usedToday":0}"#.utf8)
+            default: return Data(#"{"available":true,"configured":true,"source":"config"}"#.utf8)
+            }
+        }
+        let t0 = Date(timeIntervalSince1970: 1_800_000_000)
+        // Launch: the status has not arrived, the server reads down. Nothing is asked.
+        check(store.serverStatus(running: false, now: t0) == nil && helper.calls.isEmpty, "work check waits for server", "no ask while the server is down")
+        // (a) The server comes up on a later refresh: asked at once, with no restart.
+        let first = store.serverStatus(running: true, now: t0.addingTimeInterval(5))
+        check(first != nil && store.facts.check == .checking, "work check after server up", "asked when the server came up: \(store.facts.check)")
+        await first?.value
+        check(helper.calls == WorkKeysCheck.commands, "work check after server up", "\(helper.calls)")
+        check(store.facts.check == .unreachable && helper.published.last?.check == .unreachable, "work check unreachable", "a check with no answer says so: \(store.facts.check)")
+        // A refresh right after a failed ask does not ask again (no tight polling); one after retryAfter does.
+        check(store.serverStatus(running: true, now: t0.addingTimeInterval(10)) == nil, "work check bounded", "no ask within \(WorkKeySchedule.retryAfter) s")
+        helper.answering = true
+        let retry = store.serverStatus(running: true, now: t0.addingTimeInterval(5 + WorkKeySchedule.retryAfter))
+        check(retry != nil, "work check retry", "a later status refresh asks again")
+        await retry?.value
+        check(store.facts == keys(jev: true, subq: true, inUse: allUse("subq")) && helper.published.last == store.facts, "work check retry", "\(store.facts)")
+        let row = workRow(store.facts)
+        check(row.done && row.status == "SubQ in use (Jev key also saved)", "work check retry", "the row reads the answer: \(row.status)")
+        // Answered: refreshes do not ask again until refreshAfter, or until the server comes back.
+        let asked = helper.calls.count
+        let answeredAt = t0.addingTimeInterval(5 + WorkKeySchedule.retryAfter)
+        check(store.serverStatus(running: true, now: answeredAt.addingTimeInterval(60)) == nil && helper.calls.count == asked, "work check bounded", "an answer is kept")
+        _ = store.serverStatus(running: false, now: answeredAt.addingTimeInterval(70))
+        let back = store.serverStatus(running: true, now: answeredAt.addingTimeInterval(80))
+        check(back != nil, "work check after server up", "a server that comes back is asked again")
+        await back?.value
+        let stale = store.serverStatus(running: true, now: answeredAt.addingTimeInterval(80 + WorkKeySchedule.refreshAfter))
+        check(stale != nil, "work check stale", "an old answer is asked again")
+        // A failed re-ask keeps the earlier answer (the server answered a moment ago) and is not a Checking line.
+        helper.answering = false
+        await stale?.value
+        check(store.facts.check == .answered && store.facts.subq == true, "work check keeps answer", "\(store.facts.check)")
+        // Never two at once.
+        helper.answering = true
+        let a = store.checkNow(now: answeredAt.addingTimeInterval(2000))
+        let b = store.checkNow(now: answeredAt.addingTimeInterval(2000))
+        check(a != nil && b == nil && store.facts.check == .answered, "work check once", "a second ask waits; a re-ask never shows Checking")
+        await a?.value
     }
 }

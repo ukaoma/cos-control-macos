@@ -1,3 +1,13 @@
+## 0.5.352 (build 406), Work suggestions card and Unstuck
+
+Pairs with COS server 6.93.0. No server change.
+
+- Work suggestions (the setup guide row that was "Jev (TypeSafe)"): it asked `jev-status` once, when the guide first appeared, and only if the server already read as running. Right after a launch or an update the status had not arrived, so it never asked and showed "Checking…" with Add a key and Skip until Control restarted. Now `WorkKeysCheck` asks `decision-provider-status`, `jev-status` and `subq-status` from the status refreshes: when the server comes up, 30 seconds after an ask that got no answer, and when the answer is 10 minutes old. Never two at once and never while the server is down. A key saved or removed, or a provider chosen in Settings, asks again.
+- The row reads the server's answer: which keys are saved and which provider the session, completion and search workflows use, for example "SubQ in use (Jev key also saved)". While checking it shows a neutral line and no buttons. Add a key appears only when neither key is saved and opens Settings on Decision models. A provider selected without its key says so with Open Settings. A server that did not answer is named, with Check again. An older server without decision settings reads as Jev only. The row stays uncounted.
+- Settings: the Jev and SubQ key lines are filled by the same asks, so the SubQ line no longer reads "SubQ key status unavailable." while it is being asked or until Decision models is opened. With no answer yet it says Checking, or that the server did not answer.
+- Update download failures: when the download fails or times out, the banner and the What's New window offer Unstuck beside the error. It opens https://www.gotcos.com/control/#unstuck (manual steps, or a runbook handed to Claude, Codex or Cursor). Try again is unchanged. A failure after the download (installing, or a refusal restored after a relaunch) does not show Unstuck.
+- Full-suite, signing, publication and installed acceptance are recorded in the release receipt; focused tests alone do not establish release readiness.
+
 ## 0.5.351 (build 405), Quick save, stall recovery and the iPhone microphone
 
 Pairs with COS server 6.93.0 (iPhone microphone support, live Mac voice numbering on by default, and assigning a Mac voice to a voice profile; the server's iPhone switch is off by default).

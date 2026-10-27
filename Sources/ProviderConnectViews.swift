@@ -721,7 +721,7 @@ extension ControllerModel {
         facts.claudeSessionsEnabled = status.claudeSessionsEnabled
         facts.threadAttachSupported = status.threadAttachSupported
         facts.threadAttachEnabled = status.threadAttachEnabled
-        facts.jevConfigured = jevStatus?.configured
+        facts.workKeys = workKeyFacts
         facts.permissionsNeedCount = permissionGuide.needCount
         facts.ollamaPinnedModel = status.ollamaConfiguredModel
         facts.glasses = glassesPairing.facts(serverRunning: status.running, pairingSupported: status.pairingSupported)
@@ -756,10 +756,10 @@ struct SetupRowView: View {
                 Spacer(minLength: 6)
                 HStack(spacing: 5) {
                     if (row.id == .voice && (guide.voiceRunning || guide.dictationChecking)) || (row.id == .dictationEngine && guide.engineTesting) { ProgressView().controlSize(.mini) }
-                    else { Circle().fill(row.done ? COSPalette.green : row.skipped || row.afterSetup || waiting || row.calm ? COSPalette.muted : COSPalette.amber).frame(width: 7, height: 7) }
-                    Text(row.id == .voice && guide.voiceRunning ? "Downloading…" : row.skipped && !row.done ? "Skipped for now" : row.status)
-                        .font(COSType.body(11, weight: row.done || row.skipped || row.afterSetup || waiting || row.calm ? .regular : .semibold))
-                        .foregroundStyle(row.done ? COSPalette.green : row.skipped || row.afterSetup || waiting || row.calm ? COSPalette.muted : COSPalette.amber)
+                    else { Circle().fill(row.done ? COSPalette.green : row.skipped || row.afterSetup || waiting || row.calm || row.awaitsServer ? COSPalette.muted : COSPalette.amber).frame(width: 7, height: 7) }
+                    Text(row.id == .voice && guide.voiceRunning ? "Downloading…" : row.skipped && !row.done && !row.awaitsServer ? "Skipped for now" : row.status)
+                        .font(COSType.body(11, weight: row.done || row.skipped || row.afterSetup || waiting || row.calm || row.awaitsServer ? .regular : .semibold))
+                        .foregroundStyle(row.done ? COSPalette.green : row.skipped || row.afterSetup || waiting || row.calm || row.awaitsServer ? COSPalette.muted : COSPalette.amber)
                 }.fixedSize()
             }
             Text(row.unlocks).font(COSType.body(11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
@@ -768,7 +768,8 @@ struct SetupRowView: View {
             }
             if row.id == .voice { voiceControls }
             if row.id == .dictationEngine { engineControls }
-            if !row.done && !row.afterSetup {
+            // 0.5.352: a row waiting on the server shows no Skip, and nothing at all unless it has its own action.
+            if !row.done && !row.afterSetup && (!row.awaitsServer || row.action != .none) {
                 HStack(spacing: 12) {
                     if let title = row.actionTitle, row.action != .none {
                         Button(title) { perform(row.action) }
@@ -777,6 +778,8 @@ struct SetupRowView: View {
                     }
                     if row.id == .voice && guide.voiceRunning {
                         Button("Cancel") { guide.cancelVoiceSetup() }.buttonStyle(COSTextButtonStyle())
+                    } else if row.awaitsServer {
+                        EmptyView()
                     } else if !row.skipped {
                         Button("Skip for now") { guide.skip(row.id) }.buttonStyle(COSTextButtonStyle())
                     } else {
@@ -857,7 +860,8 @@ struct SetupRowView: View {
         case .useEngine(let setting): guide.useEngine(setting, installParakeetToo: setting == "auto" && guide.voice?.parakeetInstalled != true && guide.voice?.parakeetInstallable == true)
         case .turnOnSessions: model.setClaudeSessionsEnabled(true)
         case .turnOnContinue: model.setThreadAttachEnabled(true)
-        case .addJevKey: model.showSettings?()
+        case .openWorkKeySettings: (model.showDecisionKeySettings ?? model.showSettings)?()
+        case .checkWorkKeys: model.workKeys.checkNow()
         case .openPermissions: model.permissionGuide.openInPanel()
         // The Glasses rows draw their own buttons (GlassesSetupRows); these never reach a SetupRowView.
         case .getTailscale: _ = model.providerGuide.openURL(GlassesRules.tailscaleDownload)
@@ -1042,7 +1046,8 @@ struct SetupGuideView: View {
         .task {
             guide.adoptServerTier(guide.voice?.explicitTier)
             await guide.refreshVoice()
-            if model.jevStatus == nil, model.status.running { await model.loadJevStatus() }
+            // 0.5.352: asks only when due (WorkKeySchedule); every status refresh asks the same question.
+            model.workKeys.serverStatus(running: model.status.running)
         }
         .onChange(of: guide.voice?.explicitTier) { _, tier in guide.adoptServerTier(tier) }
     }

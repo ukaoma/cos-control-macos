@@ -156,6 +156,12 @@ struct AppUpdateBanner: View {
                     .foregroundStyle(failed == nil ? AnyShapeStyle(COSPalette.ink) : AnyShapeStyle(.secondary))
                     .fixedSize(horizontal: false, vertical: true)
                     .lineLimit(4)
+                // 0.5.352: a failed or timed-out download offers gotcos.com's Unstuck steps; Try again stays.
+                if words.unstuck {
+                    Button(AppUpdateFlow.unstuckTitle) { NSWorkspace.shared.open(AppUpdateFlow.unstuckURL) }
+                        .buttonStyle(COSTextButtonStyle())
+                        .help("Opens gotcos.com: update by hand, or hand the steps to Claude, Codex or Cursor")
+                }
             }
             Spacer(minLength: 8)
             action.layoutPriority(1)
@@ -399,6 +405,12 @@ struct WhatsNewView: View {
                         .lineLimit(4)
                 }
                 .accessibilityElement(children: .combine)
+                // 0.5.352: beside a failed download, gotcos.com's Unstuck steps. Try again below is unchanged.
+                if footer.unstuck {
+                    Button(AppUpdateFlow.unstuckTitle) { NSWorkspace.shared.open(AppUpdateFlow.unstuckURL) }
+                        .buttonStyle(COSTextButtonStyle())
+                        .help("Opens gotcos.com: update by hand, or hand the steps to Claude, Codex or Cursor")
+                }
             }
             HStack(spacing: 12) {
                 // Alone (Done after an update, Close with nothing to install) it takes the primary's place on the right.
@@ -1067,8 +1079,9 @@ struct ControlPanel: View {
                 Divider()
                 Text("Jev key").font(.caption.weight(.semibold))
                 Text("Key status is separate from the provider choices above.").font(.caption2).foregroundStyle(.secondary)
-                // Without an answer from the server, say so instead of "Checking…" forever (the error is below).
-                Text(model.jevStatus?.summary ?? (model.jevMessage == nil ? "Checking…" : "Status unavailable."))
+                // Without an answer from the server, say so instead of "Checking…" forever (the error is below). 0.5.352: the
+                // status refreshes fill it (WorkKeysCheck), so it no longer waits for this section to open.
+                Text(model.jevStatus?.summary ?? WorkKeyWords.settingsPending(model.workKeyFacts.check, failed: model.jevMessage != nil))
                     .font(.caption).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 if let problem = model.jevStatus?.problem {
@@ -1138,7 +1151,9 @@ struct ControlPanel: View {
             .font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         Link("SubQ data retention", destination: URL(string: "https://docs.subq.ai/using-the-api/data-retention/")!).font(.caption2)
         Text("SubQ key").font(.caption.weight(.semibold))
-        Text(model.subQKeyStatus?.summary ?? "SubQ key status unavailable.").font(.caption2).foregroundStyle(.secondary)
+        // 0.5.352: it read "SubQ key status unavailable." while it was still being asked, and until this section opened.
+        Text(model.subQKeyStatus?.summary ?? WorkKeyWords.settingsPending(model.workKeyFacts.check, failed: model.subQKeyMessage != nil))
+            .font(.caption2).foregroundStyle(.secondary)
         if model.decisionSettingsAvailable == true {
             HStack {
                 SecureField(model.subQKeyStatus?.configured == true ? "Replace SubQ key" : "SubQ API key", text: $subQKeyDraft)
