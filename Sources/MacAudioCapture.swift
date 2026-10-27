@@ -23,6 +23,9 @@ final class MacAudioCapture: @unchecked Sendable {
     private var interruption: String?
     private var lastInput = Date()
     private var started = Date()
+    /// 0.5.351 (QA W4): when the RECORDING began. A tap restarted by the watchdog is given the original time, so the
+    /// two-hour limit counts from the real start and not from the restart.
+    private let recordingStartedAt: Date?
     /// 0.5.334: the hearing check (MacRecordingHearing). Raw input since the last chunk, and in all, that was not 0.0.
     private var rawSignalSinceChunk = false
     private var rawSignalEver = false
@@ -38,8 +41,8 @@ final class MacAudioCapture: @unchecked Sendable {
     private let level: (@Sendable (Double) -> Void)?
 
     init(chunk: @escaping @Sendable (MacRecordingChunk) -> Bool, failure: @escaping @Sendable (String) -> Void,
-         probe: (@Sendable (Bool) -> Void)? = nil, level: (@Sendable (Double) -> Void)? = nil) {
-        self.chunk = chunk; self.failure = failure; self.probe = probe; self.level = level
+         probe: (@Sendable (Bool) -> Void)? = nil, level: (@Sendable (Double) -> Void)? = nil, recordingStartedAt: Date? = nil) {
+        self.chunk = chunk; self.failure = failure; self.probe = probe; self.level = level; self.recordingStartedAt = recordingStartedAt
     }
     /// 0.5.334: whether another app has audio output running now (the hearing check's "something is playing"). nil
     /// when the process list cannot be read. COS itself is excluded (sources() skips this process).
@@ -139,7 +142,8 @@ final class MacAudioCapture: @unchecked Sendable {
             ring.push(bytes: data, count: Int(buffers[0].mDataByteSize))
         }, "Attach audio capture")
         try Self.checked(AudioDeviceStart(aggregate, ioProc), "Begin audio capture")
-        started = Date(); lastInput = started
+        let now = Date()
+        started = recordingStartedAt ?? now; lastInput = now
         let timer = DispatchSource.makeTimerSource(queue: queue)
         timer.schedule(deadline: .now() + .milliseconds(100), repeating: .milliseconds(100))
         timer.setEventHandler { [weak self] in self?.drainOrFail() }
@@ -153,7 +157,7 @@ final class MacAudioCapture: @unchecked Sendable {
             guard Date().timeIntervalSince(lastInput) < 15 else {
                 throw MacRecordingError.unavailable("Recording stopped: no audio buffers arrived for 15 seconds. Check the selected app and system audio permission.")
             }
-            guard Date().timeIntervalSince(started) < 7_200 else {
+            guard !MacRecordingLimit.reached(startedAt: started) else {
                 throw MacRecordingError.unavailable(MacRecordingInterruption.pilotLimit)
             }
         } catch {

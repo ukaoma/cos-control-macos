@@ -167,7 +167,16 @@ final class MacRecordingStore: ObservableObject {
     private var progress: MacRecordingProgress?
     private var watchdogTask: Task<Void, Never>?
     private var watchdog = MacRecordingWatchdog.State()
+    /// 0.5.351 (QA W3): set when a restart begins and cleared only when that restart's own work returns (restartReturned),
+    /// never when the watchdog's time bound on it expires, so a slow restart can never overlap a second one.
     private var restartInFlight = false
+    /// 0.5.351 (QA W3): bumped by every restart, by Stop and by every start. A restart whose number is no longer current
+    /// stops the tap it made instead of installing it, so one capture never has two live taps.
+    private var tapGeneration = 0
+    /// 0.5.351 (QA W4): when this recording began, handed to every tap so a restart does not restart the two-hour clock.
+    private var recordingStartedAt = Date()
+    /// 0.5.351 (QA W6): title and body of the one notification a stall that could not be recovered posts.
+    var stallNotice: ((String, String) -> Void)?
     /// 0.5.351: the watchdog's line while no chunk is being written (MacRecordingWatchdog.line); nil otherwise.
     @Published private(set) var stallLine: String?
     private var streamContinuation: AsyncStream<MacRecordingChunk>.Continuation?
@@ -283,7 +292,7 @@ final class MacRecordingStore: ObservableObject {
         hearing = MacRecordingHearing.State(); cannotHear = false; failFast = false; cannotHearTitle = nil
         slowTask?.cancel(); slowTask = nil; slowSave = false; waitingToRetry = false
         let attempt = UUID(); startAttempt = attempt
-        watchdog = MacRecordingWatchdog.State(); stallLine = nil; restartInFlight = false
+        watchdog = MacRecordingWatchdog.State(); stallLine = nil; restartInFlight = false; tapGeneration += 1
         installStopObservers()
         var localCapture: MacAudioCapture?
         var localContinuation: AsyncStream<MacRecordingChunk>.Continuation?
@@ -321,21 +330,11 @@ final class MacRecordingStore: ObservableObject {
             let (stored, storedContinuation) = AsyncStream<MacRecordingWriterEvent>.makeStream(bufferingPolicy: .unbounded)
             let spool = self.spool
             MacRecordingOpenCaptures.shared.add(id, spool: spool)
+            // The loop itself is MacRecordingWriter.run (core), the same code the checks run with the main thread blocked.
             writerTask = Task.detached(priority: .userInitiated) {
-                var sequence = MacRecordingSequencer()
-                for await raw in stream {
-                    let silent = MacRecordingSignal.isSilent(raw.pcm)
-                    let chunk = sequence.next(raw)
-                    do {
-                        let journal = try await spool.append(chunk, captureId: id)
-                        sequence.stored(journal); progress.mark()
-                        storedContinuation.yield(.init(chunk: MacRecordingWriterEvent.slim(chunk), silent: silent, manifest: journal))
-                    } catch {
-                        let reason = error.localizedDescription
-                        recordingLog.error("append failed: \(reason, privacy: .public)")
-                        storedContinuation.yield(.init(failure: reason)); break
-                    }
-                }
+                await MacRecordingWriter.run(stream: stream, spool: spool, captureId: id, progress: progress,
+                                             emit: { _ = storedContinuation.yield($0) },
+                                             log: { reason in recordingLog.error("append failed: \(reason, privacy: .public)") })
                 storedContinuation.finish()
             }
             chunksTask = Task { [weak self] in
@@ -356,6 +355,7 @@ final class MacRecordingStore: ObservableObject {
                     self.deliverPending()
                 }
             }
+            recordingStartedAt = Date()
             let engine = makeEngine(id: id, source: source, continuation: continuation)
             localCapture = engine; capture = engine
             try await engine.start(source: source)
@@ -367,11 +367,12 @@ final class MacRecordingStore: ObservableObject {
             message = source.isAllMacAudio ? "Recording everything this Mac plays. Microphone off." : "Recording \(source.name) playback only. Microphone off."
         } catch {
             MacRecordingOpenCaptures.shared.remove(id)
-            watchdogTask?.cancel(); watchdogTask = nil; stallLine = nil
             let interruption = await localCapture?.stop(); localContinuation?.finish()
             let reason = error is CancellationError ? "cancelled" : error.localizedDescription
             recordingLog.error("start failed: \(reason, privacy: .public)")
             guard startAttempt == attempt else { return }
+            // 0.5.351 (QA N2): only this attempt's own watchdog; a stale attempt failing late must not cancel a newer one's.
+            watchdogTask?.cancel(); watchdogTask = nil; stallLine = nil
             capture = nil
             streamContinuation?.finish(); await writerTask?.value; await chunksTask?.value
             streamContinuation = nil; writerTask = nil; chunksTask = nil
@@ -402,7 +403,7 @@ final class MacRecordingStore: ObservableObject {
         }, level: { rms in
             // 0.5.336: the audiogram. A number, ten a second, into its own feed (never this store or the model).
             Task { @MainActor in LiveAudiogramFeed.live.push(rms: rms) }
-        })
+        }, recordingStartedAt: recordingStartedAt)
     }
     /// What the writer stored, into the panel's manifest. Never older than what is shown, never fewer acknowledgements.
     private func takeStored(_ journal: MacRecordingManifest) {
@@ -442,23 +443,38 @@ final class MacRecordingStore: ObservableObject {
         case .restart:
             recordingLog.error("watchdog: no chunk for \(quiet)s; restarting the tap (restart \(self.watchdog.totalRestarts) of \(MacRecordingWatchdog.maxRestartsPerRecording))")
             restartInFlight = true
+            tapGeneration += 1
+            let generation = tapGeneration
             let worked = await MacRecordingBounded.run(seconds: TimeInterval(MacRecordingWatchdog.restartSeconds)) { [weak self] in
-                await self?.restartTap(id: id, source: source) ?? false
+                guard let self else { return false }
+                let done = await self.restartTap(id: id, source: source, generation: generation)
+                await self.restartReturned(generation: generation)
+                return done
             }
-            restartInFlight = false
             recordingLog.notice("watchdog: restart \(worked == true ? "ok" : (worked == nil ? "timed out" : "failed"), privacy: .public)")
-            if worked != true { watchdog.restartFailed(); stallLine = MacRecordingWatchdog.line(watchdog) }
+            if worked != true { watchdog.restartFailed() }
         }
+        publishStall()
+    }
+    /// The panel's line, and (once per stall) the notification: the panel is usually closed during a call.
+    private func publishStall() {
+        stallLine = MacRecordingWatchdog.line(watchdog)
+        if watchdog.takeGiveUpNotice(), let note = MacRecordingWatchdog.notification(watchdog) { stallNotice?(note.title, note.body) }
+    }
+    /// A restart's own work has returned (in time or late). Only then may the next restart start; a restart that Stop or a
+    /// newer start has made stale leaves the flag alone.
+    private func restartReturned(generation: Int) {
+        if tapGeneration == generation { restartInFlight = false }
     }
     /// Stops the tap (its tail goes to the writer like any chunk), then starts a new one on the same stream.
-    private func restartTap(id: String, source: MacAudioSource) async -> Bool {
+    private func restartTap(id: String, source: MacAudioSource, generation: Int) async -> Bool {
         guard #available(macOS 14.2, *), let continuation = streamContinuation, let old = capture else { return false }
         _ = await old.stop()
-        guard phase == "recording", manifest?.captureId == id else { return false }
+        guard generation == tapGeneration, phase == "recording", manifest?.captureId == id else { return false }
         let engine = makeEngine(id: id, source: source, continuation: continuation)
         do { try await engine.start(source: source) }
         catch { recordingLog.error("watchdog: the new tap did not start: \(error.localizedDescription, privacy: .public)"); return false }
-        guard phase == "recording", manifest?.captureId == id else { _ = await engine.stop(); return false }
+        guard generation == tapGeneration, phase == "recording", manifest?.captureId == id else { _ = await engine.stop(); return false }
         capture = engine
         return true
     }
@@ -480,12 +496,21 @@ final class MacRecordingStore: ObservableObject {
         guard ["recording", "starting"].contains(phase) else { return }
         startAttempt = nil
         phase = "stopping"
+        tapGeneration += 1
+        if let id = manifest?.captureId { MacRecordingOpenCaptures.shared.beginStopping(id) }
         recordingLog.notice("stop")
         previewTask?.cancel(); previewTask = nil
         watchdogTask?.cancel(); watchdogTask = nil; stallLine = nil
         // QA 0.5.313: an interruption is written to the journal and shown once, by MacRecordingInterruption.line (muted for
         // the two-hour limit). Copying it into `error` too showed the same news again in red, and nothing cleared it.
-        if let reason = await capture?.stop() { captureInterruption = reason }
+        // 0.5.351 (QA W2): a tap whose capture queue is wedged must not hold Stop. After the bound the stream is finished, the
+        // writer drained and the journal marked stopped as usual, so every stored chunk is kept.
+        if let old = capture {
+            switch await MacRecordingTapStop.run({ await old.stop() }) {
+            case .stopped(let reason): if let reason { captureInterruption = reason }
+            case .timedOut: recordingLog.error("stop: the tap did not stop in time code=tap_stop_timeout")
+            }
+        }
         capture = nil
         streamContinuation?.finish(); streamContinuation = nil
         // The writer first: every chunk the tap handed over is stored before the journal is marked stopped.

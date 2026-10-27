@@ -13,6 +13,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 CORE, STORE, APP = "Sources/MacRecordingCore.swift", "Sources/MacRecording.swift", "Sources/COSControlApp.swift"
+CAPTURE, MODEL, ASK = "Sources/MacAudioCapture.swift", "Sources/ControllerModel.swift", "Sources/MeetingAskCore.swift"
 
 MUTANTS = [
     # The rules (core lane).
@@ -40,31 +41,80 @@ MUTANTS = [
     ("C22 the signal says nothing about why", "core", CORE, "_ = try? await spool.interrupt(id, reason: MacRecordingSigterm.reason)", "_ = try? await spool.interrupt(id, reason: \"\")"),
     ("C23 the signal source never starts", "core", CORE, "        source.resume()\n        return source", "        return source"),
     ("C24 the signal closes nothing", "core", CORE, "finish(flush(ids: open.ids, wait: wait) { await open.closeForExit($0) })", "finish(flush(ids: [], wait: wait) { await open.closeForExit($0) })"),
-    ("C25 a finished capture stays registered", "core", CORE, "func remove(_ id: String) { lock.lock(); spools[id] = nil; lock.unlock() }", "func remove(_ id: String) { }"),
+    ("C25 a finished capture stays registered", "core", CORE, "func remove(_ id: String) { lock.lock(); spools[id] = nil; stopping.remove(id); lock.unlock() }", "func remove(_ id: String) { }"),
+    # QA fixes (core lane: behaviour).
+    ("C26 the writer keeps the tap's own numbering", "core", CORE, "            let chunk = sequence.next(raw)\n", "            let chunk = raw\n"),
+    ("C27 the writer never reports progress", "core", CORE, "                sequence.stored(journal); progress.mark()\n                emit(", "                sequence.stored(journal)\n                emit("),
+    ("C28 the writer reads on after a refused chunk", "core", CORE, "                emit(.init(failure: reason)); break", "                emit(.init(failure: reason))"),
+    ("C29 the writer runs on the main actor", "core", CORE, "enum MacRecordingWriter {\n    static func run(", "enum MacRecordingWriter {\n    @MainActor static func run("),
+    ("C30 the writer never logs a refusal", "core", CORE, "                log(reason)\n", ""),
+    ("C31 Stop waits for a wedged tap", "core", CORE, "await MacRecordingBounded.run(seconds: seconds) { await stop() }", "await MacRecordingBounded.run(seconds: 3_600) { await stop() }"),
+    ("C32 the tap stop bound is a minute", "core", CORE, "static let stopSeconds: TimeInterval = 5", "static let stopSeconds: TimeInterval = 60"),
+    ("C33 a timed out tap stop looks stopped", "core", CORE, "guard let answer else { return .timedOut }", "guard let answer else { return .stopped(nil) }"),
+    ("C34 the two-hour limit is one second late", "core", CORE, "now.timeIntervalSince(startedAt) >= pilotSeconds", "now.timeIntervalSince(startedAt) > pilotSeconds"),
+    ("C35 the pilot limit is shorter", "core", CORE, "static let pilotSeconds: TimeInterval = 7_200", "static let pilotSeconds: TimeInterval = 7_000"),
+    ("C36 the notice posts more than once", "core", CORE, "            noticePosted = true; return true", "            return true"),
+    ("C37 the notice posts before giving up", "core", CORE, "guard gaveUp, stalledSince != nil, !noticePosted else { return false }", "guard stalledSince != nil, !noticePosted else { return false }"),
+    ("C38 the next stall never posts", "core", CORE, "state.gaveUp = false; state.noticePosted = false", "state.gaveUp = false"),
+    ("C39 the notice body is not the panel line", "core", CORE, "return (\"Mac recording not receiving audio\", text)", "return (\"Mac recording not receiving audio\", \"Stalled\")"),
+    ("C40 a quit reads as an incomplete recording", "core", CORE, "if reason == MacRecordingSigterm.reason { return (MacRecordingSigterm.reason, false) }", "if reason == MacRecordingSigterm.reason { return (MacRecordingSigterm.reason, true) }"),
+    ("C41 the quit copy claims what was recorded", "core", CORE, "Everything saved up to then is kept.\"\n    struct Result", "Everything recorded up to then is kept.\"\n    struct Result"),
+    ("C42 a stop the person made reads as a quit", "core", CORE, "if !isStopping(id) { _ = try? await spool.interrupt(id, reason: MacRecordingSigterm.reason) }", "_ = try? await spool.interrupt(id, reason: MacRecordingSigterm.reason)"),
+    ("C43 the stopping mark outlives its capture", "core", CORE, "spools[id] = nil; stopping.remove(id); lock.unlock()", "spools[id] = nil; lock.unlock()"),
+    ("C44 an unknown capture can be marked stopping", "core", CORE, "func beginStopping(_ id: String) { lock.lock(); if spools[id] != nil { stopping.insert(id) }; lock.unlock() }", "func beginStopping(_ id: String) { lock.lock(); stopping.insert(id); lock.unlock() }"),
+    # QA W1 (transcription lane: behaviour of the free-space read, compiles MeetingAskCore and its checks).
+    ("T1 the store reads the disk before it knows it needs it", "trans", ASK, "return Transcription.parakeetState(settings, installing: installing, recording: recording, freeBytes: freeBytes())", "let eager = freeBytes(); return Transcription.parakeetState(settings, installing: installing, recording: recording, freeBytes: eager)"),
+    ("T2 the Parakeet rule reads the disk for every row", "trans", ASK, "let parakeet = settings.parakeet\n        if installing || parakeet.serverInstalling { return .installing(progressLine(parakeet)) }", "let parakeet = settings.parakeet; _ = freeBytes()\n        if installing || parakeet.serverInstalling { return .installing(progressLine(parakeet)) }"),
+    ("T3 the reader waits for the disk", "trans", ASK, "            queue.async { [self] in\n                let fresh = read()", "            queue.sync { [self] in\n                let fresh = read()"),
+    ("T4 the reader reads again on every call", "trans", ASK, "let stale = readAt.map { now().timeIntervalSince($0) >= ttl } ?? true", "let stale = readAt.map { now().timeIntervalSince($0) >= 0 } ?? true"),
+    ("T5 the reader never refreshes", "trans", ASK, "let stale = readAt.map { now().timeIntervalSince($0) >= ttl } ?? true", "let stale = readAt.map { now().timeIntervalSince($0) >= 1e12 } ?? true"),
     # The wiring (pins lane).
-    ("P1 the writer keeps the tap's own numbering", "pins", STORE, "let chunk = sequence.next(raw)", "let chunk = raw"),
-    ("P2 the writer never reports progress", "pins", STORE, "sequence.stored(journal); progress.mark()", "sequence.stored(journal)"),
     ("P3 a stop does not wait for the writer", "pins", STORE, "        await writerTask?.value; writerTask = nil\n", ""),
     ("P4 a failed start does not wait for the writer", "pins", STORE, "streamContinuation?.finish(); await writerTask?.value; await chunksTask?.value", "streamContinuation?.finish(); await chunksTask?.value"),
     ("P5 the watchdog never starts", "pins", STORE, "            startWatchdog(id: id, source: source)\n", ""),
-    ("P6 the restart is not bounded", "pins", STORE, "            let worked = await MacRecordingBounded.run(seconds: TimeInterval(MacRecordingWatchdog.restartSeconds)) { [weak self] in\n                await self?.restartTap(id: id, source: source) ?? false\n            }\n", "            let worked: Bool? = await self.restartTap(id: id, source: source)\n"),
-    ("P7 a failed restart is not said", "pins", STORE, "if worked != true { watchdog.restartFailed(); stallLine = MacRecordingWatchdog.line(watchdog) }", "if false { watchdog.restartFailed(); stallLine = MacRecordingWatchdog.line(watchdog) }"),
+    ("P6 the restart is not bounded", "pins", STORE, "            let worked = await MacRecordingBounded.run(seconds: TimeInterval(MacRecordingWatchdog.restartSeconds)) { [weak self] in\n                guard let self else { return false }\n                let done = await self.restartTap(id: id, source: source, generation: generation)\n                await self.restartReturned(generation: generation)\n                return done\n            }\n", "            let worked: Bool? = await self.restartTap(id: id, source: source, generation: generation)\n            restartReturned(generation: generation)\n"),
+    ("P7 a failed restart is not said", "pins", STORE, "if worked != true { watchdog.restartFailed() }", "if false { watchdog.restartFailed() }"),
     ("P8 the old tap keeps running", "pins", STORE, "        _ = await old.stop()\n", ""),
-    ("P9 a restart can outlive the recording", "pins", STORE, "guard phase == \"recording\", manifest?.captureId == id else { _ = await engine.stop(); return false }", "guard true else { _ = await engine.stop(); return false }"),
+    ("P9 a restart can outlive the recording", "pins", STORE, "guard generation == tapGeneration, phase == \"recording\", manifest?.captureId == id else { _ = await engine.stop(); return false }", "guard true else { _ = await engine.stop(); return false }"),
     ("P10 the stall line hides behind older warnings", "pins", STORE, "        if let stall = stallLine { return stall }\n", ""),
     ("P11 a capture is never registered for the signal", "pins", STORE, "            MacRecordingOpenCaptures.shared.add(id, spool: spool)\n", ""),
     ("P12 a stopped capture stays registered", "pins", STORE, "            MacRecordingOpenCaptures.shared.remove(id)\n        }\n        phase = \"pending\"", "        }\n        phase = \"pending\""),
-    ("P13 a failed start stays registered", "pins", STORE, "            MacRecordingOpenCaptures.shared.remove(id)\n            watchdogTask?.cancel(); watchdogTask = nil; stallLine = nil\n            let interruption", "            watchdogTask?.cancel(); watchdogTask = nil; stallLine = nil\n            let interruption"),
+    ("P13 a failed start stays registered", "pins", STORE, "            MacRecordingOpenCaptures.shared.remove(id)\n            let interruption", "            let interruption"),
     ("P14 the signal never ends the process", "pins", STORE, "signal(SIGTERM, SIG_DFL); raise(SIGTERM)", "recordingLog.notice(\"sigterm handled\")"),
     ("P15 the app never installs the handler", "pins", APP, "        MacRecordingSigtermWiring.install()\n", ""),
     ("P16 a stop leaves the watchdog running", "pins", STORE, "        watchdogTask?.cancel(); watchdogTask = nil; stallLine = nil\n        // QA 0.5.313", "        // QA 0.5.313"),
     ("P17 an older stored manifest replaces a newer one", "pins", STORE, "        if current.chunks.count > journal.chunks.count { return }\n", ""),
     ("P18 the watchdog judges by the clock, not the writer", "pins", STORE, "let now = Date(), last = progress.lastWrite", "let now = Date(), last = Date()"),
+    # QA fixes (pins lane: wiring the store cannot run without the app).
+    ("P19 the restart flag is cleared when the bound expires", "pins", STORE, "            recordingLog.notice(\"watchdog: restart \\(worked == true", "            restartInFlight = false\n            recordingLog.notice(\"watchdog: restart \\(worked == true"),
+    ("P20 a stale restart installs a new tap", "pins", STORE, "guard generation == tapGeneration, phase == \"recording\", manifest?.captureId == id else { return false }", "guard phase == \"recording\", manifest?.captureId == id else { return false }"),
+    ("P21 Stop does not make a running restart stale", "pins", STORE, "        phase = \"stopping\"\n        tapGeneration += 1\n", "        phase = \"stopping\"\n"),
+    ("P22 Stop does not mark the capture as stopped by the person", "pins", STORE, "        if let id = manifest?.captureId { MacRecordingOpenCaptures.shared.beginStopping(id) }\n", ""),
+    ("P23 Stop waits for the tap with no bound", "pins", STORE, "switch await MacRecordingTapStop.run({ await old.stop() }) {", "switch MacRecordingTapStop.Outcome.stopped(await old.stop()) {"),
+    ("P24 a restarted tap counts the limit from its own start", "pins", STORE, "        }, recordingStartedAt: recordingStartedAt)", "        })"),
+    ("P25 the recording's start is never taken", "pins", STORE, "            recordingStartedAt = Date()\n", ""),
+    ("P26 the tap ignores the start it was given", "pins", CAPTURE, "started = recordingStartedAt ?? now; lastInput = now", "started = now; lastInput = now"),
+    ("P27 the tap's limit ignores the shared rule", "pins", CAPTURE, "guard !MacRecordingLimit.reached(startedAt: started) else {", "guard Date().timeIntervalSince(started) < 7_200 else {"),
+    ("P28 an unrecovered stall posts no notification", "pins", STORE, "{ stallNotice?(note.title, note.body) }", "{ _ = note }"),
+    ("P29 the stall line and notice are not published after a restart", "pins", STORE, "            if worked != true { watchdog.restartFailed() }\n        }\n        publishStall()\n", "            if worked != true { watchdog.restartFailed() }\n        }\n"),
+    ("P30 a late failing start cancels the newer watchdog", "pins", STORE, "            MacRecordingOpenCaptures.shared.remove(id)\n            let interruption", "            MacRecordingOpenCaptures.shared.remove(id)\n            watchdogTask?.cancel(); watchdogTask = nil; stallLine = nil\n            let interruption"),
+    ("P31 the app does not post the stall notice", "pins", MODEL, "macRecording.stallNotice = { [weak self] title, body in self?.meetingAudioNotifier.postRecordingStalled(title: title, body: body) }\n", ""),
+    ("P32 the Parakeet row reads the disk eagerly", "pins", ASK, "freeBytes: @autoclosure () -> Int64?) -> ParakeetRowState {", "freeBytes: Int64?) -> ParakeetRowState {"),
+    ("P33 the free space is read on the calling thread", "pins", ASK, "var freeBytes: () -> Int64? = { FreeSpaceReader.shared.value() }", "var freeBytes: () -> Int64? = { (try? URL(fileURLWithPath: NSHomeDirectory()).resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]))?.volumeAvailableCapacityForImportantUsage }"),
+    ("P34 the store runs its own writer loop", "pins", STORE, "                await MacRecordingWriter.run(stream: stream, spool: spool, captureId: id, progress: progress,", "                await MacRecordingWriterX.run(stream: stream, spool: spool, captureId: id, progress: progress,"),
 ]
 
 def run(lane):
     if lane == "pins":
         return subprocess.run(["/usr/bin/python3", str(ROOT / "Tests/capture-stall-pins.py"), str(ROOT)], capture_output=True, text=True)
+    if lane == "trans":
+        for _ in range(40):
+            r = subprocess.run(["zsh", str(ROOT / "Tests/run-transcription-settings.sh")], cwd=ROOT, capture_output=True, text=True)
+            text = r.stdout + r.stderr
+            if r.returncode == 75 or "lock busy" in text or "compile-bounded: refused" in text:
+                time.sleep(60); continue
+            return r
+        return r
     for _ in range(40):   # exit 75 / "lock busy" / "refused" is a wait, never a kill
         r = subprocess.run(["zsh", str(ROOT / "Tests/run-mac-recording.sh")], cwd=ROOT, env=dict(os.environ, COS_MAC_REC_LANE="core"), capture_output=True, text=True)
         text = r.stdout + r.stderr

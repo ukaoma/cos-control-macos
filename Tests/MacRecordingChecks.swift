@@ -1,6 +1,21 @@
 import Foundation
 import Darwin
 
+/// QA W7: blocks the calling thread (the main thread, in the checks) until `condition` holds on another thread, or `timeout`
+/// passes. A synchronous function, so the async checks may call it. True when the condition held while the caller was blocked.
+func blockMainThread(timeout: TimeInterval, until condition: @escaping @Sendable () -> Bool) -> (onMainThread: Bool, held: Bool) {
+    let onMain = Thread.isMainThread
+    let released = DispatchSemaphore(value: 0)
+    DispatchQueue.global(qos: .userInitiated).async {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if condition() { released.signal(); return }
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+    }
+    return (onMain, released.wait(timeout: .now() + timeout + 1) == .success)
+}
+
 /// Pure fixture audio bytes only. Never opens a tap, microphone, socket, or permission prompt.
 @main struct MacRecordingChecks {
     @MainActor static func main() async throws {
@@ -635,16 +650,29 @@ import Darwin
             try await wspool.write(wjournal)
             let tone = Data((0..<MacRecordingWAV.framesPerChunk).flatMap { i -> [UInt8] in let v = Int16(truncatingIfNeeded: 1_000 + (i % 7)); return [UInt8(v & 0xff), UInt8((v >> 8) & 0xff)] })
             let tail = Data(tone.prefix(4_000))
-            var sequence = MacRecordingSequencer()
-            // First tap: indexes 0, 1, 2 and its tail; second tap (after a restart) counts from zero again.
+            // First tap: indexes 0, 1, 2 and its tail; second tap (after a restart) counts from zero again. The REAL writer
+            // loop (MacRecordingWriter.run, the one the store runs) stores them, so this checks the code that ships.
             let taps: [[MacRecordingChunk]] = [
                 [.init(index: 0, pcm: tone, endFrame: 96_000), .init(index: 1, pcm: tone, endFrame: 192_000), .init(index: 2, pcm: tail, endFrame: 194_000)],
                 [.init(index: 0, pcm: tone, endFrame: 96_000), .init(index: 1, pcm: tone, endFrame: 192_000)]]
-            var latest = wjournal
-            for tap in taps { for raw in tap {
-                do { latest = try await wspool.append(sequence.next(raw), captureId: wjournal.id); sequence.stored(latest) }
-                catch { check(false, "writer: the journal refused a restarted tap's chunk (\(error.localizedDescription))") }
-            } }
+            final class Events: @unchecked Sendable {
+                private let lock = NSLock(); private var items: [MacRecordingWriterEvent] = []; private var lines: [String] = []
+                func add(_ event: MacRecordingWriterEvent) { lock.lock(); items.append(event); lock.unlock() }
+                func note(_ line: String) { lock.lock(); lines.append(line); lock.unlock() }
+                var all: [MacRecordingWriterEvent] { lock.lock(); defer { lock.unlock() }; return items }
+                var logged: [String] { lock.lock(); defer { lock.unlock() }; return lines }
+            }
+            let (restartStream, restartFeed) = AsyncStream<MacRecordingChunk>.makeStream(bufferingPolicy: .unbounded)
+            for tap in taps { for raw in tap { _ = restartFeed.yield(raw) } }
+            restartFeed.finish()
+            let restartEvents = Events()
+            let restartProgress = MacRecordingProgress(Date(timeIntervalSince1970: 1_000))
+            await MacRecordingWriter.run(stream: restartStream, spool: wspool, captureId: wjournal.id, progress: restartProgress,
+                                         emit: { restartEvents.add($0) }, log: { restartEvents.note($0) })
+            let latest = try await wspool.snapshot(wjournal.id)
+            check(restartEvents.all.count == 5 && restartEvents.all.allSatisfy { $0.failure == nil && $0.manifest != nil } && restartEvents.logged.isEmpty,
+                  "writer: every chunk of both taps is stored and reported, nothing fails")
+            check(restartProgress.lastWrite > Date(timeIntervalSince1970: 2_000), "writer: storing a chunk moves the watchdog's progress clock")
             check(latest.chunks.map(\.index) == [0, 1, 2, 3, 4], "writer: a restarted tap continues the journal's index sequence")
             check(latest.chunks.map(\.endFrame) == [96_000, 192_000, 194_000, 290_000, 386_000], "writer: and its end frames, so the transcript timeline stays one line")
             let firstFile = wroot.appendingPathComponent(wjournal.id).appendingPathComponent("000000.wav")
@@ -665,6 +693,113 @@ import Darwin
             let hung: Int? = await MacRecordingBounded.run(seconds: 0.3) { try? await Task.sleep(nanoseconds: 4_000_000_000); return 1 }
             let waited = Date().timeIntervalSince(began)
             check(hung == nil && waited >= 0.25 && waited < 1.5, "bounded: a hung operation is given up on at its time")
+
+            // QA W2: Stop never waits forever on a wedged tap.
+            let stopQuick = await MacRecordingTapStop.run(seconds: 5) { "reason" }
+            let stopQuickNil = await MacRecordingTapStop.run(seconds: 5) { nil }
+            check(stopQuick == .stopped("reason") && stopQuickNil == .stopped(nil), "tap stop: a tap that stops in time hands back its interruption, or none")
+            check(MacRecordingTapStop.stopSeconds > 1 && MacRecordingTapStop.stopSeconds <= 10, "tap stop: the bound is a few seconds")
+            let stopBegan = Date()
+            let stopHung = await MacRecordingTapStop.run(seconds: 0.3) { try? await Task.sleep(nanoseconds: 4_000_000_000); return "late" }
+            check(stopHung == .timedOut && Date().timeIntervalSince(stopBegan) < 1.5, "tap stop: a wedged tap is given up on inside the bound, and Stop carries on")
+
+            // QA W4: the two-hour clock belongs to the recording, not to a tap.
+            let began0 = Date(timeIntervalSince1970: 1_793_000_000)
+            check(!MacRecordingLimit.reached(startedAt: began0, now: began0.addingTimeInterval(7_199)) && MacRecordingLimit.reached(startedAt: began0, now: began0.addingTimeInterval(7_200)),
+                  "limit: two hours from the recording's own start")
+            check(MacRecordingLimit.reached(startedAt: began0, now: began0.addingTimeInterval(7_200 + 40)) && !MacRecordingLimit.reached(startedAt: began0.addingTimeInterval(60), now: began0.addingTimeInterval(7_200)),
+                  "limit: a tap handed the original start reaches it at the original time, a later start does not")
+
+            // QA W6: one notification per stall that could not be recovered, never before it gave up.
+            var notice = w.State()
+            _ = w.step(&notice, now: t0.addingTimeInterval(Double(w.stallSeconds)), lastChunk: t0, restartInFlight: false)
+            check(!notice.takeGiveUpNotice() && w.notification(notice) == nil, "notice: nothing to say while the restart is still trying")
+            notice.restartFailed()
+            let noticeText = w.notification(notice, calendar: utc)
+            check(noticeText?.title == "Mac recording not receiving audio" && noticeText?.body == w.line(notice, calendar: utc), "notice: the body is the panel's own line")
+            check(notice.takeGiveUpNotice() && !notice.takeGiveUpNotice() && !notice.takeGiveUpNotice(), "notice: posted once however many times the watchdog looks")
+            _ = w.step(&notice, now: t0.addingTimeInterval(9_999), lastChunk: t0, restartInFlight: false)
+            check(!notice.takeGiveUpNotice(), "notice: the same stall never posts again")
+            let t2 = t0.addingTimeInterval(2_000)
+            _ = w.step(&notice, now: t2.addingTimeInterval(1), lastChunk: t2, restartInFlight: false)
+            _ = w.step(&notice, now: t2.addingTimeInterval(Double(w.stallSeconds)), lastChunk: t2, restartInFlight: false)
+            notice.restartFailed()
+            check(notice.takeGiveUpNotice(), "notice: the next stall posts its own")
+            var steppedOut = w.State()
+            _ = w.step(&steppedOut, now: t0.addingTimeInterval(Double(w.stallSeconds)), lastChunk: t0, restartInFlight: false)
+            check(w.step(&steppedOut, now: t0.addingTimeInterval(Double(w.stallSeconds) * 2), lastChunk: t0, restartInFlight: false) == .giveUp && steppedOut.takeGiveUpNotice(),
+                  "notice: a stall the watchdog gives up on after its restart posts too")
+            check(!(noticeText?.body ?? "").contains("\u{2014}") && !(noticeText?.body ?? "").contains("\u{2192}") && !(noticeText?.title ?? "").contains("\u{2014}"), "notice: no em dash or arrow in the copy")
+
+            // QA W8: a quit says what is true, and reads muted like the two-hour limit.
+            check(MacRecordingSigterm.reason == "COS Control was quit while recording. Everything saved up to then is kept.", "sigterm: the copy says saved, not recorded")
+            let quit = MacRecordingInterruption.line(MacRecordingSigterm.reason)
+            check(!quit.problem && !quit.text.contains("Incomplete") && quit.text == MacRecordingSigterm.reason, "sigterm: shown muted, never as an incomplete recording")
+            check(MacRecordingInterruption.line("The app ended during recording.").problem, "sigterm: other interruptions still read as incomplete")
+
+            // QA W7: the writer keeps storing while the main actor is blocked, and a refused chunk ends it.
+            let blockedHome = scratch.appendingPathComponent("blocked-home/cos-data/mac-recordings")
+            let blockedSpool = MacRecordingSpool(root: blockedHome)
+            let blockedJournal = MacRecordingManifest(captureId: "mac_00000003-bbbb-4bbb-8bbb-123456789abc", startTime: 1_793_000_000_000, serverInstanceId: "fixture-server",
+                                                      sourceName: MacAudioSource.allMacAudio.name, title: "Teams meeting", stopped: false, saved: false, acknowledged: 0, chunks: [])
+            try await blockedSpool.write(blockedJournal)
+            let (blockedStream, blockedFeed) = AsyncStream<MacRecordingChunk>.makeStream(bufferingPolicy: .bufferingOldest(8))
+            let blockedEvents = Events()
+            let blockedProgress = MacRecordingProgress(Date(timeIntervalSince1970: 1_000))
+            let writing = Task.detached(priority: .userInitiated) {
+                await MacRecordingWriter.run(stream: blockedStream, spool: blockedSpool, captureId: blockedJournal.id, progress: blockedProgress,
+                                             emit: { blockedEvents.add($0) }, log: { blockedEvents.note($0) })
+            }
+            // The tap keeps handing chunks over from its own queue while the main actor is stuck.
+            let tapQueue = Task.detached {
+                for index in 0..<6 { _ = blockedFeed.yield(.init(index: index, pcm: tone, endFrame: (index + 1) * 96_000)); try? await Task.sleep(nanoseconds: 20_000_000) }
+            }
+            let lastFile = blockedHome.appendingPathComponent(blockedJournal.id).appendingPathComponent("000005.wav").path
+            let blocked = blockMainThread(timeout: 5) { FileManager.default.fileExists(atPath: lastFile) && blockedEvents.all.count == 6 }
+            check(blocked.onMainThread, "writer: this check really blocks the main thread")
+            check(blocked.held, "writer: all six chunks reach disk and are reported while the main actor is blocked")
+            await tapQueue.value
+            blockedFeed.finish(); await writing.value
+            let blockedLatest = try await blockedSpool.snapshot(blockedJournal.id)
+            check(blockedLatest.chunks.map(\.index) == [0, 1, 2, 3, 4, 5] && blockedProgress.lastWrite > Date(timeIntervalSince1970: 2_000), "writer: the stored journal is whole and the progress clock moved")
+            // A refused chunk is reported once and the writer stops reading.
+            let refusedRoot = scratch.appendingPathComponent("refused-home/cos-data/mac-recordings")
+            let refusedSpool = MacRecordingSpool(root: refusedRoot)
+            let refusedJournal = MacRecordingManifest(captureId: "mac_00000004-bbbb-4bbb-8bbb-123456789abc", startTime: 1_793_000_000_000, serverInstanceId: "fixture-server",
+                                                      sourceName: MacAudioSource.allMacAudio.name, title: "Teams meeting", stopped: false, saved: false, acknowledged: 0, chunks: [])
+            try await refusedSpool.write(refusedJournal)
+            _ = try await refusedSpool.markStopped(refusedJournal.id)
+            let (refusedStream, refusedFeed) = AsyncStream<MacRecordingChunk>.makeStream(bufferingPolicy: .unbounded)
+            _ = refusedFeed.yield(.init(index: 0, pcm: tone, endFrame: 96_000)); _ = refusedFeed.yield(.init(index: 1, pcm: tone, endFrame: 192_000)); refusedFeed.finish()
+            let refusedEvents = Events()
+            await MacRecordingWriter.run(stream: refusedStream, spool: refusedSpool, captureId: refusedJournal.id, progress: MacRecordingProgress(),
+                                         emit: { refusedEvents.add($0) }, log: { refusedEvents.note($0) })
+            check(refusedEvents.all.count == 1 && refusedEvents.all[0].failure != nil && refusedEvents.all[0].manifest == nil && refusedEvents.logged.count == 1,
+                  "writer: a refused chunk is reported and logged once, and nothing after it is read")
+            check((try await refusedSpool.snapshot(refusedJournal.id)).chunks.isEmpty, "writer: a refused chunk stores nothing")
+
+            // QA N5: a stop the person made keeps its own words if a quit lands during the save.
+            let quitRoot = scratch.appendingPathComponent("quit-home/cos-data/mac-recordings")
+            let quitSpool = MacRecordingSpool(root: quitRoot)
+            func quitJournal(_ n: Int) -> MacRecordingManifest {
+                MacRecordingManifest(captureId: "mac_0000000\(n)-bbbb-4bbb-8bbb-123456789abc", startTime: 1_793_000_000_000, serverInstanceId: "fixture-server",
+                                     sourceName: MacAudioSource.allMacAudio.name, title: "Teams meeting", stopped: false, saved: false, acknowledged: 0, chunks: [])
+            }
+            let recordingOne = quitJournal(5), stoppingOne = quitJournal(6)
+            try await quitSpool.write(recordingOne); try await quitSpool.write(stoppingOne)
+            let quitOpen = MacRecordingOpenCaptures()
+            quitOpen.add(recordingOne.id, spool: quitSpool); quitOpen.add(stoppingOne.id, spool: quitSpool)
+            quitOpen.beginStopping(stoppingOne.id); quitOpen.beginStopping("mac_00000099-bbbb-4bbb-8bbb-123456789abc")
+            let closedRunning = await quitOpen.closeForExit(recordingOne.id), closedStopping = await quitOpen.closeForExit(stoppingOne.id)
+            check(closedRunning && closedStopping, "quit: both captures are closed")
+            let quitRecording = try await quitSpool.snapshot(recordingOne.id), quitStopping = try await quitSpool.snapshot(stoppingOne.id)
+            check(quitRecording.stopped && quitRecording.interruption == MacRecordingSigterm.reason, "quit: a recording that was running says it was quit")
+            check(quitStopping.stopped && quitStopping.interruption == nil, "quit: a recording the person already stopped is closed without saying it was quit")
+            quitOpen.remove(stoppingOne.id)
+            quitOpen.add(stoppingOne.id, spool: quitSpool)
+            let closedAgain = await quitOpen.closeForExit(stoppingOne.id)
+            let quitAgain = try await quitSpool.snapshot(stoppingOne.id)
+            check(closedAgain && quitAgain.interruption == MacRecordingSigterm.reason, "quit: a finished capture's stopping mark does not outlive its registration")
 
             // SIGTERM: the work, its time bound, and the real signal path.
             check(MacRecordingSigterm.waitSeconds <= 1.0 && MacRecordingSigterm.waitSeconds > 0, "sigterm: the wait is at most one second")

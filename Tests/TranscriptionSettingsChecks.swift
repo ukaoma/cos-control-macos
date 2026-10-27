@@ -256,6 +256,40 @@ extension SttSettings {
               == .installing("Installing Parakeet. 0.0 of 654 MB."), "installing on the server: progress")
         check(Transcription.parakeetState(SttSettings(dictated("auto", effective: "parakeet-ultra", installed: true))!, installing: false, recording: false, freeBytes: nil)
               == .installed("Parakeet Ultra 95eaa59a, CLI 0.17.4 is installed."), "installed")
+        // 0.5.351 (QA W1, mac_b0bd6732): the panels redraw on every model publish, including mid-meeting. The disk is asked only
+        // by the one rule that needs it, never while recording and never for an installed or installing row.
+        final class Reads { var count = 0 }
+        let reads = Reads()
+        let missingParakeet = SttSettings(dictated("auto", effective: "whisper"))!
+        _ = Transcription.parakeetState(missingParakeet, installing: false, recording: true, freeBytes: { reads.count += 1; return 0 }())
+        _ = Transcription.parakeetState(SttSettings(dictated("auto", effective: "parakeet-ultra", installed: true))!, installing: false, recording: false, freeBytes: { reads.count += 1; return 0 }())
+        _ = Transcription.parakeetState(missingParakeet, installing: true, recording: false, freeBytes: { reads.count += 1; return 0 }())
+        _ = Transcription.parakeetState(untrusted, installing: false, recording: false, freeBytes: { reads.count += 1; return 0 }())
+        check(reads.count == 0, "W1: a recording, installed, installing or not-installable row never reads the disk")
+        _ = Transcription.parakeetState(missingParakeet, installing: false, recording: false, freeBytes: { reads.count += 1; return 0 }())
+        check(reads.count == 1, "W1: the disk rule reads the disk exactly once (the counter can count)")
+        let storeReads = Reads()
+        let watched = TranscriptionSettingsStore()
+        watched.freeBytes = { storeReads.count += 1; return 0 }
+        await watched.load(fake(Calls(), [reply(200, settings: dictated("auto", effective: "whisper"))]))
+        check(watched.rowState(recording: true) == .blocked(reason: Transcription.recordingHold, action: .afterRecording) && storeReads.count == 0,
+              "W1: the store's rowState(recording: true) never asks for free space")
+        check(watched.rowState(recording: false) != nil && storeReads.count == 1, "W1: and rowState(recording: false) asks once")
+        // The default reader never reads on the caller's thread: the first answer is nil, a later one is the disk's, a stale one is
+        // served at once while a refresh runs.
+        final class Clock: @unchecked Sendable { var now = Date(timeIntervalSince1970: 1_000_000); var value: Int64 = 111; var reads = 0 }
+        let clock = Clock()
+        let slow = FreeSpaceReader(ttl: 30, now: { clock.now }, read: { Thread.sleep(forTimeInterval: 0.4); clock.reads += 1; return clock.value })
+        let began = Date()
+        let first = slow.value()
+        check(first == nil && Date().timeIntervalSince(began) < 0.2, "W1: the reader's first call returns at once, without waiting for the disk")
+        check(slow.settle() && slow.value() == 111 && clock.reads == 1, "W1: once the background read lands, its value is served")
+        clock.value = 222; clock.now = clock.now.addingTimeInterval(29)
+        check(slow.value() == 111 && slow.settle() && clock.reads == 1, "W1: inside the ttl nothing is read again")
+        clock.now = clock.now.addingTimeInterval(2)
+        let staleAt = Date()
+        check(slow.value() == 111 && Date().timeIntervalSince(staleAt) < 0.2, "W1: past the ttl the old value is served at once")
+        check(slow.settle() && slow.value() == 222 && clock.reads == 2, "W1: and the refresh replaces it")
         // The store: the bundled tool's path rides on stdin, the disk floor refuses before the POST, 507 and 422 say why.
         let bundled = makeStore(); let bundledCalls = Calls()
         bundled.cliPath = { "/Applications/COS Control.app/Contents/Helpers/fluidaudiocli" }

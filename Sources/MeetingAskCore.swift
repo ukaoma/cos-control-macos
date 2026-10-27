@@ -2069,7 +2069,10 @@ enum Transcription {
     }
 
     /// The Parakeet row: installed, installing, Install offered, or why not with one action. Never a dead control.
-    static func parakeetState(_ settings: SttSettings, installing: Bool, recording: Bool, freeBytes: Int64?) -> ParakeetRowState {
+    /// 0.5.351 (QA W1): `freeBytes` is an autoclosure and is read only at the disk rule. The panels call this on every redraw,
+    /// including while a meeting records, and a free-space query on the main thread is the strongest suspect for the
+    /// main-thread stall of mac_b0bd6732. Installed, installing and recording rows never ask the disk.
+    static func parakeetState(_ settings: SttSettings, installing: Bool, recording: Bool, freeBytes: @autoclosure () -> Int64?) -> ParakeetRowState {
         let parakeet = settings.parakeet
         if installing || parakeet.serverInstalling { return .installing(progressLine(parakeet)) }
         if let line = installedLine(parakeet) { return .installed(line) }
@@ -2078,7 +2081,7 @@ enum Transcription {
             let explicit = settings.dictation?.selected == "parakeet-ultra"
             return .blocked(reason: notInstallableLine(parakeet), action: explicit ? .useWhisper : .checkAgain)
         }
-        if let freeBytes, freeBytes < requiredFreeBytes { return .blocked(reason: diskLine(free: freeBytes), action: .checkAgain) }
+        if let free = freeBytes(), free < requiredFreeBytes { return .blocked(reason: diskLine(free: free), action: .checkAgain) }
         if let failure = installFailureLine(parakeet) { return .offer(title: parakeet.cancelled ? installTitle : "Try again", line: failure) }
         return .offer(title: installTitle, line: nil)
     }
@@ -2095,6 +2098,51 @@ enum Transcription {
     /// 15 minutes at one check every 2 seconds: a backstop only, the server's installed or failed state ends the poll.
     static let installPollLimit = 450
     static let installPollNanoseconds: UInt64 = 2_000_000_000
+}
+
+/// 0.5.351 (QA W1): free space on the home volume, never read on the main thread. `value()` returns what was last read at
+/// once; the first call and any call after `ttl` seconds start a background read and return the last answer (nil before
+/// the first: unknown, and the server still checks). A disk that is slow or busy therefore can never stall a redraw.
+final class FreeSpaceReader: @unchecked Sendable {
+    static let shared = FreeSpaceReader()
+    private let lock = NSLock()
+    private var cached: Int64?
+    private var readAt: Date?
+    private var reading = false
+    private let ttl: TimeInterval
+    private let now: @Sendable () -> Date
+    private let read: @Sendable () -> Int64?
+    private let queue = DispatchQueue(label: "com.gotcos.control.free-space", qos: .utility)
+    init(ttl: TimeInterval = 30, now: @escaping @Sendable () -> Date = { Date() },
+         read: @escaping @Sendable () -> Int64? = {
+             (try? URL(fileURLWithPath: NSHomeDirectory()).resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]))?
+                 .volumeAvailableCapacityForImportantUsage
+         }) {
+        self.ttl = ttl; self.now = now; self.read = read
+    }
+    func warm() { _ = value() }
+    func value() -> Int64? {
+        lock.lock(); defer { lock.unlock() }
+        let stale = readAt.map { now().timeIntervalSince($0) >= ttl } ?? true
+        if stale, !reading {
+            reading = true
+            queue.async { [self] in
+                let fresh = read()
+                lock.lock(); cached = fresh; readAt = now(); reading = false; lock.unlock()
+            }
+        }
+        return cached
+    }
+    /// For checks: waits for a read in flight to land.
+    func settle(timeout: TimeInterval = 5) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            lock.lock(); let busy = reading; lock.unlock()
+            if !busy { return true }
+            Thread.sleep(forTimeInterval: 0.005)
+        }
+        return false
+    }
 }
 
 @MainActor
@@ -2120,10 +2168,9 @@ final class TranscriptionSettingsStore: ObservableObject {
         return !parakeet.installed && parakeet.installable && !parakeet.serverInstalling
     }
     /// 0.5.317: free space on this Mac's home volume, read when the card asks (nil: unknown, the server still checks).
-    var freeBytes: () -> Int64? = {
-        (try? URL(fileURLWithPath: NSHomeDirectory()).resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]))?
-            .volumeAvailableCapacityForImportantUsage
-    }
+    /// 0.5.351: through FreeSpaceReader, which never touches the disk on the calling (main) thread.
+    var freeBytes: () -> Int64? = { FreeSpaceReader.shared.value() }
+    init() { FreeSpaceReader.shared.warm() }
     /// COS Control's bundled FluidAudio tool (Contents/Helpers/fluidaudiocli), passed to the server's install. nil in a
     /// build without it (the server then looks for its own copy).
     var cliPath: () -> String? = {

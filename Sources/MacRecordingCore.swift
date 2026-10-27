@@ -103,8 +103,10 @@ struct MacAudioSource: Identifiable, Equatable, Sendable {
 enum MacRecordingInterruption {
     static let pilotLimit = "The two-hour recording pilot limit was reached."
     static func line(_ reason: String) -> (text: String, problem: Bool) {
-        reason == pilotLimit ? ("Stopped at the two-hour limit. Everything recorded up to then is kept.", false)
-            : ("Incomplete recording: " + reason, true)
+        if reason == pilotLimit { return ("Stopped at the two-hour limit. Everything recorded up to then is kept.", false) }
+        // 0.5.351 (QA W8): a quit is not a failed capture; the line is the reason itself, muted like the two-hour limit.
+        if reason == MacRecordingSigterm.reason { return (MacRecordingSigterm.reason, false) }
+        return ("Incomplete recording: " + reason, true)
     }
     /// QA 0.5.313: a recording that stops without the person stopping it says so outside the panel, which is usually
     /// closed during a call. The call may still be going.
@@ -1097,6 +1099,30 @@ struct MacRecordingWriterEvent: Sendable {
     }
 }
 
+/// 0.5.351 (QA W7): the writer loop itself, so the store and the checks run the same code. It touches only the spool (its
+/// own executor), the progress clock and what `emit` does, never the main actor: run it from `Task.detached` and it keeps
+/// storing while the app is stalled. One unbroken sequence whichever tap produced the chunk; ends when the stream ends
+/// or the spool refuses a chunk (then the failure is emitted and the loop stops).
+enum MacRecordingWriter {
+    static func run(stream: AsyncStream<MacRecordingChunk>, spool: MacRecordingSpool, captureId id: String, progress: MacRecordingProgress,
+                    emit: @Sendable (MacRecordingWriterEvent) -> Void, log: @Sendable (String) -> Void) async {
+        var sequence = MacRecordingSequencer()
+        for await raw in stream {
+            let silent = MacRecordingSignal.isSilent(raw.pcm)
+            let chunk = sequence.next(raw)
+            do {
+                let journal = try await spool.append(chunk, captureId: id)
+                sequence.stored(journal); progress.mark()
+                emit(.init(chunk: MacRecordingWriterEvent.slim(chunk), silent: silent, manifest: journal))
+            } catch {
+                let reason = error.localizedDescription
+                log(reason)
+                emit(.init(failure: reason)); break
+            }
+        }
+    }
+}
+
 /// Gives every stored chunk the next index and the next end frame of the JOURNAL, whichever tap produced it. A tap that
 /// is restarted counts from zero again; the journal's own sequence is the one that must stay unbroken.
 struct MacRecordingSequencer: Sendable {
@@ -1138,12 +1164,20 @@ enum MacRecordingWatchdog {
         var attemptsThisStall = 0
         var totalRestarts = 0
         var gaveUp = false
+        /// 0.5.351 (QA W6): the notification for this stall's give-up line has been posted (once per stall).
+        var noticePosted = false
         mutating func restartFailed() { gaveUp = true }
+        /// True exactly once per stall, the first time it has given up. The panel is usually closed during a call, so this
+        /// is the one place a stall reaches the person (MacRecordingWatchdog.notification).
+        mutating func takeGiveUpNotice() -> Bool {
+            guard gaveUp, stalledSince != nil, !noticePosted else { return false }
+            noticePosted = true; return true
+        }
     }
 
     static func step(_ state: inout State, now: Date, lastChunk: Date, restartInFlight: Bool) -> Action {
         if let since = state.stalledSince, lastChunk > since {   // a chunk arrived after the stall: it is over
-            state.stalledSince = nil; state.restartAttemptAt = nil; state.attemptsThisStall = 0; state.gaveUp = false
+            state.stalledSince = nil; state.restartAttemptAt = nil; state.attemptsThisStall = 0; state.gaveUp = false; state.noticePosted = false
         }
         guard !state.gaveUp, !restartInFlight else { return .none }
         let reference = max(lastChunk, state.restartAttemptAt ?? .distantPast)
@@ -1169,6 +1203,11 @@ enum MacRecordingWatchdog {
         return state.gaveUp ? "Recording stopped receiving audio at \(at). Stop and save keeps everything up to then."
                             : "Recording stopped receiving audio at \(at). Restarting."
     }
+    /// 0.5.351 (QA W6): the notification for a stall that could not be recovered; nil while there is nothing to say.
+    static func notification(_ state: State, calendar: Calendar = .current) -> (title: String, body: String)? {
+        guard state.gaveUp, let text = line(state, calendar: calendar) else { return nil }
+        return ("Mac recording not receiving audio", text)
+    }
 }
 
 /// The captures being written right now, readable from any thread: what a termination signal has to close.
@@ -1176,14 +1215,19 @@ final class MacRecordingOpenCaptures: @unchecked Sendable {
     static let shared = MacRecordingOpenCaptures()
     private let lock = NSLock()
     private var spools: [String: MacRecordingSpool] = [:]
+    /// 0.5.351 (QA N5): captures the person already stopped. A quit during their save closes the journal but does not
+    /// relabel their stop as "quit while recording".
+    private var stopping: Set<String> = []
     func add(_ id: String, spool: MacRecordingSpool) { lock.lock(); spools[id] = spool; lock.unlock() }
-    func remove(_ id: String) { lock.lock(); spools[id] = nil; lock.unlock() }
+    func remove(_ id: String) { lock.lock(); spools[id] = nil; stopping.remove(id); lock.unlock() }
+    func beginStopping(_ id: String) { lock.lock(); if spools[id] != nil { stopping.insert(id) }; lock.unlock() }
+    private func isStopping(_ id: String) -> Bool { lock.lock(); defer { lock.unlock() }; return stopping.contains(id) }
     var ids: [String] { lock.lock(); defer { lock.unlock() }; return spools.keys.sorted() }
     private func spool(for id: String) -> MacRecordingSpool? { lock.lock(); defer { lock.unlock() }; return spools[id] }
     /// Notes the interruption and marks the journal stopped. Chunks already written are never touched.
     func closeForExit(_ id: String) async -> Bool {
         guard let spool = spool(for: id) else { return false }
-        _ = try? await spool.interrupt(id, reason: MacRecordingSigterm.reason)
+        if !isStopping(id) { _ = try? await spool.interrupt(id, reason: MacRecordingSigterm.reason) }
         return (try? await spool.markStopped(id)) != nil
     }
 }
@@ -1192,7 +1236,7 @@ final class MacRecordingOpenCaptures: @unchecked Sendable {
 enum MacRecordingSigterm {
     /// Under one second: a signal must not hold the process up.
     static let waitSeconds: TimeInterval = 0.8
-    static let reason = "COS Control was quit while recording. Everything recorded up to then is kept."
+    static let reason = "COS Control was quit while recording. Everything saved up to then is kept."
     struct Result: Equatable, Sendable { var total: Int; var finished: Int; var timedOut: Bool; var elapsedMs: Int }
 
     /// Runs `work` for every id at once and waits at most `wait` for all of them.
@@ -1235,6 +1279,25 @@ enum MacRecordingSigterm {
 extension MacRecordingWatchdog {
     /// One restart is allowed two chunk lengths.
     static var restartSeconds: Int { chunkSeconds * 2 }
+}
+
+/// 0.5.351 (QA W2): Stop must never wait forever on a tap whose capture queue is wedged.
+enum MacRecordingTapStop {
+    static let stopSeconds: TimeInterval = 5
+    enum Outcome: Equatable, Sendable { case stopped(String?), timedOut }
+    /// The tap's interruption (if any) when it stopped in time; `.timedOut` when it did not. The caller then carries on to
+    /// finish the stream, drain the writer and mark the journal stopped, so every stored chunk is kept.
+    static func run(seconds: TimeInterval = stopSeconds, _ stop: @escaping @Sendable () async -> String?) async -> Outcome {
+        let answer: String?? = await MacRecordingBounded.run(seconds: seconds) { await stop() }
+        guard let answer else { return .timedOut }
+        return .stopped(answer)
+    }
+}
+
+/// 0.5.351 (QA W4): the two-hour pilot limit counts from the recording's own start, whichever tap is running.
+enum MacRecordingLimit {
+    static let pilotSeconds: TimeInterval = 7_200
+    static func reached(startedAt: Date, now: Date = Date()) -> Bool { now.timeIntervalSince(startedAt) >= pilotSeconds }
 }
 
 /// Runs an operation and gives up waiting after `seconds`. The operation is not cancelled (a stuck tap call cannot be);

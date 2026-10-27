@@ -45,7 +45,7 @@ writer = between(store, "            writerTask = Task.detached(priority: .userI
 pin("if await self.hearingCheck(chunk, allMacAudio: source.isAllMacAudio) == .cannotHear {" in loop
     and loop.index("self.takeStored(journal)") < loop.index("hearingCheck(") < loop.index("self.deliverPending()"),
     "hearing check per chunk", "each stored chunk is checked before delivery (0.5.351: the writer stored it; the main actor reads it)")
-pin("spool.append(chunk, captureId: id)" in writer, "writer stores", "the detached writer, not the main actor, appends each chunk")
+pin("await MacRecordingWriter.run(stream: stream, spool: spool, captureId: id, progress: progress," in writer, "writer stores", "the detached writer, not the main actor, appends each chunk (0.5.351: through the core loop the checks run)")
 pin(re.search(r"== \.cannotHear \{\s*Task \{ await self\.stopCannotHear\(id\) \}; break\s*\}", loop) is not None, "fail-fast stops",
     "cannot hear stops this capture and stops consuming chunks")
 pin("probe: { [weak self] sawSignal in" in store and "await self?.hearingProbe(sawSignal, captureId: id, allMacAudio: source.isAllMacAudio)" in store,
