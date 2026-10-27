@@ -50,10 +50,28 @@ try:
     reply.clear();reply.update(status=422,body={'reason':'nothing_to_enrol','error':'No usable audio','enrolment':{'person':'Dana Reyes','skipped':'audio_not_retained'}})
     res=run(*relabel,'--assign-voice-profile','--confirm')
     assert res['details']['state']=='declined' and res['details']['result']['enrolment']['skipped']=='audio_not_retained',res
+    # 0.5.351 QA W4: a 400 that says the assignment does not apply is the server's answer, not its confirmation gate.
+    for why in ('not_a_voice_label','not_mac_capture'):
+        reply.clear();reply.update(status=400,body={'reason':why,'error':'Only an unnamed Voice N can be assigned to a voice profile'})
+        res=run(*relabel,'--assign-voice-profile','--confirm')
+        assert res['details']['state']=='declined' and res['details']['reason']==why and 'unnamed Voice N' in res['details']['result']['error'],res
+    # The confirmation gate is still a 400 preview (no reason, or confirmation_required).
+    reply.clear();reply.update(status=400,body={'reason':'confirmation_required','error':'confirmation required','enrolment':{'person':'Dana Reyes','enrolled':3}})
+    res=run(*relabel,'--assign-voice-profile')
+    assert res['details']['state']=='preview' and res['details']['result']['enrolment']['enrolled']==3,res
+    # QA B1: a 409 gate carries its reason and the measured enrolment block; force crosses only when asked.
+    for why in ('below_floor','mixed_voice','too_little_audio','owner_profile','capture_active','meeting_changed','assign_in_progress'):
+        reply.clear();reply.update(status=409,body={'reason':why,'error':'Nothing was changed','gates':[why],'enrolment':{'person':'Dana Reyes','enrolled':3,'attempted':5,'clusterSkipped':2,'gates':[why]}})
+        res=run(*relabel,'--assign-voice-profile','--confirm')
+        assert res['details']['state']=='declined' and res['details']['reason']==why and res['details']['result']['enrolment']['clusterSkipped']==2,res
+        assert 'force' not in calls[-1][1],calls[-1]
+    reply.update(status=200,body={'ok':True,'enrolment':{'person':'Dana Reyes','enrolled':3}})
+    res=run(*relabel,'--assign-voice-profile','--confirm','--force')
+    assert calls[-1][1]['force'] is True and calls[-1][1]['assignVoiceProfile'] is True and calls[-1][1]['confirm'] is True and res['details']['state']=='applied',calls[-1]
     reply.clear()
     for command,route in [('meeting-speakers','speakers'),('meeting-content','content')]:
         assert run(command,'--session','meeting_fixture','--record-id','ops:personal:2026-10:merged.md')['ok']
         assert calls[-1][0]=='/api/meeting/meeting_fixture/'+route+'?recordId=ops%3Apersonal%3A2026%2D10%3Amerged%2Emd',calls[-1]
-    print('PASS: selected record and source revision cross compiled helper; six 409 recovery cases, including a missing reason; Mac voice assignment flag, unknown profile 404 and nothing_to_enrol 422')
+    print('PASS: selected record and source revision cross compiled helper; six 409 recovery cases, including a missing reason; Mac voice assignment flag, unknown profile 404, nothing_to_enrol 422, not_a_voice_label 400, seven 409 gates, force only when asked')
 finally:
     server.shutdown();shutil.rmtree(root)

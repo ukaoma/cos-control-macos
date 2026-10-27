@@ -5928,27 +5928,53 @@ enum MacVoiceLabel {
 /// 0.5.351 (server 6.93.0): a Mac voice can be assigned to an existing voice profile; a typed name stays text only.
 enum MacVoiceCopy {
     static let renameNote = "A typed name renames text only, in this meeting. To add this voice's audio to a voice profile, pick the person from the list."
+    /// Only an unnamed Voice N can add samples (the server refuses anything else), so the note for any other row must not promise it.
+    static let renameNoteNotVoice = "A name renames text only, in this meeting. Only an unnamed Voice N can add voice samples to a profile."
+    static func renameNote(forLabel label: String) -> String { MacVoiceLabel.isVoice(label) ? renameNote : renameNoteNotVoice }
     /// On the confirm card when no voice sample is involved (a typed name).
     static let typedNote = "Renames text only, in this meeting. No voice sample is added to any profile."
     static let menuTitle = "Rename voice"
+    /// Buttons on the assignment card. "Add anyway" is never the default action.
+    static let renameOnlyTitle = "Rename only"
+    static let addAnywayTitle = "Add anyway"
+    static let addAnywayConfirmTitle = "Yes, add the samples"
+    static let backTitle = "Back"
     /// Voice numbers are anonymous; confirmed names and meeting-only renames remain separate.
     static let unattributedNote = "Voice numbers do not identify people. When voices can be distinguished, they appear as Voice 1, Voice 2 and so on; names appear only at high confidence. Name the ones you know; this changes this meeting only."
 
     static func menuItem(_ label: String) -> String { "Name \(label)" }
+
+    /// Why Save is not offered: the server holds the samples back unless the person adds them anyway.
+    static func holdNote(person: String) -> String {
+        "The server holds these samples back. \(person)'s profile also drives who is recognised in future meetings, so a voice that is not theirs would stay in it until you remove it."
+    }
+    static func addAnywayConfirmNote(person: String, samples: Int) -> String {
+        "Add \(samples) voice sample\(samples == 1 ? "" : "s") to \(person)'s profile even though the checks above flagged this voice? Only do this if you know it is \(person)."
+    }
 }
 
 /// 0.5.351 (server 6.93.0): what assigning a Mac recording voice to an EXISTING voice profile would add. Read from the
 /// `enrolment` block of the relabel preview, never computed here: the server holds the audio and the profile.
+/// QA 2026-10-26: the server now refuses a voice that sounds unlike the profile, a Voice N that holds more than one voice,
+/// or one short stretch of audio, unless the request is forced. This type carries the counts so the card can show them,
+/// and `needsForce` so Save is replaced by a separate "Add anyway".
 struct MacVoiceAssignment: Sendable, Hashable {
     let person: String
     /// The most samples that would be added (the store's near-duplicate gate can still drop some).
     let samples: Int
     /// Audio stretches the server embedded for this voice before its coherence gate.
     let attempted: Int
-    /// Cosine of this voice against the person's stored profile. A suggestion, not a verdict.
+    /// Of those, how many sounded like a different voice and were left out. Never hidden: a non-zero count means the label holds more than one voice.
+    let clusterSkipped: Int
+    /// The kept group, in stretches and seconds of audio.
+    let groupSize: Int
+    let groupSec: Double
+    /// Cosine of this voice against the person's stored profile.
     let similarity: Double?
     let belowFloor: Bool
     let floor: Double
+    /// What the server will refuse without `force`: below_floor, mixed_voice, too_little_audio. Strongest first.
+    let gates: [String]
     /// The server's reason nothing can be added, nil when samples can be.
     let skipped: String?
 
@@ -5957,18 +5983,28 @@ struct MacVoiceAssignment: Sendable, Hashable {
         self.person = person
         samples = max(0, o["enrolled"]?.int ?? 0)
         attempted = max(0, o["attempted"]?.int ?? 0)
+        clusterSkipped = max(0, o["clusterSkipped"]?.int ?? 0)
+        groupSize = max(0, o["groupSize"]?.int ?? 0)
+        groupSec = max(0, o["groupSec"]?.double ?? 0)
         similarity = o["similarity"]?.double
-        belowFloor = o["belowFloor"]?.bool ?? false
+        let below = o["belowFloor"]?.bool ?? false
+        belowFloor = below
         floor = o["floor"]?.double ?? 0.55
+        var reported = (o["gates"]?.array ?? []).compactMap { $0.string }.filter { !$0.isEmpty }
+        // A server that reports belowFloor but no gates list (the first 6.93.0 build) still holds the sample back for the person.
+        if below && !reported.contains("below_floor") { reported.insert("below_floor", at: 0) }
+        gates = reported
         let reason = o["skipped"]?.string
         skipped = (reason?.isEmpty == false) ? reason : nil
     }
 
     /// True only when the server would add at least one sample. Confirm sends the assignment only then.
     var canAdd: Bool { skipped == nil && samples > 0 }
+    /// True when adding needs the person's explicit "Add anyway": Save is not offered.
+    var needsForce: Bool { canAdd && !gates.isEmpty }
 
     /// A server too old to know the flag answers a preview with no `enrolment` block.
-    static let unsupported = "This server cannot add voice samples yet; it needs glasses-server 6.93.0 or newer. The name is applied as text only."
+    static let unsupported = "This server cannot add voice samples yet; it needs COS server 6.93.0 or newer. The name will be applied to this meeting as text when you save."
 
     static func reason(_ code: String?) -> String {
         switch code {
@@ -5977,25 +6013,72 @@ struct MacVoiceAssignment: Sendable, Hashable {
         case "store_unavailable": return "the voice model is not available"
         case "disabled": return "voice samples are switched off on this server"
         case "no_index_mapping": return "this recording has no audio index"
+        case "owner_profile": return "that is the wearer's own profile, and a Mac recording has no wearer microphone"
+        case "profile_full": return "that profile is full of other samples and has none from a Mac recording to replace"
+        case "no_stored_voice": return "that profile has no stored voice to compare with"
+        case "deadline": return "reading the audio took longer than the time limit. Try again and it continues where it stopped"
         case .some(let other) where !other.isEmpty: return "the server could not use this audio (\(other))"
         default: return "the server could not use this audio"
         }
     }
 
-    /// The lines the confirm card shows. Plain sentences: no em dash, no arrow.
+    private static func two(_ value: Double) -> String { String(format: "%.2f", value) }
+
+    /// The lines the confirm card shows. Plain sentences: no em dash, no arrow, and no claim the server did not measure.
     func lines(from voice: String) -> [String] {
         guard canAdd else {
-            return ["No voice samples will be added to \(person): \(Self.reason(skipped)). The name is still applied to this meeting as text."]
+            return ["No voice samples will be added to \(person): \(Self.reason(skipped)). The name will be applied to this meeting as text when you save."]
         }
         var out = ["Adds up to \(samples) voice sample\(samples == 1 ? "" : "s") of \(voice) to \(person)'s profile. Nothing is added until you save."]
+        if attempted > 0 {
+            out.append(clusterSkipped > 0
+                ? "\(clusterSkipped) of \(attempted) stretches of audio sounded like a different voice and were left out."
+                : "\(attempted) stretch\(attempted == 1 ? "" : "es") of audio read, none left out as a different voice.")
+        }
         if let similarity {
-            if belowFloor {
-                out.append("This voice sounds unlike \(person)'s stored profile (similarity \(String(format: "%.2f", similarity)), usual match floor \(String(format: "%.2f", floor))). Call audio often does. Save only if you know it is them.")
-            } else {
-                out.append("Similarity to \(person)'s stored profile: \(String(format: "%.2f", similarity)).")
-            }
+            out.append(belowFloor
+                ? "This voice sounds unlike \(person)'s stored profile (similarity \(Self.two(similarity)), usual match floor \(Self.two(floor)))."
+                : "Similarity to \(person)'s stored profile: \(Self.two(similarity)).")
+        }
+        if gates.contains("mixed_voice") {
+            out.append("This \(voice) holds more than one voice, so the main one may not be \(person).")
+        }
+        if gates.contains("too_little_audio") {
+            out.append("Only \(String(format: "%.1f", groupSec)) seconds of clean audio from this voice.")
         }
         return out
+    }
+}
+
+/// 0.5.351 QA: which flags a confirm sends for a Mac voice, and when it may not be sent at all. Pure, so ModelsContract runs the rules.
+enum MacAssignRequest {
+    /// What the server refuses unless forced. The card replaces Save with a separate "Add anyway" for these.
+    static let gateReasons: Set<String> = ["below_floor", "mixed_voice", "too_little_audio"]
+
+    /// The extra helper flags for this confirm, or nil when it must not be sent.
+    /// - `renameOnly`, or a plan that adds nothing: a text rename, no flags.
+    /// - a plan the server flagged: only an explicit "Add anyway" that the person then confirmed (`armed`) sends it, with `--force`.
+    ///   Anything else is nil: a flagged plan is never saved by a plain Save.
+    /// - an unflagged plan: `--assign-voice-profile`.
+    static func flags(for correction: PendingCorrection, renameOnly: Bool, addAnyway: Bool, armed: Bool) -> [String]? {
+        guard correction.addsVoiceSamples, !renameOnly else { return [] }
+        if correction.needsForceToAddSamples {
+            guard addAnyway, armed else { return nil }
+            return ["--assign-voice-profile", "--force"]
+        }
+        return ["--assign-voice-profile"]
+    }
+}
+
+extension MacVoiceCopy {
+    /// The tail of the notice after a rename that was applied. Never claims more than the server reported.
+    static func appliedNoteForSkip(_ skipped: String?) -> String {
+        switch skipped {
+        case "mac_capture": return " · text only, no voice sample added"
+        case "store_unavailable": return " · the name is applied, but the voice samples could not be saved"
+        case .some(let other) where !other.isEmpty: return " · profile not updated (\(other))"
+        default: return ""
+        }
     }
 }
 
@@ -6432,17 +6515,22 @@ struct MeetingContent: Sendable {
 struct VoiceProfileOption: Identifiable, Sendable, Hashable {
     let name: String
     let embeddings: Int
+    /// The wearer's own profile (server `isOwner`). It drives owner detection, and a Mac recording has no wearer microphone,
+    /// so it is never offered as the person for a Mac voice (0.5.351 QA).
+    let isOwner: Bool
     var id: String { name }
 
     init?(_ value: JSONValue?) {
         guard let o = value?.object, let name = o["name"]?.string else { return nil }
         self.name = name
         embeddings = o["embeddings"]?.int ?? 0
+        isOwner = o["isOwner"]?.bool ?? false
     }
 
-    init(name: String, embeddings: Int) {
+    init(name: String, embeddings: Int, isOwner: Bool = false) {
         self.name = name
         self.embeddings = embeddings
+        self.isOwner = isOwner
     }
 }
 
@@ -7022,6 +7110,17 @@ struct PendingCorrection: Identifiable, Sendable {
     var isDeattribution: Bool { to == nil }
     /// Confirm sends the assignment only when the server said it would add samples.
     var addsVoiceSamples: Bool { macAssignment?.canAdd == true }
+    /// The server holds the samples back unless the person adds them anyway: Save is not offered, "Rename only" is the default.
+    var needsForceToAddSamples: Bool { macAssignment?.needsForce == true }
+    /// A plain Save that also adds samples (nothing flagged).
+    var savesWithSamples: Bool { addsVoiceSamples && !needsForceToAddSamples }
+    /// The same card with a fresher server answer about the assignment (a 409 gate on confirm, after a preview that showed none).
+    func replacingAssignment(_ fresh: MacVoiceAssignment) -> PendingCorrection {
+        var copy = self
+        copy.macAssignment = fresh
+        copy.macAssignUnsupported = false
+        return copy
+    }
     /// What the card says about voice samples, empty when none were asked for.
     var assignLines: [String] {
         if macAssignUnsupported { return [MacVoiceAssignment.unsupported] }
