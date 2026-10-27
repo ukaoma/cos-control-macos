@@ -10,6 +10,10 @@ Usage: python3 Tests/mutate-capture-stall.py [--list] [name-prefix...]
 """
 import os, subprocess, sys, time
 from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import mutate_bounded as bounded
+
+LIMIT = 900   # seconds per lane run; a mutant that deadlocks is killed after this and counts as a kill by timeout
 
 ROOT = Path(__file__).resolve().parent.parent
 CORE, STORE, APP = "Sources/MacRecordingCore.swift", "Sources/MacRecording.swift", "Sources/COSControlApp.swift"
@@ -55,7 +59,7 @@ MUTANTS = [
     ("C35 the pilot limit is shorter", "core", CORE, "static let pilotSeconds: TimeInterval = 7_200", "static let pilotSeconds: TimeInterval = 7_000"),
     ("C36 the notice posts more than once", "core", CORE, "            noticePosted = true; return true", "            return true"),
     ("C37 the notice posts before giving up", "core", CORE, "guard gaveUp, stalledSince != nil, !noticePosted else { return false }", "guard stalledSince != nil, !noticePosted else { return false }"),
-    ("C38 the next stall never posts", "core", CORE, "state.gaveUp = false; state.noticePosted = false", "state.gaveUp = false"),
+    ("C38 the next stall never posts", "core", CORE, "            state.noticePosted = false\n", ""),
     ("C39 the notice body is not the panel line", "core", CORE, "return (\"Mac recording not receiving audio\", text)", "return (\"Mac recording not receiving audio\", \"Stalled\")"),
     ("C40 a quit reads as an incomplete recording", "core", CORE, "if reason == MacRecordingSigterm.reason { return (MacRecordingSigterm.reason, false) }", "if reason == MacRecordingSigterm.reason { return (MacRecordingSigterm.reason, true) }"),
     ("C41 the quit copy claims what was recorded", "core", CORE, "Everything saved up to then is kept.\"\n    struct Result", "Everything recorded up to then is kept.\"\n    struct Result"),
@@ -68,6 +72,18 @@ MUTANTS = [
     ("T3 the reader's first call waits for the disk", "trans", ASK, "        return cached\n    }\n    /// For checks: waits", "        if cached == nil { Thread.sleep(forTimeInterval: 0.6) }\n        return cached\n    }\n    /// For checks: waits"),
     ("T4 the reader reads again on every call", "trans", ASK, "let stale = readAt.map { now().timeIntervalSince($0) >= ttl } ?? true", "let stale = readAt.map { now().timeIntervalSince($0) >= 0 } ?? true"),
     ("T5 the reader never refreshes", "trans", ASK, "let stale = readAt.map { now().timeIntervalSince($0) >= ttl } ?? true", "let stale = readAt.map { now().timeIntervalSince($0) >= 1e12 } ?? true"),
+    # QA2 fixes: the rules (core lane) and the wiring (pins lane).
+    ("C45 a stall notice is never taken back", "core", CORE, "            if state.noticePosted { state.noticeToRemove = true }\n", ""),
+    ("C46 a taken-back notice is taken back again", "core", CORE, "            noticeToRemove = false; return true", "            return true"),
+    ("C47 a stall that posted nothing takes a notice back", "core", CORE, "            if state.noticePosted { state.noticeToRemove = true }\n", "            state.noticeToRemove = true\n"),
+    ("C48 Keep and Retry wait a minute for a running delivery", "core", CORE, "static let detachSeconds: Double = 2", "static let detachSeconds: Double = 60"),
+    ("P35 a late tick speaks for another recording", "pins", STORE, "            guard startAttempt == attempt, phase == \"recording\", manifest?.captureId == id else { return }\n", ""),
+    ("P36 the tick forgets which recording it began in", "pins", STORE, "        let attempt = startAttempt\n", "        let attempt: UUID? = nil\n"),
+    ("P37 a leaked tap can stop a later recording", "pins", STORE, "guard let self, self.manifest?.captureId == id, [\"starting\", \"recording\"].contains(self.phase) else {", "guard let self else {"),
+    ("P38 a leaked tap can stop a recording being saved", "pins", STORE, "self.manifest?.captureId == id, [\"starting\", \"recording\"].contains(self.phase) else {", "self.manifest?.captureId == id, [\"starting\", \"recording\", \"stopping\", \"pending\"].contains(self.phase) else {"),
+    ("P39 the stall notice stays when audio returns", "pins", STORE, "        if watchdog.takeClearedNotice() { stallCleared?(capture) }\n", ""),
+    ("P40 the stall notice outlives Stop", "pins", STORE, "        if watchdog.noticePosted, let id = manifest?.captureId { stallCleared?(id) }\n", ""),
+    ("P41 every stall notice is a new one", "pins", MODEL, "let identifier = \"mac-recording-stalled-\\(captureId)\"", "let identifier = \"mac-recording-stalled-\\(UUID().uuidString)\""),
     # The wiring (pins lane).
     ("P3 a stop does not wait for the writer", "pins", STORE, "        await writerTask?.value; writerTask = nil\n", ""),
     ("P4 a failed start does not wait for the writer", "pins", STORE, "streamContinuation?.finish(); await writerTask?.value; await chunksTask?.value", "streamContinuation?.finish(); await chunksTask?.value"),
@@ -82,7 +98,7 @@ MUTANTS = [
     ("P13 a failed start stays registered", "pins", STORE, "            MacRecordingOpenCaptures.shared.remove(id)\n            let interruption", "            let interruption"),
     ("P14 the signal never ends the process", "pins", STORE, "signal(SIGTERM, SIG_DFL); raise(SIGTERM)", "recordingLog.notice(\"sigterm handled\")"),
     ("P15 the app never installs the handler", "pins", APP, "        MacRecordingSigtermWiring.install()\n", ""),
-    ("P16 a stop leaves the watchdog running", "pins", STORE, "        watchdogTask?.cancel(); watchdogTask = nil; stallLine = nil\n        // QA 0.5.313", "        // QA 0.5.313"),
+    ("P16 a stop leaves the watchdog running", "pins", STORE, "        watchdogTask?.cancel(); watchdogTask = nil; stallLine = nil\n        if watchdog.noticePosted", "        if watchdog.noticePosted"),
     ("P17 an older stored manifest replaces a newer one", "pins", STORE, "        if current.chunks.count > journal.chunks.count { return }\n", ""),
     ("P18 the watchdog judges by the clock, not the writer", "pins", STORE, "let now = Date(), last = progress.lastWrite", "let now = Date(), last = Date()"),
     # QA fixes (pins lane: wiring the store cannot run without the app).
@@ -95,10 +111,10 @@ MUTANTS = [
     ("P25 the recording's start is never taken", "pins", STORE, "            recordingStartedAt = Date()\n", ""),
     ("P26 the tap ignores the start it was given", "pins", CAPTURE, "started = recordingStartedAt ?? now; lastInput = now", "started = now; lastInput = now"),
     ("P27 the tap's limit ignores the shared rule", "pins", CAPTURE, "guard !MacRecordingLimit.reached(startedAt: started) else {", "guard Date().timeIntervalSince(started) < 7_200 else {"),
-    ("P28 an unrecovered stall posts no notification", "pins", STORE, "{ stallNotice?(note.title, note.body) }", "{ _ = note }"),
+    ("P28 an unrecovered stall posts no notification", "pins", STORE, "{ stallNotice?(capture, note.title, note.body) }", "{ _ = note }"),
     ("P29 the stall line and notice are not published after a restart", "pins", STORE, "            if worked != true { watchdog.restartFailed() }\n        }\n        publishStall()\n", "            if worked != true { watchdog.restartFailed() }\n        }\n"),
     ("P30 a late failing start cancels the newer watchdog", "pins", STORE, "            MacRecordingOpenCaptures.shared.remove(id)\n            let interruption", "            MacRecordingOpenCaptures.shared.remove(id)\n            watchdogTask?.cancel(); watchdogTask = nil; stallLine = nil\n            let interruption"),
-    ("P31 the app does not post the stall notice", "pins", MODEL, "macRecording.stallNotice = { [weak self] title, body in self?.meetingAudioNotifier.postRecordingStalled(title: title, body: body) }\n", ""),
+    ("P31 the app does not post the stall notice", "pins", MODEL, "        macRecording.stallNotice = { [weak self] captureId, title, body in self?.meetingAudioNotifier.postRecordingStalled(captureId: captureId, title: title, body: body) }\n", ""),
     ("P32 the Parakeet row reads the disk eagerly", "pins", ASK, "freeBytes: @autoclosure () -> Int64?) -> ParakeetRowState {", "freeBytes: Int64?) -> ParakeetRowState {"),
     ("P33 the free space is read on the calling thread", "pins", ASK, "var freeBytes: () -> Int64? = { FreeSpaceReader.shared.value() }", "var freeBytes: () -> Int64? = { (try? URL(fileURLWithPath: NSHomeDirectory()).resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]))?.volumeAvailableCapacityForImportantUsage }"),
     ("P34 the store runs its own writer loop", "pins", STORE, "                await MacRecordingWriter.run(stream: stream, spool: spool, captureId: id, progress: progress,", "                await MacRecordingWriterX.run(stream: stream, spool: spool, captureId: id, progress: progress,"),
@@ -106,19 +122,19 @@ MUTANTS = [
 
 def run(lane):
     if lane == "pins":
-        return subprocess.run(["/usr/bin/python3", str(ROOT / "Tests/capture-stall-pins.py"), str(ROOT)], capture_output=True, text=True)
+        return bounded.run(["/usr/bin/python3", str(ROOT / "Tests/capture-stall-pins.py"), str(ROOT)], 60)
     if lane == "trans":
         for _ in range(40):
-            r = subprocess.run(["zsh", str(ROOT / "Tests/run-transcription-settings.sh")], cwd=ROOT, capture_output=True, text=True)
+            r = bounded.run(["zsh", str(ROOT / "Tests/run-transcription-settings.sh")], LIMIT, cwd=ROOT)
             text = r.stdout + r.stderr
-            if r.returncode == 75 or "lock busy" in text or "compile-bounded: refused" in text:
+            if r.returncode == 75 or "lock busy" in text or "compile-bounded: stopped" in text or "compile-bounded: refused" in text:
                 time.sleep(60); continue
             return r
         return r
     for _ in range(40):   # exit 75 / "lock busy" / "refused" is a wait, never a kill
-        r = subprocess.run(["zsh", str(ROOT / "Tests/run-mac-recording.sh")], cwd=ROOT, env=dict(os.environ, COS_MAC_REC_LANE="core"), capture_output=True, text=True)
+        r = bounded.run(["zsh", str(ROOT / "Tests/run-mac-recording.sh")], LIMIT, cwd=ROOT, env=dict(os.environ, COS_MAC_REC_LANE="core"))
         text = r.stdout + r.stderr
-        if r.returncode == 75 or "lock busy" in text or "compile-bounded: refused" in text:
+        if r.returncode == 75 or "lock busy" in text or "compile-bounded: stopped" in text or "compile-bounded: refused" in text:
             time.sleep(60); continue
         return r
     return r
@@ -134,12 +150,15 @@ if "--list" in sys.argv:
     for m in MUTANTS: print(m[0])
     sys.exit(0)
 chosen = [m for m in MUTANTS if not args or any(m[0].startswith(a) for a in args)]
+_sha = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+_dirty = subprocess.run(["git", "-C", str(ROOT), "status", "--porcelain"], capture_output=True, text=True).stdout.strip().splitlines()
+print(f"gate header: mutate-capture-stall.py sha={_sha} dirty_files={len(_dirty)} started={time.strftime('%Y-%m-%d %H:%M:%S %Z')} per-mutant limit={LIMIT}s", flush=True)
 for lane in sorted({m[1] for m in chosen}):
     base = run(lane)
     if base.returncode != 0:
         print(f"BASELINE RED ({lane}):\n{base.stdout[-2000:]}{base.stderr[-2000:]}"); sys.exit(2)
     print(f"baseline green: {lane}: " + (base.stdout.strip().splitlines() or [""])[-1][:120])
-killed = survivors = infra = 0
+killed = survivors = infra = timeouts = 0
 for name, lane, rel, old, new in chosen:
     path = ROOT / rel
     src = path.read_text()
@@ -150,7 +169,9 @@ for name, lane, rel, old, new in chosen:
         r = run(lane)
         out = r.stdout + r.stderr
         line = named(out)
-        if r.returncode != 0 and line:
+        if getattr(r, "timed_out", False):
+            killed += 1; timeouts += 1; print(f"{name}: killed by TIMEOUT after {LIMIT} s (the mutant hangs; no named check)")
+        elif r.returncode != 0 and line:
             killed += 1; print(f"{name}: killed by {line}")
         elif r.returncode != 0:
             infra += 1; print(f"{name}: INFRASTRUCTURE (exit {r.returncode}, no named check)\n{out[-800:]}")
@@ -159,5 +180,5 @@ for name, lane, rel, old, new in chosen:
     finally:
         path.write_text(src)
         assert path.read_text() == src, f"restore failed for {rel}"
-print(f"capture stall mutants: {killed} killed, {survivors} survived, {infra} infrastructure, of {len(chosen)}")
+print(f"capture stall mutants: {killed} killed ({timeouts} by timeout), {survivors} survived, {infra} infrastructure, of {len(chosen)}")
 sys.exit(1 if survivors or infra else 0)

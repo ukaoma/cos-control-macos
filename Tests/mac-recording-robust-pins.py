@@ -174,7 +174,7 @@ pin('self.error = ["recording", "stopping"].contains(self.phase) && self.deliver
     "a passing failure while recording or stopping never paints the red line; a real one and any failure after the capture is pending still do (quick-save QA W6)")
 pin("self.deliveryFailureTransient = false; self.quietSince = nil" in deliver
     and deliver.index("self.deliveryFailureTransient = false") < deliver.index("defer {") and "self.deliveryWake && (!failed || self.deliveryFailureTransient)" in deliver
-    and "self.deliveryTask = nil; self.waitingToRetry = false" in deliver, "delivery starts clean and ends clean",
+    and "if self.deliveryToken == token {\n                    self.deliveryTask = nil; self.waitingToRetry = false" in deliver, "delivery starts clean and ends clean",
     "a new delivery starts with no stale passing flag (QA W7); a wake that arrived during a passing failure still runs (QA W6); the wait mark ends with the delivery")
 pin("deliveryPaused = false; deliveryFailureTransient = false" in start and "deliveryFailureTransient = false\n        if let id = manifest?.captureId { MacRecordingOpenCaptures" in finish,
     "stale passing flag reset on start and stop", "a passing failure from an earlier recording never speaks for this one (quick-save QA W7)")
@@ -217,11 +217,18 @@ canKeep = between(store, "    var canKeepForLater: Bool {", "    func keepSilent
 pin("stopped: manifest?.stopped == true,\n                                                   delivering: deliveryTask != nil, waiting: quietWaitControls)" in canKeep, "keep offered in a quiet wait",
     "Keep audio for later is offered while a slow quiet retry runs (quick-save QA W4)")
 keep = between(store, "    func keepSilentAudioForLater() async {", "    func retryNow() async {")
-pin("if let delivering = deliveryTask { deliveryWake = false; delivering.cancel(); await delivering.value }" in keep and keep.index("delivering.cancel()") < keep.index("recoverable = retained"),
+pin("await detachDelivery()" in keep and keep.index("await detachDelivery()") < keep.index("recoverable = retained"),
     "keep ends the delivery first", "Keep audio for later during a quiet wait ends the running delivery before it releases the capture")
+detach = between(store, "    private func detachDelivery() async {", "    func deliverPending() {")
+pin("delivering.cancel()" in detach and "MacRecordingBounded.run(seconds: MacRecordingSaveRetry.detachSeconds) { await delivering.value }" in detach
+    and detach.index("delivering.cancel()") < detach.index("MacRecordingBounded.run(") < detach.index("deliveryToken = nil; deliveryTask = nil; waitingToRetry = false"),
+    "detach is prompt", "Keep and Retry cancel the delivery, wait only a couple of seconds for it, then free Record and orphan whatever is still running (QA2 W-C)")
 retry = between(store, "    func retryNow() async {", "    func deliverPending() {")
-pin("guard quietWaitControls else { return }" in retry and "delivering.cancel(); await delivering.value" in retry and "deliverPending()" in retry.split("await delivering.value", 1)[1],
+pin("guard quietWaitControls else { return }" in retry and "await detachDelivery()" in retry and "deliverPending()" in retry.split("await detachDelivery()", 1)[1],
     "retry now", "Retry during a quiet wait ends the wait and tries again at once")
 pin("if !retained.isEmpty, !store.canStart, let reason = store.recoverUnavailable {" in panel and panel.count("Text(reason)") == 1, "recover says why",
     "a grayed-out Recover shows its reason once under the buttons")
+pin("let token = UUID(); deliveryToken = token" in deliver and deliver.count("guard self.deliveryToken == token else { return }") == 3 and "} catch { guard self.deliveryToken == token else { return }" in deliver,
+    "a detached delivery changes nothing", "after Keep or Retry detaches it, a delivery whose call comes back late touches neither the manifest, the saved state nor the error line (QA2 W-C)")
+pin(store_src.count("COSPalette.ink") == 0 and "Color.primary" in panel, "adaptive text in the panel", "the panel's title, headline and sound line use the adaptive text colour, readable in dark mode (QA2 W-D)")
 print(f"mac recording robust pins: {passed} passed")

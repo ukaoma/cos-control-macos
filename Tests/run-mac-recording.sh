@@ -11,19 +11,19 @@ COS_COMPILE_PROFILE=bounded /usr/bin/python3 "$ROOT/Tests/kit-compile.py" "$ROOT
 OUT="$("$DIR/checks")" || { print -r -- "$OUT"; exit 1; }
 print -r -- "$OUT"
 COUNT="${${OUT##*checks: }%% passed*}"
-(( COUNT >= 12840 )) || { print -u2 "Mac recording core checks ran only $COUNT"; exit 1; }
+(( COUNT >= 12844 )) || { print -u2 "Mac recording core checks ran only $COUNT"; exit 1; }
 fi
 if [[ "$LANE" == "core" ]]; then exit 0; fi
 # 0.5.334: the hearing check, the fail-fast and Discard, wired (rules above, wiring here).
 OUT="$(/usr/bin/python3 "$ROOT/Tests/mac-recording-robust-pins.py" "$ROOT")" || { print -r -- "$OUT"; exit 1; }
 print -r -- "$OUT"
 COUNT="${${OUT##*pins: }%% passed*}"
-(( COUNT >= 102 )) || { print -u2 "mac recording robust pins ran only $COUNT (expected at least 102)"; exit 1; }
+(( COUNT >= 106 )) || { print -u2 "mac recording robust pins ran only $COUNT (expected at least 106)"; exit 1; }
 # 0.5.351 (mac_b0bd6732): the capture stall fix's wiring (writer off the main actor, watchdog, SIGTERM). Mutants: Tests/mutate-capture-stall.py.
 OUT="$(/usr/bin/python3 "$ROOT/Tests/capture-stall-pins.py" "$ROOT")" || { print -r -- "$OUT"; exit 1; }
 print -r -- "$OUT"
 COUNT="${${OUT##*pins: }%% passed*}"
-(( COUNT >= 53 )) || { print -u2 "capture stall pins ran only $COUNT (expected at least 53)"; exit 1; }
+(( COUNT >= 57 )) || { print -u2 "capture stall pins ran only $COUNT (expected at least 57)"; exit 1; }
 if [[ "$LANE" == "pins" ]]; then exit 0; fi
 # 0.5.310: the Meetings row reads the store's paused state (the label rule itself is checked above). Source pins only:
 # the store needs the full app to run, so these prove the wiring exists, not its runtime behaviour.
@@ -31,7 +31,7 @@ python3 - "$ROOT/Sources/MacRecording.swift" "$ROOT/Sources/ControllerModel.swif
 import sys
 store, model = (open(p).read() for p in sys.argv[1:3])
 catch = store[store.index("    func deliverPending() {"):store.index("protocol MacCaptureSession")]
-assert "} catch { failed = true; self.deliveryPaused = true;" in catch, "a failed delivery must mark the row paused"
+assert "failed = true; self.deliveryPaused = true;" in catch, "a failed delivery must mark the row paused"
 assert catch.index("self.deliveryPaused = false") < catch.index("do {"), "a new delivery attempt must clear the paused state first"
 assert "paused: macRecording.deliveryPaused, slow: macRecording.slowSave)" in model, "the Meetings row must pass the store's paused state to its label"
 print("PASS Mac recording paused-delivery wiring")

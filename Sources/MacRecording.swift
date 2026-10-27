@@ -184,12 +184,17 @@ final class MacRecordingStore: ObservableObject {
     /// 0.5.351 (QA W4): when this recording began, handed to every tap so a restart does not restart the two-hour clock.
     private var recordingStartedAt = Date()
     /// 0.5.351 (QA W6): title and body of the one notification a stall that could not be recovered posts.
-    var stallNotice: ((String, String) -> Void)?
+    var stallNotice: ((String, String, String) -> Void)?
+    /// 0.5.351 (QA2): audio came back, or the person stopped: take that capture's stall notification out of Notification Center.
+    var stallCleared: ((String) -> Void)?
     /// 0.5.351: the watchdog's line while no chunk is being written (MacRecordingWatchdog.line); nil otherwise.
     @Published private(set) var stallLine: String?
     private var streamContinuation: AsyncStream<MacRecordingChunk>.Continuation?
     private var deliveryTask: Task<Void, Never>?
     private var deliveryWake = false
+    /// Names the running delivery. Keep and Retry detach it (QA2 W-C): a delivery whose token is no longer current changes
+    /// nothing on the store, whether or not its helper call has come back yet.
+    private var deliveryToken: UUID?
     private var instance: String?
     private var startAttempt: UUID?
     private var captureInterruption: String?
@@ -406,8 +411,14 @@ final class MacRecordingStore: ObservableObject {
             return false
         }, failure: { [weak self] reason in
             Task { @MainActor in
+                // A tap Stop gave up on (its 5 s bound) can fail long after; it must never stop a later recording or
+                // relabel the one the person just stopped. Only the capture this tap belongs to, while it records.
+                guard let self, self.manifest?.captureId == id, ["starting", "recording"].contains(self.phase) else {
+                    recordingLog.notice("capture failure from a tap that no longer belongs to the recording ignored")
+                    return
+                }
                 recordingLog.error("capture failed: \(reason, privacy: .public)")
-                self?.captureInterruption = reason; await self?.stop()
+                self.captureInterruption = reason; await self.stop()
             }
         }, probe: { [weak self] sawSignal in
             Task { @MainActor in await self?.hearingProbe(sawSignal, captureId: id, allMacAudio: source.isAllMacAudio) }
@@ -443,6 +454,7 @@ final class MacRecordingStore: ObservableObject {
     }
     private func watchdogTick(id: String, source: MacAudioSource, progress: MacRecordingProgress) async {
         guard phase == "recording", manifest?.captureId == id else { return }
+        let attempt = startAttempt
         let now = Date(), last = progress.lastWrite
         let action = MacRecordingWatchdog.step(&watchdog, now: now, lastChunk: last, restartInFlight: restartInFlight)
         stallLine = MacRecordingWatchdog.line(watchdog)
@@ -463,6 +475,9 @@ final class MacRecordingStore: ObservableObject {
                 return done
             }
             recordingLog.notice("watchdog: restart \(worked == true ? "ok" : (worked == nil ? "timed out" : "failed"), privacy: .public)")
+            // The restart can outlast Stop, and a new recording can have started since: this stall belongs to the recording
+            // that began it, or to nobody (QA2 W-A).
+            guard startAttempt == attempt, phase == "recording", manifest?.captureId == id else { return }
             if worked != true { watchdog.restartFailed() }
         }
         publishStall()
@@ -470,7 +485,9 @@ final class MacRecordingStore: ObservableObject {
     /// The panel's line, and (once per stall) the notification: the panel is usually closed during a call.
     private func publishStall() {
         stallLine = MacRecordingWatchdog.line(watchdog)
-        if watchdog.takeGiveUpNotice(), let note = MacRecordingWatchdog.notification(watchdog) { stallNotice?(note.title, note.body) }
+        guard let capture = manifest?.captureId else { return }
+        if watchdog.takeGiveUpNotice(), let note = MacRecordingWatchdog.notification(watchdog) { stallNotice?(capture, note.title, note.body) }
+        if watchdog.takeClearedNotice() { stallCleared?(capture) }
     }
     /// A restart's own work has returned (in time or late). Only then may the next restart start; a restart that Stop or a
     /// newer start has made stale leaves the flag alone.
@@ -513,6 +530,7 @@ final class MacRecordingStore: ObservableObject {
         recordingLog.notice("stop")
         previewTask?.cancel(); previewTask = nil
         watchdogTask?.cancel(); watchdogTask = nil; stallLine = nil
+        if watchdog.noticePosted, let id = manifest?.captureId { stallCleared?(id) }
         // QA 0.5.313: an interruption is written to the journal and shown once, by MacRecordingInterruption.line (muted for
         // the two-hour limit). Copying it into `error` too showed the same news again in red, and nothing cleared it.
         // 0.5.351 (QA W2): a tap whose capture queue is wedged must not hold Stop. After the bound the stream is finished, the
@@ -798,7 +816,7 @@ final class MacRecordingStore: ObservableObject {
         guard canKeepForLater else { return }
         recordingLog.notice("keep for later noSpeech=\(self.noSpeech) paused=\(self.deliveryPaused) quietWait=\(self.quietWaitControls)")
         // During a quiet wait the delivery is still running: end it first (its audio is untouched; the journal stays unsaved).
-        if let delivering = deliveryTask { deliveryWake = false; delivering.cancel(); await delivering.value }
+        await detachDelivery()
         slowTask?.cancel(); slowTask = nil; slowSave = false
         do {
             let retained = try await spool.recoverable()
@@ -812,11 +830,21 @@ final class MacRecordingStore: ObservableObject {
     }
     /// 0.5.351 (quick-save QA W4): Retry during a quiet wait tries now instead of waiting out the pause.
     func retryNow() async {
-        if let delivering = deliveryTask {
+        if deliveryTask != nil {
             guard quietWaitControls else { return }
-            deliveryWake = false; delivering.cancel(); await delivering.value
+            await detachDelivery()
         }
         deliverPending()
+    }
+    /// QA2 W-C: ends the running delivery at once. It is cancelled (the helper call checks for that and stops its process), and
+    /// waited for only briefly: a call that does not come back is left running on its own, with a token that no longer matches,
+    /// so it cannot touch the store, and Record is free now instead of up to 95 s later.
+    private func detachDelivery() async {
+        guard let delivering = deliveryTask else { return }
+        deliveryWake = false
+        delivering.cancel()
+        _ = await MacRecordingBounded.run(seconds: MacRecordingSaveRetry.detachSeconds) { await delivering.value }
+        deliveryToken = nil; deliveryTask = nil; waitingToRetry = false
     }
     func deliverPending() {
         guard phase != "discarding" else { return }
@@ -824,6 +852,7 @@ final class MacRecordingStore: ObservableObject {
         if deliveryTask != nil { deliveryWake = true; return }
         guard let id = manifest?.captureId else { return }
         deliveryWake = false
+        let token = UUID(); deliveryToken = token
         deliveryTask = Task { [weak self] in
             guard let self else { return }
             var failed = false
@@ -833,10 +862,12 @@ final class MacRecordingStore: ObservableObject {
             // Quick-save QA W7: a passing failure from an earlier delivery never speaks for this one.
             self.deliveryFailureTransient = false; self.quietSince = nil
             defer {
-                self.deliveryTask = nil; self.waitingToRetry = false
-                // A wake that arrived during a passing failure (Stop while a chunk was failing) still runs: the red line was
-                // suppressed on the promise that the next delivery tries again.
-                if self.deliveryWake && (!failed || self.deliveryFailureTransient) { self.deliveryWake = false; self.deliverPending() }
+                if self.deliveryToken == token {
+                    self.deliveryTask = nil; self.waitingToRetry = false
+                    // A wake that arrived during a passing failure (Stop while a chunk was failing) still runs: the red line was
+                    // suppressed on the promise that the next delivery tries again.
+                    if self.deliveryWake && (!failed || self.deliveryFailureTransient) { self.deliveryWake = false; self.deliverPending() }
+                }
             }
             do {
                 while !Task.isCancelled {
@@ -851,7 +882,9 @@ final class MacRecordingStore: ObservableObject {
                               receipt["canonical"]?.bool != nil else {
                             throw MacRecordingError.unavailable("The server did not acknowledge this exact audio chunk. Its local copy is retained.")
                         }
-                        current = try await self.spool.acknowledge(id, index: chunk.index); self.manifest = current
+                        current = try await self.spool.acknowledge(id, index: chunk.index)
+                        guard self.deliveryToken == token else { return }   // detached by Keep or Retry: the journal has the acknowledgement, nothing else changes
+                        self.manifest = current
                         continue
                     }
                     if current.stopped, !current.chunks.isEmpty, !current.saved {
@@ -862,7 +895,9 @@ final class MacRecordingStore: ObservableObject {
                               saved["sourceType"]?.string == "mac_system_audio" else {
                             throw MacRecordingError.unavailable("A saved-meeting receipt was not verified. Audio is retained for recovery.")
                         }
-                        self.manifest = try await self.spool.markSaved(id)
+                        let marked = try await self.spool.markSaved(id)
+                        guard self.deliveryToken == token else { return }
+                        self.manifest = marked
                         self.slowTask?.cancel(); self.slowTask = nil; self.slowSave = false
                         recordingLog.notice("save ok chunks=\(current.chunks.count)")
                         if self.error?.hasPrefix("Delivery paused:") == true { self.error = nil }
@@ -871,7 +906,8 @@ final class MacRecordingStore: ObservableObject {
                     }
                     break
                 }
-            } catch { failed = true; self.deliveryPaused = true; let reason = error.localizedDescription; recordingLog.error("delivery paused: \(reason, privacy: .public)")
+            } catch { guard self.deliveryToken == token else { return }
+                failed = true; self.deliveryPaused = true; let reason = error.localizedDescription; recordingLog.error("delivery paused: \(reason, privacy: .public)")
                 // 0.5.334: no speech is not a paused delivery to retry. The panel offers Discard and says why; no red
                 // "Delivery paused: ... Choose the app" line, and the hand-off stops looking for a meeting.
                 // 0.5.351: while recording or stopping, a passing failure is retried by the next chunk or the delivery after Stop; it shows as "COS is not
@@ -952,7 +988,7 @@ struct MacRecordingPanel: View {
         VStack(alignment: .leading, spacing: 9) {
             HStack {
                 Label(store.isRecording ? "Recording on this Mac" : "Record on Mac · pilot", systemImage: store.isRecording ? "record.circle.fill" : "waveform")
-                    .font(COSType.body(12, weight: .semibold)).foregroundStyle(store.isRecording ? COSPalette.danger : COSPalette.ink)
+                    .font(COSType.body(12, weight: .semibold)).foregroundStyle(store.isRecording ? COSPalette.danger : Color.primary)
                 if store.isRecording {
                     Text(MacRecordingNotice.reminder).font(COSType.body(10.5)).foregroundStyle(.secondary)
                 }
@@ -1004,7 +1040,7 @@ struct MacRecordingPanel: View {
                 // save is slow or stopped on an error (MacRecordingSaveStatus), never through an ordinary save.
                 let line = store.saveLine
                 Text(line.headline).font(COSType.body(11, weight: line.tone == .quiet ? .regular : .semibold))
-                    .foregroundStyle(line.tone == .quiet ? COSPalette.muted : COSPalette.ink)
+                    .foregroundStyle(line.tone == .quiet ? COSPalette.muted : Color.primary)
                     .fixedSize(horizontal: false, vertical: true)
                 if let detail = line.detail {
                     Text(detail).font(COSType.body(11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
@@ -1014,7 +1050,7 @@ struct MacRecordingPanel: View {
                     if let warning = store.signalWarning {
                         Text(warning).font(COSType.body(11, weight: .semibold)).foregroundStyle(COSPalette.danger)
                     } else if store.isRecording {
-                        Text(store.heardSound ? "Sound detected" : "Listening for sound…").font(COSType.body(11)).foregroundStyle(store.heardSound ? COSPalette.ink : COSPalette.muted)
+                        Text(store.heardSound ? "Sound detected" : "Listening for sound…").font(COSType.body(11)).foregroundStyle(store.heardSound ? Color.primary : COSPalette.muted)
                     }
                     if let interruption = value.interruption {
                         let line = MacRecordingInterruption.line(interruption)
@@ -1078,7 +1114,7 @@ struct MacRecordingNoticeCard: View {
     private func scaled(_ value: CGFloat) -> CGFloat { size.map { $0.typeSize(value) } ?? value }
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(MacRecordingNotice.title).font(COSType.body(scaled(12.5), weight: .semibold)).foregroundStyle(COSPalette.ink)
+            Text(MacRecordingNotice.title).font(COSType.body(scaled(12.5), weight: .semibold)).foregroundStyle(Color.primary)
             ForEach(MacRecordingNotice.lines, id: \.self) { line in
                 Text(line).font(COSType.body(scaled(11))).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
