@@ -134,7 +134,8 @@ need("switch MacRecordingRefusal.decide(available: available, currentError: erro
 need("MacRecordingNotice.panelShowsNotice(requested: showingNotice, acknowledged: acknowledged, occupied: store.occupied)" in panel
      and "if noticeVisible {" in panel and "if showingNotice {" not in panel,
      "the panel's notice hides once acknowledged anywhere or once a recording runs")
-need("ForEach(MacRecordingRecoveryPolicy.listed(store.recoverable, current: store.manifest?.captureId)) { value in" in panel
+need("let retained = MacRecordingRecoveryPolicy.listed(store.recoverable, current: store.manifest?.captureId)" in panel
+     and "ForEach(retained) { value in" in panel
      and "store.recoverable.filter" not in panel, "a zero-chunk journal is never offered to Recover (and never deleted)")
 for event in ("prepare failed:", "record refused:", "append failed:", "capture failed:", "start ok", "start failed:", '"stop"',
               "markStopped failed:", "save ok", "recover failed:", "keep for later failed:"):
