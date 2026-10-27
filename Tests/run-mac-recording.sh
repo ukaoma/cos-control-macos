@@ -31,7 +31,7 @@ python3 - "$ROOT/Sources/MacRecording.swift" "$ROOT/Sources/ControllerModel.swif
 import sys
 store, model = (open(p).read() for p in sys.argv[1:3])
 catch = store[store.index("    func deliverPending() {"):store.index("protocol MacCaptureSession")]
-assert "} catch { failed = true; self.deliveryPaused = true;" in catch, "a failed delivery must mark the row paused"
+assert "failed = true; self.deliveryPaused = true;" in catch, "a failed delivery must mark the row paused"
 assert catch.index("self.deliveryPaused = false") < catch.index("do {"), "a new delivery attempt must clear the paused state first"
 assert "paused: macRecording.deliveryPaused, slow: macRecording.slowSave)" in model, "the Meetings row must pass the store's paused state to its label"
 print("PASS Mac recording paused-delivery wiring")
