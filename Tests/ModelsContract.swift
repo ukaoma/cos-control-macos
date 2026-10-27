@@ -4657,6 +4657,8 @@ struct ModelsContract {
         precondition(MacVoiceCopy.withoutForceJargon(nil, fallback: "Y") == "Y" && MacVoiceCopy.withoutForceJargon("", fallback: "Y") == "Y")
         precondition(!MacVoiceCopy.earlierCorrectionNote.lowercased().contains("force") && MacVoiceCopy.earlierCorrectionNote.contains("Nothing was changed"),
                      "the stalled-correction line says what happened and offers nothing Control cannot do")
+        precondition(MacVoiceCopy.earlierCorrectionNote.contains("Restart the COS server, then try again.") && !MacVoiceCopy.earlierCorrectionNote.contains("Re-open"),
+                     "only a server restart clears a stalled correction, so that is the one step the line names")
         precondition(MacVoiceCopy.renameNote.contains("text only") && MacVoiceCopy.renameNote.contains("pick the person"),
                      "the picker note says a typed name is text only and a picked person is how a profile is taught")
         precondition(MacVoiceCopy.typedNote.contains("text only") && MacVoiceCopy.typedNote.contains("No voice sample"))

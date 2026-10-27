@@ -5946,11 +5946,11 @@ enum MacVoiceCopy {
 
     /// 0.5.351 polish: one line for a correction the server held back because an earlier one on this meeting never finished.
     /// The server words this for an API caller ("pass { force: true }"). Control has no such action on this path, so it never repeats it.
-    static let earlierCorrectionNote = "An earlier correction on this meeting never finished, so its files may be part-written. Nothing was changed. Re-open it before trying again."
+    static let earlierCorrectionNote = "An earlier correction on this meeting never finished, so its files may be part-written. Nothing was changed. Restart the COS server, then try again."
 
     /// Server text is written for a caller that can send `{ force: true }`. The only forced actions Control offers are its own
-    /// buttons ("Add anyway", "Apply anyway"), so any server sentence that tells the person to force something is dropped and
-    /// `fallback` is shown instead. Pass "" to get "nothing" back and let the caller choose its own line.
+    /// buttons ("Add anyway", "Apply anyway"), so a server message that tells the person to force something is dropped WHOLE, not
+    /// sentence by sentence, and `fallback` is shown instead. Pass "" to get "nothing" back and let the caller choose its own line.
     static func withoutForceJargon(_ text: String?, fallback: String) -> String {
         guard let text, !text.isEmpty else { return fallback }
         let words = text.lowercased().split(whereSeparator: { !$0.isLetter })
