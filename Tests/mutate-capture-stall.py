@@ -127,14 +127,14 @@ def run(lane):
         for _ in range(40):
             r = bounded.run(["zsh", str(ROOT / "Tests/run-transcription-settings.sh")], LIMIT, cwd=ROOT)
             text = r.stdout + r.stderr
-            if r.returncode == 75 or "lock busy" in text or "compile-bounded: refused" in text:
+            if r.returncode == 75 or "lock busy" in text or "compile-bounded: stopped" in text or "compile-bounded: refused" in text:
                 time.sleep(60); continue
             return r
         return r
     for _ in range(40):   # exit 75 / "lock busy" / "refused" is a wait, never a kill
         r = bounded.run(["zsh", str(ROOT / "Tests/run-mac-recording.sh")], LIMIT, cwd=ROOT, env=dict(os.environ, COS_MAC_REC_LANE="core"))
         text = r.stdout + r.stderr
-        if r.returncode == 75 or "lock busy" in text or "compile-bounded: refused" in text:
+        if r.returncode == 75 or "lock busy" in text or "compile-bounded: stopped" in text or "compile-bounded: refused" in text:
             time.sleep(60); continue
         return r
     return r

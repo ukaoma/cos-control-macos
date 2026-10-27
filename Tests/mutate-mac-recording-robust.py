@@ -161,7 +161,7 @@ def run(lane, root):
     import time
     for _ in range(20):
         r = run_once(lane, root)
-        if r.returncode == 75 or "compile-bounded: refused" in (r.stdout + r.stderr) or "lock busy" in (r.stdout + r.stderr):
+        if r.returncode == 75 or "compile-bounded: refused" in (r.stdout + r.stderr) or "lock busy" in (r.stdout + r.stderr) or "compile-bounded: stopped" in (r.stdout + r.stderr):
             time.sleep(60); continue
         return r
     return r
