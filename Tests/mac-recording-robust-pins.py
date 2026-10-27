@@ -230,5 +230,5 @@ pin("if !retained.isEmpty, !store.canStart, let reason = store.recoverUnavailabl
     "a grayed-out Recover shows its reason once under the buttons")
 pin("let token = UUID(); deliveryToken = token" in deliver and deliver.count("guard self.deliveryToken == token else { return }") == 3 and "} catch { guard self.deliveryToken == token else { return }" in deliver,
     "a detached delivery changes nothing", "after Keep or Retry detaches it, a delivery whose call comes back late touches neither the manifest, the saved state nor the error line (QA2 W-C)")
-pin(store.count("COSPalette.ink") == 0 and "Color.primary" in panel, "adaptive text in the panel", "the panel's title, headline and sound line use the adaptive text colour, readable in dark mode (QA2 W-D)")
+pin(store_src.count("COSPalette.ink") == 0 and "Color.primary" in panel, "adaptive text in the panel", "the panel's title, headline and sound line use the adaptive text colour, readable in dark mode (QA2 W-D)")
 print(f"mac recording robust pins: {passed} passed")

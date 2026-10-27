@@ -134,7 +134,7 @@ MUTANTS = [
     ("Z9 Stop keeps the old passing flag", "pins", STORE, "        deliveryFailureTransient = false\n        if let id = manifest?.captureId { MacRecordingOpenCaptures", "        if let id = manifest?.captureId { MacRecordingOpenCaptures"),
     ("Z10 reconcile replaces the list under a new recording", "pins", STORE, "if !occupied { recoverable = checked }", "recoverable = checked"),
     ("Z11 reconcile asks the server before the sources load", "pins", STORE, "                    serverDiscard = result[\"discard\"]?.bool == true\n", "                    serverDiscard = result[\"discard\"]?.bool == true\n                    _ = await reconciled(recoverable)\n"),
-    ("Z12 Keep leaves the delivery running", "pins", STORE, "        if let delivering = deliveryTask { deliveryWake = false; delivering.cancel(); await delivering.value }\n        slowTask?.cancel()", "        slowTask?.cancel()"),
+    ("Z12 Keep leaves the delivery running", "pins", STORE, "        await detachDelivery()\n        slowTask?.cancel()", "        slowTask?.cancel()"),
     ("Z13 Retry now works outside a quiet wait", "pins", STORE, "            guard quietWaitControls else { return }\n", ""),
     ("Z14 Record names Meetings while the save runs", "pins", STORE, "let stillSaving = deliveryTask != nil && !quietWaitControls", "let stillSaving = false"),
     ("Z15 Recover ignores a recording with no sound", "pins", STORE, "nothingToKeep: noSpeech || manifest?.allDigitalSilence == true)", "nothingToKeep: false)"),
