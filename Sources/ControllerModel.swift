@@ -10382,10 +10382,14 @@ final class ControllerModel: ObservableObject {
         let pendingEarlier = state == "pending_correction"
         let training = result?["training"]?.object
 
-        let serverMessage = result?["message"]?.string
-            ?? result?["error"]?.string
-            ?? response.details["message"]?.string
-            ?? ""
+        // 0.5.351 polish: a server sentence that tells the caller to pass `{ force: true }` is API wording, and this card has no such
+        // control. It is dropped here, so the branches below fall back to Control's own line.
+        let serverMessage = MacVoiceCopy.withoutForceJargon(
+            result?["message"]?.string
+                ?? result?["error"]?.string
+                ?? response.details["message"]?.string
+                ?? "",
+            fallback: "")
         let message: String
         if state == "meeting_finalizing" {
             message = "This meeting is still being saved. Try again in a minute."
@@ -10394,7 +10398,7 @@ final class ControllerModel: ObservableObject {
         } else if state == "direct_library_read_only" {
             message = "This meeting comes from a read-only library, so its speakers cannot be corrected here."
         } else if pendingEarlier {
-            message = "An earlier correction on this meeting never finished, so its files may be part-written. Re-open it before trying again."
+            message = MacVoiceCopy.earlierCorrectionNote
         } else if refused {
             message = serverMessage.isEmpty
                 ? "The server declined this, so nothing was applied."
@@ -10488,9 +10492,14 @@ final class ControllerModel: ObservableObject {
                 // layer down, reintroduced here.
                 let state = response.details["state"]?.string ?? ""
                 guard state == "applied" else {
-                let detail = response.details["result"]?.object?["message"]?.string
+                // 0.5.351 polish: the server's sentence for a stalled earlier correction says to pass `{ force: true }`, and the
+                // assignment variant says to do a text-only rename with it first. Control offers neither, so that text never reaches
+                // the person; see MacVoiceCopy.withoutForceJargon.
+                let rawDetail = response.details["result"]?.object?["message"]?.string
                         ?? response.details["result"]?.object?["error"]?.string
                         ?? response.details["message"]?.string
+                let detailText = MacVoiceCopy.withoutForceJargon(rawDetail, fallback: "")
+                let detail: String? = detailText.isEmpty ? nil : detailText
                     // 0.5.351 QA: the server flagged the voice at confirm (the profile or the audio moved since the preview). Show the
                     // numbers it measured now, with Rename only as the default and "Add anyway" as the separate choice.
                     if let gate = response.details["reason"]?.string, MacAssignRequest.gateReasons.contains(gate),
@@ -10504,7 +10513,7 @@ final class ControllerModel: ObservableObject {
                     case "route_missing":
                         reviewError = "This needs glasses-server 6.21.18 or newer — use Update Server."
                     case "pending_correction":
-                        reviewError = detail ?? "An earlier correction on this meeting never finished."
+                        reviewError = MacVoiceCopy.earlierCorrectionNote
                     case "meeting_finalizing":
                         reviewError = "This meeting is still being saved. Try again in a minute."
                     default:
