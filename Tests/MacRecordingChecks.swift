@@ -801,12 +801,18 @@ func blockMainThread(timeout: TimeInterval, until condition: @escaping @Sendable
             try await quitSpool.write(recordingOne); try await quitSpool.write(stoppingOne)
             let quitOpen = MacRecordingOpenCaptures()
             quitOpen.add(recordingOne.id, spool: quitSpool); quitOpen.add(stoppingOne.id, spool: quitSpool)
-            quitOpen.beginStopping(stoppingOne.id); quitOpen.beginStopping("mac_00000099-bbbb-4bbb-8bbb-123456789abc")
+            let lateOne = quitJournal(9)
+            try await quitSpool.write(lateOne)
+            quitOpen.beginStopping(stoppingOne.id); quitOpen.beginStopping(lateOne.id)   // the second is not registered yet: ignored
             let closedRunning = await quitOpen.closeForExit(recordingOne.id), closedStopping = await quitOpen.closeForExit(stoppingOne.id)
             check(closedRunning && closedStopping, "quit: both captures are closed")
             let quitRecording = try await quitSpool.snapshot(recordingOne.id), quitStopping = try await quitSpool.snapshot(stoppingOne.id)
             check(quitRecording.stopped && quitRecording.interruption == MacRecordingSigterm.reason, "quit: a recording that was running says it was quit")
             check(quitStopping.stopped && quitStopping.interruption == nil, "quit: a recording the person already stopped is closed without saying it was quit")
+            quitOpen.add(lateOne.id, spool: quitSpool)
+            let closedLate = await quitOpen.closeForExit(lateOne.id)
+            let lateSnapshot = try await quitSpool.snapshot(lateOne.id)
+            check(closedLate && lateSnapshot.interruption == MacRecordingSigterm.reason, "quit: a stopping mark for a capture that was not registered is ignored")
             quitOpen.remove(stoppingOne.id)
             quitOpen.add(stoppingOne.id, spool: quitSpool)
             let closedAgain = await quitOpen.closeForExit(stoppingOne.id)
@@ -1044,10 +1050,16 @@ func blockMainThread(timeout: TimeInterval, until condition: @escaping @Sendable
             for index in 0..<3 { _ = try await rspool.append(.init(index: index, pcm: tiny, endFrame: (index + 1) * 160), captureId: id) }
             _ = try await rspool.acknowledge(id, index: 0); _ = try await rspool.acknowledge(id, index: 1)
             await rejects("reconcile: a journal with an unacknowledged chunk is never marked saved") { _ = try await rspool.markSavedOnServer(id) }
+            // The spool's own guard speaks first; the journal validator behind it would also refuse, with a different sentence.
+            var refusalText = ""
+            do { _ = try await rspool.markSavedOnServer(id) } catch { refusalText = error.localizedDescription }
+            check(refusalText == "Recording still has pending audio.", "reconcile: the unacknowledged refusal is the spool's own, not the validator's backstop")
             check(try await MacRecordingSpool(root: rroot).snapshot(id).saved == false, "reconcile: the refused mark changed nothing on disk")
             _ = try await rspool.acknowledge(id, index: 2)
             let wavs = try fm.contentsOfDirectory(atPath: rroot.appendingPathComponent(id).path).filter { $0.hasSuffix(".wav") }.sorted()
-            let marked = try await rspool.markSavedOnServer(id)
+            let markedAttempt = try? await rspool.markSavedOnServer(id)
+            check(markedAttempt != nil, "reconcile: a fully acknowledged journal can be marked")
+            let marked = markedAttempt!
             check(marked.saved && marked.stopped && marked.acknowledged == 3 && marked.chunks.count == 3, "reconcile: an unstopped, fully acknowledged journal is marked stopped and saved")
             check(try await MacRecordingSpool(root: rroot).recoverable().isEmpty, "reconcile: a marked journal is no longer offered for Recover, after a restart too")
             check(try fm.contentsOfDirectory(atPath: rroot.appendingPathComponent(id).path).filter { $0.hasSuffix(".wav") }.sorted() == wavs && wavs.count == 3,

@@ -65,7 +65,7 @@ MUTANTS = [
     # QA W1 (transcription lane: behaviour of the free-space read, compiles MeetingAskCore and its checks).
     ("T1 the store reads the disk before it knows it needs it", "trans", ASK, "return Transcription.parakeetState(settings, installing: installing, recording: recording, freeBytes: freeBytes())", "let eager = freeBytes(); return Transcription.parakeetState(settings, installing: installing, recording: recording, freeBytes: eager)"),
     ("T2 the Parakeet rule reads the disk for every row", "trans", ASK, "let parakeet = settings.parakeet\n        if installing || parakeet.serverInstalling { return .installing(progressLine(parakeet)) }", "let parakeet = settings.parakeet; _ = freeBytes()\n        if installing || parakeet.serverInstalling { return .installing(progressLine(parakeet)) }"),
-    ("T3 the reader waits for the disk", "trans", ASK, "            queue.async { [self] in\n                let fresh = read()", "            queue.sync { [self] in\n                let fresh = read()"),
+    ("T3 the reader's first call waits for the disk", "trans", ASK, "        return cached\n    }\n    /// For checks: waits", "        if cached == nil { Thread.sleep(forTimeInterval: 0.6) }\n        return cached\n    }\n    /// For checks: waits"),
     ("T4 the reader reads again on every call", "trans", ASK, "let stale = readAt.map { now().timeIntervalSince($0) >= ttl } ?? true", "let stale = readAt.map { now().timeIntervalSince($0) >= 0 } ?? true"),
     ("T5 the reader never refreshes", "trans", ASK, "let stale = readAt.map { now().timeIntervalSince($0) >= ttl } ?? true", "let stale = readAt.map { now().timeIntervalSince($0) >= 1e12 } ?? true"),
     # The wiring (pins lane).

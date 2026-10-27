@@ -49,7 +49,7 @@ MUTANTS = [
     ("W5 the zeros are delivered for saving", "pins", STORE, "        if !failFast { deliverPending() }\n", "        deliverPending()\n"),
     ("W6 the fail-fast leaves the capture pending", "pins", STORE, "        await stop()\n        await discardNoSound(cannotHear: true)\n", "        await stop()\n"),
     ("W7 the panel discards without a confirm", "pins", STORE, "Button(MacRecordingDiscard.buttonTitle) { confirmDiscard = true }", "Button(MacRecordingDiscard.buttonTitle) { Task { await store.discardNoSound() } }"),
-    ("W8 Retry saving is back for no speech", "pins", STORE, "                        if store.canRetrySave {\n                            Button(\"Retry saving retained audio\") { store.deliverPending() }\n                        }", "                        Button(\"Retry saving retained audio\") { store.deliverPending() }"),
+    ("W8 Retry saving is back for no speech", "pins", STORE, "                        if store.canRetrySave {\n                            Button(\"Retry saving retained audio\") { Task { await store.retryNow() } }\n                        }", "                        Button(\"Retry saving retained audio\") { Task { await store.retryNow() } }"),
     ("W9 delivery restarts during a discard", "pins", STORE, "        guard phase != \"discarding\" else { return }\n", ""),
     ("W10 no speech keeps the red dead-end line", "pins", STORE, "                if self.noSpeech { self.noMeetingCaptureIDs.insert(id); self.error = nil }\n                else { self.error =", "                do { self.error ="),
     ("W11 the stranded row keeps a Save that cannot work", "pins", MEET, "                    if MacRecordingDiscard.strandedOffersDiscard(sessionId: capture.sessionId, transcriptState: capture.transcriptState, canSave: capture.canSave) {", "                    if false {"),
@@ -147,7 +147,7 @@ def run(lane, root):
     import time
     for _ in range(20):
         r = run_once(lane, root)
-        if r.returncode == 75 or "compile-bounded: refused" in (r.stdout + r.stderr):
+        if r.returncode == 75 or "compile-bounded: refused" in (r.stdout + r.stderr) or "lock busy" in (r.stdout + r.stderr):
             time.sleep(60); continue
         return r
     return r
@@ -159,6 +159,7 @@ def run_once(lane, root):
         build = subprocess.run(["/usr/bin/python3", str(root / "Tests/kit-compile.py"), str(root / "Tests/compile-guard.sh"), "swiftc",
             "-target", "arm64-apple-macosx14.0", "-swift-version", "6", "-strict-concurrency=complete",
             str(root / "HelperSources/main.swift"), str(root / "HelperSources/ProviderStatusCore.swift"), str(root / "HelperSources/PairingCore.swift"),
+            str(root / "HelperSources/SessionUsageCollector.swift"), str(root / "Sources/SessionUsageCore.swift"),
             str(root / "Sources/WorkSessionLinks.swift"), "-framework", "Security", "-framework", "AppKit",
             "-o", out + "/cos-control-helper"], cwd=root, capture_output=True, text=True)
         if build.returncode != 0:
