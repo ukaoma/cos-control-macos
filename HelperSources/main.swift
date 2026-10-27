@@ -20504,9 +20504,12 @@ final class COSControlHelper {
         // 400 = confirmation gate (carries the full preview).
         // 409 carries a reason: finalization, stale source, read-only, or an unfinished correction.
         // 422 = the server declined, e.g. the label is not in this meeting.
-        let gated = response.status == 400
+        // 0.5.351 QA: a 400 that names why the request does not apply (a Mac assignment for something that is not an unnamed
+        // Voice N, or not a Mac recording) is the server's answer, not its confirmation gate and not "needs a newer server".
+        let notApplicable = response.status == 400 && ["not_a_voice_label", "not_mac_capture"].contains((body["reason"] as? String) ?? "")
+        let gated = response.status == 400 && !notApplicable
         let pending = response.status == 409
-        let declined = response.status == 422 || unknownProfile
+        let declined = response.status == 422 || unknownProfile || notApplicable
         if response.status != 200 && !gated && !pending && !declined {
             let reason = (body["message"] as? String) ?? (body["error"] as? String)
                 ?? "Request failed (\(response.status))"

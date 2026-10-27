@@ -4638,61 +4638,116 @@ struct ModelsContract {
         precondition(WorkMeetingPeople.isPlaceholder("voice 2") && WorkMeetingPeople.isPlaceholder("voice 12"), "a Voice label is not a person to link work to")
         precondition(!WorkMeetingPeople.isPlaceholder("voiceover studio"))
         // Copy: no em dash, no arrow.
-        for copy in [MacVoiceCopy.renameNote, MacVoiceCopy.menuTitle, MacVoiceCopy.menuItem("Voice 2"), MacVoiceCopy.unattributedNote] {
+        for copy in [MacVoiceCopy.renameNote, MacVoiceCopy.renameNoteNotVoice, MacVoiceCopy.menuTitle, MacVoiceCopy.menuItem("Voice 2"), MacVoiceCopy.unattributedNote,
+                     MacVoiceCopy.renameOnlyTitle, MacVoiceCopy.addAnywayTitle, MacVoiceCopy.addAnywayConfirmTitle, MacVoiceCopy.backTitle,
+                     MacVoiceCopy.holdNote(person: "Dana Reyes"), MacVoiceCopy.addAnywayConfirmNote(person: "Dana Reyes", samples: 3)] {
             precondition(!copy.contains("\u{2014}") && !copy.contains("\u{2192}"), "Mac voice copy has no em dash or arrow")
         }
         precondition(MacVoiceCopy.renameNote.contains("text only") && MacVoiceCopy.renameNote.contains("pick the person"),
                      "the picker note says a typed name is text only and a picked person is how a profile is taught")
         precondition(MacVoiceCopy.typedNote.contains("text only") && MacVoiceCopy.typedNote.contains("No voice sample"))
+        // W4: only an unnamed Voice N can add samples, so any other row's note must not promise it.
+        precondition(MacVoiceCopy.renameNote(forLabel: "Voice 2") == MacVoiceCopy.renameNote)
+        for other in ["Ext", "Unidentified 2", "Dana Reyes", "Voice 100", "voice 2"] {
+            precondition(MacVoiceCopy.renameNote(forLabel: other) == MacVoiceCopy.renameNoteNotVoice && !MacVoiceCopy.renameNote(forLabel: other).contains("pick the person"), other)
+        }
 
         // 0.5.351 (server 6.93.0): a Mac voice assigned to an existing voice profile, read from the relabel preview.
         func enrolment(_ over: [String: JSONValue] = [:]) -> JSONValue {
-            var o: [String: JSONValue] = ["person": .string("Dana Reyes"), "enrolled": .number(3), "attempted": .number(5),
+            var o: [String: JSONValue] = ["person": .string("Dana Reyes"), "enrolled": .number(3), "attempted": .number(5), "clusterSkipped": .number(0),
+                                          "groupSize": .number(5), "groupSec": .number(20), "gates": .array([]),
                                           "similarity": .number(0.81), "belowFloor": .bool(false), "floor": .number(0.55), "skipped": .null]
             for (k, v) in over { o[k] = v }
             return .object(o)
         }
         guard let ready = MacVoiceAssignment(enrolment()) else { preconditionFailure("an enrolment preview parses") }
         precondition(ready.canAdd && ready.samples == 3 && ready.attempted == 5 && ready.person == "Dana Reyes" && ready.skipped == nil)
+        precondition(ready.clusterSkipped == 0 && ready.groupSize == 5 && ready.groupSec == 20 && ready.gates.isEmpty && !ready.needsForce, "nothing flagged")
         let readyLines = ready.lines(from: "Voice 2")
-        precondition(readyLines.count == 2, "the card shows the samples and the similarity")
+        precondition(readyLines.count == 3, "the card shows the samples, the counts and the similarity: \(readyLines)")
         precondition(readyLines[0] == "Adds up to 3 voice samples of Voice 2 to Dana Reyes's profile. Nothing is added until you save.", readyLines[0])
-        precondition(readyLines[1] == "Similarity to Dana Reyes's stored profile: 0.81.", readyLines[1])
+        precondition(readyLines[1] == "5 stretches of audio read, none left out as a different voice.", readyLines[1])
+        precondition(readyLines[2] == "Similarity to Dana Reyes's stored profile: 0.81.", readyLines[2])
         precondition(MacVoiceAssignment(enrolment(["enrolled": .number(1)]))!.lines(from: "Voice 2")[0].contains("1 voice sample of"), "one sample is singular")
-        // A voice that sounds unlike the profile is flagged, and the person still decides.
-        guard let low = MacVoiceAssignment(enrolment(["similarity": .number(0.31), "belowFloor": .bool(true)])) else { preconditionFailure("below floor parses") }
-        precondition(low.canAdd, "a low similarity is a warning, not a refusal")
+        precondition(MacVoiceAssignment(enrolment(["attempted": .number(1), "groupSize": .number(1)]))!.lines(from: "Voice 2")[1] == "1 stretch of audio read, none left out as a different voice.")
+        precondition(MacVoiceAssignment(enrolment(["attempted": .number(0)]))!.lines(from: "Voice 2").count == 2, "no count line when nothing was read")
+        // B1: a voice that sounds unlike the profile is held back; the card shows the numbers, never a claim about call audio.
+        guard let low = MacVoiceAssignment(enrolment(["similarity": .number(0.31), "belowFloor": .bool(true), "gates": .array([.string("below_floor")])])) else { preconditionFailure("below floor parses") }
+        precondition(low.canAdd && low.needsForce, "a low similarity is held back until the person adds it anyway")
         let lowLines = low.lines(from: "Voice 2")
-        precondition(lowLines[1].contains("sounds unlike") && lowLines[1].contains("0.31") && lowLines[1].contains("0.55") && lowLines[1].contains("Save only if you know it is them"), lowLines[1])
+        precondition(lowLines[2].contains("sounds unlike") && lowLines[2].contains("0.31") && lowLines[2].contains("0.55"), lowLines[2])
+        precondition(!lowLines.joined().contains("Call audio") && !lowLines.joined().contains("Save only if"), "the unmeasured call-audio claim is gone")
+        // A server that reports belowFloor but no gates list (the first 6.93.0 build) is held back the same way.
+        precondition(MacVoiceAssignment(enrolment(["similarity": .number(0.31), "belowFloor": .bool(true), "gates": .null]))!.gates == ["below_floor"])
+        precondition(MacVoiceAssignment(enrolment(["similarity": .number(0.31), "belowFloor": .bool(true), "gates": .array([.string("mixed_voice")])]))!.gates == ["below_floor", "mixed_voice"])
+        // clusterSkipped is shown, never hidden, and a mixed Voice N says so.
+        guard let mixed = MacVoiceAssignment(enrolment(["attempted": .number(5), "clusterSkipped": .number(2), "groupSize": .number(3), "gates": .array([.string("mixed_voice")])])) else { preconditionFailure("mixed parses") }
+        precondition(mixed.needsForce && mixed.clusterSkipped == 2 && mixed.groupSize == 3)
+        let mixedLines = mixed.lines(from: "Voice 2")
+        precondition(mixedLines[1] == "2 of 5 stretches of audio sounded like a different voice and were left out.", mixedLines[1])
+        precondition(mixedLines.contains("This Voice 2 holds more than one voice, so the main one may not be Dana Reyes."), "\(mixedLines)")
+        guard let thin = MacVoiceAssignment(enrolment(["attempted": .number(1), "groupSize": .number(1), "groupSec": .number(2.5), "gates": .array([.string("too_little_audio")])])) else { preconditionFailure("thin parses") }
+        precondition(thin.needsForce && thin.lines(from: "Voice 2").contains("Only 2.5 seconds of clean audio from this voice."), "\(thin.lines(from: "Voice 2"))")
         // No similarity reported: no similarity line.
-        precondition(MacVoiceAssignment(enrolment(["similarity": .null]))!.lines(from: "Voice 2").count == 1)
-        // Nothing to add: the reason is plain and the text rename is still said to apply.
+        precondition(MacVoiceAssignment(enrolment(["similarity": .null]))!.lines(from: "Voice 2").count == 2)
+        // Nothing to add: the reason is plain and the text rename is still said to apply when the person saves.
         guard let none = MacVoiceAssignment(enrolment(["enrolled": .number(0), "skipped": .string("audio_not_retained")])) else { preconditionFailure("refusal parses") }
-        precondition(!none.canAdd)
+        precondition(!none.canAdd && !none.needsForce)
         let noneLines = none.lines(from: "Voice 2")
-        precondition(noneLines.count == 1 && noneLines[0].contains("No voice samples will be added to Dana Reyes") && noneLines[0].contains("no longer kept") && noneLines[0].contains("applied to this meeting as text"), noneLines[0])
+        precondition(noneLines.count == 1 && noneLines[0].contains("No voice samples will be added to Dana Reyes") && noneLines[0].contains("no longer kept") && noneLines[0].contains("applied to this meeting as text when you save"), noneLines[0])
         precondition(!MacVoiceAssignment(enrolment(["enrolled": .number(0)]))!.canAdd, "no samples is nothing to add even with no reason")
         precondition(!MacVoiceAssignment(enrolment(["skipped": .string("no_usable_audio")]))!.canAdd, "a reason wins over a count")
         precondition(MacVoiceAssignment(enrolment(["skipped": .string("")]))!.canAdd, "an empty reason is no reason")
         precondition(MacVoiceAssignment(nil) == nil && MacVoiceAssignment(.null) == nil && MacVoiceAssignment(.object([:])) == nil
                      && MacVoiceAssignment(enrolment(["person": .string("")])) == nil, "no enrolment block means the server did not preview an assignment")
-        for code in ["audio_not_retained", "no_usable_audio", "store_unavailable", "disabled", "no_index_mapping", "something_new", ""] {
-            precondition(!MacVoiceAssignment.reason(code).isEmpty)
-        }
+        let codes = ["audio_not_retained", "no_usable_audio", "store_unavailable", "disabled", "no_index_mapping", "owner_profile", "profile_full", "no_stored_voice", "deadline", "something_new", ""]
+        for code in codes { precondition(!MacVoiceAssignment.reason(code).isEmpty) }
         precondition(MacVoiceAssignment.reason("something_new").contains("something_new"), "an unknown code is shown, not hidden")
+        precondition(MacVoiceAssignment.reason("owner_profile").contains("wearer") && MacVoiceAssignment.reason("deadline").contains("Try again"))
         // The pending correction: the assignment is confirmed only when the server said samples would be added.
         func pending(_ assignment: MacVoiceAssignment?, unsupported: Bool = false) -> PendingCorrection {
             PendingCorrection(from: "Voice 2", to: "Dana Reyes", scope: .thisMeeting, message: "", surfaces: CorrectionSurfaces(nil), similarity: nil,
                               refused: false, forceable: false, proseStale: false, isNameAssignment: true, createsProfile: false,
                               wouldRetract: 0, untraceable: 0, macAssignment: assignment, macAssignUnsupported: unsupported)
         }
-        precondition(pending(ready).addsVoiceSamples && pending(ready).assignLines == readyLines)
+        precondition(pending(ready).addsVoiceSamples && pending(ready).assignLines == readyLines && pending(ready).savesWithSamples && !pending(ready).needsForceToAddSamples)
         precondition(!pending(none).addsVoiceSamples && pending(none).assignLines == noneLines, "a refused preview confirms as text only")
         precondition(!pending(nil).addsVoiceSamples && pending(nil).assignLines.isEmpty, "a typed name has no voice lines")
         precondition(!pending(nil, unsupported: true).addsVoiceSamples && pending(nil, unsupported: true).assignLines == [MacVoiceAssignment.unsupported],
                      "an older server is told so, and confirms as text only")
-        precondition(MacVoiceAssignment.unsupported.contains("6.93.0"))
-        for line in readyLines + lowLines + noneLines + [MacVoiceAssignment.unsupported] + ["audio_not_retained", "no_usable_audio", "store_unavailable", "disabled", "no_index_mapping", "x"].map(MacVoiceAssignment.reason) {
+        precondition(MacVoiceAssignment.unsupported.contains("6.93.0") && MacVoiceAssignment.unsupported.contains("COS server") && !MacVoiceAssignment.unsupported.contains("glasses-server")
+                     && MacVoiceAssignment.unsupported.contains("when you save") && !MacVoiceAssignment.unsupported.contains("The name is applied"))
+
+        // B1 and W3: which flags a confirm sends. A flagged plan is never saved by a plain Save, and "Add anyway" needs the second step.
+        let flagged = pending(low)
+        precondition(flagged.addsVoiceSamples && flagged.needsForceToAddSamples && !flagged.savesWithSamples)
+        precondition(MacAssignRequest.flags(for: pending(ready), renameOnly: false, addAnyway: false, armed: false) == ["--assign-voice-profile"], "an unflagged plan saves with samples")
+        precondition(MacAssignRequest.flags(for: pending(ready), renameOnly: true, addAnyway: false, armed: false) == [], "Rename only adds no sample")
+        precondition(MacAssignRequest.flags(for: pending(ready), renameOnly: false, addAnyway: true, armed: true) == ["--assign-voice-profile"], "Add anyway on an unflagged plan forces nothing")
+        precondition(MacAssignRequest.flags(for: flagged, renameOnly: false, addAnyway: false, armed: false) == nil, "a plain Save never sends a flagged plan")
+        precondition(MacAssignRequest.flags(for: flagged, renameOnly: false, addAnyway: false, armed: true) == nil, "armed alone is not enough: the second press is the one that sends")
+        precondition(MacAssignRequest.flags(for: flagged, renameOnly: false, addAnyway: true, armed: false) == nil, "Add anyway without arming first is refused")
+        precondition(MacAssignRequest.flags(for: flagged, renameOnly: false, addAnyway: true, armed: true) == ["--assign-voice-profile", "--force"], "a confirmed Add anyway forces it")
+        precondition(MacAssignRequest.flags(for: flagged, renameOnly: true, addAnyway: true, armed: true) == [], "Rename only wins over Add anyway")
+        precondition(MacAssignRequest.flags(for: pending(none), renameOnly: false, addAnyway: true, armed: true) == [], "a plan that adds nothing is a text rename")
+        precondition(MacAssignRequest.flags(for: pending(nil), renameOnly: false, addAnyway: false, armed: false) == [], "a typed name is a text rename")
+        precondition(MacAssignRequest.gateReasons == ["below_floor", "mixed_voice", "too_little_audio"])
+        // A 409 at confirm swaps in the numbers the server measured then.
+        let swapped = pending(ready).replacingAssignment(low)
+        precondition(swapped.needsForceToAddSamples && swapped.macAssignment == low && !swapped.macAssignUnsupported && swapped.from == "Voice 2")
+        precondition(pending(nil, unsupported: true).replacingAssignment(low).macAssignUnsupported == false)
+
+        // B3: the wearer's own profile is read from the profile list and never offered for a Mac voice.
+        let owner = VoiceProfileOption(.object(["name": .string("MU"), "embeddings": .number(40), "isOwner": .bool(true)]))
+        let other = VoiceProfileOption(.object(["name": .string("Dana Reyes"), "embeddings": .number(12)]))
+        precondition(owner?.isOwner == true && other?.isOwner == false && VoiceProfileOption(name: "X", embeddings: 1).isOwner == false)
+
+        // The notice after a rename never claims more than the server reported.
+        precondition(MacVoiceCopy.appliedNoteForSkip("mac_capture") == " · text only, no voice sample added")
+        precondition(MacVoiceCopy.appliedNoteForSkip("store_unavailable").contains("could not be saved") && MacVoiceCopy.appliedNoteForSkip("store_unavailable").contains("name is applied"))
+        precondition(MacVoiceCopy.appliedNoteForSkip("x") == " · profile not updated (x)" && MacVoiceCopy.appliedNoteForSkip(nil) == "" && MacVoiceCopy.appliedNoteForSkip("") == "")
+        precondition(!MacVoiceCopy.appliedNoteForSkip("mac_capture").contains("never train"), "Mac recordings can now teach a profile, so that line is gone")
+        for line in readyLines + lowLines + mixedLines + thin.lines(from: "Voice 2") + noneLines + [MacVoiceAssignment.unsupported, MacVoiceCopy.appliedNoteForSkip("store_unavailable"), MacVoiceCopy.appliedNoteForSkip("mac_capture")] + codes.map(MacVoiceAssignment.reason) {
             precondition(!line.contains("\u{2014}") && !line.contains("\u{2192}"), "Mac assignment copy has no em dash or arrow: \(line)")
         }
         precondition(!MacVoiceCopy.typedNote.contains("\u{2014}") && !MacVoiceCopy.typedNote.contains("\u{2192}"))

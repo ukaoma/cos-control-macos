@@ -3323,8 +3323,10 @@ private struct VoiceRow: View {
     private var matches: [VoiceProfileOption] {
         let q = typed.trimmingCharacters(in: .whitespaces).lowercased()
         guard !q.isEmpty else { return [] }
+        // 0.5.351 QA: a Mac recording has no wearer microphone, so the wearer's own profile is never offered as the person for a Mac voice.
+        let mac = model.openReview?.isMacRecording == true
         return model.voiceProfiles
-            .filter { $0.name.lowercased().contains(q) && $0.name != voice.label }
+            .filter { $0.name.lowercased().contains(q) && $0.name != voice.label && !(mac && $0.isOwner) }
             .prefix(4).map { $0 }
     }
 
@@ -3465,7 +3467,7 @@ private struct VoiceRow: View {
                     // 0.5.340: a Mac recording has no scope to choose. Its rename is
                     // this meeting's text, and nothing reaches voice profiles.
                     if model.openReview?.isMacRecording == true {
-                        Text(MacVoiceCopy.renameNote)
+                        Text(MacVoiceCopy.renameNote(forLabel: voice.label))
                             .font(.system(size: 10.5)).foregroundStyle(.tertiary)
                             .fixedSize(horizontal: false, vertical: true)
                     } else {
@@ -3481,7 +3483,7 @@ private struct VoiceRow: View {
                             model.previewRename(from: voice.label, to: option.name,
                                                scope: model.correctionScope,
                                                isNameAssignment: voice.isNameAssignment,
-                                               assignVoiceProfile: model.openReview?.isMacRecording == true)
+                                               assignVoiceProfile: model.openReview?.isMacRecording == true && MacVoiceLabel.isVoice(voice.label))
                         } label: {
                             HStack {
                                 Text(option.name).font(.system(size: 12))
@@ -3954,12 +3956,41 @@ struct SpeakerReviewPane: View {
                             .font(.system(size: 10, design: .monospaced)).foregroundStyle(.tertiary)
                     }
 
+                    // 0.5.351 QA: a flagged Mac voice is not saved by a plain Save. Rename only is the default; "Add anyway" is a separate
+                    // choice that asks once more before anything is forced.
+                    if correction.needsForceToAddSamples, let person = correction.macAssignment?.person {
+                        Text(model.forceAssignArmed
+                             ? MacVoiceCopy.addAnywayConfirmNote(person: person, samples: correction.macAssignment?.samples ?? 0)
+                             : MacVoiceCopy.holdNote(person: person))
+                            .font(.system(size: 10.5)).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
                     HStack(spacing: 8) {
                         if !correction.refused {
-                            Button("Save") { model.confirmCorrection(correction) }
-                                .keyboardShortcut(.defaultAction)
-                                .buttonStyle(COSPrimaryButtonStyle())
-                                .disabled(model.mergeInFlight)
+                            if correction.needsForceToAddSamples {
+                                Button(MacVoiceCopy.renameOnlyTitle) { model.confirmCorrection(correction, renameOnly: true) }
+                                    .keyboardShortcut(.defaultAction)
+                                    .buttonStyle(COSPrimaryButtonStyle())
+                                    .disabled(model.mergeInFlight)
+                                if model.forceAssignArmed {
+                                    Button(MacVoiceCopy.addAnywayConfirmTitle) { model.confirmCorrection(correction, addAnyway: true) }
+                                        .disabled(model.mergeInFlight)
+                                    Button(MacVoiceCopy.backTitle) { model.forceAssignArmed = false }
+                                } else {
+                                    Button(MacVoiceCopy.addAnywayTitle) { model.armAddAnyway() }
+                                        .disabled(model.mergeInFlight)
+                                }
+                            } else {
+                                Button("Save") { model.confirmCorrection(correction) }
+                                    .keyboardShortcut(.defaultAction)
+                                    .buttonStyle(COSPrimaryButtonStyle())
+                                    .disabled(model.mergeInFlight)
+                                if correction.savesWithSamples {
+                                    Button(MacVoiceCopy.renameOnlyTitle) { model.confirmCorrection(correction, renameOnly: true) }
+                                        .disabled(model.mergeInFlight)
+                                }
+                            }
                         } else if correction.forceable {
                             // A stalled EARLIER correction is the one refusal a
                             // user can override. Without this the 409 was a dead

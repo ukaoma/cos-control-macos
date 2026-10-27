@@ -533,6 +533,8 @@ final class ControllerModel: ObservableObject {
     @Published var archiveChatRouteActive = false
     @Published var addVoiceResult: String?
     @Published var pendingCorrection: PendingCorrection?
+    /// 0.5.351 QA: the person pressed "Add anyway" on a flagged Mac voice and has not yet confirmed it. Only then can the forced assignment be sent.
+    @Published var forceAssignArmed = false
     /// Scope the reviewer has chosen for the next rename. Defaults to this
     /// meeting — the whole point of 0.5.0.
     @Published var correctionScope: CorrectionScope = .thisMeeting
@@ -10265,7 +10267,8 @@ final class ControllerModel: ObservableObject {
         // 0.5.340: a Mac recording never makes a profile, so the card must never say it will.
         let createsProfile = !review.isMacRecording && !voiceProfiles.contains { $0.name.caseInsensitiveCompare(to) == .orderedSame }
         // 0.5.351: only an existing enrolled person can receive a Mac voice's samples; the exact stored name is what the server matches.
-        let assigned = assignVoiceProfile && review.isMacRecording ? voiceProfiles.first { $0.name == to }?.name : nil
+        let assigned = assignVoiceProfile && review.isMacRecording && MacVoiceLabel.isVoice(from) ? voiceProfiles.first { $0.name == to && !$0.isOwner }?.name : nil
+        forceAssignArmed = false
         mergeInFlight = true
         Task { [weak self] in
             guard let self else { return }
@@ -10436,10 +10439,20 @@ final class ControllerModel: ObservableObject {
         confirmCorrection(correction, force: true)
     }
 
-    func confirmCorrection(_ correction: PendingCorrection, force: Bool = false) {
+    /// "Add anyway" is two steps on purpose: this arms it, and only a confirm after that sends the forced assignment.
+    func armAddAnyway() {
+        guard pendingCorrection?.needsForceToAddSamples == true else { return }
+        forceAssignArmed = true
+    }
+
+    /// `renameOnly` (0.5.351 QA): rename in this meeting as text and add no voice sample, even when the server would have added some.
+    /// `addAnyway`: send a flagged assignment with `--force`, only after `armAddAnyway()`.
+    func confirmCorrection(_ correction: PendingCorrection, force: Bool = false, renameOnly: Bool = false, addAnyway: Bool = false) {
         // A refusal that is only a stalled predecessor CAN be forced; a genuine
         // decline cannot.
         guard !correction.refused || force else { pendingCorrection = nil; return }
+        // A flagged Mac assignment is never sent by a plain Save.
+        guard let assignFlags = MacAssignRequest.flags(for: correction, renameOnly: renameOnly, addAnyway: addAnyway, armed: forceAssignArmed) else { return }
         guard let review = openReview, review.mutable, selectedReviewRecordID == nil || (review.identityVersion == 1 && review.sourceRevision?.count == 64) else {
             reviewError = "This review is read-only or needs a newer server to verify the selected meeting. Reopen it after updating."
             return
@@ -10458,8 +10471,9 @@ final class ControllerModel: ObservableObject {
                 } else if correction.scope == .thisMeeting {
                     args = ["meeting-relabel", "--session", session, "--record-id", review.recordId,
                             "--from", correction.from, "--to", correction.to ?? "", "--confirm"]
-                    // 0.5.351: the samples go to the profile only when the preview said some would. Otherwise this is the text rename it was.
-                    if correction.addsVoiceSamples { args.append("--assign-voice-profile") }
+                    // 0.5.351: the samples go to the profile only when the preview said some would be added, and a flagged plan only as a confirmed
+                    // "Add anyway". Rename only, or a plan that adds nothing, is the text rename it was.
+                    args += assignFlags
                 } else {
                     args = ["voice-merge", "--into", correction.to ?? "", "--from", correction.from, "--confirm"]
                 }
@@ -10477,6 +10491,15 @@ final class ControllerModel: ObservableObject {
                 let detail = response.details["result"]?.object?["message"]?.string
                         ?? response.details["result"]?.object?["error"]?.string
                         ?? response.details["message"]?.string
+                    // 0.5.351 QA: the server flagged the voice at confirm (the profile or the audio moved since the preview). Show the
+                    // numbers it measured now, with Rename only as the default and "Add anyway" as the separate choice.
+                    if let gate = response.details["reason"]?.string, MacAssignRequest.gateReasons.contains(gate),
+                       let fresh = MacVoiceAssignment(response.details["result"]?.object?["enrolment"]) {
+                        pendingCorrection = correction.replacingAssignment(fresh)
+                        forceAssignArmed = false
+                        reviewError = detail
+                        return
+                    }
                     switch state {
                     case "route_missing":
                         reviewError = "This needs glasses-server 6.21.18 or newer — use Update Server."
@@ -10501,8 +10524,7 @@ final class ControllerModel: ObservableObject {
                 } else if correction.isDeattribution {
                     notice = "Removed \(correction.from) from this meeting"
                 } else if correction.scope == .thisMeeting {
-                    let reason = skipped == "mac_capture" ? " · text only, Mac recordings never train a voice profile"
-                        : (skipped?.isEmpty == false) ? " · profile not updated (\(skipped!))" : ""
+                    let reason = MacVoiceCopy.appliedNoteForSkip(skipped)
                     notice = "\(correction.from) is now \(correction.to ?? "") in this meeting\(reason)"
                 } else {
                     notice = "Saved — \(correction.from) is now \(correction.to ?? "") everywhere"
@@ -10694,6 +10716,7 @@ final class ControllerModel: ObservableObject {
 
     func cancelCorrection() {
         pendingCorrection = nil
+        forceAssignArmed = false
         correctionScope = .thisMeeting
     }
 }
