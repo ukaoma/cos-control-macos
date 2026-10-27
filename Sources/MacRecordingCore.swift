@@ -81,6 +81,15 @@ final class MacAudioRing: @unchecked Sendable {
     }
 }
 
+/// 0.5.351 (quick-save QA N2): a helper refusal carries its own status and reason, so a delivery reads exactly the answer
+/// it got and no other call can overwrite it.
+struct MacRecordingHelperRefusal: LocalizedError, Equatable {
+    let message: String
+    let httpStatus: Int?
+    let reason: String?
+    var errorDescription: String? { message }
+}
+
 enum MacRecordingError: LocalizedError {
     case unavailable(String)
     var errorDescription: String? { if case .unavailable(let reason) = self { return reason }; return nil }
@@ -103,8 +112,10 @@ struct MacAudioSource: Identifiable, Equatable, Sendable {
 enum MacRecordingInterruption {
     static let pilotLimit = "The two-hour recording pilot limit was reached."
     static func line(_ reason: String) -> (text: String, problem: Bool) {
-        reason == pilotLimit ? ("Stopped at the two-hour limit. Everything recorded up to then is kept.", false)
-            : ("Incomplete recording: " + reason, true)
+        if reason == pilotLimit { return ("Stopped at the two-hour limit. Everything recorded up to then is kept.", false) }
+        // 0.5.351 (QA W8): a quit is not a failed capture; the line is the reason itself, muted like the two-hour limit.
+        if reason == MacRecordingSigterm.reason { return (MacRecordingSigterm.reason, false) }
+        return ("Incomplete recording: " + reason, true)
     }
     /// QA 0.5.313: a recording that stops without the person stopping it says so outside the panel, which is usually
     /// closed during a call. The call may still be going.
@@ -484,8 +495,11 @@ enum MacRecordingRecoveryPolicy {
     /// Record hostage; the audio stays in the spool and is listed with Recover.
     /// 0.5.334 (Miles 2026-10-21): not for no speech. Audio the server found no speech in, or exact zeros, saves no
     /// better later; Discard (MacRecordingDiscard) releases the composer for those instead.
-    static func canKeepForLater(noSpeech: Bool, paused: Bool = false, pending: Bool, stopped: Bool, delivering: Bool) -> Bool {
-        paused && !noSpeech && pending && stopped && !delivering
+    /// 0.5.351 (quick-save QA W4): `waiting` is a quiet retry that has gone on long enough to show its controls
+    /// (MacRecordingSaveStatus.offersControls); Keep is then offered although the delivery is still running, so Record is
+    /// never blocked behind an invisible "Saving…".
+    static func canKeepForLater(noSpeech: Bool, paused: Bool = false, pending: Bool, stopped: Bool, delivering: Bool, waiting: Bool = false) -> Bool {
+        (paused && !delivering || waiting) && !noSpeech && pending && stopped
     }
     /// What the panel offers to Recover: retained captures with audio, other than the current one. A journal with no
     /// chunks (a start that failed after its manifest was written) has nothing to recover; it is hidden, never deleted.
@@ -494,7 +508,9 @@ enum MacRecordingRecoveryPolicy {
     }
     /// 0.5.351 (Miles 2026-10-26: Recover was grayed out during a live recording with no reason). Why Recover is not
     /// available right now, in the panel's words, or nil when it is.
-    static func recoverUnavailable(phase: String, delivering: Bool, currentUnsaved: Bool) -> String? {
+    /// `nothingToKeep`: the capture above has no sound (the server's no speech, or exact zeros); the only action the panel
+    /// offers for it is Discard, so the reason names that (quick-save QA W3).
+    static func recoverUnavailable(phase: String, delivering: Bool, currentUnsaved: Bool, nothingToKeep: Bool = false) -> String? {
         switch phase {
         case "starting", "recording", "stopping": return "Recover is available after this recording."
         case "recovering": return "Recover is available after the recovery in progress."
@@ -502,7 +518,9 @@ enum MacRecordingRecoveryPolicy {
         default: break
         }
         if delivering { return "Recover is available once this recording is saved." }
-        if currentUnsaved { return "Recover is available once the recording above is saved or kept for later." }
+        if currentUnsaved {
+            return nothingToKeep ? "Recover is available once the recording above is discarded." : "Recover is available once the recording above is saved or kept for later."
+        }
         return nil
     }
 }
@@ -528,12 +546,27 @@ enum MacRecordingReconcile {
         var receiptSessionId: String?
         var receiptCaptureId: String?
         var receiptSourceType: String?
+        /// 0.5.351 (quick-save QA N3): the receipt's own server instance, and its transfer integrity when it has one.
+        var receiptServerInstanceId: String?
+        var integrity: Integrity?
+        struct Integrity: Equatable, Sendable {
+            var expected: Int?
+            var missingChunks: Int?
+        }
     }
     /// Saved on the server, by a receipt for this exact Mac capture. Everything else (a refusal, unreachable, active,
     /// missing, a receipt for another session or source) is not.
-    static func savedOnServer(captureId: String, _ answer: Answer) -> Bool {
-        answer.ok && answer.state == "saved" && answer.sessionId == captureId && answer.receiptSaved == true && answer.receiptVersion == 1
+    /// `serverInstanceId` and `chunkCount` are the journal's: the receipt must come from the instance the audio was pinned
+    /// to, and a receipt that reports transfer integrity must say every one of this journal's chunks arrived. A receipt
+    /// with no integrity block (an older server) is judged on the rest.
+    static func savedOnServer(captureId: String, serverInstanceId: String, chunkCount: Int, _ answer: Answer) -> Bool {
+        guard answer.ok && answer.state == "saved" && answer.sessionId == captureId && answer.receiptSaved == true && answer.receiptVersion == 1
             && answer.receiptSessionId == captureId && answer.receiptCaptureId == captureId && answer.receiptSourceType == "mac_system_audio"
+            && answer.receiptServerInstanceId == serverInstanceId else { return false }
+        if let integrity = answer.integrity {
+            return integrity.missingChunks == 0 && integrity.expected == chunkCount
+        }
+        return true
     }
 }
 
@@ -543,14 +576,17 @@ enum MacRecordingRefusal: Equatable, Sendable {
     case keep
     case set(String)
     static let pending = "A Mac recording is waiting to be saved. Open Meetings to finish it before recording another."
-    static func decide(available: Bool, currentError: String?, live: Bool, pendingCapture: Bool) -> MacRecordingRefusal {
+    /// 0.5.351 (quick-save QA W4): while the save is still running and Meetings offers nothing to press, Record does not
+    /// point at a control that is not there.
+    static let stillSaving = "The last recording is still saving. Try again in a moment."
+    static func decide(available: Bool, currentError: String?, live: Bool, pendingCapture: Bool, stillSaving saving: Bool = false) -> MacRecordingRefusal {
         if live { return .keep }
         if !available {
             // prepare() just ran and said why; keep that reason rather than replacing it.
             if let currentError, !currentError.isEmpty { return .set(currentError) }
             return .set("Mac recording isn't available: COS Control couldn't reach its recording helper. Try again in a moment.")
         }
-        if pendingCapture { return .set(pending) }
+        if pendingCapture { return .set(saving ? stillSaving : pending) }
         return .set("Mac recording couldn't start. Try again in a moment.")
     }
 }
@@ -629,8 +665,9 @@ enum MacRecordingDiscard {
     }
     /// "Retry saving retained audio" only where a retry can work: never for no speech or exact zeros, and never while a
     /// save is already running (0.5.351: the button showed through every ordinary save and read as "retrying chunks").
-    static func retryOffered(noSpeech: Bool, allZero: Bool, pending: Bool, hasChunks: Bool, delivering: Bool) -> Bool {
-        pending && hasChunks && !noSpeech && !allZero && !delivering
+    /// 0.5.351 (quick-save QA W4): also during a quiet retry that shows its controls (`waiting`): Retry now.
+    static func retryOffered(noSpeech: Bool, allZero: Bool, pending: Bool, hasChunks: Bool, delivering: Bool, waiting: Bool = false) -> Bool {
+        pending && hasChunks && !noSpeech && !allZero && (!delivering || waiting)
     }
     /// A stranded row on Meetings: Discard instead of Save for a Mac capture the server says has no speech.
     static func strandedOffersDiscard(sessionId: String, transcriptState: String, canSave: Bool) -> Bool {
@@ -679,8 +716,6 @@ enum MacRecordingDiscard {
     static let retries = 2
 }
 
-/// The discard itself, with its two sides as seams so the checks run it against a fake helper (MacRecordingChecks).
-/// The local spool moves first: it is on this Mac and cannot fail for a network reason.
 /// 0.5.351 (Miles 2026-10-26: "There's many times when you click save and it shows as like retrying chunks. We should
 /// just show like a quick save."). On this Mac a stopped capture is saved about 5 s after Stop (median of 14 saves,
 /// Oct 19-26, 3.4 to 8.0 s for 13 of them): the server keeps up live, so only the last chunk is left. The panel showed
@@ -700,15 +735,25 @@ enum MacRecordingSaveStatus {
     static let saved = "Saved"
     static let savedDetail = "Open Meetings to review the transcript."
     static let notSaved = "Not saved yet. Audio is safe on this Mac."
-    static let notAnswering = "COS is not answering yet. Audio is safe on this Mac, and COS keeps trying for a minute."
+    static let notAnswering = "COS is not answering yet. Audio is safe on this Mac, and COS keeps trying for about a minute."
     static let notAnsweringWhileRecording = "COS is not answering. Audio is safe on this Mac and sends when COS is back."
     /// A save still running this long after Stop says how far it got (the slowest ordinary save measured 8.0 s).
     static let slowAfterSeconds: Double = 20
     /// While recording, the count appears only when COS is this many chunks (6 s each) behind.
     static let behindChunks = 3
-    static func stillSaving(_ acknowledged: Int, of chunks: Int) -> String { "Still saving. \(acknowledged) of \(chunks) audio chunks have reached COS." }
-    static func reached(_ acknowledged: Int, of chunks: Int) -> String { "\(acknowledged) of \(chunks) audio chunks reached COS." }
-    static func sending(_ acknowledged: Int, of chunks: Int) -> String { "Sending audio to COS: \(acknowledged) of \(chunks) chunks received." }
+    /// 1,200, not 1200 (quick-save QA N8): thousands grouped, in one fixed locale.
+    static func count(_ value: Int) -> String {
+        let formatter = NumberFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX"); formatter.numberStyle = .decimal
+        formatter.usesGroupingSeparator = true; formatter.groupingSeparator = ","; formatter.groupingSize = 3
+        return formatter.string(from: NSNumber(value: value)) ?? String(value)
+    }
+    static func stillSaving(_ acknowledged: Int, of chunks: Int) -> String { "Still saving. \(count(acknowledged)) of \(count(chunks)) audio chunks have reached COS." }
+    static func reached(_ acknowledged: Int, of chunks: Int) -> String { "\(count(acknowledged)) of \(count(chunks)) audio chunks reached COS." }
+    static func sending(_ acknowledged: Int, of chunks: Int) -> String { "Sending audio to COS: \(count(acknowledged)) of \(count(chunks)) chunks received." }
+    /// 0.5.351 (quick-save QA W4): a quiet retry that has outlasted an ordinary save shows Keep and Retry, so nothing hides
+    /// behind "Saving…" while Record is blocked.
+    static func offersControls(delivering: Bool, waiting: Bool, slow: Bool) -> Bool { delivering && waiting && slow }
 
     /// `delivering`: a delivery task is running, including a quiet wait to try again. `waiting`: that wait follows a
     /// transient failure. `paused`: delivery stopped on an error. `slow`: Stop was at least slowAfterSeconds ago.
@@ -726,7 +771,7 @@ enum MacRecordingSaveStatus {
         case "pending" where chunks > 0 && !noSpeech && !allZero:
             if delivering {
                 let detail: String? = !slow ? nil : waiting ? notAnswering : stillSaving(acknowledged, of: chunks)
-                return Line(headline: saving, detail: detail, progress: nil, tone: .quiet, showsActions: false)
+                return Line(headline: saving, detail: detail, progress: nil, tone: .quiet, showsActions: offersControls(delivering: delivering, waiting: waiting, slow: slow))
             }
             return Line(headline: paused ? notSaved : message, detail: nil, progress: reached(acknowledged, of: chunks),
                         tone: paused ? .problem : .quiet, showsActions: true)
@@ -753,6 +798,17 @@ enum MacRecordingSaveRetry {
         if let httpStatus, [502, 503, 504].contains(httpStatus) { return true }
         return reason == nil && httpStatus == nil && transientMessages.contains(message)
     }
+    /// 0.5.351 (quick-save QA W4): the quiet tries also have a wall-clock end, counted from the first wait. A try already in
+    /// flight finishes (the helper's own timeouts bound it); no new wait starts past the window, and the last wait is cut
+    /// short to end with it.
+    static let windowSeconds: Double = 75
+    /// The wait before the next quiet try with the window applied, or nil to stop and say so.
+    static func pause(delays table: [Double] = delays, attempt: Int, stopped: Bool, transient: Bool, since: Date?, now: Date, window: Double = windowSeconds) -> Double? {
+        guard stopped, transient, attempt >= 0, attempt < table.count else { return nil }
+        let elapsed = since.map { now.timeIntervalSince($0) } ?? 0
+        guard elapsed < window else { return nil }
+        return min(table[attempt], window - elapsed)
+    }
     /// The wait before the next quiet try, or nil to stop and say so.
     static func delay(afterAttempt attempt: Int, stopped: Bool, transient: Bool) -> Double? {
         guard stopped, transient, attempt >= 0, attempt < delays.count else { return nil }
@@ -760,6 +816,8 @@ enum MacRecordingSaveRetry {
     }
 }
 
+/// The discard itself, with its two sides as seams so the checks run it against a fake helper (MacRecordingChecks).
+/// The local spool moves first: it is on this Mac and cannot fail for a network reason.
 struct MacRecordingDiscarder: Sendable {
     typealias Server = @Sendable (_ captureId: String, _ serverInstanceId: String) async -> MacRecordingDiscard.Server
     let spool: MacRecordingSpool
@@ -1097,6 +1155,30 @@ struct MacRecordingWriterEvent: Sendable {
     }
 }
 
+/// 0.5.351 (QA W7): the writer loop itself, so the store and the checks run the same code. It touches only the spool (its
+/// own executor), the progress clock and what `emit` does, never the main actor: run it from `Task.detached` and it keeps
+/// storing while the app is stalled. One unbroken sequence whichever tap produced the chunk; ends when the stream ends
+/// or the spool refuses a chunk (then the failure is emitted and the loop stops).
+enum MacRecordingWriter {
+    static func run(stream: AsyncStream<MacRecordingChunk>, spool: MacRecordingSpool, captureId id: String, progress: MacRecordingProgress,
+                    emit: @Sendable (MacRecordingWriterEvent) -> Void, log: @Sendable (String) -> Void) async {
+        var sequence = MacRecordingSequencer()
+        for await raw in stream {
+            let silent = MacRecordingSignal.isSilent(raw.pcm)
+            let chunk = sequence.next(raw)
+            do {
+                let journal = try await spool.append(chunk, captureId: id)
+                sequence.stored(journal); progress.mark()
+                emit(.init(chunk: MacRecordingWriterEvent.slim(chunk), silent: silent, manifest: journal))
+            } catch {
+                let reason = error.localizedDescription
+                log(reason)
+                emit(.init(failure: reason)); break
+            }
+        }
+    }
+}
+
 /// Gives every stored chunk the next index and the next end frame of the JOURNAL, whichever tap produced it. A tap that
 /// is restarted counts from zero again; the journal's own sequence is the one that must stay unbroken.
 struct MacRecordingSequencer: Sendable {
@@ -1138,12 +1220,20 @@ enum MacRecordingWatchdog {
         var attemptsThisStall = 0
         var totalRestarts = 0
         var gaveUp = false
+        /// 0.5.351 (QA W6): the notification for this stall's give-up line has been posted (once per stall).
+        var noticePosted = false
         mutating func restartFailed() { gaveUp = true }
+        /// True exactly once per stall, the first time it has given up. The panel is usually closed during a call, so this
+        /// is the one place a stall reaches the person (MacRecordingWatchdog.notification).
+        mutating func takeGiveUpNotice() -> Bool {
+            guard gaveUp, stalledSince != nil, !noticePosted else { return false }
+            noticePosted = true; return true
+        }
     }
 
     static func step(_ state: inout State, now: Date, lastChunk: Date, restartInFlight: Bool) -> Action {
         if let since = state.stalledSince, lastChunk > since {   // a chunk arrived after the stall: it is over
-            state.stalledSince = nil; state.restartAttemptAt = nil; state.attemptsThisStall = 0; state.gaveUp = false
+            state.stalledSince = nil; state.restartAttemptAt = nil; state.attemptsThisStall = 0; state.gaveUp = false; state.noticePosted = false
         }
         guard !state.gaveUp, !restartInFlight else { return .none }
         let reference = max(lastChunk, state.restartAttemptAt ?? .distantPast)
@@ -1169,6 +1259,11 @@ enum MacRecordingWatchdog {
         return state.gaveUp ? "Recording stopped receiving audio at \(at). Stop and save keeps everything up to then."
                             : "Recording stopped receiving audio at \(at). Restarting."
     }
+    /// 0.5.351 (QA W6): the notification for a stall that could not be recovered; nil while there is nothing to say.
+    static func notification(_ state: State, calendar: Calendar = .current) -> (title: String, body: String)? {
+        guard state.gaveUp, let text = line(state, calendar: calendar) else { return nil }
+        return ("Mac recording not receiving audio", text)
+    }
 }
 
 /// The captures being written right now, readable from any thread: what a termination signal has to close.
@@ -1176,14 +1271,19 @@ final class MacRecordingOpenCaptures: @unchecked Sendable {
     static let shared = MacRecordingOpenCaptures()
     private let lock = NSLock()
     private var spools: [String: MacRecordingSpool] = [:]
+    /// 0.5.351 (QA N5): captures the person already stopped. A quit during their save closes the journal but does not
+    /// relabel their stop as "quit while recording".
+    private var stopping: Set<String> = []
     func add(_ id: String, spool: MacRecordingSpool) { lock.lock(); spools[id] = spool; lock.unlock() }
-    func remove(_ id: String) { lock.lock(); spools[id] = nil; lock.unlock() }
+    func remove(_ id: String) { lock.lock(); spools[id] = nil; stopping.remove(id); lock.unlock() }
+    func beginStopping(_ id: String) { lock.lock(); if spools[id] != nil { stopping.insert(id) }; lock.unlock() }
+    private func isStopping(_ id: String) -> Bool { lock.lock(); defer { lock.unlock() }; return stopping.contains(id) }
     var ids: [String] { lock.lock(); defer { lock.unlock() }; return spools.keys.sorted() }
     private func spool(for id: String) -> MacRecordingSpool? { lock.lock(); defer { lock.unlock() }; return spools[id] }
     /// Notes the interruption and marks the journal stopped. Chunks already written are never touched.
     func closeForExit(_ id: String) async -> Bool {
         guard let spool = spool(for: id) else { return false }
-        _ = try? await spool.interrupt(id, reason: MacRecordingSigterm.reason)
+        if !isStopping(id) { _ = try? await spool.interrupt(id, reason: MacRecordingSigterm.reason) }
         return (try? await spool.markStopped(id)) != nil
     }
 }
@@ -1192,7 +1292,7 @@ final class MacRecordingOpenCaptures: @unchecked Sendable {
 enum MacRecordingSigterm {
     /// Under one second: a signal must not hold the process up.
     static let waitSeconds: TimeInterval = 0.8
-    static let reason = "COS Control was quit while recording. Everything recorded up to then is kept."
+    static let reason = "COS Control was quit while recording. Everything saved up to then is kept."
     struct Result: Equatable, Sendable { var total: Int; var finished: Int; var timedOut: Bool; var elapsedMs: Int }
 
     /// Runs `work` for every id at once and waits at most `wait` for all of them.
@@ -1235,6 +1335,25 @@ enum MacRecordingSigterm {
 extension MacRecordingWatchdog {
     /// One restart is allowed two chunk lengths.
     static var restartSeconds: Int { chunkSeconds * 2 }
+}
+
+/// 0.5.351 (QA W2): Stop must never wait forever on a tap whose capture queue is wedged.
+enum MacRecordingTapStop {
+    static let stopSeconds: TimeInterval = 5
+    enum Outcome: Equatable, Sendable { case stopped(String?), timedOut }
+    /// The tap's interruption (if any) when it stopped in time; `.timedOut` when it did not. The caller then carries on to
+    /// finish the stream, drain the writer and mark the journal stopped, so every stored chunk is kept.
+    static func run(seconds: TimeInterval = stopSeconds, _ stop: @escaping @Sendable () async -> String?) async -> Outcome {
+        let answer: String?? = await MacRecordingBounded.run(seconds: seconds) { await stop() }
+        guard let answer else { return .timedOut }
+        return .stopped(answer)
+    }
+}
+
+/// 0.5.351 (QA W4): the two-hour pilot limit counts from the recording's own start, whichever tap is running.
+enum MacRecordingLimit {
+    static let pilotSeconds: TimeInterval = 7_200
+    static func reached(startedAt: Date, now: Date = Date()) -> Bool { now.timeIntervalSince(startedAt) >= pilotSeconds }
 }
 
 /// Runs an operation and gives up waiting after `seconds`. The operation is not cancelled (a stuck tap call cannot be);

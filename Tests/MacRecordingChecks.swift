@@ -1,6 +1,21 @@
 import Foundation
 import Darwin
 
+/// QA W7: blocks the calling thread (the main thread, in the checks) until `condition` holds on another thread, or `timeout`
+/// passes. A synchronous function, so the async checks may call it. True when the condition held while the caller was blocked.
+func blockMainThread(timeout: TimeInterval, until condition: @escaping @Sendable () -> Bool) -> (onMainThread: Bool, held: Bool) {
+    let onMain = Thread.isMainThread
+    let released = DispatchSemaphore(value: 0)
+    DispatchQueue.global(qos: .userInitiated).async {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if condition() { released.signal(); return }
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+    }
+    return (onMain, released.wait(timeout: .now() + timeout + 1) == .success)
+}
+
 /// Pure fixture audio bytes only. Never opens a tap, microphone, socket, or permission prompt.
 @main struct MacRecordingChecks {
     @MainActor static func main() async throws {
@@ -55,6 +70,9 @@ import Darwin
                             let permitted = MacRecordingRecoveryPolicy.canKeepForLater(noSpeech: noSpeech, paused: paused, pending: pending, stopped: stopped, delivering: delivering)
                             check(permitted == (paused && !noSpeech && pending && stopped && !delivering),
                                   "Keep audio for later only for a paused delivery, never for no speech (Discard is offered there), with no delivery in flight")
+                            // Quick-save QA W4: during a quiet wait that shows its controls, Keep is offered although delivery is running.
+                            let waited = MacRecordingRecoveryPolicy.canKeepForLater(noSpeech: noSpeech, paused: paused, pending: pending, stopped: stopped, delivering: delivering, waiting: true)
+                            check(waited == (!noSpeech && pending && stopped), "Keep audio for later: a quiet wait offers it while the delivery runs, still never for no speech")
                         }
                     }
                 }
@@ -366,6 +384,12 @@ import Darwin
             } else { check(false, "unavailable is never silent") }
             check(MacRecordingRefusal.decide(available: true, currentError: "Recording stopped because this Mac slept", live: false, pendingCapture: true)
                   == .set(MacRecordingRefusal.pending), "a pending capture says so, replacing a stale unrelated line")
+            // Quick-save QA W4: while the save is still running with nothing to press, Record says so instead of pointing at Meetings.
+            check(MacRecordingRefusal.decide(available: true, currentError: nil, live: false, pendingCapture: true, stillSaving: true) == .set(MacRecordingRefusal.stillSaving)
+                  && MacRecordingRefusal.decide(available: true, currentError: nil, live: false, pendingCapture: true, stillSaving: false) == .set(MacRecordingRefusal.pending)
+                  && MacRecordingRefusal.decide(available: true, currentError: nil, live: true, pendingCapture: true, stillSaving: true) == .keep,
+                  "Record: a save still running says so; Meetings is named only where it offers a control")
+            check(!MacRecordingRefusal.stillSaving.contains("Open Meetings") && MacRecordingRefusal.pending.contains("Open Meetings") && !MacRecordingRefusal.stillSaving.contains("—"), "Record: the still-saving copy names no control")
             // The Recover list hides journals with nothing in them.
             var withAudio = manifest(7); withAudio.stopped = true
             withAudio.chunks = [MacRecordingManifest.Chunk(index: 0, filename: "000000.wav", endFrame: 0)]
@@ -479,6 +503,9 @@ import Darwin
                           == (pending && hasChunks && !noSpeech && !allZero && !delivering), "Retry saving: never for no sound (it cannot work)")
                     // 0.5.351: the button showed through every ordinary save and read as "retrying chunks".
                     if delivering { check(!MacRecordingDiscard.retryOffered(noSpeech: noSpeech, allZero: allZero, pending: pending, hasChunks: hasChunks, delivering: true), "Retry saving: never while the save is running") }
+                    // Quick-save QA W4: except in a quiet wait that shows its controls, and still never for no sound.
+                    check(MacRecordingDiscard.retryOffered(noSpeech: noSpeech, allZero: allZero, pending: pending, hasChunks: hasChunks, delivering: delivering, waiting: true)
+                          == (pending && hasChunks && !noSpeech && !allZero), "Retry saving: offered in a quiet wait, never for no sound")
                 }
             } } } } }
             check(MacRecordingDiscard.strandedOffersDiscard(sessionId: "mac_x", transcriptState: "no_speech", canSave: false), "stranded: a no-speech Mac row offers Discard")
@@ -635,16 +662,29 @@ import Darwin
             try await wspool.write(wjournal)
             let tone = Data((0..<MacRecordingWAV.framesPerChunk).flatMap { i -> [UInt8] in let v = Int16(truncatingIfNeeded: 1_000 + (i % 7)); return [UInt8(v & 0xff), UInt8((v >> 8) & 0xff)] })
             let tail = Data(tone.prefix(4_000))
-            var sequence = MacRecordingSequencer()
-            // First tap: indexes 0, 1, 2 and its tail; second tap (after a restart) counts from zero again.
+            // First tap: indexes 0, 1, 2 and its tail; second tap (after a restart) counts from zero again. The REAL writer
+            // loop (MacRecordingWriter.run, the one the store runs) stores them, so this checks the code that ships.
             let taps: [[MacRecordingChunk]] = [
                 [.init(index: 0, pcm: tone, endFrame: 96_000), .init(index: 1, pcm: tone, endFrame: 192_000), .init(index: 2, pcm: tail, endFrame: 194_000)],
                 [.init(index: 0, pcm: tone, endFrame: 96_000), .init(index: 1, pcm: tone, endFrame: 192_000)]]
-            var latest = wjournal
-            for tap in taps { for raw in tap {
-                do { latest = try await wspool.append(sequence.next(raw), captureId: wjournal.id); sequence.stored(latest) }
-                catch { check(false, "writer: the journal refused a restarted tap's chunk (\(error.localizedDescription))") }
-            } }
+            final class Events: @unchecked Sendable {
+                private let lock = NSLock(); private var items: [MacRecordingWriterEvent] = []; private var lines: [String] = []
+                func add(_ event: MacRecordingWriterEvent) { lock.lock(); items.append(event); lock.unlock() }
+                func note(_ line: String) { lock.lock(); lines.append(line); lock.unlock() }
+                var all: [MacRecordingWriterEvent] { lock.lock(); defer { lock.unlock() }; return items }
+                var logged: [String] { lock.lock(); defer { lock.unlock() }; return lines }
+            }
+            let (restartStream, restartFeed) = AsyncStream<MacRecordingChunk>.makeStream(bufferingPolicy: .unbounded)
+            for tap in taps { for raw in tap { _ = restartFeed.yield(raw) } }
+            restartFeed.finish()
+            let restartEvents = Events()
+            let restartProgress = MacRecordingProgress(Date(timeIntervalSince1970: 1_000))
+            await MacRecordingWriter.run(stream: restartStream, spool: wspool, captureId: wjournal.id, progress: restartProgress,
+                                         emit: { restartEvents.add($0) }, log: { restartEvents.note($0) })
+            let latest = try await wspool.snapshot(wjournal.id)
+            check(restartEvents.all.count == 5 && restartEvents.all.allSatisfy { $0.failure == nil && $0.manifest != nil } && restartEvents.logged.isEmpty,
+                  "writer: every chunk of both taps is stored and reported, nothing fails")
+            check(restartProgress.lastWrite > Date(timeIntervalSince1970: 2_000), "writer: storing a chunk moves the watchdog's progress clock")
             check(latest.chunks.map(\.index) == [0, 1, 2, 3, 4], "writer: a restarted tap continues the journal's index sequence")
             check(latest.chunks.map(\.endFrame) == [96_000, 192_000, 194_000, 290_000, 386_000], "writer: and its end frames, so the transcript timeline stays one line")
             let firstFile = wroot.appendingPathComponent(wjournal.id).appendingPathComponent("000000.wav")
@@ -665,6 +705,119 @@ import Darwin
             let hung: Int? = await MacRecordingBounded.run(seconds: 0.3) { try? await Task.sleep(nanoseconds: 4_000_000_000); return 1 }
             let waited = Date().timeIntervalSince(began)
             check(hung == nil && waited >= 0.25 && waited < 1.5, "bounded: a hung operation is given up on at its time")
+
+            // QA W2: Stop never waits forever on a wedged tap.
+            let stopQuick = await MacRecordingTapStop.run(seconds: 5) { "reason" }
+            let stopQuickNil = await MacRecordingTapStop.run(seconds: 5) { nil }
+            check(stopQuick == .stopped("reason") && stopQuickNil == .stopped(nil), "tap stop: a tap that stops in time hands back its interruption, or none")
+            check(MacRecordingTapStop.stopSeconds > 1 && MacRecordingTapStop.stopSeconds <= 10, "tap stop: the bound is a few seconds")
+            let stopBegan = Date()
+            let stopHung = await MacRecordingTapStop.run(seconds: 0.3) { try? await Task.sleep(nanoseconds: 4_000_000_000); return "late" }
+            check(stopHung == .timedOut && Date().timeIntervalSince(stopBegan) < 1.5, "tap stop: a wedged tap is given up on inside the bound, and Stop carries on")
+
+            // QA W4: the two-hour clock belongs to the recording, not to a tap.
+            let began0 = Date(timeIntervalSince1970: 1_793_000_000)
+            check(!MacRecordingLimit.reached(startedAt: began0, now: began0.addingTimeInterval(7_199)) && MacRecordingLimit.reached(startedAt: began0, now: began0.addingTimeInterval(7_200)),
+                  "limit: two hours from the recording's own start")
+            check(MacRecordingLimit.reached(startedAt: began0, now: began0.addingTimeInterval(7_200 + 40)) && !MacRecordingLimit.reached(startedAt: began0.addingTimeInterval(60), now: began0.addingTimeInterval(7_200)),
+                  "limit: a tap handed the original start reaches it at the original time, a later start does not")
+
+            // QA W6: one notification per stall that could not be recovered, never before it gave up.
+            var notice = w.State()
+            _ = w.step(&notice, now: t0.addingTimeInterval(Double(w.stallSeconds)), lastChunk: t0, restartInFlight: false)
+            check(!notice.takeGiveUpNotice() && w.notification(notice) == nil, "notice: nothing to say while the restart is still trying")
+            notice.restartFailed()
+            let noticeText = w.notification(notice, calendar: utc)
+            check(noticeText?.title == "Mac recording not receiving audio" && noticeText?.body == w.line(notice, calendar: utc), "notice: the body is the panel's own line")
+            check(notice.takeGiveUpNotice() && !notice.takeGiveUpNotice() && !notice.takeGiveUpNotice(), "notice: posted once however many times the watchdog looks")
+            _ = w.step(&notice, now: t0.addingTimeInterval(9_999), lastChunk: t0, restartInFlight: false)
+            check(!notice.takeGiveUpNotice(), "notice: the same stall never posts again")
+            let t2 = t0.addingTimeInterval(2_000)
+            _ = w.step(&notice, now: t2.addingTimeInterval(1), lastChunk: t2, restartInFlight: false)
+            _ = w.step(&notice, now: t2.addingTimeInterval(Double(w.stallSeconds)), lastChunk: t2, restartInFlight: false)
+            notice.restartFailed()
+            check(notice.takeGiveUpNotice(), "notice: the next stall posts its own")
+            var steppedOut = w.State()
+            _ = w.step(&steppedOut, now: t0.addingTimeInterval(Double(w.stallSeconds)), lastChunk: t0, restartInFlight: false)
+            check(w.step(&steppedOut, now: t0.addingTimeInterval(Double(w.stallSeconds) * 2), lastChunk: t0, restartInFlight: false) == .giveUp && steppedOut.takeGiveUpNotice(),
+                  "notice: a stall the watchdog gives up on after its restart posts too")
+            check(!(noticeText?.body ?? "").contains("\u{2014}") && !(noticeText?.body ?? "").contains("\u{2192}") && !(noticeText?.title ?? "").contains("\u{2014}"), "notice: no em dash or arrow in the copy")
+
+            // QA W8: a quit says what is true, and reads muted like the two-hour limit.
+            check(MacRecordingSigterm.reason == "COS Control was quit while recording. Everything saved up to then is kept.", "sigterm: the copy says saved, not recorded")
+            let quit = MacRecordingInterruption.line(MacRecordingSigterm.reason)
+            check(!quit.problem && !quit.text.contains("Incomplete") && quit.text == MacRecordingSigterm.reason, "sigterm: shown muted, never as an incomplete recording")
+            check(MacRecordingInterruption.line("The app ended during recording.").problem, "sigterm: other interruptions still read as incomplete")
+
+            // QA W7: the writer keeps storing while the main actor is blocked, and a refused chunk ends it.
+            let blockedHome = scratch.appendingPathComponent("blocked-home/cos-data/mac-recordings")
+            let blockedSpool = MacRecordingSpool(root: blockedHome)
+            let blockedJournal = MacRecordingManifest(captureId: "mac_00000003-bbbb-4bbb-8bbb-123456789abc", startTime: 1_793_000_000_000, serverInstanceId: "fixture-server",
+                                                      sourceName: MacAudioSource.allMacAudio.name, title: "Teams meeting", stopped: false, saved: false, acknowledged: 0, chunks: [])
+            try await blockedSpool.write(blockedJournal)
+            let (blockedStream, blockedFeed) = AsyncStream<MacRecordingChunk>.makeStream(bufferingPolicy: .bufferingOldest(8))
+            let blockedEvents = Events()
+            let blockedProgress = MacRecordingProgress(Date(timeIntervalSince1970: 1_000))
+            let writing = Task.detached(priority: .userInitiated) {
+                await MacRecordingWriter.run(stream: blockedStream, spool: blockedSpool, captureId: blockedJournal.id, progress: blockedProgress,
+                                             emit: { blockedEvents.add($0) }, log: { blockedEvents.note($0) })
+            }
+            // The tap keeps handing chunks over from its own queue while the main actor is stuck.
+            let tapQueue = Task.detached {
+                for index in 0..<6 { _ = blockedFeed.yield(.init(index: index, pcm: tone, endFrame: (index + 1) * 96_000)); try? await Task.sleep(nanoseconds: 20_000_000) }
+            }
+            let lastFile = blockedHome.appendingPathComponent(blockedJournal.id).appendingPathComponent("000005.wav").path
+            let blocked = blockMainThread(timeout: 5) { FileManager.default.fileExists(atPath: lastFile) && blockedEvents.all.count == 6 }
+            check(blocked.onMainThread, "writer: this check really blocks the main thread")
+            check(blocked.held, "writer: all six chunks reach disk and are reported while the main actor is blocked")
+            await tapQueue.value
+            blockedFeed.finish(); await writing.value
+            let blockedLatest = try await blockedSpool.snapshot(blockedJournal.id)
+            check(blockedLatest.chunks.map(\.index) == [0, 1, 2, 3, 4, 5] && blockedProgress.lastWrite > Date(timeIntervalSince1970: 2_000), "writer: the stored journal is whole and the progress clock moved")
+            // A refused chunk is reported once and the writer stops reading.
+            let refusedRoot = scratch.appendingPathComponent("refused-home/cos-data/mac-recordings")
+            let refusedSpool = MacRecordingSpool(root: refusedRoot)
+            let refusedJournal = MacRecordingManifest(captureId: "mac_00000004-bbbb-4bbb-8bbb-123456789abc", startTime: 1_793_000_000_000, serverInstanceId: "fixture-server",
+                                                      sourceName: MacAudioSource.allMacAudio.name, title: "Teams meeting", stopped: false, saved: false, acknowledged: 0, chunks: [])
+            try await refusedSpool.write(refusedJournal)
+            _ = try await refusedSpool.markStopped(refusedJournal.id)
+            let (refusedStream, refusedFeed) = AsyncStream<MacRecordingChunk>.makeStream(bufferingPolicy: .unbounded)
+            _ = refusedFeed.yield(.init(index: 0, pcm: tone, endFrame: 96_000)); _ = refusedFeed.yield(.init(index: 1, pcm: tone, endFrame: 192_000)); refusedFeed.finish()
+            let refusedEvents = Events()
+            await MacRecordingWriter.run(stream: refusedStream, spool: refusedSpool, captureId: refusedJournal.id, progress: MacRecordingProgress(),
+                                         emit: { refusedEvents.add($0) }, log: { refusedEvents.note($0) })
+            check(refusedEvents.all.count == 1 && refusedEvents.all[0].failure != nil && refusedEvents.all[0].manifest == nil && refusedEvents.logged.count == 1,
+                  "writer: a refused chunk is reported and logged once, and nothing after it is read")
+            check((try await refusedSpool.snapshot(refusedJournal.id)).chunks.isEmpty, "writer: a refused chunk stores nothing")
+
+            // QA N5: a stop the person made keeps its own words if a quit lands during the save.
+            let quitRoot = scratch.appendingPathComponent("quit-home/cos-data/mac-recordings")
+            let quitSpool = MacRecordingSpool(root: quitRoot)
+            func quitJournal(_ n: Int) -> MacRecordingManifest {
+                MacRecordingManifest(captureId: "mac_0000000\(n)-bbbb-4bbb-8bbb-123456789abc", startTime: 1_793_000_000_000, serverInstanceId: "fixture-server",
+                                     sourceName: MacAudioSource.allMacAudio.name, title: "Teams meeting", stopped: false, saved: false, acknowledged: 0, chunks: [])
+            }
+            let recordingOne = quitJournal(5), stoppingOne = quitJournal(6)
+            try await quitSpool.write(recordingOne); try await quitSpool.write(stoppingOne)
+            let quitOpen = MacRecordingOpenCaptures()
+            quitOpen.add(recordingOne.id, spool: quitSpool); quitOpen.add(stoppingOne.id, spool: quitSpool)
+            let lateOne = quitJournal(9)
+            try await quitSpool.write(lateOne)
+            quitOpen.beginStopping(stoppingOne.id); quitOpen.beginStopping(lateOne.id)   // the second is not registered yet: ignored
+            let closedRunning = await quitOpen.closeForExit(recordingOne.id), closedStopping = await quitOpen.closeForExit(stoppingOne.id)
+            check(closedRunning && closedStopping, "quit: both captures are closed")
+            let quitRecording = try await quitSpool.snapshot(recordingOne.id), quitStopping = try await quitSpool.snapshot(stoppingOne.id)
+            check(quitRecording.stopped && quitRecording.interruption == MacRecordingSigterm.reason, "quit: a recording that was running says it was quit")
+            check(quitStopping.stopped && quitStopping.interruption == nil, "quit: a recording the person already stopped is closed without saying it was quit")
+            quitOpen.add(lateOne.id, spool: quitSpool)
+            let closedLate = await quitOpen.closeForExit(lateOne.id)
+            let lateSnapshot = try await quitSpool.snapshot(lateOne.id)
+            check(closedLate && lateSnapshot.interruption == MacRecordingSigterm.reason, "quit: a stopping mark for a capture that was not registered is ignored")
+            quitOpen.remove(stoppingOne.id)
+            quitOpen.add(stoppingOne.id, spool: quitSpool)
+            let closedAgain = await quitOpen.closeForExit(stoppingOne.id)
+            let quitAgain = try await quitSpool.snapshot(stoppingOne.id)
+            check(closedAgain && quitAgain.interruption == MacRecordingSigterm.reason, "quit: a finished capture's stopping mark does not outlive its registration")
 
             // SIGTERM: the work, its time bound, and the real signal path.
             check(MacRecordingSigterm.waitSeconds <= 1.0 && MacRecordingSigterm.waitSeconds > 0, "sigterm: the wait is at most one second")
@@ -728,7 +881,14 @@ import Darwin
             check(slow.headline == "Saving…" && slow.detail == "Still saving. 340 of 345 audio chunks have reached COS." && !slow.showsActions,
                   "quick save: a slow save says how far it got")
             let down = line("pending", delivering: true, waiting: true, slow: true)
-            check(down.headline == "Saving…" && down.detail == Q.notAnswering && !down.showsActions, "quick save: COS not answering is said once the save is slow")
+            check(down.headline == "Saving…" && down.detail == Q.notAnswering && down.showsActions, "quick save: COS not answering is said once the save is slow, and Keep and Retry appear")
+            for delivering in [false, true] { for waiting in [false, true] { for slowFlag in [false, true] {
+                check(Q.offersControls(delivering: delivering, waiting: waiting, slow: slowFlag) == (delivering && waiting && slowFlag), "quick save: controls only for a slow quiet wait")
+                if delivering { check(line("pending", delivering: true, waiting: waiting, slow: slowFlag).showsActions == (waiting && slowFlag), "quick save: the line shows the controls exactly then") }
+            } } }
+            check(Q.stillSaving(1_199, of: 1_200) == "Still saving. 1,199 of 1,200 audio chunks have reached COS." && Q.reached(5, of: 1_201) == "5 of 1,201 audio chunks reached COS."
+                  && Q.sending(999, of: 1_000) == "Sending audio to COS: 999 of 1,000 chunks received." && Q.count(0) == "0" && Q.count(345) == "345",
+                  "quick save: thousands are grouped")
             let saved = line("saved", ack: 345)
             check(saved.headline == "Saved" && saved.detail == "Open Meetings to review the transcript." && saved.progress == nil && saved.tone == .done && !saved.showsActions,
                   "quick save: Saved, with no 345/345 counter")
@@ -789,6 +949,20 @@ import Darwin
             }
             // Bounded, and only after Stop.
             check(R.delays == [1, 2, 4, 8, 15, 30] && R.delays.reduce(0, +) == 60, "retry: six quiet tries in about a minute")
+            // Quick-save QA W4: and a wall-clock end, from the first wait.
+            let began1 = Date(timeIntervalSince1970: 1_793_000_000)
+            check(R.windowSeconds == 75 && R.windowSeconds >= 60 && R.windowSeconds <= 90, "retry: the window is about a minute and a quarter")
+            check(R.pause(attempt: 0, stopped: true, transient: true, since: nil, now: began1) == 1, "retry: the first wait has no clock yet")
+            check(R.pause(attempt: 3, stopped: true, transient: true, since: began1, now: began1.addingTimeInterval(20)) == 8, "retry: inside the window the table decides")
+            check(R.pause(attempt: 5, stopped: true, transient: true, since: began1, now: began1.addingTimeInterval(60)) == 15, "retry: the last wait is cut to end with the window")
+            check(R.pause(attempt: 1, stopped: true, transient: true, since: began1, now: began1.addingTimeInterval(75)) == nil
+                  && R.pause(attempt: 1, stopped: true, transient: true, since: began1, now: began1.addingTimeInterval(500)) == nil, "retry: past the window there is no next wait")
+            check(R.pause(attempt: 0, stopped: false, transient: true, since: nil, now: began1) == nil && R.pause(attempt: 0, stopped: true, transient: false, since: nil, now: began1) == nil
+                  && R.pause(attempt: 6, stopped: true, transient: true, since: nil, now: began1) == nil && R.pause(delays: [0.01], attempt: 0, stopped: true, transient: true, since: nil, now: began1) == 0.01,
+                  "retry: the window never loosens the other rules")
+            var total = 0.0, clock = began1, since: Date? = nil
+            for attempt in 0..<6 { if let wait = R.pause(attempt: attempt, stopped: true, transient: true, since: since, now: clock) { if since == nil { since = clock }; total += wait; clock = clock.addingTimeInterval(wait + 30) } }
+            check(since != nil && total < 75, "retry: waits plus 30 s tries stop early rather than run the table out")
             for attempt in -1...8 {
                 for stopped in [false, true] { for transient in [false, true] {
                     let wait = R.delay(afterAttempt: attempt, stopped: stopped, transient: transient)
@@ -814,6 +988,16 @@ import Darwin
                   "Recover: during a save it says once this recording is saved")
             check(MacRecordingRecoveryPolicy.recoverUnavailable(phase: "pending", delivering: false, currentUnsaved: true) == "Recover is available once the recording above is saved or kept for later.",
                   "Recover: behind a paused recording it names what to do")
+            // Quick-save QA W3: behind a recording with no sound the only action is Discard, and the reason says so.
+            check(MacRecordingRecoveryPolicy.recoverUnavailable(phase: "pending", delivering: false, currentUnsaved: true, nothingToKeep: true) == "Recover is available once the recording above is discarded.",
+                  "Recover: behind a no-sound recording it names Discard")
+            for phase in ["idle", "saved", "pending", "starting", "recording", "stopping", "recovering", "discarding"] { for delivering in [false, true] { for unsaved in [false, true] {
+                let plain = MacRecordingRecoveryPolicy.recoverUnavailable(phase: phase, delivering: delivering, currentUnsaved: unsaved)
+                let none = MacRecordingRecoveryPolicy.recoverUnavailable(phase: phase, delivering: delivering, currentUnsaved: unsaved, nothingToKeep: true)
+                check((plain == nil) == (none == nil) && (plain == none || (unsaved && !delivering && !["starting", "recording", "stopping", "recovering", "discarding"].contains(phase))),
+                      "Recover: no sound changes only the wording behind a settled unsaved recording")
+                if let none, none.contains("discarded") { check(unsaved && !delivering, "Recover: Discard is named only where the recording above is what blocks") }
+            } } }
         }
         // MARK: 0.5.351, reconcile a retained capture the server already saved (mac_b0bd6732)
         do {
@@ -829,8 +1013,12 @@ import Darwin
             check(!C.shouldAsk(done, current: nil), "reconcile: a saved journal is not asked about")
             var empty = value; empty.chunks = []; empty.acknowledged = 0
             check(!C.shouldAsk(empty, current: nil), "reconcile: an empty journal is not asked about")
-            let good = C.Answer(ok: true, state: "saved", sessionId: id, receiptSaved: true, receiptVersion: 1, receiptSessionId: id, receiptCaptureId: id, receiptSourceType: "mac_system_audio")
-            check(C.savedOnServer(captureId: id, good), "reconcile: a verified receipt for this capture is saved")
+            let good = C.Answer(ok: true, state: "saved", sessionId: id, receiptSaved: true, receiptVersion: 1, receiptSessionId: id, receiptCaptureId: id, receiptSourceType: "mac_system_audio",
+                                receiptServerInstanceId: "fixture-server", integrity: .init(expected: 3, missingChunks: 0))
+            func savedOn(_ answer: C.Answer, instance: String = "fixture-server", chunks: Int = 3) -> Bool { C.savedOnServer(captureId: id, serverInstanceId: instance, chunkCount: chunks, answer) }
+            check(savedOn(good), "reconcile: a verified receipt for this capture is saved")
+            var noIntegrity = good; noIntegrity.integrity = nil
+            check(savedOn(noIntegrity), "reconcile: a receipt with no integrity block (an older server) is judged on the rest")
             var variants: [(String, C.Answer)] = []
             var a = good; a.ok = false; variants.append(("a refusal", a))
             a = good; a.state = "active"; variants.append(("a live session", a))
@@ -843,7 +1031,15 @@ import Darwin
             a = good; a.receiptSessionId = "mac_other"; variants.append(("a receipt for another session", a))
             a = good; a.receiptCaptureId = nil; variants.append(("a receipt with no capture", a))
             a = good; a.receiptSourceType = nil; variants.append(("a receipt that is not a Mac capture", a))
-            for (name, answer) in variants { check(!C.savedOnServer(captureId: id, answer), "reconcile: \(name) keeps the row") }
+            a = good; a.receiptServerInstanceId = nil; variants.append(("a receipt with no server instance", a))
+            a = good; a.receiptServerInstanceId = "another-server"; variants.append(("a receipt from another server instance", a))
+            a = good; a.integrity = .init(expected: 3, missingChunks: 1); variants.append(("a receipt that lost a chunk", a))
+            a = good; a.integrity = .init(expected: 2, missingChunks: 0); variants.append(("a receipt for fewer chunks than the journal holds", a))
+            a = good; a.integrity = .init(expected: 4, missingChunks: 0); variants.append(("a receipt for more chunks than the journal holds", a))
+            a = good; a.integrity = .init(expected: 3, missingChunks: nil); variants.append(("a receipt that does not say what is missing", a))
+            a = good; a.integrity = .init(expected: nil, missingChunks: 0); variants.append(("a receipt that does not say how many it expected", a))
+            for (name, answer) in variants { check(!savedOn(answer), "reconcile: \(name) keeps the row") }
+            check(!savedOn(good, instance: "another-server") && !savedOn(good, chunks: 4), "reconcile: the journal's own instance and chunk count are what the receipt is held to")
             // The spool marks only a fully acknowledged journal, and never touches its audio.
             let rroot = scratch.appendingPathComponent("reconcile-home/cos-data/mac-recordings")
             let rspool = MacRecordingSpool(root: rroot)
@@ -854,10 +1050,16 @@ import Darwin
             for index in 0..<3 { _ = try await rspool.append(.init(index: index, pcm: tiny, endFrame: (index + 1) * 160), captureId: id) }
             _ = try await rspool.acknowledge(id, index: 0); _ = try await rspool.acknowledge(id, index: 1)
             await rejects("reconcile: a journal with an unacknowledged chunk is never marked saved") { _ = try await rspool.markSavedOnServer(id) }
+            // The spool's own guard speaks first; the journal validator behind it would also refuse, with a different sentence.
+            var refusalText = ""
+            do { _ = try await rspool.markSavedOnServer(id) } catch { refusalText = error.localizedDescription }
+            check(refusalText == "Recording still has pending audio.", "reconcile: the unacknowledged refusal is the spool's own, not the validator's backstop")
             check(try await MacRecordingSpool(root: rroot).snapshot(id).saved == false, "reconcile: the refused mark changed nothing on disk")
             _ = try await rspool.acknowledge(id, index: 2)
             let wavs = try fm.contentsOfDirectory(atPath: rroot.appendingPathComponent(id).path).filter { $0.hasSuffix(".wav") }.sorted()
-            let marked = try await rspool.markSavedOnServer(id)
+            let markedAttempt = try? await rspool.markSavedOnServer(id)
+            check(markedAttempt != nil, "reconcile: a fully acknowledged journal can be marked")
+            let marked = markedAttempt!
             check(marked.saved && marked.stopped && marked.acknowledged == 3 && marked.chunks.count == 3, "reconcile: an unstopped, fully acknowledged journal is marked stopped and saved")
             check(try await MacRecordingSpool(root: rroot).recoverable().isEmpty, "reconcile: a marked journal is no longer offered for Recover, after a restart too")
             check(try fm.contentsOfDirectory(atPath: rroot.appendingPathComponent(id).path).filter { $0.hasSuffix(".wav") }.sorted() == wavs && wavs.count == 3,

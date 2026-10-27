@@ -111,6 +111,20 @@ final class MeetingAudioNotifier: NSObject, UNUserNotificationCenterDelegate, @u
         }
     }
 
+    /// 0.5.351 (QA W6): a Mac recording stopped receiving audio and could not recover. The recording is still open, so
+    /// the person is told while the call may still be going; the text is MacRecordingWatchdog.notification.
+    func postRecordingStalled(title: String, body: String) {
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        content.sound = .default
+        let identifier = "mac-recording-stalled-\(UUID().uuidString)"
+        center.add(UNNotificationRequest(identifier: identifier, content: content, trigger: nil)) { error in
+            let detail = error.map { String(describing: $0) } ?? "none"
+            meetingAudioLog.notice("post \(identifier, privacy: .public) error=\(detail, privacy: .public)")
+        }
+    }
+
     /// Audio reached this Mac again: take the out-of-date notification out of Notification Center.
     func removeDelivered(sessionIds: [String]) {
         guard !sessionIds.isEmpty else { return }
@@ -685,6 +699,7 @@ final class ControllerModel: ObservableObject {
         activityLoadsEnabled = startBackgroundWork || allowActivityLoads
         workActivity = WorkActivityJournal(url: WorkActivityJournal.defaultURL(background: startBackgroundWork))
         macRecording.stoppedOnItsOwn = { [weak self] reason in self?.meetingAudioNotifier.postRecordingStopped(reason) }
+        macRecording.stallNotice = { [weak self] title, body in self?.meetingAudioNotifier.postRecordingStalled(title: title, body: body) }
         // 0.5.336 (server 6.86.0): live cues on a Mac recording, and its grey line (ControllerModel, Live meeting view).
         macRecording.liveCuesWanted = { [weak self] in self?.liveMeetingCapability.sendsMacLiveCues == true }
         macRecording.previewWanted = { [weak self] id in self?.liveMeetingPreviewWanted(id) == true }

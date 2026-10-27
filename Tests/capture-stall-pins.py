@@ -11,7 +11,8 @@ import pathlib, sys
 root = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else ".")
 def code(rel):
     return "\n".join(l for l in (root / rel).read_text(encoding="utf-8").splitlines() if not l.lstrip().startswith("//"))
-store_src, app, core = (code(p) for p in ("Sources/MacRecording.swift", "Sources/COSControlApp.swift", "Sources/MacRecordingCore.swift"))
+store_src, app, core, capture_src, model_src, askcore = (code(p) for p in ("Sources/MacRecording.swift", "Sources/COSControlApp.swift", "Sources/MacRecordingCore.swift",
+    "Sources/MacAudioCapture.swift", "Sources/ControllerModel.swift", "Sources/MeetingAskCore.swift"))
 passed = 0
 def pin(ok, behaviour, why):
     global passed
@@ -39,13 +40,13 @@ writer = between(start, "            writerTask = Task.detached(priority: .userI
 consumer = between(start, "            chunksTask = Task { [weak self] in", "            let engine = makeEngine(")
 
 # 1. The writer: its own executor, the journal's own sequence, progress for the watchdog, in that order.
-pin("self" not in writer.replace("MacRecordingSequencer", ""), "writer off the main actor",
+pin("self" not in writer, "writer off the main actor",
     "the writer closure never mentions self, so it cannot wait for the main actor")
-pin("let chunk = sequence.next(raw)" in writer and "spool.append(chunk, captureId: id)" in writer and "sequence.stored(journal); progress.mark()" in writer
-    and ordered(writer, "sequence.next(raw)", "spool.append(", "progress.mark()", "storedContinuation.yield("),
-    "writer sequence", "each chunk takes the journal's next index, is stored, marks progress, then goes to the main actor")
-pin("storedContinuation.yield(.init(failure: reason)); break" in writer and "storedContinuation.finish()" in writer.split("break")[-1],
-    "writer failure and end", "a refused chunk is reported and ends the writer; the end of the stream ends the main actor's loop")
+pin("await MacRecordingWriter.run(stream: stream, spool: spool, captureId: id, progress: progress," in writer
+    and "emit: { _ in } " not in writer and "emit: { _ = storedContinuation.yield($0) }" in writer,
+    "store runs the core writer", "the store runs the same loop the checks run with the main thread blocked, and sends what it stores to the main actor")
+pin(ordered(writer, "await MacRecordingWriter.run(", "storedContinuation.finish()"), "end of the writer ends the main actor's loop",
+    "when the writer ends (stream finished or a chunk refused) the main actor's loop ends too")
 pin("for await event in stored {" in consumer and "for await" not in consumer.split("for await event in stored {", 1)[1], "main actor reads what was stored",
     "the main actor loop reads the writer's output, never the tap's stream")
 pin("if let reason = event.failure { self.captureInterruption = reason; Task { await self.stop() }; break }" in consumer, "append failure stops",
@@ -61,28 +62,49 @@ pin(ordered(finish, "await writerTask?.value", "await chunksTask?.value", "markS
 pin("await writerTask?.value; await chunksTask?.value" in catch, "failed start waits for the writer", "a start that fails also waits for the writer")
 pin("watchdogTask?.cancel(); watchdogTask = nil; stallLine = nil" in finish and "watchdogTask?.cancel(); watchdogTask = nil; stallLine = nil" in catch,
     "watchdog stops with the recording", "stop and a failed start both end the watchdog and clear its line")
+pin(catch.count("watchdogTask?.cancel()") == 1 and ordered(catch, "guard startAttempt == attempt else { return }", "watchdogTask?.cancel(); watchdogTask = nil; stallLine = nil"),
+    "stale start leaves the newer watchdog alone", "a start that was superseded and fails late returns before it can cancel the newer recording's watchdog")
 
 # 3. The watchdog.
 pin('phase = "recording"\n            startWatchdog(id: id, source: source)' in start, "watchdog starts when recording starts", "it runs only from the moment the recording is live")
-tick = between(store, "    private func watchdogTick(", "    private func restartTap(")
+tick = between(store, "    private func watchdogTick(", "    private func publishStall() {")
 pin("guard phase == \"recording\", manifest?.captureId == id else { return }" in tick
     and "MacRecordingWatchdog.step(&watchdog, now: now, lastChunk: progress.lastWrite, restartInFlight: restartInFlight)" not in tick
     and "lastChunk: last, restartInFlight: restartInFlight)" in tick and "let now = Date(), last = progress.lastWrite" in tick,
     "watchdog reads the writer's progress", "the stall is judged from when the writer last stored a chunk, only while recording")
 pin("stallLine = MacRecordingWatchdog.line(watchdog)" in tick, "watchdog line shown", "the panel line follows the watchdog state every look")
 pin("MacRecordingBounded.run(seconds: TimeInterval(MacRecordingWatchdog.restartSeconds))" in tick, "restart is bounded", "a restart that hangs is given up on")
-pin("if worked != true { watchdog.restartFailed(); stallLine = MacRecordingWatchdog.line(watchdog) }" in tick, "failed restart is said",
+pin(ordered(tick, "if worked != true { watchdog.restartFailed() }", "publishStall()"), "failed restart is said",
     "a restart that fails or times out puts the Stop and save line up at once")
-pin(ordered(tick, "restartInFlight = true", "MacRecordingBounded.run(", "restartInFlight = false"),
-    "one restart at a time", "no second restart starts while one runs")
+pin("restartInFlight = false" not in tick and ordered(tick, "restartInFlight = true", "tapGeneration += 1", "MacRecordingBounded.run(", "await self.restartReturned(generation: generation)", "return done"),
+    "restart flag cleared only by the restart itself", "the in-flight flag is not cleared when the watchdog's time bound expires, only when the restart's own work returns (QA W3)")
+returned = between(store, "    private func restartReturned(", "    private func restartTap(")
+pin("if tapGeneration == generation { restartInFlight = false }" in returned, "a stale restart leaves the flag alone", "only the current restart clears the flag")
+publish = between(store, "    private func publishStall() {", "    private func restartReturned(")
+pin(ordered(publish, "stallLine = MacRecordingWatchdog.line(watchdog)", "watchdog.takeGiveUpNotice()", "MacRecordingWatchdog.notification(watchdog)", "stallNotice?(note.title, note.body)"),
+    "one notification per stall", "an unrecovered stall posts its notification once, from the watchdog state's own once-only gate (QA W6)")
+pin("macRecording.stallNotice = { [weak self] title, body in self?.meetingAudioNotifier.postRecordingStalled(title: title, body: body) }" in model_src
+    and "func postRecordingStalled(title: String, body: String) {" in model_src, "notification reaches the app", "the stall notice goes through the existing meeting-audio notifier")
 loop = between(store, "    private func startWatchdog(", "    private func watchdogTick(")
 pin("UInt64(MacRecordingWatchdog.pollSeconds) * 1_000_000_000" in loop and "guard let progress else { return }" in loop, "watchdog cadence",
     "it looks once per chunk length, from the recording's own progress")
 restart = between(store, "    private func restartTap(", "    private func installStopObservers() {")
 pin(ordered(restart, "_ = await old.stop()", "makeEngine(", "engine.start(source: source)", "capture = engine"),
     "restart order", "the old tap is stopped (its tail is kept), then a new one started, then installed")
-pin("guard phase == \"recording\", manifest?.captureId == id else { _ = await engine.stop(); return false }" in restart, "restart never outlives the recording",
-    "a tap started after the recording stopped is stopped again, never left running")
+pin("guard generation == tapGeneration, phase == \"recording\", manifest?.captureId == id else { _ = await engine.stop(); return false }" in restart, "restart never outlives the recording",
+    "a tap started after the recording stopped, or after a newer restart, is stopped again, never left running (QA W3)")
+pin("guard generation == tapGeneration, phase == \"recording\", manifest?.captureId == id else { return false }" in restart and "func restartTap(id: String, source: MacAudioSource, generation: Int) async -> Bool {" in store,
+    "stale restart does not start a tap", "a restart made stale while its old tap was stopping never starts a new one")
+pin(ordered(finish, 'phase = "stopping"', "tapGeneration += 1", "MacRecordingOpenCaptures.shared.beginStopping(id)", "await MacRecordingTapStop.run({ await old.stop() })", "streamContinuation?.finish()"),
+    "stop makes restarts stale and bounds the tap", "Stop invalidates a running restart, marks the capture as stopped by the person, then waits for the tap only within the bound (QA W2, W3, N5)")
+pin('case .timedOut: recordingLog.error("stop: the tap did not stop in time code=tap_stop_timeout")' in finish and "case .stopped(let reason): if let reason { captureInterruption = reason }" in finish,
+    "tap stop timeout logged by code", "a tap that does not stop in time is logged by a code only and Stop carries on")
+pin("tapGeneration += 1" in start.split("installStopObservers()")[0], "a new recording starts a new generation", "a restart left over from the last recording can never act on this one")
+pin(ordered(start, "recordingStartedAt = Date()", "let engine = makeEngine("), "recording start time taken", "the recording's own start is taken before its first tap")
+engine_src = between(store, "    private func makeEngine(", "    private func takeStored(")
+pin("}, recordingStartedAt: recordingStartedAt)" in engine_src, "every tap gets the recording's start", "the first tap and every restarted tap count the two-hour limit from the recording's own start (QA W4)")
+pin("started = recordingStartedAt ?? now; lastInput = now" in capture_src and "guard !MacRecordingLimit.reached(startedAt: started) else {" in capture_src
+    and "let recordingStartedAt: Date?" in capture_src, "tap counts from the recording's start", "the tap's two-hour limit reads the start it was given, not the moment it started")
 pin("continuation: continuation" in restart and "AsyncStream" not in restart.replace("streamContinuation", ""), "restart feeds the same stream",
     "the new tap writes to the same stream, so its chunks continue the same journal")
 warn = between(store, "    var signalWarning: String? {", "    var canDiscard: Bool {")
@@ -101,5 +123,11 @@ pin("source = MacRecordingSigterm.install { result in" in wiring and "signal(SIG
 pin("MacRecordingSigtermWiring.install()" in app, "sigterm installed at launch", "the app installs the handler where it wires the quit")
 pin("signalNumber: Int32 = SIGTERM" in core, "default signal is SIGTERM", "the installed handler is for SIGTERM")
 pin("static let waitSeconds: TimeInterval = 0.8" in core, "sigterm wait under a second", "the wait is bounded below one second")
+
+# 5. The disk is not read on every redraw (QA W1).
+pin("freeBytes: @autoclosure () -> Int64?) -> ParakeetRowState {" in askcore and "if let free = freeBytes(), free < requiredFreeBytes {" in askcore,
+    "free space read only at the disk rule", "the Parakeet row asks for free space only at the one rule that needs it")
+pin("freeBytes: freeBytes())" in askcore and "var freeBytes: () -> Int64? = { FreeSpaceReader.shared.value() }" in askcore,
+    "free space read off the main thread", "the default reader answers from a cache and refreshes in the background")
 
 print(f"capture stall pins: {passed} passed")

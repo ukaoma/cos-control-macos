@@ -91,8 +91,12 @@ final class MacRecordingStore: ObservableObject {
     var retryDelays = MacRecordingSaveRetry.delays
     var slowSaveAfter = MacRecordingSaveStatus.slowAfterSeconds
     private var slowTask: Task<Void, Never>?
-    /// The last refusal's HTTP status and reason code (never its text), for MacRecordingSaveRetry.transient.
-    private var lastFailure: (httpStatus: Int?, reason: String?) = (nil, nil)
+    /// 0.5.351 (quick-save QA W4): when the first quiet wait of this delivery began (MacRecordingSaveRetry.pause); nil before it.
+    private var quietSince: Date?
+    /// How long Control waits before asking a not-yet-idle server to discard again. Fixed policy; a render harness shortens it.
+    var discardRetryDelay = MacRecordingDiscard.retryAfterSeconds
+    /// How long the quiet tries may go on in all. Fixed policy; a render or test harness shortens it.
+    var retryWindow = MacRecordingSaveRetry.windowSeconds
     /// Whether the delivery call that just failed failed in a passing way; false after any call that succeeded.
     private var deliveryFailureTransient = false
     /// 0.5.334: can COS hear this Mac (MacRecordingHearing): the probe's warning and the fail-fast's count.
@@ -140,7 +144,11 @@ final class MacRecordingStore: ObservableObject {
     /// "Retry saving retained audio" only where a retry can work.
     var canRetrySave: Bool {
         MacRecordingDiscard.retryOffered(noSpeech: noSpeech, allZero: manifest?.allDigitalSilence == true, pending: phase == "pending",
-                                         hasChunks: manifest?.chunks.isEmpty == false, delivering: deliveryTask != nil)
+                                         hasChunks: manifest?.chunks.isEmpty == false, delivering: deliveryTask != nil, waiting: quietWaitControls)
+    }
+    /// 0.5.351 (quick-save QA W4): a quiet retry that has outlasted an ordinary save, so Keep and Retry are offered.
+    var quietWaitControls: Bool {
+        MacRecordingSaveStatus.offersControls(delivering: deliveryTask != nil, waiting: waitingToRetry, slow: slowSave)
     }
     /// 0.5.351: what the panel says about this capture (MacRecordingSaveStatus): Saving…, then Saved.
     var saveLine: MacRecordingSaveStatus.Line {
@@ -167,7 +175,16 @@ final class MacRecordingStore: ObservableObject {
     private var progress: MacRecordingProgress?
     private var watchdogTask: Task<Void, Never>?
     private var watchdog = MacRecordingWatchdog.State()
+    /// 0.5.351 (QA W3): set when a restart begins and cleared only when that restart's own work returns (restartReturned),
+    /// never when the watchdog's time bound on it expires, so a slow restart can never overlap a second one.
     private var restartInFlight = false
+    /// 0.5.351 (QA W3): bumped by every restart, by Stop and by every start. A restart whose number is no longer current
+    /// stops the tap it made instead of installing it, so one capture never has two live taps.
+    private var tapGeneration = 0
+    /// 0.5.351 (QA W4): when this recording began, handed to every tap so a restart does not restart the two-hour clock.
+    private var recordingStartedAt = Date()
+    /// 0.5.351 (QA W6): title and body of the one notification a stall that could not be recovered posts.
+    var stallNotice: ((String, String) -> Void)?
     /// 0.5.351: the watchdog's line while no chunk is being written (MacRecordingWatchdog.line); nil otherwise.
     @Published private(set) var stallLine: String?
     private var streamContinuation: AsyncStream<MacRecordingChunk>.Continuation?
@@ -204,10 +221,13 @@ final class MacRecordingStore: ObservableObject {
                     }
                     instance = id; available = true
                     serverDiscard = result["discard"]?.bool == true
-                    // 0.5.351: the server answered, so drop retained captures it already saved (MacRecordingReconcile).
-                    recoverable = await reconciled(recoverable)
                     sources = [.allMacAudio] + (try await Task.detached(priority: .utility) { try MacAudioCapture.sources() }.value)
                     if !sources.contains(where: { $0.id == selectedID }) { selectedID = MacAudioSource.allMacAudioID }
+                    // 0.5.351: the server answered, so drop retained captures it already saved (MacRecordingReconcile). After the
+                    // sources are loaded (quick-save QA W8), so a Record pressed while the status calls run still starts; if one
+                    // did, the list is left for the next refresh rather than replaced under it.
+                    let checked = await reconciled(recoverable)
+                    if !occupied { recoverable = checked }
                 } else { throw MacRecordingError.unavailable("Manual system audio recording requires macOS 14.2 or later.") }
             } catch where !(error is CancellationError) {
                 // QA 0.5.313 telemetry: the reason, once; cancellation is not a failure and is not logged.
@@ -223,12 +243,11 @@ final class MacRecordingStore: ObservableObject {
     }
     private func invoke(_ operation: String, _ payload: [String: JSONValue]) async throws -> [String: JSONValue] {
         guard let bridge else { throw MacRecordingError.unavailable("Recording transport is not connected.") }
-        lastFailure = (nil, nil)
         let response = try await bridge(operation, payload)
         guard response.ok else {
-            lastFailure = (response.details["httpStatus"]?.int, response.details["reason"]?.string)
             if operation == "save", response.details["reason"]?.string == "nothing_to_save" { noSpeech = true }
-            throw MacRecordingError.unavailable(response.message)
+            // The status and reason travel in the error itself (quick-save QA N2), never in store state another call can reset.
+            throw MacRecordingHelperRefusal(message: response.message, httpStatus: response.details["httpStatus"]?.int, reason: response.details["reason"]?.string)
         }
         return response.details
     }
@@ -248,7 +267,8 @@ final class MacRecordingStore: ObservableObject {
         // (0.5.311 recorded beside one; QA 2026-10-15: a recoverable gate here made Record and the meeting card dead).
         guard available, canStart else {
             let pendingCapture = deliveryTask != nil || (manifest.map { !$0.saved && !$0.chunks.isEmpty } ?? false)
-            switch MacRecordingRefusal.decide(available: available, currentError: error, live: occupied, pendingCapture: pendingCapture) {
+            let stillSaving = deliveryTask != nil && !quietWaitControls
+            switch MacRecordingRefusal.decide(available: available, currentError: error, live: occupied, pendingCapture: pendingCapture, stillSaving: stillSaving) {
             case .keep: break
             case .set(let text): error = text
             }
@@ -278,12 +298,12 @@ final class MacRecordingStore: ObservableObject {
             recordingLog.notice("system audio before recording: allowed=\(allowed)")
             guard noticeAcknowledged, canStart, available else { return }
         }
-        phase = "starting"; error = nil; noSpeech = false; captureInterruption = nil; silentChunks = 0; heardSound = false; deliveryPaused = false
+        phase = "starting"; error = nil; noSpeech = false; captureInterruption = nil; silentChunks = 0; heardSound = false; deliveryPaused = false; deliveryFailureTransient = false
         LiveAudiogramFeed.live.reset()
         hearing = MacRecordingHearing.State(); cannotHear = false; failFast = false; cannotHearTitle = nil
         slowTask?.cancel(); slowTask = nil; slowSave = false; waitingToRetry = false
         let attempt = UUID(); startAttempt = attempt
-        watchdog = MacRecordingWatchdog.State(); stallLine = nil; restartInFlight = false
+        watchdog = MacRecordingWatchdog.State(); stallLine = nil; restartInFlight = false; tapGeneration += 1
         installStopObservers()
         var localCapture: MacAudioCapture?
         var localContinuation: AsyncStream<MacRecordingChunk>.Continuation?
@@ -321,21 +341,11 @@ final class MacRecordingStore: ObservableObject {
             let (stored, storedContinuation) = AsyncStream<MacRecordingWriterEvent>.makeStream(bufferingPolicy: .unbounded)
             let spool = self.spool
             MacRecordingOpenCaptures.shared.add(id, spool: spool)
+            // The loop itself is MacRecordingWriter.run (core), the same code the checks run with the main thread blocked.
             writerTask = Task.detached(priority: .userInitiated) {
-                var sequence = MacRecordingSequencer()
-                for await raw in stream {
-                    let silent = MacRecordingSignal.isSilent(raw.pcm)
-                    let chunk = sequence.next(raw)
-                    do {
-                        let journal = try await spool.append(chunk, captureId: id)
-                        sequence.stored(journal); progress.mark()
-                        storedContinuation.yield(.init(chunk: MacRecordingWriterEvent.slim(chunk), silent: silent, manifest: journal))
-                    } catch {
-                        let reason = error.localizedDescription
-                        recordingLog.error("append failed: \(reason, privacy: .public)")
-                        storedContinuation.yield(.init(failure: reason)); break
-                    }
-                }
+                await MacRecordingWriter.run(stream: stream, spool: spool, captureId: id, progress: progress,
+                                             emit: { _ = storedContinuation.yield($0) },
+                                             log: { reason in recordingLog.error("append failed: \(reason, privacy: .public)") })
                 storedContinuation.finish()
             }
             chunksTask = Task { [weak self] in
@@ -356,6 +366,7 @@ final class MacRecordingStore: ObservableObject {
                     self.deliverPending()
                 }
             }
+            recordingStartedAt = Date()
             let engine = makeEngine(id: id, source: source, continuation: continuation)
             localCapture = engine; capture = engine
             try await engine.start(source: source)
@@ -367,11 +378,12 @@ final class MacRecordingStore: ObservableObject {
             message = source.isAllMacAudio ? "Recording everything this Mac plays. Microphone off." : "Recording \(source.name) playback only. Microphone off."
         } catch {
             MacRecordingOpenCaptures.shared.remove(id)
-            watchdogTask?.cancel(); watchdogTask = nil; stallLine = nil
             let interruption = await localCapture?.stop(); localContinuation?.finish()
             let reason = error is CancellationError ? "cancelled" : error.localizedDescription
             recordingLog.error("start failed: \(reason, privacy: .public)")
             guard startAttempt == attempt else { return }
+            // 0.5.351 (QA N2): only this attempt's own watchdog; a stale attempt failing late must not cancel a newer one's.
+            watchdogTask?.cancel(); watchdogTask = nil; stallLine = nil
             capture = nil
             streamContinuation?.finish(); await writerTask?.value; await chunksTask?.value
             streamContinuation = nil; writerTask = nil; chunksTask = nil
@@ -402,7 +414,7 @@ final class MacRecordingStore: ObservableObject {
         }, level: { rms in
             // 0.5.336: the audiogram. A number, ten a second, into its own feed (never this store or the model).
             Task { @MainActor in LiveAudiogramFeed.live.push(rms: rms) }
-        })
+        }, recordingStartedAt: recordingStartedAt)
     }
     /// What the writer stored, into the panel's manifest. Never older than what is shown, never fewer acknowledgements.
     private func takeStored(_ journal: MacRecordingManifest) {
@@ -442,23 +454,38 @@ final class MacRecordingStore: ObservableObject {
         case .restart:
             recordingLog.error("watchdog: no chunk for \(quiet)s; restarting the tap (restart \(self.watchdog.totalRestarts) of \(MacRecordingWatchdog.maxRestartsPerRecording))")
             restartInFlight = true
+            tapGeneration += 1
+            let generation = tapGeneration
             let worked = await MacRecordingBounded.run(seconds: TimeInterval(MacRecordingWatchdog.restartSeconds)) { [weak self] in
-                await self?.restartTap(id: id, source: source) ?? false
+                guard let self else { return false }
+                let done = await self.restartTap(id: id, source: source, generation: generation)
+                await self.restartReturned(generation: generation)
+                return done
             }
-            restartInFlight = false
             recordingLog.notice("watchdog: restart \(worked == true ? "ok" : (worked == nil ? "timed out" : "failed"), privacy: .public)")
-            if worked != true { watchdog.restartFailed(); stallLine = MacRecordingWatchdog.line(watchdog) }
+            if worked != true { watchdog.restartFailed() }
         }
+        publishStall()
+    }
+    /// The panel's line, and (once per stall) the notification: the panel is usually closed during a call.
+    private func publishStall() {
+        stallLine = MacRecordingWatchdog.line(watchdog)
+        if watchdog.takeGiveUpNotice(), let note = MacRecordingWatchdog.notification(watchdog) { stallNotice?(note.title, note.body) }
+    }
+    /// A restart's own work has returned (in time or late). Only then may the next restart start; a restart that Stop or a
+    /// newer start has made stale leaves the flag alone.
+    private func restartReturned(generation: Int) {
+        if tapGeneration == generation { restartInFlight = false }
     }
     /// Stops the tap (its tail goes to the writer like any chunk), then starts a new one on the same stream.
-    private func restartTap(id: String, source: MacAudioSource) async -> Bool {
+    private func restartTap(id: String, source: MacAudioSource, generation: Int) async -> Bool {
         guard #available(macOS 14.2, *), let continuation = streamContinuation, let old = capture else { return false }
         _ = await old.stop()
-        guard phase == "recording", manifest?.captureId == id else { return false }
+        guard generation == tapGeneration, phase == "recording", manifest?.captureId == id else { return false }
         let engine = makeEngine(id: id, source: source, continuation: continuation)
         do { try await engine.start(source: source) }
         catch { recordingLog.error("watchdog: the new tap did not start: \(error.localizedDescription, privacy: .public)"); return false }
-        guard phase == "recording", manifest?.captureId == id else { _ = await engine.stop(); return false }
+        guard generation == tapGeneration, phase == "recording", manifest?.captureId == id else { _ = await engine.stop(); return false }
         capture = engine
         return true
     }
@@ -480,12 +507,22 @@ final class MacRecordingStore: ObservableObject {
         guard ["recording", "starting"].contains(phase) else { return }
         startAttempt = nil
         phase = "stopping"
+        tapGeneration += 1
+        deliveryFailureTransient = false
+        if let id = manifest?.captureId { MacRecordingOpenCaptures.shared.beginStopping(id) }
         recordingLog.notice("stop")
         previewTask?.cancel(); previewTask = nil
         watchdogTask?.cancel(); watchdogTask = nil; stallLine = nil
         // QA 0.5.313: an interruption is written to the journal and shown once, by MacRecordingInterruption.line (muted for
         // the two-hour limit). Copying it into `error` too showed the same news again in red, and nothing cleared it.
-        if let reason = await capture?.stop() { captureInterruption = reason }
+        // 0.5.351 (QA W2): a tap whose capture queue is wedged must not hold Stop. After the bound the stream is finished, the
+        // writer drained and the journal marked stopped as usual, so every stored chunk is kept.
+        if let old = capture {
+            switch await MacRecordingTapStop.run({ await old.stop() }) {
+            case .stopped(let reason): if let reason { captureInterruption = reason }
+            case .timedOut: recordingLog.error("stop: the tap did not stop in time code=tap_stop_timeout")
+            }
+        }
         capture = nil
         streamContinuation?.finish(); streamContinuation = nil
         // The writer first: every chunk the tap handed over is stored before the journal is marked stopped.
@@ -620,7 +657,7 @@ final class MacRecordingStore: ObservableObject {
     private func retryServerDiscard(captureId: String, serverInstanceId: String, left: Int) {
         guard left > 0 else { return }
         Task { [weak self] in
-            try? await Task.sleep(for: .seconds(MacRecordingDiscard.retryAfterSeconds))
+            try? await Task.sleep(for: .seconds(self?.discardRetryDelay ?? MacRecordingDiscard.retryAfterSeconds))
             guard let self else { return }
             let answer = await self.askServerDiscard(captureId: captureId, serverInstanceId: serverInstanceId)
             recordingLog.notice("discard retry: server=\(String(describing: answer), privacy: .public)")
@@ -697,10 +734,13 @@ final class MacRecordingStore: ObservableObject {
         guard let bridge,
               let response = try? await bridge("status", ["captureId": .string(value.captureId), "serverInstanceId": .string(value.serverInstanceId)]) else { return false }
         let receipt = response.details["saveReceipt"]?.object
-        return MacRecordingReconcile.savedOnServer(captureId: value.captureId, .init(
+        let integrity = receipt?["transferIntegrity"]?.object
+        return MacRecordingReconcile.savedOnServer(captureId: value.captureId, serverInstanceId: value.serverInstanceId, chunkCount: value.chunks.count, .init(
             ok: response.ok, state: response.details["state"]?.string, sessionId: response.details["sessionId"]?.string,
             receiptSaved: receipt?["saved"]?.bool, receiptVersion: receipt?["receiptVersion"]?.int, receiptSessionId: receipt?["sessionId"]?.string,
-            receiptCaptureId: receipt?["captureId"]?.string, receiptSourceType: receipt?["sourceType"]?.string))
+            receiptCaptureId: receipt?["captureId"]?.string, receiptSourceType: receipt?["sourceType"]?.string,
+            receiptServerInstanceId: receipt?["serverInstanceId"]?.string,
+            integrity: integrity.map { .init(expected: $0["expected"]?.int, missingChunks: $0["missingChunks"]?.int) }))
     }
     /// The spool's recoverable list, read locally (no helper, no capture), so a meeting suggestion never buries one.
     func refreshRecoverable() async {
@@ -745,16 +785,21 @@ final class MacRecordingStore: ObservableObject {
     /// 0.5.351: why Recover is grayed out right now, shown under the Recover buttons (nil when it is available).
     var recoverUnavailable: String? {
         MacRecordingRecoveryPolicy.recoverUnavailable(phase: phase, delivering: deliveryTask != nil,
-                                                      currentUnsaved: manifest.map { !$0.saved && !$0.chunks.isEmpty } ?? false)
+                                                      currentUnsaved: manifest.map { !$0.saved && !$0.chunks.isEmpty } ?? false,
+                                                      nothingToKeep: noSpeech || manifest?.allDigitalSilence == true)
     }
     var canKeepForLater: Bool {
-        MacRecordingRecoveryPolicy.canKeepForLater(noSpeech: noSpeech, paused: deliveryPaused, pending: phase == "pending", stopped: manifest?.stopped == true, delivering: deliveryTask != nil)
+        MacRecordingRecoveryPolicy.canKeepForLater(noSpeech: noSpeech, paused: deliveryPaused, pending: phase == "pending", stopped: manifest?.stopped == true,
+                                                   delivering: deliveryTask != nil, waiting: quietWaitControls)
     }
     /// Leaves the immutable journal and WAVs untouched; only releases the current editor.
     /// Offered only after the server positively reported that no speech was saved.
     func keepSilentAudioForLater() async {
         guard canKeepForLater else { return }
-        recordingLog.notice("keep for later noSpeech=\(self.noSpeech) paused=\(self.deliveryPaused)")
+        recordingLog.notice("keep for later noSpeech=\(self.noSpeech) paused=\(self.deliveryPaused) quietWait=\(self.quietWaitControls)")
+        // During a quiet wait the delivery is still running: end it first (its audio is untouched; the journal stays unsaved).
+        if let delivering = deliveryTask { deliveryWake = false; delivering.cancel(); await delivering.value }
+        slowTask?.cancel(); slowTask = nil; slowSave = false
         do {
             let retained = try await spool.recoverable()
             recoverable = retained; manifest = nil; deliveryPaused = false; selectedID = MacAudioSource.allMacAudioID; noSpeech = false; silentChunks = 0; error = nil; phase = "idle"
@@ -764,6 +809,14 @@ final class MacRecordingStore: ObservableObject {
             recordingLog.error("keep for later failed: \(reason, privacy: .public)")
             self.error = reason
         }
+    }
+    /// 0.5.351 (quick-save QA W4): Retry during a quiet wait tries now instead of waiting out the pause.
+    func retryNow() async {
+        if let delivering = deliveryTask {
+            guard quietWaitControls else { return }
+            deliveryWake = false; delivering.cancel(); await delivering.value
+        }
+        deliverPending()
     }
     func deliverPending() {
         guard phase != "discarding" else { return }
@@ -777,9 +830,13 @@ final class MacRecordingStore: ObservableObject {
             // A new attempt replaces the last attempt's "Delivery paused: …" (it stayed red through a later save).
             if self.deliveryPaused { self.error = nil }
             self.deliveryPaused = false
+            // Quick-save QA W7: a passing failure from an earlier delivery never speaks for this one.
+            self.deliveryFailureTransient = false; self.quietSince = nil
             defer {
-                self.deliveryTask = nil
-                if self.deliveryWake && !failed { self.deliveryWake = false; self.deliverPending() }
+                self.deliveryTask = nil; self.waitingToRetry = false
+                // A wake that arrived during a passing failure (Stop while a chunk was failing) still runs: the red line was
+                // suppressed on the promise that the next delivery tries again.
+                if self.deliveryWake && (!failed || self.deliveryFailureTransient) { self.deliveryWake = false; self.deliverPending() }
             }
             do {
                 while !Task.isCancelled {
@@ -817,10 +874,10 @@ final class MacRecordingStore: ObservableObject {
             } catch { failed = true; self.deliveryPaused = true; let reason = error.localizedDescription; recordingLog.error("delivery paused: \(reason, privacy: .public)")
                 // 0.5.334: no speech is not a paused delivery to retry. The panel offers Discard and says why; no red
                 // "Delivery paused: ... Choose the app" line, and the hand-off stops looking for a meeting.
-                // 0.5.351: while recording, a passing failure is retried by the next chunk; it shows as "COS is not
+                // 0.5.351: while recording or stopping, a passing failure is retried by the next chunk or the delivery after Stop; it shows as "COS is not
                 // answering" once COS falls behind (MacRecordingSaveStatus), never as a red line that clears 6 s later.
                 if self.noSpeech { self.noMeetingCaptureIDs.insert(id); self.error = nil }
-                else { self.error = self.isRecording && self.deliveryFailureTransient ? nil : "Delivery paused: \(error.localizedDescription) Audio is retained. Retry does not restart recording." }
+                else { self.error = ["recording", "stopping"].contains(self.phase) && self.deliveryFailureTransient ? nil : "Delivery paused: \(error.localizedDescription) Audio is retained. Retry does not restart recording." }
             }
         }
     }
@@ -836,17 +893,19 @@ final class MacRecordingStore: ObservableObject {
             } catch {
                 // Read before the next await: the refusal's status and reason when the helper answered, else the
                 // helper's own "did not answer" sentence.
-                let transient = MacRecordingSaveRetry.transient(httpStatus: lastFailure.httpStatus, reason: lastFailure.reason, message: error.localizedDescription)
+                let refusal = error as? MacRecordingHelperRefusal
+                let transient = MacRecordingSaveRetry.transient(httpStatus: refusal?.httpStatus, reason: refusal?.reason, message: error.localizedDescription)
                 deliveryFailureTransient = transient
                 let stopped = (try? await spool.snapshot(id))?.stopped == true
+                let now = Date()
                 guard !Task.isCancelled, phase == "pending", manifest?.captureId == id, attempt < retryDelays.count,
-                      MacRecordingSaveRetry.delay(afterAttempt: attempt, stopped: stopped, transient: transient) != nil else { throw error }
-                let pause = retryDelays[attempt]
+                      let pause = MacRecordingSaveRetry.pause(delays: retryDelays, attempt: attempt, stopped: stopped, transient: transient,
+                                                              since: quietSince, now: now, window: retryWindow) else { throw error }
+                if quietSince == nil { quietSince = now }
                 attempt += 1
-                recordingLog.notice("save retry: op=\(operation, privacy: .public) attempt=\(attempt) wait=\(pause)s status=\(self.lastFailure.httpStatus ?? 0) reason=\(self.lastFailure.reason ?? "none", privacy: .public)")
+                recordingLog.notice("save retry: op=\(operation, privacy: .public) attempt=\(attempt) wait=\(pause)s status=\(refusal?.httpStatus ?? 0) reason=\(refusal?.reason ?? "none", privacy: .public)")
                 waitingToRetry = true
                 try? await Task.sleep(for: .seconds(pause))
-                waitingToRetry = false
                 guard !Task.isCancelled, phase == "pending", manifest?.captureId == id else { throw error }
             }
         }
@@ -963,7 +1022,9 @@ struct MacRecordingPanel: View {
                     }
                     if line.showsActions, store.phase == "pending", !value.chunks.isEmpty {
                         let nothing = store.noSpeech || value.allDigitalSilence
-                        Text(nothing ? "No sound was captured in this recording, so there is nothing to save." : "Save this retained recording before starting another.").font(COSType.body(11)).foregroundStyle(.secondary)
+                        Text(nothing ? "No sound was captured in this recording, so there is nothing to save."
+                             : store.quietWaitControls ? "COS is still trying to save this. Keep the audio for later to record another meeting now, or try again."
+                             : "Save this retained recording before starting another.").font(COSType.body(11)).foregroundStyle(.secondary)
                         // 0.5.334: Keep only where it can help (a paused delivery); Retry only where a retry can work.
                         if store.canKeepForLater {
                             Button("Keep audio for later") { Task { await store.keepSilentAudioForLater() } }
@@ -972,7 +1033,7 @@ struct MacRecordingPanel: View {
                             Button(MacRecordingDiscard.buttonTitle) { confirmDiscard = true }
                         }
                         if store.canRetrySave {
-                            Button("Retry saving retained audio") { store.deliverPending() }
+                            Button("Retry saving retained audio") { Task { await store.retryNow() } }
                         }
                     }
                 }
