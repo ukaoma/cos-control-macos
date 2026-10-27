@@ -8,8 +8,12 @@ checks); a compile failure is an infrastructure error, not a kill. Every lane co
 one at a time, and the core lane is MacRecordingCore.swift alone (never a full COS Control compile).
 Usage: python3 Tests/mutate-mac-recording-robust.py [--list] [name-prefix...]
 """
-import os, re, subprocess, sys, tempfile
+import os, re, subprocess, sys, tempfile, time
 from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import mutate_bounded as bounded
+
+LIMIT = 900   # seconds per lane run; a mutant that deadlocks is killed after this and counts as a kill by timeout
 
 ROOT = Path(__file__).resolve().parent.parent
 CORE, STORE, CAP, MODEL, MEET, APP, HELPER = ("Sources/MacRecordingCore.swift", "Sources/MacRecording.swift", "Sources/MacAudioCapture.swift",
@@ -136,6 +140,16 @@ MUTANTS = [
     ("Z15 Recover ignores a recording with no sound", "pins", STORE, "nothingToKeep: noSpeech || manifest?.allDigitalSilence == true)", "nothingToKeep: false)"),
     ("Z16 Keep ignores a quiet wait", "pins", STORE, "stopped: manifest?.stopped == true,\n                                                   delivering: deliveryTask != nil, waiting: quietWaitControls)", "stopped: manifest?.stopped == true,\n                                                   delivering: deliveryTask != nil)"),
     ("Z17 a retry reads the refusal from shared state", "pins", STORE, "let refusal = error as? MacRecordingHelperRefusal", "let refusal: MacRecordingHelperRefusal? = nil"),
+    # QA2 fixes (W-C, W-D): the wiring (pins lane) and the behaviour of a detached delivery (harness lane: the real store and
+    # panel against a fake helper whose hung call ignores cancellation).
+    ("Z18 Keep waits for a hung call", "pins", STORE, "_ = await MacRecordingBounded.run(seconds: MacRecordingSaveRetry.detachSeconds) { await delivering.value }", "await delivering.value"),
+    ("Z19 a detached delivery keeps its token", "harness", STORE, "        deliveryToken = nil; deliveryTask = nil; waitingToRetry = false\n", "        deliveryTask = nil; waitingToRetry = false\n"),
+    ("Z20 a late acknowledgement brings the recording back", "harness", STORE, "                        guard self.deliveryToken == token else { return }   // detached by Keep or Retry: the journal has the acknowledgement, nothing else changes\n", ""),
+    ("Z21 a late failure paints a red line", "harness", STORE, "} catch { guard self.deliveryToken == token else { return }\n                failed = true", "} catch {\n                failed = true"),
+    ("Z22 a detached delivery clears the next one", "pins", STORE, "                if self.deliveryToken == token {\n                    self.deliveryTask = nil", "                if true {\n                    self.deliveryTask = nil"),
+    ("Z23 the headline is dark on dark", "pins", STORE, "line.tone == .quiet ? COSPalette.muted : Color.primary", "line.tone == .quiet ? COSPalette.muted : COSPalette.ink"),
+    ("Z24 the panel title is dark on dark", "pins", STORE, "store.isRecording ? COSPalette.danger : Color.primary", "store.isRecording ? COSPalette.danger : COSPalette.ink"),
+    ("Z25 Retry does not end the running delivery", "pins", STORE, "            await detachDelivery()\n        }\n        deliverPending()", "        }\n        deliverPending()"),
     # The helper (helper lane: the compiled helper against the loopback stand-in).
     ("X1 the helper discards without confirm", "helper", HELPER, "            guard payload[\"confirm\"] as? Bool == true, (payload[\"confirm\"] as? NSNumber).map({ CFGetTypeID($0) == CFBooleanGetTypeID() }) == true else {", "            guard true else {"),
     ("X2 the helper takes a number for confirm", "helper", HELPER, "            guard payload[\"confirm\"] as? Bool == true, (payload[\"confirm\"] as? NSNumber).map({ CFGetTypeID($0) == CFBooleanGetTypeID() }) == true else {", "            guard payload[\"confirm\"] as? Bool == true else {"),
@@ -153,19 +167,22 @@ def run(lane, root):
     return r
 
 def run_once(lane, root):
+    if lane == "harness":
+        out = tempfile.mkdtemp(prefix="cos-mac-rec-harness-", dir="/private/tmp")
+        return bounded.run(["zsh", str(root / "Tests/run-quick-save-render.sh"), out], 900, cwd=root)
     if lane == "helper":
         out = tempfile.mkdtemp(prefix="cos-mac-rec-helper-", dir="/private/tmp")
         # The helper exactly as Tests/run.sh builds it.
-        build = subprocess.run(["/usr/bin/python3", str(root / "Tests/kit-compile.py"), str(root / "Tests/compile-guard.sh"), "swiftc",
+        build = bounded.run(["/usr/bin/python3", str(root / "Tests/kit-compile.py"), str(root / "Tests/compile-guard.sh"), "swiftc",
             "-target", "arm64-apple-macosx14.0", "-swift-version", "6", "-strict-concurrency=complete",
             str(root / "HelperSources/main.swift"), str(root / "HelperSources/ProviderStatusCore.swift"), str(root / "HelperSources/PairingCore.swift"),
             str(root / "HelperSources/SessionUsageCollector.swift"), str(root / "Sources/SessionUsageCore.swift"),
             str(root / "Sources/WorkSessionLinks.swift"), "-framework", "Security", "-framework", "AppKit",
-            "-o", out + "/cos-control-helper"], cwd=root, capture_output=True, text=True)
+            "-o", out + "/cos-control-helper"], LIMIT, cwd=root)
         if build.returncode != 0:
             return build
-        return subprocess.run(["/usr/bin/python3", str(root / "Tests/mac-recording-helper-checks.py"), out + "/cos-control-helper"], cwd=root, capture_output=True, text=True)
-    return subprocess.run(["zsh", str(root / "Tests/run-mac-recording.sh")], cwd=root, env=dict(os.environ, COS_MAC_REC_LANE=lane), capture_output=True, text=True)
+        return bounded.run(["/usr/bin/python3", str(root / "Tests/mac-recording-helper-checks.py"), out + "/cos-control-helper"], 300, cwd=root)
+    return bounded.run(["zsh", str(root / "Tests/run-mac-recording.sh")], LIMIT, cwd=root, env=dict(os.environ, COS_MAC_REC_LANE=lane))
 
 def named(out):
     for line in out.splitlines():
@@ -178,13 +195,16 @@ if "--list" in sys.argv:
     for m in MUTANTS: print(m[0])
     sys.exit(0)
 chosen = [m for m in MUTANTS if not args or any(m[0].startswith(a) for a in args)]
+_sha = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+_dirty = subprocess.run(["git", "-C", str(ROOT), "status", "--porcelain"], capture_output=True, text=True).stdout.strip().splitlines()
+print(f"gate header: mutate-mac-recording-robust.py sha={_sha} dirty_files={len(_dirty)} started={time.strftime('%Y-%m-%d %H:%M:%S %Z')} per-mutant limit={LIMIT}s", flush=True)
 lanes = sorted({m[1] for m in chosen})
 for lane in lanes:
     base = run(lane, ROOT)
     if base.returncode != 0:
         print(f"BASELINE RED ({lane}):\n{base.stdout[-2000:]}{base.stderr[-2000:]}"); sys.exit(2)
 print("baseline green: " + ", ".join(lanes))
-killed = survivors = infra = 0
+killed = survivors = infra = timeouts = 0
 for name, lane, rel, old, new in chosen:
     path = ROOT / rel
     src = path.read_text()
@@ -197,7 +217,9 @@ for name, lane, rel, old, new in chosen:
         r = run(lane, ROOT)
         out = r.stdout + r.stderr
         line = named(out)
-        if r.returncode != 0 and line:
+        if getattr(r, "timed_out", False):
+            killed += 1; timeouts += 1; print(f"{name}: killed by TIMEOUT after {LIMIT} s (the mutant hangs; no named check)")
+        elif r.returncode != 0 and line:
             killed += 1; print(f"{name}: killed by {line}")
         elif r.returncode != 0:
             infra += 1; print(f"{name}: INFRASTRUCTURE (exit {r.returncode}, no named check)\n{out[-800:]}")
@@ -206,5 +228,5 @@ for name, lane, rel, old, new in chosen:
     finally:
         path.write_text(src)
         assert path.read_text() == src, f"restore failed for {rel}"
-print(f"mac recording robust mutants: {killed} killed, {survivors} survived, {infra} infrastructure, of {len(chosen)}")
+print(f"mac recording robust mutants: {killed} killed ({timeouts} by timeout), {survivors} survived, {infra} infrastructure, of {len(chosen)}")
 sys.exit(1 if survivors or infra else 0)

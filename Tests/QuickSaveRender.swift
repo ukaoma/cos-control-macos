@@ -14,7 +14,7 @@ import SwiftUI
 
     /// The helper, as COS Control's bridge sees it, for one scenario.
     @MainActor final class FakeServer {
-        enum Mode { case answer, hold, failThenAnswer(Int), alwaysStopped, refuse, noSpeech }
+        enum Mode { case answer, hold, failThenAnswer(Int), failThenHold(Int), alwaysStopped, refuse, noSpeech }
         var mode: Mode
         var chunkCalls = 0, saveCalls = 0, statusCalls = 0, discardCalls = 0
         /// What the server answers to each discard call, in order; the last one repeats.
@@ -48,6 +48,11 @@ import SwiftUI
                 switch mode {
                 case .hold: await withCheckedContinuation { held.append($0) }
                 case .failThenAnswer(let n) where chunkCalls <= n: throw HelperClientError.commandFailed("Server stopped")
+                case .failThenHold(let n):
+                    // The first n calls fail (a quiet wait follows each); the next one hangs and does not notice cancellation, like
+                    // a server that stopped answering mid-request; later calls answer.
+                    if chunkCalls <= n { throw HelperClientError.commandFailed("Server stopped") }
+                    if chunkCalls == n + 1 { await withCheckedContinuation { held.append($0) } }
                 case .alwaysStopped: throw HelperClientError.commandFailed("Server stopped")
                 case .refuse:
                     return HelperResponse(ok: false, message: "Mac recording could not continue. Check its receipt before retrying.",
@@ -253,6 +258,36 @@ import SwiftUI
         await n.retryNow()
         expect(await until(5) { n.phase == "saved" }, "retry now: saves without waiting out the 30 s pause")
         summary.append("retry now: phase=\(n.phase) chunkCalls=\(nowServer.chunkCalls)")
+
+        // 11b. QA2 W-C: Keep while a try is IN FLIGHT and will not come back (not only while sleeping between tries). It answers at
+        // once, frees Record, and the call that comes back late changes nothing.
+        let hanging = FakeServer(.failThenHold(1))
+        let (hg, hgValue, hgBridge) = try await scenario(hanging) { $0.slowSaveAfter = 0.2; $0.retryDelays = [0.05, 0.05, 0.05, 0.05, 0.05, 0.05] }
+        expect(await hg.recover(hgValue, bridge: hgBridge) == .started, "hanging: recover starts")
+        expect(await until(5) { hanging.chunkCalls >= 2 && hg.quietWaitControls }, "hanging: the second try is in flight and the controls show")
+        let keepBegan = Date()
+        await hg.keepSilentAudioForLater()
+        let keepSeconds = Date().timeIntervalSince(keepBegan)
+        expect(keepSeconds < MacRecordingSaveRetry.detachSeconds + 1.5, "hanging: Keep answers within the detach bound (took \(keepSeconds) s)")
+        expect(hg.phase == "idle" && hg.manifest == nil && hg.canStart && hg.error == nil && !hg.deliveryPaused && !hg.waitingToRetry, "hanging: Record is free and nothing is painted")
+        hanging.release()
+        try? await Task.sleep(for: .milliseconds(400))
+        expect(hg.phase == "idle" && hg.manifest == nil && hg.canStart && hg.error == nil && !hg.deliveryPaused && !hg.waitingToRetry && hanging.saveCalls == 0,
+               "hanging: the call that comes back late changes nothing and saves nothing")
+        summary.append("keep while a try hangs: seconds=\(String(format: "%.2f", keepSeconds)) phase=\(hg.phase) canStart=\(hg.canStart)")
+        let hanging2 = FakeServer(.failThenHold(1))
+        let (hr, hrValue, hrBridge) = try await scenario(hanging2) { $0.slowSaveAfter = 0.2; $0.retryDelays = [0.05, 0.05, 0.05, 0.05, 0.05, 0.05] }
+        expect(await hr.recover(hrValue, bridge: hrBridge) == .started, "hanging retry: recover starts")
+        expect(await until(5) { hanging2.chunkCalls >= 2 && hr.quietWaitControls }, "hanging retry: the second try is in flight and the controls show")
+        let retryBegan = Date()
+        await hr.retryNow()
+        expect(Date().timeIntervalSince(retryBegan) < MacRecordingSaveRetry.detachSeconds + 1.5, "hanging retry: Retry answers within the detach bound")
+        expect(await until(2) { hanging2.chunkCalls >= 3 }, "hanging retry: it started a new try at once")
+        expect(await until(5) { hr.phase == "saved" }, "hanging retry: the new delivery finishes the save while the old call still hangs")
+        hanging2.release()
+        try? await Task.sleep(for: .milliseconds(400))
+        expect(hr.phase == "saved" && hr.error == nil && !hr.deliveryPaused, "hanging retry: the old call that returned late did not disturb the saved recording")
+        summary.append("retry while a try hangs: phase=\(hr.phase) chunkCalls=\(hanging2.chunkCalls)")
 
         // 12. Quick-save QA W4: the quiet tries end on the wall clock, not only by count.
         let clockServer = FakeServer(.alwaysStopped)

@@ -741,6 +741,18 @@ func blockMainThread(timeout: TimeInterval, until condition: @escaping @Sendable
             _ = w.step(&steppedOut, now: t0.addingTimeInterval(Double(w.stallSeconds)), lastChunk: t0, restartInFlight: false)
             check(w.step(&steppedOut, now: t0.addingTimeInterval(Double(w.stallSeconds) * 2), lastChunk: t0, restartInFlight: false) == .giveUp && steppedOut.takeGiveUpNotice(),
                   "notice: a stall the watchdog gives up on after its restart posts too")
+            // QA2: audio coming back takes the notification back, once; a stall that never posted one has nothing to take back.
+            var cleared = w.State()
+            _ = w.step(&cleared, now: t0.addingTimeInterval(Double(w.stallSeconds)), lastChunk: t0, restartInFlight: false)
+            cleared.restartFailed()
+            check(cleared.takeGiveUpNotice() && !cleared.takeClearedNotice(), "notice: nothing to take back while the stall is open")
+            _ = w.step(&cleared, now: t0.addingTimeInterval(500), lastChunk: t0.addingTimeInterval(499), restartInFlight: false)
+            check(cleared.takeClearedNotice() && !cleared.takeClearedNotice(), "notice: audio coming back takes the notification back, once")
+            var unposted = w.State()
+            _ = w.step(&unposted, now: t0.addingTimeInterval(Double(w.stallSeconds)), lastChunk: t0, restartInFlight: false)
+            _ = w.step(&unposted, now: t0.addingTimeInterval(500), lastChunk: t0.addingTimeInterval(499), restartInFlight: false)
+            check(!unposted.takeClearedNotice(), "notice: a stall that posted nothing takes nothing back")
+            check(MacRecordingSaveRetry.detachSeconds > 0 && MacRecordingSaveRetry.detachSeconds <= 5, "keep and retry wait only a moment for a running delivery")
             check(!(noticeText?.body ?? "").contains("\u{2014}") && !(noticeText?.body ?? "").contains("\u{2192}") && !(noticeText?.title ?? "").contains("\u{2014}"), "notice: no em dash or arrow in the copy")
 
             // QA W8: a quit says what is true, and reads muted like the two-hour limit.

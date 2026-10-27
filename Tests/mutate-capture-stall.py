@@ -10,6 +10,10 @@ Usage: python3 Tests/mutate-capture-stall.py [--list] [name-prefix...]
 """
 import os, subprocess, sys, time
 from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import mutate_bounded as bounded
+
+LIMIT = 900   # seconds per lane run; a mutant that deadlocks is killed after this and counts as a kill by timeout
 
 ROOT = Path(__file__).resolve().parent.parent
 CORE, STORE, APP = "Sources/MacRecordingCore.swift", "Sources/MacRecording.swift", "Sources/COSControlApp.swift"
@@ -68,6 +72,18 @@ MUTANTS = [
     ("T3 the reader's first call waits for the disk", "trans", ASK, "        return cached\n    }\n    /// For checks: waits", "        if cached == nil { Thread.sleep(forTimeInterval: 0.6) }\n        return cached\n    }\n    /// For checks: waits"),
     ("T4 the reader reads again on every call", "trans", ASK, "let stale = readAt.map { now().timeIntervalSince($0) >= ttl } ?? true", "let stale = readAt.map { now().timeIntervalSince($0) >= 0 } ?? true"),
     ("T5 the reader never refreshes", "trans", ASK, "let stale = readAt.map { now().timeIntervalSince($0) >= ttl } ?? true", "let stale = readAt.map { now().timeIntervalSince($0) >= 1e12 } ?? true"),
+    # QA2 fixes: the rules (core lane) and the wiring (pins lane).
+    ("C45 a stall notice is never taken back", "core", CORE, "            if state.noticePosted { state.noticeToRemove = true }\n", ""),
+    ("C46 a taken-back notice is taken back again", "core", CORE, "            noticeToRemove = false; return true", "            return true"),
+    ("C47 a stall that posted nothing takes a notice back", "core", CORE, "            if state.noticePosted { state.noticeToRemove = true }\n", "            state.noticeToRemove = true\n"),
+    ("C48 Keep and Retry wait a minute for a running delivery", "core", CORE, "static let detachSeconds: Double = 2", "static let detachSeconds: Double = 60"),
+    ("P35 a late tick speaks for another recording", "pins", STORE, "            guard startAttempt == attempt, phase == \"recording\", manifest?.captureId == id else { return }\n", ""),
+    ("P36 the tick forgets which recording it began in", "pins", STORE, "        let attempt = startAttempt\n", "        let attempt: UUID? = nil\n"),
+    ("P37 a leaked tap can stop a later recording", "pins", STORE, "guard let self, self.manifest?.captureId == id, [\"starting\", \"recording\"].contains(self.phase) else {", "guard let self else {"),
+    ("P38 a leaked tap can stop a recording being saved", "pins", STORE, "self.manifest?.captureId == id, [\"starting\", \"recording\"].contains(self.phase) else {", "self.manifest?.captureId == id, [\"starting\", \"recording\", \"stopping\", \"pending\"].contains(self.phase) else {"),
+    ("P39 the stall notice stays when audio returns", "pins", STORE, "        if watchdog.takeClearedNotice() { stallCleared?(capture) }\n", ""),
+    ("P40 the stall notice outlives Stop", "pins", STORE, "        if watchdog.noticePosted, let id = manifest?.captureId { stallCleared?(id) }\n", ""),
+    ("P41 every stall notice is a new one", "pins", MODEL, "let identifier = \"mac-recording-stalled-\\(captureId)\"", "let identifier = \"mac-recording-stalled-\\(UUID().uuidString)\""),
     # The wiring (pins lane).
     ("P3 a stop does not wait for the writer", "pins", STORE, "        await writerTask?.value; writerTask = nil\n", ""),
     ("P4 a failed start does not wait for the writer", "pins", STORE, "streamContinuation?.finish(); await writerTask?.value; await chunksTask?.value", "streamContinuation?.finish(); await chunksTask?.value"),
@@ -106,17 +122,17 @@ MUTANTS = [
 
 def run(lane):
     if lane == "pins":
-        return subprocess.run(["/usr/bin/python3", str(ROOT / "Tests/capture-stall-pins.py"), str(ROOT)], capture_output=True, text=True)
+        return bounded.run(["/usr/bin/python3", str(ROOT / "Tests/capture-stall-pins.py"), str(ROOT)], 60)
     if lane == "trans":
         for _ in range(40):
-            r = subprocess.run(["zsh", str(ROOT / "Tests/run-transcription-settings.sh")], cwd=ROOT, capture_output=True, text=True)
+            r = bounded.run(["zsh", str(ROOT / "Tests/run-transcription-settings.sh")], LIMIT, cwd=ROOT)
             text = r.stdout + r.stderr
             if r.returncode == 75 or "lock busy" in text or "compile-bounded: refused" in text:
                 time.sleep(60); continue
             return r
         return r
     for _ in range(40):   # exit 75 / "lock busy" / "refused" is a wait, never a kill
-        r = subprocess.run(["zsh", str(ROOT / "Tests/run-mac-recording.sh")], cwd=ROOT, env=dict(os.environ, COS_MAC_REC_LANE="core"), capture_output=True, text=True)
+        r = bounded.run(["zsh", str(ROOT / "Tests/run-mac-recording.sh")], LIMIT, cwd=ROOT, env=dict(os.environ, COS_MAC_REC_LANE="core"))
         text = r.stdout + r.stderr
         if r.returncode == 75 or "lock busy" in text or "compile-bounded: refused" in text:
             time.sleep(60); continue
@@ -134,12 +150,15 @@ if "--list" in sys.argv:
     for m in MUTANTS: print(m[0])
     sys.exit(0)
 chosen = [m for m in MUTANTS if not args or any(m[0].startswith(a) for a in args)]
+_sha = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+_dirty = subprocess.run(["git", "-C", str(ROOT), "status", "--porcelain"], capture_output=True, text=True).stdout.strip().splitlines()
+print(f"gate header: mutate-capture-stall.py sha={_sha} dirty_files={len(_dirty)} started={time.strftime('%Y-%m-%d %H:%M:%S %Z')} per-mutant limit={LIMIT}s", flush=True)
 for lane in sorted({m[1] for m in chosen}):
     base = run(lane)
     if base.returncode != 0:
         print(f"BASELINE RED ({lane}):\n{base.stdout[-2000:]}{base.stderr[-2000:]}"); sys.exit(2)
     print(f"baseline green: {lane}: " + (base.stdout.strip().splitlines() or [""])[-1][:120])
-killed = survivors = infra = 0
+killed = survivors = infra = timeouts = 0
 for name, lane, rel, old, new in chosen:
     path = ROOT / rel
     src = path.read_text()
@@ -150,7 +169,9 @@ for name, lane, rel, old, new in chosen:
         r = run(lane)
         out = r.stdout + r.stderr
         line = named(out)
-        if r.returncode != 0 and line:
+        if getattr(r, "timed_out", False):
+            killed += 1; timeouts += 1; print(f"{name}: killed by TIMEOUT after {LIMIT} s (the mutant hangs; no named check)")
+        elif r.returncode != 0 and line:
             killed += 1; print(f"{name}: killed by {line}")
         elif r.returncode != 0:
             infra += 1; print(f"{name}: INFRASTRUCTURE (exit {r.returncode}, no named check)\n{out[-800:]}")
@@ -159,5 +180,5 @@ for name, lane, rel, old, new in chosen:
     finally:
         path.write_text(src)
         assert path.read_text() == src, f"restore failed for {rel}"
-print(f"capture stall mutants: {killed} killed, {survivors} survived, {infra} infrastructure, of {len(chosen)}")
+print(f"capture stall mutants: {killed} killed ({timeouts} by timeout), {survivors} survived, {infra} infrastructure, of {len(chosen)}")
 sys.exit(1 if survivors or infra else 0)

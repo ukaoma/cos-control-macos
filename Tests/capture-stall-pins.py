@@ -81,10 +81,17 @@ pin("restartInFlight = false" not in tick and ordered(tick, "restartInFlight = t
 returned = between(store, "    private func restartReturned(", "    private func restartTap(")
 pin("if tapGeneration == generation { restartInFlight = false }" in returned, "a stale restart leaves the flag alone", "only the current restart clears the flag")
 publish = between(store, "    private func publishStall() {", "    private func restartReturned(")
-pin(ordered(publish, "stallLine = MacRecordingWatchdog.line(watchdog)", "watchdog.takeGiveUpNotice()", "MacRecordingWatchdog.notification(watchdog)", "stallNotice?(note.title, note.body)"),
-    "one notification per stall", "an unrecovered stall posts its notification once, from the watchdog state's own once-only gate (QA W6)")
-pin("macRecording.stallNotice = { [weak self] title, body in self?.meetingAudioNotifier.postRecordingStalled(title: title, body: body) }" in model_src
-    and "func postRecordingStalled(title: String, body: String) {" in model_src, "notification reaches the app", "the stall notice goes through the existing meeting-audio notifier")
+pin(ordered(publish, "stallLine = MacRecordingWatchdog.line(watchdog)", "watchdog.takeGiveUpNotice()", "MacRecordingWatchdog.notification(watchdog)", "stallNotice?(capture, note.title, note.body)", "watchdog.takeClearedNotice()", "stallCleared?(capture)"),
+    "one notification per stall", "an unrecovered stall posts its notification once, from the watchdog state's own once-only gate (QA W6), and takes it back when audio returns (QA2)")
+pin("macRecording.stallNotice = { [weak self] captureId, title, body in self?.meetingAudioNotifier.postRecordingStalled(captureId: captureId, title: title, body: body) }" in model_src
+    and "macRecording.stallCleared = { [weak self] captureId in self?.meetingAudioNotifier.removeRecordingStalled(captureId: captureId) }" in model_src
+    and 'let identifier = "mac-recording-stalled-\\(captureId)"' in model_src and "removeDeliveredNotifications(withIdentifiers: [\"mac-recording-stalled-\\(captureId)\"])" in model_src,
+    "notification reaches the app", "the stall notice goes through the existing meeting-audio notifier, one identifier per recording, and is removed when the stall ends")
+pin("if watchdog.noticePosted, let id = manifest?.captureId { stallCleared?(id) }" in finish, "stop takes the notice back", "a stall notification does not outlive the recording the person stopped")
+pin(ordered(tick, "let attempt = startAttempt", "MacRecordingBounded.run(", 'guard startAttempt == attempt, phase == "recording", manifest?.captureId == id else { return }', "watchdog.restartFailed()"),
+    "late tick cannot speak for another recording", "after the restart wait, a tick that Stop or a newer recording has overtaken writes no failure state and posts no notice (QA2 W-A)")
+pin(ordered(between(store, "    private func makeEngine(", "    private func takeStored("), 'guard let self, self.manifest?.captureId == id, ["starting", "recording"].contains(self.phase) else {', "self.captureInterruption = reason; await self.stop()"),
+    "a leaked tap cannot stop another recording", "a tap that Stop gave up on, failing late, is ignored unless it is the recording that is running (QA2 W-B)")
 loop = between(store, "    private func startWatchdog(", "    private func watchdogTick(")
 pin("UInt64(MacRecordingWatchdog.pollSeconds) * 1_000_000_000" in loop and "guard let progress else { return }" in loop, "watchdog cadence",
     "it looks once per chunk length, from the recording's own progress")

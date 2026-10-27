@@ -802,6 +802,8 @@ enum MacRecordingSaveRetry {
     /// flight finishes (the helper's own timeouts bound it); no new wait starts past the window, and the last wait is cut
     /// short to end with it.
     static let windowSeconds: Double = 75
+    /// QA2 W-C: how long Keep and Retry wait for a running delivery to come back after cancelling it.
+    static let detachSeconds: Double = 2
     /// The wait before the next quiet try with the window applied, or nil to stop and say so.
     static func pause(delays table: [Double] = delays, attempt: Int, stopped: Bool, transient: Bool, since: Date?, now: Date, window: Double = windowSeconds) -> Double? {
         guard stopped, transient, attempt >= 0, attempt < table.count else { return nil }
@@ -1222,7 +1224,14 @@ enum MacRecordingWatchdog {
         var gaveUp = false
         /// 0.5.351 (QA W6): the notification for this stall's give-up line has been posted (once per stall).
         var noticePosted = false
+        /// The stall that posted a notification has ended: that notification should leave Notification Center (QA2).
+        var noticeToRemove = false
         mutating func restartFailed() { gaveUp = true }
+        /// True once after a stall that posted a notification ends.
+        mutating func takeClearedNotice() -> Bool {
+            guard noticeToRemove else { return false }
+            noticeToRemove = false; return true
+        }
         /// True exactly once per stall, the first time it has given up. The panel is usually closed during a call, so this
         /// is the one place a stall reaches the person (MacRecordingWatchdog.notification).
         mutating func takeGiveUpNotice() -> Bool {
@@ -1233,7 +1242,9 @@ enum MacRecordingWatchdog {
 
     static func step(_ state: inout State, now: Date, lastChunk: Date, restartInFlight: Bool) -> Action {
         if let since = state.stalledSince, lastChunk > since {   // a chunk arrived after the stall: it is over
-            state.stalledSince = nil; state.restartAttemptAt = nil; state.attemptsThisStall = 0; state.gaveUp = false; state.noticePosted = false
+            state.stalledSince = nil; state.restartAttemptAt = nil; state.attemptsThisStall = 0; state.gaveUp = false
+            if state.noticePosted { state.noticeToRemove = true }
+            state.noticePosted = false
         }
         guard !state.gaveUp, !restartInFlight else { return .none }
         let reference = max(lastChunk, state.restartAttemptAt ?? .distantPast)
