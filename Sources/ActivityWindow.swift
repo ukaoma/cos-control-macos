@@ -1019,7 +1019,7 @@ struct ActivityWindow: View {
         // model.settingsHubTarget says.
         if model.activityOpenSettings {
             model.activityOpenSettings = false
-            if isolatedWorkPreview { model.settingsHubTarget = nil } else { openActivitySettings() }
+            openActivitySettings()
             return
         }
         if isolatedWorkPreview {
@@ -1243,8 +1243,10 @@ struct ActivityWindow: View {
     }
 
     private func openActivitySettings() {
-        guard !isolatedWorkPreview else { return }
-        if taskDetail != nil { requestCloseTaskDetail(); return }
+        // An opener's target is for this open only: when Settings does not open, a later manual open must not jump to
+        // it (QA delta N2).
+        guard !isolatedWorkPreview else { model.settingsHubTarget = nil; return }
+        if taskDetail != nil { model.settingsHubTarget = nil; requestCloseTaskDetail(); return }
         showingSettings = true
     }
 

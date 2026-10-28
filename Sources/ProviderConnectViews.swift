@@ -663,7 +663,7 @@ struct PetIntroLine: View {
                     Button("Calm") { model.answerPetIntro(.calm) }.buttonStyle(COSTextButtonStyle())
                         .help("Keep it, with gentler motion")
                     Button("Hide") { model.answerPetIntro(.hide) }.buttonStyle(COSTextButtonStyle())
-                        .help("Turn the pet off. Turn it back on in Settings, Pet and appearance.")
+                        .help("Turn the pet off. Turn it back on in Settings, Session pet.")
                     Spacer(minLength: 0)
                 }
             }

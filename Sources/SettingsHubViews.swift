@@ -553,6 +553,8 @@ enum SettingsHubCopy {
     static let chooseRestarts = "Changing it restarts the server when no work is running."
     static let todayFirst = "Turn on Today home to use this."
     static let waitsForWork = "Apply is off until running work finishes."
+    /// The folder pickers' line while work runs (their change restarts the server through the same drain).
+    static let chooseWaitsForWork = "Choose is off until running work finishes."
     static let plannerNote = "Used when the server offers a choice."
 }
 

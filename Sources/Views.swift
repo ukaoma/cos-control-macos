@@ -2103,6 +2103,12 @@ struct ControlPanel: View {
 
     /// An ownership conflict, operation progress and the green notice (C-09).
     @ViewBuilder private var serverMessages: some View {
+        serverProgressMessages
+        serverNoticeLine
+    }
+
+    /// The ownership conflict and an operation's progress: in the hub, on every page (top strip).
+    @ViewBuilder private var serverProgressMessages: some View {
         if model.status.ownerConflict {
             Label("Ownership conflict detected. COS Control will not stop or replace the unknown listener.", systemImage: "exclamationmark.octagon.fill")
                 .font(.caption).foregroundStyle(.red)
@@ -2110,6 +2116,10 @@ struct ControlPanel: View {
         if let progress = model.operationProgress {
             Text(progress).font(.caption).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+
+    /// The green notice: in the hub, on System only, since other actions ("Copied") write it too (QA delta N1).
+    @ViewBuilder private var serverNoticeLine: some View {
         if let notice = model.notice {
             Text(notice).font(.caption).foregroundStyle(COSPalette.green).frame(maxWidth: .infinity, alignment: .leading)
         }
@@ -2970,16 +2980,16 @@ struct ControlPanel: View {
             // Own row so labels don't truncate into ambiguous "Choose…" / "Meeting…"
             HStack {
                 Button("Work folder", systemImage: "folder") { model.selectWorkFolder() }
-                    .disabled(serverNotInstalled)
-                    .help(workFolderHelp)
+                    .disabled(folderPickBlocked)
+                    .help(folderHelp(workFolderHelp))
                 Button("Meetings folder", systemImage: "calendar") { model.selectOperationsFolder() }
-                    .disabled(serverNotInstalled)
-                    .help(Self.meetingsLibraryHelp)
+                    .disabled(folderPickBlocked)
+                    .help(folderHelp(Self.meetingsLibraryHelp))
             }
             HStack {
                 Button("Notes folder", systemImage: "externaldrive.badge.icloud") { model.selectContextFolder() }
-                    .disabled(serverNotInstalled)
-                    .help(Self.cosDataHelp)
+                    .disabled(folderPickBlocked)
+                    .help(folderHelp(Self.cosDataHelp))
                 // Names the TIER, not just the path. "Notes" is browse and
                 // reference; "Bridge" adds semantic recall and type statistics.
                 // Showing a bare path let a files install look like a pipeline.
@@ -3080,6 +3090,11 @@ struct ControlPanel: View {
 
     /// No managed or self-managed server yet: the folder pickers and Create Folders wait for one.
     private var serverNotInstalled: Bool { !model.status.installed && model.status.runtimeState != "managedInPlace" }
+    /// set-workdir, set-operations-dir and set-context-dir restart the server through the drain lease, which closes
+    /// admissions and waits up to 90 s; during a live meeting it times out and leaves the gate for Repair (QA delta
+    /// 2026-10-28). So the folder pickers wait for running work, as the Apply rows do.
+    private var folderPickBlocked: Bool { serverNotInstalled || serverWorkActive }
+    private func folderHelp(_ help: String) -> String { serverWorkActive ? help + " " + SettingsHubCopy.chooseWaitsForWork : help }
     private var repairRuntimeBlocked: Bool {
         !model.status.installed || model.status.ownerConflict || model.status.runtimeState == "legacyForeground"
     }
@@ -3648,7 +3663,9 @@ private extension ControlPanel {
     /// Escape in the hub: a search is cleared first, then an open inline confirm closes; only then does Activity leave
     /// Settings (ActivityWindow.handleActivityEscape asks here first).
     func hubEscape() -> Bool {
-        if !hubQuery.isEmpty { hubQuery = ""; hubSearchFocused = false; return true }
+        // A query of spaces is no search (hubSearching trims), so Escape clears it on the way and goes on.
+        if hubSearching { hubQuery = ""; hubSearchFocused = false; return true }
+        hubQuery = ""
         if confirmHubRollback { confirmHubRollback = false; return true }
         return false
     }
@@ -3775,10 +3792,10 @@ private extension ControlPanel {
     func hubTopStrip(_ reader: ScrollViewProxy) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             updateBanner
-            // C-09's progress, notice and ownership conflict (QA 2026-10-28 S5): an Apply anywhere restarts the server,
-            // so what it is doing shows on every page, not only on System.
-            if model.status.ownerConflict || model.operationProgress != nil || model.notice != nil {
-                VStack(alignment: .leading, spacing: 6) { serverMessages }
+            // C-09's progress and ownership conflict (QA 2026-10-28 S5): an Apply anywhere restarts the server, so what
+            // it is doing shows on every page. The green notice stays on System (other actions write it too).
+            if model.status.ownerConflict || model.operationProgress != nil {
+                VStack(alignment: .leading, spacing: 6) { serverProgressMessages }
                     .font(COSType.body(13))
                     .padding(EdgeInsets(top: 12, leading: 16, bottom: 12, trailing: 16))
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -3805,6 +3822,10 @@ private extension ControlPanel {
 
     func hubLabel(_ id: String) -> String { SettingsHubCatalog.item(id)?.label ?? id }
     func hubDetail(_ id: String) -> String { SettingsHubCatalog.item(id)?.detail ?? "" }
+    /// A folder picker's row: what it is, that changing it restarts the server, and why Choose is off while work runs.
+    func hubFolderDetail(_ id: String) -> String {
+        hubDetail(id) + " " + SettingsHubCopy.chooseRestarts + (serverWorkActive ? " " + SettingsHubCopy.chooseWaitsForWork : "")
+    }
 
     /// A row in the catalog's words for `id`.
     func hubRow<Control: View>(_ id: String, label: String? = nil, detail: String? = nil, @ViewBuilder _ control: () -> Control) -> some View {
@@ -4016,11 +4037,11 @@ private extension ControlPanel {
             MeetingAskSettings(store: model.meetingAsk, model: model, part: .liveCues)
         }
         hubCard("meetings.library", advanced: hubAdvancedCount("meetings.library")) {
-            hubRow("UT-16", detail: hubDetail("UT-16") + " " + SettingsHubCopy.chooseRestarts) {
+            hubRow("UT-16", detail: hubFolderDetail("UT-16")) {
                 Button("Choose…") { model.selectOperationsFolder() }
                     .buttonStyle(TodayButtonStyle(small: true))
-                    .disabled(serverNotInstalled)
-                    .help(Self.meetingsLibraryHelp)
+                    .disabled(folderPickBlocked)
+                    .help(folderHelp(Self.meetingsLibraryHelp))
             }
             .disabled(model.busy)
             SettingsHubBlock { statusLibraryRows }
@@ -4231,14 +4252,14 @@ private extension ControlPanel {
         }
         hubCard("work.folders", advanced: hubAdvancedCount("work.folders")) {
             Group {
-                hubRow("UT-15", detail: hubDetail("UT-15") + " " + SettingsHubCopy.chooseRestarts) {
+                hubRow("UT-15", detail: hubFolderDetail("UT-15")) {
                     Button("Choose…") { model.selectWorkFolder() }
-                        .buttonStyle(TodayButtonStyle(small: true)).disabled(serverNotInstalled).help(workFolderHelp)
+                        .buttonStyle(TodayButtonStyle(small: true)).disabled(folderPickBlocked).help(folderHelp(workFolderHelp))
                 }
                 SettingsHubBlock { statusWorkFolderRows }
-                hubRow("UT-17", detail: hubDetail("UT-17") + " " + SettingsHubCopy.chooseRestarts) {
+                hubRow("UT-17", detail: hubFolderDetail("UT-17")) {
                     Button("Choose…") { model.selectContextFolder() }
-                        .buttonStyle(TodayButtonStyle(small: true)).disabled(serverNotInstalled).help(Self.cosDataHelp)
+                        .buttonStyle(TodayButtonStyle(small: true)).disabled(folderPickBlocked).help(folderHelp(Self.cosDataHelp))
                 }
                 if model.status.contextResolvedRoot == nil {
                     hubRow("UT-18") {
@@ -4315,8 +4336,8 @@ private extension ControlPanel {
             hubRow("C-01", label: "Restart and update", detail: "Restart, stop or start the server, or install the newest one. Restart is off while work is running.") {
                 serverControlButtons
             }
-            if model.status.runtimeState == "legacyForeground" {
-                SettingsHubBlock { serverForegroundWarning }
+            if model.status.runtimeState == "legacyForeground" || model.notice != nil {
+                SettingsHubBlock { serverForegroundWarning; serverNoticeLine }
             }
         } advanced: {
             if legacy {

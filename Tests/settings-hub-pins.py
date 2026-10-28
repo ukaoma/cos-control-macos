@@ -101,8 +101,11 @@ for name in pieces_status:
 pin(hub.count("statusVideoRows(clearButton: false)") == 1 and status_card.count("statusVideoRows(clearButton: true)") == 1,
     "video uploads' status: once in each, Clear stranded drawn once in the hub (on Reliable video uploads)")
 controls = body(views, "    private var controls: some View {", "\n    }\n")
-for name in ["serverControlButtons", "serverForegroundWarning", "serverLegacyControls", "serverMessages"]:
+for name in ["serverControlButtons", "serverForegroundWarning", "serverLegacyControls"]:
     pin(len(re.findall(rf"\b{name}\b", hub)) == 1 and len(re.findall(rf"\b{name}\b", controls)) == 1, f"{name} mounts once in the hub and once in the panel")
+# The hub mounts serverMessages' two halves apart (progress in the top strip, the notice on System); the panel keeps both.
+pin(len(re.findall(r"\bserverMessages\b", controls)) == 1 and not re.search(r"\bserverMessages\b", hub),
+    "serverMessages mounts once in the panel; the hub mounts its two halves")
 utilities = body(views, "    private var utilities: some View {", "\n    }\n")
 for name in ["toolTranscriptionTier", "toolBackgroundJobs", "toolMeetingPreview", "toolClaudeSessions", "toolThreadAttach",
              "toolOllamaModel", "toolVideoUploads", "toolIdleMetal", "toolAudioCleanup"]:
@@ -283,7 +286,8 @@ pin(page.index("SettingsHubSearchField(query: $hubQuery, focused: $hubSearchFocu
 pin("confirmHubRollback = false" in opened.split("switch category")[0], "a new page cancels an open inline confirm")
 pin("SettingsHubSearch.results(hubQuery, shown: hubGroupShown)" in hub and "guard let group = item.group, shown(group) else { return nil }" in catalog,
     "search leaves out rows in groups the page does not draw")
-pin('static let accessibilityRepairHint = "Already on? Use Reset and add again in Settings, Session pet."' in code(read("Sources/ControllerModel.swift")),
+pin('static let accessibilityRepairHint = "Already on? Use Reset and add again in Settings, Session pet."' in code(read("Sources/ControllerModel.swift"))
+    and '.help("Turn the pet off. Turn it back on in Settings, Session pet.")' in connect_views,
     "the Accessibility repair hint names the Session pet card, right in both layouts")
 pin(".keyboardShortcut(backShortcut ? KeyboardShortcut(.leftArrow, modifiers: .command) : nil)" in shell
     and "backShortcut: todayEnabled && !isolatedWorkPreview)" in activity, "⌘← is registered once: the hub's ‹ only where no toolbar Back has it")
@@ -299,7 +303,19 @@ pin("case .addJevKey: model.showDecisionKeySettings?()" in connect_views
     and 'Button("Transcription settings") { model.showTranscriptionSettings?() }' in connect_views,
     "the guide's Add a key, Permissions and Transcription settings land inside the hub")
 strip = body(hub, "    func hubTopStrip(_ reader: ScrollViewProxy) -> some View {", "\n    }\n")
-pin("serverMessages" in strip and hub.count("serverMessages") == 1, "an Apply's progress and notice show on every page, in the top strip")
+pin("serverProgressMessages" in strip and "serverNoticeLine" not in strip and hub.count("serverProgressMessages") == 1
+    and "SettingsHubBlock { serverForegroundWarning; serverNoticeLine }" in hub and hub.count("serverNoticeLine") == 1,
+    "an Apply's progress shows on every page in the top strip; the green notice stays on System")
+# QA delta 2026-10-28: the folder pickers restart through the drain lease, so they wait for running work like Apply.
+pin("private var folderPickBlocked: Bool { serverNotInstalled || serverWorkActive }" in views
+    and views.count(".disabled(folderPickBlocked)") == 6 and ".disabled(serverNotInstalled).help(workFolderHelp)" not in views,
+    "folder pickers wait for running work: all six Choose buttons, hub and classic")
+pin(all(f'hubRow("{rid}", detail: hubFolderDetail("{rid}"))' in hub for rid in ("UT-15", "UT-16", "UT-17"))
+    and "(serverWorkActive ? \" \" + SettingsHubCopy.chooseWaitsForWork : \"\")" in hub,
+    "folder pickers say why Choose is off while work runs")
+open_settings = body(activity, "    private func openActivitySettings() {", "\n    }\n")
+pin(open_settings.count("model.settingsHubTarget = nil") == 2 and open_settings.index("model.settingsHubTarget = nil; requestCloseTaskDetail()") >= 0,
+    "an opener's target is dropped when Settings does not open")
 video = body(hub, '            hubCard("glasses.video"', "        } advanced: {")
 pin('hubRow("UT-10", detail: "A stopped upload can wait here for 4 hours and block Repair.")' in video,
     "a stuck upload's warning and Clear stay on the card, not under Advanced")
@@ -310,7 +326,7 @@ pin('"Dictation engine"' not in stt_hub and "if !hosted, let state = store.rowSt
 escape = body(activity, "    private func handleActivityEscape() -> Bool {", "\n    }\n")
 hub_escape = body(hub, "    func hubEscape() -> Bool {", "\n    }\n")
 pin("if model.settingsHubEscape?() == true { return true }" in escape and escape.index("settingsHubEscape") < escape.index("showingSettings = false")
-    and hub_escape.index("hubQuery") < hub_escape.index("confirmHubRollback")
+    and hub_escape.index("hubQuery") < hub_escape.index("confirmHubRollback") and "if hubSearching {" in hub_escape
     and "model.settingsHubEscape = { hubEscape() }" in hub and "model.settingsHubEscape = nil" in hub,
     "Escape clears a search, then closes an inline confirm, and only then leaves Settings")
 pin(views.count("if !hubOn { Task { await model.loadOpenPetsCatalog() } }") == 1, "the Characters card leaves the catalog read to the hub's root")
