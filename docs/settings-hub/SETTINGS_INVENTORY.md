@@ -1103,7 +1103,7 @@ Decisions from section 2:
 
 ---
 
-## 5. Notes for Anand
+## 5. Notes for the designer
 
 **What the prototype needs to show to reach parity**
 
