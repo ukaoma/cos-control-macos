@@ -8,6 +8,7 @@ Pairs with COS server 6.93.0 or newer (unchanged from 0.5.351). Built on the shi
 - Roll back server now asks for confirmation. The "Named speakers are off" warning shows again (Transcription and voice); it sat in an unmounted card in 0.5.351.
 - Pet: macOS 27.2 stopped starting background window drags, so the pet could not be dragged. The pet panel now drives its own drag (a 4 pt threshold keeps taps, double taps and the right-click menu), on every macOS version, and a drop partly off a screen is clamped back inside its visible frame.
 - Tests: two stale Work checks in run-control2-foundation-contract.sh (not called by run.sh) now pass the production call shape.
+- Bundled fluidaudiocli rebuilt from the same pinned FluidAudio v0.17.4 source (21493f8), same size and system libraries, minos 14.0. The build is not byte-reproducible (the 0.5.321 copy did not survive the macOS 27.2 reboot), so the pin records SHA-256 c200fcac...fb78.
 - Full-suite, signing, publication and installed acceptance are recorded in the release receipt; focused tests alone do not establish release readiness.
 
 ## 0.5.351 (build 405), Quick save, stall recovery and the iPhone microphone
