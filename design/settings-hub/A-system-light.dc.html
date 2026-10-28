@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Settings, System and updates</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600&amp;family=Fraunces:opsz,wght@9..144,400;9..144,500&amp;family=JetBrains+Mono:wght@500&amp;display=swap">
+<style>
+body{margin:0;background:#f5f0e6}
+a{color:#89662d}a:hover{color:#1f1712}
+.nav{display:flex;align-items:flex-start;gap:12px;width:100%;box-sizing:border-box;padding:10px 12px;border-radius:10px;border:1px solid transparent;background:transparent;color:#1f1712;font:inherit;text-align:left;cursor:pointer;text-decoration:none}
+.nav:hover{background:#e8e0d1}
+.row{display:flex;align-items:center;gap:16px;padding:14px 20px;border-top:1px solid #efe7d8}
+.rt{flex:1;min-width:0;display:flex;flex-direction:column;gap:3px}
+.rl{font-size:14.5px;font-weight:600;color:#1f1712}
+.rd{font-size:13px;line-height:1.45;color:#66635e}
+.btn{font:500 13px 'DM Sans',system-ui,sans-serif;color:#1f1712;background:#ffffff;border:1px solid #a08a66;border-radius:8px;padding:0 14px;min-height:32px;cursor:pointer;white-space:nowrap}
+.btn:hover{background:#fbf7ef}
+.pri{font:600 13px 'DM Sans',system-ui,sans-serif;color:#ffffff;background:#89662d;border:1px solid #89662d;border-radius:8px;padding:0 14px;min-height:32px;cursor:pointer;white-space:nowrap}
+.adv{display:flex;align-items:center;gap:10px;width:100%;box-sizing:border-box;padding:13px 20px;border:0;border-top:1px solid #efe7d8;background:#fbf7ef;color:#5c5a55;font:500 13px 'DM Sans',system-ui,sans-serif;text-align:left;cursor:pointer}
+.adv:hover{color:#1f1712}
+.btn:focus-visible,.pri:focus-visible,.nav:focus-visible,.adv:focus-visible{outline:2px solid #89662d;outline-offset:2px}
+</style>
+</helmet>
+<div style="min-height: 100%; background: #f5f0e6; color: #1f1712; font-family: 'DM Sans', system-ui, sans-serif; display: flex; flex-wrap: wrap; align-items: stretch">
+  <nav aria-label="Settings categories" style="flex: 1 1 270px; min-width: 0; box-sizing: border-box; background: #efe8db; border-right: 1px solid #e0d5c0; padding: 26px 14px 32px; display: flex; flex-direction: column; gap: 4px">
+    <button class="btn" type="button" style="align-self: flex-start; border-color: transparent; background: transparent; color: #66635e; padding: 0 8px"><span aria-hidden="true">‹</span> Today</button>
+    <div style="padding: 10px 12px 14px; display: flex; flex-direction: column; gap: 14px">
+      <h1 style="margin: 0; font-family: 'Fraunces', Georgia, serif; font-weight: 500; font-size: 30px; letter-spacing: -0.3px">Settings</h1>
+      <label for="search2" style="display: flex; align-items: center; gap: 8px; border: 1px solid #e3d9c6; background: #ffffff; border-radius: 10px; padding: 0 12px; min-height: 38px">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#5c5a55" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="M20 20l-3.5-3.5"></path></svg>
+        <input id="search2" type="search" placeholder="Search 253 settings" style="flex: 1; min-width: 0; border: 0; background: transparent; color: #1f1712; font: 400 13px 'DM Sans', system-ui, sans-serif; outline: none">
+        <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #5c5a55; border: 1px solid #e3d9c6; border-radius: 6px; padding: 1px 6px">⌘F</span>
+      </label>
+    </div>
+    <button class="nav" type="button"><span style="display: flex; flex-direction: column; gap: 2px"><span style="font-size: 14px; font-weight: 600">General</span><span style="font-size: 12.5px; color: #66635e">Opens on Today</span></span></button>
+    <button class="nav" type="button"><span style="display: flex; flex-direction: column; gap: 2px"><span style="font-size: 14px; font-weight: 600">AI and accounts</span><span style="font-size: 12.5px; color: #66635e">Claude, Codex, Cursor</span></span></button>
+    <button class="nav" type="button"><span style="display: flex; flex-direction: column; gap: 2px"><span style="font-size: 14px; font-weight: 600">Glasses and iPhone</span><span style="font-size: 12.5px; color: #66635e">Paired</span></span></button>
+    <a class="nav" href="Main.dc.html"><span style="display: flex; flex-direction: column; gap: 2px"><span style="font-size: 14px; font-weight: 600; color: #1f1712">Meetings</span><span style="font-size: 12.5px; color: #66635e">Live cues on</span></span></a>
+    <button class="nav" type="button"><span style="display: flex; flex-direction: column; gap: 2px"><span style="font-size: 14px; font-weight: 600">Dictation</span><span style="font-size: 12.5px; color: #66635e">Last used 9:27 PM</span></span></button>
+    <button class="nav" type="button"><span style="display: flex; flex-direction: column; gap: 2px"><span style="font-size: 14px; font-weight: 600">Transcription and voice</span><span style="font-size: 12.5px; color: #66635e">Parakeet</span></span></button>
+    <button class="nav" type="button"><span style="display: flex; flex-direction: column; gap: 2px"><span style="font-size: 14px; font-weight: 600">Work and agents</span><span style="font-size: 12.5px; color: #66635e">Morning brief at 7:00 AM</span></span></button>
+    <button class="nav" type="button"><span style="display: flex; flex-direction: column; gap: 2px"><span style="font-size: 14px; font-weight: 600">Privacy and permissions</span><span style="font-size: 12.5px; color: #66635e">All granted</span></span></button>
+    <button class="nav" type="button"><span style="display: flex; flex-direction: column; gap: 2px"><span style="font-size: 14px; font-weight: 600">Pet and appearance</span><span style="font-size: 12.5px; color: #66635e">Miles Windu</span></span></button>
+    <a class="nav" href="SettingsSystem.dc.html" aria-current="page" style="background: #ffffff; border-color: #e3d9c6"><span style="display: flex; flex-direction: column; gap: 2px"><span style="font-size: 14px; font-weight: 600; color: #1f1712">System and updates</span><span style="font-size: 12.5px; color: #8a4b1c">1 check needs you</span></span></a>
+  </nav>
+
+  <main style="flex: 999 1 560px; min-width: 0; box-sizing: border-box; padding: 40px 48px 72px; display: flex; flex-direction: column; gap: 26px">
+    <header style="display: flex; flex-direction: column; gap: 8px; max-width: 820px">
+      <h2 style="margin: 0; font-family: 'Fraunces', Georgia, serif; font-weight: 500; font-size: 40px; letter-spacing: -0.5px">System and updates</h2>
+      <p style="margin: 0; font-size: 15px; line-height: 1.5; color: #66635e">The COS server on this Mac, app updates, and checks when something is off.</p>
+    </header>
+
+    <section aria-labelledby="s-srv" style="max-width: 820px; background: #ffffff; border: 1px solid #e3d9c6; border-radius: 14px; overflow: hidden">
+      <div style="display: flex; align-items: center; gap: 14px; padding: 18px 20px; flex-wrap: wrap">
+        <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><circle cx="6" cy="6" r="5" fill="#2f6b3a"></circle></svg>
+        <div style="flex: 1; min-width: 200px; display: flex; flex-direction: column; gap: 2px">
+          <h3 id="s-srv" style="margin: 0; font-size: 16px; font-weight: 600">Server running</h3>
+          <span style="font-size: 13px; color: #66635e">Managed by COS Control. Recovery is set up.</span>
+        </div>
+        <span style="font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #5c5a55">server 6.94.1</span>
+      </div>
+      <div class="row"><div class="rt"><span class="rl">Work in progress</span><span class="rd">Active jobs and recordings. Restart waits for them.</span></div><span style="font-size: 13px; color: #66635e">None running</span></div>
+      <div class="row"><div class="rt"><span class="rl">Restart</span><span class="rd">Restart the server. Waits until no work is running.</span></div><span style="display: flex; gap: 8px"><button class="btn" type="button">Stop</button><button class="btn" type="button">Restart</button></span></div>
+      <div class="row"><div class="rt"><span class="rl">Update server</span><span class="rd">Install the newest server and restart it.</span></div><span style="font-size: 13px; color: #2f6b3a">Up to date</span></div>
+      <button class="adv" type="button" onClick="{{toggleSrv}}" aria-expanded="{{srvOpen}}">
+        <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true" style="transform: rotate({{srvRot}}deg); transition: transform .15s"><path d="M4 2.5L7.5 6 4 9.5"></path></svg>
+        Advanced <span style="color: #5c5a55">4</span>
+      </button>
+      <sc-if value="{{srvOpen}}" hint-placeholder-val="{{true}}">
+        <div class="row" style="background: #fbf7ef"><div class="rt"><span class="rl">Health page</span><span class="rd">Open the server health page in your browser.</span></div><button class="btn" type="button">Open</button></div>
+        <div style="border-top: 1px solid #efe7d8; background: #fbf7ef">
+          <div class="row" style="border-top: 0"><div class="rt"><span class="rl">Roll back server</span><span class="rd">Go back to the previous server version.</span></div><button class="btn" type="button" onClick="{{askRollback}}" aria-expanded="{{rbOpen}}">Roll back…</button></div>
+          <sc-if value="{{rbOpen}}" hint-placeholder-val="{{true}}">
+            <div role="group" aria-label="Confirm roll back" style="margin: 0 20px 16px; padding: 14px 16px; border: 1px solid #a08a66; border-radius: 10px; background: #ffffff; display: flex; flex-direction: column; gap: 10px">
+              <span style="font-size: 14px; font-weight: 600">Roll back to server 6.94.0?</span>
+              <span style="font-size: 13px; line-height: 1.45; color: #66635e">COS Control stops 6.94.1 and starts the version it kept. You can update again from this page.</span>
+              <span style="display: flex; gap: 8px; flex-wrap: wrap"><button class="pri" type="button">Roll back</button><button class="btn" type="button" onClick="{{cancelRollback}}">Cancel</button></span>
+            </div>
+          </sc-if>
+        </div>
+        <div class="row" style="background: #fbf7ef"><div class="rt"><span class="rl">Finish server change</span><span class="rd">Finish or undo an interrupted server change.</span></div><span style="font-size: 13px; color: #5c5a55">Nothing pending</span></div>
+        <div class="row" style="background: #fbf7ef"><div class="rt"><span class="rl">Older server</span><span class="rd">Adopt, manage in place, or replace a server COS Control did not install.</span></div><span style="font-size: 13px; color: #5c5a55">Not needed</span></div>
+      </sc-if>
+    </section>
+
+    <section aria-labelledby="s-app" style="max-width: 820px; background: #ffffff; border: 1px solid #e3d9c6; border-radius: 14px; overflow: hidden">
+      <h3 id="s-app" style="margin: 0; padding: 16px 20px 12px; font-size: 16px; font-weight: 600">App updates</h3>
+      <div class="row"><div class="rt"><span class="rl">COS Control</span><span class="rd">Checked a few minutes ago. You have the newest version.</span></div><span style="display: flex; align-items: center; gap: 12px"><span style="font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #5c5a55">0.5.351</span><button class="btn" type="button">Check now</button></span></div>
+      <div class="row"><div class="rt"><span class="rl">What's new</span><span class="rd">Notes for this version.</span></div><button class="btn" type="button">Read</button></div>
+    </section>
+
+    <section aria-labelledby="s-fix" style="max-width: 820px; background: #ffffff; border: 1px solid #e3d9c6; border-radius: 14px; overflow: hidden">
+      <h3 id="s-fix" style="margin: 0; padding: 16px 20px 12px; font-size: 16px; font-weight: 600">Troubleshooting</h3>
+      <div class="row"><div class="rt"><span class="rl">Run checks</span><span class="rd">Check the setup and list any problems.</span></div><button class="btn" type="button">Run checks</button></div>
+      <div style="border-top: 1px solid #efe7d8; padding: 14px 20px 16px; display: flex; flex-direction: column; gap: 10px">
+        <span style="font-size: 13px; color: #66635e">Example results. 18 of 19 checks pass.</span>
+        <div style="display: flex; align-items: center; gap: 12px; padding: 12px 14px; border: 1px solid #e3d9c6; border-radius: 10px; flex-wrap: wrap">
+          <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><circle cx="6" cy="6" r="5" fill="#8a4b1c"></circle></svg>
+          <span style="flex: 1; min-width: 200px; display: flex; flex-direction: column; gap: 2px"><span style="font-size: 14px; font-weight: 600">Whisper server is not answering</span><span style="font-size: 13px; color: #66635e">Meeting and dictation text waits until it answers.</span></span>
+          <button class="pri" type="button">Restart Whisper</button>
+        </div>
+        <span style="font-size: 13px; color: #66635e">Not sure what to do? <a href="#">Ask COS</a> on Today. It can repair this and explain the other checks.</span>
+      </div>
+      <div class="row"><div class="rt"><span class="rl">Repair</span><span class="rd">Fix the managed server setup.</span></div><button class="btn" type="button">Repair</button></div>
+      <div class="row"><div class="rt"><span class="rl">Support report</span><span class="rd">Copy a report for the COS team. Keys and tokens are left out.</span></div><span style="display: flex; gap: 8px"><button class="btn" type="button">Copy report</button><button class="btn" type="button">Open logs</button></span></div>
+      <div class="row"><div class="rt"><span class="rl">Online help</span><span class="rd">COS Control help on gotcos.com.</span></div><button class="btn" type="button">Open</button></div>
+    </section>
+  </main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1280,"height":1560}}'>
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    this.state = { srvOpen: true, rbOpen: true };
+  }
+  renderVals() {
+    const s = this.state;
+    return {
+      srvOpen: s.srvOpen, srvRot: s.srvOpen ? 90 : 0, rbOpen: s.rbOpen,
+      toggleSrv: () => this.setState({ srvOpen: !s.srvOpen }),
+      askRollback: () => this.setState({ rbOpen: true }),
+      cancelRollback: () => this.setState({ rbOpen: false })
+    };
+  }
+}
+</script>
+</body>
+</html>
