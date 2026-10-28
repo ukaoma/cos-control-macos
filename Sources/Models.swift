@@ -7564,6 +7564,63 @@ enum PetPanelFrame {
     }
 }
 
+/// 0.5.352: the pet moves itself. Since macOS 27.2 (2026-10-27) `isMovableByWindowBackground` never started a
+/// window drag on the pet: a capture of 10 presses dragged up to 450pt showed the frame never moved, while clicks,
+/// double clicks and the right-click menu still worked. PetPanel.sendEvent feeds left-button events through this
+/// and moves the panel to `.move`. Points are screen points; `origin` is the panel's frame origin at the press.
+///
+/// Under `threshold` a press is a click: every event goes on to SwiftUI and the tap runs. At `threshold` it becomes
+/// a drag for the rest of the press, and the tap SwiftUI may still report for it is swallowed once by `consumeTap`.
+struct PetDragTracker {
+    static let threshold: CGFloat = 4
+
+    enum Drag: Equatable {
+        /// Below the threshold, or a press that may not drag: SwiftUI gets the event.
+        case forward
+        /// Put the panel's origin here; SwiftUI does not see the event.
+        case move(CGPoint)
+    }
+
+    private var pressMouse: CGPoint?
+    private var pressOrigin = CGPoint.zero
+    private(set) var dragging = false
+    private var swallowTap = false
+
+    /// A press on a pill, list, card or button (`mayDrag` false) never drags. Any new press clears a swallowed tap
+    /// left by the last drag, so a stale one can never eat a real click.
+    mutating func mouseDown(mouse: CGPoint, origin: CGPoint, mayDrag: Bool) {
+        swallowTap = false
+        dragging = false
+        pressMouse = mayDrag ? mouse : nil
+        pressOrigin = origin
+    }
+
+    mutating func mouseDragged(mouse: CGPoint) -> Drag {
+        guard let pressMouse else { return .forward }
+        let dx = mouse.x - pressMouse.x
+        let dy = mouse.y - pressMouse.y
+        if !dragging {
+            guard hypot(dx, dy) >= Self.threshold else { return .forward }
+            dragging = true
+        }
+        return .move(CGPoint(x: pressOrigin.x + dx, y: pressOrigin.y + dy))
+    }
+
+    /// True when this release ends a drag: the caller keeps the click from reaching the sprite as a tap.
+    mutating func mouseUp() -> Bool {
+        defer { pressMouse = nil; dragging = false }
+        guard dragging else { return false }
+        swallowTap = true
+        return true
+    }
+
+    /// The tap handlers ask before acting. False exactly once after a drag.
+    mutating func consumeTap() -> Bool {
+        if swallowTap { swallowTap = false; return false }
+        return true
+    }
+}
+
 private func petSpriteJSONInt(_ value: Any?, fallback: Int) -> Int {
     if let number = value as? Int { return number }
     if let number = value as? NSNumber { return number.intValue }
