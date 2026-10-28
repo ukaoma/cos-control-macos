@@ -46,7 +46,7 @@ struct KeyLanesSettingsRow: View {
             }
             if store.blockedInstall != nil {
                 // The server downgrade journey: an install below 6.80.0 waits for the keys to go.
-                Text(KeyLanes.downgradeBlockedLine + " " + KeyLanes.downgradeLine).font(COSType.body(11, weight: .medium))
+                Text(KeyLanes.downgradeLine).font(COSType.body(11, weight: .medium))
                     .foregroundStyle(COSPalette.amber).fixedSize(horizontal: false, vertical: true)
                 Button(KeyLanes.removeAndContinueLabel) { removingSaved = true }
                     .buttonStyle(COSQuietButtonStyle(tone: .destructive)).disabled(store.busy || model.busy)
