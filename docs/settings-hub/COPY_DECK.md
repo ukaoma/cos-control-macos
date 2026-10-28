@@ -58,7 +58,7 @@ Category names come from the reviewed boards. The one-line description shows und
 | HUB-06 | `new (hub chrome)` | (none) | Advanced | Disclosure title; the count shows beside it | none | none | hub-builder |
 | HUB-07 | `new (hub chrome)` | (none) | Applying restarts the server. | One sentence for every Apply row; see section 0.3 | none | none | hub-builder |
 | HUB-08 | `new (hub chrome)` | (none) | Restart waits until running work finishes. | Why Apply is disabled while work runs (ST-30) | none | none | hub-builder |
-| HUB-09 | `new (hub chrome)` | (none) | Set on the server. | Every .env lock (O-09); replaces "Set in .env" and "Set on the server" | none | none | hub-builder |
+| HUB-09 | `new (hub chrome)` | (none) | Set on the server. | One phrase for every .env lock (O-09), replacing "Set in .env" | none | none | hub-builder |
 | HUB-10 | `new (hub chrome)` | (none) | Update the server to use this. | A card hidden on an older server, when one line is shown | none | none | hub-builder |
 
 ### 0.2 Categories and groups
