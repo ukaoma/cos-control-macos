@@ -283,6 +283,16 @@ struct COSBuildUpProbeFrame {
     var pulsing: Bool
 }
 
+extension View {
+    /// The loaded list's content column (0.5.353): the same COSBuildUpColumn the build-up stage draws its rows in, so the
+    /// skeleton and the list share one width at every window size.
+    func cosColumn(_ column: COSBuildUpColumn) -> some View {
+        frame(maxWidth: CGFloat(column.maxWidth), alignment: column.centered ? .center : .leading)
+            .padding(.horizontal, CGFloat(column.inset))
+            .frame(maxWidth: .infinity, alignment: column.centered ? .center : .leading)
+    }
+}
+
 /// Test hooks, nil in the app. `stage`: every frame COSBuildUpStage draws, from inside its body. `wrapper`: whether the
 /// wrapper hides its content, each time it draws. `breadcrumb`: every breadcrumb. `freeze`: every COSBuildUp draws this
 /// frozen moment instead of its own clock (renders of the real call sites).
@@ -375,11 +385,13 @@ struct COSBuildUp<Content: View>: View {
         let current = machine ?? opened(at: now)
         let hide = frozen.map { COSBuildUpPlan.hides($0.phase, wordsShown: $0.drawT >= COSBuildUpPlan.wordsSeconds) } ?? current.hidesContent
         let wire = frozen.map { $0.phase == .building || $0.phase == .landing || $0.phase == .handoff } ?? current.drawsWire
+        let phase = frozen?.phase ?? current.phase
+        let reserving = COSBuildUpPlan.reserves(phase, reduceMotion: reduceMotion)
         let _ = COSBuildUpProbe.wrapper?(shape.kind, hide)
         sized(content()
             .opacity(hide ? 0 : 1)
             .allowsHitTesting(!hide)
-            .accessibilityHidden(hide), hide: hide)
+            .accessibilityHidden(hide), hide: hide, reserving: reserving)
             .overlay(alignment: .topLeading) {
                 if wire {
                     COSBuildUpLiveStage(shape: shape, tune: tune, machine: current, frozen: frozen, background: background, onFit: fit)
@@ -419,15 +431,19 @@ struct COSBuildUp<Content: View>: View {
     }
 
     /// A pane-filling view takes the whole container while the wire stands in for it, so the wire fits the room the
-    /// content will have. An inline view (a Today card, an answer) is never resized: the wire draws inside today's view.
+    /// content will have. 0.5.353: an inline view (a Today card, an answer) reserves its typical content's height and the
+    /// container's width while it builds (`reserving`), so the data lands in place instead of pushing everything below it
+    /// down; when the build ends (data, empty, error, timeout) the reservation goes and the view is its own size again.
     @ViewBuilder
-    private func sized<V: View>(_ view: V, hide: Bool) -> some View {
+    private func sized<V: View>(_ view: V, hide: Bool, reserving: Bool) -> some View {
         if layout.fills {
             view.frame(maxWidth: hide ? .infinity : nil, maxHeight: hide ? .infinity : nil, alignment: .topLeading)
         } else {
-            view
+            view.frame(maxWidth: reserving ? .infinity : nil, minHeight: reserving ? reserve.map { CGFloat($0) } : nil, alignment: .topLeading)
         }
     }
+
+    private var reserve: Double? { COSBuildUpPlan.reserve(shape, tune) }
 
     private func fit(_ count: Int) {
         guard frozen == nil, var next = machine, next.phase == .building || next.phase == .grace, next.count != count else { return }
@@ -602,8 +618,8 @@ private struct COSBuildUpStage: View {
     }
 
     private func rect(_ index: Int, _ item: COSBuildUpItem, items: [COSBuildUpItem]) -> CGRect {
-        CGRect(x: layout.leading, y: COSBuildUpPlan.top(index, in: items, layout: layout),
-               width: max(0, Double(size.width) - layout.leading - layout.trailing), height: item.height)
+        let span = COSBuildUpPlan.rows(in: Double(size.width), layout)
+        return CGRect(x: span.x, y: COSBuildUpPlan.top(index, in: items, layout: layout), width: span.width, height: item.height)
     }
 
     /// One band over the content, from this component's top (the first also covers the inset above it) to the next one's
@@ -707,11 +723,14 @@ private struct COSBuildUpStage: View {
         .offset(x: box.minX, y: box.minY)
     }
 
+    /// Where the rows start across the view (inside the loaded list's column).
+    private var rowsX: CGFloat { CGFloat(COSBuildUpPlan.rows(in: Double(size.width), layout).x) }
+
     private func nodeX(_ x: CGFloat) -> CGFloat { min(max(x, 4), max(4, size.width - 4)) }
     private func nodeY(_ y: CGFloat) -> CGFloat { min(max(y, 4), max(4, size.height - 4)) }
 
     private func spine(_ items: [COSBuildUpItem]) -> (x: CGFloat, top: CGFloat, bottom: CGFloat)? {
-        guard let x = layout.spineX, !items.isEmpty else { return nil }
+        guard let x = COSBuildUpPlan.spineX(in: Double(size.width), layout), !items.isEmpty else { return nil }
         return (CGFloat(x), CGFloat(max(0, COSBuildUpPlan.junctionY(0, in: items, layout: layout) - 10)),
                 CGFloat(COSBuildUpPlan.junctionY(items.count - 1, in: items, layout: layout)))
     }
@@ -727,7 +746,7 @@ private struct COSBuildUpStage: View {
                 ForEach(items.indices, id: \.self) { index in
                     let y = CGFloat(COSBuildUpPlan.junctionY(index, in: items, layout: layout))
                     let pop = 6 * CGFloat(COSBuildUpPlan.progress(COSBuildUpPlan.junctionStep(index), at: drawT, curve: COSBuildUpPlan.pop))
-                    Path { path in path.move(to: CGPoint(x: spine.x, y: y)); path.addLine(to: CGPoint(x: CGFloat(layout.leading) - 4, y: y)) }
+                    Path { path in path.move(to: CGPoint(x: spine.x, y: y)); path.addLine(to: CGPoint(x: rowsX - 4, y: y)) }
                         .trim(from: 0, to: COSBuildUpPlan.progress(COSBuildUpPlan.branchStep(index), at: drawT))
                         .stroke(wire, lineWidth: 1)
                     Circle().fill(background)
@@ -755,7 +774,7 @@ private struct COSBuildUpStage: View {
                         .frame(width: 7 + 10 * spread, height: 7 + 10 * spread)
                         .opacity(1 - spread)
                         .frame(width: 7, height: 7)
-                        .offset(x: CGFloat(layout.leading) - 3.5, y: CGFloat(COSBuildUpPlan.top(index, in: items, layout: layout)) - 3.5)
+                        .offset(x: rowsX - 3.5, y: CGFloat(COSBuildUpPlan.top(index, in: items, layout: layout)) - 3.5)
                 }
             }
         }
