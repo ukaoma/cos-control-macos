@@ -95,7 +95,7 @@ need("DictationClipboard.keepWaiting(elapsedMilliseconds:" in restore and "Dicta
      "after the ⌘V the clipboard is put back only by the tested decision")
 need('dictationLog.notice("clipboard not restored: \\(reason, privacy: .public)")' in restore, "every skip is logged with its reason")
 need("deliver(text, restoreClipboard: restoreClipboard, fieldContext: useFieldContext, casing: casingRequest())" in dictation and 'forKey: "dictation.restoreClipboard") as? Bool ?? true' in dictation
-     and 'Toggle("Restore my clipboard after pasting", isOn: $store.restoreClipboard)' in dictation, "the setting is on by default and reaches delivery")
+     and 'Toggle("Restore clipboard", isOn: $store.restoreClipboard)' in dictation, "the setting is on by default and reaches delivery")
 need("DictationInsertPolicy.refusal(" in deliver and "DictationDelivery.decide(" in deliver and "DictationDelivery.route(" in deliver,
      "delivery goes through the tested policy, route and decision")
 need("IsSecureEventInputEnabled()" in deliver and "kAXSubroleAttribute" in deliver and "AXIsProcessTrusted()" in deliver,
@@ -243,7 +243,7 @@ need('forKey: "dictation.sound.pitch") as? Double ?? 0' in dictation and "Slider
      and "let player = soundPlayer, pitch = soundPitch" in dictation and "player.play(url, volume: volume, semitones: pitch, askedAt: asked)" in dictation
      and "AVAudioUnitTimePitch()" in dictation and "pitch.pitch = Float(DictationSoundLibrary.cents(semitones))" in dictation
      and "static let pitchRange = -12.0...6.0" in core, "Pitch: -12 to +6 st, default 0, applied at playback to every sound")
-need("laptop speakers reproduce little of it" in dictation, "the caption says the saber is mostly bass")
+need("laptop speakers barely play it" in dictation, "the caption says the saber is mostly bass")
 need('"high-pass' not in (root / "scripts/render-dictation-sounds.py").read_text() and '"highpass"' not in (root / "scripts/render-dictation-sounds.py").read_text().split("def unstable_v2(")[1].split("def master(")[0].split("# sparse spits")[0],
      "v2's growl is never high-passed (only its spits are)")
 need('Button("Preview") { store.previewSound(edge) }' in dictation and 'COSDropdownOption("import", "Your own file…")' in dictation
@@ -710,7 +710,7 @@ need(len(casing_facts) == 1 and "text" not in casing_facts[0].split("casing=")[1
 need(dictation.count("casing: delivered.casing, request: casingRequest())") == 1 and dictation.count("casing: casingRequest())") == 2,
      "the swap's final text takes the same capital as the typed text, and both deliveries pass the setting")
 need('forKey: "dictation.fieldContext") as? Bool ?? true' in dictation
-     and 'Toggle("Spell words the way the text box has them", isOn: $store.useFieldContext)' in dictation
+     and 'Toggle("Match nearby spelling", isOn: $store.useFieldContext)' in dictation
      and "never saves or sends it" in dictation and "Never in terminals or password fields." in dictation,
      "a setting, on by default, says what is read and that it is kept for that dictation only")
 need("editWatcher.start(target, mode: learnMode, context: context)" in finish, "the watch gets the read")

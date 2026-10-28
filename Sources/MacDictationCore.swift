@@ -1811,7 +1811,7 @@ enum DictationShortcutSlot: String, CaseIterable, Sendable {
     var title: String {
         switch self {
         case .hold: "Push to talk"
-        case .toggle: "Start / stop"
+        case .toggle: "Start and stop"
         case .fix: "Fix last dictation"
         }
     }
@@ -2417,7 +2417,7 @@ enum DictationPolish {
     /// Settings' one line under AI polish.
     static func settingNote(_ model: DictationPolishModel) -> String {
         guard let budget = budget(for: model) else {
-            return "Off: COS pastes what it heard. Haiku or Sonnet sends each dictation to Claude to clean up first."
+            return "Off: COS pastes what it heard. Haiku or Sonnet sends each dictation to Claude first."
         }
         return "Claude cleans filler, punctuation and dictionary spellings before COS pastes. It does not reliably fix misheard words. Uses your Claude plan. If it takes longer than \(Int(budget)) seconds, COS pastes what it heard."
     }
@@ -2560,7 +2560,7 @@ enum DictationPolishInstructions {
     static let placeholder = "Use Oxford commas.\nWrite product names as Bottle POS and IT Retail.\nKeep sentences short."
     static let title = "Your polish instructions"
     /// The line under the box. Plain copy: no em dash, no arrow.
-    static let note = "Extra direction for AI polish, used after COS's built-in rules. The built-in rules still win: your instructions never change what you meant, and never change links, paths, numbers or names you said. Used for Mac and glasses dictation, not meeting transcripts."
+    static let note = "Runs after the built-in rules, which still win. Mac and glasses dictation, not meetings."
     static let offNote = "Mac dictation uses these when AI polish is on. Glasses dictation uses them whenever it polishes."
 
     /// What the server counts: the trimmed text's UTF-16 length.
@@ -2896,7 +2896,7 @@ enum DictationPolishSwap {
     static func routeName(_ route: DictationReplace.Route) -> String { route == .accessibility ? "accessibility" : "paste" }
     static func settingNote(_ model: DictationPolishModel) -> String {
         model == .off ? "Works with AI polish on."
-            : "COS types what it heard right away. When Claude's version is ready, COS swaps it in at the same spot. If you moved on or changed the text, COS leaves it and keeps the polished version in Activity, Dictation until COS Control quits."
+            : "Swaps in Claude's version. If you moved on, it waits in Activity, Dictation until quit."
     }
 }
 
@@ -3115,11 +3115,11 @@ enum DictationEditLearning {
     }
     static var settingNote: String {
         // 0.5.344 part 2 (QA W1): no promise about when it reads; style habits are named, and Your style is where they show.
-        "When you fix a word COS just typed, in that same field, COS can learn it: it reads that field while you edit, three minutes at most, and keeps nothing it could not read. "
+        "When you fix a word COS just typed, COS learns it if it can read that field, for up to three minutes. "
             + "It learns names and terms, never plain English words, and with AI polish on, a few style habits (Your style). Works in native apps, "
             + provenNames
             + ". Not available yet in " + notYetNames.joined(separator: ", ")
-            + ", or text boxes in Chrome and Comet: COS only measures there for now. Suggest only keeps them a week in Activity, Dictation for you to add. Never in terminals or password fields."
+            + ", or text boxes in Chrome and Comet. Suggest only keeps them a week in Activity, Dictation. Never in terminals or password fields."
     }
 
     /// At most this many pairs from one watch: a third edit inside one dictation is a rewrite, not a mishearing.
@@ -4832,7 +4832,7 @@ extension DictationStyle.Ledger {
 /// Settings, Dictation, Your style: the words, here so the checks read them. Plain copy, no em dashes or arrows.
 enum DictationStyleCopy {
     static let title = "Your style"
-    static let switchTitle = "Learn my style from edits"
+    static let switchTitle = "Learn my style"
     static let needsLearn = "Learning needs Learn from my edits set to Save automatically or Suggest only."
     /// Style evidence needs the shortcut monitor's count (the person typed the change), which only a single-key shortcut installs.
     static let needsShortcut = "Learning your style needs a single-key dictation shortcut such as Fn, so COS can count that you typed the change."
@@ -4842,15 +4842,15 @@ enum DictationStyleCopy {
     static let pending = "Not active yet"
     static let notUsedHeading = "Not used"
     static let pausedHeading = "Paused"
-    static let paused = "Learning is off, so these rules are not applied, on this Mac or on G2."
+    static let paused = "Learning is off, so these rules are not used here or on the glasses."
     static let addTitle = "Add a rule"
     static let reset = "Reset learned style"
     static let resetDone = "Learned style reset."
     static let previousPolish = "Previous polish (v3)"
-    static let previousNote = "Sonnet now uses the new polish (v4). This goes back to the earlier prompt on every model, and your style rules apply only with the new one."
+    static let previousNote = "Goes back to the earlier prompt on every model. Your style rules work only with v4."
     static let setOnServer = "Set on the server"
     static let undoHelp = "Remove this style rule"
-    static let disclosureRules = "Your COS server adds your style rules (never your text) to each Sonnet polish, on G2 too when it polishes with Sonnet."
+    static let disclosureRules = "Your COS server adds your style rules (never your text) to each Sonnet polish, on the glasses too when it polishes with Sonnet."
     static let disclosureKeys = "While COS watches your edit, it notices Return, clicks and other key presses in the app it typed into, as counts only. It never records which keys."
     static func notSaved(_ code: String) -> String { "Not saved on the server (\(code))." }
     static func resetNotSaved(_ code: String) -> String { "Not reset on the server (\(code)). Your style was reset on this Mac." }
@@ -5466,8 +5466,8 @@ enum DictationMedia {
 enum DictationFillers {
     static let defaultsKey = "dictation.removeFillers"
     static func stored(_ value: Any?) -> Bool { (value as? Bool) ?? true }
-    static let settingTitle = "Remove filler sounds (um, uh) before typing"
-    static let settingNote = "COS leaves out um, uh, er and hmm on their own before it types, also with AI polish off. Text in another language, file names and handles keep them."
+    static let settingTitle = "Remove um and uh"
+    static let settingNote = "Drops um, uh, er and hmm before COS types, even with AI polish off."
     /// The built-in filler tokens (the Always drop chip is never offered for these; A-W11).
     static let tokens: Set<String> = ["um", "umm", "uh", "uhh", "uhm", "er", "erm", "ah", "ahh", "hm", "hmm", "mm", "mhm"]
     static func isBuiltIn(_ phrase: String) -> Bool {
@@ -5634,8 +5634,8 @@ enum DictationFillers {
 enum DictationCasing {
     static let defaultsKey = "dictation.capitalizeStart"
     static func stored(_ value: Any?) -> Bool { (value as? Bool) ?? true }
-    static let settingTitle = "Capitalize the start of a sentence"
-    static let settingNote = "When COS can read the text box, a dictation at the start of it or after a full stop starts with a capital. Never in terminals, and never for iPhone, @handles, paths or a lowercase dictionary term."
+    static let settingTitle = "Capitalize sentences"
+    static let settingNote = "Capitalizes a new sentence when COS can read the text box. Never in terminals or paths."
     static let windowUnits = 16
     /// What the caret sits after. `before` is up to `windowUnits` UTF-16 units read before it; `reachesStart` says that
     /// read began at the field's first character (or the field was measured empty).
@@ -5979,8 +5979,8 @@ enum DictationPolishPicker {
 enum DictationSwapWait {
     static let defaultsKey = "dictation.swapWaitForKeys"
     static func stored(_ value: Any?) -> Bool { (value as? Bool) ?? true }
-    static let settingTitle = "Wait for ⌘ or ⌃ to be released before swapping in polish"
-    static let settingNote = "A shortcut you are still holding no longer cancels the swap: COS waits up to 1.2 seconds, then a moment of no typing."
+    static let settingTitle = "Wait for held keys"
+    static let settingNote = "If you still hold ⌘ or ⌃, COS waits up to 1.2 seconds before it swaps."
     static let releaseMilliseconds = 1_200
     /// QA W-1: the same quiet the swap's re-proof requires (DictationPolishSwap.quietMilliseconds) right before ⌘V, so
     /// a wait that ends here is never skipped there as typing.
@@ -6099,8 +6099,8 @@ struct DictationStartFailure: Error, Sendable {
 enum DictationMicFallback {
     static let defaultsKey = "dictation.micFallback"
     static func stored(_ value: Any?) -> Bool { (value as? Bool) ?? true }
-    static let settingTitle = "If the microphone fails, try another one"
-    static let settingNote = "With System default, COS tries a microphone that worked before (never Bluetooth or an iPhone) and says which it used."
+    static let settingTitle = "Microphone fallback"
+    static let settingNote = "With System default, COS tries a microphone that worked before, never Bluetooth or iPhone."
     static let goodKey = "dictation.micGoodUIDs"
     static let maximumGood = 8
     /// The first 300 ms of a fallback must carry sound above this, or it is not accepted.

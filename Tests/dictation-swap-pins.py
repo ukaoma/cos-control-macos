@@ -75,7 +75,7 @@ def check(d, core):
                                           "let text = formatLists ? DictationListFormat.format(said) : said", "await DictationInsertion.deliver(text,"]]
     pin(-1 not in order and order == sorted(order) and transcribe.count("DictationInsertion.deliver(") == 1, "toggle off is today",
         "after the branch: polish, lists, then exactly one delivery, as before 0.5.331")
-    pin(d.count('Toggle("Paste right away, then polish in place", isOn: $store.pasteThenPolish)') == 1
+    pin(d.count('Toggle("Paste then polish", isOn: $store.pasteThenPolish)') == 1
         and "DictationPolishSwap.stored(UserDefaults.standard.object(forKey: DictationPolishSwap.defaultsKey))" in d
         and "UserDefaults.standard.set(pasteThenPolish, forKey: DictationPolishSwap.defaultsKey)" in d
         and d.count("pasteThenPolish") == 8, "toggle", "the setting is shown, read with its tested default, stored, and read only at the two call sites (0.5.345: plus the paste-first note and the ⌘/⌃ wait row's disabled state, both Settings only)")
