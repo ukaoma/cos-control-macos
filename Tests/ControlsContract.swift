@@ -306,7 +306,7 @@ private struct LabelBoard: View {
         check(systemTwo.title.midY - systemTwo.icon.midY > 4, "the system style still tops the icon of two lines (the fault this pins): \(systemTwo.icon.midY) vs \(systemTwo.title.midY)")
     }
 
-    /// The real menu-bar panel, off screen, light and dark: Create Folders (the buttons grid) wraps to two lines there
+    /// The real menu-bar panel, off screen, light and dark: Notes folder (the buttons grid; Create Folders until 0.5.352) wraps to two lines there
     /// (Check for updates did too, until its card went, 2026-10-09), and each icon is within 1 pt of its text block's middle; so are the
     /// one-line Work Folder and Run Doctor. COS_PANEL_RENDER_OUT names a folder for its PNGs.
     @MainActor static func panel() {
@@ -316,7 +316,9 @@ private struct LabelBoard: View {
             print("  panel: \(measure)")
             check(measure.offBy <= 1, "the panel's \(measure)")
         }
-        for name in ["Create Folders"] {
+        // 0.5.352: the copy pass renamed COS Data to Notes folder; it is the grid's two-line button now, and Create Folders
+        // fits on one line (both renders checked by eye, 2026-10-28). The two-line case Miles saw is measured on Notes folder.
+        for name in ["Notes folder"] {
             check(measures.contains { $0.name == name && $0.lines == 2 }, "\(name) wraps to two lines in the panel render, so it measures the case Miles saw")
         }
         check(measures.contains { $0.lines == 1 }, "the panel render measures a one-line label too")

@@ -34,7 +34,8 @@ import Vision
     }
 
     /// The button Miles pointed at that is still in the panel, and one-line icon buttons beside it.
-    static let targets = ["Create Folders", "Work folder", "Run checks"]
+    /// 0.5.352: the copy pass renamed COS Data to Notes folder, which now wraps to two lines; Create Folders fits on one.
+    static let targets = ["Create Folders", "Notes folder", "Work folder", "Run checks"]
 
     static func model() -> ControllerModel {
         let model = ControllerModel(startBackgroundWork: false)
@@ -127,18 +128,37 @@ import Vision
 
     struct Line { let text: String; let box: CGRect }
 
+    /// Vision reads the panel in overlapping bands, not as one image. 0.5.352 on macOS 27.2: given the whole dark panel
+    /// (780 x 3839 px) it returned no line of the button grid, while a 600 px band of the same pixels read "Work folder"
+    /// and "Create Folders"; the light panel and 0.5.351's 3999 px dark panel read whole. A line touching a band's cut
+    /// edge is dropped (a later band holds it whole), so a word sliced by a cut never matches.
+    static let bandPixels = 900, bandOverlap = 300
+
     /// Every line of words Vision reads in the render, with its box in points from the top left.
     static func recognizedLines(_ image: CGImage?, size: CGSize) -> [Line] {
         guard let image else { return [] }
-        let request = VNRecognizeTextRequest()
-        request.recognitionLevel = .accurate
-        request.usesLanguageCorrection = false
-        do { try VNImageRequestHandler(cgImage: image, options: [:]).perform([request]) } catch { fatalError("Vision could not read the render: \(error)") }
-        return (request.results ?? []).compactMap { observation in
-            guard let text = observation.topCandidates(1).first?.string else { return nil }
-            let b = observation.boundingBox
-            return Line(text: text, box: CGRect(x: b.minX * size.width, y: (1 - b.maxY) * size.height, width: b.width * size.width, height: b.height * size.height))
+        let scale = CGFloat(image.height) / size.height
+        var lines: [Line] = [], top = 0
+        while true {
+            let height = min(bandPixels, image.height - top)
+            guard let band = image.cropping(to: CGRect(x: 0, y: top, width: image.width, height: height)) else { break }
+            let request = VNRecognizeTextRequest()
+            request.recognitionLevel = .accurate
+            request.usesLanguageCorrection = false
+            do { try VNImageRequestHandler(cgImage: band, options: [:]).perform([request]) } catch { fatalError("Vision could not read the render: \(error)") }
+            let first = top == 0, last = top + height >= image.height
+            for observation in request.results ?? [] {
+                guard let text = observation.topCandidates(1).first?.string else { continue }
+                let b = observation.boundingBox
+                let minPx = (1 - b.maxY) * CGFloat(height), maxPx = (1 - b.minY) * CGFloat(height)
+                if (!first && minPx < 4) || (!last && maxPx > CGFloat(height) - 4) { continue }
+                lines.append(Line(text: text, box: CGRect(x: b.minX * size.width, y: (CGFloat(top) + minPx) / scale,
+                                                          width: b.width * size.width, height: (maxPx - minPx) / scale)))
+            }
+            if last { break }
+            top += bandPixels - bandOverlap
         }
+        return lines
     }
 
     static func luminance(_ rep: NSBitmapImageRep, _ x: Int, _ y: Int) -> CGFloat {
