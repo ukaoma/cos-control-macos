@@ -1,3 +1,15 @@
+## 0.5.352 (build 406), Settings hub and pet drag on macOS 27.2
+
+Pairs with COS server 6.93.0 or newer (unchanged from 0.5.351). Built on the shipped 0.5.351 (82b12c8); the unreleased claude/control-352 work moves to 0.5.353.
+
+- Settings hub: Activity's Settings is now ten categories (General, AI and accounts, Glasses and iPhone, Meetings, Dictation, Transcription and voice, Work and agents, Privacy and permissions, Pet and appearance, System and updates) with cards, Advanced disclosures, an On this page rail with scroll-spy, and search across every setting by new or old name (Command-F). Every row is composed from ControlPanel's own pieces, so gates, Apply drafts and confirmations are unchanged; the menu-bar panel keeps the classic list.
+- Openers: Command-comma, the Dock menu, the pet, the welcome window and in-app links open the hub at the right category and group. Use classic Settings (General, Advanced) restores the one-page Settings and the previous routing; Use new Settings switches back.
+- Copy: a full pass over Settings strings for short, plain labels and one-line descriptions (deck in docs/settings-hub/COPY_DECK.md). Kept on purpose: Update Server, Repair Whisper, Create Folders, Answer with your own key, and every string that must match the server.
+- Roll back server now asks for confirmation. The "Named speakers are off" warning shows again (Transcription and voice); it sat in an unmounted card in 0.5.351.
+- Pet: macOS 27.2 stopped starting background window drags, so the pet could not be dragged. The pet panel now drives its own drag (a 4 pt threshold keeps taps, double taps and the right-click menu), on every macOS version, and a drop partly off a screen is clamped back inside its visible frame.
+- Tests: two stale Work checks in run-control2-foundation-contract.sh (not called by run.sh) now pass the production call shape.
+- Full-suite, signing, publication and installed acceptance are recorded in the release receipt; focused tests alone do not establish release readiness.
+
 ## 0.5.351 (build 405), Quick save, stall recovery and the iPhone microphone
 
 Pairs with COS server 6.93.0 (iPhone microphone support, live Mac voice numbering on by default, and assigning a Mac voice to a voice profile; the server's iPhone switch is off by default).
