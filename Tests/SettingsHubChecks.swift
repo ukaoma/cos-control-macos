@@ -99,6 +99,19 @@ import Foundation
         check(ids("Launch COS Control at login").contains("G-01"), "the old label still finds Open at login")
         check(ids("run doctor").contains("UT-01"), "the old label Run Doctor finds Run checks")
         check(ids("Rollback Server").contains("UT-26"), "the old label Rollback Server finds Roll back server")
+        // A match only the old label can make: Meeting Turbo preview is now Fast preview, and nothing else says turbo.
+        if let fast = SettingsHubCatalog.item("UT-05") {
+            check(SettingsHubSearch.rank(fast, query: "Meeting Turbo") == 2, "the old label finds Fast preview by its old name (rank 2)")
+        } else { check(false, "UT-05 is in the catalog") }
+        check(ids("Meeting Turbo") == ["UT-05"], "only the old label finds Meeting Turbo")
+        // A match only a keyword can make.
+        check(ids("byok") == ["KL-01"], "only the keyword finds byok (Your own key)")
+        // The rows outside Settings are not searchable at all, not only left out of the sections.
+        check(SettingsHubCatalog.searchable.count == SettingsHubCatalog.all.count - 13
+              && SettingsHubCatalog.searchable.allSatisfy { $0.mount != .outside }, "rows outside Settings never show in search: all 13 are left out of the searchable set")
+        // Ranking: a label that starts with the word comes before a row whose description mentions it.
+        check(SettingsHubSearch.results("restart").first(where: { $0.category == .system })?.items.first?.id == "C-01",
+              "Restart ranks the server's Restart first in System, ahead of rows that only mention it")
         check(ids("typesafe").contains("JV-11"), "a keyword finds the Jev key")
         check(ids("TAILSCALE").contains("SG-11"), "search ignores case")
         check(ids("pairing token").contains("UT-21"), "every word must match: pairing token")

@@ -19,3 +19,6 @@ mkdir -p "$DIR/Fonts" "$HOME_DIR"
 cp "$ROOT/Resources/Fonts/"*.ttf "$DIR/Fonts/"
 cp "$ROOT/Resources/"*.svg "$DIR/"
 CFFIXED_USER_HOME="$HOME_DIR" HOME="$HOME_DIR" COS_CONTROL_TEST_HOME="$HOME_DIR" "$DIR/hub-render" "$OUT" 2>"$DIR/stderr.log" || { cat "$DIR/stderr.log" >&2; exit 1; }
+# COS_HUB_SPY_DEBUG=1: keep the run's stderr (the scroll-spy's inputs) beside the PNGs.
+[[ -n "${COS_HUB_SPY_DEBUG:-}" ]] && cp "$DIR/stderr.log" "$OUT/render-stderr.log"
+exit 0

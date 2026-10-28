@@ -39,8 +39,6 @@ MUTANTS = [
     ("routes: settings lands elsewhere", C, '        "settings": "meetings.assistant",\n', '        "settings": "general.app",\n', "settings lands on"),
     ("routes: Advanced never opens", C, "            return destination(group: group, advanced: item.advanced)\n", "            return destination(group: group, advanced: false)\n",
      "opens Advanced exactly when"),
-    ("routes: a menu row gets a destination", C, "        if let item = SettingsHubCatalog.item(target), item.mount != .outside, let group = item.group {",
-     "        if let item = SettingsHubCatalog.item(target), let group = item.group {", "no hub destination"),
     ("routes: hub anchors unread", C, '        let bare = target.hasPrefix("hub.") ? String(target.dropFirst(4)) : target\n', "        let bare = target\n", "resolves"),
     # Catalog: search
     ("search: the old label ignored", C, '        let haystack = [label, old, detail, keys, group].joined(separator: " ")\n',
@@ -105,8 +103,8 @@ MUTANTS = [
      "ControlPanel(model: model, openActivity: openActivity, hostedInWindow: true))",
      "ControlPanel(model: model, openActivity: openActivity, hostedInWindow: true, hub: SettingsHubHost(backTitle: \"Today\", back: {})))",
      "the only host outside the fixture"),
-    ("wiring: MeetingAsk always draws Live cues", M, "            if part != .assistant { LiveCuesSettingsRow(store: store.liveCues, model: model) }\n",
-     "            LiveCuesSettingsRow(store: store.liveCues, model: model)\n", "unless the hub asks for one"),
+    ("wiring: MeetingAsk always draws Live cues", M, "        if part != .assistant { LiveCuesSettingsRow(store: store.liveCues, model: model) }\n",
+     "        LiveCuesSettingsRow(store: store.liveCues, model: model)\n", "unless the hub asks for one"),
     ("copy: an em dash in the hub's words", C, '        case .glasses: "Pair your glasses and phone, and how videos reach this Mac."\n',
      '        case .glasses: "Pair your glasses and phone — and how videos reach this Mac."\n', "em dash"),
     # Lists and the suite
@@ -118,8 +116,13 @@ MUTANTS = [
 
 def suite(copy):
     started = time.time()
-    result = bounded.run(["zsh", "-c", 'zsh Tests/run-settings-hub.sh && /usr/bin/python3 Tests/settings-hub-pins.py .'], LIMIT, cwd=copy)
-    out = result.stdout + result.stderr
+    for _ in range(20):
+        result = bounded.run(["zsh", "-c", 'zsh Tests/run-settings-hub.sh && /usr/bin/python3 Tests/settings-hub-pins.py .'], LIMIT, cwd=copy)
+        out = result.stdout + result.stderr
+        # The shared compile lock was busy (another lane compiling): that is no verdict, so run the mutant again.
+        if "infrastructure-error" not in out:
+            break
+        time.sleep(15)
     if "compile-guard: STOPPED" in out:
         sys.exit("compile-guard stopped a compile (memory); ending the mutation lane. " + out[-400:])
     return result.returncode, out, time.time() - started, result.timed_out
@@ -152,8 +155,8 @@ def main():
             code, out, seconds, timed_out = suite(copy)
         finally:
             path.write_text(text, encoding="utf-8")
-        if not filecmp.cmp(path, src / rel, shallow=False):
-            sys.exit(f"RESTORE FAILED for {name}: {rel} differs from the worktree")
+        if path.read_text(encoding="utf-8") != text:
+            sys.exit(f"RESTORE FAILED for {name}: {rel} differs from its unmutated text")
         lines = [l for l in out.splitlines() if l.startswith("FAIL: ") or "settings hub pin FAILED" in l or ": error:" in l]
         reason = " | ".join(l.strip() for l in lines[:6]) if lines else (out.strip().splitlines()[-1] if out.strip() else "")
         if timed_out:

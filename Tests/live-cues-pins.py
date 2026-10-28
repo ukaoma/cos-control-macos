@@ -60,7 +60,7 @@ check(".disabled(!store.switchEnabled)" in row, "the switch is held while a call
 check("get: { store.pending ?? settings.enabled }" in row, "the switch shows the server's value, or the change being asked for")
 check("Text(store.line)" in row and row.count("Text(LiveCues.glassesLine)") == 1, "the status line and the glasses app line")
 check("if let note = store.note {" in row, "the 409 sentence shows")
-check('.task(id: "\\(model.status.running) \\(model.status.version ?? "")") { await store.load(Self.run(model)) }' in row,
+check('.task(id: "\\(model.status.running) \\(model.status.version ?? "")") { if !hosted { await store.load(Self.run(model)) } }' in row,
       "read on appear and whenever the server starts, stops or changes version")
 check("{ arguments, input in try await model.runHelper(arguments, timeout: 20, stdinData: input) }" in row, "the helper bridge, nothing else")
 check("Button(LiveCues.addKeyLabel) { model.panelScrollTarget = LiveCues.decisionKeysAnchor }" in row, "Add a Jev or SubQ key jumps to the key fields")

@@ -134,7 +134,7 @@ for needle in ["model.loadWorkExpiry()", "model.loadOpenPetsCatalog()", "model.m
                "model.meetingAsk.liveCues.load(LiveCuesSettingsRow.run(model))", "model.loadMorningBrief(quiet: true)",
                "syncMorningBriefDraft(force: stamp != briefDraftStamp)", "syncMorningBriefDraft(force: briefDraft == nil)",
                "model.loadDomains()", "syncDomainsDraft(force: false)", "model.providerGuide.refresh()", "model.permissionGuide.refresh()",
-               "NSApplication.didBecomeActiveNotification", "model.dictation.refreshMicrophones()", "model.liveTranscriptSettingChanged()",
+               "NSApplication.didBecomeActiveNotification", "model.liveTranscriptSettingChanged()",
                "voiceGuide.adoptServerTier(", "hubCategoryOpened(hubCategory)"]:
     pin(needle in loaders, f"the hub's root runs {needle}")
 pin("hubLoaders(" in body(views, "    func settingsHub(_ host: SettingsHubHost) -> some View {", "\n    }\n"), "the hub's root view is wrapped in its loaders")
@@ -147,6 +147,36 @@ pin(".task { await model.loadMorningBrief(quiet: true) }" in body(views, "    pr
 pin("await model.loadDomains()" in body(views, "    private var domainsCard: some View {", "\n    }\n"), "the panel's domains card still loads itself")
 pin(".task { await model.transcriptionSettings.load(TranscriptionSettingsCard.run(model)) }" in panel, "the panel still loads Transcription from an always-drawn view")
 pin(".onChange(of: showLiveTranscript) { _, _ in model.liveTranscriptSettingChanged() }" in utilities, "the panel's live transcript switch keeps its observation")
+
+# 3b. Hosted sub-views (the hub presentation mode): one environment value, set by the hub's page, read by each hosted
+# view; and every loader those views run happens once on its page (two MeetingAskSettings parts, seven dictation groups).
+shell_raw = read("Sources/SettingsHubViews.swift")
+pin("var settingsHubHosted: Bool" in shell_raw and "static let defaultValue = false" in shell_raw, "hosted mode is off unless the hub sets it")
+pin(hub.count(".environment(\\.settingsHubHosted, true)") == 1, "the hub's page sets hosted mode once")
+dictation = code(read("Sources/MacDictation.swift"))
+settings_view = body(dictation, "struct MacDictationSettings: View {", "private struct DictationQuietSettings")
+for section in ("dictation", "microphone", "shortcuts", "sounds", "text", "polish", "history"):
+    pin(f"if shows(.{section}) {{" in settings_view, f"MacDictationSettings draws its {section} group on its own")
+    pin(f'"dictation.{section}"' in catalog, f"the catalog has the dictation.{section} group")
+pin('.onAppear { if shows(.microphone) { store.refreshMicrophones() } }' in settings_view, "microphones are read once per page: by the Microphone group")
+pin("refreshMicrophones" not in loaders, "the hub's root does not read microphones a second time")
+pin(hub.count("MacDictationSettings(store: model.dictation, activityShortcut: model.activityHotKey, section: section)") == 1, "the hub draws each group as a section")
+ask_card = body(ask, "struct MeetingAskSettings: View {", "struct HomeCitySettings: View {")
+ask_hub = body(ask_card, "@ViewBuilder private var hubBody: some View {", "\n    }\n")
+pin(ask_card.count(".task {") == 1 and ".task" not in ask_hub, "MeetingAskSettings loads only in the panel; in the hub its two parts load nothing")
+cues = body(ask, "struct LiveCuesSettingsRow: View {", "struct LiveCuesLimitsRows: View {")
+pin(cues.count(".task(id:") == 1 and "{ if !hosted { await store.load(Self.run(model)) } }" in cues,
+    "Live cues loads only in the panel; the hub's root reads it once")
+pin("model.meetingAsk.refreshConfig(model: model)" in loaders and "model.meetingAsk.liveCues.load(LiveCuesSettingsRow.run(model))" in loaders,
+    "the hub's root loads the assistant's models and the cue state, once")
+engine = body(code(read("Sources/ProviderConnectViews.swift")), "struct DictationEngineControls: View {", "struct EngineCellsLayout")
+pin(".task { if !hosted { await store.load(TranscriptionSettingsCard.run(model)) } }" in engine, "the engine step does not load Transcription again in the hub")
+lanes = code(read("Sources/KeyLanesViews.swift"))
+pin("guard part != .advanced, model.backgroundWorkEnabled" in lanes, "Your own key's Advanced part reads nothing: the main part does, once")
+pin("KeyLanesSettingsRow(model: model, part: .main)" in shell_raw and "KeyLanesSettingsRow(model: model, part: .advanced)" in shell_raw,
+    "Your own key: the card's rows and its Advanced rows")
+for item_id in ("KL-02", "KL-03", "KL-14", "KL-15"):
+    pin(re.search(r'\.init\("' + item_id + r'", .*?advanced: true', catalog) is not None, f"{item_id} sits under Your own key's Advanced")
 
 # 4. Only Activity's Settings route passes a host; everything else draws mainPanel.
 pin("if let hub, !useClassicSettings { settingsHub(hub) } else { mainPanel }" in views, "ControlPanel draws the hub only with a host and the classic switch off")

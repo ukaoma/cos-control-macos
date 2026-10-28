@@ -14,6 +14,8 @@ import SwiftUI
         try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
         UserDefaults.standard.set(true, forKey: TodayHome.enabledKey)
         UserDefaults.standard.set(false, forKey: SettingsHub.classicKey)
+        // Dictation on, so its seven groups draw. Read by the store's init, which registers no hot key.
+        UserDefaults.standard.set(true, forKey: "dictation.enabled")
 
         for category in SettingsHubCategory.allCases {
             try render(width: 1280, height: 900, name: "hub-\(category.rawValue)-1280") { ControlPanel.hubFixture(model: $0, category: category) }
