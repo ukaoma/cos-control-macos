@@ -7619,6 +7619,14 @@ struct PetDragTracker {
         if swallowTap { swallowTap = false; return false }
         return true
     }
+
+    /// Where a dropped pet comes to rest: inside the visible frame of the screen it was dropped on. A syncPanel
+    /// mid-drag (a pose change, or a scale change crossing displays) rebuilds the frame from restingAnchor and can
+    /// leave the panel half off that screen; nothing else clamps until the next resize. No screen: left as is.
+    static func dropOrigin(frame: CGRect, screen: CGRect?) -> CGPoint {
+        guard let screen else { return frame.origin }
+        return PetPanelFrame.clamped(frame, screens: [screen]).origin
+    }
 }
 
 private func petSpriteJSONInt(_ value: Any?, fallback: Int) -> Int {
