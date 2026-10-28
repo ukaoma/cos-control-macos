@@ -519,13 +519,17 @@ struct MeetingAskSettings: View {
     @State private var showUnavailableModels = false
     /// Settings hub: Meeting assistant and Live cues are two groups there, each this card with one part. The panel: both.
     var part: MeetingAskSettingsPart = .all
+    @Environment(\.settingsHubHosted) private var hosted
     var body: some View {
+        if hosted { hubBody } else { panelBody }
+    }
+    private var panelBody: some View {
         VStack(alignment: .leading, spacing: 8) {
             if part != .liveCues {
             Text("Meeting assistant").font(COSType.body(13, weight: .semibold))
             Text("Answers when you ask during a meeting. Sonnet by default; other chats keep their models.").font(COSType.body(11)).foregroundStyle(.secondary)
             // 0.5.282: the same control the Live COS Ask panel shows, so a change in either shows in both.
-            MeetingAskModelControl(store: store, model: model)
+            modelControl
             if let config = store.config {
                 if let web = config.web {
                     Text(web.available ? "Public web lookup uses \(web.engine?.capitalized ?? "the connected search provider") when a question needs it." : "Public web lookup unavailable: " + (web.reason ?? "No qualified search provider"))
@@ -537,11 +541,41 @@ struct MeetingAskSettings: View {
             Button("Refresh models") {
                 Task { await store.refreshConfig(model: model); await store.homeArea.load(HomeCitySettings.run(model)) }
             }.buttonStyle(COSQuietButtonStyle())
-            HomeCitySettings(store: store.homeArea, model: model)
+            homeCity
             }
-            if part != .assistant { LiveCuesSettingsRow(store: store.liveCues, model: model) }
+            cuesRow
         }.padding(12).background(COSPalette.card, in: RoundedRectangle(cornerRadius: 12))
         .task { await store.refreshConfig(model: model); await store.homeArea.load(HomeCitySettings.run(model)) }
+    }
+    /// Each drawn once, by whichever body is showing: the panel's card or the hub's rows.
+    private var modelControl: some View { MeetingAskModelControl(store: store, model: model) }
+    private var homeCity: some View { HomeCitySettings(store: store.homeArea, model: model) }
+    @ViewBuilder private var cuesRow: some View {
+        if part != .assistant { LiveCuesSettingsRow(store: store.liveCues, model: model) }
+    }
+    /// Settings hub: the same controls as hub rows, without the card, its title or a loader. The hub's root loads the
+    /// models and the home city once for both parts (ControlPanel.hubLoaders).
+    @ViewBuilder private var hubBody: some View {
+        if part != .liveCues {
+            modelControl.settingsHubRow(SettingsHubCatalog.item("MA-01")?.detail)
+            if let web = store.config?.web {
+                SettingsHubRow("MA-02") {
+                    SettingsHubValue(text: web.available ? (web.engine?.capitalized ?? "Available") : "Unavailable", good: web.available)
+                }
+            }
+            if let notice = store.notice { SettingsHubNote(text: notice) }
+            homeCity
+            if let config = store.config, config.models.contains(where: { !$0.available }) {
+                MeetingAskModelDetails(options: config.models.filter { !$0.available }, expanded: $showUnavailableModels)
+                    .padding(EdgeInsets(top: 12, leading: 20, bottom: 12, trailing: 20))
+                    .overlay(alignment: .top) { SettingsHubHairline() }
+            }
+            SettingsHubRow("MA-04") {
+                Button("Refresh") { Task { await store.refreshConfig(model: model); await store.homeArea.load(HomeCitySettings.run(model)) } }
+                    .buttonStyle(TodayButtonStyle(small: true))
+            }
+        }
+        cuesRow
     }
 }
 
@@ -554,8 +588,22 @@ struct HomeCitySettings: View {
     static func run(_ model: ControllerModel) -> HomeAreaStore.Run {
         { arguments, input in try await model.runHelper(arguments, timeout: 20, stdinData: input) }
     }
+    @Environment(\.settingsHubHosted) private var hosted
     var body: some View {
-        if store.visible {
+        if store.visible, hosted {
+            // Settings hub: the field and Save on the right of a row; the server's answer under it.
+            SettingsHubRow(label: "Home city", detail: store.error ?? HomeArea.caption) {
+                HStack(spacing: 8) {
+                    TextField(HomeArea.placeholder, text: $store.draft)
+                        .textFieldStyle(.plain).cosField().frame(width: 180)
+                        .accessibilityLabel("Home city")
+                        .onSubmit(save)
+                    Button("Save", action: save).buttonStyle(TodayButtonStyle(small: true))
+                        .disabled(store.saving || !store.changed)
+                }
+            }
+            if store.error == nil { SettingsHubNote(text: store.effectiveLine) }
+        } else if store.visible {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Home city").font(COSType.body(12, weight: .semibold))
                 HStack(spacing: 8) {
@@ -595,39 +643,51 @@ struct HomeCitySettings: View {
 struct LiveCuesSettingsRow: View {
     @ObservedObject var store: LiveCuesStore
     @ObservedObject var model: ControllerModel
+    /// Settings hub: the same view in the hub's row grammar (settingsHubRow). No loader there: the hub's root reads the
+    /// cue state once, on the same key (ControlPanel.hubLoaders).
+    @Environment(\.settingsHubHosted) private var hosted
     static func run(_ model: ControllerModel) -> LiveCuesStore.Run {
         { arguments, input in try await model.runHelper(arguments, timeout: 20, stdinData: input) }
     }
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        let problem = LiveCues.isProblem(store.state) && store.pending == nil
+        VStack(alignment: .leading, spacing: hosted ? 0 : 6) {
             if let settings = store.settings {
                 Toggle(LiveCues.title, isOn: Binding(get: { store.pending ?? settings.enabled },
                                                      set: { on in Task { await store.set(on, run: Self.run(model)) } }))
                     .toggleStyle(COSSwitchStyle())
-                    .font(COSType.body(12, weight: .semibold))
+                    .font(COSType.body(hosted ? 14.5 : 12, weight: .semibold))
                     .disabled(!store.switchEnabled)
                     .accessibilityIdentifier("settings-live-cues")
+                    .settingsHubRow(hosted && !problem ? store.line : nil)
             } else {
                 HStack(spacing: 8) {
-                    Text(LiveCues.title).font(COSType.body(12, weight: .semibold))
+                    Text(LiveCues.title).font(COSType.body(hosted ? 14.5 : 12, weight: .semibold))
                     Spacer(minLength: 8)
                     if store.busy { ProgressView().controlSize(.small) }
                 }
+                .settingsHubRow(hosted && !problem ? store.line : nil)
             }
+            if !hosted || problem {
             Text(store.line).font(COSType.body(11))
-                .foregroundStyle(LiveCues.isProblem(store.state) && store.pending == nil ? AnyShapeStyle(COSPalette.amber) : AnyShapeStyle(.secondary))
+                .foregroundStyle(problem ? AnyShapeStyle(COSPalette.amber) : AnyShapeStyle(.secondary))
                 .fixedSize(horizontal: false, vertical: true)
+                .settingsHubBlock()
+            }
             if let note = store.note {
                 Text(note).font(COSType.body(11)).foregroundStyle(COSPalette.amber).fixedSize(horizontal: false, vertical: true)
+                    .settingsHubBlock()
             }
             switch store.action {
             case .addDecisionKey:
                 Button(LiveCues.addKeyLabel) { model.panelScrollTarget = LiveCues.decisionKeysAnchor }
                     .buttonStyle(COSTextButtonStyle())
+                    .settingsHubBlock()
             case .checkAgain:
                 Button(LiveCues.checkAgainLabel) { Task { await store.load(Self.run(model)) } }
                     .buttonStyle(COSQuietButtonStyle())
                     .disabled(store.busy)
+                    .settingsHubBlock()
             case .none:
                 EmptyView()
             }
@@ -637,9 +697,10 @@ struct LiveCuesSettingsRow: View {
             }
             Text(LiveCues.glassesLine).font(COSType.body(11)).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+                .settingsHubBlock()
         }
-        .padding(.top, 4)
-        .task(id: "\(model.status.running) \(model.status.version ?? "")") { await store.load(Self.run(model)) }
+        .padding(.top, hosted ? 0 : 4)
+        .task(id: "\(model.status.running) \(model.status.version ?? "")") { if !hosted { await store.load(Self.run(model)) } }
     }
 }
 
@@ -652,8 +713,23 @@ struct LiveCuesLimitsRows: View {
     @ObservedObject var store: LiveCuesStore
     let limits: LiveCuesLimits
     let run: LiveCuesStore.Run
+    @Environment(\.settingsHubHosted) private var hosted
 
     var body: some View {
+        if hosted { hubBody } else { panelBody }
+    }
+    /// Settings hub: the panel's bar and steppers (the only controls that move a limit), each at a row's inset.
+    @ViewBuilder private var hubBody: some View {
+        if let gate = limits.values[.gate] { bar(gate).font(COSType.body(13)).settingsHubBlock() }
+        ForEach([LiveCuesLimits.Key.maxCuesPerMeeting, .cooldownSeconds, .dailyWriterCalls], id: \.self) { key in
+            if let limit = limits.values[key] { stepper(key, limit).font(COSType.body(13)).settingsHubBlock() }
+        }
+        if !store.pendingLimits.isEmpty { SettingsHubNote(text: LiveCues.savingLine) }
+        if let note = store.limitsNote { SettingsHubNote(text: note, tone: .warning) }
+        if let usage = limits.usage { SettingsHubNote(text: LiveCues.usageLine(usage)) }
+    }
+
+    private var panelBody: some View {
         VStack(alignment: .leading, spacing: 8) {
             if let gate = limits.values[.gate] { bar(gate) }
             ForEach([LiveCuesLimits.Key.maxCuesPerMeeting, .cooldownSeconds, .dailyWriterCalls], id: \.self) { key in
@@ -749,10 +825,80 @@ struct TranscriptionSettingsCard: View {
     static func run(_ model: ControllerModel) -> TranscriptionSettingsStore.Run {
         { arguments, input in try await model.runHelper(arguments, timeout: 20, stdinData: input) }
     }
+    @Environment(\.settingsHubHosted) private var hosted
     var body: some View {
         if store.visible, let settings = store.settings {
-            card(settings)
+            if hosted { hubCard(settings) } else { card(settings) }
         }
+    }
+    /// Settings hub: each model a row with its line as the description, the resolver switch, Parakeet, then the Advanced
+    /// pickers once its disclosure is open (the hub's Advanced, opened by a deep link or a search result). No card, no title.
+    @ViewBuilder private func hubCard(_ settings: SttSettings) -> some View {
+        let recording = model.recordingCount > 0
+        if let choice = settings.dictation {
+            SettingsHubRow(label: "Dictation engine", detail: Transcription.dictationLine(settings)) { hubDictationPicker(choice) }
+        } else {
+            SettingsHubNote(text: Transcription.dictationLine(settings))
+        }
+        SettingsHubRow(label: "Preview model", detail: Transcription.previewLine(settings) ?? "") { hubPicker(.preview, settings.preview) }
+        SettingsHubRow(label: "HQ model", detail: Transcription.effectiveLine(settings.hq) ?? "") { hubPicker(.hq, settings.hq) }
+        SettingsHubRow(label: "Second opinion", detail: Transcription.effectiveLine(settings.secondOpinion) ?? "") { hubPicker(.secondOpinion, settings.secondOpinion) }
+        SettingsHubRow(label: "Refine with second opinion", detail: Transcription.resolverInactiveLine(settings) ?? "") {
+            SettingsHubSwitch(label: "Refine with second opinion", isOn: Binding(
+                get: { store.settings?.resolverEnabled ?? false },
+                set: { on in Task { await store.set("resolver", .bool(on), run: Self.run(model)) } }))
+                .disabled(store.pending != nil)
+        }
+        SettingsHubNote(text: Transcription.appliesLine(settings))
+        if let error = store.error { SettingsHubNote(text: error, tone: .warning) }
+        if store.rowState(recording: recording) != nil {
+            parakeetRow(settings.parakeet, recording: recording)
+                .padding(EdgeInsets(top: 12, leading: 20, bottom: 12, trailing: 20))
+                .overlay(alignment: .top) { SettingsHubHairline() }
+        }
+        if showAdvanced {
+            SettingsHubRow(label: "Front end", detail: "", advanced: true) { hubPicker(.frontEnd, settings.frontEnd) }
+            SettingsHubRow(label: "Quiet detection", detail: "", advanced: true) { hubPicker(.quietGate, settings.quietGate) }
+        } else {
+            Button { showAdvanced = true } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: "chevron.right").font(.system(size: 10, weight: .semibold))
+                    Text("Advanced").font(COSType.body(13, weight: .medium))
+                    Text("2").font(COSType.body(13)).foregroundStyle(TodayInk.grey)
+                    Spacer(minLength: 0)
+                }
+                .foregroundStyle(TodayInk.sub).padding(.horizontal, 20).padding(.vertical, 13)
+                .frame(maxWidth: .infinity, alignment: .leading).background(TodayInk.hubAdvancedBg)
+                .overlay(alignment: .top) { SettingsHubHairline() }.contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Advanced, 2 settings")
+        }
+    }
+    /// A model picker for a hub row: the same binding and rows as the card's, without its label (the row says it).
+    private func hubPicker(_ key: Transcription.Key, _ choice: SttChoice) -> some View {
+        COSDropdown("Model", selection: Binding(
+            get: { store.settings.map { Self.selected($0, key) } ?? choice.selected },
+            set: { id in
+                guard id != choice.selected else { return }
+                Task { await store.set(key.rawValue, .string(id), run: Self.run(model)) }
+            }), options: Transcription.rows(choice).map { row in
+                COSDropdownOption(row.id, row.title, note: row.note, muted: !row.enabled, enabled: row.enabled)
+            }, showsLabel: false)
+            .frame(width: 240)
+            .disabled(store.pending != nil)
+    }
+    private func hubDictationPicker(_ choice: SttDictationChoice) -> some View {
+        COSDropdown("Dictation engine", selection: Binding(
+            get: { store.settings?.dictation?.selected ?? choice.selected },
+            set: { id in
+                guard id != choice.selected else { return }
+                Task { await store.set("dictation", .string(id), run: Self.run(model)) }
+            }), options: Transcription.dictationRows(choice, compact: true).map { row in
+                COSDropdownOption(row.id, row.title, note: row.note, muted: !row.enabled, enabled: row.enabled)
+            }, showsLabel: false)
+            .frame(width: 240)
+            .disabled(store.pending != nil)
     }
     private func card(_ settings: SttSettings) -> some View {
         let recording = model.recordingCount > 0
@@ -978,10 +1124,19 @@ struct MeetingAskModelControl: View {
     @ObservedObject var store: MeetingAskStore
     @ObservedObject var model: ControllerModel
     var compact = false
+    @Environment(\.settingsHubHosted) private var hosted
     var body: some View {
         let lock = store.modelLock
         VStack(alignment: .leading, spacing: 4) {
-            if let config = store.config {
+            if hosted {
+                // Settings hub: the row's label on the left in the hub's row type, the dropdown on the right. The label
+                // stays while the server has not answered, so the row never loses its name.
+                HStack(spacing: 12) {
+                    Text("Assistant model")
+                    Spacer(minLength: 12)
+                    if let config = store.config { dropdown(config, showsLabel: false, locked: lock != nil) }
+                }
+            } else if let config = store.config {
                 if compact {
                     HStack(spacing: 8) {
                         Text("Model").font(COSType.body(11.5)).foregroundStyle(.secondary).accessibilityHidden(true)

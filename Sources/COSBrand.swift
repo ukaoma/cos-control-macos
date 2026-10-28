@@ -778,6 +778,7 @@ struct COSDropdown<Value: Hashable>: View {
     /// The list drops inline when the surface asks for it, or when there was no window to open a panel in.
     private var listsInline: Bool { inline || presenter.inlineFallback }
 
+    @Environment(\.settingsHubHosted) private var settingsHubHosted
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 10) {
@@ -787,8 +788,10 @@ struct COSDropdown<Value: Hashable>: View {
                         .lineLimit(1)
                         .frame(width: labelWidth, alignment: .leading)
                         .accessibilityHidden(true)
+                    // Settings hub: a row's words on the left, the face on the right.
+                    if settingsHubHosted { Spacer(minLength: 12) }
                 }
-                face
+                if settingsHubHosted { face.frame(maxWidth: 260) } else { face }
             }
             if listsInline && presenter.isOpen {
                 HStack(spacing: 10) {

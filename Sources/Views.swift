@@ -1891,12 +1891,16 @@ struct ControlPanel: View {
 
     /// The work folder and a restart it waits for (ST-28).
     @ViewBuilder private var statusWorkFolderRows: some View {
+        if hubOn {
+            hubPathRow(model.status.workDirectory ?? "Default COS context", line: nil)
+        } else {
         HStack(alignment: .top) {
             Text("Work folder").foregroundStyle(.secondary)
             Spacer()
             Text(model.status.workDirectory ?? "Default COS context")
                 .lineLimit(2).multilineTextAlignment(.trailing).textSelection(.enabled)
         }.font(.caption)
+        }
         if model.status.workDirectoryPending {
             Label("Saved. Applies at the next safe restart.", systemImage: "clock.badge.exclamationmark")
                 .font(.caption).foregroundStyle(COSPalette.amber)
@@ -1905,6 +1909,10 @@ struct ControlPanel: View {
 
     /// The meetings library (ST-29).
     @ViewBuilder private var statusLibraryRows: some View {
+        if hubOn {
+            hubPathRow(model.status.operationsDirectory ?? "Not set (standalone recordings)", line: model.status.operationsDirectory == nil ? nil
+                       : (model.status.meetingLibraryLayout == "direct" ? "One folder" : "Multiple folders") + " · \(model.status.meetingLibraryCount) meeting(s)")
+        } else {
         HStack(alignment: .top) {
             Text("Meetings folder").foregroundStyle(.secondary)
             Spacer()
@@ -1919,6 +1927,7 @@ struct ControlPanel: View {
                 }
             }
         }.font(.caption)
+        }
         if let warning = model.status.meetingLibraryWarning {
             Label(warning, systemImage: "exclamationmark.triangle.fill")
                 .font(.caption).foregroundStyle(COSPalette.amber)
@@ -2350,10 +2359,13 @@ struct ControlPanel: View {
     private var fencesContent: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
+                // The hub's card already says Paused threads.
+                if !hubOn {
                 Text("Paused threads · \(model.fenceRecords.count)")
                     .font(.caption2.weight(.bold))
                     .tracking(1.3)
                     .foregroundStyle(.secondary)
+                }
                 Spacer()
                 if model.fenceRecordsLoading {
                     ProgressView().controlSize(.mini)
@@ -2566,7 +2578,8 @@ struct ControlPanel: View {
     private var domainsContent: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text("Domains").font(.headline)
+                // The hub's card already says Domains.
+                if !hubOn { Text("Domains").font(.headline) }
                 Spacer()
                 if domainsBusy { ProgressView().controlSize(.small) }
             }
@@ -2669,7 +2682,10 @@ struct ControlPanel: View {
 
     private var morningBriefHeader: some View {
         HStack(alignment: .firstTextBaseline) {
-            Text("MORNING BRIEF").font(.caption2.weight(.bold)).tracking(1.3).foregroundStyle(.secondary)
+            // The hub's card already says Morning brief.
+            if !hubOn { Text("MORNING BRIEF").font(.caption2.weight(.bold)).tracking(1.3).foregroundStyle(.secondary) }
+            // The hub's row label for the status line (MB-01), so it never sits alone on the right.
+            if hubOn { Text(hubLabel("MB-01")).font(COSType.body(14.5, weight: .semibold)).foregroundStyle(TodayInk.ink) }
             Spacer()
             Text(morningBriefStatusLine).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
         }
@@ -3501,6 +3517,19 @@ struct ControlPanel: View {
         }
     }
 
+    /// The hub's line for a folder in use: its path on the right, in mono, with a count under it.
+    private func hubPathRow(_ path: String, line: String?) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 16) {
+            Text("In use").font(COSType.body(14.5, weight: .semibold)).foregroundStyle(TodayInk.ink)
+            Spacer(minLength: 8)
+            VStack(alignment: .trailing, spacing: 3) {
+                Text(path).font(COSType.mono(12)).foregroundStyle(TodayInk.sub)
+                    .lineLimit(2).truncationMode(.middle).multilineTextAlignment(.trailing).textSelection(.enabled)
+                if let line { Text(line).font(COSType.body(12.5)).foregroundStyle(TodayInk.grey) }
+            }
+        }
+    }
+
     /// Status lines the hub draws right under the switch of the same name.
     private static let hubStatusUnderSwitch: Set<String> = ["Background jobs", "Fast preview", "Continue sessions", "GPU when idle", "Playback cleanup"]
 
@@ -3599,8 +3628,6 @@ private extension ControlPanel {
             .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
                 Task { await model.permissionGuide.refresh() }
             }
-            // MacDictationSettings (DI-02).
-            .onAppear { model.dictation.refreshMicrophones() }
             // The Show live meeting transcript switch's observation (MT-01).
             .onChange(of: showLiveTranscript) { _, _ in model.liveTranscriptSettingChanged() }
             // SetupGuideView's, for the Voice row drawn on its own (SG-05).
@@ -3648,6 +3675,8 @@ private extension ControlPanel {
                         }
                         .padding(EdgeInsets(top: 40, leading: pad, bottom: 72, trailing: pad))
                         .frame(maxWidth: .infinity, alignment: .leading)
+                        // Hosted sub-views drop their own cards and titles and use the hub's row grammar.
+                        .environment(\.settingsHubHosted, true)
                         .background(GeometryReader { content in
                             Color.clear.onChange(of: content.frame(in: .named(Self.hubSpace)), initial: true) { _, frame in
                                 hubSpy.content(top: frame.minY, bottom: frame.maxY)
@@ -3661,12 +3690,14 @@ private extension ControlPanel {
                 }
                 if SettingsHubLayout.showsRail(mode) && !hubSearching {
                     SettingsHubObserving(model.transcriptionSettings) { _ in
+                      SettingsHubObserving(model.dictation) { _ in
                         SettingsHubOwnKeyObserving {
                             let groups = hubVisibleGroups(hubCategory)
                             SettingsHubSpyRail(spy: hubSpy, groups: groups) { group in hubScroll(reader, to: group.anchor) }
                                 .onAppear { hubSpy.page(groups.map(\.id)) }
                                 .onChange(of: groups.map(\.id)) { _, ids in hubSpy.page(ids) }
                         }
+                      }
                     }
                     .padding(EdgeInsets(top: 112, leading: 0, bottom: 0, trailing: 20))
                     .frame(width: SettingsHubLayout.railWidth, alignment: .leading)
@@ -3765,6 +3796,10 @@ private extension ControlPanel {
             .settingsHubSpyTop(id, space: Self.hubSpace, spy: hubSpy)
     }
 
+    func hubAdvancedBinding(_ id: String) -> Binding<Bool> {
+        Binding(get: { hubAdvanced.contains(id) }, set: { open in if open { hubAdvanced.insert(id) } else { hubAdvanced.remove(id) } })
+    }
+
     func hubCard<Content: View>(_ id: String, @ViewBuilder _ content: () -> Content) -> some View {
         hubCard(id, advanced: 0, content, advanced: { EmptyView() })
     }
@@ -3780,6 +3815,7 @@ private extension ControlPanel {
         case "ai.keys": return SettingsHubOwnKeyCard.shown(model)
         case "glasses.video": return model.status.videoUploadV2Supported
         case "dictation.engine": return voiceGuide.voice?.dictationSelected != nil
+        case "dictation.microphone", "dictation.shortcuts", "dictation.sounds", "dictation.text", "dictation.polish": return model.dictation.enabled
         case "voice.models": return model.transcriptionSettings.visible
         case "voice.performance":
             return model.status.idleMetalHqSupported || model.status.adaptiveAudioCleanupSupported || model.status.progressiveHqEnabled != nil
@@ -3879,7 +3915,7 @@ private extension ControlPanel {
         }
         // Your own key and Search are cards of their own (SettingsHubViews.swift), so the panel's file keeps its one
         // own-key hook and no token-spending search switch.
-        SettingsHubOwnKeyCard(model: model, spy: hubSpy, space: Self.hubSpace)
+        SettingsHubOwnKeyCard(model: model, spy: hubSpy, space: Self.hubSpace, advancedOpen: hubAdvancedBinding("ai.keys"))
         hubCard("ai.search") { SettingsHubSemanticSearchRow(model: model) }
     }
 
@@ -3919,7 +3955,7 @@ private extension ControlPanel {
         hubCard("meetings.recording") {
             Group {
                 hubSwitch("MT-01", isOn: $showLiveTranscript)
-                SettingsHubBlock { MeetingSuggestSettings(store: MeetingDetectorStore.shared, recording: model.macRecording) }
+                MeetingSuggestSettings(store: MeetingDetectorStore.shared, recording: model.macRecording)
             }
             .disabled(model.busy)
             if !model.meetingAudio.isEmpty {
@@ -3927,10 +3963,10 @@ private extension ControlPanel {
             }
         }
         hubCard("meetings.assistant") {
-            SettingsHubBlock { MeetingAskSettings(store: model.meetingAsk, model: model, part: .assistant) }
+            MeetingAskSettings(store: model.meetingAsk, model: model, part: .assistant)
         }
         hubCard("meetings.cues") {
-            SettingsHubBlock { MeetingAskSettings(store: model.meetingAsk, model: model, part: .liveCues) }
+            MeetingAskSettings(store: model.meetingAsk, model: model, part: .liveCues)
         }
         hubCard("meetings.library", advanced: model.status.meetingPreviewSupported ? 3 : 1) {
             hubRow("UT-16", detail: hubDetail("UT-16") + " " + SettingsHubCopy.chooseRestarts) {
@@ -3980,17 +4016,38 @@ private extension ControlPanel {
     // MARK: Dictation
 
     @ViewBuilder var hubDictation: some View {
-        if hubGroupShown("dictation.engine") {
-            hubCard("dictation.engine") {
+        // D-05: one category for every dictation setting. Each group draws one section of MacDictationSettings (each
+        // control still written once there), and it came from Tools, which is off while busy.
+        hubCard("dictation.dictation") {
+            dictationSection(.dictation)
+            if hubGroupShown("dictation.engine") {
                 SettingsHubBlock { DictationEngineControls(model: model, guide: model.setupGuide, store: model.transcriptionSettings) }
             }
         }
-        hubCard("dictation.dictation") {
-            // One card for every dictation setting (D-05). It came from Tools, which is off while busy.
-            SettingsHubBlock { MacDictationSettings(store: model.dictation, activityShortcut: model.activityHotKey) }
-                .disabled(model.busy)
-            hubButton("DI-35", "Open Dictation") { openActivity(.dictation) }
+        SettingsHubObserving(model.dictation) { dictation in
+            if dictation.enabled {
+                ForEach([DictationSettingsSection.microphone, .shortcuts, .sounds, .text, .polish], id: \.self) { section in
+                    hubCard("dictation." + section.rawValue) { dictationSection(section) }
+                }
+            }
         }
+        hubCard("dictation.history") {
+            dictationSection(.history)
+            // DI-35: the Dictation tab keeps the dictionary and the history (and these settings, behind its Settings).
+            HStack(spacing: 6) {
+                Text(hubDetail("DI-35")).font(COSType.body(13)).foregroundStyle(TodayInk.sub)
+                Button("Open Dictation") { openActivity(.dictation) }.buttonStyle(TodayLinkStyle(size: 13))
+                Spacer(minLength: 0)
+            }
+            .padding(EdgeInsets(top: 12, leading: 20, bottom: 14, trailing: 20))
+            .overlay(alignment: .top) { SettingsHubHairline() }
+            .id("item.DI-35")
+        }
+    }
+
+    func dictationSection(_ section: DictationSettingsSection) -> some View {
+        MacDictationSettings(store: model.dictation, activityShortcut: model.activityHotKey, section: section)
+            .disabled(model.busy)
     }
 
     // MARK: Transcription and voice
@@ -4018,23 +4075,26 @@ private extension ControlPanel {
                 // Its own Advanced (Front end, Quiet detection), opened when a deep link or search lands inside it.
                 let open = hubAdvanced.contains("voice.models")
                 hubCard("voice.models") {
-                    SettingsHubBlock { TranscriptionSettingsCard(store: store, model: model, advancedOpen: open).id(open) }
+                    TranscriptionSettingsCard(store: store, model: model, advancedOpen: open).id(open)
                 }
             }
         }
         if hubGroupShown("voice.performance") {
-            hubCard("voice.performance", advanced: hubPerformanceCount) { EmptyView() } advanced: {
+            // The two switches and their status lines are the card; only the server-set HQ prefill line is Advanced,
+            // so the card never opens on an empty body with everything folded away.
+            hubCard("voice.performance", advanced: hubPerformanceCount) {
                 Group {
                     toolIdleMetal(hub: true)
                     if model.status.idleMetalHqSupported, model.status.idleMetalHqEnabled != nil {
-                        SettingsHubBlock(advanced: true) { statusIdleMetalRow }
+                        SettingsHubBlock { statusIdleMetalRow }
                     }
                     toolAudioCleanup(hub: true)
                     if model.status.adaptiveAudioCleanupSupported, model.status.adaptiveAudioCleanupEnabled != nil {
-                        SettingsHubBlock(advanced: true) { statusAudioCleanupRow }
+                        SettingsHubBlock { statusAudioCleanupRow }
                     }
                 }
                 .disabled(model.busy)
+            } advanced: {
                 if model.status.progressiveHqEnabled != nil, model.status.progressiveHqValue != nil {
                     SettingsHubBlock(advanced: true) { statusHqPrefillRows }
                 }
@@ -4043,11 +4103,7 @@ private extension ControlPanel {
     }
 
     var hubPerformanceCount: Int {
-        var n = 0
-        if model.status.idleMetalHqSupported { n += model.status.idleMetalHqEnabled != nil ? 2 : 1 }
-        if model.status.adaptiveAudioCleanupSupported { n += model.status.adaptiveAudioCleanupEnabled != nil ? 2 : 1 }
-        if model.status.progressiveHqEnabled != nil, model.status.progressiveHqValue != nil { n += 1 }
-        return n
+        model.status.progressiveHqEnabled != nil && model.status.progressiveHqValue != nil ? 1 : 0
     }
 
     // MARK: Work and agents
@@ -4144,7 +4200,7 @@ private extension ControlPanel {
 
     @ViewBuilder var hubPrivacy: some View {
         hubCard("privacy.permissions", advanced: 1) {
-            hubRow("PM-01") { SettingsHubPermissionsSummary(guide: model.permissionGuide) }
+            hubRow("PM-01", label: "Status") { SettingsHubPermissionsSummary(guide: model.permissionGuide) }
             SettingsHubBlock { PermissionGuideList(guide: model.permissionGuide) }
         } advanced: {
             SettingsHubBlock(advanced: true) { StaleBuildsSection(guide: model.permissionGuide) }
@@ -6069,10 +6125,7 @@ private struct PetSizeControls: View {
                 set: { model.setPetMotion($0) }
             ), options: PetMotion.allCases.map { COSViewOption($0, $0.shortTitle) }, showsLabel: true)
             .font(.caption)
-            Text("Full plays every state, Calm stays idle, None holds still. Also on the pet's menu. "
-                 + "instead of the multi-session fights. None holds one still frame. "
-                 + "Session counts always show on the bar, and alerts still change "
-                 + "the pose. Also on the pet's right-click menu.")
+            Text("Full plays every state, Calm stays idle, None holds still. Also on the pet's menu.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
         }

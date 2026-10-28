@@ -118,13 +118,15 @@ struct ProviderCommandLine: View {
 struct ProviderRowView: View {
     @ObservedObject var guide: ProviderGuide
     let provider: AIProvider
+    /// Settings hub: the hub's type for the name and the line under it.
+    @Environment(\.settingsHubHosted) private var hosted
 
     var body: some View {
         let row = guide.row(provider)
         let status = guide.report?.status(provider)
         VStack(alignment: .leading, spacing: 5) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text(provider.title).font(COSType.body(12.5, weight: .semibold))
+                Text(provider.title).font(COSType.body(hosted ? 14.5 : 12.5, weight: .semibold))
                 Text(provider.cliName == provider.title ? "" : provider.cliName)
                     .font(COSType.body(10.5)).foregroundStyle(COSPalette.muted)
                 Spacer(minLength: 6)
@@ -132,7 +134,7 @@ struct ProviderRowView: View {
             }
             if let detail = row.detail {
                 Text(detail)
-                    .font(COSType.body(11))
+                    .font(COSType.body(hosted ? 13 : 11))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -345,6 +347,8 @@ struct ProviderConnectCard: View {
 struct PanelConnectAIRow: View {
     @ObservedObject var guide: ProviderGuide
     @ObservedObject var model: ControllerModel
+    /// Settings hub: the hub's row (label and description on the left, the summary on the right).
+    @Environment(\.settingsHubHosted) private var hosted
 
     var body: some View {
         Group {
@@ -353,14 +357,22 @@ struct PanelConnectAIRow: View {
             } else {
                 Button { guide.openInPanel() } label: {
                     HStack(spacing: 8) {
+                        if hosted {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("Setup guide").font(COSType.body(14.5, weight: .semibold)).foregroundStyle(TodayInk.ink)
+                                Text(SettingsHubCatalog.item("SG-01")?.detail ?? "").font(COSType.body(13)).foregroundStyle(TodayInk.sub)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        } else {
                         Label("Setup guide", systemImage: "sparkles")
                             .font(COSType.body(12, weight: .medium))
+                        }
                         Spacer(minLength: 6)
                         if guide.needCount > 0 {
                             Circle().fill(COSPalette.amber).frame(width: 7, height: 7)
                         }
                         Text(guide.summary)
-                            .font(COSType.body(11.5, weight: guide.needCount > 0 ? .semibold : .regular))
+                            .font(COSType.body(hosted ? 13 : 11.5, weight: guide.needCount > 0 ? .semibold : .regular))
                             .foregroundStyle(guide.needCount > 0 ? COSPalette.amber : Color.secondary)
                         Image(systemName: "chevron.right").font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary)
                     }
@@ -637,6 +649,8 @@ struct GlassesRowView<Controls: View>: View {
 /// F4: one line that introduces the session pet, once, with Keep, Calm and Hide.
 struct PetIntroLine: View {
     @ObservedObject var model: ControllerModel
+    /// Settings hub: the hub's card is its card.
+    @Environment(\.settingsHubHosted) private var hosted
 
     var body: some View {
         if model.petIntroVisible {
@@ -653,9 +667,9 @@ struct PetIntroLine: View {
                     Spacer(minLength: 0)
                 }
             }
-            .padding(11)
-            .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 10))
-            .overlay(RoundedRectangle(cornerRadius: 10).stroke(COSPalette.line, lineWidth: 1))
+            .padding(hosted ? 0 : 11)
+            .background(hosted ? Color.clear : COSPalette.card, in: RoundedRectangle(cornerRadius: 10))
+            .overlay(RoundedRectangle(cornerRadius: 10).stroke(hosted ? Color.clear : COSPalette.line, lineWidth: 1))
         }
     }
 }
@@ -746,13 +760,15 @@ struct SetupRowView: View {
     @ObservedObject var model: ControllerModel
     @ObservedObject var guide: SetupGuideState
     let row: SetupRow
+    /// Settings hub: the hub's type for the step's name and what it unlocks.
+    @Environment(\.settingsHubHosted) private var hosted
     /// 0.5.317: Checking dictation is a wait, never a problem: no amber while it runs (SetupGuideRules.voiceWaiting).
     private var waiting: Bool { SetupGuideRules.voiceWaiting(row) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text(row.title).font(COSType.body(12.5, weight: .semibold))
+                Text(row.title).font(COSType.body(hosted ? 14.5 : 12.5, weight: .semibold))
                 Spacer(minLength: 6)
                 HStack(spacing: 5) {
                     if (row.id == .voice && (guide.voiceRunning || guide.dictationChecking)) || (row.id == .dictationEngine && guide.engineTesting) { ProgressView().controlSize(.mini) }
@@ -762,7 +778,7 @@ struct SetupRowView: View {
                         .foregroundStyle(row.done ? COSPalette.green : row.skipped || row.afterSetup || waiting || row.calm ? COSPalette.muted : COSPalette.amber)
                 }.fixedSize()
             }
-            Text(row.unlocks).font(COSType.body(11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            Text(row.unlocks).font(COSType.body(hosted ? 13 : 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             if let detail = row.detail {
                 Text(detail).font(COSType.body(10.5)).foregroundStyle(COSPalette.muted).fixedSize(horizontal: false, vertical: true)
             }
@@ -876,6 +892,8 @@ struct DictationEngineControls: View {
         case .offer, .installed: false
         }
     }
+    /// Settings hub: the hub's root loads Transcription once, so this step does not load it again there.
+    @Environment(\.settingsHubHosted) private var hosted
     @ObservedObject var model: ControllerModel
     @ObservedObject var guide: SetupGuideState
     @ObservedObject var store: TranscriptionSettingsStore
@@ -945,7 +963,7 @@ struct DictationEngineControls: View {
                 Text(message).font(COSType.body(10.5)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
         }
-        .task { await store.load(TranscriptionSettingsCard.run(model)) }
+        .task { if !hosted { await store.load(TranscriptionSettingsCard.run(model)) } }
         // An install finished here or anywhere else: the row reads the new state.
         .onChange(of: store.settings?.parakeet.done) { _, _ in Task { await guide.refreshVoice() } }
     }

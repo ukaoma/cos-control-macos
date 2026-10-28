@@ -21,6 +21,9 @@ private func keyLanesRun(_ model: ControllerModel) -> KeyLanesStore.Run {
 struct KeyLanesSettingsRow: View {
     @ObservedObject var model: ControllerModel
     @ObservedObject var store: KeyLanesStore = .shared
+    /// Settings hub: the card's rows (`.main`) or its Advanced rows (`.advanced`: KL-02, KL-03, KL-14, KL-15). Panel: `.all`.
+    var part: KeyLanesSettingsPart = .all
+    @Environment(\.settingsHubHosted) private var hosted
     @State private var removingSaved = false
 
     var body: some View {
@@ -31,7 +34,17 @@ struct KeyLanesSettingsRow: View {
 
     private var card: some View {
         VStack(alignment: .leading, spacing: 8) {
-            if store.enabled || KeyLanes.serverSupports(model.status.version) {
+            if part != .advanced, hosted {
+                // Settings hub: the switch as a row, its line as the description.
+                SettingsHubRow(label: KeyLanes.rowTitle, detail: store.enabled ? KeyLanes.onLine : KeyLanes.offLine) {
+                    if store.enabled || KeyLanes.serverSupports(model.status.version) {
+                        SettingsHubSwitch(label: KeyLanes.rowTitle, isOn: Binding(
+                            get: { store.enabled },
+                            set: { on in Task { if on { await store.enable(run: keyLanesRun(model)) } else { await store.disable(run: keyLanesRun(model)) } } }))
+                            .disabled(store.busy)
+                    }
+                }
+            } else if part != .advanced, store.enabled || KeyLanes.serverSupports(model.status.version) {
                 Toggle(KeyLanes.rowTitle, isOn: Binding(
                     get: { store.enabled },
                     set: { on in Task { if on { await store.enable(run: keyLanesRun(model)) } else { await store.disable(run: keyLanesRun(model)) } } }))
@@ -41,10 +54,10 @@ struct KeyLanesSettingsRow: View {
                     .accessibilityIdentifier("settings-key-lanes")
                 Text(store.enabled ? KeyLanes.onLine : KeyLanes.offLine).font(COSType.body(11)).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-            } else {
+            } else if part != .advanced {
                 Text(KeyLanes.rowTitle).font(COSType.body(13, weight: .semibold))
             }
-            if store.blockedInstall != nil {
+            if part != .main, store.blockedInstall != nil {
                 // The server downgrade journey: an install below 6.80.0 waits for the keys to go.
                 Text(KeyLanes.downgradeLine).font(COSType.body(11, weight: .medium))
                     .foregroundStyle(COSPalette.amber).fixedSize(horizontal: false, vertical: true)
@@ -52,22 +65,24 @@ struct KeyLanesSettingsRow: View {
                     .buttonStyle(COSQuietButtonStyle(tone: .destructive)).disabled(store.busy || model.busy)
             }
             if store.enabled {
-                KeyLanesSetupPanel(model: model, store: store)
+                KeyLanesSetupPanel(model: model, store: store, part: part)
+                    .padding(.horizontal, hosted ? 20 : 0).padding(.vertical, hosted ? 12 : 0)
             } else {
-                if KeyLanes.savedKeysRowVisible(enabled: store.enabled, savedKeys: store.savedKeys) && store.blockedInstall == nil {
+                if part != .main, KeyLanes.savedKeysRowVisible(enabled: store.enabled, savedKeys: store.savedKeys) && store.blockedInstall == nil {
                     Text(KeyLanes.savedKeysLine(serverVersion: model.status.version)).font(COSType.body(11)).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                     Button(KeyLanes.removeSavedLabel) { removingSaved = true }
                         .buttonStyle(COSQuietButtonStyle(tone: .destructive)).disabled(store.busy)
                 }
-                if let line = store.line {
+                if part != .advanced, let line = store.line {
                     Text(line).font(COSType.body(11)).foregroundStyle(COSPalette.amber).fixedSize(horizontal: false, vertical: true)
                 }
             }
         }
-        .padding(12)
+        // Settings hub: Advanced's own lines sit at the rows' inset.
+        .padding(.horizontal, hosted && part == .advanced ? 20 : 0).padding(.vertical, hosted && part == .advanced ? 12 : 0)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 12))
+        .settingsPanelCard()
         .cosConfirm("\(KeyLanes.removeSavedLabel)?", isPresented: $removingSaved, message: KeyLanes.removeSavedMessage, actions: [
             .destructive(KeyLanes.removeSavedLabel) {
                 Task {
@@ -79,8 +94,9 @@ struct KeyLanesSettingsRow: View {
         ])
         .id("key-lanes")
         .task(id: "\(model.status.running) \(model.status.version ?? "")") {
-            // Fixtures and previews read nothing; an older server has no key-lane routes to read.
-            guard model.backgroundWorkEnabled, store.enabled || KeyLanes.serverSupports(model.status.version) else { return }
+            // Fixtures and previews read nothing; an older server has no key-lane routes to read. The hub's Advanced part
+            // reads nothing either: its main part already does, once.
+            guard part != .advanced, model.backgroundWorkEnabled, store.enabled || KeyLanes.serverSupports(model.status.version) else { return }
             store.observe(model.status)
             await store.refresh(run: keyLanesRun(model))
             if store.enabled, store.catalog.isEmpty { await store.loadCatalog(run: keyLanesRun(model)) }
@@ -93,6 +109,8 @@ struct KeyLanesSettingsRow: View {
 struct KeyLanesSetupPanel: View {
     @ObservedObject var model: ControllerModel
     @ObservedObject var store: KeyLanesStore
+    /// Settings hub: `.main` leaves out Remove all keys and the ledger switch, `.advanced` shows only them. Panel: `.all`.
+    var part: KeyLanesSettingsPart = .all
     @State private var chosenKind: String?
     /// The pasted key, held only until Save key; never drawn (KeyLanes.pendingLine shows kind and last four).
     @State private var pending: String?
@@ -110,6 +128,12 @@ struct KeyLanesSetupPanel: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
+            if part != .advanced { mainRows }
+            if part != .main, store.hasKey { removeAllRows }
+        }
+    }
+
+    @ViewBuilder private var mainRows: some View {
             if let local = KeyLanes.localFirstLine(claudeReady: model.status.claudeCliReady, codexReady: model.status.codexCliReady,
                                                    ollamaReady: model.status.ollamaReady == true) {
                 Text(local).font(COSType.body(11)).foregroundStyle(.secondary)
@@ -126,7 +150,10 @@ struct KeyLanesSetupPanel: View {
             if let line = store.line {
                 Text(line).font(COSType.body(11)).foregroundStyle(COSPalette.amber).fixedSize(horizontal: false, vertical: true)
             }
-            if store.hasKey {
+    }
+
+    /// KL-14 and KL-15: Remove all keys, after the downgrade note, and whether to save the spend ledger first.
+    @ViewBuilder private var removeAllRows: some View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(KeyLanes.downgradeHeading).font(COSType.body(11, weight: .medium))
                     Text(KeyLanes.downgradeLine).font(COSType.body(11)).foregroundStyle(.secondary)
@@ -139,8 +166,6 @@ struct KeyLanesSetupPanel: View {
                         .cancel(),
                     ])
                 Toggle(KeyLanes.exportLedgerLabel, isOn: $exportLedger).toggleStyle(COSSwitchStyle()).font(COSType.body(11))
-            }
-        }
     }
 
     private func keyRow(_ key: KeyLanesKey) -> some View {

@@ -32,16 +32,18 @@ struct PermissionRowView: View {
     @ObservedObject var guide: PermissionGuide
     let row: PermissionRow
     var prominent = false
+    /// Settings hub: the hub's type for the name and what it unlocks.
+    @Environment(\.settingsHubHosted) private var hosted
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text(row.title).font(COSType.body(12.5, weight: .semibold))
+                Text(row.title).font(COSType.body(hosted ? 14.5 : 12.5, weight: .semibold))
                 Spacer(minLength: 6)
                 PermissionStatusMark(status: row.status)
             }
             Text(row.unlocks)
-                .font(COSType.body(11))
+                .font(COSType.body(hosted ? 13 : 11))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             if let feature = guide.waitingFeature[row.id] {
@@ -100,14 +102,25 @@ struct PermissionGuideList: View {
 /// Old COS builds' rows in Privacy & Security, found only when asked and reset one at a time.
 struct StaleBuildsSection: View {
     @ObservedObject var guide: PermissionGuide
+    /// Settings hub: the row's label and description on the left (PM-08), the button on the right.
+    @Environment(\.settingsHubHosted) private var hosted
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .center, spacing: 16) {
+                if hosted, let item = SettingsHubCatalog.item("PM-08") {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(item.label).font(COSType.body(14.5, weight: .semibold)).foregroundStyle(TodayInk.ink)
+                        Text(item.detail).font(COSType.body(13)).foregroundStyle(TodayInk.sub).fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer(minLength: 8)
+                }
             Button(guide.staleSearching ? "Looking for old COS test builds…" : "Clean up old COS test builds") {
                 Task { await guide.findStaleBuilds() }
             }
             .buttonStyle(COSTextButtonStyle())
             .disabled(guide.staleSearching)
+            }
             if let builds = guide.staleBuilds {
                 if builds.isEmpty {
                     Text("No old COS test builds on this Mac.")

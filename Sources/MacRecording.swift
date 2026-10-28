@@ -1590,12 +1590,48 @@ struct MeetingSuggestSettings: View {
     @AppStorage(MacRecordingNotice.acknowledgedKey) private var acknowledged = false
     /// Settings passes the model's recording store so the reset publishes to every view reading it.
     var recording: MacRecordingStore? = nil
+    @Environment(\.settingsHubHosted) private var hosted
     var body: some View {
+        if hosted { hubBody } else { panelBody }
+    }
+    /// 0.5.313: the one-time recording notice can be shown again (both layouts' button).
+    private func showNoticeAgain() { if let recording { recording.resetNotice() } else { acknowledged = false } }
+    /// Settings hub: the same switches as hub rows (MT-02 to MT-06); the apps as checkboxes in one row.
+    @ViewBuilder private var hubBody: some View {
+        SettingsHubRow("MT-03") { SettingsHubSwitch(label: "Suggest recording", isOn: $store.suggestEnabled) }
+        if store.suggestEnabled {
+            SettingsHubRow("MT-04") {
+                HStack(spacing: 14) {
+                    ForEach(MeetingApp.allCases, id: \.self) { app in
+                        Toggle(app.title, isOn: Binding(get: { store.allowed.contains(app) }, set: { store.setAllowed(app, $0) }))
+                            .toggleStyle(COSCheckStyle())
+                    }
+                }
+            }
+            if store.browserNeedsAccessibility { SettingsHubRow("MT-05") { SettingsHubValue(text: "Needs Accessibility", good: false) } }
+            if !store.never.isEmpty {
+                SettingsHubRow("MT-06") {
+                    VStack(alignment: .trailing, spacing: 6) {
+                        ForEach(store.never.keys.sorted(), id: \.self) { owner in
+                            HStack(spacing: 8) {
+                                Text(store.never[owner] ?? owner).font(COSType.body(13)).foregroundStyle(TodayInk.ink)
+                                Button("Remove") { store.removeNever(owner) }.buttonStyle(TodayButtonStyle(small: true))
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        SettingsHubRow("MT-02") {
+            Button("Show again", action: showNoticeAgain)
+                .buttonStyle(TodayButtonStyle(small: true))
+                .disabled(!acknowledged)
+        }
+    }
+    private var panelBody: some View {
         VStack(alignment: .leading, spacing: 6) {
             // 0.5.313: the one-time recording notice can be shown again.
-            Button("Show recording notice again") {
-                if let recording { recording.resetNotice() } else { acknowledged = false }
-            }
+            Button("Show recording notice again", action: showNoticeAgain)
                 .controlSize(.small)
                 .disabled(!acknowledged)
                 .help("The next Mac recording shows what COS records and asks once more.")

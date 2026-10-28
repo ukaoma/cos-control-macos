@@ -31,7 +31,8 @@ struct SettingsHubRow<Control: View>: View {
         // a second identity. The page keeps 480 pt or more (SettingsHubLayout), so the words wrap beside the control.
         HStack(alignment: .center, spacing: 16) {
             words
-            control.fixedSize()
+            // One line per button and value: a label never wraps inside its button (QA: "Recor/d").
+            control.lineLimit(1).fixedSize()
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 14)
@@ -347,7 +348,7 @@ struct SettingsHubSearchResults: View {
             let count = sections.reduce(0) { $0 + $1.items.count }
             SettingsHubPageHeader(title: "Search", line: count == 0
                 ? "No settings match \"\(query.trimmingCharacters(in: .whitespacesAndNewlines))\". Try fewer words, or the name a setting used to have."
-                : (count == 1 ? "1 setting" : "\(count) settings") + " match “\(query.trimmingCharacters(in: .whitespacesAndNewlines))”.")
+                : (count == 1 ? "1 setting matches" : "\(count) settings match") + " “\(query.trimmingCharacters(in: .whitespacesAndNewlines))”.")
             ForEach(sections, id: \.category) { section in
                 VStack(alignment: .leading, spacing: 0) {
                     HStack(spacing: 10) {
@@ -414,12 +415,26 @@ struct SettingsHubSearchResults: View {
     func bottom(_ maxY: CGFloat) { bottom = maxY; recompute() }
     func content(top minY: CGFloat, bottom maxY: CGFloat) { contentTop = minY; bottom = maxY; recompute() }
 
+    private var computed: String?
+    private var publishQueued = false
+
     private func recompute() {
         let measured = order.compactMap { id in tops[id].map { (id: id, minY: $0) } }
         // A page that fits has no end to reach: its first group stays in view.
         let atEnd = viewport > 0 && contentTop < -1 && bottom <= viewport + 2 && measured.count > 1
-        let next = SettingsHubSpy.active(tops: measured, line: Self.line, atEnd: atEnd)
-        if next != active { active = next }
+        // Until a group has passed the line (or the end is reached), the page's first group is in view, measured or not:
+        // the cards report from the bottom up, so the first one measured is often the last on the page.
+        let passed = atEnd || measured.contains { $0.minY <= Self.line }
+        computed = passed ? SettingsHubSpy.active(tops: measured, line: Self.line, atEnd: atEnd) : order.first
+        // Published after the layout pass that measured it: a change published inside a view update is dropped, which
+        // left On this page on the first group measured (2026-10-28 renders).
+        guard !publishQueued else { return }
+        publishQueued = true
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            self.publishQueued = false
+            if self.computed != self.active { self.active = self.computed }
+        }
     }
 }
 
@@ -566,14 +581,28 @@ struct SettingsHubOwnKeyCard: View {
     @ObservedObject var store: KeyLanesStore = .shared
     let spy: SettingsHubSpyModel
     let space: String
+    @Binding var advancedOpen: Bool
     static func shown(_ model: ControllerModel, _ store: KeyLanesStore = .shared) -> Bool {
         KeyLanes.rowVisible(serverVersion: model.status.version, enabled: store.enabled, savedKeys: store.savedKeys) || store.blockedInstall != nil
     }
+    /// The rows behind Advanced right now: the downgrade's Remove saved keys and continue (KL-02), Remove saved keys while
+    /// lanes are off (KL-03), and Remove all keys with the ledger switch (KL-14, KL-15) while a key is saved.
+    static func advancedCount(_ store: KeyLanesStore) -> Int {
+        var n = 0
+        if store.blockedInstall != nil { n += 1 }
+        if !store.enabled, store.blockedInstall == nil, KeyLanes.savedKeysRowVisible(enabled: false, savedKeys: store.savedKeys) { n += 1 }
+        if store.enabled, store.hasKey { n += 2 }
+        return n
+    }
     var body: some View {
         if Self.shown(model, store), let group = SettingsHubCatalog.group("ai.keys") {
-            SettingsHubCard(group: group, advancedCount: 0, advancedOpen: .constant(false)) {
-                SettingsHubBlock { KeyLanesSettingsRow(model: model) }
-            } advanced: { EmptyView() }
+            // A waiting install needs its row, so Advanced opens on its own then.
+            SettingsHubCard(group: group, advancedCount: Self.advancedCount(store),
+                            advancedOpen: Binding(get: { advancedOpen || store.blockedInstall != nil }, set: { advancedOpen = $0 })) {
+                KeyLanesSettingsRow(model: model, part: .main)
+            } advanced: {
+                KeyLanesSettingsRow(model: model, part: .advanced).background(TodayInk.hubAdvancedBg)
+            }
             .settingsHubSpyTop(group.id, space: space, spy: spy)
         }
     }
@@ -597,4 +626,123 @@ struct SettingsHubOwnKeyObserving<Content: View>: View {
     @ObservedObject var store: KeyLanesStore = .shared
     @ViewBuilder let content: () -> Content
     var body: some View { content() }
+}
+
+// MARK: Hosted sub-views
+
+/// True inside the hub's page. A view the hub hosts (Meeting assistant, Live cues, Transcription, Your own key, Dictation,
+/// recording suggestions, the setup and permission rows) reads it to drop its own card, padding and repeated title, and to
+/// lay its switches and pickers out as hub rows. Absent (false) everywhere else, so the menu-bar panel, the Settings
+/// window and Activity's Dictation tab draw exactly as before.
+private struct SettingsHubHostedKey: EnvironmentKey { static let defaultValue = false }
+
+extension EnvironmentValues {
+    var settingsHubHosted: Bool {
+        get { self[SettingsHubHostedKey.self] }
+        set { self[SettingsHubHostedKey.self] = newValue }
+    }
+}
+
+/// A line a hosted view keeps under its rows (a server's refusal, a note, a state): the rows' inset, in the hub's type.
+struct SettingsHubNote: View {
+    enum Tone { case plain, warning }
+    let text: String
+    var tone: Tone = .plain
+    var body: some View {
+        Text(text)
+            .font(COSType.body(13)).foregroundStyle(tone == .warning ? TodayInk.hot : TodayInk.sub)
+            .lineSpacing(2).fixedSize(horizontal: false, vertical: true)
+            .padding(EdgeInsets(top: 10, leading: 20, bottom: 10, trailing: 20))
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .overlay(alignment: .top) { SettingsHubHairline() }
+    }
+}
+
+/// A switch for a hub row: the COS switch without words (the row says them).
+struct SettingsHubSwitch: View {
+    let label: String
+    @Binding var isOn: Bool
+    var body: some View {
+        Toggle(isOn: $isOn) { EmptyView() }
+            .toggleStyle(COSSwitchStyle())
+            .accessibilityLabel(label)
+    }
+}
+
+extension View {
+    /// The card a sub-view draws around itself in the panel. Hosted in the hub, the hub's card is the card: nothing.
+    func settingsPanelCard(padding: CGFloat = 12, radius: CGFloat = 12) -> some View {
+        modifier(SettingsPanelCard(padding: padding, radius: radius))
+    }
+}
+
+private struct SettingsPanelCard: ViewModifier {
+    let padding: CGFloat
+    let radius: CGFloat
+    @Environment(\.settingsHubHosted) private var hosted
+    func body(content: Content) -> some View {
+        if hosted {
+            content
+        } else {
+            content.padding(padding).background(COSPalette.card, in: RoundedRectangle(cornerRadius: radius))
+        }
+    }
+}
+
+/// MacDictationSettings in the hub: one group each. `.all` is the panel's and the Dictation tab's single view.
+enum DictationSettingsSection: String, CaseIterable, Sendable {
+    case all, dictation, microphone, shortcuts, sounds, text, polish, history
+}
+
+/// KeyLanesSettingsRow in the hub: the card's rows, or the rows behind its Advanced disclosure (KL-02, KL-03, KL-14,
+/// KL-15). `.all` is the panel's.
+enum KeyLanesSettingsPart: Sendable { case all, main, advanced }
+
+extension View {
+    /// One setting inside a hosted view: in the hub, the row's inset and hairline, the hub's label type, and the
+    /// description under it. Outside the hub, nothing changes.
+    func settingsHubRow(_ detail: String? = nil) -> some View { modifier(SettingsHubRowChrome(detail: detail, block: false)) }
+    /// A hosted part that keeps its own layout (a shortcut recorder, the sound pickers): the rows' inset and hairline.
+    func settingsHubBlock() -> some View { modifier(SettingsHubRowChrome(detail: nil, block: true)) }
+    /// A lone control (a button) inside a hosted view: in the hub, a full row with the catalog row's label and description
+    /// on the left and the control on the right. Outside the hub, nothing changes.
+    func settingsHubLabeled(_ id: String) -> some View { modifier(SettingsHubLabeledChrome(item: SettingsHubCatalog.item(id))) }
+}
+
+private struct SettingsHubLabeledChrome: ViewModifier {
+    let item: SettingsHubItem?
+    @Environment(\.settingsHubHosted) private var hosted
+    func body(content: Content) -> some View {
+        if hosted, let item {
+            SettingsHubRow(label: item.label, detail: item.detail) { content }
+        } else {
+            content
+        }
+    }
+}
+
+private struct SettingsHubRowChrome: ViewModifier {
+    let detail: String?
+    let block: Bool
+    @Environment(\.settingsHubHosted) private var hosted
+    func body(content: Content) -> some View {
+        if hosted {
+            VStack(alignment: .leading, spacing: 4) {
+                if block {
+                    content
+                } else {
+                    content.font(COSType.body(14.5, weight: .semibold)).foregroundStyle(TodayInk.ink)
+                }
+                if let detail, !detail.isEmpty {
+                    Text(detail).font(COSType.body(13)).foregroundStyle(TodayInk.sub).lineSpacing(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .padding(.horizontal, 20).padding(.vertical, block ? 12 : 14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .overlay(alignment: .top) { SettingsHubHairline() }
+        } else {
+            content
+        }
+    }
 }

@@ -4094,6 +4094,12 @@ struct MacDictationSettings: View {
     @ObservedObject var style = DictationStyleStore.shared
     @State private var confirmingDontKeep = false
     @State private var confirmingClear = false
+    /// Settings hub: one group of these (Dictation, Microphone, Shortcuts, Sounds and audio, Text, AI polish, History),
+    /// each control still written once below. The panel and Activity's Dictation tab: `.all`, the whole view.
+    var section: DictationSettingsSection = .all
+    /// Settings hub: rows in the hub's grammar, the notes as their descriptions (settingsHubRow). Absent elsewhere.
+    @Environment(\.settingsHubHosted) private var hosted
+    private func shows(_ part: DictationSettingsSection) -> Bool { section == .all || section == part }
     /// "Don't keep" waits for a confirm, because choosing it deletes the history already on this Mac.
     private var retentionChoice: Binding<DictationRetention> {
         Binding(get: { store.retention }, set: { next in
@@ -4108,48 +4114,84 @@ struct MacDictationSettings: View {
         }
         return options
     }
+    /// The panel's words, also the hub rows' descriptions.
+    static let enableNote = "Type by voice into any Mac app. Transcribed on this Mac with your dictionary."
+    static let fieldContextNote = "Reads nearby text and never saves or sends it. Never in terminals or password fields."
+    static let shortcutsNote = "Use a combo, a function key or Fn alone (needs Accessibility). COS never presses Return."
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: hosted ? 0 : 8) {
+            if shows(.dictation) {
             Toggle("Dictate into Mac apps", isOn: $store.enabled).toggleStyle(COSSwitchStyle()).disabled(store.busy)
-            Text("Type by voice into any Mac app. Transcribed on this Mac with your dictionary.")
+                .settingsHubRow(hosted ? Self.enableNote : nil)
+            if !hosted {
+            Text(Self.enableNote)
                 .font(.caption2).foregroundStyle(.secondary)
+            }
+            }
             if store.enabled {
+                if shows(.microphone) {
+                HStack(spacing: 10) {
                 COSDropdown("Microphone", selection: $store.microphoneUID, options: microphoneOptions).disabled(store.busy)
-                Button("Refresh microphones") { store.refreshMicrophones() }.controlSize(.small)
+                if hosted { Button("Refresh") { store.refreshMicrophones() }.controlSize(.small) }
+                }
+                .settingsHubRow()
+                if !hosted { Button("Refresh microphones") { store.refreshMicrophones() }.controlSize(.small) }
                 // 0.5.345 (A-W1): with System default, a microphone that fails to start gives way to one that worked before.
                 Toggle(DictationMicFallback.settingTitle, isOn: $store.micFallback).toggleStyle(COSSwitchStyle())
                     .disabled(!store.microphoneUID.isEmpty)
-                Text(DictationMicFallback.settingNote).font(.caption2).foregroundStyle(.secondary)
-                if let note = store.micNote { Text("Last time " + note).font(.caption2).foregroundStyle(COSPalette.amber) }
-                DictationShortcutRow(store: store, slot: .hold, activityShortcut: activityShortcut)
-                DictationShortcutRow(store: store, slot: .toggle, activityShortcut: activityShortcut)
-                DictationShortcutRow(store: store, slot: .fix, activityShortcut: activityShortcut)
-                Button("Allow typing in apps…") { store.requestInsertionPermission() }.controlSize(.small)
-                DictationSoundSettings(store: store)
+                    .settingsHubRow(hosted ? DictationMicFallback.settingNote : nil)
+                if !hosted { Text(DictationMicFallback.settingNote).font(.caption2).foregroundStyle(.secondary) }
+                if let note = store.micNote { Text("Last time " + note).font(.caption2).foregroundStyle(COSPalette.amber).settingsHubBlock() }
+                }
+                if shows(.shortcuts) {
+                DictationShortcutRow(store: store, slot: .hold, activityShortcut: activityShortcut).settingsHubBlock()
+                DictationShortcutRow(store: store, slot: .toggle, activityShortcut: activityShortcut).settingsHubBlock()
+                DictationShortcutRow(store: store, slot: .fix, activityShortcut: activityShortcut).settingsHubBlock()
+                Button("Allow typing in apps…") { store.requestInsertionPermission() }.controlSize(.small).settingsHubLabeled("DI-08")
+                }
+                if shows(.sounds) {
+                DictationSoundSettings(store: store).settingsHubBlock()
                 // 0.5.345 (A-W1): sounds paused by the breaker, with the reset.
                 if store.soundsPaused {
+                    VStack(alignment: .leading, spacing: 8) {
                     Text(DictationAudioCopy.soundsPaused).font(.caption2).foregroundStyle(COSPalette.amber)
                     Button(DictationAudioCopy.playAgain) { store.resetSoundBreaker() }.controlSize(.small)
+                    }.settingsHubBlock()
                 }
-                DictationQuietSettings(store: store)
+                DictationQuietSettings(store: store).settingsHubBlock()
+                }
+                if shows(.text) {
                 Toggle("Restore clipboard", isOn: $store.restoreClipboard).toggleStyle(COSSwitchStyle())
                     .help("When COS pastes with ⌘V, it puts back whatever you had copied once the app has the text.")
+                    .settingsHubRow(hosted ? "When COS pastes with ⌘V, it puts back whatever you had copied once the app has the text." : nil)
                 COSDropdown("Learn from my edits", selection: $store.learnMode,
                             options: DictationLearnMode.allCases.map { COSDropdownOption($0, $0.title) })
+                    .settingsHubRow(hosted ? DictationEditLearning.settingNote : nil)
+                if !hosted {
                 Text(DictationEditLearning.settingNote)
                     .font(.caption2).foregroundStyle(.secondary)
+                }
                 Toggle("Match nearby spelling", isOn: $store.useFieldContext).toggleStyle(COSSwitchStyle())
                     .help("Spells names the way the text box already has them.")
-                Text("Reads nearby text and never saves or sends it. Never in terminals or password fields.")
+                    .settingsHubRow(hosted ? Self.fieldContextNote : nil)
+                if !hosted {
+                Text(Self.fieldContextNote)
                     .font(.caption2).foregroundStyle(.secondary)
+                }
                 Toggle("Format spoken lists", isOn: $store.formatLists).toggleStyle(COSSwitchStyle())
                     .help("Say “number one…” or “bullet…” and COS writes a numbered or bulleted list.")
+                    .settingsHubRow(hosted ? "Say “number one…” or “bullet…” and COS writes a numbered or bulleted list." : nil)
                 // 0.5.345 (A-W10, A-W9a): both on by default, both with AI polish off too.
                 Toggle(DictationFillers.settingTitle, isOn: $store.removeFillers).toggleStyle(COSSwitchStyle())
-                Text(DictationFillers.settingNote).font(.caption2).foregroundStyle(.secondary)
+                    .settingsHubRow(hosted ? DictationFillers.settingNote : nil)
+                if !hosted { Text(DictationFillers.settingNote).font(.caption2).foregroundStyle(.secondary) }
                 Toggle(DictationCasing.settingTitle, isOn: $store.capitalizeStart).toggleStyle(COSSwitchStyle())
-                Text(DictationCasing.settingNote).font(.caption2).foregroundStyle(.secondary)
+                    .settingsHubRow(hosted ? DictationCasing.settingNote : nil)
+                if !hosted { Text(DictationCasing.settingNote).font(.caption2).foregroundStyle(.secondary) }
+                }
+                if shows(.polish) {
                 // 0.5.325 AI polish: Off by default; the line says what it fixes, what it does not, and how long COS waits.
+                VStack(alignment: .leading, spacing: 8) {
                 COSDropdown("AI polish", selection: $store.polishModel,
                             options: DictationPolishModel.allCases.map { COSDropdownOption($0, $0.title) })
                 // 0.5.345 (A-W2): one line for the selected model, from the server's own answer (none on an older server),
@@ -4165,32 +4207,49 @@ struct MacDictationSettings: View {
                 if store.polishModel != .off, let pause = store.polishPause {
                     Text(DictationPolishPause.settingLine(pause)).font(.caption2).foregroundStyle(COSPalette.amber)
                 }
+                }
+                .settingsHubRow()
                 // 0.5.331 paste first, polish in place: on by default; off is the order before 0.5.331.
                 Toggle("Paste then polish", isOn: $store.pasteThenPolish).toggleStyle(COSSwitchStyle())
                     .disabled(store.polishModel == .off)
+                    .settingsHubRow(hosted ? DictationPolishSwap.settingNote(store.polishModel) : nil)
+                if !hosted {
                 Text(DictationPolishSwap.settingNote(store.polishModel))
                     .font(.caption2).foregroundStyle(.secondary)
+                }
                 // 0.5.345 (A-W3b): a held ⌘ or ⌃ is waited for before the swap.
                 Toggle(DictationSwapWait.settingTitle, isOn: $store.swapWaitForKeys).toggleStyle(COSSwitchStyle())
                     .disabled(store.polishModel == .off || !store.pasteThenPolish)
-                Text(DictationSwapWait.settingNote).font(.caption2).foregroundStyle(.secondary)
+                    .settingsHubRow(hosted ? DictationSwapWait.settingNote : nil)
+                if !hosted { Text(DictationSwapWait.settingNote).font(.caption2).foregroundStyle(.secondary) }
                 // 0.5.335 (server 6.85.0): Your polish instructions, after the built-in rules. Absent on an older server.
+                // The card puts the hub's block chrome on what it draws, so an older server leaves no empty row.
                 DictationPolishInstructionsCard(store: DictationPolishInstructionsStore.shared, polishOn: store.polishModel != .off, model: store.polishModel)
                 // 0.5.344 part 2 (server 6.91.0): Your style, inline under AI polish.
                 DictationStyleCard(style: DictationStyleStore.shared, dictation: store)
-                Text("Use a combo, a function key or Fn alone (needs Accessibility). COS never presses Return.")
+                    .settingsHubBlock()
+                }
+                if shows(.shortcuts) {
+                Text(Self.shortcutsNote)
                     .font(.caption2).foregroundStyle(.secondary)
-                if let message = store.message { Text(message).font(.caption2).foregroundStyle(COSPalette.amber) }
+                    .settingsHubBlock()
+                if let message = store.message { Text(message).font(.caption2).foregroundStyle(COSPalette.amber).settingsHubBlock() }
+                }
             }
+            if shows(.history) {
             // 0.5.312: dictations stay on this Mac for the chosen time, never more than DictationHistory.cap.
             COSDropdown("Keep dictations for", selection: retentionChoice,
                         options: DictationRetention.allCases.map { COSDropdownOption($0, $0.title) })
                 .disabled(store.busy)
+                .settingsHubRow()
             Button("Clear dictation history") { confirmingClear = true }
                 .controlSize(.small)
                 .disabled(store.recent.isEmpty || store.busy)
+                .settingsHubLabeled("DI-33")
+            }
         }
-        .onAppear { store.refreshMicrophones() }
+        // Microphones are listed when their group appears (the panel: every time it opens).
+        .onAppear { if shows(.microphone) { store.refreshMicrophones() } }
         .cosConfirm(
             "Stop keeping dictations?",
             isPresented: $confirmingDontKeep,
@@ -4256,14 +4315,17 @@ private struct DictationShortcutRow: View {
     @State private var pendingModifier: UInt16?
     /// 0.5.329: reads the keyboard while a lone modifier is pending (watchPending).
     @State private var recorderWatch: Task<Void, Never>?
+    /// Settings hub: the shortcut's name as a row label on the left, the key and its buttons on the right.
+    @Environment(\.settingsHubHosted) private var hosted
     var body: some View {
         HStack {
-            Text(slot.title).font(.caption)
+            Text(slot.title).font(hosted ? COSType.body(14.5, weight: .semibold) : .caption)
+            if hosted { Spacer(minLength: 12) }
             Text(monitor != nil ? "Press shortcut…" : (store.trigger(slot)?.display ?? "Off")).font(.caption.monospaced())
             Button(monitor == nil ? "Change" : "Cancel") { monitor == nil ? record() : stop() }
             Button("Off") { store.setShortcut(nil, slot: slot, activity: activityShortcut); stop() }
             if let note { Text(note).font(.caption2) }
-        }.controlSize(.mini).disabled(store.busy).onDisappear { stop() }
+        }.controlSize(hosted ? .small : .mini).disabled(store.busy).onDisappear { stop() }
     }
     private func record() {
         note = nil; pendingModifier = nil
@@ -5577,6 +5639,7 @@ struct DictationPolishInstructionsCard: View {
                         Button("Try again") { Task { await store.load(); if !touched { draft = store.saved } } }.buttonStyle(COSTextButtonStyle())
                     }
                 }
+                .settingsHubBlock()
             }
             if DictationPolishInstructions.visible(available: store.available) {
                 VStack(alignment: .leading, spacing: 6) {
@@ -5636,6 +5699,7 @@ struct DictationPolishInstructionsCard: View {
                         if open, store.rules == nil || store.rules?.model != model { Task { await store.loadRules(model: model) } }
                     }
                 }
+                .settingsHubBlock()
             }
         }
         .task {
