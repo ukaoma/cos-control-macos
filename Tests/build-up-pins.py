@@ -79,7 +79,8 @@ SITES = [
     ("window", 'label: "Reading sessions", background: TodayInk.runBg)', ".cardRows(2, badge: true)", 'Text("Reading sessions")', 'Text("Nothing is running.")', ["tune: .running"]),
     ("views", 'label: "Reading the transcript", key: model.reviewRequest.map { AnyHashable($0) })', ".turns(6)", 'ProgressView("Reading the transcript…")',
      'Button("Try again") { model.retryOpenReview() }', ["loading: model.reviewLoading, landed: model.openReview != nil && !model.reviewLoading"]),
-    ("ask", 'label: "Checking the meeting", key: AnyHashable(exchange.id), background: COSPalette.raised)', ".answer", '"Checking the meeting…"', '"No answer · "',
+    # 0.5.353: the Working line sits above the wrapper (the approved spec); inside, the answer's reserved room.
+    ("ask", 'label: "Checking the meeting", key: AnyHashable(exchange.id), background: COSPalette.raised)', ".answer", 'else { Color.clear.frame(height: 0).accessibilityHidden(true) }', '"No answer · "',
      ["failed: exchange.error != nil", "timeout: MeetingAskStore.helperTimeout + COSBuildUpPlan.helperMargin"]),
 ]
 
@@ -115,6 +116,10 @@ def check(src):
     pin("?? current.hidesContent" in view and "var hidesContent: Bool { COSBuildUpPlan.hides(phase, wordsShown: wordsShown) }" in c["models"]
         and "phase == .grace || (phase == .building && !wordsShown)" in c["models"], "never hides data",
         "only the grace and a build before its words hide the content; never a landing or a hand-off")
+    ask_src = c["ask"]
+    at_wrap = ask_src.find("COSBuildUp(.answer, loading:")
+    pin(at_wrap > 0 and "Text(MeetingAskText.working)" in ask_src[max(0, at_wrap - 600):at_wrap] and ask_src.count("Text(MeetingAskText.working)") == 1,
+        "call site", "the Working line sits under the question, above the answer's block, never inside the wire")
     sized = body(component, "    private func sized<V: View>(")
     # 0.5.353 (moved subject, was "an inline view is never resized"): an inline view reserves its typical height and the
     # container's width only while it builds (the grace and the wire, never under Reduce Motion), and is its own size the
@@ -139,7 +144,9 @@ def check(src):
         "fit", "the stage fits its rows to the view's own height every frame")
 
     # 4. Reduce Motion, the memory, interruptions and the machine.
-    pin("@Environment(\\.accessibilityReduceMotion) private var reduceMotion" in component, "reduce motion", "the component reads it")
+    # 0.5.353: the system setting, overridable only by the test hook (COSBuildUpProbe.reduceMotion, nil in the app).
+    pin("@Environment(\\.accessibilityReduceMotion) private var systemReduceMotion" in component
+        and "private var reduceMotion: Bool { COSBuildUpProbe.reduceMotion ?? systemReduceMotion }" in component, "reduce motion", "the component reads it")
     pin("reduceMotion: reduceMotion," in component and ".onChange(of: reduceMotion) { _, _ in step() }" in view
         and "reduceMotion: reduceMotion, interrupted: interrupted," in component, "reduce motion",
         "every machine sees it, and a change mid-build settles")
@@ -182,7 +189,7 @@ def check(src):
 
     # 6. One source of truth: every frame is COSBuildUpPlan.look on the machine's clocks; the tint is the plan's; the
     #    wire's colour comes from the surface it is on. One breadcrumb per load through the app's log, counts only.
-    pin("COSBuildUpPlan.look($0, drawT: drawT, landT: landT)" in stage_src and "drawT: machine.drawT(at: t) ?? 0, landT: machine.landT(at: t)," in live,
+    pin("COSBuildUpPlan.look($0, drawT: drawT, landT: landT, words: shape != .answer)" in stage_src and "drawT: machine.drawT(at: t) ?? 0, landT: machine.landT(at: t)," in live,
         "tokens", "the stage draws the plan's look on the machine's clocks")
     pin("let curtains = looks.map { COSBuildUpPlan.curtain($0, landing: phase == .landing) }" in stage_src
         and "            .compositingGroup()\n            .opacity(curtain)\n" in stage_src and "Rectangle().fill(background)\n" in stage_src
@@ -253,6 +260,7 @@ MUTANTS = [
     ("words never show", "models", "phase == .grace || (phase == .building && !wordsShown)", "phase == .grace || phase == .building"),
     ("an inline view reserves height", "motion", "view.frame(maxWidth: reserving ? .infinity : nil, minHeight: reserving ? reserve.map { CGFloat($0) } : nil, alignment: .topLeading)",
      "view.frame(maxWidth: .infinity, minHeight: reserve.map { CGFloat($0) }, alignment: .topLeading)"),
+    ("the Working line gone", "ask", "                Text(MeetingAskText.working).font(COSType.body(12)).foregroundStyle(.secondary)\n", ""),
     ("the reservation outlives the build", "motion", "let reserving = COSBuildUpPlan.reserves(phase, reduceMotion: reduceMotion)",
      "let reserving = phase != .settled"),
     ("the wire draws past the view", "motion", "                        .clipped()\n                        .allowsHitTesting(false)\n", "                        .allowsHitTesting(false)\n"),
@@ -275,11 +283,11 @@ MUTANTS = [
     ("pulse always", "motion", "if pulse { pulseView(items, wire: wire) }", "if true { pulseView(items, wire: wire) }"),
     ("the stage repeats", "motion", "        .opacity(handoffT.map { max(0, 1 - $0 / COSBuildUpPlan.handoffSeconds) } ?? 1)\n",
      "        .opacity(handoffT.map { max(0, 1 - $0 / COSBuildUpPlan.handoffSeconds) } ?? 1)\n        .animation(.linear.repeatForever(), value: drawT)\n"),
-    ("the wrapper reads the window", "motion", "    @Environment(\\.accessibilityReduceMotion) private var reduceMotion\n    @State private var machine",
-     "    @Environment(\\.accessibilityReduceMotion) private var reduceMotion\n    @Environment(\\.controlActiveState) private var windowState\n    @State private var machine"),
+    ("the wrapper reads the window", "motion", "    private var reduceMotion: Bool { COSBuildUpProbe.reduceMotion ?? systemReduceMotion }\n    @State private var machine",
+     "    private var reduceMotion: Bool { COSBuildUpProbe.reduceMotion ?? systemReduceMotion }\n    @Environment(\\.controlActiveState) private var windowState\n    @State private var machine"),
     ("a refresh rewrites state", "motion", "        guard next != machine else { return }\n", ""),
     ("the landing restarts the draw", "motion", "drawT: machine.drawT(at: t) ?? 0, landT: machine.landT(at: t),", "drawT: machine.landT(at: t) ?? (machine.drawT(at: t) ?? 0), landT: machine.landT(at: t),"),
-    ("the stage skips the plan", "motion", "COSBuildUpPlan.look($0, drawT: drawT, landT: landT)", "COSBuildUpPlan.look($0, drawT: 9, landT: landT)"),
+    ("the stage skips the plan", "motion", "COSBuildUpPlan.look($0, drawT: drawT, landT: landT, words: shape != .answer)", "COSBuildUpPlan.look($0, drawT: 9, landT: landT, words: shape != .answer)"),
     ("an opaque tint", "motion", "            .compositingGroup()\n            .opacity(curtain)\n", "            .compositingGroup()\n            .opacity(curtain > 0 ? 1 : 0)\n"),
     ("a stacked fill", "motion", "                        .fill(COSPalette.card)\n                        .frame(width: box.width, height: box.height)",
      "                        .fill(COSPalette.card)\n                        .opacity(curtain)\n                        .frame(width: box.width, height: box.height)"),
@@ -315,7 +323,7 @@ MUTANTS = [
 ]
 
 # Each mutant must fail the pin that names what it breaks, not just any pin.
-EXPECTED = {'content removed while building': 'content always live', 'content shown under the wire': 'content always live', 'content not clickable after it lands': 'content always live', 'content read while building': 'content always live', 'the hand-off hides the content': 'never hides data', 'words never show': 'never hides data', 'an inline view reserves height': 'no extra height', 'the reservation outlives the build': 'no extra height', 'the wire draws past the view': 'wire hidden', 'wire takes clicks': 'wire hidden', 'wire visible to accessibility': 'wire hidden', 'no loading label': 'loading label', "the stage ignores the view's height": 'fit', 'reduce motion ignored mid-build': 'reduce motion', 'landed never fed': 'machine fed', 'an interruption never fed': 'machine fed', 'an early wake gives up': 'machine fed', 'a seen view builds again': 'memory', 'keyed views kept across launches': 'memory', 'empty views forgotten at quit': 'memory', 'a view taken away is not logged': 'abandoned', 'the clock never pauses': 'no idle cost', 'pulse in an inactive window': 'pulse gated', 'pulse always': 'pulse gated', 'the stage repeats': 'no idle cost', 'the wrapper reads the window': 'no idle cost', 'a refresh rewrites state': 'no idle cost', 'the landing restarts the draw': 'tokens', 'the stage skips the plan': 'tokens', 'an opaque tint': 'curtain light', 'an opaque fill': 'curtain light', 'one wire colour for every surface': 'tokens', 'breadcrumb holds text': 'breadcrumb', 'breadcrumb every change': 'breadcrumb', 'a dead reopen comes back': 'no dead code', 'tasks unwrapped': 'call site', 'tasks spinner gone': 'today inside', 'tasks empty copy gone': 'today inside', 'answer shape wrong': 'call site', 'answer loading not declared': 'call site', 'Today running unwrapped': 'call site', 'a detail wrapper comes back': 'call site', 'speaker review lands on a spinner': 'call site', 'sessions forget the search': 'call site', 'memories lose their geometry': 'call site', 'an em dash in a label': 'call site', 'meetings chain moved': 'call site', 'version not bumped': 'version', "What's New not chained": 'version', "an em dash in What's New": 'copy', 'CHANGELOG not led': 'version', '0.5.343 not chained by a later release': 'version', 'lane not wired': 'lane wired', 'a stacked fill': 'curtain light', 'data never clears the empty mark': 'empty cleared', 'errors kept as empty': 'failed', 'a tab switch is a refresh': 'relabel', 'the picker builds': 'call site', 'tasks give up before their helper': 'call site'}
+EXPECTED = {'content removed while building': 'content always live', 'content shown under the wire': 'content always live', 'content not clickable after it lands': 'content always live', 'content read while building': 'content always live', 'the hand-off hides the content': 'never hides data', 'words never show': 'never hides data', 'an inline view reserves height': 'no extra height', 'the reservation outlives the build': 'no extra height', 'the Working line gone': 'call site', 'the wire draws past the view': 'wire hidden', 'wire takes clicks': 'wire hidden', 'wire visible to accessibility': 'wire hidden', 'no loading label': 'loading label', "the stage ignores the view's height": 'fit', 'reduce motion ignored mid-build': 'reduce motion', 'landed never fed': 'machine fed', 'an interruption never fed': 'machine fed', 'an early wake gives up': 'machine fed', 'a seen view builds again': 'memory', 'keyed views kept across launches': 'memory', 'empty views forgotten at quit': 'memory', 'a view taken away is not logged': 'abandoned', 'the clock never pauses': 'no idle cost', 'pulse in an inactive window': 'pulse gated', 'pulse always': 'pulse gated', 'the stage repeats': 'no idle cost', 'the wrapper reads the window': 'no idle cost', 'a refresh rewrites state': 'no idle cost', 'the landing restarts the draw': 'tokens', 'the stage skips the plan': 'tokens', 'an opaque tint': 'curtain light', 'an opaque fill': 'curtain light', 'one wire colour for every surface': 'tokens', 'breadcrumb holds text': 'breadcrumb', 'breadcrumb every change': 'breadcrumb', 'a dead reopen comes back': 'no dead code', 'tasks unwrapped': 'call site', 'tasks spinner gone': 'today inside', 'tasks empty copy gone': 'today inside', 'answer shape wrong': 'call site', 'answer loading not declared': 'call site', 'Today running unwrapped': 'call site', 'a detail wrapper comes back': 'call site', 'speaker review lands on a spinner': 'call site', 'sessions forget the search': 'call site', 'memories lose their geometry': 'call site', 'an em dash in a label': 'call site', 'meetings chain moved': 'call site', 'version not bumped': 'version', "What's New not chained": 'version', "an em dash in What's New": 'copy', 'CHANGELOG not led': 'version', '0.5.343 not chained by a later release': 'version', 'lane not wired': 'lane wired', 'a stacked fill': 'curtain light', 'data never clears the empty mark': 'empty cleared', 'errors kept as empty': 'failed', 'a tab switch is a refresh': 'relabel', 'the picker builds': 'call site', 'tasks give up before their helper': 'call site'}
 
 sources = {k: (root / v).read_text(encoding="utf-8") for k, v in FILES.items()}
 try:

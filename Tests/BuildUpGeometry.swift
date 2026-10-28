@@ -35,6 +35,30 @@ import SwiftUI
                 }
             }
         }
+        // The Meeting Ask card (0.5.353, the approved phone spec): running (no answer yet this session), answered (a typical
+        // answer, completed), and running again (sized by that answer), light, dark and Reduce Motion, card heights in points.
+        var ask = "| Appearance | Card | Card height (pt) | Wire / block height (pt) | Wired |\n|---|---|---|---|---|\n"
+        if only == nil || only!.contains("meeting-ask-answer") {
+            for (name, appearance, still) in [("light", NSAppearance.Name.aqua, false), ("dark", .darkAqua, false), ("reduce-motion", .aqua, true)] {
+                BuildUpSites.fresh()
+                COSBuildUpProbe.reduceMotion = still
+                for (card, landed) in [("running", false), ("answered", true), ("running-after-one-answer", false)] {
+                    var probe: COSBuildUpProbeFrame?
+                    COSBuildUpProbe.stage = { if $0.kind == "answer" { probe = $0 } }
+                    COSBuildUpProbe.freeze = landed || still ? nil : COSBuildUpFrame(phase: .building, drawT: 1.4)
+                    BuildUpAskBoard.card = .zero
+                    let rep = bitmap(BuildUpAskBoard(landed: landed).frame(width: 560, height: 640), size: CGSize(width: 560, height: 640), appearance: appearance)
+                    COSBuildUpProbe.freeze = nil
+                    COSBuildUpProbe.stage = nil
+                    try png(rep, out.appendingPathComponent("ask-card-\(card)-\(name).png"))
+                    let wire = probe.map { String(format: "%.1f", $0.size.height) } ?? "none"
+                    ask += "| \(name) | \(card) | \(String(format: "%.1f", BuildUpAskBoard.card.height)) | \(landed ? "-" : wire) | \(landed ? "-" : (probe.map { $0.wired ? "yes" : "no (still)" } ?? "none")) |\n"
+                    print("ask card \(name) \(card): \(BuildUpAskBoard.card.height) pt, block \(wire), answers \(COSBuildUpSession.answers)")
+                }
+                COSBuildUpProbe.reduceMotion = nil
+            }
+            try ask.write(to: out.appendingPathComponent("ask-card.md"), atomically: true, encoding: .utf8)
+        }
         let json = JSONEncoder()
         json.outputFormatting = [.prettyPrinted, .sortedKeys]
         try json.encode(all).write(to: out.appendingPathComponent("geometry.json"))
@@ -47,17 +71,17 @@ import SwiftUI
         let sk = m.skFrame.count == 4 ? "\(f(m.skFrame[2]))x\(f(m.skFrame[3]))@\(f(m.skFrame[0]))" : "-"
         let ld = m.ldFrame.count == 4 ? "\(f(m.ldFrame[2]))x\(f(m.ldFrame[3]))@\(f(m.ldFrame[0]))" : "-"
         return "geometry \(m.site) \(m.width) \(m.theme): skeleton \(sk) rows \(m.skRows) x\(f(m.skRowX)) w\(f(m.skRowW)) h\(f(m.skRowH)) extent \(f(m.skExtent)) | "
-            + "loaded \(ld) rows \(m.ldRows) x\(f(m.ldRowX)) w\(f(m.ldRowW)) h\(f(m.ldRowH)) extent \(f(m.ldExtent)) ink \(m.ldInk.map(f)) \(m.note)"
+            + "loaded \(ld) rows \(m.ldRows) x\(f(m.ldRowX)) w\(f(m.ldRowW)) h\(f(m.ldRowH)) range \(f(m.ldMinH))-\(f(m.ldMaxH)) extent \(f(m.ldExtent)) ink \(m.ldInk.map(f)) \(m.note)"
     }
 
     nonisolated static func table(_ all: [Measure]) -> String {
-        var s = "| Site | Window | Theme | Skeleton frame w x h | Loaded frame w x h | Row x (sk / ld) | Row w (sk / ld) | Row h (sk / ld) | Rows (sk / ld) | Filled height (sk / ld) | Note |\n"
+        var s = "| Site | Window | Theme | Skeleton frame w x h | Loaded frame w x h | Row x (sk / ld) | Row w (sk / ld) | Row h (sk / real range) | Rows (sk / ld) | Filled height (sk / ld) | Note |\n"
         s += "|---|---|---|---|---|---|---|---|---|---|---|\n"
         for m in all {
             let sk = m.skFrame.count == 4 ? "\(f(m.skFrame[2])) x \(f(m.skFrame[3]))" : "none"
             let ld = m.ldFrame.count == 4 ? "\(f(m.ldFrame[2])) x \(f(m.ldFrame[3]))" : "none"
             s += "| \(m.site)\(m.alone ? " (pane alone)" : "") | \(m.width) | \(m.theme) | \(sk) | \(ld) | \(f(m.skRowX)) / \(f(m.ldRowX)) | \(f(m.skRowW)) / \(f(m.ldRowW)) | "
-            s += "\(f(m.skRowH)) / \(f(m.ldRowH)) | \(m.skRows) / \(m.ldRows) | \(f(m.skExtent)) / \(f(m.ldExtent)) | \(m.note) |\n"
+            s += "\(f(m.skRowH)) / \(f(m.ldMinH))-\(f(m.ldMaxH)) | \(m.skRows) / \(m.ldRows) | \(f(m.skExtent)) / \(f(m.ldExtent)) | \(m.note) |\n"
         }
         return s
     }

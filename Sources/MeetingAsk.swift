@@ -1270,15 +1270,29 @@ struct LiveAskPanel: View {
     private func answer(_ exchange: MeetingAskExchange, proxy: ScrollViewProxy) -> some View {
         VStack(alignment: .leading, spacing: 9) {
             Text(verbatim: exchange.question).font(COSType.body(12, weight: .semibold))
+            // 0.5.353 (the spec Miles approved for the phone, 2026-10-28): a short Working line under the question while the
+            // answer is written, and under it the answer-shaped block the build-up reserves and draws (COSBuildUpPlan.answerBody).
+            if !exchange.terminal && exchange.answer == nil && MeetingAskAnswerRows.rows(sections: exchange.sections?.items, answer: nil) == nil {
+                Text(MeetingAskText.working).font(COSType.body(12)).foregroundStyle(.secondary)
+            }
             // 0.5.283: bold-label rows, So what first, when the answer has labels; an older answer stays plain Markdown.
             // 0.5.343: a new answer builds in place while COS reads the meeting (COSBuildUp); the chain is today's.
             COSBuildUp(.answer, loading: !exchange.terminal && exchange.answer == nil && MeetingAskAnswerRows.rows(sections: exchange.sections?.items, answer: nil) == nil,
                        landed: exchange.answer != nil || MeetingAskAnswerRows.rows(sections: exchange.sections?.items, answer: nil) != nil,
                        failed: exchange.error != nil,
                        timeout: MeetingAskStore.helperTimeout + COSBuildUpPlan.helperMargin, label: "Checking the meeting", key: AnyHashable(exchange.id), background: COSPalette.raised) {
-            if let rows = MeetingAskAnswerRows.rows(sections: exchange.sections?.items, answer: exchange.answer) { MeetingAskAnswerRowsView(rows: rows, bodySize: 13, citationIDs: Set(exchange.sources.map(\.id))) }
-            else if let answer = exchange.answer { COSMarkdownView(text: answer, cacheID: exchange.id + exchange.updatedAt, bodySize: 13) }
-            else { Text(exchange.terminal ? "No answer · " + exchange.status : "Checking the meeting…").font(COSType.body(12)).foregroundStyle(.secondary) }
+            // 0.5.353: a completed answer's body sizes the next answer's block (the session's typical answer).
+            if let rows = MeetingAskAnswerRows.rows(sections: exchange.sections?.items, answer: exchange.answer) {
+                MeetingAskAnswerRowsView(rows: rows, bodySize: 13, citationIDs: Set(exchange.sources.map(\.id)))
+                    .cosAnswerBody(key: exchange.id, counts: COSBuildUpPlan.countsAnswer(status: exchange.status, failed: exchange.error != nil))
+            }
+            else if let answer = exchange.answer {
+                COSMarkdownView(text: answer, cacheID: exchange.id + exchange.updatedAt, bodySize: 13)
+                    .cosAnswerBody(key: exchange.id, counts: COSBuildUpPlan.countsAnswer(status: exchange.status, failed: exchange.error != nil))
+            }
+            else if exchange.terminal { Text("No answer · " + exchange.status).font(COSType.body(12)).foregroundStyle(.secondary) }
+            // While it is written the Working line above says so; the build-up reserves the answer's room here.
+            else { Color.clear.frame(height: 0).accessibilityHidden(true) }
             }
             if let reason = exchange.error { Text(MeetingAskText.failure(reason)).font(COSType.body(11)).foregroundStyle(COSPalette.amber) }
             ForEach(exchange.sources) { source in sourceRow(source, exchangeID: exchange.id) }.font(COSType.body(11))
