@@ -27,9 +27,8 @@ import Foundation
         capChecks()
         fillChecks()
         columnChecks()
-        laneChecks()
-        reserveChecks()
         layoutChecks()
+        reserveChecks()
         heightChecks()
         answerChecks()
         timingChecks()
@@ -54,6 +53,8 @@ import Foundation
         fitChecks()
         breadcrumbChecks()
         visibilityChecks()
+        // Last: its 16-row timing reads every land and draw step, so the timing table's own checks name those first.
+        laneChecks()
         print("PASS build up: \(ran) checks; the cap, the site geometry, no extra height, the answer re-fit, the timing table, the settle, the tint, "
               + "the eased look, the draw clock through a landing, the wire's contrast, the grace, first open only, Reduce Motion, the build, "
               + "the words, the pulse, the deadlines alone, the timeout, the hand-off, a new load mid-landing, interrupted and abandoned, "
@@ -85,7 +86,7 @@ import Foundation
         check(P.items(.rows(8), fitting: 210).count == 3, "fits", "\(P.items(.rows(8), fitting: 210).count)")
         check(P.items(.rows(8), fitting: 217).count == 4, "fill", "\(P.items(.rows(8), fitting: 217).count)")
         check(P.items(.rows(8), fitting: 209).count == 3, "fill", "\(P.items(.rows(8), fitting: 209).count)")
-        check(P.items(.rows(8), fitting: 100_000).count == 16, "fits", "room never lifts the cap")
+        check(P.items(.rows(8), fitting: 100_000).count == 16, "fill", "a tall pane fills to the cap, never past it")
         check(P.items(.rows(8), fitting: 150).count == 3, "fill", "a 150 pt pane: \(P.items(.rows(8), fitting: 150).count)")
         // An inline view takes only whole rows (it reserves their height instead, `reserve`).
         check(P.items(.cardRows(2, badge: false), fitting: 91).count == 1 && P.items(.cardRows(2, badge: false), fitting: 96).count == 2, "fits",
@@ -154,8 +155,9 @@ import Foundation
               "Needs you holds two rows: \(String(describing: P.reserve(.cardRows(2, badge: false), .needsYou)))")
         check(P.reserve(.cardRows(2, badge: true), .running).map { near($0, 2 * 61) } == true, "reserve",
               "Running holds two rows: \(String(describing: P.reserve(.cardRows(2, badge: true), .running)))")
-        check(P.reserve(.answer).map { near($0, Double(P.answerLines) * P.answerPitch) } == true && P.answerLines == 4, "reserve",
-              "an answer holds four lines: \(String(describing: P.reserve(.answer)))")
+        check(P.reserve(.answer).map { near($0, P.answerDefault - P.answerWorking) } == true
+              && P.reserve(.answer, answers: [300, 310, 320]).map { near($0, 310 - P.answerWorking) } == true,
+              "answer reserve", "an answer holds the typical body less its Working line: \(String(describing: P.reserve(.answer)))")
         check(P.reserve(.rows(6)) == nil && P.reserve(.summary(turns: 5), .meetingBody) == nil, "reserve", "a pane reserves nothing")
         // Held only while it builds, never under Reduce Motion, never after the build ends (data, empty, error, timeout).
         for phase in [M.Phase.fresh, .grace, .building, .landing, .handoff, .settled] {
@@ -186,7 +188,7 @@ import Foundation
         // 0.5.353 adds the speaker lists, learning, a session's turns, a meeting's body and Today's two cards, measured on the
         // real rows by Tests/BuildUpGeometry.swift (and held on the pixels by the layout lane of Tests/BuildUpViewChecks.swift).
         for (tune, top, row, spacing, first) in [(COSBuildUpTune.sessions, 0.0, 62.0, 6.0, 62.0), (.tasks, 0, 62, 6, 62), (.memories, 1, 78, 7, 78),
-                                                 (.threads, 1, 60, 7, 60), (.messages, 21, 79, 1, 79), (.voices, 32, 62, 1, 62),
+                                                 (.threads, 1, 78, 7, 78), (.messages, 21, 79, 1, 79), (.voices, 32, 62, 1, 62),
                                                  (.reviewMeetings, 0, 76, 1, 76), (.learning, 0, 74, 1, 74), (.sessionTurns, 24, 70, 14, 65),
                                                  (.meetingBody, 24, 79, 0, 101), (.needsYou, 0, 150, 0, 150), (.running, 0, 61, 0, 61)] {
             let l = P.layout(.rows(4), tune), i = P.items(.rows(4), tune)
@@ -207,7 +209,8 @@ import Foundation
                 check(!items.isEmpty && P.height(items, layout: P.layout(shape)) <= room + 1e-9, "no extra height",
                       "\(shape) in \(room) pt drew \(P.height(items, layout: P.layout(shape))) pt")
                 for item in items {
-                    let used = item.lines.reduce(0) { $0 + $1.height } + Double(max(0, item.lines.count - 1)) * item.lineGap + 2 * item.padV
+                    let used = item.lines.reduce(0) { $0 + $1.height } + item.lines.dropFirst().reduce(0) { $0 + $1.gapAbove }
+                        + Double(max(0, item.lines.count - 1)) * item.lineGap + 2 * item.padV
                     check(used <= item.height + 1e-9, "no extra height", "\(shape) in \(room): its lines take \(used) of \(item.height)")
                 }
             }
@@ -220,13 +223,71 @@ import Foundation
     // MARK: The answer: inside today's one line, re-fit to the real text when it lands
 
     static func answerChecks() {
-        // 0.5.353: while it builds an answer holds four lines (a typical short answer), not today's one loading line.
+        // 0.5.353 (the approved phone spec): while it is written an answer is an answer-shaped block, not today's one line.
         let short = P.items(.answer)
-        check(short.count == 1 && short[0].lines.count == 4 && near(short[0].height, 70), "answer size", "four lines: \(short)")
+        check(short.count == 1 && short[0].lines.count == 16 && near(short[0].height, P.answerDefault - P.answerWorking) && short[0].topAligned, "answer size",
+              "the block: \(short.map { ($0.lines.count, $0.height) })")
+        answerSpecChecks()
         let one = P.items(.answer, measured: 17)[0], four = P.items(.answer, measured: 70)[0], tall = P.items(.answer, measured: 900)[0]
         check(one.lines.count == 1 && four.lines.count == 4 && near(four.height, 70) && tall.lines.count == 8, "answer refit",
               "lines follow the real text: \(one.lines.count) \(four.lines.count) \(tall.lines.count)")
         check(near(P.helperMargin, 5) && near(P.defaultTimeout, 35), "timeout", "a site waits its helper's timeout plus 5 s; the default covers the common 30 s helper")
+    }
+
+    // MARK: 0.5.353 The Meeting Ask answer block (the spec Miles approved for the phone, 2026-10-28)
+
+    static func answerSpecChecks() {
+        // The phone's cycle (glasses 6.10.666): paragraphs of [92,96,40] [94,88,52] [90,95,30] [86,58] [93,90,44] [88,62] percent of
+        // the text width; a paragraph break above each paragraph after the first; each paragraph's last line short.
+        let block = P.items(.answer)[0]
+        let breaks = block.lines.indices.filter { block.lines[$0].gapAbove > 0 }
+        check(P.answerWidths == [[0.92, 0.96, 0.40], [0.94, 0.88, 0.52], [0.90, 0.95, 0.30], [0.86, 0.58], [0.93, 0.90, 0.44], [0.88, 0.62]]
+              && block.lines.map(\.width) == P.answerWidths.flatMap { $0 } && breaks == [3, 6, 9, 11, 14] && block.lines.allSatisfy { $0.height == P.answerLine },
+              "answer block", "paragraph breaks at \(breaks), widths \(block.lines.map(\.width))")
+        var start = 0
+        for paragraph in P.answerWidths {
+            let para = Array(block.lines[start..<(start + paragraph.count)])
+            check(para.dropLast().allSatisfy { $0.width > para.last!.width + 0.15 } && para.dropLast().allSatisfy { $0.width >= 0.8 }, "answer block",
+                  "paragraph at \(start): full lines then a short last line: \(para.map(\.width))")
+            start += paragraph.count
+        }
+        // The cycle is taller than the default block, so the block clips it (with its bottom fade) rather than ending short.
+        let used = block.lines.reduce(0) { $0 + $1.height + $1.gapAbove } + Double(block.lines.count - 1) * block.lineGap + 2 * block.padV
+        check(used > P.answerBlock([]) && near(P.answerFade, 28) && near(P.answerBlockMin, 95), "answer block",
+              "the cycle runs \(used) pt past the \(P.answerBlock([])) pt block")
+        // The running card is the answered card: the block plus the Working line is the typical body, at the default and
+        // at both clamp ends.
+        for history in [[Double](), [40], [130], [900], [470, 480, 490]] {
+            check(near(P.answerBlock(history) + P.answerWorking, P.answerBody(history)), "answer equal",
+                  "\(history): block \(P.answerBlock(history)) + line \(P.answerWorking) vs body \(P.answerBody(history))")
+        }
+        // Only completed answers count; failed or stopped ones never do.
+        check(P.countsAnswer(status: "completed", failed: false), "answer counts", "a completed answer counts")
+        for (status, failed) in [("completed", true), ("failed", true), ("cancelled", false), ("interrupted", false), ("running", false), ("queued", false)] {
+            check(!P.countsAnswer(status: status, failed: failed), "answer counts", "\(status) failed \(failed) never counts")
+        }
+        // The body: the default until an answer completes, then the median of the last five, clamped to 120...480.
+        check(near(P.answerBody([]), 240), "answer reserve", "default \(P.answerBody([]))")
+        check(near(P.answerBody([90]), 120) && near(P.answerBody([20, 30, 40]), 120), "answer reserve", "the floor: \(P.answerBody([90]))")
+        check(near(P.answerBody([900]), 480) && near(P.answerBody([600, 700, 800]), 480), "answer reserve", "the ceiling: \(P.answerBody([900]))")
+        check(near(P.answerBody([200, 300]), 250) && near(P.answerBody([150, 400, 260]), 260), "answer reserve", "the median: \(P.answerBody([150, 400, 260]))")
+        check(near(P.answerBody([470, 470, 470, 470, 470, 200, 210, 220]), 220) && near(P.answerBody([130, 470, 470, 470, 470, 470, 160]), 470),
+              "answer reserve", "only the last five: \(P.answerBody([470, 470, 470, 470, 470, 200, 210, 220])) \(P.answerBody([130, 470, 470, 470, 470, 470, 160]))")
+        // Drawn into a reservation shorter than the block it is the same block, top-aligned (the stage fades its bottom).
+        let short = P.items(.answer, answerHeight: 96)[0]
+        check(short.lines.count == 16 && near(short.height, 96) && short.topAligned, "answer block", "a 96 pt block keeps the cycle and fades it")
+        // Reduce Motion: the block stays still while the answer is written, an answer only, never once it ends.
+        check(P.holdsStill(.answer, reduceMotion: true, loading: true, landed: false, failed: false, interrupted: false), "answer still", "held still")
+        for (rm, loading, landed, failed, interrupted) in [(false, true, false, false, false), (true, false, false, false, false), (true, true, true, false, false),
+                                                           (true, true, false, true, false), (true, true, false, false, true)] {
+            check(!P.holdsStill(.answer, reduceMotion: rm, loading: loading, landed: landed, failed: failed, interrupted: interrupted), "answer still",
+                  "rm \(rm) loading \(loading) landed \(landed) failed \(failed) interrupted \(interrupted)")
+        }
+        check(!P.holdsStill(.cardRows(2, badge: false), reduceMotion: true, loading: true, landed: false, failed: false, interrupted: false)
+              && !P.holdsStill(.rows(6), reduceMotion: true, loading: true, landed: false, failed: false, interrupted: false), "answer still",
+              "only an answer holds a still block")
+        check(P.look(0, drawT: 3.6, landT: nil, words: false).wordsFade == 0 && P.look(0, drawT: 3.6, landT: nil).wordsFade > 0.5, "answer block",
+              "an answer's lines never give way to the loading words")
     }
 
     // MARK: The timing table

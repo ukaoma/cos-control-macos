@@ -132,6 +132,8 @@ private struct AskBoard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
             Text(verbatim: "What did we decide about the October offer?").font(COSType.body(12, weight: .semibold))
+            // 0.5.353: the Working line sits above the answer's block while it is written (MeetingAsk.swift).
+            if !landed && !handoff { Text(MeetingAskText.working).font(COSType.body(12)).foregroundStyle(.secondary) }
             COSBuildUp(.answer, loading: !landed && !handoff, landed: landed, label: "Checking the meeting", key: AnyHashable("render"),
                        background: COSPalette.raised) {
                 if landed {
@@ -139,7 +141,7 @@ private struct AskBoard: View {
                          + "Graham owns the landing page copy refresh, and Gina reviews it before Wednesday.")
                         .font(COSType.body(13)).fixedSize(horizontal: false, vertical: true)
                 } else {
-                    Text(handoff ? "No answer · failed" : "Checking the meeting…").font(COSType.body(12)).foregroundStyle(.secondary)
+                    if handoff { Text("No answer · failed").font(COSType.body(12)).foregroundStyle(.secondary) } else { Color.clear.frame(height: 0) }
                 }
             }
             Text("10:42  Keep it through the 31st").font(COSType.body(11)).foregroundStyle(COSPalette.accent)

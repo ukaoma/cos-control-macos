@@ -13747,7 +13747,8 @@ enum COSBuildUpShape: Equatable, Sendable {
     case summary(turns: Int)
     /// Transcript turns alone: a speaker capsule and a line each.
     case turns(Int)
-    /// A Meeting Ask answer: drawn inside today's one-line "Checking the meeting…", re-fit to the real text when it lands.
+    /// A Meeting Ask answer: 0.5.353, an answer-shaped block under the Working line (answerBody tall), re-fit to the real text
+    /// when it lands.
     case answer
     /// Rows inside a Today card (Needs you, Running), drawn inside the card's loading line. `badge`: a platform badge leads.
     case cardRows(Int, badge: Bool)
@@ -13786,7 +13787,8 @@ struct COSBuildUpTune: Equatable, Sendable {
     static let sessions = COSBuildUpTune(top: 0)
     static let tasks = COSBuildUpTune(top: 0)
     static let memories = COSBuildUpTune(top: 1, spacing: 7, rowHeight: 78)
-    static let threads = COSBuildUpTune(top: 1, spacing: 7, rowHeight: 60)
+    /// 0.5.353: 78 pt, a thread row with its meetings and topics line (the realistic row; 0.5.343 measured a name-only 60).
+    static let threads = COSBuildUpTune(top: 1, spacing: 7, rowHeight: 78)
     static let messages = COSBuildUpTune(top: 21, spacing: 1, rowHeight: 79)
     /// The voice directory: its column header (about 32 pt), then 62 pt rows with a 1 pt rule (from the row's code), in the
     /// speaker lists' 980 pt column.
@@ -13831,6 +13833,8 @@ struct COSBuildUpLine: Equatable, Sendable {
     /// A fraction of the row's inner width.
     var width: Double
     var height: Double
+    /// Extra room above this line (a paragraph break in an answer).
+    var gapAbove: Double = 0
 }
 
 /// One component of a placeholder, at the size the stage lays it out. Heights are points.
@@ -13847,6 +13851,8 @@ struct COSBuildUpItem: Equatable, Sendable {
     var trailing: [Double] = []
     /// A fixed capsule leading the row on the same line (a turn's speaker, a run's platform badge), in points.
     var lead: Double? = nil
+    /// Lines run from the top and the bottom fades where they overflow (an answer's block), instead of centring.
+    var topAligned = false
 }
 
 /// Where a stage's components sit inside the view, and where the spine runs.
@@ -13896,8 +13902,33 @@ enum COSBuildUpPlan {
     /// Rows past this many draw and land with the last staggered one, so the draw and the landing take no longer with 16
     /// rows than they did with 8 (the 450 ms landing rule holds at any count).
     static let staggered = 8
-    /// The answer's reserved lines while it builds (0.5.353): a typical short answer, re-fit to the real text on landing.
-    static let answerLines = 4
+    /// The Meeting Ask answer while it is written (0.5.353, the spec Miles approved for the phone on 2026-10-28, matched to
+    /// glasses 6.10.666): the running card is the answered card's height. Under the Working line, an answer-shaped block of
+    /// paragraphs whose capsule widths cycle through `answerWidths` (percent of the text width, each paragraph's last line
+    /// short), clipped with a `answerFade` bottom fade. The block is the typical answer body less the Working line
+    /// (`answerWorking`), never under `answerBlockMin`. Typical = `answerDefault` until answers complete this session, then
+    /// the median of the last `answerWindow` completed bodies, clamped to `answerMin`...`answerMax`. The phone's CSS px are
+    /// taken 1:1 as points (both are the platform's logical unit): 240 px is 240 pt, the 28 px fade
+    /// 28 pt. The Working line is Control's own: 12 pt type (a 16 pt line) plus the card's 9 pt spacing, 25 pt (the phone's 23), so
+    /// the floor is 95 pt (the 120 clamp less the line; the phone's 96 px is its 120 less 23 plus a pixel).
+    static let answerWidths: [[Double]] = [[0.92, 0.96, 0.40], [0.94, 0.88, 0.52], [0.90, 0.95, 0.30], [0.86, 0.58], [0.93, 0.90, 0.44], [0.88, 0.62]]
+    static let answerParagraphGap = 10.0
+    static let answerDefault = 240.0, answerMin = 120.0, answerMax = 480.0
+    static let answerWorking = 25.0, answerBlockMin = 95.0, answerFade = 28.0
+    static let answerWindow = 5
+    /// The block under the Working line: the typical body less the line, at least `answerBlockMin`.
+    static func answerBlock(_ history: [Double]) -> Double { max(answerBlockMin, answerBody(history) - answerWorking) }
+    /// Whether a finished answer's body counts toward the typical height: completed only (a failed or stopped answer does not).
+    static func countsAnswer(status: String, failed: Bool) -> Bool { status == "completed" && !failed }
+    /// The answer body this session reserves: the default before any answer has landed, then the median of the last
+    /// `answerWindow` landed bodies (the mean of the middle two for an even count), clamped.
+    static func answerBody(_ history: [Double]) -> Double {
+        let window = history.suffix(answerWindow).sorted()
+        guard !window.isEmpty else { return answerDefault }
+        let mid = window.count / 2
+        let median = window.count % 2 == 1 ? window[mid] : (window[mid - 1] + window[mid]) / 2
+        return min(answerMax, max(answerMin, median))
+    }
     /// Data inside this window after the load starts skips the build entirely (and under Reduce Motion, the spinner).
     static let graceSeconds = 0.15
     /// A view that opens before its load starts may still build when the load starts inside this window.
@@ -13988,10 +14019,11 @@ enum COSBuildUpPlan {
 
     /// Component `i` at `drawT` seconds into the build and `landT` seconds into the landing (nil before it lands). The draw
     /// never resets when the data lands: a wire the eye did not see drawn is never shown drawn.
-    static func look(_ i: Int, drawT: Double, landT: Double?) -> COSBuildUpLook {
+    static func look(_ i: Int, drawT: Double, landT: Double?, words: Bool = true) -> COSBuildUpLook {
         func l(_ step: COSBuildUpStep) -> Double { landT.map { progress(step, at: $0) } ?? 0 }
+        // `words`: false where today's loading words never take over (an answer keeps its Working line above the block).
         return COSBuildUpLook(outline: progress(outlineStep(i), at: drawT), nodes: progress(nodeStep(i), at: drawT, curve: pop),
-                              wireText: progress(wireTextStep(i), at: drawT), wordsFade: progress(wordsFadeStep, at: drawT),
+                              wireText: progress(wireTextStep(i), at: drawT), wordsFade: words ? progress(wordsFadeStep, at: drawT) : 0,
                               fill: l(fillStep(i)), solid: l(solidStep(i)), wireFade: l(wireFadeStep(i)), ink: l(inkStep(i)),
                               outlineFade: l(outlineFadeStep(i)), nodeFade: l(nodeFadeStep(i)))
     }
@@ -14070,11 +14102,20 @@ enum COSBuildUpPlan {
     }
     /// What an inline view (a Today card, an answer) reserves while it builds (0.5.353): the height of its typical
     /// content, so the data lands in place. Nil for a pane, which fills its container anyway.
-    static func reserve(_ shape: COSBuildUpShape, _ tune: COSBuildUpTune = .none) -> Double? {
+    static func reserve(_ shape: COSBuildUpShape, _ tune: COSBuildUpTune = .none, answers: [Double] = []) -> Double? {
         let layout = layout(shape, tune)
         guard !layout.fills else { return nil }
+        if shape == .answer { return answerBlock(answers) }
         return height(items(shape, tune), layout: layout)
     }
+
+    /// Reduce Motion on a Meeting Ask answer that is still being written (0.5.353, the approved spec): the reserved block
+    /// stays, drawn still (no wire animation), until the answer lands, fails or is taken away.
+    static func holdsStill(_ shape: COSBuildUpShape, reduceMotion: Bool, loading: Bool, landed: Bool, failed: Bool, interrupted: Bool) -> Bool {
+        reduceMotion && shape == .answer && loading && !landed && !failed && !interrupted
+    }
+    /// The moment a still block is drawn at: every layer drawn, nothing moving.
+    static let stillDrawT = 2.0
 
     private static let titles = [0.62, 0.48, 0.56, 0.44, 0.52]
     private static let metas = [0.40, 0.36, 0.30, 0.42, 0.34]
@@ -14086,7 +14127,7 @@ enum COSBuildUpPlan {
     /// of height, and when even one does not fit (an inline view inside its one-line loading view) that one is squeezed
     /// to the room, keeping the lines that fit. `measured`: a landed answer's real height, to re-fit its lines.
     static func items(_ shape: COSBuildUpShape, _ tune: COSBuildUpTune = .none, limit: Int? = nil, fitting height: Double? = nil,
-                      measured: Double? = nil) -> [COSBuildUpItem] {
+                      measured: Double? = nil, answerHeight: Double? = nil) -> [COSBuildUpItem] {
         let cap = min(maxItems, limit ?? maxItems)
         // 0.5.353: a pane being fitted fills its height (every row the cap allows, then the room decides), as the loaded
         // list does; the count a shape asks for is what it draws before the pane is measured.
@@ -14110,11 +14151,25 @@ enum COSBuildUpPlan {
         case .turns(let count):
             all = (0..<n(count)).map(turn)
         case .answer:
-            let lines = measured.map { max(1, min(widthsCount, Int(($0 / answerPitch).rounded()))) } ?? answerLines
             let widths = [0.92, 0.84, 0.88, 0.80, 0.86, 0.90, 0.82, 0.58]
-            all = cap < 1 ? [] : [COSBuildUpItem(style: .plain, height: measured ?? Double(answerLines) * answerPitch, radius: 4, padH: 0, padV: (answerPitch - answerLine) / 2,
-                                                 lines: (0..<lines).map { .init(width: $0 == lines - 1 && lines > 1 ? 0.58 : widths[$0], height: answerLine) },
-                                                 lineGap: answerPitch - answerLine)]
+            if let measured {
+                // Landed: re-fit to the real text's lines (as 0.5.343).
+                let lines = max(1, min(widthsCount, Int((measured / answerPitch).rounded())))
+                all = cap < 1 ? [] : [COSBuildUpItem(style: .plain, height: measured, radius: 4, padH: 0, padV: (answerPitch - answerLine) / 2,
+                                                     lines: (0..<lines).map { .init(width: $0 == lines - 1 && lines > 1 ? 0.58 : widths[$0], height: answerLine) },
+                                                     lineGap: answerPitch - answerLine)]
+            } else {
+                // Building: the answer-shaped block from the top of the reservation, every paragraph of the cycle (the stage
+                // clips and fades what does not fit).
+                var lines: [COSBuildUpLine] = []
+                for (p, paragraph) in answerWidths.enumerated() {
+                    for (k, width) in paragraph.enumerated() {
+                        lines.append(.init(width: width, height: answerLine, gapAbove: k == 0 && p > 0 ? answerParagraphGap : 0))
+                    }
+                }
+                all = cap < 1 ? [] : [COSBuildUpItem(style: .plain, height: answerHeight ?? answerBlock([]), radius: 6, padH: 0, padV: (answerPitch - answerLine) / 2,
+                                                     lines: lines, lineGap: answerPitch - answerLine, topAligned: true)]
+            }
         case .cardRows(let count, let badge):
             all = (0..<n(count)).map { i in
                 COSBuildUpItem(style: .plain, height: 46, radius: 8, padH: badge ? 8 : 0, padV: 8,
@@ -14162,7 +14217,7 @@ enum COSBuildUpPlan {
         var lines: [COSBuildUpLine] = []
         var used = 0.0
         for line in item.lines {
-            let next = used + (lines.isEmpty ? 0 : item.lineGap) + line.height
+            let next = used + (lines.isEmpty ? 0 : item.lineGap + line.gapAbove) + line.height
             if next > room - 2 * out.padV { break }
             lines.append(line)
             used = next
