@@ -223,6 +223,37 @@ try:
     for verb, args in [("meeting-stop-request", []), ("meeting-stranded-save", []), ("meeting-speaker-policy", ["--mode", "standard", "--policy-revision", "unset"]), ("meeting-relabel", ["--from", "Ext", "--to", "A name"]), ("voice-enroll-ext", ["--name", "A name"])]:
         code, refused, _, _ = run(verb, "--session", phone_id, *args)
         check(code != 0 and len(seen_paths) == before, verb + " refuses phone before a server request")
+    mac_id = "mac_11111111-1111-4111-8111-111111111111"
+    mac_path = sessions / (mac_id + ".json")
+    original = {"text": "same original words", "speaker": "Ext", "elapsed": 0}
+    acoustic = {"sessionId": mac_id, "sourceType": "mac_system_audio", "speakerIdentityPolicy": "acoustic-v1",
+                "speakerRevision": 1, "chunksIndexed": [{"i": 0, "c": original}],
+                "speakerProjectedChunksIndexed": [{"i": 0, "c": dict(original, speaker="Voice 1")}], "maxChunkIndex": 0}
+    def mac_read(known="0"):
+        mac_path.write_text(json.dumps(acoustic))
+        return run("live-transcript", "--data-dir", str(data_dir), "--session", mac_id, "--since", "0", "--speaker-revision", known)
+    code, answer, _, _ = mac_read()
+    revised = answer["details"]["read"]
+    check(code == 0 and revised["fullSnapshot"] and revised["speakerRevision"] == 1 and revised["turns"][0]["speaker"] == "Voice 1",
+          "revision bypasses settled cursor for a late identity")
+    check(revised["turns"][0]["text"] == original["text"] and revised["turns"][0]["elapsedMs"] == 0, "projection preserves original words and time")
+    code, answer, _, _ = mac_read("1")
+    check(code == 0 and not answer["details"]["read"]["fullSnapshot"] and answer["details"]["read"]["turns"] == [], "same revision retains incremental cursor")
+    acoustic["speakerRevision"] = 2; acoustic["speakerProjectedChunksIndexed"] = []
+    code, answer, _, _ = mac_read("1")
+    check(code == 0 and answer["details"]["read"]["turns"][0]["speaker"] == "Ext", "empty overlay restores originals on next revision")
+    for field, value in [("text", "altered"), ("elapsed", 6000), ("speaker", "Invented person")]:
+        acoustic["speakerProjectedChunksIndexed"] = [{"i": 0, "c": dict(original, speaker="Voice 1", **({field: value} if field != "speaker" else {}))}]
+        if field == "speaker": acoustic["speakerProjectedChunksIndexed"][0]["c"][field] = value
+        code, answer, out, err = mac_read("1")
+        check(code != 0 and "speaker_projection_invalid" in answer["message"] and "altered" not in out + err, "invalid overlay field refused: " + field)
+    acoustic["speakerProjectedChunksIndexed"] = [{"i": 0, "c": dict(original, speaker="Voice 1")}] * 2
+    check(mac_read("1")[0] != 0, "duplicate overlay indexes refused")
+    acoustic["speakerProjectedChunksIndexed"] = []; acoustic["speakerRevision"] = True
+    check(mac_read("1")[0] != 0, "boolean speaker revision refused")
+    acoustic["speakerRevision"] = 2; acoustic["chunksIndexed"][0]["c"]["speaker"] = "Confirmed person"
+    acoustic["speakerProjectedChunksIndexed"] = [{"i": 0, "c": dict(original, speaker="Voice 1")}]
+    check(mac_read("1")[0] != 0, "anonymous overlay cannot overwrite existing named person")
     print("live-transcript helper checks: %d passed" % passed)
 finally:
     server.shutdown()

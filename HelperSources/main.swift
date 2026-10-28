@@ -15977,7 +15977,7 @@ final class COSControlHelper {
     }
 
     /// One session parsed from the file's bytes: the chunks after `since`, and the cursor the next read sends.
-    static func liveTranscriptParse(_ data: Data, sessionId: String, since: Int, stamp: String) throws -> [String: Any] {
+    static func liveTranscriptParse(_ data: Data, sessionId: String, since: Int, stamp: String, knownSpeakerRevision: Int? = nil) throws -> [String: Any] {
         guard let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
             throw LiveTranscriptFailure(reason: "parse_failed")
         }
@@ -15998,6 +15998,35 @@ final class COSControlHelper {
                 "text": text,
             ]
         }
+        // Acoustic identities may settle after the ASR cursor has passed a turn.
+        // Only the server's source-bound, whole-chunk speaker overlay is projected;
+        // canonical words and clocks always come from the original chunks above.
+        var speakerRevision: Int? = nil
+        if object["speakerIdentityPolicy"] as? String == "acoustic-v1" {
+            guard sessionId.hasPrefix("mac_"), object["sourceType"] as? String == "mac_system_audio",
+                  let revision = liveTranscriptIndexes([object["speakerRevision"] as Any]).first,
+                  let projected = object["speakerProjectedChunksIndexed"] as? [[String: Any]],
+                  projected.count <= chunks.count else { throw LiveTranscriptFailure(reason: "speaker_projection_invalid") }
+            speakerRevision = revision
+            var seen = Set<Int>()
+            for row in projected {
+                guard let index = liveTranscriptIndexes([row["i"] as Any]).first, seen.insert(index).inserted,
+                      var original = chunks[index], let c = row["c"] as? [String: Any],
+                      c["text"] as? String == original["text"] as? String,
+                      let elapsed = c["elapsed"] as? NSNumber, CFGetTypeID(elapsed) != CFBooleanGetTypeID(),
+                      elapsed.doubleValue.isFinite, elapsed.doubleValue >= 0,
+                      elapsed.doubleValue.rounded() == Double(original["elapsedMs"] as? Int ?? -1),
+                      let speaker = c["speaker"] as? String,
+                      speaker.range(of: #"^Voice [1-9][0-9]?$"#, options: .regularExpression) != nil,
+                      ["", "Ext", "Unknown", "Unidentified"].contains(original["speaker"] as? String ?? "")
+                else { throw LiveTranscriptFailure(reason: "speaker_projection_invalid") }
+                original["speaker"] = speaker
+                chunks[index] = original
+            }
+        } else if object["speakerRevision"] != nil || object["speakerProjectedChunksIndexed"] != nil {
+            throw LiveTranscriptFailure(reason: "speaker_projection_invalid")
+        }
+        let fullSnapshot = speakerRevision != nil && speakerRevision != knownSpeakerRevision
         var settled = Set(chunks.keys)
         settled.formUnion(liveTranscriptIndexes(object["asrCompletedIndices"]))
         for key in ((object["emptyCompletions"] as? [String: Any]) ?? [:]).keys {
@@ -16014,7 +16043,7 @@ final class COSControlHelper {
                 settledThrough = index
             }
         }
-        let turns = chunks.keys.sorted().filter { $0 > since }.compactMap { chunks[$0] }
+        let turns = chunks.keys.sorted().filter { fullSnapshot || $0 > since }.compactMap { chunks[$0] }
         var read: [String: Any] = [
             "sessionId": sessionId,
             "ended": false,
@@ -16026,6 +16055,7 @@ final class COSControlHelper {
             "settledThrough": settledThrough,
             "turns": turns,
         ]
+        if let speakerRevision { read["speakerRevision"] = speakerRevision; read["fullSnapshot"] = fullSnapshot }
         if sessionId.hasPrefix("phone_") { read["sourceType"] = "iphone_microphone"; read["speakerPolicy"] = "anonymous" }
         if let levels = liveTranscriptLevels(object["chunkLevels"]) { read["levels"] = levels }
         return read
@@ -16055,7 +16085,7 @@ final class COSControlHelper {
     /// it is the file `knownStamp` describes (opened and fstat'd, never read), else the chunks after `since`.
     /// O_NOFOLLOW is the one symlink guard and fstat the one file-type guard, both on the descriptor that is read, so
     /// nothing can be swapped in between a check and the read. O_NONBLOCK: a FIFO named like a session never hangs.
-    static func liveTranscriptRead(dataDir: URL, sessionId: String, since: Int, knownStamp: String?) throws -> [String: Any] {
+    static func liveTranscriptRead(dataDir: URL, sessionId: String, since: Int, knownStamp: String?, knownSpeakerRevision: Int? = nil) throws -> [String: Any] {
         guard let file = liveTranscriptPath(dataDir: dataDir, sessionId: sessionId) else {
             throw LiveTranscriptFailure(reason: "invalid_session_id")
         }
@@ -16107,7 +16137,7 @@ final class COSControlHelper {
                 throw LiveTranscriptFailure(reason: "phone_capture_provenance_unreadable")
             }
         }
-        return try liveTranscriptParse(data, sessionId: sessionId, since: since, stamp: stamp)
+        return try liveTranscriptParse(data, sessionId: sessionId, since: since, stamp: stamp, knownSpeakerRevision: knownSpeakerRevision)
     }
 
     /// Microphone audio arrives only on stdin, never argv, a caller path, or a log.
@@ -16910,8 +16940,13 @@ final class COSControlHelper {
             if let sessionId = option("--session", in: args) {
                 let sinceText = option("--since", in: args) ?? "-1"
                 guard let since = Int(sinceText), since >= -1, since < 10_000_000 else { refuse("invalid_since"); exit(1) }
+                var revision: Int? = nil
+                if let raw = option("--speaker-revision", in: args) {
+                    guard let number = Int(raw), number >= 0, number < 10_000_000 else { refuse("invalid_speaker_revision"); exit(1) }
+                    revision = number
+                }
                 details["read"] = try Self.liveTranscriptRead(dataDir: dataDir, sessionId: sessionId, since: since,
-                                                              knownStamp: option("--stamp", in: args))
+                                                              knownStamp: option("--stamp", in: args), knownSpeakerRevision: revision)
             }
             emit(ok: true, message: "Live transcript", details: details)
         } catch let failure as LiveTranscriptFailure {

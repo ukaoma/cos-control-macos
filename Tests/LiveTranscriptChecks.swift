@@ -443,6 +443,24 @@ import Foundation
         let older = ServerStatus(["running": .bool(true), "activeTranscriptionSessions": .number(1)])
         check(older.liveTranscriptionSessions == nil && older.staleTranscriptionSessionIds.isEmpty, "an older server leaves live unknown")
 
+        // Late acoustic identity revisions must replace settled rows and withdraw claims.
+        var revised = LiveTranscriptFeed(sessionId: "s1")
+        revised.apply(read([chunk(0, "Ext", "original"), chunk(1, "Ext", "later")], settled: 1), now: now)
+        var update = read([chunk(0, "Voice 1", "original"), chunk(1, "Ext", "later")], settled: 1)
+        update.speakerRevision = 1; update.fullSnapshot = true
+        check(revised.apply(update, now: now) && revised.chunks[0]?.speaker == "Voice 1", "late revision replaces an already settled speaker")
+        check(revised.cursor == 1 && revised.speakerRevision == 1, "speaker refresh retains ASR cursor")
+        var clear = read([chunk(0, "Ext", "original"), chunk(1, "Ext", "later")], settled: 1)
+        clear.speakerRevision = 2; clear.fullSnapshot = true
+        check(revised.apply(clear, now: now) && revised.chunks[0]?.speaker == "Ext", "withdrawn claim restores original speaker")
+        check(!revised.apply(update, now: now) && revised.speakerRevision == 2, "stale revision cannot resurrect withdrawn claim")
+        clear.speakerRevision = 3; clear.fullSnapshot = false
+        check(!revised.apply(clear, now: now), "new revision without full replacement is refused")
+        clear.speakerRevision = -1; clear.fullSnapshot = true
+        check(!revised.apply(clear, now: now), "negative revision refused")
+        clear.speakerRevision = 3; clear.turns = []
+        check(revised.apply(clear, now: now) && revised.chunks.isEmpty && revised.turns.isEmpty, "empty replacement removes all cached rows")
+
         print("live transcript checks: \(passed) passed")
     }
 }

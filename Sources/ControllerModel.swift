@@ -3908,6 +3908,7 @@ final class ControllerModel: ObservableObject {
             let feed = liveTranscriptFeeds[target]
             args += ["--session", target, "--since", String(feed?.cursor ?? -1)]
             if let stamp = feed?.stamp { args += ["--stamp", stamp] }
+            if let revision = feed?.speakerRevision { args += ["--speaker-revision", String(revision)] }
         }
         liveTranscriptPolls += 1
         do {

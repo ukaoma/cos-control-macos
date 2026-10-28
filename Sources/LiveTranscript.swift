@@ -9,8 +9,8 @@ import Foundation
 // Tests/LiveTranscriptChecks.swift executes it; the views only paint it.
 //
 // THE REDUCER. A chunk is keyed by its own index, and a second copy of an index in a later read replaces the first.
-// The helper re-sends only chunks after its settled cursor, so a chunk at or below the cursor is not read again: what
-// was settled stays as first read (the saved meeting is the final text). The turns are in index order whatever order
+// ASR reads normally advance a settled cursor. A changed speaker revision instead sends a full replacement,
+// including earlier turns, so confirmed or withdrawn speaker claims are visible while the meeting continues. The turns are in index order whatever order
 // chunks arrive in, and an index that is not there is never drawn as loss (it is silence, a dropped hallucination, or
 // a chunk still in Whisper). Consecutive chunks with the same speaker form bounded reading sections (30 seconds or
 // 600 characters). A turn's id is the first index it was ever drawn with, and it keeps that id when it grows at either end (a late chunk with a lower index included),
@@ -44,6 +44,8 @@ struct LiveTranscriptRead: Codable, Equatable, Sendable {
     var lastActivityAt: Double? = nil
     var settledThrough: Int? = nil
     var turns: [LiveTranscriptChunk]? = nil
+    var speakerRevision: Int? = nil
+    var fullSnapshot: Bool? = nil
     /// 0.5.339 (server 6.87.0): the newest chunks' levels from the file's `chunkLevels`, in index order. Two numbers a
     /// chunk, never text. nil when the file has none (an older server).
     var sourceType: String? = nil
@@ -103,6 +105,7 @@ struct LiveTranscriptFeed: Equatable, Sendable {
     var stamp: String?
     /// The `--since` the next read sends: the helper's `settledThrough`, never lowered.
     var cursor = -1
+    private(set) var speakerRevision: Int? = nil
     private(set) var chunks: [Int: LiveTranscriptChunk] = [:]
     private(set) var turns: [LiveTranscriptTurn] = []
     /// Which turn id each chunk was drawn in, so a rebuilt turn keeps its id.
@@ -128,6 +131,12 @@ struct LiveTranscriptFeed: Equatable, Sendable {
     @discardableResult
     mutating func apply(_ read: LiveTranscriptRead, now: Date) -> Bool {
         guard read.sessionId == sessionId else { return false }
+        if read.fullSnapshot == true && (read.speakerRevision == nil || read.turns == nil) { return false }
+        if let revision = read.speakerRevision {
+            guard revision >= 0, revision < 10_000_000,
+                  speakerRevision.map({ revision >= $0 }) ?? true else { return false }
+            if revision != speakerRevision && read.fullSnapshot != true { return false }
+        } else if speakerRevision != nil && !read.ended && !read.unchanged { return false }
         if read.ended { return markEnded(now: now) }
         if PhoneMeetingCapture.protected(sessionId, sourceType: read.sourceType) {
             guard PhoneMeetingCapture.validID(sessionId), read.sourceType == "iphone_microphone", read.speakerPolicy == "anonymous",
@@ -147,6 +156,12 @@ struct LiveTranscriptFeed: Equatable, Sendable {
         if let last = read.lastActivityAt.map({ Date(timeIntervalSince1970: $0 / 1000) }), last != lastActivityAt { lastActivityAt = last; changed = true }
         if let settled = read.settledThrough { cursor = max(cursor, settled) }
         var chunksChanged = false
+        if read.fullSnapshot == true {
+            let replacement = Dictionary((read.turns ?? []).filter { $0.i >= 0 }.map { ($0.i, $0) }, uniquingKeysWith: { _, new in new })
+            chunksChanged = replacement != chunks
+            chunks = replacement
+        }
+        if let revision = read.speakerRevision { speakerRevision = revision }
         for chunk in read.turns ?? [] where chunk.i >= 0 && chunks[chunk.i] != chunk {
             chunks[chunk.i] = chunk
             chunksChanged = true
