@@ -1,0 +1,321 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ask COS Setup Help</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600&family=Fraunces:opsz,wght@9..144,400;9..144,500&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<!--
+  Ask COS as setup and repair help (Miles, 2026-10-27). A mock for picking a layout, not a build.
+  Tokens are TodayInk (Sources/ActivityWindow.swift, enum TodayInk). Every line of copy comes from the engine
+  (Sources/SetupAssistant.swift), the helper's own messages (HelperSources/main.swift) or gotcos.com's guide.
+  The states render from one data table below, once per placement, so A and B always show the same words.
+-->
+<style>
+:root{
+  --page:#f5f0e6; --panel:#ffffff; --ink:#1f1712; --sub:#66635e; --grey:#5c5a55; --accent:#89662d; --onAccent:#ffffff;
+  --panelBorder:#e3d9c6; --rowBorder:#efe7d8; --hot:#8a4b1c; --hotBorder:#e7c9a5; --btnBorder:#a08a66; --btnBg:#ffffff;
+  --qopen:#fbf7ef; --ok:#1f6b3d; --kbd:#d8ccb6; --suggLine:#e6dccb; --shadow:0 18px 44px rgba(60,42,20,.16);
+  --docBg:#ece5d7; --docInk:#1f1712;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --page:#17120e; --panel:#221b15; --ink:#efe7dc; --sub:#b3a796; --grey:#a39887; --accent:#d9b06a; --onAccent:#17120e;
+    --panelBorder:#3a2f25; --rowBorder:#2e251d; --hot:#e8a46c; --hotBorder:#6b4a2e; --btnBorder:#7a6650; --btnBg:#221b15;
+    --qopen:#2a2119; --ok:#6ccf8f; --kbd:#4a3d30; --suggLine:#3a2f25; --shadow:0 18px 44px rgba(0,0,0,.5);
+    --docBg:#100c09; --docInk:#efe7dc;
+  }
+}
+:root[data-theme="dark"]{
+  --page:#17120e; --panel:#221b15; --ink:#efe7dc; --sub:#b3a796; --grey:#a39887; --accent:#d9b06a; --onAccent:#17120e;
+  --panelBorder:#3a2f25; --rowBorder:#2e251d; --hot:#e8a46c; --hotBorder:#6b4a2e; --btnBorder:#7a6650; --btnBg:#221b15;
+  --qopen:#2a2119; --ok:#6ccf8f; --kbd:#4a3d30; --suggLine:#3a2f25; --shadow:0 18px 44px rgba(0,0,0,.5);
+  --docBg:#100c09; --docInk:#efe7dc;
+}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--docBg);color:var(--docInk);font:14px/1.5 "DM Sans",system-ui,sans-serif;padding:36px 16px 96px}
+.doc{max-width:1240px;margin:0 auto}
+.top{display:flex;flex-wrap:wrap;align-items:flex-start;gap:16px;justify-content:space-between}
+h1{font:500 34px/1.15 "Fraunces",Georgia,serif;margin:0;letter-spacing:-.3px}
+.stand{font-style:italic;color:var(--sub);max-width:760px;margin:8px 0 0;font-size:15px}
+.theme{font:500 13px "DM Sans";color:var(--ink);background:var(--btnBg);border:1px solid var(--btnBorder);border-radius:9px;padding:8px 14px;cursor:pointer}
+.rules{margin:22px 0 0;padding:0 0 0 18px;max-width:900px;color:var(--sub)}
+.rules li{margin:3px 0} .rules b{color:var(--docInk);font-weight:600}
+h2{font:500 24px/1.2 "Fraunces",Georgia,serif;margin:56px 0 6px}
+.why{color:var(--sub);max-width:900px;margin:0 0 6px}
+.why b{color:var(--docInk);font-weight:600}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,560px),1fr));gap:26px;margin-top:20px}
+figure{margin:0;min-width:0}
+figcaption{font:600 14px "DM Sans";margin:0 0 8px;color:var(--docInk)}
+figcaption span{font-weight:400;color:var(--sub)}
+
+/* One Today page, cropped to its header */
+.frame{background:var(--page);border:1px solid var(--panelBorder);border-radius:14px;padding:22px 22px 26px;position:relative;overflow:hidden;min-height:430px}
+.head{display:flex;flex-wrap:wrap;align-items:center;gap:14px 18px;position:relative;z-index:2}
+.title{display:flex;align-items:baseline;gap:12px;flex:0 0 auto;min-width:0}
+.title b{font:500 38px/1 "Fraunces",Georgia,serif;letter-spacing:-.5px;color:var(--ink)}
+.title span{color:var(--sub);font-size:13px;white-space:nowrap}
+.askwrap{position:relative;flex:1 1 300px;max-width:430px;min-width:0;margin-left:auto}
+/* The app's ViewThatFits: title, date and box on one row; then the date moves to a tooltip; then the box drops below. */
+@container (max-width:760px){.title span{display:none}}
+@container (max-width:470px){.askwrap{flex-basis:100%;max-width:none;margin-left:0}}
+.frame.A{min-height:560px}
+.ask{display:flex;align-items:center;gap:10px;min-height:44px;padding:0 12px 0 14px;background:var(--panel);border:1px solid var(--btnBorder);border-radius:12px}
+.ask.focus{border-color:var(--accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 22%,transparent)}
+.ask.off{opacity:.55}
+.ask svg{flex:none;color:var(--grey)}
+.ask .ph{flex:1;min-width:0;color:var(--grey);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:14px}
+.ask .typed{flex:1;min-width:0;color:var(--ink);font-size:14px;white-space:nowrap;overflow:hidden}
+.caret{display:inline-block;width:1.5px;height:17px;background:var(--accent);vertical-align:-3px;margin-left:1px}
+.kbd{font:500 11px "JetBrains Mono",monospace;color:var(--grey);border:1px solid var(--kbd);border-radius:6px;padding:1px 6px;white-space:nowrap}
+.brief{font:400 21px/1.45 "Fraunces",Georgia,serif;color:var(--ink);opacity:.38;margin:24px 0 0;max-width:600px}
+.ghostcard{margin-top:16px;height:110px;border:1px solid var(--panelBorder);border-radius:12px;background:var(--panel);opacity:.35;max-width:520px}
+
+/* Placement A: the list under the box */
+.drop{position:absolute;left:0;right:0;top:52px;background:var(--panel);border:1px solid var(--panelBorder);border-radius:12px;box-shadow:var(--shadow);overflow:hidden;z-index:5}
+/* Placement B: the panel under the header */
+.panel{margin-top:18px;background:var(--panel);border:1px solid var(--panelBorder);border-radius:14px;overflow:hidden;position:relative;z-index:2}
+.phead{display:flex;align-items:center;gap:10px;padding:14px 16px 10px;border-bottom:1px solid var(--rowBorder)}
+.phead b{font:600 16px "DM Sans";color:var(--ink)}
+.phead .n{font:600 16px "DM Sans";color:var(--hot)}
+.phead .close{margin-left:auto;font-size:13px;color:var(--accent);display:flex;align-items:center;gap:8px}
+.pbody{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
+.pbody.single{grid-template-columns:minmax(0,1fr)}
+.plist{border-right:1px solid var(--rowBorder);min-width:0}
+.pdetail{padding:16px 18px;min-width:0}
+@container (max-width:480px){.pbody{grid-template-columns:minmax(0,1fr)}.plist{border-right:0;border-bottom:1px solid var(--rowBorder)}}
+.frame{container-type:inline-size}
+
+/* Rows, shared */
+.note{padding:10px 14px;font-size:12.5px;color:var(--sub);border-bottom:1px solid var(--rowBorder);display:flex;gap:8px;align-items:flex-start}
+.note.hot{color:var(--hot)}
+.row{display:flex;gap:11px;align-items:flex-start;padding:11px 14px;border-bottom:1px solid var(--rowBorder);border-left:3px solid transparent}
+.row:last-of-type{border-bottom:0}
+.row.hi{background:var(--qopen);border-left-color:var(--accent)}
+.row .ic{flex:none;margin-top:2px}
+.ic.repair{color:var(--hot)} .ic.setup{color:var(--accent)} .ic.extra{color:var(--grey)} .ic.ok{color:var(--ok)}
+.row .tx{flex:1;min-width:0}
+.row .tx b{display:block;font:600 13.5px/1.35 "DM Sans";color:var(--ink)}
+.row .tx span{display:block;font-size:12.5px;line-height:1.4;color:var(--sub);margin-top:2px}
+.row .held{display:block;font-size:12px;color:var(--hot);margin-top:4px}
+.row .act{flex:none;display:flex;gap:6px;align-items:center;margin-top:1px}
+.btn{font:500 12.5px "DM Sans";color:var(--ink);background:var(--btnBg);border:1px solid var(--btnBorder);border-radius:9px;min-height:30px;padding:0 11px;white-space:nowrap;display:inline-flex;align-items:center}
+.btn.pri{background:var(--accent);border-color:var(--accent);color:var(--onAccent)}
+.btn.link{border-color:transparent;background:transparent;color:var(--accent);padding:0 6px}
+.answer{padding:13px 14px 12px;border-bottom:1px solid var(--rowBorder);background:var(--qopen)}
+.answer .t{display:flex;gap:9px;align-items:flex-start}
+.answer .t b{font:600 13.5px/1.35 "DM Sans";color:var(--ink)}
+.answer p{margin:6px 0 10px 25px;font-size:12.8px;line-height:1.5;color:var(--ink)}
+.answer .act{margin-left:25px;display:flex;gap:8px;flex-wrap:wrap}
+.confirm{margin:10px 0 2px 25px;border:1px solid var(--hotBorder);border-radius:10px;padding:11px 12px;background:var(--panel)}
+.confirm b{display:block;font:600 13.5px "DM Sans";color:var(--ink)}
+.confirm span{display:block;font-size:12.6px;color:var(--sub);margin:3px 0 10px;line-height:1.45}
+.confirm .act{margin:0;display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.confirm .act em{font-style:normal;font:400 11px "JetBrains Mono",monospace;color:var(--grey)}
+.prog{margin:10px 0 2px 25px}
+.bar{height:4px;border-radius:2px;background:var(--suggLine);overflow:hidden;position:relative}
+.bar i{position:absolute;top:0;bottom:0;width:38%;background:var(--accent);border-radius:2px;animation:slide 1.6s ease-in-out infinite}
+@keyframes slide{0%{left:-38%}100%{left:100%}}
+@media (prefers-reduced-motion:reduce){.bar i{animation:none;left:0;width:60%}}
+.prog .line{font:400 11.5px "JetBrains Mono",monospace;color:var(--sub);margin-top:7px}
+.result{display:flex;gap:9px;align-items:flex-start;padding:12px 14px;border-bottom:1px solid var(--rowBorder)}
+.result b{font:600 13.5px/1.4 "DM Sans";color:var(--ink)}
+.result.fail b{color:var(--hot)}
+.result span{display:block;font-size:12px;color:var(--sub)}
+.clear{padding:18px 16px 14px;display:flex;gap:12px;align-items:flex-start}
+.clear b{display:block;font:500 19px/1.25 "Fraunces",Georgia,serif;color:var(--ink)}
+.clear span{display:block;font-size:12.8px;color:var(--sub);margin-top:4px}
+.foot{padding:9px 14px;font-size:11.5px;color:var(--grey);border-top:1px solid var(--rowBorder);background:var(--panel)}
+.foot .kbd{margin:0 2px}
+.dhead{font:600 13.5px "DM Sans";color:var(--ink);margin:0 0 4px}
+.dsub{font-size:12.6px;color:var(--sub);margin:0 0 12px;line-height:1.45}
+.pdetail .confirm,.pdetail .prog{margin-left:0}
+.pdetail .act{display:flex;gap:8px;flex-wrap:wrap}
+.compare{margin:48px 0 0;border-collapse:collapse;width:100%;max-width:1000px;font-size:13.5px}
+.compare th,.compare td{text-align:left;vertical-align:top;padding:10px 12px;border-bottom:1px solid var(--panelBorder)}
+.compare th{font-weight:600;color:var(--docInk)}
+.compare td{color:var(--sub)}
+.tablewrap{overflow-x:auto}
+</style>
+</head>
+<body>
+<div class="doc">
+  <div class="top">
+    <div>
+      <h1>Ask COS as setup help</h1>
+      <p class="stand">The same engine in two places. Every state uses real Doctor checks, helper actions and answers from the COS Control guide. Pick A or B.</p>
+    </div>
+    <button class="theme" id="theme" type="button">Switch to dark</button>
+  </div>
+  <ul class="rules">
+    <li><b>Local first.</b> Suggestions come from what COS Control already knows, with no model and no network, so they work with the server down.</li>
+    <li><b>Fixed actions.</b> Each button is one of COS Control's own commands or settings. Typed words pick an answer; they never become a command.</li>
+    <li><b>Changes confirm in place.</b> A change shows what it will do first. Restarts wait while a job or recording runs, as they do today.</li>
+    <li><b>Return keeps today's meaning.</b> With nothing highlighted, Return asks COS and Option-Return files to Work, as it does now.</li>
+  </ul>
+
+  <h2>A. A list that drops from the Ask box</h2>
+  <p class="why">Opens when the box is focused or on <b>⌘K</b>, and closes on Esc or a click outside. The Today page does not move. Best for quick, one-tap fixes; long answers and progress share the box's width.</p>
+  <div class="grid" id="gridA"></div>
+
+  <h2>B. A setup panel under Today's header</h2>
+  <p class="why">Opens in the page, under the header, and pushes Today down. The list sits on the left and the highlighted item's detail on the right: its answer, its confirm, its progress. It stays open until you close it, so a long repair stays in view.</p>
+  <div class="grid" id="gridB"></div>
+
+  <div class="tablewrap">
+  <table class="compare">
+    <tr><th></th><th>A. List under the box</th><th>B. Panel under the header</th></tr>
+    <tr><th>Feels like</th><td>Spotlight: type, pick, done.</td><td>A small control room inside Today.</td></tr>
+    <tr><th>Long repairs</th><td>Progress shows in the row; closing the list hides it until you reopen.</td><td>Progress stays on screen beside the list.</td></tr>
+    <tr><th>Today's layout</th><td>Unchanged; the list floats over the brief.</td><td>Moves down while the panel is open.</td></tr>
+    <tr><th>Narrow windows</th><td>Same width as the box (340 to 520 pt).</td><td>Detail drops under the list.</td></tr>
+    <tr><th>Build size</th><td>Smaller: one overlay view.</td><td>Larger: a second column and its own open state.</td></tr>
+  </table>
+  </div>
+</div>
+
+<script>
+// Icons (24 px viewBox, stroked).
+const I = {
+  repair:'<path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>',
+  setup:'<circle cx="12" cy="12" r="9"/><path d="M12 8v8M8 12h8"/>',
+  extra:'<path d="M12 3l1.9 5.8L20 10.7l-6.1 1.9L12 18.5l-1.9-5.9L4 10.7l6.1-1.9z"/>',
+  ok:'<circle cx="12" cy="12" r="9"/><path d="M8 12.5l2.7 2.7L16 9.6"/>',
+  fail:'<path d="M10.3 3.9L1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/>',
+  book:'<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>',
+  pulse:'<path d="M22 12h-4l-3 9L9 3l-3 9H2"/>',
+  ask:'<path d="M12 3l1.9 5.8L20 10.7l-6.1 1.9L12 18.5l-1.9-5.9L4 10.7l6.1-1.9z"/>'
+};
+const svg = (k, cls='') => `<svg class="ic ${cls}" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${I[k]}</svg>`;
+const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;');
+
+// Real copy. Lines and reasons: Sources/SetupAssistant.swift (board, Held, confirmation, entries).
+const S = {
+  whisper:{tier:'repair', line:'I can repair local Whisper.', why:'It is not answering, so this Mac cannot transcribe meetings.', act:'Repair Whisper'},
+  codex:{tier:'setup', line:'I can set up Codex.', why:'Installed, not signed in. Sessions, Continue and Work in Codex.', act:'Open the setup guide'},
+  glasses:{tier:'extra', line:'I can connect your glasses.', why:'Ready to scan. Scan the code with the COS app on your phone. Nothing to type.', act:'Open the setup guide'},
+  serverDown:{tier:'repair', line:'I can repair the COS server.', why:'It is loaded but not answering.', act:'Repair'},
+  checkup:{tier:'extra', line:'I can run a full checkup.', why:'Doctor checks the server, Whisper and your AI apps, and names anything failing.', act:'Run Doctor'},
+  heldWhisper:{tier:'repair', line:'I can repair local Whisper.', why:'It is not answering, so this Mac cannot transcribe meetings.', held:'A meeting is recording. Save or end it first.'},
+  troubleshoot:{tier:'extra', icon:'ask', line:'Ask COS to troubleshoot this.', why:'One Work run with your words and a redacted Doctor report. It asks before it changes anything.', act:'Ask COS to troubleshoot'},
+};
+const ANS = {
+  update:{title:'Update stuck, or COS Control is very old', text:'If an update times out or will not finish, update by hand: download the current COS Control from gotcos.com, quit the old copy and drag the new one into Applications. It takes a few minutes, and your settings and meetings stay where they are. If it sits on Installing, finish any meeting first.', acts:[['Show the steps',1],['Try again',0]]},
+  restart:{title:'Restart the COS server', text:'Restart replaces the server process and checks it again. It is locked while a job or recording is active, so nothing is cut off.', acts:[['Restart',0]]},
+};
+const CONF = {question:'Restart the COS server?', consequence:'COS checks that nothing is running, restarts the server and waits up to a minute for it to answer.', confirm:'Restart'};
+
+const FOOT = 'Up and Down choose. <span class="kbd">Return</span> runs the highlighted one, or asks COS when none is. <span class="kbd">Esc</span> closes.';
+const DATE = 'Tuesday, October 27, 10:41 PM';
+
+function row(item, hi, place){
+  const icon = item.icon || item.tier;
+  // B's list is for choosing; the chosen item's button sits in the detail column.
+  const btn = item.act && place !== 'B' ? `<span class="act"><span class="btn${hi ? ' pri' : ''}">${esc(item.act)}</span></span>` : '';
+  const held = item.held ? `<span class="held">${esc(item.held)}</span>` : '';
+  return `<div class="row${hi ? ' hi' : ''}">${svg(icon, item.tier)}<div class="tx"><b>${esc(item.line)}</b><span>${esc(item.why)}</span>${held}</div>${btn}</div>`;
+}
+function answer(a, extra=''){
+  const acts = a.acts.map(([t, pri]) => `<span class="btn${pri ? ' pri' : ''}">${esc(t)}</span>`).join('');
+  return `<div class="answer"><div class="t">${svg('book','setup')}<b>${esc(a.title)}</b></div><p>${esc(a.text)}</p>${extra || `<div class="act">${acts}</div>`}</div>`;
+}
+const confirmBlock = () => `<div class="confirm"><b>${CONF.question}</b><span>${CONF.consequence}</span><div class="act"><span class="btn pri">${CONF.confirm}</span><span class="btn">Cancel</span><em>Return confirms, Esc cancels</em></div></div>`;
+const progBlock = () => `<div class="prog"><div class="bar"><i></i></div><div class="line">Draining active work safely…</div></div>`;
+
+// Each state: the box, and what opens under it.
+const STATES = [
+  {key:'a', cap:'1. Focused', sub:'three live suggestions, the first highlighted', ask:{focus:true},
+   items:[[S.whisper,1],[S.codex,0],[S.glasses,0]]},
+  {key:'b', cap:'2. Typing "update is stuck"', sub:'the guide\'s answer and its action', ask:{focus:true, typed:'update is stuck'},
+   answer:ANS.update, items:[[S.troubleshoot,0]], foot:'<span class="kbd">Return</span> asks COS: “update is stuck”. Down chooses an answer or a fix.'},
+  {key:'c', cap:'3. Confirm in place', sub:'Restart the COS server', ask:{focus:true, typed:'restart the server'},
+   answer:ANS.restart, confirm:true, foot:'Nothing is running now, so Restart is ready. A job or a recording would hold it.'},
+  {key:'d', cap:'4. Running', sub:'the helper\'s own progress line', ask:{off:true},
+   running:'Restarting the COS server', items:[[S.codex,0]], foot:'Other changes wait until this one finishes.'},
+  {key:'e', cap:'5. Done', sub:'the helper\'s notice, then what is left', ask:{focus:true},
+   result:{ok:true, text:'COS server restarted and verified', sub:'Just now'}, items:[[S.codex,0],[S.glasses,0]]},
+  {key:'f', cap:'6. Failed, with a next step', sub:'the error as the helper said it', ask:{focus:true},
+   result:{ok:false, text:'Local Whisper did not become ready (starting); the server remains available.', sub:'Repair Whisper, just now'},
+   items:[[S.troubleshoot,1],[S.checkup,0]]},
+  {key:'g', cap:'7. Server down', sub:'local repairs still work', ask:{focus:true},
+   note:'The COS server is not answering. These run on this Mac without it.', items:[[S.serverDown,1],[S.checkup,0]],
+   foot:'Asking COS needs the server. Typed questions still get answers from the COS Control guide.'},
+  {key:'h', cap:'8. Held', sub:'a fix that waits for a recording', ask:{focus:true},
+   items:[[S.heldWhisper,0],[S.codex,1]]},
+  {key:'i', cap:'9. All clear', sub:'nothing broken, nothing left to set up', ask:{focus:true}, clear:true},
+];
+
+function askBox(st){
+  const a = st.ask || {};
+  const inner = a.typed ? `<span class="typed">${esc(a.typed)}<span class="caret"></span></span>`
+                        : `<span class="ph">Ask COS: Return runs it, Option-Return files it</span>`;
+  return `<div class="ask${a.focus ? ' focus' : ''}${a.off ? ' off' : ''}">${svg('ask')}${inner}<span class="kbd">⌘K</span></div>`;
+}
+function bodyRows(st, place){
+  let h = '';
+  if (st.note) h += `<div class="note hot">${svg('fail','repair')}<span>${esc(st.note)}</span></div>`;
+  if (st.result) h += `<div class="result${st.result.ok ? '' : ' fail'}">${svg(st.result.ok ? 'ok' : 'fail', st.result.ok ? 'ok' : 'repair')}<div><b>${esc(st.result.text)}</b><span>${esc(st.result.sub)}</span></div></div>`;
+  if (st.running) h += `<div class="answer"><div class="t">${svg('repair','repair')}<b>${esc(st.running)}</b></div>${progBlock()}</div>`;
+  if (st.answer && place === 'A') h += answer(st.answer, st.confirm ? confirmBlock() : '');
+  if (st.answer && place === 'B') h += `<div class="answer"><div class="t">${svg('book','setup')}<b>${esc(st.answer.title)}</b></div></div>`;
+  for (const [it, hi] of (st.items || [])) h += row(it, hi, place);
+  if (st.clear) h += `<div class="clear">${svg('ok','ok')}<div><b>Everything checks out.</b><span>Doctor passed all 18 checks at 10:41 PM. Nothing is left to set up.</span><span style="margin-top:8px"><span class="btn link" style="padding:0">Run Doctor again</span></span></div></div>`;
+  return h;
+}
+function detailB(st){
+  // B's right column: the highlighted item in full.
+  if (st.answer && st.confirm) return `<p class="dhead">${esc(st.answer.title)}</p><p class="dsub">${esc(st.answer.text)}</p>${confirmBlock()}`;
+  if (st.answer) return `<p class="dhead">${esc(st.answer.title)}</p><p class="dsub">${esc(st.answer.text)}</p><div class="act">${st.answer.acts.map(([t,p]) => `<span class="btn${p ? ' pri' : ''}">${esc(t)}</span>`).join('')}</div>`;
+  if (st.running) return `<p class="dhead">${esc(st.running)}</p><p class="dsub">${CONF.consequence}</p>${progBlock()}`;
+  const hi = (st.items || []).find(([, h]) => h);
+  if (st.result && !st.result.ok && hi) return `<p class="dhead">${esc(hi[0].line)}</p><p class="dsub">${esc(hi[0].why)}</p><div class="act"><span class="btn pri">${esc(hi[0].act)}</span><span class="btn">Copy report</span></div>`;
+  if (st.result) return `<p class="dhead">${esc(st.result.text)}</p><p class="dsub">The helper restarted the server and checked that it answers.</p>`;
+  if (hi) {
+    const it = hi[0];
+    const preview = it.act === 'Repair Whisper' ? '<p class="dsub">When you choose it: This restarts the whole COS server, then waits for Whisper to answer.</p>' :
+                    it.act === 'Repair' ? '<p class="dsub">When you choose it: COS reinstalls its background service and recovery controller, restarts the server and checks it.</p>' :
+                    it.act === 'Open the setup guide' ? '<p class="dsub">Opens the setup guide at this step. Nothing changes until you choose there.</p>' : '';
+    return `<p class="dhead">${esc(it.line)}</p><p class="dsub">${esc(it.why)}</p>${preview}<div class="act"><span class="btn pri">${esc(it.act)}</span></div>`;
+  }
+  const held = (st.items || []).find(([it]) => it.held);
+  if (held) return `<p class="dhead">${esc(held[0].line)}</p><p class="dsub">${esc(held[0].held)}</p>`;
+  return '';
+}
+function frame(st, place){
+  const head = `<div class="head"><div class="title"><b>Today</b><span>${DATE}</span></div><div class="askwrap">${askBox(st)}${place === 'A' ? drop(st) : ''}</div></div>`;
+  const page = `<p class="brief">Two things need you, and one run is going. Your 2 PM with Silas is next.</p><div class="ghostcard"></div>`;
+  return `<figure><figcaption>${st.cap} <span>${st.sub}</span></figcaption><div class="frame ${place}">${head}${place === 'B' ? panel(st) : ''}${page}</div></figure>`;
+}
+function drop(st){
+  const foot = st.clear ? '<span class="kbd">Return</span> asks COS. <span class="kbd">Esc</span> closes.' : (st.foot || FOOT);
+  return `<div class="drop">${bodyRows(st, 'A')}<div class="foot">${foot}</div></div>`;
+}
+function panel(st){
+  const count = (st.items || []).filter(([it]) => it.tier !== 'extra').length + (st.note ? 1 : 0);
+  const head = `<div class="phead"><b>Setup help</b>${count && !st.clear ? `<span class="n">${count}</span>` : ''}<span class="close">Close <span class="kbd">Esc</span></span></div>`;
+  if (st.clear) return `<div class="panel">${head}${bodyRows(st, 'B')}</div>`;
+  const detail = detailB(st);
+  const foot = st.foot ? `<div class="foot">${st.foot}</div>` : `<div class="foot">${FOOT}</div>`;
+  return `<div class="panel">${head}<div class="pbody${detail ? '' : ' single'}"><div class="plist">${bodyRows(st, 'B')}</div>${detail ? `<div class="pdetail">${detail}</div>` : ''}</div>${foot}</div>`;
+}
+document.getElementById('gridA').innerHTML = STATES.map(s => frame(s, 'A')).join('');
+document.getElementById('gridB').innerHTML = STATES.map(s => frame(s, 'B')).join('');
+
+// Theme: follows the Mac until switched; the switch is remembered on this browser only.
+const root = document.documentElement, btn = document.getElementById('theme');
+const dark = () => root.dataset.theme ? root.dataset.theme === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches;
+const label = () => { btn.textContent = dark() ? 'Switch to light' : 'Switch to dark'; };
+try { const saved = localStorage.getItem('ask-cos-mock-theme'); if (saved) root.dataset.theme = saved; } catch (e) {}
+label();
+btn.addEventListener('click', () => {
+  root.dataset.theme = dark() ? 'light' : 'dark';
+  try { localStorage.setItem('ask-cos-mock-theme', root.dataset.theme); } catch (e) {}
+  label();
+});
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change', label);
+</script>
+</body>
+</html>
