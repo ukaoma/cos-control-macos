@@ -114,11 +114,11 @@ import Foundation
     let receipts = [receipt("run", status: "delivered", at: 1), receipt("reply", status: "delivered", at: 5), receipt("seen", status: "reviewed", at: 9),
                     receipt("fail", status: "failed", at: 3), receipt("wait", status: "delivered", at: 2), receipt("queue", status: "queued", at: 4)]
     let items = WorkWorkspaceProjection.items(tasks: tasks, reviews: [], receipts: receipts, sessions: sessions)
-    let all = WorkBoardSessionsProjection.cards(items, domain: nil)
+    let all = WorkBoardSessionsProjection.cards(items, receipts: receipts, sessions: sessions, domain: nil)
     precondition(all.map(\.item.task!.id) == ["run", "wait", "fail", "reply", "queue"],
                  "Running, waiting on you, needs attention, reply ready, queued; reviewed and untouched cards stay off the row")
     precondition(all.map(\.state) == [.running, .waiting, .attention, .replyReady, .queued])
-    precondition(WorkBoardSessionsProjection.cards(items, domain: "quilt").map(\.item.task!.id) == ["run", "wait", "reply", "queue"], "The row follows the board's domain")
+    precondition(WorkBoardSessionsProjection.cards(items, receipts: receipts, sessions: sessions, domain: "quilt").map(\.item.task!.id) == ["run", "wait", "reply", "queue"], "The row follows the board's domain")
     precondition(WorkBoardSessionsProjection.summary(all) == "1 running · 1 waiting for you · 1 needs attention · 1 reply ready · 1 queued")
     precondition(WorkBoardSessionsProjection.summary([]) == "None right now")
     precondition(WorkBoardSessionsProjection.summary(all + all).hasPrefix("2 running · 2 waiting for you · 2 need attention · 2 replies ready"), "Plurals")
