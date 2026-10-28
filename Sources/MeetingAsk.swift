@@ -517,8 +517,11 @@ struct MeetingAskSettings: View {
     @ObservedObject var store: MeetingAskStore
     @ObservedObject var model: ControllerModel
     @State private var showUnavailableModels = false
+    /// Settings hub: Meeting assistant and Live cues are two groups there, each this card with one part. The panel: both.
+    var part: MeetingAskSettingsPart = .all
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
+            if part != .liveCues {
             Text("Meeting assistant").font(COSType.body(13, weight: .semibold))
             Text("Used only when you ask during a meeting. Defaults to Sonnet; other chats keep their own models.").font(COSType.body(11)).foregroundStyle(.secondary)
             // 0.5.282: the same control the Live COS Ask panel shows, so a change in either shows in both.
@@ -535,7 +538,8 @@ struct MeetingAskSettings: View {
                 Task { await store.refreshConfig(model: model); await store.homeArea.load(HomeCitySettings.run(model)) }
             }.buttonStyle(COSQuietButtonStyle())
             HomeCitySettings(store: store.homeArea, model: model)
-            LiveCuesSettingsRow(store: store.liveCues, model: model)
+            }
+            if part != .assistant { LiveCuesSettingsRow(store: store.liveCues, model: model) }
         }.padding(12).background(COSPalette.card, in: RoundedRectangle(cornerRadius: 12))
         .task { await store.refreshConfig(model: model); await store.homeArea.load(HomeCitySettings.run(model)) }
     }

@@ -161,8 +161,8 @@ need('"$ROOT/Tests/run-work-board-perf.sh" --gate' in run_sh and "TodayHome.comp
 
 # Notes folded in.
 need("if self?.runNote == note { self?.runNote = nil }" in win, "[N5 note] the Ask box note clears itself")
-need('Text("Prep me is off: Settings, Start Work runs from Today")' in win, "[N7 prep] Prep me off says where")
-need("After 6 PM, before 6 AM and on weekends" in views, "[N8 quiet] the help names the early morning")
+need('Text("Prep me is off: Settings, Work runs from Today")' in win, "[N7 prep] Prep me off says where")
+need("From 6 PM to 6 AM and on weekends" in views, "[N8 quiet] the help names the early morning")
 need("if let kept = liveMeetingTitlesKept[sessionId] { return kept }" in model, "[N10 title] a calendar title stays for its meeting")
 need("model.liveMeetingFileInfo(session)" in meetings and "let info = model.liveMeetingFileInfo(session)" in ask, "[N11 files] live files are filed under the meeting's title and day")
 # 0.5.339: the drop line under the bar is gone (the whole pane takes the drop); adding of any kind still needs meeting files on.

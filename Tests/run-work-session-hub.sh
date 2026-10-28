@@ -77,7 +77,7 @@ assert "let references = taskChat.referencesOffered ? handoffStore.referenceRows
 assert "submit(" not in refs and 'Button("Send' not in refs and "sendAll(" not in refs, "the References group has no send control"
 assert '"queueRounds": body["queueRounds"] as? Bool == true' in helper, "the helper passes the server's queueRounds capability"
 assert "@AppStorage(WorkChatHold.settingKey) private var workChatWhenHeld = WorkChatHold.settingDefault" in views, "Settings reads the default"
-assert 'COSDropdown("When earlier work is still open", selection: $workChatWhenHeld,' in views, "Settings › Work has the switch"
+assert 'COSDropdown("When work is open", selection: $workChatWhenHeld,' in views, "Settings › Work has the switch"
 assert "    static let settingDefault = queueSetting\n" in queue, "Queue it is the default"
 assert "let pump = WorkChatQueuePump(handoff: store, sources:" in model and "pump.start()" in model, "the app starts the app-wide pump"
 loop = chat[chat.index("WorkChatQueuePump.show(source.id); defer { WorkChatQueuePump.hide(source.id) }"):chat.index('}.confirmationDialog("Check the connected session first"')]

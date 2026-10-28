@@ -1549,7 +1549,7 @@ struct WorkChatSendControls: View {
     @ViewBuilder private var settings: some View {
         Toggle("Auto-send", isOn: Binding(get: { cardAutoSend }, set: { autoSendCards = WorkOrchestrator.setting(workID: source.id, on: $0, raw: autoSendCards, settingDefault: autoSend) }))
             .toggleStyle(COSSwitchStyle()).font(COSType.body(10)).disabled(chat.busy).fixedSize()
-            .help("This card only. On: plans are sent without review, each assignment with a Stop. Its default is Settings › Work › Send plans without review.")
+            .help("This card only. On: plans are sent without review, each assignment with a Stop. Its default is in Settings, Work and agents.")
             .accessibilityIdentifier("work-chat-auto-send")
         if !chat.planners.isEmpty {
             // GOTCOS theme (0.5.251): COSDropdown, never a stock Picker.

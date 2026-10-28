@@ -511,12 +511,13 @@ struct ControlPanel: View {
     @ObservedObject private var voiceGuide: SetupGuideState
 
     init(model: ControllerModel, openActivity: @escaping (ActivitySection?) -> Void,
-         hostedInWindow: Bool = false, hostedInActivity: Bool = false) {
+         hostedInWindow: Bool = false, hostedInActivity: Bool = false, hub: SettingsHubHost? = nil) {
         self.model = model
         self.voiceGuide = model.setupGuide
         self.openActivity = openActivity
         self.hostedInWindow = hostedInWindow
         self.hostedInActivity = hostedInActivity
+        self.hub = hub
     }
     /// 0.5.278: Settings, "Show live meeting transcript". Off: no Live now row, no live dots, no live-transcript helper.
     @AppStorage(LiveTranscript.enabledKey) private var showLiveTranscript = true
@@ -534,6 +535,27 @@ struct ControlPanel: View {
     var hostedInWindow = false
     /// Activity supplies its own size; settings and actions still use this shared panel.
     var hostedInActivity = false
+    /// Settings hub (Miles, 2026-10-27): only Activity's Settings route passes a host, and then the hub draws in place of
+    /// mainPanel. The menu-bar panel and the standalone Settings window pass none and keep the one-page panel. Both
+    /// layouts are this one view, so every draft, confirmation, seed and observation below serves both.
+    var hub: SettingsHubHost?
+    /// General, Advanced: Use classic Settings. On, Activity draws mainPanel again (the rollback without a reinstall).
+    @AppStorage(SettingsHub.classicKey) private var useClassicSettings = false
+    @State private var hubCategory: SettingsHubCategory = .general
+    @State private var hubQuery = ""
+    @FocusState private var hubSearchFocused: Bool
+    /// The groups whose Advanced disclosure is open.
+    @State private var hubAdvanced: Set<String> = []
+    /// On this page: the group in view, from the scroll-spy.
+    @State private var hubInView: String?
+    @State private var confirmHubRollback = false
+    /// The scroll-spy, held but not observed (only the rail observes it), so scrolling never redraws this view.
+    @State private var hubSpy = SettingsHubSpyModel()
+    /// Work chat's per-Mac planner and effort defaults (OUT-05, OUT-06), the same keys as its footer.
+    @AppStorage(WorkChatPolicy.plannerKey) private var workChatPlanner = "opus"
+    @AppStorage(WorkChatPolicy.effortKey) private var workChatEffort = "high"
+    /// True only while the hub draws (a host, and the classic switch off).
+    private var hubOn: Bool { hub != nil && !useClassicSettings }
     @State private var confirmLegacyRestart = false
     @State private var confirmInstallManaged = false
     @State private var showGuidedSetupTier = false
@@ -605,7 +627,7 @@ struct ControlPanel: View {
     }
 
     private var syncedPanel: some View {
-        mainPanel
+        panelContent
         .frame(width: hostedInActivity ? nil : 390, height: hostedInActivity ? nil : 640)
         .font(COSType.body(13))
         .background(COSPalette.panel)
@@ -687,6 +709,11 @@ struct ControlPanel: View {
         }
     }
 
+    /// The hub when Activity hosts it with the classic switch off; the one-page panel everywhere else.
+    @ViewBuilder private var panelContent: some View {
+        if let hub, !useClassicSettings { settingsHub(hub) } else { mainPanel }
+    }
+
     /// Split in three ON PURPOSE. Ten confirmations plus the error alert in one
     /// chained expression exceeds what the SwiftUI type-checker will solve.
     /// Adding an eleventh on panelWithPrimaryConfirms or panelWithSecondaryConfirms
@@ -701,28 +728,28 @@ struct ControlPanel: View {
         // MenuBarExtra(.window) panel, and leaving one untested modal behind a fix
         // that claims the panel works would be the same bet that lost here already.
         .cosConfirm(
-            "Meetings Library",
+            "Meetings folder",
             isPresented: Binding(
                 get: { model.meetingLibraryGuidance != nil },
                 set: { if !$0 { model.meetingLibraryGuidance = nil } }
             ),
             message: model.meetingLibraryGuidance ?? "",
             actions: [
-                .normal("Choose Again") {
+                .normal("Choose again") {
                     model.meetingLibraryGuidance = nil
                     model.selectOperationsFolder()
                 },
-                .normal("View Examples") {
+                .normal("View examples") {
                     model.meetingLibraryGuidance = nil
                     model.openSetupGuide()
                 },
-                .cancel("Skip for Now") { model.meetingLibraryGuidance = nil },
+                .cancel("Skip for now") { model.meetingLibraryGuidance = nil },
             ]
         )
         // INLINE, never .confirmationDialog. A destructive button's action does
         // not run inside MenuBarExtra(.window) -- see Sources/COSConfirm.swift.
         .cosConfirm(
-            "Release this fence?",
+            "Release this thread?",
             isPresented: Binding(
                 get: { model.fencePendingRelease != nil },
                 set: { if !$0 { model.cancelReleaseFence() } }
@@ -733,18 +760,18 @@ struct ControlPanel: View {
         .cosConfirm(
             "Restart this self-managed server?",
             isPresented: $confirmLegacyRestart,
-            message: "This older server cannot prove that meetings and agent jobs are idle. Continue only when no work is active. COS Control will reload the LaunchAgent so the selected folder becomes active.",
+            message: "This older server cannot show whether meetings and jobs are idle. Restart only when no work is running.",
             actions: [
                 .destructive("Restart now") { model.perform("restart") },
                 .cancel(),
             ]
         )
         .cosConfirm(
-            "Install the latest managed server?",
+            "Replace the older server?",
             isPresented: $confirmInstallManaged,
-            message: "This stops your checkout LaunchAgent, then installs the current npm latest (@gotcos/glasses-server@latest). Finish active glasses work first. Prefer Manage in place if you only want status/restart without replacing the server.",
+            message: "Stops your older server, then installs the latest COS server. Finish glasses work first. To keep it, use Manage in place.",
             actions: [
-                .destructive("Stop legacy and install") { model.installLatestManagedFromLegacy() },
+                .destructive("Stop and replace") { model.installLatestManagedFromLegacy() },
                 .cancel(),
             ]
         )
@@ -757,7 +784,7 @@ struct ControlPanel: View {
             isPresented: $showGuidedSetupTier,
             message: "Balanced uses fast Small.en previews, Turbo commits, and Large-v3 polish. Max uses Large-v3 for live preview and commit too; choose it only on a powerful Mac.",
             actions: [
-                .normal("Balanced (Recommended)") {
+                .normal("Balanced (recommended)") {
                     selectedTranscriptionTier = "balanced"
                     model.runGuidedSetup(tier: "balanced")
                 },
@@ -769,36 +796,36 @@ struct ControlPanel: View {
             ]
         )
         .cosConfirm(
-            "Clear stranded video uploads?",
+            "Clear stuck video uploads?",
             isPresented: $confirmClearStrandedVideoUploads,
-            message: "Cancels drafts that have not received bytes for 60 seconds. Uploads still in progress and videos being compressed are left alone. Repair does not do this — stranded drafts block Repair.",
+            message: "Cancels uploads that received nothing for 60 seconds. Uploads still sending or compressing stay. Stuck uploads block Repair.",
             actions: [
-                .destructive("Clear stranded") { model.clearStrandedVideoUploads() },
+                .destructive("Clear stuck uploads") { model.clearStrandedVideoUploads() },
                 .cancel(),
             ]
         )
         .cosConfirm(
             "Reset live message count?",
             isPresented: $confirmResetMessageCount,
-            message: "The next message is #1. Older cards keep their own numbers, and history stays in ARCHIVE and Message History. Needs COS Glasses 6.8.423 or newer on the phone — on an older build this clears the phone's chat list.",
+            message: "The next message is #1. Older cards keep their numbers and history stays in Archive. On a glasses app older than 6.8.423, this clears the phone's chat list.",
             actions: [
                 .destructive("Reset count") { model.resetMessageEra() },
                 .cancel(),
             ]
         )
         .cosConfirm(
-            "Recover all unsaved captures?",
+            "Recover all unsaved recordings?",
             isPresented: $confirmRecoverAllOrphans,
-            message: "Turns each unsaved capture into a meeting, one at a time. Already-recovering captures wait their turn. Session files are not deleted.",
+            message: "Turns each unsaved recording into a meeting, one at a time. The files are kept.",
             actions: [
                 .normal("Recover all") { model.recoverAllOrphans() },
                 .cancel(),
             ]
         )
         .cosConfirm(
-            "Save still-live captures as meetings?",
+            "Save live recordings as meetings?",
             isPresented: $confirmSaveAllStranded,
-            message: "Finalizes each still-live G2 capture through the same save path as Stop on the phone. Session files become meetings; they are not deleted.",
+            message: "Ends each live glasses recording and saves it, like Stop on the phone. The files are kept.",
             actions: [
                 .normal("Save all") { model.saveAllStranded() },
                 .cancel(),
@@ -1052,9 +1079,9 @@ struct ControlPanel: View {
             if model.workExpiryAvailable {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Work intake").font(COSType.body(13, weight: .semibold))
-                    Toggle("Expire old asks from other people", isOn: Binding(get: { model.workExpiryEnabled }, set: { enabled in Task { await model.setWorkExpiry(enabled) } }))
+                    Toggle("Expire old asks", isOn: Binding(get: { model.workExpiryEnabled }, set: { enabled in Task { await model.setWorkExpiry(enabled) } }))
                         .toggleStyle(COSSwitchStyle())
-                    Text("Your own items and uncertain owners stay for Keep or Drop. Restore expired asks from Sort for 30 days.").font(COSType.body(11)).foregroundStyle(.secondary)
+                    Text("Expires other people's old asks; yours stay. Restore them from Sort for 30 days.").font(COSType.body(11)).foregroundStyle(.secondary)
                 }
             }
         }.task { await model.loadWorkExpiry() }
@@ -1065,36 +1092,7 @@ struct ControlPanel: View {
             VStack(alignment: .leading, spacing: 8) {
                 decisionProviderControls
                 Divider()
-                Text("Jev key").font(.caption.weight(.semibold))
-                Text("Key status is separate from the provider choices above.").font(.caption2).foregroundStyle(.secondary)
-                // Without an answer from the server, say so instead of "Checking…" forever (the error is below).
-                Text(model.jevStatus?.summary ?? (model.jevMessage == nil ? "Checking…" : "Status unavailable."))
-                    .font(.caption).foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                if let problem = model.jevStatus?.problem {
-                    Text(problem).font(.caption2).foregroundStyle(COSPalette.danger).fixedSize(horizontal: false, vertical: true)
-                }
-                if let until = model.jevStatus?.breakerOpenUntil {
-                    Text("Paused after repeated errors until \(until.prefix(16).replacingOccurrences(of: "T", with: " ")) UTC.")
-                        .font(.caption2).foregroundStyle(COSPalette.danger)
-                }
-                if model.jevStatus?.available != false {
-                    HStack {
-                        SecureField(model.jevStatus?.configured == true ? "Replace key" : "TypeSafe API key", text: $jevKeyDraft)
-                            .textFieldStyle(.plain).cosField().disabled(model.jevBusy)
-                        Button(model.jevBusy ? "Checking…" : "Save") {
-                            let key = jevKeyDraft
-                            Task { if await model.saveJevKey(key) { jevKeyDraft = "" } }
-                        }.disabled(model.jevBusy || jevKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines).count < 16)
-                    }
-                    if model.jevStatus?.source == "config" {
-                        Button("Remove saved key", role: .destructive) { Task { await model.removeJevKey() } }
-                            .buttonStyle(COSTextButtonStyle(tone: .destructive)).disabled(model.jevBusy)
-                    }
-                }
-                if let message = model.jevMessage { Text(message).font(.caption2).foregroundStyle(.secondary) }
-                Text("TypeSafe keys come from typesafe.ai. Meeting intake still uses Jev; the provider choices above apply to session suggestions, completion checks and Work search.")
-                    .font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                jevKeyControls
             }.padding(.top, 6)
         } label: {
             HStack(spacing: 8) {
@@ -1111,32 +1109,99 @@ struct ControlPanel: View {
         }
     }
 
+    /// The Jev key: its status, any pause after errors, Save and Remove (JV-10 to JV-12).
+    @ViewBuilder private var jevKeyControls: some View {
+        Text("Jev key").font(.caption.weight(.semibold))
+        Text("Key status is separate from the provider choices above.").font(.caption2).foregroundStyle(.secondary)
+        // Without an answer from the server, say so instead of "Checking…" forever (the error is below).
+        Text(model.jevStatus?.summary ?? (model.jevMessage == nil ? "Checking…" : "Status unavailable."))
+            .font(.caption).foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+        if let problem = model.jevStatus?.problem {
+            Text(problem).font(.caption2).foregroundStyle(COSPalette.danger).fixedSize(horizontal: false, vertical: true)
+        }
+        if let until = model.jevStatus?.breakerOpenUntil {
+            Text("Paused after repeated errors until \(until.prefix(16).replacingOccurrences(of: "T", with: " ")) UTC.")
+                .font(.caption2).foregroundStyle(COSPalette.danger)
+        }
+        if model.jevStatus?.available != false {
+            HStack {
+                SecureField(model.jevStatus?.configured == true ? "Replace Jev key" : "TypeSafe API key", text: $jevKeyDraft)
+                    .textFieldStyle(.plain).cosField().disabled(model.jevBusy)
+                Button(model.jevBusy ? "Checking…" : "Save key") {
+                    let key = jevKeyDraft
+                    Task { if await model.saveJevKey(key) { jevKeyDraft = "" } }
+                }.disabled(model.jevBusy || jevKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines).count < 16)
+            }
+            if model.jevStatus?.source == "config" {
+                Button("Remove Jev key", role: .destructive) { Task { await model.removeJevKey() } }
+                    .buttonStyle(COSTextButtonStyle(tone: .destructive)).disabled(model.jevBusy)
+            }
+        }
+        if let message = model.jevMessage { Text(message).font(.caption2).foregroundStyle(.secondary) }
+        Text("Get a key at typesafe.ai. Meeting intake always uses Jev, whatever you pick above.")
+            .font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+    }
+
+    /// The provider controls, then the SubQ key, in the panel's order. The hub places the Default and both keys in the
+    /// card and the per-workflow choices, Refresh and SubQ's retention note under Advanced.
     @ViewBuilder private var decisionProviderControls: some View {
+        decisionDefaultControls
+        decisionWorkflowControls
+        decisionMessageLine
+        decisionRefreshButton
+        subQRetentionNote
+        subQKeyControls
+    }
+
+    /// JV-02, or why it is not offered.
+    @ViewBuilder private var decisionDefaultControls: some View {
         if let settings = model.decisionSettings {
-            Text("Used for session suggestions, completion checks and Work search. Jev remains the default; errors never switch providers automatically.")
+            Text("Session suggestions, completion checks and Work search. Errors never switch the provider.")
                 .font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            decisionProviderPicker("Default", workflow: nil, selection: settings.savedProvider?.rawValue ?? "inherit")
+            decisionProviderPicker("Default provider", workflow: nil, selection: settings.savedProvider?.rawValue ?? "inherit")
+        } else if model.decisionSettingsAvailable == false {
+            Text("Picking a provider needs a newer COS server. Your Jev key still works.").font(.caption2).foregroundStyle(.secondary)
+        } else {
+            Text(model.decisionMessage == nil ? "Checking decision settings…" : "Decision settings unavailable.").font(.caption2).foregroundStyle(.secondary)
+        }
+    }
+
+    /// JV-03 to JV-05: one picker per workflow, its effective line and a missing key.
+    @ViewBuilder private var decisionWorkflowControls: some View {
+        if let settings = model.decisionSettings {
             ForEach(DecisionProviderSettings.workflows, id: \.self) { workflow in
                 VStack(alignment: .leading, spacing: 2) {
                     decisionProviderPicker(workflow == "session" ? "Session suggestions" : workflow == "completion" ? "Completion checks" : "Work search",
                                            workflow: workflow, selection: settings.overrides[workflow]?.rawValue ?? "inherit")
                     Text(settings.effectiveText(workflow)).font(.caption2).foregroundStyle(.secondary)
                     if let provider = settings.effective[workflow], settings.configured[provider.rawValue] != true {
-                        Text("\(provider.title) needs a key. This workflow will be unavailable until configured.")
+                        Text("\(provider.title) needs a key. This stays off until you add one.")
                             .font(.caption2).foregroundStyle(COSPalette.danger)
                     }
                 }
             }
-        } else if model.decisionSettingsAvailable == false {
-            Text("Choosing a decision provider needs a newer COS server. Existing Jev settings still work.").font(.caption2).foregroundStyle(.secondary)
-        } else {
-            Text(model.decisionMessage == nil ? "Checking decision settings…" : "Decision settings unavailable.").font(.caption2).foregroundStyle(.secondary)
         }
+    }
+
+    @ViewBuilder private var decisionMessageLine: some View {
         if let message = model.decisionMessage { Text(message).font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
-        Button("Refresh decision settings") { Task { await model.loadDecisionSettings(); await model.loadSubQKeyStatus() } }.disabled(model.decisionBusy)
-        Text("SubQ is an optional public preview. Selected workflows send their context to SubQ. Provider retention applies; the default organization retention is indefinite.")
+    }
+
+    /// JV-06.
+    private var decisionRefreshButton: some View {
+        Button("Refresh providers") { Task { await model.loadDecisionSettings(); await model.loadSubQKeyStatus() } }.disabled(model.decisionBusy)
+    }
+
+    /// JV-07: SubQ is a public preview; what it keeps.
+    @ViewBuilder private var subQRetentionNote: some View {
+        Text("SubQ is a public preview. Steps on SubQ send it their context, kept forever by default.")
             .font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         Link("SubQ data retention", destination: URL(string: "https://docs.subq.ai/using-the-api/data-retention/")!).font(.caption2)
+    }
+
+    /// The SubQ key: status, Save and Remove (JV-08, JV-09).
+    @ViewBuilder private var subQKeyControls: some View {
         Text("SubQ key").font(.caption.weight(.semibold))
         Text(model.subQKeyStatus?.summary ?? "SubQ key status unavailable.").font(.caption2).foregroundStyle(.secondary)
         if model.decisionSettingsAvailable == true {
@@ -1148,10 +1213,10 @@ struct ControlPanel: View {
                     Task { if await model.saveSubQKey(key) { subQKeyDraft = "" } }
                 }.disabled(model.subQKeyBusy || subQKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
-            Text("Validated against SubQ’s model list, then saved privately on the server. Saving a key does not select SubQ.")
+            Text("COS checks the key with SubQ, then saves it on the server. Saving does not turn SubQ on.")
                 .font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             if model.subQKeyStatus?.source == "config" {
-                Button("Remove saved SubQ key", role: .destructive) { Task { await model.removeSubQKey() } }
+                Button("Remove SubQ key", role: .destructive) { Task { await model.removeSubQKey() } }
                     .buttonStyle(COSTextButtonStyle(tone: .destructive)).disabled(model.subQKeyBusy)
             }
         }
@@ -1169,41 +1234,9 @@ struct ControlPanel: View {
     private var sessionPetSettings: some View {
         DisclosureGroup(isExpanded: $petSettingsExpanded) {
             VStack(alignment: .leading, spacing: 10) {
-                Toggle("Session pet", isOn: Binding(
-                    get: { model.petEnabled },
-                    set: { model.setPetEnabled($0) }
-                ))
-                .toggleStyle(COSSwitchStyle())
+                petSwitch
                 if model.petEnabled {
-                    // State the permission BEFORE a jump fails. Without this the
-                    // only way to learn the grant is missing was to click the pet
-                    // and read an error, which is what happened on Queen's Mac.
-                    if !model.petJumpTrusted {
-                        HStack(spacing: 8) {
-                            Image(systemName: "exclamationmark.triangle.fill")
-                                .foregroundStyle(COSPalette.gold)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("Jump to session needs Accessibility")
-                                    .font(.caption.weight(.semibold))
-                                Text("Everything else about the pet works without it.")
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                                // 0.5.267: a grant that reads ON in System Settings but no longer matches this build.
-                                Text("Already on? Reset and add again removes the old entry and asks macOS again.")
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                                    .fixedSize(horizontal: false, vertical: true)
-                                Button("Reset and add again") { model.resetAccessibilityAndAddAgain() }
-                                    .buttonStyle(COSTextButtonStyle())
-                            }
-                            Spacer(minLength: 0)
-                            Button("Grant") { model.requestPetJumpAccessibility() }
-                                .buttonStyle(COSTextButtonStyle())
-                        }
-                        .padding(8)
-                        .background(RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .fill(COSPalette.card))
-                    }
+                    petJumpWarning
                     PetSizeControls(model: model)
                     Divider()
                     DisclosureGroup(isExpanded: $petStateSpritesExpanded) {
@@ -1238,21 +1271,8 @@ struct ControlPanel: View {
                     }
                     .font(.caption)
                     Divider()
-                    Button("Use Cloud Puff") { model.restoreDefaultCharacter() }
-                        .help("Restore the bundled default pet. Artwork from OpenPets.")
-                    HStack {
-                        Button("Install sprite pack") {
-                            model.choosePetSpritePack()
-                        }
-                        .help("V2 Windu boards or a folder of per-state strips.")
-                        Button(model.petCustomSprite == nil ? "Choose sprite" : "Replace sprite") {
-                            model.choosePetSprite()
-                        }
-                        .help("One PNG for every state that has no strip. A small square pixel figure stays sharp.")
-                        if model.petSpriteKit.hasAnyCustom {
-                            Button("Use COS figure") { model.resetPetSprite() }
-                        }
-                    }
+                    petCloudPuffButton
+                    petSpriteButtons
                 }
             }
             .padding(.top, 8)
@@ -1278,6 +1298,71 @@ struct ControlPanel: View {
         }
     }
 
+    /// PT-01.
+    private var petSwitch: some View {
+        Toggle("Session pet", isOn: Binding(
+            get: { model.petEnabled },
+            set: { model.setPetEnabled($0) }
+        ))
+        .toggleStyle(COSSwitchStyle())
+    }
+
+    /// PT-02: jump to a session needs Accessibility, with Grant and Reset and add again.
+    @ViewBuilder private var petJumpWarning: some View {
+        // State the permission BEFORE a jump fails. Without this the
+        // only way to learn the grant is missing was to click the pet
+        // and read an error, which is what happened on Queen's Mac.
+        if !model.petJumpTrusted {
+            HStack(spacing: 8) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(COSPalette.gold)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Jump to session needs Accessibility")
+                        .font(.caption.weight(.semibold))
+                    Text("Everything else about the pet works without it.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    // 0.5.267: a grant that reads ON in System Settings but no longer matches this build.
+                    Text("Already on? Reset and add again removes the old entry and asks macOS again.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Button("Reset and add again") { model.resetAccessibilityAndAddAgain() }
+                        .buttonStyle(COSTextButtonStyle())
+                }
+                Spacer(minLength: 0)
+                Button("Allow") { model.requestPetJumpAccessibility() }
+                    .buttonStyle(COSTextButtonStyle())
+            }
+            .padding(8)
+            .background(RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(COSPalette.card))
+        }
+    }
+
+    /// PT-10.
+    private var petCloudPuffButton: some View {
+        Button("Use Cloud Puff") { model.restoreDefaultCharacter() }
+            .help("Restore the bundled default pet. Artwork from OpenPets.")
+    }
+
+    /// PT-11 to PT-13: a sprite pack, one sprite, back to the COS figure.
+    private var petSpriteButtons: some View {
+        HStack {
+            Button("Install sprite pack") {
+                model.choosePetSpritePack()
+            }
+            .help("V2 Windu boards or a folder of per-state strips.")
+            Button(model.petCustomSprite == nil ? "Choose sprite" : "Replace sprite") {
+                model.choosePetSprite()
+            }
+            .help("One PNG for every state that has no strip. A small square pixel figure stays sharp.")
+            if model.petSpriteKit.hasAnyCustom {
+                Button("Use COS figure") { model.resetPetSprite() }
+            }
+        }
+    }
+
     private var header: some View {
         HStack(spacing: 10) {
             COSLockupView(height: 17)
@@ -1292,14 +1377,14 @@ struct ControlPanel: View {
                     Text("Control").font(COSType.display(18, weight: .semibold)).fixedSize()
                     versionStamp.layoutPriority(-1)
                 }
-                updateStatusLine(idle: "Your local glasses server").lineLimit(1)
+                updateStatusLine(idle: "Your COS server on this Mac").lineLimit(1)
             }
             Spacer()
             if model.busy { ProgressView().controlSize(.small) }
             Button { confirmResetMessageCount = true } label: { Image(systemName: "archivebox") }
                 .buttonStyle(COSIconButtonStyle(size: 24))
                 .disabled(model.busy)
-                .help("Archive live messages and start numbering at #1")
+                .help("Reset message count")
             refreshAndCheckButton
         }
     }
@@ -1338,396 +1423,527 @@ struct ControlPanel: View {
             .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: shown)
     }
 
+    /// The server status card: the pieces below in the panel's order. The hub places each in its category.
     private var statusCard: some View {
         VStack(spacing: 9) {
-            statusRow("Server", value: runtimeLabel, good: model.status.runtimeState == "managedHealthy")
-            statusRow("Ownership", value: ownershipLabel, good: model.status.ownershipVerified)
-            statusRow("Recovery", value: model.status.recoveryLoaded ? "Scheduled" : "Needs repair", good: model.status.recoveryInstalled && model.status.recoveryLoaded)
-            if let voice = voiceGuide.voice, voice.usesParakeet {
-                statusRow("Local transcription", value: voice.parakeetReady ? "Ready · Parakeet Ultra" : "Parakeet needs attention", good: voice.parakeetReady)
-                statusRow("Selected live preview", value: selectedEngineLabel(voice.selectedPreview, effective: voice.effectivePreview), good: voice.selectedPreview == voice.effectivePreview)
-                statusRow("Selected saved meetings", value: selectedEngineLabel(voice.selectedHQ, effective: voice.effectiveHQ), good: voice.selectedHQ == voice.effectiveHQ)
-                if !voice.parakeetReady {
-                    Text("Your selected engines are kept. Check Transcription settings before recording.")
-                        .font(.caption2).foregroundStyle(COSPalette.amber)
-                }
-            } else {
-                statusRow("Local Whisper", value: whisperLabel, good: model.status.whisperReady)
+            statusServerRows
+            statusVoiceRows
+            statusContextRows
+            statusBackgroundRow
+            statusMeetingPreviewRow
+            statusContinueRow
+            statusVideoRows(clearButton: true)
+            statusIdleMetalRow
+            statusAudioCleanupRow
+            statusWhisperErrorLine
+            statusTranscriptionModelRows
+            statusMeetingAudioRows
+            statusMeetingAlertsRow
+            statusMeetingSyncRows
+            statusEarlySyncRows
+            statusHqPrefillRows
+            statusFinalizationRows
+            statusRetainedCaptureRows
+            statusAgentRows
+            statusCursorRow
+            statusOllamaRow
+            statusVersionRow
+            Divider()
+            statusWorkFolderRows
+            statusLibraryRows
+            statusActiveWorkLine
+            statusTransactionLine
+        }
+        .padding(13)
+        .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(COSPalette.line, lineWidth: 1))
+    }
+
+    /// Server, ownership and recovery (ST-01 to ST-03).
+    @ViewBuilder private var statusServerRows: some View {
+        statusRow("Server", value: runtimeLabel, good: model.status.runtimeState == "managedHealthy")
+        statusRow("Ownership", value: ownershipLabel, good: model.status.ownershipVerified)
+        statusRow("Recovery", value: model.status.recoveryLoaded ? "Scheduled" : "Needs repair", good: model.status.recoveryInstalled && model.status.recoveryLoaded)
+    }
+
+    /// Local transcription: Parakeet's readiness and selected engines, or Whisper (ST-04, ST-05).
+    @ViewBuilder private var statusVoiceRows: some View {
+        if let voice = voiceGuide.voice, voice.usesParakeet {
+            statusRow("Local transcription", value: voice.parakeetReady ? "Ready · Parakeet Ultra" : "Parakeet needs attention", good: voice.parakeetReady)
+            statusRow("Selected live preview", value: selectedEngineLabel(voice.selectedPreview, effective: voice.effectivePreview), good: voice.selectedPreview == voice.effectivePreview)
+            statusRow("Selected saved meetings", value: selectedEngineLabel(voice.selectedHQ, effective: voice.effectiveHQ), good: voice.selectedHQ == voice.effectiveHQ)
+            if !voice.parakeetReady {
+                Text("Your selected engines are kept. Check Transcription settings before recording.")
+                    .font(.caption2).foregroundStyle(COSPalette.amber)
             }
-            if model.status.contextBrowserSupported {
-                let memoryReady = model.status.memoryAvailable == true
-                let threadsReady = model.status.threadsAvailable == true
-                statusRow("Memory & Threads", value: contextBrowserLabel, good: memoryReady && threadsReady)
-                if !memoryReady || !threadsReady {
-                    // The ONLY in-app guidance for this feature, so it has to say
-                    // what to actually do. It used to read "Choose COS Data below.
-                    // Empty stores are healthy" — true, and useless to someone
-                    // who has no COS workspace, which was everyone but the author.
-                    Text(contextBrowserHint)
+        } else {
+            statusRow("Local Whisper", value: whisperLabel, good: model.status.whisperReady)
+        }
+    }
+
+    /// Memory and threads, with what to do when either is missing (ST-06).
+    @ViewBuilder private var statusContextRows: some View {
+        if model.status.contextBrowserSupported {
+            let memoryReady = model.status.memoryAvailable == true
+            let threadsReady = model.status.threadsAvailable == true
+            statusRow("Memory and threads", value: contextBrowserLabel, good: memoryReady && threadsReady)
+            if !memoryReady || !threadsReady {
+                // The ONLY in-app guidance for this feature, so it has to say
+                // what to actually do. It used to read "Choose COS Data below.
+                // Empty stores are healthy" — true, and useless to someone
+                // who has no COS workspace, which was everyone but the author.
+                Text(contextBrowserHint)
+                    .font(.caption2).foregroundStyle(COSPalette.amber)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+                    .multilineTextAlignment(.trailing)
+            }
+            contextDetail
+        }
+    }
+
+    /// Background jobs (ST-07).
+    @ViewBuilder private var statusBackgroundRow: some View {
+        if model.status.backgroundJobsSupported, let enabled = model.status.backgroundJobsEnabled {
+            statusRow("Background jobs", value: enabled ? "Allowed" : "Off", good: enabled)
+        }
+    }
+
+    /// Meeting preview (ST-08).
+    @ViewBuilder private var statusMeetingPreviewRow: some View {
+        if model.status.meetingPreviewSupported, let enabled = model.status.meetingPreviewEnabled {
+            statusRow("Fast preview", value: enabled ? "\(voiceGuide.voice?.activePreviewTitle ?? "Status unavailable") · On" : "Off", good: enabled)
+        }
+    }
+
+    /// Continue threads (ST-09).
+    @ViewBuilder private var statusContinueRow: some View {
+        if model.status.threadAttachSupported, let enabled = model.status.threadAttachEnabled {
+            let providers = model.status.threadAttachProviders
+            let detail = enabled
+                ? (providers.isEmpty ? "On" : providers.joined(separator: " · "))
+                : "Off"
+            statusRow("Continue sessions", value: detail, good: enabled)
+        }
+    }
+
+    /// Video uploads (ST-10). The hub draws Clear stranded once, on the Reliable video uploads row (D-14).
+    @ViewBuilder private func statusVideoRows(clearButton: Bool) -> some View {
+        if model.status.videoUploadV2Supported, let enabled = model.status.videoUploadV2Enabled {
+            let receiving = model.status.videoUploadV2Receiving
+            let finalizing = model.status.videoUploadV2Finalizing
+            let active = receiving + finalizing
+            let detail = active > 0 ? "\(active) active" : (enabled ? "Resumable · On" : "Off")
+            statusRow("Video uploads", value: detail, good: enabled && active == 0)
+            if receiving > 0, clearButton {
+                HStack {
+                    Text("A stopped upload can wait here for 4 hours and block Repair.")
                         .font(.caption2).foregroundStyle(COSPalette.amber)
+                    Spacer()
+                    Button("Clear stuck uploads") { confirmClearStrandedVideoUploads = true }
+                        .disabled(model.busy)
+                }
+            }
+            if model.status.videoUploadV2Unacknowledged > 0 {
+                Text("\(model.status.videoUploadV2Unacknowledged) finished upload(s) waiting for the phone to confirm.")
+                    .font(.caption2).foregroundStyle(COSPalette.amber)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+            }
+        }
+    }
+
+    /// Idle Metal HQ (ST-11).
+    @ViewBuilder private var statusIdleMetalRow: some View {
+        if model.status.idleMetalHqSupported, let enabled = model.status.idleMetalHqEnabled {
+            let label = enabled ? "On · pauses for live work" : (model.status.idleMetalHqForceCpu == true ? "Force CPU" : "Off · CPU")
+            statusRow("GPU when idle", value: label, good: enabled)
+        }
+    }
+
+    /// Audio cleanup (ST-12).
+    @ViewBuilder private var statusAudioCleanupRow: some View {
+        if model.status.adaptiveAudioCleanupSupported, let enabled = model.status.adaptiveAudioCleanupEnabled {
+            // Raw replay is the safe default/rollback, not a degraded state.
+            statusRow("Playback cleanup", value: enabled ? "Cleaned" : "Original", good: true)
+        }
+    }
+
+    /// Whisper's own error while it is not ready (ST-05).
+    @ViewBuilder private var statusWhisperErrorLine: some View {
+        if voiceGuide.voice?.usesParakeet != true, !model.status.whisperReady, let error = model.status.whisperError, !error.isEmpty {
+            Text(error)
+                .font(.caption2)
+                .foregroundStyle(COSPalette.amber)
+                .lineLimit(2)
+                .frame(maxWidth: .infinity, alignment: .trailing)
+                .textSelection(.enabled)
+        }
+    }
+
+    /// The tier and the models for preview, live commit and save (ST-13).
+    @ViewBuilder private var statusTranscriptionModelRows: some View {
+        if voiceGuide.voice?.usesParakeet != true, model.status.livePreviewModel != nil || model.status.liveCommitModel != nil || model.status.hqPolishModel != nil {
+            if let tier = model.status.transcriptionEffectiveTier {
+                statusRow(
+                    "Transcription tier",
+                    value: transcriptionTierLabel(
+                        requested: model.status.transcriptionRequestedTier,
+                        effective: tier,
+                        degraded: model.status.transcriptionTierDegraded
+                    ),
+                    good: !model.status.transcriptionTierDegraded && model.status.whisperReady
+                )
+                if model.status.transcriptionTierDegraded {
+                    Text(transcriptionTierReason)
+                        .font(.caption2)
+                        .foregroundStyle(COSPalette.amber)
                         .frame(maxWidth: .infinity, alignment: .trailing)
-                        .multilineTextAlignment(.trailing)
-                }
-                contextDetail
-            }
-            if model.status.backgroundJobsSupported, let enabled = model.status.backgroundJobsEnabled {
-                statusRow("Background jobs", value: enabled ? "Allowed" : "Off", good: enabled)
-            }
-            if model.status.meetingPreviewSupported, let enabled = model.status.meetingPreviewEnabled {
-                statusRow("Meeting preview", value: enabled ? "\(voiceGuide.voice?.activePreviewTitle ?? "Status unavailable") · On" : "Off", good: enabled)
-            }
-            if model.status.threadAttachSupported, let enabled = model.status.threadAttachEnabled {
-                let providers = model.status.threadAttachProviders
-                let detail = enabled
-                    ? (providers.isEmpty ? "On" : providers.joined(separator: " · "))
-                    : "Off"
-                statusRow("Continue threads", value: detail, good: enabled)
-            }
-            if model.status.videoUploadV2Supported, let enabled = model.status.videoUploadV2Enabled {
-                let receiving = model.status.videoUploadV2Receiving
-                let finalizing = model.status.videoUploadV2Finalizing
-                let active = receiving + finalizing
-                let detail = active > 0 ? "\(active) active" : (enabled ? "Resumable · On" : "Off")
-                statusRow("Video uploads", value: detail, good: enabled && active == 0)
-                if receiving > 0 {
-                    HStack {
-                        Text("Sideload or a killed upload can sit here for 4 hours and block Repair.")
-                            .font(.caption2).foregroundStyle(COSPalette.amber)
-                        Spacer()
-                        Button("Clear stranded") { confirmClearStrandedVideoUploads = true }
-                            .disabled(model.busy)
-                    }
-                }
-                if model.status.videoUploadV2Unacknowledged > 0 {
-                    Text("\(model.status.videoUploadV2Unacknowledged) completed video receipt(s) await companion acknowledgment.")
-                        .font(.caption2).foregroundStyle(COSPalette.amber)
-                        .frame(maxWidth: .infinity, alignment: .trailing)
                 }
             }
-            if model.status.idleMetalHqSupported, let enabled = model.status.idleMetalHqEnabled {
-                let label = enabled ? "On · preemptible" : (model.status.idleMetalHqForceCpu == true ? "Force CPU" : "Off · CPU")
-                statusRow("Idle Metal HQ", value: label, good: enabled)
+            if model.status.livePreviewModel != nil {
+            statusRow(
+                "Preview, while dictating",
+                value: transcriptionModelLabel(model.status.livePreviewModel, degraded: model.status.livePreviewDegraded),
+                good: model.status.livePreviewReady == true
+            )
             }
-            if model.status.adaptiveAudioCleanupSupported, let enabled = model.status.adaptiveAudioCleanupEnabled {
-                // Raw replay is the safe default/rollback, not a degraded state.
-                statusRow("Audio cleanup", value: enabled ? "Adaptive replay" : "Raw replay", good: true)
+            if model.status.liveCommitModel != nil {
+            statusRow(
+                "Commit, live meeting",
+                value: transcriptionModelLabel(model.status.liveCommitModel),
+                good: model.status.whisperReady
+            )
             }
-            if voiceGuide.voice?.usesParakeet != true, !model.status.whisperReady, let error = model.status.whisperError, !error.isEmpty {
+            if model.status.hqPolishModel != nil {
+            statusRow(
+                "Polish, on save",
+                value: transcriptionModelLabel(model.status.hqPolishModel),
+                good: model.status.hqPolishReady == true
+            )
+            }
+            if let vocabularyTerms = model.status.transcriptionVocabularyTerms, vocabularyTerms == 0 {
+                Text("Add names and terms in the setup wizard for better accuracy.")
+                    .font(.caption2)
+                    .foregroundStyle(COSPalette.amber)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+            }
+        }
+    }
+
+    /// Each live meeting's audio (ST-14).
+    @ViewBuilder private var statusMeetingAudioRows: some View {
+        ForEach(model.meetingAudio) { watch in
+            statusRow(watch.rowLabel(amongLive: model.meetingAudio.count), value: watch.rowValue, good: watch.state == "reaching")
+            if watch.alert {
+                Text(watch.panelCaption)
+                    .font(.caption2)
+                    .foregroundStyle(COSPalette.amber)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+            }
+        }
+    }
+
+    /// Meeting alerts off for COS Control (ST-15).
+    @ViewBuilder private var statusMeetingAlertsRow: some View {
+        if model.meetingAlertsOff && !model.meetingAudio.isEmpty {
+            statusRow("Meeting alerts", value: "Off for COS Control", good: false)
+            HStack {
+                Spacer()
+                Button("Notification settings") { model.openNotificationSettings() }
+                    .controlSize(.small)
+            }
+        }
+    }
+
+    /// Meeting sync, its meetings and Run sync now (ST-16, ST-17).
+    @ViewBuilder private var statusMeetingSyncRows: some View {
+        statusRow("Meeting sync", value: model.status.displayedMeetingSync.label, good: !model.status.meetingWorkBlockingRestart)
+        // 0.5.237: which meetings, and where each one is, as the server reports it.
+        ForEach(model.status.meetingSyncMeetings.prefix(4)) { row in
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(row.title())
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 8)
+                Text(row.stage)
+                    .monospacedDigit()
+                    .foregroundStyle(row.isWaiting ? Color.secondary : Color.primary)
+                    .lineLimit(1)
+            }
+            .font(.caption)
+        }
+        if model.status.meetingSyncMeetings.count > 4 {
+            Text("+\(model.status.meetingSyncMeetings.count - 4) more")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .trailing)
+        }
+        HStack {
+            Spacer()
+            Button("Sync now") { model.perform("meeting-sync-now") }
+                .controlSize(.small)
+                .disabled(model.busy || model.status.meetingWorkBlockingRestart)
+        }
+        if model.status.meetingWorkBlockingRestart {
+            Text(meetingWorkBlockCaption)
+                .font(.caption2)
+                .foregroundStyle(COSPalette.amber)
+                .frame(maxWidth: .infinity, alignment: .trailing)
+        }
+    }
+
+    /// Early meeting sync (ST-18).
+    @ViewBuilder private var statusEarlySyncRows: some View {
+        if let earlySync = model.status.earlyMeetingSyncEnabled {
+            let failed = model.status.earlyMeetingSyncLastOutcome == "failed"
+            let unavailable = model.status.earlyMeetingSyncRequested == true
+                && model.status.earlyMeetingSyncAvailable == false
+            let earlyValue = unavailable
+                ? model.status.earlyMeetingSyncReason == "sync_script_upgrade_required"
+                    ? "Workspace update required"
+                    : "Unavailable"
+                : !earlySync
+                ? "Off"
+                : model.status.earlyMeetingSyncInFlight || model.status.earlyMeetingSyncPendingCount > 0
+                    ? "Claiming · \(model.status.earlyMeetingSyncPendingCount) pending"
+                    : failed
+                        ? "Final sync pending"
+                        : model.status.earlyMeetingSyncLastOutcome == "finalized"
+                            ? "Final sync verified"
+                        : model.status.earlyMeetingSyncLastOutcome == "claimed"
+                            ? "Claim verified"
+                            : "Ready"
+            statusRow(
+                "Early sync",
+                value: earlyValue,
+                good: earlySync && !failed && !unavailable
+            )
+            if failed, let error = model.status.earlyMeetingSyncLastError {
                 Text(error)
                     .font(.caption2)
                     .foregroundStyle(COSPalette.amber)
                     .lineLimit(2)
                     .frame(maxWidth: .infinity, alignment: .trailing)
-                    .textSelection(.enabled)
             }
-            if voiceGuide.voice?.usesParakeet != true, model.status.livePreviewModel != nil || model.status.liveCommitModel != nil || model.status.hqPolishModel != nil {
-                if let tier = model.status.transcriptionEffectiveTier {
-                    statusRow(
-                        "Transcription tier",
-                        value: transcriptionTierLabel(
-                            requested: model.status.transcriptionRequestedTier,
-                            effective: tier,
-                            degraded: model.status.transcriptionTierDegraded
-                        ),
-                        good: !model.status.transcriptionTierDegraded && model.status.whisperReady
-                    )
-                    if model.status.transcriptionTierDegraded {
-                        Text(transcriptionTierReason)
-                            .font(.caption2)
-                            .foregroundStyle(COSPalette.amber)
-                            .frame(maxWidth: .infinity, alignment: .trailing)
-                    }
-                }
-                if model.status.livePreviewModel != nil {
-                statusRow(
-                    "Preview, while dictating",
-                    value: transcriptionModelLabel(model.status.livePreviewModel, degraded: model.status.livePreviewDegraded),
-                    good: model.status.livePreviewReady == true
-                )
-                }
-                if model.status.liveCommitModel != nil {
-                statusRow(
-                    "Commit, live meeting",
-                    value: transcriptionModelLabel(model.status.liveCommitModel),
-                    good: model.status.whisperReady
-                )
-                }
-                if model.status.hqPolishModel != nil {
-                statusRow(
-                    "Polish, on save",
-                    value: transcriptionModelLabel(model.status.hqPolishModel),
-                    good: model.status.hqPolishReady == true
-                )
-                }
-                if let vocabularyTerms = model.status.transcriptionVocabularyTerms, vocabularyTerms == 0 {
-                    Text("Add names and specialist terms in the setup wizard to improve accuracy.")
-                        .font(.caption2)
-                        .foregroundStyle(COSPalette.amber)
-                        .frame(maxWidth: .infinity, alignment: .trailing)
-                }
-            }
-            ForEach(model.meetingAudio) { watch in
-                statusRow(watch.rowLabel(amongLive: model.meetingAudio.count), value: watch.rowValue, good: watch.state == "reaching")
-                if watch.alert {
-                    Text(watch.panelCaption)
-                        .font(.caption2)
-                        .foregroundStyle(COSPalette.amber)
-                        .frame(maxWidth: .infinity, alignment: .trailing)
-                }
-            }
-            if model.meetingAlertsOff && !model.meetingAudio.isEmpty {
-                statusRow("Meeting alerts", value: "Off for COS Control", good: false)
-                HStack {
-                    Spacer()
-                    Button("Notification settings") { model.openNotificationSettings() }
-                        .controlSize(.small)
-                }
-            }
-            statusRow("Meeting sync", value: model.status.displayedMeetingSync.label, good: !model.status.meetingWorkBlockingRestart)
-            // 0.5.237: which meetings, and where each one is, as the server reports it.
-            ForEach(model.status.meetingSyncMeetings.prefix(4)) { row in
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text(row.title())
-                        .foregroundStyle(.secondary)
-                    Spacer(minLength: 8)
-                    Text(row.stage)
-                        .monospacedDigit()
-                        .foregroundStyle(row.isWaiting ? Color.secondary : Color.primary)
-                        .lineLimit(1)
-                }
-                .font(.caption)
-            }
-            if model.status.meetingSyncMeetings.count > 4 {
-                Text("+\(model.status.meetingSyncMeetings.count - 4) more")
+        }
+    }
+
+    /// HQ prefill (ST-19).
+    @ViewBuilder private var statusHqPrefillRows: some View {
+        if let progressive = model.status.progressiveHqEnabled, let prefillValue = model.status.progressiveHqValue {
+            let tier = model.status.progressiveHqTier == "max" ? "Max" : "Balanced"
+            let threadLabel = model.status.progressiveHqThreads.map { " · \($0)t" } ?? ""
+            let unavailable = model.status.progressiveHqRequested == true && !progressive
+            statusRow(
+                "HQ prefill",
+                value: prefillValue,
+                good: progressive
+            )
+            if model.status.progressiveHqActive {
+                Text("\(tier) CPU guardrail\(threadLabel) · canonical meeting text is unchanged.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .trailing)
-            }
-            HStack {
-                Spacer()
-                Button("Run sync now") { model.perform("meeting-sync-now") }
-                    .controlSize(.small)
-                    .disabled(model.busy || model.status.meetingWorkBlockingRestart)
-            }
-            if model.status.meetingWorkBlockingRestart {
-                Text(meetingWorkBlockCaption)
+            } else if unavailable {
+                Text(model.status.progressiveHqReason == "hq_unavailable"
+                    ? "Large-v3 HQ is unavailable; live transcription remains unchanged."
+                    : "Progressive HQ was not admitted on this server.")
                     .font(.caption2)
                     .foregroundStyle(COSPalette.amber)
                     .frame(maxWidth: .infinity, alignment: .trailing)
-            }
-            if let earlySync = model.status.earlyMeetingSyncEnabled {
-                let failed = model.status.earlyMeetingSyncLastOutcome == "failed"
-                let unavailable = model.status.earlyMeetingSyncRequested == true
-                    && model.status.earlyMeetingSyncAvailable == false
-                let earlyValue = unavailable
-                    ? model.status.earlyMeetingSyncReason == "sync_script_upgrade_required"
-                        ? "Workspace update required"
-                        : "Unavailable"
-                    : !earlySync
-                    ? "Off"
-                    : model.status.earlyMeetingSyncInFlight || model.status.earlyMeetingSyncPendingCount > 0
-                        ? "Claiming · \(model.status.earlyMeetingSyncPendingCount) pending"
-                        : failed
-                            ? "Final sync pending"
-                            : model.status.earlyMeetingSyncLastOutcome == "finalized"
-                                ? "Final sync verified"
-                            : model.status.earlyMeetingSyncLastOutcome == "claimed"
-                                ? "Claim verified"
-                                : "Ready"
-                statusRow(
-                    "Early meeting sync",
-                    value: earlyValue,
-                    good: earlySync && !failed && !unavailable
-                )
-                if failed, let error = model.status.earlyMeetingSyncLastError {
-                    Text(error)
-                        .font(.caption2)
-                        .foregroundStyle(COSPalette.amber)
-                        .lineLimit(2)
-                        .frame(maxWidth: .infinity, alignment: .trailing)
-                }
-            }
-            if let progressive = model.status.progressiveHqEnabled, let prefillValue = model.status.progressiveHqValue {
-                let tier = model.status.progressiveHqTier == "max" ? "Max" : "Balanced"
-                let threadLabel = model.status.progressiveHqThreads.map { " · \($0)t" } ?? ""
-                let unavailable = model.status.progressiveHqRequested == true && !progressive
-                statusRow(
-                    "HQ prefill",
-                    value: prefillValue,
-                    good: progressive
-                )
-                if model.status.progressiveHqActive {
-                    Text("\(tier) CPU guardrail\(threadLabel) · canonical meeting text is unchanged.")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .trailing)
-                } else if unavailable {
-                    Text(model.status.progressiveHqReason == "hq_unavailable"
-                        ? "Large-v3 HQ is unavailable; live transcription remains unchanged."
-                        : "Progressive HQ was not admitted on this server.")
-                        .font(.caption2)
-                        .foregroundStyle(COSPalette.amber)
-                        .frame(maxWidth: .infinity, alignment: .trailing)
-                }
-            }
-            if model.status.meetingFinalizationPending > 0 || model.status.meetingFinalizationMalformed > 0 {
-                let recovering = model.status.meetingFinalizationFailed > 0
-                    || model.status.meetingFinalizationMalformed > 0
-                statusRow(
-                    recovering ? "Finalization recovery" : "Library save",
-                    value: model.status.meetingFinalizationMalformed > 0
-                        ? "Repair required"
-                        : model.status.meetingFinalizationFailed > 0
-                        ? "\(model.status.meetingFinalizationFailed) retrying"
-                        : "\(model.status.meetingFinalizationPending) pending",
-                    good: !recovering
-                )
-                if let error = model.status.meetingFinalizationLastError {
-                    Text(error)
-                        .font(.caption2)
-                        .foregroundStyle(COSPalette.amber)
-                        .lineLimit(2)
-                        .frame(maxWidth: .infinity, alignment: .trailing)
-                }
-            }
-            // Server 6.19.0+: meeting audio whose save never landed is
-            // quarantined instead of deleted. Surface it — a hidden lost
-            // meeting is the failure this exists to end. Row hides at zero.
-            if model.status.unsavedCaptures > 0 || !model.recoverableOrphans.isEmpty || !model.strandedCaptures.isEmpty {
-                statusRow(
-                    "Retained captures",
-                    value: unsavedCapturesLabel,
-                    good: false
-                )
-                Text("Retained captures on this Mac. Save available transcripts or recover quarantined audio before retention expires.")
-                    .font(.caption2)
-                    .foregroundStyle(COSPalette.amber)
-                    .lineLimit(3)
-                    .frame(maxWidth: .infinity, alignment: .trailing)
-                if !model.recoverableOrphans.isEmpty {
-                    VStack(alignment: .trailing, spacing: 6) {
-                        // ONLY when there is more than one. With exactly one
-                        // capture this rendered a second button reading
-                        // "Recover", identical to the per-row button below and
-                        // firing the same recovery on the same session (the
-                        // branch below falls through to .first). The user saw two
-                        // identical buttons, one greyed, and could not tell which
-                        // was authoritative. The per-row button already covers the
-                        // single case AND carries the label and chunk count that
-                        // say WHAT is being recovered.
-                        if model.recoverableOrphans.count > 1 {
-                            // The single-capture fallback that used to live here
-                            // is gone with the single-capture button: unreachable
-                            // once the guard above exists.
-                            Button("Recover all") { confirmRecoverAllOrphans = true }
-                                .controlSize(.small)
-                                .disabled(model.busy || model.orphanBusy)
-                        }
-                        ForEach(model.recoverableOrphans) { capture in
-                            HStack(spacing: 8) {
-                                Text(capture.label)
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(1)
-                                Button("Recover") { model.recoverOrphan(capture.sessionId) }
-                                    .controlSize(.mini)
-                                    .disabled(model.busy || model.orphanBusy || capture.recovering)
-                            }
-                            .frame(maxWidth: .infinity, alignment: .trailing)
-                        }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .trailing)
-                }
-                if !model.strandedCaptures.isEmpty {
-                    Text("A retained server session does not mean the phone has a pending meeting. Save is available only when a transcript exists.")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .trailing)
-                    VStack(alignment: .trailing, spacing: 6) {
-                        if model.strandedCaptures.filter({ $0.canSave }).count > 1 {
-                            Button("Save all") { confirmSaveAllStranded = true }
-                                .controlSize(.small)
-                                .disabled(model.busy || model.orphanBusy)
-                        }
-                        ForEach(model.strandedCaptures) { capture in
-                            HStack(spacing: 8) {
-                                Text(capture.label)
-                                    .font(.caption2)
-                                    .foregroundStyle(.tertiary)
-                                    .lineLimit(1)
-                                if capture.canSave {
-                                    Button("Save") { model.saveStranded(capture.sessionId) }
-                                        .controlSize(.mini)
-                                        .disabled(model.busy || model.orphanBusy)
-                                }
-                            }
-                            .frame(maxWidth: .infinity, alignment: .trailing)
-                        }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .trailing)
-                }
-            }
-            // One quick-glance row for all three agent backends. Cursor keeps
-            // its own detailed row below because the helper probes it locally
-            // (sign-in state, not just presence) — richer than health's flag.
-            statusRow("Agent CLIs", value: agentCliSummary, good: agentCliAllReady)
-            // Onboarding P1: "Not found" vs "Not signed in" comes from the helper's provider-status (a failed server
-            // `--version` was labelled "Not signed in" before); the server's flags are the fallback.
-            AgentCliDetailLine(guide: model.providerGuide, model: model, allReady: agentCliAllReady)
-            statusRow("Cursor CLI", value: cursorLabel, good: model.status.cursorReady)
-            // Hide-unless-ready, and never `good: ollamaReady ?? false` -- that
-            // would paint a red mark on every pre-6.39.0 server and on this Mac
-            // today. No row is the correct render for "no local daemon".
-            if model.status.ollamaReady == true, let ollamaName = model.status.ollamaModel, !ollamaName.isEmpty {
-                statusRow("Ollama", value: ollamaName, good: true)
-            }
-            statusRow("Version", value: model.status.runtimeState == "managedInPlace" ? "Self-managed" : (model.status.version ?? model.status.installedVersion ?? "Not installed"), good: model.status.installed || model.status.runtimeState == "managedInPlace")
-            Divider()
-            HStack(alignment: .top) {
-                Text("Work folder").foregroundStyle(.secondary)
-                Spacer()
-                Text(model.status.workDirectory ?? "Default COS context")
-                    .lineLimit(2).multilineTextAlignment(.trailing).textSelection(.enabled)
-            }.font(.caption)
-            if model.status.workDirectoryPending {
-                Label("Saved to LaunchAgent · pending a safe server restart", systemImage: "clock.badge.exclamationmark")
-                    .font(.caption).foregroundStyle(COSPalette.amber)
-            }
-            HStack(alignment: .top) {
-                Text("Meetings library").foregroundStyle(.secondary)
-                Spacer()
-                VStack(alignment: .trailing, spacing: 2) {
-                    Text(model.status.operationsDirectory ?? "Not set (standalone recordings)")
-                        .lineLimit(2).multilineTextAlignment(.trailing).textSelection(.enabled)
-                    if model.status.operationsDirectory != nil {
-                        Text(model.status.meetingLibraryLayout == "direct"
-                            ? "One folder · \(model.status.meetingLibraryCount) meeting(s)"
-                            : "Multiple folders · \(model.status.meetingLibraryCount) meeting(s)")
-                            .foregroundStyle(.secondary)
-                    }
-                }
-            }.font(.caption)
-            if let warning = model.status.meetingLibraryWarning {
-                Label(warning, systemImage: "exclamationmark.triangle.fill")
-                    .font(.caption).foregroundStyle(COSPalette.amber)
-            }
-            if let jobs = model.status.activeJobs, let recordings = model.status.activeTranscriptionSessions, jobs + recordings > 0 {
-                Label("\(jobs) job(s), \(recordings) recording(s) active. Restart is locked.", systemImage: "lock.fill")
-                    .font(.caption).foregroundStyle(COSPalette.amber)
-            }
-            if model.status.transactionPending {
-                if model.busy {
-                    Label("Server change in progress · recovery is armed", systemImage: "arrow.trianglehead.2.clockwise.rotate.90")
-                        .font(.caption).foregroundStyle(COSPalette.amber)
-                } else {
-                    Label("An interrupted server change needs Repair.", systemImage: "wrench.and.screwdriver.fill")
-                        .font(.caption).foregroundStyle(.red)
-                }
             }
         }
-        .padding(13)
-        .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 12))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(COSPalette.line, lineWidth: 1))
+    }
+
+    /// Finalization recovery or library save (ST-20).
+    @ViewBuilder private var statusFinalizationRows: some View {
+        if model.status.meetingFinalizationPending > 0 || model.status.meetingFinalizationMalformed > 0 {
+            let recovering = model.status.meetingFinalizationFailed > 0
+                || model.status.meetingFinalizationMalformed > 0
+            statusRow(
+                recovering ? "Save retries" : "Saving meetings",
+                value: model.status.meetingFinalizationMalformed > 0
+                    ? "Repair required"
+                    : model.status.meetingFinalizationFailed > 0
+                    ? "\(model.status.meetingFinalizationFailed) retrying"
+                    : "\(model.status.meetingFinalizationPending) pending",
+                good: !recovering
+            )
+            if let error = model.status.meetingFinalizationLastError {
+                Text(error)
+                    .font(.caption2)
+                    .foregroundStyle(COSPalette.amber)
+                    .lineLimit(2)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+            }
+        }
+    }
+
+    /// Retained captures, Recover and Save (ST-21 to ST-23).
+    @ViewBuilder private var statusRetainedCaptureRows: some View {
+        // Server 6.19.0+: meeting audio whose save never landed is
+        // quarantined instead of deleted. Surface it — a hidden lost
+        // meeting is the failure this exists to end. Row hides at zero.
+        if model.status.unsavedCaptures > 0 || !model.recoverableOrphans.isEmpty || !model.strandedCaptures.isEmpty {
+            statusRow(
+                "Unsaved recordings",
+                value: unsavedCapturesLabel,
+                good: false
+            )
+            Text("Recordings that never became meetings. Save or recover them before they expire.")
+                .font(.caption2)
+                .foregroundStyle(COSPalette.amber)
+                .lineLimit(3)
+                .frame(maxWidth: .infinity, alignment: .trailing)
+            if !model.recoverableOrphans.isEmpty {
+                VStack(alignment: .trailing, spacing: 6) {
+                    // ONLY when there is more than one. With exactly one
+                    // capture this rendered a second button reading
+                    // "Recover", identical to the per-row button below and
+                    // firing the same recovery on the same session (the
+                    // branch below falls through to .first). The user saw two
+                    // identical buttons, one greyed, and could not tell which
+                    // was authoritative. The per-row button already covers the
+                    // single case AND carries the label and chunk count that
+                    // say WHAT is being recovered.
+                    if model.recoverableOrphans.count > 1 {
+                        // The single-capture fallback that used to live here
+                        // is gone with the single-capture button: unreachable
+                        // once the guard above exists.
+                        Button("Recover all") { confirmRecoverAllOrphans = true }
+                            .controlSize(.small)
+                            .disabled(model.busy || model.orphanBusy)
+                    }
+                    ForEach(model.recoverableOrphans) { capture in
+                        HStack(spacing: 8) {
+                            Text(capture.label)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                            Button("Recover") { model.recoverOrphan(capture.sessionId) }
+                                .controlSize(.mini)
+                                .disabled(model.busy || model.orphanBusy || capture.recovering)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .trailing)
+            }
+            if !model.strandedCaptures.isEmpty {
+                Text("These do not mean the phone has a meeting waiting. Save needs a transcript.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+                VStack(alignment: .trailing, spacing: 6) {
+                    if model.strandedCaptures.filter({ $0.canSave }).count > 1 {
+                        Button("Save all") { confirmSaveAllStranded = true }
+                            .controlSize(.small)
+                            .disabled(model.busy || model.orphanBusy)
+                    }
+                    ForEach(model.strandedCaptures) { capture in
+                        HStack(spacing: 8) {
+                            Text(capture.label)
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                                .lineLimit(1)
+                            if capture.canSave {
+                                Button("Save") { model.saveStranded(capture.sessionId) }
+                                    .controlSize(.mini)
+                                    .disabled(model.busy || model.orphanBusy)
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .trailing)
+            }
+        }
+    }
+
+    /// Agent CLIs (ST-24).
+    @ViewBuilder private var statusAgentRows: some View {
+        // One quick-glance row for all three agent backends. Cursor keeps
+        // its own detailed row below because the helper probes it locally
+        // (sign-in state, not just presence) — richer than health's flag.
+        statusRow("AI apps", value: agentCliSummary, good: agentCliAllReady)
+        // Onboarding P1: "Not found" vs "Not signed in" comes from the helper's provider-status (a failed server
+        // `--version` was labelled "Not signed in" before); the server's flags are the fallback.
+        AgentCliDetailLine(guide: model.providerGuide, model: model, allReady: agentCliAllReady)
+    }
+
+    /// Cursor CLI (ST-25).
+    @ViewBuilder private var statusCursorRow: some View {
+        statusRow("Cursor Agent", value: cursorLabel, good: model.status.cursorReady)
+    }
+
+    /// Ollama (ST-26).
+    @ViewBuilder private var statusOllamaRow: some View {
+        // Hide-unless-ready, and never `good: ollamaReady ?? false` -- that
+        // would paint a red mark on every pre-6.39.0 server and on this Mac
+        // today. No row is the correct render for "no local daemon".
+        if model.status.ollamaReady == true, let ollamaName = model.status.ollamaModel, !ollamaName.isEmpty {
+            statusRow("Ollama", value: ollamaName, good: true)
+        }
+    }
+
+    /// The server version (ST-27).
+    @ViewBuilder private var statusVersionRow: some View {
+        statusRow("Version", value: model.status.runtimeState == "managedInPlace" ? "Self-managed" : (model.status.version ?? model.status.installedVersion ?? "Not installed"), good: model.status.installed || model.status.runtimeState == "managedInPlace")
+    }
+
+    /// The work folder and a restart it waits for (ST-28).
+    @ViewBuilder private var statusWorkFolderRows: some View {
+        HStack(alignment: .top) {
+            Text("Work folder").foregroundStyle(.secondary)
+            Spacer()
+            Text(model.status.workDirectory ?? "Default COS context")
+                .lineLimit(2).multilineTextAlignment(.trailing).textSelection(.enabled)
+        }.font(.caption)
+        if model.status.workDirectoryPending {
+            Label("Saved. Applies at the next safe restart.", systemImage: "clock.badge.exclamationmark")
+                .font(.caption).foregroundStyle(COSPalette.amber)
+        }
+    }
+
+    /// The meetings library (ST-29).
+    @ViewBuilder private var statusLibraryRows: some View {
+        HStack(alignment: .top) {
+            Text("Meetings folder").foregroundStyle(.secondary)
+            Spacer()
+            VStack(alignment: .trailing, spacing: 2) {
+                Text(model.status.operationsDirectory ?? "Not set (standalone recordings)")
+                    .lineLimit(2).multilineTextAlignment(.trailing).textSelection(.enabled)
+                if model.status.operationsDirectory != nil {
+                    Text(model.status.meetingLibraryLayout == "direct"
+                        ? "One folder · \(model.status.meetingLibraryCount) meeting(s)"
+                        : "Multiple folders · \(model.status.meetingLibraryCount) meeting(s)")
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }.font(.caption)
+        if let warning = model.status.meetingLibraryWarning {
+            Label(warning, systemImage: "exclamationmark.triangle.fill")
+                .font(.caption).foregroundStyle(COSPalette.amber)
+        }
+    }
+
+    /// Active jobs and recordings lock restart (ST-30).
+    @ViewBuilder private var statusActiveWorkLine: some View {
+        if let jobs = model.status.activeJobs, let recordings = model.status.activeTranscriptionSessions, jobs + recordings > 0 {
+            Label("\(jobs) job(s), \(recordings) recording(s) active. Restart waits until they finish.", systemImage: "lock.fill")
+                .font(.caption).foregroundStyle(COSPalette.amber)
+        }
+    }
+
+    /// A pending server change (ST-31).
+    @ViewBuilder private var statusTransactionLine: some View {
+        if model.status.transactionPending {
+            if model.busy {
+                Label("Server change in progress · recovery is armed", systemImage: "arrow.trianglehead.2.clockwise.rotate.90")
+                    .font(.caption).foregroundStyle(COSPalette.amber)
+            } else {
+                Label("An interrupted server change needs Repair.", systemImage: "wrench.and.screwdriver.fill")
+                    .font(.caption).foregroundStyle(.red)
+            }
+        }
     }
 
     private var contextBrowserLabel: String {
@@ -1755,8 +1971,8 @@ struct ControlPanel: View {
     /// There is now a button for that, so the hint names the button.
     private var contextBrowserHint: String {
         switch model.status.contextState {
-        case "bridge_outdated": return "Update your COS workspace, then choose COS Data again."
-        case "bridge_error": return "The workspace bridge failed. Open Logs, then choose COS Data again."
+        case "bridge_outdated": return "Update your COS workspace, then choose the notes folder again."
+        case "bridge_error": return "The workspace bridge failed. Open logs, then choose the notes folder again."
         default:
             if model.status.contextResolvedRoot != nil {
                 return "The store resolved but holds no notes yet. Drop markdown files into memory/ or threads/."
@@ -1764,7 +1980,7 @@ struct ControlPanel: View {
             if let suggested = model.status.contextSuggestedRoot {
                 return "No memory/ or threads/ folder yet. Create Folders makes them in \(shortPath(suggested))."
             }
-            return "Choose a Work Folder or Meetings Library first, then Create Folders."
+            return "Choose a work folder or meetings folder first, then Create Folders."
         }
     }
 
@@ -1794,78 +2010,99 @@ struct ControlPanel: View {
             // Reported, never applied on our own initiative: switching tiers stops the
             // file tier being consulted at all, so notes being browsed today would
             // silently stop appearing.
-            Text("A Python bridge is installed but unused at \(shortPath(scripts)). Choose COS Data to switch to it, which replaces the file tier.")
+            Text("A Python bridge is installed but unused at \(shortPath(scripts)). Choose it as the notes folder to use it instead of plain files.")
                 .font(.caption2).foregroundStyle(COSPalette.amber)
                 .frame(maxWidth: .infinity, alignment: .trailing)
                 .multilineTextAlignment(.trailing)
         }
     }
 
+    /// Restart, Stop, Start, Update Server and Install Server, then the legacy paths and the server's messages (C-01 to C-09).
     private var controls: some View {
         VStack(spacing: 9) {
+            serverControlButtons
+            serverForegroundWarning
+            serverLegacyControls
+            serverMessages
+        }
+    }
+
+    /// C-01 to C-05, disabled while busy.
+    private var serverControlButtons: some View {
+        HStack {
+            if model.status.runtimeState == "managedHealthy" || model.status.runtimeState == "managedInPlace" {
+                Button("Restart", systemImage: "arrow.clockwise") {
+                    if model.status.runtimeState == "managedInPlace" && !model.status.safeToRestart {
+                        confirmLegacyRestart = true
+                    } else {
+                        model.perform("restart")
+                    }
+                }
+                    .disabled((model.status.activeJobs ?? 0) + (model.status.activeTranscriptionSessions ?? 0) > 0
+                              || model.status.transactionPending
+                              || model.status.meetingWorkBlockingRestart)
+                Button("Stop", systemImage: "stop.fill", role: .destructive) { model.perform("stop") }
+                    .buttonStyle(COSQuietButtonStyle(tone: .destructive))
+                    .disabled(model.status.runtimeState == "managedInPlace" && !model.status.safeToRestart)
+            } else if model.status.runtimeState == "stopped" {
+                Button("Start", systemImage: "play.fill") { model.perform("start") }.buttonStyle(COSPrimaryButtonStyle())
+            }
+            Spacer()
+            if model.status.installed && model.status.managedContract && model.status.ownershipVerified {
+                Button("Update Server") { model.perform("update") }
+                    .disabled(model.status.meetingWorkBlockingRestart)
+            } else if !model.status.installed && model.status.runtimeState == "notInstalled" {
+                Button("Install server") { model.installCurrentRelease() }.buttonStyle(COSPrimaryButtonStyle())
+            }
+        }
+        .disabled(model.busy)
+    }
+
+    /// A foreground server owns the ports (C-09).
+    @ViewBuilder private var serverForegroundWarning: some View {
+        if model.status.runtimeState == "legacyForeground" {
+            Label("A foreground server owns the ports. Finish active work and stop it in Terminal before installing.", systemImage: "exclamationmark.triangle.fill")
+                .font(.caption).foregroundStyle(COSPalette.amber)
+        }
+    }
+
+    /// Adopt Safely, Manage in place and Install managed server, each only for its legacy state (C-06 to C-08).
+    @ViewBuilder private var serverLegacyControls: some View {
+        if model.status.runtimeState == "legacyStopped" {
             HStack {
-                if model.status.runtimeState == "managedHealthy" || model.status.runtimeState == "managedInPlace" {
-                    Button("Restart", systemImage: "arrow.clockwise") {
-                        if model.status.runtimeState == "managedInPlace" && !model.status.safeToRestart {
-                            confirmLegacyRestart = true
-                        } else {
-                            model.perform("restart")
-                        }
-                    }
-                        .disabled((model.status.activeJobs ?? 0) + (model.status.activeTranscriptionSessions ?? 0) > 0
-                                  || model.status.transactionPending
-                                  || model.status.meetingWorkBlockingRestart)
-                    Button("Stop", systemImage: "stop.fill", role: .destructive) { model.perform("stop") }
-                        .buttonStyle(COSQuietButtonStyle(tone: .destructive))
-                        .disabled(model.status.runtimeState == "managedInPlace" && !model.status.safeToRestart)
-                } else if model.status.runtimeState == "stopped" {
-                    Button("Start", systemImage: "play.fill") { model.perform("start") }.buttonStyle(COSPrimaryButtonStyle())
-                }
+                Label("COS Control can take over this stopped older server as it is.", systemImage: "arrow.triangle.2.circlepath")
                 Spacer()
-                if model.status.installed && model.status.managedContract && model.status.ownershipVerified {
-                    Button("Update Server") { model.perform("update") }
-                        .disabled(model.status.meetingWorkBlockingRestart)
-                } else if !model.status.installed && model.status.runtimeState == "notInstalled" {
-                    Button("Install Server") { model.installCurrentRelease() }.buttonStyle(COSPrimaryButtonStyle())
-                }
-            }
-            .disabled(model.busy)
-            if model.status.runtimeState == "legacyForeground" {
-                Label("A foreground server owns the ports. Finish active work and stop it in Terminal before installing.", systemImage: "exclamationmark.triangle.fill")
-                    .font(.caption).foregroundStyle(COSPalette.amber)
-            }
-            if model.status.runtimeState == "legacyStopped" {
-                HStack {
-                    Label("A recognized stopped legacy LaunchAgent can be adopted exactly.", systemImage: "arrow.triangle.2.circlepath")
-                    Spacer()
-                    Button("Adopt Safely") { model.installLatestManagedFromLegacy() }
-                }.font(.caption).foregroundStyle(COSPalette.amber)
-            }
-            if model.status.runtimeState == "legacyService" {
-                VStack(alignment: .leading, spacing: 8) {
-                    Label("Your server is running. COS Control can manage it in place — status, restart, and recovery — without replacing it.", systemImage: "checkmark.seal")
-                        .font(.caption).foregroundStyle(.secondary)
-                    HStack(spacing: 8) {
-                        Button("Manage in place") { model.perform("adopt-in-place") }
-                            .buttonStyle(COSPrimaryButtonStyle())
-                        Button("Install managed server") {
-                            confirmInstallManaged = true
-                        }
-                        .controlSize(.small)
-                        .disabled((model.status.activeJobs ?? 0) + (model.status.activeTranscriptionSessions ?? 0) > 0)
+                Button("Adopt server") { model.installLatestManagedFromLegacy() }
+            }.font(.caption).foregroundStyle(COSPalette.amber)
+        }
+        if model.status.runtimeState == "legacyService" {
+            VStack(alignment: .leading, spacing: 8) {
+                Label("Your server is running. COS Control can restart and recover it without replacing it.", systemImage: "checkmark.seal")
+                    .font(.caption).foregroundStyle(.secondary)
+                HStack(spacing: 8) {
+                    Button("Manage in place") { model.perform("adopt-in-place") }
+                        .buttonStyle(COSPrimaryButtonStyle())
+                    Button("Replace server") {
+                        confirmInstallManaged = true
                     }
-                }.frame(maxWidth: .infinity, alignment: .leading)
-            }
-            if model.status.ownerConflict {
-                Label("Ownership conflict detected. COS Control will not stop or replace the unknown listener.", systemImage: "exclamationmark.octagon.fill")
-                    .font(.caption).foregroundStyle(.red)
-            }
-            if let progress = model.operationProgress {
-                Text(progress).font(.caption).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)
-            }
-            if let notice = model.notice {
-                Text(notice).font(.caption).foregroundStyle(COSPalette.green).frame(maxWidth: .infinity, alignment: .leading)
-            }
+                    .controlSize(.small)
+                    .disabled((model.status.activeJobs ?? 0) + (model.status.activeTranscriptionSessions ?? 0) > 0)
+                }
+            }.frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    /// An ownership conflict, operation progress and the green notice (C-09).
+    @ViewBuilder private var serverMessages: some View {
+        if model.status.ownerConflict {
+            Label("Ownership conflict detected. COS Control will not stop or replace the unknown listener.", systemImage: "exclamationmark.octagon.fill")
+                .font(.caption).foregroundStyle(.red)
+        }
+        if let progress = model.operationProgress {
+            Text(progress).font(.caption).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)
+        }
+        if let notice = model.notice {
+            Text(notice).font(.caption).foregroundStyle(COSPalette.green).frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
@@ -1894,38 +2131,7 @@ struct ControlPanel: View {
                         refreshAndCheckButton
                     }
                 } else { header }
-                if model.recordingCount > 0 {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Label(model.recordingLabel, systemImage: "record.circle.fill")
-                            .font(COSType.body(13, weight: .semibold))
-                            .foregroundStyle(Color.red)
-                        // 0.5.313: the quiet, non-blocking reminder while this Mac records.
-                        if model.macRecordingActive {
-                            Text(MacRecordingNotice.reminder).font(COSType.body(11)).foregroundStyle(.secondary)
-                        }
-                        if model.liveTranscriptEnabled {
-                            HStack(spacing: 8) {
-                                Button("View live transcript") { model.showRecordingTranscript() }
-                                    .buttonStyle(COSQuietButtonStyle())
-                                // 0.5.321: the one live glasses meeting stops from here too, after the inline confirmation.
-                                if let id = model.soleLiveGlassesMeetingID {
-                                    Button(G2MeetingStop.buttonLabel) { glassesStopTarget = id }
-                                        .buttonStyle(COSQuietButtonStyle())
-                                        .disabled(model.glassesMeetingStopping(id))
-                                }
-                            }
-                            if let line = model.glassesMeetingStopLine(model.glassesMeetingStop?.sessionId) {
-                                Text(line).font(COSType.body(11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                            }
-                        } else {
-                            Text("Enable live transcripts in Settings to view the recording.")
-                                .font(COSType.body(12)).foregroundStyle(.secondary)
-                        }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(12)
-                    .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 12))
-                }
+                if model.recordingCount > 0 { recordingCard }
                 // Upgraders, once: COS Control is in the Dock now (Menu bar only / Keep).
                 DockNoticeLine(model: model)
                 // Early users: Finish setup at the top until every row is done or skipped, or Hide setup guide.
@@ -1981,6 +2187,41 @@ struct ControlPanel: View {
         .onAppear { scrollToTarget(reader) }
         .onChange(of: model.panelScrollTarget) { _, _ in scrollToTarget(reader) }
         }
+    }
+
+    /// H-10: a live recording, with View live transcript and, for one live glasses meeting, Stop and save. Above every
+    /// page in both layouts.
+    private var recordingCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label(model.recordingLabel, systemImage: "record.circle.fill")
+                .font(COSType.body(13, weight: .semibold))
+                .foregroundStyle(Color.red)
+            // 0.5.313: the quiet, non-blocking reminder while this Mac records.
+            if model.macRecordingActive {
+                Text(MacRecordingNotice.reminder).font(COSType.body(11)).foregroundStyle(.secondary)
+            }
+            if model.liveTranscriptEnabled {
+                HStack(spacing: 8) {
+                    Button("View live transcript") { model.showRecordingTranscript() }
+                        .buttonStyle(COSQuietButtonStyle())
+                    // 0.5.321: the one live glasses meeting stops from here too, after the inline confirmation.
+                    if let id = model.soleLiveGlassesMeetingID {
+                        Button(G2MeetingStop.buttonLabel) { glassesStopTarget = id }
+                            .buttonStyle(COSQuietButtonStyle())
+                            .disabled(model.glassesMeetingStopping(id))
+                    }
+                }
+                if let line = model.glassesMeetingStopLine(model.glassesMeetingStop?.sessionId) {
+                    Text(line).font(COSType.body(11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
+            } else {
+                Text("Turn on Live transcript in Settings to view this recording.")
+                    .font(COSType.body(12)).foregroundStyle(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 12))
     }
 
     private func scrollToTarget(_ reader: ScrollViewProxy) {
@@ -2099,9 +2340,17 @@ struct ControlPanel: View {
     /// something to act on — which is also the only time it can be found, since a
     /// fence was previously discoverable only by being refused on the glasses.
     private var fencesCard: some View {
+        fencesContent
+        .padding(13)
+        .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(COSPalette.line, lineWidth: 1))
+    }
+
+    /// FN-01 and FN-02.
+    private var fencesContent: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Text("Fenced threads · \(model.fenceRecords.count)")
+                Text("Paused threads · \(model.fenceRecords.count)")
                     .font(.caption2.weight(.bold))
                     .tracking(1.3)
                     .foregroundStyle(.secondary)
@@ -2115,7 +2364,7 @@ struct ControlPanel: View {
                 }
             }
 
-            Text("COS sent a turn and never learned whether it arrived, so it stopped writing to the thread. Open it on your Mac before releasing.")
+            Text("COS stopped writing here after a message it sent went unconfirmed. Check the thread first.")
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -2124,7 +2373,7 @@ struct ControlPanel: View {
                 // The server said its last durable write failed. A memory-only fence
                 // behaves identically until the process restarts, so saying nothing
                 // would be indistinguishable from working.
-                Label("These will not survive a server restart — the server could not write them to disk.",
+                Label("These clear on a server restart. The server could not save them.",
                       systemImage: "exclamationmark.triangle")
                     .font(.system(size: 10))
                     .foregroundStyle(.orange)
@@ -2139,7 +2388,7 @@ struct ControlPanel: View {
                                 Text(fence.provider.isEmpty ? "thread" : fence.provider)
                                     .font(.system(size: 11.5, weight: .medium))
                                     .lineLimit(1)
-                                Text("fenced \(fence.fencedAtLabel)")
+                                Text("paused \(fence.fencedAtLabel)")
                                     .font(.system(size: 9.5, design: .monospaced))
                                     .foregroundStyle(.tertiary)
                             }
@@ -2154,7 +2403,7 @@ struct ControlPanel: View {
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    .help("Release this fence so COS can write to the thread again")
+                    .help("Let COS write to this thread again")
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -2168,9 +2417,44 @@ struct ControlPanel: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
-        .padding(13)
-        .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 12))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(COSPalette.line, lineWidth: 1))
+    }
+
+    /// O-01: named speakers are off, or the voiceprint model failed to load, with Run Guided Setup. Held by the unmounted
+    /// Review speakers card; the hub shows it at the top of Transcription and voice.
+    @ViewBuilder private var speakerModelWarning: some View {
+        // Named diarization depends on a 26 MB voiceprint model that NO install
+        // or update path fetches: COS Control stages the server with
+        // `npm install --ignore-scripts` and never executes bin/cli.cjs, and the
+        // package ships no install hook. Guided Setup is the only route to it.
+        //
+        // Without this the failure was invisible in the one place it matters:
+        // the panel listed two voices for a five-person meeting, called them Me
+        // and Ext, and said nothing. /api/health has reported the state all
+        // along and Control had never read it.
+        if model.status.speakerIdNeedsSetup {
+            VStack(alignment: .leading, spacing: 6) {
+                Label(model.status.speakerId == "error"
+                        ? "Voiceprint model failed to load"
+                        : "Named speakers are off",
+                      systemImage: "person.crop.circle.badge.exclamationmark")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(COSPalette.amber)
+                Text(model.status.speakerId == "error"
+                     ? "The voiceprint model is present but did not load. Every voice shows as Me or Ext until it does."
+                     : "Every voice shows as Me or Ext until guided setup installs the voiceprint model (26 MB).")
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Button("Run guided setup", systemImage: "terminal") {
+                    showGuidedSetupTier = true
+                }
+                .font(.system(size: 11))
+                .controlSize(.small)
+            }
+            .padding(8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 8))
+        }
     }
 
     private var reviewableMeetingsCard: some View {
@@ -2192,39 +2476,7 @@ struct ControlPanel: View {
                 }
             }
 
-            // Named diarization depends on a 26 MB voiceprint model that NO install
-            // or update path fetches: COS Control stages the server with
-            // `npm install --ignore-scripts` and never executes bin/cli.cjs, and the
-            // package ships no install hook. Guided Setup is the only route to it.
-            //
-            // Without this the failure was invisible in the one place it matters:
-            // the panel listed two voices for a five-person meeting, called them Me
-            // and Ext, and said nothing. /api/health has reported the state all
-            // along and Control had never read it.
-            if model.status.speakerIdNeedsSetup {
-                VStack(alignment: .leading, spacing: 6) {
-                    Label(model.status.speakerId == "error"
-                            ? "Voiceprint model failed to load"
-                            : "Named speakers are off",
-                          systemImage: "person.crop.circle.badge.exclamationmark")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(COSPalette.amber)
-                    Text(model.status.speakerId == "error"
-                         ? "The voiceprint model is present but did not load. Every voice shows as Me or Ext until it does."
-                         : "Every voice shows as Me or Ext until the voiceprint model is installed. Guided Setup fetches it (about 26 MB).")
-                        .font(.system(size: 10.5))
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                    Button("Run Guided Setup", systemImage: "terminal") {
-                        showGuidedSetupTier = true
-                    }
-                    .font(.system(size: 11))
-                    .controlSize(.small)
-                }
-                .padding(8)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 8))
-            }
+            speakerModelWarning
 
             if model.reviewableMeetings.isEmpty {
                 Text(model.reviewError ?? "Name the voices in a saved meeting.")
@@ -2300,6 +2552,18 @@ struct ControlPanel: View {
     /// folder that still holds tasks keeps appearing. Saying that in the card is
     /// the point: a delete that looks like it failed is worse than no delete.
     private var domainsCard: some View {
+        domainsContent
+        .padding(13)
+        .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(COSPalette.line, lineWidth: 1))
+        .task {
+            await model.loadDomains()
+            syncDomainsDraft(force: false)
+        }
+    }
+
+    /// DM-01 to DM-03. The panel's card adds the chrome and its loader; the hub loads from its root.
+    private var domainsContent: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Text("Domains").font(.headline)
@@ -2342,15 +2606,8 @@ struct ControlPanel: View {
             if !domainsError.isEmpty {
                 Text(domainsError).font(.caption2).foregroundStyle(.red)
             }
-            Text("A folder under operations/ with a tasks.md always shows here, whether or not it is listed. Removing a name only unlists it; the folder and its tasks stay.")
+            Text("Any folder in operations/ with a tasks.md shows here. Remove unlists it; its tasks stay.")
                 .font(.caption2).foregroundStyle(.secondary)
-        }
-        .padding(13)
-        .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 12))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(COSPalette.line, lineWidth: 1))
-        .task {
-            await model.loadDomains()
-            syncDomainsDraft(force: false)
         }
     }
 
@@ -2379,6 +2636,19 @@ struct ControlPanel: View {
     }
 
     private var morningBriefCard: some View {
+        morningBriefContent
+        .padding(13)
+        .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(COSPalette.line, lineWidth: 1))
+        .task { await model.loadMorningBrief(quiet: true) }
+        .onChange(of: model.morningBrief?.updatedAt) { _, stamp in
+            syncMorningBriefDraft(force: stamp != briefDraftStamp)
+        }
+        .onAppear { syncMorningBriefDraft(force: briefDraft == nil) }
+    }
+
+    /// MB-01 to MB-09. The panel's card adds the chrome and its loaders; the hub loads from its root.
+    private var morningBriefContent: some View {
         VStack(alignment: .leading, spacing: 10) {
             morningBriefHeader
             if let draft = briefDraft {
@@ -2389,14 +2659,6 @@ struct ControlPanel: View {
                 morningBriefPlaceholder
             }
         }
-        .padding(13)
-        .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 12))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(COSPalette.line, lineWidth: 1))
-        .task { await model.loadMorningBrief(quiet: true) }
-        .onChange(of: model.morningBrief?.updatedAt) { _, stamp in
-            syncMorningBriefDraft(force: stamp != briefDraftStamp)
-        }
-        .onAppear { syncMorningBriefDraft(force: briefDraft == nil) }
     }
 
     private func syncMorningBriefDraft(force: Bool) {
@@ -2458,7 +2720,7 @@ struct ControlPanel: View {
                 Text(draft.timezone).font(.caption2).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
             }
             morningBriefWeekdays
-            Text("Lands in the inbox as a numbered reply before you open COS. One run a day; a Mac asleep at the slot still fires within three hours.")
+            Text("Lands in your inbox once a day. If the Mac is asleep, it runs within 3 hours.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
         }
@@ -2578,7 +2840,7 @@ struct ControlPanel: View {
                 if let draft = briefDraft { model.saveMorningBrief(draft) }
             }
             .disabled(model.busy || briefDraft == nil)
-            Button("Run Now", systemImage: "sunrise") { model.runMorningBriefNow() }
+            Button("Run now", systemImage: "sunrise") { model.runMorningBriefNow() }
                 .disabled(model.busy || model.status.morningBriefGate == "durable_jobs_off" || model.status.runtimeState != "managedHealthy")
                 .help("Runs the brief right away and drops it in the inbox. Five a day.")
             Spacer()
@@ -2622,28 +2884,33 @@ struct ControlPanel: View {
 
     private var doctorCard: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("DOCTOR").font(.caption2.weight(.bold)).tracking(1.3).foregroundStyle(.secondary)
-            ForEach(model.doctorChecks) { check in
-                HStack(alignment: .center, spacing: 8) {
-                    Image(systemName: check.state == "ok" ? "checkmark.circle.fill" : check.state == "error" ? "xmark.circle.fill" : "exclamationmark.triangle.fill")
-                        .foregroundStyle(check.state == "ok" ? COSPalette.green : check.state == "error" ? .red : COSPalette.amber)
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(check.name).font(.caption.weight(.semibold))
-                        Text(check.detail).font(.caption2).foregroundStyle(.secondary).textSelection(.enabled)
-                    }
-                    Spacer()
-                }
-            }
+            Text("CHECKS").font(.caption2.weight(.bold)).tracking(1.3).foregroundStyle(.secondary)
+            doctorResults
         }
         .padding(13)
         .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 12))
         .overlay(RoundedRectangle(cornerRadius: 12).stroke(COSPalette.line, lineWidth: 1))
     }
 
+    /// DR-01: the last Run Doctor's checks.
+    private var doctorResults: some View {
+        ForEach(model.doctorChecks) { check in
+            HStack(alignment: .center, spacing: 8) {
+                Image(systemName: check.state == "ok" ? "checkmark.circle.fill" : check.state == "error" ? "xmark.circle.fill" : "exclamationmark.triangle.fill")
+                    .foregroundStyle(check.state == "ok" ? COSPalette.green : check.state == "error" ? .red : COSPalette.amber)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(check.name).font(.caption.weight(.semibold))
+                    Text(check.detail).font(.caption2).foregroundStyle(.secondary).textSelection(.enabled)
+                }
+                Spacer()
+            }
+        }
+    }
+
     /// Local model rows: Automatic, each pulled tag, then a configured pin gone from the daemon. The pin must
     /// still show, or the dropdown would lie about the server's actual configuration.
     private var ollamaModelOptions: [COSDropdownOption<String>] {
-        var rows = [COSDropdownOption("", "Automatic (newest pull)")] + model.ollamaTags.map { COSDropdownOption($0, $0) }
+        var rows = [COSDropdownOption("", "Newest pulled model")] + model.ollamaTags.map { COSDropdownOption($0, $0) }
         if let pinned = model.status.ollamaConfiguredModel, !model.ollamaTags.contains(pinned) {
             rows.append(COSDropdownOption(pinned, pinned, note: "not pulled", muted: true))
         }
@@ -2654,154 +2921,38 @@ struct ControlPanel: View {
         VStack(alignment: .leading, spacing: 8) {
             Text("TOOLS").font(.caption2.weight(.bold)).tracking(1.3).foregroundStyle(.secondary)
             HStack {
-                Button("Run Doctor", systemImage: "stethoscope") { model.perform("doctor") }
-                Button("Guided Setup", systemImage: "terminal") { showGuidedSetupTier = true }
+                Button("Run checks", systemImage: "stethoscope") { model.perform("doctor") }
+                Button("Guided setup", systemImage: "terminal") { showGuidedSetupTier = true }
             }
-            if model.status.transcriptionRequestedTier != nil {
-                HStack(spacing: 8) {
-                    COSViewSwitch("Transcription", selection: $selectedTranscriptionTier,
-                                  options: [COSViewOption("balanced", "Balanced"), COSViewOption("max", "Max")], showsLabel: true)
-                    Spacer(minLength: 0)
-                    Button("Apply") { model.setTranscriptionTier(selectedTranscriptionTier) }
-                        .disabled(model.busy
-                            || (!model.status.installed && model.status.runtimeState != "managedInPlace"))
-                }
-                Text("Balanced is recommended. Max keeps Large-v3 resident for live commit and may use substantially more memory.")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            } else if model.status.installed || model.status.runtimeState == "managedInPlace" {
-                Label("Update Server to 6.21.0 or newer to enable transcription tier controls.", systemImage: "arrow.down.circle")
-                    .font(.caption2)
-                    .foregroundStyle(COSPalette.amber)
-            }
-            if model.status.backgroundJobsSupported {
-                HStack(spacing: 8) {
-                    Toggle("Background jobs", isOn: $selectedBackgroundJobs)
-                        .toggleStyle(COSSwitchStyle())
-                    Button("Apply") { model.setBackgroundJobsEnabled(selectedBackgroundJobs) }
-                        .disabled(model.busy
-                            || (!model.status.installed && model.status.runtimeState != "managedInPlace")
-                            || (model.status.activeJobs ?? 0) + (model.status.activeTranscriptionSessions ?? 0) > 0)
-                }
-                Text("On by default. Replies keep running when the companion closes or you browse elsewhere. Existing work must finish before this machine-wide setting changes.")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-            if model.status.meetingPreviewSupported {
-                HStack(spacing: 8) {
-                    Toggle("Meeting Turbo preview", isOn: $selectedMeetingPreview)
-                        .toggleStyle(COSSwitchStyle())
-                    Button("Apply") { model.setMeetingPreviewEnabled(selectedMeetingPreview) }
-                        .disabled(model.busy
-                            || (!model.status.installed && model.status.runtimeState != "managedInPlace")
-                            || (model.status.activeJobs ?? 0) + (model.status.activeTranscriptionSessions ?? 0) > 0)
-                }
-                Text("Shows fast provisional meeting text, then replaces it with the canonical speaker-attributed transcript. Disable for immediate rollback.")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-            HStack(spacing: 8) {
-                Toggle("Show Claude sessions", isOn: $selectedClaudeSessions)
-                    .toggleStyle(COSSwitchStyle())
-                Button("Apply") { model.setClaudeSessionsEnabled(selectedClaudeSessions) }
-                    .disabled(model.busy
-                        || (!model.status.installed && model.status.runtimeState != "managedInPlace"))
-            }
-            Text("Lists Claude, Codex and Cursor sessions from this Mac in the Activity window. Off by default: it reads another product's private state directory and serves names, workspaces and timestamps — not conversation content — over your local network. Leave it off on an untrusted network.")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-            if model.status.threadAttachSupported {
-                HStack(spacing: 8) {
-                    Toggle("Continue agent threads", isOn: $selectedThreadAttach)
-                        .toggleStyle(COSSwitchStyle())
-                    Button("Apply") { model.setThreadAttachEnabled(selectedThreadAttach) }
-                        .disabled(model.busy
-                            || (!model.status.installed && model.status.runtimeState != "managedInPlace")
-                            || (model.status.activeJobs ?? 0) + (model.status.activeTranscriptionSessions ?? 0) > 0)
-                }
-                Text("On by default since server 6.37. Lets a reply write into a real Claude or Codex session on this Mac instead of starting a new thread. Off writes an explicit 0, so the write routes stay dark on every server era.")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-            if model.status.ollamaReady == true || model.status.ollamaConfiguredModel != nil || !model.ollamaTags.isEmpty {
-                HStack(spacing: 8) {
-                    COSDropdown("Local model", selection: $selectedOllamaModel, options: ollamaModelOptions)
-                    Button("Apply") { model.setOllamaModel(selectedOllamaModel.isEmpty ? nil : selectedOllamaModel) }
-                        .disabled(model.busy
-                            || (!model.status.installed && model.status.runtimeState != "managedInPlace")
-                            || selectedOllamaModel == (model.status.ollamaConfiguredModel ?? ""))
-                }
-                Text(model.ollamaTagsState == "daemon_down"
-                     ? "Ollama is not running, so the list may be stale. A pin still applies once the daemon is back."
-                     : "Automatic follows the newest pulled model, which silently changes when anything is pulled. Pin one to make it deterministic. Applying restarts the server.")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-            if model.status.videoUploadV2Supported {
-                HStack(spacing: 8) {
-                    Toggle("Reliable video uploads (beta)", isOn: $selectedVideoUploadV2)
-                        .toggleStyle(COSSwitchStyle())
-                    Button("Apply") { model.setVideoUploadV2Enabled(selectedVideoUploadV2) }
-                        .disabled(model.busy
-                            || (!model.status.installed && model.status.runtimeState != "managedInPlace")
-                            || model.status.videoUploadV2Receiving + model.status.videoUploadV2Finalizing > 0)
-                    if model.status.videoUploadV2Receiving > 0 {
-                        Button("Clear stranded") { confirmClearStrandedVideoUploads = true }
-                            .disabled(model.busy)
-                    }
-                }
-                Text("Private canary. Sends every MP4/MOV in restart-safe chunks and resumes from server-confirmed bytes. Phone frame extraction remains off until device benchmarks prove it is faster. Disable for immediate transport rollback.")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-            if model.status.idleMetalHqSupported {
-                HStack(spacing: 8) {
-                    Toggle("Idle Metal HQ", isOn: $selectedIdleMetalHq)
-                        .toggleStyle(COSSwitchStyle())
-                    Button("Apply") { model.setIdleMetalHqEnabled(selectedIdleMetalHq) }
-                        .disabled(model.busy
-                            || (!model.status.installed && model.status.runtimeState != "managedInPlace")
-                            || (model.status.activeJobs ?? 0) + (model.status.activeTranscriptionSessions ?? 0) > 0)
-                }
-                Text("Powerful Macs only. Uses Metal for sealed post-meeting HQ when idle. Live and progressive transcription stay protected; Off forces CPU rollback.")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-            if model.status.adaptiveAudioCleanupSupported {
-                HStack(spacing: 8) {
-                    Toggle("Adaptive audio cleanup", isOn: $selectedAdaptiveAudioCleanup)
-                        .toggleStyle(COSSwitchStyle())
-                    Button("Apply") { model.setAdaptiveAudioCleanupEnabled(selectedAdaptiveAudioCleanup) }
-                        .disabled(model.busy
-                            || (!model.status.installed && model.status.runtimeState != "managedInPlace")
-                            || (model.status.activeJobs ?? 0) + (model.status.activeTranscriptionSessions ?? 0) > 0)
-                }
-                Text("Default off. Cleans retained audio only when you press Play. Raw WAV stays untouched; live transcription, speaker attribution, save, HQ, and sync do not change. Off restores raw replay.")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
+            toolTranscriptionTier(hub: false)
+            toolBackgroundJobs(hub: false)
+            toolMeetingPreview(hub: false)
+            toolClaudeSessions(hub: false)
+            toolThreadAttach(hub: false)
+            toolOllamaModel(hub: false)
+            toolVideoUploads(hub: false)
+            toolIdleMetal(hub: false)
+            toolAudioCleanup(hub: false)
             HStack {
-                Button("Repair Managed Runtime", systemImage: "wrench.and.screwdriver") { model.perform("repair") }
-                    .disabled(!model.status.installed || model.status.ownerConflict || model.status.runtimeState == "legacyForeground")
-                if model.status.managedContract && model.status.ownershipVerified && (!model.status.whisperReady || model.status.whisperCircuitOpen) {
+                Button("Repair server", systemImage: "wrench.and.screwdriver") { model.perform("repair") }
+                    .disabled(repairRuntimeBlocked)
+                if repairWhisperOffered {
                     Button("Repair Whisper", systemImage: "waveform.badge.exclamationmark") { model.perform("restart-whisper") }
                 }
             }
             // Own row so labels don't truncate into ambiguous "Choose…" / "Meeting…"
             HStack {
-                Button("Work Folder", systemImage: "folder") { model.selectWorkFolder() }
-                    .disabled(!model.status.installed && model.status.runtimeState != "managedInPlace")
-                    .help(model.status.installed || model.status.runtimeState == "managedInPlace"
-                          ? "COS workspace for Claude, Codex, and Cursor (Work folder above)"
-                          : "Install the managed server or choose Manage in place first")
-                Button("Meetings Library", systemImage: "calendar") { model.selectOperationsFolder() }
-                    .disabled(!model.status.installed && model.status.runtimeState != "managedInPlace")
-                    .help("Choose your existing meetings folder. COS also recognizes a parent containing several custom-named meeting folders.")
+                Button("Work folder", systemImage: "folder") { model.selectWorkFolder() }
+                    .disabled(serverNotInstalled)
+                    .help(workFolderHelp)
+                Button("Meetings folder", systemImage: "calendar") { model.selectOperationsFolder() }
+                    .disabled(serverNotInstalled)
+                    .help(Self.meetingsLibraryHelp)
             }
             HStack {
-                Button("COS Data", systemImage: "externaldrive.badge.icloud") { model.selectContextFolder() }
-                    .disabled(!model.status.installed && model.status.runtimeState != "managedInPlace")
-                    .help("Choose a folder of markdown notes (memory/ or threads/), or a COS workspace with the Python bridge. This does not change the Work Folder or Meetings Library.")
+                Button("Notes folder", systemImage: "externaldrive.badge.icloud") { model.selectContextFolder() }
+                    .disabled(serverNotInstalled)
+                    .help(Self.cosDataHelp)
                 // Names the TIER, not just the path. "Notes" is browse and
                 // reference; "Bridge" adds semantic recall and type statistics.
                 // Showing a bare path let a files install look like a pipeline.
@@ -2810,35 +2961,28 @@ struct ControlPanel: View {
                 // has never been touched, because that is exactly the new-install case.
                 if model.status.contextResolvedRoot == nil {
                     Button("Create Folders", systemImage: "folder.badge.plus") { model.perform("create-context-folders") }
-                        .disabled(!model.status.installed && model.status.runtimeState != "managedInPlace")
-                        .help(model.status.contextSuggestedRoot.map { "Creates memory/ and threads/ in \($0)" }
-                              ?? "Choose a Work Folder or Meetings Library first")
+                        .disabled(serverNotInstalled)
+                        .help(createFoldersHelp)
                 }
-                if let path = model.status.contextScriptsDirectory {
-                    Text("Bridge: \(path)").font(.caption2).foregroundStyle(.secondary)
-                        .lineLimit(1).truncationMode(.middle).textSelection(.enabled)
-                } else if let path = model.status.contextFilesDirectory {
-                    Text("Notes: \(path)").font(.caption2).foregroundStyle(.secondary)
-                        .lineLimit(1).truncationMode(.middle).textSelection(.enabled)
-                }
+                notesSourceLine
             }
             HStack {
                 Button("Open Cursor", systemImage: "chevron.left.forwardslash.chevron.right") { model.openCursor() }
-                Button("Copy Pairing Token", systemImage: "key") { model.perform("token") }
-                    .disabled(model.status.runtimeState != "managedHealthy")
+                Button("Copy pairing token", systemImage: "key") { model.perform("token") }
+                    .disabled(pairingTokenBlocked)
             }
             HStack {
-                Button("Copy Report", systemImage: "doc.on.doc") { model.perform("report") }
-                Button("Open Logs", systemImage: "doc.text.magnifyingglass") { model.openLogs() }
-                Button("Health", systemImage: "heart.text.square") { model.openHealth() }
+                Button("Copy report", systemImage: "doc.on.doc") { model.perform("report") }
+                Button("Open logs", systemImage: "doc.text.magnifyingglass") { model.openLogs() }
+                Button("Health page", systemImage: "heart.text.square") { model.openHealth() }
             }
             Divider()
-            Toggle("Launch COS Control at login", isOn: Binding(get: { model.launchAtLogin }, set: { model.setLaunchAtLogin($0) }))
+            Toggle("Open at login", isOn: Binding(get: { model.launchAtLogin }, set: { model.setLaunchAtLogin($0) }))
                 .toggleStyle(COSSwitchStyle())
             // F3: in the Dock by default; the menu-bar icon stays either way, so menu bar only never strands anyone.
-            Toggle("Show in menu bar only", isOn: Binding(get: { !model.showInDock }, set: { model.setShowInDock(!$0) }))
+            Toggle("Menu bar only", isOn: Binding(get: { !model.showInDock }, set: { model.setShowInDock(!$0) }))
                 .toggleStyle(COSSwitchStyle())
-                .help("Hide COS Control from the Dock. The menu-bar icon stays, and opening COS Control from Finder opens Activity")
+                .help("Hides the Dock icon. The menu bar icon stays; opening the app shows Activity.")
             HotKeyRecorderRow(model: model)
             MacDictationSettings(store: model.dictation, activityShortcut: model.activityHotKey)
             Divider()
@@ -2849,60 +2993,301 @@ struct ControlPanel: View {
             // 0.5.247: Work tracking notifications (a session received a task, finished it, or needs you).
             Toggle("Work notifications", isOn: Binding(get: { model.workNotificationsEnabled }, set: { model.workNotificationsEnabled = $0 }))
                 .toggleStyle(COSSwitchStyle())
-                .help("Notify me when a session receives Work, reports it done, or needs my input")
+                .help("Alerts when a session gets Work, finishes it, or needs you.")
             // 0.5.249: a New session starts in the background, then opens in its app once its first reply is done.
-            Toggle("Open new sessions in the app", isOn: Binding(get: { model.workOpensTabs }, set: { model.workOpensTabs = $0 }))
+            Toggle("Open new sessions", isOn: Binding(get: { model.workOpensTabs }, set: { model.workOpensTabs = $0 }))
                 .toggleStyle(COSSwitchStyle())
-                .help("Start Claude and Codex work in the background, then open it in their app when the first reply is done. Off: it stays in the background on this Mac. Cursor always opens its own window with the handoff filled in, for you to send")
+                .help("Claude and Codex sessions open in their app after the first reply. Off: background only. Cursor always opens its own window with the handoff filled in, for you to send")
             // 0.5.312 (Miles 2026-10-15): Work chat plans and sends in one step. The first use still asks once.
             Toggle("Send plans without review", isOn: $workChatSendWithoutReview)
                 .toggleStyle(COSSwitchStyle())
-                .help("The default for every card's Auto-send switch (0.5.333). On: Work chat's main button becomes Plan and send, assignments go to their sessions as soon as they are planned, and each has a Stop. A card's own switch overrides this. Plan, with review, stays available")
+                .help("Work chat plans and sends in one step, each with a Stop. Each card can override it.")
             // 0.5.317 (Miles 2026-10-16): a send that earlier work on the card would hold queues by default. Plan and send
             // always queues; it never skips the check.
-            COSDropdown("When earlier work is still open", selection: $workChatWhenHeld,
+            COSDropdown("When work is open", selection: $workChatWhenHeld,
                         options: WorkChatHold.settingOptions.map { COSDropdownOption($0.0, $0.1) })
                 .help(WorkChatHold.settingHelp)
                 .accessibilityIdentifier("settings-work-chat-when-held")
             // 0.5.278: the live meeting transcript in Meetings. Stored in AppStorage, read by the model before any poll.
-            Toggle("Show live meeting transcript", isOn: $showLiveTranscript)
+            Toggle("Live transcript", isOn: $showLiveTranscript)
                 .toggleStyle(COSSwitchStyle())
-                .help("While a glasses meeting records, show it at the top of Meetings with the text so far. The transcript opens only when you click it. Off: no live row, no live dots, and nothing is read")
+                .help("Shows a glasses meeting at the top of Meetings while it records. Off reads nothing.")
                 .onChange(of: showLiveTranscript) { _, _ in model.liveTranscriptSettingChanged() }
             // Activity Today home (plan v2, an opt-in candidate): the rail on every Activity tab and the Today home.
-            Toggle("New Today home", isOn: $todayHomeEnabled)
+            Toggle("Today home", isOn: $todayHomeEnabled)
                 .toggleStyle(COSSwitchStyle())
-                .help("Activity opens on Today: what needs you, what is running, what is next, and today's meeting suggestions, with the section rail on every tab. Off: the earlier home and the tab strip")
+                .help("Activity opens on Today: what needs you, what is running and what is next.")
             if todayHomeEnabled {
-                Toggle("Quiet hours on Today", isOn: $todayQuietHours)
+                Toggle("Quiet hours", isOn: $todayQuietHours)
                     .toggleStyle(COSSwitchStyle())
-                    .help("After 6 PM, before 6 AM and on weekends, Needs you folds everything below agent questions under For tomorrow. Running and session questions never fold")
-                Toggle("Start Work runs from Today", isOn: $todayWorkRuns)
+                    .help("From 6 PM to 6 AM and on weekends, Today folds what can wait under For tomorrow.")
+                Toggle("Work runs from Today", isOn: $todayWorkRuns)
                     .toggleStyle(COSSwitchStyle())
-                    .help("Prep me and Return in the Ask box each start one Work run, at most 20 a day, paused for 15 minutes after 3 failed starts. Off: no Prep me, and Return files your words to the Work inbox")
+                    .help("Prep me and Ask start Work runs, up to 20 a day. Off: Ask files to the Work inbox.")
             }
             MeetingSuggestSettings(store: MeetingDetectorStore.shared, recording: model.macRecording)
             DisclosureGroup("Advanced") {
                 // 0.5.234: the Meetings clock. The server sends 24-hour times and
                 // the tab used to print them raw; twelve-hour is the default here
                 // and the 24-hour reading is one pick away.
-                COSDropdown("Clock", selection: Binding(
+                COSDropdown("Time format", selection: Binding(
                     get: { model.clockStyle },
                     set: { model.setClockStyle($0) }
                 ), options: ClockStyle.allCases.map { COSDropdownOption($0, $0.label) })
                 .padding(.top, 6)
-                Text("How meeting times read in Meetings and Speakers.")
+                Text("How times show in Meetings and Speakers.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                 HStack {
-                    Button("Rollback Server") { model.perform("rollback") }
-                    Button("Reconcile Change") { model.perform("reconcile") }
-                    Button("Setup Guide") { model.openSetupGuide() }
+                    Button("Roll back server") { model.perform("rollback") }
+                    Button("Finish server change") { model.perform("reconcile") }
+                    Button("Online help") { model.openSetupGuide() }
                 }.padding(.top, 6)
             }.font(.caption)
         }
         .buttonStyle(COSQuietButtonStyle())
         .disabled(model.busy)
+    }
+
+    // MARK: Gates and words shared by the one-page panel's Tools and the hub (UT-13 to UT-21)
+
+    /// No managed or self-managed server yet: the folder pickers and Create Folders wait for one.
+    private var serverNotInstalled: Bool { !model.status.installed && model.status.runtimeState != "managedInPlace" }
+    private var repairRuntimeBlocked: Bool {
+        !model.status.installed || model.status.ownerConflict || model.status.runtimeState == "legacyForeground"
+    }
+    /// Repair Whisper is offered only for a managed, owned server whose Whisper is down or tripped.
+    private var repairWhisperOffered: Bool {
+        model.status.managedContract && model.status.ownershipVerified && (!model.status.whisperReady || model.status.whisperCircuitOpen)
+    }
+    private var pairingTokenBlocked: Bool { model.status.runtimeState != "managedHealthy" }
+    private var workFolderHelp: String {
+        model.status.installed || model.status.runtimeState == "managedInPlace"
+            ? "The folder Claude, Codex and Cursor work in. Changing it restarts the server."
+            : "Install the server or choose Manage in place first"
+    }
+    private static let meetingsLibraryHelp = "Choose your meetings folder, or one that holds several. Changing it restarts the server."
+    private static let cosDataHelp = "Notes in memory/ or threads/, or a COS workspace. Changing it restarts the server."
+    private var createFoldersHelp: String {
+        model.status.contextSuggestedRoot.map { "Creates memory/ and threads/ in \($0)" }
+            ?? "Choose a work folder or meetings folder first"
+    }
+    /// UT-19: which tier reads the notes, and where.
+    @ViewBuilder private var notesSourceLine: some View {
+        if let path = model.status.contextScriptsDirectory {
+            Text("Bridge: \(path)").font(.caption2).foregroundStyle(.secondary)
+                .lineLimit(1).truncationMode(.middle).textSelection(.enabled)
+        } else if let path = model.status.contextFilesDirectory {
+            Text("Notes: \(path)").font(.caption2).foregroundStyle(.secondary)
+                .lineLimit(1).truncationMode(.middle).textSelection(.enabled)
+        }
+    }
+
+    // MARK: Server settings with Apply, shared by the one-page panel and the hub (UT-03 to UT-12)
+    //
+    // Each piece is one setting: its gate, its draft, its Apply and what blocks it are written once. `hub` picks only the
+    // frame: the panel's switch with its words and the caption under it, or a hub row with the catalog's label and
+    // description. Every one of these restarts the server when applied.
+
+    /// Apply waits for an installed (or self-managed) server and for the panel not to be busy.
+    private var serverSettingsLocked: Bool {
+        model.busy || serverNotInstalled
+    }
+    /// Active jobs or recordings: machine-wide server settings wait for them.
+    private var serverWorkActive: Bool {
+        (model.status.activeJobs ?? 0) + (model.status.activeTranscriptionSessions ?? 0) > 0
+    }
+
+    /// A draft switch and its Apply. Panel: the switch with its own words, then the caption. Hub: the catalog row for
+    /// `id`, its description ending with the restart line.
+    @ViewBuilder private func applySwitch(_ hub: Bool, id: String, panel: String, caption: String, isOn: Binding<Bool>,
+                                          applyBlocked: Bool, waitsForWork: Bool = false, apply: @escaping () -> Void) -> some View {
+        if hub {
+            // HUB-08: while running work holds Apply, the row says so.
+            hubRow(id, detail: hubDetail(id) + " " + SettingsHubCopy.appliesRestart
+                   + (waitsForWork && serverWorkActive ? " " + SettingsHubCopy.waitsForWork : "")) {
+                HStack(spacing: 10) {
+                    Toggle(isOn: isOn) { EmptyView() }
+                        .toggleStyle(COSSwitchStyle())
+                        .accessibilityLabel(hubLabel(id))
+                    Button("Apply", action: apply).buttonStyle(TodayButtonStyle(small: true)).disabled(applyBlocked)
+                }
+            }
+        } else {
+            HStack(spacing: 8) {
+                Toggle(panel, isOn: isOn)
+                    .toggleStyle(COSSwitchStyle())
+                Button("Apply", action: apply)
+                    .disabled(applyBlocked)
+            }
+            Text(caption)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    /// UT-03: Balanced or Max, then Apply. Before server 6.21.0, the line that says to update the server.
+    @ViewBuilder private func toolTranscriptionTier(hub: Bool) -> some View {
+        if model.status.transcriptionRequestedTier != nil {
+            let options = [COSViewOption("balanced", "Balanced"), COSViewOption("max", "Max")]
+            let apply = { model.setTranscriptionTier(selectedTranscriptionTier) }
+            if hub {
+                hubRow("UT-03", detail: hubDetail("UT-03") + " " + SettingsHubCopy.appliesRestart) {
+                    HStack(spacing: 10) {
+                        COSViewSwitch("Transcription", selection: $selectedTranscriptionTier, options: options, showsLabel: false)
+                        Button("Apply", action: apply).buttonStyle(TodayButtonStyle(small: true)).disabled(serverSettingsLocked)
+                    }
+                }
+            } else {
+                HStack(spacing: 8) {
+                    COSViewSwitch("Transcription", selection: $selectedTranscriptionTier,
+                                  options: options, showsLabel: true)
+                    Spacer(minLength: 0)
+                    Button("Apply", action: apply)
+                        .disabled(serverSettingsLocked)
+                }
+                Text("Balanced suits most Macs. Max uses much more memory. Applying restarts the server.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        } else if model.status.installed || model.status.runtimeState == "managedInPlace" {
+            let line = Label("Update the server to 6.21.0 or newer to change the tier.", systemImage: "arrow.down.circle")
+                .font(.caption2)
+                .foregroundStyle(COSPalette.amber)
+            if hub { hubRow("UT-03") { line } } else { line }
+        }
+    }
+
+    /// UT-04, machine-wide: waits for active work.
+    @ViewBuilder private func toolBackgroundJobs(hub: Bool) -> some View {
+        if model.status.backgroundJobsSupported {
+            applySwitch(hub, id: "UT-04", panel: "Background jobs",
+                        caption: "Replies keep running when the phone app closes. Applying restarts the server.",
+                        isOn: $selectedBackgroundJobs, applyBlocked: serverSettingsLocked || serverWorkActive, waitsForWork: true) {
+                model.setBackgroundJobsEnabled(selectedBackgroundJobs)
+            }
+        }
+    }
+
+    /// UT-05.
+    @ViewBuilder private func toolMeetingPreview(hub: Bool) -> some View {
+        if model.status.meetingPreviewSupported {
+            applySwitch(hub, id: "UT-05", panel: "Fast preview",
+                        caption: "Quick meeting text first, then the final transcript. Applying restarts the server.",
+                        isOn: $selectedMeetingPreview, applyBlocked: serverSettingsLocked || serverWorkActive, waitsForWork: true) {
+                model.setMeetingPreviewEnabled(selectedMeetingPreview)
+            }
+        }
+    }
+
+    /// UT-06. Privacy: it serves session names, workspaces and times over the local network.
+    @ViewBuilder private func toolClaudeSessions(hub: Bool) -> some View {
+        applySwitch(hub, id: "UT-06", panel: "Show AI sessions",
+                    caption: "Shares session names, not chats, on your local network. Applying restarts the server.",
+                    isOn: $selectedClaudeSessions, applyBlocked: serverSettingsLocked) {
+            model.setClaudeSessionsEnabled(selectedClaudeSessions)
+        }
+    }
+
+    /// UT-07 (server 6.37).
+    @ViewBuilder private func toolThreadAttach(hub: Bool) -> some View {
+        if model.status.threadAttachSupported {
+            applySwitch(hub, id: "UT-07", panel: "Continue sessions",
+                        caption: "Replies go into your real Claude or Codex session. Applying restarts the server.",
+                        isOn: $selectedThreadAttach, applyBlocked: serverSettingsLocked || serverWorkActive, waitsForWork: true) {
+                model.setThreadAttachEnabled(selectedThreadAttach)
+            }
+        }
+    }
+
+    /// UT-08: Automatic or a pinned Ollama tag, then Apply.
+    @ViewBuilder private func toolOllamaModel(hub: Bool) -> some View {
+        if model.status.ollamaReady == true || model.status.ollamaConfiguredModel != nil || !model.ollamaTags.isEmpty {
+            let blocked = serverSettingsLocked || selectedOllamaModel == (model.status.ollamaConfiguredModel ?? "")
+            let apply = { model.setOllamaModel(selectedOllamaModel.isEmpty ? nil : selectedOllamaModel) }
+            let note = model.ollamaTagsState == "daemon_down"
+                 ? "Ollama is not running, so this list is out of date. A chosen model applies when it starts."
+                 : "Newest changes when you pull a model. Pick one to keep it. Applying restarts the server."
+            if hub {
+                hubRow("UT-08", detail: model.ollamaTagsState == "daemon_down" ? note : hubDetail("UT-08") + " " + SettingsHubCopy.appliesRestart) {
+                    HStack(spacing: 10) {
+                        COSDropdown("Local model", selection: $selectedOllamaModel, options: ollamaModelOptions, showsLabel: false)
+                            .frame(maxWidth: 240)
+                        Button("Apply", action: apply).buttonStyle(TodayButtonStyle(small: true)).disabled(blocked)
+                    }
+                }
+            } else {
+                HStack(spacing: 8) {
+                    COSDropdown("Local model", selection: $selectedOllamaModel, options: ollamaModelOptions)
+                    Button("Apply", action: apply)
+                        .disabled(blocked)
+                }
+                Text(note)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    /// UT-09 and UT-10: Apply waits while an upload is in flight; Clear stranded appears while a draft is receiving.
+    @ViewBuilder private func toolVideoUploads(hub: Bool) -> some View {
+        if model.status.videoUploadV2Supported {
+            let blocked = serverSettingsLocked || model.status.videoUploadV2Receiving + model.status.videoUploadV2Finalizing > 0
+            let apply = { model.setVideoUploadV2Enabled(selectedVideoUploadV2) }
+            if hub {
+                hubRow("UT-09", detail: hubDetail("UT-09") + " " + SettingsHubCopy.appliesRestart) {
+                    HStack(spacing: 10) {
+                        Toggle(isOn: $selectedVideoUploadV2) { EmptyView() }
+                            .toggleStyle(COSSwitchStyle())
+                            .accessibilityLabel(hubLabel("UT-09"))
+                        Button("Apply", action: apply).buttonStyle(TodayButtonStyle(small: true)).disabled(blocked)
+                    }
+                }
+                if model.status.videoUploadV2Receiving > 0 {
+                    hubRow("UT-10") {
+                        Button("Clear stuck uploads") { confirmClearStrandedVideoUploads = true }
+                            .buttonStyle(TodayButtonStyle(small: true))
+                            .disabled(model.busy)
+                    }
+                }
+            } else {
+                HStack(spacing: 8) {
+                    Toggle("Reliable video uploads", isOn: $selectedVideoUploadV2)
+                        .toggleStyle(COSSwitchStyle())
+                    Button("Apply", action: apply)
+                        .disabled(blocked)
+                    if model.status.videoUploadV2Receiving > 0 {
+                        Button("Clear stuck uploads") { confirmClearStrandedVideoUploads = true }
+                            .disabled(model.busy)
+                    }
+                }
+                Text("Beta. Sends videos in chunks that resume after a restart. Applying restarts the server.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    /// UT-11.
+    @ViewBuilder private func toolIdleMetal(hub: Bool) -> some View {
+        if model.status.idleMetalHqSupported {
+            applySwitch(hub, id: "UT-11", panel: "GPU when idle",
+                        caption: "Powerful Macs only. Final transcripts use the GPU when idle. Applying restarts the server.",
+                        isOn: $selectedIdleMetalHq, applyBlocked: serverSettingsLocked || serverWorkActive, waitsForWork: true) {
+                model.setIdleMetalHqEnabled(selectedIdleMetalHq)
+            }
+        }
+    }
+
+    /// UT-12.
+    @ViewBuilder private func toolAudioCleanup(hub: Bool) -> some View {
+        if model.status.adaptiveAudioCleanupSupported {
+            applySwitch(hub, id: "UT-12", panel: "Playback cleanup",
+                        caption: "Cleans audio when you press Play. The original stays as is. Applying restarts the server.",
+                        isOn: $selectedAdaptiveAudioCleanup, applyBlocked: serverSettingsLocked || serverWorkActive, waitsForWork: true) {
+                model.setAdaptiveAudioCleanupEnabled(selectedAdaptiveAudioCleanup)
+            }
+        }
     }
 
     /// Renders ONLY when the appcast advertises a genuinely newer build; offline,
@@ -3116,13 +3501,781 @@ struct ControlPanel: View {
         }
     }
 
-    private func statusRow(_ label: String, value: String, good: Bool) -> some View {
-        HStack {
-            Text(label).foregroundStyle(.secondary)
-            Spacer()
-            Circle().fill(good ? COSPalette.green : Color.secondary.opacity(0.5)).frame(width: 7, height: 7)
-            Text(value).fontWeight(.medium)
-        }.font(COSType.body(13))
+    /// Status lines the hub draws right under the switch of the same name.
+    private static let hubStatusUnderSwitch: Set<String> = ["Background jobs", "Fast preview", "Continue sessions", "GPU when idle", "Playback cleanup"]
+
+    /// One status line. In the hub the same line in the hub's type: the label as a row label, the value and its dot on
+    /// the right.
+    @ViewBuilder private func statusRow(_ label: String, value: String, good: Bool) -> some View {
+        if hubOn {
+            HStack(alignment: .center, spacing: 16) {
+                // A status line under its own switch reads "Status": the switch row above already says what it is.
+                Text(Self.hubStatusUnderSwitch.contains(label) ? "Status" : label)
+                    .font(COSType.body(14.5, weight: .semibold)).foregroundStyle(TodayInk.ink)
+                Spacer(minLength: 8)
+                SettingsHubValue(text: value, good: good)
+            }
+        } else {
+            HStack {
+                Text(label).foregroundStyle(.secondary)
+                Spacer()
+                Circle().fill(good ? COSPalette.green : Color.secondary.opacity(0.5)).frame(width: 7, height: 7)
+                Text(value).fontWeight(.medium)
+            }.font(COSType.body(13))
+        }
+    }
+}
+
+// MARK: - Settings hub: the composition (Miles, 2026-10-27, design/settings-hub)
+//
+// Every card below is built from ControlPanel's own pieces (the status card's rows, the server controls, the Tools
+// settings, the cards and the shared views), each mounted once, in the place docs/settings-hub/SETTINGS_INVENTORY.md
+// section 3 gives it. Drafts, confirmations, seeds and observations stay at ControlPanel's root for both layouts; the
+// loaders mainPanel's always-drawn views ran sit at the hub's root (hubLoaders), so they run whichever category is open.
+
+private extension ControlPanel {
+    static let hubSpace = "settings-hub-page"
+
+    var hubSearching: Bool { !hubQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+
+    func settingsHub(_ host: SettingsHubHost) -> some View {
+        hubLoaders(
+            GeometryReader { geometry in
+                let mode = SettingsHubLayout.mode(width: geometry.size.width)
+                HStack(spacing: 0) {
+                    SettingsHubFactsReader(model: model, permissions: model.permissionGuide, dictation: model.dictation,
+                                           cues: model.meetingAsk.liveCues, stt: model.transcriptionSettings, setup: model.setupGuide) { facts in
+                        SettingsHubSidebar(mode: mode, backTitle: host.backTitle, back: host.back, query: $hubQuery,
+                                           searchFocused: $hubSearchFocused, selected: hubSearching ? nil : hubCategory,
+                                           status: { SettingsHubStatus.line($0, facts) }, select: hubSelect)
+                    }
+                    hubPage(mode: mode)
+                }
+            }
+            .background(TodayInk.page)
+            .background {
+                // ⌘F: the search field, from anywhere in Settings.
+                Button("") { hubSearchFocused = true }
+                    .keyboardShortcut("f", modifiers: .command).opacity(0).frame(width: 0, height: 0).accessibilityHidden(true)
+            }
+        )
+    }
+
+    func hubSelect(_ category: SettingsHubCategory) {
+        hubQuery = ""
+        hubSearchFocused = false
+        hubCategory = category
+    }
+
+    // MARK: Loaders
+
+    /// What mainPanel's always-drawn views loaded on their own, hoisted so it runs whichever category is open.
+    func hubLoaders<Content: View>(_ content: Content) -> some View {
+        content
+            // workExpirySettings (WK-01).
+            .task { await model.loadWorkExpiry() }
+            // sessionPetSettings (PT-09's catalogue).
+            .task { await model.loadOpenPetsCatalog() }
+            // MeetingAskSettings (MA-01 to MA-05).
+            .task { await model.meetingAsk.refreshConfig(model: model); await model.meetingAsk.homeArea.load(HomeCitySettings.run(model)) }
+            // mainPanel's mount of MeetingAskSettings loads Transcription, which is hidden until the server answers.
+            .task { await model.transcriptionSettings.load(TranscriptionSettingsCard.run(model)) }
+            // LiveCuesSettingsRow (MA-06), and Meetings' status line.
+            .task(id: "\(model.status.running) \(model.status.version ?? "")") { await model.meetingAsk.liveCues.load(LiveCuesSettingsRow.run(model)) }
+            // morningBriefCard (MB-01 to MB-09).
+            .task(id: model.status.morningBriefSupported) { if model.status.morningBriefSupported { await model.loadMorningBrief(quiet: true) } }
+            .onChange(of: model.morningBrief?.updatedAt) { _, stamp in syncMorningBriefDraft(force: stamp != briefDraftStamp) }
+            .onAppear { syncMorningBriefDraft(force: briefDraft == nil) }
+            // domainsCard (DM-01 to DM-03).
+            .task(id: model.status.tasksGate != nil) {
+                guard model.status.tasksGate != nil else { return }
+                await model.loadDomains()
+                syncDomainsDraft(force: false)
+            }
+            // PanelConnectAIRow's one read for its summary.
+            .task { if model.providerGuide.report == nil { await model.providerGuide.refresh() } }
+            // PanelPermissionsRow's read and its re-read on return from System Settings.
+            .task { await model.permissionGuide.refresh() }
+            .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+                Task { await model.permissionGuide.refresh() }
+            }
+            // MacDictationSettings (DI-02).
+            .onAppear { model.dictation.refreshMicrophones() }
+            // The Show live meeting transcript switch's observation (MT-01).
+            .onChange(of: showLiveTranscript) { _, _ in model.liveTranscriptSettingChanged() }
+            // SetupGuideView's, for the Voice row drawn on its own (SG-05).
+            .onAppear { voiceGuide.adoptServerTier(voiceGuide.voice?.explicitTier) }
+            .onChange(of: voiceGuide.voice?.explicitTier) { _, tier in voiceGuide.adoptServerTier(tier) }
+            // Opening a category loads what its views read on opening in the panel (Decision models' disclosure).
+            .task(id: hubCategory) { await hubCategoryOpened(hubCategory) }
+            .onDisappear { subQKeyDraft = ""; jevKeyDraft = "" }
+    }
+
+    func hubCategoryOpened(_ category: SettingsHubCategory) async {
+        switch category {
+        case .ai:
+            // As opening Decision models in the panel does.
+            await model.loadDecisionSettings(); await model.loadJevStatus(); await model.loadSubQKeyStatus()
+        case .meetings:
+            // Fireflies' key line (OUT-01), read as the Import pane reads it.
+            await model.loadFirefliesKey()
+        default:
+            // As closing Decision models does: a key typed and left is not kept.
+            subQKeyDraft = ""; jevKeyDraft = ""
+        }
+    }
+
+    // MARK: The page
+
+    func hubPage(mode: SettingsHubLayout.Mode) -> some View {
+        let pad = SettingsHubLayout.pagePadding(mode)
+        return ScrollViewReader { reader in
+            HStack(alignment: .top, spacing: 0) {
+                GeometryReader { viewport in
+                    ScrollView(.vertical) {
+                        VStack(alignment: .leading, spacing: 26) {
+                            hubTopStrip(reader)
+                            if mode == .narrow {
+                                SettingsHubSearchField(query: $hubQuery, focused: $hubSearchFocused)
+                                    .frame(maxWidth: SettingsHubLayout.pageMaxWidth)
+                            }
+                            if hubSearching {
+                                SettingsHubSearchResults(query: hubQuery, sections: SettingsHubSearch.results(hubQuery)) { hubOpen($0, reader) }
+                            } else {
+                                SettingsHubPageHeader(title: hubCategory.title, line: hubCategory.blurb, busy: model.busy)
+                                hubCategoryContent(hubCategory)
+                            }
+                        }
+                        .padding(EdgeInsets(top: 40, leading: pad, bottom: 72, trailing: pad))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(GeometryReader { content in
+                            Color.clear.onChange(of: content.frame(in: .named(Self.hubSpace)), initial: true) { _, frame in
+                                hubSpy.content(top: frame.minY, bottom: frame.maxY)
+                            }
+                        })
+                    }
+                    .coordinateSpace(name: Self.hubSpace)
+                    // A new category or search starts at its top.
+                    .id(hubSearching ? "search" : hubCategory.rawValue)
+                    .onChange(of: viewport.size.height, initial: true) { _, height in hubSpy.viewport(height) }
+                }
+                if SettingsHubLayout.showsRail(mode) && !hubSearching {
+                    SettingsHubObserving(model.transcriptionSettings) { _ in
+                        SettingsHubOwnKeyObserving {
+                            let groups = hubVisibleGroups(hubCategory)
+                            SettingsHubSpyRail(spy: hubSpy, groups: groups) { group in hubScroll(reader, to: group.anchor) }
+                                .onAppear { hubSpy.page(groups.map(\.id)) }
+                                .onChange(of: groups.map(\.id)) { _, ids in hubSpy.page(ids) }
+                        }
+                    }
+                    .padding(EdgeInsets(top: 112, leading: 0, bottom: 0, trailing: 20))
+                    .frame(width: SettingsHubLayout.railWidth, alignment: .leading)
+                }
+            }
+            // The panel's openers (model.panelScrollTarget) land on their category and group, Advanced opened if inside.
+            .onAppear { hubFollowTarget(reader) }
+            .onChange(of: model.panelScrollTarget) { _, _ in hubFollowTarget(reader) }
+        }
+    }
+
+    func hubScroll(_ reader: ScrollViewProxy, to anchor: String) {
+        withAnimation(Motion.gated(.easeInOut(duration: 0.25), reduceMotion: reduceMotion)) { reader.scrollTo(anchor, anchor: .top) }
+    }
+
+    func hubFollowTarget(_ reader: ScrollViewProxy) {
+        guard let target = model.panelScrollTarget else { return }
+        let destination = SettingsHubRoute.destination(target)
+        if let destination {
+            hubQuery = ""
+            hubCategory = destination.category
+            if destination.opensAdvanced { hubAdvanced.insert(destination.group) }
+        }
+        // After the page for the new category has drawn.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+            if let destination { reader.scrollTo(destination.anchor, anchor: .top) }
+            model.panelScrollTarget = nil
+        }
+    }
+
+    /// A search result: its category, its group, and Advanced when the row sits there.
+    func hubOpen(_ item: SettingsHubItem, _ reader: ScrollViewProxy) {
+        guard let destination = SettingsHubRoute.destination(item.id) else { return }
+        hubQuery = ""
+        hubSearchFocused = false
+        hubCategory = destination.category
+        if destination.opensAdvanced { hubAdvanced.insert(destination.group) }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+            reader.scrollTo(destination.anchor, anchor: .top)
+            reader.scrollTo("item." + item.id, anchor: .center)
+        }
+    }
+
+    /// Above every category: an update that is ready first (2026-10-09), then the recording, the Dock notice, Finish
+    /// setup, the publisher's notice and Get started, as at the top of the panel.
+    func hubTopStrip(_ reader: ScrollViewProxy) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            updateBanner
+            if model.recordingCount > 0 { recordingCard }
+            DockNoticeLine(model: model)
+            FinishSetupCard(model: model, provider: model.providerGuide, guide: model.setupGuide, permissions: model.permissionGuide) {
+                model.providerGuide.openInPanel()
+                hubSelect(.general)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { reader.scrollTo(SettingsHub.anchor("general.guide"), anchor: .top) }
+            }
+            noticeBanner
+            if model.status.needsFirstRun {
+                Button("Get started with COS") { model.openSetup?() }
+                    .buttonStyle(COSPrimaryButtonStyle())
+            }
+        }
+        .frame(maxWidth: SettingsHubLayout.pageMaxWidth, alignment: .leading)
+    }
+
+    // MARK: Building blocks
+
+    func hubLabel(_ id: String) -> String { SettingsHubCatalog.item(id)?.label ?? id }
+    func hubDetail(_ id: String) -> String { SettingsHubCatalog.item(id)?.detail ?? "" }
+
+    /// A row in the catalog's words for `id`.
+    func hubRow<Control: View>(_ id: String, label: String? = nil, detail: String? = nil, @ViewBuilder _ control: () -> Control) -> some View {
+        let item = SettingsHubCatalog.item(id)
+        return SettingsHubRow(label: label ?? item?.label ?? id, detail: detail ?? item?.detail ?? "",
+                              advanced: item?.advanced ?? false, anchor: "item." + id, control: control)
+    }
+
+    func hubSwitch(_ id: String, isOn: Binding<Bool>, detail: String? = nil) -> some View {
+        hubRow(id, detail: detail) {
+            Toggle(isOn: isOn) { EmptyView() }
+                .toggleStyle(COSSwitchStyle())
+                .accessibilityLabel(hubLabel(id))
+        }
+    }
+
+    func hubButton(_ id: String, _ title: String, detail: String? = nil, action: @escaping () -> Void) -> some View {
+        hubRow(id, detail: detail) { Button(title, action: action).buttonStyle(TodayButtonStyle(small: true)) }
+    }
+
+    func hubCard<Content: View, Advanced: View>(_ id: String, advanced count: Int, forceOpen: Bool = false,
+                                                 @ViewBuilder _ content: () -> Content,
+                                                 @ViewBuilder advanced: () -> Advanced) -> some View {
+        SettingsHubCard(group: SettingsHubCatalog.group(id) ?? SettingsHubGroup(id: id, category: hubCategory, title: id), advancedCount: count,
+                        advancedOpen: Binding(get: { forceOpen || hubAdvanced.contains(id) },
+                                              set: { open in if open { hubAdvanced.insert(id) } else { hubAdvanced.remove(id) } }),
+                        content: content, advanced: advanced)
+            .settingsHubSpyTop(id, space: Self.hubSpace, spy: hubSpy)
+    }
+
+    func hubCard<Content: View>(_ id: String, @ViewBuilder _ content: () -> Content) -> some View {
+        hubCard(id, advanced: 0, content, advanced: { EmptyView() })
+    }
+
+    /// The groups a category draws now (a card on an older server, or with nothing to show, is left out), for On this
+    /// page. The same tests gate each card in hubCategoryContent.
+    func hubVisibleGroups(_ category: SettingsHubCategory) -> [SettingsHubGroup] {
+        SettingsHubCatalog.groups(in: category).filter { hubGroupShown($0.id) }
+    }
+
+    func hubGroupShown(_ id: String) -> Bool {
+        switch id {
+        case "ai.keys": return SettingsHubOwnKeyCard.shown(model)
+        case "glasses.video": return model.status.videoUploadV2Supported
+        case "dictation.engine": return voiceGuide.voice?.dictationSelected != nil
+        case "voice.models": return model.transcriptionSettings.visible
+        case "voice.performance":
+            return model.status.idleMetalHqSupported || model.status.adaptiveAudioCleanupSupported || model.status.progressiveHqEnabled != nil
+        case "work.background": return model.status.backgroundJobsSupported
+        case "work.brief": return model.status.morningBriefSupported
+        case "work.domains": return model.status.tasksGate != nil
+        case "work.fences": return !model.fenceRecords.isEmpty
+        case "pet.characters": return model.petEnabled
+        default: return true
+        }
+    }
+
+    @ViewBuilder func hubCategoryContent(_ category: SettingsHubCategory) -> some View {
+        switch category {
+        case .general: hubGeneral
+        case .ai: hubAI
+        case .glasses: hubGlasses
+        case .meetings: hubMeetings
+        case .dictation: hubDictation
+        case .voice: hubVoice
+        case .work: hubWork
+        case .privacy: hubPrivacy
+        case .pet: hubPet
+        case .system: hubSystem
+        }
+    }
+
+    // MARK: General
+
+    @ViewBuilder var hubGeneral: some View {
+        hubCard("general.app", advanced: 1) {
+            // Launch at login, menu bar only, the shortcut and the clock came from Tools, which is off while busy.
+            Group {
+                hubSwitch("G-01", isOn: Binding(get: { model.launchAtLogin }, set: { model.setLaunchAtLogin($0) }))
+                hubSwitch("G-02", isOn: Binding(get: { !model.showInDock }, set: { model.setShowInDock(!$0) }))
+                hubRow("G-03") { HotKeyRecorderRow(model: model, showsLabel: false).buttonStyle(TodayButtonStyle(small: true)) }
+                hubRow("UT-25") {
+                    COSDropdown("Clock", selection: Binding(get: { model.clockStyle }, set: { model.setClockStyle($0) }),
+                                options: ClockStyle.allCases.map { COSDropdownOption($0, $0.label) }, showsLabel: false)
+                        .frame(width: 200)
+                }
+            }
+            .disabled(model.busy)
+        } advanced: {
+            // The rollback: Activity draws the one-page Settings again. Never locked while busy.
+            hubSwitch("HUB-CL", isOn: $useClassicSettings)
+        }
+        hubCard("general.home") {
+            Group {
+                hubSwitch("WK-06", isOn: $todayHomeEnabled)
+                // O-11: shown while Today is off, locked, with the reason (the panel hides them).
+                hubSwitch("WK-07", isOn: $todayQuietHours, detail: todayHomeEnabled ? nil : hubDetail("WK-07") + " " + SettingsHubCopy.todayFirst)
+                    .disabled(!todayHomeEnabled)
+                hubSwitch("WK-08", isOn: $todayWorkRuns, detail: todayHomeEnabled ? nil : hubDetail("WK-08") + " " + SettingsHubCopy.todayFirst)
+                    .disabled(!todayHomeEnabled)
+            }
+            .disabled(model.busy)
+        }
+        hubCard("general.guide") {
+            // SG-01, which opens the whole guide in place (SG-02 to SG-14 inside it).
+            SettingsHubBlock { PanelConnectAIRow(guide: model.providerGuide, model: model) }
+        }
+    }
+
+    // MARK: AI and accounts
+
+    @ViewBuilder var hubAI: some View {
+        hubCard("ai.apps") {
+            // SG-03: the same rows as the guide's Your AI, polling only while this card is on screen.
+            SettingsHubBlock { ProviderConnectList(guide: model.providerGuide, includeOllama: false).providerPolling(model.providerGuide) }
+            SettingsHubBlock { statusAgentRows; statusCursorRow }
+            hubButton("UT-20", "Open Cursor") { model.openCursor() }.disabled(model.busy)
+        }
+        hubCard("ai.local") {
+            SettingsHubBlock { SettingsHubSetupRow(model: model, provider: model.providerGuide, guide: model.setupGuide, id: .ollama) }
+            if model.status.ollamaReady == true, let name = model.status.ollamaModel, !name.isEmpty {
+                SettingsHubBlock { statusOllamaRow }
+            }
+            toolOllamaModel(hub: true).disabled(model.busy)
+        }
+        hubCard("ai.decision", advanced: model.decisionSettings == nil ? 2 : 3) {
+            // Decision models came from Tools, which is off while busy.
+            Group {
+                hubRow("JV-01", label: "Provider in use") { SettingsHubValue(text: model.decisionSettings?.provider.title ?? "Checking…") }
+                SettingsHubBlock { decisionDefaultControls }
+                SettingsHubBlock { jevKeyControls }
+                SettingsHubBlock { subQKeyControls; decisionMessageLine }
+            }
+            .disabled(model.busy)
+        } advanced: {
+            Group {
+                if model.decisionSettings != nil { SettingsHubBlock(advanced: true) { decisionWorkflowControls } }
+                SettingsHubBlock(advanced: true) { decisionRefreshButton }
+                SettingsHubBlock(advanced: true) { subQRetentionNote }
+            }
+            .disabled(model.busy)
+        }
+        // Your own key and Search are cards of their own (SettingsHubViews.swift), so the panel's file keeps its one
+        // own-key hook and no token-spending search switch.
+        SettingsHubOwnKeyCard(model: model, spy: hubSpy, space: Self.hubSpace)
+        hubCard("ai.search") { SettingsHubSemanticSearchRow(model: model) }
+    }
+
+    // MARK: Glasses and iPhone
+
+    @ViewBuilder var hubGlasses: some View {
+        hubCard("glasses.devices", advanced: 2) {
+            SettingsHubBlock { SetupDeviceChoice(guide: model.setupGuide) }
+            if voiceGuide.devicePath == .glasses {
+                SettingsHubBlock {
+                    GlassesSetupRows(model: model, pairing: model.glassesPairing, openURL: { _ = model.providerGuide.openURL($0) })
+                }
+                hubButton("SG-13", "Get the app") { _ = model.providerGuide.openURL(GuideExtras.glassesWizardURL) }
+            }
+        } advanced: {
+            hubRow("UT-21") {
+                Button("Copy token") { model.perform("token") }.buttonStyle(TodayButtonStyle(small: true)).disabled(pairingTokenBlocked)
+            }
+            .disabled(model.busy)
+            // O-10: Reset live message count, which the panel keeps in its header, reachable in every host.
+            hubRow("H-04") {
+                Button("Reset count…") { confirmResetMessageCount = true }.buttonStyle(TodayButtonStyle(small: true)).disabled(model.busy)
+            }
+        }
+        if hubGroupShown("glasses.video") {
+            hubCard("glasses.video", advanced: model.status.videoUploadV2Receiving > 0 ? 2 : 1) {
+                if model.status.videoUploadV2Enabled != nil { SettingsHubBlock { statusVideoRows(clearButton: false) } }
+            } advanced: {
+                toolVideoUploads(hub: true).disabled(model.busy)
+            }
+        }
+    }
+
+    // MARK: Meetings
+
+    @ViewBuilder var hubMeetings: some View {
+        hubCard("meetings.recording") {
+            Group {
+                hubSwitch("MT-01", isOn: $showLiveTranscript)
+                SettingsHubBlock { MeetingSuggestSettings(store: MeetingDetectorStore.shared, recording: model.macRecording) }
+            }
+            .disabled(model.busy)
+            if !model.meetingAudio.isEmpty {
+                SettingsHubBlock { statusMeetingAudioRows; statusMeetingAlertsRow }
+            }
+        }
+        hubCard("meetings.assistant") {
+            SettingsHubBlock { MeetingAskSettings(store: model.meetingAsk, model: model, part: .assistant) }
+        }
+        hubCard("meetings.cues") {
+            SettingsHubBlock { MeetingAskSettings(store: model.meetingAsk, model: model, part: .liveCues) }
+        }
+        hubCard("meetings.library", advanced: model.status.meetingPreviewSupported ? 3 : 1) {
+            hubRow("UT-16", detail: hubDetail("UT-16") + " " + SettingsHubCopy.chooseRestarts) {
+                Button("Choose…") { model.selectOperationsFolder() }
+                    .buttonStyle(TodayButtonStyle(small: true))
+                    .disabled(serverNotInstalled)
+                    .help(Self.meetingsLibraryHelp)
+            }
+            .disabled(model.busy)
+            SettingsHubBlock { statusLibraryRows }
+            SettingsHubBlock { statusMeetingSyncRows }
+            if model.status.meetingFinalizationPending > 0 || model.status.meetingFinalizationMalformed > 0 {
+                SettingsHubBlock { statusFinalizationRows }
+            }
+            if model.status.unsavedCaptures > 0 || !model.recoverableOrphans.isEmpty || !model.strandedCaptures.isEmpty {
+                SettingsHubBlock { statusRetainedCaptureRows }
+            }
+        } advanced: {
+            if model.status.earlyMeetingSyncEnabled != nil {
+                SettingsHubBlock(advanced: true) { statusEarlySyncRows }
+            } else {
+                hubRow("ST-18") { SettingsHubValue(text: "Not reported") }
+            }
+            toolMeetingPreview(hub: true).disabled(model.busy)
+            if model.status.meetingPreviewSupported, model.status.meetingPreviewEnabled != nil {
+                SettingsHubBlock(advanced: true) { statusMeetingPreviewRow }
+            }
+        }
+        hubCard("meetings.fireflies") {
+            // OUT-01 to OUT-03 live in Activity › Meetings › Import; these rows open it.
+            hubRow("OUT-01") {
+                HStack(spacing: 12) {
+                    SettingsHubValue(text: model.firefliesKey.summary, good: model.firefliesKey.configured ? !model.firefliesKey.needsNewKey : nil)
+                    Button("Manage") { hubOpenImport() }.buttonStyle(TodayButtonStyle(small: true))
+                }
+            }
+            hubButton("OUT-02", "Import…") { hubOpenImport() }
+            hubButton("OUT-03", "Open") { hubOpenImport() }
+        }
+    }
+
+    func hubOpenImport() {
+        openActivity(.meetings)
+        model.openMeetingImport()
+    }
+
+    // MARK: Dictation
+
+    @ViewBuilder var hubDictation: some View {
+        if hubGroupShown("dictation.engine") {
+            hubCard("dictation.engine") {
+                SettingsHubBlock { DictationEngineControls(model: model, guide: model.setupGuide, store: model.transcriptionSettings) }
+            }
+        }
+        hubCard("dictation.dictation") {
+            // One card for every dictation setting (D-05). It came from Tools, which is off while busy.
+            SettingsHubBlock { MacDictationSettings(store: model.dictation, activityShortcut: model.activityHotKey) }
+                .disabled(model.busy)
+            hubButton("DI-35", "Open Dictation") { openActivity(.dictation) }
+        }
+    }
+
+    // MARK: Transcription and voice
+
+    @ViewBuilder var hubVoice: some View {
+        if model.status.speakerIdNeedsSetup {
+            // O-01, from the Review speakers card no view mounts.
+            speakerModelWarning.frame(maxWidth: SettingsHubLayout.pageMaxWidth, alignment: .leading)
+        }
+        let modelRows = voiceGuide.voice?.usesParakeet != true
+            && (model.status.livePreviewModel != nil || model.status.liveCommitModel != nil || model.status.hqPolishModel != nil)
+        hubCard("voice.setup", advanced: modelRows ? 2 : 1) {
+            SettingsHubBlock { SettingsHubSetupRow(model: model, provider: model.providerGuide, guide: model.setupGuide, id: .voice) }
+            toolTranscriptionTier(hub: true).disabled(model.busy)
+            SettingsHubBlock { statusVoiceRows; statusWhisperErrorLine }
+            if repairWhisperOffered {
+                hubButton("UT-14", "Repair Whisper") { model.perform("restart-whisper") }.disabled(model.busy)
+            }
+        } advanced: {
+            hubButton("UT-02", "Guided setup…") { showGuidedSetupTier = true }.disabled(model.busy)
+            if modelRows { SettingsHubBlock(advanced: true) { statusTranscriptionModelRows } }
+        }
+        SettingsHubObserving(model.transcriptionSettings) { store in
+            if store.visible {
+                // Its own Advanced (Front end, Quiet detection), opened when a deep link or search lands inside it.
+                let open = hubAdvanced.contains("voice.models")
+                hubCard("voice.models") {
+                    SettingsHubBlock { TranscriptionSettingsCard(store: store, model: model, advancedOpen: open).id(open) }
+                }
+            }
+        }
+        if hubGroupShown("voice.performance") {
+            hubCard("voice.performance", advanced: hubPerformanceCount) { EmptyView() } advanced: {
+                Group {
+                    toolIdleMetal(hub: true)
+                    if model.status.idleMetalHqSupported, model.status.idleMetalHqEnabled != nil {
+                        SettingsHubBlock(advanced: true) { statusIdleMetalRow }
+                    }
+                    toolAudioCleanup(hub: true)
+                    if model.status.adaptiveAudioCleanupSupported, model.status.adaptiveAudioCleanupEnabled != nil {
+                        SettingsHubBlock(advanced: true) { statusAudioCleanupRow }
+                    }
+                }
+                .disabled(model.busy)
+                if model.status.progressiveHqEnabled != nil, model.status.progressiveHqValue != nil {
+                    SettingsHubBlock(advanced: true) { statusHqPrefillRows }
+                }
+            }
+        }
+    }
+
+    var hubPerformanceCount: Int {
+        var n = 0
+        if model.status.idleMetalHqSupported { n += model.status.idleMetalHqEnabled != nil ? 2 : 1 }
+        if model.status.adaptiveAudioCleanupSupported { n += model.status.adaptiveAudioCleanupEnabled != nil ? 2 : 1 }
+        if model.status.progressiveHqEnabled != nil, model.status.progressiveHqValue != nil { n += 1 }
+        return n
+    }
+
+    // MARK: Work and agents
+
+    @ViewBuilder var hubWork: some View {
+        hubCard("work.sessions") {
+            Group {
+                toolClaudeSessions(hub: true)
+                toolThreadAttach(hub: true)
+            }
+            .disabled(model.busy)
+            if model.status.threadAttachSupported, model.status.threadAttachEnabled != nil {
+                SettingsHubBlock { statusContinueRow }
+            }
+            Group {
+                hubSwitch("WK-03", isOn: Binding(get: { model.workOpensTabs }, set: { model.workOpensTabs = $0 }))
+                hubSwitch("WK-02", isOn: Binding(get: { model.workNotificationsEnabled }, set: { model.workNotificationsEnabled = $0 }))
+            }
+            .disabled(model.busy)
+            hubRow("OUT-04") { SettingsHubUsageSwitch(store: model.sessionUsage, label: hubLabel("OUT-04")) }
+        }
+        hubCard("work.chat", advanced: 2) {
+            Group {
+                hubSwitch("WK-04", isOn: $workChatSendWithoutReview)
+                hubRow("WK-05") {
+                    COSDropdown("When earlier work is still open", selection: $workChatWhenHeld,
+                                options: WorkChatHold.settingOptions.map { COSDropdownOption($0.0, $0.1) }, showsLabel: false)
+                        .frame(width: 200)
+                }
+                if model.workExpiryAvailable {
+                    hubSwitch("WK-01", isOn: Binding(get: { model.workExpiryEnabled }, set: { enabled in Task { await model.setWorkExpiry(enabled) } }))
+                }
+            }
+            .disabled(model.busy)
+        } advanced: {
+            // Per-Mac defaults that Work chat's footer also offers (OUT-05, OUT-06).
+            hubRow("OUT-05", detail: hubDetail("OUT-05") + " " + SettingsHubCopy.plannerNote) {
+                COSDropdown("Plan with", selection: $workChatPlanner,
+                            options: WorkChatPolicy.planners.map { COSDropdownOption($0, WorkChatPolicy.plannerName($0)) }, showsLabel: false)
+                    .frame(width: 160)
+            }
+            hubRow("OUT-06", detail: hubDetail("OUT-06") + " " + SettingsHubCopy.plannerNote) {
+                COSDropdown("Effort", selection: $workChatEffort,
+                            options: WorkChatPolicy.efforts.map { COSDropdownOption($0, WorkChatPolicy.effortName($0)) }, showsLabel: false)
+                    .frame(width: 160)
+            }
+        }
+        if hubGroupShown("work.background") {
+            hubCard("work.background") {
+                toolBackgroundJobs(hub: true).disabled(model.busy)
+                if model.status.backgroundJobsEnabled != nil { SettingsHubBlock { statusBackgroundRow } }
+            }
+        }
+        hubCard("work.folders", advanced: 1) {
+            Group {
+                hubRow("UT-15", detail: hubDetail("UT-15") + " " + SettingsHubCopy.chooseRestarts) {
+                    Button("Choose…") { model.selectWorkFolder() }
+                        .buttonStyle(TodayButtonStyle(small: true)).disabled(serverNotInstalled).help(workFolderHelp)
+                }
+                SettingsHubBlock { statusWorkFolderRows }
+                hubRow("UT-17", detail: hubDetail("UT-17") + " " + SettingsHubCopy.chooseRestarts) {
+                    Button("Choose…") { model.selectContextFolder() }
+                        .buttonStyle(TodayButtonStyle(small: true)).disabled(serverNotInstalled).help(Self.cosDataHelp)
+                }
+                if model.status.contextResolvedRoot == nil {
+                    hubRow("UT-18") {
+                        Button("Create Folders") { model.perform("create-context-folders") }
+                            .buttonStyle(TodayButtonStyle(small: true)).disabled(serverNotInstalled).help(createFoldersHelp)
+                    }
+                }
+            }
+            .disabled(model.busy)
+            if model.status.contextBrowserSupported { SettingsHubBlock { statusContextRows } }
+        } advanced: {
+            if model.status.contextScriptsDirectory != nil || model.status.contextFilesDirectory != nil {
+                SettingsHubBlock(advanced: true) { notesSourceLine }
+            } else {
+                hubRow("UT-19") { SettingsHubValue(text: "Not set") }
+            }
+        }
+        if hubGroupShown("work.brief") {
+            hubCard("work.brief") { SettingsHubBlock { morningBriefContent } }
+        }
+        if hubGroupShown("work.domains") {
+            hubCard("work.domains") { SettingsHubBlock { domainsContent } }
+        }
+        if hubGroupShown("work.fences") {
+            // Only while a thread is paused, and then it needs you: not under Advanced.
+            hubCard("work.fences") { SettingsHubBlock { fencesContent } }
+        }
+    }
+
+    // MARK: Privacy and permissions
+
+    @ViewBuilder var hubPrivacy: some View {
+        hubCard("privacy.permissions", advanced: 1) {
+            hubRow("PM-01") { SettingsHubPermissionsSummary(guide: model.permissionGuide) }
+            SettingsHubBlock { PermissionGuideList(guide: model.permissionGuide) }
+        } advanced: {
+            SettingsHubBlock(advanced: true) { StaleBuildsSection(guide: model.permissionGuide) }
+        }
+    }
+
+    // MARK: Pet and appearance
+
+    @ViewBuilder var hubPet: some View {
+        // The pet's settings came from Tools, which is off while busy.
+        hubCard("pet.pet", advanced: model.petEnabled ? 2 : 0) {
+            hubSwitch("PT-01", isOn: Binding(get: { model.petEnabled }, set: { model.setPetEnabled($0) }))
+            if model.petIntroVisible { SettingsHubBlock { PetIntroLine(model: model) } }
+            if model.petEnabled {
+                if !model.petJumpTrusted { SettingsHubBlock { petJumpWarning } }
+                SettingsHubBlock { PetSizeControls(model: model) }
+                hubRow("PT-10") { petCloudPuffButton.buttonStyle(TodayButtonStyle(small: true)) }
+            }
+        } advanced: {
+            SettingsHubBlock(advanced: true) { PetSpriteStateControls(model: model) }
+            SettingsHubBlock(advanced: true) { petSpriteButtons }
+        }
+        .disabled(model.busy)
+        if hubGroupShown("pet.characters") {
+            hubCard("pet.characters") { SettingsHubBlock { petGalleryCard } }
+                .disabled(model.busy)
+        }
+    }
+
+    // MARK: System and updates
+
+    @ViewBuilder var hubSystem: some View {
+        let legacy = ["legacyStopped", "legacyService"].contains(model.status.runtimeState)
+        // A legacy server's next step is under Advanced, so Advanced opens on its own then.
+        hubCard("system.server", advanced: 4, forceOpen: legacy) {
+            SettingsHubBlock { statusServerRows; statusVersionRow }
+            if (model.status.activeJobs ?? 0) + (model.status.activeTranscriptionSessions ?? 0) > 0 || model.status.transactionPending {
+                SettingsHubBlock { statusActiveWorkLine; statusTransactionLine }
+            }
+            hubRow("C-01", label: "Restart and update", detail: "Restart, stop or start the server, or install the newest one. Restart waits until no work is running.") {
+                serverControlButtons
+            }
+            if model.status.runtimeState == "legacyForeground" || model.status.ownerConflict || model.operationProgress != nil || model.notice != nil {
+                SettingsHubBlock { serverForegroundWarning; serverMessages }
+            }
+        } advanced: {
+            if legacy {
+                SettingsHubBlock(advanced: true) { serverLegacyControls }
+            } else {
+                hubRow("C-06", label: "Older server", detail: "Adopt, manage in place, or replace a server COS Control did not install.") {
+                    SettingsHubValue(text: "Not needed")
+                }
+            }
+            Group {
+                hubButton("UT-24", "Open") { model.openHealth() }
+                // UT-26 gets the confirmation the inventory asks for; the panel's button rolls back on one click.
+                hubButton("UT-26", "Roll back…") { confirmHubRollback = true }
+                if confirmHubRollback { hubRollbackConfirm }
+                hubButton("UT-27", "Finish change") { model.perform("reconcile") }
+            }
+            .disabled(model.busy)
+        }
+        hubCard("system.updates") {
+            // H-01 to H-03: the version, Check now (the header's refresh and check) and how the last check went.
+            HStack(alignment: .center, spacing: 16) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("COS Control").font(COSType.body(14.5, weight: .semibold)).foregroundStyle(TodayInk.ink)
+                    updateStatusLine(idle: "Checks at launch and every six hours.", size: 13).lineLimit(2)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                HStack(spacing: 12) {
+                    Text(ControllerModel.currentVersion).font(COSType.mono(12)).foregroundStyle(TodayInk.grey)
+                        .accessibilityLabel("COS Control version \(ControllerModel.currentVersion)")
+                    Button("Check now") { Task { await model.refreshAndCheckForUpdates() } }
+                        .buttonStyle(TodayButtonStyle(small: true))
+                        .help("Refresh status and check for updates")
+                }
+                .fixedSize()
+            }
+            .padding(.horizontal, 20).padding(.vertical, 14)
+            .overlay(alignment: .top) { SettingsHubHairline() }
+            .id("item.H-02")
+            hubRow("H-06") {
+                if model.appUpdateFlow.showsBanner {
+                    Button("Read") { model.presentWhatsNew() }.buttonStyle(TodayButtonStyle(small: true))
+                } else {
+                    SettingsHubValue(text: "Opens with the next update")
+                }
+            }
+            hubRow("G-05") { SettingsHubValue(text: footerLabel, mono: true) }
+        }
+        hubCard("system.troubleshooting") {
+            Group {
+                hubButton("UT-01", "Run checks") { model.perform("doctor") }
+                if !model.doctorChecks.isEmpty { SettingsHubBlock { doctorResults } }
+                hubRow("UT-13") {
+                    Button("Repair") { model.perform("repair") }.buttonStyle(TodayButtonStyle(small: true)).disabled(repairRuntimeBlocked)
+                }
+                hubRow("UT-22") {
+                    HStack(spacing: 8) {
+                        Button("Copy report") { model.perform("report") }.buttonStyle(TodayButtonStyle(small: true))
+                        Button("Open logs") { model.openLogs() }.buttonStyle(TodayButtonStyle(small: true))
+                    }
+                }
+                hubButton("UT-28", "Open") { model.openSetupGuide() }
+            }
+            .disabled(model.busy)
+            hubButton("G-04", "Quit") { AppQuit.request() }
+        }
+    }
+
+    /// The board's inline confirmation for Roll back server (A-system-light).
+    var hubRollbackConfirm: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Roll back the server?").font(COSType.body(14, weight: .semibold)).foregroundStyle(TodayInk.ink)
+            Text("COS Control stops \(model.status.version.map { "server " + $0 } ?? "this server") and starts the version it kept. You can update again from this page.")
+                .font(COSType.body(13)).foregroundStyle(TodayInk.sub).fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 8) {
+                Button("Roll back") { confirmHubRollback = false; model.perform("rollback") }
+                    .buttonStyle(TodayButtonStyle(primary: true, small: true))
+                Button("Cancel") { confirmHubRollback = false }.buttonStyle(TodayButtonStyle(small: true))
+                    .keyboardShortcut(.cancelAction)
+            }
+        }
+        .padding(EdgeInsets(top: 14, leading: 16, bottom: 14, trailing: 16))
+        .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(TodayInk.panel))
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(TodayInk.btnBorder, lineWidth: 1))
+        .padding(EdgeInsets(top: 0, leading: 20, bottom: 16, trailing: 20))
+        .background(TodayInk.hubAdvancedBg)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Confirm roll back")
     }
 }
 
@@ -4657,6 +5810,8 @@ final class HotKeyCenter {
 /// Option is refused with the reason.
 struct HotKeyRecorderRow: View {
     @ObservedObject var model: ControllerModel
+    /// Settings hub: the row's label is the hub row's ("Activity shortcut"), so the recorder draws without its own.
+    var showsLabel = true
     @State private var recording = false
     @State private var monitor: Any?
     @State private var note: String?
@@ -4664,8 +5819,10 @@ struct HotKeyRecorderRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 8) {
-                Text("Open Activity with")
-                    .font(.caption)
+                if showsLabel {
+                    Text("Activity shortcut")
+                        .font(.caption)
+                }
                 Text(recording ? "Press keys…" : (model.activityHotKey?.display ?? "Off"))
                     .font(.system(size: 11, weight: .semibold, design: .rounded))
                     .padding(.horizontal, 7)
@@ -4678,7 +5835,7 @@ struct HotKeyRecorderRow: View {
                     Button("Off") { model.setActivityHotKey(nil); note = nil }
                         .controlSize(.mini)
                 }
-                Spacer(minLength: 0)
+                if showsLabel { Spacer(minLength: 0) }
             }
             if let note {
                 Text(note).font(.caption2).foregroundStyle(COSPalette.amber)
@@ -4912,7 +6069,7 @@ private struct PetSizeControls: View {
                 set: { model.setPetMotion($0) }
             ), options: PetMotion.allCases.map { COSViewOption($0, $0.shortTitle) }, showsLabel: true)
             .font(.caption)
-            Text("Full plays every state. Calm rests the character on its idle loop "
+            Text("Full plays every state, Calm stays idle, None holds still. Also on the pet's menu. "
                  + "instead of the multi-session fights. None holds one still frame. "
                  + "Session counts always show on the bar, and alerts still change "
                  + "the pose. Also on the pet's right-click menu.")
@@ -4931,5 +6088,19 @@ private struct PetSizeControls: View {
             model.setPetCustomPixels(value)
         }
         pixelDraft = "\(model.petSize.pixels)"
+    }
+}
+
+extension ControlPanel {
+    /// Settings hub offscreen fixture (Tests/SettingsHubRender.swift): Activity's hub opened on a category, or on a search.
+    static func hubFixture(model: ControllerModel, category: SettingsHubCategory, query: String = "",
+                           advanced: Set<String> = []) -> ControlPanel {
+        precondition(!model.backgroundWorkEnabled)
+        var panel = ControlPanel(model: model, openActivity: { _ in }, hostedInWindow: true, hostedInActivity: true,
+                                 hub: SettingsHubHost(backTitle: "Today", back: {}))
+        panel._hubCategory = State(initialValue: category)
+        panel._hubQuery = State(initialValue: query)
+        panel._hubAdvanced = State(initialValue: advanced)
+        return panel
     }
 }

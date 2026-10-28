@@ -581,6 +581,8 @@ struct ActivityWindow: View {
     /// Activity Today home (plan v2): the opt-in switch (the integrated candidate; off keeps the 0.5.259 home and the
     /// top lens rail), its store, the Ask box, and Needs you's expansions and Next ⌘] cursor.
     @AppStorage(TodayHome.enabledKey) private var todayEnabled = false
+    /// Settings hub (Miles, 2026-10-27): Settings draws as the hub unless General, Advanced, Use classic Settings is on.
+    @AppStorage(SettingsHub.classicKey) private var classicSettings = false
     @StateObject private var today = TodayHomeStore()
     @State private var todayAsk = ""
     @FocusState private var todayAskFocused: Bool
@@ -767,10 +769,11 @@ struct ActivityWindow: View {
     private func activityContent(today: TodayHome.Frame?, width: CGFloat, now: Date) -> some View {
             Group {
                 if showingSettings {
+                    // The hub takes the whole region (its own sidebar and On this page); the classic panel keeps its 780.
                     ControlPanel(model: model, openActivity: { destination in
                         if let destination { select(destination) } else { goHome() }
-                    }, hostedInWindow: true, hostedInActivity: true)
-                        .frame(maxWidth: 780, maxHeight: .infinity)
+                    }, hostedInWindow: true, hostedInActivity: true, hub: settingsHubHost)
+                        .frame(maxWidth: classicSettings ? 780 : .infinity, maxHeight: .infinity)
                 } else if section == .sessions && (isolatedWorkPreview || showingLinkedSession) {
                     WorkSessionsView(store: handoffStore, isPreview: isolatedWorkPreview, onOpenWork: openHandoffWork, onOpenFullSession: openFullHandoffSession)
                 } else if isolatedWorkPreview, let selected = section, selected != .work, !(selected == .meetings && selectedLibraryRecordID != nil) {
@@ -898,6 +901,15 @@ struct ActivityWindow: View {
                     activityHome
                 }
             }
+    }
+
+    /// Settings opened as the hub, which brings its own sidebar in place of the Today rail and its own back control.
+    private var settingsHubShowing: Bool { showingSettings && !classicSettings }
+
+    /// What the hub's "‹" says and does: back to the tab Settings was opened over, or to Today (Home in the classic frame).
+    private var settingsHubHost: SettingsHubHost {
+        SettingsHubHost(backTitle: section?.title ?? (todayEnabled && !isolatedWorkPreview ? "Today" : "Home"),
+                        back: { showingSettings = false })
     }
 
     @ViewBuilder
@@ -4787,7 +4799,7 @@ struct ActivityWindow: View {
             } else if loading {
                 centeredProgress("Loading \(item.title.lowercased())…")
             } else if !available {
-                emptyState(item, text: "Choose COS Data in the menu-bar panel to connect this library.")
+                emptyState(item, text: "Choose a notes folder in Settings to connect this library.")
             } else if records.isEmpty {
                 emptyState(item, text: error ?? "No \(item.title.lowercased()) yet.")
             } else {
@@ -6085,7 +6097,7 @@ struct ActivityWindow: View {
         switch model.recentGlassesStatus {
         case .serverStopped: "Start the COS server, then refresh."
         case .unauthorized: "The saved pairing token was rejected. Copy a new token from the menu-bar panel."
-        case .error: "Messages could not be loaded. Open Logs from the menu-bar panel, then try again."
+        case .error: "Messages could not be loaded. Open logs from Settings, then try again."
         default: "No glasses messages have landed today."
         }
     }
@@ -7638,6 +7650,8 @@ enum TodayInk {
     static let cardFoot = pair(0x57534d, 0xb3a796)
     static let hotBorder = pair(0xe7c9a5, 0x6b4a2e)
     static let kbdBorder = pair(0xd8ccb6, 0x4a3d30)
+    /// Settings hub: the Advanced disclosure and its rows (design/settings-hub, `.adv`).
+    static let hubAdvancedBg = pair(0xfbf7ef, 0x1c1611)
     static let pulse = Color(nsColor: hex(0x7fd19b))
 
     /// Badge fill and words by platform (spelled words, never monograms).
@@ -8027,7 +8041,7 @@ let todayLog = Logger(subsystem: "com.gotcos.control", category: "activity-today
         let admission = guardrail.admission(target: target, inFlight: Self.inFlightTargets(handoff.receipts),
                                             switchOn: TodayHome.workRunsOn(.standard), now: Date())
         guard admission == .allowed else {
-            runNote = TodayRunGuard.line(admission) ?? "Starting Work runs from Today is off in Settings."
+            runNote = TodayRunGuard.line(admission) ?? "Work runs from Today is off in Settings."
             todayLog.info("run refused by the guard: \(String(describing: admission), privacy: .public)")
             return
         }
@@ -8306,9 +8320,10 @@ extension ActivityWindow {
                 let width = geometry.size.width
                 let mode = TodayHome.railMode(windowWidth: width)
                 HStack(spacing: 0) {
-                    todayRail(mode: mode, frame: frame, now: timeline.date)
+                    // Settings as the hub: its sidebar takes the rail's place, and "‹ Today" leaves it.
+                    if !settingsHubShowing { todayRail(mode: mode, frame: frame, now: timeline.date) }
                     VStack(spacing: 0) {
-                        if canGoBack || connectedWorkTest { navigationBar; Divider() }
+                        if (canGoBack || connectedWorkTest) && !settingsHubShowing { navigationBar; Divider() }
                         activityContent(today: frame, width: width, now: timeline.date)
                             .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity, alignment: .top)
                             .clipped()
@@ -8969,7 +8984,7 @@ extension ActivityWindow {
             case .switchOff:
                 // 0.5.337 (loop audit N7): the switch off says where it is, rather than Prep me vanishing.
                 if !TodayHome.workRunsOn(.standard) {
-                    Text("Prep me is off: Settings, Start Work runs from Today").font(COSType.body(12.5)).foregroundStyle(TodayInk.sub).lineLimit(2)
+                    Text("Prep me is off: Settings, Work runs from Today").font(COSType.body(12.5)).foregroundStyle(TodayInk.sub).lineLimit(2)
                 }
             default:
                 if let line = TodayRunGuard.line(admission) { Text(line).font(COSType.body(12.5)).foregroundStyle(TodayInk.sub).lineLimit(2) }

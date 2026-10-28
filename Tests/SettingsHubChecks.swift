@@ -60,7 +60,7 @@ import Foundation
               "the top strip holds the update banner, notices, the Dock notice, Get started, the recording card and Finish setup")
         check(SettingsHubCatalog.advancedCount("system.server") == 6, "Server's Advanced: adopt, manage in place, replace, health, roll back, finish change")
         check(SettingsHubCatalog.advancedCount("general.app") == 1, "General's Advanced holds Use classic Settings")
-        check(SettingsHubCatalog.item("HUB-01")?.advanced == true && SettingsHubCatalog.item("HUB-01")?.group == "general.app",
+        check(SettingsHubCatalog.item("HUB-CL")?.advanced == true && SettingsHubCatalog.item("HUB-CL")?.group == "general.app",
               "Use classic Settings is in General, Advanced")
         check(SettingsHub.classicKey == "cos.settings.classic", "the classic switch's key")
     }
@@ -103,7 +103,7 @@ import Foundation
         check(ids("TAILSCALE").contains("SG-11"), "search ignores case")
         check(ids("pairing token").contains("UT-21"), "every word must match: pairing token")
         check(!ids("pairing zebra").contains("UT-21"), "a word that matches nothing removes the row")
-        check(ids("classic").contains("HUB-01"), "search finds Use classic Settings")
+        check(ids("classic").contains("HUB-CL"), "search finds Use classic Settings")
         check(ids("zzqxv").isEmpty && SettingsHubSearch.results("zzqxv").isEmpty, "no match is an empty result")
         check(SettingsHubSearch.results("   ").isEmpty, "a blank query has no results")
         check(!ids("Dock menu").contains("MN-06"), "rows outside Settings never show in search")

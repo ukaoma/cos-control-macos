@@ -77,7 +77,7 @@ pin("HeaderUpdateStatus.shown(inFlight: model.updateCheckInFlight, status: model
 pin("reduceMotion ? nil :" in line, "reduce motion", "no animation under Reduce Motion")
 pin('.help(shown == .failed ? (model.headerUpdateFailureDetail ?? "") : "")' in line, "failure detail",
     "the failure's own words on hover while the line says Couldn't check")
-pin('updateStatusLine(idle: "Your local glasses server")' in header, "subtitle words", "the header's subtitle is the status line")
+pin('updateStatusLine(idle: "Your COS server on this Mac")' in header, "subtitle words", "the header's subtitle is the status line")
 pin('"Up to date · ' not in models and "COS Control \\(" not in body(models, "enum HeaderUpdateStatus", "\n}\n"), "subtitle words",
     "Up to date stands alone: the version is the stamp's")
 # Settings in Activity had the version card as its only manual check: it keeps one.

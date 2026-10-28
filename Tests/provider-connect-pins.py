@@ -96,7 +96,7 @@ pin('return "Not signed in: " + missing' not in views and "AgentCliDetailLine(gu
 # F3 Dock.
 pin("@NSApplicationDelegateAdaptor(COSAppDelegate.self)" in app and "DockPresence.reopenTarget(" in app, "dock", "the Dock click is handled")
 pin("func applicationShouldHandleReopen" in connect_views and "DockPresence.apply(DockPresence.mode(stored:" in connect_views, "dock", "the setting is applied at launch")
-pin('Toggle("Show in menu bar only"' in views and "model.setShowInDock(" in views, "dock", "Settings has the switch")
+pin('Toggle("Menu bar only"' in views and "model.setShowInDock(" in views, "dock", "Settings has the switch")
 pin("<key>LSUIElement</key>\n\t<true/>" in read("Resources/Info.plist"), "dock", "menu-bar-only users never flash in the Dock at launch")
 
 # F4 pet intro, F5 glasses, F6 Jev.

@@ -194,7 +194,7 @@ need('"sessions": sessions.map { $0.filter { $0.key != "waitingQuestion" && $0.k
      "[disk] the session cache never holds a question's words")
 
 # Settings (both open questions as settings).
-for key, label in (("TodayHome.enabledKey", "New Today home"), ("TodayHome.quietHoursKey", "Quiet hours on Today"), ("TodayHome.workRunsKey", "Start Work runs from Today")):
+for key, label in (("TodayHome.enabledKey", "Today home"), ("TodayHome.quietHoursKey", "Quiet hours"), ("TodayHome.workRunsKey", "Work runs from Today")):
     need(key in views and f'Toggle("{label}"' in views, f"[settings] {label}")
 
 # Copy rules: no em dash, arrows or attribution in Today's words; no eyebrow, no vanity totals.

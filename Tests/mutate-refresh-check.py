@@ -60,7 +60,7 @@ MUTANTS = [
     ("button only refreshes", V, "            Task { await model.refreshAndCheckForUpdates() }", "            Task { await model.refresh() }", "[both actions]", "pins"),
     ("button help unchanged", V, '            .help("Refresh status and check for updates")', '            .help("Refresh status")', "[button help]", "pins"),
     ("button unlabelled", V, '            .accessibilityLabel("Refresh status and check for updates")\n', "", "[button help]", "pins"),
-    ("subtitle not wired", V, 'updateStatusLine(idle: "Your local glasses server").lineLimit(1)', 'Text("Your local glasses server").font(COSType.body(11)).foregroundStyle(.secondary)', "[subtitle words]", "pins"),
+    ("subtitle not wired", V, 'updateStatusLine(idle: "Your COS server on this Mac").lineLimit(1)', 'Text("Your COS server on this Mac").font(COSType.body(11)).foregroundStyle(.secondary)', "[subtitle words]", "pins"),
     ("subtitle ignores in flight", V, "HeaderUpdateStatus.shown(inFlight: model.updateCheckInFlight, status: model.headerUpdateStatus)", "HeaderUpdateStatus.shown(inFlight: false, status: model.headerUpdateStatus)", "[subtitle words]", "pins"),
     ("motion under Reduce Motion", V, ".animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: shown)", ".animation(.easeOut(duration: 0.15), value: shown)", "[reduce motion]", "pins"),
     ("version card back", V, "                noticeBanner\n", "                updateRow\n                noticeBanner\n", "[card gone]", "pins"),

@@ -6173,7 +6173,7 @@ final class ControllerModel: ObservableObject {
     }
 
     /// One sentence for every place a stale Accessibility grant shows up.
-    nonisolated static let accessibilityRepairHint = "Already on? Use Reset and add again in COS Control Settings, under Session pet."
+    nonisolated static let accessibilityRepairHint = "Already on? Use Reset and add again in Settings, Pet and appearance."
 
     /// 0.5.267: the repair for a grant that reads ON in System Settings while this build is untrusted. Removes COS
     /// Control's Accessibility entry (`tccutil reset Accessibility <bundle id>`, which touches only this app), asks
@@ -7184,7 +7184,7 @@ final class ControllerModel: ObservableObject {
         }
         switch status.threadAttachEnabled {
         case .some(true): return nil
-        case .some(false): return "Continue agent threads is off in Settings."
+        case .some(false): return "Continue sessions is off in Settings."
         case .none: return "Update the COS server to continue a thread from here."
         }
     }
@@ -7555,7 +7555,7 @@ final class ControllerModel: ObservableObject {
                 }
                 return chatBinding?.bindingId.isEmpty == false
             case "disabled":
-                chatRefusal = "Continue agent threads is off in Settings."
+                chatRefusal = "Continue sessions is off in Settings."
                 await refresh()
                 return false
             default:
@@ -7604,7 +7604,7 @@ final class ControllerModel: ObservableObject {
                     ?? "COS cannot tell whether this turn landed. Check the transcript before sending again."
                 clearPendingTurn()
             case "disabled":
-                chatRefusal = "Continue agent threads is off in Settings."
+                chatRefusal = "Continue sessions is off in Settings."
                 clearPendingTurn()
                 await refresh()
             default:
@@ -8098,7 +8098,7 @@ final class ControllerModel: ObservableObject {
                 sessionBindings[Self.bindingKey(session)] = binding
                 return .attached(binding)
             case "disabled":
-                return .failed(reason: "disabled", copy: "Continue agent threads is off in Settings.")
+                return .failed(reason: "disabled", copy: "Continue sessions is off in Settings.")
             default:
                 return .failed(reason: response.details["reason"]?.string ?? "",
                                copy: response.details["reasonCopy"]?.string ?? "COS could not attach to this session.")
@@ -8132,7 +8132,7 @@ final class ControllerModel: ObservableObject {
             case "queued":
                 return .settled(.queued("Sent. COS is opening the thread; the reply lands in its transcript."))
             case "disabled":
-                return .settled(.failed("Continue agent threads is off in Settings."))
+                return .settled(.failed("Continue sessions is off in Settings."))
             case "ambiguous":
                 return .settled(.failed(copy.isEmpty
                     ? "COS cannot tell whether this landed. Check the session before sending again." : copy))
@@ -10533,7 +10533,7 @@ final class ControllerModel: ObservableObject {
                     }
                     switch state {
                     case "route_missing":
-                        reviewError = "This needs glasses-server 6.21.18 or newer — use Update Server."
+                        reviewError = "This needs COS server 6.21.18 or newer. Use Update Server."
                     case "pending_correction":
                         reviewError = MacVoiceCopy.earlierCorrectionNote
                     case "meeting_finalizing":
@@ -10688,7 +10688,7 @@ final class ControllerModel: ObservableObject {
                     let text: String
                     switch state {
                     case "expired": text = missing
-                    case "route_missing": text = "This needs glasses-server 6.21.18 or newer — use Update Server."
+                    case "route_missing": text = "This needs COS server 6.21.18 or newer. Use Update Server."
                     default: text = "Audio unavailable (\(state))."
                     }
                     playbackNote = (key: key, voice: voice, text: text)

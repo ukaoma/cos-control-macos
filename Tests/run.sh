@@ -171,7 +171,7 @@ python3 "$ROOT/Tests/reuse-compile.py" --root "$ROOT" --receipt "$TMP/app-compil
 "$ROOT/Tests/compile-guard.sh" swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \
   "$ROOT/Sources/Models.swift" \
   "$ROOT/Sources/HelperClient.swift" \
-  "$ROOT/Sources/ControllerModel.swift" "$ROOT/Sources/SessionUsageCore.swift" "$ROOT/Sources/SessionUsageView.swift" "$ROOT/Sources/SetupAssistant.swift" \
+  "$ROOT/Sources/ControllerModel.swift" "$ROOT/Sources/SessionUsageCore.swift" "$ROOT/Sources/SettingsHubCatalog.swift" "$ROOT/Sources/SettingsHubViews.swift" "$ROOT/Sources/SessionUsageView.swift" "$ROOT/Sources/SetupAssistant.swift" \
   "$ROOT/Sources/AppQuit.swift" "$ROOT/Sources/MacRecordingCore.swift" "$ROOT/Sources/MacAudioCapture.swift" "$ROOT/Sources/MacRecording.swift" "$ROOT/Sources/MacDictationCore.swift" "$ROOT/Sources/MacDictation.swift" \
   "$ROOT/Sources/COSBrand.swift" \
   "$ROOT/Sources/COSMotion.swift" \
@@ -265,7 +265,7 @@ zsh "$ROOT/Tests/run-illustrated-pet.sh"
   -framework AppKit -o "$TMP/jedi-gallery-contract"
 "$TMP/jedi-gallery-contract" "$ROOT/Resources"
 /usr/bin/python3 "$ROOT/Tests/kit-compile.py" "$ROOT/Tests/compile-guard.sh" swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \
-  "$ROOT/Sources/Models.swift" "$ROOT/Sources/HelperClient.swift" "$ROOT/Sources/ControllerModel.swift" "$ROOT/Sources/SessionUsageCore.swift" "$ROOT/Sources/SessionUsageView.swift" "$ROOT/Sources/SetupAssistant.swift" \
+  "$ROOT/Sources/Models.swift" "$ROOT/Sources/HelperClient.swift" "$ROOT/Sources/ControllerModel.swift" "$ROOT/Sources/SessionUsageCore.swift" "$ROOT/Sources/SettingsHubCatalog.swift" "$ROOT/Sources/SettingsHubViews.swift" "$ROOT/Sources/SessionUsageView.swift" "$ROOT/Sources/SetupAssistant.swift" \
   "$ROOT/Sources/AppQuit.swift" "$ROOT/Sources/MacRecordingCore.swift" "$ROOT/Sources/MacAudioCapture.swift" "$ROOT/Sources/MacRecording.swift" "$ROOT/Sources/MacDictationCore.swift" "$ROOT/Sources/MacDictation.swift" \
   "$ROOT/Sources/COSBrand.swift" "$ROOT/Sources/COSMotion.swift" "$ROOT/Sources/COSConfirm.swift" \
   "$ROOT/Sources/Views.swift" "$ROOT/Sources/Control2Foundation.swift" "$ROOT/Sources/WorkHandoffStore.swift" "$ROOT/Sources/KeyLanes.swift" "$ROOT/Sources/KeyLanesViews.swift" "$ROOT/Sources/WorkSessionLinks.swift" "$ROOT/Sources/WorkProgress.swift" "$ROOT/Sources/WorkCardFiles.swift" "$ROOT/Sources/WorkProgressTracker.swift" "$ROOT/Sources/WorkTrackingViews.swift" "$ROOT/Sources/WorkHandoffView.swift" "$ROOT/Sources/WorkReviewStore.swift" "$ROOT/Sources/WorkWorkspaceView.swift" "$ROOT/Sources/WorkTaskChat.swift" "$ROOT/Sources/WorkOrchestrator.swift" "$ROOT/Sources/WorkLensPlans.swift" "$ROOT/Sources/WorkLensPlansPump.swift" "$ROOT/Sources/WorkChatQueue.swift" "$ROOT/Sources/WorkReferences.swift" "$ROOT/Sources/WorkTaskContext.swift" "$ROOT/Sources/WorkContextMeter.swift" "$ROOT/Sources/PermissionGuideModel.swift" "$ROOT/Sources/PermissionGuideSystem.swift" "$ROOT/Sources/PermissionFlowVendored.swift" "$ROOT/Sources/PermissionDragFlow.swift" "$ROOT/Sources/PermissionGuideViews.swift" "$ROOT/Sources/ProviderConnectModel.swift" "$ROOT/Sources/ProviderConnectViews.swift" "$ROOT/Sources/ActivityWindow.swift" "$ROOT/Sources/ActivityMeetings.swift" "$ROOT/Sources/MeetingSpeakerPolicy.swift" "$ROOT/Sources/MeetingAskCore.swift" "$ROOT/Sources/MeetingAsk.swift" \
@@ -476,8 +476,8 @@ echo "COS Control: Claude sessions toggle wired helper -> model -> view"
 /usr/bin/grep -q 'npm latest' "$ROOT/Sources/Views.swift"
 /usr/bin/grep -q 'ControllerModel.currentVersion' "$ROOT/Sources/Views.swift"
 /usr/bin/grep -q 'model.status.version' "$ROOT/Sources/Views.swift"
-/usr/bin/grep -q 'Work Folder' "$ROOT/Sources/Views.swift"
-/usr/bin/grep -q 'Meetings Library' "$ROOT/Sources/Views.swift"
+/usr/bin/grep -q 'Work folder' "$ROOT/Sources/Views.swift"
+/usr/bin/grep -q 'Meetings folder' "$ROOT/Sources/Views.swift"
 /usr/bin/grep -q 'set-operations-dir' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'COS_OPERATIONS_DIR' "$ROOT/HelperSources/main.swift"
 
@@ -491,12 +491,12 @@ echo "COS Control: Claude sessions toggle wired helper -> model -> view"
 /usr/bin/grep -q 'case "set-meeting-preview"' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'COS_WHISPER_MEETING_PREVIEW' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'requireMeetingPreview' "$ROOT/HelperSources/main.swift"
-/usr/bin/grep -q 'Meeting Turbo preview' "$ROOT/Sources/Views.swift"
+/usr/bin/grep -q 'Fast preview' "$ROOT/Sources/Views.swift"
 /usr/bin/grep -q 'case "set-idle-metal-hq"' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'COS_BATCH_HQ_METAL' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'COS_BATCH_HQ_FORCE_CPU' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'requireIdleMetalHq' "$ROOT/HelperSources/main.swift"
-/usr/bin/grep -q 'Idle Metal HQ' "$ROOT/Sources/Views.swift"
+/usr/bin/grep -q 'GPU when idle' "$ROOT/Sources/Views.swift"
 /usr/bin/grep -q 'case "set-adaptive-audio-cleanup"' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'case "set-video-upload-v2"' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'case "clear-stranded-video-uploads"' "$ROOT/HelperSources/main.swift"
@@ -505,7 +505,7 @@ echo "COS Control: Claude sessions toggle wired helper -> model -> view"
 /usr/bin/grep -q 'case "meeting-orphan-recover"' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'case "meeting-stranded-save"' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'case "meeting-stranded-save-all"' "$ROOT/HelperSources/main.swift"
-/usr/bin/grep -q 'Save still-live captures as meetings' "$ROOT/Sources/Views.swift"
+/usr/bin/grep -q 'Save live recordings as meetings' "$ROOT/Sources/Views.swift"
 /usr/bin/grep -q 'model.saveStranded' "$ROOT/Sources/Views.swift"
 /usr/bin/grep -q 'model.saveAllStranded' "$ROOT/Sources/ActivityMeetings.swift"
 /usr/bin/grep -q 'lastCustomTitle' "$ROOT/HelperSources/main.swift"
@@ -524,12 +524,12 @@ echo "COS Control: Claude sessions toggle wired helper -> model -> view"
 /usr/bin/grep -q 'case .pinned:' "$ROOT/Sources/ActivityWindow.swift"
 /usr/bin/grep -q 'Fireflies meeting sync' "$ROOT/Tests/ModelsContract.swift"
 /usr/bin/grep -q 'case "meeting-sync-now"' "$ROOT/HelperSources/main.swift"
-/usr/bin/grep -q 'Run sync now' "$ROOT/Sources/Views.swift"
+/usr/bin/grep -q 'Sync now' "$ROOT/Sources/Views.swift"
 /usr/bin/grep -q 'meetingSyncTooling' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'cos_python' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'recoverableOrphanSessionIds' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'waitForOrphanSlot' "$ROOT/HelperSources/main.swift"
-/usr/bin/grep -q 'Recover all unsaved captures' "$ROOT/Sources/Views.swift"
+/usr/bin/grep -q 'Recover all unsaved recordings' "$ROOT/Sources/Views.swift"
 /usr/bin/grep -q 'Recover all unsaved captures' "$ROOT/Sources/ActivityMeetings.swift"
 /usr/bin/grep -q 'recoverableOrphans.isEmpty || !model.strandedCaptures.isEmpty' "$ROOT/Sources/Views.swift"
 /usr/bin/grep -q 'model.recoverAllOrphans' "$ROOT/Sources/Views.swift"
@@ -542,16 +542,16 @@ if /usr/bin/grep -q '/api/meeting/orphans route' "$ROOT/Sources/Views.swift"; th
 fi
 /usr/bin/grep -q 'struct OrphanCapture' "$ROOT/Sources/Models.swift"
 /usr/bin/grep -q 'isStrandedReceivingVideoUpload' "$ROOT/HelperSources/main.swift"
-/usr/bin/grep -q 'Clear stranded' "$ROOT/Sources/Views.swift"
+/usr/bin/grep -q 'Clear stuck uploads' "$ROOT/Sources/Views.swift"
 /usr/bin/grep -q 'clearStrandedVideoUploads' "$ROOT/Sources/ControllerModel.swift"
 /usr/bin/grep -q 'resetMessageEra' "$ROOT/Sources/ControllerModel.swift"
-/usr/bin/grep -q 'Archive live messages and start numbering at #1' "$ROOT/Sources/Views.swift"
+/usr/bin/grep -q 'Reset message count' "$ROOT/Sources/Views.swift"
 /usr/bin/grep -q 'Reset live message count' "$ROOT/Sources/Views.swift"
-/usr/bin/grep -q 'Repair does not do this' "$ROOT/Sources/Views.swift"
+/usr/bin/grep -q 'Stuck uploads block Repair' "$ROOT/Sources/Views.swift"
 /usr/bin/grep -q 'It does not cancel stranded V2 video drafts' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'COS_MEETING_AUDIO_ADAPTIVE_PLAYBACK' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'requireAdaptiveAudioCleanup' "$ROOT/HelperSources/main.swift"
-/usr/bin/grep -q 'Adaptive audio cleanup' "$ROOT/Sources/Views.swift"
+/usr/bin/grep -q 'Playback cleanup' "$ROOT/Sources/Views.swift"
 /usr/bin/grep -q 'playbackTask?.cancel()' "$ROOT/Sources/ControllerModel.swift"
 /usr/bin/grep -q 'playbackRequestID == requestID' "$ROOT/Sources/ControllerModel.swift"
 /usr/bin/grep -q 'stoppedCompatibleManagedServer' "$ROOT/HelperSources/main.swift"
@@ -577,7 +577,7 @@ PY
 /usr/bin/grep -q 'Preview, while dictating' "$ROOT/Sources/Views.swift"
 /usr/bin/grep -q 'Commit, live meeting' "$ROOT/Sources/Views.swift"
 /usr/bin/grep -q 'Polish, on save' "$ROOT/Sources/Views.swift"
-/usr/bin/grep -q 'Update Server to 6.21.0 or newer to enable transcription tier controls' "$ROOT/Sources/Views.swift"
+/usr/bin/grep -q 'Update the server to 6.21.0 or newer to change the tier' "$ROOT/Sources/Views.swift"
 /usr/bin/grep -q 'onAppear' "$ROOT/Sources/Views.swift"
 /usr/bin/grep -Fq 'transcription-tier \(normalized)' "$ROOT/Sources/ControllerModel.swift"
 /usr/bin/grep -Fq 'Proving \(provider.capitalized) (up to \(proofWindow))' "$ROOT/HelperSources/main.swift"
@@ -750,7 +750,7 @@ ENTCHK
 /usr/bin/grep -q 'meetingSyncStatusFields' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'pending-batch' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q '_batch_progress.json' "$ROOT/HelperSources/main.swift"
-/usr/bin/grep -q 'Early meeting sync' "$ROOT/Sources/Views.swift"
+/usr/bin/grep -q 'Early sync' "$ROOT/Sources/Views.swift"
 /usr/bin/grep -q 'HQ prefill' "$ROOT/Sources/Views.swift"
 /usr/bin/grep -q 'COS_MEETING_PROGRESSIVE_HQ_THREADS' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'Balanced CPU guardrail\|tier.*CPU guardrail' "$ROOT/Sources/Views.swift"
@@ -1285,7 +1285,7 @@ for dead in ("func tabLink(", "func openTab(", "func linkOpenedTabs(", "func reo
     assert dead not in store and dead not in progress, "the 0.5.248 prefill route is gone: " + dead
 assert "store.opensInApp = workOpensTabs" in model and "workHandoffStore?.opensInApp = newValue" in model, "the Settings switch reaches the store at launch and on change"
 assert 'nonisolated static let workOpensTabsKey = "cos.workOpensTabs"' in model, "the Settings key is unchanged"
-assert 'Toggle("Open new sessions in the app", isOn: Binding(get: { model.workOpensTabs }, set: { model.workOpensTabs = $0 }))' in views
+assert 'Toggle("Open new sessions", isOn: Binding(get: { model.workOpensTabs }, set: { model.workOpensTabs = $0 }))' in views
 PY
 # 0.5.250: a Claude New session is named after its task (server 6.58.2 passes `sessionName` to `claude -p --name`), a
 # session linked while it runs is Work in Sessions at once, and the fresh list reads the name from the transcript.
@@ -1351,6 +1351,11 @@ PY
 # Tests/run-activity-today-render.sh (PNGs against activity-canvas).
 "$ROOT/Tests/run-activity-today.sh"
 /usr/bin/python3 "$ROOT/Tests/activity-today-pins.py" "$ROOT"
+# Settings hub (Miles, 2026-10-27, the A treatment with B's On this page rail): the catalog's rules (every inventory row
+# in one group, deep links, search, breakpoints, scroll-spy, status lines; Tests/run-settings-hub.sh), then the wiring pins.
+# Hand-run: Tests/mutate-settings-hub.py (the mutation lane) and Tests/run-settings-hub-render.sh (PNGs for QA).
+zsh "$ROOT/Tests/run-settings-hub.sh"
+/usr/bin/python3 "$ROOT/Tests/settings-hub-pins.py" "$ROOT"
 # Ask COS setup and repair assistant (2026-10-27, engine only): the pins, then the rules against fictional fixtures
 # (Tests/SetupAssistantChecks.swift, SetupAssistant.swift alone). Hand-run: Tests/mutate-setup-assistant.py.
 zsh "$ROOT/Tests/run-setup-assistant.sh"
@@ -1766,7 +1771,7 @@ PY
 /usr/bin/grep -q 'COS_THREAD_ATTACH_ENABLED' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'requireThreadAttach' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'threadAttachEnvironment' "$ROOT/HelperSources/main.swift"
-/usr/bin/grep -q 'Continue agent threads' "$ROOT/Sources/Views.swift"
+/usr/bin/grep -q 'Continue sessions' "$ROOT/Sources/Views.swift"
 /usr/bin/grep -q 'setThreadAttachEnabled' "$ROOT/Sources/ControllerModel.swift"
 /usr/bin/grep -q 'threadAttachSupported' "$ROOT/Sources/Models.swift"
 # The toggle must mount under the support flag the helper actually publishes. A
@@ -1918,7 +1923,7 @@ need("func saveDomains" in model, "saveDomains is gone from the model")
 need('case "set-domains"' in helper, "the helper cannot set domains")
 need('case "task-set-text"' in helper, "the helper cannot edit task text")
 # Removing a name must not read as deleting the folder's tasks.
-need("Removing a name only unlists it" in views,
+need("Remove unlists it" in views,
      "the Domains card does not say what removing a name does")
 
 # 0.5.189: the three-stage board reaches Control.
@@ -2771,7 +2776,7 @@ python3 "$ROOT/Tests/reuse-compile.py" --root "$ROOT" --receipt "$TMP/app-compil
 "$ROOT/Tests/compile-guard.sh" swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \
   "$ROOT/Sources/Models.swift" \
   "$ROOT/Sources/HelperClient.swift" \
-  "$ROOT/Sources/ControllerModel.swift" "$ROOT/Sources/SessionUsageCore.swift" "$ROOT/Sources/SessionUsageView.swift" "$ROOT/Sources/SetupAssistant.swift" \
+  "$ROOT/Sources/ControllerModel.swift" "$ROOT/Sources/SessionUsageCore.swift" "$ROOT/Sources/SettingsHubCatalog.swift" "$ROOT/Sources/SettingsHubViews.swift" "$ROOT/Sources/SessionUsageView.swift" "$ROOT/Sources/SetupAssistant.swift" \
   "$ROOT/Sources/AppQuit.swift" "$ROOT/Sources/MacRecordingCore.swift" "$ROOT/Sources/MacAudioCapture.swift" "$ROOT/Sources/MacRecording.swift" "$ROOT/Sources/MacDictationCore.swift" "$ROOT/Sources/MacDictation.swift" \
   "$ROOT/Sources/COSBrand.swift" \
   "$ROOT/Sources/COSMotion.swift" \
@@ -3719,7 +3724,7 @@ need('"ollamaConfiguredModel": loadedEnvironmentValue("COS_OLLAMA_MODEL")' in he
      "status does not expose the configured pin")
 need('perform("set-ollama-model"' in model, "the picker does not route through perform()")
 need('rows.append(COSDropdownOption(pinned, pinned, note: "not pulled", muted: true))' in views, "a pin whose model is gone from the daemon must still render")
-need('Automatic (newest pull)' in views, "the automatic option is not rendered")
+need('Newest pulled model' in views, "the automatic option is not rendered")
 need('"daemon_down"' in model and "Ollama is not running" in views,
      "an unreachable daemon must render as a state, not an error")
 OLLAMACHK
@@ -5096,7 +5101,7 @@ need("petNotice = " in settle_src and "loadPetSessions()" in settle_src,
 views_src = (root / "Sources/Views.swift").read_text()
 adv = views_src[views_src.index('DisclosureGroup("Advanced")'):]
 adv = adv[:adv.index("}.font(.caption)")]
-need('COSDropdown("Clock"' in adv and "model.setClockStyle($0)" in adv and "ClockStyle.allCases" in adv,
+need('COSDropdown("Time format"' in adv and "model.setClockStyle($0)" in adv and "ClockStyle.allCases" in adv,
      "the clock picker is not under Advanced, or does not persist through the model")
 meetings_src = (root / "Sources/ActivityMeetings.swift").read_text()
 for _needle in ("meeting.subtitle(clock: model.clockStyle)", "hit.meeting.subtitle(clock: model.clockStyle)",

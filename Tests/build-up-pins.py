@@ -69,7 +69,7 @@ SITES = [
     ("window", 'label: toReview ? "Loading the review queue" : "Loading recent learning")', ".list(6)",
      'centeredProgress(toReview ? "Loading review queue…" : "Loading recent learning…")', '"Nothing to review."', []),
     ("window", 'label: "Loading \\(item.title.lowercased())")', ".rows(6)", 'centeredProgress("Loading \\(item.title.lowercased())…")',
-     '"Choose COS Data in the menu-bar panel to connect this library."', ["tune: isThread ? .threads : .memories", "interrupted: queryActive"]),
+     '"Choose a notes folder in Settings to connect this library."', ["tune: isThread ? .threads : .memories", "interrupted: queryActive"]),
     ("window", 'label: "Reading \\(date)", key: AnyHashable(date)', ".list(6)", 'centeredProgress("Reading \\(date)…")', '"No conversations were archived on \\(date)."', []),
     ("window", 'label: "Reading chat \\(index + 1)"', ".turns(6)", 'centeredProgress("Reading chat \\(index + 1)…")', '"That chat holds no messages."', []),
     ("window", 'label: "Loading session", key:', ".turns(6)", 'ProgressView("Loading session…")', "ScheduledJobFacts(row: row)", []),

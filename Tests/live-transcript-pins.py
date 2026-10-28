@@ -188,7 +188,7 @@ need("|| model.liveTranscriptRouteActive" in window and "model.closeLiveTranscri
 need("if item == .meetings, showLiveTranscript, model.liveTranscriptDot {" in window, "the lens rail Meetings tab carries the live dot")
 need("if item == .meetings, showLiveTranscript, model.liveTranscriptDot {" in views, "the panel Meetings chip carries the live dot")
 sources = "".join(p.read_text() for p in (root / "Sources").glob("*.swift"))
-need(sources.count('Toggle("Show live meeting transcript"') == 1 and 'Toggle("Show live meeting transcript", isOn: $showLiveTranscript)' in views,
+need(sources.count('Toggle("Live transcript"') == 1 and 'Toggle("Live transcript", isOn: $showLiveTranscript)' in views,
      "the Settings toggle is placed once, in Views.swift (the ControlPanel is shared)")
 need("model.liveTranscriptSettingChanged()" in views, "the toggle tells the model")
 for rel, text in (("Sources/Views.swift", views), ("Sources/ActivityWindow.swift", window), ("Sources/ActivityMeetings.swift", meetings)):

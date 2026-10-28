@@ -82,7 +82,7 @@ MUTANTS = [
  ("Complete column in board order", "Sources/WorkWorkspaceView.swift", '? WorkBoardStage.recentFirst(ordered, id: \\.sourceID, moves: model.workActivity.moves) : ordered', '? ordered : ordered'),
  # Wiring the hub checks cannot execute (pinned in run-work-session-hub.sh).
  ("helper drops queueRounds", H, '"queueRounds": body["queueRounds"] as? Bool == true,', '"queueRounds": false,'),
- ("Settings switch removed", V, 'COSDropdown("When earlier work is still open", selection: $workChatWhenHeld,', 'COSDropdown("When earlier work is open", selection: $workChatWhenHeld,'),
+ ("Settings switch removed", V, 'COSDropdown("When work is open", selection: $workChatWhenHeld,', 'COSDropdown("When earlier work is open", selection: $workChatWhenHeld,'),
  ("open card never pumps", C, '                await chat.pumpQueued(source:source,handoff:handoff)\n', ''),
 ]
 

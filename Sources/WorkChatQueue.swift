@@ -35,7 +35,7 @@ enum WorkChatHold: Equatable {
     }
     static let olderServer = "This COS server cannot queue work or send it in parallel yet, so COS checks first. Update the COS server to keep sending while earlier work runs."
     static let whileClosed = "Queued work sends while COS Control is open. If it is closed, it waits, and sends after the same checks once COS Control opens again."
-    static let settingHelp = "Queue it: a send that earlier work would hold waits, then sends by itself once that work is resolved, after the same checks. Ask each time: choose Queue it, Send in parallel or Check first. " + whileClosed
+    static let settingHelp = "Queue it sends once earlier work resolves, while COS Control is open. Ask lets you pick. " + whileClosed
     /// "Queued behind “Copy review”", naming at most one session and counting the rest.
     static func queuedLine(titles: [String]) -> String {
         let named = titles.reduce(into: [String]()) { if !$0.contains($1) { $0.append($1) } }

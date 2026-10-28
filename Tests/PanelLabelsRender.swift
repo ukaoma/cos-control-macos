@@ -34,7 +34,7 @@ import Vision
     }
 
     /// The button Miles pointed at that is still in the panel, and one-line icon buttons beside it.
-    static let targets = ["Create Folders", "Work Folder", "Run Doctor"]
+    static let targets = ["Create Folders", "Work folder", "Run checks"]
 
     static func model() -> ControllerModel {
         let model = ControllerModel(startBackgroundWork: false)
@@ -106,7 +106,7 @@ import Vision
                 out.append(measure)
             }
             if let output {
-                let grid = buttons["Create Folders"]!.union(buttons["Work Folder"]!)
+                let grid = buttons["Create Folders"]!.union(buttons["Work folder"]!)
                 let top = max(0, grid.minY - 80), bottom = min(size.height, grid.maxY + 80)
                 write(rep, size: size, crop: CGRect(x: 0, y: top, width: size.width, height: bottom - top),
                       appearance: appearance, to: output.appendingPathComponent("\(label)-buttons-grid-\(word).png"))

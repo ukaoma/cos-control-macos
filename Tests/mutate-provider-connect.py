@@ -103,7 +103,7 @@ MUTANTS = [
     ("a login run as a probe", K, 'probes.run(path, ["auth", "status", "--json"])', 'probes.run(path, ["auth", "login"])', "[read-only probes]", "pins"),
     ("the card opens on a need", W, "            if guide.panelRouteActive {\n                ProviderConnectCard", "            if guide.panelRouteActive || guide.needCount > 0 {\n                ProviderConnectCard", "[route flag]", "pins"),
     ("the collapsed row polls", W, ".task { if guide.report == nil { await guide.refresh() } }", ".task { await guide.poll() }", "[polling]", "pins"),
-    ("no Dock switch", V, '            Toggle("Show in menu bar only"', '            Toggle("Hide from Dock"', "[dock]", "pins"),
+    ("no Dock switch", V, '            Toggle("Menu bar only"', '            Toggle("Hide from Dock"', "[dock]", "pins"),
     ("release build without the views", R, ' "$ROOT/Sources/ProviderConnectViews.swift"', "", "[source lists]", "pins"),
     ("the old label is back", V, "            AgentCliDetailLine(guide: model.providerGuide, model: model, allReady: agentCliAllReady)", "            Text(\"x\")", "[label fix]", "pins"),
 ]

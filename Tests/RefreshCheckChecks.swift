@@ -18,7 +18,7 @@ import Foundation
 
     static func main() {
         NSApplication.shared.setActivationPolicy(.prohibited)
-        let idle = "Your local glasses server"
+        let idle = "Your COS server on this Mac"
         // The words.
         check(HeaderUpdateStatus.idle.text(idle: idle) == idle, "idle words", "idle keeps the line's own words")
         check(HeaderUpdateStatus.idle.text(idle: "Settings words") == "Settings words", "idle words", "idle is the caller's words")

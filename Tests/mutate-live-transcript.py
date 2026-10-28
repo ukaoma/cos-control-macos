@@ -123,7 +123,7 @@ MUTANTS = [
     ("poll before the setting", C, "    func pollLiveTranscriptOnce() async {\n        guard liveTranscriptEnabled else { return }\n", "    func pollLiveTranscriptOnce() async {\n", "first line refuses", "pins"),
     ("no didWake", C, "            forName: NSWorkspace.didWakeNotification, object: nil, queue: .main", "            forName: NSWorkspace.didLaunchApplicationNotification, object: nil, queue: .main", "didWake", "pins"),
     ("row in the picker", AM, "            if !selectionOnly && showLiveTranscript {\n                LiveNowRows(model: model)", "            if showLiveTranscript {\n                LiveNowRows(model: model)", "hidden in the picker", "pins"),
-    ("toggle placed twice", V, '            Toggle("Show live meeting transcript", isOn: $showLiveTranscript)\n', '            Toggle("Show live meeting transcript", isOn: $showLiveTranscript)\n            Toggle("Show live meeting transcript", isOn: $showLiveTranscript)\n', "placed once", "pins"),
+    ("toggle placed twice", V, '            Toggle("Live transcript", isOn: $showLiveTranscript)\n', '            Toggle("Live transcript", isOn: $showLiveTranscript)\n            Toggle("Live transcript", isOn: $showLiveTranscript)\n', "placed once", "pins"),
     ("window close keeps polling", AW, "        model?.liveTranscriptWindowClosed()\n", "", "stops the live poll", "pins"),
     ("pane mounted without its flag", AW, "                } else if section == .meetings, model.liveTranscriptRouteActive {\n                    LiveTranscriptPane(model: model)",
      "                } else if section == .meetings, model.liveTranscriptOpenID != nil || true {\n                    LiveTranscriptPane(model: model)", "own route flag", "pins"),
