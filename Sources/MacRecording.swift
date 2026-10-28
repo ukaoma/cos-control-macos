@@ -1593,22 +1593,22 @@ struct MeetingSuggestSettings: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             // 0.5.313: the one-time recording notice can be shown again.
-            Button("Show the recording notice again") {
+            Button("Show recording notice again") {
                 if let recording { recording.resetNotice() } else { acknowledged = false }
             }
                 .controlSize(.small)
                 .disabled(!acknowledged)
-                .help("The next Mac recording shows what COS records and asks once more before it starts")
-            Toggle("Suggest recording when a meeting starts", isOn: $store.suggestEnabled)
+                .help("The next Mac recording shows what COS records and asks once more.")
+            Toggle("Suggest recording", isOn: $store.suggestEnabled)
                 .toggleStyle(COSSwitchStyle())
-                .help("When Zoom, Microsoft Teams or Google Meet has used the microphone for 10 seconds, the pet offers Record on Mac with live transcript. COS never starts or stops a recording on its own")
+                .help("The pet offers to record when Zoom, Teams or Meet uses the microphone. COS never starts it.")
             if store.suggestEnabled {
                 ForEach(MeetingApp.allCases, id: \.self) { app in
                     Toggle(app.title, isOn: Binding(get: { store.allowed.contains(app) }, set: { store.setAllowed(app, $0) }))
                         .toggleStyle(COSSwitchStyle()).controlSize(.small)
                 }
                 if store.browserNeedsAccessibility {
-                    Text("Google Meet in a browser needs Accessibility (the same permission dictation uses) to see the Meet tab's title. Until then COS watches Zoom and Teams only.")
+                    Text("Google Meet in a browser needs Accessibility. Until then COS watches Zoom and Teams only.")
                         .font(.caption2).foregroundStyle(COSPalette.amber)
                 }
                 ForEach(store.never.keys.sorted(), id: \.self) { owner in
