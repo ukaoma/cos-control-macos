@@ -35,10 +35,11 @@ The words for the Settings hub. It supersedes the inventory's proposed labels an
 ## Notes for the builder
 
 1. **Restart rows.** Every Apply row ends its description with `Applying restarts the server.` (HUB-07). Folder pickers apply on choose and say `Changing it restarts the server.` When Apply is disabled by running work, show HUB-08.
-2. **Renames that other strings point at.** When you rename these, change the pointer in the same commit: WK-08 (two Today lines in `ActivityWindow.swift`), UT-07 (`Continue agent threads is off in Settings.`, five places in `ControllerModel.swift`), MT-01 (H-10), UT-17 and UT-23 (two `ActivityWindow.swift` lines), C-04 (`Models.swift`, `ControllerModel.swift`), PT-02x (`ControllerModel.swift:6176`), WK-04x (`WorkTaskChat.swift:1552`).
-3. **Sentence case renames are quoted on gotcos.com** (Update Server, Run Doctor, Work Folder, Create Folders, Guided Setup, COS Data and others). The release updates the site from the "Quoted on gotcos.com" column.
+2. **Renames that other strings point at.** When you rename these, change the pointer in the same commit: WK-08 (two Today lines in `ActivityWindow.swift`), UT-07 (`Continue agent threads is off in Settings.`, five places in `ControllerModel.swift`), MT-01 (H-10), UT-17 and UT-23 (two `ActivityWindow.swift` lines), C-04z (`ControllerModel.swift`, two places), PT-02x (`ControllerModel.swift:6176`), WK-04x (`WorkTaskChat.swift:1552`).
+3. **Sentence case renames are quoted on gotcos.com** (Run Doctor, Work Folder, Guided Setup, COS Data, Meetings Library and others). Update Server and Create Folders stay as they are (test churn rule, below). The release updates the site from the "Quoted on gotcos.com" column.
 4. **UT-22d** ("Keys and tokens are left out") comes from the board. Confirm the report redacts them before shipping that sentence; otherwise use "Copy a report for the COS team."
-5. **Category and group rows** (HUB-C…) give `Name: description`. The 90-character limit applies to the description after the colon.
+5. **Kept rules (lead, 2026-10-28).** A string that something outside Settings also shows (the Welcome window, Today, the HUD, the lens, a string the helper compares) is "Shared, kept". A string with more than about 10 test locations is kept unless it misleads. Both lists are at the end.
+6. **Category and group rows** (HUB-C…) give `Name: description`. The 90-character limit applies to the description after the colon.
 
 ## 0. Hub chrome
 
@@ -58,7 +59,7 @@ Category names come from the reviewed boards. The one-line description shows und
 | HUB-06 | `new (hub chrome)` | (none) | Advanced | Disclosure title; the count shows beside it | none | none | hub-builder |
 | HUB-07 | `new (hub chrome)` | (none) | Applying restarts the server. | One sentence for every Apply row; see section 0.3 | none | none | hub-builder |
 | HUB-08 | `new (hub chrome)` | (none) | Restart waits until running work finishes. | Why Apply is disabled while work runs (ST-30) | none | none | hub-builder |
-| HUB-09 | `new (hub chrome)` | (none) | Set on the server. | One phrase for every .env lock (O-09), replacing "Set in .env" | none | none | hub-builder |
+| HUB-09 | `new (hub chrome)` | (none) | Set on the server. | Every .env lock (O-09); replaces "Set in .env" and "Set on the server" | none | none | hub-builder |
 | HUB-10 | `new (hub chrome)` | (none) | Update the server to use this. | A card hidden on an older server, when one line is shown | none | none | hub-builder |
 
 ### 0.2 Categories and groups
@@ -163,22 +164,22 @@ Category descriptions are 90 characters or fewer counting only the text after th
 | SG-01d | `ProviderConnectViews.swift:370` | Your AI apps, local voice and their settings, each with one click to set up | Set up your AI, voice, glasses and permissions, one step at a time. | Names all four steps | none | none | copy-pass |
 | SG-01c | `ProviderConnectViews.swift:328` | Each AI you sign in to can run your sessions. Skip anything for now and come back here. COS checks again on its own while this is open. | Each AI you sign in to can run your sessions. Skip any step and come back later. | 90 chars | none | none | copy-pass |
 | SG-01e | `ProviderConnectViews.swift:326` | Done | keep | Clear | Tests/WhatsNewChecks.swift:252, Tests/run.sh:1906, Tests/run.sh:1961, Tests/SessionLiveFeedContract.swift:83 | index.html:843, assets/ring-lessons.js:43, assets/docs-control.js:19, control/docs/index.html:1012 | copy-pass |
-| SG-14 | `ProviderConnectViews.swift:1035` | Hide setup guide | Hide Finish setup | It hides the card, not the guide | Tests/ProviderConnectChecks.swift:459, Tests/provider-connect-pins.py:131 | none | copy-pass |
-| SG-14h | `ProviderConnectViews.swift:1036` | Removes the Finish setup card. The guide stays in the Dock menu, the Help menu, the panel and the pet's menu | Hides the Finish setup card. The guide stays in Help, the Dock menu and the pet's menu. | 90 chars | none | none | copy-pass |
-| SG-14b | `ProviderConnectViews.swift:1033` | Show Finish setup at the top again | Show Finish setup | 3 words | none | none | copy-pass |
+| SG-14 | `ProviderConnectViews.swift:1035` | Hide setup guide | keep | Shared, kept: also shown in the setup guide (Welcome window) | Tests/ProviderConnectChecks.swift:459, Tests/provider-connect-pins.py:131 | none | copy-pass |
+| SG-14h | `ProviderConnectViews.swift:1036` | Removes the Finish setup card. The guide stays in the Dock menu, the Help menu, the panel and the pet's menu | keep | Shared, kept: also shown in the setup guide (Welcome window) | none | none | copy-pass |
+| SG-14b | `ProviderConnectViews.swift:1033` | Show Finish setup at the top again | keep | Shared, kept: also shown in the setup guide (Welcome window) | none | none | copy-pass |
 | SG-15 | `ProviderConnectViews.swift:1103` | Continue setup | keep | Clear | none | control/docs/index.html:506 | copy-pass |
 | SG-15a | `ProviderConnectViews.swift:1089` | Hide | keep | Clear in the card | Tests/provider-connect-pins.py:131 | none | copy-pass |
-| SG-15h | `ProviderConnectViews.swift:1090` | Hide the setup guide. Reopen it from the Dock menu, Help, the panel or the pet | Hide this card. Reopen the guide from Help, the Dock menu or the pet. | Says what it hides | none | none | copy-pass |
+| SG-15h | `ProviderConnectViews.swift:1090` | Hide the setup guide. Reopen it from the Dock menu, Help, the panel or the pet | keep | Shared, kept: also shown in Today (Activity home) | none | none | copy-pass |
 | SG-15n | `ProviderConnectViews.swift:1100` | Next: \(next.title). \(next.unlocks) | keep | Clear | Tests/mutate-activity-home.py:87, Tests/MeetingAskChecks.swift:258, Tests/MeetingAskChecks.swift:270, Tests/ModelsContract.swift:249 (+2 more) | none | copy-pass |
-| SG-07 | `ProviderConnectModel.swift:964` | Show your AI sessions | Show AI sessions | Same name as UT-06 | Tests/SetupAssistantChecks.swift:480, Tests/SetupAssistantChecks.swift:491 | control/docs/index.html:510, control/docs/index.html:1005 | copy-pass |
-| SG-07a | `ProviderConnectModel.swift:970` | Show your AI sessions | Show AI sessions | Same row before Get started | Tests/SetupAssistantChecks.swift:480, Tests/SetupAssistantChecks.swift:491 | control/docs/index.html:510, control/docs/index.html:1005 | copy-pass |
+| SG-07 | `ProviderConnectModel.swift:964` | Show your AI sessions | keep | Shared, kept: also shown in the setup guide (Welcome window) | Tests/SetupAssistantChecks.swift:480, Tests/SetupAssistantChecks.swift:491 | control/docs/index.html:510, control/docs/index.html:1005 | copy-pass |
+| SG-07a | `ProviderConnectModel.swift:970` | Show your AI sessions | keep | Shared, kept: also shown in the setup guide (Welcome window) | Tests/SetupAssistantChecks.swift:480, Tests/SetupAssistantChecks.swift:491 | control/docs/index.html:510, control/docs/index.html:1005 | copy-pass |
 | SG-07u | `ProviderConnectModel.swift:965` | Lists your Claude, Codex and Cursor sessions in Activity and on the pet, so you can follow and continue them. | keep | Guide row, reads well | none | none | copy-pass |
 | SG-07d | `ProviderConnectModel.swift:966` | It reads names, folders and times (not what was said) and serves them on your local network. Leave it off on an untrusted network. | keep | Privacy fact; already plain | none | none | copy-pass |
 | SG-07b | `ProviderConnectModel.swift:968` | Turn on | keep | Clear | Tests/ProviderConnectChecks.swift:490, Tests/ProviderConnectChecks.swift:828, Tests/PermissionGuideChecks.swift:93, Tests/mutate-activity-today.py:42 (+1 more) | wizard/index.html:479, docs/index.html:1108, docs/index.html:1415, docs/index.html:2045 (+3 more) | copy-pass |
-| SG-08 | `ProviderConnectModel.swift:974` | Continue agent threads | Continue sessions | Same name as UT-07 | Tests/run.sh:1769 | docs/index.html:1186, control/docs/index.html:510, control/docs/index.html:1020, control/docs/index.html:1210 | copy-pass |
+| SG-08 | `ProviderConnectModel.swift:974` | Continue agent threads | keep | Shared, kept: also shown in the setup guide (Welcome window) | Tests/run.sh:1769 | docs/index.html:1186, control/docs/index.html:510, control/docs/index.html:1020, control/docs/index.html:1210 | copy-pass |
 | SG-08u | `ProviderConnectModel.swift:975` | A reply from COS writes into your real Claude or Codex session instead of starting a new thread. | keep | Clear | none | none | copy-pass |
 | SG-09 | `ProviderConnectModel.swift:981` | Jev (TypeSafe) | keep | Guide row name, as on typesafe.ai | Tests/mutate-work-search.py:162 | docs/index.html:2218, control/docs/index.html:510 | copy-pass |
-| SG-09d | `ProviderConnectModel.swift:983` | Optional. Keys come from typesafe.ai; paste one in Settings, under Jev (TypeSafe). | Optional. Get a key at typesafe.ai, then paste it in Settings, AI and accounts. | Settings has no "Jev (TypeSafe)" heading | none | none | copy-pass |
+| SG-09d | `ProviderConnectModel.swift:983` | Optional. Keys come from typesafe.ai; paste one in Settings, under Jev (TypeSafe). | keep | Shared, kept: also shown in the setup guide (Welcome window) | none | none | copy-pass |
 | SG-09b | `ProviderConnectModel.swift:984` | Add a key | keep | Clear | none | none | copy-pass |
 | SG-10 | `ProviderConnectModel.swift:991` | Permissions | keep | Clear | Tests/SetupAssistantChecks.swift:42 | harness/index.html:374, control/docs/index.html:426, control/docs/index.html:464, control/docs/index.html:499 (+2 more) | copy-pass |
 | SG-10u | `ProviderConnectModel.swift:992` | Jump to a session from the pet, meeting alerts, open at login. | keep | Clear | none | none | copy-pass |
@@ -274,11 +275,11 @@ Category descriptions are 90 characters or fewer counting only the text after th
 | KL-04l | `KeyLanes.swift:131` | You already have Claude. A key is optional. | keep | Clear | Tests/KeyLanesChecks.swift:139 | none | copy-pass |
 | KL-04g | `KeyLanes.swift:47` | On the glasses: Model, then Key: \(label). | keep | Clear | Tests/KeyLanesChecks.swift:200 | none | copy-pass |
 | KL-05 | `KeyLanes.swift:25` | Key paused 1 hour after 3 failures. | keep | Clear | Tests/key-lanes-pins.py:53 | none | copy-pass |
-| KL-05b | `KeyLanes.swift:48` | Reset pause | Resume key | Says what happens | Tests/mutate-key-lanes.py:54, Tests/KeyLanesHelperChecks.swift:88, Tests/KeyLanesHelperChecks.swift:89, Tests/KeyLanesChecks.swift:207 (+3 more) | docs/index.html:2133, control/appcast.json:209, control/docs/index.html:1117, control/docs/index.html:1285 | copy-pass |
+| KL-05b | `KeyLanes.swift:48` | Reset pause | keep | Shared, kept: also shown in the Welcome window key step (KeyLanesSetupPanel) | Tests/mutate-key-lanes.py:54, Tests/KeyLanesHelperChecks.swift:88, Tests/KeyLanesHelperChecks.swift:89, Tests/KeyLanesChecks.swift:207 (+3 more) | docs/index.html:2133, control/appcast.json:209, control/docs/index.html:1117, control/docs/index.html:1285 | copy-pass |
 | KL-06 | `KeyLanes.swift:75` | Model | keep | Clear | Tests/live-transcript-pins.py:224 | wizard/index.html:474, wizard/index.html:623, docs/index.html:2170, harness/index.html:412 (+4 more) | copy-pass |
 | KL-06p | `KeyLanesViews.swift:167` | Choose a model | keep | Clear | none | docs/index.html:962, harness/index.html:362 | copy-pass |
-| KL-06n | `KeyLanes.swift:76` | Pick a model for this key in a later COS. The key is saved. | This COS version has no models for this key yet. The key is saved. | Says why | none | none | copy-pass |
-| KL-06e | `KeyLanes.swift:44` | Answering on your own key runs Claude Code on this Mac. Install it in Connect your AI first. | Your own key runs through Claude Code on this Mac. Install it under Your AI apps first. | Points at the Settings group | none | none | copy-pass |
+| KL-06n | `KeyLanes.swift:76` | Pick a model for this key in a later COS. The key is saved. | keep | Shared, kept: also shown in the Welcome window key step | none | none | copy-pass |
+| KL-06e | `KeyLanes.swift:44` | Answering on your own key runs Claude Code on this Mac. Install it in Connect your AI first. | keep | Shared, kept: also shown in the Welcome window key step | none | none | copy-pass |
 | KL-07 | `KeyLanes.swift:49` | Use for answers | keep | Clear | Tests/mutate-key-lanes.py:55, Tests/KeyLanesChecks.swift:212 | docs/index.html:2133, control/appcast.json:209, control/docs/index.html:1117, control/docs/index.html:1285 | copy-pass |
 | KL-08 | `KeyLanes.swift:74` | Daily cap (USD) | keep | Clear | none | none | copy-pass |
 | KL-08b | `KeyLanesViews.swift:182` | Set cap | keep | Clear | none | none | copy-pass |
@@ -286,7 +287,7 @@ Category descriptions are 90 characters or fewer counting only the text after th
 | KL-09 | `KeyLanes.swift:64` | Remove | keep | Clear in the key row | none | philosophy/cos-philosophy-diagram.html:3004, philosophy/cos-philosophy-diagram.html:3070, control/docs/index.html:845, control/docs/index.html:1117 | copy-pass |
 | KL-09c | `KeyLanesViews.swift:191` | Remove this key? | keep | Clear | none | none | copy-pass |
 | KL-09m | `KeyLanesViews.swift:192` | and its key profile are deleted from this Mac. | keep | Clear | none | none | copy-pass |
-| KL-10 | `KeyLanesViews.swift:205` | Key from | Key provider | Names the choice | none | none | copy-pass |
+| KL-10 | `KeyLanesViews.swift:205` | Key from | keep | Shared, kept: also shown in the Welcome window key step | none | none | copy-pass |
 | KL-11 | `KeyLanes.swift:62` | Paste key | keep | Clear | none | control/docs/index.html:1113 | copy-pass |
 | KL-11h | `KeyLanes.swift:68` | Copy the key, then press Paste key. COS never shows it again. | keep | Clear | none | none | copy-pass |
 | KL-11e | `KeyLanes.swift:69` | The clipboard has no text. Copy the key, then press Paste key. | keep | Clear | none | none | copy-pass |
@@ -295,10 +296,10 @@ Category descriptions are 90 characters or fewer counting only the text after th
 | KL-13 | `KeyLanes.swift:63` | Save key | keep | Clear | Tests/key-lanes-pins.py:113 | none | copy-pass |
 | KL-13d | `KeyLanes.swift:23` | Your key is saved on this Mac. Apps and agents that run on this Mac as you can read it. Your provider's spending limit is the real stop. | keep | Server parity: must equal KEY_LANE_SAME_MAC_COPY (key-lanes-pins.py) | none | none | copy-pass |
 | KL-14 | `KeyLanes.swift:65` | Remove all keys | keep | Clear | Tests/mutate-key-lanes.py:78, Tests/key-lanes-pins.py:117, Tests/KeyLanesChecks.swift:240, Tests/KeyLanesChecks.swift:241 (+2 more) | docs/index.html:2133, control/index.html:854, control/appcast.json:209, control/docs/index.html:1117 (+1 more) | copy-pass |
-| KL-14m | `KeyLanes.swift:66` | Every key, key profile and the spend ledger are deleted from this Mac, and key lanes turn off. Sessions that ran on a key stay refused for Continue and Fork. | Deletes every key, key profile and the spend ledger from this Mac, and turns Use your own key off. Sessions that ran on a key still cannot be continued or forked. | Names the switch it turns off | none | none | copy-pass |
+| KL-14m | `KeyLanes.swift:66` | Every key, key profile and the spend ledger are deleted from this Mac, and key lanes turn off. Sessions that ran on a key stay refused for Continue and Fork. | keep | Shared, kept: also shown in the Welcome window key step | none | none | copy-pass |
 | KL-14a | `KeyLanes.swift:72` | Going back to a COS older than 6.80.0? | keep | Sits over KL-14b, which must say "Older COS" | none | none | copy-pass |
 | KL-14b | `KeyLanes.swift:20` | Remove your keys first. Older COS cannot see them. | keep | Server parity: must equal the server catalog (key-lanes-pins.py:47) | Tests/key-lanes-pins.py:47 | none | copy-pass |
-| KL-15 | `KeyLanes.swift:67` | Save the spend ledger to Downloads first | Save ledger to Downloads | 4 words, keeps where it goes | none | none | copy-pass |
+| KL-15 | `KeyLanes.swift:67` | Save the spend ledger to Downloads first | keep | Shared, kept: also shown in the Welcome window key step | none | none | copy-pass |
 
 ### Search
 
@@ -320,15 +321,15 @@ Category descriptions are 90 characters or fewer counting only the text after th
 | SG-11a | `ProviderConnectViews.swift:445` | Get Tailscale | keep | Clear | Tests/ProviderConnectChecks.swift:806 | none | copy-pass |
 | SG-11b | `ProviderConnectViews.swift:447` | Open Tailscale | keep | Clear | Tests/ProviderConnectChecks.swift:809 | wizard/index.html:701, docs/index.html:2162 | copy-pass |
 | SG-11c | `ProviderConnectViews.swift:455` | Point your iPhone Camera here to open Tailscale in the App Store. | keep | Clear | none | none | copy-pass |
-| SG-11d | `ProviderConnectViews.swift:484` | Update Server | Update server | Sentence case, same as C-04 | Tests/WorkIntakeChecks.swift:412, Tests/WorkIntakeChecks.swift:430, Tests/WorkIntakeChecks.swift:432, Tests/SetupAssistantChecks.swift:169 (+21 more) | docs/index.html:1037, docs/index.html:1674, docs/index.html:1863, docs/index.html:2235 (+9 more) | copy-pass |
+| SG-11d | `ProviderConnectViews.swift:484` | Update Server | keep | Kept for test churn: 25 test locations; not misleading | Tests/WorkIntakeChecks.swift:412, Tests/WorkIntakeChecks.swift:430, Tests/WorkIntakeChecks.swift:432, Tests/SetupAssistantChecks.swift:169 (+21 more) | docs/index.html:1037, docs/index.html:1674, docs/index.html:1863, docs/index.html:2235 (+9 more) | copy-pass |
 | SG-11e | `ProviderConnectViews.swift:489` | Show a new code | keep | Clear | Tests/ProviderConnectChecks.swift:1090, Tests/ProviderConnectChecks.swift:1108 | none | copy-pass |
 | SG-11f | `ProviderConnectViews.swift:502` | Pair another phone | keep | Clear | none | none | copy-pass |
 | SG-11g | `ProviderConnectViews.swift:511` | Hold your phone so the code fills the screen | keep | Clear | Tests/provider-connect-pins.py:124 | none | copy-pass |
 | SG-11h | `ProviderConnectViews.swift:520` | Works once, until | keep | Clear | none | none | copy-pass |
 | SG-11i | `ProviderConnectViews.swift:548` | Allow only if this is your phone. It gets full access to COS on this Mac. | keep | The security fact, plainly | none | none | copy-pass |
-| SG-12 | `ProviderConnectViews.swift:530` | Allow pairing on this Wi-Fi (home only) | Pair on home Wi-Fi | 4 words; "home" kept | Tests/provider-connect-pins.py:124 | control/docs/index.html:500 | copy-pass |
-| SG-12d | `ProviderConnectViews.swift:534` | Lets a phone on this Wi-Fi pair without Tailscale for the next 10 minutes. Use it only at home. | A phone on this Wi-Fi can pair without Tailscale for 10 minutes. Use it only at home. | 90 chars | none | none | copy-pass |
-| SG-13 | `ProviderConnectViews.swift:1027` | The COS app for your glasses | Get the glasses app | 4 words, says what it does | none | none | copy-pass |
+| SG-12 | `ProviderConnectViews.swift:530` | Allow pairing on this Wi-Fi (home only) | keep | Shared, kept: also shown in glasses pairing in the Welcome window | Tests/provider-connect-pins.py:124 | control/docs/index.html:500 | copy-pass |
+| SG-12d | `ProviderConnectViews.swift:534` | Lets a phone on this Wi-Fi pair without Tailscale for the next 10 minutes. Use it only at home. | keep | Shared, kept: also shown in glasses pairing in the Welcome window | none | none | copy-pass |
+| SG-13 | `ProviderConnectViews.swift:1027` | The COS app for your glasses | keep | Shared, kept: also shown in the setup guide (Welcome window) | none | none | copy-pass |
 | SG-13h | `ProviderConnectViews.swift:1029` | Install COS on your phone from the Even app, then scan the code above | keep | Clear | none | none | copy-pass |
 | UT-21 | `Views.swift:2827` | Copy Pairing Token | Copy pairing token | Sentence case | none | wizard/index.html:465, wizard/index.html:468, wizard/index.html:691, wizard/index.html:715 (+4 more) | hub-builder |
 | UT-21d | `new (hub chrome)` | (none) | Copies the pairing token. Anyone with it can reach COS on this Mac. | New description; keeps the security fact | none | none | hub-builder |
@@ -474,7 +475,7 @@ Category descriptions are 90 characters or fewer counting only the text after th
 | SG-06 | `ProviderConnectViews.swift:903` | Dictation engine | keep | Clear | Tests/TranscriptionSettingsChecks.swift:207, Tests/ProviderConnectChecks.swift:466, Tests/transcription-settings-helper-checks.py:104, Tests/TranscriptionSettingsRender.swift:120 (+1 more) | docs/index.html:2146, control/appcast.json:329, control/appcast.json:332, control/docs/index.html:509 (+4 more) | copy-pass |
 | SG-06a | `ProviderConnectViews.swift:908` | Install first | keep | Clear | none | none | copy-pass |
 | SG-06b | `ProviderConnectViews.swift:939` | Test on this Mac | keep | Clear | none | control/appcast.json:332, control/docs/index.html:516 | copy-pass |
-| SG-06c | `ProviderConnectViews.swift:942` | Dictates COS's 30-second sample with each installed engine. A quick check, not a full accuracy test. | Runs a 30-second sample on each installed engine. A quick check, not a full accuracy test. | Active voice; keeps the pinned honest-scope phrase | none | none | copy-pass |
+| SG-06c | `ProviderConnectViews.swift:942` | Dictates COS's 30-second sample with each installed engine. A quick check, not a full accuracy test. | keep | Shared, kept: also shown in the setup guide engine step | none | none | copy-pass |
 | DI-35 | `MacDictation.swift:5329` | Dictation settings | keep | Clear | none | docs/index.html:2133, control/appcast.json:212, control/docs/index.html:1285 | copy-pass |
 | DI-35a | `MacDictation.swift:5366` | Turn it on in Dictation settings | keep | Clear | none | none | copy-pass |
 
@@ -533,10 +534,10 @@ Category descriptions are 90 characters or fewer counting only the text after th
 | DI-17h | `MacDictation.swift:4136` | When COS pastes with ⌘V, it puts back whatever you had copied once the app has the text. | keep | 88 chars, clear | none | none | copy-pass |
 | DI-18 | `MacDictation.swift:4137` | Learn from my edits | keep | 4 words; other lines name it | Tests/mutate-mac-dictation-core.py:179, Tests/mutate-mac-dictation-core.py:287, Tests/mutate-mac-dictation-core.py:606, Tests/mutate-mac-dictation-core.py:657 (+16 more) | llms.txt:32, docs/index.html:2121, docs/index.html:2123, docs/index.html:2124 (+24 more) | copy-pass |
 | DI-18o | `MacDictationCore.swift:2252` | Save automatically | keep | Clear | Tests/MacDictationChecks.swift:658, Tests/MacDictationChecks.swift:659, Tests/MacDictationChecks.swift:660, Tests/MacDictationChecks.swift:748 (+3 more) | control/appcast.json:349, control/docs/index.html:828, control/docs/index.html:850 | copy-pass |
-| DI-18d | `MacDictationCore.swift:3118` | When you fix a word COS just typed, in that same field, COS can learn it: | When you fix a word COS just typed, COS learns names and terms, never plain words. Works in native apps and {proven}. Not yet in {notYet}, Chrome or Comet. Suggest only keeps them a week in Activity, Dictation. Never in terminals or password fields. | Shorter; keeps where it works and where it never runs (over 90, see the report) | none | none | copy-pass |
+| DI-18d | `MacDictationCore.swift:3118` | When you fix a word COS just typed, in that same field, COS can learn it: | When you fix a word COS just typed, COS learns it, reading that field for up to three minutes. It learns names and terms, never plain English words, and with AI polish on, a few style habits (Your style). Works in native apps, {proven}. Not available yet in {notYet}, or text boxes in Chrome and Comet. Suggest only keeps them a week in Activity, Dictation. Never in terminals or password fields. | No hedge; keeps the pinned phrases (MacDictationChecks.swift:1833); over 90, see the end | none | none | copy-pass |
 | DI-19 | `MacDictation.swift:4141` | Spell words the way the text box has them | Match nearby spelling | 3 words | Tests/dictation-wispr-pins.py:713 | docs/index.html:2139, control/appcast.json:271, control/docs/index.html:1289 | copy-pass |
 | DI-19h | `MacDictation.swift:4142` | Before COS types, it reads the words already in the text box, on this Mac only, so a name or term written there comes out spelled the same way. | Spells names the way the text box already has them. | 90 chars | none | none | copy-pass |
-| DI-19d | `MacDictation.swift:4143` | COS reads the text around the cursor before it types, keeps it only for that dictation and never saves or sends it. When you fix a word to a spelling that text already has, Learn from my edits takes it even if it sounds less alike. Never in terminals or password fields. | Reads text by the cursor for that dictation only. Never saved or sent, never in terminals. | 90 chars; keeps the privacy facts | none | none | copy-pass |
+| DI-19d | `MacDictation.swift:4143` | COS reads the text around the cursor before it types, keeps it only for that dictation and never saves or sends it. When you fix a word to a spelling that text already has, Learn from my edits takes it even if it sounds less alike. Never in terminals or password fields. | Reads text by the cursor, never saved or sent. Never in terminals or password fields. | 90 chars; keeps the privacy facts and the pinned last sentence | none | none | copy-pass |
 | DI-20 | `MacDictation.swift:4145` | Format spoken lists | keep | 3 words, clear | Tests/MacDictationChecks.swift:632, Tests/dictation-wispr-pins.py:528 | control/appcast.json:348, control/docs/index.html:772 | copy-pass |
 | DI-20h | `MacDictation.swift:4146` | Say “number one, … number two, …” or “bullet, … next bullet, …” and COS writes a numbered or bulleted list, one item per line. | Say “number one…” or “bullet…” and COS writes a numbered or bulleted list. | 90 chars | none | none | copy-pass |
 | DI-21 | `MacDictationCore.swift:5469` | Remove filler sounds (um, uh) before typing | Remove um and uh | 4 words | none | llms.txt:32, docs/index.html:2120, control/docs/index.html:806, control/docs/index.html:1272 | copy-pass |
@@ -551,8 +552,8 @@ Category descriptions are 90 characters or fewer counting only the text after th
 | DI-23 | `MacDictation.swift:4153` | AI polish | keep | Clear | Tests/mutate-mac-dictation-core.py:377, Tests/mutate-mac-dictation-core.py:478, Tests/DictationEveryoneChecks.swift:144, Tests/MacDictationChecks.swift:1082 (+25 more) | llms.txt:32, docs/index.html:798, docs/index.html:2120, docs/index.html:2121 (+37 more) | copy-pass |
 | DI-23o | `MacDictationCore.swift:2279` | Claude Haiku | keep | Clear | Tests/KeyLanesRender.swift:50, Tests/MacDictationChecks.swift:1090, Tests/LiveCuesChecks.swift:63, Tests/KeyLanesChecks.swift:46 | CHANGELOG.md:164, docs/index.html:2133, docs/index.html:2137, control/index.html:854 (+6 more) | copy-pass |
 | DI-23a | `MacDictationCore.swift:2420` | Off: COS pastes what it heard. Haiku or Sonnet sends each dictation to Claude to clean up first. | Off: COS pastes what it heard. Haiku or Sonnet sends each dictation to Claude first. | 90 chars | none | none | copy-pass |
-| DI-23b | `MacDictationCore.swift:2422` | Claude cleans filler, punctuation and dictionary spellings before COS pastes. It does not reliably fix misheard words. Uses your Claude plan. If it takes longer than \(Int(budget)) seconds, COS pastes what it heard. | Claude fixes filler, punctuation and spellings, not misheard words. Uses your Claude plan. After \(Int(budget)) seconds, COS pastes what it heard. | No hedge; two facts kept (see the report) | none | none | copy-pass |
-| DI-23c | `MacDictationCore.swift:2428` | COS types what it heard right away, then swaps in Claude's version if you haven't moved on. It does not reliably fix misheard words. Uses your Claude plan. If it takes longer than \(Int(budget)) seconds, COS keeps what it typed. | COS types what it heard, then swaps in Claude's version if you have not moved on. Uses your Claude plan. After \(Int(budget)) seconds, COS keeps what it typed. | No hedge; same facts | none | none | copy-pass |
+| DI-23b | `MacDictationCore.swift:2422` | Claude cleans filler, punctuation and dictionary spellings before COS pastes. It does not reliably fix misheard words. Uses your Claude plan. If it takes longer than \(Int(budget)) seconds, COS pastes what it heard. | keep | "Does not reliably fix" is a fact the tests guard as honesty (mutate-mac-dictation-core.py:401) | none | none | copy-pass |
+| DI-23c | `MacDictationCore.swift:2428` | COS types what it heard right away, then swaps in Claude's version if you haven't moved on. It does not reliably fix misheard words. Uses your Claude plan. If it takes longer than \(Int(budget)) seconds, COS keeps what it typed. | keep | Same caveat, pinned (DictationParityChecks.swift:370) | none | none | copy-pass |
 | DI-23d | `MacDictationCore.swift:2493` | AI polish reached the server's daily limit. COS pastes what it heard until the limit resets tomorrow. | keep | Clear | none | none | copy-pass |
 | DI-23e | `MacDictationCore.swift:5941` | Glasses dictation has its own polish setting (Haiku by default). | keep | Clear | none | none | copy-pass |
 | DI-24 | `MacDictation.swift:4169` | Paste right away, then polish in place | Paste then polish | 3 words | Tests/run.sh:37, Tests/dictation-swap-pins.py:78 | docs/index.html:2131, control/appcast.json:193, control/docs/index.html:1283 | copy-pass |
@@ -569,7 +570,7 @@ Category descriptions are 90 characters or fewer counting only the text after th
 | DI-27s | `MacDictationCore.swift:4282` | Learn my style from edits | Learn my style | 3 words | Tests/VoiceStyleChecks.swift:117 | docs/index.html:2121, control/docs/index.html:844, control/docs/index.html:1273 | copy-pass |
 | DI-27a | `MacDictationCore.swift:4836` | Learning needs Learn from my edits set to Save automatically or Suggest only. | keep | Clear | none | none | copy-pass |
 | DI-27b | `MacDictationCore.swift:4839` | No style rules yet. COS adds one after you make the same change in two dictations. | keep | Clear empty state | none | none | copy-pass |
-| DI-27c | `MacDictationCore.swift:4853` | Your COS server adds your style rules (never your text) to each Sonnet polish, on G2 too when it polishes with Sonnet. | Your style rules (never your text) go with each Sonnet polish, on the glasses too. | 90 chars; "glasses", not G2 | Tests/mutate-voice-style.py:155 | control/appcast.json:41 | copy-pass |
+| DI-27c | `MacDictationCore.swift:4853` | Your COS server adds your style rules (never your text) to each Sonnet polish, on G2 too when it polishes with Sonnet. | Your COS server adds your style rules (never your text) to each Sonnet polish, on the glasses too when it polishes with Sonnet. | "glasses", not G2; the condition stays (VoiceStyleChecks.swift:380) | Tests/mutate-voice-style.py:155 | control/appcast.json:41 | copy-pass |
 | DI-27d | `MacDictationCore.swift:4854` | While COS watches your edit, it notices Return, clicks and other key presses in the app it typed into, as counts only. It never records which keys. | keep | Privacy fact, plainly | none | control/appcast.json:33 | copy-pass |
 | DI-28 | `MacDictationCore.swift:4840` | Active | keep | Clear | Tests/fixtures/pairing/tailscale-status-running.json:13, Tests/fixtures/pairing/tailscale-status-running.json:30, Tests/fixtures/pairing/tailscale-status-running.json:48 | none | copy-pass |
 | DI-28a | `MacDictationCore.swift:4842` | Not active yet | keep | Clear | Tests/mutate-voice-style.py:154, Tests/VoiceStyleChecks.swift:368 | none | copy-pass |
@@ -604,11 +605,11 @@ Category descriptions are 90 characters or fewer counting only the text after th
 
 | ID | file:line | Current (verbatim) | Proposed | Reason | Pinned by | Quoted on gotcos.com | Owner |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| SG-05 | `ProviderConnectViews.swift:806` | Initial recommendation: \(VoiceTier.title(recommendation)). Based on speech processing speed; calibration on smaller Macs is still in progress. | Suggested tier: \(VoiceTier.title(recommendation)), from this Mac's speed. | No hedge | none | none | copy-pass |
+| SG-05 | `ProviderConnectViews.swift:806` | Initial recommendation: \(VoiceTier.title(recommendation)). Based on speech processing speed; calibration on smaller Macs is still in progress. | keep | Shared, kept: also shown in the setup guide voice step | none | none | copy-pass |
 | SG-05a | `ProviderConnectViews.swift:816` | Test this Mac and recommend a tier. An existing voice choice is always kept. | keep | Clear | none | none | copy-pass |
 | SG-05b | `ProviderConnectViews.swift:810` | Test this Mac again | keep | Clear | none | none | copy-pass |
 | SG-05c | `ProviderConnectViews.swift:819` | Or run it in Terminal | keep | Clear | none | none | copy-pass |
-| SG-05d | `ProviderConnectViews.swift:831` | Runs the same setup in Terminal (COS Control's helper, the installed server's own setup), for when you want to watch it | Runs the same setup in Terminal, so you can watch it. | Shorter | none | none | copy-pass |
+| SG-05d | `ProviderConnectViews.swift:831` | Runs the same setup in Terminal (COS Control's helper, the installed server's own setup), for when you want to watch it | keep | Shared, kept: also shown in the setup guide voice step | none | none | copy-pass |
 | SG-05e | `ProviderConnectViews.swift:797` | Transcription settings | keep | Clear | Tests/TranscriptionSettingsChecks.swift:338, Tests/run-transcription-settings-render.sh:2, Tests/ProviderConnectChecks.swift:1204, Tests/DictationEveryoneChecks.swift:52 (+5 more) | control/appcast.json:331, control/docs/index.html:433, control/docs/index.html:471, control/docs/index.html:797 (+2 more) | copy-pass |
 | UT-03 | `Views.swift:2662` | Transcription | Quality tier | Names the choice | Tests/TranscriptionSettingsChecks.swift:3, Tests/TranscriptionSettingsChecks.swift:13, Tests/TranscriptionSettingsChecks.swift:14, Tests/TranscriptionSettingsChecks.swift:17 (+180 more) | RELEASE_639_6720_289.md:3, wizard/index.html:732, docs/index.html:1064, docs/index.html:1779 (+21 more) | hub-builder |
 | UT-03d | `Views.swift:2669` | Balanced is recommended. Max keeps Large-v3 resident for live commit and may use substantially more memory. | Balanced suits most Macs. Max uses much more memory. Applying restarts the server. | No hedge; adds the restart | none | none | hub-builder |
@@ -624,7 +625,7 @@ Category descriptions are 90 characters or fewer counting only the text after th
 | ST-04 | `Views.swift:1347` | Local transcription | keep | Clear | none | none | hub-builder |
 | ST-04a | `Views.swift:1351` | Your selected engines are kept. Check Transcription settings before recording. | keep | Clear | none | none | hub-builder |
 | ST-05 | `Views.swift:1355` | Local Whisper | keep | Clear | none | docs/index.html:1060, docs/index.html:2005, control/index.html:871, control/docs/index.html:1239 (+1 more) | hub-builder |
-| UT-14 | `Views.swift:2787` | Repair Whisper | Restart Whisper | Says what it does; as on the board | Tests/SetupAssistantChecks.swift:127, Tests/SetupAssistantChecks.swift:130, Tests/SetupAssistantChecks.swift:182, Tests/SetupAssistantChecks.swift:381 (+7 more) | control/docs/index.html:1059, control/docs/index.html:1101 | hub-builder |
+| UT-14 | `Views.swift:2787` | Repair Whisper | keep | Lead: Repair restarts the whole COS server, so "Restart Whisper" understates it | Tests/SetupAssistantChecks.swift:127, Tests/SetupAssistantChecks.swift:130, Tests/SetupAssistantChecks.swift:182, Tests/SetupAssistantChecks.swift:381 (+7 more) | control/docs/index.html:1059, control/docs/index.html:1101 | hub-builder |
 | ST-13 | `Views.swift:1426` | Transcription tier | keep | Clear | none | docs/index.html:1064, control/index.html:877 | hub-builder |
 | ST-13a | `Views.swift:1463` | Add names and specialist terms in the setup wizard to improve accuracy. | Add names and terms in the setup wizard for better accuracy. | Shorter | none | none | hub-builder |
 | O-01 | `Views.swift:2208` | Named speakers are off | keep | Clear | none | none | hub-builder |
@@ -719,13 +720,13 @@ Category descriptions are 90 characters or fewer counting only the text after th
 | UT-17 | `Views.swift:2802` | COS Data | Notes folder | Says what it holds | Tests/build-up-pins.py:72, Tests/PanelLabelsRender.swift:42, Tests/PanelLabelsRender.swift:48, Tests/PanelLabelsRender.swift:49 | wizard/index.html:553, wizard/index.html:1170, wizard/index.html:1173, docs/index.html:1159 (+6 more) | hub-builder |
 | UT-17h | `Views.swift:2804` | Choose a folder of markdown notes (memory/ or threads/), or a COS workspace with the Python bridge. This does not change the Work Folder or Meetings Library. | Notes in memory/ or threads/, or a COS workspace. Changing it restarts the server. | 90 chars; adds the restart | none | none | hub-builder |
 | UT-17x | `ActivityWindow.swift:4790` | Choose COS Data in the menu-bar panel to connect this library. | Choose a notes folder in Settings to connect this library. | Follows the rename and the new home | Tests/build-up-pins.py:72 | none | hub-builder |
-| UT-18 | `Views.swift:2812` | Create Folders | Create folders | Sentence case | Tests/ControlsContract.swift:116, Tests/ControlsContract.swift:309, Tests/ControlsContract.swift:319, Tests/PanelLabelsRender.swift:8 (+6 more) | wizard/index.html:1165, control/index.html:852, control/docs/index.html:708, control/docs/index.html:1102 | hub-builder |
+| UT-18 | `Views.swift:2812` | Create Folders | keep | Kept for test churn: 10 test locations, and the helper message says "Use Create Folders." | Tests/ControlsContract.swift:116, Tests/ControlsContract.swift:309, Tests/ControlsContract.swift:319, Tests/PanelLabelsRender.swift:8 (+6 more) | wizard/index.html:1165, control/index.html:852, control/docs/index.html:708, control/docs/index.html:1102 | hub-builder |
 | UT-18h | `Views.swift:1767` | Choose a Work Folder or Meetings Library first | Choose a work folder or meetings folder first | Follows the renames | none | none | hub-builder |
 | ST-06 | `Views.swift:1360` | Memory & Threads | Memory and threads | No ampersand | none | assets/docs-control.js:23 | hub-builder |
 | ST-06a | `Views.swift:1758` | Update your COS workspace, then choose COS Data again. | Update your COS workspace, then choose the notes folder again. | Follows the rename | none | none | hub-builder |
 | ST-06b | `Views.swift:1759` | The workspace bridge failed. Open Logs, then choose COS Data again. | The workspace bridge failed. Open logs, then choose the notes folder again. | Follows the renames | none | none | hub-builder |
-| ST-06c | `Views.swift:1765` | No memory/ or threads/ folder yet. Create Folders makes them in | No memory/ or threads/ folder yet. Create folders makes them in | Follows the rename | none | none | hub-builder |
-| ST-06d | `Views.swift:1767` | Choose a Work Folder or Meetings Library first, then Create Folders. | Choose a work folder or meetings folder first, then Create folders. | Follows the renames | none | none | hub-builder |
+| ST-06c | `Views.swift:1765` | No memory/ or threads/ folder yet. Create Folders makes them in | keep | Names Create Folders, kept | none | none | hub-builder |
+| ST-06d | `Views.swift:1767` | Choose a Work Folder or Meetings Library first, then Create Folders. | Choose a work folder or meetings folder first, then Create Folders. | Follows the folder renames; Create Folders kept | none | none | hub-builder |
 | ST-06e | `Views.swift:1797` | Choose COS Data to switch to it, which replaces the file tier. | Choose it as the notes folder to use it instead of plain files. | Plain words | none | none | hub-builder |
 | UT-19 | `Views.swift:2818` | Bridge: \(path) | keep | Clear | none | none | hub-builder |
 
@@ -774,16 +775,16 @@ Category descriptions are 90 characters or fewer counting only the text after th
 | PM-01c | `PermissionGuideViews.swift:154` | Each one switches on a feature. COS works without any of them. | keep | Clear | none | control/docs/index.html:539 | copy-pass |
 | PM-01s | `PermissionGuideModel.swift:424` | All set | keep | Clear | Tests/PermissionGuideChecks.swift:179 | none | copy-pass |
 | PM-02 | `PermissionGuideModel.swift:256` | Accessibility | keep | macOS name | Tests/mutate-mac-dictation-core.py:78, Tests/mutate-mac-dictation-core.py:535, Tests/mutate-mac-dictation-core.py:566, Tests/MacRecordingChecks.swift:271 (+88 more) | wizard/index.html:725, docs/index.html:1170, docs/index.html:1183, docs/index.html:1964 (+22 more) | copy-pass |
-| PM-02d | `PermissionGuideModel.swift:257` | Lets dictation type into the app you are using, and lets COS jump straight to your Claude or Cursor session and bring its window forward. | Lets dictation type into apps, and lets COS jump to your Claude or Cursor session. | 90 chars | none | none | copy-pass |
+| PM-02d | `PermissionGuideModel.swift:257` | Lets dictation type into the app you are using, and lets COS jump straight to your Claude or Cursor session and bring its window forward. | keep | Shared, kept: also shown in the Welcome window permissions step | none | none | copy-pass |
 | PM-02a | `PermissionGuideViews.swift:68` | Already on? Reset and add again | keep | Clear | Tests/mutate-permission-guide.py:78, Tests/permission-guide-pins.py:79 | control/docs/index.html:566 | copy-pass |
 | PM-02b | `PermissionGuideModel.swift:262` | An update changed COS Control's signature, so the old switch no longer counts. | keep | Clear | none | control/docs/index.html:564 | copy-pass |
 | PM-03 | `PermissionGuideModel.swift:273` | Lets COS tell you when meeting audio stops reaching this Mac and when Work needs you. | keep | 85 chars, clear | none | none | copy-pass |
 | PM-03a | `PermissionGuideModel.swift:279` | Allowed, but alerts are switched off. | keep | Clear | none | none | copy-pass |
 | PM-04 | `PermissionGuideModel.swift:294` | Starts COS Control when you log in, so the pet, meeting alerts and Work stay on. | keep | Clear | none | none | copy-pass |
 | PM-04a | `PermissionGuideModel.swift:300` | macOS is waiting for you to approve it in Login Items. | keep | Clear | none | none | copy-pass |
-| PM-05 | `PermissionGuideModel.swift:328` | Lets the glasses server read your COS scripts in Documents. | Lets the COS server read your COS scripts in Documents. | One term for the server | none | none | copy-pass |
+| PM-05 | `PermissionGuideModel.swift:328` | Lets the glasses server read your COS scripts in Documents. | keep | Shared, kept: also shown in the Welcome window permissions step | none | none | copy-pass |
 | PM-05b | `PermissionGuideModel.swift:329` | Lets COS's scheduled jobs, such as meeting sync, read your COS folder after macOS updates. | keep | Clear | none | none | copy-pass |
-| PM-05t | `PermissionGuideModel.swift:326` | Glasses server (\(name)) | COS server (\(name)) | One term for the server | Tests/PermissionGuideChecks.swift:138 | none | copy-pass |
+| PM-05t | `PermissionGuideModel.swift:326` | Glasses server (\(name)) | keep | Shared, kept: also shown in the Welcome window permissions step | Tests/PermissionGuideChecks.swift:138 | none | copy-pass |
 | PM-06 | `PermissionGuideModel.swift:375` | Lets COS reopen \(target.name) and bring your session forward. | keep | Clear | none | none | copy-pass |
 | PM-06a | `PermissionGuideModel.swift:388` | Checked when \(target.name) is open. Test opens it. | keep | Clear | none | none | copy-pass |
 | PM-07 | `PermissionGuideModel.swift:401` | Calendar (CalendarFetch) | keep | Names the helper app | none | none | copy-pass |
@@ -817,7 +818,7 @@ Category descriptions are 90 characters or fewer counting only the text after th
 | PT-07 | `Views.swift:4910` | Motion | keep | Clear | Tests/run.sh:4706, Tests/run.sh:4765 | control/docs/index.html:642 | hub-builder |
 | PT-07d | `Views.swift:4915` | Full plays every state. Calm rests the character on its idle loop | Full plays every state, Calm stays idle, None holds still. Also on the pet's menu. | 90 chars; replaces the four source lines | none | none | hub-builder |
 | PT-14 | `ProviderConnectViews.swift:644` | That small character by your windows is your session pet. It shows what your AI sessions are doing; click it to jump to one. | keep | Clear | none | none | copy-pass |
-| PT-14h | `ProviderConnectViews.swift:652` | Turn the pet off. Settings, under Session pet, brings it back | Turn the pet off. Settings, Pet and appearance brings it back | Points at the new home | none | none | copy-pass |
+| PT-14h | `ProviderConnectViews.swift:652` | Turn the pet off. Settings, under Session pet, brings it back | keep | Shared, kept: also shown in the Welcome window (PetIntroLine) | none | none | copy-pass |
 | PT-15 | `SessionPet.swift:1348` | Hide pet | keep | Clear | Tests/run.sh:4726, Tests/run.sh:4732, Tests/run.sh:4733, Tests/ProviderConnectRender.swift:210 (+1 more) | control/docs/index.html:634 | copy-pass |
 | PT-15b | `SessionPet.swift:1351` | Settings… | keep | Clear | Tests/mutate-provider-connect.py:75, Tests/mutate-provider-connect.py:76, Tests/dictation-lock-pins.py:161, Tests/provider-connect-pins.py:132 (+2 more) | control/docs/index.html:609, control/docs/index.html:634 | copy-pass |
 
@@ -855,10 +856,10 @@ Category descriptions are 90 characters or fewer counting only the text after th
 | C-01 | `Views.swift:1808` | Restart | keep | Clear | none | control/docs/index.html:598, control/docs/index.html:1092 | hub-builder |
 | C-01c | `Views.swift:734` | Restart this self-managed server? | keep | Clear | Tests/run.sh:2762 | none | hub-builder |
 | C-01m | `Views.swift:736` | This older server cannot prove that meetings and agent jobs are idle. Continue only when no work is active. COS Control will reload the LaunchAgent so the selected folder becomes active. | This older server cannot show whether meetings and jobs are idle. Restart only when no work is running. | Plain words; keeps the warning | none | none | hub-builder |
-| C-04 | `Views.swift:1826` | Update Server | Update server | Sentence case | Tests/WorkIntakeChecks.swift:412, Tests/WorkIntakeChecks.swift:430, Tests/WorkIntakeChecks.swift:432, Tests/SetupAssistantChecks.swift:169 (+21 more) | docs/index.html:1037, docs/index.html:1674, docs/index.html:1863, docs/index.html:2235 (+9 more) | hub-builder |
-| C-04x | `ActivityWindow.swift:2803` | Update Server | Update server | Same button in Activity | Tests/WorkIntakeChecks.swift:412, Tests/WorkIntakeChecks.swift:430, Tests/WorkIntakeChecks.swift:432, Tests/SetupAssistantChecks.swift:169 (+21 more) | docs/index.html:1037, docs/index.html:1674, docs/index.html:1863, docs/index.html:2235 (+9 more) | hub-builder |
-| C-04y | `Models.swift:6435` | Use Update Server in Settings. | Use Update server in Settings. | Follows the rename | none | none | hub-builder |
-| C-04z | `ControllerModel.swift:10536` | This needs glasses-server 6.21.18 or newer — use Update Server. | This needs COS server 6.21.18 or newer. Use Update server. | No em dash; one term (2 places) | none | none | hub-builder |
+| C-04 | `Views.swift:1826` | Update Server | keep | Kept for test churn: 25 test locations; not misleading | Tests/WorkIntakeChecks.swift:412, Tests/WorkIntakeChecks.swift:430, Tests/WorkIntakeChecks.swift:432, Tests/SetupAssistantChecks.swift:169 (+21 more) | docs/index.html:1037, docs/index.html:1674, docs/index.html:1863, docs/index.html:2235 (+9 more) | hub-builder |
+| C-04x | `ActivityWindow.swift:2803` | Update Server | keep | Kept for test churn: 25 test locations; not misleading | Tests/WorkIntakeChecks.swift:412, Tests/WorkIntakeChecks.swift:430, Tests/WorkIntakeChecks.swift:432, Tests/SetupAssistantChecks.swift:169 (+21 more) | docs/index.html:1037, docs/index.html:1674, docs/index.html:1863, docs/index.html:2235 (+9 more) | hub-builder |
+| C-04y | `Models.swift:6435` | Use Update Server in Settings. | keep | Follows C-04, kept | none | none | hub-builder |
+| C-04z | `ControllerModel.swift:10536` | This needs glasses-server 6.21.18 or newer — use Update Server. | This needs COS server 6.21.18 or newer. Use Update Server. | No em dash; one term for the server (2 places); button name kept | none | none | hub-builder |
 | C-05 | `Views.swift:1829` | Install Server | Install server | Sentence case | none | control/docs/index.html:598 | hub-builder |
 | C-06 | `Views.swift:1841` | Adopt Safely | Adopt server | Says what it adopts | Tests/SetupAssistantChecks.swift:269, Tests/mutate-setup-assistant.py:70 | control/docs/index.html:531 | hub-builder |
 | C-07 | `Views.swift:1849` | Manage in place | keep | Clear | Tests/SetupAssistantChecks.swift:269 | control/docs/index.html:531 | hub-builder |
@@ -900,23 +901,24 @@ Category descriptions are 90 characters or fewer counting only the text after th
 
 ## Over 90 characters on purpose
 
-Confirm messages keep every fact the choice depends on, so a few run past 90 characters. Three captions could not be cut further without dropping a fact a person decides on.
+Confirm messages keep every fact the choice depends on, so a few run past 90 characters. Two captions could not be cut further without dropping a fact a person decides on.
 
 | ID | Length | Why |
 | --- | --- | --- |
 | KL-03m | 132 | Confirm message: keeps what is deleted or ended and what is kept |
-| KL-14m | 162 | Confirm message: keeps what is deleted or ended and what is kept |
 | H-04m | 156 | Confirm message: keeps what is deleted or ended and what is kept |
 | UT-10m | 124 | Confirm message: keeps what is deleted or ended and what is kept |
-| DI-18d | 249 | Where learning works and where it never runs are both decision facts; the app lists are computed |
-| DI-23b | 146 | Says what polish does not fix, that it uses the Claude plan, and the timeout |
-| DI-23c | 159 | Same three facts for paste first |
+| DI-18d | 396 | Where learning works and where it never runs are both decision facts; three phrases are pinned |
+| DI-27c | 127 | Privacy disclosure; the Sonnet condition is pinned (VoiceStyleChecks.swift:380) |
 | DI-30m | 96 | Confirm message: keeps what is deleted or ended and what is kept |
 | C-01m | 103 | Confirm message: keeps the warning that this server cannot prove work is idle |
 | C-08m | 121 | Confirm message: keeps what is deleted or ended and what is kept |
 
 ## Kept on purpose
 
-- KL-02, KL-13d, KL-14b: server parity. `Tests/key-lanes-pins.py` requires these to match the server's key-notices catalog or the helper refusal byte for byte. Change them on the server first.
-- TR-03, TR-05: the server's option labels and notes say HQ. Renaming only Control's label would split the term inside one card.
-- H-05, H-06, G-05: release-flow copy with its own pins; out of the settings rewrite.
+- **Shared, kept** (shown outside Settings too): SG-14, SG-14h, SG-14b, SG-15h, SG-07, SG-07a, SG-08, SG-09d, KL-05b, KL-06n, KL-06e, KL-10, KL-14m, KL-15, SG-12, SG-12d, SG-13, SG-06c, SG-05, SG-05d, PM-02d, PM-05, PM-05t, PT-14h.
+- **Test churn** (more than about 10 test locations, not misleading): SG-11d, UT-14, UT-18, C-04, C-04x. UT-14 is the lead's call: Repair restarts the whole COS server.
+- **Server parity**: KL-02, KL-13d, KL-14b must match the server's key-notices catalog or the helper refusal byte for byte (`Tests/key-lanes-pins.py`). KL-14a sits over KL-14b.
+- **Pinned honesty caveats**: DI-23b, DI-23c ("does not reliably fix misheard words" is guarded by `mutate-mac-dictation-core.py:401`).
+- **HQ**: TR-03, TR-05. The server's option labels and notes say HQ; a rename here would split the term inside one card.
+- **Release flow**: H-05, H-06, G-05 have their own pins.
