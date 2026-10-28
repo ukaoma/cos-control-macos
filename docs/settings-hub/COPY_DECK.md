@@ -171,6 +171,7 @@ Category descriptions are 90 characters or fewer counting only the text after th
 | SG-15h | `ProviderConnectViews.swift:1090` | Hide the setup guide. Reopen it from the Dock menu, Help, the panel or the pet | Hide this card. Reopen the guide from Help, the Dock menu or the pet. | Says what it hides | none | none | copy-pass |
 | SG-15n | `ProviderConnectViews.swift:1100` | Next: \(next.title). \(next.unlocks) | keep | Clear | Tests/mutate-activity-home.py:87, Tests/MeetingAskChecks.swift:258, Tests/MeetingAskChecks.swift:270, Tests/ModelsContract.swift:249 (+2 more) | none | copy-pass |
 | SG-07 | `ProviderConnectModel.swift:964` | Show your AI sessions | Show AI sessions | Same name as UT-06 | Tests/SetupAssistantChecks.swift:480, Tests/SetupAssistantChecks.swift:491 | control/docs/index.html:510, control/docs/index.html:1005 | copy-pass |
+| SG-07a | `ProviderConnectModel.swift:970` | Show your AI sessions | Show AI sessions | Same row before Get started | Tests/SetupAssistantChecks.swift:480, Tests/SetupAssistantChecks.swift:491 | control/docs/index.html:510, control/docs/index.html:1005 | copy-pass |
 | SG-07u | `ProviderConnectModel.swift:965` | Lists your Claude, Codex and Cursor sessions in Activity and on the pet, so you can follow and continue them. | keep | Guide row, reads well | none | none | copy-pass |
 | SG-07d | `ProviderConnectModel.swift:966` | It reads names, folders and times (not what was said) and serves them on your local network. Leave it off on an untrusted network. | keep | Privacy fact; already plain | none | none | copy-pass |
 | SG-07b | `ProviderConnectModel.swift:968` | Turn on | keep | Clear | Tests/ProviderConnectChecks.swift:490, Tests/ProviderConnectChecks.swift:828, Tests/PermissionGuideChecks.swift:93, Tests/mutate-activity-today.py:42 (+1 more) | wizard/index.html:479, docs/index.html:1108, docs/index.html:1415, docs/index.html:2045 (+3 more) | copy-pass |
@@ -259,8 +260,9 @@ Category descriptions are 90 characters or fewer counting only the text after th
 | KL-01 | `KeyLanes.swift:33` | Answer with your own key | Use your own key | 4 words | Tests/KeyLanesOneRowRender.swift:6 | docs/index.html:1833, docs/index.html:2133, docs/index.html:2134, control/index.html:854 (+5 more) | copy-pass |
 | KL-01a | `KeyLanes.swift:34` | Off. Answers use the AI you connected and its plan. | keep | Clear | none | none | copy-pass |
 | KL-01b | `KeyLanes.swift:35` | On. Answers you send to a key profile run on your key, under its daily cap. | keep | Clear | none | none | copy-pass |
-| KL-02 | `KeyLanes.swift:58` | Remove your saved keys first. | The server you are installing is older than 6.80.0. | Shown before KL-14b; the old pair said "Remove ... first" twice | Tests/KeyLanesHelperChecks.swift:105, Tests/key-lanes-pins.py:142, Tests/KeyLanesChecks.swift:325, Tests/KeyLanesChecks.swift:332 | none | copy-pass |
-| KL-02b | `KeyLanes.swift:59` | Remove saved keys and continue | Remove keys and install | Says what continues | none | none | copy-pass |
+| KL-02 | `KeyLanes.swift:58` | Remove your saved keys first. | keep | Matched against the helper refusal word for word (key-lanes-pins.py:142) | Tests/KeyLanesHelperChecks.swift:105, Tests/key-lanes-pins.py:142, Tests/KeyLanesChecks.swift:325, Tests/KeyLanesChecks.swift:332 | none | copy-pass |
+| KL-02b | `KeyLanes.swift:59` | Remove saved keys and continue | Remove keys and continue | 4 words; it continues an install or a rollback | none | none | copy-pass |
+| KL-02v | `KeyLanesViews.swift:49` | Text(KeyLanes.downgradeBlockedLine + | Text(KeyLanes.downgradeLine) (shows "Remove your keys first. Older COS cannot see them.") | The pair read "Remove your saved keys first. Remove your keys first. ..."; show the second only | none | none | copy-pass |
 | KL-03 | `KeyLanes.swift:53` | Key lanes are off. Your saved keys are still on this Mac. | Your own key is off. Your saved keys are still on this Mac. | "Key lanes" is the internal name | none | none | copy-pass |
 | KL-03o | `KeyLanes.swift:52` | Keys saved for COS 6.80 or later are still on this Mac. This COS cannot use them. | Keys saved for server 6.80 or later are still on this Mac. This server cannot use them. | Names the server | none | none | copy-pass |
 | KL-03b | `KeyLanes.swift:51` | Remove saved keys | keep | Clear; also the confirm title | Tests/mutate-key-lanes.py:104, Tests/KeyLanesHelperChecks.swift:93, Tests/key-lanes-pins.py:117, Tests/key-lanes-pins.py:133 (+5 more) | docs/index.html:2133, control/docs/index.html:1119, control/docs/index.html:1285 | copy-pass |
@@ -291,11 +293,11 @@ Category descriptions are 90 characters or fewer counting only the text after th
 | KL-11r | `KeyLanes.swift:141` | Ready to save: | keep | Clear | Tests/mutate-key-lanes.py:35, Tests/KeyLanesChecks.swift:118 | none | copy-pass |
 | KL-12 | `KeyLanesViews.swift:217` | Cap $ | keep | Clear | Tests/KeyLanesChecks.swift:149 | none | copy-pass |
 | KL-13 | `KeyLanes.swift:63` | Save key | keep | Clear | Tests/key-lanes-pins.py:113 | none | copy-pass |
-| KL-13d | `KeyLanes.swift:23` | Your key is saved on this Mac. Apps and agents that run on this Mac as you can read it. Your provider's spending limit is the real stop. | Saved on this Mac, where apps you run can read it. Your provider's limit is the real stop. | 90 chars; same three facts | none | none | copy-pass |
+| KL-13d | `KeyLanes.swift:23` | Your key is saved on this Mac. Apps and agents that run on this Mac as you can read it. Your provider's spending limit is the real stop. | keep | Server parity: must equal KEY_LANE_SAME_MAC_COPY (key-lanes-pins.py) | none | none | copy-pass |
 | KL-14 | `KeyLanes.swift:65` | Remove all keys | keep | Clear | Tests/mutate-key-lanes.py:78, Tests/key-lanes-pins.py:117, Tests/KeyLanesChecks.swift:240, Tests/KeyLanesChecks.swift:241 (+2 more) | docs/index.html:2133, control/index.html:854, control/appcast.json:209, control/docs/index.html:1117 (+1 more) | copy-pass |
 | KL-14m | `KeyLanes.swift:66` | Every key, key profile and the spend ledger are deleted from this Mac, and key lanes turn off. Sessions that ran on a key stay refused for Continue and Fork. | Deletes every key, key profile and the spend ledger from this Mac, and turns Use your own key off. Sessions that ran on a key still cannot be continued or forked. | Names the switch it turns off | none | none | copy-pass |
-| KL-14a | `KeyLanes.swift:72` | Going back to a COS older than 6.80.0? | Going back to a server older than 6.80.0? | Names the server | none | none | copy-pass |
-| KL-14b | `KeyLanes.swift:20` | Remove your keys first. Older COS cannot see them. | Remove your keys first. Older servers cannot see them. | Names the server | Tests/key-lanes-pins.py:47 | none | copy-pass |
+| KL-14a | `KeyLanes.swift:72` | Going back to a COS older than 6.80.0? | keep | Sits over KL-14b, which must say "Older COS" | none | none | copy-pass |
+| KL-14b | `KeyLanes.swift:20` | Remove your keys first. Older COS cannot see them. | keep | Server parity: must equal the server catalog (key-lanes-pins.py:47) | Tests/key-lanes-pins.py:47 | none | copy-pass |
 | KL-15 | `KeyLanes.swift:67` | Save the spend ledger to Downloads first | Save ledger to Downloads | 4 words, keeps where it goes | none | none | copy-pass |
 
 ### Search
@@ -472,7 +474,7 @@ Category descriptions are 90 characters or fewer counting only the text after th
 | SG-06 | `ProviderConnectViews.swift:903` | Dictation engine | keep | Clear | Tests/TranscriptionSettingsChecks.swift:207, Tests/ProviderConnectChecks.swift:466, Tests/transcription-settings-helper-checks.py:104, Tests/TranscriptionSettingsRender.swift:120 (+1 more) | docs/index.html:2146, control/appcast.json:329, control/appcast.json:332, control/docs/index.html:509 (+4 more) | copy-pass |
 | SG-06a | `ProviderConnectViews.swift:908` | Install first | keep | Clear | none | none | copy-pass |
 | SG-06b | `ProviderConnectViews.swift:939` | Test on this Mac | keep | Clear | none | control/appcast.json:332, control/docs/index.html:516 | copy-pass |
-| SG-06c | `ProviderConnectViews.swift:942` | Dictates COS's 30-second sample with each installed engine. A quick check, not a full accuracy test. | Runs a 30-second sample through each installed engine. A quick check, not a full test. | Active voice | none | none | copy-pass |
+| SG-06c | `ProviderConnectViews.swift:942` | Dictates COS's 30-second sample with each installed engine. A quick check, not a full accuracy test. | Runs a 30-second sample on each installed engine. A quick check, not a full accuracy test. | Active voice; keeps the pinned honest-scope phrase | none | none | copy-pass |
 | DI-35 | `MacDictation.swift:5329` | Dictation settings | keep | Clear | none | docs/index.html:2133, control/appcast.json:212, control/docs/index.html:1285 | copy-pass |
 | DI-35a | `MacDictation.swift:5366` | Turn it on in Dictation settings | keep | Clear | none | none | copy-pass |
 
@@ -635,8 +637,8 @@ Category descriptions are 90 characters or fewer counting only the text after th
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | TR-00 | `MeetingAsk.swift:756` | Transcription | keep | Card title | Tests/TranscriptionSettingsChecks.swift:3, Tests/TranscriptionSettingsChecks.swift:13, Tests/TranscriptionSettingsChecks.swift:14, Tests/TranscriptionSettingsChecks.swift:17 (+180 more) | RELEASE_639_6720_289.md:3, wizard/index.html:732, docs/index.html:1064, docs/index.html:1779 (+21 more) | copy-pass |
 | TR-02 | `MeetingAsk.swift:758` | Preview model | keep | Clear | none | control/docs/index.html:1042 | copy-pass |
-| TR-03 | `MeetingAsk.swift:760` | HQ model | Final model | Users know "final", not HQ | none | RELEASE_639_6720_289.md:3, wizard/index.html:450, docs/index.html:2285, control/index.html:598 (+1 more) | copy-pass |
-| TR-05 | `MeetingAskCore.swift:1934` | Preview changes apply to the \(preview). HQ changes apply to the \(hq). | Preview changes apply to the \(preview). Final model changes apply to the \(hq). | Follows the TR-03 rename | Tests/TranscriptionSettingsChecks.swift:65 | RELEASE_639_6720_289.md:3 | copy-pass |
+| TR-03 | `MeetingAsk.swift:760` | HQ model | keep | The server labels and notes say HQ; a rename here splits the term | none | RELEASE_639_6720_289.md:3, wizard/index.html:450, docs/index.html:2285, control/index.html:598 (+1 more) | copy-pass |
+| TR-05 | `MeetingAskCore.swift:1934` | Preview changes apply to the \(preview). HQ changes apply to the \(hq). | keep | Follows TR-03 | Tests/TranscriptionSettingsChecks.swift:65 | RELEASE_639_6720_289.md:3 | copy-pass |
 | TR-04 | `MeetingAsk.swift:762` | Second opinion | keep | Clear | Tests/TranscriptionSettingsChecks.swift:64, Tests/TranscriptionSettingsChecks.swift:140 | control/docs/index.html:1044, control/docs/index.html:1050 | copy-pass |
 | TR-06 | `MeetingAsk.swift:771` | Refine with second opinion | keep | 4 words, clear | none | control/docs/index.html:1044 | copy-pass |
 | TR-06a | `MeetingAskCore.swift:1964` | Not refining: Second opinion is off. | keep | Clear | Tests/TranscriptionSettingsChecks.swift:140 | none | copy-pass |
@@ -912,3 +914,9 @@ Confirm messages keep every fact the choice depends on, so a few run past 90 cha
 | DI-30m | 96 | Confirm message: keeps what is deleted or ended and what is kept |
 | C-01m | 103 | Confirm message: keeps the warning that this server cannot prove work is idle |
 | C-08m | 121 | Confirm message: keeps what is deleted or ended and what is kept |
+
+## Kept on purpose
+
+- KL-02, KL-13d, KL-14b: server parity. `Tests/key-lanes-pins.py` requires these to match the server's key-notices catalog or the helper refusal byte for byte. Change them on the server first.
+- TR-03, TR-05: the server's option labels and notes say HQ. Renaming only Control's label would split the term inside one card.
+- H-05, H-06, G-05: release-flow copy with its own pins; out of the settings rewrite.
