@@ -412,6 +412,31 @@ import Vision
         if let i = secondArgs.firstIndex(of: "--stamp") { expect(secondArgs[i + 1] == "100.1.4096", "the stamp is passed back", "\(secondArgs)") }
         else { fail("the stamp is passed back", "\(secondArgs)") }
 
+        // A late acoustic match must cross the actual helper polling boundary,
+        // even when the ASR cursor has already settled the original row.
+        let revisionDir = stand.dir.appendingPathComponent("speaker-revision", isDirectory: true)
+        try! FileManager.default.createDirectory(at: revisionDir, withIntermediateDirectories: true)
+        let revisionHelper = revisionDir.appendingPathComponent("helper")
+        try! FileManager.default.copyItem(at: stand.helper, to: revisionHelper)
+        let revisionStand = Stand(revisionHelper)
+        let (revisionModel, _) = model(revisionStand, enabled: true)
+        let revisionID = "mac_8c1f2a3b-4c5d-4e6f-8a9b-0c1d2e3f4a5b"
+        func revisionAnswer(_ revision: Int, _ speaker: String) -> String {
+            liveAnswer(sessionId: revisionID, chunks: [(0, speaker, "Original fixture words.", 0)], settled: 5, stamp: "revision-\(revision)")
+                .replacingOccurrences(of: "\"read\":{", with: "\"read\":{\"speakerRevision\":\(revision),\"fullSnapshot\":true,")
+        }
+        revisionStand.write("live-transcript.json", revisionAnswer(1, "Ext"))
+        await revisionModel.pollLiveTranscriptOnce()
+        revisionStand.write("live-transcript.json", revisionAnswer(2, "Voice 1"))
+        await revisionModel.pollLiveTranscriptOnce()
+        expect(revisionStand.lastArgs("live-transcript").contains("--speaker-revision"), "poll sends the previous speaker revision")
+        expect(revisionModel.liveTranscriptFeeds[revisionID]?.chunks[0]?.speaker == "Voice 1"
+               && revisionModel.liveTranscriptFeeds[revisionID]?.cursor == 5, "late match refreshes an already settled row through the helper")
+        revisionStand.write("live-transcript.json", revisionAnswer(3, "Ext"))
+        await revisionModel.pollLiveTranscriptOnce()
+        expect(revisionModel.liveTranscriptFeeds[revisionID]?.chunks[0]?.speaker == "Ext"
+               && revisionModel.liveTranscriptFeeds[revisionID]?.chunks[0]?.text == "Original fixture words.", "withdrawal restores the original row through the helper")
+
         // ── A session that leaves the list ends, even on a poll that read another one.
         let (two, _) = model(stand, enabled: true)
         func listed(_ ids: [String]) -> String {
