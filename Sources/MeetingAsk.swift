@@ -119,7 +119,7 @@ final class MeetingAskStore: ObservableObject {
                 current.selected = reply.selected; current.models = reply.models; config = current
             }
             await refreshConfig(model: model)
-            if config?.selected != selection { modelError = "The server kept \(config?.selected.label ?? "its model"). Refresh connected models to check." }
+            if config?.selected != selection { modelError = "The server kept \(config?.selected.label ?? "its model"). Refresh models to check." }
         } catch { notice = message(error); modelError = message(error) }
     }
     func ensure(_ session: String) {
@@ -833,13 +833,9 @@ struct TranscriptionSettingsCard: View {
     }
     /// Settings hub: each model a row with its line as the description, the resolver switch, Parakeet, then the Advanced
     /// pickers once its disclosure is open (the hub's Advanced, opened by a deep link or a search result). No card, no title.
+    /// The dictation engine (TR-01) is not here: in the hub it has one home, Dictation (DictationEngineControls).
     @ViewBuilder private func hubCard(_ settings: SttSettings) -> some View {
         let recording = model.recordingCount > 0
-        if let choice = settings.dictation {
-            SettingsHubRow(label: "Dictation engine", detail: Transcription.dictationLine(settings)) { hubDictationPicker(choice) }
-        } else {
-            SettingsHubNote(text: Transcription.dictationLine(settings))
-        }
         SettingsHubRow(label: "Preview model", detail: Transcription.previewLine(settings) ?? "") { hubPicker(.preview, settings.preview) }
         SettingsHubRow(label: "HQ model", detail: Transcription.effectiveLine(settings.hq) ?? "") { hubPicker(.hq, settings.hq) }
         SettingsHubRow(label: "Second opinion", detail: Transcription.effectiveLine(settings.secondOpinion) ?? "") { hubPicker(.secondOpinion, settings.secondOpinion) }
@@ -883,18 +879,6 @@ struct TranscriptionSettingsCard: View {
                 guard id != choice.selected else { return }
                 Task { await store.set(key.rawValue, .string(id), run: Self.run(model)) }
             }), options: Transcription.rows(choice).map { row in
-                COSDropdownOption(row.id, row.title, note: row.note, muted: !row.enabled, enabled: row.enabled)
-            }, showsLabel: false)
-            .frame(width: 240)
-            .disabled(store.pending != nil)
-    }
-    private func hubDictationPicker(_ choice: SttDictationChoice) -> some View {
-        COSDropdown("Dictation engine", selection: Binding(
-            get: { store.settings?.dictation?.selected ?? choice.selected },
-            set: { id in
-                guard id != choice.selected else { return }
-                Task { await store.set("dictation", .string(id), run: Self.run(model)) }
-            }), options: Transcription.dictationRows(choice, compact: true).map { row in
                 COSDropdownOption(row.id, row.title, note: row.note, muted: !row.enabled, enabled: row.enabled)
             }, showsLabel: false)
             .frame(width: 240)

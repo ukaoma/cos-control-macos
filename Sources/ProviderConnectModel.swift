@@ -961,17 +961,17 @@ enum SetupGuideRules {
         rows.append(dictationEngine(facts, skipped: skipped.contains(.dictationEngine)))
         if facts.serverRunning || facts.claudeSessionsEnabled != nil {
             let on = facts.claudeSessionsEnabled == true
-            rows.append(SetupRow(id: .sessions, title: "Show your AI sessions", status: on ? "On" : "Off",
+            rows.append(SetupRow(id: .sessions, title: "Show AI sessions", status: on ? "On" : "Off",
                                  unlocks: "Lists your Claude, Codex and Cursor sessions in Activity and on the pet, so you can follow and continue them.",
                                  detail: on ? nil : "It reads names, folders and times (not what was said) and serves them on your local network. Leave it off on an untrusted network.",
                                  done: on, afterSetup: !facts.serverRunning, skipped: skipped.contains(.sessions),
                                  action: on ? .none : .turnOnSessions, actionTitle: on ? nil : "Turn on"))
         } else {
-            rows.append(after(.sessions, "Show your AI sessions", "Lists your AI sessions in Activity and on the pet.", skipped))
+            rows.append(after(.sessions, "Show AI sessions", "Lists your AI sessions in Activity and on the pet.", skipped))
         }
         if facts.threadAttachSupported {
             let on = facts.threadAttachEnabled == true
-            rows.append(SetupRow(id: .continueThreads, title: "Continue agent threads", status: on ? "On" : "Off",
+            rows.append(SetupRow(id: .continueThreads, title: "Continue sessions", status: on ? "On" : "Off",
                                  unlocks: "A reply from COS writes into your real Claude or Codex session instead of starting a new thread.",
                                  detail: nil, done: on, skipped: skipped.contains(.continueThreads),
                                  action: on ? .none : .turnOnContinue, actionTitle: on ? nil : "Turn on"))

@@ -683,6 +683,14 @@ final class ControllerModel: ObservableObject {
     var showTranscriptionSettings: (() -> Void)?
     /// The panel scrolls here when it appears ("settings"); the panel clears it.
     @Published var panelScrollTarget: String?
+    /// 2026-10-28: where the Settings hub opens (an opener's anchor, routed by SettingsHubRoute), apart from the menu-bar
+    /// panel's target so an open panel never takes it. The hub clears it.
+    @Published var settingsHubTarget: String?
+    /// 2026-10-28: Activity shows Settings (the hub) when it next applies its launch state; consumed there.
+    @Published var activityOpenSettings = false
+    /// The Settings hub's own Escape (QA 2026-10-28 S9), set while it shows: true when it cleared a search or closed an
+    /// inline confirm, so Activity's window-level Escape leaves Settings only after those.
+    var settingsHubEscape: (@MainActor () -> Bool)?
     /// F4: the one-line session pet introduction, once, for anyone who never touched the pet settings.
     @Published var petIntroVisible = false
     /// F3: COS Control shows in the Dock unless "Show in menu bar only" is on (DockPresence in ProviderConnectModel).
@@ -1972,9 +1980,9 @@ final class ControllerModel: ObservableObject {
 
     func selectWorkFolder() {
         let panel = NSOpenPanel()
-        panel.title = "Work Folder — COS agent workspace"
-        panel.message = "This is the repo/workdir Claude, Codex, and Cursor use for tools and edits. It is not the meetings library."
-        panel.prompt = "Use as Work Folder"
+        panel.title = "Work folder"
+        panel.message = "The folder Claude, Codex and Cursor work in, for their tools and edits. It is not your meetings folder."
+        panel.prompt = "Use as work folder"
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
         panel.allowsMultipleSelection = false
@@ -1984,12 +1992,12 @@ final class ControllerModel: ObservableObject {
 
     func selectOperationsFolder() {
         let panel = NSOpenPanel()
-        panel.title = "Meetings Library"
+        panel.title = "Meetings folder"
         panel.message = "Choose the folder you already use for meetings. Most people should choose "
             + "the folder that directly contains month folders such as 2026-08. If you organize meetings "
             + "into several named folders, choose their parent instead; each named folder only needs its "
             + "own meetings folder. Your names are entirely up to you. COS never moves or reorganizes files."
-        panel.prompt = "Use as Meetings Library"
+        panel.prompt = "Use as meetings folder"
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
         panel.allowsMultipleSelection = false
@@ -1999,9 +2007,9 @@ final class ControllerModel: ObservableObject {
 
     func selectContextFolder() {
         let panel = NSOpenPanel()
-        panel.title = "COS Data — Memory and Threads"
-        panel.message = "Choose your COS workspace, or its operations/scripts folder. This is separate from the agent Work Folder and Meetings Library. COS validates the local bridge before changing the server."
-        panel.prompt = "Use for Memory and Threads"
+        panel.title = "Notes folder"
+        panel.message = "Choose your COS workspace, or its operations/scripts folder. It is separate from your work folder and meetings folder. COS checks the workspace bridge before changing the server."
+        panel.prompt = "Use as notes folder"
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
         panel.allowsMultipleSelection = false
@@ -6173,7 +6181,8 @@ final class ControllerModel: ObservableObject {
     }
 
     /// One sentence for every place a stale Accessibility grant shows up.
-    nonisolated static let accessibilityRepairHint = "Already on? Use Reset and add again in Settings, Pet and appearance."
+    // "Session pet" is the classic section and the hub's card (in Pet and appearance), so it is right in both layouts.
+    nonisolated static let accessibilityRepairHint = "Already on? Use Reset and add again in Settings, Session pet."
 
     /// 0.5.267: the repair for a grant that reads ON in System Settings while this build is untrusted. Removes COS
     /// Control's Accessibility entry (`tccutil reset Accessibility <bundle id>`, which touches only this app), asks

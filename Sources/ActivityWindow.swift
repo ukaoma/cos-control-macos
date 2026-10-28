@@ -908,8 +908,9 @@ struct ActivityWindow: View {
 
     /// What the hub's "‹" says and does: back to the tab Settings was opened over, or to Today (Home in the classic frame).
     private var settingsHubHost: SettingsHubHost {
+        // The classic frame keeps its toolbar, whose Back already has ⌘←; the Today frame hides it, so the hub's ‹ has it.
         SettingsHubHost(backTitle: section?.title ?? (todayEnabled && !isolatedWorkPreview ? "Today" : "Home"),
-                        back: { showingSettings = false })
+                        back: { showingSettings = false }, backShortcut: todayEnabled && !isolatedWorkPreview)
     }
 
     @ViewBuilder
@@ -1008,11 +1009,19 @@ struct ActivityWindow: View {
         .onExitCommand { if !handleActivityEscape() { goBack() } }
         .onAppear { applyLaunchSection() }
         .onChange(of: model.activityOpenSection) { _, _ in applyLaunchSection() }
+        .onChange(of: model.activityOpenSettings) { _, _ in applyLaunchSection() }
         .onChange(of: model.activityOpenSessionID) { _, _ in applyLaunchSection() }
         .onChange(of: model.activityOpenWorkID) { _, _ in applyLaunchSection() }
     }
 
     private func applyLaunchSection() {
+        // A Settings opener (SettingsOpener, the hub's route): Settings over whatever tab is showing, landing where
+        // model.settingsHubTarget says.
+        if model.activityOpenSettings {
+            model.activityOpenSettings = false
+            if isolatedWorkPreview { model.settingsHubTarget = nil } else { openActivitySettings() }
+            return
+        }
         if isolatedWorkPreview {
             model.activityOpenSection = nil
             model.activityOpenSessionID = nil
@@ -1268,7 +1277,12 @@ struct ActivityWindow: View {
     /// Escape reaches these window-owned routes before TextEditor/ScrollView can
     /// consume it. Other child panes retain their own cancellation semantics.
     private func handleActivityEscape() -> Bool {
-        if showingSettings { showingSettings = false; return true }
+        if showingSettings {
+            // The hub first: a search to clear, then an inline confirm to close. Then Escape leaves Settings.
+            if model.settingsHubEscape?() == true { return true }
+            showingSettings = false
+            return true
+        }
         // 0.5.244: Work's Start work overlay sits above everything in Work; Escape closes it first (not mid-send).
         if workWorkspaceState.startItemID != nil {
             if !workWorkspaceState.startSending { workWorkspaceState.startItemID = nil }
@@ -2280,7 +2294,7 @@ struct ActivityWindow: View {
                 // Off by default: the endpoint projects Claude Code's private 0700
                 // state dir over a LAN-bound socket, so it is opt-in. Showing the
                 // ordinary empty copy here made a switched-off feature look broken.
-                emptyState(.sessions, text: "Claude sessions are switched off. Turn them on in Advanced \u{2192} Show Claude sessions.")
+                emptyState(.sessions, text: "AI sessions are off. Turn on Show AI sessions in Settings, Work and agents.")
             } else if sessions.isEmpty {
                 emptyState(.sessions, text: sessionsEmptyCopy)
             } else {
@@ -3574,7 +3588,7 @@ struct ActivityWindow: View {
         } else if model.heldGroupsState == "ready", model.heldGroupsEmbedded == 0, model.heldGroupsSamples > 0 {
             addVoiceNotice(model.heldGroupsSpeakerModel
                  ? "\(model.heldGroupsSamples) held samples are still being read for grouping. Refresh in a moment."
-                 : "\(model.heldGroupsSamples) held samples cannot be grouped yet: the speaker model is not loaded on this Mac (Run Doctor shows it). The sessions are listed below.")
+                 : "\(model.heldGroupsSamples) held samples cannot be grouped yet: the speaker model is not loaded on this Mac (Run checks shows it). The sessions are listed below.")
         }
     }
 
@@ -3596,7 +3610,7 @@ struct ActivityWindow: View {
         if pending > 0 { parts.append("\(pending) still being read.") }
         if model.heldGroupsUnusable > 0 { parts.append("\(model.heldGroupsUnusable) could not be read and will expire with the window.") }
         // Naming needs the model on the server side; listening and discarding do not.
-        if !model.heldGroupsSpeakerModel { parts.append("The speaker model is not loaded on this Mac (Run Doctor shows it): voices can be heard and discarded, not named yet.") }
+        if !model.heldGroupsSpeakerModel { parts.append("The speaker model is not loaded on this Mac (Run checks shows it): voices can be heard and discarded, not named yet.") }
         return parts.joined(separator: " ")
     }
 
@@ -8341,6 +8355,20 @@ extension ActivityWindow {
             // ⌘K focuses the Ask box from any tab.
             Button("") { goHome(); DispatchQueue.main.async { todayAskFocused = true } }
                 .keyboardShortcut("k", modifiers: .command).opacity(0).frame(width: 0, height: 0).accessibilityHidden(true)
+            // The Settings hub takes the rail's and the toolbar's place, so their keys stay here while it shows (QA
+            // 2026-10-28, as 0.5.351 had them): ⌘⇧H and ⌘0 home, ⌘1 to ⌘9 the tabs in rail order.
+            if settingsHubShowing { settingsHubTodayKeys }
+        }
+    }
+
+    @ViewBuilder private var settingsHubTodayKeys: some View {
+        Button("") { goHome() }.keyboardShortcut(KeyEquivalent("h"), modifiers: [.command, .shift])
+            .opacity(0).frame(width: 0, height: 0).accessibilityHidden(true)
+        Button("") { goHome() }.keyboardShortcut("0", modifiers: .command)
+            .opacity(0).frame(width: 0, height: 0).accessibilityHidden(true)
+        ForEach(Array(ActivitySection.allCases.prefix(9).enumerated()), id: \.offset) { index, item in
+            Button("") { select(item) }.keyboardShortcut(KeyEquivalent(Character(String(index + 1))), modifiers: .command)
+                .opacity(0).frame(width: 0, height: 0).accessibilityHidden(true)
         }
     }
 

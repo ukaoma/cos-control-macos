@@ -94,13 +94,19 @@ struct KeyLanesSettingsRow: View {
         ])
         .id("key-lanes")
         .task(id: "\(model.status.running) \(model.status.version ?? "")") {
-            // Fixtures and previews read nothing; an older server has no key-lane routes to read. The hub's Advanced part
-            // reads nothing either: its main part already does, once.
-            guard part != .advanced, model.backgroundWorkEnabled, store.enabled || KeyLanes.serverSupports(model.status.version) else { return }
-            store.observe(model.status)
-            await store.refresh(run: keyLanesRun(model))
-            if store.enabled, store.catalog.isEmpty { await store.loadCatalog(run: keyLanesRun(model)) }
+            // The panel's row reads here. In the Settings hub neither part reads: the hub's root runs Self.load once for
+            // every page, since the key-lane state feeds Continue and Fork's guard (QA 2026-10-28 S4).
+            guard !hosted, part != .advanced else { return }
+            await Self.load(model, store: store)
         }
+    }
+
+    /// Observe, refresh and the catalog. Fixtures and previews read nothing; an older server has no key-lane routes.
+    static func load(_ model: ControllerModel, store: KeyLanesStore = .shared) async {
+        guard model.backgroundWorkEnabled, store.enabled || KeyLanes.serverSupports(model.status.version) else { return }
+        store.observe(model.status)
+        await store.refresh(run: keyLanesRun(model))
+        if store.enabled, store.catalog.isEmpty { await store.loadCatalog(run: keyLanesRun(model)) }
     }
 }
 

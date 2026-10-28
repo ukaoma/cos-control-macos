@@ -53,30 +53,30 @@ struct MeetingLibraryBody: View {
         // fetched when Meetings opens rather than only once the pane is entered.
         .task { if !selectionOnly { await model.loadMeetingEngineStatus() } }
         .confirmationDialog(
-            "Recover all unsaved captures?",
+            "Recover all unsaved recordings?",
             isPresented: $confirmRecoverAllOrphans,
             titleVisibility: .visible
         ) {
             Button("Recover all") { model.recoverAllOrphans() }.keyboardShortcut(.defaultAction)
             Button("Cancel", role: .cancel) { }
         } message: {
-            Text("Turns each unsaved capture into a meeting, one at a time. Session files are not deleted.")
+            Text("Turns each unsaved recording into a meeting, one at a time. The files are kept.")
         }
         .confirmationDialog(
-            "Save still-live captures as meetings?",
+            "Save live recordings as meetings?",
             isPresented: $confirmSaveAllStranded,
             titleVisibility: .visible
         ) {
             Button("Save all") { model.saveAllStranded() }.keyboardShortcut(.defaultAction)
             Button("Cancel", role: .cancel) { }
         } message: {
-            Text("Finalizes each still-live G2 capture. Session files become meetings; they are not deleted.")
+            Text("Ends each live glasses recording and saves it, like Stop on the phone. The files are kept.")
         }
     }
 
     private var unsavedCaptureBanner: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Unsaved captures")
+            Text("Unsaved recordings")
                 .font(COSType.body(11, weight: .semibold))
                 .foregroundStyle(COSPalette.amber)
             Text("Audio that never became a meeting. This is not Speakers’ Meetings to review.")

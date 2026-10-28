@@ -13,6 +13,14 @@ enum SettingsHub {
     static let classicKey = "cos.settings.classic"
     /// Each scroll target the hub draws: "hub.<group id>".
     static func anchor(_ group: String) -> String { "hub." + group }
+    /// Every Settings opener (⌘,, the Dock, the pet, Welcome, the deep links) lands in the hub unless the classic switch
+    /// is on; then SettingsOpener's panel-or-window route runs exactly as before (2026-10-28).
+    static func opensHub(classic: Bool) -> Bool { !classic }
+    /// The category the hub opened on last, where a plain "Settings" lands again. General the first time.
+    static let lastCategoryKey = "cos.settings.hub.category"
+    static func lastCategory(_ defaults: UserDefaults = .standard) -> SettingsHubCategory {
+        defaults.string(forKey: lastCategoryKey).flatMap(SettingsHubCategory.init(rawValue:)) ?? .general
+    }
 }
 
 enum SettingsHubCategory: String, CaseIterable, Identifiable, Sendable {
@@ -87,6 +95,8 @@ struct SettingsHubItem: Identifiable, Equatable, Sendable {
     let advanced: Bool
     let mount: Mount
     let keywords: [String]
+    /// The label this row had on the page before the hub, when it was renamed (SettingsHubCatalog.formerLabels).
+    var formerLabel: String? { SettingsHubCatalog.formerLabels[id] }
     init(_ id: String, _ label: String, _ detail: String, old: String, group: String?, advanced: Bool, mount: Mount, keywords: [String] = []) {
         self.id = id; self.label = label; self.detail = detail; self.old = old
         self.group = group; self.advanced = advanced; self.mount = mount; self.keywords = keywords
@@ -156,7 +166,7 @@ enum SettingsHubCatalog {
         .init("SG-15", "Finish setup card", "A progress card at the top until every step is done or skipped.", old: "Finish setup · N of M, progress bar, Next line, Continue setup, Hide", group: "general.guide", advanced: false, mount: .topStrip),
         .init("SG-14", "Show setup card", "Show or hide the Finish setup card.", old: "Hide setup guide / Show Finish setup at the top again", group: "general.guide", advanced: false, mount: .group),
         .init("SG-07", "Sessions step", "The guide step that turns on Show AI sessions.", old: "Show your AI sessions row (Turn on)", group: "general.guide", advanced: false, mount: .group),
-        .init("SG-08", "Continue step", "The guide step that turns on Continue threads.", old: "Continue agent threads row (Turn on)", group: "general.guide", advanced: false, mount: .group),
+        .init("SG-08", "Continue step", "The guide step that turns on Continue sessions.", old: "Continue agent threads row (Turn on)", group: "general.guide", advanced: false, mount: .group),
         .init("SG-09", "Work suggestions step", "The guide step that checks your Jev or SubQ key.", old: "Work suggestions row (opens Decision models, Check)", group: "general.guide", advanced: false, mount: .group),
         .init("SG-10", "Permissions step", "The guide step that opens Permissions.", old: "Permissions row (opens Permissions)", group: "general.guide", advanced: false, mount: .group),
         .init("SG-03", "Claude, Codex, Cursor", "Install and sign in to the AI apps COS works through.", old: "Your AI rows (Claude Code, Codex, Cursor Agent): Get X, Copy, Sign in, Open Terminal again, Stop waiting, Check again, Skip for now / Set up now, Pass to X", group: "ai.apps", advanced: false, mount: .group, keywords: ["claude code", "codex", "cursor", "sign in"]),
@@ -178,7 +188,7 @@ enum SettingsHubCatalog {
         .init("JV-05", "Work search", "The provider that searches Work by meaning.", old: "Work search", group: "ai.decision", advanced: true, mount: .group),
         .init("JV-06", "Refresh providers", "Read the provider settings from the server again.", old: "Refresh decision settings", group: "ai.decision", advanced: true, mount: .group),
         .init("JV-07", "SubQ data retention", "SubQ is a public preview. Steps on SubQ send it their context, kept forever by default.", old: "SubQ preview and retention text + SubQ data retention link", group: "ai.decision", advanced: true, mount: .group),
-        .init("KL-01", "Use your own key", "Answer with your own API key under a daily cap. Off uses your AI plan.", old: "Answer with your own key, plus on/off line", group: "ai.keys", advanced: false, mount: .group, keywords: ["byok", "api key", "openrouter", "anthropic", "openai", "spend cap"]),
+        .init("KL-01", "Answer with your own key", "Answer with your own API key under a daily cap. Off uses your AI plan.", old: "Answer with your own key, plus on/off line", group: "ai.keys", advanced: false, mount: .group, keywords: ["byok", "api key", "openrouter", "anthropic", "openai", "spend cap"]),
         .init("KL-04", "Key details", "Each key's cap, spend and limits.", old: "Per key: key line, cap line, no-provider-limit line, local-first line, glasses hint", group: "ai.keys", advanced: false, mount: .group),
         .init("KL-06", "Key model", "The model this key answers with.", old: "Model (per key)", group: "ai.keys", advanced: false, mount: .group),
         .init("KL-07", "Use for answers", "Send your answers to this key.", old: "Use for answers", group: "ai.keys", advanced: false, mount: .group),
@@ -202,9 +212,9 @@ enum SettingsHubCatalog {
         .init("H-04", "Reset message count", "Live messages start again at #1. History stays in Archive.", old: "\"Archive live messages and start numbering at #1\" (archivebox icon), confirm \"Reset live message count?\" / \"Reset count\"", group: "glasses.devices", advanced: true, mount: .group, keywords: ["archive", "message number", "era"]),
         .init("UT-09", "Reliable video uploads", "Beta. Sends videos in chunks that resume after a restart.", old: "Reliable video uploads (beta) + Apply", group: "glasses.video", advanced: true, mount: .group),
         .init("ST-10", "Video uploads", "Uploads in progress and finished uploads waiting for the phone.", old: "Video uploads; \"Sideload or a killed upload can sit here for 4 hours and block Repair.\"; completed receipts await acknowledgment", group: "glasses.video", advanced: false, mount: .group),
-        .init("UT-10", "Clear stuck uploads", "Cancel uploads that stopped sending. Uploads still sending stay.", old: "Clear stranded; confirm \"Clear stranded video uploads?\"", group: "glasses.video", advanced: true, mount: .group),
+        .init("UT-10", "Clear stuck uploads", "Cancel uploads that stopped sending. Uploads still sending stay.", old: "Clear stranded; confirm \"Clear stranded video uploads?\"", group: "glasses.video", advanced: false, mount: .group),
         .init("MT-01", "Live transcript", "Shows a glasses meeting at the top of Meetings while it records. Off reads nothing.", old: "Show live meeting transcript", group: "meetings.recording", advanced: false, mount: .group, keywords: ["live transcript"]),
-        .init("MT-03", "Suggest recording", "Offers to record when Zoom, Teams or Meet uses the microphone. COS never starts it.", old: "Suggest recording when a meeting starts", group: "meetings.recording", advanced: false, mount: .group),
+        .init("MT-03", "Suggest recording", "Offers to record when Zoom, Teams or Meet uses the microphone. COS never starts or stops it.", old: "Suggest recording when a meeting starts", group: "meetings.recording", advanced: false, mount: .group),
         .init("MT-04", "Apps to watch", "Choose which meeting apps get the suggestion.", old: "Zoom / Microsoft Teams / Google Meet", group: "meetings.recording", advanced: false, mount: .group),
         .init("MT-05", "Google Meet access", "Google Meet in a browser needs Accessibility. Until then COS watches Zoom and Teams only.", old: "Google Meet needs Accessibility note", group: "meetings.recording", advanced: false, mount: .group),
         .init("MT-06", "Never suggest for", "Apps you told COS to stop suggesting. Remove one to undo.", old: "Never for {app} + Remove", group: "meetings.recording", advanced: false, mount: .group),
@@ -222,7 +232,7 @@ enum SettingsHubCatalog {
         .init("MA-08", "Cue bar", "Lower gives more cues. Higher gives fewer.", old: "Bar slider (More cues / Fewer cues)", group: "meetings.cues", advanced: false, mount: .group),
         .init("MA-09", "Cues per meeting", "The most cues one meeting can get.", old: "Max cues per meeting", group: "meetings.cues", advanced: false, mount: .group),
         .init("MA-10", "Gap between cues", "The shortest time between two cues.", old: "Minimum gap between cues", group: "meetings.cues", advanced: false, mount: .group),
-        .init("MA-11", "Daily cue limit", "The most cue writer calls in one day.", old: "Daily writer limit", group: "meetings.cues", advanced: false, mount: .group),
+        .init("MA-11", "Daily writer calls", "The most cue writer calls in one day.", old: "Daily writer limit", group: "meetings.cues", advanced: false, mount: .group),
         .init("MA-12", "Cue usage", "Today's cue use and save progress.", old: "Saving… line, limits note, today's usage line", group: "meetings.cues", advanced: false, mount: .group),
         .init("UT-16", "Meetings folder", "Choose your meetings folder, or one that holds several.", old: "Meetings Library; guidance confirm \"Meetings Library\" Choose Again / View Examples / Skip for Now", group: "meetings.library", advanced: false, mount: .group, keywords: ["meetings library", "operations folder"]),
         .init("ST-29", "Library status", "Where your meetings are and how many COS found.", old: "Meetings library path, layout and count; library warning", group: "meetings.library", advanced: false, mount: .group),
@@ -262,17 +272,17 @@ enum SettingsHubCatalog {
         .init("DI-18", "Learn from my edits", "Save or suggest the corrections you make.", old: "Learn from my edits (Save automatically / Suggest only / Off) + note", group: "dictation.text", advanced: false, mount: .group),
         .init("DI-19", "Match nearby spelling", "Spell names the way the text box already has them.", old: "Spell words the way the text box has them + note", group: "dictation.text", advanced: false, mount: .group),
         .init("DI-20", "Format spoken lists", "Turn spoken list items into numbered or bulleted lists.", old: "Format spoken lists", group: "dictation.text", advanced: false, mount: .group),
-        .init("DI-21", "Remove fillers", "Drop um and uh before COS types.", old: "Remove filler sounds (um, uh) before typing + note", group: "dictation.text", advanced: false, mount: .group),
+        .init("DI-21", "Remove um and uh", "Drop um and uh before COS types.", old: "Remove filler sounds (um, uh) before typing + note", group: "dictation.text", advanced: false, mount: .group),
         .init("DI-22", "Capitalize sentences", "Start each sentence with a capital letter.", old: "Capitalize the start of a sentence + note", group: "dictation.text", advanced: false, mount: .group),
         .init("DI-23", "AI polish", "Clean up dictation with Claude Haiku or Sonnet. Uses model calls.", old: "AI polish (Off / Claude Haiku / Claude Sonnet), model line, note, pause line", group: "dictation.polish", advanced: false, mount: .group),
         .init("DI-24", "Paste then polish", "Paste right away, then swap in the polished text.", old: "Paste right away, then polish in place + note", group: "dictation.polish", advanced: false, mount: .group),
         .init("DI-27", "Learn my style", "Learn how you write from the edits you make.", old: "Your style · Learn my style from edits, status lines", group: "dictation.polish", advanced: false, mount: .group),
-        .init("DI-25", "Wait for keys", "Wait until you release ⌘ or ⌃ before swapping.", old: "Wait for ⌘ or ⌃ to be released before swapping in polish + note", group: "dictation.polish", advanced: false, mount: .group),
-        .init("DI-26", "Polish instructions", "Your own rules for polish, added after the built-in rules.", old: "Your polish instructions: editor, counter, Clear, Save, \"See the built-in rules\", Try again", group: "dictation.polish", advanced: false, mount: .group),
+        .init("DI-25", "Wait for held keys", "Wait until you release ⌘ or ⌃ before swapping.", old: "Wait for ⌘ or ⌃ to be released before swapping in polish + note", group: "dictation.polish", advanced: false, mount: .group),
+        .init("DI-26", "Your polish instructions", "Your own rules for polish, added after the built-in rules.", old: "Your polish instructions: editor, counter, Clear, Save, \"See the built-in rules\", Try again", group: "dictation.polish", advanced: false, mount: .group),
         .init("DI-28", "Style rules", "Rules COS learned or you added. Keep or remove each one.", old: "Style rules: Active (Remove), Suggested (Add, Dismiss), Pending", group: "dictation.polish", advanced: false, mount: .group),
-        .init("DI-29", "Add a style rule", "Add a rule from a short list.", old: "Add a rule (Choose a rule) + Add", group: "dictation.polish", advanced: false, mount: .group),
-        .init("DI-30", "Reset style", "Delete every style rule on this Mac and on the server.", old: "Reset learned style (confirm)", group: "dictation.polish", advanced: false, mount: .group),
-        .init("DI-31", "Previous polish", "Use the earlier polish prompt, version 3.", old: "Previous polish (v3) + note / set on server", group: "dictation.polish", advanced: false, mount: .group),
+        .init("DI-29", "Add a rule", "Add a rule from a short list.", old: "Add a rule (Choose a rule) + Add", group: "dictation.polish", advanced: false, mount: .group),
+        .init("DI-30", "Reset learned style", "Delete every style rule on this Mac and on the server.", old: "Reset learned style (confirm)", group: "dictation.polish", advanced: false, mount: .group),
+        .init("DI-31", "Previous polish (v3)", "Use the earlier polish prompt, version 3.", old: "Previous polish (v3) + note / set on server", group: "dictation.polish", advanced: false, mount: .group),
         .init("DI-32", "Keep dictations for", "How long dictations stay on this Mac.", old: "Keep dictations for (7 days / 30 days / 90 days / Forever / Don't keep); confirm \"Stop keeping dictations?\"", group: "dictation.history", advanced: false, mount: .group, keywords: ["history", "retention"]),
         .init("DI-33", "Clear dictation history", "Delete every dictation kept on this Mac.", old: "Clear dictation history (confirm)", group: "dictation.history", advanced: false, mount: .group),
         .init("SG-05", "Voice setup", "Download local transcription and test this Mac.", old: "Voice (local transcription) row: tier action, Voice switch Automatic / Balanced / Max, Or run it in Terminal, Test this Mac again, Transcription settings,…", group: "voice.setup", advanced: false, mount: .group, keywords: ["whisper", "download", "tier"]),
@@ -295,14 +305,14 @@ enum SettingsHubCatalog {
         .init("UT-12", "Playback cleanup", "Cleans audio when you press Play. The original stays as is.", old: "Adaptive audio cleanup + Apply", group: "voice.performance", advanced: false, mount: .group),
         .init("ST-12", "Cleanup status", "Adaptive or raw playback.", old: "Audio cleanup (Adaptive replay / Raw replay)", group: "voice.performance", advanced: false, mount: .group),
         .init("ST-19", "HQ prefill status", "Early final-quality text. Set on the server.", old: "HQ prefill, CPU guardrail line, unavailable line", group: "voice.performance", advanced: true, mount: .group),
-        .init("UT-06", "Show AI sessions", "Shares session names, not chats, on your local network.", old: "Show Claude sessions + Apply", group: "work.sessions", advanced: false, mount: .group, keywords: ["claude sessions", "privacy"]),
+        .init("UT-06", "Show AI sessions", "Shares session names, folders and times on your local network. Off on untrusted Wi-Fi.", old: "Show Claude sessions + Apply", group: "work.sessions", advanced: false, mount: .group, keywords: ["claude sessions", "privacy"]),
         .init("UT-07", "Continue sessions", "Replies go into your real Claude or Codex session.", old: "Continue agent threads + Apply", group: "work.sessions", advanced: false, mount: .group, keywords: ["continue", "attach", "threads"]),
         .init("ST-09", "Continue status", "Shows which apps can be continued.", old: "Continue threads", group: "work.sessions", advanced: false, mount: .group),
         .init("WK-03", "Open new sessions", "Claude and Codex sessions open in their app after the first reply. Off: background only.", old: "Open new sessions in the app", group: "work.sessions", advanced: false, mount: .group),
         .init("WK-02", "Work notifications", "Alerts when a session gets Work, finishes it, or needs you.", old: "Work notifications", group: "work.sessions", advanced: false, mount: .group),
         .init("OUT-04", "Track session usage", "Count session tokens on this Mac.", old: "Track session usage on this Mac", group: "work.sessions", advanced: false, mount: .group, keywords: ["usage", "tokens"]),
         .init("WK-04", "Send plans without review", "Work chat plans and sends in one step, each with a Stop. Each card can override it.", old: "Send plans without review", group: "work.chat", advanced: false, mount: .group),
-        .init("WK-05", "When work is open", "Queue it sends once earlier work resolves, while COS Control is open. Ask lets you pick.", old: "When earlier work is still open (Queue it / Ask each time)", group: "work.chat", advanced: false, mount: .group),
+        .init("WK-05", "When work is open", "Queue it sends once earlier work resolves, while COS Control is open. Ask each time lets you pick.", old: "When earlier work is still open (Queue it / Ask each time)", group: "work.chat", advanced: false, mount: .group),
         .init("WK-01", "Expire old asks", "Expires other people's old asks; yours stay. Restore them from Sort for 30 days.", old: "Work intake · Expire old asks from other people + note", group: "work.chat", advanced: false, mount: .group),
         .init("OUT-05", "Default planner", "The model that plans Work on this Mac.", old: "Plan with (per-Mac default planner)", group: "work.chat", advanced: true, mount: .group),
         .init("OUT-06", "Planning effort", "How hard the planner thinks. Higher uses more tokens.", old: "Effort (per-Mac default)", group: "work.chat", advanced: true, mount: .group),
@@ -357,14 +367,14 @@ enum SettingsHubCatalog {
         .init("ST-30", "Work in progress", "Active jobs and recordings. Restart waits for them.", old: "\"{n} job(s), {m} recording(s) active. Restart is locked.\"", group: "system.server", advanced: false, mount: .group),
         .init("ST-31", "Pending change", "A server change in progress, or one that needs Repair.", old: "\"Server change in progress · recovery is armed\" / \"An interrupted server change needs Repair.\"", group: "system.server", advanced: false, mount: .group),
         .init("C-09", "Server messages", "Warnings and progress for server changes.", old: "Foreground-server warning, ownership conflict, operation progress, green notice", group: "system.server", advanced: false, mount: .group),
-        .init("C-01", "Restart", "Restart the server. Waits until no work is running.", old: "Restart; confirm \"Restart this self-managed server?\" / Restart now", group: "system.server", advanced: false, mount: .group),
+        .init("C-01", "Restart", "Restart the server. Off while work is running.", old: "Restart; confirm \"Restart this self-managed server?\" / Restart now", group: "system.server", advanced: false, mount: .group),
         .init("C-02", "Stop", "Stop the server.", old: "Stop", group: "system.server", advanced: false, mount: .group),
         .init("C-03", "Start", "Start the server.", old: "Start", group: "system.server", advanced: false, mount: .group),
         .init("C-04", "Update server", "Install the newest server and restart it.", old: "Update Server", group: "system.server", advanced: false, mount: .group, keywords: ["update server", "npm"]),
         .init("C-05", "Install server", "Install the COS server.", old: "Install Server", group: "system.server", advanced: false, mount: .group),
-        .init("C-06", "Adopt server", "Take over a stopped older server safely.", old: "Adopt Safely", group: "system.server", advanced: true, mount: .group),
+        .init("C-06", "Adopt server", "Replace a stopped older server with the latest COS server.", old: "Adopt Safely", group: "system.server", advanced: true, mount: .group),
         .init("C-07", "Manage in place", "Manage your running server without replacing it.", old: "Manage in place", group: "system.server", advanced: true, mount: .group),
-        .init("C-08", "Replace server", "Stop the older server and install the managed one.", old: "Install managed server; confirm \"Install the latest managed server?\" / Stop legacy and install", group: "system.server", advanced: true, mount: .group),
+        .init("C-08", "Replace server", "Stop the older server and install the latest COS server.", old: "Install managed server; confirm \"Install the latest managed server?\" / Stop legacy and install", group: "system.server", advanced: true, mount: .group),
         .init("H-01", "App version", "The COS Control version.", old: "v{version} stamp", group: "system.updates", advanced: false, mount: .group),
         .init("H-02", "Check for updates", "Refresh status and look for a new version.", old: "Refresh status and check for updates (arrow icon, help text)", group: "system.updates", advanced: false, mount: .group, keywords: ["check for updates", "refresh"]),
         .init("H-03", "Update status", "Whether the last check found an update.", old: "\"Your local glasses server\" / Checking for updates… / Up to date / Couldn't check for updates", group: "system.updates", advanced: false, mount: .group),
@@ -374,7 +384,7 @@ enum SettingsHubCatalog {
         .init("G-05", "Versions", "App and server versions side by side.", old: "Controller X • Server Y (npm latest) / self-managed / not installed", group: "system.updates", advanced: false, mount: .group),
         .init("UT-01", "Run checks", "Check the setup and list any problems.", old: "Run Doctor", group: "system.troubleshooting", advanced: false, mount: .group, keywords: ["doctor", "diagnostics"]),
         .init("DR-01", "Check results", "Results of the last check.", old: "DOCTOR results (name, detail, state per check)", group: "system.troubleshooting", advanced: false, mount: .group),
-        .init("UT-13", "Repair server", "Fix the managed server setup.", old: "Repair Managed Runtime", group: "system.troubleshooting", advanced: false, mount: .group),
+        .init("UT-13", "Repair server", "Fix the COS server when it is missing or not loaded.", old: "Repair Managed Runtime", group: "system.troubleshooting", advanced: false, mount: .group),
         .init("UT-22", "Copy report", "Copy a report for the COS team.", old: "Copy Report", group: "system.troubleshooting", advanced: false, mount: .group, keywords: ["report", "support"]),
         .init("UT-23", "Open logs", "Open the log folder.", old: "Open Logs", group: "system.troubleshooting", advanced: false, mount: .group, keywords: ["logs", "console"]),
         .init("UT-28", "Online help", "Open COS Control help on gotcos.com.", old: "Advanced · Setup Guide", group: "system.troubleshooting", advanced: false, mount: .group, keywords: ["help", "gotcos", "setup guide"]),
@@ -398,16 +408,76 @@ enum SettingsHubCatalog {
         .init("MN-09", "Activity and Welcome Settings buttons", "Entry points; must open the new view", old: "Activity: Settings (rail and toolbar), Setup guide, Settings…; Welcome window \"Open settings\"", group: nil, advanced: false, mount: .outside)
     ]
 
-    static var all: [SettingsHubItem] { items + extras }
-    static func group(_ id: String) -> SettingsHubGroup? { groups.first { $0.id == id } }
+    /// What a renamed row was called on the page in 0.5.351, for search's "Was:" line. Only real former labels: the
+    /// `old` field is the inventory's notation ("Local model + Apply (Automatic…"), which search still matches but
+    /// never shows (QA copy 2026-10-28). A rename by case alone is not listed.
+    static let formerLabels: [String: String] = [
+        "G-01": "Launch COS Control at login",
+        "G-02": "Show in menu bar only",
+        "G-03": "Open Activity with",
+        "UT-25": "Clock",
+        "WK-06": "New Today home",
+        "WK-07": "Quiet hours on Today",
+        "WK-08": "Start Work runs from Today",
+        "ST-24": "Agent CLIs",
+        "ST-25": "Cursor CLI",
+        "JV-06": "Refresh decision settings",
+        "JV-09": "Remove saved SubQ key",
+        "JV-12": "Remove saved key",
+        "UT-10": "Clear stranded",
+        "MT-01": "Show live meeting transcript",
+        "MT-03": "Suggest recording when a meeting starts",
+        "MT-02": "Show the recording notice again",
+        "MA-04": "Refresh connected models",
+        "MA-09": "Max cues per meeting",
+        "MA-10": "Minimum gap between cues",
+        "MA-11": "Daily writer limit",
+        "UT-16": "Meetings Library",
+        "ST-29": "Meetings library",
+        "ST-17": "Run sync now",
+        "ST-20": "Finalization recovery",
+        "ST-21": "Retained captures",
+        "ST-18": "Early meeting sync",
+        "UT-05": "Meeting Turbo preview",
+        "ST-08": "Meeting preview",
+        "DI-17": "Restore my clipboard after pasting",
+        "DI-22": "Capitalize the start of a sentence",
+        "UT-03": "Transcription",
+        "UT-11": "Idle Metal HQ",
+        "ST-11": "Idle Metal HQ",
+        "UT-12": "Adaptive audio cleanup",
+        "ST-12": "Audio cleanup",
+        "UT-06": "Show Claude sessions",
+        "UT-07": "Continue agent threads",
+        "ST-09": "Continue threads",
+        "WK-03": "Open new sessions in the app",
+        "WK-05": "When earlier work is still open",
+        "UT-17": "COS Data",
+        "ST-06": "Memory & Threads",
+        "C-06": "Adopt Safely",
+        "C-08": "Install managed server",
+        "UT-01": "Run Doctor",
+        "UT-13": "Repair Managed Runtime",
+        "UT-24": "Health",
+        "UT-26": "Rollback Server",
+        "UT-27": "Reconcile Change",
+        "UT-28": "Setup Guide",
+    ]
+
+    /// Built once: views look rows up by id on every render (QA 2026-10-28), so lookups are dictionary reads.
+    static let all: [SettingsHubItem] = items + extras
+    private static let itemsByID: [String: SettingsHubItem] = Dictionary(all.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+    private static let groupsByID: [String: SettingsHubGroup] = Dictionary(groups.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+    private static let rowsByGroup: [String: [SettingsHubItem]] = Dictionary(grouping: all.filter { $0.mount == .group && $0.group != nil }, by: { $0.group ?? "" })
+    static func group(_ id: String) -> SettingsHubGroup? { groupsByID[id] }
     static func groups(in category: SettingsHubCategory) -> [SettingsHubGroup] { groups.filter { $0.category == category } }
-    static func item(_ id: String) -> SettingsHubItem? { all.first { $0.id == id } }
+    static func item(_ id: String) -> SettingsHubItem? { itemsByID[id] }
     /// The rows of one group, as drawn: in the card, not the top strip.
-    static func items(inGroup id: String) -> [SettingsHubItem] { all.filter { $0.group == id && $0.mount == .group } }
+    static func items(inGroup id: String) -> [SettingsHubItem] { rowsByGroup[id] ?? [] }
     /// The count beside a group's Advanced disclosure.
     static func advancedCount(_ group: String) -> Int { items(inGroup: group).filter(\.advanced).count }
     /// What search covers: every row the hub draws, in a card or in the top strip.
-    static var searchable: [SettingsHubItem] { all.filter { $0.mount != .outside } }
+    static let searchable: [SettingsHubItem] = all.filter { $0.mount != .outside }
     static func category(of item: SettingsHubItem) -> SettingsHubCategory? { item.group.flatMap { group($0)?.category } }
 }
 
@@ -422,9 +492,9 @@ enum SettingsHubRoute {
         var anchor: String { SettingsHub.anchor(group) }
     }
     /// The classic panel's anchors (Views.swift mainPanel `.id(...)`, KeyLanesViews.swift `.id("key-lanes")`,
-    /// LiveCues.decisionKeysAnchor) and the group each is in.
+    /// LiveCues.decisionKeysAnchor) and the group each is in. "settings", the plain Settings… opener, is not one of
+    /// them: it has no destination, so the hub stays on the category it opens on (the last one open, or General).
     static let panelAnchors: [String: String] = [
-        "settings": "meetings.assistant",
         "transcription": "voice.models",
         "decision-models": "ai.decision",
         "setup-guide": "general.guide",
@@ -476,9 +546,12 @@ enum SettingsHubSearch {
         return 4
     }
     /// Grouped by category in the sidebar's order; best match first inside each, catalogue order on a tie.
-    static func results(_ query: String) -> [Section] {
+    /// `shown` is the page's own test for a group (a card hidden on an older server, or with nothing to show): a row in
+    /// a group the page does not draw is left out, so a result never opens on a card that is not there.
+    static func results(_ query: String, shown: (String) -> Bool = { _ in true }) -> [Section] {
         let ranked = SettingsHubCatalog.searchable.enumerated().compactMap { index, item -> (SettingsHubItem, Int, Int)? in
-            rank(item, query: query).map { (item, $0, index) }
+            guard let group = item.group, shown(group) else { return nil }
+            return rank(item, query: query).map { (item, $0, index) }
         }
         return SettingsHubCategory.allCases.compactMap { category in
             let rows = ranked.filter { SettingsHubCatalog.category(of: $0.0) == category }

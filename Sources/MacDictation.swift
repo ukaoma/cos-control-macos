@@ -2601,7 +2601,7 @@ enum DictationSpareBuild: Sendable {
             if let local = NSEvent.addLocalMonitorForEvents(matching: mask, handler: { handle($0); return $0 }) { keyMonitors.append(local) }
             editWatcher.monitor = !keyMonitors.isEmpty
             if !AXIsProcessTrusted() {
-                message = "Fn and single-key shortcuts need Accessibility. Click Allow insertion into other apps…, then turn dictation off and on."
+                message = "Fn and single-key shortcuts need Accessibility. Click Allow typing in apps…, then turn dictation off and on."
             }
         }
         // 0.5.330: the 🌐 key's own job in macOS, checked when the shortcuts are set (launch included).
@@ -4122,7 +4122,7 @@ struct MacDictationSettings: View {
         VStack(alignment: .leading, spacing: hosted ? 0 : 8) {
             if shows(.dictation) {
             Toggle("Dictate into Mac apps", isOn: $store.enabled).toggleStyle(COSSwitchStyle()).disabled(store.busy)
-                .settingsHubRow(hosted ? Self.enableNote : nil)
+                .settingsHubRow(hosted ? Self.enableNote : nil).settingsHubAnchor("DI-01")
             if !hosted {
             Text(Self.enableNote)
                 .font(.caption2).foregroundStyle(.secondary)
@@ -4139,7 +4139,7 @@ struct MacDictationSettings: View {
                 // 0.5.345 (A-W1): with System default, a microphone that fails to start gives way to one that worked before.
                 Toggle(DictationMicFallback.settingTitle, isOn: $store.micFallback).toggleStyle(COSSwitchStyle())
                     .disabled(!store.microphoneUID.isEmpty)
-                    .settingsHubRow(hosted ? DictationMicFallback.settingNote : nil)
+                    .settingsHubRow(hosted ? DictationMicFallback.settingNote : nil).settingsHubAnchor("DI-04")
                 if !hosted { Text(DictationMicFallback.settingNote).font(.caption2).foregroundStyle(.secondary) }
                 if let note = store.micNote { Text("Last time " + note).font(.caption2).foregroundStyle(COSPalette.amber).settingsHubBlock() }
                 }
@@ -4163,30 +4163,30 @@ struct MacDictationSettings: View {
                 if shows(.text) {
                 Toggle("Restore clipboard", isOn: $store.restoreClipboard).toggleStyle(COSSwitchStyle())
                     .help("When COS pastes with ⌘V, it puts back whatever you had copied once the app has the text.")
-                    .settingsHubRow(hosted ? "When COS pastes with ⌘V, it puts back whatever you had copied once the app has the text." : nil)
+                    .settingsHubRow(hosted ? "When COS pastes with ⌘V, it puts back whatever you had copied once the app has the text." : nil).settingsHubAnchor("DI-17")
                 COSDropdown("Learn from my edits", selection: $store.learnMode,
                             options: DictationLearnMode.allCases.map { COSDropdownOption($0, $0.title) })
-                    .settingsHubRow(hosted ? DictationEditLearning.settingNote : nil)
+                    .settingsHubRow(hosted ? DictationEditLearning.settingNote : nil).settingsHubAnchor("DI-18")
                 if !hosted {
                 Text(DictationEditLearning.settingNote)
                     .font(.caption2).foregroundStyle(.secondary)
                 }
                 Toggle("Match nearby spelling", isOn: $store.useFieldContext).toggleStyle(COSSwitchStyle())
                     .help("Spells names the way the text box already has them.")
-                    .settingsHubRow(hosted ? Self.fieldContextNote : nil)
+                    .settingsHubRow(hosted ? Self.fieldContextNote : nil).settingsHubAnchor("DI-19")
                 if !hosted {
                 Text(Self.fieldContextNote)
                     .font(.caption2).foregroundStyle(.secondary)
                 }
                 Toggle("Format spoken lists", isOn: $store.formatLists).toggleStyle(COSSwitchStyle())
                     .help("Say “number one…” or “bullet…” and COS writes a numbered or bulleted list.")
-                    .settingsHubRow(hosted ? "Say “number one…” or “bullet…” and COS writes a numbered or bulleted list." : nil)
+                    .settingsHubRow(hosted ? "Say “number one…” or “bullet…” and COS writes a numbered or bulleted list." : nil).settingsHubAnchor("DI-20")
                 // 0.5.345 (A-W10, A-W9a): both on by default, both with AI polish off too.
                 Toggle(DictationFillers.settingTitle, isOn: $store.removeFillers).toggleStyle(COSSwitchStyle())
-                    .settingsHubRow(hosted ? DictationFillers.settingNote : nil)
+                    .settingsHubRow(hosted ? DictationFillers.settingNote : nil).settingsHubAnchor("DI-21")
                 if !hosted { Text(DictationFillers.settingNote).font(.caption2).foregroundStyle(.secondary) }
                 Toggle(DictationCasing.settingTitle, isOn: $store.capitalizeStart).toggleStyle(COSSwitchStyle())
-                    .settingsHubRow(hosted ? DictationCasing.settingNote : nil)
+                    .settingsHubRow(hosted ? DictationCasing.settingNote : nil).settingsHubAnchor("DI-22")
                 if !hosted { Text(DictationCasing.settingNote).font(.caption2).foregroundStyle(.secondary) }
                 }
                 if shows(.polish) {
@@ -4212,7 +4212,7 @@ struct MacDictationSettings: View {
                 // 0.5.331 paste first, polish in place: on by default; off is the order before 0.5.331.
                 Toggle("Paste then polish", isOn: $store.pasteThenPolish).toggleStyle(COSSwitchStyle())
                     .disabled(store.polishModel == .off)
-                    .settingsHubRow(hosted ? DictationPolishSwap.settingNote(store.polishModel) : nil)
+                    .settingsHubRow(hosted ? DictationPolishSwap.settingNote(store.polishModel) : nil).settingsHubAnchor("DI-24")
                 if !hosted {
                 Text(DictationPolishSwap.settingNote(store.polishModel))
                     .font(.caption2).foregroundStyle(.secondary)
@@ -4220,7 +4220,7 @@ struct MacDictationSettings: View {
                 // 0.5.345 (A-W3b): a held ⌘ or ⌃ is waited for before the swap.
                 Toggle(DictationSwapWait.settingTitle, isOn: $store.swapWaitForKeys).toggleStyle(COSSwitchStyle())
                     .disabled(store.polishModel == .off || !store.pasteThenPolish)
-                    .settingsHubRow(hosted ? DictationSwapWait.settingNote : nil)
+                    .settingsHubRow(hosted ? DictationSwapWait.settingNote : nil).settingsHubAnchor("DI-25")
                 if !hosted { Text(DictationSwapWait.settingNote).font(.caption2).foregroundStyle(.secondary) }
                 // 0.5.335 (server 6.85.0): Your polish instructions, after the built-in rules. Absent on an older server.
                 // The card puts the hub's block chrome on what it draws, so an older server leaves no empty row.

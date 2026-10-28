@@ -11,10 +11,12 @@ struct SettingsHubHost {
     /// Where "‹" goes: "Today", or the tab Settings was opened from.
     var backTitle: String
     var back: () -> Void
+    /// ⌘← on "‹": only where no toolbar Back holds it (the Today frame), so the shortcut is never registered twice.
+    var backShortcut = true
 }
 
 /// A hub row (A's `.row`): the label and its one-line description on the left, the control on the right, a hairline
-/// above. Long controls wrap under the words instead of squeezing them.
+/// above. The control keeps its one line at its own width; the words take what is left and wrap beside it.
 struct SettingsHubRow<Control: View>: View {
     let label: String
     let detail: String
@@ -185,6 +187,7 @@ struct SettingsHubSidebar: View {
     let mode: SettingsHubLayout.Mode
     let backTitle: String
     let back: () -> Void
+    var backShortcut = true
     @Binding var query: String
     var searchFocused: FocusState<Bool>.Binding
     /// Nil while search results are showing.
@@ -206,7 +209,7 @@ struct SettingsHubSidebar: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .keyboardShortcut(.leftArrow, modifiers: .command)
+                .keyboardShortcut(backShortcut ? KeyboardShortcut(.leftArrow, modifiers: .command) : nil)
                 .help("Back to \(backTitle)")
                 .accessibilityLabel("Back to \(backTitle)")
                 if full {
@@ -347,7 +350,7 @@ struct SettingsHubSearchResults: View {
         VStack(alignment: .leading, spacing: 26) {
             let count = sections.reduce(0) { $0 + $1.items.count }
             SettingsHubPageHeader(title: "Search", line: count == 0
-                ? "No settings match \"\(query.trimmingCharacters(in: .whitespacesAndNewlines))\". Try fewer words, or the name a setting used to have."
+                ? "No settings match “\(query.trimmingCharacters(in: .whitespacesAndNewlines))”. Try fewer words, or the name a setting used to have."
                 : (count == 1 ? "1 setting matches" : "\(count) settings match") + " “\(query.trimmingCharacters(in: .whitespacesAndNewlines))”.")
             ForEach(sections, id: \.category) { section in
                 VStack(alignment: .leading, spacing: 0) {
@@ -374,9 +377,9 @@ struct SettingsHubSearchResults: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text(item.label).font(COSType.body(14.5, weight: .semibold)).foregroundStyle(TodayInk.ink)
                 Text(item.detail).font(COSType.body(13)).foregroundStyle(TodayInk.sub).fixedSize(horizontal: false, vertical: true)
-                if !item.old.isEmpty, SettingsHubSearch.normalized(item.old) != SettingsHubSearch.normalized(item.label),
-                   let rank = SettingsHubSearch.rank(item, query: query), rank == 2 {
-                    Text("Was: " + item.old).font(COSType.body(12)).foregroundStyle(TodayInk.grey).lineLimit(1)
+                // Only a real former label, and only when the old name is what matched.
+                if let former = item.formerLabel, let rank = SettingsHubSearch.rank(item, query: query), rank == 2 {
+                    Text("Was: " + former).font(COSType.body(12)).foregroundStyle(TodayInk.grey).lineLimit(1)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -545,9 +548,11 @@ struct SettingsHubPermissionsSummary: View {
 /// Copy the hub adds around the existing settings.
 enum SettingsHubCopy {
     static let appliesRestart = "Applying restarts the server."
-    static let chooseRestarts = "Changing it restarts the server."
+    /// What set-workdir, set-operations-dir and set-context-dir do: restart through the drain, which waits for running
+    /// work (a stopped server takes the folder when it starts; an older server shows the pending line instead).
+    static let chooseRestarts = "Changing it restarts the server when no work is running."
     static let todayFirst = "Turn on Today home to use this."
-    static let waitsForWork = "Restart waits until running work finishes."
+    static let waitsForWork = "Apply is off until running work finishes."
     static let plannerNote = "Used when the server offers a choice."
 }
 
@@ -707,6 +712,21 @@ extension View {
     /// A lone control (a button) inside a hosted view: in the hub, a full row with the catalog row's label and description
     /// on the left and the control on the right. Outside the hub, nothing changes.
     func settingsHubLabeled(_ id: String) -> some View { modifier(SettingsHubLabeledChrome(item: SettingsHubCatalog.item(id))) }
+    /// A hosted row's search anchor ("item.<id>"), so a result lands on the row itself, not only its card.
+    func settingsHubAnchor(_ id: String) -> some View { modifier(SettingsHubAnchorChrome(id: id)) }
+    /// The hub root's read of Your own key (QA 2026-10-28 S4): once for every page, when the server starts, stops or
+    /// changes version, since the key state feeds Continue and Fork's guard. The row's own read stays off in the hub.
+    @MainActor func settingsHubOwnKeyReader(_ model: ControllerModel) -> some View {
+        task(id: "\(model.status.running) \(model.status.version ?? "")") { await KeyLanesSettingsRow.load(model) }
+    }
+}
+
+private struct SettingsHubAnchorChrome: ViewModifier {
+    let id: String
+    @Environment(\.settingsHubHosted) private var hosted
+    func body(content: Content) -> some View {
+        if hosted { content.id("item." + id) } else { content }
+    }
 }
 
 private struct SettingsHubLabeledChrome: ViewModifier {
@@ -714,7 +734,7 @@ private struct SettingsHubLabeledChrome: ViewModifier {
     @Environment(\.settingsHubHosted) private var hosted
     func body(content: Content) -> some View {
         if hosted, let item {
-            SettingsHubRow(label: item.label, detail: item.detail) { content }
+            SettingsHubRow(label: item.label, detail: item.detail, advanced: item.advanced, anchor: "item." + item.id) { content }
         } else {
             content
         }

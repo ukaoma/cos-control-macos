@@ -2896,7 +2896,7 @@ enum DictationPolishSwap {
     static func routeName(_ route: DictationReplace.Route) -> String { route == .accessibility ? "accessibility" : "paste" }
     static func settingNote(_ model: DictationPolishModel) -> String {
         model == .off ? "Works with AI polish on."
-            : "Swaps in Claude's version. If you moved on, it waits in Activity, Dictation until quit."
+            : "Swaps in Claude's version. If you moved on, it waits in Activity, Dictation until COS Control quits."
     }
 }
 

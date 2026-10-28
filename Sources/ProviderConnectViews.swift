@@ -663,7 +663,7 @@ struct PetIntroLine: View {
                     Button("Calm") { model.answerPetIntro(.calm) }.buttonStyle(COSTextButtonStyle())
                         .help("Keep it, with gentler motion")
                     Button("Hide") { model.answerPetIntro(.hide) }.buttonStyle(COSTextButtonStyle())
-                        .help("Turn the pet off. Settings, under Session pet, brings it back")
+                        .help("Turn the pet off. Turn it back on in Settings, Pet and appearance.")
                     Spacer(minLength: 0)
                 }
             }
@@ -810,7 +810,8 @@ struct SetupRowView: View {
     /// Balanced or Max in plain words, the exact whisper.cpp command, live progress, and the Terminal fallback.
     @ViewBuilder private var voiceControls: some View {
         if guide.voice?.usesParakeet == true {
-            Button("Transcription settings") { model.showSettings?() }.buttonStyle(COSTextButtonStyle())
+            // Lands on the Transcription card (the hub's Models group), not Settings' top (QA 2026-10-28 S3).
+            Button("Transcription settings") { model.showTranscriptionSettings?() }.buttonStyle(COSTextButtonStyle())
         }
         if let progress = guide.voiceProgress, guide.voiceRunning {
             Text(progress).font(COSType.mono(10.5)).foregroundStyle(COSPalette.accent)
@@ -873,8 +874,10 @@ struct SetupRowView: View {
         case .useEngine(let setting): guide.useEngine(setting, installParakeetToo: setting == "auto" && guide.voice?.parakeetInstalled != true && guide.voice?.parakeetInstallable == true)
         case .turnOnSessions: model.setClaudeSessionsEnabled(true)
         case .turnOnContinue: model.setThreadAttachEnabled(true)
-        case .addJevKey: model.showSettings?()
-        case .openPermissions: model.permissionGuide.openInPanel()
+        // Both land where the step points (QA 2026-10-28 S3): the key fields, and in the hub the Privacy page, which
+        // always shows the list the panel opens with openInPanel.
+        case .addJevKey: model.showDecisionKeySettings?()
+        case .openPermissions: if hosted { model.settingsHubTarget = "hub.privacy.permissions" } else { model.permissionGuide.openInPanel() }
         // The Glasses rows draw their own buttons (GlassesSetupRows); these never reach a SetupRowView.
         case .getTailscale: _ = model.providerGuide.openURL(GlassesRules.tailscaleDownload)
         case .openTailscale: if !GlassesWindowHolder.openTailscaleApp() { _ = model.providerGuide.openURL(GlassesRules.tailscaleDownload) }
@@ -908,14 +911,15 @@ struct DictationEngineControls: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            // The step's own button already offers the install; the row adds progress, Cancel or why not.
-            if let state = store.rowState(recording: model.recordingCount > 0), Self.drawsRow(state) {
+            // The step's own button already offers the install; the row adds progress, Cancel or why not. In the Settings
+            // hub the install has one home, Transcription and voice (TR-07), so Dictation shows only the pick and the test.
+            if !hosted, let state = store.rowState(recording: model.recordingCount > 0), Self.drawsRow(state) {
                 ParakeetRowView(state: state, offersCancel: store.offersCancel, compact: true,
                                 install: { model.installParakeet() },
                                 cancel: { Task { await store.cancelInstall(TranscriptionSettingsCard.run(model)) } },
                                 checkAgain: { Task { await store.checkAgain(TranscriptionSettingsCard.run(model)); await guide.refreshVoice() } },
                                 useWhisper: { guide.useEngine("whisper", installParakeetToo: false) })
-            } else if case .offer(_, let line?)? = store.rowState(recording: model.recordingCount > 0) {
+            } else if !hosted, case .offer(_, let line?)? = store.rowState(recording: model.recordingCount > 0) {
                 Text(line).font(COSType.body(10.5)).foregroundStyle(COSPalette.amber).fixedSize(horizontal: false, vertical: true)
             }
             COSDropdown("Dictation engine", selection: Binding(
@@ -1189,6 +1193,15 @@ final class SettingsWindowPresenter: ObservableObject {
 @MainActor enum SettingsOpener {
     /// `scroll`: the panel section to land on ("settings", or "transcription" for a dictation card's action, 0.5.317).
     static func open(model: ControllerModel, window: SettingsWindowPresenter, scroll: String = "settings", openActivity: @escaping (ActivitySection?) -> Void) {
+        // 2026-10-28: the Settings hub is Activity's Settings, and every opener lands there on the group its anchor names
+        // ("settings" keeps the last category). The classic switch keeps the route below exactly, as the rollback.
+        if SettingsHub.opensHub(classic: UserDefaults.standard.bool(forKey: SettingsHub.classicKey)) {
+            onboardingLog.info("settings opened target=hub scroll=\(scroll, privacy: .public)")
+            model.settingsHubTarget = scroll
+            model.activityOpenSettings = true
+            openActivity(nil)
+            return
+        }
         let target = SettingsRoute.decide(panelOpen: model.panelVisible, item: MenuBarPanelOpener.statusItemFacts())
         onboardingLog.info("settings opened target=\(String(describing: target), privacy: .public) scroll=\(scroll, privacy: .public)")
         switch target {

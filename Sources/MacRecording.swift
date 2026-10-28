@@ -1637,7 +1637,7 @@ struct MeetingSuggestSettings: View {
                 .help("The next Mac recording shows what COS records and asks once more.")
             Toggle("Suggest recording", isOn: $store.suggestEnabled)
                 .toggleStyle(COSSwitchStyle())
-                .help("Offers to record when Zoom, Teams or Meet uses the microphone. COS never starts it.")
+                .help("Offers to record when Zoom, Teams or Meet uses the microphone. COS never starts or stops it.")
             if store.suggestEnabled {
                 ForEach(MeetingApp.allCases, id: \.self) { app in
                     Toggle(app.title, isOn: Binding(get: { store.allowed.contains(app) }, set: { store.setAllowed(app, $0) }))
