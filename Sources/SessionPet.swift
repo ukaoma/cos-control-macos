@@ -279,7 +279,9 @@ final class SessionPetPresenter: NSObject, ObservableObject, NSWindowDelegate {
         panel.backgroundColor = .clear
         panel.hasShadow = false
         panel.hidesOnDeactivate = false
-        panel.isMovableByWindowBackground = true
+        // 0.5.352: PetPanel.sendEvent moves the pet itself (PetDragTracker). Left on, a macOS that still honours
+        // background drags would move the panel twice for one drag.
+        panel.isMovableByWindowBackground = false
         panel.titleVisibility = .hidden
         panel.titlebarAppearsTransparent = true
         panel.isReleasedWhenClosed = false
@@ -355,6 +357,9 @@ final class SessionPetPresenter: NSObject, ObservableObject, NSWindowDelegate {
         restingAnchor = CGPoint(x: panel.frame.minX, y: panel.frame.minY)
     }
 
+    /// 0.5.352: false once right after the pet was dragged, so the drag's release is not also a click on the figure.
+    func consumeSpriteTap() -> Bool { (panel as? PetPanel)?.consumeTap() ?? true }
+
     private func syncLists() {
         syncOutsideClickMonitor((model?.petExpanded ?? false) || (model?.petCompletionsExpanded ?? false)
                                 || model?.petComposeTarget != nil || model?.dictation.listRoute != nil)
@@ -407,6 +412,79 @@ enum SessionPetCanary {
 final class PetPanel: NSPanel {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
+
+    private var drag = PetDragTracker()
+
+    /// 0.5.352: dragging the pet, from the figure or its bare background. A press inside a PetNoDragZone (pills,
+    /// lists, cards, buttons) or a control-click (the context menu) never drags. Moving the frame posts
+    /// windowDidMove outside applyingFrame, so the presenter re-parks restingAnchor, and the frame autosave keeps
+    /// the spot across launches as before.
+    override func sendEvent(_ event: NSEvent) {
+        switch event.type {
+        case .leftMouseDown:
+            drag.mouseDown(mouse: NSEvent.mouseLocation, origin: frame.origin,
+                           mayDrag: !event.modifierFlags.contains(.control) && !pressIsInNoDragZone(event))
+        case .leftMouseDragged:
+            if case .move(let origin) = drag.mouseDragged(mouse: NSEvent.mouseLocation) {
+                setFrameOrigin(origin)
+                return
+            }
+        case .leftMouseUp:
+            if drag.mouseUp() {
+                // The panel followed the pointer, so the release lands where the press did and SwiftUI would read
+                // the drag as a tap. It still needs a release to end the press: send one far outside the window.
+                if let release = NSEvent.mouseEvent(
+                    with: .leftMouseUp, location: NSPoint(x: -10_000, y: -10_000),
+                    modifierFlags: event.modifierFlags, timestamp: event.timestamp, windowNumber: windowNumber,
+                    context: nil, eventNumber: event.eventNumber, clickCount: event.clickCount, pressure: 0
+                ) {
+                    super.sendEvent(release)
+                }
+                return
+            }
+        default:
+            break
+        }
+        super.sendEvent(event)
+    }
+
+    /// False exactly once after a drag, so a tap SwiftUI reports for the drag's release does not open anything.
+    func consumeTap() -> Bool { drag.consumeTap() }
+
+    private func pressIsInNoDragZone(_ event: NSEvent) -> Bool {
+        guard let content = contentView else { return false }
+        func hit(_ view: NSView) -> Bool {
+            for child in view.subviews where !child.isHidden {
+                if let zone = child as? PetNoDragZone.Zone, zone.active,
+                   zone.convert(zone.bounds, to: nil).contains(event.locationInWindow) {
+                    return true
+                }
+                if hit(child) { return true }
+            }
+            return false
+        }
+        return hit(content)
+    }
+}
+
+/// 0.5.352: marks a pet surface a drag may not start from. Behind a pill, list, card or button; invisible to hit
+/// testing, so clicks still reach the control above it. `active` false keeps it in place while its surface is
+/// hidden (the pills fade out but stay laid out).
+struct PetNoDragZone: NSViewRepresentable {
+    var active = true
+
+    final class Zone: NSView {
+        var active = true
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    }
+
+    func makeNSView(context: Context) -> Zone {
+        let zone = Zone()
+        zone.active = active
+        return zone
+    }
+
+    func updateNSView(_ zone: Zone, context: Context) { zone.active = active }
 }
 
 private struct SessionPetRoot: View {
@@ -468,10 +546,12 @@ private struct SessionPetRoot: View {
         VStack(spacing: size.length(8)) {
             if model.petExpanded, !sessions.isEmpty || !model.petDismissals.stamps.isEmpty {
                 sessionList
+                    .background(PetNoDragZone())
                     .modifier(PetReveal(reduceMotion: reduceMotion))
             }
             if model.petCompletionsExpanded, !model.petCompletions.isEmpty {
                 completionsList
+                    .background(PetNoDragZone())
                     .modifier(PetReveal(reduceMotion: reduceMotion))
             }
             // No hover bubble or action buttons (Miles, 2026-08-30, on-device):
@@ -504,21 +584,25 @@ private struct SessionPetRoot: View {
                 }
                 .buttonStyle(.plain)
                 .help("Clear the finished list. The sessions themselves are untouched.")
+                .background(PetNoDragZone())
                 .accessibilityLabel("Close all \(model.petCompletions.count) finished sessions")
                 .modifier(PetReveal(reduceMotion: reduceMotion))
             }
             // 0.5.309: Recent dictations, one dictation, or Fix a word (mock 05, 06), in the lists' slot above the figure.
             if let route = dictation.listRoute, dictation.surface == .pet || !route.isFix {
                 dictationList(route)
+                    .background(PetNoDragZone())
                     .modifier(PetReveal(reduceMotion: reduceMotion))
             }
             // No text box (mock 04): the card pops over the figure. With the pet hidden it rises from the Dock pill.
             if dictation.surface == .pet, let card = dictation.card {
                 DictationCardView(store: dictation, card: card, size: size, reduceMotion: reduceMotion)
+                    .background(PetNoDragZone())
                     .modifier(PetReveal(reduceMotion: reduceMotion))
             }
             if meetings.surface == .pet, let card = meetings.card {
                 MeetingCardView(store: meetings, card: card, size: size)
+                    .background(PetNoDragZone())
                     .modifier(PetReveal(reduceMotion: reduceMotion))
             }
             // 0.5.234: the composer card. It takes the list's slot — one target,
@@ -526,6 +610,7 @@ private struct SessionPetRoot: View {
             // never a card and a list.
             if let target = model.petComposeTarget {
                 composerCard(target)
+                    .background(PetNoDragZone())
                     .modifier(PetReveal(reduceMotion: reduceMotion))
             }
             if let hint = model.petTerminalHint, !hint.isEmpty {
@@ -613,6 +698,8 @@ private struct SessionPetRoot: View {
         }
         .frame(height: size.length(42))
         .frame(maxWidth: .infinity)
+        // 0.5.352: the resting bar is the pet's own background and drags it; the pills and the listening pill are buttons.
+        .background(PetNoDragZone(active: showPills || listening))
         .animation(reduceMotion ? nil : .easeOut(duration: 0.26), value: showPills)
         .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: listening)
     }
@@ -1353,6 +1440,7 @@ private struct SessionPetRoot: View {
     }
 
     private func handleSpriteClick() {
+        guard presenter.consumeSpriteTap() else { return }
         if let focus { model.openSessionInPlatform(focus) }
     }
 
@@ -1367,6 +1455,7 @@ private struct SessionPetRoot: View {
     /// so a double-click while DONE was open appeared to do nothing at all.
     /// Gate on "is there anything to show" instead of a session count.
     private func toggleSessionMenu() {
+        guard presenter.consumeSpriteTap() else { return }
         if dictation.listRoute != nil, !model.petExpanded, !model.petCompletionsExpanded {
             dictation.closeList()
             return

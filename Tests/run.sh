@@ -259,6 +259,7 @@ zsh "$ROOT/Tests/run-transcription-settings.sh"
   -framework AppKit -o "$TMP/jedi-v2-migration"
 "$TMP/jedi-v2-migration" "$ROOT"
 zsh "$ROOT/Tests/run-pet-rotation.sh"
+zsh "$ROOT/Tests/run-pet-drag.sh"
 zsh "$ROOT/Tests/run-illustrated-pet.sh"
 /usr/bin/python3 "$ROOT/Tests/kit-compile.py" "$ROOT/Tests/compile-guard.sh" swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \
   "$ROOT/Sources/Models.swift" "$ROOT/Tests/JediGalleryContract.swift" \
