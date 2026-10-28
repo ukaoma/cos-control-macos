@@ -105,7 +105,7 @@ MUTANTS = [
     ("the collapsed row polls", W, ".task { if guide.report == nil { await guide.refresh() } }", ".task { await guide.poll() }", "[polling]", "pins"),
     ("no Dock switch", V, '            Toggle("Menu bar only"', '            Toggle("Hide from Dock"', "[dock]", "pins"),
     ("release build without the views", R, ' "$ROOT/Sources/ProviderConnectViews.swift"', "", "[source lists]", "pins"),
-    ("the old label is back", V, "            AgentCliDetailLine(guide: model.providerGuide, model: model, allReady: agentCliAllReady)", "            Text(\"x\")", "[label fix]", "pins"),
+    ("the old label is back", V, "        AgentCliDetailLine(guide: model.providerGuide, model: model, allReady: agentCliAllReady)", "        Text(\"x\")", "[label fix]", "pins"),
 ]
 
 
