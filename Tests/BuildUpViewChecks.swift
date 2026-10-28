@@ -125,6 +125,8 @@ import SwiftUI
     static func main() {
         NSApplication.shared.setActivationPolicy(.prohibited)
         fresh()
+        // First, before any live view below is hosted: a hosted view that outlives its check still reports its stage.
+        layoutLane()
         landings()
         realSessions()
         pulse()
@@ -384,9 +386,10 @@ import SwiftUI
         }
         let short = run.frames.filter { $0.t < 0.75 && $0.frame.phase == .building }
         let tall = run.frames.filter { $0.t > 1.0 && $0.frame.phase == .building }
-        check(!short.isEmpty && short.allSatisfy { $0.frame.rects.count == 2 }, "fit", "a 150 pt container draws 2 rows: \(short.map(\.frame.rects.count))")
-        check(!tall.isEmpty && tall.allSatisfy { $0.frame.rects.count == 4 }, "fit", "resized to 330 pt it draws 4: \(tall.map(\.frame.rects.count))")
-        check(run.frames.allSatisfy { f in f.frame.rects.allSatisfy { $0.maxY <= f.frame.size.height + 0.5 } }, "fit", "a row past the view")
+        // 0.5.353: a pane fills its height, the last row clipped as a scrolled list shows it (12 + 68 + 68 = 148 < 150).
+        check(!short.isEmpty && short.allSatisfy { $0.frame.rects.count == 3 }, "fit", "a 150 pt container draws 3 rows: \(short.map(\.frame.rects.count))")
+        check(!tall.isEmpty && tall.allSatisfy { $0.frame.rects.count == 5 }, "fit", "resized to 330 pt it draws 5: \(tall.map(\.frame.rects.count))")
+        check(run.frames.allSatisfy { f in f.frame.rects.allSatisfy { $0.minY < f.frame.size.height } }, "fit", "a row that starts past the view")
     }
 
     // MARK: The answer: inside today's one line, re-fit to the real text
@@ -398,52 +401,59 @@ import SwiftUI
         }
         // Before the answer arrives (the loader flips at 0.75 s; the frame in flight then may already lay out the answer).
         let building = run.phase(.building).filter { $0.t < 0.74 && $0.frame.kind == "answer" }, landing = run.phase(.landing).filter { $0.frame.kind == "answer" }
-        check(!building.isEmpty && building.allSatisfy { $0.frame.size.height < 20 && $0.frame.lines == [1] }, "answer size",
-              "the answer's wire sits inside the one-line loading text: \(building.filter { !($0.frame.size.height < 20 && $0.frame.lines == [1]) }.map { "\($0.frame.size.height) \($0.frame.lines)" }.prefix(6)) of \(building.count)")
+        // 0.5.353: while it builds the answer holds four lines (70 pt), across the card's width, so the text lands in place.
+        let reserve = COSBuildUpPlan.reserve(.answer) ?? 0
+        check(!building.isEmpty && building.allSatisfy { abs($0.frame.size.height - reserve) < 0.5 && $0.frame.lines == [4] && $0.frame.size.width > 440 }, "answer size",
+              "the answer reserves four lines across the card: \(building.filter { !(abs($0.frame.size.height - reserve) < 0.5 && $0.frame.lines == [4] && $0.frame.size.width > 440) }.map { "\($0.frame.size) \($0.frame.lines)" }.prefix(6)) of \(building.count)")
         check(!landing.isEmpty && landing.allSatisfy { $0.frame.lines.first ?? 0 >= 4 && $0.frame.size.height > 60 }, "answer refit",
               "landed, the wire re-fits to the real text's lines: \(landing.filter { !(($0.frame.lines.first ?? 0) >= 4 && $0.frame.size.height > 60) }.map { "\($0.frame.size.height) \($0.frame.lines)" }.prefix(6)) of \(landing.count)")
     }
 
-    // MARK: The inline views are today's height: loading, empty and landed
+    // MARK: The inline views: their reservation while they build, today's height once the build ends (0.5.353)
 
     static func heights() {
         func height(_ view: some View) -> CGFloat { NSHostingView(rootView: AnyView(view.frame(width: 480))).fittingSize.height }
-        let sites: [(String, COSBuildUpShape, Color, [(String, AnyView)])] = [
-            ("answer", .answer, COSPalette.raised, [
+        let sites: [(String, COSBuildUpShape, COSBuildUpTune, Color, [(String, AnyView)])] = [
+            ("answer", .answer, .none, COSPalette.raised, [
                 ("loading", AnyView(Text("Checking the meeting…").font(COSType.body(12)))),
                 ("empty", AnyView(Text("No answer · failed").font(COSType.body(12)))),
                 ("typical", AnyView(Text(String(repeating: "The offer stays live through October 31. ", count: 5)).font(COSType.body(13)).fixedSize(horizontal: false, vertical: true))),
             ]),
-            ("needs you", .cardRows(2, badge: false), COSPalette.card, [
+            ("needs you", .cardRows(2, badge: false), .needsYou, COSPalette.card, [
                 ("loading", AnyView(VStack(alignment: .leading, spacing: 0) { Text(TodayHome.loadingLine).font(COSType.body(13.5)).padding(.horizontal, 18).padding(.bottom, 18) }.frame(maxWidth: .infinity, alignment: .leading))),
                 ("empty", AnyView(VStack(alignment: .leading, spacing: 0) { VStack(alignment: .leading, spacing: 6) { Text(TodayHome.caughtUpLine).font(COSType.display(20)); Text("Checked at 9:41.").font(COSType.body(12)) }.padding(.horizontal, 18).padding(.bottom, 18) }.frame(maxWidth: .infinity, alignment: .leading))),
                 ("typical", AnyView(VStack(alignment: .leading, spacing: 0) { ForEach(0..<3, id: \.self) { _ in VStack(alignment: .leading, spacing: 3) { Text("Name 2 voices").font(COSType.body(14, weight: .semibold)); Text("Speakers").font(COSType.body(12.5)) }.padding(.horizontal, 18).padding(.vertical, 12) } }.frame(maxWidth: .infinity, alignment: .leading))),
             ]),
-            ("running", .cardRows(1, badge: true), COSPalette.ink, [
+            ("running", .cardRows(2, badge: true), .running, COSPalette.ink, [
                 ("loading", AnyView(VStack(alignment: .leading, spacing: 0) { Text("Reading sessions").font(COSType.body(13.5)).padding(.top, 4).padding(.bottom, 10) }.frame(maxWidth: .infinity, alignment: .leading))),
                 ("empty", AnyView(VStack(alignment: .leading, spacing: 0) { Text("Nothing is running.").font(COSType.body(13.5)).padding(.top, 4).padding(.bottom, 10) }.frame(maxWidth: .infinity, alignment: .leading))),
                 ("typical", AnyView(VStack(alignment: .leading, spacing: 0) { ForEach(0..<2, id: \.self) { _ in HStack { Text("CLAUDE").frame(width: 84); Text("Holiday promo landing page").font(COSType.body(14, weight: .semibold)) }.padding(.vertical, 10) } }.frame(maxWidth: .infinity, alignment: .leading))),
             ]),
         ]
-        for (name, shape, background, states) in sites {
+        for (name, shape, tune, background, states) in sites {
+            let reserve = CGFloat(COSBuildUpPlan.reserve(shape, tune) ?? 0)
             for (state, content) in states {
                 let today = height(content)
                 var seen: [CGFloat] = []
                 for frame in [COSBuildUpFrame(phase: .grace, drawT: 0), .init(phase: .building, drawT: 1.4), .init(phase: .building, drawT: 3.5),
                               .init(phase: .landing, drawT: 2, phaseT: 0.1), .init(phase: .handoff, drawT: 2, phaseT: 0.1)] {
-                    let built = height(COSBuildUp(shape, loading: true, landed: false, label: "Heights", background: background, frozen: frame) { content })
-                    check(abs(built - today) < 0.5, "no extra height", "\(name) \(state) \(frame.phase): 0.5.342 \(today) pt, 0.5.343 \(built) pt")
+                    let built = height(COSBuildUp(shape, tune: tune, loading: true, landed: false, label: "Heights", background: background, frozen: frame) { content })
+                    // Building (the grace and the wire): the reservation, or today's view where that is taller. Landed or handed
+                    // off: exactly today's view, so an empty or failed answer never keeps a full-height skeleton.
+                    let want = frame.phase == .grace || frame.phase == .building ? max(today, reserve) : today
+                    check(abs(built - want) < 0.5, frame.phase == .grace || frame.phase == .building ? "reserve height" : "no extra height",
+                          "\(name) \(state) \(frame.phase): today \(today) pt, reserve \(reserve) pt, drawn \(built) pt")
                     seen.append(built)
                 }
                 if name == "needs you", state == "loading" {
                     var width: CGFloat = 0
                     COSBuildUpProbe.stage = { width = $0.rects.first?.width ?? 0 }
-                    _ = bitmap(COSBuildUp(shape, loading: true, landed: false, label: "Heights", background: background, frozen: .init(phase: .building, drawT: 1.4)) { content }
+                    _ = bitmap(COSBuildUp(shape, tune: tune, loading: true, landed: false, label: "Heights", background: background, frozen: .init(phase: .building, drawT: 1.4)) { content }
                         .frame(width: 480).frame(maxHeight: .infinity, alignment: .top), size: CGSize(width: 480, height: 200))
                     COSBuildUpProbe.stage = nil
                     check(width > 400, "needs you width", "the Needs you wire spans the card, not just its words: \(width) pt")
                 }
-                print("height \(name) \(state): 0.5.342 \(String(format: "%.1f", today)) pt; 0.5.343 \(seen.map { String(format: "%.1f", $0) }.joined(separator: " / ")) pt (grace / wire / words / landing / hand-off)")
+                print("height \(name) \(state): today \(String(format: "%.1f", today)) pt; built \(seen.map { String(format: "%.1f", $0) }.joined(separator: " / ")) pt (grace / wire / words / landing / hand-off)")
             }
         }
     }
@@ -555,6 +565,58 @@ import SwiftUI
                 check(abs(r.0 - w.0) <= 1.01 && abs(r.1 - w.1) <= 1.01, "geometry parity", "\(site.name): real \(fmt(real)) vs wire \(fmt(wire))")
             }
         }
+    }
+
+    // MARK: 0.5.353 The skeleton is the loaded view's geometry, per site, window and appearance
+
+    /// Every build-up site (Tests/BuildUpSites.swift) at a 760 and a 1280 pt window, light and dark: the skeleton's frame
+    /// against the loaded content's (x, width and top within 1 pt: no header jump), its rows against the real rows (x,
+    /// right edge and height within 1 pt, where the rows can be read), and the height it fills against the loaded view's
+    /// (a pane: within one row pitch of the loaded rows' bottom; an inline view: within one row, an answer two lines).
+    /// `COS_BUILD_UP_LAYOUT_SITES=a,b` narrows it (the mutation lane uses the full set).
+    static func layoutLane() {
+        let only = ProcessInfo.processInfo.environment["COS_BUILD_UP_LAYOUT_SITES"].map { Set($0.split(separator: ",").map(String.init)) }
+        _ = BuildUpSites.railWidth(CGSize(width: 760, height: 900)); _ = BuildUpSites.railWidth(CGSize(width: 1280, height: 900))
+        var measured = 0
+        for appearance in [NSAppearance.Name.aqua, .darkAqua] {
+            for size in [CGSize(width: 760, height: 900), CGSize(width: 1280, height: 900)] {
+                for site in BuildUpSites.all() where only == nil || only!.contains(site.name) {
+                    guard let m = try? BuildUpSites.measure(site, size: size, appearance: appearance, out: nil) else {
+                        check(false, "geometry width", "\(site.name): the measure threw"); continue
+                    }
+                    measured += 1
+                    let tag = "\(site.name) \(m.width) \(m.theme)"
+                    check(m.skFrame.count == 4 && m.ldFrame.count == 4, "geometry width", "\(tag): \(m.note)")
+                    guard m.skFrame.count == 4, m.ldFrame.count == 4 else { continue }
+                    // An answer's wrapped text measures its longest line, so the loaded frame may end up to a word short of the
+                    // card; the skeleton spans the card, as the text wraps in it.
+                    let narrower = site.kind == "answer" ? 48.0 : 1
+                    check(abs(m.skFrame[0] - m.ldFrame[0]) <= 1 && m.ldFrame[2] <= m.skFrame[2] + 1 && m.skFrame[2] - m.ldFrame[2] <= narrower, "geometry width",
+                          "\(tag): skeleton x \(m.skFrame[0]) w \(m.skFrame[2]), loaded x \(m.ldFrame[0]) w \(m.ldFrame[2])")
+                    check(abs(m.skFrame[1] - m.ldFrame[1]) <= 1, "geometry top", "\(tag): skeleton top \(m.skFrame[1]), loaded \(m.ldFrame[1])")
+                    if site.rows != .ink {
+                        check(m.ldRows >= 3 && m.skRows >= 3, "geometry rows", "\(tag): rows read \(m.ldRows), drawn \(m.skRows)")
+                        let x = m.ldRowX - site.ruleInset, right = m.ldRowX + m.ldRowW
+                        check(abs(m.skRowX - x) <= 1 && abs(m.skRowX + m.skRowW - right) <= 1, "geometry width",
+                              "\(tag): skeleton rows \(m.skRowX) to \(m.skRowX + m.skRowW), loaded \(x) to \(right)")
+                        check(abs(m.skRowH - m.ldRowH) <= 1.01 && abs(m.skPitch - m.ldPitch) <= 1.01, "geometry rows",
+                              "\(tag): skeleton rows \(m.skRowH) every \(m.skPitch), loaded \(m.ldRowH) every \(m.ldPitch)")
+                    }
+                    let fills = site.kind != "cardRows" && site.kind != "answer"
+                    if fills {
+                        let pitch = max(m.skPitch, m.ldPitch, m.skRowH)
+                        let sk = min(m.skExtent, m.skFrame[3]), ld = min(m.ldExtent, m.ldFrame[3])
+                        check(abs(sk - ld) <= pitch + 1, "geometry height", "\(tag): skeleton fills to \(sk) pt, loaded to \(ld) pt (band \(pitch))")
+                    } else {
+                        let band = site.kind == "answer" ? 2 * COSBuildUpPlan.answerPitch : m.skRowH
+                        check(abs(m.skFrame[3] - m.ldFrame[3]) <= band + 1, "geometry height",
+                              "\(tag): skeleton \(m.skFrame[3]) pt, loaded \(m.ldFrame[3]) pt (band \(band))")
+                    }
+                }
+            }
+        }
+        check(only != nil || measured >= 48, "geometry width", "measured \(measured) site cases")
+        print("layout lane: \(measured) site cases (sites x 760/1280 x light/dark)")
     }
 
     static func bitmap(_ view: some View, size: CGSize) -> NSBitmapImageRep {

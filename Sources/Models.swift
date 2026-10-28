@@ -13729,7 +13729,12 @@ enum TodayTickLoop {
 ///   - landed data is never hidden: the tint is at most 35% and gone within 300 ms; the landing ends within 450 ms;
 ///   - an error, an empty answer or the timeout never hides content: the wire fades over today's view;
 ///   - after 3 s today's loading words show and the wire text fades; the pulse stops after its cycles;
-///   - the wire never adds height: inline views draw inside today's loading view, panes clip to themselves.
+///   - the skeleton is the loaded view's geometry (0.5.353, Miles 2026-10-28: "much smaller than the window, then it
+///     jumps"): a pane's rows sit in the same column as the real rows (COSBuildUpColumn, shared with the list) and fill the
+///     pane's height (at most `maxItems`, the last one clipped like a scrolled list); an inline view (a Today card, an
+///     answer) reserves the height of its typical content while it builds (`reserve`), so the data lands in place. An
+///     empty or failed answer releases the reservation in one step (never a full-height skeleton that lingers), and the
+///     view is remembered as empty by label, so the next open reserves nothing.
 ///
 /// This half is pure (Foundation only) so the checks run it with Models.swift alone. The SwiftUI half is `COSBuildUp` in
 /// COSMotion.swift, which draws every frame from `COSBuildUpPlan.look`.
@@ -13767,6 +13772,14 @@ struct COSBuildUpTune: Equatable, Sendable {
     var trailing: Double? = nil
     var spacing: Double? = nil
     var rowHeight: Double? = nil
+    /// The loaded list's content column (0.5.353): the rows sit in it, `leading` and `trailing` inside it.
+    var column: COSBuildUpColumn? = nil
+    /// The row's look where it differs from the shape's: a card (a filled, bordered row) or plain text.
+    var card: Bool? = nil
+    /// Lines per row where they differ from the shape's (a turn card: its label and a line of text).
+    var lines: Int? = nil
+    /// The first component's height where it differs from the rows' (a session's Activity card, a meeting's summary).
+    var firstHeight: Double? = nil
     static let none = COSBuildUpTune()
     // Meetings (the shape's default), Sessions, Memories, Threads and Messages: measured on the real rows, and held there by
     // the geometry parity check in Tests/BuildUpViewChecks.swift. Tasks and the voice directory: from their row layout code.
@@ -13775,8 +13788,43 @@ struct COSBuildUpTune: Equatable, Sendable {
     static let memories = COSBuildUpTune(top: 1, spacing: 7, rowHeight: 78)
     static let threads = COSBuildUpTune(top: 1, spacing: 7, rowHeight: 60)
     static let messages = COSBuildUpTune(top: 21, spacing: 1, rowHeight: 79)
-    /// The voice directory: its column header (about 32 pt), then 62 pt rows with a 1 pt rule (from the row's code).
-    static let voices = COSBuildUpTune(top: 32, spacing: 1, rowHeight: 62)
+    /// The voice directory: its column header (about 32 pt), then 62 pt rows with a 1 pt rule (from the row's code), in the
+    /// speaker lists' 980 pt column.
+    static let voices = COSBuildUpTune(top: 32, leading: 0, trailing: 0, spacing: 1, rowHeight: 62, column: .speakers)
+    /// 0.5.353, measured on the real rows (Tests/BuildUpGeometry.swift) and held by the geometry lane in
+    /// Tests/BuildUpViewChecks.swift. Meetings to review: three text lines, 76 pt rows with a 1 pt rule, in the speaker column.
+    static let reviewMeetings = COSBuildUpTune(top: 0, leading: 0, trailing: 0, spacing: 1, rowHeight: 76, column: .speakers)
+    /// Recent learning and To review: 74 pt rows with a 1 pt rule.
+    static let learning = COSBuildUpTune(top: 0, spacing: 1, rowHeight: 74)
+    /// A session's conversation: the 65 pt Activity card, then 70 pt turn cards (a label and a line), 14 pt apart inside
+    /// 24 pt of padding.
+    static let sessionTurns = COSBuildUpTune(top: 24, leading: 24, trailing: 24, spacing: 14, rowHeight: 70, card: true, lines: 2, firstHeight: 65)
+    /// A saved meeting's body, plain text in the 700 pt body column (24 pt padding inside it): the summary and the
+    /// Transcript heading (101 pt), then 79 pt turns (speaker, time, text).
+    static let meetingBody = COSBuildUpTune(top: 24, spacing: 0, rowHeight: 79, column: .meetingBody, card: false, lines: 3, firstHeight: 101)
+    /// Today's Needs you rows (a session's question: its title, the quote, Open session and the source line, 150 pt) and
+    /// the Running card's rows (61 pt, the rule included), stacked with no gap.
+    static let needsYou = COSBuildUpTune(top: 0, spacing: 0, rowHeight: 150)
+    static let running = COSBuildUpTune(top: 0, spacing: 0, rowHeight: 61)
+}
+
+/// A list pane's content column (0.5.353): at most `maxWidth` wide, `inset` in from each side of the pane, centred or at
+/// the leading edge. The loaded list lays out in it (`cosColumn`, COSMotion.swift) and the build-up stage draws its rows in
+/// it, from the same value, so the wire's rows are the real rows' width at every window size.
+struct COSBuildUpColumn: Equatable, Sendable {
+    var maxWidth: Double
+    var inset: Double = 0
+    var centered: Bool = true
+    /// Meetings to review and the voice directory: 980 pt, 22 pt in from each side, centred.
+    static let speakers = COSBuildUpColumn(maxWidth: 980, inset: 22)
+    /// A saved meeting's body: 700 pt from the leading edge (the body keeps its own 24 pt padding inside).
+    static let meetingBody = COSBuildUpColumn(maxWidth: 700, inset: 0, centered: false)
+    /// The column's x and width in a view `width` points wide.
+    func span(in width: Double) -> (x: Double, width: Double) {
+        let room = max(0, width - 2 * inset)
+        let w = min(room, maxWidth)
+        return (inset + (centered ? (room - w) / 2 : 0), w)
+    }
 }
 
 struct COSBuildUpLine: Equatable, Sendable {
@@ -13811,6 +13859,10 @@ struct COSBuildUpLayout: Equatable, Sendable {
     var fills: Bool
     /// The spine's x, from the view's leading edge. Nil: no traces (no room inside the view to the left).
     var spineX: Double?
+    /// 0.5.353: the loaded list's column the rows sit in (nil: the whole view).
+    var column: COSBuildUpColumn? = nil
+    /// How far left of the rows the spine runs (the shape's own gap, kept when a column moves the rows).
+    var spineGap: Double? = nil
 }
 
 struct COSBuildUpStep: Equatable, Sendable {
@@ -13838,8 +13890,14 @@ struct COSBuildUpLook: Equatable, Sendable {
 }
 
 enum COSBuildUpPlan {
-    /// Never more placeholder components than this, and never more than fit the container.
-    static let maxItems = 8
+    /// Never more placeholder components than this, and never more than fit the container. 0.5.353: 16 (was 8), so a pane's
+    /// rows reach its bottom in a tall window as the loaded list does; the timing never grows past `staggered`.
+    static let maxItems = 16
+    /// Rows past this many draw and land with the last staggered one, so the draw and the landing take no longer with 16
+    /// rows than they did with 8 (the 450 ms landing rule holds at any count).
+    static let staggered = 8
+    /// The answer's reserved lines while it builds (0.5.353): a typical short answer, re-fit to the real text on landing.
+    static let answerLines = 4
     /// Data inside this window after the load starts skips the build entirely (and under Reduce Motion, the spinner).
     static let graceSeconds = 0.15
     /// A view that opens before its load starts may still build when the load starts inside this window.
@@ -13871,20 +13929,22 @@ enum COSBuildUpPlan {
     static let easeOut = (0.16, 0.84, 0.24, 1.0)
     static let pop = (0.3, 1.6, 0.5, 1.0)
 
-    static func outlineStep(_ i: Int) -> COSBuildUpStep { .init(delay: Double(i) * drawStagger, duration: outline) }
-    static func nodeStep(_ i: Int) -> COSBuildUpStep { .init(delay: Double(i) * drawStagger + 0.46, duration: nodes) }
-    static func wireTextStep(_ i: Int) -> COSBuildUpStep { .init(delay: Double(i) * drawStagger + 0.30, duration: wireText) }
+    /// The stagger lane of component `i`: rows past `staggered` share the last lane.
+    static func lane(_ i: Int) -> Int { min(max(0, i), staggered - 1) }
+    static func outlineStep(_ i: Int) -> COSBuildUpStep { .init(delay: Double(lane(i)) * drawStagger, duration: outline) }
+    static func nodeStep(_ i: Int) -> COSBuildUpStep { .init(delay: Double(lane(i)) * drawStagger + 0.46, duration: nodes) }
+    static func wireTextStep(_ i: Int) -> COSBuildUpStep { .init(delay: Double(lane(i)) * drawStagger + 0.30, duration: wireText) }
     static let spineStep = COSBuildUpStep(delay: 0, duration: trace)
-    static func branchStep(_ i: Int) -> COSBuildUpStep { .init(delay: Double(i) * traceStagger + 0.16, duration: trace) }
-    static func junctionStep(_ i: Int) -> COSBuildUpStep { .init(delay: Double(i) * traceStagger + 0.28, duration: junction) }
-    static func pingDelay(_ i: Int) -> Double { Double(i) * pingStagger + pingStart }
+    static func branchStep(_ i: Int) -> COSBuildUpStep { .init(delay: Double(lane(i)) * traceStagger + 0.16, duration: trace) }
+    static func junctionStep(_ i: Int) -> COSBuildUpStep { .init(delay: Double(lane(i)) * traceStagger + 0.28, duration: junction) }
+    static func pingDelay(_ i: Int) -> Double { Double(lane(i)) * pingStagger + pingStart }
 
-    static func fillStep(_ i: Int) -> COSBuildUpStep { .init(delay: Double(i) * landStagger, duration: fill) }
-    static func solidStep(_ i: Int) -> COSBuildUpStep { .init(delay: Double(i) * landStagger, duration: solid) }
-    static func wireFadeStep(_ i: Int) -> COSBuildUpStep { .init(delay: Double(i) * landStagger, duration: wireFade) }
-    static func inkStep(_ i: Int) -> COSBuildUpStep { .init(delay: Double(i) * landStagger, duration: ink) }
-    static func outlineFadeStep(_ i: Int) -> COSBuildUpStep { .init(delay: Double(i) * landStagger + outlineFadeLead, duration: outlineFade) }
-    static func nodeFadeStep(_ i: Int) -> COSBuildUpStep { .init(delay: Double(i) * landStagger, duration: nodeFade) }
+    static func fillStep(_ i: Int) -> COSBuildUpStep { .init(delay: Double(lane(i)) * landStagger, duration: fill) }
+    static func solidStep(_ i: Int) -> COSBuildUpStep { .init(delay: Double(lane(i)) * landStagger, duration: solid) }
+    static func wireFadeStep(_ i: Int) -> COSBuildUpStep { .init(delay: Double(lane(i)) * landStagger, duration: wireFade) }
+    static func inkStep(_ i: Int) -> COSBuildUpStep { .init(delay: Double(lane(i)) * landStagger, duration: ink) }
+    static func outlineFadeStep(_ i: Int) -> COSBuildUpStep { .init(delay: Double(lane(i)) * landStagger + outlineFadeLead, duration: outlineFade) }
+    static func nodeFadeStep(_ i: Int) -> COSBuildUpStep { .init(delay: Double(lane(i)) * landStagger, duration: nodeFade) }
     static let tracesFadeStep = COSBuildUpStep(delay: 0, duration: tracesFade)
 
     /// Every step the landing draws for component `i` (the settle time is derived from exactly these).
@@ -13896,11 +13956,11 @@ enum COSBuildUpPlan {
     }
     /// How long the landing runs for `count` components: the end of the last step of any of them.
     static func landDuration(count: Int) -> Double {
-        (0..<max(1, min(count, maxItems))).flatMap(landSteps).map(\.end).max() ?? 0
+        (0..<max(1, min(count, staggered))).flatMap(landSteps).map(\.end).max() ?? 0
     }
     /// How long the wire takes to finish drawing for `count` components.
     static func drawDuration(count: Int) -> Double {
-        (0..<max(1, min(count, maxItems))).flatMap(drawSteps).map(\.end).max() ?? 0
+        (0..<max(1, min(count, staggered))).flatMap(drawSteps).map(\.end).max() ?? 0
     }
 
     /// The eased fraction of `step` at `t` seconds.
@@ -13982,11 +14042,38 @@ enum COSBuildUpPlan {
         case .cardRows(_, let badge): base = .init(top: 0, leading: badge ? 0 : 18, trailing: badge ? 0 : 18, spacing: 4, fills: false,
                                                    spineX: badge ? nil : 8)
         }
+        base.spineGap = base.spineX.map { base.leading - $0 }
+        base.column = tune.column
         if let v = tune.top { base.top = v }
         if let v = tune.leading { base.leading = v }
         if let v = tune.trailing { base.trailing = v }
         if let v = tune.spacing { base.spacing = v }
         return base
+    }
+
+    /// Where the rows sit across a view `width` points wide (0.5.353): inside the loaded list's column when it has one, then
+    /// `leading` and `trailing` in from it.
+    static func rows(in width: Double, _ layout: COSBuildUpLayout) -> (x: Double, width: Double) {
+        let column = layout.column?.span(in: width) ?? (x: 0, width: width)
+        return (column.x + layout.leading, max(0, column.width - layout.leading - layout.trailing))
+    }
+    /// The spine's x in a view `width` wide: the shape's gap left of the rows. Nil: no traces.
+    static func spineX(in width: Double, _ layout: COSBuildUpLayout) -> Double? {
+        guard let gap = layout.spineGap else { return nil }
+        return rows(in: width, layout).x - gap
+    }
+    /// Whether an inline view holds its reservation (0.5.353): only while it builds (the grace and the wire), never under
+    /// Reduce Motion (whose grace shows today's view at today's size, as before), and never once the build has ended, so an
+    /// empty or failed answer is its own size at once.
+    static func reserves(_ phase: COSBuildUpMachine.Phase, reduceMotion: Bool) -> Bool {
+        !reduceMotion && (phase == .grace || phase == .building)
+    }
+    /// What an inline view (a Today card, an answer) reserves while it builds (0.5.353): the height of its typical
+    /// content, so the data lands in place. Nil for a pane, which fills its container anyway.
+    static func reserve(_ shape: COSBuildUpShape, _ tune: COSBuildUpTune = .none) -> Double? {
+        let layout = layout(shape, tune)
+        guard !layout.fills else { return nil }
+        return height(items(shape, tune), layout: layout)
     }
 
     private static let titles = [0.62, 0.48, 0.56, 0.44, 0.52]
@@ -14001,7 +14088,10 @@ enum COSBuildUpPlan {
     static func items(_ shape: COSBuildUpShape, _ tune: COSBuildUpTune = .none, limit: Int? = nil, fitting height: Double? = nil,
                       measured: Double? = nil) -> [COSBuildUpItem] {
         let cap = min(maxItems, limit ?? maxItems)
-        func n(_ asked: Int) -> Int { max(0, min(asked, cap)) }
+        // 0.5.353: a pane being fitted fills its height (every row the cap allows, then the room decides), as the loaded
+        // list does; the count a shape asks for is what it draws before the pane is measured.
+        let filling = height != nil && layout(shape, tune).fills
+        func n(_ asked: Int) -> Int { max(0, min(filling ? cap : asked, cap)) }
         var all: [COSBuildUpItem]
         switch shape {
         case .rows(let count):
@@ -14016,13 +14106,13 @@ enum COSBuildUpPlan {
                                lines: [.init(width: titles[i % 5], height: 11), .init(width: metas[i % 5], height: 8)], lineGap: 8)
             }
         case .summary(let turns):
-            all = Array(([summaryCard] + (0..<max(0, turns)).map(turn)).prefix(cap))
+            all = Array(([summaryCard] + (0..<max(0, filling ? cap : turns)).map(turn)).prefix(cap))
         case .turns(let count):
             all = (0..<n(count)).map(turn)
         case .answer:
-            let lines = measured.map { max(1, min(maxItems, Int(($0 / answerPitch).rounded()))) } ?? 1
+            let lines = measured.map { max(1, min(widthsCount, Int(($0 / answerPitch).rounded()))) } ?? answerLines
             let widths = [0.92, 0.84, 0.88, 0.80, 0.86, 0.90, 0.82, 0.58]
-            all = cap < 1 ? [] : [COSBuildUpItem(style: .plain, height: measured ?? 18, radius: 4, padH: 0, padV: 4,
+            all = cap < 1 ? [] : [COSBuildUpItem(style: .plain, height: measured ?? Double(answerLines) * answerPitch, radius: 4, padH: 0, padV: (answerPitch - answerLine) / 2,
                                                  lines: (0..<lines).map { .init(width: $0 == lines - 1 && lines > 1 ? 0.58 : widths[$0], height: answerLine) },
                                                  lineGap: answerPitch - answerLine)]
         case .cardRows(let count, let badge):
@@ -14033,6 +14123,18 @@ enum COSBuildUpPlan {
             }
         }
         if let row = tune.rowHeight { all = all.map { var item = $0; item.height = row; return item } }
+        if let card = tune.card { all = all.map { var item = $0; item.style = card ? .card : .plain; if card { item.radius = 13; item.padH = 16; item.padV = 16 }; return item } }
+        if let count = tune.lines {
+            all = all.enumerated().map { i, item in
+                var item = item
+                // A short label, then lines of text.
+                item.lines = Array(([COSBuildUpLine(width: 0.14, height: 7), .init(width: says[i % 5], height: 10), .init(width: metas[i % 5] + 0.2, height: 10)]
+                                    + Array(repeating: COSBuildUpLine(width: 0.5, height: 10), count: max(0, count - 3))).prefix(max(1, count)))
+                item.lead = nil
+                return item
+            }
+        }
+        if let first = tune.firstHeight, !all.isEmpty { all[0].height = first }
         guard let height else { return all }
         let layout = layout(shape, tune)
         let room = max(0, height - layout.top)
@@ -14040,7 +14142,9 @@ enum COSBuildUpPlan {
         var fitted: [COSBuildUpItem] = []
         for item in all {
             let next = used + (fitted.isEmpty ? 0 : layout.spacing) + item.height
-            if next > room {
+            // A pane takes a row whose top is inside it (the last one clipped, like a scrolled list); an inline view only
+            // the rows that fit whole.
+            if layout.fills ? next - item.height >= room : next > room {
                 if fitted.isEmpty, room >= 6 { fitted.append(squeezed(item, to: room)) }
                 break
             }
@@ -14069,6 +14173,8 @@ enum COSBuildUpPlan {
         out.lead = item.lead
         return out
     }
+
+    private static let widthsCount = 8
 
     private static let summaryCard = COSBuildUpItem(style: .card, height: 78, radius: 9, padH: 12, padV: 12,
                                                     lines: [.init(width: 0.22, height: 7), .init(width: 0.94, height: 10), .init(width: 0.76, height: 10)])

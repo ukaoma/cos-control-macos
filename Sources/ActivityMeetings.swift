@@ -585,7 +585,7 @@ struct MeetingLibraryDetailPane: View {
             }
 
             // 0.5.343: the body builds in place under the header while the meeting loads (COSBuildUp); the chain is today's.
-            COSBuildUp(.summary(turns: 5), loading: model.libraryDetailLoading && model.libraryDetail == nil,
+            COSBuildUp(.summary(turns: 5), tune: .meetingBody, loading: model.libraryDetailLoading && model.libraryDetail == nil,
                        landed: model.libraryDetail != nil, failed: model.libraryDetailError != nil, label: "Loading meeting", key: model.openLibraryRow.map { AnyHashable($0.id) }) {
                 VStack(alignment: .leading, spacing: 0) {
             if model.libraryDetailLoading && model.libraryDetail == nil {
@@ -657,8 +657,8 @@ struct MeetingLibraryDetailPane: View {
                     }
                     .font(COSType.body(12.5))
                     .padding(24)
-                    .frame(maxWidth: 700, alignment: .leading)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    // 0.5.353: the column the build-up draws its body in (COSBuildUpColumn.meetingBody), one value for both.
+                    .cosColumn(.meetingBody)
                 }
                 .frame(minHeight: 0, maxHeight: .infinity)
                 .clipped()

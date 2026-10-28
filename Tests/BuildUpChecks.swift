@@ -25,6 +25,10 @@ import Foundation
 
     static func main() {
         capChecks()
+        fillChecks()
+        columnChecks()
+        laneChecks()
+        reserveChecks()
         layoutChecks()
         heightChecks()
         answerChecks()
@@ -63,12 +67,12 @@ import Foundation
         return m
     }
 
-    // MARK: Never more than 8, never more than fit, never more than remembered
+    // MARK: Never more than 16 (0.5.353, was 8), never more than fit, never more than remembered
 
     static func capChecks() {
-        check(P.maxItems == 8, "cap", "\(P.maxItems)")
+        check(P.maxItems == 16 && P.staggered == 8, "cap", "\(P.maxItems) rows, \(P.staggered) staggered")
         for shape in [COSBuildUpShape.rows(20), .list(20), .turns(20), .summary(turns: 20), .cardRows(20, badge: true)] {
-            check(P.items(shape).count == 8, "cap", "\(shape) drew \(P.items(shape).count)")
+            check(P.items(shape).count == 16, "cap", "\(shape) drew \(P.items(shape).count)")
         }
         check(P.items(.rows(3)).count == 3 && P.items(.list(1)).count == 1 && P.items(.rows(0)).isEmpty && P.items(.rows(-2)).isEmpty,
               "cap", "a short list draws what it asked for")
@@ -76,11 +80,93 @@ import Foundation
         check(P.items(.rows(8), limit: 2).count == 2 && P.items(.summary(turns: 6), limit: 3).count == 3 && P.items(.answer, limit: 0).isEmpty,
               "cap", "a limit caps the rows")
         check(M(at: t0, loading: true, landed: false, reduceMotion: false, count: 0).phase == .settled, "cap", "nothing to draw: no build")
-        // Rows are 62 pt with 6 pt between them, 12 pt down: 3 fit in 210 (12 + 62 + 6 + 62 + 6 + 62), 2 in 209.
+        // Rows are 62 pt with 6 pt between them, 12 pt down. 0.5.353: a pane takes every row whose top is inside it (the
+        // last clipped, as a scrolled list shows it): 3 in 210 (the 4th would start at 216), 4 in 217, 3 in 209.
         check(P.items(.rows(8), fitting: 210).count == 3, "fits", "\(P.items(.rows(8), fitting: 210).count)")
-        check(P.items(.rows(8), fitting: 209).count == 2, "fits", "\(P.items(.rows(8), fitting: 209).count)")
-        check(P.items(.rows(8), fitting: 100_000).count == 8, "fits", "room never lifts the cap")
-        check(P.items(.rows(8), fitting: 150).count == 2, "fits", "a 150 pt pane: \(P.items(.rows(8), fitting: 150).count)")
+        check(P.items(.rows(8), fitting: 217).count == 4, "fill", "\(P.items(.rows(8), fitting: 217).count)")
+        check(P.items(.rows(8), fitting: 209).count == 3, "fill", "\(P.items(.rows(8), fitting: 209).count)")
+        check(P.items(.rows(8), fitting: 100_000).count == 16, "fits", "room never lifts the cap")
+        check(P.items(.rows(8), fitting: 150).count == 3, "fill", "a 150 pt pane: \(P.items(.rows(8), fitting: 150).count)")
+        // An inline view takes only whole rows (it reserves their height instead, `reserve`).
+        check(P.items(.cardRows(2, badge: false), fitting: 91).count == 1 && P.items(.cardRows(2, badge: false), fitting: 96).count == 2, "fits",
+              "inline rows fit whole: \(P.items(.cardRows(2, badge: false), fitting: 91).count) \(P.items(.cardRows(2, badge: false), fitting: 96).count)")
+    }
+
+    // MARK: 0.5.353 The skeleton is the loaded view's geometry (Miles 2026-10-28: "much smaller than the window, then it jumps")
+
+    /// A pane fills its height as the loaded list does: every row's top inside it, the last one reaching the bottom (or the
+    /// cap). Every pane shape and site tune, short to tall.
+    static func fillChecks() {
+        let panes: [(String, COSBuildUpShape, COSBuildUpTune)] = [
+            ("meetings", .rows(6), .none), ("sessions", .rows(6), .sessions), ("tasks", .rows(6), .tasks), ("memories", .rows(6), .memories),
+            ("threads", .rows(6), .threads), ("messages", .list(6), .messages), ("voices", .list(6), .voices), ("review meetings", .list(6), .reviewMeetings),
+            ("learning", .list(6), .learning), ("archive day", .list(6), .none), ("chat", .turns(6), .none), ("session", .turns(6), .sessionTurns),
+            ("meeting body", .summary(turns: 5), .meetingBody),
+        ]
+        for (name, shape, tune) in panes {
+            let layout = P.layout(shape, tune)
+            check(layout.fills, "fill", "\(name) is a pane")
+            for height in [150.0, 243, 549, 700, 900, 1100, 1400] {
+                let items = P.items(shape, tune, fitting: height)
+                let room = height - layout.top
+                let tops = items.indices.map { P.top($0, in: items, layout: layout) - layout.top }
+                check(!items.isEmpty && tops.allSatisfy { $0 < room }, "fill", "\(name) in \(height): every row starts inside the pane: \(tops)")
+                let bottom = P.height(items, layout: layout)
+                // The last row reaches the bottom, or stops in the gap before a row that would start past it.
+                check(bottom >= height - layout.spacing - 1e-9 || items.count == P.maxItems, "fill",
+                      "\(name) in \(height) pt: the rows reach \(bottom) of \(height) with \(items.count) rows")
+            }
+        }
+        // Before it is measured a pane draws what its shape asks for (the machine's first count).
+        check(P.items(.rows(6)).count == 6 && P.items(.list(6), .learning).count == 6, "fill", "the asked count before the fit")
+    }
+
+    /// The rows sit in the loaded list's column: the same COSBuildUpColumn the list lays out in (cosColumn).
+    static func columnChecks() {
+        let speakers = COSBuildUpColumn.speakers, body = COSBuildUpColumn.meetingBody
+        check(speakers.span(in: 1280) == (150, 980) && speakers.span(in: 760) == (22, 716) && speakers.span(in: 1024) == (22, 980),
+              "column", "the speaker column: \(speakers.span(in: 1280)) \(speakers.span(in: 760)) \(speakers.span(in: 1024))")
+        check(body.span(in: 1280) == (0, 700) && body.span(in: 600) == (0, 600), "column", "the meeting body: \(body.span(in: 1280)) \(body.span(in: 600))")
+        for (tune, width, x, w) in [(COSBuildUpTune.voices, 1280.0, 150.0, 980.0), (.voices, 760, 22, 716), (.reviewMeetings, 1280, 150, 980),
+                                    (.meetingBody, 1280, 24, 652), (.meetingBody, 760, 24, 652), (.none, 1280, 22, 1236), (.learning, 760, 22, 716)] {
+            let shape: COSBuildUpShape = tune == .meetingBody ? .summary(turns: 5) : .list(6)
+            let span = P.rows(in: width, P.layout(shape, tune))
+            check(near(span.x, x) && near(span.width, w), "column", "\(tune) at \(width): rows at \(span) want (\(x), \(w))")
+        }
+        // The spine keeps its gap left of the rows wherever the column puts them.
+        check(P.spineX(in: 1280, P.layout(.list(6), .voices)) == 138 && P.spineX(in: 1280, P.layout(.list(6))) == 10
+              && P.spineX(in: 1280, P.layout(.summary(turns: 5), .meetingBody)) == 11 && P.spineX(in: 600, P.layout(.answer)) == nil,
+              "column", "the spine 12 pt left of the speaker column, 10 pt in a plain list")
+    }
+
+    /// Rows past the eighth draw and land with the eighth: 16 rows take no longer than 8.
+    static func laneChecks() {
+        for i in 8..<16 {
+            check(P.look(i, drawT: 0.6, landT: 0.12) == P.look(7, drawT: 0.6, landT: 0.12), "stagger cap", "row \(i) moves with row 7")
+        }
+        check(near(P.landDuration(count: 16), P.landDuration(count: 8)) && near(P.drawDuration(count: 16), P.drawDuration(count: 8))
+              && P.landDuration(count: 16) <= 0.45 + 1e-9, "stagger cap", "16 rows land in \(P.landDuration(count: 16)) s")
+    }
+
+    /// An inline view reserves its typical content's height while it builds; a pane reserves nothing (it fills).
+    static func reserveChecks() {
+        check(P.reserve(.cardRows(2, badge: false), .needsYou).map { near($0, 2 * 150) } == true, "reserve",
+              "Needs you holds two rows: \(String(describing: P.reserve(.cardRows(2, badge: false), .needsYou)))")
+        check(P.reserve(.cardRows(2, badge: true), .running).map { near($0, 2 * 61) } == true, "reserve",
+              "Running holds two rows: \(String(describing: P.reserve(.cardRows(2, badge: true), .running)))")
+        check(P.reserve(.answer).map { near($0, Double(P.answerLines) * P.answerPitch) } == true && P.answerLines == 4, "reserve",
+              "an answer holds four lines: \(String(describing: P.reserve(.answer)))")
+        check(P.reserve(.rows(6)) == nil && P.reserve(.summary(turns: 5), .meetingBody) == nil, "reserve", "a pane reserves nothing")
+        // Held only while it builds, never under Reduce Motion, never after the build ends (data, empty, error, timeout).
+        for phase in [M.Phase.fresh, .grace, .building, .landing, .handoff, .settled] {
+            check(P.reserves(phase, reduceMotion: false) == (phase == .grace || phase == .building), "reserve", "\(phase) reserves only while building")
+            check(!P.reserves(phase, reduceMotion: true), "reduce motion size", "Reduce Motion never reserves (\(phase))")
+        }
+        // The stage draws every reserved row inside the reservation.
+        for (shape, tune) in [(COSBuildUpShape.cardRows(2, badge: false), COSBuildUpTune.needsYou), (.cardRows(2, badge: true), .running), (.answer, .none)] {
+            let reserve = P.reserve(shape, tune) ?? 0
+            check(P.items(shape, tune, fitting: reserve).count == P.items(shape, tune).count, "reserve", "\(shape) fits its reservation")
+        }
     }
 
     // MARK: Each site's geometry (measured from the real rows by Tests/BuildUpRender.swift)
@@ -97,13 +183,18 @@ import Foundation
               "layout", "a pane fills, an answer and a card's rows sit inside today's view")
         check(P.layout(.answer).spineX == nil && P.layout(.cardRows(1, badge: true)).spineX == nil && P.layout(.cardRows(2, badge: false)).spineX == 8,
               "layout", "no spine where there is no room inside the view")
-        for (tune, top, row, spacing) in [(COSBuildUpTune.sessions, 0.0, 62.0, 6.0), (.tasks, 0, 62, 6), (.memories, 1, 78, 7), (.threads, 1, 60, 7),
-                                          (.messages, 21, 79, 1), (.voices, 32, 62, 1)] {
+        // 0.5.353 adds the speaker lists, learning, a session's turns, a meeting's body and Today's two cards, measured on the
+        // real rows by Tests/BuildUpGeometry.swift (and held on the pixels by the layout lane of Tests/BuildUpViewChecks.swift).
+        for (tune, top, row, spacing, first) in [(COSBuildUpTune.sessions, 0.0, 62.0, 6.0, 62.0), (.tasks, 0, 62, 6, 62), (.memories, 1, 78, 7, 78),
+                                                 (.threads, 1, 60, 7, 60), (.messages, 21, 79, 1, 79), (.voices, 32, 62, 1, 62),
+                                                 (.reviewMeetings, 0, 76, 1, 76), (.learning, 0, 74, 1, 74), (.sessionTurns, 24, 70, 14, 65),
+                                                 (.meetingBody, 24, 79, 0, 101), (.needsYou, 0, 150, 0, 150), (.running, 0, 61, 0, 61)] {
             let l = P.layout(.rows(4), tune), i = P.items(.rows(4), tune)
-            check(near(l.top, top) && i.allSatisfy { near($0.height, row) } && near(l.spacing, spacing), "site geometry",
+            check(near(l.top, top) && i.dropFirst().allSatisfy { near($0.height, row) } && near(i[0].height, first) && near(l.spacing, spacing), "site geometry",
                   "\(tune): top \(l.top), rows \(i.map(\.height)), spacing \(l.spacing)")
         }
-        check(P.items(.rows(8), .memories, fitting: 1 + 78 + 7 + 78).count == 2 && P.items(.rows(8), .memories, fitting: 1 + 78 + 7 + 77).count == 1,
+        // 0.5.353: a pane takes a row whose top is inside it, so the second memory row (at 1 + 78 + 7) needs one point more.
+        check(P.items(.rows(8), .memories, fitting: 1 + 78 + 7 + 1).count == 2 && P.items(.rows(8), .memories, fitting: 1 + 78 + 7).count == 1,
               "site geometry", "a site's rows fit by its own height")
     }
 
@@ -129,8 +220,9 @@ import Foundation
     // MARK: The answer: inside today's one line, re-fit to the real text when it lands
 
     static func answerChecks() {
+        // 0.5.353: while it builds an answer holds four lines (a typical short answer), not today's one loading line.
         let short = P.items(.answer)
-        check(short.count == 1 && short[0].lines.count == 1 && near(short[0].height, 18), "answer size", "one line: \(short)")
+        check(short.count == 1 && short[0].lines.count == 4 && near(short[0].height, 70), "answer size", "four lines: \(short)")
         let one = P.items(.answer, measured: 17)[0], four = P.items(.answer, measured: 70)[0], tall = P.items(.answer, measured: 900)[0]
         check(one.lines.count == 1 && four.lines.count == 4 && near(four.height, 70) && tall.lines.count == 8, "answer refit",
               "lines follow the real text: \(one.lines.count) \(four.lines.count) \(tall.lines.count)")
@@ -162,7 +254,7 @@ import Foundation
     // MARK: The settle comes from the same steps
 
     static func settleChecks() {
-        for n in 1...8 {
+        for n in 1...16 {
             let settle = P.landDuration(count: n)
             check(settle <= 0.45 + 1e-9, "land duration", "\(n) components land within 450 ms: \(settle)")
             let lastEnd = (0..<n).flatMap(P.landSteps).map(\.end).max() ?? 0
@@ -513,10 +605,10 @@ import Foundation
         check(m.count == 3 && m.deadline.map { near($0, t0 + 0.15 + P.drawDuration(count: 3)) } == true, "fit",
               "a smaller container draws fewer rows, and the draw ends sooner")
         m.fit(20)
-        check(m.count == 8, "fit", "never past the cap")
+        check(m.count == 16, "fit", "never past the cap")
         m.update(at: t0 + 1, loading: false, landed: true)
         m.fit(2)
-        check(m.count == 8, "fit", "a landing keeps the rows it drew")
+        check(m.count == 16, "fit", "a landing keeps the rows it drew")
     }
 
     // MARK: One breadcrumb per load, counts only
