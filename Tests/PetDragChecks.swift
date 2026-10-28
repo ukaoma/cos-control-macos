@@ -57,6 +57,21 @@ import Foundation
         check(edge.mouseDragged(mouse: CGPoint(x: press.x, y: press.y + PetDragTracker.threshold))
               == .move(CGPoint(x: origin.x, y: origin.y + PetDragTracker.threshold)), "at the threshold the pet drags")
 
+        // A drop lands inside the visible frame of the screen it was dropped on (0.5.352 QA: a syncPanel mid-drag
+        // could leave the pet half off-screen until the next resize).
+        let screen = CGRect(x: 0, y: 25, width: 1920, height: 1055)
+        let size = CGSize(width: 490, height: 257)
+        check(PetDragTracker.dropOrigin(frame: CGRect(origin: CGPoint(x: 1700, y: 300), size: size), screen: screen)
+              == CGPoint(x: 1920 - 490, y: 300), "a pet dropped half off the right edge must come back on screen")
+        check(PetDragTracker.dropOrigin(frame: CGRect(origin: CGPoint(x: -120, y: -80), size: size), screen: screen)
+              == CGPoint(x: 0, y: 25), "a pet dropped off the bottom-left must rest inside the visible frame")
+        check(PetDragTracker.dropOrigin(frame: CGRect(origin: CGPoint(x: 600, y: 950), size: size), screen: screen)
+              == CGPoint(x: 600, y: 25 + 1055 - 257), "a pet dropped under the menu bar must come down inside it")
+        check(PetDragTracker.dropOrigin(frame: CGRect(origin: CGPoint(x: 600, y: 300), size: size), screen: screen)
+              == CGPoint(x: 600, y: 300), "a pet dropped fully on screen must stay exactly where it was dropped")
+        check(PetDragTracker.dropOrigin(frame: CGRect(origin: CGPoint(x: 5000, y: 300), size: size), screen: nil)
+              == CGPoint(x: 5000, y: 300), "with no screen to clamp to, the drop is left alone")
+
         print("COS Control: pet drag tracker, \(passed) checks passed (click under \(PetDragTracker.threshold)pt taps, a drag moves the panel and swallows one tap, pills never drag)")
     }
 }

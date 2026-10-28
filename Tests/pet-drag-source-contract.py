@@ -29,6 +29,10 @@ need(re.search(r"case \.move\(let origin\) = drag\.mouseDragged\(mouse: NSEvent\
      "a drag past the threshold no longer moves the panel")
 need(re.search(r"if drag\.mouseUp\(\) \{.*?return\s*\}", send, re.S),
      "a drag's release reaches SwiftUI where it was pressed and opens the session as a tap")
+_up = send[send.index("if drag.mouseUp() {"):]
+_up = _up[:_up.index("return\n")]
+need("setFrameOrigin(PetDragTracker.dropOrigin(frame: frame, screen: screen?.visibleFrame))" in _up,
+     "a dropped pet is not clamped to its screen; a syncPanel mid-drag can leave it half off-screen")
 need(send.rstrip().endswith("super.sendEvent(event)\n    }"),
      "PetPanel swallows events it does not handle; clicks and the right-click menu need them")
 for handler in ("private func handleSpriteClick() {", "private func toggleSessionMenu() {"):

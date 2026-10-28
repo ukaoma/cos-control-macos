@@ -431,6 +431,8 @@ final class PetPanel: NSPanel {
             }
         case .leftMouseUp:
             if drag.mouseUp() {
+                // Drop inside the screen it landed on; windowDidMove re-parks restingAnchor at the clamped spot.
+                setFrameOrigin(PetDragTracker.dropOrigin(frame: frame, screen: screen?.visibleFrame))
                 // The panel followed the pointer, so the release lands where the press did and SwiftUI would read
                 // the drag as a tap. It still needs a release to end the press: send one far outside the window.
                 if let release = NSEvent.mouseEvent(
