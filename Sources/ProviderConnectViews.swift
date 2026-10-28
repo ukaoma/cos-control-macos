@@ -325,7 +325,7 @@ struct ProviderConnectCard: View {
                 Spacer()
                 Button("Done") { guide.closePanelRoute() }.buttonStyle(COSTextButtonStyle())
             }
-            Text("Each AI you sign in to can run your sessions. Skip anything for now and come back here. COS checks again on its own while this is open.")
+            Text("Each AI you sign in to can run your sessions. Skip any step and come back later.")
                 .font(COSType.body(11)).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             if let error = guide.error {
@@ -367,7 +367,7 @@ struct PanelConnectAIRow: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .help("Your AI apps, local voice and their settings, each with one click to set up")
+                .help("Set up your AI, voice, glasses and permissions, one step at a time.")
                 // One read for the summary; no polling until the card is open.
                 .task { if guide.report == nil { await guide.refresh() } }
             }
@@ -1195,7 +1195,7 @@ struct DockNoticeLine: View {
                 Text("COS Control is in the Dock now.").font(COSType.body(11.5)).foregroundStyle(.secondary)
                 Spacer(minLength: 4)
                 Button("Menu bar only") { model.setShowInDock(false); dismiss() }.buttonStyle(COSTextButtonStyle())
-                Button("Keep") { model.setShowInDock(true); dismiss() }.buttonStyle(COSTextButtonStyle())
+                Button("Keep in Dock") { model.setShowInDock(true); dismiss() }.buttonStyle(COSTextButtonStyle())
             }
         }
     }
