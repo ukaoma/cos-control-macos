@@ -4111,7 +4111,7 @@ struct MacDictationSettings: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Toggle("Dictate into Mac apps", isOn: $store.enabled).toggleStyle(COSSwitchStyle()).disabled(store.busy)
-            Text("Transcribed on this Mac with your COS dictionary, by Parakeet Ultra or Whisper (Settings, Transcription). Glasses are optional. Dictation uses your microphone; Record on Mac captures meeting playback.")
+            Text("Type by voice into any Mac app. Transcribed on this Mac with your dictionary.")
                 .font(.caption2).foregroundStyle(.secondary)
             if store.enabled {
                 COSDropdown("Microphone", selection: $store.microphoneUID, options: microphoneOptions).disabled(store.busy)
@@ -4124,7 +4124,7 @@ struct MacDictationSettings: View {
                 DictationShortcutRow(store: store, slot: .hold, activityShortcut: activityShortcut)
                 DictationShortcutRow(store: store, slot: .toggle, activityShortcut: activityShortcut)
                 DictationShortcutRow(store: store, slot: .fix, activityShortcut: activityShortcut)
-                Button("Allow insertion into other apps…") { store.requestInsertionPermission() }.controlSize(.small)
+                Button("Allow typing in apps…") { store.requestInsertionPermission() }.controlSize(.small)
                 DictationSoundSettings(store: store)
                 // 0.5.345 (A-W1): sounds paused by the breaker, with the reset.
                 if store.soundsPaused {
@@ -4132,18 +4132,18 @@ struct MacDictationSettings: View {
                     Button(DictationAudioCopy.playAgain) { store.resetSoundBreaker() }.controlSize(.small)
                 }
                 DictationQuietSettings(store: store)
-                Toggle("Restore my clipboard after pasting", isOn: $store.restoreClipboard).toggleStyle(COSSwitchStyle())
+                Toggle("Restore clipboard", isOn: $store.restoreClipboard).toggleStyle(COSSwitchStyle())
                     .help("When COS pastes with ⌘V, it puts back whatever you had copied once the app has the text.")
                 COSDropdown("Learn from my edits", selection: $store.learnMode,
                             options: DictationLearnMode.allCases.map { COSDropdownOption($0, $0.title) })
                 Text(DictationEditLearning.settingNote)
                     .font(.caption2).foregroundStyle(.secondary)
-                Toggle("Spell words the way the text box has them", isOn: $store.useFieldContext).toggleStyle(COSSwitchStyle())
-                    .help("Before COS types, it reads the words already in the text box, on this Mac only, so a name or term written there comes out spelled the same way.")
-                Text("COS reads the text around the cursor before it types, keeps it only for that dictation and never saves or sends it. When you fix a word to a spelling that text already has, Learn from my edits takes it even if it sounds less alike. Never in terminals or password fields.")
+                Toggle("Match nearby spelling", isOn: $store.useFieldContext).toggleStyle(COSSwitchStyle())
+                    .help("Spells names the way the text box already has them.")
+                Text("Reads nearby text and never saves or sends it. Never in terminals or password fields.")
                     .font(.caption2).foregroundStyle(.secondary)
                 Toggle("Format spoken lists", isOn: $store.formatLists).toggleStyle(COSSwitchStyle())
-                    .help("Say “number one, … number two, …” or “bullet, … next bullet, …” and COS writes a numbered or bulleted list, one item per line.")
+                    .help("Say “number one…” or “bullet…” and COS writes a numbered or bulleted list.")
                 // 0.5.345 (A-W10, A-W9a): both on by default, both with AI polish off too.
                 Toggle(DictationFillers.settingTitle, isOn: $store.removeFillers).toggleStyle(COSSwitchStyle())
                 Text(DictationFillers.settingNote).font(.caption2).foregroundStyle(.secondary)
@@ -4166,7 +4166,7 @@ struct MacDictationSettings: View {
                     Text(DictationPolishPause.settingLine(pause)).font(.caption2).foregroundStyle(COSPalette.amber)
                 }
                 // 0.5.331 paste first, polish in place: on by default; off is the order before 0.5.331.
-                Toggle("Paste right away, then polish in place", isOn: $store.pasteThenPolish).toggleStyle(COSSwitchStyle())
+                Toggle("Paste then polish", isOn: $store.pasteThenPolish).toggleStyle(COSSwitchStyle())
                     .disabled(store.polishModel == .off)
                 Text(DictationPolishSwap.settingNote(store.polishModel))
                     .font(.caption2).foregroundStyle(.secondary)
@@ -4178,7 +4178,7 @@ struct MacDictationSettings: View {
                 DictationPolishInstructionsCard(store: DictationPolishInstructionsStore.shared, polishOn: store.polishModel != .off, model: store.polishModel)
                 // 0.5.344 part 2 (server 6.91.0): Your style, inline under AI polish.
                 DictationStyleCard(style: DictationStyleStore.shared, dictation: store)
-                Text("Any shortcut: a modifier plus a key, a function key, or one modifier key by itself such as Fn 🌐 or Right ⌘. Fn and single-key shortcuts use Accessibility. Finished text drops into the text box that has the cursor; with no text box it is copied, and the pet shows it with a Copy button. Some apps, such as terminals and Electron editors, get ⌘V; COS shows Pasted when it can't confirm, then puts your clipboard back. COS never presses Send or Return.")
+                Text("Use a combo, a function key or Fn alone (needs Accessibility). COS never presses Return.")
                     .font(.caption2).foregroundStyle(.secondary)
                 if let message = store.message { Text(message).font(.caption2).foregroundStyle(COSPalette.amber) }
             }
@@ -4222,7 +4222,7 @@ private struct DictationQuietSettings: View {
                     options: DictationQuietMode.allCases.map { COSDropdownOption($0, $0.title) })
             .disabled(store.busy)
         if store.quietMode == .mute, !permitted {
-            Text("Muting other apps needs System Audio Recording for COS Control. Until it's allowed, COS lowers your Mac's volume while you dictate and puts it back after.")
+            Text("Muting needs System Audio Recording. Until you allow it, COS lowers the volume instead.")
                 .font(.caption2).foregroundStyle(COSPalette.amber)
             // 0.5.318: macOS's own prompt first, which is what adds COS Control to the list; then the drag flow.
             Button("Allow System Audio Recording…") {
@@ -4241,7 +4241,7 @@ private struct DictationQuietSettings: View {
                 }.controlSize(.small)
             }
         }
-        Text("Never during a Mac recording. Music and video stay muted, not paused: COS can't tell what's playing, so it never presses Play/Pause.")
+        Text("Never during a Mac recording. Music and video are muted, never paused.")
             .font(.caption2).foregroundStyle(.secondary)
             .onAppear { permitted = DictationQuietController.tapPermitted }
     }
@@ -5837,7 +5837,7 @@ struct DictationStyleCard: View {
         .cosConfirm(
             "Reset learned style?",
             isPresented: $confirmingReset,
-            message: "Every style rule COS learned or you added goes, on this Mac and on the server. The switch and your dictation history stay.",
+            message: "Deletes every style rule, learned or added, here and on the server. The switch and history stay.",
             actions: [
                 .destructive(DictationStyleCopy.reset) { Task { await style.reset() } },
                 .cancel(),
@@ -6341,7 +6341,7 @@ struct DictationSoundSettings: View {
                 Text(Self.semitones(store.soundPitch)).font(.caption.monospacedDigit())
             }
             if let note = store.soundNote { Text(note).font(.caption2).foregroundStyle(COSPalette.amber) }
-            Text("Unstable saber is mostly bass: use headphones or real speakers, laptop speakers reproduce little of it. Sounds never play while a COS recording is capturing.")
+            Text("Unstable saber is mostly bass, so laptop speakers barely play it. Silent while recording.")
                 .font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }
     }

@@ -357,7 +357,7 @@ import Foundation
               && DictationStyleCopy.rulesHeading(enabled: true, notUsed: .notSonnet) == (DictationStyleCopy.notUsedHeading, DictationStyleCopy.notUsedLine(.notSonnet))
               && DictationStyleCopy.rulesHeading(enabled: true, notUsed: nil) == (DictationStyleCopy.active, nil), "copy headings", "Paused, Not used, Active")
         check(DictationStyleCopy.notUsedLine(.notSonnet) == "AI polish is on Haiku, so these rules are not used."
-              && DictationStyleCopy.paused.contains("on G2"), "copy headings", "the reason in words")
+              && DictationStyleCopy.paused.contains("on the glasses"), "copy headings", "the reason in words")
         check(DictationStyleCopy.status(learnMode: .off, monitor: true, notUsed: nil, enabled: true) == [DictationStyleCopy.needsLearn]
               && DictationStyleCopy.status(learnMode: .automatic, monitor: false, notUsed: nil, enabled: true) == [DictationStyleCopy.needsShortcut]
               && DictationStyleCopy.status(learnMode: .automatic, monitor: false, notUsed: .notSonnet, enabled: true).isEmpty

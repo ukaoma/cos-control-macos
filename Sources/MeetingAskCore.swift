@@ -643,7 +643,7 @@ struct HomeAreaEffective: Equatable, Sendable { var text: String; var source: St
 
 enum HomeArea {
     static let placeholder = "Austin, TX"
-    static let caption = "Used only when a fact check needs a starting point. City and state, no street address. Leave blank to use your phone's area."
+    static let caption = "Where fact checks start. City and state, no street. Blank uses your phone's area."
     /// What the helper forwards as the PUT body. Blank (or spaces only) is "", the server's clear.
     static func payload(_ draft: String) -> [String: String] {
         ["homeCity": normalized(draft)]
@@ -813,7 +813,7 @@ enum LiveCues {
     static let checkAgainLabel = "Check again"
     static let glassesLine = "Cues also need Live Cues on in the glasses app."
     static let envOnPrefix = "Turned on in the server's environment."
-    static let envForcedNote = "Turned on in the server's environment, so it cannot be turned off here."
+    static let envForcedNote = "Set on the server, so it cannot be turned off here."
     static let offLine = "Off. Turn it on to see cues on the glasses during a meeting."
 
     /// The helper's details to a state. nil (the helper failed) is `notChecked`.
@@ -866,13 +866,13 @@ enum LiveCues {
     }
 
     // ── The limits' words and values (0.5.329, server 6.79.2).
-    static let barTitle = "Bar"
+    static let barTitle = "Cue bar"
     static let moreCues = "More cues"
     static let fewerCues = "Fewer cues"
-    static let maxCuesTitle = "Max cues per meeting"
-    static let gapTitle = "Minimum gap between cues"
-    static let dailyTitle = "Daily writer limit"
-    static let envNote = "Set in .env"
+    static let maxCuesTitle = "Cues per meeting"
+    static let gapTitle = "Gap between cues"
+    static let dailyTitle = "Daily writer calls"
+    static let envNote = "Set on the server"
     static let savingLine = "Saving…"
     /// How long the controls wait for a person to stop moving before one change goes to the server.
     static let limitsDebounce: Duration = .milliseconds(600)
@@ -1983,7 +1983,7 @@ enum Transcription {
         guard parakeet.failed else { return nil }
         return parakeet.progress?.error ?? "The Parakeet install did not finish. Try again."
     }
-    static let installCaption = "Parakeet Ultra runs on this Mac, for dictation and as the second opinion. Every file is checked before it is installed, and dictation keeps working with Whisper meanwhile."
+    static let installCaption = "Parakeet Ultra runs on this Mac. Each file is checked; dictation uses Whisper until then."
     static let recordingHold = "Install Parakeet after the recording ends."
     static func installingLine(bytes: Int) -> String {
         bytes > 0 ? "Installing Parakeet. \(megabytes(bytes)) MB so far." : "Installing Parakeet."
@@ -2000,7 +2000,7 @@ enum Transcription {
     static let installTitle = "Install Parakeet (654 MB)"
     /// The server's own precheck (507 insufficient_disk) uses the same floor: the 654 MB download, staging and the swap.
     static let requiredFreeBytes: Int64 = 1_500_000_000
-    static let dictationCaption = "Automatic uses Parakeet Ultra when it is installed and ready, and Whisper on this Mac otherwise. Dictation never uses the cloud."
+    static let dictationCaption = "Automatic uses Parakeet Ultra when ready, else Whisper. Dictation never uses the cloud."
     static let dictationOldServer = "This COS server dictates with Parakeet Ultra only. Update the server to dictate with Whisper."
     static let licensesLine = "Parakeet Ultra model: CC BY 4.0, FluidInference. FluidAudio: Apache 2.0."
     static let dictationTitles = ["auto": "Automatic (recommended)", "parakeet-ultra": "Parakeet Ultra", "whisper": "Whisper"]

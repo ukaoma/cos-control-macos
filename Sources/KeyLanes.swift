@@ -49,14 +49,14 @@ enum KeyLanes {
     static let profileToggleLabel = "Use for answers"
     // QA U7: saved keys the server can no longer manage (an older server, or lanes off).
     static let removeSavedLabel = "Remove saved keys"
-    static let savedKeysOlderServerLine = "Keys saved for COS 6.80 or later are still on this Mac. This COS cannot use them."
-    static let savedKeysOffLine = "Key lanes are off. Your saved keys are still on this Mac."
-    static let removeSavedMessage = "COS deletes the saved keys, key profiles and spend ledger from this Mac. Sessions that ran on a key stay refused for Continue and Fork."
+    static let savedKeysOlderServerLine = "Keys saved for server 6.80 or later are still on this Mac. This server cannot use them."
+    static let savedKeysOffLine = "Your own key is off. Your saved keys are still on this Mac."
+    static let removeSavedMessage = "Deletes the saved keys, key profiles and spend ledger from this Mac. Sessions that ran on a key still cannot be continued or forked."
     static let savedKeysRemovedLine = "Saved keys removed from this Mac."
     /// The helper's refusal to install COS older than 6.80.0 while keys are saved starts with this (ProviderStatusCore
     /// KeyLanesHelperCore.downgradeBlocked; Tests/key-lanes-pins.py keeps them equal).
     static let downgradeBlockedLine = "Remove your saved keys first."
-    static let removeAndContinueLabel = "Remove saved keys and continue"
+    static let removeAndContinueLabel = "Remove keys and continue"
     static let skipLabel = "Skip"
     static let addLabel = "Add a key"
     static let pasteLabel = "Paste key"
