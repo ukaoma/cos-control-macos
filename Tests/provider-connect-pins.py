@@ -103,7 +103,8 @@ pin("<key>LSUIElement</key>\n\t<true/>" in read("Resources/Info.plist"), "dock",
 pin("PetIntroLine(model: model)" in main_panel and "PetIntroLine(model: model)" in setup, "pet intro", "panel and Welcome")
 init = body(model, "    init(startBackgroundWork: Bool = true", "\n    }\n")
 pin(before(init, "guard startBackgroundWork else { return }", "evaluatePetIntro()"), "pet intro", "evaluated only in the running app")
-pin("case .addJevKey: model.showSettings?()" in connect_views and 'rows.append(SetupRow(id: .jev' in connect, "jev row", "the guide shows Jev and sends the key to Settings")
+# 2026-10-28 (QA parity S3): to the key fields themselves, Decision models, in the hub or the panel.
+pin("case .addJevKey: model.showDecisionKeySettings?()" in connect_views and 'rows.append(SetupRow(id: .jev' in connect, "jev row", "the guide shows Jev and sends the key to Settings, on Decision models")
 pin("jevKey" not in connect_views, "jev row", "the guide never touches the key")
 # Glasses section (contract 2026-10-09): replaces GlassesGuideRow, polls only as its own view task, never counted.
 pin("GlassesGuideRow" not in connect_views and "gotcos.com/wizard/#glasses-setup" in connect and "GuideExtras.glassesWizardURL" in connect_views, "glasses row", "the section replaces the link-only row and keeps the wizard link")

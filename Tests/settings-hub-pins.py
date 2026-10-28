@@ -141,7 +141,14 @@ pin("hubLoaders(" in body(views, "    func settingsHub(_ host: SettingsHubHost) 
 opened = body(views, "    func hubCategoryOpened(_ category: SettingsHubCategory) async {", "\n    }\n")
 pin("model.loadDecisionSettings()" in opened and "model.loadJevStatus()" in opened and "model.loadSubQKeyStatus()" in opened,
     "opening AI and accounts loads what opening Decision models loads")
-pin('subQKeyDraft = ""; jevKeyDraft = ""' in opened, "leaving AI and accounts drops a typed key, as closing Decision models does")
+# Before the switch and for every page but AI, so no case can skip it (QA N2: Meetings kept the key).
+pin('if category != .ai { subQKeyDraft = ""; jevKeyDraft = "" }\n        switch category {' in opened
+    and opened.count('jevKeyDraft = ""') == 1, "leaving AI and accounts for any page drops a typed key, as closing Decision models does")
+pin(not re.search(r'hubCard\("[a-z.]+", advanced: [0-9]', views) and views.count("advanced: hubAdvancedCount(") == 12,
+    "every Advanced count is the catalog's rows the page draws, never a typed number")
+shown_adv = body(views, "    func hubAdvancedShown(_ id: String) -> Bool {", "\n    }\n")
+for rid in ("JV-03", "JV-04", "JV-05", "UT-05", "ST-08", "ST-13", "ST-19", "PT-08", "PT-11", "PT-12", "PT-13", "C-06", "C-07", "C-08"):
+    pin(f'"{rid}"' in shown_adv, f"Advanced counts: {rid}, drawn only sometimes, is counted only when drawn")
 pin(".task { await model.loadMorningBrief(quiet: true) }" in body(views, "    private var morningBriefCard: some View {", "\n    }\n"),
     "the panel's morning brief card still loads itself")
 pin("await model.loadDomains()" in body(views, "    private var domainsCard: some View {", "\n    }\n"), "the panel's domains card still loads itself")
@@ -172,7 +179,11 @@ pin("model.meetingAsk.refreshConfig(model: model)" in loaders and "model.meeting
 engine = body(code(read("Sources/ProviderConnectViews.swift")), "struct DictationEngineControls: View {", "struct EngineCellsLayout")
 pin(".task { if !hosted { await store.load(TranscriptionSettingsCard.run(model)) } }" in engine, "the engine step does not load Transcription again in the hub")
 lanes = code(read("Sources/KeyLanesViews.swift"))
-pin("guard part != .advanced, model.backgroundWorkEnabled" in lanes, "Your own key's Advanced part reads nothing: the main part does, once")
+pin("guard !hosted, part != .advanced else { return }" in lanes and lanes.count("await Self.load(model, store: store)") == 1,
+    "Your own key's Advanced part reads nothing, and in the hub neither part does")
+pin(".settingsHubOwnKeyReader(model)" in loaders and views.count("settingsHubOwnKeyReader(") == 1
+    and shell_raw.count("await KeyLanesSettingsRow.load(model)") == 1,
+    "the hub's root reads Your own key once for every page")
 pin("KeyLanesSettingsRow(model: model, part: .main)" in shell_raw and "KeyLanesSettingsRow(model: model, part: .advanced)" in shell_raw,
     "Your own key: the card's rows and its Advanced rows")
 for item_id in ("KL-02", "KL-03", "KL-14", "KL-15"):
@@ -203,7 +214,41 @@ pin(".frame(maxWidth: classicSettings ? 780 : .infinity, maxHeight: .infinity)" 
 anchors = set(re.findall(r'\.id\("([a-z-]+)"\)', panel)) | set(re.findall(r'\.id\("([a-z-]+)"\)', code(read("Sources/KeyLanesViews.swift"))))
 anchors.add(re.search(r'static let decisionKeysAnchor = "([a-z-]+)"', read("Sources/MeetingAskCore.swift")).group(1))
 routed = set(re.findall(r'^\s+"([a-z-]+)": "[a-z.]+",$', body(catalog, "static let panelAnchors", "\n    ]"), re.M))
-pin(anchors == routed, f"every opener anchor is routed (anchors {sorted(anchors)}, routed {sorted(routed)})")
+pin(anchors - {"settings"} == routed, f"every opener anchor but the plain one is routed (anchors {sorted(anchors)}, routed {sorted(routed)})")
+pin('"settings"' not in body(catalog, "static let panelAnchors", "\n    ]"), "the plain Settings anchor has no route: the hub stays on the category it opens on")
+
+# 6b. Every Settings opener lands in the hub while the classic switch is off (2026-10-28); with it on, the old route runs.
+connect_views = code(read("Sources/ProviderConnectViews.swift"))
+opener = body(connect_views, "    static func open(model: ControllerModel, window: SettingsWindowPresenter,", "\n    }\n}")
+hub_branch = opener.split("let target = SettingsRoute.decide(")[0]
+pin("if SettingsHub.opensHub(classic: UserDefaults.standard.bool(forKey: SettingsHub.classicKey)) {" in hub_branch
+    and "model.settingsHubTarget = scroll" in hub_branch and "model.activityOpenSettings = true" in hub_branch
+    and "openActivity(nil)" in hub_branch and "return" in hub_branch,
+    "SettingsOpener: the hub first (target, Activity on Settings), before the panel-or-window route")
+pin("static func opensHub(classic: Bool) -> Bool { !classic }" in catalog, "the classic switch is the routing rollback too")
+app_src = code(read("Sources/COSControlApp.swift"))
+pin("model.showSettings = {\n            SettingsOpener.open(model: model, window: settingsWindow) {" in app_src
+    and "SettingsOpener.open(model: model, window: settingsWindow, scroll: LiveCues.decisionKeysAnchor)" in app_src
+    and 'SettingsOpener.open(model: model, window: settingsWindow, scroll: "transcription")' in app_src
+    and 'Button("Settings…") { model.showSettings?() }.keyboardShortcut(",")' in app_src
+    and "COSAppDelegate.onSettings = { model.showSettings?() }" in app_src
+    and "model.dictation.openTranscriptionSettings = { [weak model] in model?.showTranscriptionSettings?() }" in app_src,
+    "⌘,, the Dock, the decision-key and transcription openers all go through SettingsOpener")
+pin('Button("Settings…") { model.showSettings?() }' in code(read("Sources/SessionPet.swift"))
+    and 'Button("Open settings") { model.showSettings?() }' in code(read("Sources/ControlSetup.swift")),
+    "the pet's and Welcome's Settings go through SettingsOpener")
+launch = body(activity, "    private func applyLaunchSection() {", "\n        if isolatedWorkPreview {")
+pin("if model.activityOpenSettings {" in launch and "model.activityOpenSettings = false" in launch and "openActivitySettings()" in launch
+    and ".onChange(of: model.activityOpenSettings) { _, _ in applyLaunchSection() }" in activity,
+    "Activity opens Settings for an opener, once")
+follow = body(hub, "    func hubFollowTarget(_ reader: ScrollViewProxy) {", "\n    }\n")
+pin("guard let target = model.settingsHubTarget ?? model.panelScrollTarget else { return }" in follow
+    and "if fromOpener { model.settingsHubTarget = nil } else { model.panelScrollTarget = nil }" in follow
+    and ".onChange(of: model.settingsHubTarget) { _, _ in hubFollowTarget(reader) }" in hub,
+    "the hub lands on an opener's target and consumes it")
+pin("@State private var hubCategory: SettingsHubCategory = SettingsHub.lastCategory()" in views
+    and "UserDefaults.standard.set(category.rawValue, forKey: SettingsHub.lastCategoryKey)" in hub,
+    "a plain Settings opens on the last category")
 page = body(views, "    func hubPage(mode: SettingsHubLayout.Mode) -> some View {", "\n    func hubScroll(")
 pin(".onChange(of: model.panelScrollTarget) { _, _ in hubFollowTarget(reader) }" in page and ".onAppear { hubFollowTarget(reader) }" in page,
     "the hub follows the panel's scroll target, also when it opens with one")
@@ -228,6 +273,47 @@ pin(suite.count('zsh "$ROOT/Tests/run-settings-hub.sh"') == 1 and suite.count('/
     "the full suite runs the hub's checks and these pins once")
 pin('"$ROOT/Sources/SettingsHubCatalog.swift" "$ROOT/Tests/SettingsHubChecks.swift"' in read("Tests/run-settings-hub.sh"),
     "the checks compile the catalog alone")
+
+# 7b. QA fixes on b785daa (2026-10-28), each pinned where it lives.
+pin('if hub != nil {' in panel and 'Button("Use new Settings") { useClassicSettings = false }' in panel,
+    "classic Settings in Activity has its own way back to the hub")
+page = body(views, "    func hubPage(mode: SettingsHubLayout.Mode) -> some View {", "\n    func hubScroll(")
+pin(page.index("SettingsHubSearchField(query: $hubQuery, focused: $hubSearchFocused)") < page.index("ScrollView(.vertical)"),
+    "the narrow search field sits outside the ScrollView whose identity changes, so it keeps focus")
+pin("confirmHubRollback = false" in opened.split("switch category")[0], "a new page cancels an open inline confirm")
+pin("SettingsHubSearch.results(hubQuery, shown: hubGroupShown)" in hub and "guard let group = item.group, shown(group) else { return nil }" in catalog,
+    "search leaves out rows in groups the page does not draw")
+pin('static let accessibilityRepairHint = "Already on? Use Reset and add again in Settings, Session pet."' in code(read("Sources/ControllerModel.swift")),
+    "the Accessibility repair hint names the Session pet card, right in both layouts")
+pin(".keyboardShortcut(backShortcut ? KeyboardShortcut(.leftArrow, modifiers: .command) : nil)" in shell
+    and "backShortcut: todayEnabled && !isolatedWorkPreview)" in activity, "⌘← is registered once: the hub's ‹ only where no toolbar Back has it")
+pin("if settingsHubShowing { settingsHubTodayKeys }" in activity and 'keyboardShortcut(KeyEquivalent("h"), modifiers: [.command, .shift])' in body(activity, "    @ViewBuilder private var settingsHubTodayKeys: some View {", "\n    }\n")
+    and "ActivitySection.allCases.prefix(9)" in activity, "the hub keeps the rail's ⌘0 to ⌘9 and ⌘⇧H in Today")
+pin("@State private var hubInView" not in views, "no unused hub state")
+pin('static let chooseRestarts = "Changing it restarts the server when no work is running."' in shell
+    and "Saved. Restart the server when no work is running to use it." in views,
+    "the folder copy says what the helper does: a drained restart, or a pending change on an older server")
+# Parity (S3 to S9).
+pin("case .addJevKey: model.showDecisionKeySettings?()" in connect_views
+    and 'case .openPermissions: if hosted { model.settingsHubTarget = "hub.privacy.permissions" } else { model.permissionGuide.openInPanel() }' in connect_views
+    and 'Button("Transcription settings") { model.showTranscriptionSettings?() }' in connect_views,
+    "the guide's Add a key, Permissions and Transcription settings land inside the hub")
+strip = body(hub, "    func hubTopStrip(_ reader: ScrollViewProxy) -> some View {", "\n    }\n")
+pin("serverMessages" in strip and hub.count("serverMessages") == 1, "an Apply's progress and notice show on every page, in the top strip")
+video = body(hub, '            hubCard("glasses.video"', "        } advanced: {")
+pin('hubRow("UT-10", detail: "A stopped upload can wait here for 4 hours and block Repair.")' in video,
+    "a stuck upload's warning and Clear stay on the card, not under Advanced")
+stt_hub = body(ask, "    @ViewBuilder private func hubCard(_ settings: SttSettings) -> some View {", "\n    }\n")
+engine_body = body(connect_views, "struct DictationEngineControls: View {", "struct EngineCellsLayout")
+pin('"Dictation engine"' not in stt_hub and "if !hosted, let state = store.rowState(" in engine_body and "!hosted, case .offer(" in engine_body,
+    "the dictation engine has one home (Dictation) and the Parakeet install one (Transcription and voice)")
+escape = body(activity, "    private func handleActivityEscape() -> Bool {", "\n    }\n")
+hub_escape = body(hub, "    func hubEscape() -> Bool {", "\n    }\n")
+pin("if model.settingsHubEscape?() == true { return true }" in escape and escape.index("settingsHubEscape") < escape.index("showingSettings = false")
+    and hub_escape.index("hubQuery") < hub_escape.index("confirmHubRollback")
+    and "model.settingsHubEscape = { hubEscape() }" in hub and "model.settingsHubEscape = nil" in hub,
+    "Escape clears a search, then closes an inline confirm, and only then leaves Settings")
+pin(views.count("if !hubOn { Task { await model.loadOpenPetsCatalog() } }") == 1, "the Characters card leaves the catalog read to the hub's root")
 
 # 8. Words: no em dash or arrow in what the hub says.
 strings = re.findall(r'"((?:[^"\\]|\\.)*)"', code(catalog) + "\n" + shell + "\n" + hub)

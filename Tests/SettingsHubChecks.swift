@@ -68,13 +68,24 @@ import Foundation
     static func routes() {
         // The anchors the classic panel's openers use today (Views.swift, KeyLanesViews.swift, LiveCues.decisionKeysAnchor).
         let expected: [String: (SettingsHubCategory, String)] = [
-            "settings": (.meetings, "meetings.assistant"),
             "transcription": (.voice, "voice.models"),
             "decision-models": (.ai, "ai.decision"),
             "setup-guide": (.general, "general.guide"),
             "key-lanes": (.ai, "ai.keys"),
         ]
-        check(Set(SettingsHubRoute.panelAnchors.keys) == Set(expected.keys), "the routed panel anchors are exactly the five openers' anchors")
+        check(Set(SettingsHubRoute.panelAnchors.keys) == Set(expected.keys), "the routed panel anchors are exactly the four openers' anchors")
+        // The plain Settings… (⌘,, the Dock, the pet, Welcome): no destination, so the hub stays on the last category.
+        check(SettingsHubRoute.destination("settings") == nil, "a plain Settings has no destination: the hub stays where it opens")
+        check(SettingsHub.opensHub(classic: false) && !SettingsHub.opensHub(classic: true), "openers land in the hub unless the classic switch is on")
+        if let defaults = UserDefaults(suiteName: "cos.settings.hub.checks") {
+            defaults.removePersistentDomain(forName: "cos.settings.hub.checks")
+            check(SettingsHub.lastCategory(defaults) == .general, "the first plain Settings opens General")
+            defaults.set(SettingsHubCategory.pet.rawValue, forKey: SettingsHub.lastCategoryKey)
+            check(SettingsHub.lastCategory(defaults) == .pet, "then the category open last")
+            defaults.set("no-such-category", forKey: SettingsHub.lastCategoryKey)
+            check(SettingsHub.lastCategory(defaults) == .general, "an unknown stored category opens General")
+            defaults.removePersistentDomain(forName: "cos.settings.hub.checks")
+        }
         for (anchor, (category, group)) in expected {
             let d = SettingsHubRoute.destination(anchor)
             check(d?.category == category && d?.group == group, "\(anchor) lands on \(category.title), \(group)")
@@ -104,6 +115,19 @@ import Foundation
             check(SettingsHubSearch.rank(fast, query: "Meeting Turbo") == 2, "the old label finds Fast preview by its old name (rank 2)")
         } else { check(false, "UT-05 is in the catalog") }
         check(ids("Meeting Turbo") == ["UT-05"], "only the old label finds Meeting Turbo")
+        // A group the page does not draw (an older server, nothing to show) gives no results to land on.
+        let hidden = SettingsHubSearch.results("restart", shown: { $0 != "system.server" }).flatMap(\.items).map(\.id)
+        check(!hidden.contains("C-01") && SettingsHubSearch.results("restart").flatMap(\.items).map(\.id).contains("C-01"),
+              "search leaves out a row whose group is not drawn")
+        // "Was:" shows only a real former label, one that search finds the row by (QA copy 2026-10-28).
+        for (id, former) in SettingsHubCatalog.formerLabels {
+            let item = SettingsHubCatalog.item(id)
+            check(item != nil && SettingsHubSearch.normalized(item?.old ?? "").contains(SettingsHubSearch.normalized(former))
+                  && SettingsHubSearch.normalized(former) != SettingsHubSearch.normalized(item?.label ?? ""),
+                  "\(id)'s former label \(former) is in its old name and differs from today's")
+        }
+        check(SettingsHubCatalog.item("UT-08")?.formerLabel == nil, "inventory notation is never shown as a former label")
+        check(SettingsHubCatalog.item("UT-01")?.formerLabel == "Run Doctor", "Run checks was Run Doctor")
         // A match only a keyword can make.
         check(ids("byok") == ["KL-01"], "only the keyword finds byok (Your own key)")
         // The rows outside Settings are not searchable at all, not only left out of the sections.

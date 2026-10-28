@@ -468,7 +468,7 @@ for key in ('COS_WHISPER_MEETING_PREVIEW', 'configuredThreadAttach',
 print('default-on gate wiring: 4/4 OK')
 PY
 # and the switched-off state must say so rather than render an ordinary empty list
-/usr/bin/grep -q 'Claude sessions are switched off' "$ROOT/Sources/ActivityWindow.swift"
+/usr/bin/grep -q 'AI sessions are off. Turn on Show AI sessions in Settings, Work and agents.' "$ROOT/Sources/ActivityWindow.swift"
 echo "COS Control: Claude sessions toggle wired helper -> model -> view"
 /usr/bin/grep -q 'MediaTransfers' "$ROOT/Sources/ControllerModel.swift"
 /usr/bin/grep -q 'Handoffs' "$ROOT/Sources/ControllerModel.swift"
@@ -531,11 +531,11 @@ echo "COS Control: Claude sessions toggle wired helper -> model -> view"
 /usr/bin/grep -q 'recoverableOrphanSessionIds' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'waitForOrphanSlot' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'Recover all unsaved recordings' "$ROOT/Sources/Views.swift"
-/usr/bin/grep -q 'Recover all unsaved captures' "$ROOT/Sources/ActivityMeetings.swift"
+/usr/bin/grep -q 'Recover all unsaved recordings' "$ROOT/Sources/ActivityMeetings.swift"
 /usr/bin/grep -q 'recoverableOrphans.isEmpty || !model.strandedCaptures.isEmpty' "$ROOT/Sources/Views.swift"
 /usr/bin/grep -q 'model.recoverAllOrphans' "$ROOT/Sources/Views.swift"
 /usr/bin/grep -q 'model.recoverOrphan' "$ROOT/Sources/Views.swift"
-/usr/bin/grep -q 'Unsaved captures' "$ROOT/Sources/ActivityMeetings.swift"
+/usr/bin/grep -q 'Unsaved recordings' "$ROOT/Sources/ActivityMeetings.swift"
 /usr/bin/grep -q "This is not Speakers" "$ROOT/Sources/ActivityMeetings.swift"
 if /usr/bin/grep -q '/api/meeting/orphans route' "$ROOT/Sources/Views.swift"; then
   echo "COS Control: user-facing copy still tells the user to curl orphans" >&2
