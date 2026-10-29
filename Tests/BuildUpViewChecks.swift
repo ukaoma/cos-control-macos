@@ -421,7 +421,9 @@ import SwiftUI
         // The wire wraps the block, never the Working line: the stage starts below the line.
         check(Answer.working.height > 8 && building.allSatisfy { $0.frame.frame.minY >= Answer.working.maxY - 0.5 }, "answer wraps block",
               "Working line \(Answer.working), wire tops \(Set(building.map { $0.frame.frame.minY }))")
-        check(!landing.isEmpty && landing.allSatisfy { $0.frame.lines.first ?? 0 >= 4 && $0.frame.size.height > 60 }, "answer refit",
+        // Landed, the lines re-fit to the real text (its height over the 17.5 pt pitch, at most 8), never the building block's 16.
+        func refit(_ f: COSBuildUpProbeFrame) -> Int { max(1, min(8, Int((Double(f.size.height) / COSBuildUpPlan.answerPitch).rounded()))) }
+        check(!landing.isEmpty && landing.allSatisfy { $0.frame.lines.first == refit($0.frame) && $0.frame.lines.first ?? 0 >= 4 && $0.frame.size.height > 60 }, "answer refit",
               "landed, the wire re-fits to the real text's lines: \(landing.filter { !(($0.frame.lines.first ?? 0) >= 4 && $0.frame.size.height > 60) }.map { "\($0.frame.size.height) \($0.frame.lines)" }.prefix(6)) of \(landing.count)")
     }
 
