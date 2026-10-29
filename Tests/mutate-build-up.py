@@ -136,7 +136,7 @@ MUTANTS = [
     # 25 pt line), so dropping the floor is an equivalent mutant while answerMin is 120.
     ("answer: the block centred", "lines: lines, lineGap: answerPitch - answerLine, topAligned: true)]", "lines: lines, lineGap: answerPitch - answerLine, topAligned: false)]", "answer size"),
     ("answer: the median over every answer", "        let window = history.suffix(answerWindow).sorted()\n", "        let window = history.sorted()\n", "answer reserve"),
-    ("answer: no floor", "        return min(answerMax, max(answerMin, median))\n", "        return min(answerMax, median)\n", "answer reserve"),
+    ("answer: no floor", "        return min(answerMax, max(answerMin, median))\n", "        return min(answerMax, median)\n", "answer equal"),
     ("answer: no ceiling", "        return min(answerMax, max(answerMin, median))\n", "        return max(answerMin, median)\n", "answer reserve"),
     ("answer: the mean, not the median", "        let median = window.count % 2 == 1 ? window[mid] : (window[mid - 1] + window[mid]) / 2\n",
      "        let median = window.reduce(0, +) / Double(window.count)\n", "answer reserve"),
@@ -158,7 +158,7 @@ MUTANTS = [
     ("column: the gutters ignored", "let room = max(0, width - 2 * inset)", "let room = max(0, width)", "column"),
     ("column: the spine loses its gap", "        return rows(in: width, layout).x - gap\n", "        return layout.spineX\n", "column"),
     ("column: the tune's column dropped", "        base.column = tune.column\n", "", "column"),
-    ("stagger: rows past 8 keep staggering", "static func lane(_ i: Int) -> Int { min(max(0, i), staggered - 1) }", "static func lane(_ i: Int) -> Int { max(0, i) }", "stagger cap"),
+    ("stagger: rows past 8 keep staggering", "static func lane(_ i: Int) -> Int { min(max(0, i), staggered - 1) }", "static func lane(_ i: Int) -> Int { max(0, i) }", "land duration"),
     # Not mutated, on purpose: landDuration over min(count, maxItems) instead of staggered. Rows past the eighth share its
     # lane, so their steps end with the eighth's and the result is identical (an equivalent mutant).
     ("reserve: nothing reserved", "        if shape == .answer { return answerBlock(answers) }\n        return height(items(shape, tune), layout: layout)", "        if shape == .answer { return answerBlock(answers) }\n        return 0", "reserve"),
@@ -169,7 +169,7 @@ MUTANTS = [
     ("site: review meetings at the shape's height", "static let reviewMeetings = COSBuildUpTune(top: 0, leading: 0, trailing: 0, spacing: 1, rowHeight: 76, column: .speakers)",
      "static let reviewMeetings = COSBuildUpTune(top: 0, leading: 0, trailing: 0, spacing: 1, column: .speakers)", "site geometry"),
     ("site: the first component's height ignored", "        if let first = tune.firstHeight, !all.isEmpty { all[0].height = first }\n", "", "site geometry"),
-    ("site: Needs you reserves short rows", "static let needsYou = COSBuildUpTune(top: 0, spacing: 0, rowHeight: 150)", "static let needsYou = COSBuildUpTune(top: 0, spacing: 0, rowHeight: 46)", "reserve"),
+    ("site: Needs you reserves short rows", "static let needsYou = COSBuildUpTune(top: 0, spacing: 0, rowHeight: 150)", "static let needsYou = COSBuildUpTune(top: 0, spacing: 0, rowHeight: 46)", "site geometry"),
     ("junction: the middle of a row", "top(index, in: items, layout: layout) + min(18, items[index].height / 2)",
      "top(index, in: items, layout: layout) + items[index].height / 2", "junction"),
     ("stagger: draw 40 ms", "static let drawStagger = 0.05, traceStagger = 0.045", "static let drawStagger = 0.04, traceStagger = 0.045", "stagger"),

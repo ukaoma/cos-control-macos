@@ -56,11 +56,11 @@ MUTANTS = [
     ("the still block draws the wire", MOTION, "background: background, wired: !still)", "background: background, wired: true)", "answer still"),
     ("Reduce Motion drops the reservation", MOTION, "let reserving = COSBuildUpPlan.reserves(phase, reduceMotion: reduceMotion) || still",
      "let reserving = COSBuildUpPlan.reserves(phase, reduceMotion: reduceMotion)", "answer still"),
-    ("the running card ignores the Working line", MODELS, "static let answerWorking = 25.0,", "static let answerWorking = 0.0,", "answer equal"),
+    ("the running card ignores the Working line", MODELS, "static let answerWorking = 25.0,", "static let answerWorking = 0.0,", "geometry top"),
     ("a stopped answer is kept", MOTION, "                .onAppear { if counts { COSBuildUpSession.recordAnswer(key, height: Double(g.size.height)) } }",
      "                .onAppear { COSBuildUpSession.recordAnswer(key, height: Double(g.size.height)) }", "answer counts"),
     ("the wire wraps the Working line", MOTION, "    private var reserve: Double? { COSBuildUpPlan.reserve(shape, tune, answers: COSBuildUpSession.answers) }",
-     "    private var reserve: Double? { COSBuildUpPlan.reserve(shape, tune, answers: COSBuildUpSession.answers).map { shape == .answer ? $0 + COSBuildUpPlan.answerWorking : $0 } }", "answer size"),
+     "    private var reserve: Double? { COSBuildUpPlan.reserve(shape, tune, answers: COSBuildUpSession.answers).map { shape == .answer ? $0 + COSBuildUpPlan.answerWorking : $0 } }", "geometry height"),
     ("the meeting body leaves its column", MODELS, "static let meetingBody = COSBuildUpTune(top: 24, spacing: 0, rowHeight: 79, column: .meetingBody, card: false, lines: 3, firstHeight: 101)",
      "static let meetingBody = COSBuildUpTune(top: 24, spacing: 0, rowHeight: 79, card: false, lines: 3, firstHeight: 101)", "geometry width"),
 ]
