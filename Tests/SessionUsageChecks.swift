@@ -272,6 +272,8 @@ import Foundation
                         model("OpenAI", "charlie", total: 2000, read: 1000, events: 9, priced: 4, usd: 5),
                         model("Anthropic", "delta", total: 500, read: 0, events: 3, priced: 0, usd: 0),
                         model("OpenAI", "echo", total: 4000, read: 400, events: 7, priced: 0, usd: 0)]
+        let twins = [model("OpenAI", "same", total: 100, read: 0, events: 1, priced: 1, usd: 1), model("Anthropic", "same", total: 100, read: 0, events: 1, priced: 1, usd: 1)]
+        check(P.sortModels(twins, by: .tokens).map(\.provider) == ["Anthropic", "OpenAI"] && P.sortModels(twins, by: .tokens, ascending: true).map(\.provider) == ["Anthropic", "OpenAI"], "ties break on provider|model in both directions")
         func order(_ sort: SessionUsageModelSort, _ ascending: Bool) -> [String] { P.sortModels(sortRows, by: sort, ascending: ascending).map(\.model) }
         check(order(.tokens, false) == ["echo", "bravo", "charlie", "alpha", "delta"] && order(.tokens, true) == ["delta", "alpha", "charlie", "bravo", "echo"], "sort by tokens both ways")
         check(order(.cost, false) == ["alpha", "charlie", "bravo", "delta", "echo"], "API value descending, unpriced last")
@@ -281,8 +283,6 @@ import Foundation
         check(order(.model, true) == ["alpha", "bravo", "charlie", "delta", "echo"] && order(.model, false) == ["echo", "delta", "charlie", "bravo", "alpha"], "sort by model name both ways")
         check(P.defaultAscending(.model) && !P.defaultAscending(.tokens) && P.directionLabel(SessionUsageModelSort.model, ascending: true) == "A to Z"
               && P.directionLabel(SessionUsageModelSort.cost, ascending: false) == "Highest first" && P.directionLabel(SessionUsageDaySort.date, ascending: false) == "Newest first", "sort direction defaults and labels")
-        let twins = [model("OpenAI", "same", total: 100, read: 0, events: 1, priced: 1, usd: 1), model("Anthropic", "same", total: 100, read: 0, events: 1, priced: 1, usd: 1)]
-        check(P.sortModels(twins, by: .tokens).map(\.provider) == ["Anthropic", "OpenAI"] && P.sortModels(twins, by: .tokens, ascending: true).map(\.provider) == ["Anthropic", "OpenAI"], "ties break on provider|model in both directions")
         check(P.aggregate(sortRows).first { $0.model == "alpha" }?.day == "" && P.aggregate(sortRows).first { $0.model == "alpha" }?.counts.total == 1000, "aggregate spans days without an arbitrary day id")
         func day(_ d: String, _ total: Int64, _ events: Int, _ priced: Int, _ usd: Double) -> SessionUsageBucket {
             SessionUsageBucket(day: d, provider: "OpenAI", model: "gpt-6-astra", counts: SessionUsageCounts(input: total), events: events, pricedEvents: priced, estimatedUSD: usd)
@@ -299,7 +299,7 @@ import Foundation
         // Period comparison: like-for-like windows, explicit ranges, partial coverage.
         let priorRow = SessionUsageBucket(day: "2026-10-17", provider: "OpenAI", model: "gpt-6-astra", counts: SessionUsageCounts(input: 5, output: 10, cacheRead: 450, cacheWrite: 35), events: 1, pricedEvents: 1, estimatedUSD: 1.5)
         let cmp = P.comparePeriod(allRows: [priorRow, pricedRow, nextRow], selectedRows: [pricedRow, nextRow], period: "Last 7 days", now: monday, timeZone: chicago)
-        check(cmp.recordedDays == 2 && cmp.dailyAvgTokens == 1000 && cmp.dailyAvgRecords == 2, "daily averages divide by recorded days")
+        check(cmp.dailyAvgTokens == 1000 && cmp.dailyAvgRecords == 2, "daily averages divide by recorded days")
         check(cmp.currentRange == "2026-10-20"..."2026-10-26" && cmp.priorRange == "2026-10-13"..."2026-10-19" && cmp.includesToday && cmp.hasPriorBaseline, "prior 7-day window aligned; current window flags today")
         check(cmp.tokenDeltaLabel == "+300.0%" && cmp.recordsDeltaLabel == "+300.0%" && cmp.costDeltaLabel == "+100.0%", "deltas compare current to prior window")
         check(cmp.costDeltaPartial && cmp.priorPriced && cmp.priorUSD == 1.5, "API value delta marked partial when a window has unpriced records; prior dollars kept")

@@ -10,9 +10,10 @@ Usage: python3 Tests/mutate-session-usage.py <repo root>
 """
 import pathlib, shutil, subprocess, sys, tempfile, time
 
+sys.stdout.reconfigure(line_buffering=True)  # progress reaches a log file as each mutant finishes
 root = pathlib.Path(sys.argv[1]).resolve()
 CORE = "Sources/SessionUsageCore.swift"
-# (name, old, new, the check label that must fail)
+# (name, old, new, the check label that must fail, or a tuple when one primitive feeds several checks)
 MUTANTS = [
     ("inspection cleared on a scale change",
      "if inspection.scale == scale { return keys.contains(inspection.key) ? inspection : nil }",
@@ -119,7 +120,8 @@ MUTANTS = [
     ("week starts on Sunday",
      "var weekdayFromMonday: Int { ((serial + 3) % 7 + 7) % 7 }",
      "var weekdayFromMonday: Int { ((serial + 4) % 7 + 7) % 7 }",
-     "Saturday maps to Monday of its week"),
+     # The weekday primitive also sets Last weekend, which is checked earlier: either check pins it.
+     ("Saturday maps to Monday of its week", "last completed weekend boundaries")),
     ("boundary week title not clamped",
      "let (start, end) = clamp(first, sunday)",
      "let (start, end) = (first, sunday)",
@@ -159,7 +161,7 @@ try:
         code, output = compile_and_run(work)
         if code == 2: verdict = "KILLED (did not compile)"
         elif code == 0: verdict = "SURVIVED"; survivors.append(name)
-        elif f"Fatal error: {label}" in output: verdict = "KILLED"
+        elif any(f"Fatal error: {one}" in output for one in ((label,) if isinstance(label, str) else label)): verdict = "KILLED"
         else:
             verdict = "MISATTRIBUTED"; misattributed.append(name)
             failed = [line for line in output.splitlines() if "Fatal error:" in line]

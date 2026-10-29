@@ -536,7 +536,6 @@ enum SessionUsagePresentation {
     }
 
     struct PeriodComparison: Sendable {
-        let recordedDays: Int
         let dailyAvgTokens: Int64
         let dailyAvgRecords: Int
         let dailyAvgUSD: Double
@@ -585,7 +584,7 @@ enum SessionUsagePresentation {
         let peak = peakDay(selectedRows, measure: measure, excludingCacheReads: excludingCacheReads)
         let today = dayFormatter(timeZone: timeZone).string(from: now)
         guard let windows = comparisonWindows(period: period, now: now, timeZone: timeZone, customStart: customStart, customEnd: customEnd) else {
-            return PeriodComparison(recordedDays: days, dailyAvgTokens: avgTokens, dailyAvgRecords: avgRecords, dailyAvgUSD: avgUSD, peakDay: peak,
+            return PeriodComparison(dailyAvgTokens: avgTokens, dailyAvgRecords: avgRecords, dailyAvgUSD: avgUSD, peakDay: peak,
                 currentRange: nil, priorRange: nil, includesToday: false, priorTokens: 0, priorRecords: 0, priorUSD: 0, priorPriced: false,
                 hasPriorBaseline: false, partialPriorHistory: false, costDeltaPartial: false,
                 tokenDeltaLabel: "Unavailable", recordsDeltaLabel: "Unavailable", costDeltaLabel: "Unavailable")
@@ -603,7 +602,7 @@ enum SessionUsagePresentation {
         let tokDelta = hasBaseline ? deltaPercent(current: Double(curTokens), prior: Double(pTokens)) : "Unavailable"
         let recDelta = hasBaseline ? deltaPercent(current: Double(curEvents), prior: Double(pEvents)) : "Unavailable"
         let usdDelta = (hasBaseline && curPriced > 0 && pPriced > 0) ? deltaPercent(current: curUSD, prior: pUSD) : "Unavailable"
-        return PeriodComparison(recordedDays: days, dailyAvgTokens: avgTokens, dailyAvgRecords: avgRecords, dailyAvgUSD: avgUSD, peakDay: peak,
+        return PeriodComparison(dailyAvgTokens: avgTokens, dailyAvgRecords: avgRecords, dailyAvgUSD: avgUSD, peakDay: peak,
             currentRange: windows.current, priorRange: prior, includesToday: windows.current.contains(today),
             priorTokens: pTokens, priorRecords: pEvents, priorUSD: pUSD, priorPriced: pPriced > 0,
             hasPriorBaseline: hasBaseline, partialPriorHistory: partialPrior,

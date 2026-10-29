@@ -1083,7 +1083,8 @@ struct SessionUsageChart: View {
                             let x = P.tooltipX(pointer: Double(hoverX), cardWidth: Double(cardWidth), containerWidth: Double(geometry.size.width))
                             SessionUsagePeriodDetail(title: periodTitle(key), rows: periodValues(key), excludingCacheReads: excludeCacheReads, measure: measure, compact: true)
                                 .frame(width: contentWidth).fixedSize(horizontal: false, vertical: true)
-                                .frame(maxHeight: maxContentHeight, alignment: .top).clipped()
+                                // A max-only frame grows to its proposal; fixing it vertically keeps the card at its content height.
+                                .frame(maxHeight: maxContentHeight, alignment: .top).clipped().fixedSize(horizontal: false, vertical: true)
                                 .padding(padding).background(COSPalette.card, in: RoundedRectangle(cornerRadius: 10))
                                 .overlay(RoundedRectangle(cornerRadius: 10).stroke(COSPalette.border))
                                 .shadow(color: .black.opacity(0.14), radius: 12, y: 4)
@@ -1113,6 +1114,7 @@ struct SessionUsagePeriodDetail: View {
     }
     private func tokens(_ counts: SessionUsageCounts) -> String { SessionUsagePricing.tokens(SessionUsagePresentation.tokenCount(counts, excludingCacheReads: excludingCacheReads)) }
     private var records: Int { rows.reduce(0) { $0 + $1.events } }
+    private var recordsLine: String { "\(records.formatted()) usage records · \(rows.reduce(0) { $0 + $1.pricedEvents }.formatted()) priced" }
     /// The headline follows the chart's measure; the other two figures stay beside it.
     private var headline: (String, String) {
         switch measure {
@@ -1122,8 +1124,14 @@ struct SessionUsagePeriodDetail: View {
         }
     }
     var body: some View {
-        VStack(alignment: .leading, spacing: compact ? 8 : 10) {
-            Text(title).font(COSType.body(14, weight: .semibold))
+        VStack(alignment: .leading, spacing: compact ? 5 : 10) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(title).font(COSType.body(14, weight: .semibold))
+                if compact {
+                    Spacer(minLength: 8)
+                    Text(recordsLine).foregroundStyle(COSPalette.subtle)
+                }
+            }
             HStack {
                 Text(headline.0).font(COSType.body(18, weight: .semibold)).monospacedDigit()
                     .help(SessionUsagePresentation.tokenCount(counts, excludingCacheReads: excludingCacheReads).formatted() + " tokens")
@@ -1134,7 +1142,7 @@ struct SessionUsagePeriodDetail: View {
                 Text(excludingCacheReads ? "Cache reads excluded from token totals. API value includes all priced tokens." : "All token categories included. Estimated API value, not your bill.")
                     .font(COSType.body(11)).foregroundStyle(COSPalette.subtle)
             }
-            Text("\(records.formatted()) usage records · \(rows.reduce(0) { $0 + $1.pricedEvents }.formatted()) priced").foregroundStyle(COSPalette.subtle)
+            if !compact { Text(recordsLine).foregroundStyle(COSPalette.subtle) }
             ForEach(SessionUsagePresentation.summarize(rows, by: \.provider, excludingCacheReads: excludingCacheReads)) { provider in
                 HStack {
                     Text(provider.id).fontWeight(.semibold)
@@ -1159,7 +1167,7 @@ struct SessionUsagePeriodDetail: View {
             if compact {
                 Text("Input \(SessionUsagePricing.tokens(counts.input)) · Output \(SessionUsagePricing.tokens(counts.output)) · Cache read \(SessionUsagePricing.tokens(counts.cacheRead)) · Cache write \(SessionUsagePricing.tokens(counts.cacheWrite))")
                     .foregroundStyle(COSPalette.subtle)
-                Text(models.count > compactModelLimit ? "\(models.count - compactModelLimit) more models. Click to keep the full breakdown open." : "Click to keep this breakdown open")
+                Text(models.count > compactModelLimit ? "\(models.count - compactModelLimit) more \(models.count - compactModelLimit == 1 ? "model" : "models"). Click to keep the full breakdown open." : "Click to keep this breakdown open")
                     .foregroundStyle(COSPalette.subtle)
             } else {
                 Divider()

@@ -28,6 +28,7 @@ Sources: [Anthropic pricing](https://platform.claude.com/docs/en/about-claude/pr
 - `Sources/SessionUsageView.swift`: store, filters, charts and coverage UI.
 - `HelperSources/main.swift`: `session-usage` and `session-usage --read-only` helper commands.
 - `Sources/ControllerModel.swift`, `Sources/ActivityWindow.swift`: lifecycle and Sessions integration.
+- `Tests/mutate-session-usage.py`: serial mutation gate for the slicing rules (green baseline first; each mutant must fail its named check).
 - `Tests/run-session-usage.sh`: parsing, deduplication, cumulative counters, cache pricing, month boundaries, retained history, partial writes, archive/model changes and unknown-price fixtures.
 - `Tests/SessionUsageRender.swift`: offscreen light/dark renders at 800 and 1200 points. Never activates or orders in a window.
 - `Tests/SessionUsageCanary.swift`: bounded real-log import with the database restricted to `/tmp`; prints aggregates only. It does not modify source sessions.
