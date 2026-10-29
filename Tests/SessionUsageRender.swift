@@ -13,7 +13,7 @@ import SwiftUI
         for day in 1...25 {
             for (index, model) in ["claude-opus-5-5", "gpt-6-astra", "unpriced-model"].enumerated() {
                 rows.append(SessionUsageBucket(day: month + String(format: "-%02d", day), provider: index == 0 ? "Anthropic" : "OpenAI", model: model,
-                    counts: SessionUsageCounts(input: Int64(day*2300), output: Int64(day*900), cacheRead: Int64(day*70000)),
+                    counts: SessionUsageCounts(input: Int64(day*2300), output: Int64(day*900), cacheRead: Int64(day*70000), cacheWrite: Int64(day*3100)),
                     events: 10, pricedEvents: index == 2 ? 0 : 10, estimatedUSD: index == 2 ? 0 : Double(day)*0.21))
             }
         }
@@ -38,9 +38,16 @@ import SwiftUI
             var failed = false
             var pending = false
             var minimumOnly = false
+            var scale: SessionUsageTimeScale? = nil
+            var measure: SessionUsageMeasure? = nil
+            var series: SessionUsageSeries = .providers
+            var lineChart = true
+            var provider = "All providers"
         }
         let cases: [PageCase] = [
             PageCase(name: "range"),
+            PageCase(name: "weekly-categories", scale: .weekly, series: .categories, lineChart: false),
+            PageCase(name: "records-filtered", minimumOnly: true, measure: .records, provider: "Anthropic"),
             PageCase(name: "history", period: "All history", inspection: "2026-08"),
             PageCase(name: "custom", period: "Custom dates", inspection: month + "-24"),
             PageCase(name: "90days", period: "Last 90 days"),
@@ -63,10 +70,12 @@ import SwiftUI
                 pageStore.report = report
                 if fixture.failed { pageStore.error = "Usage could not refresh: fixture helper unavailable. Showing the last recorded history." }
                 let dates = fixture.reversed ? (Date(), Calendar.current.date(byAdding: .day, value: -1, to: Date())!) : nil
-                let height = fixture.expanded ? 3200.0 : 2000.0
+                let height = fixture.expanded ? 3400.0 : 2200.0
                 let page = SessionUsageView(store: pageStore, initialPeriod: fixture.period, initialInspection: fixture.inspection,
                     initialDates: dates, initialCostChart: fixture.cost, initialExcludeCacheReads: fixture.cacheExcluded,
-                    initialDayBreakdownExpanded: fixture.expanded)
+                    initialDayBreakdownExpanded: fixture.expanded, initialTimeScale: fixture.scale,
+                    initialMeasure: fixture.measure, initialSeries: fixture.series,
+                    initialLineChart: fixture.lineChart, initialProvider: fixture.provider)
                 let host = NSHostingView(rootView: page.cosControlTheme().frame(width: width, height: height).background(COSPalette.panel))
                 let window = NSWindow(contentRect: NSRect(x: -20000, y: -20000, width: width, height: height), styleMask: [.borderless], backing: .buffered, defer: false)
                 window.isReleasedWhenClosed = false

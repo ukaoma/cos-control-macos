@@ -169,6 +169,54 @@ import Foundation
         let noReads = SessionUsagePresentation.tokenMix(displayCounts, excludingCacheReads: true)
         check(mix.map(\.id) == ["Uncached input", "Output", "Cache read", "Cache write"] && mix.reduce(0) { $0 + $1.count } == displayCounts.total, "token mix is disjoint and reconciles to total")
         check(noReads.map(\.id) == ["Uncached input", "Output", "Cache write"] && noReads.reduce(0) { $0 + $1.count } == 100, "token mix exclusion retains cache writes and reconciles to displayed denominator")
+
+        // New slicing, weekly aggregation, category cost mix, period comparison, sorting, and export checks.
+        check(SessionUsagePresentation.periodKey(for: "2026-10-24", scale: .weekly, timeZone: chicago) == "2026-10-19", "Saturday maps to Monday of its reporting-zone week")
+        check(SessionUsagePresentation.periodKey(for: "2026-10-25", scale: .weekly, timeZone: chicago) == "2026-10-19", "Sunday stays in same Monday–Sunday week")
+        check(SessionUsagePresentation.periodKey(for: "2026-10-26", scale: .weekly, timeZone: chicago) == "2026-10-26", "Monday starts a new week")
+        check(SessionUsagePresentation.periodTitle(for: "2026-10-19", scale: .weekly, timeZone: chicago).contains("Oct 19") && SessionUsagePresentation.periodTitle(for: "2026-10-19", scale: .weekly, timeZone: chicago).contains("Oct 25"), "weekly title spans Monday through Sunday")
+
+        // Category cost decomposition reconciles to bucket estimatedUSD and isolates Anthropic 1h cache write premium.
+        let opusBucket = first.buckets[0]
+        let opusCat = SessionUsagePricing.categoryUSD(for: opusBucket)
+        let catSum = opusCat.input + opusCat.output + opusCat.cacheRead + opusCat.cacheWrite
+        check(abs(catSum - opusBucket.estimatedUSD) < 1e-12, "category USD reconciles to stored bucket estimatedUSD")
+        check(abs(opusCat.input - 10 * 4.0 / 1e6) < 1e-12 && abs(opusCat.output - 20 * 20.0 / 1e6) < 1e-12, "uncached input and output keep exact rates")
+        let costCategories = SessionUsagePresentation.costMix([opusBucket, nextRow])
+        check(abs(costCategories.reduce(0.0) { $0 + $1.estimatedUSD } - opusBucket.estimatedUSD) < 1e-12, "costMix ignores unpriced rows and sums to priced total")
+
+        // Period comparison: daily averages, peak day, prior window bounds, and honest missing-baseline handling.
+        let priorRow = SessionUsageBucket(day: "2026-10-17", provider: "OpenAI", model: "gpt-6-astra", counts: SessionUsageCounts(input: 5, output: 10, cacheRead: 450, cacheWrite: 35), events: 1, pricedEvents: 1, estimatedUSD: 1.5)
+        let cmp = SessionUsagePresentation.comparePeriod(allRows: [priorRow, pricedRow, nextRow], selectedRows: [pricedRow, nextRow], period: "Last 7 days", now: monday, timeZone: chicago)
+        check(cmp.recordedDays == 2 && cmp.dailyAvgTokens == 1000 && cmp.dailyAvgRecords == 2, "daily averages divide by recorded days")
+        check(cmp.peakDay?.id == "2026-10-24", "peak day identified")
+        check(cmp.priorRangeLabel == "2026-10-13 – 2026-10-19" && cmp.hasPriorBaseline, "prior 7-day window aligned")
+        check(cmp.tokenDeltaLabel == "+300.0%" && cmp.recordsDeltaLabel == "+300.0%" && cmp.costDeltaLabel == "+100.0%", "deltas compare current to prior window")
+        let noPrior = SessionUsagePresentation.comparePeriod(allRows: [pricedRow], selectedRows: [pricedRow], period: "Last 7 days", now: monday, timeZone: chicago)
+        check(!noPrior.hasPriorBaseline && noPrior.tokenDeltaLabel == "Unavailable", "absent prior window is Unavailable, never +infinity")
+
+        // Model and day sorting.
+        var cheapHighRecords = pricedRow
+        cheapHighRecords.model = "claude-haiku-4-5"; cheapHighRecords.provider = "Anthropic"
+        cheapHighRecords.counts = SessionUsageCounts(input: 50, output: 50, cacheRead: 10, cacheWrite: 0)
+        cheapHighRecords.events = 25; cheapHighRecords.pricedEvents = 25; cheapHighRecords.estimatedUSD = 0.25
+        let byRecords = SessionUsagePresentation.sortModels([pricedRow, cheapHighRecords], by: .records)
+        check(byRecords.first?.model == "claude-haiku-4-5", "sort models by usage records")
+        let byCost = SessionUsagePresentation.sortModels([pricedRow, cheapHighRecords, nextRow], by: .cost)
+        check(byCost.first?.model == "gpt-6-astra", "sort models by API value")
+        let byCache = SessionUsagePresentation.sortModels([pricedRow, cheapHighRecords], by: .cacheShare)
+        check(byCache.first?.model == "gpt-6-astra", "sort models by cache read share")
+        let daysByCost = SessionUsagePresentation.sortDays([pricedRow, nextRow], by: .cost)
+        check(daysByCost.first?.id == "2026-10-24" && daysByCost.last?.id == "2026-10-25", "unpriced days sort below priced days on cost sort")
+
+        // CSV and JSON export.
+        let csv = SessionUsagePresentation.exportCSV([pricedRow, nextRow], excludingCacheReads: true)
+        check(csv.contains("2026-10-24,OpenAI,gpt-6-astra,100,1000,10,20,900,70,2,2,3.000000,priced"), "CSV includes both displayed and all tokens")
+        check(csv.contains("2026-10-25,OpenAI,gpt-6-astra,100,1000,10,20,900,70,2,0,,unpriced"), "CSV leaves unpriced USD blank rather than 0")
+        let json = SessionUsagePresentation.exportJSON([pricedRow, nextRow], period: "Last 7 days", provider: "All providers", model: "All models", excludingCacheReads: true, timeZone: "America/Chicago", pricingVersion: SessionUsagePricing.version)
+        check(json.contains("\"displayedTokens\" : 200") && json.contains("\"allTokens\" : 2000") && json.contains("\"hasUnpricedRecords\" : true"), "JSON export reconciles filtered slice")
+
+        print("PASS: weekly buckets, category USD mix, period comparisons, table sorting and CSV/JSON export")
         print("PASS: 30/90/custom dates, DST/leap/calendar boundaries, provider/day summaries and token mix")
         print("PASS: usage period boundaries, timezone, token/category shares, tooltip aggregation and unknown-price handling")
         print("PASS: usage parsing, deduplication, cache pricing, local dates, reset, partial append, retention and unknown coverage")
