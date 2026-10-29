@@ -15976,6 +15976,134 @@ final class COSControlHelper {
         }
     }
 
+    // mac-native-v1 is a full replacement, checked against original ASR and
+    // the server's exact raw-source spans. Never render projected text/clocks.
+    private static func liveTranscriptNativeOverlay(_ object: [String: Any], sessionId: String,
+                                                     originals: [Int: [String: Any]]) throws -> [Int: String] {
+        func invalid() -> LiveTranscriptFailure { LiveTranscriptFailure(reason: "speaker_projection_invalid") }
+        func integer(_ value: Any?) -> Int? {
+            guard let n = value as? NSNumber, CFGetTypeID(n) != CFBooleanGetTypeID(), n.doubleValue.isFinite,
+                  n.doubleValue >= 0, n.doubleValue <= 9_007_199_254_740_991, n.doubleValue == n.doubleValue.rounded() else { return nil }
+            return Int(n.doubleValue)
+        }
+        func sample(_ value: Any?) -> Int? {
+            guard let n = value as? NSNumber, CFGetTypeID(n) != CFBooleanGetTypeID(), n.doubleValue.isFinite, n.doubleValue >= 0 else { return nil }
+            let count = n.doubleValue * 16
+            guard count <= 9_007_199_254_740_991, abs(count - count.rounded()) <= 0.000001 else { return nil }
+            return Int(count.rounded())
+        }
+        func matches(_ value: Any?, _ pattern: String) -> Bool {
+            guard let text = value as? String else { return false }
+            return text.range(of: pattern, options: .regularExpression) != nil
+        }
+        func anonymous(_ value: Any?) -> Bool {
+            guard let text = value as? String else { return false }
+            return ["", "Ext", "Unknown", "Unidentified"].contains(text) || matches(text, #"^Voice [1-9][0-9]?$"#)
+        }
+        func protected(_ row: [String: Any]) -> Bool {
+            for key in ["speakerCorrectionBatchId", "speakerCorrectionId", "manualSpeaker", "speakerManuallyAssigned", "confirmedByHuman", "manuallyAssigned", "manuallyCorrected"] {
+                guard let value = row[key], !(value is NSNull) else { continue }
+                if let n = value as? NSNumber { if n.doubleValue != 0 { return true } }
+                else if let text = value as? String { if !text.isEmpty { return true } }
+                else { return true }
+            }
+            return ["speakerOrigin", "speakerSource", "speakerPolicy", "speakerProvenance", "source"].contains {
+                matches(row[$0], "(?i)manual|human|correction|confirmed")
+            }
+        }
+        func eligible(_ source: [String: Any]) -> Bool {
+            guard anonymous(source["speaker"]), !protected(source), source["overlap"] as? Bool != true, source["mixedSpeakers"] as? Bool != true else { return false }
+            for key in ["segments", "finalSegments", "words"] where source[key] != nil {
+                guard let nested = source[key] as? [[String: Any]] else { return false }
+                for row in nested {
+                    guard !protected(row), row["overlap"] as? Bool != true, row["mixedSpeakers"] as? Bool != true else { return false }
+                    if key == "words" && row["speaker"] == nil { continue }
+                    guard anonymous(row["speaker"]), row["speaker"] as? String == source["speaker"] as? String else { return false }
+                }
+            }
+            return true
+        }
+        func same(_ a: [String: Any], _ b: [String: Any]) -> Bool {
+            guard let left = try? JSONSerialization.data(withJSONObject: a, options: [.sortedKeys]),
+                  let right = try? JSONSerialization.data(withJSONObject: b, options: [.sortedKeys]) else { return false }
+            return left == right // NSNumber dictionary equality confuses false/0.
+        }
+        func stripped(_ chunk: [String: Any]) -> [String: Any]? {
+            var copy = chunk
+            copy.removeValue(forKey: "speaker")
+            for key in ["segments", "finalSegments", "words"] where chunk[key] != nil {
+                guard let rows = chunk[key] as? [[String: Any]] else { return nil }
+                copy[key] = rows.map { row -> [String: Any] in var next = row; next.removeValue(forKey: "speaker"); return next }
+            }
+            return copy
+        }
+        guard sessionId.hasPrefix("mac_"), object["sourceType"] as? String == "mac_system_audio",
+              let revision = integer(object["speakerRevision"]),
+              let state = object["macSpeakerLive"] as? [String: Any], integer(state["version"]) == 1,
+              state["captureId"] as? String == sessionId, integer(state["revision"]) == revision,
+              let generation = state["generation"] as? String, !generation.isEmpty, generation.count <= 200,
+              matches(state["modelSHA256"], #"^[a-f0-9]{64}$"#), matches(state["profileSHA256"], #"^[a-f0-9]{64}$"#),
+              let spans = state["projections"] as? [[String: Any]], spans.count <= 10_000,
+              let rows = object["speakerProjectedChunksIndexed"] as? [[String: Any]], rows.count == originals.count
+        else { throw invalid() }
+        var byIndex: [Int: [String: Any]] = [:]
+        var identities: [String: String] = [:], labels: [String: String] = [:]
+        for span in spans {
+            guard let index = integer(span["rawChunkIndex"]), index < 10_000, byIndex[index] == nil,
+                  matches(span["audioSHA256"], #"^[a-f0-9]{64}$"#), matches(span["pcmSHA256"], #"^[a-f0-9]{64}$"#),
+                  let start = integer(span["startSample"]), let end = integer(span["endSample"]), end > start, end - start <= 480_000,
+                  let identity = span["identityId"] as? String, matches(identity, #"^acoustic_[a-f0-9]{16,64}$"#),
+                  let label = span["displayLabel"] as? String,
+                  let evidence = span["evidenceIds"] as? [String], (2...64).contains(evidence.count), Set(evidence).count == evidence.count,
+                  evidence.allSatisfy({ matches($0, #"^[A-Za-z0-9_:-]{1,160}$"#) }) else { throw invalid() }
+            if let name = span["profileName"] {
+                guard let text = name as? String, text == label, text.utf16.count <= 40, text.split(whereSeparator: { $0.isWhitespace }).count <= 4,
+                      matches(text, #"^[\p{L}\p{M}][\p{L}\p{M}\s'’-]*$"#),
+                      !matches(text, #"(?i)^(my|me|mine|myself|voice|voiceprint)\b"#) else { throw invalid() }
+            } else {
+                guard matches(label, #"^Voice [1-9][0-9]?$"#), labels[label] == nil || labels[label] == identity else { throw invalid() }
+                labels[label] = identity
+            }
+            guard identities[identity] == nil || identities[identity] == label else { throw invalid() }
+            identities[identity] = label; byIndex[index] = span
+        }
+        let ordered = spans.sorted { (integer($0["startSample"]) ?? 0) < (integer($1["startSample"]) ?? 0) }
+        for i in ordered.indices where i > 0 {
+            guard (integer(ordered[i - 1]["endSample"]) ?? 0) <= (integer(ordered[i]["startSample"]) ?? 0) else { throw invalid() }
+        }
+        for (index, source) in originals {
+            guard let originalLabel = source["speaker"] as? String, let identity = labels[originalLabel] else { continue }
+            guard let span = byIndex[index], span["identityId"] as? String == identity, eligible(source),
+                  source["audioSha256"] as? String == span["audioSHA256"] as? String,
+                  let start = sample(source["elapsed"]), let duration = sample(source["audioDurationMs"]),
+                  start == integer(span["startSample"]), start + duration == integer(span["endSample"]) else { throw invalid() }
+        }
+        var result: [Int: String] = [:]
+        for row in rows {
+            guard let index = integer(row["i"]), result[index] == nil, let source = originals[index], let projected = row["c"] as? [String: Any],
+                  let label = projected["speaker"] as? String else { throw invalid() }
+            if same(source, projected) { result[index] = label; continue }
+            guard let span = byIndex[index], span["displayLabel"] as? String == label, source["speaker"] as? String != label,
+                  source["audioSha256"] as? String == span["audioSHA256"] as? String,
+                  let start = sample(source["elapsed"]), let duration = sample(source["audioDurationMs"]), duration > 0,
+                  start == integer(span["startSample"]), start + duration == integer(span["endSample"]),
+                  eligible(source),
+                  let before = stripped(source), let after = stripped(projected), same(before, after)
+            else { throw invalid() }
+            for key in ["segments", "finalSegments", "words"] where source[key] != nil {
+                guard let old = source[key] as? [[String: Any]], let new = projected[key] as? [[String: Any]], old.count == new.count else { throw invalid() }
+                for (a, b) in zip(old, new) {
+                    guard !protected(a), a["overlap"] as? Bool != true, a["mixedSpeakers"] as? Bool != true else { throw invalid() }
+                    if a["speaker"] == nil && key == "words" { guard b["speaker"] == nil else { throw invalid() }; continue }
+                    guard anonymous(a["speaker"]), a["speaker"] as? String == source["speaker"] as? String, b["speaker"] as? String == label else { throw invalid() }
+                }
+            }
+            result[index] = label
+        }
+        guard Set(result.keys) == Set(originals.keys) else { throw invalid() }
+        return result
+    }
+
     /// One session parsed from the file's bytes: the chunks after `since`, and the cursor the next read sends.
     static func liveTranscriptParse(_ data: Data, sessionId: String, since: Int, stamp: String, knownSpeakerRevision: Int? = nil) throws -> [String: Any] {
         guard let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
@@ -15986,10 +16114,13 @@ final class COSControlHelper {
             guard phoneMeetingSourceValid(object, sessionId: sessionId) else { throw LiveTranscriptFailure(reason: "phone_capture_provenance_unreadable") }
         }
         var chunks: [Int: [String: Any]] = [:]
+        var sourceChunks: [Int: [String: Any]] = [:]
         for entry in (object["chunksIndexed"] as? [Any]) ?? [] {
             guard let row = entry as? [String: Any], let index = liveTranscriptIndexes([row["i"] as Any]).first,
                   let chunk = row["c"] as? [String: Any], let text = chunk["text"] as? String,
                   !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+            if object["speakerIdentityPolicy"] as? String == "mac-native-v1", sourceChunks[index] != nil { throw LiveTranscriptFailure(reason: "speaker_projection_invalid") }
+            sourceChunks[index] = chunk
             let elapsed = (chunk["elapsed"] as? NSNumber).map { $0.doubleValue.isFinite ? max(0, Int($0.doubleValue.rounded())) : 0 } ?? 0
             chunks[index] = [
                 "i": index,
@@ -16022,6 +16153,14 @@ final class COSControlHelper {
                 else { throw LiveTranscriptFailure(reason: "speaker_projection_invalid") }
                 original["speaker"] = speaker
                 chunks[index] = original
+            }
+        } else if object["speakerIdentityPolicy"] as? String == "mac-native-v1" {
+            let labels = try liveTranscriptNativeOverlay(object, sessionId: sessionId, originals: sourceChunks)
+            speakerRevision = liveTranscriptIndexes([object["speakerRevision"] as Any]).first
+            guard speakerRevision != nil else { throw LiveTranscriptFailure(reason: "speaker_projection_invalid") }
+            for (index, label) in labels {
+                chunks[index]?["originalSpeaker"] = sourceChunks[index]?["speaker"] as? String ?? ""
+                chunks[index]?["speaker"] = label
             }
         } else if object["speakerRevision"] != nil || object["speakerProjectedChunksIndexed"] != nil {
             throw LiveTranscriptFailure(reason: "speaker_projection_invalid")

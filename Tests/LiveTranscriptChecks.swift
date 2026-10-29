@@ -454,11 +454,32 @@ import Foundation
         clear.speakerRevision = 2; clear.fullSnapshot = true
         check(revised.apply(clear, now: now) && revised.chunks[0]?.speaker == "Ext", "withdrawn claim restores original speaker")
         check(!revised.apply(update, now: now) && revised.speakerRevision == 2, "stale revision cannot resurrect withdrawn claim")
-        clear.speakerRevision = 3; clear.fullSnapshot = false
+        var named = read([chunk(0, "Qualified Person", "original"), chunk(1, "Ext", "later")], settled: 1)
+        named.speakerRevision = 3; named.fullSnapshot = true
+        check(revised.apply(named, now: now) && revised.chunks[0]?.speaker == "Qualified Person", "late qualified profile name replaces previously settled anonymous turn")
+        check(revised.chunks[0]?.text == "original" && revised.cursor == 1, "qualified-name refresh preserves original words and cursor")
+        clear.speakerRevision = 4; clear.fullSnapshot = true
+        check(revised.apply(clear, now: now) && revised.chunks[0]?.speaker == "Ext", "profile qualification withdrawal restores original source")
+        check(!revised.apply(named, now: now), "stale named revision cannot resurrect withdrawn profile")
+        clear.speakerRevision = 5; clear.fullSnapshot = false
         check(!revised.apply(clear, now: now), "new revision without full replacement is refused")
         clear.speakerRevision = -1; clear.fullSnapshot = true
         check(!revised.apply(clear, now: now), "negative revision refused")
-        clear.speakerRevision = 3; clear.turns = []
+        var protectedRefresh = read([
+            LiveTranscriptChunk(i: 0, elapsedMs: 0, speaker: "Qualified Person", text: "original", originalSpeaker: "Voice 7"),
+            LiveTranscriptChunk(i: 1, elapsedMs: 6000, speaker: "Human Person", text: "manual original", originalSpeaker: "Human Person")
+        ], settled: 1, stamp: "native-five")
+        protectedRefresh.speakerRevision = 5; protectedRefresh.fullSnapshot = true
+        check(revised.apply(protectedRefresh, now: now), "native refresh retains separate source labels")
+        check(revised.invalidateSpeakerProjection() && revised.chunks[0]?.speaker == "Voice 7" && revised.chunks[1]?.speaker == "Human Person",
+              "invalid overlay withdraws machine name while preserving human original")
+        check(revised.chunks[0]?.text == "original" && revised.chunks[1]?.elapsedMs == 6000 && revised.cursor == 1
+              && revised.speakerRevision == nil && revised.stamp == nil, "invalidation preserves content and requests full revalidation")
+        check(revised.apply(protectedRefresh, now: now) && revised.chunks[0]?.speaker == "Qualified Person", "valid full snapshot recovers after invalidation without revision invention")
+        var legacy = LiveTranscriptFeed(sessionId: "s1")
+        legacy.apply(read([chunk(0, "Existing Person", "original")]), now: now)
+        check(!legacy.invalidateSpeakerProjection() && legacy.chunks[0]?.speaker == "Existing Person", "legacy feeds without source-bound metadata are unchanged")
+        clear.speakerRevision = 6; clear.turns = []
         check(revised.apply(clear, now: now) && revised.chunks.isEmpty && revised.turns.isEmpty, "empty replacement removes all cached rows")
 
         print("live transcript checks: \(passed) passed")

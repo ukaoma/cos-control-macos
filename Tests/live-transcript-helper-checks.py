@@ -254,6 +254,80 @@ try:
     acoustic["speakerRevision"] = 2; acoustic["chunksIndexed"][0]["c"]["speaker"] = "Confirmed person"
     acoustic["speakerProjectedChunksIndexed"] = [{"i": 0, "c": dict(original, speaker="Voice 1")}]
     check(mac_read("1")[0] != 0, "anonymous overlay cannot overwrite existing named person")
+    # Mac-native names use full source-bound replacement; no G2 fixture or enrollment.
+    import copy
+    original = {"text": "same original words", "speaker": "Voice 7", "elapsed": 0,
+                "audioSha256": "a" * 64, "audioDurationMs": 6000, "similarity": 0,
+                "segments": [{"text": "same original words", "speaker": "Voice 7", "start": 0, "end": 6}],
+                "finalSegments": [{"text": "same original words", "speaker": "Voice 7", "start": 0, "end": 6}],
+                "words": [{"word": "same", "speaker": "Voice 7", "start": 0, "end": .4}, {"word": "original", "start": .4, "end": .8}]}
+    span = {"rawChunkIndex": 0, "audioSHA256": "a" * 64, "pcmSHA256": "b" * 64, "startSample": 0, "endSample": 96000,
+            "identityId": "acoustic_" + "c" * 64, "displayLabel": "Qualified Person", "profileName": "Qualified Person", "evidenceIds": ["receipt_a", "receipt_b"]}
+    projected = copy.deepcopy(original); projected["speaker"] = span["displayLabel"]
+    projected["segments"][0]["speaker"] = span["displayLabel"]; projected["finalSegments"][0]["speaker"] = span["displayLabel"]; projected["words"][0]["speaker"] = span["displayLabel"]
+    native = {"sessionId": mac_id, "sourceType": "mac_system_audio", "speakerIdentityPolicy": "mac-native-v1", "speakerRevision": 5,
+              "chunksIndexed": [{"i": 0, "c": original}], "speakerProjectedChunksIndexed": [{"i": 0, "c": projected}], "maxChunkIndex": 0,
+              "macSpeakerLive": {"version": 1, "captureId": mac_id, "generation": "generation_a", "revision": 5,
+                                 "modelSHA256": "d" * 64, "profileSHA256": "e" * 64, "projections": [span]}}
+    acoustic = copy.deepcopy(native)
+    code, answer, _, _ = mac_read("4")
+    check(code == 0 and answer["details"]["read"]["fullSnapshot"] and answer["details"]["read"]["turns"][0]["speaker"] == "Qualified Person", "source-bound late profile name replaces settled Voice label")
+    check(answer["details"]["read"]["turns"][0]["text"] == original["text"], "native projection renders original words")
+    check(answer["details"]["read"]["turns"][0]["originalSpeaker"] == "Voice 7", "native read separately retains source label for invalidation")
+    acoustic["speakerRevision"] = 6; acoustic["macSpeakerLive"]["revision"] = 6
+    acoustic["macSpeakerLive"]["projections"] = []; acoustic["speakerProjectedChunksIndexed"] = copy.deepcopy(acoustic["chunksIndexed"])
+    code, answer, _, _ = mac_read("5")
+    check(code == 0 and answer["details"]["read"]["turns"][0]["speaker"] == "Voice 7", "revocation replaces name with exact original anonymous label")
+    for field, value in [("audioSha256", "f" * 64), ("audioDurationMs", 5000), ("elapsed", 1), ("similarity", .99), ("similarity", False), ("text", "changed private text")]:
+        acoustic = copy.deepcopy(native); acoustic["speakerProjectedChunksIndexed"][0]["c"][field] = value
+        code, answer, out, err = mac_read("4")
+        check(code != 0 and "changed private text" not in out + err, "non-label projection mutation refused: " + field)
+    for surface in [None, "segments", "finalSegments", "words"]:
+        for marker, value in [("speakerOrigin", "manual"), ("manuallyCorrected", True)]:
+            acoustic = copy.deepcopy(native)
+            for key in ["chunksIndexed", "speakerProjectedChunksIndexed"]:
+                target = acoustic[key][0]["c"] if surface is None else acoustic[key][0]["c"][surface][0]
+                target[marker] = value
+            check(mac_read("4")[0] != 0, "native overwrite refuses human marker on " + str(surface))
+    for surface in [None, "segments", "finalSegments", "words"]:
+        acoustic = copy.deepcopy(native)
+        target = acoustic["chunksIndexed"][0]["c"] if surface is None else acoustic["chunksIndexed"][0]["c"][surface][0]
+        target["speaker"] = "Existing Person"
+        check(mac_read("4")[0] != 0, "native overwrite refuses existing name on " + str(surface))
+    for field, value in [("captureId", "mac_22222222-2222-4222-8222-222222222222"), ("revision", 4), ("modelSHA256", "bad")]:
+        acoustic = copy.deepcopy(native); acoustic["macSpeakerLive"][field] = value
+        check(mac_read("4")[0] != 0, "native state binding refused: " + field)
+    for field, value in [("audioSHA256", "f" * 64), ("startSample", 1), ("endSample", 96001), ("evidenceIds", ["one"]), ("profileName", "Different Person")]:
+        acoustic = copy.deepcopy(native); acoustic["macSpeakerLive"]["projections"][0][field] = value
+        check(mac_read("4")[0] != 0, "native receipt source binding refused: " + field)
+    for field, value in [("audioSha256", "f" * 64), ("audioDurationMs", 5000), ("elapsed", 1)]:
+        acoustic = copy.deepcopy(native)
+        for key in ["chunksIndexed", "speakerProjectedChunksIndexed"]: acoustic[key][0]["c"][field] = value
+        check(mac_read("4")[0] != 0, "current original drift withdraws source-bound native claim: " + field)
+    acoustic = copy.deepcopy(native)
+    named_original = dict(original, speaker="Existing Person", manuallyCorrected=True)
+    acoustic["chunksIndexed"].append({"i": 1, "c": named_original})
+    acoustic["speakerProjectedChunksIndexed"].append({"i": 1, "c": copy.deepcopy(named_original)})
+    check(mac_read("4")[0] == 0, "unmodified existing manual name survives full overlay")
+    acoustic = copy.deepcopy(native)
+    del acoustic["macSpeakerLive"]["projections"][0]["profileName"]
+    acoustic["macSpeakerLive"]["projections"][0]["displayLabel"] = "Voice 31"
+    row = acoustic["speakerProjectedChunksIndexed"][0]["c"]; row["speaker"] = "Voice 31"
+    for key in ["segments", "finalSegments", "words"]:
+        for word in row[key]:
+            if "speaker" in word: word["speaker"] = "Voice 31"
+    check(mac_read("4")[0] == 0, "new stable anonymous identity uses backend-allocated display label")
+    # An unsupported old Voice31 cannot be merged merely because its hint matches.
+    old_voice = dict(original, speaker="Voice 31", elapsed=6000)
+    acoustic["chunksIndexed"].append({"i": 1, "c": old_voice})
+    acoustic["speakerProjectedChunksIndexed"].append({"i": 1, "c": copy.deepcopy(old_voice)})
+    check(mac_read("4")[0] != 0, "new identity cannot collide with unsupported original Voice label")
+    acoustic = copy.deepcopy(native); acoustic["speakerProjectedChunksIndexed"] = []
+    check(mac_read("4")[0] != 0, "native overlay must cover full original index set")
+    acoustic = copy.deepcopy(native); acoustic["chunksIndexed"] *= 2
+    check(mac_read("4")[0] != 0, "duplicate original indices refused")
+    acoustic = copy.deepcopy(native); acoustic["speakerProjectedChunksIndexed"][0]["c"]["words"][1]["speaker"] = "Qualified Person"
+    check(mac_read("4")[0] != 0, "unlabeled ASR word remains unlabeled")
     print("live-transcript helper checks: %d passed" % passed)
 finally:
     server.shutdown()

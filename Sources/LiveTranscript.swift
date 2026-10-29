@@ -23,6 +23,9 @@ struct LiveTranscriptChunk: Codable, Equatable, Sendable {
     let elapsedMs: Int
     let speaker: String
     let text: String
+    /// Original ASR label, separately retained only by the source-bound Mac read
+    /// transport. Never the capture's diagnostic originalSpeaker field.
+    var originalSpeaker: String? = nil
 }
 
 /// One live session file, from a stat (the helper opens nothing for the list).
@@ -170,6 +173,23 @@ struct LiveTranscriptFeed: Equatable, Sendable {
             (turns, turnOfChunk) = Self.build(chunks, previous: turnOfChunk)
             changed = true
         }
+        return changed
+    }
+
+    /// An invalid machine overlay withdraws cached machine labels immediately.
+    /// Original human labels, words, clocks and the ASR cursor survive. Forgetting
+    /// the stamp/revision makes the next valid read send a complete replacement.
+    @discardableResult
+    mutating func invalidateSpeakerProjection() -> Bool {
+        guard chunks.values.contains(where: { $0.originalSpeaker != nil }) else { return false }
+        var changed = stamp != nil || speakerRevision != nil
+        for (index, chunk) in chunks {
+            guard let original = chunk.originalSpeaker, chunk.speaker != original else { continue }
+            chunks[index] = LiveTranscriptChunk(i: chunk.i, elapsedMs: chunk.elapsedMs, speaker: original, text: chunk.text, originalSpeaker: original)
+            changed = true
+        }
+        stamp = nil; speakerRevision = nil
+        if changed { (turns, turnOfChunk) = Self.build(chunks, previous: turnOfChunk) }
         return changed
     }
 

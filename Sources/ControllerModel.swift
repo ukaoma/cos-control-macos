@@ -3903,8 +3903,9 @@ final class ControllerModel: ObservableObject {
     func pollLiveTranscriptOnce() async {
         guard liveTranscriptEnabled else { return }
         var args = ["live-transcript"]
+        let requestedSession = liveTranscriptReadTarget()
         if let dir = liveTranscriptDataDir { args += ["--data-dir", dir] }
-        if let target = liveTranscriptReadTarget() {
+        if let target = requestedSession {
             let feed = liveTranscriptFeeds[target]
             args += ["--session", target, "--since", String(feed?.cursor ?? -1)]
             if let stamp = feed?.stamp { args += ["--stamp", stamp] }
@@ -3928,6 +3929,10 @@ final class ControllerModel: ObservableObject {
         } catch {
             guard liveTranscriptEnabled else { return }
             liveTranscriptReason = Self.liveTranscriptReasonCode(error)
+            if liveTranscriptReason == "speaker_projection_invalid", let requestedSession {
+                var feeds = liveTranscriptFeeds
+                if feeds[requestedSession]?.invalidateSpeakerProjection() == true { liveTranscriptFeeds = feeds }
+            }
             if (liveTranscriptServerLive ?? 0) == 0, liveTranscriptErrorSince == nil { liveTranscriptErrorSince = Date() }
         }
         await pollLiveProvisionalOnce()

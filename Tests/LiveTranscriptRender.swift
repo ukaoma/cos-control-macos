@@ -437,6 +437,23 @@ import Vision
         expect(revisionModel.liveTranscriptFeeds[revisionID]?.chunks[0]?.speaker == "Ext"
                && revisionModel.liveTranscriptFeeds[revisionID]?.chunks[0]?.text == "Original fixture words.", "withdrawal restores the original row through the helper")
 
+        let namedAnswer = revisionAnswer(4, "Qualified Person")
+            .replacingOccurrences(of: "\"i\":0,", with: "\"i\":0,\"originalSpeaker\":\"Voice 7\",")
+        revisionStand.write("live-transcript.json", namedAnswer)
+        await revisionModel.pollLiveTranscriptOnce()
+        expect(revisionModel.liveTranscriptFeeds[revisionID]?.chunks[0]?.speaker == "Qualified Person", "late profile refresh crosses polling boundary")
+        revisionStand.write("live-transcript.json", #"{"ok":false,"message":"Live transcript unavailable (speaker_projection_invalid)","details":{"reason":"speaker_projection_invalid"}}"#)
+        await revisionModel.pollLiveTranscriptOnce()
+        expect(revisionModel.liveTranscriptFeeds[revisionID]?.chunks[0]?.speaker == "Voice 7"
+               && revisionModel.liveTranscriptFeeds[revisionID]?.chunks[0]?.text == "Original fixture words."
+               && revisionModel.liveTranscriptFeeds[revisionID]?.speakerRevision == nil, "malformed public state withdraws cached name through actual poll")
+        revisionStand.write("live-transcript.json", namedAnswer)
+        await revisionModel.pollLiveTranscriptOnce()
+        let recoveryArgs = revisionStand.lastArgs("live-transcript")
+        expect(!recoveryArgs.contains("--stamp") && !recoveryArgs.contains("--speaker-revision")
+               && revisionModel.liveTranscriptFeeds[revisionID]?.chunks[0]?.speaker == "Qualified Person"
+               && revisionModel.liveTranscriptFeeds[revisionID]?.cursor == 5, "valid recovery requests full snapshot and preserves settled cursor")
+
         // ── A session that leaves the list ends, even on a poll that read another one.
         let (two, _) = model(stand, enabled: true)
         func listed(_ ids: [String]) -> String {
