@@ -16,6 +16,10 @@ import SwiftUI
                     counts: SessionUsageCounts(input: Int64(day*2300), output: Int64(day*900), cacheRead: Int64(day*70000), cacheWrite: Int64(day*3100)),
                     events: 10, pricedEvents: index == 2 ? 0 : 10, estimatedUSD: index == 2 ? 0 : Double(day)*0.21))
             }
+            // Partially priced: Codex cache writes leave some records unpriced, so the cost split must leave this out.
+            rows.append(SessionUsageBucket(day: month + String(format: "-%02d", day), provider: "OpenAI", model: "gpt-6.1-sol",
+                counts: SessionUsageCounts(input: Int64(day*800), output: Int64(day*300), cacheRead: Int64(day*9000), cacheWrite: Int64(day*1200)),
+                events: 6, pricedEvents: 4, estimatedUSD: Double(day)*0.05))
         }
         let historyRows = rows.map { row -> SessionUsageBucket in
             var copy = row
@@ -43,6 +47,10 @@ import SwiftUI
             var series: SessionUsageSeries = .providers
             var lineChart = true
             var provider = "All providers"
+            var model = "All models"
+            var modelSort: SessionUsageModelSort = .tokens
+            var daySort: SessionUsageDaySort = .date
+            var loading = false
         }
         let cases: [PageCase] = [
             PageCase(name: "range"),
@@ -59,6 +67,13 @@ import SwiftUI
             PageCase(name: "api-cost", inspection: month + "-24", cost: true, minimumOnly: true),
             PageCase(name: "cache-excluded", inspection: month + "-24", cacheExcluded: true, minimumOnly: true),
             PageCase(name: "expanded-days", expanded: true, minimumOnly: true),
+            // The state a Peak day or Daily breakdown click lands in from All history (Monthly): Daily, day inspected.
+            PageCase(name: "history-day-inspect", period: "All history", inspection: "2026-08-12", scale: .daily),
+            PageCase(name: "narrow-slice", inspection: month + "-24", cacheExcluded: true, minimumOnly: true, provider: "OpenAI", model: "gpt-6-astra"),
+            PageCase(name: "sorted", expanded: true, minimumOnly: true, modelSort: .cost, daySort: .cost),
+            PageCase(name: "cost-categories", cost: true, minimumOnly: true, series: .categories, lineChart: false),
+            PageCase(name: "records-categories", minimumOnly: true, measure: .records, series: .categories),
+            PageCase(name: "first-load", empty: true, minimumOnly: true, loading: true),
         ]
         for width in [1200.0, 800.0, 760.0] {
             for dark in [false, true] {
@@ -67,7 +82,9 @@ import SwiftUI
                 var report = fixtureReport
                 if fixture.empty { report.buckets = []; report.filesIndexed = 0 }
                 if fixture.pending { report.pendingFiles = 37 }
-                pageStore.report = report
+                pageStore.report = fixture.loading ? nil : report
+                // refresh() returns at once while loading is set, so the first-load case never calls the helper.
+                pageStore.loading = fixture.loading
                 if fixture.failed { pageStore.error = "Usage could not refresh: fixture helper unavailable. Showing the last recorded history." }
                 let dates = fixture.reversed ? (Date(), Calendar.current.date(byAdding: .day, value: -1, to: Date())!) : nil
                 let height = fixture.expanded ? 3400.0 : 2200.0
@@ -75,7 +92,8 @@ import SwiftUI
                     initialDates: dates, initialCostChart: fixture.cost, initialExcludeCacheReads: fixture.cacheExcluded,
                     initialDayBreakdownExpanded: fixture.expanded, initialTimeScale: fixture.scale,
                     initialMeasure: fixture.measure, initialSeries: fixture.series,
-                    initialLineChart: fixture.lineChart, initialProvider: fixture.provider)
+                    initialLineChart: fixture.lineChart, initialProvider: fixture.provider, initialModel: fixture.model,
+                    initialModelSort: fixture.modelSort, initialDaySort: fixture.daySort)
                 let host = NSHostingView(rootView: page.cosControlTheme().frame(width: width, height: height).background(COSPalette.panel))
                 let window = NSWindow(contentRect: NSRect(x: -20000, y: -20000, width: width, height: height), styleMask: [.borderless], backing: .buffered, defer: false)
                 window.isReleasedWhenClosed = false
@@ -106,15 +124,16 @@ import SwiftUI
         }
         // Render the actual chart overlay with a selected hover period, without sending any event.
         let zone = TimeZone(identifier: "America/Chicago")!
-        let formatter = DateFormatter(); formatter.dateFormat = "yyyy-MM-dd"; formatter.timeZone = zone
+        let calendar = SessionUsagePresentation.reportingCalendar(zone)
         let chartRows = rows.filter { $0.day.hasPrefix(month) }
         let chartPoints = chartRows.map { row in
-            SessionUsageView.Point(date: formatter.date(from: row.day)!, series: row.model, tokens: row.counts.total, usd: row.estimatedUSD)
+            SessionUsageView.Point(date: SessionUsagePresentation.noon(of: row.day, calendar: calendar)!, series: row.model, tokens: row.counts.total, usd: row.estimatedUSD)
         }
         for dark in [false, true] {
-          for lines in [false, true] {
+          // Pointer x in the 756 pt chart: the right-edge case must flip the padded card left of the pointer.
+          for (lines, hover, x) in [(false, "-24", 560.0), (true, "-24", 560.0), (true, "-03", 60.0), (false, "-25", 720.0)] {
             let chart = SessionUsageChart(points: chartPoints, rows: chartRows, monthly: false, costChart: false,
-                excludeCacheReads: false, timeZone: zone, inspectedPeriod: .constant(nil), initialHover: month + "-24", lineChart: lines)
+                excludeCacheReads: false, timeZone: zone, inspectedPeriod: .constant(nil), initialHover: month + hover, lineChart: lines, initialHoverX: CGFloat(x))
             let host = NSHostingView(rootView: chart.padding(22).frame(width: 800, height: 480, alignment: .top).background(COSPalette.panel).cosControlTheme())
             let window = NSWindow(contentRect: NSRect(x: -20000, y: -20000, width: 800, height: 480), styleMask: [.borderless], backing: .buffered, defer: false)
             window.isReleasedWhenClosed = false
@@ -124,10 +143,10 @@ import SwiftUI
             while Date() < until { RunLoop.main.run(until: Date().addingTimeInterval(0.05)); host.layoutSubtreeIfNeeded() }
             guard let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds) else { fatalError("chart overlay bitmap unavailable") }
             host.cacheDisplay(in: host.bounds, to: rep)
-            try rep.representation(using: .png, properties: [:])!.write(to: out.appendingPathComponent("usage-chart-hover-\(dark ? "dark" : "light")-\(lines ? "lines" : "bars").png"))
+            try rep.representation(using: .png, properties: [:])!.write(to: out.appendingPathComponent("usage-chart-hover-\(dark ? "dark" : "light")-\(lines ? "lines" : "bars")\(hover).png"))
             window.close()
           }
         }
-        print("PASS: offscreen light/dark Usage renders at 760, 800 and 1200 points, including empty/error/backfill/reversed dates/API/cache/day states")
+        print("PASS: offscreen light/dark Usage renders at 760, 800 and 1200 points, including first load/empty/error/backfill/reversed dates/API/cache/day/slice/sort/history-inspect states")
     }
 }

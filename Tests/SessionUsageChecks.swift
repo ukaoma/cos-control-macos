@@ -165,56 +165,184 @@ import Foundation
         let days = SessionUsagePresentation.summarize([pricedRow, nextRow, anotherProvider], by: \.day)
         check(days.count == 2 && days.first { $0.id == "2026-10-24" }?.events == 4, "daily breakdown sums across providers")
         check(SessionUsagePresentation.summarize([nextRow], by: \.provider).first?.costLabel == "Unavailable", "unpriced provider never appears free")
-        let mix = SessionUsagePresentation.tokenMix(displayCounts, excludingCacheReads: false)
-        let noReads = SessionUsagePresentation.tokenMix(displayCounts, excludingCacheReads: true)
-        check(mix.map(\.id) == ["Uncached input", "Output", "Cache read", "Cache write"] && mix.reduce(0) { $0 + $1.count } == displayCounts.total, "token mix is disjoint and reconciles to total")
-        check(noReads.map(\.id) == ["Uncached input", "Output", "Cache write"] && noReads.reduce(0) { $0 + $1.count } == 100, "token mix exclusion retains cache writes and reconciles to displayed denominator")
+        typealias P = SessionUsagePresentation
+        let categoryNames = ["Uncached input", "Output", "Cache read", "Cache write"]
+        let mix = P.tokenMix(displayCounts, excludingCacheReads: false)
+        let noReads = P.tokenMix(displayCounts, excludingCacheReads: true)
+        check(mix.map(\.id) == categoryNames && mix.reduce(0) { $0 + $1.count } == displayCounts.total && !mix.contains { $0.excludedFromTokens }, "token mix is disjoint and reconciles to total")
+        check(noReads.map(\.id) == categoryNames && noReads.filter { $0.excludedFromTokens }.map(\.id) == ["Cache read"]
+              && noReads.filter { !$0.excludedFromTokens }.reduce(0) { $0 + $1.count } == 100, "exclusion flags only cache reads, keeps them listed for API value, and reconciles the displayed denominator")
 
-        // New slicing, weekly aggregation, category cost mix, period comparison, sorting, and export checks.
-        check(SessionUsagePresentation.periodKey(for: "2026-10-24", scale: .weekly, timeZone: chicago) == "2026-10-19", "Saturday maps to Monday of its reporting-zone week")
-        check(SessionUsagePresentation.periodKey(for: "2026-10-25", scale: .weekly, timeZone: chicago) == "2026-10-19", "Sunday stays in same Monday–Sunday week")
-        check(SessionUsagePresentation.periodKey(for: "2026-10-26", scale: .weekly, timeZone: chicago) == "2026-10-26", "Monday starts a new week")
-        check(SessionUsagePresentation.periodTitle(for: "2026-10-19", scale: .weekly, timeZone: chicago).contains("Oct 19") && SessionUsagePresentation.periodTitle(for: "2026-10-19", scale: .weekly, timeZone: chicago).contains("Oct 25"), "weekly title spans Monday through Sunday")
+        // Weekly keys are civil-date arithmetic: DST days, year ends and leap days never shift a week.
+        check(P.periodKey(for: "2026-10-24", scale: .weekly) == "2026-10-19", "Saturday maps to Monday of its week")
+        check(P.periodKey(for: "2026-10-25", scale: .weekly) == "2026-10-19", "Sunday stays in the same Monday to Sunday week")
+        check(P.periodKey(for: "2026-10-26", scale: .weekly) == "2026-10-26", "Monday starts a new week")
+        check(P.periodKey(for: "2026-11-01", scale: .weekly) == "2026-10-26" && P.periodKey(for: "2026-11-02", scale: .weekly) == "2026-11-02"
+              && P.periodKey(for: "2026-03-08", scale: .weekly) == "2026-03-02" && P.periodKey(for: "2026-03-09", scale: .weekly) == "2026-03-09", "weekly keys across US DST change days")
+        check(P.periodKey(for: "2026-01-01", scale: .weekly) == "2025-12-29" && P.periodKey(for: "2024-03-01", scale: .weekly) == "2024-02-26", "weeks cross year ends and leap days")
+        check(SessionUsageDay("2026-02-30") == nil && SessionUsageDay("2026-13-01") == nil && SessionUsageDay("2024-02-29")?.key == "2024-02-29", "invalid dates rejected, leap day kept")
+        check(P.periodKeyMap([pricedRow, nextRow], scale: .weekly) == ["2026-10-24": "2026-10-19", "2026-10-25": "2026-10-19"], "day to week map built once")
+        for (zone, day) in [("America/Havana", "2026-03-08"), ("America/Santiago", "2026-09-06"), ("America/Chicago", "2026-03-08"), ("America/Chicago", "2026-11-01")] {
+            let calendar = P.reportingCalendar(TimeZone(identifier: zone)!)
+            check(P.noon(of: day, calendar: calendar).map { P.dayKey(for: $0, calendar: calendar) } == day, "chart date for \(day) in \(zone) stays on its date")
+        }
+        check(P.periodTitle(for: "2026-10-19", scale: .weekly) == "Week of Oct 19 – Oct 25, 2026", "weekly title spans Monday through Sunday")
+        check(P.periodTitle(for: "2026-10-19", scale: .weekly, within: "2026-10-22"..."2026-11-20") == "Oct 22 – Oct 25, 2026 (partial week)", "boundary week title clamps to the selection")
+        check(P.periodTitle(for: "2026-12-28", scale: .weekly) == "Week of Dec 28, 2026 – Jan 3, 2027", "week across a year end names both years")
+        check(P.periodTitle(for: "2026-10", scale: .monthly) == "October 2026" && P.periodTitle(for: "2026-10", scale: .monthly, within: "2026-09-29"..."2026-10-28") == "October 2026 (Oct 1 – Oct 28)", "boundary month title clamps")
+        check(P.periodTitle(for: "2026-10-24", scale: .daily) == "Saturday, Oct 24, 2026", "daily title")
+        check(P.selectionBounds(period: "2026-02", now: monday, timeZone: chicago) == "2026-02-01"..."2026-02-28" && P.selectionBounds(period: "All history", now: monday, timeZone: chicago) == nil, "selection bounds for months and history")
 
-        // Category cost decomposition reconciles to bucket estimatedUSD and isolates Anthropic 1h cache write premium.
+        // An inspection belongs to the scale it was chosen on.
+        let dayInspection = SessionUsageInspection(key: "2026-10-24", scale: .daily)
+        check(P.reconcile(dayInspection, to: .daily, keys: ["2026-10-23", "2026-10-24"]) == dayInspection, "inspection set together with a switch to Daily survives the scale change")
+        check(P.reconcile(dayInspection, to: .weekly, keys: ["2026-10-19"]) == SessionUsageInspection(key: "2026-10-19", scale: .weekly), "an inspected day carries into its week")
+        check(P.reconcile(dayInspection, to: .monthly, keys: ["2026-10"]) == SessionUsageInspection(key: "2026-10", scale: .monthly), "an inspected day carries into its month")
+        check(P.reconcile(SessionUsageInspection(key: "2026-10-19", scale: .weekly), to: .daily, keys: ["2026-10-19"]) == nil, "a week never turns into its Monday")
+        check(P.reconcile(dayInspection, to: .daily, keys: ["2026-10-23"]) == nil && P.reconcile(nil, to: .daily, keys: []) == nil, "a vanished period closes")
+
+        // Only All history defaults to Monthly; leaving restores the scale in use before.
+        let toHistory = P.timeScale(afterChangingTo: "All history", current: .weekly, remembered: nil)
+        check(toHistory.scale == .monthly && toHistory.remembered == .weekly, "All history opens on Monthly and remembers Weekly")
+        let back = P.timeScale(afterChangingTo: "Last 7 days", current: .monthly, remembered: .weekly)
+        check(back.scale == .weekly && back.remembered == nil, "leaving All history restores the remembered scale")
+        let keep = P.timeScale(afterChangingTo: "Last 90 days", current: .weekly, remembered: nil)
+        check(keep.scale == .weekly && keep.remembered == nil, "other period changes keep the chosen scale")
+
+        // Model clicks restore the provider filter that was in force before.
+        var slice = SessionUsageSlice()
+        slice.toggleModel(provider: "OpenAI", model: "gpt-6-astra")
+        check(slice.provider == "OpenAI" && slice.model == "gpt-6-astra", "model click narrows provider and model")
+        slice.toggleModel(provider: "OpenAI", model: "gpt-6-astra")
+        check(slice.provider == P.allProviders && slice.model == P.allModels, "second model click restores All providers")
+        slice.choose(provider: "Anthropic"); slice.toggleModel(provider: "Anthropic", model: "claude-opus-5-5"); slice.toggleModel(provider: "Anthropic", model: "claude-opus-5-5")
+        check(slice.provider == "Anthropic" && slice.model == P.allModels, "clearing a model keeps a provider chosen before it")
+        slice.reset(); slice.toggleModel(provider: "OpenAI", model: "gpt-6-astra"); slice.toggleModel(provider: "OpenAI", model: "gpt-6.1-sol"); slice.toggleModel(provider: "OpenAI", model: "gpt-6.1-sol")
+        check(slice.provider == P.allProviders, "switching models keeps the original provider to restore")
+        slice.toggleProvider("OpenAI"); slice.toggleProvider("OpenAI")
+        check(slice == SessionUsageSlice(), "provider click toggles back to all")
+
+        // Records count whole observations, so they never offer Categories.
+        check(P.seriesOptions(for: .records) == [.providers, .models] && P.series(.categories, for: .records) == .providers
+              && P.series(.categories, for: .tokens) == .categories && P.seriesOptions(for: .cost) == SessionUsageSeries.allCases, "Records hides Categories")
+
+        // Category cost split: exact rates, 1-hour premium capped, partial buckets excluded, Haiku 5.5 tier scaled.
         let opusBucket = first.buckets[0]
-        let opusCat = SessionUsagePricing.categoryUSD(for: opusBucket)
-        let catSum = opusCat.input + opusCat.output + opusCat.cacheRead + opusCat.cacheWrite
-        check(abs(catSum - opusBucket.estimatedUSD) < 1e-12, "category USD reconciles to stored bucket estimatedUSD")
-        check(abs(opusCat.input - 10 * 4.0 / 1e6) < 1e-12 && abs(opusCat.output - 20 * 20.0 / 1e6) < 1e-12, "uncached input and output keep exact rates")
-        let costCategories = SessionUsagePresentation.costMix([opusBucket, nextRow])
-        check(abs(costCategories.reduce(0.0) { $0 + $1.estimatedUSD } - opusBucket.estimatedUSD) < 1e-12, "costMix ignores unpriced rows and sums to priced total")
+        let opusCat = SessionUsagePricing.categoryUSD(for: opusBucket)!
+        check(abs(opusCat.total - opusBucket.estimatedUSD) < 1e-12, "category USD reconciles to stored bucket estimatedUSD")
+        check(abs(opusCat.input - 40e-6) < 1e-12 && abs(opusCat.output - 400e-6) < 1e-12 && abs(opusCat.cacheRead - 20e-6) < 1e-12 && abs(opusCat.cacheWrite - 290e-6) < 1e-12,
+              "exact rates per category; the 1-hour write premium lands on cache write only")
+        let allOneHour = SessionUsageBucket(day: "2026-10-01", provider: "Anthropic", model: "claude-opus-5-5", counts: SessionUsageCounts(input: 1_000_000, cacheWrite: 1_000_000), events: 1, pricedEvents: 1, estimatedUSD: 12)
+        let atCap = SessionUsagePricing.categoryUSD(for: allOneHour)!
+        check(abs(atCap.input - 4) < 1e-9 && abs(atCap.cacheWrite - 8) < 1e-9, "every write at the 1-hour rate is the cap and still splits exactly")
+        var rateDecrease = allOneHour; rateDecrease.estimatedUSD = 24
+        let overCap = SessionUsagePricing.categoryUSD(for: rateDecrease)!
+        check(abs(overCap.input - 32.0 / 3) < 1e-9 && abs(overCap.cacheWrite - 40.0 / 3) < 1e-9, "a remainder above the 1-hour cap scales instead of loading cache write")
+        let haikuLong = SessionUsageBucket(day: "2026-10-01", provider: "Anthropic", model: "claude-haiku-5-5", counts: SessionUsageCounts(input: 150_000, output: 1_000, cacheWrite: 10_000), events: 1, pricedEvents: 1,
+            estimatedUSD: SessionUsagePricing.estimate(provider: "Anthropic", model: "claude-haiku-5-5", counts: SessionUsageCounts(input: 150_000, output: 1_000, cacheWrite: 10_000))!)
+        let haikuCat = SessionUsagePricing.categoryUSD(for: haikuLong)!
+        check(abs(haikuLong.estimatedUSD - 0.08375) < 1e-12 && abs(haikuCat.input - 0.075) < 1e-12 && abs(haikuCat.output - 0.0025) < 1e-12 && abs(haikuCat.cacheWrite - 0.00625) < 1e-12,
+              "Haiku 5.5 >100K prompt tier scales every category")
+        let partialOpenAI = SessionUsageBucket(day: "2026-10-01", provider: "OpenAI", model: "gpt-6.1-sol", counts: SessionUsageCounts(input: 1000, output: 100, cacheRead: 0, cacheWrite: 5000), events: 3, pricedEvents: 2, estimatedUSD: 0.5)
+        check(SessionUsagePricing.categoryUSD(for: partialOpenAI) == nil && SessionUsagePricing.categoryUSD(for: nextRow) == nil, "partial and unpriced buckets are never split")
+        let split = P.costSplit([opusBucket, partialOpenAI, nextRow])
+        check(abs(split.splitUSD - opusBucket.estimatedUSD) < 1e-12 && abs(split.pricedUSD - (opusBucket.estimatedUSD + 0.5)) < 1e-12 && split.unsplitRecords == 3 && !split.isComplete,
+              "split covers fully priced records and reports what it left out")
+        let splitMix = P.tokenMix(opusBucket.counts + partialOpenAI.counts, excludingCacheReads: false, rows: [opusBucket, partialOpenAI])
+        check(abs(splitMix[3].estimatedUSD - 290e-6) < 1e-12, "never-charged OpenAI cache writes get no dollars")
+        check(P.costSplit([opusBucket]).isComplete, "fully priced selection splits completely")
 
-        // Period comparison: daily averages, peak day, prior window bounds, and honest missing-baseline handling.
+        // Bars and hover card geometry.
+        let widths = P.segmentWidths([0.98, 0.005, 0.015], total: 100, spacing: 1, minimum: 2)
+        check(abs(widths[0] - 94) < 1e-9 && widths[1] == 2 && widths[2] == 2 && abs(widths.reduce(0, +) + 2 - 100) < 1e-9, "slivers get the minimum and the bar never overflows")
+        let gapped = P.segmentWidths([0.5, 0, 0.5], total: 100, spacing: 1, minimum: 2)
+        check(gapped == [49.5, 0, 49.5], "zero segments take no room or gap")
+        check(P.tooltipX(pointer: 100, cardWidth: 388, containerWidth: 700) == 118, "card sits right of a left-side pointer")
+        let leftX = P.tooltipX(pointer: 600, cardWidth: 388, containerWidth: 700)
+        check(leftX == 194 && leftX + 388 + 18 <= 600, "padded card flips left without covering the pointer")
+        check(P.tooltipX(pointer: 690, cardWidth: 388, containerWidth: 700) + 388 <= 692 && P.tooltipX(pointer: 300, cardWidth: 388, containerWidth: 700) + 388 <= 692, "card never runs past the right edge")
+
+        // Sorting: every measure orders the fixture differently. Unpriced models stay last both ways.
+        func model(_ provider: String, _ name: String, total: Int64, read: Int64, events: Int, priced: Int, usd: Double) -> SessionUsageBucket {
+            SessionUsageBucket(day: "2026-10-20", provider: provider, model: name, counts: SessionUsageCounts(input: total - read, cacheRead: read), events: events, pricedEvents: priced, estimatedUSD: usd)
+        }
+        var alphaLater = model("Anthropic", "alpha", total: 600, read: 60, events: 3, priced: 3, usd: 5); alphaLater.day = "2026-10-21"
+        let sortRows = [model("Anthropic", "alpha", total: 400, read: 40, events: 2, priced: 2, usd: 4), alphaLater,
+                        model("OpenAI", "bravo", total: 3000, read: 2700, events: 1, priced: 1, usd: 2),
+                        model("OpenAI", "charlie", total: 2000, read: 1000, events: 9, priced: 4, usd: 5),
+                        model("Anthropic", "delta", total: 500, read: 0, events: 3, priced: 0, usd: 0),
+                        model("OpenAI", "echo", total: 4000, read: 400, events: 7, priced: 0, usd: 0)]
+        func order(_ sort: SessionUsageModelSort, _ ascending: Bool) -> [String] { P.sortModels(sortRows, by: sort, ascending: ascending).map(\.model) }
+        check(order(.tokens, false) == ["echo", "bravo", "charlie", "alpha", "delta"] && order(.tokens, true) == ["delta", "alpha", "charlie", "bravo", "echo"], "sort by tokens both ways")
+        check(order(.cost, false) == ["alpha", "charlie", "bravo", "delta", "echo"], "API value descending, unpriced last")
+        check(order(.cost, true) == ["bravo", "charlie", "alpha", "delta", "echo"], "API value ascending, unpriced still last")
+        check(order(.records, false) == ["charlie", "echo", "alpha", "delta", "bravo"] && order(.records, true) == ["bravo", "delta", "alpha", "echo", "charlie"], "sort by records both ways")
+        check(order(.cacheShare, false) == ["bravo", "charlie", "alpha", "echo", "delta"] && order(.cacheShare, true) == ["delta", "alpha", "echo", "charlie", "bravo"], "cache share ties break on provider|model")
+        check(order(.model, true) == ["alpha", "bravo", "charlie", "delta", "echo"] && order(.model, false) == ["echo", "delta", "charlie", "bravo", "alpha"], "sort by model name both ways")
+        check(P.defaultAscending(.model) && !P.defaultAscending(.tokens) && P.directionLabel(SessionUsageModelSort.model, ascending: true) == "A to Z"
+              && P.directionLabel(SessionUsageModelSort.cost, ascending: false) == "Highest first" && P.directionLabel(SessionUsageDaySort.date, ascending: false) == "Newest first", "sort direction defaults and labels")
+        let twins = [model("OpenAI", "same", total: 100, read: 0, events: 1, priced: 1, usd: 1), model("Anthropic", "same", total: 100, read: 0, events: 1, priced: 1, usd: 1)]
+        check(P.sortModels(twins, by: .tokens).map(\.provider) == ["Anthropic", "OpenAI"] && P.sortModels(twins, by: .tokens, ascending: true).map(\.provider) == ["Anthropic", "OpenAI"], "ties break on provider|model in both directions")
+        check(P.aggregate(sortRows).first { $0.model == "alpha" }?.day == "" && P.aggregate(sortRows).first { $0.model == "alpha" }?.counts.total == 1000, "aggregate spans days without an arbitrary day id")
+        func day(_ d: String, _ total: Int64, _ events: Int, _ priced: Int, _ usd: Double) -> SessionUsageBucket {
+            SessionUsageBucket(day: d, provider: "OpenAI", model: "gpt-6-astra", counts: SessionUsageCounts(input: total), events: events, pricedEvents: priced, estimatedUSD: usd)
+        }
+        let dayRows = [day("2026-10-01", 300, 2, 2, 1), day("2026-10-02", 100, 1, 1, 5), day("2026-10-03", 200, 9, 0, 0)]
+        check(P.sortDays(dayRows, by: .cost).map(\.id) == ["2026-10-02", "2026-10-01", "2026-10-03"] && P.sortDays(dayRows, by: .cost, ascending: true).map(\.id) == ["2026-10-01", "2026-10-02", "2026-10-03"], "unpriced days sort last on API value both ways")
+        check(P.sortDays(dayRows, by: .tokens, ascending: true).map(\.id) == ["2026-10-02", "2026-10-03", "2026-10-01"] && P.sortDays(dayRows, by: .date).map(\.id) == ["2026-10-03", "2026-10-02", "2026-10-01"], "day sorts by tokens and date")
+
+        // Peak day follows the active measure; ties go to the earlier date.
+        check(P.peakDay(dayRows, measure: .tokens)?.id == "2026-10-01" && P.peakDay(dayRows, measure: .cost)?.id == "2026-10-02" && P.peakDay(dayRows, measure: .records)?.id == "2026-10-03", "peak day ranks by tokens, API value or records")
+        check(P.peakDay([day("2026-10-05", 100, 1, 1, 1), day("2026-10-04", 100, 1, 1, 1)], measure: .tokens)?.id == "2026-10-04", "peak tie goes to the earlier date")
+        check(P.peakDay([nextRow], measure: .cost) == nil, "no priced day, no API value peak")
+
+        // Period comparison: like-for-like windows, explicit ranges, partial coverage.
         let priorRow = SessionUsageBucket(day: "2026-10-17", provider: "OpenAI", model: "gpt-6-astra", counts: SessionUsageCounts(input: 5, output: 10, cacheRead: 450, cacheWrite: 35), events: 1, pricedEvents: 1, estimatedUSD: 1.5)
-        let cmp = SessionUsagePresentation.comparePeriod(allRows: [priorRow, pricedRow, nextRow], selectedRows: [pricedRow, nextRow], period: "Last 7 days", now: monday, timeZone: chicago)
+        let cmp = P.comparePeriod(allRows: [priorRow, pricedRow, nextRow], selectedRows: [pricedRow, nextRow], period: "Last 7 days", now: monday, timeZone: chicago)
         check(cmp.recordedDays == 2 && cmp.dailyAvgTokens == 1000 && cmp.dailyAvgRecords == 2, "daily averages divide by recorded days")
-        check(cmp.peakDay?.id == "2026-10-24", "peak day identified")
-        check(cmp.priorRangeLabel == "2026-10-13 – 2026-10-19" && cmp.hasPriorBaseline, "prior 7-day window aligned")
+        check(cmp.currentRange == "2026-10-20"..."2026-10-26" && cmp.priorRange == "2026-10-13"..."2026-10-19" && cmp.includesToday && cmp.hasPriorBaseline, "prior 7-day window aligned; current window flags today")
         check(cmp.tokenDeltaLabel == "+300.0%" && cmp.recordsDeltaLabel == "+300.0%" && cmp.costDeltaLabel == "+100.0%", "deltas compare current to prior window")
-        let noPrior = SessionUsagePresentation.comparePeriod(allRows: [pricedRow], selectedRows: [pricedRow], period: "Last 7 days", now: monday, timeZone: chicago)
+        check(cmp.costDeltaPartial && cmp.priorPriced && cmp.priorUSD == 1.5, "API value delta marked partial when a window has unpriced records; prior dollars kept")
+        let fullyPriced = P.comparePeriod(allRows: [priorRow, pricedRow], selectedRows: [pricedRow], period: "Last 7 days", now: monday, timeZone: chicago)
+        check(!fullyPriced.costDeltaPartial, "fully priced windows are not partial")
+        let noPrior = P.comparePeriod(allRows: [pricedRow], selectedRows: [pricedRow], period: "Last 7 days", now: monday, timeZone: chicago)
         check(!noPrior.hasPriorBaseline && noPrior.tokenDeltaLabel == "Unavailable", "absent prior window is Unavailable, never +infinity")
+        let marchMTD = P.comparisonWindows(period: "2026-03", now: utc.date(from: "2026-03-30T17:00:00Z")!, timeZone: chicago)
+        check(marchMTD?.current == "2026-03-01"..."2026-03-30" && marchMTD?.prior == "2026-02-01"..."2026-02-28", "month to date compares the same elapsed dates, clamped to a shorter month")
+        let octoberMTD = P.comparisonWindows(period: "2026-10", now: monday, timeZone: chicago)
+        check(octoberMTD?.current == "2026-10-01"..."2026-10-26" && octoberMTD?.prior == "2026-09-01"..."2026-09-26", "month in progress is not compared with a whole month")
+        let september = P.comparisonWindows(period: "2026-09", now: monday, timeZone: chicago)
+        check(september?.current == "2026-09-01"..."2026-09-30" && september?.prior == "2026-08-01"..."2026-08-31", "completed month compares with the whole previous month")
+        check(P.comparisonWindows(period: "Last weekend", now: monday, timeZone: chicago)?.prior == "2026-10-17"..."2026-10-18" && P.comparisonWindows(period: "All history", now: monday, timeZone: chicago) == nil, "weekend and history windows")
+        check(P.dateRangeTitle("2026-10-13"..."2026-10-19") == "Oct 13 – Oct 19, 2026" && P.dateRangeTitle("2026-10-13"..."2026-10-13") == "Oct 13, 2026", "range titles")
 
-        // Model and day sorting.
-        var cheapHighRecords = pricedRow
-        cheapHighRecords.model = "claude-haiku-4-5"; cheapHighRecords.provider = "Anthropic"
-        cheapHighRecords.counts = SessionUsageCounts(input: 50, output: 50, cacheRead: 10, cacheWrite: 0)
-        cheapHighRecords.events = 25; cheapHighRecords.pricedEvents = 25; cheapHighRecords.estimatedUSD = 0.25
-        let byRecords = SessionUsagePresentation.sortModels([pricedRow, cheapHighRecords], by: .records)
-        check(byRecords.first?.model == "claude-haiku-4-5", "sort models by usage records")
-        let byCost = SessionUsagePresentation.sortModels([pricedRow, cheapHighRecords, nextRow], by: .cost)
-        check(byCost.first?.model == "gpt-6-astra", "sort models by API value")
-        let byCache = SessionUsagePresentation.sortModels([pricedRow, cheapHighRecords], by: .cacheShare)
-        check(byCache.first?.model == "gpt-6-astra", "sort models by cache read share")
-        let daysByCost = SessionUsagePresentation.sortDays([pricedRow, nextRow], by: .cost)
-        check(daysByCost.first?.id == "2026-10-24" && daysByCost.last?.id == "2026-10-25", "unpriced days sort below priced days on cost sort")
-
-        // CSV and JSON export.
-        let csv = SessionUsagePresentation.exportCSV([pricedRow, nextRow], excludingCacheReads: true)
-        check(csv.contains("2026-10-24,OpenAI,gpt-6-astra,100,1000,10,20,900,70,2,2,3.000000,priced"), "CSV includes both displayed and all tokens")
-        check(csv.contains("2026-10-25,OpenAI,gpt-6-astra,100,1000,10,20,900,70,2,0,,unpriced"), "CSV leaves unpriced USD blank rather than 0")
-        let json = SessionUsagePresentation.exportJSON([pricedRow, nextRow], period: "Last 7 days", provider: "All providers", model: "All models", excludingCacheReads: true, timeZone: "America/Chicago", pricingVersion: SessionUsagePricing.version)
-        check(json.contains("\"displayedTokens\" : 200") && json.contains("\"allTokens\" : 2000") && json.contains("\"hasUnpricedRecords\" : true"), "JSON export reconciles filtered slice")
+        // Exports: the active slice, escaped and neutralized CSV, parsed JSON.
+        let weekRows = [pricedRow, nextRow, outsideWeekend]
+        check(P.exportRows(weekRows, inspection: SessionUsageInspection(key: "2026-10-24", scale: .daily)).map(\.day) == ["2026-10-24"], "export narrows to the inspected day")
+        check(P.exportRows(weekRows, inspection: SessionUsageInspection(key: "2026-10-19", scale: .weekly)).count == 3 && P.exportRows(weekRows, inspection: nil).count == 3, "export keeps a whole inspected week, or everything without inspection")
+        var partialRow = pricedRow; partialRow.day = "2026-10-23"; partialRow.pricedEvents = 1
+        let csv = P.exportCSV([pricedRow, nextRow, partialRow], excludingCacheReads: true)
+        check(csv.contains("\n2026-10-24,OpenAI,gpt-6-astra,100,1000,10,20,900,70,2,2,3.000000,priced\n"), "CSV includes both displayed and all tokens")
+        check(csv.contains("\n2026-10-25,OpenAI,gpt-6-astra,100,1000,10,20,900,70,2,0,,unpriced\n"), "CSV leaves unpriced USD blank rather than 0")
+        check(csv.contains("\n2026-10-23,OpenAI,gpt-6-astra,100,1000,10,20,900,70,2,1,3.000000,partial\n"), "CSV marks partially priced rows")
+        check(P.csvField("a,b") == "\"a,b\"" && P.csvField("say \"hi\"") == "\"say \"\"hi\"\"\"" && P.csvField("line\nbreak") == "\"line\nbreak\"" && P.csvField("cr\rhere") == "\"cr\rhere\"", "CSV quotes commas, quotes, newlines and carriage returns")
+        check(P.csvField("=HYPERLINK(\"x\")") == "\"'=HYPERLINK(\"\"x\"\")\"" && P.csvField("+1") == "'+1" && P.csvField("-2") == "'-2" && P.csvField("@cmd") == "'@cmd" && P.csvField("plain-model") == "plain-model", "CSV neutralizes formula-leading characters only")
+        var hostile = pricedRow; hostile.model = "=cmd|' /C calc'!A0"
+        check(P.exportCSV([hostile], excludingCacheReads: false).contains(",'=cmd|' /C calc'!A0,"), "hostile model name exported as text")
+        let exportContext = P.ExportContext(period: "Custom dates", customStart: "2026-10-20", customEnd: "2026-10-26", provider: "OpenAI", model: P.allModels,
+            excludingCacheReads: true, timeScale: .weekly, inspection: SessionUsageInspection(key: "2026-10-19", scale: .weekly),
+            inspectedTitle: "Oct 20 – Oct 25, 2026 (partial week)", timeZone: "America/Chicago", pricingVersion: SessionUsagePricing.version)
+        let parsed = try JSONSerialization.jsonObject(with: Data(P.exportJSON([pricedRow, nextRow], context: exportContext).utf8)) as! [String: Any]
+        check(parsed["displayedTokens"] as? Int == 200 && parsed["allTokens"] as? Int == 2000 && parsed["hasUnpricedRecords"] as? Bool == true
+              && parsed["usageRecords"] as? Int == 4 && parsed["pricedRecords"] as? Int == 2 && parsed["estimatedUSD"] as? Double == 3, "JSON totals reconcile the slice")
+        check(parsed["customStart"] as? String == "2026-10-20" && parsed["customEnd"] as? String == "2026-10-26" && parsed["timeScale"] as? String == "Weekly"
+              && parsed["inspectedPeriod"] as? String == "2026-10-19" && parsed["inspectedPeriodScale"] as? String == "Weekly"
+              && parsed["inspectedPeriodTitle"] as? String == "Oct 20 – Oct 25, 2026 (partial week)" && parsed["providerFilter"] as? String == "OpenAI" && parsed["excludeCacheReads"] as? Bool == true, "JSON names the period, dates, scale, inspection and filters")
+        let jsonBuckets = parsed["buckets"] as! [[String: Any]]
+        check(jsonBuckets.map { $0["pricingStatus"] as? String } == ["priced", "unpriced"] && jsonBuckets[1]["estimatedUSD"] is NSNull && jsonBuckets[0]["estimatedUSD"] as? Double == 3, "JSON buckets carry pricing status and null unknown cost")
+        var noInspection = exportContext; noInspection.inspection = nil; noInspection.inspectedTitle = nil; noInspection.customStart = nil
+        let plain = try JSONSerialization.jsonObject(with: Data(P.exportJSON([pricedRow], context: noInspection).utf8)) as! [String: Any]
+        check(plain["inspectedPeriod"] is NSNull && plain["customStart"] is NSNull, "absent inspection and dates are null, not omitted")
 
         print("PASS: weekly buckets, category USD mix, period comparisons, table sorting and CSV/JSON export")
         print("PASS: 30/90/custom dates, DST/leap/calendar boundaries, provider/day summaries and token mix")
