@@ -322,6 +322,25 @@ try:
     acoustic["chunksIndexed"].append({"i": 1, "c": old_voice})
     acoustic["speakerProjectedChunksIndexed"].append({"i": 1, "c": copy.deepcopy(old_voice)})
     check(mac_read("4")[0] != 0, "new identity cannot collide with unsupported original Voice label")
+    initial = copy.deepcopy(native); del initial["macSpeakerLive"]
+    initial["speakerGeneration"] = "generation_a"; initial["macSpeakerLiveStatus"] = {"reason": "awaiting_qualified_evidence"}
+    initial["speakerProjectedChunksIndexed"] = copy.deepcopy(initial["chunksIndexed"])
+    acoustic = copy.deepcopy(initial)
+    code, answer, _, _ = mac_read("4")
+    check(code == 0 and answer["details"]["read"]["turns"][0]["speaker"] == "Voice 7", "original ASR remains readable before identity state exists")
+    acoustic["macSpeakerLiveStatus"] = {"reason": "model_unavailable", "completeEligibleSnapshot": False}
+    check(mac_read("4")[0] == 0, "unavailable identity model withholds labels without hiding ASR")
+    for mutate, why in [
+        (lambda a: a["speakerProjectedChunksIndexed"][0]["c"].update(speaker="Qualified Person"), "state-absent name change"),
+        (lambda a: a["speakerProjectedChunksIndexed"][0]["c"].update(text="changed private text"), "state-absent word change"),
+        (lambda a: a.update(speakerProjectedChunksIndexed=[]), "state-absent omitted original"),
+        (lambda a: a.update(speakerRevision=True), "state-absent boolean revision"),
+        (lambda a: a.update(speakerGeneration=""), "state-absent missing generation"),
+        (lambda a: a.update(macSpeakerLiveStatus={}), "state-absent missing withheld reason"),
+        (lambda a: a.update(macSpeakerLiveStatus={"reason": "   "}), "state-absent empty reason"),
+        (lambda a: a.update(macSpeakerLiveStatus={"reason": "qualified", "completeEligibleSnapshot": True}), "state-absent false completeness")]:
+        acoustic = copy.deepcopy(initial); mutate(acoustic)
+        check(mac_read("4")[0] != 0, why + " refused")
     acoustic = copy.deepcopy(native); acoustic["speakerProjectedChunksIndexed"] = []
     check(mac_read("4")[0] != 0, "native overlay must cover full original index set")
     acoustic = copy.deepcopy(native); acoustic["chunksIndexed"] *= 2

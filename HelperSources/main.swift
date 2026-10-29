@@ -16037,6 +16037,26 @@ final class COSControlHelper {
             }
             return copy
         }
+        // ASR remains readable before any identity model/profile state exists.
+        // This exception can only reproduce every original row exactly; an
+        // explicit withheld status never authorizes a name or number change.
+        if object["macSpeakerLive"] == nil {
+            guard sessionId.hasPrefix("mac_"), object["sourceType"] as? String == "mac_system_audio",
+                  integer(object["speakerRevision"]) != nil,
+                  let generation = object["speakerGeneration"] as? String, !generation.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, generation.count <= 200,
+                  let status = object["macSpeakerLiveStatus"] as? [String: Any],
+                  let reason = status["reason"] as? String, !reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, reason.count <= 200,
+                  status["completeEligibleSnapshot"] as? Bool != true,
+                  let rows = object["speakerProjectedChunksIndexed"] as? [[String: Any]], rows.count == originals.count else { throw invalid() }
+            var labels: [Int: String] = [:]
+            for row in rows {
+                guard let index = integer(row["i"]), labels[index] == nil, let source = originals[index],
+                      let projected = row["c"] as? [String: Any], same(source, projected), let label = source["speaker"] as? String else { throw invalid() }
+                labels[index] = label
+            }
+            guard Set(labels.keys) == Set(originals.keys) else { throw invalid() }
+            return labels
+        }
         guard sessionId.hasPrefix("mac_"), object["sourceType"] as? String == "mac_system_audio",
               let revision = integer(object["speakerRevision"]),
               let state = object["macSpeakerLive"] as? [String: Any], integer(state["version"]) == 1,
