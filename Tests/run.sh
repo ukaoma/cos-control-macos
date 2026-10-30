@@ -112,6 +112,7 @@ python3 "$ROOT/Tests/work-roundtrip-helper-checks.py" "$TMP/cos-control-helper"
 python3 "$ROOT/Tests/work-session-meter-helper-checks.py" "$TMP/cos-control-helper"
 python3 "$ROOT/Tests/hardening-helper-checks.py" "$TMP/cos-control-helper"
 python3 "$ROOT/Tests/speaker-policy-helper-checks.py" "$TMP/cos-control-helper"
+zsh "$ROOT/Tests/run-speaker-groups.sh" --helper "$TMP/cos-control-helper"
 # 0.5.340 (server 6.90.0): Mac recording Voice N, wired. The rules run in ModelsContract and ActivityTodayChecks.
 /usr/bin/python3 "$ROOT/Tests/mac-voice-pins.py" "$ROOT" --selftest
 python3 "$ROOT/Tests/mac-recording-helper-checks.py" "$TMP/cos-control-helper"
