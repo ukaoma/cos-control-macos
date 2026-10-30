@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Usage slicing mutation gate (Sources/SessionUsageCore.swift + Tests/SessionUsageChecks.swift).
+"""Usage slicing and Cursor feed mutation gate (SessionUsageCore, SessionUsageCollector, Tests/SessionUsageChecks.swift).
 
 SERIAL: one small three-file compile at a time through Tests/compile-guard.sh, on a scratch copy (the checkout is
 never mutated). A green baseline is required first; each mutant must land exactly once, must make the checks FAIL,
@@ -13,6 +13,7 @@ import pathlib, shutil, subprocess, sys, tempfile, time
 sys.stdout.reconfigure(line_buffering=True)  # progress reaches a log file as each mutant finishes
 root = pathlib.Path(sys.argv[1]).resolve()
 CORE = "Sources/SessionUsageCore.swift"
+COLLECTOR = "HelperSources/SessionUsageCollector.swift"
 # (name, old, new, the check label that must fail, or a tuple when one primitive feeds several checks)
 MUTANTS = [
     ("inspection cleared on a scale change",
@@ -126,6 +127,102 @@ MUTANTS = [
      "let (start, end) = clamp(first, sunday)",
      "let (start, end) = (first, sunday)",
      "boundary week title clamps to the selection"),
+    ("prior window judged by the earliest date of any tool",
+     "allRows.filter { $0.provider == name }.map(\\.day).min()",
+     "allRows.map(\\.day).min()",
+     "old Cursor history cannot vouch for Claude Code's prior window"),
+    ("90 days opens on Daily",
+     'period == "Last 90 days" ? .weekly : .daily',
+     ".daily",
+     "each period opens on a readable scale"),
+    ("New tokens sort counts cache reads",
+     "a = Double(tokenCount(left.counts, excludingCacheReads: true))\n                b = Double(tokenCount(right.counts, excludingCacheReads: true))",
+     "a = Double(tokenCount(left.counts, excludingCacheReads: false))\n                b = Double(tokenCount(right.counts, excludingCacheReads: false))",
+     "New tokens sort ignores cache reads"),
+    ("feed ignores its quiet interval",
+     "guard force || clock >= state.nextAllowedAt else { return }",
+     "guard force || clock >= 0 else { return }",
+     "a failed sign-in read backs off until forced", COLLECTOR),
+    ("all feed rows share one identity",
+     'digest("cursor|" + identity)',
+     'digest("cursor|")',
+     "the event id is the identity", COLLECTOR),
+    ("reported cost dropped",
+     "let cost = event.reportedUSD ?? SessionUsagePricing.estimate(",
+     "let cost = SessionUsagePricing.estimate(",
+     "reported cost is stored as priced value", COLLECTOR),
+    ("cents stored as dollars",
+     "$0.isFinite && $0 >= 0 ? $0 / 100 : nil",
+     "$0.isFinite && $0 >= 0 ? $0 : nil",
+     "feed cost is its reported cents as dollars", COLLECTOR),
+    ("every pass opens a new run",
+     "if state.runEndMs == 0 {",
+     "if state.runEndMs >= 0 {",
+     "the backfill resumes at the next page", COLLECTOR),
+    ("a run forgets its page",
+     "state.nextPage += 1",
+     "state.nextPage += 0",
+     ("the backfill resumes at the next page", "pages until the reported total is read", "a short page does not end a run the total says is unfinished"), COLLECTOR),
+    ("short page ends a run the total says is unfinished",
+     "if state.runSeen >= state.runTotal { drained = true; break }",
+     "if state.runSeen >= state.runTotal || rows.count < Self.cursorPageSize { drained = true; break }",
+     "a short page does not end a run the total says is unfinished", COLLECTOR),
+    ("total ignored",
+     "if state.runSeen >= state.runTotal { drained = true; break }",
+     "_ = state.runTotal",
+     ("pages until the reported total is read", "the total ends a run even if pages repeat"), COLLECTOR),
+    ("no page limit",
+     "guard state.nextPage <= Self.cursorPageLimit else {",
+     "guard state.nextPage > 0 else {",
+     "a list that never ends stops at the page limit", COLLECTOR),
+    ("empty answer treated as a changed feed",
+     'drained = true; break\n            }\n            let events',
+     'state.state = .changed; try saveCursorFeedState(state); return\n            }\n            let events',
+     "an empty answer is a quiet window, not a changed feed", COLLECTOR),
+    ("live sync without overlap",
+     "state.watermarkMs - 2*86_400_000",
+     "state.watermarkMs",
+     "a live sync rereads two days past its watermark", COLLECTOR),
+    ("unreadable rows treated as no usage",
+     "if events.isEmpty {",
+     "if events.isEmpty && rows.isEmpty {",
+     "rows the feed can no longer read are reported, not treated as no usage", COLLECTOR),
+    ("rejected sign-in treated as an outage",
+     "if reply.status == 401 || reply.status == 403 {",
+     "if reply.status == 999 {",
+     "a rejected sign-in asks for a new one", COLLECTOR),
+    ("failure retries every pass",
+     "state.nextAllowedAt = clock + min(6*3600, 1800 * pow(2, Double(min(state.failures, 8) - 1)))",
+     "state.nextAllowedAt = clock",
+     "a failure backs off instead of retrying every pass", COLLECTOR),
+    ("empty page before the total ends a run",
+     "if state.runSeen < state.runTotal {",
+     "if state.runSeen < 0 {",
+     "an empty page before the total is reported, and the run stays open", COLLECTOR),
+    ("a failing page holds its run forever",
+     "if state.failures >= 4 { state.runEndMs = 0 }",
+     "",
+     "a page that keeps failing closes the run and starts again at the newest page", COLLECTOR),
+    ("an open run stops waiting for Keychain",
+     "switch readToken(force || state.runEndMs != 0) {",
+     "switch readToken(force) {",
+     "a run in progress and a manual Refresh wait patiently for Keychain", COLLECTOR),
+    ("Keychain prompt repeats",
+     "state.nextAllowedAt = clock + 30*86_400",
+     "state.nextAllowedAt = clock + 3600",
+     "an unanswered Keychain prompt is not repeated by automatic passes", COLLECTOR),
+    ("a thrown sync reads as fine",
+     "if syncFailed { state.state = .failed }",
+     "",
+     "a sync that threw is reported, so the loop stops hurrying", COLLECTOR),
+    ("expired sign-in still sent",
+     "return expiry <= now.timeIntervalSince1970",
+     "return false",
+     "an expired sign-in is not sent", COLLECTOR),
+    ("feed reports on while turned off",
+     "guard enabled else { return SessionUsageCursorFeedStatus(state: .off) }",
+     "",
+     "the feed is off until turned on", COLLECTOR),
 ]
 
 
@@ -135,7 +232,7 @@ def compile_and_run(work):
     for attempt in range(60):
         if out.exists(): out.unlink()
         build = subprocess.run(["/bin/zsh", str(root / "Tests/compile-guard.sh"), "swiftc", "-swift-version", "6", "-strict-concurrency=complete",
-                                "-parse-as-library", str(work / CORE), str(root / "HelperSources/SessionUsageCollector.swift"),
+                                "-parse-as-library", str(work / CORE), str(work / COLLECTOR),
                                 str(root / "Tests/SessionUsageChecks.swift"), "-o", str(out)], capture_output=True, text=True)
         if build.returncode in (70, 75):
             time.sleep(30)
@@ -149,15 +246,20 @@ def compile_and_run(work):
 work = pathlib.Path(tempfile.mkdtemp(prefix="cos-usage-mutants-", dir="/private/tmp"))
 try:
     (work / "Sources").mkdir()
+    (work / "HelperSources").mkdir()
     shutil.copy(root / CORE, work / CORE)
-    original = (work / CORE).read_text()
+    shutil.copy(root / COLLECTOR, work / COLLECTOR)
+    originals = {CORE: (work / CORE).read_text(), COLLECTOR: (work / COLLECTOR).read_text()}
     code, output = compile_and_run(work)
     if code != 0: sys.exit("baseline is not green:\n" + output[-2000:])
     print("GREEN BASELINE: unmutated usage checks pass")
     survivors, misattributed = [], []
-    for name, old, new, label in MUTANTS:
+    for mutant in MUTANTS:
+        name, old, new, label = mutant[:4]
+        target = mutant[4] if len(mutant) > 4 else CORE
+        original = originals[target]
         if original.count(old) != 1: sys.exit(f"mutant '{name}' targets {original.count(old)} sites")
-        (work / CORE).write_text(original.replace(old, new))
+        (work / target).write_text(original.replace(old, new))
         code, output = compile_and_run(work)
         if code == 2: verdict = "KILLED (did not compile)"
         elif code == 0: verdict = "SURVIVED"; survivors.append(name)
@@ -167,7 +269,7 @@ try:
             failed = [line for line in output.splitlines() if "Fatal error:" in line]
             name += f" (failed: {failed[0].split('Fatal error:', 1)[1].strip() if failed else 'no check label'})"
         print(f"{verdict:24} {name}")
-        (work / CORE).write_text(original)
+        (work / target).write_text(original)
     killed = len(MUTANTS) - len(survivors) - len(misattributed)
     print(f"SUMMARY: {killed} killed, {len(survivors)} survived, {len(misattributed)} misattributed of {len(MUTANTS)} mutants")
     if survivors or misattributed: sys.exit(f"survivors: {survivors}; misattributed: {misattributed}")

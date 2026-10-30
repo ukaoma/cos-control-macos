@@ -2275,9 +2275,9 @@ struct ActivityWindow: View {
             sectionHeader(
                 section: .sessions,
                 title: "Sessions",
-                detail: showingSessionUsage ? "Local token usage and estimated API value" : sessionsStatus,
+                detail: showingSessionUsage ? "Token usage and estimated API value" : sessionsStatus,
                 refresh: { Task {
-                    if showingSessionUsage { await model.sessionUsage.refresh() }
+                    if showingSessionUsage { await model.sessionUsage.refresh(cursorNow: true) }
                     else { await model.loadClaudeSessions(force: true) }
                 } },
                 refreshDisabled: showingSessionUsage ? false : model.claudeSessionsLoading,

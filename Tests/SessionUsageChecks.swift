@@ -344,6 +344,243 @@ import Foundation
         let plain = try JSONSerialization.jsonObject(with: Data(P.exportJSON([pricedRow], context: noInspection).utf8)) as! [String: Any]
         check(plain["inspectedPeriod"] is NSNull && plain["customStart"] is NSNull, "absent inspection and dates are null, not omitted")
 
+        // Tools and names.
+        check(P.toolName("Anthropic") == "Claude Code" && P.toolName("OpenAI") == "Codex" && P.toolName("Cursor") == "Cursor", "tools are named for what people run")
+        check(P.toolName("Ollama") == "Codex (Ollama)", "a Codex log's other provider stays distinct and traceable")
+        for (id, name) in [("claude-opus-5-5", "Opus 5.5"), ("claude-opus-5", "Opus 5"), ("claude-haiku-4-5-20251001", "Haiku 4.5"), ("claude-opus-5-thinking-high", "Opus 5 thinking high"),
+                           ("claude-4.5-opus-high-thinking", "Opus 4.5 high thinking"), ("gpt-6.1-sol", "GPT-6.1 Sol"), ("gpt-5.6-sol-xhigh", "GPT-5.6 Sol xhigh"), ("gpt-5.5", "GPT-5.5"),
+                           ("cursor-grok-4.6-xhigh-fast", "Grok 4.6 xhigh fast"), ("composer-2.5-fast", "Composer 2.5 fast"), ("codex-auto-review", "Codex auto review"), ("Unknown model", "Unknown model"), ("default", "default")] {
+            check(P.modelName(id) == name, "model name \(id) reads \(name), got \(P.modelName(id))")
+        }
+        check(P.spokenTokens(78_000_000_000) == "78.0 billion" && P.spokenTokens(459_000_000) == "459 million" && P.spokenTokens(85_700_000) == "85.7 million" && P.spokenTokens(900) == "900", "spoken token sizes")
+        check(P.shortTokens(74_020_000_000) == "74.02B" && P.shortTokens(601_640_000) == "602M" && P.shortTokens(50_400_000) == "50.4M" && P.shortTokens(358_100) == "358K" && P.shortTokens(1_500) == "1.5K" && P.shortTokens(12) == "12", "table token sizes scan")
+        check(P.dollars(75.04) == "$75" && P.dollars(0.04) == "<$1" && P.dollars(0) == "$0", "whole dollars, and a small amount never rounds to nothing")
+        check(P.costCell([nextRow]) == "No verified price" && P.costCell([pricedRow]) == "$3" && P.costCell([pricedRow, nextRow]) == "$3 + unknown", "cost cells stay honest about unpriced records")
+        check(P.axisLabel(for: "2026-10-19") == "Oct 19" && P.axisLabel(for: "2026-10") == "Oct" && P.axisLabel(for: "2026-01") == "Jan 2026", "axis labels are short dates")
+        check(P.axisKeys(["a", "b", "c"]) == ["a", "b", "c"] && P.axisKeys((1...30).map(String.init)).count <= 8 && P.axisKeys((1...30).map(String.init)).first == "1" && P.axisKeys((1...25).map(String.init)).last != "25", "about seven axis labels, starting at the first period and never clipping the last")
+        check(P.seriesOrder(["small": 1, "big": 9, "mid": 5]) == ["big", "mid", "small"] && P.seriesOrder(["b": 1, "a": 1]) == ["a", "b"], "the largest series comes first, ties by name")
+        check(P.valueShare([pricedRow], of: 6) == "50.0%" && P.valueShare([nextRow], of: 6) == "Unavailable", "the share of value is priced records only")
+        check(P.defaultScale(for: "Last 30 days") == .daily && P.defaultScale(for: "Last 90 days") == .weekly && P.defaultScale(for: "All history") == .monthly && P.defaultScale(for: "2026-10") == .daily, "each period opens on a readable scale")
+        check(P.niceAxisTop(13_000) == 16_000 && P.niceAxisTop(459) == 600 && P.niceAxisTop(5736) == 6000 && P.niceAxisTop(0) == 1, "axis tops land on four round steps")
+        let cursorRow = SessionUsageBucket(day: "2026-10-24", provider: "Cursor", model: "grok-4.7", counts: SessionUsageCounts(input: 1, output: 1, cacheRead: 5000, cacheWrite: 0), events: 1, pricedEvents: 1, estimatedUSD: 2)
+        let groups2 = P.toolGroups([pricedRow, anotherProvider, cursorRow, nextRow], by: .tokens)
+        check(Set(groups2.map(\.id)) == Set([pricedRow.provider, anotherProvider.provider, "Cursor"]) && groups2.first(where: { $0.id == "Cursor" })?.tool == "Cursor", "one group per tool")
+        check(groups2.reduce(0) { $0 + $1.models.count } == P.aggregate([pricedRow, anotherProvider, cursorRow, nextRow]).count, "every model lands in exactly one tool")
+        let byNew = P.sortModels([SessionUsageBucket(day: "2026-10-24", provider: "A", model: "reads", counts: SessionUsageCounts(input: 1, output: 0, cacheRead: 9000, cacheWrite: 0), events: 1, pricedEvents: 1, estimatedUSD: 1),
+                                  SessionUsageBucket(day: "2026-10-24", provider: "A", model: "writes", counts: SessionUsageCounts(input: 50, output: 50, cacheRead: 0, cacheWrite: 0), events: 1, pricedEvents: 1, estimatedUSD: 1)], by: .newTokens)
+        check(byNew.first?.model == "writes", "New tokens sort ignores cache reads")
+
+        // A prior window is complete only when every tool in the selection reaches back that far.
+        let oldCursor = SessionUsageBucket(day: "2025-07-01", provider: "Cursor", model: "m", counts: SessionUsageCounts(input: 1, output: 1, cacheRead: 1, cacheWrite: 1), events: 1, pricedEvents: 1, estimatedUSD: 1)
+        let newClaude = SessionUsageBucket(day: "2026-10-20", provider: "Anthropic", model: "m", counts: SessionUsageCounts(input: 1, output: 1, cacheRead: 1, cacheWrite: 1), events: 1, pricedEvents: 1, estimatedUSD: 1)
+        let priorCursor = SessionUsageBucket(day: "2026-09-20", provider: "Cursor", model: "m", counts: SessionUsageCounts(input: 1, output: 1, cacheRead: 1, cacheWrite: 1), events: 1, pricedEvents: 1, estimatedUSD: 1)
+        let newCursor = SessionUsageBucket(day: "2026-10-21", provider: "Cursor", model: "m", counts: SessionUsageCounts(input: 1, output: 1, cacheRead: 1, cacheWrite: 1), events: 1, pricedEvents: 1, estimatedUSD: 1)
+        let everyone = [oldCursor, priorCursor, newCursor, newClaude]
+        check(P.comparePeriod(allRows: everyone, selectedRows: [newClaude, newCursor], period: "Last 30 days", now: monday, timeZone: chicago).partialPriorHistory, "old Cursor history cannot vouch for Claude Code's prior window")
+        check(!P.comparePeriod(allRows: everyone, selectedRows: [newCursor], period: "Last 30 days", provider: "Cursor", now: monday, timeZone: chicago).partialPriorHistory, "a tool with old history has a complete prior window")
+
+        // The Cursor feed: parsing, privacy, paging, failure and resume, all against fakes.
+        let feedHome = home.appendingPathComponent("feed")
+        try FileManager.default.createDirectory(at: feedHome, withIntermediateDirectories: true)
+        let feedDB = feedHome.appendingPathComponent("feed.sqlite")
+        let feed = try SessionUsageCollector(home: feedHome, database: feedDB, timeZone: TimeZone(identifier: "America/Chicago")!)
+        func feedRow(_ id: String?, _ stamp: String = "1793372502953", model: String = "grok-4.7", input: Int = 10, cents: Double? = 250) -> [String: Any] {
+            var usage: [String: Any] = ["inputTokens": input, "outputTokens": 5, "cacheReadTokens": 1000, "cacheWriteTokens": 2]
+            if let cents { usage["totalCents"] = cents }
+            var row: [String: Any] = ["timestamp": stamp, "model": model, "tokenUsage": usage, "conversationId": "SECRET_CONVERSATION", "owningUser": "SECRET_OWNER", "userEmail": "secret@example.com"]
+            if let id { row["usageEventId"] = id }
+            return row
+        }
+        func page(_ rows: [[String: Any]], total: Int? = nil) -> Data { try! JSONSerialization.data(withJSONObject: ["totalUsageEventsCount": total ?? rows.count, "usageEventsDisplay": rows]) }
+        let feedIso = ISO8601DateFormatter()
+        let parsed0 = SessionUsageCollector.cursorEvent(feedRow("event-1"), iso: feedIso)!
+        check(parsed0.provider == "Cursor" && parsed0.counts.input == 10 && parsed0.counts.output == 5 && parsed0.counts.cacheRead == 1000 && parsed0.counts.cacheWrite == 2, "feed counts map to disjoint categories")
+        check(parsed0.reportedUSD == 2.5, "feed cost is its reported cents as dollars")
+        check(SessionUsageCollector.cursorEvent(feedRow("x", "not-a-time"), iso: feedIso) == nil && SessionUsageCollector.cursorEvent(["model": "m"], iso: feedIso) == nil, "a row without a time is dropped")
+        check(SessionUsageCollector.cursorEvent(feedRow("a"), iso: feedIso)!.id != SessionUsageCollector.cursorEvent(feedRow("b"), iso: feedIso)!.id, "the event id is the identity")
+        check(SessionUsageCollector.cursorEvent(feedRow(nil), iso: feedIso)!.id == SessionUsageCollector.cursorEvent(feedRow(nil), iso: feedIso)!.id, "old rows without an id still dedupe")
+        check(SessionUsageCollector.cursorEvent(feedRow("n", cents: nil), iso: feedIso)!.reportedUSD == nil, "a row with no cost stays unpriced")
+        let sessionish = "h." + Data(#"{"exp":100}"#.utf8).base64EncodedString().replacingOccurrences(of: "=", with: "") + ".s"
+        check(SessionUsageCollector.cursorTokenExpired(sessionish, now: Date(timeIntervalSince1970: 200)), "an expired sign-in is not sent")
+        check(!SessionUsageCollector.cursorTokenExpired(sessionish, now: Date(timeIntervalSince1970: 50)), "a current sign-in is used")
+        check(!SessionUsageCollector.cursorTokenExpired("opaque", now: Date()), "a token that is not a JWT is left for the server")
+
+        let t0 = Date(timeIntervalSince1970: 1_793_400_000)
+        // Off means no request at all: refresh never reaches the feed, and the report says off.
+        var feedCalls = 0
+        check(try feed.refresh(cursorEnabled: false).cursorFeed?.state == .off, "the feed is off until turned on")
+        check(try feed.refresh(cursorEnabled: false).buckets.isEmpty, "off counts nothing")
+
+        // Missing and expired sign-ins never reach the network, and say what to do.
+        try feed.syncCursorFeed(force: true, now: t0, readToken: { _ in .missing }, fetch: { _, _, _, _ in feedCalls += 1; return .init(status: 200, body: page([])) })
+        check(feedCalls == 0, "no sign-in, no request")
+        check(try feed.refresh(cursorEnabled: true).cursorFeed?.state == .signIn, "a missing sign-in is reported")
+        try feed.syncCursorFeed(force: true, now: t0, readToken: { _ in .expired }, fetch: { _, _, _, _ in feedCalls += 1; return .init(status: 200, body: page([])) })
+        check(try feedCalls == 0 && feed.refresh(cursorEnabled: true).cursorFeed?.state == .expired, "an expired sign-in is reported without a request")
+        try feed.syncCursorFeed(force: false, now: t0.addingTimeInterval(60), readToken: { _ in feedCalls += 1; return .blocked }, fetch: { _, _, _, _ in .init(status: 200, body: page([])) })
+        check(feedCalls == 0, "a failed sign-in read backs off until forced")
+
+        // A full page then a short page drains, stores content-free rows, and dedupes on the next pass.
+        var seenPages: [Int] = [], seenTokens: Set<String> = [], seenStarts: [Int64] = [], seenEnds: [Int64] = []
+        let full = (0..<SessionUsageCollector.cursorPageSize).map { feedRow("full-\($0)") }
+        let replies = [1: page(full, total: full.count + 2), 2: page([feedRow("last"), feedRow("zero", input: 0, cents: 0)], total: full.count + 2)]
+        func scripted(_ token: String, _ start: Int64, _ end: Int64, _ number: Int) -> SessionUsageCollector.CursorFeedReply {
+            seenPages.append(number); seenTokens.insert(token); seenStarts.append(start); seenEnds.append(end)
+            return .init(status: 200, body: replies[number] ?? page([]))
+        }
+        try feed.syncCursorFeed(force: true, now: t0, readToken: { _ in .token("SECRET_TOKEN") }, fetch: scripted)
+        check(seenPages == [1, 2] && seenTokens == ["SECRET_TOKEN"], "pages until the reported total is read")
+        let afterFeed = try feed.refresh(cursorEnabled: true)
+        let cursorRows = afterFeed.buckets.filter { $0.provider == "Cursor" }
+        check(cursorRows.reduce(0) { $0 + $1.events } == SessionUsageCollector.cursorPageSize + 2, "every row with tokens is stored")
+        check(cursorRows.reduce(0) { $0 + $1.pricedEvents } == SessionUsageCollector.cursorPageSize + 2 && abs(cursorRows.reduce(0) { $0 + $1.estimatedUSD } - Double(SessionUsageCollector.cursorPageSize + 1) * 2.5) < 0.001, "reported cost is stored as priced value")
+        check(afterFeed.cursorFeed?.state == .ready && afterFeed.cursorFeed?.lastSuccessAt != nil, "a drained feed is ready")
+        for suffix in ["", "-wal", "-shm"] {
+            if let raw = try? Data(contentsOf: URL(fileURLWithPath: feedDB.path + suffix)) {
+                let text = String(decoding: raw, as: UTF8.self)
+                check(!text.contains("SECRET_"), "the database holds no token, conversation or owner")
+                check(!text.contains("secret@example.com"), "the database holds no email")
+            }
+        }
+        // Inside the quiet interval nothing is asked; after it, only a recent window with overlap, and no double count.
+        seenPages = []
+        try feed.syncCursorFeed(force: false, now: t0.addingTimeInterval(60), readToken: { _ in .token("t") }, fetch: scripted)
+        check(seenPages.isEmpty, "the feed stays quiet between syncs")
+        seenPages = []; seenStarts = []
+        try feed.syncCursorFeed(force: false, now: t0.addingTimeInterval(700), readToken: { _ in .token("t") }, fetch: { token, start, end, number in
+            scripted(token, start, end, number == 1 ? 2 : number)
+        })
+        check(seenStarts.first == Int64(t0.timeIntervalSince1970 * 1000) - 2*86_400_000, "a live sync rereads two days past its watermark")
+        check(try feed.refresh(cursorEnabled: true).buckets.filter { $0.provider == "Cursor" }.reduce(0) { $0 + $1.events } == SessionUsageCollector.cursorPageSize + 2, "rereading never double counts")
+
+        // Failure keeps history and backs off; a rejected sign-in says so; a changed answer never counts as finished.
+        let keptEvents = try feed.refresh(cursorEnabled: true).buckets.reduce(0) { $0 + $1.events }
+        let t1 = t0.addingTimeInterval(4000)
+        seenPages = []
+        try feed.syncCursorFeed(force: true, now: t1, readToken: { _ in .token("t") }, fetch: { _, _, _, _ in .init(status: 500, body: nil) })
+        check(try feed.refresh(cursorEnabled: true).cursorFeed?.state == .failed, "a server failure is reported")
+        try feed.syncCursorFeed(force: false, now: t1.addingTimeInterval(60), readToken: { _ in .token("t") }, fetch: { t, s, e, n in scripted(t, s, e, n) })
+        check(seenPages.isEmpty, "a failure backs off instead of retrying every pass")
+        try feed.syncCursorFeed(force: true, now: t1, readToken: { _ in .token("t") }, fetch: { _, _, _, _ in .init(status: 0, body: nil) })
+        check(try feed.refresh(cursorEnabled: true).cursorFeed?.state == .failed, "no answer at all is a failure")
+        try feed.syncCursorFeed(force: true, now: t1, readToken: { _ in .token("t") }, fetch: { _, _, _, _ in .init(status: 401, body: nil) })
+        check(try feed.refresh(cursorEnabled: true).cursorFeed?.state == .expired, "a rejected sign-in asks for a new one")
+        // The real feed answers an empty window with {} and a page past the end with only a total.
+        try feed.syncCursorFeed(force: true, now: t1, readToken: { _ in .token("t") }, fetch: { _, _, _, _ in .init(status: 200, body: Data("{}".utf8)) })
+        check(try feed.refresh(cursorEnabled: true).cursorFeed?.state == .ready, "an empty answer is a quiet window, not a changed feed")
+        try feed.syncCursorFeed(force: true, now: t1, readToken: { _ in .token("t") }, fetch: { _, _, _, _ in .init(status: 200, body: Data(#"{"totalUsageEventsCount":0}"#.utf8)) })
+        check(try feed.refresh(cursorEnabled: true).cursorFeed?.state == .ready, "a total of zero with no list is a quiet window")
+        try feed.syncCursorFeed(force: true, now: t1, readToken: { _ in .token("t") }, fetch: { _, _, _, _ in .init(status: 200, body: page([["model": "m", "newShape": 1]])) })
+        check(try feed.refresh(cursorEnabled: true).cursorFeed?.state == .changed, "rows the feed can no longer read are reported, not treated as no usage")
+        try feed.syncCursorFeed(force: true, now: t1, readToken: { _ in .token("t") }, fetch: { _, _, _, _ in .init(status: 200, body: Data("not json".utf8)) })
+        check(try feed.refresh(cursorEnabled: true).cursorFeed?.state == .changed, "an unreadable answer is reported")
+        check(try feed.refresh(cursorEnabled: true).buckets.reduce(0) { $0 + $1.events } == keptEvents, "failures keep what was counted")
+        // Turning the feed off keeps history and reports off, even with a problem on record.
+        let offReport = try feed.refresh(cursorEnabled: false)
+        check(offReport.cursorFeed?.state == .off && offReport.buckets.reduce(0) { $0 + $1.events } == keptEvents, "off keeps history")
+
+        // A backfill cut by its budget resumes at the next page with the same end date.
+        let resumeHome = home.appendingPathComponent("resume")
+        try FileManager.default.createDirectory(at: resumeHome, withIntermediateDirectories: true)
+        let resume = try SessionUsageCollector(home: resumeHome, database: resumeHome.appendingPathComponent("r.sqlite"), timeZone: TimeZone(identifier: "America/Chicago")!)
+        seenPages = []; seenEnds = []
+        let longPage = page((0..<SessionUsageCollector.cursorPageSize).map { feedRow("long-\($0)") }, total: SessionUsageCollector.cursorPageSize + 1)
+        let lastPage = page([feedRow("long-last")], total: SessionUsageCollector.cursorPageSize + 1)
+        try resume.syncCursorFeed(force: true, now: t0, seconds: 0.001, readToken: { _ in .token("t") }, fetch: { _, _, end, number in
+            seenPages.append(number); seenEnds.append(end); Thread.sleep(forTimeInterval: 0.01); return .init(status: 200, body: longPage)
+        })
+        check(try seenPages == [1] && resume.refresh(cursorEnabled: true).cursorFeed?.pending == true, "a budget cut leaves the backfill pending")
+        try resume.syncCursorFeed(force: false, now: t0.addingTimeInterval(15), readToken: { _ in .token("t") }, fetch: { _, _, end, number in
+            seenPages.append(number); seenEnds.append(end); return .init(status: 200, body: lastPage)
+        })
+        check(seenPages == [1, 2], "the backfill resumes at the next page")
+        check(Set(seenEnds).count == 1, "backfill pages keep one end date so new usage cannot shift them")
+        check(try resume.refresh(cursorEnabled: true).cursorFeed?.state == .ready, "the resumed backfill finishes")
+        // A live window cut by its budget continues too, with the same dates, so older rows in it are reached.
+        seenPages = []; seenStarts = []; seenEnds = []
+        let t2 = t0.addingTimeInterval(90 * 86_400)
+        try resume.syncCursorFeed(force: false, now: t2, seconds: 0.001, readToken: { _ in .token("t") }, fetch: { _, start, end, number in
+            seenPages.append(number); seenStarts.append(start); seenEnds.append(end); Thread.sleep(forTimeInterval: 0.01); return .init(status: 200, body: longPage)
+        })
+        check(try seenPages == [1] && resume.refresh(cursorEnabled: true).cursorFeed?.pending == true, "a long live window stays pending")
+        try resume.syncCursorFeed(force: false, now: t2.addingTimeInterval(1), readToken: { _ in .token("t") }, fetch: { _, start, end, number in
+            seenPages.append(number); seenStarts.append(start); seenEnds.append(end); return .init(status: 200, body: lastPage)
+        })
+        check(seenPages == [1, 2] && Set(seenStarts).count == 1 && Set(seenEnds).count == 1, "a long live window continues at its next page with the same dates")
+        check(seenStarts[0] < Int64(t0.timeIntervalSince1970 * 1000), "a long live window reaches back past its gap")
+        // An empty page before the total is reached never finishes a run: older rows would be lost for good.
+        let gapHome = home.appendingPathComponent("gap")
+        try FileManager.default.createDirectory(at: gapHome, withIntermediateDirectories: true)
+        let gap = try SessionUsageCollector(home: gapHome, database: gapHome.appendingPathComponent("g.sqlite"), timeZone: TimeZone(identifier: "America/Chicago")!)
+        var gapPages: [Int] = []
+        try gap.syncCursorFeed(force: true, now: t0, readToken: { _ in .token("t") }, fetch: { _, _, _, number in
+            gapPages.append(number)
+            return .init(status: 200, body: number == 1 ? page((0..<SessionUsageCollector.cursorPageSize).map { feedRow("g-\($0)") }, total: 700) : Data(#"{"totalUsageEventsCount":700}"#.utf8))
+        })
+        check(try gapPages == [1, 2] && gap.refresh(cursorEnabled: true).cursorFeed?.state == .failed, "an empty page before the total is reported, and the run stays open")
+        gapPages = []
+        try gap.syncCursorFeed(force: true, now: t0.addingTimeInterval(1), readToken: { _ in .token("t") }, fetch: { _, _, _, number in
+            gapPages.append(number); return .init(status: 200, body: page((0..<200).map { feedRow("h-\($0)") }, total: 700))
+        })
+        check(try gapPages == [2] && gap.refresh(cursorEnabled: true).cursorFeed?.state == .ready, "the run retries the page that came back empty and then finishes")
+        // A page that keeps failing closes the run, so new usage is still read.
+        let stuckHome = home.appendingPathComponent("stuck")
+        try FileManager.default.createDirectory(at: stuckHome, withIntermediateDirectories: true)
+        let stuck = try SessionUsageCollector(home: stuckHome, database: stuckHome.appendingPathComponent("k.sqlite"), timeZone: TimeZone(identifier: "America/Chicago")!)
+        var stuckPages: [Int] = []
+        func stuckReply(_ number: Int) -> SessionUsageCollector.CursorFeedReply {
+            stuckPages.append(number)
+            return number == 1 ? .init(status: 200, body: page((0..<SessionUsageCollector.cursorPageSize).map { feedRow("k-\($0)") }, total: 5000)) : .init(status: 500, body: nil)
+        }
+        for attempt in 0..<5 {
+            try stuck.syncCursorFeed(force: true, now: t0.addingTimeInterval(Double(attempt)), readToken: { _ in .token("t") }, fetch: { _, _, _, number in stuckReply(number) })
+        }
+        check(stuckPages == [1, 2, 2, 2, 2, 1, 2], "a page that keeps failing closes the run and starts again at the newest page")
+        // An automatic pass waits patiently for Keychain only while a run is open.
+        var patience: [Bool] = []
+        let patientHome = home.appendingPathComponent("patient")
+        try FileManager.default.createDirectory(at: patientHome, withIntermediateDirectories: true)
+        let patient = try SessionUsageCollector(home: patientHome, database: patientHome.appendingPathComponent("p.sqlite"), timeZone: TimeZone(identifier: "America/Chicago")!)
+        try patient.syncCursorFeed(force: false, now: t0, seconds: 0.001, readToken: { wait in patience.append(wait); return .token("t") }, fetch: { _, _, _, _ in
+            Thread.sleep(forTimeInterval: 0.01); return .init(status: 200, body: longPage)
+        })
+        try patient.syncCursorFeed(force: false, now: t0.addingTimeInterval(15), readToken: { wait in patience.append(wait); return .token("t") }, fetch: { _, _, _, _ in .init(status: 200, body: lastPage) })
+        try patient.syncCursorFeed(force: true, now: t0.addingTimeInterval(1000), readToken: { wait in patience.append(wait); return .blocked }, fetch: { _, _, _, _ in .init(status: 200, body: page([])) })
+        check(patience == [false, true, true], "a run in progress and a manual Refresh wait patiently for Keychain")
+        var askedAgain = false
+        try patient.syncCursorFeed(force: false, now: t0.addingTimeInterval(1000 + 7*86_400), readToken: { _ in askedAgain = true; return .blocked }, fetch: { _, _, _, _ in .init(status: 200, body: page([])) })
+        check(!askedAgain, "an unanswered Keychain prompt is not repeated by automatic passes")
+        check(try feed.refresh(cursorEnabled: true, cursorSyncFailed: true).cursorFeed?.state == .failed, "a sync that threw is reported, so the loop stops hurrying")
+        // A page shorter than asked for cannot end a run while the total says there is more.
+        let shortHome = home.appendingPathComponent("short")
+        try FileManager.default.createDirectory(at: shortHome, withIntermediateDirectories: true)
+        let short = try SessionUsageCollector(home: shortHome, database: shortHome.appendingPathComponent("s.sqlite"), timeZone: TimeZone(identifier: "America/Chicago")!)
+        seenPages = []
+        try short.syncCursorFeed(force: true, now: t0, readToken: { _ in .token("t") }, fetch: { _, _, _, number in
+            seenPages.append(number)
+            return .init(status: 200, body: number == 1 ? page([feedRow("s1")], total: 2) : page([feedRow("s2")], total: 2))
+        })
+        check(seenPages == [1, 2], "a short page does not end a run the total says is unfinished")
+        // A server that ignores the page number ends at the total instead of paging forever.
+        seenPages = []
+        try short.syncCursorFeed(force: true, now: t0.addingTimeInterval(700), readToken: { _ in .token("t") }, fetch: { _, _, _, number in
+            seenPages.append(number); return .init(status: 200, body: page((0..<SessionUsageCollector.cursorPageSize).map { feedRow("same-\($0)") }, total: 500))
+        })
+        check(seenPages == [1], "the total ends a run even if pages repeat")
+        // A list that never ends stops at the page limit and says so.
+        let endless = try SessionUsageCollector(home: shortHome, database: shortHome.appendingPathComponent("e.sqlite"), timeZone: TimeZone(identifier: "America/Chicago")!)
+        var endlessCalls = 0
+        for pass in 0..<(SessionUsageCollector.cursorPageLimit / 8 + 1) {
+            try endless.syncCursorFeed(force: true, now: t0.addingTimeInterval(Double(pass)), seconds: 100, readToken: { _ in .token("t") }, fetch: { _, _, _, _ in
+                endlessCalls += 1; return .init(status: 200, body: page([feedRow("loop")], total: Int.max / 2))
+            })
+        }
+        check(try endless.refresh(cursorEnabled: true).cursorFeed?.state == .changed && endlessCalls == SessionUsageCollector.cursorPageLimit, "a list that never ends stops at the page limit")
+        // An older helper's report, with no feed field, still decodes.
+        let oldJSON = try JSONSerialization.data(withJSONObject: ["buckets": [], "updatedAt": "x", "timeZone": "UTC", "filesIndexed": 0, "pendingFiles": 0, "unreadableFiles": 0, "malformedRows": 0, "missingBaselineEvents": 0, "coverage": [], "pricingVersion": "v"])
+        check(try JSONDecoder().decode(SessionUsageReport.self, from: oldJSON).cursorFeed == nil, "a report without the feed field decodes")
+        print("PASS: tool names, model names, default scales, per-tool prior windows and the Cursor feed (parsing, privacy, paging, backoff, resume)")
+
         print("PASS: weekly buckets, category USD mix, period comparisons, table sorting and CSV/JSON export")
         print("PASS: 30/90/custom dates, DST/leap/calendar boundaries, provider/day summaries and token mix")
         print("PASS: usage period boundaries, timezone, token/category shares, tooltip aggregation and unknown-price handling")

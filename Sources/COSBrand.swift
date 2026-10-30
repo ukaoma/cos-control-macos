@@ -1525,6 +1525,11 @@ extension View {
         menuStyle(.button).menuIndicator(.hidden).buttonStyle(COSQuietButtonStyle())
     }
 
+    /// A `Menu` that reads as one word of a sentence: the label is all there is, with no button around it.
+    func cosWordMenu() -> some View {
+        menuStyle(.button).menuIndicator(.hidden).buttonStyle(.plain)
+    }
+
     /// Everything a window root sets once: progress, disclosure, the quiet button for any
     /// button that names no style of its own (a stock push button otherwise), the centered
     /// label (0.5.253), and a gold tint as the backstop for the two controls that stay

@@ -29,6 +29,14 @@ import SwiftUI
         rows += historyRows
         store.report = SessionUsageReport(buckets: rows, updatedAt: "2026-10-25T21:00:00Z", timeZone: "America/Chicago", filesIndexed: 120, pendingFiles: 0, unreadableFiles: 0, malformedRows: 0, missingBaselineEvents: 0,
             coverage: ["Claude Code and Codex local session logs, including archived sessions and subagents.", "Cursor, browser-only chats and other Macs are not included."], pricingVersion: SessionUsagePricing.version)
+        let plainReport = store.report!
+        // Hand-run only: a local aggregate file renders the page on real numbers. It is never read in the suite.
+        if let path = ProcessInfo.processInfo.environment["COS_USAGE_RENDER_BUCKETS"] {
+            rows = try JSONDecoder().decode([SessionUsageBucket].self, from: Data(contentsOf: URL(fileURLWithPath: path)))
+            store.report?.buckets = rows
+            store.report?.filesIndexed = 3140
+            store.report?.unreadableFiles = 157
+        }
         let fixtureReport = store.report!
         struct PageCase {
             var name: String
@@ -45,8 +53,11 @@ import SwiftUI
             var scale: SessionUsageTimeScale? = nil
             var measure: SessionUsageMeasure? = nil
             var series: SessionUsageSeries = .providers
-            var lineChart = true
-            var provider = "All providers"
+            var lineChart = false
+            var cursorFeed: SessionUsageCursorFeedStatus? = nil
+            var cursorOn = false
+            var notes = false
+            var provider = SessionUsagePresentation.allProviders
             var model = "All models"
             var modelSort: SessionUsageModelSort = .tokens
             var daySort: SessionUsageDaySort = .date
@@ -54,8 +65,15 @@ import SwiftUI
         }
         let cases: [PageCase] = [
             PageCase(name: "range"),
-            PageCase(name: "weekly-categories", scale: .weekly, series: .categories, lineChart: false),
-            PageCase(name: "records-filtered", minimumOnly: true, measure: .records, provider: "Anthropic"),
+            PageCase(name: "weekly-categories", scale: .weekly, series: .categories),
+            PageCase(name: "filtered", minimumOnly: true, provider: "Anthropic"),
+            PageCase(name: "lines", lineChart: true),
+            PageCase(name: "selected", period: "Last 90 days", inspection: "2026-10-19"),
+            PageCase(name: "new-tokens", period: "Last 90 days", cacheExcluded: true),
+            PageCase(name: "models-week", period: "Last 90 days", inspection: nil, series: .models),
+            PageCase(name: "notes", cursorFeed: SessionUsageCursorFeedStatus(state: .off), notes: true),
+            PageCase(name: "cursor-sign-in", cursorFeed: SessionUsageCursorFeedStatus(state: .signIn, message: "This Mac has no Cursor command line sign-in. Run cursor-agent login in Terminal, then refresh."), cursorOn: true),
+            PageCase(name: "cursor-failed", cursorFeed: SessionUsageCursorFeedStatus(state: .failed, message: "Cursor did not answer, so its numbers may be behind. COS will try again."), cursorOn: true),
             PageCase(name: "history", period: "All history", inspection: "2026-08"),
             PageCase(name: "custom", period: "Custom dates", inspection: month + "-24"),
             PageCase(name: "90days", period: "Last 90 days"),
@@ -71,15 +89,17 @@ import SwiftUI
             PageCase(name: "history-day-inspect", period: "All history", inspection: "2026-08-12", scale: .daily),
             PageCase(name: "narrow-slice", inspection: month + "-24", cacheExcluded: true, minimumOnly: true, provider: "OpenAI", model: "gpt-6-astra"),
             PageCase(name: "sorted", expanded: true, minimumOnly: true, modelSort: .cost, daySort: .cost),
-            PageCase(name: "cost-categories", cost: true, minimumOnly: true, series: .categories, lineChart: false),
-            PageCase(name: "records-categories", minimumOnly: true, measure: .records, series: .categories),
+            PageCase(name: "cost-categories", cost: true, minimumOnly: true, series: .categories),
             PageCase(name: "first-load", empty: true, minimumOnly: true, loading: true),
         ]
         for width in [1200.0, 800.0, 760.0] {
             for dark in [false, true] {
               for fixture in cases where !fixture.minimumOnly || width == 760 {
                 let pageStore = SessionUsageStore()
-                var report = fixtureReport
+                // The Cursor states are about a Mac with no Cursor rows yet, so they stay on the invented fixture.
+                var report = fixture.name.hasPrefix("cursor-") || fixture.name == "notes" ? plainReport : fixtureReport
+                report.cursorFeed = fixture.cursorFeed
+                pageStore.cursorEnabled = fixture.cursorOn
                 if fixture.empty { report.buckets = []; report.filesIndexed = 0 }
                 if fixture.pending { report.pendingFiles = 37 }
                 pageStore.report = fixture.loading ? nil : report
@@ -93,7 +113,7 @@ import SwiftUI
                     initialDayBreakdownExpanded: fixture.expanded, initialTimeScale: fixture.scale,
                     initialMeasure: fixture.measure, initialSeries: fixture.series,
                     initialLineChart: fixture.lineChart, initialProvider: fixture.provider, initialModel: fixture.model,
-                    initialModelSort: fixture.modelSort, initialDaySort: fixture.daySort)
+                    initialModelSort: fixture.modelSort, initialDaySort: fixture.daySort, initialShowNotes: fixture.notes)
                 let host = NSHostingView(rootView: page.cosControlTheme().frame(width: width, height: height).background(COSPalette.panel))
                 let window = NSWindow(contentRect: NSRect(x: -20000, y: -20000, width: width, height: height), styleMask: [.borderless], backing: .buffered, defer: false)
                 window.isReleasedWhenClosed = false
@@ -113,14 +133,15 @@ import SwiftUI
             }
         }
         for dark in [false, true] {
-            let detail = SessionUsagePeriodDetail(title: "Saturday, Oct 24, 2026", rows: rows.filter { $0.day == month + "-24" }, excludingCacheReads: false, compact: true)
-            let host = NSHostingView(rootView: detail.padding(14).frame(width: 418).background(COSPalette.card).cosControlTheme())
+            let detail = SessionUsageInspector(title: "Saturday, Oct 24, 2026", rows: rows.filter { $0.day == month + "-24" }, excludingCacheReads: false, measure: .tokens,
+                isPeriod: true, canGoEarlier: true, canGoLater: false, comparison: nil, onStep: { _ in }, onClear: {}, onInspectDay: { _ in })
+            let host = NSHostingView(rootView: detail.frame(width: 320).background(COSPalette.panel).cosControlTheme())
             host.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
-            host.frame = NSRect(x: 0, y: 0, width: 418, height: 440)
+            host.frame = NSRect(x: 0, y: 0, width: 320, height: 620)
             host.layoutSubtreeIfNeeded()
-            guard let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds) else { fatalError("tooltip bitmap unavailable") }
+            guard let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds) else { fatalError("inspector bitmap unavailable") }
             host.cacheDisplay(in: host.bounds, to: rep)
-            try rep.representation(using: .png, properties: [:])!.write(to: out.appendingPathComponent("usage-tooltip-\(dark ? "dark" : "light").png"))
+            try rep.representation(using: .png, properties: [:])!.write(to: out.appendingPathComponent("usage-inspector-\(dark ? "dark" : "light").png"))
         }
         // Render the actual chart overlay with a selected hover period, without sending any event.
         let zone = TimeZone(identifier: "America/Chicago")!

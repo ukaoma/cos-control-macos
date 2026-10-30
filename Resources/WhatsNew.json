@@ -1,8 +1,17 @@
 {
-  "version": "0.5.355",
+  "version": "0.5.356",
   "whatsNew": {
-    "summary": "Saved Mac recordings can show estimated anonymous speaker groups from a compatible COS server. Select the parts you want to name, inspect the preview, then confirm the text-label change. Naming a group adds no voice-training samples. Includes the Usage and loading improvements from 0.5.353.",
+    "summary": "Usage is easier to read: the chart sits beside a panel that follows the bar you pick, and one table groups every tool and model. You can now count Cursor tokens too. Plus everything in 0.5.355: saved Mac recordings can show estimated anonymous speaker groups from a compatible COS server. Select the parts you want to name, inspect the preview, then confirm the text-label change. Naming a group adds no voice-training samples.",
     "sections": [
+      {
+        "title": "0.5.356",
+        "items": [
+          "Usage has a new layout: filters, then a stacked chart beside a panel that shows the whole period or the bar you pick, then one table grouped by tool.",
+          "Pick what the chart shows from one line: All tokens, New tokens or API value, by tool, model or token type, per day, week or month.",
+          "Count Cursor tokens is a new choice, off until you turn it on. It reads the Cursor command line sign-in from this Mac's Keychain and asks Cursor for your usage. Only counts, dates, model names and each request's reported cost are stored.",
+          "Comparisons with an earlier period appear only when your history covers that whole period."
+        ]
+      },
       {
         "title": "0.5.355",
         "items": [

@@ -443,7 +443,19 @@ final class COSControlHelper {
         case "self-test": try selfTest()
         case "self-test-lock-crash": try selfTestLockCrash()
         case "session-usage":
-            let report = try SessionUsageCollector(home: home).refresh(maxBytes: args.contains("--read-only") ? 0 : 64*1024*1024)
+            let collector = try SessionUsageCollector(home: home)
+            let readOnly = args.contains("--read-only")
+            let cursorEnabled = args.contains("--cursor")
+            // The feed is opt-in and reads the network, so a read-only pass never touches it.
+            let started = Date()
+            // A feed failure must never cost the local logs their refresh. The feed reports its own state.
+            var cursorSyncFailed = false
+            if cursorEnabled && !readOnly {
+                do { try collector.syncCursorFeed(force: args.contains("--cursor-now")) } catch { cursorSyncFailed = true }
+            }
+            // Control waits 45 seconds for this command, so a slow feed pass shortens the log import.
+            let importSeconds = max(2, min(12, 40 - Date().timeIntervalSince(started)))
+            let report = try collector.refresh(maxBytes: readOnly ? 0 : 64*1024*1024, seconds: importSeconds, cursorEnabled: cursorEnabled, cursorSyncFailed: cursorSyncFailed)
             let details = try JSONSerialization.jsonObject(with: JSONEncoder().encode(report)) as? [String: Any] ?? [:]
             emit(ok: true, message: "Local usage refreshed", details: details)
         case "status": emit(ok: true, message: "Status refreshed", details: statusDetails())

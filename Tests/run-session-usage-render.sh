@@ -4,7 +4,7 @@ ROOT="${0:A:h:h}"
 OUT="${1:?usage: run-session-usage-render.sh /tmp/output-folder}"
 TMP="$(mktemp -d /tmp/cos-usage-render.XXXXXX)"
 trap 'rm -rf "$TMP"' EXIT
-mkdir -p "$TMP/home" "$TMP/Fonts"
+mkdir -p "$TMP/home/.cursor" "$TMP/Fonts"
 cp "$ROOT/Resources/Fonts/"*.ttf "$TMP/Fonts/"
 SOURCES=("$ROOT"/Sources/*.swift)
 SOURCES=("${(@)SOURCES:#*/COSControlApp.swift}")

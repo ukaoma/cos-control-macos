@@ -1,3 +1,13 @@
+## 0.5.356 (build 410), Usage redesign and Cursor tokens
+
+Pairs with the same servers as 0.5.355. Built on 0.5.355 (855834b). Local build for Miles's Mac; not published.
+
+- Usage: filters, then a stacked chart beside an inspector that shows the whole period or the chosen bar, then one table grouped by tool. One sentence of menus replaces the chart's tab rows. Stacked bars are the default. Caveats move under How this is counted. Last 90 days opens weekly until a scale is picked.
+- Count Cursor tokens: opt-in, off by default, offered where `~/.cursor` exists. Reads the `cursor-access-token` Keychain item, requests usage from `api2.cursor.sh` with redirects refused, and stores only counts, the date, the model, the reported cost and a hash of the event id. Backfills in bounded passes and backs off on failure. Details in docs/session-usage.md.
+- A prior-period comparison now needs every tool in the selection to reach the start of that period.
+- Fixes the What's New summary that 855834b left without its required prior-release line, which failed the dictation parity and What's New pins.
+- Left the page: per-day averages, the records comparison, the Records chart measure, the per-model records, Cache read % and Within provider columns, and the API value mix bar. Records stay in the daily breakdown and exports.
+
 ## 0.5.355 (build 409), Saved Mac speaker-group review
 
 Built on shipped Control 0.5.353, including its Usage and loading improvements. Requires compatible saved-call speaker-group and scoped-correction endpoints; the paired server candidate is 6.96.0.

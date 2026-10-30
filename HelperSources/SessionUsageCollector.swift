@@ -26,7 +26,31 @@ final class SessionUsageCollector {
         var model: String
         var counts: SessionUsageCounts
         var oneHour: Int64 = 0
+        /// What the source itself says the request cost at model rates. Wins over the local rate card.
+        var reportedUSD: Double? = nil
     }
+    /// Cursor's sign-in, read only for the moment of a request. Never stored, logged or put in an argument.
+    enum CursorFeedToken { case token(String), missing, expired, blocked }
+    /// status 0 means the request never got an answer.
+    struct CursorFeedReply { var status: Int; var body: Data? }
+    struct CursorFeedState: Codable {
+        var state = SessionUsageCursorFeedStatus.State.backfilling
+        var backfillDone = false
+        /// The window being read, 0 when no run is open. Pages stay stable because its end stays fixed while new
+        /// usage arrives.
+        var runStartMs: Int64 = 0
+        var runEndMs: Int64 = 0
+        var nextPage = 1
+        var runSeen = 0
+        var runTotal = 0
+        var watermarkMs: Int64 = 0
+        var nextAllowedAt: Double = 0
+        var failures = 0
+        var lastSuccessAt: Double?
+    }
+    static let cursorFeedStartMs: Int64 = 1_577_836_800_000 // 2020-01-01, before any account history
+    static let cursorPageSize = 500
+    static let cursorPageLimit = 400
     struct Failure: Error, LocalizedError {
         let message: String
         var errorDescription: String? { message }
@@ -91,14 +115,14 @@ final class SessionUsageCollector {
     private func record(_ event: Event) throws {
         guard event.counts.total > 0, let date = fractional.date(from: event.timestamp) ?? iso.date(from: event.timestamp) else { return }
         let c = event.counts
-        let cost = SessionUsagePricing.estimate(provider: event.provider, model: event.model, counts: c, oneHour: event.oneHour)
+        let cost = event.reportedUSD ?? SessionUsagePricing.estimate(provider: event.provider, model: event.model, counts: c, oneHour: event.oneHour)
         // A streamed Claude message repeats its usage per content block. Keep the most complete observation.
         try run("""
             INSERT INTO events VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET
             input=excluded.input, output=excluded.output, cache_read=excluded.cache_read, cache_write=excluded.cache_write,
             usd=excluded.usd, pricing=excluded.pricing
             WHERE excluded.input+excluded.output+excluded.cache_read+excluded.cache_write > events.input+events.output+events.cache_read+events.cache_write
-            """, [event.id, dayFormatter.string(from: date), event.provider, event.model, String(c.input), String(c.output), String(c.cacheRead), String(c.cacheWrite), cost.map { String($0) } ?? "", SessionUsagePricing.version])
+            """, [event.id, dayFormatter.string(from: date), event.provider, event.model, String(c.input), String(c.output), String(c.cacheRead), String(c.cacheWrite), cost.map { String($0) } ?? "", event.reportedUSD != nil ? "cursor-reported-v1" : SessionUsagePricing.version])
         // Binding a missing price as text keeps the SQL simple; normalize to NULL before aggregation.
         if cost == nil { try run("UPDATE events SET usd=NULL WHERE id=? AND usd=''", [event.id]) }
     }
@@ -147,8 +171,221 @@ final class SessionUsageCollector {
         return Event(id: digest(key), timestamp: timestamp, provider: cursor.provider, model: cursor.model, counts: c)
     }
 
+    /// One row of Cursor's usage feed. Only counts, the date, the model and a hash of the event id are kept: the
+    /// feed's conversation id, owning user and email never leave this function. Zero-token rows (old request-based
+    /// billing) are dropped by `record`.
+    static func cursorEvent(_ row: [String: Any], iso: ISO8601DateFormatter) -> Event? {
+        let stamp = (row["timestamp"] as? String).flatMap(Int64.init) ?? (row["timestamp"] as? NSNumber)?.int64Value ?? 0
+        guard stamp > 0 else { return nil }
+        let u = row["tokenUsage"] as? [String: Any] ?? [:]
+        let n = SessionUsageCounts.number
+        let c = SessionUsageCounts(input: n(u["inputTokens"]), output: n(u["outputTokens"]), cacheRead: n(u["cacheReadTokens"]), cacheWrite: n(u["cacheWriteTokens"]))
+        let model = (row["model"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? "Unknown model"
+        let identity = (row["usageEventId"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? "\(stamp)|\(model)|\(c.input)|\(c.output)|\(c.cacheRead)|\(c.cacheWrite)"
+        let cents = (u["totalCents"] as? NSNumber)?.doubleValue
+        let usd = cents.flatMap { $0.isFinite && $0 >= 0 ? $0 / 100 : nil }
+        return Event(id: digest("cursor|" + identity), timestamp: iso.string(from: Date(timeIntervalSince1970: Double(stamp) / 1000)),
+                     provider: "Cursor", model: model, counts: c, reportedUSD: usd)
+    }
+
+    /// Cursor's command line keeps its sign-in in the login Keychain. The app's own database copy is encrypted.
+    /// `patient` is a manual Refresh, where a person may be answering a Keychain prompt.
+    static func keychainCursorToken(patient: Bool) -> CursorFeedToken {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/security")
+        process.arguments = ["find-generic-password", "-s", "cursor-access-token", "-w"]
+        let out = Pipe()
+        process.standardOutput = out
+        process.standardError = FileHandle.nullDevice
+        do { try process.run() } catch { return .blocked }
+        let deadline = Date().addingTimeInterval(patient ? 20 : 5)
+        while process.isRunning && Date() < deadline { Thread.sleep(forTimeInterval: 0.05) }
+        if process.isRunning { process.terminate(); return .blocked }
+        let data = out.fileHandleForReading.readDataToEndOfFile()
+        if process.terminationStatus == 44 { return .missing } // errSecItemNotFound
+        guard process.terminationStatus == 0 else { return .blocked }
+        let token = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !token.isEmpty else { return .missing }
+        return cursorTokenExpired(token, now: Date()) ? .expired : .token(token)
+    }
+    /// Reads only the expiry claim. A token that is not a JWT is left for the server to judge.
+    static func cursorTokenExpired(_ token: String, now: Date) -> Bool {
+        let parts = token.split(separator: ".")
+        guard parts.count == 3 else { return false }
+        var payload = parts[1].replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
+        payload += String(repeating: "=", count: (4 - payload.count % 4) % 4)
+        guard let data = Data(base64Encoded: payload),
+              let claims = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let expiry = (claims["exp"] as? NSNumber)?.doubleValue else { return false }
+        return expiry <= now.timeIntervalSince1970
+    }
+
+    private final class ReplyBox: @unchecked Sendable { var reply = CursorFeedReply(status: 0, body: nil) }
+    /// The sign-in goes to one host. A redirect is not followed, so it comes back as a failed status.
+    private final class NoRedirects: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+        func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
+                        newRequest request: URLRequest, completionHandler: @escaping @Sendable (URLRequest?) -> Void) {
+            completionHandler(nil)
+        }
+    }
+    /// The same call Cursor's app makes for its usage page. Not a published API: an unexpected answer stops the sync.
+    static func liveCursorFetch(token: String, start: Int64, end: Int64, page: Int) -> CursorFeedReply {
+        var request = URLRequest(url: URL(string: "https://api2.cursor.sh/aiserver.v1.DashboardService/GetFilteredUsageEvents")!, timeoutInterval: 10)
+        request.httpMethod = "POST"
+        request.setValue("Bearer " + token, forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("1", forHTTPHeaderField: "Connect-Protocol-Version")
+        let body: [String: Any] = ["teamId": 0, "startDate": String(start), "endDate": String(end), "page": page, "pageSize": cursorPageSize]
+        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        let session = URLSession(configuration: .ephemeral, delegate: NoRedirects(), delegateQueue: nil)
+        defer { session.finishTasksAndInvalidate() }
+        let box = ReplyBox()
+        let done = DispatchSemaphore(value: 0)
+        session.dataTask(with: request) { data, response, _ in
+            box.reply = CursorFeedReply(status: (response as? HTTPURLResponse)?.statusCode ?? 0, body: data)
+            done.signal()
+        }.resume()
+        _ = done.wait(timeout: .now() + 12)
+        return box.reply
+    }
+
+    private func loadCursorFeedState() throws -> CursorFeedState {
+        guard let raw = try query("SELECT value FROM meta WHERE key='cursor_feed'").first?.first, let data = raw.data(using: .utf8),
+              let state = try? JSONDecoder().decode(CursorFeedState.self, from: data) else { return CursorFeedState() }
+        return state
+    }
+    private func saveCursorFeedState(_ state: CursorFeedState) throws {
+        try run("INSERT OR REPLACE INTO meta VALUES('cursor_feed',?)", [String(decoding: try JSONEncoder().encode(state), as: UTF8.self)])
+    }
+
+    /// Bounded and idempotent. A request only happens when the person turned the feed on, and a failure backs off
+    /// instead of retrying every pass. `force` is a manual Refresh. A run keeps one date window and its next page
+    /// across passes, so a long window finishes instead of rereading its newest page forever.
+    func syncCursorFeed(force: Bool, now: Date = Date(), seconds: TimeInterval = 12,
+                        readToken: (Bool) -> CursorFeedToken = SessionUsageCollector.keychainCursorToken,
+                        fetch: (String, Int64, Int64, Int) -> CursorFeedReply = { SessionUsageCollector.liveCursorFetch(token: $0, start: $1, end: $2, page: $3) }) throws {
+        var state = try loadCursorFeedState()
+        let clock = now.timeIntervalSince1970
+        guard force || clock >= state.nextAllowedAt else { return }
+        let started = Date()
+        let token: String
+        // A run in progress keeps the patient wait, so one unanswered prompt cannot strand a backfill.
+        switch readToken(force || state.runEndMs != 0) {
+        case .token(let value): token = value
+        case .missing: state.state = .signIn; state.nextAllowedAt = clock + 3600; try saveCursorFeedState(state); return
+        case .expired: state.state = .expired; state.nextAllowedAt = clock + 3600; try saveCursorFeedState(state); return
+        // A prompt nobody answered must not come back every hour. A manual Refresh asks again.
+        case .blocked: state.state = .blocked; state.nextAllowedAt = clock + 30*86_400; try saveCursorFeedState(state); return
+        }
+        if state.runEndMs == 0 {
+            state.runEndMs = Int64(clock * 1000)
+            state.runStartMs = state.backfillDone ? max(Self.cursorFeedStartMs, state.watermarkMs - 2*86_400_000) : Self.cursorFeedStartMs
+            state.nextPage = 1
+            state.runSeen = 0
+            state.runTotal = 0
+        }
+        // A slow Keychain read comes out of this pass's budget, so the helper stays inside its own timeout.
+        let deadline = Date().addingTimeInterval(min(seconds, max(1, 24 - Date().timeIntervalSince(started))))
+        var drained = false
+        var pages = 0
+        while pages < 8 && Date() < deadline {
+            guard state.nextPage <= Self.cursorPageLimit else {
+                // The server is not ending the list. Stop rather than page forever.
+                state.state = .changed; state.nextAllowedAt = clock + 6*3600; state.runEndMs = 0
+                try saveCursorFeedState(state)
+                return
+            }
+            let reply = fetch(token, state.runStartMs, state.runEndMs, state.nextPage)
+            pages += 1
+            guard reply.status == 200 else {
+                if reply.status == 401 || reply.status == 403 {
+                    state.state = .expired; state.nextAllowedAt = clock + 6*3600
+                } else {
+                    noteCursorFailure(&state, as: .failed, clock: clock)
+                }
+                try saveCursorFeedState(state)
+                return
+            }
+            guard let body = reply.body, let object = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any] else {
+                noteCursorFailure(&state, as: .changed, clock: clock)
+                try saveCursorFeedState(state)
+                return
+            }
+            if let total = (object["totalUsageEventsCount"] as? NSNumber)?.intValue { state.runTotal = total }
+            // The feed omits empty fields: an empty window answers {} and a page past the end has no list.
+            let rows = object["usageEventsDisplay"] as? [[String: Any]] ?? []
+            if rows.isEmpty {
+                // An empty page while the total says more is a server hiccup. Finishing here would mark older rows
+                // as read when they never were, and nothing would ever go back for them.
+                if state.runSeen < state.runTotal {
+                    noteCursorFailure(&state, as: .failed, clock: clock)
+                    try saveCursorFeedState(state)
+                    return
+                }
+                drained = true; break
+            }
+            let events = rows.compactMap { Self.cursorEvent($0, iso: iso) }
+            if events.isEmpty {
+                // Rows came back and none can be read. That is a changed feed, never zero usage.
+                noteCursorFailure(&state, as: .changed, clock: clock)
+                try saveCursorFeedState(state)
+                return
+            }
+            state.nextPage += 1
+            state.runSeen += rows.count
+            try Self.execute(db, "BEGIN IMMEDIATE")
+            do {
+                for event in events { try record(event) }
+                try saveCursorFeedState(state)
+                try Self.execute(db, "COMMIT")
+            } catch { try? Self.execute(db, "ROLLBACK"); throw error }
+            // The count decides when it is known, so a page shorter than asked for cannot end a run early.
+            if state.runTotal > 0 {
+                if state.runSeen >= state.runTotal { drained = true; break }
+            } else if rows.count < Self.cursorPageSize { drained = true; break }
+        }
+        if drained {
+            state.backfillDone = true
+            state.watermarkMs = state.runEndMs
+            state.runEndMs = 0
+            state.state = .ready
+            state.nextAllowedAt = clock + 600
+        } else {
+            // Budget ran out with more to read. The next pass continues this run.
+            state.state = .backfilling
+            state.nextAllowedAt = clock
+        }
+        state.failures = 0
+        state.lastSuccessAt = clock
+        try saveCursorFeedState(state)
+    }
+    /// Backs off, and after repeated failures closes the run: one bad page must not stop new usage being read.
+    /// The next run starts at the newest page again, and rereading never double counts.
+    private func noteCursorFailure(_ state: inout CursorFeedState, as outcome: SessionUsageCursorFeedStatus.State, clock: Double) {
+        state.failures += 1
+        state.state = outcome
+        state.nextAllowedAt = clock + min(6*3600, 1800 * pow(2, Double(min(state.failures, 8) - 1)))
+        if state.failures >= 4 { state.runEndMs = 0 }
+    }
+    private func cursorFeedStatus(enabled: Bool, syncFailed: Bool) throws -> SessionUsageCursorFeedStatus {
+        guard enabled else { return SessionUsageCursorFeedStatus(state: .off) }
+        var state = try loadCursorFeedState()
+        if syncFailed { state.state = .failed }
+        let message: String?
+        switch state.state {
+        case .off, .ready: message = nil
+        case .backfilling: message = "Reading your Cursor usage."
+        case .signIn: message = "This Mac has no Cursor command line sign-in. Run cursor-agent login in Terminal, then refresh."
+        case .expired: message = "Cursor's sign-in on this Mac has expired. Run cursor-agent login in Terminal, then refresh."
+        case .blocked: message = "macOS did not let COS read Cursor's sign-in from Keychain. Allow it when asked, then refresh."
+        case .failed: message = "Cursor did not answer, so its numbers may be behind. COS will try again."
+        case .changed: message = "Cursor changed how it reports usage, so new Cursor usage is not being counted."
+        }
+        return SessionUsageCursorFeedStatus(state: state.state, message: message, lastSuccessAt: state.lastSuccessAt.map { iso.string(from: Date(timeIntervalSince1970: $0)) })
+    }
+
     /// Bounded slices keep the helper and desktop responsive. The next pass resumes all partial files.
-    func refresh(maxBytes: Int = 64*1024*1024, seconds: TimeInterval = 12) throws -> SessionUsageReport {
+    func refresh(maxBytes: Int = 64*1024*1024, seconds: TimeInterval = 12, cursorEnabled: Bool = false, cursorSyncFailed: Bool = false) throws -> SessionUsageReport {
         let fm = FileManager.default
         let roots = [("claude", home.appendingPathComponent(".claude/projects")), ("codex", home.appendingPathComponent(".codex/sessions")), ("codex", home.appendingPathComponent(".codex/archived_sessions"))]
         var files: [(String, URL, Int, Double)] = []; var unreadable = 0
@@ -240,6 +477,6 @@ final class SessionUsageCollector {
         let rows = try query("SELECT day,provider,model,SUM(input),SUM(output),SUM(cache_read),SUM(cache_write),COUNT(*),COUNT(usd),COALESCE(SUM(usd),0) FROM events GROUP BY day,provider,model ORDER BY day,provider,model")
         let buckets = rows.map { r in SessionUsageBucket(day:r[0],provider:r[1],model:r[2],counts:SessionUsageCounts(input:Int64(r[3]) ?? 0,output:Int64(r[4]) ?? 0,cacheRead:Int64(r[5]) ?? 0,cacheWrite:Int64(r[6]) ?? 0),events:Int(r[7]) ?? 0,pricedEvents:Int(r[8]) ?? 0,estimatedUSD:Double(r[9]) ?? 0) }
         let cursors = try query("SELECT state FROM files").compactMap { $0[0].data(using:.utf8) }.compactMap { try? JSONDecoder().decode(Cursor.self,from:$0) }
-        return SessionUsageReport(buckets:buckets,updatedAt:iso.string(from:Date()),timeZone:zone.identifier,filesIndexed:cursors.count,pendingFiles:max(0,pending.count-completed),unreadableFiles:unreadable+cursors.reduce(0){$0+$1.oversizedRows},malformedRows:cursors.reduce(0){$0+$1.malformed},missingBaselineEvents:cursors.reduce(0){$0+$1.gaps},coverage:["Claude Code and Codex local session logs, including archived sessions and subagents.","Cursor, browser-only chats, other Macs and providers without token records are not included.","History starts at the earliest usage still present on this Mac. Deleted logs cannot be backfilled. Incomplete final lines wait for the next write; rows larger than 8 MiB are skipped and reported as coverage gaps.","Input, cache read, cache write and output are disjoint. Reasoning is included in output."],pricingVersion:SessionUsagePricing.version)
+        return SessionUsageReport(buckets:buckets,updatedAt:iso.string(from:Date()),timeZone:zone.identifier,filesIndexed:cursors.count,pendingFiles:max(0,pending.count-completed),unreadableFiles:unreadable+cursors.reduce(0){$0+$1.oversizedRows},malformedRows:cursors.reduce(0){$0+$1.malformed},missingBaselineEvents:cursors.reduce(0){$0+$1.gaps},coverage:["Claude Code and Codex local session logs, including archived sessions and subagents.",cursorEnabled ? "Cursor usage comes from your Cursor account, using the sign-in its command line keeps in this Mac's Keychain. Only counts, dates, model names and each request's reported cost are stored." : "Cursor is counted only after you turn it on. Its token counts are kept on Cursor's servers.","Browser-only chats, other Macs and providers without token records are not included.","History starts at the earliest usage still present on this Mac. Deleted logs cannot be backfilled. Incomplete final lines wait for the next write; rows larger than 8 MiB are skipped and reported as coverage gaps.","Input, cache read, cache write and output are disjoint. Reasoning is included in output."],pricingVersion:SessionUsagePricing.version,cursorFeed:try cursorFeedStatus(enabled:cursorEnabled,syncFailed:cursorSyncFailed))
     }
 }

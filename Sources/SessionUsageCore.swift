@@ -40,6 +40,20 @@ struct SessionUsageReport: Codable, Sendable {
     var missingBaselineEvents: Int
     var coverage: [String]
     var pricingVersion: String
+    /// Optional so a report from an older helper still decodes.
+    var cursorFeed: SessionUsageCursorFeedStatus? = nil
+}
+
+/// The Cursor account feed, as the helper last left it. Never carries the sign-in.
+struct SessionUsageCursorFeedStatus: Codable, Equatable, Sendable {
+    enum State: String, Codable, Sendable { case off, ready, backfilling, signIn, expired, blocked, failed, changed }
+    var state: State
+    /// Plain words for anything other than off or ready.
+    var message: String? = nil
+    var lastSuccessAt: String? = nil
+    /// More history is waiting, so the store refreshes again soon.
+    var pending: Bool { state == .backfilling }
+    var isProblem: Bool { [.signIn, .expired, .blocked, .failed, .changed].contains(state) }
 }
 
 enum SessionUsageTimeScale: String, CaseIterable, Sendable {
@@ -62,6 +76,7 @@ enum SessionUsageSeries: String, CaseIterable, Sendable {
 
 enum SessionUsageModelSort: String, CaseIterable, Sendable {
     case tokens = "Tokens"
+    case newTokens = "New tokens"
     case cost = "API value"
     case records = "Records"
     case cacheShare = "Cache read %"
@@ -238,7 +253,7 @@ struct SessionUsageInspection: Equatable, Sendable {
 
 /// Presentation math shares the ledger's reporting timezone. Never interprets tokens as plan quota.
 enum SessionUsagePresentation {
-    static let allProviders = "All providers"
+    static let allProviders = "All tools"
     static let allModels = "All models"
     static let allHistory = "All history"
     static let customDates = "Custom dates"
@@ -303,6 +318,9 @@ enum SessionUsagePresentation {
             case .tokens:
                 a = Double(tokenCount(left.counts, excludingCacheReads: excludingCacheReads))
                 b = Double(tokenCount(right.counts, excludingCacheReads: excludingCacheReads))
+            case .newTokens:
+                a = Double(tokenCount(left.counts, excludingCacheReads: true))
+                b = Double(tokenCount(right.counts, excludingCacheReads: true))
             case .cost: a = left.estimatedUSD; b = right.estimatedUSD
             case .records: a = Double(left.events); b = Double(right.events)
             case .cacheShare:
@@ -451,6 +469,127 @@ enum SessionUsagePresentation {
             return a == b ? $0.id < $1.id : a > b
         }
     }
+    /// What a person calls the source of a usage row. The ledger's provider stays the stored key and the export
+    /// value. Only Claude Code logs say Anthropic, only the account feed says Cursor, and every other provider
+    /// comes from a Codex log.
+    static func toolName(_ provider: String) -> String {
+        switch provider {
+        case "Anthropic": return "Claude Code"
+        case "OpenAI": return "Codex"
+        case "Cursor": return "Cursor"
+        default: return "Codex (\(provider))"
+        }
+    }
+    /// "claude-opus-5-5" reads "Opus 5.5". The raw id stays in help text and exports. Unknown ids stay recognizable.
+    static func modelName(_ id: String) -> String {
+        var name = id.replacingOccurrences(of: #"-\d{8}$"#, with: "", options: .regularExpression)
+        if name.hasPrefix("cursor-") { name.removeFirst(7) }
+        var parts = name.split(separator: "-").map(String.init)
+        guard parts.count > 1 else { return name }
+        func isVersion(_ s: String) -> Bool { !s.isEmpty && s.allSatisfy { $0.isNumber || $0 == "." } }
+        if parts[0] == "claude" {
+            parts.removeFirst()
+            // Older ids put the version first: claude-4.5-opus-high-thinking.
+            if parts.count > 1, isVersion(parts[0]) { parts.swapAt(0, 1) }
+            guard let family = parts.first else { return name }
+            var version: [String] = []
+            var rest = Array(parts.dropFirst())
+            while let next = rest.first, isVersion(next) { version.append(next); rest.removeFirst() }
+            let head = ([family.capitalized] + (version.isEmpty ? [] : [version.joined(separator: ".")]))
+            return (head + rest).joined(separator: " ")
+        }
+        if parts[0] == "gpt", parts.count > 1 {
+            let tail = parts.dropFirst(2).enumerated().map { $0.offset == 0 ? $0.element.capitalized : $0.element }
+            return (["GPT-" + parts[1]] + tail).joined(separator: " ")
+        }
+        return ([parts[0].capitalized] + parts.dropFirst()).joined(separator: " ")
+    }
+    /// Words for the inspector headline: "78.0 billion".
+    static func spokenTokens(_ n: Int64) -> String {
+        let v = Double(n)
+        if n >= 1_000_000_000 { return String(format: "%.1f billion", v / 1e9) }
+        if n >= 1_000_000 { return String(format: v >= 1e8 ? "%.0f million" : "%.1f million", v / 1e6) }
+        if n >= 1000 { return String(format: "%.1f thousand", v / 1e3) }
+        return n.formatted()
+    }
+    /// Three significant figures where a table or list has to scan: 74.02B, 602M, 50.4M.
+    static func shortTokens(_ n: Int64) -> String {
+        let v = Double(n)
+        if n >= 1_000_000_000 { return String(format: "%.2fB", v / 1e9) }
+        if n >= 100_000_000 { return String(format: "%.0fM", v / 1e6) }
+        if n >= 1_000_000 { return String(format: "%.1fM", v / 1e6) }
+        if n >= 100_000 { return String(format: "%.0fK", v / 1e3) }
+        if n >= 1000 { return String(format: "%.1fK", v / 1e3) }
+        return String(n)
+    }
+    /// Whole dollars. A small amount says so rather than rounding to nothing.
+    static func dollars(_ value: Double) -> String {
+        value > 0 && value < 1 ? "<$1" : value.formatted(.currency(code: "USD").precision(.fractionLength(0)))
+    }
+    /// A table cell's value for rows that may be partly or wholly unpriced.
+    static func costCell(_ rows: [SessionUsageBucket]) -> String {
+        let priced = rows.reduce(0) { $0 + $1.pricedEvents }, events = rows.reduce(0) { $0 + $1.events }
+        guard priced > 0 else { return "No verified price" }
+        return dollars(rows.reduce(0) { $0 + $1.estimatedUSD }) + (priced < events ? " + unknown" : "")
+    }
+    /// "Oct 19" for a chart axis, "Oct" for a month key.
+    static func axisLabel(for key: String) -> String {
+        guard let day = SessionUsageDay(periodStart(key)) else { return key }
+        let month = String(monthNames[day.month - 1].prefix(3))
+        return key.count == 7 ? (day.month == 1 ? "\(month) \(day.year)" : month) : "\(month) \(day.day)"
+    }
+    /// At most about seven labels across a chart, always starting at the first period.
+    static func axisKeys(_ keys: [String]) -> [String] {
+        guard keys.count > 7 else { return keys }
+        let step = Int((Double(keys.count) / 7).rounded(.up))
+        // Never the last period: its label would run off the plot's right edge.
+        return stride(from: 0, to: keys.count - 1, by: step).map { keys[$0] }
+    }
+    /// Series names, largest first. The stack, the legend and the colours all read this order.
+    static func seriesOrder(_ totals: [String: Double]) -> [String] {
+        totals.keys.sorted { a, b in
+            let left = totals[a, default: 0], right = totals[b, default: 0]
+            return left == right ? a < b : left > right
+        }
+    }
+    /// The scale a period opens on until someone picks one: bars stay few enough to read.
+    static func defaultScale(for period: String) -> SessionUsageTimeScale {
+        period == allHistory ? .monthly : period == "Last 90 days" ? .weekly : .daily
+    }
+    /// A clean top for the chart's axis: four even steps that land on round numbers.
+    static func niceAxisTop(_ peak: Double) -> Double {
+        guard peak > 0, peak.isFinite else { return 1 }
+        let target = peak * 1.04
+        let magnitude = pow(10, floor(log10(target)))
+        for step in [1.0, 1.2, 1.6, 2, 2.4, 3.2, 4, 6, 8, 10] where step * magnitude >= target { return step * magnitude }
+        return 10 * magnitude
+    }
+    /// A cost table cell's share of the priced total.
+    static func valueShare(_ rows: [SessionUsageBucket], of total: Double) -> String {
+        rows.reduce(0) { $0 + $1.pricedEvents } == 0 ? "Unavailable" : costShare(rows.reduce(0) { $0 + $1.estimatedUSD }, of: total)
+    }
+    /// Words for a token category.
+    static func categoryTitle(_ id: String) -> String {
+        switch id {
+        case "Uncached input": return "Input"
+        case "Cache read": return "Read from cache"
+        case "Cache write": return "Written to cache"
+        default: return id
+        }
+    }
+    struct ToolGroup: Identifiable, Sendable {
+        let id: String // the provider key
+        let tool: String
+        let summary: Summary
+        let models: [SessionUsageBucket]
+    }
+    /// One group per tool, largest first, each holding its models in the chosen order.
+    static func toolGroups(_ rows: [SessionUsageBucket], by sort: SessionUsageModelSort, ascending: Bool = false, excludingCacheReads: Bool = false) -> [ToolGroup] {
+        summarize(rows, by: \.provider, excludingCacheReads: excludingCacheReads).map { summary in
+            ToolGroup(id: summary.id, tool: toolName(summary.id), summary: summary,
+                models: sortModels(rows.filter { $0.provider == summary.id }, by: sort, ascending: ascending, excludingCacheReads: excludingCacheReads))
+        }
+    }
     /// Unpriced days sort last in both directions on API value. Ties break on the earlier date.
     static func sortDays(_ rows: [SessionUsageBucket], by sort: SessionUsageDaySort, ascending: Bool = false, excludingCacheReads: Bool = false) -> [Summary] {
         summarize(rows, by: \.day, excludingCacheReads: excludingCacheReads).sorted { left, right in
@@ -593,7 +732,12 @@ enum SessionUsagePresentation {
         let priorRows = allRows.filter {
             prior.contains($0.day) && (provider == allProviders || $0.provider == provider) && (model == allModels || $0.model == model)
         }
-        let partialPrior = allRows.map(\.day).min().map { $0 > prior.lowerBound } ?? true
+        // Each tool in the selection must reach back that far. Cursor's account history starts long before local
+        // logs do, so one earliest date across all tools would call a mostly empty prior window complete.
+        let selectedProviders = Set(selectedRows.map(\.provider))
+        let partialPrior = selectedProviders.isEmpty || selectedProviders.contains { name in
+            allRows.filter { $0.provider == name }.map(\.day).min().map { $0 > prior.lowerBound } ?? true
+        }
         let pTokens = tokenCount(priorRows.reduce(SessionUsageCounts()) { $0 + $1.counts }, excludingCacheReads: excludingCacheReads)
         let pEvents = priorRows.reduce(0) { $0 + $1.events }
         let pPriced = priorRows.reduce(0) { $0 + $1.pricedEvents }

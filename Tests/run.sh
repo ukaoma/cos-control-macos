@@ -1572,7 +1572,7 @@ for path in sorted((root / "Sources").glob("*.swift")):
     menus = [m.start() for m in re.finditer(r"(?<![A-Za-z0-9_.])Menu\s*[({]", text)]
     for index, start in enumerate(menus):
         stop = menus[index + 1] if index + 1 < len(menus) else len(text)
-        if ".cosMenu()" not in text[start:stop]:
+        if ".cosMenu()" not in text[start:stop] and ".cosWordMenu()" not in text[start:stop]:
             hits.append(f"  Sources/{path.name}:{line_of(text, start)}: a Menu with no .cosMenu()")
     # A TextField or SecureField draws the system's rounded field unless it takes .textFieldStyle(.plain) (and then
     # cosField()) before the next field begins.
@@ -5302,6 +5302,13 @@ need("stats: showingSessionUsage ? [] : sessionsStats" in sessions_pane,
      "Sessions keeps its session stat strip; Usage shows its own token totals instead")
 need("if showingSessionUsage {\n                SessionUsageView(store: model.sessionUsage)" in sessions_pane,
      "the Usage selection must render its own totals and history")
+# The Cursor feed reads a sign-in and the network, so it is opt-in at both ends and a read-only pass never reaches it.
+usage_view_src = (root / "Sources/SessionUsageView.swift").read_text()
+helper_src = (root / "HelperSources/main.swift").read_text()
+need('UserDefaults.standard.bool(forKey: "sessionUsageCursorFeed")' in usage_view_src and 'if cursorEnabled { arguments.append("--cursor") }' in usage_view_src,
+     "Usage passes the Cursor feed flag only after the person turned it on")
+need('if cursorEnabled && !readOnly {\n                do { try collector.syncCursorFeed(' in helper_src and 'let cursorEnabled = args.contains("--cursor")' in helper_src,
+     "the helper syncs the Cursor feed only with the flag and never on a read-only pass")
 meetings_src = (root / "Sources/ActivityMeetings.swift").read_text()
 # 3 from 0.5.230: the library row, the search hit, and the suggestion row; 4 from 0.5.278 with the Live now row. The
 # rule is "cards in a shared scroll list, never a List"; the count is how it is
