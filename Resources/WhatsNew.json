@@ -1,8 +1,17 @@
 {
-  "version": "0.5.353",
+  "version": "0.5.355",
   "whatsNew": {
-    "summary": "Usage can now show weeks, count records, split a period into token categories, compare it with the period before, sort its tables and copy what you see as CSV or JSON. Views that are loading take the size of what will appear, so pages no longer jump when they fill in, and a question you ask COS in a meeting holds its answer's room while it works. Plus everything in 0.5.352: Settings in ten categories with search, and pet dragging on macOS 27.2.",
+    "summary": "Saved Mac recordings can show estimated anonymous speaker groups from a compatible COS server. Select the parts you want to name, inspect the preview, then confirm the text-label change. Naming a group adds no voice-training samples. Includes the Usage and loading improvements from 0.5.353.",
     "sections": [
+      {
+        "title": "0.5.355",
+        "items": [
+          "Review estimated anonymous speaker groups in saved Mac recordings. The group view keeps existing names and protected corrections; a group is an estimate, not a verified identity.",
+          "Select the exact parts to name, check the preview, and confirm. A changed recording or selection needs a fresh preview. Group naming changes text labels and does not add voice-training samples.",
+          "Live transcript speaker-label revisions can refresh previously settled rows without changing their words or clocks.",
+          "Requires compatible server endpoints and server-side admission. Installing Control does not enable live cues or automatic speaker grouping. Older servers retain their supported recording view."
+        ]
+      },
       {
         "title": "0.5.353",
         "items": [

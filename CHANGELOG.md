@@ -1,3 +1,13 @@
+## 0.5.355 (build 409), Saved Mac speaker-group review
+
+Built on shipped Control 0.5.353, including its Usage and loading improvements. Requires compatible saved-call speaker-group and scoped-correction endpoints; the paired server candidate is 6.96.0.
+
+- Saved Mac recordings can present estimated anonymous speaker groups while retaining existing named and protected corrections. These groups are identity estimates, not verified names or proof that every word has one speaker.
+- Review the exact selected parts, inspect the preview, and confirm a text-label change. Stale revisions, changed selections, duplicate or protected members, and unsupported group arguments fail closed. Group naming does not enroll or train a voice profile.
+- Live transcript speaker revisions can refresh earlier settled labels while preserving the original words and elapsed times.
+- Control installation does not enable live cues or automatic grouping. Server admission and qualified per-capture evidence remain separate; older servers keep their supported view.
+- Full regression passed at a5f9112 before this metadata-only version allocation. Signing, native-engine accuracy, actual producer/helper integration, installation, and release acceptance require their own receipts; no recording repair is implied by this changelog.
+
 ## 0.5.353 (build 407), Usage slice and dice, loading outlines at full size
 
 Pairs with COS server 6.93.0 or newer (unchanged from 0.5.352). Built on the shipped 0.5.352 (9f5ca05). The held claude/control-352 work (2dbadec) moves to 0.5.354.
