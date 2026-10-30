@@ -4754,7 +4754,9 @@ private struct VoiceRow: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            if model.openReview?.mutable == false {
+            if let scope = model.openReview?.groupScopes.first(where: { $0.displayLabel == voice.label }) {
+                SpeakerGroupNamingView(model: model, scope: scope).id(scope.id)
+            } else if model.openReview?.mutable == false {
                 Label("Read-only library · new COS meetings remain editable", systemImage: "lock")
                     .font(.system(size: 10.5)).foregroundStyle(.secondary)
             } else if voice.canRename {
@@ -5188,6 +5190,11 @@ struct SpeakerReviewPane: View {
                 }
                 .padding(10)
                 .background(COSPalette.amber.opacity(0.14))
+            }
+
+            if let preview = model.pendingSpeakerGroupName {
+                Divider()
+                SpeakerGroupConfirmationView(model: model, preview: preview)
             }
 
             if let correction = model.pendingCorrection {
@@ -6248,5 +6255,81 @@ extension ControlPanel {
         panel._hubQuery = State(initialValue: query)
         panel._hubAdvanced = State(initialValue: advanced)
         return panel
+    }
+}
+
+
+/// Separate from profile enrollment and legacy label-wide corrections. The
+/// source scope is fixed by the server; a user may select a smaller subset.
+struct SpeakerGroupNamingView: View {
+    @ObservedObject var model: ControllerModel
+    let scope: SpeakerGroupScope
+    @State private var expanded = false
+    @State private var name = ""
+    @State private var excluded: Set<Int> = []
+    private var selected: [Int] { scope.members.filter { !excluded.contains($0.id) }.map(\.id) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Button(expanded ? "Cancel naming" : "Name reviewed segments…") { expanded.toggle() }
+                .font(.system(size: 11))
+                .disabled(model.mergeInFlight)
+            if expanded {
+                Text(scope.reviewExplanation)
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 7) {
+                        ForEach(scope.members) { member in
+                            Toggle(isOn: Binding(get: { !excluded.contains(member.id) }, set: { include in
+                                if include { excluded.remove(member.id) } else { excluded.insert(member.id) }
+                            })) {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(member.stamp).font(.system(size: 10, design: .monospaced)).foregroundStyle(.secondary)
+                                    Text(member.text.isEmpty ? "No text for this segment" : member.text)
+                                        .font(.system(size: 11)).lineLimit(4)
+                                }
+                            }.toggleStyle(.checkbox).disabled(model.mergeInFlight)
+                        }
+                    }.padding(3)
+                }.frame(maxHeight: 220)
+                TextField("Name for these segments", text: $name).textFieldStyle(.plain).cosField()
+                    .disabled(model.mergeInFlight)
+                HStack {
+                    Text("\(selected.count) of \(scope.members.count) selected · this meeting only")
+                        .font(.system(size: 10)).foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Preview name") { model.previewSpeakerGroupName(scope, rawChunkIndices: selected, to: name) }
+                        .disabled(model.mergeInFlight || selected.isEmpty || name.trimmingCharacters(in: .whitespacesAndNewlines).count < 2)
+                }
+                Text("This correction changes transcript labels. It does not train a voice profile.")
+                    .font(.system(size: 10)).foregroundStyle(.secondary)
+            }
+        }
+        .onChange(of: name) { _, _ in invalidatePreview() }
+        .onChange(of: excluded) { _, _ in invalidatePreview() }
+        .onChange(of: expanded) { _, isExpanded in if !isExpanded { invalidatePreview() } }
+    }
+
+    private func invalidatePreview() {
+        if model.pendingSpeakerGroupName?.scope.id == scope.id { model.pendingSpeakerGroupName = nil }
+    }
+}
+
+struct SpeakerGroupConfirmationView: View {
+    @ObservedObject var model: ControllerModel
+    let preview: PendingSpeakerGroupName
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Name \(preview.rawChunkIndices.count) reviewed segments “\(preview.to)”?")
+                .font(.system(size: 12, weight: .semibold))
+            Text("Only the selected segments in this meeting change. Existing corrections and voice profiles are preserved.")
+                .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            HStack {
+                Button("Save name") { model.confirmSpeakerGroupName(preview) }.disabled(model.mergeInFlight)
+                Button("Cancel") { model.pendingSpeakerGroupName = nil }.disabled(model.mergeInFlight)
+                if model.mergeInFlight { ProgressView().controlSize(.small) }
+            }
+        }.padding(12)
     }
 }

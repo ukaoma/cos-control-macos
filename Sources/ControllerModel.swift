@@ -553,6 +553,7 @@ final class ControllerModel: ObservableObject {
     @Published var archiveChatRouteActive = false
     @Published var addVoiceResult: String?
     @Published var pendingCorrection: PendingCorrection?
+    @Published var pendingSpeakerGroupName: PendingSpeakerGroupName?
     /// 0.5.351 QA: the person pressed "Add anyway" on a flagged Mac voice and has not yet confirmed it. Only then can the forced assignment be sent.
     @Published var forceAssignArmed = false
     /// Scope the reviewer has chosen for the next rename. Defaults to this
@@ -9596,6 +9597,7 @@ final class ControllerModel: ObservableObject {
         correctionScope = .thisMeeting
         namingVoice = nil
         pendingCorrection = nil
+        pendingSpeakerGroupName = nil
         openReview = nil
         mergeInFlight = false
         lastReviewSession = sessionId
@@ -9717,6 +9719,7 @@ final class ControllerModel: ObservableObject {
         openReview = nil
         namingVoice = nil
         pendingCorrection = nil
+        pendingSpeakerGroupName = nil
         reviewError = nil
         lastReviewSession = nil
         selectedReviewRecordID = nil
@@ -10280,6 +10283,77 @@ final class ControllerModel: ObservableObject {
     /// `isNameAssignment` marks the case where the row was never attributed to
     /// anyone. It changes no behaviour — only what the confirm card is allowed
     /// to say, so a click that labels an unverified cluster says so first.
+    /// A derived call view cannot use the whole-label/profile correction route.
+    /// Keep the exact server-issued membership and revision through both clicks.
+    func previewSpeakerGroupName(_ scope: SpeakerGroupScope, rawChunkIndices: [Int], to: String) {
+        let name = to.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !mergeInFlight, let review = openReview, review.isMacRecording,
+              review.groupScopes.contains(scope), let revision = review.sourceRevision,
+              let args = scope.arguments(sessionId: review.sessionId, recordId: review.recordId, revision: revision,
+                                         rawChunkIndices: rawChunkIndices, to: name, confirm: false) else {
+            reviewError = "This voice group changed. Reopen the meeting before naming it."; return
+        }
+        let generation = reviewSelectionGeneration
+        mergeInFlight = true; pendingSpeakerGroupName = nil; pendingCorrection = nil
+        Task { [weak self] in
+            guard let self else { return }
+            defer { if reviewSelectionGeneration == generation { mergeInFlight = false } }
+            do {
+                let response = try await helper.run(args)
+                guard reviewSelectionGeneration == generation, lastReviewSession == review.sessionId,
+                      openReview?.sourceRevision == revision, openReview?.groupScopes.contains(scope) == true else { return }
+                guard let preview = PendingSpeakerGroupName(scope: scope, review: review, rawChunkIndices: rawChunkIndices,
+                                                            to: name, response: response) else {
+                    reviewError = response.details["result"]?.object?["message"]?.string
+                        ?? "The server could not verify that exact group. Refresh the meeting and try again."; return
+                }
+                pendingSpeakerGroupName = preview; namingVoice = nil; reviewError = nil
+            } catch {
+                guard reviewSelectionGeneration == generation else { return }
+                reviewError = "Could not check this group: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    func confirmSpeakerGroupName(_ preview: PendingSpeakerGroupName) {
+        guard !mergeInFlight, let review = openReview, review.sessionId == preview.sessionId,
+              review.recordId == preview.recordId, review.sourceRevision == preview.revision,
+              review.groupScopes.contains(preview.scope),
+              pendingSpeakerGroupName?.scope == preview.scope, pendingSpeakerGroupName?.to == preview.to,
+              pendingSpeakerGroupName?.rawChunkIndices == preview.rawChunkIndices,
+              let args = preview.scope.arguments(sessionId: preview.sessionId, recordId: preview.recordId,
+                  revision: preview.revision, rawChunkIndices: preview.rawChunkIndices, to: preview.to, confirm: true) else {
+            pendingSpeakerGroupName = nil; reviewError = "This group changed. Reopen it before saving a name."; return
+        }
+        let generation = reviewSelectionGeneration
+        mergeInFlight = true
+        Task { [weak self] in
+            guard let self else { return }
+            defer { if reviewSelectionGeneration == generation { mergeInFlight = false } }
+            do {
+                let response = try await helper.run(args)
+                guard reviewSelectionGeneration == generation, lastReviewSession == preview.sessionId else { return }
+                let result = response.details["result"]?.object
+                guard response.details["state"]?.string == "applied", result?["confirmed"]?.bool == true,
+                      result?["enrollmentAllowed"]?.bool == false else {
+                    pendingSpeakerGroupName = nil
+                    reviewError = result?["message"]?.string
+                        ?? "The name was not saved. Refresh this meeting before trying again."; return
+                }
+                pendingSpeakerGroupName = nil
+                notice = "Saved \(preview.to) for \(preview.rawChunkIndices.count) reviewed segments"
+                await fetchReview(sessionId: preview.sessionId)
+                await loadVoiceDirectory(refresh: true)
+            } catch {
+                guard reviewSelectionGeneration == generation else { return }
+                // A lost reply might follow a successful write. Require a fresh
+                // read rather than offering to repeat a potentially applied edit.
+                pendingSpeakerGroupName = nil
+                reviewError = "Check this meeting before retrying: \(error.localizedDescription)"
+            }
+        }
+    }
+
     private func reviewRevisionArgs(_ review: SpeakerReview) -> [String] {
         review.sourceRevision.map { ["--expected-revision", $0] } ?? []
     }

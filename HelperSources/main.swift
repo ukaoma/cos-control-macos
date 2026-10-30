@@ -746,6 +746,7 @@ final class COSControlHelper {
         case "voice-held-batches": try emitVoiceHeldBatches()
         case "voice-held-discard": try emitVoiceHeldDiscard(args: args)
         case "meeting-relabel": try emitMeetingRelabel(args: args)
+        case "meeting-group-relabel": try emitMeetingGroupRelabel(args: args)
         case "meeting-deattribute": try emitMeetingDeattribute(args: args)
         case "meeting-confirm": try emitMeetingConfirm(args: args)
         // ── Import and merge meetings (server 6.47.0, WS6) ───────────────────
@@ -20590,6 +20591,52 @@ final class COSControlHelper {
             confirmed: args.contains("--confirm"),
             appliedMessage: "Name applied to this meeting"
         )
+    }
+
+    /// A packet identity is opaque: only the exact server-issued members may be
+    /// named here. Never forward legacy force/profile/whole-label options.
+    private func emitMeetingGroupRelabel(args: [String]) throws {
+        let valued = Set(["--session", "--record-id", "--expected-revision", "--identity", "--scope-sha256", "--raw-chunks", "--to"])
+        var values: [String: String] = [:]
+        var confirmed = false
+        var index = 1
+        while index < args.count {
+            let key = args[index]
+            if key == "--confirm" {
+                guard !confirmed else { throw HelperError.message("Duplicate confirmation") }
+                confirmed = true; index += 1; continue
+            }
+            guard valued.contains(key), values[key] == nil, index + 1 < args.count,
+                  !args[index + 1].hasPrefix("--") else { throw HelperError.message("Invalid scoped naming options") }
+            values[key] = args[index + 1]; index += 2
+        }
+        guard values.count == valued.count, let session = values["--session"], validSessionID(session), session.hasPrefix("mac_"),
+              let record = values["--record-id"], !record.isEmpty, record.utf8.count <= 4096,
+              let revision = values["--expected-revision"], Self.validPreviewHash(revision),
+              let scope = values["--scope-sha256"], Self.validPreviewHash(scope),
+              let identity = values["--identity"], !identity.isEmpty, identity.utf8.count <= 128,
+              identity.utf8.allSatisfy({ (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0) || [45, 58, 95].contains($0) }),
+              let encoded = identity.addingPercentEncoding(withAllowedCharacters: .alphanumerics),
+              let raw = values["--raw-chunks"], !raw.isEmpty, raw.utf8.count <= 30000,
+              let name = values["--to"], name == name.trimmingCharacters(in: .whitespacesAndNewlines),
+              (2...200).contains(name.count), !name.lowercased().hasPrefix("voice "),
+              !["ext", "unknown", "mu", "unidentified", "unidentified voice"].contains(name.lowercased()),
+              name.unicodeScalars.allSatisfy({ !CharacterSet.controlCharacters.contains($0) }) else {
+            throw HelperError.message("A current Mac group, revision and reviewed segment list are required")
+        }
+        let parts = raw.split(separator: ",", omittingEmptySubsequences: false)
+        let indices = parts.compactMap { part -> Int? in
+            guard !part.isEmpty, part.utf8.allSatisfy({ (48...57).contains($0) }), let n = Int(part), (0..<6000).contains(n), String(n) == part else { return nil }
+            return n
+        }
+        guard indices.count == parts.count, !indices.isEmpty, Set(indices).count == indices.count else {
+            throw HelperError.message("Review an explicit, unique list of source segments")
+        }
+        var payload: [String: Any] = ["recordId": record, "expectedRevision": revision, "scopeSHA256": scope,
+                                      "rawChunkIndices": indices.sorted(), "to": name]
+        payload[confirmed ? "confirm" : "dryRun"] = true
+        try emitMeetingCorrection(path: "/api/meeting/\(escapedSessionID(session))/speaker-groups/\(encoded)/relabel",
+                                  payload: payload, confirmed: confirmed, appliedMessage: "Name saved for reviewed segments")
     }
 
     /// Read or revision-guard a per-capture matching policy on the authenticated server.

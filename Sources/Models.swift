@@ -6219,6 +6219,123 @@ struct SpeakerTimelineSpan: Identifiable, Sendable, Hashable {
     }
 }
 
+/// A server-issued group names only the explicitly reviewed source members.
+/// Its display label is never a selector for a legacy whole-label rename.
+struct SpeakerGroupScope: Identifiable, Sendable, Hashable {
+    enum ReviewBasis: String, Sendable, Hashable {
+        case acoustic = "accepted-acoustic-group"
+        case automaticLabel = "automatic-label-only"
+        case human = "human-authored"
+    }
+    /// JSONValue.int serves older permissive displays. Source selectors must
+    /// reject fractions instead of truncating them to a different segment.
+    static func exactInt(_ value: JSONValue?) -> Int? {
+        guard case let .number(number)? = value, number.isFinite else { return nil }
+        return Int(exactly: number)
+    }
+    struct Member: Identifiable, Sendable, Hashable {
+        let rawChunkIndex: Int
+        let position: Int
+        let before: String
+        let text: String
+        let elapsedMs: Int?
+        var id: Int { rawChunkIndex }
+        var stamp: String { elapsedMs.map { String(format: "%d:%02d", $0 / 60000, ($0 / 1000) % 60) } ?? "Segment \(position + 1)" }
+        init?(_ value: JSONValue) {
+            guard let o = value.object, let raw = SpeakerGroupScope.exactInt(o["rawChunkIndex"]), (0..<6000).contains(raw),
+                  let position = SpeakerGroupScope.exactInt(o["position"]), (0..<6000).contains(position),
+                  let before = o["before"]?.string, !before.isEmpty, before.count <= 200,
+                  !SpeakerGroupScope.isUnassigned(before) else { return nil }
+            rawChunkIndex = raw; self.position = position; self.before = before
+            text = String((o["text"]?.string ?? "").prefix(600))
+            if let elapsedValue = o["elapsedMs"], case .null = elapsedValue {
+                elapsedMs = nil
+            } else if o["elapsedMs"] != nil {
+                guard let elapsed = SpeakerGroupScope.exactInt(o["elapsedMs"]), elapsed >= 0 else { return nil }
+                elapsedMs = elapsed
+            } else { elapsedMs = nil }
+        }
+    }
+    let identityId: String
+    let displayLabel: String
+    let scopeSHA256: String
+    let members: [Member]
+    let fieldCount: Int
+    let reviewBasis: ReviewBasis
+    var reviewExplanation: String {
+        switch reviewBasis {
+        case .acoustic: return "This is an estimated voice group. Review its segments before naming it. Your earlier corrections stay in place."
+        case .automaticLabel: return "These turns share an automatic label; they have not been verified as one voice. Select only the turns you recognize. Your earlier corrections stay in place."
+        case .human: return "You previously named these segments. Select the turns you want to correct; other corrections stay in place."
+        }
+    }
+    var id: String { identityId + ":" + scopeSHA256 }
+    static func validHash(_ value: String) -> Bool {
+        value.utf8.count == 64 && value.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
+    }
+    static func isUnassigned(_ value: String) -> Bool {
+        let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return ["ext", "unknown", "mu", "unidentified", "unidentified voice"].contains(normalized)
+    }
+    init?(_ value: JSONValue) {
+        guard let o = value.object, let identity = o["identityId"]?.string, !identity.isEmpty, identity.utf8.count <= 128,
+              identity.utf8.allSatisfy({ (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0) || [45, 58, 95].contains($0) }),
+              let label = o["displayLabel"]?.string, !label.isEmpty, label.count <= 200, !Self.isUnassigned(label),
+              let hash = o["scopeSHA256"]?.string, Self.validHash(hash),
+              let rows = o["members"]?.array, !rows.isEmpty, rows.count <= 6000,
+              let fieldCount = Self.exactInt(o["fieldCount"]), fieldCount > 0, fieldCount <= 40000 else { return nil }
+        if let basis = o["reviewBasis"] {
+            guard let text = basis.string, let parsedBasis = ReviewBasis(rawValue: text) else { return nil }
+            reviewBasis = parsedBasis
+        } else { reviewBasis = .acoustic }
+        let parsed = rows.compactMap(Member.init)
+        guard parsed.count == rows.count, Set(parsed.map(\.rawChunkIndex)).count == parsed.count,
+              Set(parsed.map(\.position)).count == parsed.count else { return nil }
+        identityId = identity; displayLabel = label; scopeSHA256 = hash; members = parsed; self.fieldCount = fieldCount
+    }
+    func selectedMembers(_ indices: [Int]) -> [Member]? {
+        let chosen = Set(indices)
+        guard !indices.isEmpty, chosen.count == indices.count,
+              chosen.isSubset(of: Set(members.map(\.rawChunkIndex))) else { return nil }
+        return members.filter { chosen.contains($0.rawChunkIndex) }
+    }
+    func arguments(sessionId: String, recordId: String, revision: String, rawChunkIndices: [Int], to: String, confirm: Bool) -> [String]? {
+        let name = to.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard sessionId.hasPrefix("mac_"), !recordId.isEmpty, Self.validHash(revision),
+              selectedMembers(rawChunkIndices) != nil, name.count >= 2, name.count <= 200,
+              name.unicodeScalars.allSatisfy({ !CharacterSet.controlCharacters.contains($0) }),
+              !MacVoiceLabel.isVoice(name), !Self.isUnassigned(name) else { return nil }
+        var args = ["meeting-group-relabel", "--session", sessionId, "--record-id", recordId,
+                    "--expected-revision", revision, "--identity", identityId, "--scope-sha256", scopeSHA256,
+                    "--raw-chunks", rawChunkIndices.sorted().map(String.init).joined(separator: ","), "--to", name]
+        if confirm { args.append("--confirm") }
+        return args
+    }
+}
+
+struct PendingSpeakerGroupName: Sendable {
+    let scope: SpeakerGroupScope
+    let recordId: String
+    let sessionId: String
+    let revision: String
+    let rawChunkIndices: [Int]
+    let to: String
+    let fields: Int
+    init?(scope: SpeakerGroupScope, review: SpeakerReview, rawChunkIndices: [Int], to: String, response: HelperResponse) {
+        guard response.details["state"]?.string == "preview", let revision = review.sourceRevision,
+              let preview = response.details["result"]?.object?["preview"]?.object,
+              preview["identityId"]?.string == scope.identityId, preview["scopeSHA256"]?.string == scope.scopeSHA256,
+              preview["sourceRevision"]?.string == revision, preview["to"]?.string == to,
+              preview["enrollmentAllowed"]?.bool == false,
+              let rows = preview["members"]?.array, let expected = scope.selectedMembers(rawChunkIndices), rows.count == expected.count,
+              let fields = SpeakerGroupScope.exactInt(preview["fields"]), fields > 0, fields <= scope.fieldCount else { return nil }
+        let actual = rows.compactMap(SpeakerGroupScope.Member.init)
+        guard actual.count == expected.count, Set(actual) == Set(expected) else { return nil }
+        self.scope = scope; recordId = review.recordId; sessionId = review.sessionId; self.revision = revision
+        self.rawChunkIndices = rawChunkIndices.sorted(); self.to = to; self.fields = fields
+    }
+}
+
 struct SpeakerReview: Sendable {
     let sessionId: String
     let title: String
@@ -6249,6 +6366,7 @@ struct SpeakerReview: Sendable {
     let sourceRevision: String?
     let identityVersion: Int?
     let mutable: Bool
+    let groupScopes: [SpeakerGroupScope]
     let librarySource: String
     /// 6.47.0. The merged record that holds this capture, when the panel asked
     /// through one.
@@ -6277,6 +6395,14 @@ struct SpeakerReview: Sendable {
         sourceRevision = o["sourceRevision"]?.string
         identityVersion = o["reviewIdentityVersion"]?.int
         mutable = o["mutable"]?.bool ?? true
+        let scopeRows = o["groupScopes"]?.array ?? []
+        let scopes = scopeRows.compactMap(SpeakerGroupScope.init)
+        let members = scopes.flatMap { $0.members.map(\.rawChunkIndex) }
+        groupScopes = sessionId.hasPrefix("mac_") && sourceRevision.map(SpeakerGroupScope.validHash) == true
+            && scopeRows.count <= 6000 && scopes.count == scopeRows.count
+            && Set(scopes.map(\.identityId)).count == scopes.count
+            && Set(scopes.map(\.displayLabel)).count == scopes.count
+            && Set(members).count == members.count ? scopes : []
         librarySource = o["source"]?.string ?? "standalone_recordings"
         blendedRecordId = o["blendedRecordId"]?.string
     }
