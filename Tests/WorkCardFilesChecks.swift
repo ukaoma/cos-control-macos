@@ -1284,7 +1284,9 @@ extension WorkCardFilesChecks {
         try Data("PROD_PASSWORD=hunter2".utf8).write(to: project2.appendingPathComponent("sub/settings.txt"))
         await store.intake(urls: [project2], source: card)
         check(flashText(store, card.id) == "Not added: this folder holds secrets (sub/settings.txt). Add the files you need one by one.", "folder scan", flashText(store, card.id))
-        check(WorkCardFiles.broadFolder(user.path + "/Library/Caches", home: user) && !WorkCardFiles.broadFolder(user.path + "/Projects", home: user), "folder roots", "under ~/Library")
+        let libraryCaches = WorkCardFiles.resolved(user.appendingPathComponent("Library/Caches"))
+        let projects = WorkCardFiles.resolved(user.appendingPathComponent("Projects"))
+        check(WorkCardFiles.broadFolder(libraryCaches, home: user) && !WorkCardFiles.broadFolder(projects, home: user), "folder roots", "under ~/Library")
     }
 
     /// QA W1 (the identity stamp), N2 (a root reached through a link), N3 (two domains, one identity).
