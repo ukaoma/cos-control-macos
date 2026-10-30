@@ -6289,7 +6289,7 @@ struct SpeakerGroupNamingView: View {
                                     Text(member.text.isEmpty ? "No text for this segment" : member.text)
                                         .font(.system(size: 11)).lineLimit(4)
                                 }
-                            }.toggleStyle(.checkbox).disabled(model.mergeInFlight)
+                            }.toggleStyle(COSCheckStyle()).disabled(model.mergeInFlight)
                         }
                     }.padding(3)
                 }.frame(maxHeight: 220)
