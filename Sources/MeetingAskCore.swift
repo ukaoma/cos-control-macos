@@ -405,6 +405,8 @@ struct MeetingAskDisk {
 }
 
 enum MeetingAskText {
+    /// 0.5.353: the line under a question while its answer is written (the spec Miles approved for the phone, 2026-10-28).
+    static let working = "Working: COS is answering."
     static func failure(_ reason: String) -> String {
         switch reason {
         case "provider_timeout": return "The selected model took too long. Retry when you’re ready."

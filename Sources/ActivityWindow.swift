@@ -603,6 +603,17 @@ struct ActivityWindow: View {
         return view
     }
 
+    /// Build-up geometry fixture (Tests/BuildUpGeometry.swift, Tests/BuildUpViewChecks.swift): the production window opened on
+    /// one section and, by raw value, one Speakers or Memories subview. Nothing else differs from the app's window.
+    static func buildUpFixture(model: ControllerModel, section: ActivitySection, speakers: String? = nil, memories: String? = nil) -> ActivityWindow {
+        precondition(!model.backgroundWorkEnabled)
+        var view = ActivityWindow(model: model)
+        view._section = State(initialValue: section)
+        if let speakers, let sub = SpeakerSubview(rawValue: speakers) { view._speakerSubview = State(initialValue: sub) }
+        if let memories, let sub = MemoriesSubview(rawValue: memories) { view._memoriesSubview = State(initialValue: sub) }
+        return view
+    }
+
     /// Activity Today (plan v2) offscreen fixture: the production window with a filled Today store and Work journal, and no
     /// live loads (Tests/ActivityTodayRender.swift).
     static func todayFixture(model: ControllerModel, store: TodayHomeStore, handoff: WorkHandoffStore,
@@ -2198,6 +2209,11 @@ struct ActivityWindow: View {
     }
 
     private var sessionsStats: [(value: String, label: String)] {
+        // 0.5.353: the strip holds its place while the first load builds (the build-up below it), so the list does not
+        // drop 68 pt when the data lands. Dashes, never a count that has not been read.
+        if visibleSessions.isEmpty, model.claudeSessionsLoading, !model.isSessionQueryActive {
+            return [("–", "ON DISK"), ("–", "WAITING"), ("–", "PINNED")]
+        }
         guard !visibleSessions.isEmpty else { return [] }
         let waiting = visibleSessions.filter(ClaudeSession.needsAPerson).count
         let pinned = visibleSessions.filter(\.pinned).count
@@ -2205,6 +2221,8 @@ struct ActivityWindow: View {
     }
 
     private var tasksStats: [(value: String, label: String)] {
+        // 0.5.353: as Sessions, the strip holds its place through the first load.
+        if model.tasks.isEmpty, model.tasksLoading { return [("–", "OPEN"), ("–", "SCHEDULED"), ("–", "NEED ATTENTION")] }
         guard !model.tasks.isEmpty else { return [] }
         let scheduled = model.tasks.filter { !$0.runAt.isEmpty }.count
         let flagged = model.tasks.filter { $0.missed == true || $0.failed == true }.count
@@ -2856,7 +2874,9 @@ struct ActivityWindow: View {
             if model.sessionSearching { return "Looking up…" }
             return "Lookup across Claude, Codex, and Cursor"
         }
-        if model.claudeSessionsLoading { return visibleSessions.isEmpty ? "Loading…" : "Refreshing…" }
+        // 0.5.353: the first load reads as the line that replaces it (same sources, same width), so the header wraps the
+        // same at a narrow window and the list below does not move when the sessions land.
+        if model.claudeSessionsLoading { return visibleSessions.isEmpty ? "Claude · Codex · Cursor · reading the last 7 days…" : "Refreshing…" }
         if let error = model.claudeSessionsError { return error }
         if visibleSessions.isEmpty { return "No sessions" }
         switch model.sessionClock {
@@ -4141,10 +4161,9 @@ struct ActivityWindow: View {
                             .padding(.vertical, 28)
                         }
                     }
-                    .frame(maxWidth: 980)
-                    .padding(.horizontal, 22)
+                    // 0.5.353: the voice directory's column, the one its build-up draws in (COSBuildUpColumn.speakers).
+                    .cosColumn(.speakers)
                     .padding(.bottom, 22)
-                    .frame(maxWidth: .infinity)
                 }
             }
         }
@@ -4221,7 +4240,7 @@ struct ActivityWindow: View {
     private var meetingsToReviewList: some View {
         Group {
             // 0.5.343: the meetings build in place on first load (COSBuildUp); the chain is today's.
-            COSBuildUp(.list(6), loading: model.meetingsLoading, landed: !model.reviewableMeetings.isEmpty, failed: model.reviewError != nil, label: "Loading meetings to review") {
+            COSBuildUp(.list(6), tune: .reviewMeetings, loading: model.meetingsLoading, landed: !model.reviewableMeetings.isEmpty, failed: model.reviewError != nil, label: "Loading meetings to review") {
             if model.meetingsLoading {
                 centeredProgress("Loading meetings…")
             } else if model.reviewableMeetings.isEmpty {
@@ -4257,10 +4276,9 @@ struct ActivityWindow: View {
                             Divider().padding(.leading, 46)
                         }
                     }
-                    .frame(maxWidth: 980)
-                    .padding(.horizontal, 22)
+                    // 0.5.353: Meetings to review's column, the one its build-up draws in (COSBuildUpColumn.speakers).
+                    .cosColumn(.speakers)
                     .padding(.bottom, 22)
-                    .frame(maxWidth: .infinity)
                 }
             }
             }
@@ -4398,7 +4416,7 @@ struct ActivityWindow: View {
                 refresh: { Task { if toReview { await model.loadToReviewEvents() } else { await model.loadLearningEvents() } } }
             )
             // 0.5.343: the events build in place on first load (COSBuildUp); the chain is today's.
-            COSBuildUp(.list(6), loading: loading && events.isEmpty, landed: !events.isEmpty,
+            COSBuildUp(.list(6), tune: .learning, loading: loading && events.isEmpty, landed: !events.isEmpty,
                        failed: error != nil,
                        timeout: ControllerModel.helperTimeout + COSBuildUpPlan.helperMargin, label: toReview ? "Loading the review queue" : "Loading recent learning") {
                 VStack(spacing: 0) {
@@ -6332,7 +6350,7 @@ struct ClaudeSessionDetailPane: View {
             Divider()
 
             // 0.5.343: the conversation builds in place on first open (COSBuildUp); the chain is today's.
-            COSBuildUp(.turns(6), loading: !(model.openClaudeRow?.isScheduledJob ?? false) && model.claudeSessionDetailLoading && model.claudeSessionDetail == nil,
+            COSBuildUp(.turns(6), tune: .sessionTurns, loading: !(model.openClaudeRow?.isScheduledJob ?? false) && model.claudeSessionDetailLoading && model.claudeSessionDetail == nil,
                        landed: model.claudeSessionDetail != nil, failed: model.claudeSessionDetailError != nil, label: "Loading session", key: model.openClaudeRow.map { AnyHashable($0.id) }) {
                 VStack(alignment: .leading, spacing: 0) {
             if let row = model.openClaudeRow, row.isScheduledJob {
@@ -8682,6 +8700,14 @@ extension ActivityWindow {
                     .buttonStyle(TodayButtonStyle())
                     .keyboardShortcut("]", modifiers: .command)
                     .help("Open the next thing waiting on you (⌘])")
+                } else if line == .loading {
+                    // 0.5.353: the Next button's room, held (hidden, inert) while Needs you reads, so the header is its
+                    // landed height and the rows land in place instead of 14 pt lower.
+                    Button {} label: { HStack(spacing: 8) { Text("Next"); Text("⌘]").font(COSType.mono(11, weight: .medium)) } }
+                        .buttonStyle(TodayButtonStyle())
+                        .hidden()
+                        .disabled(true)
+                        .accessibilityHidden(true)
                 }
             }
             .padding(.horizontal, 18).padding(.vertical, 16)
@@ -8696,7 +8722,7 @@ extension ActivityWindow {
                 .padding(.horizontal, 18).padding(.bottom, 10)
             }
             // 0.5.343: until the sources answer, the rows build in place (COSBuildUp); the switch is today's.
-            COSBuildUp(.cardRows(2, badge: false), loading: line == .loading && frame.reachable && TodayHome.failed(states).isEmpty,
+            COSBuildUp(.cardRows(2, badge: false), tune: .needsYou, loading: line == .loading && frame.reachable && TodayHome.failed(states).isEmpty,
                        landed: line == .rows, failed: !frame.reachable || !TodayHome.failed(states).isEmpty, label: "Reading sessions and Work", background: TodayInk.panel) {
                 VStack(alignment: .leading, spacing: 0) {
             switch line {
@@ -8859,7 +8885,7 @@ extension ActivityWindow {
             }
             .padding(.bottom, 6)
             // 0.5.343: the first session read builds the rows in place (COSBuildUp); what is inside is today's.
-            COSBuildUp(.cardRows(1, badge: true), loading: model.claudeSessionsEnabled && !sessionsKnown && run.shown.isEmpty && run.finished.isEmpty,
+            COSBuildUp(.cardRows(2, badge: true), tune: .running, loading: model.claudeSessionsEnabled && !sessionsKnown && run.shown.isEmpty && run.finished.isEmpty,
                        landed: !run.shown.isEmpty || !run.finished.isEmpty, failed: model.claudeSessionsError != nil,
                        timeout: ControllerModel.claudeSessionsFreshTimeout + COSBuildUpPlan.helperMargin, label: "Reading sessions", background: TodayInk.runBg) {
                 VStack(alignment: .leading, spacing: 0) {

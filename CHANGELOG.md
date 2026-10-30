@@ -1,3 +1,11 @@
+## 0.5.353 (build 407), Usage slice and dice, loading outlines at full size
+
+Pairs with COS server 6.93.0 or newer (unchanged from 0.5.352). Built on the shipped 0.5.352 (9f5ca05). The held claude/control-352 work (2dbadec) moves to 0.5.354.
+
+- Usage: weekly scale, Records measure, Categories series (input, output, cache read, cache write), per-day averages, peak day, prior-window comparison on like-for-like dates (month in progress against the same dates of the previous month; partial today and partial pricing coverage labeled), click-to-filter rows, sortable Models and Daily tables, Copy CSV and Copy JSON of the active slice. QA fixes: an inspection survives scale changes, cost split excludes partially priced buckets, unpriced rows sort last both ways, CSV neutralizes formula characters. Mutation gate: green baseline, 27 of 27 killed.
+- Build-up skeletons take the loaded view's geometry: pane rows fill the pane (cap 16), one column value shared by the list and its skeleton, per-site row heights measured on the real rows, inline views reserve their typical height while building (never under Reduce Motion), Sessions and Tasks hold their stat strip with dashes. Layout lane: 52 site cases, skeleton vs loaded within 1 pt.
+- Meeting Ask: the running card is the answered card's height (Working line plus an answer-shaped block; 240 pt until answers complete, then the median of the last five, clamped 120 to 480). The first ask of a meeting can shrink once when its answer is shorter than 240 pt.
+
 ## 0.5.352 (build 406), Settings hub and pet drag on macOS 27.2
 
 Pairs with COS server 6.93.0 or newer (unchanged from 0.5.351). Built on the shipped 0.5.351 (82b12c8); the unreleased claude/control-352 work moves to 0.5.353.

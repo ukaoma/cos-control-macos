@@ -12,8 +12,12 @@ import pathlib, re, shutil, subprocess, sys, tempfile
 
 root = pathlib.Path(sys.argv[1]).resolve()
 only = sys.argv[sys.argv.index("--only") + 1] if "--only" in sys.argv else ""
+# "--only a|b" selects every mutant whose name starts with any of the prefixes.
+def chosen(name: str) -> bool:
+    return not only or any(name.startswith(p) for p in only.split("|"))
 MOTION = "Sources/COSMotion.swift"
 MODELS = "Sources/Models.swift"
+WINDOW = "Sources/ActivityWindow.swift"
 
 # (name, old, new, the behaviour whose check must fail first)
 MUTANTS = [
@@ -29,10 +33,36 @@ MUTANTS = [
      "        guard frozen == nil, landed, key == nil, COSBuildUpSession.memory.empty.contains(memoryKey), false else { return }", "empty cleared"),
     ("the stage ignores the view's height", MOTION, "COSBuildUpPlan.items(shape, tune, limit: limit, fitting: height,",
      "COSBuildUpPlan.items(shape, tune, limit: limit, fitting: nil,", "fit"),
-    ("the answer never re-fits", MOTION, "measured: shape == .answer && phase == .landing ? height : nil)", "measured: nil)", "answer refit"),
+    ("the answer never re-fits", MOTION, "measured: shape == .answer && phase == .landing ? height : nil,", "measured: nil,", "answer refit"),
     ("the hand-off hides the content", MODELS, "        phase == .grace || (phase == .building && !wordsShown)",
      "        phase == .grace || phase == .handoff || (phase == .building && !wordsShown)", "never hides data"),
     ("a seen view builds again", MOTION, "quiet: !enabled || !COSBuildUpSession.memory.builds(memoryKey)", "quiet: !enabled || false", "empty remembered"),
+    # 0.5.353 The skeleton is the loaded view's geometry (the layout lane, BuildUpViewChecks.layoutLane, and heights/answer).
+    ("the stage ignores the column", MOTION, "        let span = COSBuildUpPlan.rows(in: Double(size.width), layout)\n",
+     "        let span = (x: layout.leading, width: max(0, Double(size.width) - layout.leading - layout.trailing))\n", "geometry width"),
+    ("an inline view reserves nothing", MOTION, "let reserving = COSBuildUpPlan.reserves(phase, reduceMotion: reduceMotion) || still", "let reserving = false", "geometry top"),
+    ("the reservation outlives the build", MOTION, "let reserving = COSBuildUpPlan.reserves(phase, reduceMotion: reduceMotion)",
+     "let reserving = phase != .settled", "no extra height"),
+    ("Meetings to review leaves the shared column", WINDOW,
+     "                    // 0.5.353: Meetings to review's column, the one its build-up draws in (COSBuildUpColumn.speakers).\n                    .cosColumn(.speakers)",
+     "                    // 0.5.353: Meetings to review's column, the one its build-up draws in (COSBuildUpColumn.speakers).\n                    .padding(.horizontal, 22)",
+     "geometry width"),
+    ("the Sessions strip drops while it loads", WINDOW, "if visibleSessions.isEmpty, model.claudeSessionsLoading, !model.isSessionQueryActive {", "if false {",
+     "geometry top"),
+    ("a session's turns at the shape's rows", MODELS,
+     "static let sessionTurns = COSBuildUpTune(top: 24, leading: 24, trailing: 24, spacing: 14, rowHeight: 70, card: true, lines: 2, firstHeight: 65)",
+     "static let sessionTurns = COSBuildUpTune()", "geometry height"),
+    # 0.5.353 The Meeting Ask answer (the approved phone spec, glasses 6.10.666's rules).
+    ("the still block draws the wire", MOTION, "background: background, wired: !still)", "background: background, wired: true)", "answer still"),
+    ("Reduce Motion drops the reservation", MOTION, "let reserving = COSBuildUpPlan.reserves(phase, reduceMotion: reduceMotion) || still",
+     "let reserving = COSBuildUpPlan.reserves(phase, reduceMotion: reduceMotion)", "answer still"),
+    ("the running card ignores the Working line", MODELS, "static let answerWorking = 25.0,", "static let answerWorking = 0.0,", "geometry top"),
+    ("a stopped answer is kept", MOTION, "                .onAppear { if counts { COSBuildUpSession.recordAnswer(key, height: Double(g.size.height)) } }",
+     "                .onAppear { COSBuildUpSession.recordAnswer(key, height: Double(g.size.height)) }", "answer counts"),
+    ("the wire wraps the Working line", MOTION, "    private var reserve: Double? { COSBuildUpPlan.reserve(shape, tune, answers: COSBuildUpSession.answers) }",
+     "    private var reserve: Double? { COSBuildUpPlan.reserve(shape, tune, answers: COSBuildUpSession.answers).map { shape == .answer ? $0 + COSBuildUpPlan.answerWorking : $0 } }", "geometry height"),
+    ("the meeting body leaves its column", MODELS, "static let meetingBody = COSBuildUpTune(top: 24, spacing: 0, rowHeight: 79, column: .meetingBody, card: false, lines: 3, firstHeight: 101)",
+     "static let meetingBody = COSBuildUpTune(top: 24, spacing: 0, rowHeight: 79, card: false, lines: 3, firstHeight: 101)", "geometry width"),
 ]
 FAILED = re.compile(r"check failed \[([^\]]+)\]")
 
@@ -54,7 +84,7 @@ work = pathlib.Path(tempfile.mkdtemp(prefix="cos-build-up-view-mutants-", dir="/
 try:
     for name in ("Sources", "Tests", "Resources"):
         shutil.copytree(root / name, work / name)
-    originals = {path: (work / path).read_text() for path in (MOTION, MODELS)}
+    originals = {path: (work / path).read_text() for path in (MOTION, MODELS, WINDOW)}
     for name, path, old, _, _ in MUTANTS:
         if originals[path].count(old) != 1:
             sys.exit(f"mutant '{name}' targets {originals[path].count(old)} sites; it must land exactly once")
@@ -63,7 +93,7 @@ try:
         sys.exit(f"baseline is not green ({verdict}: {detail})")
     print("baseline green", flush=True)
     bad = []
-    for name, path, old, new, expected in [m for m in MUTANTS if m[0].startswith(only)]:
+    for name, path, old, new, expected in [m for m in MUTANTS if chosen(m[0])]:
         (work / path).write_text(originals[path].replace(old, new))
         verdict, detail = run(work)
         ok = verdict == "FAILED" and detail == expected
@@ -73,7 +103,7 @@ try:
         (work / path).write_text(originals[path])
     if bad:
         sys.exit(f"view mutation gate FAILED: {bad}")
-    selected = len([m for m in MUTANTS if m[0].startswith(only)])
+    selected = len([m for m in MUTANTS if chosen(m[0])])
     print(f"PASS build up view mutation gate: {selected} mutants" + (f" (of {len(MUTANTS)}, named {only!r})" if only else "")
           + ", each killed by its named check, green baseline")
 finally:

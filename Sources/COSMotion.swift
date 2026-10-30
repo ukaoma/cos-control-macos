@@ -281,6 +281,29 @@ struct COSBuildUpProbeFrame {
     var curtains: [Double]
     var lines: [Int]
     var pulsing: Bool
+    /// Whether the wire (outline, nodes, traces) is drawn; false for Reduce Motion's still block.
+    var wired = true
+}
+
+extension View {
+    /// 0.5.353: a Meeting Ask answer's body, kept for the next answer's block (COSBuildUpSession.answers) once it has
+    /// completed (`counts`: COSBuildUpPlan.countsAnswer; a failed or stopped answer never counts), at the height it lays out.
+    func cosAnswerBody(key: String, counts: Bool) -> some View {
+        background(GeometryReader { g in
+            Color.clear
+                .onAppear { if counts { COSBuildUpSession.recordAnswer(key, height: Double(g.size.height)) } }
+                .onChange(of: g.size.height) { _, h in if counts { COSBuildUpSession.recordAnswer(key, height: Double(h)) } }
+                .onChange(of: counts) { _, now in if now { COSBuildUpSession.recordAnswer(key, height: Double(g.size.height)) } }
+        })
+    }
+
+    /// The loaded list's content column (0.5.353): the same COSBuildUpColumn the build-up stage draws its rows in, so the
+    /// skeleton and the list share one width at every window size.
+    func cosColumn(_ column: COSBuildUpColumn) -> some View {
+        frame(maxWidth: CGFloat(column.maxWidth), alignment: column.centered ? .center : .leading)
+            .padding(.horizontal, CGFloat(column.inset))
+            .frame(maxWidth: .infinity, alignment: column.centered ? .center : .leading)
+    }
 }
 
 /// Test hooks, nil in the app. `stage`: every frame COSBuildUpStage draws, from inside its body. `wrapper`: whether the
@@ -291,6 +314,8 @@ struct COSBuildUpProbeFrame {
     static var wrapper: ((String, Bool) -> Void)?
     static var breadcrumb: ((String) -> Void)?
     static var freeze: COSBuildUpFrame?
+    /// Reduce Motion as the build-ups read it, in place of the system setting (renders and checks only).
+    static var reduceMotion: Bool?
 }
 
 /// What COS remembers per view (COSBuildUpMemory). The empty list is kept across launches in UserDefaults, label keys
@@ -301,6 +326,17 @@ struct COSBuildUpProbeFrame {
     static func record(_ key: String, _ outcome: COSBuildUpMachine.Outcome, persists: Bool) {
         if memory.record(key, outcome, persists: persists) { UserDefaults.standard.set(memory.empty, forKey: emptyKey) }
     }
+    /// 0.5.353: the body heights of the Meeting Ask answers that landed this app session (newest last, one per answer,
+    /// kept in memory only), which size the next answer's block (COSBuildUpPlan.answerBody).
+    private(set) static var answerLog: [(key: String, height: Double)] = []
+    static var answers: [Double] { answerLog.map(\.height) }
+    static func recordAnswer(_ key: String, height: Double) {
+        guard height > 1 else { return }
+        answerLog.removeAll { $0.key == key }
+        answerLog.append((key, height))
+        if answerLog.count > COSBuildUpPlan.answerWindow { answerLog.removeFirst(answerLog.count - COSBuildUpPlan.answerWindow) }
+    }
+    static func forgetAnswers() { answerLog = [] }
 }
 
 private let buildUpLog = Logger(subsystem: "com.gotcos.control", category: "build-up")
@@ -356,7 +392,8 @@ struct COSBuildUp<Content: View>: View {
         self.content = content
     }
 
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
+    private var reduceMotion: Bool { COSBuildUpProbe.reduceMotion ?? systemReduceMotion }
     @State private var machine: COSBuildUpMachine?
 
     private static func now() -> Double { ProcessInfo.processInfo.systemUptime }
@@ -375,14 +412,23 @@ struct COSBuildUp<Content: View>: View {
         let current = machine ?? opened(at: now)
         let hide = frozen.map { COSBuildUpPlan.hides($0.phase, wordsShown: $0.drawT >= COSBuildUpPlan.wordsSeconds) } ?? current.hidesContent
         let wire = frozen.map { $0.phase == .building || $0.phase == .landing || $0.phase == .handoff } ?? current.drawsWire
+        let phase = frozen?.phase ?? current.phase
+        // Reduce Motion on an answer still being written: the block stays, drawn still (the approved spec).
+        let still = COSBuildUpPlan.holdsStill(shape, reduceMotion: reduceMotion, loading: loading, landed: landed, failed: failed,
+                                              interrupted: interrupted) && enabled
+        let reserving = COSBuildUpPlan.reserves(phase, reduceMotion: reduceMotion) || still
         let _ = COSBuildUpProbe.wrapper?(shape.kind, hide)
         sized(content()
             .opacity(hide ? 0 : 1)
             .allowsHitTesting(!hide)
-            .accessibilityHidden(hide), hide: hide)
+            .accessibilityHidden(hide), hide: hide, reserving: reserving)
             .overlay(alignment: .topLeading) {
-                if wire {
-                    COSBuildUpLiveStage(shape: shape, tune: tune, machine: current, frozen: frozen, background: background, onFit: fit)
+                if wire || still {
+                    // Under Reduce Motion an answer's block is the same stage frozen fully drawn: no clock, no pulse.
+                    let stillOnly = still && !wire
+                    COSBuildUpLiveStage(shape: shape, tune: tune, machine: current,
+                                        frozen: stillOnly ? COSBuildUpFrame(phase: .building, drawT: COSBuildUpPlan.stillDrawT) : frozen,
+                                        background: background, onFit: stillOnly ? { _ in } : fit, still: stillOnly)
                         .clipped()
                         .allowsHitTesting(false)
                         .accessibilityHidden(true)
@@ -419,15 +465,19 @@ struct COSBuildUp<Content: View>: View {
     }
 
     /// A pane-filling view takes the whole container while the wire stands in for it, so the wire fits the room the
-    /// content will have. An inline view (a Today card, an answer) is never resized: the wire draws inside today's view.
+    /// content will have. 0.5.353: an inline view (a Today card, an answer) reserves its typical content's height and the
+    /// container's width while it builds (`reserving`), so the data lands in place instead of pushing everything below it
+    /// down; when the build ends (data, empty, error, timeout) the reservation goes and the view is its own size again.
     @ViewBuilder
-    private func sized<V: View>(_ view: V, hide: Bool) -> some View {
+    private func sized<V: View>(_ view: V, hide: Bool, reserving: Bool) -> some View {
         if layout.fills {
             view.frame(maxWidth: hide ? .infinity : nil, maxHeight: hide ? .infinity : nil, alignment: .topLeading)
         } else {
-            view
+            view.frame(maxWidth: reserving ? .infinity : nil, minHeight: reserving ? reserve.map { CGFloat($0) } : nil, alignment: .topLeading)
         }
     }
+
+    private var reserve: Double? { COSBuildUpPlan.reserve(shape, tune, answers: COSBuildUpSession.answers) }
 
     private func fit(_ count: Int) {
         guard frozen == nil, var next = machine, next.phase == .building || next.phase == .grace, next.count != count else { return }
@@ -522,6 +572,8 @@ private struct COSBuildUpLiveStage: View {
     let frozen: COSBuildUpFrame?
     let background: Color
     let onFit: (Int) -> Void
+    /// Reduce Motion's still block: the capsules alone, no wire (no outline, nodes, traces or pulse).
+    var still = false
     @Environment(\.controlActiveState) private var activeState
 
     var body: some View {
@@ -531,8 +583,8 @@ private struct COSBuildUpLiveStage: View {
                 if let frozen {
                     COSBuildUpStage(shape: shape, tune: tune, phase: frozen.phase, drawT: frozen.drawT,
                                     landT: frozen.phase == .landing ? frozen.phaseT : nil, handoffT: frozen.phase == .handoff ? frozen.phaseT : nil,
-                                    pulsing: frozen.phase == .building, limit: nil, size: geometry.size, frame: geometry.frame(in: .global),
-                                    background: background)
+                                    pulsing: frozen.phase == .building && !still, limit: nil, size: geometry.size, frame: geometry.frame(in: .global),
+                                    background: background, wired: !still)
                 } else {
                     TimelineView(COSBuildUpSchedule(paused: !machine.needsFrames(windowActive: active))) { _ in
                         let t = ProcessInfo.processInfo.systemUptime
@@ -567,6 +619,8 @@ private struct COSBuildUpStage: View {
     let size: CGSize
     let frame: CGRect
     let background: Color
+    /// False for Reduce Motion's still block: the capsules alone.
+    var wired = true
     @Environment(\.self) private var environment
 
     private var layout: COSBuildUpLayout { COSBuildUpPlan.layout(shape, tune) }
@@ -574,8 +628,10 @@ private struct COSBuildUpStage: View {
     var body: some View {
         let height = Double(size.height)
         let items = COSBuildUpPlan.items(shape, tune, limit: limit, fitting: height,
-                                         measured: shape == .answer && phase == .landing ? height : nil)
-        let looks = items.indices.map { COSBuildUpPlan.look($0, drawT: drawT, landT: landT) }
+                                         measured: shape == .answer && phase == .landing ? height : nil,
+                                         answerHeight: shape == .answer ? height : nil)
+        // An answer keeps its Working line above the block, so the block's lines never give way to today's words.
+        let looks = items.indices.map { COSBuildUpPlan.look($0, drawT: drawT, landT: landT, words: shape != .answer) }
         let curtains = looks.map { COSBuildUpPlan.curtain($0, landing: phase == .landing) }
         let wire = COSPalette.wire(on: background, in: environment)
         let bone = COSPalette.wireBone(on: background, in: environment)
@@ -583,27 +639,29 @@ private struct COSBuildUpStage: View {
         let pulse = pulsing || (phase == .landing && COSBuildUpPlan.flow(drawT: drawT) != nil)
         let _ = COSBuildUpProbe.stage?(COSBuildUpProbeFrame(kind: shape.kind, phase: phase, drawT: drawT, size: size, frame: frame,
                                                             rects: items.indices.map { rect($0, items[$0], items: items) }, looks: looks,
-                                                            curtains: curtains, lines: items.map(\.lines.count), pulsing: pulse))
+                                                            curtains: curtains, lines: items.map(\.lines.count), pulsing: pulse, wired: wired))
         ZStack(alignment: .topLeading) {
             ForEach(Array(items.enumerated()), id: \.offset) { index, item in
                 band(index, item, looks[index], curtain: curtains[index], items: items, wire: wire, bone: bone)
             }
-            ForEach(Array(items.enumerated()), id: \.offset) { index, item in
-                wireFrame(index, item, looks[index], items: items, wire: wire)
+            if wired {
+                ForEach(Array(items.enumerated()), id: \.offset) { index, item in
+                    wireFrame(index, item, looks[index], items: items, wire: wire)
+                }
+                ZStack(alignment: .topLeading) {
+                    traces(items, wire: wire)
+                    if pulse { pulseView(items, wire: wire) }
+                }
+                .opacity(1 - (landT.map { COSBuildUpPlan.progress(COSBuildUpPlan.tracesFadeStep, at: $0) } ?? 0))
             }
-            ZStack(alignment: .topLeading) {
-                traces(items, wire: wire)
-                if pulse { pulseView(items, wire: wire) }
-            }
-            .opacity(1 - (landT.map { COSBuildUpPlan.progress(COSBuildUpPlan.tracesFadeStep, at: $0) } ?? 0))
         }
         .frame(width: size.width, height: size.height, alignment: .topLeading)
         .opacity(handoffT.map { max(0, 1 - $0 / COSBuildUpPlan.handoffSeconds) } ?? 1)
     }
 
     private func rect(_ index: Int, _ item: COSBuildUpItem, items: [COSBuildUpItem]) -> CGRect {
-        CGRect(x: layout.leading, y: COSBuildUpPlan.top(index, in: items, layout: layout),
-               width: max(0, Double(size.width) - layout.leading - layout.trailing), height: item.height)
+        let span = COSBuildUpPlan.rows(in: Double(size.width), layout)
+        return CGRect(x: span.x, y: COSBuildUpPlan.top(index, in: items, layout: layout), width: span.width, height: item.height)
     }
 
     /// One band over the content, from this component's top (the first also covers the inset above it) to the next one's
@@ -644,8 +702,11 @@ private struct COSBuildUpStage: View {
         let lead = item.lead.map { CGFloat($0) + 10 } ?? 0
         let trailingRoom = item.trailing.isEmpty ? 0 : CGFloat(item.trailing.reduce(0, +)) + CGFloat(item.trailing.count) * 6 + 12
         let room = max(0, inner.width - lead - trailingRoom)
-        let block = item.lines.reduce(0) { $0 + $1.height } + Double(max(0, item.lines.count - 1)) * item.lineGap
-        let y0 = max(0, (Double(inner.height) - block) / 2)
+        let block = item.lines.reduce(0) { $0 + $1.height + $1.gapAbove } + Double(max(0, item.lines.count - 1)) * item.lineGap
+        let y0 = item.topAligned ? 0 : max(0, (Double(inner.height) - block) / 2)
+        // A block taller than its room (a short median) fades out over its last 24 pt instead of cutting a line in half.
+        let fades = item.topAligned && block > Double(inner.height)
+        let fade = COSBuildUpPlan.answerFade
         return ZStack(alignment: .topLeading) {
             if let leadWidth = item.lead {
                 wireCapsule(width: CGFloat(leadWidth), height: CGFloat(min(Double(inner.height), (item.lines.first?.height ?? 10) + (item.lines.count > 1 ? 6 : 0))),
@@ -655,9 +716,16 @@ private struct COSBuildUpStage: View {
             VStack(alignment: .leading, spacing: CGFloat(item.lineGap)) {
                 ForEach(Array(item.lines.enumerated()), id: \.offset) { _, line in
                     wireCapsule(width: room * CGFloat(line.width), height: CGFloat(line.height), look: look, wire: wire, bone: bone)
+                        .padding(.top, CGFloat(line.gapAbove))
                 }
             }
             .offset(x: lead, y: CGFloat(y0))
+            .frame(width: inner.width, height: max(0, inner.height), alignment: .topLeading)
+            .clipped()
+            .mask(alignment: .top) {
+                LinearGradient(stops: [.init(color: .black, location: 0), .init(color: .black, location: fades ? max(0, 1 - fade / max(1, inner.height)) : 1),
+                                       .init(color: .black.opacity(fades ? 0 : 1), location: 1)], startPoint: .top, endPoint: .bottom)
+            }
             if !item.trailing.isEmpty {
                 HStack(spacing: 6) {
                     ForEach(Array(item.trailing.enumerated()), id: \.offset) { _, pill in
@@ -707,11 +775,14 @@ private struct COSBuildUpStage: View {
         .offset(x: box.minX, y: box.minY)
     }
 
+    /// Where the rows start across the view (inside the loaded list's column).
+    private var rowsX: CGFloat { CGFloat(COSBuildUpPlan.rows(in: Double(size.width), layout).x) }
+
     private func nodeX(_ x: CGFloat) -> CGFloat { min(max(x, 4), max(4, size.width - 4)) }
     private func nodeY(_ y: CGFloat) -> CGFloat { min(max(y, 4), max(4, size.height - 4)) }
 
     private func spine(_ items: [COSBuildUpItem]) -> (x: CGFloat, top: CGFloat, bottom: CGFloat)? {
-        guard let x = layout.spineX, !items.isEmpty else { return nil }
+        guard let x = COSBuildUpPlan.spineX(in: Double(size.width), layout), !items.isEmpty else { return nil }
         return (CGFloat(x), CGFloat(max(0, COSBuildUpPlan.junctionY(0, in: items, layout: layout) - 10)),
                 CGFloat(COSBuildUpPlan.junctionY(items.count - 1, in: items, layout: layout)))
     }
@@ -727,7 +798,7 @@ private struct COSBuildUpStage: View {
                 ForEach(items.indices, id: \.self) { index in
                     let y = CGFloat(COSBuildUpPlan.junctionY(index, in: items, layout: layout))
                     let pop = 6 * CGFloat(COSBuildUpPlan.progress(COSBuildUpPlan.junctionStep(index), at: drawT, curve: COSBuildUpPlan.pop))
-                    Path { path in path.move(to: CGPoint(x: spine.x, y: y)); path.addLine(to: CGPoint(x: CGFloat(layout.leading) - 4, y: y)) }
+                    Path { path in path.move(to: CGPoint(x: spine.x, y: y)); path.addLine(to: CGPoint(x: rowsX - 4, y: y)) }
                         .trim(from: 0, to: COSBuildUpPlan.progress(COSBuildUpPlan.branchStep(index), at: drawT))
                         .stroke(wire, lineWidth: 1)
                     Circle().fill(background)
@@ -755,7 +826,7 @@ private struct COSBuildUpStage: View {
                         .frame(width: 7 + 10 * spread, height: 7 + 10 * spread)
                         .opacity(1 - spread)
                         .frame(width: 7, height: 7)
-                        .offset(x: CGFloat(layout.leading) - 3.5, y: CGFloat(COSBuildUpPlan.top(index, in: items, layout: layout)) - 3.5)
+                        .offset(x: rowsX - 3.5, y: CGFloat(COSBuildUpPlan.top(index, in: items, layout: layout)) - 3.5)
                 }
             }
         }
