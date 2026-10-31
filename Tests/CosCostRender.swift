@@ -11,7 +11,7 @@ import SwiftUI
         try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
         func base() -> CosUsageReport {
             var r = CosUsageReport(windowStart: "2026-10-02", windowEnd: "2026-10-31", timeZone: "America/Chicago", updatedAt: "2026-10-31T17:00:00Z", auditFound: true, runLedgersFound: true, gistLedgerFound: true)
-            r.work = CosWorkSummary(handoffsFound: true, runs: 12, measuredUSD: 214.6, measuredTokens: 480_000_000, addsToTotalUSD: 0)
+            r.work = CosWorkSummary(handoffsFound: true, runs: 12, measuredUSD: 41.2, measuredTokens: 92_000_000, widerUSD: 214.6, widerTokens: 480_000_000, unprovenRuns: 1)
             return r
         }
         func row(_ c: CosCostCategory, calls: Int, measured: Int = 0, usd: Double = 0, tokens: Int64 = 0, floor: Double = 0, floorTokens: Int64 = 0, adds: Double = 0) -> CosCostRow {

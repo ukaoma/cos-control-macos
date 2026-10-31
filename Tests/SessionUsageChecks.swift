@@ -727,8 +727,9 @@ extension Checks {
             row.estimatedInput = input; row.estimatedOutput = output; row.usageKind = kind; row.runID = run
             return row
         }
-        func make(gist: [CosGistRun] = [], runs: [CosRun] = [], work: [String: Double] = [:], events: [CosSliceEvent] = []) -> CosCostAccumulator {
-            CosCostAccumulator(window: window, timeZone: chicago, gistRuns: gist, runs: runs, workStarts: work, events: events)
+        func make(gist: [CosGistRun] = [], runs: [CosRun] = [], work: [String: Double] = [:], events: [CosSliceEvent] = [], handoffs: [CosWorkRun]? = nil, marks: [CosSliceMark] = []) -> CosCostAccumulator {
+            CosCostAccumulator(window: window, timeZone: chicago, gistRuns: gist, runs: runs, workStarts: work, events: events,
+                               workRuns: handoffs ?? work.map { CosWorkRun(session: $0.key, start: $0.value) }, marks: marks)
         }
         func finish(_ a: inout CosCostAccumulator) -> [CosCostCategory: CosCostRow] {
             Dictionary(uniqueKeysWithValues: a.finish(handoffsFound: true, workRuns: 0, workRunsWithoutLogs: 0).rows.map { ($0.category, $0) })
@@ -860,7 +861,7 @@ extension Checks {
         a = make(work: ["claude:s-w": workStartAttached], events: [event("2026-10-30T12:00:00Z", session: "claude:s-w")])
         a.add(real("2026-10-30T12:00:00Z", source: "g2-attached", caller: "attached_turn", model: "claude", resolved: "claude-opus-5-5", session: "s-w", usd: 9))
         var attachedFinish = a.finish(handoffsFound: true, workRuns: 1, workRunsWithoutLogs: 0)
-        check(attachedFinish.rows.isEmpty && abs(attachedFinish.work.measuredUSD - 0.004) < 1e-12, "a real row inside a Work session's slice is not counted twice")
+        check(attachedFinish.rows.isEmpty && abs(attachedFinish.work.widerUSD - 0.004) < 1e-12, "a real row inside a Work session's slice is not counted twice")
         a = make(runs: [run("rd", session: "claude:s-d", start: "2026-10-30T12:00:00Z")], work: ["claude:s-d": workStartAttached])
         a.add(real("2026-10-30T12:01:00Z", caller: "dispatch_task", model: "sonnet", resolved: "claude-sonnet-5-5", run: "rd", session: "s-d", usd: 4))
         a.add(real("2026-10-30T12:01:01Z", caller: "dispatch_task:late_result", model: "sonnet", run: "rd", session: "s-d", usd: 1))
@@ -880,18 +881,67 @@ extension Checks {
         a.add(g2Row)
         var finished = a.finish(handoffsFound: true, workRuns: 1, workRunsWithoutLogs: 0)
         rows = Dictionary(uniqueKeysWithValues: finished.rows.map { ($0.category, $0) })
-        check(abs(finished.work.measuredUSD - 0.008) < 1e-12 && finished.work.measuredTokens == 2000, "Work counts only from the moment the run started")
+        check(abs(finished.work.widerUSD - 0.008) < 1e-12 && finished.work.widerTokens == 2000, "Work counts only from the moment the run started")
         check(abs((rows[.answers]?.measuredUSD ?? 0) - 0.004) < 1e-12, "a G2 turn before Work started stays an answer")
         check(finished.work.runs == 1 && finished.work.handoffsFound, "the Work line carries its run count")
         a = make(runs: [run("r2", start: "2026-10-30T12:15:00Z", end: "2026-10-30T12:16:00Z")], work: ["claude:s1": workStart], events: [event("2026-10-30T12:15:30Z")])
         a.add(audit("2026-10-30T12:16:00Z", source: "g2-query", caller: "full_query", model: "opus"))
         finished = a.finish(handoffsFound: true, workRuns: 1, workRunsWithoutLogs: 0)
         rows = Dictionary(uniqueKeysWithValues: finished.rows.map { ($0.category, $0) })
-        check(rows[.answers] == nil && abs(finished.work.measuredUSD - 0.004) < 1e-12, "a dispatch's audit row is not also an answer")
+        check(rows[.answers] == nil && abs(finished.work.widerUSD - 0.004) < 1e-12, "a dispatch's audit row is not also an answer")
         a = make(work: ["codex:t1": workStart], events: [event("2026-10-30T12:20:00Z", session: "codex:t1", input: 100_000, model: "gpt-5.6-terra", provider: "OpenAI"), event("2026-10-30T12:21:00Z", session: "codex:t1", input: 1000, model: "gpt-made-up", provider: "OpenAI")])
         finished = a.finish(handoffsFound: true, workRuns: 1, workRunsWithoutLogs: 0)
-        check(abs(finished.work.measuredUSD - 0.2) < 1e-9 && abs(finished.work.addsToTotalUSD - 0.2) < 1e-9, "a slice priced only by a new rate adds to the total, because Usage has no price for it")
-        check(finished.work.unpricedEvents == 1, "a slice with no rate is counted as unpriced")
+        check(abs(finished.work.widerUSD - 0.2) < 1e-9 && abs(finished.work.addsToTotalUSD - 0.2) < 1e-9, "a slice priced only by a new rate adds to the total, because Usage has no price for it")
+        // The Work run itself, as against what the person did later in the session.
+        let handoff = R.epoch("2026-10-30T12:00:00Z")!
+        func mark(_ at: String, _ kind: CosMarkKind, session: String = "claude:s1") -> CosSliceMark { CosSliceMark(session: session, at: R.epoch(at)!, kind: kind) }
+        func workTurns(_ marks: [CosSliceMark], handoffs: [CosWorkRun]? = nil) -> CosWorkSummary {
+            var w = make(work: ["claude:s1": handoff], events: [event("2026-10-30T11:59:00Z", input: 1), event("2026-10-30T12:00:10Z", input: 100), event("2026-10-30T12:05:00Z", input: 200), event("2026-10-30T12:10:00Z", input: 400)], handoffs: handoffs, marks: marks)
+            return w.finish(handoffsFound: true, workRuns: 1, workRunsWithoutLogs: 0).work
+        }
+        var turn = workTurns([mark("2026-10-30T12:00:03Z", .handedIn), mark("2026-10-30T12:05:30Z", .typed)])
+        check(turn.measuredTokens == 300, "a typed turn ends the run's window")
+        check(turn.widerTokens == 700, "what came after the typed turn stays in the wider figure")
+        check(turn.unprovenRuns == 0, "a typed turn is a provable end")
+        turn = workTurns([mark("2026-10-30T12:00:03Z", .handedIn)])
+        check(turn.measuredTokens == 0 && turn.unprovenRuns == 1 && turn.widerTokens == 700, "a run with no provable end is said and stays out of the lead figure")
+        turn = workTurns([mark("2026-10-30T12:00:03Z", .handedIn), mark("2026-10-30T12:05:30Z", .end)])
+        check(turn.measuredTokens == 300 && turn.unprovenRuns == 0, "with no typed turn, the last finished turn is the end")
+        turn = workTurns([mark("2026-10-30T12:00:03Z", .handedIn), mark("2026-10-30T12:04:00Z", .end), mark("2026-10-30T12:05:30Z", .end)])
+        check(turn.measuredTokens == 300, "a background task's turn is still the run")
+        turn = workTurns([mark("2026-10-30T12:00:00Z", .peer), mark("2026-10-30T12:00:30Z", .typed)])
+        check(turn.measuredTokens == 100, "a resumed session: the handed-in message is passed over and the person's first typed turn ends it")
+        turn = workTurns([mark("2026-10-30T12:00:03Z", .handedIn), mark("2026-10-30T12:05:30Z", .peer)])
+        check(turn.measuredTokens == 300, "another session's message ends the run")
+        turn = workTurns([mark("2026-10-30T11:59:30Z", .typed), mark("2026-10-30T12:00:03Z", .handedIn), mark("2026-10-30T12:05:30Z", .typed)])
+        check(turn.measuredTokens == 300, "a resumed session: turns before the handoff are not the run's")
+        turn = workTurns([mark("2026-10-30T12:08:00Z", .handedIn), mark("2026-10-30T12:10:30Z", .end)])
+        check(turn.measuredTokens == 300, "a row long after the handoff is not the run's own prompt")
+        turn = workTurns([mark("2026-10-30T12:00:20Z", .typed), mark("2026-10-30T12:05:30Z", .typed)], handoffs: [CosWorkRun(session: "claude:s1", start: handoff, openedInApp: true)])
+        check(turn.measuredTokens == 300, "a prompt opened in the app and sent by the person is the run's own")
+        turn = workTurns([mark("2026-10-30T12:00:03Z", .handedIn), mark("2026-10-30T12:04:00Z", .handedIn), mark("2026-10-30T12:04:03Z", .end), mark("2026-10-30T12:09:00Z", .end)],
+                         handoffs: [CosWorkRun(session: "claude:s1", start: handoff), CosWorkRun(session: "claude:s1", start: R.epoch("2026-10-30T12:03:59Z")!)])
+        check(turn.measuredTokens == 300 && turn.widerTokens == 700, "two runs in one session do not count a turn twice")
+        var silent = make(work: ["claude:s1": handoff], events: [event("2026-10-30T11:59:00Z", input: 1)])
+        check(silent.finish(handoffsFound: true, workRuns: 1, workRunsWithoutLogs: 2).work.runsWithoutLogs == 3, "a run with no rows after its start is said as having no log")
+        // Row types only. Tool results and system rows are not a person typing.
+        func userRow(_ content: Any, origin: String? = nil, extra: [String: Any] = [:]) -> [String: Any] {
+            var row: [String: Any] = ["type": "user", "message": ["role": "user", "content": content]]
+            if let origin { row["origin"] = ["kind": origin] }
+            return row.merging(extra) { $1 }
+        }
+        check(R.claudeMark(userRow("hello", origin: "human")) == .typed && R.claudeMark(userRow([["type": "text", "text": "hello"]], origin: "human")) == .typed && R.claudeMark(userRow([["type": "image"]], origin: "human")) == .typed, "a human row with text or an image is typed")
+        check(R.claudeMark(userRow([["type": "tool_result", "content": "x"]])) == nil && R.claudeMark(userRow([["type": "tool_result"], ["type": "text"]], origin: "human")) == nil, "a tool result is never a typed turn")
+        check(R.claudeMark(userRow("the words tool_result are in this text", origin: "human")) == .typed, "words in a message do not change its type")
+        check(R.claudeMark(userRow("notice", origin: "task-notification")) == nil, "a background task's notice is not a typed turn")
+        check(R.claudeMark(userRow("injected", extra: ["isMeta": true])) == nil && R.claudeMark(userRow("summary", extra: ["isCompactSummary": true])) == nil && R.claudeMark(userRow("agent", extra: ["isSidechain": true])) == nil, "system rows and subagent rows are not typed turns")
+        check(R.claudeMark(userRow("hi", origin: "peer", extra: ["isMeta": true])) == .peer, "another session's message is its own kind")
+        check(R.claudeMark(userRow("prompt")) == .handedIn, "a row with no origin is handed in")
+        check(R.claudeMark(["type": "assistant", "message": ["stop_reason": "end_turn"]]) == .end && R.claudeMark(["type": "assistant", "message": ["stop_reason": "tool_use"]]) == nil, "only a finished turn ends one")
+        check(R.claudeMark(["type": "assistant", "isSidechain": true, "message": ["stop_reason": "end_turn"]]) == nil, "a subagent finishing is not the run finishing")
+        check(R.codexMark(["type": "event_msg", "payload": ["type": "task_started"]]) == .handedIn && R.codexMark(["type": "event_msg", "payload": ["type": "task_complete"]]) == .end && R.codexMark(["type": "event_msg", "payload": ["type": "turn_aborted"]]) == .end, "Codex turns open and close by event type")
+        check(R.codexMark(["type": "event_msg", "payload": ["type": "token_count"]]) == nil && R.codexMark(["type": "response_item", "payload": ["type": "message", "role": "user"]]) == nil, "other Codex rows do not move a run")
+        check(finished.work.unpricedEvents == 0, "an unpriced row outside a proven window is not in the lead figure")
         // A message copied into a second session happened once, whichever session is read first.
         var copyA = event("2026-10-30T12:00:30Z", session: "claude:s1"); copyA.id = "same-message"
         var copyB = event("2026-10-30T12:00:30Z", session: "claude:s2"); copyB.id = "same-message"
@@ -901,7 +951,7 @@ extension Checks {
         check(firstOrder == 1000 && rows[.answers]?.measuredTokens == 1000, "a message copied into a second session counts once in either order")
         a = make(runs: [run("r2", session: "claude:s2")], work: ["claude:s1": R.epoch("2026-10-30T12:00:00Z")!], events: [copyB, copyA])
         finished = a.finish(handoffsFound: true, workRuns: 1, workRunsWithoutLogs: 0)
-        check(finished.work.measuredTokens == 1000 && !finished.rows.contains { $0.category == .answers }, "a copied message goes to Work over a G2 run")
+        check(finished.work.widerTokens == 1000 && !finished.rows.contains { $0.category == .answers }, "a copied message goes to Work over a G2 run")
         // Day ledgers add tokens and dollars, never calls.
         a = make()
         a.addDailyTokens(1_000_000, category: .liveAndUpkeep, priced: true, day: "2026-10-30")
@@ -997,8 +1047,14 @@ extension Checks {
         check(notes.contains { $0.hasPrefix("4 calls have no readable date") } && notes.contains { $0.hasPrefix("1 line could not") }, "undated and unreadable rows are said, not dropped")
         check(P.workCount(CosWorkSummary()) == "This Mac has no record of Work runs." && P.workCount(CosWorkSummary(handoffsFound: true, runs: 27)) == "27 runs you started", "the Work line says how many runs, or that there is no record")
         var workMeasured = CosCostRow(category: .work); workMeasured.measuredUSD = 2; workMeasured.measuredTokens = 10; workMeasured.calls = 5; workMeasured.estimatedCalls = 4; workMeasured.estimatedUSD = 0.6
-        var workReport = report([workMeasured]); workReport.work.measuredUSD = 300; workReport.work.measuredTokens = 100
+        var workReport = report([workMeasured]); workReport.work.measuredUSD = 300; workReport.work.measuredTokens = 100; workReport.work.widerUSD = 4002
         check(P.workUSD(workReport) == 302 && P.workTokens(workReport) == 110 && P.workFigure(workReport) == "$302", "the Work line adds its slices and its real rows")
+        check(P.workWider(workReport) == "$4,004 if you count what you did later in those sessions.", "the wider figure is said plainly")
+        workReport.work.widerUSD = 300
+        check(P.workWider(workReport) == nil, "with nothing later, there is no wider figure to say")
+        check(P.workUnproven(CosWorkSummary(unprovenRuns: 2)) == "2 runs have no provable end, so they are only in the wider figure." && P.workUnproven(CosWorkSummary()) == nil, "runs with no provable end are said, not guessed")
+        var withWork = report([m]); withWork.work.widerUSD = 9_000; withWork.work.measuredUSD = 8_000
+        check(P.measuredUSD(withWork) == 284 && P.headline(report: withWork, ran: 18_612, usage: .ready).hasPrefix("Measured: COS used $284 of"), "neither Work figure reaches the headline or a share")
         check(P.workBackground(workReport) == "Plus 4 background calls, at least $0.60 estimated.", "Work's character-count rows sit beside the figure, not in it")
         for text in notes + P.method(approximate) + [P.workMethod, P.headline(report: report([m, e]), ran: 1000, usage: .ready), P.compareHint(share: 0.1, price: 20)] {
             check(!text.contains("\u{2014}") && !text.contains("\u{2192}") && !text.contains("->"), "page copy has no em dash or arrow")
@@ -1087,8 +1143,58 @@ extension Checks {
         check(row(.other, full).measuredTokens == 3000 && row(.other, full).measuredUSD == 0, "a SubQ day ledger has tokens and no price")
         check(full.sessions.noLogs == 1 && full.sessions.compressed == 1 && full.sessions.stillReading == 0, "the reader says which sessions have no log and which are compressed")
         check(full.work.runs == 2 && full.work.runsWithoutLogs == 1, "failed and old receipts are out, and a Cursor run has no log to read")
-        check(full.work.measuredTokens == 1020, "a continued Work session counts from the run's start")
+        check(full.work.widerTokens == 1020 && full.work.measuredTokens == 0, "a continued Work session counts from the run's start, and with no ending it stays wider")
+        check(full.work.unprovenRuns == 1, "the reader says a run has no provable end")
         check(try collector.cosStoredEventCount() == 6, "a row older than the window is not stored")
+        // A Work run on real row shapes, from a scratch log: its prompt, a tool call, a tool result, a typed turn, then more.
+        let turnsHome = root.appendingPathComponent("turns")
+        func writeTurns(_ relative: String, _ text: String) throws {
+            let file = turnsHome.appendingPathComponent(relative)
+            try fm.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try text.write(to: file, atomically: true, encoding: .utf8)
+        }
+        func assistant(_ id: String, _ time: String, stop: String) throws -> String {
+            try json(["type": "assistant", "timestamp": time, "sessionId": "s-led", "message": ["id": id, "model": "claude-opus-5-5", "stop_reason": stop, "usage": ["input_tokens": 1000, "output_tokens": 0, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0], "content": [["type": "text", "text": "SECRET_PROMPT_NEVER_STORE"]]]])
+        }
+        func user(_ time: String, _ content: Any, origin: String? = nil, session: String = "s-led") throws -> String {
+            var row: [String: Any] = ["type": "user", "timestamp": time, "sessionId": session, "message": ["role": "user", "content": content]]
+            if let origin { row["origin"] = ["kind": origin] }
+            return try json(row)
+        }
+        try writeTurns(".claude/projects/p9/s-led.jsonl",
+            try user("2026-10-30T09:00:00Z", "SECRET_PROMPT_NEVER_STORE", origin: "human") + assistant("before", "2026-10-30T09:00:05Z", stop: "end_turn")
+            + user("2026-10-30T12:00:03Z", "SECRET_PROMPT_NEVER_STORE") + assistant("a1", "2026-10-30T12:00:10Z", stop: "tool_use")
+            + user("2026-10-30T12:00:20Z", [["type": "tool_result", "content": "SECRET_PROMPT_NEVER_STORE"]]) + assistant("a2", "2026-10-30T12:00:30Z", stop: "end_turn")
+            + user("2026-10-30T12:05:00Z", "SECRET_PROMPT_NEVER_STORE", origin: "task-notification") + assistant("a3", "2026-10-30T12:05:10Z", stop: "end_turn")
+            + user("2026-10-30T12:30:00Z", [["type": "text", "text": "SECRET_PROMPT_NEVER_STORE"]], origin: "human") + assistant("later", "2026-10-30T12:30:10Z", stop: "end_turn"))
+        try writeTurns(".claude/projects/p9/s-led/subagents/agent-1.jsonl", try user("2026-10-30T12:02:00Z", "SECRET_PROMPT_NEVER_STORE", origin: "human") + assistant("sub", "2026-10-30T12:02:10Z", stop: "end_turn"))
+        let codexThread = "33333333-3333-3333-3333-333333333333"
+        func codexTurn(_ time: String, _ total: Int) throws -> String {
+            try json(["type": "event_msg", "timestamp": time, "payload": ["type": "token_count", "info": ["total_token_usage": ["input_tokens": total, "output_tokens": 0, "cached_input_tokens": 0], "last_token_usage": ["input_tokens": 1000, "output_tokens": 0, "cached_input_tokens": 0]]]])
+        }
+        try writeTurns(".codex/sessions/2026/10/30/rollout-2026-10-30T12-00-00-\(codexThread).jsonl",
+            try json(["type": "session_meta", "payload": ["id": codexThread, "model_provider": "openai"]]) + json(["type": "turn_context", "payload": ["model": "gpt-6.1-sol"]])
+            + json(["type": "event_msg", "timestamp": "2026-10-30T13:00:03Z", "payload": ["type": "task_started"]]) + codexTurn("2026-10-30T13:00:10Z", 1000)
+            + json(["type": "event_msg", "timestamp": "2026-10-30T13:00:20Z", "payload": ["type": "task_complete"]])
+            + json(["type": "event_msg", "timestamp": "2026-10-30T13:30:00Z", "payload": ["type": "task_started"]]) + codexTurn("2026-10-30T13:30:10Z", 2000))
+        try writeTurns("Library/Application Support/COS Control/work-handoffs/handoffs.json", try json(["receipts": [
+            ["createdAt": R.epoch("2026-10-30T12:00:00Z")!, "sessionID": "claude:s-led", "provider": "claude", "status": "completed", "channel": "turn"],
+            ["createdAt": R.epoch("2026-10-30T13:00:00Z")!, "sessionID": "codex:\(codexThread)", "provider": "codex", "status": "completed", "channel": "job"],
+            ["createdAt": R.epoch("2026-10-30T13:00:00Z")!, "sessionID": "claude:s-source", "forkChildID": "claude:s-led-child", "provider": "claude", "status": "completed", "channel": "fork"],
+        ]]))
+        try writeTurns(".claude/projects/p9/s-led-child.jsonl", try user("2026-10-30T13:00:03Z", "SECRET_PROMPT_NEVER_STORE", session: "s-led-child")
+            + json(["type": "assistant", "timestamp": "2026-10-30T13:00:10Z", "sessionId": "s-led-child", "message": ["id": "fork-1", "model": "claude-opus-5-5", "stop_reason": "end_turn", "usage": ["input_tokens": 1000, "output_tokens": 0, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0]]]))
+        try writeTurns(".claude/projects/p9/s-source.jsonl", try user("2026-10-30T13:10:00Z", "SECRET_PROMPT_NEVER_STORE", origin: "human", session: "s-source")
+            + json(["type": "assistant", "timestamp": "2026-10-30T13:10:10Z", "sessionId": "s-source", "message": ["id": "source-1", "model": "claude-opus-5-5", "stop_reason": "end_turn", "usage": ["input_tokens": 9000, "output_tokens": 0, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0]]]))
+        let turnsDB = home.appendingPathComponent("cos-turns.sqlite")
+        let turnsReader = try SessionUsageCollector(home: turnsHome, database: turnsDB, timeZone: chicago)
+        let turns = try turnsReader.cosUsage(plistScripts: scripts, dataDirectory: nil, importSessions: true, now: now)
+        // Claude: a1, a2, the background notice's a3 and the subagent are the run. `before` and `later` are not. Codex: its first turn only.
+        // The fork counts in its child, not the source. 4 Claude messages + 1 fork message + 1 Codex turn.
+        check(turns.work.measuredTokens == 6000, "on real row shapes a tool result does not end a run and a typed turn does")
+        check(turns.work.widerTokens == 8000, "the wider figure holds the later turns, from the run's start")
+        check(turns.work.unprovenRuns == 0 && turns.work.runsWithoutLogs == 0 && turns.work.runs == 3, "each scratch run has a provable end")
+        check(!Data(try Data(contentsOf: turnsDB)).contains(Data("SECRET_PROMPT_NEVER_STORE".utf8)), "no words from a typed turn reach the usage history")
         // A log that grows is read from where it stopped, and its rows are not counted twice.
         let again = try collector.cosUsage(plistScripts: scripts, dataDirectory: nil, importSessions: true, now: now)
         check(row(.answers, again).measuredTokens == answers.measuredTokens, "a second pass over unchanged logs adds nothing")

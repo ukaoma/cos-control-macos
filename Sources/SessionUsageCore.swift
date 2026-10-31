@@ -1099,11 +1099,19 @@ struct CosSliceProgress: Codable, Equatable, Sendable {
 struct CosWorkSummary: Codable, Equatable, Sendable {
     var handoffsFound = false
     var runs = 0
+    /// The Work run itself: from its start until the person next typed in that session, or its last turn ended.
     var measuredUSD = 0.0
     var measuredTokens: Int64 = 0
     var unpricedEvents = 0
+    /// The wider figure: everything in those sessions from the first run's start, including what the person did later.
+    /// Said on the page, and never in a share.
+    var widerUSD = 0.0
+    var widerTokens: Int64 = 0
+    /// Runs with usage after they started and neither a typed turn nor a finished turn to end them. Only in the wider figure.
+    var unprovenRuns = 0
+    /// What Usage cannot price, for the total. Covers everything in those sessions, because Usage's total does.
     var addsToTotalUSD = 0.0
-    /// Runs on a tool that keeps no log COS can read, such as Cursor.
+    /// Runs with no log COS can read: a tool that keeps none, such as Cursor, or a session with no rows after the start.
     var runsWithoutLogs = 0
 }
 
@@ -1407,6 +1415,84 @@ struct CosSliceEvent: Equatable, Sendable {
     var oneHour: Int64 = 0
 }
 
+/// What a row in a session log says about who moved the session. Row types and block types only: no words are read.
+enum CosMarkKind: String, Sendable {
+    /// The person typed: a `user` row marked as human, with no tool results in it.
+    case typed
+    /// A `user` row with no origin: a prompt COS or a script handed in, or an older log's typed turn.
+    case handedIn
+    /// Another session's message.
+    case peer
+    /// A turn finished.
+    case end
+}
+
+struct CosSliceMark: Equatable, Sendable {
+    var session: String
+    var at: Double
+    var kind: CosMarkKind
+}
+
+/// One handoff. `openedInApp` means the prompt was placed in the app and the person sent it, so their first typed row is
+/// the run's own prompt.
+struct CosWorkRun: Equatable, Sendable {
+    var session: String
+    var start: Double
+    var openedInApp = false
+}
+
+extension CosCostRules {
+    /// A handed-in prompt lands within seconds of its handoff. Anything later is not this run's own prompt.
+    static let deliverySeconds = 120.0
+
+    /// A Claude log row. A tool result is a `user` row the person never wrote, a background task's notice and a compaction
+    /// summary are not them either, and a subagent's log has its own prompts. Only types are looked at, never text.
+    static func claudeMark(_ row: [String: Any]) -> CosMarkKind? {
+        if row["isSidechain"] as? Bool == true { return nil }
+        let message = row["message"] as? [String: Any]
+        switch row["type"] as? String {
+        case "assistant":
+            return message?["stop_reason"] as? String == "end_turn" ? .end : nil
+        case "user":
+            if row["isCompactSummary"] as? Bool == true { return nil }
+            let origin = (row["origin"] as? [String: Any])?["kind"] as? String
+            if origin == "peer" { return .peer }
+            if row["isMeta"] as? Bool == true || origin == "task-notification" { return nil }
+            if let blocks = message?["content"] as? [[String: Any]] {
+                if blocks.isEmpty || blocks.contains(where: { $0["type"] as? String == "tool_result" }) { return nil }
+            } else if !(message?["content"] is String) {
+                return nil
+            }
+            return origin == nil ? .handedIn : .typed
+        default:
+            return nil
+        }
+    }
+    /// A Codex rollout has no typed-row marker, but every turn opens with `task_started` and closes with `task_complete`
+    /// or `turn_aborted`, so the next turn's start is what ends a run.
+    static func codexMark(_ row: [String: Any]) -> CosMarkKind? {
+        guard row["type"] as? String == "event_msg", let kind = (row["payload"] as? [String: Any])?["type"] as? String else { return nil }
+        switch kind {
+        case "task_started": return .handedIn
+        case "task_complete", "turn_aborted": return .end
+        default: return nil
+        }
+    }
+    /// When a run ended: the next typed turn or message from another session, else its last finished turn. A background
+    /// task's notice wakes the same run, so it does not end one. Nil means no ending can be proven, and nothing is guessed.
+    static func workRunEnd(_ run: CosWorkRun, marks: [CosSliceMark]) -> Double? {
+        let after = marks.filter { $0.at >= run.start - CosCostAccumulator.runLeadSeconds }.sorted { $0.at < $1.at }
+        var rest = after[...]
+        // The run's own prompt is not the person moving on, so the first row that fits is passed over.
+        if let first = after.firstIndex(where: { $0.kind != .end }), after[first].at - run.start <= deliverySeconds,
+           after[first].kind == .handedIn || after[first].kind == .peer || (run.openedInApp && after[first].kind == .typed) {
+            rest = after[after.index(after: first)...]
+        }
+        if let closer = rest.first(where: { $0.kind != .end }) { return closer.at }
+        return rest.last(where: { $0.kind == .end })?.at
+    }
+}
+
 /// Turns the ledgers into rows. Feed it the runs, Work starts and session slices once, then the audit a row at a time, so
 /// the audit never has to sit in memory.
 struct CosCostAccumulator {
@@ -1442,7 +1528,7 @@ struct CosCostAccumulator {
 
     /// Work wins from the moment a run started in that session. Before it, an event belongs to a G2 run if one was going.
     /// Anything else in the file is the person's own, which Usage already shows and COS did not start.
-    init(window: ClosedRange<String>, timeZone: TimeZone, gistRuns: [CosGistRun], runs: [CosRun], workStarts: [String: Double], events: [CosSliceEvent]) {
+    init(window: ClosedRange<String>, timeZone: TimeZone, gistRuns: [CosGistRun], runs: [CosRun], workStarts: [String: Double], events: [CosSliceEvent], workRuns: [CosWorkRun] = [], marks: [CosSliceMark] = []) {
         self.window = window
         self.zone = timeZone
         self.gist = gistRuns.filter { window.contains(CosCostRules.dayKey(epoch: $0.at, timeZone: timeZone)) }.sorted { $0.at < $1.at }
@@ -1472,16 +1558,34 @@ struct CosCostAccumulator {
             return $0.session == $1.session ? $0.at < $1.at : $0.session < $1.session
         }
         var counted = Set<String>()
+        // Each run's window, from its start to its proven end. The windows of one session never overlap, because the next
+        // run's own prompt ends the one before.
+        let marksBySession = Dictionary(grouping: marks, by: \.session)
+        var windows: [String: [ClosedRange<Double>]] = [:]
+        var silentRuns = 0
+        let eventsBySession = Dictionary(grouping: ordered, by: \.session)
+        for run in workRuns {
+            let hasRows = eventsBySession[run.session]?.contains { $0.at >= run.start - Self.runLeadSeconds } ?? false
+            guard hasRows else { silentRuns += 1; continue }
+            guard let end = CosCostRules.workRunEnd(run, marks: marksBySession[run.session] ?? []) else { work.unprovenRuns += 1; continue }
+            let begin = run.start - Self.runLeadSeconds
+            if end >= begin { windows[run.session, default: []].append(begin...end) }
+        }
+        work.runsWithoutLogs = silentRuns
         for event in ordered {
             let usd = CosCostRates.usd(provider: event.provider, model: event.model, counts: event.counts, oneHour: event.oneHour)
             let extra = SessionUsagePricing.estimate(provider: event.provider, model: event.model, counts: event.counts, oneHour: event.oneHour) == nil ? usd ?? 0 : 0
             if let start = workStarts[event.session], event.at >= start - Self.runLeadSeconds {
                 if !event.id.isEmpty && !counted.insert(event.id).inserted { continue }
-                work.measuredUSD += usd ?? 0
-                work.measuredTokens += event.counts.total
+                work.widerUSD += usd ?? 0
+                work.widerTokens += event.counts.total
                 work.addsToTotalUSD += extra
-                if usd == nil { work.unpricedEvents += 1 }
                 workSessionsWithEvents.insert(event.session)
+                if windows[event.session]?.contains(where: { $0.contains(event.at) }) == true {
+                    work.measuredUSD += usd ?? 0
+                    work.measuredTokens += event.counts.total
+                    if usd == nil { work.unpricedEvents += 1 }
+                }
                 continue
             }
             guard let index = runsBySession[event.session]?.first(where: {
@@ -1616,8 +1720,11 @@ struct CosCostAccumulator {
         guard tokens > 0, window.contains(day) else { return }
         let usd = priced ? Double(tokens) * CosCostRates.jevPerInputToken : 0
         if category == .work {
+            // Session matching and search are the run's own machinery, so they are in both figures.
             work.measuredTokens += tokens
             work.measuredUSD += usd
+            work.widerTokens += tokens
+            work.widerUSD += usd
             work.addsToTotalUSD += usd
             return
         }
@@ -1655,7 +1762,7 @@ struct CosCostAccumulator {
         }
         work.handoffsFound = handoffsFound
         work.runs = workRuns
-        work.runsWithoutLogs = workRunsWithoutLogs
+        work.runsWithoutLogs += workRunsWithoutLogs
         return (CosCostCategory.allCases.compactMap { rows[$0] }, work)
     }
 }
@@ -1728,7 +1835,7 @@ enum CosCostPresentation {
     }
     /// Dollars appear on the page, so the page says once what kind of dollars they are.
     static func showsDollars(_ report: CosUsageReport) -> Bool {
-        report.rows.contains { $0.measuredUSD > 0 || $0.estimatedUSD > 0 } || report.work.measuredUSD > 0
+        report.rows.contains { $0.measuredUSD > 0 || $0.estimatedUSD > 0 } || report.work.widerUSD > 0
     }
     /// Plain words for why there is no comparison, with the way out in the pane.
     static func usageNote(_ usage: UsageState) -> String? {
@@ -1813,7 +1920,7 @@ enum CosCostPresentation {
         guard let share, let price else { return nil }
         return "About \(percent(share)) of your usage, roughly \(money(share * price)) of your \(money(price))."
     }
-    /// The Work line: session slices from each run's start, plus real rows for work no log holds.
+    /// The Work line: each run's own window in its session log, plus real rows for work no log holds.
     static func workUSD(_ report: CosUsageReport) -> Double {
         report.work.measuredUSD + (report.rows.first { $0.category == .work }?.measuredUSD ?? 0)
     }
@@ -1824,6 +1931,17 @@ enum CosCostPresentation {
         if workUSD(report) > 0 { return money(workUSD(report)) }
         return workTokens(report) > 0 ? "No price" : ""
     }
+    /// What the person did later in those sessions is theirs, so it is said in words and stays out of any share.
+    static func workWider(_ report: CosUsageReport) -> String? {
+        let row = report.rows.first { $0.category == .work }?.measuredUSD ?? 0
+        let wider = report.work.widerUSD + row
+        guard wider - workUSD(report) >= 0.01 else { return nil }
+        return money(wider) + " if you count what you did later in those sessions."
+    }
+    static func workUnproven(_ work: CosWorkSummary) -> String? {
+        guard work.unprovenRuns > 0 else { return nil }
+        return "\(work.unprovenRuns.formatted()) \(work.unprovenRuns == 1 ? "run has" : "runs have") no provable end, so \(work.unprovenRuns == 1 ? "it is" : "they are") only in the wider figure."
+    }
     /// Intake checks and Work chat keep only character counts, so they sit beside the measured figure, not in it.
     static func workBackground(_ report: CosUsageReport) -> String? {
         guard let row = report.rows.first(where: { $0.category == .work }), row.estimatedCalls > 0 else { return nil }
@@ -1831,13 +1949,13 @@ enum CosCostPresentation {
         return "Plus " + row.category.count(row.estimatedCalls) + floor + "."
     }
     static func workWithoutLogs(_ work: CosWorkSummary) -> String {
-        "\(work.runsWithoutLogs.formatted()) \(work.runsWithoutLogs == 1 ? "run" : "runs") used a tool that keeps no log COS can read."
+        "\(work.runsWithoutLogs.formatted()) \(work.runsWithoutLogs == 1 ? "run" : "runs") left no log COS can read, so \(work.runsWithoutLogs == 1 ? "it isn't" : "they aren't") counted."
     }
     static func workCount(_ work: CosWorkSummary) -> String {
         guard work.handoffsFound else { return "This Mac has no record of Work runs." }
         return work.runs == 0 ? "No Work runs in the last 30 days" : "\(work.runs.formatted()) \(work.runs == 1 ? "run" : "runs") you started"
     }
-    static let workMethod = "Counted from each run's session log, from the moment the run started. Later turns in that session count too. Not part of the figure above."
+    static let workMethod = "From each run's session log, from its start until you next typed in that session or its last turn finished. Not part of the figure above."
     static func stillReadingNote(_ report: CosUsageReport) -> String {
         let n = report.sessions.stillReading
         return "Still reading \(n.formatted()) \(n == 1 ? "session" : "sessions"). These figures will grow until it finishes."
@@ -1855,6 +1973,7 @@ enum CosCostPresentation {
             "Measured means the provider reported the tokens, in a session log or a record COS keeps. Estimated means COS only has the length of the text, so it divides characters by four and uses the model's plain rate. Cache reads and system prompts aren't in that, which is why an estimate says at least.",
             "Estimated figures stay out of every measured total. Rates are standard API rates, checked \(ratesCheckedOnWords(report)). A model with no verified rate shows tokens and No price, never $0.",
             "The total you ran is what Usage counted in these 30 days, plus COS calls Usage can't see because they keep no session log.",
+            "A Work run counts from its start until you next typed in that session, another session messaged it, or its last turn finished. COS tells a typed turn from a tool result by the row's type and never reads the words. Background work the run started counts as the run. With none of those endings in the log, a run has no provable end and stays in the wider figure only. The wider figure is everything in those sessions from the first run's start, and it stays out of every share.",
         ]
         let approximate = report.rows.reduce(0) { $0 + $1.approximateMatches }
         if approximate > 0 { lines.append("\(approximate.formatted()) \(approximate == 1 ? "call was" : "calls were") matched to \(approximate == 1 ? "its run" : "their runs") by time and model, because older servers write no id. Newer rows carry one.") }

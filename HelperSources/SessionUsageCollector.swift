@@ -504,8 +504,8 @@ extension SessionUsageCollector {
 
     private func cosPrepareTables() throws {
         // Skips the write when they exist, so another command holding the lock costs nothing on an ordinary pass.
-        if try query("SELECT COUNT(*) FROM sqlite_master WHERE name='cos_slice_events'").first?.first == "1" { return }
-        try Self.execute(db, "CREATE TABLE IF NOT EXISTS cos_slice_files(path TEXT PRIMARY KEY, session TEXT NOT NULL, size INTEGER NOT NULL, modified REAL NOT NULL, state TEXT NOT NULL); CREATE TABLE IF NOT EXISTS cos_slice_events(id TEXT PRIMARY KEY, event TEXT NOT NULL, session TEXT NOT NULL, at REAL NOT NULL, provider TEXT NOT NULL, model TEXT NOT NULL, input INTEGER NOT NULL, output INTEGER NOT NULL, cache_read INTEGER NOT NULL, cache_write INTEGER NOT NULL, one_hour INTEGER NOT NULL); CREATE INDEX IF NOT EXISTS cos_slice_at ON cos_slice_events(at);")
+        if try query("SELECT COUNT(*) FROM sqlite_master WHERE name IN ('cos_slice_events','cos_slice_marks')").first?.first == "2" { return }
+        try Self.execute(db, "CREATE TABLE IF NOT EXISTS cos_slice_marks(session TEXT NOT NULL, at REAL NOT NULL, kind TEXT NOT NULL, PRIMARY KEY(session, at, kind)); CREATE INDEX IF NOT EXISTS cos_slice_mark_at ON cos_slice_marks(at); CREATE TABLE IF NOT EXISTS cos_slice_files(path TEXT PRIMARY KEY, session TEXT NOT NULL, size INTEGER NOT NULL, modified REAL NOT NULL, state TEXT NOT NULL); CREATE TABLE IF NOT EXISTS cos_slice_events(id TEXT PRIMARY KEY, event TEXT NOT NULL, session TEXT NOT NULL, at REAL NOT NULL, provider TEXT NOT NULL, model TEXT NOT NULL, input INTEGER NOT NULL, output INTEGER NOT NULL, cache_read INTEGER NOT NULL, cache_write INTEGER NOT NULL, one_hour INTEGER NOT NULL); CREATE INDEX IF NOT EXISTS cos_slice_at ON cos_slice_events(at);")
     }
 
     /// Lines of an append-only file, without holding it. Returns the count of lines that were not valid JSON objects. A
@@ -572,7 +572,8 @@ extension SessionUsageCollector {
     /// THE COMPRESSED LOG HOOK. Codex keeps most rollouts as `.jsonl.zst`, and `claude/usage-qa-fixes` brings the reader
     /// (`readCompressedLog` and `compressedFilter`, through the bundled Node). When that merges, this is the one place to
     /// plug it in: hand each usage row's bytes to `onLine` from decoded offset `skip`, stop at `limit` bytes or `deadline`,
-    /// and return how far the decoder got. Nil means it cannot read them yet, and the page says so.
+    /// and return how far the decoder got. Nil means it cannot read them yet, and the page says so. Its filter must also pass
+    /// `"task_started"`, `"task_complete"` and `"turn_aborted"` rows, or Codex Work runs have no provable end.
     private func cosReadCompressedRows(_ file: URL, skip: UInt64, limit: Int, deadline: Date, onLine: (Data) throws -> Void) throws -> (decodedTo: UInt64, finished: Bool)? {
         nil
     }
@@ -606,19 +607,32 @@ extension SessionUsageCollector {
     /// One usage row out of a session log. Only rows whose own session id matches count: a fork or a resume copies its
     /// parent's rows forward under the parent's id. The filter looks at bytes first, so a row of pasted images or a long
     /// tool result is never parsed, and nothing but counts leaves here.
-    private func cosHandle(line: some DataProtocol, target: CosSliceTarget, cursor: inout Cursor, sessionKey: String, retainFrom: Double) throws {
+    private func cosHandle(line: some DataProtocol, target: CosSliceTarget, cursor: inout Cursor, sessionKey: String, retainFrom: Double, isSubagent: Bool = false) throws {
         let bytes = Data(line)
         func has(_ needle: StaticString) -> Bool {
             needle.withUTF8Buffer { n in bytes.withUnsafeBytes { b in memmem(b.baseAddress, b.count, n.baseAddress, n.count) != nil } }
         }
+        func mark(_ kind: CosMarkKind?, _ stamp: Any?) throws {
+            guard let kind, !isSubagent, let stamp = stamp as? String, let at = CosCostRules.epoch(stamp), at >= retainFrom else { return }
+            try run("INSERT OR IGNORE INTO cos_slice_marks VALUES(?,CAST(? AS REAL),?)", [sessionKey, String(at), kind.rawValue])
+        }
         if target.provider == "claude" {
+            // An unescaped "type":"tool_result" can only be a real block, so these rows, the bulk of a log, skip the parser.
+            if has("\"user\""), !has("\"type\":\"tool_result\""), let row = (try? JSONSerialization.jsonObject(with: bytes)) as? [String: Any],
+               row["type"] as? String == "user", row["sessionId"] as? String == target.id {
+                try mark(CosCostRules.claudeMark(row), row["timestamp"])
+                return
+            }
             guard has("\"assistant\""), has("\"usage\"") else { return }
             guard let row = (try? JSONSerialization.jsonObject(with: bytes)) as? [String: Any] else { cursor.malformed += 1; return }
-            guard row["sessionId"] as? String == target.id, let event = Self.event(row, source: "claude", cursor: &cursor) else { return }
+            guard row["sessionId"] as? String == target.id else { return }
+            try mark(CosCostRules.claudeMark(row), row["timestamp"])
+            guard let event = Self.event(row, source: "claude", cursor: &cursor) else { return }
             try cosRecord(event, sessionKey: sessionKey, oneHour: event.oneHour, retainFrom: retainFrom)
         } else {
-            guard has("\"token_count\"") || has("\"turn_context\"") || has("\"session_meta\"") else { return }
+            guard has("\"token_count\"") || has("\"turn_context\"") || has("\"session_meta\"") || has("\"task_started\"") || has("\"task_complete\"") || has("\"turn_aborted\"") else { return }
             guard let row = (try? JSONSerialization.jsonObject(with: bytes)) as? [String: Any] else { cursor.malformed += 1; return }
+            if cursor.session.isEmpty || cursor.session == target.id { try mark(CosCostRules.codexMark(row), row["timestamp"]) }
             guard let event = Self.event(row, source: "codex", cursor: &cursor), cursor.session.isEmpty || cursor.session == target.id else { return }
             try cosRecord(event, sessionKey: sessionKey, oneHour: 0, retainFrom: retainFrom)
         }
@@ -703,7 +717,7 @@ extension SessionUsageCollector {
                     do {
                         try autoreleasepool {
                             for line in whole.split(separator: 10) {
-                                try cosHandle(line: line, target: item.target, cursor: &cursor, sessionKey: sessionKey, retainFrom: retainFrom)
+                                try cosHandle(line: line, target: item.target, cursor: &cursor, sessionKey: sessionKey, retainFrom: retainFrom, isSubagent: item.file.deletingLastPathComponent().lastPathComponent == "subagents")
                             }
                         }
                         cursor.offset += UInt64(whole.count)
@@ -721,6 +735,7 @@ extension SessionUsageCollector {
         }
         progress.stillReading = open.count
         try run("DELETE FROM cos_slice_events WHERE at < CAST(? AS REAL)", [String(retainFrom)])
+        try run("DELETE FROM cos_slice_marks WHERE at < CAST(? AS REAL)", [String(retainFrom)])
         return progress
     }
 
@@ -755,24 +770,28 @@ extension SessionUsageCollector {
         let runs = merged.values.filter { $0.start > 0 && (inWindow($0.start) || inWindow($0.end)) }.sorted { $0.start < $1.start }
 
         // Work: the receipts Control itself keeps, on any install. Only these fields are decoded.
-        struct Receipt: Decodable { var createdAt: Double?; var sessionID: String?; var status: String?; var provider: String?; var forkChildID: String? }
+        struct Receipt: Decodable { var createdAt: Double?; var sessionID: String?; var status: String?; var provider: String?; var forkChildID: String?; var channel: String? }
         struct Handoffs: Decodable { var receipts: [Receipt]? }
         let handoffsFile = home.appendingPathComponent("Library/Application Support/COS Control/work-handoffs/handoffs.json")
         opened("handoffs.json")
         let handoffs = (try? Data(contentsOf: handoffsFile)).flatMap { try? JSONDecoder().decode(Handoffs.self, from: $0) }
         var workRuns = 0
         var workStarts: [CosSliceTarget: Double] = [:]
+        var workHandoffs: [CosWorkRun] = []
         var workWithoutSession = 0
         for receipt in handoffs?.receipts ?? [] {
             guard let at = receipt.createdAt, inWindow(at), !["failed", "canceled"].contains(receipt.status ?? "") else { continue }
             workRuns += 1
             var named = false
-            for value in [receipt.sessionID, receipt.forkChildID].compactMap({ $0 }) {
+            // A fork runs in its child when the receipt knows it. The source session keeps going without it.
+            if let value = receipt.forkChildID ?? receipt.sessionID {
                 let parts = value.split(separator: ":", maxSplits: 1).map(String.init)
                 let target = parts.count == 2 ? CosSliceTarget(provider: parts[0], id: parts[1]) : CosSliceTarget(provider: receipt.provider ?? "", id: value)
-                guard target.provider == "claude" || target.provider == "codex" else { continue }
-                workStarts[target] = min(workStarts[target] ?? at, at)
-                named = true
+                if target.provider == "claude" || target.provider == "codex" {
+                    workStarts[target] = min(workStarts[target] ?? at, at)
+                    workHandoffs.append(CosWorkRun(session: target.provider + ":" + target.id, start: at, openedInApp: receipt.channel == "app"))
+                    named = true
+                }
             }
             if !named { workWithoutSession += 1 }
         }
@@ -797,6 +816,13 @@ extension SessionUsageCollector {
                 counts: SessionUsageCounts(input: Int64(row[4]) ?? 0, output: Int64(row[5]) ?? 0, cacheRead: Int64(row[6]) ?? 0, cacheWrite: Int64(row[7]) ?? 0), oneHour: Int64(row[8]) ?? 0))
         }
 
+        // What moved each session on: row types and times, with no words in them.
+        var marks: [CosSliceMark] = []
+        for row in (try? query("SELECT session,at,kind FROM cos_slice_marks WHERE at >= CAST(? AS REAL)", [String(lowerEpoch)])) ?? [] {
+            guard let target = keyed[row[0]], let kind = CosMarkKind(rawValue: row[2]) else { continue }
+            marks.append(CosSliceMark(session: target.provider + ":" + target.id, at: Double(row[1]) ?? 0, kind: kind))
+        }
+
         // The gist ledger's real usage. Halves itself at 2 MB, and its size stays small.
         var gist: [CosGistRun] = []
         if let gistFile = cosDataFile(data, "lens-gist-runs.jsonl", opened: opened), fm.fileExists(atPath: gistFile.path) {
@@ -811,7 +837,8 @@ extension SessionUsageCollector {
             runsKeyed[index].session = runsKeyed[index].provider + ":" + runsKeyed[index].session
         }
         var accumulator = CosCostAccumulator(window: window, timeZone: zone, gistRuns: gist, runs: runsKeyed,
-            workStarts: Dictionary(uniqueKeysWithValues: workStarts.map { ($0.key.provider + ":" + $0.key.id, $0.value) }), events: events)
+            workStarts: Dictionary(uniqueKeysWithValues: workStarts.map { ($0.key.provider + ":" + $0.key.id, $0.value) }), events: events,
+            workRuns: workHandoffs, marks: marks)
 
         // The audit, streamed. The server's own path first, so a test file at the fallback never mixes in.
         var envScripts: String?
