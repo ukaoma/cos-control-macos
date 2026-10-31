@@ -8210,8 +8210,9 @@ extension ActivityWindow {
             recordings.append(TodayHome.Recording(sessionId: row.sessionId, start: row.startTime, isMac: false))
         }
         // The server says something else is live and no row names it (the live transcript setting is off, or the first read is
-        // still on its way).
-        let others = (model.liveTranscriptServerLive ?? 0) - (store.occupied ? 1 : 0)
+        // still on its way). A Mac capture is not "something else", saved or not: its live row counts out with the one held here.
+        let others = TodayHome.nonMacLive(serverLive: model.liveTranscriptServerLive, liveSessionIDs: model.liveTranscriptRows.filter { $0.phase == .live }.map(\.sessionId),
+                                           macHeld: store.occupied, captureID: captureID)
         if others > 0, !recordings.contains(where: { !$0.isMac }) { recordings.append(TodayHome.Recording(sessionId: "", start: nil, isMac: false)) }
         return recordings
     }
@@ -8729,7 +8730,7 @@ extension ActivityWindow {
                 defer { today.captureBusy = false }
                 do {
                     try await model.captureTask(domain: taskDomain, text: text)
-                    commandKeys.clearWords?()
+                    commandKeys.clearDraft()
                     today.runNote = "Filed to the Work inbox."
                 } catch { today.runNote = error.localizedDescription }
             }
@@ -9336,13 +9337,20 @@ extension ActivityWindow {
 @MainActor final class CommandCenterKeys {
     var escape: (() -> Bool)?
     var clearWords: (() -> Void)?
-    /// The words typed so far, kept when a click outside closes the panel. Esc clears them.
+    /// The words typed so far, kept when a click outside closes the panel. Esc clears them, and so does anything that took them.
     var draft = ""
     /// The next section change came from the panel, which stays open to say something.
     var keepOpen = false
     /// This panel ran a helper command, so model.notice is its result, and a failure was shown in place.
     var ranHelper = false
     var recordFailed = false
+
+    /// A run, a filing or a recording took the words, so none are left to offer again. The draft is emptied directly: a panel that
+    /// was closed by a click outside has no `clearWords`, and the next ⌘K would bring the same words back armed.
+    func clearDraft() {
+        draft = ""
+        clearWords?()
+    }
 }
 
 /// Offscreen fixtures (Tests/CommandCenterRender.swift): the state a person reaches with keys, since nothing is typed there.
@@ -9422,7 +9430,8 @@ extension ActivityWindow {
         r.occupied = store.occupied
         r.busy = MeetingDetectedCard.recordingBusy(macOccupied: store.occupied, macCanStart: store.canStart, liveRecordings: model.recordingCount)
         r.saveLine = !r.stoppable && store.saveLine.headline == MacRecordingSaveStatus.saving ? MacRecordingSaveStatus.saving : nil
-        r.glassesLive = max(0, model.recordingCount - (store.occupied ? 1 : 0))
+        r.glassesLive = TodayHome.nonMacLive(serverLive: model.recordingCount, liveSessionIDs: model.liveTranscriptRows.filter { $0.phase == .live }.map(\.sessionId),
+                                             macHeld: store.occupied, captureID: store.manifest?.captureId)
         r.inFlight = today.recordInFlight
         return r
     }
@@ -9672,6 +9681,8 @@ extension ActivityWindow {
         guard !today.recordInFlight, SetupAssistant.Center.recordingHold(commandRecording(), commandSnapshot()) == nil else { return }
         today.recordInFlight = true
         commandKeys.recordFailed = false
+        // The start is under way: "record" must not come back armed once it has saved.
+        commandKeys.clearDraft()
         let title = MacRecordingNotice.title(typed: "", meetingApp: MeetingDetectorStore.shared.current?.app.title, at: Date())
         Task {
             let id = await store.record(title: title, sourceID: MacAudioSource.allMacAudioID, bridge: model.macRecordingBridge)
@@ -9729,7 +9740,7 @@ extension ActivityWindow {
     func commandStartRun(_ run: SetupAssistant.Troubleshoot) {
         Task {
             await today.startRun(target: run.target, title: run.title, prompt: run.prompt, context: run.context, handoff: handoffStore)
-            if today.runNote == TodayHomeStore.startedNote { commandKeys.clearWords?() }
+            if today.runNote == TodayHomeStore.startedNote { commandKeys.clearDraft() }
         }
     }
 }
@@ -10041,7 +10052,9 @@ struct CommandCenterPanel: View {
         case .nothing: break
         case .confirm: confirmOpen(listing)
         case .activate(let id): activate(id, listing)
-        case .startRun: submit(listing.words, false)
+        case .startRun:
+            // The Ask row's own run, so the words go with the saved answer, a short snapshot and the same rules.
+            if let ask = listing.rows.first(where: { $0.kind == .ask && $0.selectable }) { activate(ask.id, listing) }
         case .file: submit(listing.words, true)
         case .move(let id): chosen = id
         }
@@ -10069,7 +10082,16 @@ struct CommandCenterPanel: View {
     }
 
     private func perform(_ row: C.Row, _ listing: C.Listing) {
-        switch run(row, listing) {
+        let effect = run(row, listing)
+        // A row that ran has used its words up, and its highlight with them. Left behind, ⌘K would offer the same row again,
+        // armed, and one Return would fire it twice. Ask, File and troubleshoot keep theirs until the send is accepted, and the
+        // one-time notice has not run anything yet.
+        if effect != .notice, !C.sendsWords(row) {
+            chosen = nil
+            words = C.draftAfterRun(row, words)
+            keys.draft = words
+        }
+        switch effect {
         case .close: close()
         case .stay: break
         case .notice: noticeShowing = true

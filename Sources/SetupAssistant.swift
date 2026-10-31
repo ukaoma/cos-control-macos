@@ -1355,14 +1355,20 @@ enum SetupAssistant {
             case move(String)
         }
 
-        /// What Return does now. Option-Return always files. A saved answer, a near-command or a short text never starts a
-        /// run: Return moves to the Ask row first, and a second Return runs it.
+        /// What Return does now. Option-Return always files. A command or a session the words point at is where Return goes
+        /// first; a saved answer, a near-command or a short text never starts a run either: Return moves to the Ask row, and a
+        /// second Return runs it.
         static func onReturn(option: Bool, chosen: String?, confirming: Bool, noticeShowing: Bool, _ listing: Listing, _ s: Snapshot) -> ReturnOutcome {
             if option { return listing.words.isEmpty ? .nothing : .file }
             if noticeShowing { return .nothing }
             if confirming { return .confirm }
             if let id = effective(chosen, listing) { return .activate(id) }
             guard !listing.words.isEmpty else { return .nothing }
+            // The top row is a command that Return may not run on its own (Stop, Doctor, or words that only start or sit inside
+            // its phrase): Return goes to that row, never past it to a Work run on the same words. Its own confirm still applies.
+            if let top = listing.rows.first, case .command = top.kind, top.selectable { return .move(top.id) }
+            // A title that matches is a session to open, not a request: Return goes to the first of them.
+            if let session = listing.rows.first(where: { $0.group == .sessions && $0.selectable }) { return .move(session.id) }
             let askable = listing.rows.first { $0.kind == .ask && $0.selectable }
             let cautious = listing.hasAnswer || listing.nearCommand
             if !s.workRunsOn, !cautious { return .file }
@@ -1384,8 +1390,11 @@ enum SetupAssistant {
             case .file:
                 return "Return files it to the Work inbox."
             case .move(let id):
-                let name = listing.rows.first { $0.id == id }?.title ?? ""
-                return "Return moves to \(name). Return again runs it."
+                guard let row = listing.rows.first(where: { $0.id == id }) else { return "Up and Down choose. Esc closes." }
+                switch row.kind {
+                case .recording, .waiting, .running, .session: return "Return moves to \(row.title). Return again opens it."
+                default: return "Return moves to \(row.title). Return again " + (confirmation(row, s) != nil ? "asks first." : "runs it.")
+                }
             case .activate(let id):
                 guard let row = listing.rows.first(where: { $0.id == id }) else { return "Up and Down choose. Esc closes." }
                 switch row.kind {
@@ -1412,6 +1421,21 @@ enum SetupAssistant {
             if noticeShowing { return .dismissNotice }
             if chosen != nil { return .clearHighlight }
             return hasWords ? .clearWords : .close
+        }
+
+        /// Ask COS, File to Work and troubleshoot send the typed words. They keep them until the run or the filing is accepted, so a
+        /// refusal (the cap, the breaker, Work busy) costs nothing typed.
+        static func sendsWords(_ row: Row) -> Bool {
+            switch row.kind {
+            case .ask, .file, .action(.troubleshoot): return true
+            default: return false
+            }
+        }
+
+        /// The words left in the box once a row has run. Every other row has used them up: a draft left behind comes back at the
+        /// next ⌘K, armed, and one Return would fire the same row again (open work, record, stop).
+        static func draftAfterRun(_ row: Row, _ draft: String) -> String {
+            sendsWords(row) ? draft : ""
         }
 
         // MARK: Confirms

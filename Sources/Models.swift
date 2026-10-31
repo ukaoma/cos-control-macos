@@ -13827,6 +13827,8 @@ enum TodayHome {
         /// This Mac's capture, recording or starting: the only recording Stop and save reaches. Never from recordingCount.
         var canStop = false
         var isPhone: Bool { PhoneMeetingCapture.protected(sessionId) }
+        /// The server counts a live recording and no row names it, so the device is not known: not the glasses, not this Mac.
+        var isUnknown: Bool { sessionId.isEmpty && !isMac }
     }
     /// One in-flight job from GET /api/query-jobs/active (server 6.84.1).
     struct ActiveJob: Equatable, Sendable {
@@ -13968,7 +13970,8 @@ enum TodayHome {
             if let event = input.event, let start, abs(event.start.timeIntervalSince(start)) <= 15 * 60 { title = event.title }
             else if let own = recording.title.flatMap({ guarded($0) }) { title = own }
             rows.append(RunRow(id: "recording:" + recording.sessionId, platform: .glasses, title: title,
-                               detail: (recording.isPhone ? "iPhone microphone recording, live transcript" : recording.isMac ? "recording on this Mac, live transcript" : "glasses recording, live transcript")
+                               detail: (recording.isPhone ? "iPhone microphone recording, live transcript" : recording.isMac ? "recording on this Mac, live transcript"
+                                        : recording.isUnknown ? "a recording the server counts" : "glasses recording, live transcript")
                                    + (start.map { ", " + duration(input.now.timeIntervalSince($0)) } ?? ""),
                                openLabel: "Live view", open: .liveView(recording.sessionId), working: true, finished: false, started: start, recording: recording))
         }
@@ -14541,7 +14544,8 @@ enum TodayHome {
         let running = inFlightRows.filter { $0.recording == nil }
         let finished = finishedRows(input.run)
         var c = counts(needs: needs, running: running, finished: finished)
-        c.recordings = recordings.count
+        // One that has stopped and is saving is the section's "Saving", not a recording: the rail does not count it either.
+        c.recordings = recordings.filter { $0.recording?.saving == nil }.count
         let facts = input.facts
         c.voicesToName = answered(.voices, states) && facts.voicesLoaded ? needs.filter { $0.kind == .voice || $0.kind == .meetingVoices || $0.kind == .heldVoices }.reduce(0) { $0 + ($1.kind == .voice ? 1 : $1.items) } : nil
         c.memoriesToReview = answered(.memories, states) ? facts.memoriesToReview : nil
@@ -14573,14 +14577,25 @@ enum TodayHome {
     /// A live recording's second line: where it records and for how long, or that it is saving.
     static func recordingLine(_ recording: Recording, now: Date) -> String {
         if let saving = recording.saving { return saving }
-        let place = recording.isPhone ? "Recording on your iPhone" : (recording.isMac ? "Recording on this Mac" : "Recording on your glasses")
+        let place = recording.isPhone ? "Recording on your iPhone" : (recording.isMac ? "Recording on this Mac" : (recording.isUnknown ? "Recording, device not shown" : "Recording on your glasses"))
         return recording.start.map { place + ", " + duration(now.timeIntervalSince($0)) } ?? place
     }
 
     /// Where a recording stops when Stop and save cannot reach it. Nil for this Mac's own capture.
     static func recordingStopNote(_ recording: Recording) -> String? {
         if recording.isMac { return nil }
+        if recording.isUnknown { return "Stop it where it started" }
         return recording.isPhone ? PhoneMeetingCapture.stopNote : "Stop it on the glasses"
+    }
+
+    /// How many of the live sessions the server counts are not a Mac capture. A Mac capture is a Mac row whether or not this Mac
+    /// still holds it: the one it holds and a live `mac_` row are one session, counted once. A capture that left `occupied`
+    /// (saved, or `pending` after a failed save) while the server still counts it is never a recording on the glasses, or on a
+    /// device nobody can name.
+    static func nonMacLive(serverLive: Int?, liveSessionIDs: [String], macHeld: Bool, captureID: String?) -> Int {
+        var mac = Set(liveSessionIDs.filter { $0.hasPrefix("mac_") })
+        if macHeld { mac.insert(captureID ?? "") }
+        return max(0, (serverLive ?? 0) - mac.count)
     }
 
     // MARK: Brief (zero LLM, fixed templates)

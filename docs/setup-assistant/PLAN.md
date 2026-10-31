@@ -179,14 +179,19 @@ unsent words wait for the next open. All of these are rules in `SetupAssistant.C
 | --- | --- | --- | --- |
 | Down | Highlight the first row | Next row (stops at the last) | Nothing |
 | Up | Nothing | Previous row; from the first, back to no highlight | Nothing |
-| Return | One Work run only for 3 or more words with no answer or command match. A saved answer, a near-command or a short text moves to the Ask row, and a second Return runs it. Start Work off: files, unless the words are an answer or close to a command | Run the row: an opener runs at once, a change opens its confirm | Confirm (after the fresh check) |
+| Return | Where the words point first: a command listed at the top (Stop, Doctor, "go to se", a phrase inside a sentence) moves to that command's row, and a title that matches a session moves to the first session row. A second Return runs it, and its own confirm still applies. Otherwise one Work run, through the Ask row with the snapshot and the rules, only for 3 or more words with no answer or command match. A saved answer, a near-command or a short text moves to the Ask row, and a second Return runs it. Start Work off: files, unless the words are an answer or close to a command | Run the row: an opener runs at once, a change opens its confirm | Confirm (after the fresh check) |
 | Option-Return | Files to the Work inbox | Same: Option-Return always files | Same |
 | Esc | Clears the words, then closes | Clears the highlight | Cancels the confirm |
 | ⌘K | Opens over the current tab, and closes when open. It never navigates, and it does not open under a task being edited or a naming review | | |
 
 A row is highlighted on its own only when the whole text is an exact phrase of an opener or Start recording, and only when that
 row can run. Never Stop, Doctor or anything in `changesSomething`. So "start recording" runs on Return, and "stop recording the
-demo" does not.
+demo" does not: while a recording runs, Return moves to Stop and save, and Stop asks before it stops.
+
+A row that ran has used its words up. `perform` empties the box, the highlight and the draft for every row but Ask COS, File to
+Work and troubleshoot (`Center.sendsWords`), which keep theirs until the run or the filing is accepted. A run, a filing or a recording
+under way also empties the draft directly (`CommandCenterKeys.clearDraft`), because a panel closed by a click outside has no
+`clearWords` left to call. Without that, the next ⌘K brought "open work" back armed and one Return fired it twice.
 
 VoiceOver hears the highlight and what Return will do, and the foot of the panel says the same. Nothing moves in the panel, so
 Reduce Motion has nothing to stop. Breadcrumbs name a kind of row, never a title or anything typed.

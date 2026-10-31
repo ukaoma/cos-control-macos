@@ -373,6 +373,31 @@ import Foundation
         check(mac.canStop && !glasses.canStop, "[Stop and save is for this Mac only]", "")
         check(TodayHome.recordingStopNote(mac) == nil && TodayHome.recordingStopNote(glasses) == "Stop it on the glasses", "[glasses say they stop on the glasses]", "")
         check(TodayHome.recordingStopNote(TodayHome.Recording(sessionId: "phone_1", start: nil, isMac: false)) == PhoneMeetingCapture.stopNote, "[iPhone says where it stops]", "")
+        // A recording the server counts and no row names: the device is not known, so no words claim the glasses.
+        let unknown = TodayHome.Recording(sessionId: "", start: nil, isMac: false)
+        check(unknown.isUnknown && !mac.isUnknown && !glasses.isUnknown && !TodayHome.Recording(sessionId: "phone_1", start: nil, isMac: false).isUnknown, "[an unnamed recording is unknown]", "")
+        check(TodayHome.recordingLine(unknown, now: now) == "Recording, device not shown", "[an unnamed recording does not claim the glasses]", TodayHome.recordingLine(unknown, now: now))
+        check(TodayHome.recordingStopNote(unknown) == "Stop it where it started", "[an unnamed recording does not claim the glasses]", "\(String(describing: TodayHome.recordingStopNote(unknown)))")
+        var unnamedRun = runningInputs(); unnamedRun.recordings = [unknown]
+        let unnamedRow = TodayHome.compose(dayInputs(unnamedRun, TodayHome.NeedInputs())).recordings.first
+        check(unnamedRow?.title == "Recording now" && unnamedRow?.detail.lowercased().contains("glasses") == false, "[an unnamed recording does not claim the glasses]", "\(String(describing: unnamedRow?.detail))")
+        // A Mac capture the server still counts after this Mac let go of it is a Mac row, not a recording of an unnamed device.
+        check(TodayHome.nonMacLive(serverLive: 1, liveSessionIDs: ["mac_a"], macHeld: false, captureID: nil) == 0, "[a saved Mac capture is no unnamed recording]", "left occupied, still counted")
+        check(TodayHome.nonMacLive(serverLive: 2, liveSessionIDs: ["mac_a"], macHeld: true, captureID: "mac_a") == 1, "[a Mac capture is counted once]", "its row and the one held are one session, so a second live one still shows")
+        check(TodayHome.nonMacLive(serverLive: 2, liveSessionIDs: ["mac_a", "g2-1"], macHeld: true, captureID: "mac_a") == 1, "[a glasses meeting beside it still counts]", "")
+        check(TodayHome.nonMacLive(serverLive: 2, liveSessionIDs: ["mac_a", "mac_b"], macHeld: true, captureID: "mac_a") == 0, "[another Mac's capture is a Mac row too]", "")
+        check(TodayHome.nonMacLive(serverLive: 1, liveSessionIDs: [], macHeld: true, captureID: nil) == 0, "[a capture before the server knows]", "")
+        check(TodayHome.nonMacLive(serverLive: 1, liveSessionIDs: [], macHeld: false, captureID: nil) == 1 && TodayHome.nonMacLive(serverLive: nil, liveSessionIDs: [], macHeld: false, captureID: nil) == 0,
+              "[something the server counts and no row names]", "")
+        check(TodayHome.nonMacLive(serverLive: 0, liveSessionIDs: ["mac_a"], macHeld: true, captureID: "mac_a") == 0, "[never below zero]", "")
+        // A recording that has stopped and is saving is the section's Saving. The rail does not call it a recording.
+        var savingRun = runningInputs()
+        savingRun.recordings = [TodayHome.Recording(sessionId: "mac_2", start: now.addingTimeInterval(-60), isMac: true, title: "Zoom", saving: "Saving…", canStop: false)]
+        let savingFrame = TodayHome.compose(dayInputs(savingRun, TodayHome.NeedInputs()))
+        check(savingFrame.recordings.count == 1 && savingFrame.counts.recordings == 0, "[a saving recording is no recording on the rail]", "\(savingFrame.recordings.count) rows, \(savingFrame.counts.recordings) counted")
+        savingRun.recordings.append(TodayHome.Recording(sessionId: "g2-1", start: now.addingTimeInterval(-240), isMac: false))
+        let mixedFrame = TodayHome.compose(dayInputs(savingRun, TodayHome.NeedInputs()))
+        check(mixedFrame.recordings.count == 2 && mixedFrame.counts.recordings == 1, "[a saving recording is no recording on the rail]", "one saving, one live")
         // The rail: a recording comes first, and the line stays short enough not to wrap.
         func rail(_ c: TodayHome.Counts) -> TodayHome.Story { TodayHome.story("today", c, now: now, calendar: calendar) }
         var one = TodayHome.Counts(); one.recordings = 1; one.needs = 4; one.running = 3; one.settled = true

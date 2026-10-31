@@ -71,6 +71,8 @@ import Foundation
         centerEmptyBox()
         centerTyping()
         centerReturn()
+        centerReturnToCommand()
+        centerDraft()
         centerKeys()
         centerRecording()
         centerRecordingRows()
@@ -276,14 +278,23 @@ import Foundation
         // A saved answer never starts a run on Return.
         check(returned("my transcript never finished") == .move("ask"), "[a saved answer moves to Ask]", "\(returned("my transcript never finished"))")
         check(returned("how do i set up parakeet") == .move("ask"), "[a saved answer moves to Ask]", "")
-        // A near-command never starts a run on Return.
-        for phrase in ["restart server", "update", "update the deck", "stop recording the demo", "please start recording the call with Dana right now", "run doctor please"] {
+        // A near-command never starts a run on Return. With no command row to go to, it moves to Ask.
+        for phrase in ["restart server", "update", "update the deck", "stop recording the demo"] {
             check(returned(phrase) == .move("ask"), "[a near-command moves to Ask]", "\(phrase): \(returned(phrase))")
         }
+        // Where the words name a command that is listed first, Return goes to that command's row, not past it to a Work run.
+        check(returned("please start recording the call with Dana right now") == .move("command:startRecording"), "[Return moves to the command row]", "\(returned("please start recording the call with Dana right now"))")
+        check(returned("run doctor please") == .move("command:runDoctor"), "[Return moves to the command row]", "\(returned("run doctor please"))")
         // The rule on its own, because a saved answer can also send Return to Ask: a command's phrase inside a long sentence.
         check(C.nearCommand("please start recording the call with Dana right now"), "[a near-command moves to Ask]", "a command's phrase in a long sentence")
-        // A command in the list, still being typed, never starts a run either.
-        check(returned("go to se") == .move("ask"), "[a command in the list moves to Ask]", "\(returned("go to se"))")
+        // A command in the list, still being typed, never starts a run either: Return goes to it.
+        check(returned("go to sess") == .move("command:openSessions"), "[Return moves to the command row]", "\(returned("go to sess"))")
+        let goTo = C.listing(center(), words: "go to se")
+        check(goTo.rows.first.map { returned("go to se") == .move($0.id) && $0.kind != .ask } == true, "[Return moves to the command row]", "\(rowIDs(goTo))")
+        check(returned("sess") == .move("command:openSessions"), "[Return moves to the command row]", "\(returned("sess"))")
+        // A command that is held has no row to go to: Return falls back to Ask, as before.
+        var heldRecord = center(); heldRecord.recording.inFlight = true
+        check(returned("start recording now please", inputs: heldRecord) == .move("ask"), "[a held command moves to Ask]", "\(returned("start recording now please", inputs: heldRecord))")
         // The whole phrase runs at once; a highlight runs what it highlights.
         check(returned("start recording") == returnRuns("command:startRecording"), "[Return runs the highlight]", "")
         check(returned("sessions") == returnRuns("command:openSessions"), "[Return runs the highlight]", "")
@@ -311,6 +322,71 @@ import Foundation
         // Server down: never a run. Return moves to File.
         var downSnapshot = healthy(); downSnapshot.serverReachable = false; downSnapshot.runtimeState = "stopped"
         check(returned("draft the note to Dana", inputs: center { $0.snapshot = downSnapshot }) == .move("file"), "[server down never starts a run]", "")
+    }
+
+    /// A recording is running and the person types the words for Stop or Doctor. Neither may highlight itself, and Return must not
+    /// pass them on to a Work run while the recording keeps going: it goes to the command's row, whose own confirm then applies.
+    static func centerReturnToCommand() {
+        let live = center { $0.recording.stoppable = true; $0.recording.occupied = true; $0.recording.busy = true }
+        for phrase in ["stop recording", "stop the recording", "stop and save", "stop recording the demo", "please stop recording this call"] {
+            let listing = C.listing(live, words: phrase)
+            check(listing.rows.first?.id == "command:stopRecording", "[Stop is listed first]", "\(phrase): \(rowIDs(listing))")
+            check(listing.autoHighlight == nil, "[auto-highlight never Stop]", "\(phrase): \(String(describing: listing.autoHighlight))")
+            check(returned(phrase, inputs: live) == .move("command:stopRecording"), "[Return moves to Stop, not to a Work run]", "\(phrase): \(returned(phrase, inputs: live))")
+        }
+        for phrase in ["doctor", "run doctor", "checkup", "run doctor please"] {
+            let listing = C.listing(live, words: phrase)
+            check(listing.autoHighlight == nil, "[auto-highlight never Doctor]", "\(phrase): \(String(describing: listing.autoHighlight))")
+            check(listing.rows.first?.id == "command:runDoctor", "[Doctor is listed first]", "\(phrase): \(rowIDs(listing))")
+            check(returned(phrase, inputs: live) == .move("command:runDoctor"), "[Return moves to Doctor, not to a Work run]", "\(phrase): \(returned(phrase, inputs: live))")
+        }
+        // The second Return opens the command's own confirm, and the third confirms. Nothing here runs without it.
+        let stopRow = row(C.listing(live, words: "stop recording"), "command:stopRecording")!
+        let doctorRow = row(C.listing(live, words: "run doctor"), "command:runDoctor")!
+        check(returned("stop recording", chosen: "command:stopRecording", inputs: live) == returnRuns("command:stopRecording"), "[the second Return runs the highlight]", "")
+        check(C.confirmation(stopRow, healthy()) == C.stopConfirm && C.confirmation(doctorRow, healthy()) == C.doctorConfirm, "[Stop and Doctor ask first]", "")
+        check(returned("stop recording", chosen: "command:stopRecording", confirming: true, inputs: live) == .confirm, "[the third Return confirms]", "")
+        // The hint says it asks first, and where an opener only runs.
+        let stopList = C.listing(live, words: "stop recording")
+        check(C.hint(.move("command:stopRecording"), stopList, healthy()) == "Return moves to Stop and save. Return again asks first.", "[the hint says what Return does]", "\(C.hint(.move("command:stopRecording"), stopList, healthy()))")
+        let sessionsList = C.listing(center(), words: "sess")
+        check(C.hint(.move("command:openSessions"), sessionsList, healthy()) == "Return moves to Open Sessions. Return again runs it.", "[the hint says what Return does]", "")
+    }
+
+    /// The words a row leaves in the box are what the next ⌘K offers, armed. Type "open work", Return, ⌘K again: if the draft is
+    /// still "open work", Return opens Work a second time, and "record" would start a second recording.
+    static func centerDraft() {
+        for words in ["open work", "work", "go to sessions", "start recording", "record", "settings"] {
+            let listing = C.listing(center(), words: words)
+            guard let id = listing.autoHighlight, let ran = row(listing, id) else { check(false, "[a whole phrase highlights itself]", words); continue }
+            check(returned(words) == returnRuns(id), "[a whole phrase runs on Return]", words)
+            // What the box holds after the row ran, and what Return does when it comes back.
+            let draft = C.draftAfterRun(ran, words)
+            check(draft.isEmpty, "[a row that ran leaves no draft]", "\(words): \"\(draft)\"")
+            check(returned(draft) == .nothing, "[the next open arms nothing]", "\(words): \(returned(draft))")
+        }
+        // The same after Stop and Doctor, which stay in the panel: their words are used up too.
+        let live = center { $0.recording.stoppable = true; $0.recording.occupied = true; $0.recording.busy = true }
+        for (words, id) in [("stop recording", "command:stopRecording"), ("run doctor", "command:runDoctor")] {
+            let ran = row(C.listing(live, words: words), id)!
+            check(C.draftAfterRun(ran, words).isEmpty, "[a row that ran leaves no draft]", words)
+        }
+        // A recording that has saved: the draft "record" must not be waiting to start another.
+        let saved = center()
+        check(returned(C.draftAfterRun(row(C.listing(saved, words: "record"), "command:startRecording")!, "record"), inputs: saved) == .nothing, "[the next open arms nothing]", "record")
+        // Every kind of row but the ones that send the words uses them up, and those keep them until the send is accepted.
+        let sends: [C.Kind] = [.ask, .file, .action(.troubleshoot)]
+        for kind in sends {
+            let r = C.Row(id: "x", kind: kind, group: .asking, title: "x")
+            check(C.sendsWords(r) && C.draftAfterRun(r, "email Gina about pricing") == "email Gina about pricing", "[Ask, File and troubleshoot keep the words]", "\(kind)")
+        }
+        var others: [C.Kind] = [.recording("a"), .waiting("a"), .running("a"), .session("a"), .savedAnswer, .info]
+        others += C.Command.allCases.map { C.Kind.command($0) }
+        others += SA.Action.allCases.filter { $0 != .troubleshoot }.map { C.Kind.action($0) }
+        for kind in others {
+            let r = C.Row(id: "x", kind: kind, group: .doing, title: "x")
+            check(!C.sendsWords(r) && C.draftAfterRun(r, "open work").isEmpty, "[a row that ran leaves no draft]", "\(kind)")
+        }
     }
 
     static func centerKeys() {
@@ -447,7 +523,26 @@ import Foundation
         // A title match never counts as a command match, and never highlights.
         let title = C.listing(center { $0.sessions = [C.Item(id: "s1", title: "Holiday promo landing page", sessionID: "s1")] }, words: "holiday promo")
         check(title.autoHighlight == nil && row(title, "session:s1")?.kind == .session("s1") && !title.nearCommand, "[a session match never highlights]", "\(rowIDs(title))")
-        check(returnedFor(title) == .move("ask"), "[two words move to Ask]", "")
+        check(returnedFor(title) == .move("session:s1"), "[a session match moves to the session]", "\(returnedFor(title))")
+        check(C.hint(.move("session:s1"), title, healthy()) == "Return moves to Holiday promo landing page. Return again opens it.", "[the hint says what Return does]", "\(C.hint(.move("session:s1"), title, healthy()))")
+        // Three words or more, Start Work on or off: a title that matches is a session to open, never a Work run or a filed task.
+        let threeWords = center { $0.sessions = [C.Item(id: "s1", title: "Holiday promo landing page", sessionID: "s1")] }
+        let threeList = C.listing(threeWords, words: "holiday promo landing")
+        check(returned("holiday promo landing", inputs: threeWords) == .move("session:s1"), "[a session match is no Work run]", "\(returned("holiday promo landing", inputs: threeWords))")
+        check(threeList.rows.contains { $0.kind == .ask && $0.selectable }, "[a session match is no Work run]", "Ask is there, and Return still goes to the session")
+        var workOff = healthy(); workOff.workRunsOn = false
+        let threeOff = center { $0.snapshot = workOff; $0.sessions = [C.Item(id: "s1", title: "Holiday promo landing page", sessionID: "s1")] }
+        check(returned("holiday promo landing", inputs: threeOff) == .move("session:s1"), "[a session match is no filed task]", "\(returned("holiday promo landing", inputs: threeOff))")
+        // A waiting or running row that matches is the same: the first session-group row, in the order listed.
+        let waitingMatch = center { $0.waiting = [waiting("w", "Holiday promo review")]; $0.sessions = [C.Item(id: "s1", title: "Holiday promo landing page", sessionID: "s1")] }
+        check(returned("holiday promo", inputs: waitingMatch) == .move("waiting:session:w"), "[a session match moves to the first session row]", "\(returned("holiday promo", inputs: waitingMatch))")
+        // Words that match no title are what they were: a Work run for three words, Ask for fewer.
+        check(returned("holiday promo landing", inputs: center { $0.sessions = [C.Item(id: "s2", title: "Rain audit", sessionID: "s2")] }) == .startRun, "[no match, no change]", "")
+        // A command's row still comes before a session row.
+        let both = center { $0.sessions = [C.Item(id: "s1", title: "Open sessions guide", sessionID: "s1")] }
+        check(returned("open sess", inputs: both) == .move("command:openSessions"), "[a command row comes before a session row]", "\(returned("open sess", inputs: both))")
+        // `.startRun` always has an Ask row to send it through.
+        check(C.listing(center(), words: "draft the note to Dana").rows.contains { $0.kind == .ask && $0.selectable }, "[a Work run goes through Ask]", "")
         let long = C.listing(center { $0.sessions = [C.Item(id: "s1", title: "start recording the holiday promo", sessionID: "s1")] }, words: "holiday promo landing")
         check(returnedFor(long) == .startRun, "[a title never changes Return]", "")
         // A session lists once, and the search is capped.

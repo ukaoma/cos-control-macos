@@ -159,10 +159,32 @@ press = block(panel, "    private func pressReturn(", "    private func activate
 pin("private func pressReturn(option: Bool = false) {" in press and "C.onReturn(option: option," in press, "Return reaches the engine's one rule")
 pin("event.keyCode == 36 || event.keyCode == 76, flags == .option" in monitor and "pressReturn(option: true)" in panel,
     "Option-Return goes through the monitor: a single-line field types a line break for it and never submits")
-pin("case .startRun: submit(listing.words, false)" in press and "case .file: submit(listing.words, true)" in press and "case .move(let id): chosen = id" in press,
-    "Return with no highlight still runs Work, Option-Return files, and a near-command only moves the highlight")
+pin("case .file: submit(listing.words, true)" in press and "case .move(let id): chosen = id" in press,
+    "Option-Return files, and a near-command only moves the highlight")
+# A bare Return run goes through the Ask row: the saved answer, a short snapshot and the rules ride with the words. The raw words
+# never go to the Today box's submit as a run.
+start_run = block(press, "        case .startRun:", "        case .file:")
+pin("submit(" not in start_run and "listing.rows.first(where: { $0.kind == .ask && $0.selectable })" in start_run and "activate(ask.id, listing)" in start_run,
+    "Return with no highlight starts its Work run through the Ask row, never with the raw words")
+pin(press.count("submit(") == 1, "the panel's submit is Option-Return's filing and nothing else")
 pin("submit: { words, file in todaySubmitAsk(words, file: file) }" in ext, "Return reaches today's own submit")
 pin(".onTapGesture { closeCommandCenter() }" in ext, "a click outside closes it")
+
+# A row that ran leaves nothing armed: no highlight, no words in the box, no draft for the next open. The words are used up in
+# `perform` for every row but the ones that send them, and a run, a filing or a recording empties the draft directly, because
+# a panel closed by a click outside has no `clearWords` left to call.
+perform = block(panel, "    private func perform(", "    private func resultLine(")
+pin(before(perform, "let effect = run(row, listing)", "if effect != .notice, !C.sendsWords(row) {", "chosen = nil", "words = C.draftAfterRun(row, words)", "keys.draft = words", "switch effect {"),
+    "a row that ran empties its highlight, the box and the draft, unless it sends the words or only showed the notice")
+keys_class = block(window, "@MainActor final class CommandCenterKeys {", "struct CommandCenterFixture {")
+pin('func clearDraft() {\n        draft = ""\n        clearWords?()\n    }' in keys_class, "clearDraft empties the draft directly, then the box if it is on screen")
+filing = block(window, "    func todaySubmitAsk(", "    func todayNeedsPanel(")
+pin(before(filing, "try await model.captureTask(domain: taskDomain, text: text)", "commandKeys.clearDraft()"), "a filing that succeeded empties the draft")
+start_run_fn = block(ext, "    func commandStartRun(", "\n    }\n")
+pin(before(start_run_fn, "if today.runNote == TodayHomeStore.startedNote { commandKeys.clearDraft() }"), "a run that started empties the draft, even with the panel gone")
+now_fn = block(ext, "    func commandRecordNow() {", "\n    }\n")
+pin(before(now_fn, "today.recordInFlight = true", "commandKeys.clearDraft()", "Task {"), "a recording under way empties the draft")
+pin(window.count("commandKeys.clearDraft()") == 3 and "commandKeys.clearWords?()" not in ext, "a filing, a run and a recording are the only three places that empty the draft")
 
 # Every command and action has a dispatch case, with no default.
 for fn, enum in (("func commandRun(_ command: SetupAssistant.Center.Command) -> CommandEffect {", "enum Command: String, CaseIterable, Sendable {"),
@@ -257,6 +279,12 @@ live_rows = block(window, "    func todayRecordings() -> [TodayHome.Recording] {
 pin("let stoppable = store.isRecording || starting" in live_rows and 'let starting = store.phase == "starting"' in live_rows and "recordingCount" not in live_rows,
     "a recording keys on the Mac capture's own state and the server's live sessions, never recordingCount")
 pin("canStop: stoppable" in live_rows and live_rows.count("canStop:") == 1, "only this Mac's capture can have Stop")
+# A Mac capture the server still counts after this Mac let go of it (saved, or pending after a failed save) is a Mac row. It is never
+# the unnamed recording the section falls back to, and never a glasses meeting in ⌘K.
+pin("TodayHome.nonMacLive(serverLive: model.liveTranscriptServerLive, liveSessionIDs: model.liveTranscriptRows.filter { $0.phase == .live }.map(\\.sessionId)," in live_rows
+    and "macHeld: store.occupied, captureID: captureID)" in live_rows, "the unnamed recording leaves out every Mac capture the server counts")
+pin("TodayHome.nonMacLive(serverLive: model.recordingCount, liveSessionIDs: model.liveTranscriptRows.filter { $0.phase == .live }.map(\\.sessionId)," in recording
+    and "macHeld: store.occupied, captureID: store.manifest?.captureId)" in recording, "a Mac capture is never a glasses meeting in the command center")
 pin("input.recordings = todayRecordings()" in window, "Running's inputs and the section read one list")
 pin("inputs.live = frame.recordings.compactMap" in ext, "⌘K lists the same recordings as the section")
 pin("case .recording(let id):\n            todayOpen(.liveView(id))" in ext, "a recording row opens its live view, the same action as the section")
