@@ -213,7 +213,7 @@ MUTANTS = [
     ("a read-only pass starts the decoder",
      "if maxBytes > 0, pending.contains(where: { Self.isCompressedLog($0.1) }) {",
      "if pending.contains(where: { Self.isCompressedLog($0.1) }) {",
-     "with no decoder, compressed logs count as unreadable", COLLECTOR),
+     "a read-only pass asks nothing of the decoder", COLLECTOR),
     ("no decoder keeps the logs pending",
      "                pending.removeAll { Self.isCompressedLog($0.1) }\n",
      "",

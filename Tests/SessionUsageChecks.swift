@@ -908,8 +908,11 @@ import Foundation
             // No decoder fails closed for each file, says why, and is not remembered once one turns up.
             let (bareLedger, bareFolder) = try zstLedger("bare", nodes: [])
             try writeZst([whole], to: bareFolder.appendingPathComponent("rollout.jsonl.zst"))
+            let bareOff = try bareLedger.refresh(maxBytes: 0)
+            check(bareOff.pendingFiles == 1 && bareOff.unreadableFiles == 0, "a read-only pass asks nothing of the decoder")
             let bare = try bareLedger.refresh()
-            check(bare.unreadableFiles == 1 && bare.pendingFiles == 0 && bare.buckets.isEmpty && bare.coverage.contains { $0.hasPrefix("Compressed Codex logs could not be read") }, "with no decoder, compressed logs count as unreadable")
+            // filesIndexed: with no decoder the file never reaches the plain reader, which would take it for text.
+            check(bare.filesIndexed == 0 && bare.unreadableFiles == 1 && bare.pendingFiles == 0 && bare.buckets.isEmpty && bare.coverage.contains { $0.hasPrefix("Compressed Codex logs could not be read") }, "with no decoder, compressed logs count as unreadable")
             bareLedger.compressedLogNodes = [zstNode]
             let dressed = try bareLedger.refresh()
             check(dressed.unreadableFiles == 0 && totals(dressed) == totals(reference) && !dressed.coverage.contains { $0.hasPrefix("Compressed Codex logs could not be read") }, "a decoder that turns up later reads them")
@@ -964,7 +967,7 @@ import Foundation
             let claudeRoot = claudeFolder.deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent(".claude/projects/p")
             try writeZst([whole], to: claudeRoot.appendingPathComponent("a.jsonl.zst"))
             let claudeRead = try claudeLedger.refresh()
-            check(claudeRead.buckets.isEmpty && claudeRead.pendingFiles == 0 && claudeRead.unreadableFiles == 0, "only Codex logs are read compressed")
+            check(claudeRead.filesIndexed == 0 && claudeRead.pendingFiles == 0 && claudeRead.unreadableFiles == 0, "only Codex logs are read compressed")
         } else {
             compressedChecksSkipped = true
             FileHandle.standardError.write(Data("SKIPPED, NOT A PASS: no Node here can read zstd (22.15 or later), so the compressed log checks did not run.\n".utf8))
