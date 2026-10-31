@@ -101,7 +101,9 @@ final class SessionUsageCollector {
         dayFormatter.locale = Locale(identifier: "en_US_POSIX")
         dayFormatter.calendar = Calendar(identifier: .gregorian); dayFormatter.timeZone = zone; dayFormatter.dateFormat = "yyyy-MM-dd"
         fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        try run("INSERT OR IGNORE INTO meta VALUES('timezone',?)", [zone.identifier])
+        // Every command opens this database, and a write needs the lock that a compressed-log read holds through each decoder start.
+        // Once the row is there, opening is read-only, so a busy history never stops a command at init.
+        if existing == nil { try run("INSERT OR IGNORE INTO meta VALUES('timezone',?)", [zone.identifier]) }
     }
     deinit { sqlite3_close(db) }
     private static func execute(_ db: OpaquePointer?, _ sql: String) throws {
@@ -797,7 +799,7 @@ final class SessionUsageCollector {
 
 // MARK: - COS cost: the bounded reader behind `cos-usage` (0.5.359)
 //
-// Reads ledgers and session logs, writes only its own two tables, and returns counts. The rules are in SessionUsageCore.
+// Reads ledgers and session logs, writes only its own three tables, and returns counts. The rules are in SessionUsageCore.
 // The audit is an unlocked append file that grows without rotation, so it is streamed a line at a time and nothing of it
 // is held across passes. The session slice table exists because `events` has no session id and reimporting it would cost
 // 25 GB of reading: it stores the same counts again, for Work and G2 sessions only, keyed by a digest of the session id.
@@ -1276,7 +1278,9 @@ extension SessionUsageCollector {
         for path in CosCostRules.auditPaths(plistScripts: plistScripts, envScripts: envScripts, home: home.path) where fm.fileExists(atPath: path) {
             report.auditFound = true
             opened((path as NSString).lastPathComponent)
-            report.unreadableRows += Self.cosForEachJSONLine(URL(fileURLWithPath: path)) { line in accumulator.add(CosAuditRow(json: line)) } ?? 0
+            // A file that is there and will not open is not an empty one: the page says its calls are missing.
+            if let unreadable = Self.cosForEachJSONLine(URL(fileURLWithPath: path), { line in accumulator.add(CosAuditRow(json: line)) }) { report.unreadableRows += unreadable }
+            else { report.auditUnreadable = true }
             break
         }
 

@@ -1743,9 +1743,10 @@ final class CosCostStore: ObservableObject {
         guard !frozen else { return }
         while !Task.isCancelled {
             await refresh(importSessions: usage.enabled)
-            let reading = usage.enabled && (report?.sessions.stillReading ?? 0) > 0 && error == nil
+            // A busy pass keeps no progress and counts as reading, so it comes back at the reading pace, not in five minutes.
+            let reading = usage.enabled && (report?.sessions.reading ?? false) && error == nil
             // A failed pass is usually a busy history, so it tries again soon rather than at the slow pace.
-            try? await Task.sleep(for: .seconds(reading ? 15 : error != nil ? 60 : 300))
+            try? await Task.sleep(for: .seconds(reading ? CosCostPresentation.readingSeconds : error != nil ? 60 : 300))
         }
     }
 }
@@ -1772,6 +1773,10 @@ struct CosCostView: View {
     }
     private var share: Double? {
         store.report.flatMap { P.share(measured: P.measuredUSD($0), ran: ran, usage: usageState) }
+    }
+    /// Some of the person's own usage has no price, so the total they ran is low and the share reads high.
+    private func ranPartial(_ report: CosUsageReport) -> Bool {
+        P.ranPartial(usageBuckets: usage.report?.buckets ?? [], report: report, usage: usageState)
     }
 
     var body: some View {
@@ -1801,7 +1806,7 @@ struct CosCostView: View {
     }
 
     @ViewBuilder private func page(_ report: CosUsageReport) -> some View {
-        let parts = P.headlineParts(report: report, ran: ran, usage: usageState)
+        let parts = P.headlineParts(report: report, ran: ran, usage: usageState, ranPartial: ranPartial(report))
         (Text(parts.answer).foregroundStyle(.primary) + Text(parts.caveat).foregroundStyle(COSPalette.subtle))
             .font(COSType.display(narrow ? 24 : 29))
             .lineSpacing(narrow ? 3 : 5)
@@ -1830,7 +1835,7 @@ struct CosCostView: View {
                     Button("Try again") { Task { await store.refresh(importSessions: usage.enabled) } }.buttonStyle(COSQuietButtonStyle()).fixedSize()
                 }
             }
-            if usage.enabled && report.sessions.stillReading > 0 {
+            if usage.enabled && report.sessions.reading {
                 HStack(spacing: 8) {
                     ProgressView().controlSize(.mini)
                     Text(P.stillReadingNote(report)).foregroundStyle(COSPalette.subtle)
@@ -1934,7 +1939,7 @@ struct CosCostView: View {
                     .textFieldStyle(.plain).cosField().frame(width: 104)
                     .monospacedDigit().accessibilityLabel("What you pay a month for these tools")
             }
-            if let line = P.compareLine(share: share, price: price) {
+            if let line = P.compareLine(share: share, price: price, ceiling: ranPartial(report)) {
                 Text(line).font(COSType.display(narrow ? 19 : 21)).fixedSize(horizontal: false, vertical: true)
             }
             Text(P.compareHint(share: share, price: price, measured: P.measuredUSD(report) > 0)).font(COSType.body(12.5)).foregroundStyle(COSPalette.subtle).fixedSize(horizontal: false, vertical: true)
@@ -1943,7 +1948,7 @@ struct CosCostView: View {
 
     private func footer(_ report: CosUsageReport) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            ForEach(P.sessionNotes(report), id: \.self) { note in
+            ForEach(P.sessionNotes(report, ranPartial: ranPartial(report)), id: \.self) { note in
                 Text(note).font(COSType.body(12)).foregroundStyle(COSPalette.subtle).fixedSize(horizontal: false, vertical: true)
             }
             DisclosureGroup("How this is counted", isExpanded: $showNotes) {

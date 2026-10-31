@@ -1362,12 +1362,6 @@ enum ParakeetCLIPath {
     }
 }
 
-// ── Key lanes (K1, plan v4 10.1, 12; P10) ────────────────────────────────────────────────────────────────────────────
-// `cos-control-helper key-lanes <action>` talks to the server's /api/key-lanes/* over loopback with the token
-// (HelperSources/main.swift does the I/O). This part is pure and is what Tests/KeyLanesHelperChecks.swift drives: the
-// grammar (which action is which route), the stdin bodies, and the whitelist of what crosses back to the app. A pasted
-// key only ever arrives on stdin, never in argv or the environment (so `ps` never shows it), and nothing this returns
-// carries it: the server never sends a secret, and the answer is dropped whole if one ever appeared in it.
 /// Update Server, and any other install that asks for "latest", only moves forward. npm latest can sit behind a Mac on a
 /// newer private build, so one click would otherwise go backward. A named version (install --version) and Roll back are
 /// deliberate choices and stay outside this rule.
@@ -1392,6 +1386,12 @@ enum ServerUpdateGuard {
     }
 }
 
+// ── Key lanes (K1, plan v4 10.1, 12; P10) ────────────────────────────────────────────────────────────────────────────
+// `cos-control-helper key-lanes <action>` talks to the server's /api/key-lanes/* over loopback with the token
+// (HelperSources/main.swift does the I/O). This part is pure and is what Tests/KeyLanesHelperChecks.swift drives: the
+// grammar (which action is which route), the stdin bodies, and the whitelist of what crosses back to the app. A pasted
+// key only ever arrives on stdin, never in argv or the environment (so `ps` never shows it), and nothing this returns
+// carries it: the server never sends a secret, and the answer is dropped whole if one ever appeared in it.
 enum KeyLanesHelperCore {
     static let usage = "key-lanes takes status, enable, disable, save-key, set-cap --ref R --cap USD, remove-key --ref R [--force], remove-all [--export-ledger], remove-saved-keys, catalog, save-profile, delete-profile --id ID, reset-breaker --ref R"
     /// What `remove-saved-keys` deletes from the server's data dir when the server cannot (an older server, or lanes off:

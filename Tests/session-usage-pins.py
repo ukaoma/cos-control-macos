@@ -97,7 +97,15 @@ PINS = [
      lambda t: once(t[VIEW], "cursorFeedOn: P.usageHoldsCursor(feedOn: usage.cursorEnabled, usage: usage.report, report: report)"),
      VIEW, "cursorFeedOn: P.usageHoldsCursor(feedOn: usage.cursorEnabled, usage: usage.report, report: report)", "cursorFeedOn: usage.cursorEnabled"),
     ("a paused page does not say it is still reading",
-     lambda t: once(t[VIEW], "if usage.enabled && report.sessions.stillReading > 0 {"), VIEW, "if usage.enabled && report.sessions.stillReading > 0 {", "if report.sessions.stillReading > 0 {"),
+     lambda t: once(t[VIEW], "if usage.enabled && report.sessions.reading {"), VIEW, "if usage.enabled && report.sessions.reading {", "if report.sessions.reading {"),
+    ("a busy pass reads again at the reading pace, not in five minutes",
+     lambda t: once(t[VIEW], "let reading = usage.enabled && (report?.sessions.reading ?? false) && error == nil")
+               and once(t[VIEW], "reading ? CosCostPresentation.readingSeconds : error != nil ? 60 : 300"),
+     VIEW, "(report?.sessions.reading ?? false)", "((report?.sessions.stillReading ?? 0) > 0)"),
+    ("the share is said as a ceiling when some of the person's own usage has no price",
+     lambda t: once(t[VIEW], "P.compareLine(share: share, price: price, ceiling: ranPartial(report))") and once(t[VIEW], "usage: usageState, ranPartial: ranPartial(report))")
+               and once(t[VIEW], "P.sessionNotes(report, ranPartial: ranPartial(report))"),
+     VIEW, "P.compareLine(share: share, price: price, ceiling: ranPartial(report))", "P.compareLine(share: share, price: price)"),
     ("the COS cost command finds Node the same way",
      lambda t: t[HELPER].count("findCompressedLogNode(for: collector)") == 2, HELPER, "            findCompressedLogNode(for: collector)\n            let environment = serverEnvironment()", "            let environment = serverEnvironment()"),
     ("the calendar draws what fits",

@@ -732,6 +732,49 @@ MUTANTS += [
     ("cos: a busy history fails the page", "catch { report.sessions.busy = true }", "catch { throw error }", "a busy history keeps the page and says so", COLLECTOR),
     ("cos: a row past the window is stored", "let at = CosCostRules.epoch(event.timestamp), at >= retainFrom else { return }", "let at = CosCostRules.epoch(event.timestamp) else { return }", "a row older than the window is not stored", COLLECTOR),
 ]
+
+# 0.5.360: the review's fixes. Names start "cos 360:", so `mutate-session-usage.py <root> "^cos 360:"` runs only these.
+MUTANTS += [
+    ("cos 360: the time zone row is written on every open", 'if existing == nil { try run("INSERT OR IGNORE INTO meta VALUES(\'timezone\',?)", [zone.identifier]) }', 'try run("INSERT OR IGNORE INTO meta VALUES(\'timezone\',?)", [zone.identifier])',
+     "a command opens an existing history while another holds the write lock, without waiting it out", COLLECTOR),
+    ("cos 360: an audit that will not open reads as empty", "            else { report.auditUnreadable = true }\n", "            else { }\n", "an audit that will not open is flagged, not read as empty", COLLECTOR),
+    ("cos 360: an unreadable audit reads as no calls", '        if calls(report) == 0 { return ("COS could not read its record of calls, so there is no count to show.", "") }\n', "", "an unreadable audit does not read as no calls"),
+    ("cos 360: an unreadable audit with calls says nothing", 'return (parts.answer, parts.caveat + " COS could not read its record of calls, so some are missing here.")', "return parts", "an unreadable audit with other calls says some are missing"),
+    ("cos 360: a row finds its run by a bare session", 'for key in ["claude:" + row.sessionID, "codex:" + row.sessionID] {', "for key in [row.sessionID] {", "a row finds its run by session, in the key shape the collector builds"),
+    ("cos 360: a Codex run is not found by its session", 'for key in ["claude:" + row.sessionID, "codex:" + row.sessionID] {', 'for key in ["claude:" + row.sessionID] {', "a Codex run is found by its session too"),
+    ("cos 360: a Cursor gist run adds to the total", "if CosCostRules.runsThroughCursor(model: run.engine) || CosCostRules.runsThroughCursor(model: run.model) { r.addsUnlessCursorFeedUSD += usd }", "if false { r.addsUnlessCursorFeedUSD += usd }",
+     "a Cursor gist run is held apart from the plain additions"),
+    ("cos 360: the gist engine is not read", "if CosCostRules.runsThroughCursor(model: run.engine) || CosCostRules.runsThroughCursor(model: run.model) { r.addsUnlessCursorFeedUSD += usd }", "if CosCostRules.runsThroughCursor(model: run.model) { r.addsUnlessCursorFeedUSD += usd }",
+     "a Cursor gist run is held apart from the plain additions"),
+    ("cos 360: the gist model is not read", "if CosCostRules.runsThroughCursor(model: run.engine) || CosCostRules.runsThroughCursor(model: run.model) { r.addsUnlessCursorFeedUSD += usd }", "if CosCostRules.runsThroughCursor(model: run.engine) { r.addsUnlessCursorFeedUSD += usd }",
+     "a Luna gist run follows the Cursor rule too"),
+    ("cos 360: the measured figure never ends in +", 'let usdText = money(usd) + (measuredPartial(report) ? "+" : "")', "let usdText = money(usd)", "the headline's measured figure ends in + when calls were left out"),
+    ("cos 360: the total never ends in +", 'let ranText = money(ran) + (ranPartial ? "+" : "")', "let ranText = money(ran)", "the total ends in + when some of the person's own usage has no price"),
+    ("cos 360: a row's dollars never end in +", 'figure: money(row.measuredUSD) + (partial ? "+" : "")', "figure: money(row.measuredUSD)", "a row that leaves out calls with no rate says so"),
+    ("cos 360: a row does not say how many calls have no price", '        if partial { mixParts.append(', "        if false { mixParts.append(", "a row that leaves out calls with no rate says so"),
+    ("cos 360: a partly priced mix says the rest", '"\\(row.estimatedPricedCalls.formatted()) of the \\(row.estimatedCalls.formatted()) others" : "the rest"', '"the rest" : "the rest"', "a mix that prices only some of the rest says how many"),
+    ("cos 360: a bucket with some events unpriced is not partial", "return usageBuckets.contains { bounds.contains($0.day) && $0.pricedEvents < $0.events }", "return usageBuckets.contains { bounds.contains($0.day) && $0.pricedEvents == 0 }", "a bucket with some events unpriced makes the total partial"),
+    ("cos 360: a bucket outside the window is partial", "return usageBuckets.contains { bounds.contains($0.day) && $0.pricedEvents < $0.events }", "return usageBuckets.contains { $0.pricedEvents < $0.events }", "an unpriced bucket outside the window is not this window's"),
+    ("cos 360: a total that is not shown is partial", "guard usage != .paused, usage != .unavailable else { return false }\n", "", "a total that is not shown has nothing to qualify"),
+    ("cos 360: the share is not a ceiling", 'if ceiling { return "Up to about', 'if false { return "Up to about', "a share against a partial total is a ceiling"),
+    ("cos 360: the low total goes unsaid", '        if ranPartial { notes.append("Some of your own sessions', '        if false { notes.append("Some of your own sessions', "one line says the total is low when it is"),
+    ("cos 360: day-ledger usage is no usage", "overhead(report).contains { $0.measuredTokens > 0 } || workTokens(report) > 0 || report.work.widerTokens > 0", "workTokens(report) > 0 || report.work.widerTokens > 0", "day-ledger usage with no calls is not no usage"),
+    ("cos 360: Work usage is no usage", "overhead(report).contains { $0.measuredTokens > 0 } || workTokens(report) > 0 || report.work.widerTokens > 0", "overhead(report).contains { $0.measuredTokens > 0 } || report.work.widerTokens > 0", "Work usage with no calls is not no usage"),
+    ("cos 360: the wider Work figure is no usage", "overhead(report).contains { $0.measuredTokens > 0 } || workTokens(report) > 0 || report.work.widerTokens > 0", "overhead(report).contains { $0.measuredTokens > 0 } || workTokens(report) > 0", "the wider Work figure is usage too"),
+    ("cos 360: a paused page blames the server", '        if usage == .paused { return " Tracking is paused, so the session logs that could hold their cost are not being read." }\n', "", "a paused page does not blame the server"),
+    ("cos 360: unread logs blame the server", '        if report.sessions.reading { return " Still reading the session logs that could hold their cost." }\n', "", "sessions still being read are the reason, not the server"),
+    ("cos 360: a busy pass is not reading", "var reading: Bool { stillReading > 0 || busy }", "var reading: Bool { stillReading > 0 }", "a busy history is the same"),
+    ("cos 360: a busy pass counts sessions", '        guard n > 0 else { return "Still reading. The usage history was busy, so these figures may grow." }\n', "", "a busy pass says still reading, with no count it does not have"),
+    ("cos 360: the footer promises the next pass", "COS tries again in \\(readingSeconds) seconds.\")", "The next one will.\")", "the footer promises only what the page does"),
+    ("cos 360: the reading pace drifts", "static let readingSeconds = 15", "static let readingSeconds = 300", "the footer promises only what the page does"),
+    ("cos 360: the Work figure never ends in +", 'if workUSD(report) > 0 { return money(workUSD(report)) + (workPartial(report) ? "+" : "") }', "if workUSD(report) > 0 { return money(workUSD(report)) }", "the Work figure ends in + when events had no rate"),
+    ("cos 360: unpriced Work events are not read", "report.work.unpricedEvents > 0 || (report.rows.first { $0.category == .work }?.unpricedMeasuredCalls ?? 0) > 0\n    }", "(report.rows.first { $0.category == .work }?.unpricedMeasuredCalls ?? 0) > 0\n    }", "the Work figure ends in + when events had no rate"),
+    ("cos 360: a real Work row with no rate is not read", "report.work.unpricedEvents > 0 || (report.rows.first { $0.category == .work }?.unpricedMeasuredCalls ?? 0) > 0\n    }", "report.work.unpricedEvents > 0\n    }", "a real Work row with no rate marks the Work figure too"),
+    ("cos 360: the wider figure never ends in +", 'return money(wider) + (partial ? "+" : "") + " if you count', 'return money(wider) + " if you count', "the wider figure ends in + when events had no rate"),
+    ("cos 360: wider unpriced events are not counted", "                if usd == nil { work.widerUnpricedEvents += 1 }\n", "", "a Work event with no rate is counted, so the wider figure can say it leaves it out"),
+    ("cos 360: the method leaves out the +", " A dollar figure that leaves out some calls with no rate ends in a +.", "", "the method says what a + means"),
+]
+
 # Regular expressions over the names, several with | to run in that order, for when the compile lock is busy and only some can run.
 if len(sys.argv) > 2:
     picked = {}
