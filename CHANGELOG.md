@@ -1,3 +1,41 @@
+## 0.5.360 (build 414), ⌘K and COS cost fixes on top of 0.5.359
+
+Public, with server 6.94.2, which is what public users run. No server change is needed. Server 6.97.0 adds measured COS cost rows and the stopped meeting row, and an older server gets estimates and the rows it had. Built on 0.5.359 (build 413, 53db3de), which was installed on Miles's Mac and never published, so everything under 0.5.359 below reaches public users for the first time here, and its default-on list applies as written.
+
+This build adds nothing to public defaults. It changes how three default-on pieces behave:
+
+- ⌘K, for people with Today on (`activityTodayHomeEnabled`, default off): Return and the saved draft work as described below.
+- COS cost, for everyone: its words and figures change as described below. Nothing new is read, stored or sent.
+- The Today rail, for people with Today on: a recording that has stopped and is saving is no longer counted as "1 recording".
+
+⌘K:
+
+- Return goes to what your words point at before it starts anything. When the first row is a command (Stop and save, Run Doctor, "go to se", or a command's phrase inside a longer sentence), Return moves to that command's row and a second Return runs it. Stop and Doctor still ask first, and neither can highlight itself. When a title matches a session, Return moves to the first matching session row. Before, a recording running and "stop recording" then Return, Return started a Work run on those words while the recording kept going. Words that matched a session title started a Work run on those words, or filed them as a task, when there were three or more. With fewer, Return moved to Ask and the second Return spent a run instead of opening the session.
+- A row that ran no longer comes back. The box, its highlight and the saved draft are cleared for every row except Ask COS, File to Work and troubleshoot, which keep their words until the run or the filing is accepted. A run that started, a filing that saved and a recording under way clear the draft even when a click outside already closed the panel. Before, ⌘K again brought back "open work" highlighted, "record" armed after the recording had saved, or the words of a run already started, and one Return fired it a second time.
+- A longer sentence with no command in it starts its Work run through Ask COS, so it carries a short snapshot of what COS Control sees and the same rules as the Ask row, where before it sent the raw words alone. Option-Return, and the Today box with Start Work off, are unchanged.
+- A Mac capture that has finished saving, or failed to, while the server still counts it is no longer shown as a recording on the glasses. It counts out with the Mac's own capture, in Today, in ⌘K and in the rail, and ⌘K no longer says a glasses meeting is recording because of it. A live recording that no row names says "Recording, device not shown" and "Stop it where it started", where it used to claim the glasses.
+- The rail no longer says "1 recording" while the section says Saving.
+
+COS cost:
+
+- A figure that leaves out calls with no verified price ends in +, as Usage's do: a row, the headline's measured figure, and the Work line and its wider figure. A row says how many measured calls have no price. A mix of estimated calls says how many of the others have a floor, instead of "the rest". The method text says what the + means.
+- When some of your own sessions have no verified price, the total you ran is low, and the share of it reads high. The total ends in +, one line in the footer says so, and the comparison reads "Up to about 1.5% of your usage, so up to $3.00 of your $200". It is not hidden, because how much is unpriced cannot be sized.
+- An audit file that is there and cannot be opened is said in the headline ("COS could not read its record of calls"), and never read as no calls or as a smaller count.
+- "COS made no calls" no longer shows above Work or day-ledger usage. "This server doesn't measure their cost yet" shows only when nothing else could be the reason: a paused Usage says tracking is paused, and sessions still being read say that.
+- A pass that finds the usage history busy keeps no progress. It now counts as still reading: the headline says "Measured so far", the page says it is still reading, and it reads again in 15 seconds instead of five minutes. The footer says "COS tries again in 15 seconds", which the page now does.
+- Opening the usage database writes its time zone only the first time. Every helper command used to write it on open, which needs the write lock that a compressed-log read holds through each decoder start, so `cos-usage` could fail at open and show "COS cost could not refresh" instead of a busy page. A failed Usage pass has the same cause.
+- A G2 audit row with a session and no run id now finds its run by session. The lookup used the bare id against keys of the form `claude:<id>`, so it never matched, and only a time and model match could, labelled approximate.
+- A lens gist run through the Cursor engine follows the same rule as other Cursor spend: it is added to the total you ran only while the Cursor feed is off.
+
+Words and files:
+
+- The 0.5.359 entry said "Only a real denial stops asking" for Cursor's Keychain. Four timeouts in a row also stop it for 30 days, and the entry now says so. The comment above the COS cost reader says three tables, not two. `docs/session-usage.md` describes compressed logs and COS cost. `ServerUpdateGuard` no longer sits under the Key lanes comment (no behaviour change).
+
+Not verified:
+
+- The ⌘K and Today changes are proven on fixtures, the compiled engine checks and source pins, not by use on a live Mac. The view's `perform` and the draft rules are held by pins and by the engine's `draftAfterRun`, because the panel's own state cannot be reached from a test.
+- The full suite, signing and install receipts are separate from these notes.
+
 ## 0.5.359 (build 413), ⌘K command center, COS cost, compressed Codex logs, Update Server only moves forward
 
 Private install on Miles's Mac, not published. Merges claude/command-center (39da43d), claude/cos-cost (e773a1e) and claude/usage-qa-fixes (4f29af9) onto 0.5.358 (9931f89), the public build, whose ZIP is the rollback. Runs on public server 6.94.2. Server 6.97.0 adds measured COS cost rows and the stopped meeting row; an older server gets estimates and the rows it had.
@@ -11,7 +49,7 @@ Default-on changes for public users, if this goes public:
 - Restart and Update lockout. A server 6.97.0 row with phase stopped sorts last and blocks nothing, and audio on disk with no server running blocks nothing. Both say so and nothing deletes the audio. A server that does not answer stays blocked and says why, and a disabled Update Server explains itself.
 - A stopped meeting's speaker changes, voice check and one-click naming say its final transcript stopped, not "in a minute". A meeting really saving keeps its words.
 - Usage while paused: a bar with Resume tracking, which reads at once, "Paused" in place of the update time, no month estimate, and no promise that totals will grow. Turning Cursor on while paused saves the choice and reads nothing.
-- Cursor: a Keychain that gives no answer retries at 15 minutes, doubling to 6 hours, where it used to stop for 30 days. Only a real denial stops asking. The copy button gives the install command when the command line is missing. New file `cursor-feed.log` beside the usage database holds times and causes only.
+- Cursor: a Keychain that gives no answer retries at 15 minutes, doubling to 6 hours, where it used to stop for 30 days. A real denial stops asking for 30 days, and so do four timeouts in a row, since a timeout can be a prompt nobody is there to answer. The copy button gives the install command when the command line is missing. New file `cursor-feed.log` beside the usage database holds times and causes only.
 - Calendar: past a year, the most recent weeks that fit, with a line saying so. "Per 1M new" counts only fully priced rows. The confirm for Update Server adds "If this Mac already runs something newer, nothing changes."
 - What's New: the bundled text no longer names server 6.96.3 or a private build, and a new pin holds that.
 
