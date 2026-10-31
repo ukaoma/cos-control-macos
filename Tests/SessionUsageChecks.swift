@@ -917,6 +917,8 @@ extension Checks {
         check(turn.measuredTokens == 300, "a resumed session: turns before the handoff are not the run's")
         turn = workTurns([mark("2026-10-30T12:08:00Z", .handedIn), mark("2026-10-30T12:10:30Z", .end)])
         check(turn.measuredTokens == 300, "a row long after the handoff is not the run's own prompt")
+        turn = workTurns([mark("2026-10-30T12:00:30Z", .typed), mark("2026-10-30T12:05:30Z", .typed)])
+        check(turn.measuredTokens == 100, "a person typing right after a handoff ends the run, because their words are not its prompt")
         turn = workTurns([mark("2026-10-30T12:00:20Z", .typed), mark("2026-10-30T12:05:30Z", .typed)], handoffs: [CosWorkRun(session: "claude:s1", start: handoff, openedInApp: true)])
         check(turn.measuredTokens == 300, "a prompt opened in the app and sent by the person is the run's own")
         turn = workTurns([mark("2026-10-30T12:00:03Z", .handedIn), mark("2026-10-30T12:04:00Z", .handedIn), mark("2026-10-30T12:04:03Z", .end), mark("2026-10-30T12:09:00Z", .end)],
