@@ -388,6 +388,12 @@ struct ServerStatus: Sendable {
         if meetingSyncBlocksRestart { return "Blocks Update / Restart until meeting work finishes." }
         return "Meeting work in progress."
     }
+    /// The words for a server's `meeting_finalizing` refusal. A stopped save is not about to finish, so it never says "in a minute".
+    func meetingFinalizingWords(session: String?) -> String {
+        meetingSyncMeetings.contains { $0.isHeld && $0.meetingId == session }
+            ? "This meeting's final transcript stopped. Speaker changes wait until it finishes, which COS retries later. Its audio is kept."
+            : "This meeting is still being saved. Try again in a minute."
+    }
     /// Audio that holds nothing shut. Says so, and what still works. Deleting it is not offered here.
     var heldAudioNote: String? {
         guard !meetingWorkBlockingRestart else { return nil }

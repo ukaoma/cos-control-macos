@@ -85,7 +85,9 @@ with tempfile.TemporaryDirectory(prefix="cos-restart-", dir="/tmp") as tmp:
     empty = through_panel("self-test-held-audio")
     check(empty["blocking"] is False and empty["label"] == "Idle" and empty["note"] is None, "a folder with no audio is not kept audio")
 root = pathlib.Path(__file__).resolve().parents[1]
-sources = {name: (root / name).read_text() for name in ("HelperSources/main.swift", "Sources/Views.swift", "Sources/ActivityWindow.swift", "Sources/ProviderConnectViews.swift")}
+sources = {name: (root / name).read_text() for name in ("HelperSources/main.swift", "Sources/Views.swift", "Sources/ActivityWindow.swift", "Sources/ProviderConnectViews.swift", "Sources/ControllerModel.swift")}
+controller = sources["Sources/ControllerModel.swift"]
+check("still being saved" not in controller and controller.count("status.meetingFinalizingWords(session: session)") == 6 and controller.count("message = finalizingWords") == 1 and controller.count('case "meeting_finalizing": return finalizingWords') == 1, "every speaker refusal asks which words are true")
 check(sources["HelperSources/main.swift"].count("workCanRun: !snapshot.allListenerPIDs.isEmpty || snapshot.servicePID != nil, serverAnswered: false") == 1, "only no listener and no launchd pid counts as stopped")
 check(sources["HelperSources/main.swift"].count("guard health == nil else { return meetingSyncStatusFromPendingBatch(workCanRun: true, serverAnswered: true) }") == 1, "a server that answers keeps the scan's reading")
 check("Text(model.status.meetingWorkBlockReason)" in sources["Sources/Views.swift"] and "model.status.heldAudioNote" in sources["Sources/Views.swift"], "the panel shows the reason and the note")

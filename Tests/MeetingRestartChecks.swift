@@ -43,6 +43,15 @@ import Foundation
         check(saving.meetingWorkBlockingRestart && saving.meetingWorkBlockReason.contains("library"), "a real save still blocks")
         check(status(["activeTranscriptionSessions": .number(1)]).meetingWorkBlockReason.contains("recording"), "a recording names itself")
         check(!status([:]).meetingWorkBlockingRestart && status([:]).heldAudioNote == nil, "an old payload with none of this says nothing")
+        // A speaker correction refused as finalizing: the truth for a stopped meeting, the old words for one really saving.
+        let heldId = "meeting_1789754707558_277naf"
+        let stoppedWords = "This meeting's final transcript stopped. Speaker changes wait until it finishes, which COS retries later. Its audio is kept."
+        let savingWords = "This meeting is still being saved. Try again in a minute."
+        check(heldRow.meetingFinalizingWords(session: heldId) == stoppedWords, "a stopped meeting is told the truth about speaker changes")
+        check(heldRow.meetingFinalizingWords(session: "meeting_1789761552246_qfcpyr") == savingWords && heldRow.meetingFinalizingWords(session: nil) == savingWords, "another meeting keeps the saving words")
+        let savingRow = status(["meetingSyncMeetings": .array([row(["phase": .string("persisting"), "label": .string("Saving to meeting library")])])])
+        check(savingRow.meetingFinalizingWords(session: heldId) == savingWords, "a meeting really saving keeps the saving words")
+        check(status([:]).meetingFinalizingWords(session: heldId) == savingWords, "an older server's payload keeps the saving words")
         for words in [kept.heldAudioNote ?? "", heldRow.heldAudioNote ?? ""] {
             check(!words.lowercased().contains("retry") && !words.lowercased().contains("retrying") && !words.lowercased().contains("delete") && !words.lowercased().contains("discard"), "Control's own words claim no retry and offer no delete")
         }

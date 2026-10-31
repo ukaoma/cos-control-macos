@@ -2,8 +2,8 @@
 """Control's half of the restart lockout, mutation gate. SERIAL through Tests/compile-guard.sh on a scratch copy (the checkout
 is never mutated). A green baseline first; each mutant must land exactly once, fail, and fail on the check named for it.
 Model mutants need only the small compile, helper mutants a full helper compile. Hand-run.
-Usage: python3 Tests/mutate-meeting-restart.py <repo root>"""
-import pathlib, shutil, subprocess, sys, tempfile, time
+Usage: python3 Tests/mutate-meeting-restart.py <repo root> [only the mutants whose name matches this regular expression]"""
+import pathlib, re, shutil, subprocess, sys, tempfile, time
 
 sys.stdout.reconfigure(line_buffering=True)
 root = pathlib.Path(sys.argv[1]).resolve()
@@ -16,6 +16,9 @@ MUTANTS = [
     ("held rows sort with the work", MODELS, "row.isHeld ? 2 : row.isWaiting ? 1 : 0", "row.isWaiting ? 1 : 0", "held rows sort after work and the queue"),
     ("the note shows while blocked", MODELS, "guard !meetingWorkBlockingRestart else { return nil }", "", "real work beside a held job still blocks, with no note saying otherwise"),
     ("the unanswered reason is lost", MODELS, "if meetingSyncUnconfirmed {", "if false {", "a server that does not answer stays blocked and says why"),
+    ("any stopped meeting answers for this one", MODELS, "meetingSyncMeetings.contains { $0.isHeld && $0.meetingId == session }", "meetingSyncMeetings.contains { $0.isHeld }", "another meeting keeps the saving words"),
+    ("a saving meeting reads as stopped", MODELS, "meetingSyncMeetings.contains { $0.isHeld && $0.meetingId == session }", "meetingSyncMeetings.contains { $0.meetingId == session }", "a meeting really saving keeps the saving words"),
+    ("a stopped meeting says in a minute", MODELS, "meetingSyncMeetings.contains { $0.isHeld && $0.meetingId == session }", "false", "a stopped meeting is told the truth about speaker changes"),
     ("a stopped row blocks", MODELS, "            || displayedMeetingSync.blocksRestart\n", '            || displayedMeetingSync.blocksRestart\n            || meetingSyncMeetings.contains(where: \\.isHeld)\n', "a stopped job blocks nothing and says so"),
     ("stopped audio still blocks", MAIN, "if !workCanRun {", "if false {", "stopped, held audio blocks nothing"),
     ("a silent process reads as HQ polish", MAIN, "} else if !serverAnswered {", "} else if false {", "a process that does not answer stays blocked and says why"),
@@ -50,7 +53,7 @@ try:
     print("GREEN BASELINE: " + base.stdout.strip())
     survivors, misattributed = [], []
     originals = {MAIN: (work / MAIN).read_text(), MODELS: (work / MODELS).read_text()}
-    for name, target, old, new, label in MUTANTS:
+    for name, target, old, new, label in [m for m in MUTANTS if len(sys.argv) < 3 or re.search(sys.argv[2], m[0])]:
         if originals[target].count(old) != 1: sys.exit(f"mutant '{name}' targets {originals[target].count(old)} sites")
         (work / target).write_text(originals[target].replace(old, new))
         mutated = work / "mutant"
