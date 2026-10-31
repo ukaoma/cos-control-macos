@@ -21,7 +21,8 @@ export COS_TEST_KIT_DIR="${COS_TEST_KIT_DIR:-$TMP/kits}"
 /usr/bin/python3 "$ROOT/Tests/desktop-safety-check.py" "$ROOT"
 /usr/bin/python3 "$ROOT/Tests/desktop-safety-check.py" "$ROOT" --selftest
 # Hand-run: Tests/mutate-session-usage.py (the Usage slicing mutation lane, serial, green baseline first) and
-# Tests/run-session-usage-render.sh (offscreen PNGs, including the 760 pt narrow slice).
+# Tests/run-session-usage-render.sh (offscreen PNGs, including the 760 pt narrow slice). COS cost: Tests/run-cos-cost-render.sh
+# (every state at 760 and 1200 pt) and Tests/CosCostCanary.swift (real ledgers against a scratch copy of the history).
 "$ROOT/Tests/run-session-usage.sh"
 "$ROOT/Tests/run-onboarding.sh"
 # Onboarding P1, Connect your AI: provider-status against fixtures, the app model alone, and the wiring pins.

@@ -1670,6 +1670,10 @@ enum CosCostPresentation {
         if value > 0 && value < 0.01 { return "under 1¢" }
         return value.formatted(.currency(code: "USD").precision(.fractionLength(value < 10 ? 2 : 0)))
     }
+    /// A floor in words. "At least under 1¢" would contradict itself.
+    static func atLeast(_ value: Double) -> String {
+        value < 0.01 ? "at least a fraction of 1¢" : "at least " + money(value)
+    }
     /// A person's total at API value: Usage's total for the window, plus the COS spend it cannot see. The Cursor share is
     /// added only with the feed off, because with it on Usage already holds that spend.
     static func ranUSD(usageBuckets: [SessionUsageBucket], report: CosUsageReport, cursorFeedOn: Bool) -> Double {
@@ -1759,7 +1763,7 @@ enum CosCostPresentation {
         }
         var mix: String?
         if row.measuredCalls > 0 && row.estimatedCalls > 0 {
-            let floor = row.estimatedUSD > 0 ? ", at least \(money(row.estimatedUSD)) estimated for the rest" : ", no verified price for the rest"
+            let floor = row.estimatedUSD > 0 ? ", \(atLeast(row.estimatedUSD)) estimated for the rest" : ", no verified price for the rest"
             mix = "\(row.measuredCalls.formatted()) measured\(floor)."
         }
         if row.measuredUSD > 0 {
@@ -1769,7 +1773,7 @@ enum CosCostPresentation {
             return RowLine(id: row.category, title: row.category.title, count: count, evidence: .noPrice, figure: "No price", detail: tokens, mix: mix)
         }
         if row.estimatedUSD > 0 {
-            return RowLine(id: row.category, title: row.category.title, count: count, evidence: .estimated, figure: "Estimated", detail: "at least " + money(row.estimatedUSD), mix: mix)
+            return RowLine(id: row.category, title: row.category.title, count: count, evidence: .estimated, figure: "Estimated", detail: atLeast(row.estimatedUSD), mix: mix)
         }
         return RowLine(id: row.category, title: row.category.title, count: count, evidence: .noPrice, figure: "No price", detail: tokens, mix: mix)
     }
@@ -1823,7 +1827,7 @@ enum CosCostPresentation {
     /// Intake checks and Work chat keep only character counts, so they sit beside the measured figure, not in it.
     static func workBackground(_ report: CosUsageReport) -> String? {
         guard let row = report.rows.first(where: { $0.category == .work }), row.estimatedCalls > 0 else { return nil }
-        let floor = row.estimatedUSD > 0 ? ", at least \(money(row.estimatedUSD)) estimated" : ", no verified price"
+        let floor = row.estimatedUSD > 0 ? ", \(atLeast(row.estimatedUSD)) estimated" : ", no verified price"
         return "Plus " + row.category.count(row.estimatedCalls) + floor + "."
     }
     static func workWithoutLogs(_ work: CosWorkSummary) -> String {

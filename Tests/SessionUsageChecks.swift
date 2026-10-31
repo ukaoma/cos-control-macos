@@ -1,4 +1,5 @@
 import Foundation
+import SQLite3
 
 @main struct Checks {
     static func main() throws {
@@ -959,6 +960,7 @@ extension Checks {
         check(P.headline(report: report([unpriced]), ran: 1, usage: .ready).contains("no verified price"), "measured calls with no rate say so instead of $0")
         check(P.overhead(report([m, CosCostRow(category: .work, calls: 9, estimatedCalls: 9)])).count == 1 && P.calls(report([m, CosCostRow(category: .work, calls: 9, estimatedCalls: 9)])) == 10, "Work stays out of COS's own figure")
         // Rows.
+        check(P.atLeast(0.44) == "at least $0.44" && P.atLeast(0.001) == "at least a fraction of 1¢", "a floor under a cent does not contradict itself")
         check(P.money(0.444) == "$0.44" && P.money(284.4) == "$284" && P.money(18612) == "$18,612" && P.money(0.001) == "under 1¢", "money keeps cents only when they matter")
         let measuredLine = P.rowLine(m)
         check(measuredLine.evidence == .measured && measuredLine.figure == "$284" && measuredLine.mix == nil, "a measured row shows measured dollars")
@@ -1110,6 +1112,18 @@ extension Checks {
         check(reportStrings.allSatisfy { names.contains($0) || SessionUsageDay($0) != nil || $0 == "America/Chicago" || R.epoch($0) != nil }, "the report holds no free text, so it cannot carry key material")
         let stored = try Data(contentsOf: db)
         check(stored.range(of: Data("SECRET_PROMPT_NEVER_STORE".utf8)) == nil && stored.range(of: Data("SECRET_KEY_NEVER_READ".utf8)) == nil, "no prompt or key reaches the usage history")
+        // Another command holding the write lock costs this pass its slices, never the page.
+        let busyDB = home.appendingPathComponent("cos-busy.sqlite")
+        let busy = try SessionUsageCollector(home: root, database: busyDB, timeZone: chicago)
+        _ = try busy.cosUsage(plistScripts: scripts, dataDirectory: nil, importSessions: true, now: now)
+        var holder: OpaquePointer?
+        check(sqlite3_open(busyDB.path, &holder) == SQLITE_OK && sqlite3_exec(holder, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK, "the test holds the write lock")
+        let h2 = try FileHandle(forWritingTo: grown); try h2.seekToEnd(); try h2.write(contentsOf: Data(try claudeRow("m3", "2026-10-30T12:00:46Z", session: "s-main").utf8)); try h2.close()
+        let held = try busy.cosUsage(plistScripts: scripts, dataDirectory: nil, importSessions: true, now: now)
+        check(held.sessions.busy && held.auditFound && row(.answers, held).measuredCalls == 3, "a busy history keeps the page and says so")
+        sqlite3_exec(holder, "COMMIT", nil, nil, nil); sqlite3_close(holder)
+        let free = try busy.cosUsage(plistScripts: scripts, dataDirectory: nil, importSessions: true, now: now)
+        check(!free.sessions.busy && row(.answers, free).measuredTokens == row(.answers, held).measuredTokens + 1020, "the pass after a busy one catches up")
         // Bounded and resumable: a pass with almost no budget stops, says so, and the next ones finish to the same total.
         let slow = try SessionUsageCollector(home: root, database: home.appendingPathComponent("cos-slow.sqlite"), timeZone: chicago)
         let targets: Set<SessionUsageCollector.CosSliceTarget> = [.init(provider: "claude", id: "s-main"), .init(provider: "claude", id: "s-old")]

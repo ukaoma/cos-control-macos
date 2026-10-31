@@ -365,6 +365,7 @@ MUTANTS += [
     ("cos: a compressed session is not said", "guard let pass else { progress.compressed += 1; return }", "guard let pass else { return }", "the reader says which sessions have no log and which are compressed", COLLECTOR),
     ("cos: a missing log is not said", "if files.isEmpty { progress.noLogs += 1; continue }", "if files.isEmpty { continue }", "the reader says which sessions have no log and which are compressed", COLLECTOR),
     ("cos: an oversized row stops the log", "cursor.skippingLongLine = true\n                            cursor.offset += UInt64(bytes.count)\n                            continue", "break", "an oversized row does not stop the session finishing", COLLECTOR),
+    ("cos: a busy history fails the page", "catch { report.sessions.busy = true }", "catch { throw error }", "a busy history keeps the page and says so", COLLECTOR),
     ("cos: a row past the window is stored", "let at = CosCostRules.epoch(event.timestamp), at >= retainFrom else { return }", "let at = CosCostRules.epoch(event.timestamp) else { return }", "a row older than the window is not stored", COLLECTOR),
 ]
 if len(sys.argv) > 2:

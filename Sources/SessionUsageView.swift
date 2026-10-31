@@ -1716,7 +1716,8 @@ final class CosCostStore: ObservableObject {
         while !Task.isCancelled {
             await refresh(importSessions: usage.enabled)
             let reading = usage.enabled && (report?.sessions.stillReading ?? 0) > 0 && error == nil
-            try? await Task.sleep(for: .seconds(reading ? 15 : 300))
+            // A failed pass is usually a busy history, so it tries again soon rather than at the slow pace.
+            try? await Task.sleep(for: .seconds(reading ? 15 : error != nil ? 60 : 300))
         }
     }
 }

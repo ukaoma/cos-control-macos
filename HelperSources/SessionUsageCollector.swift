@@ -503,6 +503,8 @@ extension SessionUsageCollector {
     }
 
     private func cosPrepareTables() throws {
+        // Skips the write when they exist, so another command holding the lock costs nothing on an ordinary pass.
+        if try query("SELECT COUNT(*) FROM sqlite_master WHERE name='cos_slice_events'").first?.first == "1" { return }
         try Self.execute(db, "CREATE TABLE IF NOT EXISTS cos_slice_files(path TEXT PRIMARY KEY, session TEXT NOT NULL, size INTEGER NOT NULL, modified REAL NOT NULL, state TEXT NOT NULL); CREATE TABLE IF NOT EXISTS cos_slice_events(id TEXT PRIMARY KEY, event TEXT NOT NULL, session TEXT NOT NULL, at REAL NOT NULL, provider TEXT NOT NULL, model TEXT NOT NULL, input INTEGER NOT NULL, output INTEGER NOT NULL, cache_read INTEGER NOT NULL, cache_write INTEGER NOT NULL, one_hour INTEGER NOT NULL); CREATE INDEX IF NOT EXISTS cos_slice_at ON cos_slice_events(at);")
     }
 
@@ -734,7 +736,6 @@ extension SessionUsageCollector {
     /// The whole report. `importSessions` is off when Usage is paused: the person turned off reading their logs.
     /// `opened` hears the name of each ledger as it is opened, so a test can pin the list. Session logs are found by id.
     func cosUsage(plistScripts: String?, dataDirectory: String?, importSessions: Bool, seconds: TimeInterval = SessionUsageCollector.cosPassSeconds, now: Date = Date(), opened: (String) -> Void = { _ in }) throws -> CosUsageReport {
-        try cosPrepareTables()
         let fm = FileManager.default
         let window = CosCostRules.window(now: now, timeZone: zone)
         var report = CosUsageReport(windowStart: window.lowerBound, windowEnd: window.upperBound, timeZone: zone.identifier, updatedAt: iso.string(from: now))
@@ -779,18 +780,18 @@ extension SessionUsageCollector {
         // The bounded read. A busy history means no new rows this pass, not a failed page.
         var targets = Set(workStarts.keys)
         for run in runs where !run.session.isEmpty { targets.insert(CosSliceTarget(provider: run.provider, id: run.session)) }
+        report.sessions.tracked = targets.count
         if importSessions {
             do { report.sessions = try cosReadSessionSlices(targets, seconds: seconds, now: now) }
-            catch { report.sessions.tracked = targets.count; report.sessions.busy = true }
-        } else {
-            report.sessions.tracked = targets.count
+            catch { report.sessions.busy = true }
         }
 
         // Stored slices for the tracked sessions, under the same digests the reader wrote.
         let lowerEpoch = (CosCostRules.epoch(window.lowerBound + "T00:00:00Z") ?? 0) - 86_400
         let keyed = Dictionary(targets.map { (Self.digest($0.provider + ":" + $0.id), $0) }, uniquingKeysWith: { a, _ in a })
         var events: [CosSliceEvent] = []
-        for row in try query("SELECT session,at,provider,model,input,output,cache_read,cache_write,one_hour,event FROM cos_slice_events WHERE at >= CAST(? AS REAL)", [String(lowerEpoch)]) {
+        // No table yet, or no lock to make one, means no stored slices this pass. The rest of the page still stands.
+        for row in (try? query("SELECT session,at,provider,model,input,output,cache_read,cache_write,one_hour,event FROM cos_slice_events WHERE at >= CAST(? AS REAL)", [String(lowerEpoch)])) ?? [] {
             guard let target = keyed[row[0]] else { continue }
             events.append(CosSliceEvent(id: row[9], session: target.provider + ":" + target.id, at: Double(row[1]) ?? 0, provider: row[2], model: row[3],
                 counts: SessionUsageCounts(input: Int64(row[4]) ?? 0, output: Int64(row[5]) ?? 0, cacheRead: Int64(row[6]) ?? 0, cacheWrite: Int64(row[7]) ?? 0), oneHour: Int64(row[8]) ?? 0))
