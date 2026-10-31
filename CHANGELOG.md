@@ -2,7 +2,7 @@
 
 Public, with server 6.94.2, which is what public users run. No server change is needed. Server 6.97.0 adds measured COS cost rows and the stopped meeting row, and an older server gets estimates and the rows it had. Built on 0.5.359 (build 413, 53db3de), which was installed on Miles's Mac and never published, so everything under 0.5.359 below reaches public users for the first time here, and its default-on list applies as written.
 
-This build adds nothing to public defaults. It changes how three default-on pieces behave:
+This build adds one default-on change of its own, the Windu art under Pet, for everyone. It also changes how three default-on pieces behave:
 
 - ⌘K, for people with Today on (`activityTodayHomeEnabled`, default off): Return and the saved draft work as described below.
 - COS cost, for everyone: its words and figures change as described below. Nothing new is read, stored or sent.
@@ -27,6 +27,10 @@ COS cost:
 - A G2 audit row with a session and no run id now finds its run by session. The lookup used the bare id against keys of the form `claude:<id>`, so it never matched, and only a time and model match could, labelled approximate.
 - A lens gist run through the Cursor engine follows the same rule as other Cursor spend: it is added to the total you ran only while the Cursor feed is off.
 
+Pet:
+
+- The Miles Windu one-session pet no longer leaves a stray droid fragment behind after the strike, in all four casts, at 1x and 2x, full and body strips. 24 new files replace only the affected frames with the clean run frame they already match, with nothing redrawn or retimed. Every Motion V1 and illustrated file stays byte-identical, so older installs are still recognized as stock. An install on the shipped Motion V1 map moves to the new one on launch, a custom cast stays as it is, and the app grows by about 28 MB.
+
 Words and files:
 
 - The 0.5.359 entry said "Only a real denial stops asking" for Cursor's Keychain. Four timeouts in a row also stop it for 30 days, and the entry now says so. The comment above the COS cost reader says three tables, not two. `docs/session-usage.md` describes compressed logs and COS cost. `ServerUpdateGuard` no longer sits under the Key lanes comment (no behaviour change).
@@ -34,7 +38,7 @@ Words and files:
 Not verified:
 
 - The ⌘K and Today changes are proven on fixtures, the compiled engine checks and source pins, not by use on a live Mac. The view's `perform` and the draft rules are held by pins and by the engine's `draftAfterRun`, because the panel's own state cannot be reached from a test.
-- No full app compile was run for these fixes. `ActivityWindow.swift`, `SessionUsageView.swift`, `Models.swift` and `SetupAssistant.swift` each type-check as the primary file against the other sources, and the engine, Today and Usage lanes compile and pass. The full suite, signing and install receipts are separate from these notes.
+- These fixes were type-checked and run through their lanes before the merge. `ActivityWindow.swift`, `SessionUsageView.swift`, `Models.swift` and `SetupAssistant.swift` each type-check as the primary file against the other sources, and the engine, Today and Usage lanes compile and pass. The full suite, signing and install receipts are separate from these notes.
 
 ## 0.5.359 (build 413), ⌘K command center, COS cost, compressed Codex logs, Update Server only moves forward
 

@@ -1,7 +1,7 @@
 {
   "version": "0.5.360",
   "whatsNew": {
-    "summary": "⌘K is the COS command center for people with Today on: start or stop a recording, open what's waiting, get saved answers, Ask COS, troubleshoot. What's recording now sits at the top of Today and first in ⌘K. Sessions has a third view, COS cost: what COS itself used over 30 days, by job, measured where it can be. Usage now reads compressed Codex logs, so Codex numbers go up. Update Server won't move backward, and a meeting whose final transcript has stopped no longer locks Restart and Update. Plus everything in 0.5.358: Usage opens with the answers, a calendar of every day, and hover details.",
+    "summary": "⌘K is the COS command center for people with Today on: start or stop a recording, open what's waiting, get saved answers, Ask COS, troubleshoot. What's recording now sits at the top of Today and first in ⌘K. Sessions has a third view, COS cost: what COS itself used over 30 days, by job, measured where it can be. Usage now reads compressed Codex logs, so Codex numbers go up. Update Server won't move backward, and the Miles Windu pet no longer leaves a droid fragment behind after a strike. Plus everything in 0.5.358: Usage opens with the answers, a calendar of every day, and hover details.",
     "sections": [
       {
         "title": "0.5.360",
@@ -12,7 +12,8 @@
           "Work shows the runs themselves, with the wider figure in words.",
           "Add what you pay a month to see COS's share. It stays on this Mac.",
           "Usage now reads compressed Codex logs, so Codex numbers go up. You didn't use more: older logs are finally counted.",
-          "Update Server won't move backward, and a meeting whose final transcript has stopped no longer locks Restart and Update. Its audio is kept, and speaker changes say why they wait.",
+          "Update Server won't move backward.",
+          "The Miles Windu pet no longer leaves a droid fragment behind after a strike.",
           "A paused Usage page now says it is paused, offers Resume tracking and drops the month estimate. Count Cursor tokens tells a Keychain that didn't answer from one that said no, and offers the install command when Cursor's command line is missing.",
           "In ⌘K, Return goes to the command or session your words point at before it starts anything, and a row you ran is cleared so the next ⌘K doesn't offer it again.",
           "COS cost puts a + on any figure that leaves out calls with no verified price, says when it couldn't read its record of calls, and keeps trying while the usage history is busy."
