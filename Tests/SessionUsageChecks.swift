@@ -418,6 +418,93 @@ import SQLite3
                                   SessionUsageBucket(day: "2026-10-24", provider: "A", model: "writes", counts: SessionUsageCounts(input: 50, output: 50, cacheRead: 0, cacheWrite: 0), events: 1, pricedEvents: 1, estimatedUSD: 1)], by: .newTokens)
         check(byNew.first?.model == "writes", "New tokens sort ignores cache reads")
 
+        // 0.5.359 QA: paused says so, "never $0" lives here, and the legend promises only the line the chart draws.
+        check(!P.hasFigure(.cost, pricedEvents: 0) && P.hasFigure(.cost, pricedEvents: 1) && P.hasFigure(.tokens, pricedEvents: 0) && P.hasFigure(.records, pricedEvents: 0), "only the value measure needs a price")
+        let noPriceDay = P.Summary(id: "2026-10-05", counts: SessionUsageCounts(input: 5), events: 2, pricedEvents: 0, estimatedUSD: 0)
+        check(!P.dayCounted(noPriceDay, measure: .cost) && P.dayCounted(noPriceDay, measure: .tokens), "a day with no price is not counted on value")
+        func portion(_ key: String, priced: Int = 1, value: Double = 10) -> P.PeriodPortion { P.PeriodPortion(key: key, pricedEvents: priced, value: value) }
+        let fourPeriods = ["2026-01-05", "2026-01-12", "2026-01-19", "2026-01-26"].map { portion($0) }
+        check(P.chartAverage(fourPeriods + [portion("", value: 500)], measure: .cost, partial: [], lineChart: false) == 10, "four priced periods draw their average, and a point with no period is not one")
+        let threeAndUnpriced = Array(fourPeriods.dropLast()) + [portion("2026-01-26", priced: 0, value: 0)]
+        check(P.chartAverage(threeAndUnpriced, measure: .cost, partial: [], lineChart: false) == nil && P.chartAverage(fourPeriods + [portion("2026-02-02", priced: 0, value: 0)], measure: .cost, partial: [], lineChart: false) == 10, "a period with no price stays out of the average")
+        check(P.chartAverage(threeAndUnpriced, measure: .tokens, partial: [], lineChart: false) != nil, "on tokens every period counts")
+        check(P.chartAverage(fourPeriods, measure: .cost, partial: [], lineChart: true) == nil, "lines draw no average")
+        check(P.partialBarsNote(scaleWord: "week", averageDrawn: false) == "Lighter bars cover part of a week." && P.partialBarsNote(scaleWord: "week", averageDrawn: true) == "Lighter bars cover part of a week and are left out of the average.", "the partial note promises the average only when one is drawn")
+        let pausedPace = P.monthPace([usageRow("2026-10-01", usd: 30)], now: paceClock("2026-10-10"), timeZone: paceZone, tracking: false)
+        check(pausedPace?.projectedUSD == nil && pausedPace?.usd == 30, "a paused month shows its value and no estimate")
+        check(P.helperArguments(importNew: true, tracking: false, cursorEnabled: false, cursorNow: false) == ["session-usage", "--read-only"], "paused never imports, whoever asks")
+        check(P.helperArguments(importNew: true, tracking: false, cursorEnabled: true, cursorNow: true) == ["session-usage", "--read-only", "--cursor"], "paused never asks Cursor for a sync")
+        check(P.helperArguments(importNew: true, tracking: true, cursorEnabled: true, cursorNow: true) == ["session-usage", "--cursor", "--cursor-now"] && P.helperArguments(importNew: false, tracking: true, cursorEnabled: true, cursorNow: false) == ["session-usage", "--read-only", "--cursor"], "tracking imports, and Cursor syncs only when asked")
+        check(P.helperArguments(importNew: true, tracking: true, cursorEnabled: false, cursorNow: true) == ["session-usage"], "Cursor off is never named")
+        check(P.freshnessLabel(tracking: false, updatedTime: "9:00 AM") == "Paused" && P.freshnessLabel(tracking: true, updatedTime: "9:00 AM") == "Updated 9:00 AM" && P.freshnessLabel(tracking: true, updatedTime: nil) == nil, "a paused page never says Updated")
+        check(P.pendingNotes(tracking: false, pendingFiles: 37, feedMessage: "Reading your Cursor usage.").isEmpty, "paused promises no growing totals")
+        check(P.pendingNotes(tracking: true, pendingFiles: 37, feedMessage: "Reading your Cursor usage.") == ["Reading older history: 37 files remaining. Totals will grow until it finishes.", "Reading your Cursor usage. Totals will grow until it finishes."] && P.pendingNotes(tracking: true, pendingFiles: 0, feedMessage: nil).isEmpty, "tracking says what is still being read")
+        check(P.pausedLine(pendingFiles: 0).hasPrefix("Tracking is paused") && !P.pausedLine(pendingFiles: 0).contains("waiting") && P.pausedLine(pendingFiles: 1).hasSuffix("1 log file is still waiting.") && P.pausedLine(pendingFiles: 37).hasSuffix("37 log files are still waiting."), "the paused line counts what waits")
+        check(P.pausedLine(pendingFiles: 0, hasHistory: false) == "Tracking is paused, so no logs are being read." && P.pausedLine(pendingFiles: 2, hasHistory: false).hasSuffix("2 log files are still waiting."), "a paused page with nothing to show mentions no numbers")
+        check(!P.emptyWords(tracking: false, hasReport: true).contains("once their logs are read") && !P.emptyWords(tracking: false, hasReport: false).contains("Refresh reads") && P.emptyWords(tracking: false, hasReport: true).contains("resume tracking") && P.emptyWords(tracking: true, hasReport: true).contains("once their logs are read"), "the paused empty page promises only what resuming does")
+        let backfilling = SessionUsageCursorFeedStatus(state: .backfilling, message: "Cursor is waiting until tracking resumes.")
+        let signingIn = SessionUsageCursorFeedStatus(state: .signIn, message: "Run cursor-agent login in Terminal, then refresh.")
+        let outage = SessionUsageCursorFeedStatus(state: .failed, message: "Cursor did not answer.")
+        let cliPath = "/fake/.local/bin/cursor-agent"
+        check(P.cursorWords(on: true, tracking: false, feed: backfilling, commandLine: cliPath) == P.cursorWaiting && P.cursorWords(on: true, tracking: false, feed: SessionUsageCursorFeedStatus(state: .ready), commandLine: cliPath) == P.cursorWaiting && P.cursorWords(on: true, tracking: false, feed: nil, commandLine: cliPath) == P.cursorWaiting, "a paused Cursor row says it waits")
+        check(P.cursorWords(on: true, tracking: true, feed: SessionUsageCursorFeedStatus(state: .ready), commandLine: cliPath) == "Cursor reports no token usage for this account." && P.cursorWords(on: true, tracking: true, feed: nil, commandLine: cliPath) == "Reading your Cursor usage.", "a tracking Cursor row says what it read")
+        check(P.cursorWords(on: false, tracking: false, feed: nil, commandLine: cliPath).hasSuffix("it waits until tracking resumes.") && !P.cursorWords(on: false, tracking: true, feed: nil, commandLine: cliPath).contains("waits"), "the paused offer says turning it on only saves the choice")
+        check(P.cursorProblem(signingIn, commandLine: cliPath, tracking: true) == signingIn.message && P.cursorProblem(outage, commandLine: nil, tracking: true) == outage.message && P.cursorProblem(backfilling, commandLine: nil, tracking: true) == nil, "the helper's words stand while the command line is there or does not matter")
+        let getCLI = P.cursorProblem(signingIn, commandLine: nil, tracking: true) ?? ""
+        check(getCLI.contains(P.cursorInstallCommand) && getCLI.hasSuffix("then refresh.") && (P.cursorProblem(SessionUsageCursorFeedStatus(state: .expired), commandLine: nil, tracking: false) ?? "").hasSuffix("then resume tracking."), "no command line says how to get it")
+        let cliHome = home.appendingPathComponent("cli home")
+        let cliBin = cliHome.appendingPathComponent(".local/bin")
+        try FileManager.default.createDirectory(at: cliBin, withIntermediateDirectories: true)
+        check(P.cursorCommandLine(home: cliHome.path, systemFolders: []) == nil, "no command line on a Mac with only the app")
+        try FileManager.default.createDirectory(at: cliBin.appendingPathComponent("cursor-agent"), withIntermediateDirectories: true)
+        check(P.cursorCommandLine(home: cliHome.path, systemFolders: []) == nil, "a folder is not the command line")
+        try FileManager.default.removeItem(at: cliBin.appendingPathComponent("cursor-agent"))
+        FileManager.default.createFile(atPath: cliBin.appendingPathComponent("agent").path, contents: Data("#!/bin/sh\n".utf8), attributes: [.posixPermissions: 0o644])
+        check(P.cursorCommandLine(home: cliHome.path, systemFolders: []) == nil, "a file that cannot run is not the command line")
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: cliBin.appendingPathComponent("agent").path)
+        check(P.cursorCommandLine(home: cliHome.path, systemFolders: []) == cliBin.appendingPathComponent("agent").path, "its other name counts")
+        FileManager.default.createFile(atPath: cliBin.appendingPathComponent("cursor-agent").path, contents: Data("#!/bin/sh\n".utf8), attributes: [.posixPermissions: 0o755])
+        let foundCLI = P.cursorCommandLine(home: cliHome.path, systemFolders: [])
+        check(foundCLI == cliBin.appendingPathComponent("cursor-agent").path, "the name the copy uses comes first")
+        check(P.cursorSignInCommand(cliPath) == "/fake/.local/bin/cursor-agent login" && P.cursorSignInCommand(foundCLI ?? "") == "'\(foundCLI ?? "")' login", "the sign-in command runs from any Terminal, spaces and all")
+        // Long calendars. 524 is the grid at the narrowest page: 716 of content less the names and the margin.
+        func historyWeeks(_ count: Int) -> [P.CalendarWeek] {
+            let monday = SessionUsageDay("2026-10-26")!
+            return P.calendarWeeks((0..<count).map { usageRow(monday.adding(-7 * $0).key, usd: 1) }, bounds: nil, today: "2026-10-31")
+        }
+        check(historyWeeks(105).count == 105, "the long fixture has the weeks it asks for")
+        let twoYears = P.calendarFit(historyWeeks(105), width: 524)
+        check(twoYears.weeks.count == 105 && twoYears.spacing == 1 && twoYears.cell >= P.calendarMinimumCell, "two years fit at the minimum cell, gaps tightened")
+        check(P.calendarFit(historyWeeks(52), width: 524).spacing == 3 && P.calendarFit(historyWeeks(53), width: 524).spacing == 1, "a year keeps its gaps, and past that they tighten")
+        let longest = historyWeeks(180)
+        let recent = P.calendarFit(longest, width: 524)
+        check(recent.weeks.count == 105 && recent.weeks.last?.id == longest.last?.id && recent.weeks.first?.id == longest[75].id, "the most recent weeks that fit stay")
+        check(recent.weeks.first?.monthLabel?.hasSuffix(" " + String(recent.weeks[0].id.prefix(4))) == true, "a cut calendar's first column says where it starts")
+        for (count, width) in [(180, 524.0), (300, 524.0), (300, 964.0), (60, 100.0), (2, 2.0)] {
+            check(P.calendarFit(historyWeeks(count), width: width).cell >= (width >= P.calendarMinimumCell ? P.calendarMinimumCell : 0), "no square goes under the minimum")
+        }
+        for (count, width) in [(4, 524.0), (13, 524.0), (30, 524.0), (52, 524.0), (53, 524.0), (105, 524.0), (180, 524.0), (52, 964.0), (105, 964.0), (300, 964.0), (105, 1500.0)] {
+            let fit = P.calendarFit(historyWeeks(count), width: width)
+            let pitch = (width + fit.spacing) / Double(fit.weeks.count)
+            var end = -Double.infinity
+            for (index, week) in fit.weeks.enumerated() {
+                guard let label = week.monthLabel else { continue }
+                check(Double(index) * pitch >= end, "labels never overlap")
+                end = Double(index) * pitch + P.calendarLabelWidth(label)
+                check(end <= width + 8, "the last label stays out of the average column")
+            }
+            check(fit.weeks.contains { $0.monthLabel != nil }, "a calendar always names at least one month")
+        }
+        // The two labels with a year only compete with each other: Oct 2024 starts the row, and Jan 2025 sits too close to it.
+        let yearsKept = P.calendarFit(historyWeeks(105), width: 524).weeks.compactMap(\.monthLabel).filter { $0.contains(" ") }
+        check(yearsKept == ["Oct 2024", "Jan 2026"], "a month never pushes out a year")
+        check(P.calendarFit(historyWeeks(5), width: 1000).carriesNumbers && !P.calendarFit(historyWeeks(30), width: 524).carriesNumbers, "only a wide square carries its number")
+        // A month that starts in the last column has no room for its name before the average column.
+        let lateStart = P.calendarWeeks([usageRow("2025-11-03", usd: 1)], bounds: nil, today: "2026-11-02")
+        check(lateStart.last?.monthLabel == "Nov" && P.calendarFit(lateStart, width: 524).weeks.last?.monthLabel == nil, "the last label stays out of the average column")
+        let unmeasured = P.calendarFit(longest, width: 0)
+        check(unmeasured.weeks.count == 180 && !unmeasured.carriesNumbers, "before it is measured everything stays")
+
         // A prior window is complete only when every tool in the selection reaches back that far.
         let oldCursor = SessionUsageBucket(day: "2025-07-01", provider: "Cursor", model: "m", counts: SessionUsageCounts(input: 1, output: 1, cacheRead: 1, cacheWrite: 1), events: 1, pricedEvents: 1, estimatedUSD: 1)
         let newClaude = SessionUsageBucket(day: "2026-10-20", provider: "Anthropic", model: "m", counts: SessionUsageCounts(input: 1, output: 1, cacheRead: 1, cacheWrite: 1), events: 1, pricedEvents: 1, estimatedUSD: 1)
@@ -465,7 +552,7 @@ import SQLite3
         check(try feed.refresh(cursorEnabled: true).cursorFeed?.state == .signIn, "a missing sign-in is reported")
         try feed.syncCursorFeed(force: true, now: t0, readToken: { _ in .expired }, fetch: { _, _, _, _ in feedCalls += 1; return .init(status: 200, body: page([])) })
         check(try feedCalls == 0 && feed.refresh(cursorEnabled: true).cursorFeed?.state == .expired, "an expired sign-in is reported without a request")
-        try feed.syncCursorFeed(force: false, now: t0.addingTimeInterval(60), readToken: { _ in feedCalls += 1; return .blocked }, fetch: { _, _, _, _ in .init(status: 200, body: page([])) })
+        try feed.syncCursorFeed(force: false, now: t0.addingTimeInterval(60), readToken: { _ in feedCalls += 1; return .blocked(exit: 51) }, fetch: { _, _, _, _ in .init(status: 200, body: page([])) })
         check(feedCalls == 0, "a failed sign-in read backs off until forced")
 
         // A full page then a short page drains, stores content-free rows, and dedupes on the next pass.
@@ -593,12 +680,318 @@ import SQLite3
             Thread.sleep(forTimeInterval: 0.01); return .init(status: 200, body: longPage)
         })
         try patient.syncCursorFeed(force: false, now: t0.addingTimeInterval(15), readToken: { wait in patience.append(wait); return .token("t") }, fetch: { _, _, _, _ in .init(status: 200, body: lastPage) })
-        try patient.syncCursorFeed(force: true, now: t0.addingTimeInterval(1000), readToken: { wait in patience.append(wait); return .blocked }, fetch: { _, _, _, _ in .init(status: 200, body: page([])) })
+        try patient.syncCursorFeed(force: true, now: t0.addingTimeInterval(1000), readToken: { wait in patience.append(wait); return .blocked(exit: 51) }, fetch: { _, _, _, _ in .init(status: 200, body: page([])) })
         check(patience == [false, true, true], "a run in progress and a manual Refresh wait patiently for Keychain")
         var askedAgain = false
-        try patient.syncCursorFeed(force: false, now: t0.addingTimeInterval(1000 + 7*86_400), readToken: { _ in askedAgain = true; return .blocked }, fetch: { _, _, _, _ in .init(status: 200, body: page([])) })
+        try patient.syncCursorFeed(force: false, now: t0.addingTimeInterval(1000 + 7*86_400), readToken: { _ in askedAgain = true; return .blocked(exit: 51) }, fetch: { _, _, _, _ in .init(status: 200, body: page([])) })
         check(!askedAgain, "an unanswered Keychain prompt is not repeated by automatic passes")
         check(try feed.refresh(cursorEnabled: true, cursorSyncFailed: true).cursorFeed?.state == .failed, "a sync that threw is reported, so the loop stops hurrying")
+        // Keychain: a real denial stops asking, no answer retries soon, and either way the cause reaches a local log.
+        let fakeTools = home.appendingPathComponent("fake-security")
+        try FileManager.default.createDirectory(at: fakeTools, withIntermediateDirectories: true)
+        func fakeSecurity(_ body: String) -> String {
+            let path = fakeTools.appendingPathComponent(UUID().uuidString).path
+            FileManager.default.createFile(atPath: path, contents: Data(("#!/bin/sh\n" + body + "\n").utf8), attributes: [.posixPermissions: 0o755])
+            return path
+        }
+        check(SessionUsageCollector.keychainRead(tool: fakeSecurity("exit 51"), seconds: 5) == .blocked(exit: 51) && SessionUsageCollector.keychainRead(tool: fakeSecurity("exit 128"), seconds: 5) == .blocked(exit: 128), "a denial keeps its exit code")
+        check(SessionUsageCollector.keychainRead(tool: fakeSecurity("exit 44"), seconds: 5) == .missing, "no item means no sign-in")
+        check(SessionUsageCollector.keychainRead(tool: fakeSecurity("printf 'abc.def'; exit 0"), seconds: 5) == .token("abc.def"), "a good read is the token")
+        check(SessionUsageCollector.keychainRead(tool: fakeSecurity("exit 36"), seconds: 5) == .unavailable(.exit(36)), "an odd exit is no answer")
+        check(SessionUsageCollector.keychainRead(tool: fakeSecurity("exec sleep 5"), seconds: 0.2) == .unavailable(.timedOut), "a timeout is no answer")
+        check(SessionUsageCollector.keychainRead(tool: fakeTools.appendingPathComponent("not-there").path, seconds: 5) == .unavailable(.launchFailed), "a launch failure is no answer")
+        let keyHome = home.appendingPathComponent("keychain")
+        try FileManager.default.createDirectory(at: keyHome, withIntermediateDirectories: true)
+        let keyLog = keyHome.appendingPathComponent("cursor-feed.log")
+        let keyFeed = try SessionUsageCollector(home: keyHome, database: keyHome.appendingPathComponent("k.sqlite"), timeZone: TimeZone(identifier: "America/Chicago")!)
+        var keyAsks = 0
+        func keyPass(_ seconds: TimeInterval, _ answer: SessionUsageCollector.CursorFeedToken, force: Bool = false) throws {
+            try keyFeed.syncCursorFeed(force: force, now: t0.addingTimeInterval(seconds), readToken: { _ in keyAsks += 1; return answer }, fetch: { _, _, _, _ in .init(status: 200, body: page([])) })
+        }
+        try keyPass(0, .unavailable(.launchFailed))
+        let afterMiss = try keyFeed.refresh(cursorEnabled: true).cursorFeed?.state
+        check(afterMiss == .keychainBusy && keyAsks == 1, "no answer from Keychain is reported as that")
+        check(try keyFeed.refresh(cursorEnabled: true).cursorFeed?.isProblem == true, "no answer from Keychain shows on the page")
+        keyAsks = 0
+        try keyPass(840, .unavailable(.launchFailed))
+        check(keyAsks == 0, "no answer waits a little before the next try")
+        try keyPass(960, .unavailable(.exit(36)))
+        check(keyAsks == 1, "no answer from Keychain retries within minutes")
+        var keyWords = (try? String(contentsOf: keyLog, encoding: .utf8)) ?? ""
+        check(keyWords.contains("Keychain could not start, 1 in a row") && keyWords.contains("Keychain exit 36, 2 in a row"), "the cause reaches the local log")
+        // A good read starts the count over, and the sign-in never reaches the log, even on a rejected request.
+        let keyToken = "SECRET_SIGN_IN_NEVER_LOGGED"
+        let dayOne: TimeInterval = 86_400, dayTwo: TimeInterval = 172_800, dayFour: TimeInterval = 345_600
+        try keyPass(dayOne, .token(keyToken))
+        try keyPass(dayTwo, .unavailable(.timedOut))
+        keyWords = (try? String(contentsOf: keyLog, encoding: .utf8)) ?? ""
+        check(keyWords.contains("Keychain timed out, 1 in a row"), "a good read starts the count over")
+        keyAsks = 0
+        let secondTry = dayTwo + 960, thirdTry = secondTry + 1860, fourthTry = thirdTry + 3660
+        try keyPass(secondTry, .unavailable(.timedOut))
+        try keyPass(thirdTry, .unavailable(.timedOut))
+        let afterThree = try keyFeed.refresh(cursorEnabled: true).cursorFeed?.state
+        check(keyAsks == 2 && afterThree == .keychainBusy, "a timeout retries soon")
+        try keyPass(fourthTry, .unavailable(.timedOut))
+        check(try keyFeed.refresh(cursorEnabled: true).cursorFeed?.state == .blocked, "four timeouts in a row stop asking")
+        keyAsks = 0
+        try keyPass(dayFour, .unavailable(.timedOut))
+        check(keyAsks == 0, "after that an automatic pass does not bring the prompt back")
+        try keyPass(dayFour, .blocked(exit: 128), force: true)
+        keyWords = (try? String(contentsOf: keyLog, encoding: .utf8)) ?? ""
+        check(keyAsks == 1 && keyWords.contains("Keychain denied, exit 128"), "the denial reaches the local log")
+        check(!keyWords.contains(keyToken), "the sign-in never reaches the log")
+        let oversized = String(repeating: "x", count: 70_000)
+        try oversized.write(to: keyLog, atomically: true, encoding: .utf8)
+        try keyPass(dayFour, .unavailable(.launchFailed), force: true)
+        keyWords = (try? String(contentsOf: keyLog, encoding: .utf8)) ?? ""
+        check(keyWords.utf8.count < 1000 && keyWords.contains("could not start"), "the log stays small")
+        // A paused pass never syncs, so its words cannot lean on a refresh or a retry.
+        func pausedWords(_ answer: SessionUsageCollector.CursorFeedToken, status: Int = 200) throws -> (String?, String?) {
+            let wordsHome = home.appendingPathComponent("words-" + UUID().uuidString)
+            try FileManager.default.createDirectory(at: wordsHome, withIntermediateDirectories: true)
+            let words = try SessionUsageCollector(home: wordsHome, database: wordsHome.appendingPathComponent("w.sqlite"), timeZone: TimeZone(identifier: "America/Chicago")!)
+            try words.syncCursorFeed(force: true, now: t0, readToken: { _ in answer }, fetch: { _, _, _, _ in .init(status: status, body: nil) })
+            return (try words.refresh(maxBytes: 0, cursorEnabled: true, readOnly: true).cursorFeed?.message, try words.refresh(maxBytes: 0, cursorEnabled: true).cursorFeed?.message)
+        }
+        for (answer, status) in [(SessionUsageCollector.CursorFeedToken.missing, 200), (.expired, 200), (.blocked(exit: 51), 200), (.unavailable(.launchFailed), 200), (.token("t"), 500)] {
+            let (paused, tracking) = try pausedWords(answer, status: status)
+            let lowered = (paused ?? "").lowercased()
+            check(paused != tracking && lowered.contains("resume") && !lowered.contains("then refresh") && !lowered.hasSuffix("cos will try again."), "a paused pass never promises a refresh")
+        }
+        let unstarted = try SessionUsageCollector(home: home, database: home.appendingPathComponent("unstarted.sqlite"), timeZone: TimeZone(identifier: "America/Chicago")!)
+        check(try unstarted.refresh(maxBytes: 0, cursorEnabled: true, readOnly: true).cursorFeed?.message == "Cursor is waiting until tracking resumes.", "a paused Cursor that never ran is waiting, not reading")
+        check(try unstarted.refresh(maxBytes: 0, cursorEnabled: true).cursorFeed?.message == "Reading your Cursor usage.", "a Cursor that never ran is reading")
+
+        // Compressed Codex logs, against real .jsonl.zst files made here by the same Node that reads them.
+        // COS_USAGE_TEST_NODE names one binary, such as the bundled one, and then only that binary is used.
+        let namedNode = ProcessInfo.processInfo.environment["COS_USAGE_TEST_NODE"]
+        let zstNodes = namedNode.map { [$0] } ?? (["/opt/homebrew/bin/node", "/usr/local/bin/node"] + (ProcessInfo.processInfo.environment["PATH"] ?? "").split(separator: ":").map { $0 + "/node" }).filter { FileManager.default.isExecutableFile(atPath: $0) }
+        var compressedChecksSkipped = false
+        if let zstNode = SessionUsageCollector.compressedDecoder(zstNodes) {
+            let zstRoot = home.appendingPathComponent("zst")
+            try FileManager.default.createDirectory(at: zstRoot, withIntermediateDirectories: true)
+            /// Compresses each part as its own frame, so one part is the ordinary single-frame file.
+            func writeZst(_ parts: [String], to file: URL, keep: Int? = nil) throws {
+                try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+                var made = Data()
+                for part in parts {
+                    let input = zstRoot.appendingPathComponent(UUID().uuidString), output = zstRoot.appendingPathComponent(UUID().uuidString)
+                    try part.write(to: input, atomically: true, encoding: .utf8)
+                    let maker = Process()
+                    maker.executableURL = URL(fileURLWithPath: zstNode)
+                    maker.arguments = ["-e", "const f=require('fs'),z=require('zlib');f.writeFileSync(process.argv[2],z.zstdCompressSync(f.readFileSync(process.argv[1])))", input.path, output.path]
+                    try maker.run(); maker.waitUntilExit()
+                    check(maker.terminationStatus == 0, "the fixture compresses")
+                    made.append(try Data(contentsOf: output))
+                }
+                try (keep.map { made.prefix($0) } ?? made).write(to: file)
+            }
+            let noise = String(repeating: "SECRET_PROMPT_NEVER_STORE ", count: 200)
+            func rolloutLines(_ steps: Int) throws -> [String] {
+                var lines = [try line(["type": "session_meta", "payload": ["id": "zst-one", "model_provider": "openai"]]), try line(["type": "turn_context", "payload": ["model": "gpt-6.1-sol"]])]
+                for step in 1...steps {
+                    lines.append(try line(["type": "response_item", "payload": ["text": noise]]))
+                    lines.append(try line(codex(step * 100, step * 10, 0, 100, String(format: "2026-10-%02dT12:00:00Z", 1 + step % 27))))
+                }
+                return lines
+            }
+            func zstLedger(_ name: String, nodes: [String]? = nil) throws -> (SessionUsageCollector, URL) {
+                let place = zstRoot.appendingPathComponent(name)
+                try FileManager.default.createDirectory(at: place.appendingPathComponent(".codex/sessions"), withIntermediateDirectories: true)
+                let ledger = try SessionUsageCollector(home: place, database: place.appendingPathComponent("z.sqlite"), timeZone: TimeZone(identifier: "America/Chicago")!)
+                ledger.compressedLogNodes = nodes ?? [zstNode]
+                return (ledger, place.appendingPathComponent(".codex/sessions"))
+            }
+            func totals(_ report: SessionUsageReport) -> [String] {
+                report.buckets.map { "\($0.day) \($0.provider) \($0.model) \($0.counts.total) \($0.events) \($0.pricedEvents)" }
+            }
+            let steps = try rolloutLines(40)
+            let whole = steps.joined()
+            // The reference: the same rows read as a plain log.
+            let (plainLedger, plainFolder) = try zstLedger("plain")
+            try whole.write(to: plainFolder.appendingPathComponent("rollout.jsonl"), atomically: true, encoding: .utf8)
+            let reference = try plainLedger.refresh()
+            check(reference.buckets.count > 1 && reference.pendingFiles == 0, "the compressed fixture has usage to compare")
+            let (zipLedger, zipFolder) = try zstLedger("compressed")
+            try writeZst([whole], to: zipFolder.appendingPathComponent("rollout.jsonl.zst"))
+            let unread = try zipLedger.refresh(maxBytes: 0)
+            check(unread.buckets.isEmpty && unread.pendingFiles == 1 && unread.unreadableFiles == 0, "a read-only pass reads no compressed log")
+            let compressedRead = try zipLedger.refresh()
+            check(totals(compressedRead) == totals(reference), "a compressed rollout is read")
+            check(compressedRead.buckets.allSatisfy { $0.provider == "OpenAI" && $0.model == "gpt-6.1-sol" }, "the provider and model reach the compressed read")
+            let zipDatabase = try Data(contentsOf: zipFolder.deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("z.sqlite"))
+            check(zipDatabase.range(of: Data("SECRET_PROMPT".utf8)) == nil, "no log text reaches the ledger")
+            // Finished means finished: with no decoder there is nothing left to want one for.
+            zipLedger.compressedLogNodes = []
+            let finished = try zipLedger.refresh()
+            check(finished.pendingFiles == 0 && finished.unreadableFiles == 0 && totals(finished) == totals(reference), "a finished compressed log is not read again")
+            // A rollout read as .jsonl and later compressed: the same events, not new ones.
+            let (movedLedger, movedFolder) = try zstLedger("moved")
+            try whole.write(to: movedFolder.appendingPathComponent("rollout.jsonl"), atomically: true, encoding: .utf8)
+            _ = try movedLedger.refresh()
+            try FileManager.default.removeItem(at: movedFolder.appendingPathComponent("rollout.jsonl"))
+            try writeZst([whole], to: movedFolder.appendingPathComponent("rollout.jsonl.zst"))
+            check(totals(try movedLedger.refresh()) == totals(reference), "a rollout read as plain then compressed is not counted twice")
+            // Read while it was still growing, then compressed whole: only the rest is new.
+            let (partLedger, partFolder) = try zstLedger("part")
+            try steps.prefix(steps.count / 2 + 1).joined().write(to: partFolder.appendingPathComponent("rollout.jsonl"), atomically: true, encoding: .utf8)
+            _ = try partLedger.refresh()
+            try FileManager.default.removeItem(at: partFolder.appendingPathComponent("rollout.jsonl"))
+            try writeZst([whole], to: partFolder.appendingPathComponent("rollout.jsonl.zst"))
+            check(totals(try partLedger.refresh()) == totals(reference), "a rollout read part way then compressed adds only the rest")
+            // Both at once.
+            let (bothLedger, bothFolder) = try zstLedger("both")
+            try whole.write(to: bothFolder.appendingPathComponent("rollout.jsonl"), atomically: true, encoding: .utf8)
+            try writeZst([whole], to: bothFolder.appendingPathComponent("rollout.jsonl.zst"))
+            check(totals(try bothLedger.refresh()) == totals(reference), "a rollout present both ways is one rollout")
+            // A byte budget reads it in slices, resuming where the last pass stopped, and arrives at the same totals.
+            let (sliceLedger, sliceFolder) = try zstLedger("slices")
+            try writeZst([whole], to: sliceFolder.appendingPathComponent("rollout.jsonl.zst"))
+            var sliced = try sliceLedger.refresh(maxBytes: 64)
+            let firstSlice = sliced.buckets.reduce(0) { $0 + $1.events }
+            var slicePasses = 1
+            while sliced.pendingFiles > 0 && slicePasses < 100 {
+                sliced = try sliceLedger.refresh(maxBytes: 64)
+                slicePasses += 1
+            }
+            check(firstSlice < reference.buckets.reduce(0) { $0 + $1.events } && slicePasses > 2 && slicePasses < 100 && sliced.pendingFiles == 0 && totals(sliced) == totals(reference), "a small budget reads a compressed log in slices")
+            // A log swapped under a saved place, with the same size and date, ends before that place. It must not take the
+            // pass down. Not a mutant: without the guard this traps on the subtraction, which no check label can name.
+            let (swapLedger, swapFolder) = try zstLedger("swap")
+            let swapFile = swapFolder.appendingPathComponent("rollout.jsonl.zst")
+            try writeZst([whole], to: swapFile)
+            let swapDate = try FileManager.default.attributesOfItem(atPath: swapFile.path)[.modificationDate] as? Date ?? t0
+            let swapSize = try Data(contentsOf: swapFile).count
+            check(try swapLedger.refresh(maxBytes: 64).pendingFiles == 1, "the swap starts part way through a log")
+            try writeZst([steps.prefix(2).joined()], to: swapFile)
+            var padded = try Data(contentsOf: swapFile)
+            let padding = swapSize - padded.count - 8
+            check(padding >= 0, "the swapped log fits under the old size")
+            padded.append(contentsOf: [0x50, 0x2A, 0x4D, 0x18])
+            padded.append(contentsOf: withUnsafeBytes(of: UInt32(padding).littleEndian) { Array($0) })
+            padded.append(Data(count: padding))
+            try padded.write(to: swapFile)
+            try FileManager.default.setAttributes([.modificationDate: swapDate], ofItemAtPath: swapFile.path)
+            check(try swapLedger.refresh().pendingFiles == 0, "a log swapped under its saved place does not take the pass down")
+            // A log replaced part way through starts over. Carrying on from the old place would skip its first rows.
+            let (replacedLedger, replacedFolder) = try zstLedger("replaced")
+            let replacedFile = replacedFolder.appendingPathComponent("rollout.jsonl.zst")
+            try writeZst([whole], to: replacedFile)
+            _ = try replacedLedger.refresh(maxBytes: 64)
+            var other = Array(steps.prefix(2))
+            for step in 1...3 { other.append(try line(codex(step * 700, step * 70, 0, 700, "2026-10-20T12:00:00Z"))) }
+            try writeZst([other.joined()], to: replacedFile)
+            let (replacedPlainLedger, replacedPlainFolder) = try zstLedger("replaced-plain")
+            try other.joined().write(to: replacedPlainFolder.appendingPathComponent("rollout.jsonl"), atomically: true, encoding: .utf8)
+            let replacedReference = try replacedPlainLedger.refresh()
+            var replacedRead = try replacedLedger.refresh()
+            while replacedRead.pendingFiles > 0 { replacedRead = try replacedLedger.refresh() }
+            let replacedDay = replacedRead.buckets.first { $0.day == "2026-10-20" }?.counts.total
+            check(replacedDay != nil && replacedDay == replacedReference.buckets.first { $0.day == "2026-10-20" }?.counts.total, "a log replaced part way through starts over")
+            // A log of more than one frame, which the decoder alone would stop reading after the first.
+            let (framesLedger, framesFolder) = try zstLedger("frames")
+            try writeZst([steps.prefix(30).joined(), steps.dropFirst(30).joined()], to: framesFolder.appendingPathComponent("rollout.jsonl.zst"))
+            check(totals(try framesLedger.refresh()) == totals(reference), "a log of two frames is read whole")
+            // More rows than the pipe holds, faster than they can be parsed: the writer has to wait, not die.
+            let (burstLedger, burstFolder) = try zstLedger("burst")
+            var burst = try rolloutLines(1)
+            for step in 2...20_000 { burst.append(try line(codex(step * 100, step * 10, 0, 100, "2026-10-05T12:00:00Z"))) }
+            let (burstPlainLedger, burstPlainFolder) = try zstLedger("burst-plain")
+            try burst.joined().write(to: burstPlainFolder.appendingPathComponent("rollout.jsonl"), atomically: true, encoding: .utf8)
+            try writeZst([burst.joined()], to: burstFolder.appendingPathComponent("rollout.jsonl.zst"))
+            let burstRead = try burstLedger.refresh()
+            let burstReference = try burstPlainLedger.refresh()
+            check(burstRead.pendingFiles == 0 && burstRead.unreadableFiles == 0 && totals(burstRead) == totals(burstReference), "more rows than the pipe holds are read whole")
+            // Unreadable files are counted and never stop the pass, and a replaced file gets another try.
+            let (badLedger, badFolder) = try zstLedger("bad")
+            try whole.write(to: badFolder.appendingPathComponent("good.jsonl"), atomically: true, encoding: .utf8)
+            let junk = badFolder.appendingPathComponent("junk.jsonl.zst")
+            try Data("not a zstd file".utf8).write(to: junk)
+            let afterJunk = try badLedger.refresh()
+            check(afterJunk.unreadableFiles == 1 && totals(afterJunk) == totals(reference), "a corrupt compressed log counts as unreadable")
+            check(afterJunk.pendingFiles == 0, "a corrupt compressed log does not keep the page waiting")
+            try writeZst([whole], to: junk, keep: 200)
+            let afterCut = try badLedger.refresh()
+            check(afterCut.unreadableFiles == 1 && afterCut.pendingFiles == 0, "a truncated compressed log counts as unreadable")
+            try writeZst([whole], to: junk, keep: 6)
+            let afterHeader = try badLedger.refresh()
+            check(afterHeader.unreadableFiles == 1 && afterHeader.pendingFiles == 0, "a log cut off in its first block header counts as unreadable")
+            try writeZst([whole], to: junk)
+            let afterFix = try badLedger.refresh()
+            check(afterFix.unreadableFiles == 0 && totals(afterFix) == totals(reference), "a replaced log is read again")
+            try Data("not a zstd file".utf8).write(to: junk)
+            check(try badLedger.refresh().unreadableFiles == 1, "a log that goes bad is reported again")
+            try FileManager.default.removeItem(at: junk)
+            check(try badLedger.refresh().unreadableFiles == 0, "a deleted log is no longer a gap")
+            // No decoder fails closed for each file, says why, and is not remembered once one turns up.
+            let (bareLedger, bareFolder) = try zstLedger("bare", nodes: [])
+            try writeZst([whole], to: bareFolder.appendingPathComponent("rollout.jsonl.zst"))
+            let bareOff = try bareLedger.refresh(maxBytes: 0)
+            check(bareOff.pendingFiles == 1 && bareOff.unreadableFiles == 0, "a read-only pass asks nothing of the decoder")
+            let bare = try bareLedger.refresh()
+            // filesIndexed: with no decoder the file never reaches the plain reader, which would take it for text.
+            check(bare.filesIndexed == 0 && bare.unreadableFiles == 1 && bare.pendingFiles == 0 && bare.buckets.isEmpty && bare.coverage.contains { $0.hasPrefix("Compressed Codex logs could not be read") }, "with no decoder, compressed logs count as unreadable")
+            bareLedger.compressedLogNodes = [zstNode]
+            let dressed = try bareLedger.refresh()
+            check(dressed.unreadableFiles == 0 && totals(dressed) == totals(reference) && !dressed.coverage.contains { $0.hasPrefix("Compressed Codex logs could not be read") }, "a decoder that turns up later reads them")
+            func fakeNode(_ body: String) throws -> String {
+                let path = zstRoot.appendingPathComponent(UUID().uuidString).path
+                FileManager.default.createFile(atPath: path, contents: Data(("#!/bin/sh\n" + body + "\n").utf8), attributes: [.posixPermissions: 0o755])
+                return path
+            }
+            let tooOld = try fakeNode("exit 69")
+            check(SessionUsageCollector.compressedDecoder([tooOld, zstRoot.appendingPathComponent("not-there").path, zstNode]) == zstNode && SessionUsageCollector.compressedDecoder([tooOld]) == nil, "a Node without the decoder is passed over")
+            // A log that never moves stops being tried, so the page does not stay in a hurry for it.
+            let hung = try fakeNode("case \"$2\" in process.exit*) exit 0 ;; esac\nexec sleep 30")
+            let (hungLedger, hungFolder) = try zstLedger("hung", nodes: [hung])
+            try writeZst([whole], to: hungFolder.appendingPathComponent("rollout.jsonl.zst"))
+            let hungStart = Date()
+            let hungOnce = try hungLedger.refresh(seconds: 0.2)
+            check(Date().timeIntervalSince(hungStart) < 5, "a hung decoder is stopped at the deadline")
+            check(hungOnce.pendingFiles == 1 && hungOnce.unreadableFiles == 0, "a log out of time waits for the next pass")
+            _ = try hungLedger.refresh(seconds: 0.2)
+            let hungThrice = try hungLedger.refresh(seconds: 0.2)
+            check(hungThrice.pendingFiles == 0 && hungThrice.unreadableFiles == 1, "a log that never moves stops being tried")
+            // A decoder that crashes says nothing about the file, so one crash does not write it off.
+            let crashing = try fakeNode("case \"$2\" in process.exit*) exit 0 ;; esac\nexit 1")
+            let (crashLedger, crashFolder) = try zstLedger("crash", nodes: [crashing])
+            try writeZst([whole], to: crashFolder.appendingPathComponent("rollout.jsonl.zst"))
+            let crashOnce = try crashLedger.refresh()
+            check(crashOnce.pendingFiles == 1 && crashOnce.unreadableFiles == 0, "one decoder crash does not write the file off")
+            _ = try crashLedger.refresh()
+            check(try crashLedger.refresh().unreadableFiles == 1, "a decoder that keeps crashing ends in a counted gap")
+            crashLedger.compressedLogNodes = [zstNode]
+            // Many files in one pass, past what a process may hold open if each one kept a handle.
+            let (manyLedger, manyFolder) = try zstLedger("many")
+            for index in 0..<12 { try writeZst([steps.prefix(4).joined()], to: manyFolder.appendingPathComponent("r\(index).jsonl.zst")) }
+            let handlesBefore = try FileManager.default.contentsOfDirectory(atPath: "/dev/fd").count
+            let manyRead = try manyLedger.refresh()
+            let handlesAfter = try FileManager.default.contentsOfDirectory(atPath: "/dev/fd").count
+            check(manyRead.pendingFiles == 0 && manyRead.unreadableFiles == 0 && handlesAfter <= handlesBefore + 1, "reading compressed logs keeps no file handles")
+            // Too long to hand over: only a row that held usage is a gap, and the rows after it still count.
+            let (hugeLedger, hugeFolder) = try zstLedger("huge")
+            let imageRow = try line(["type": "response_item", "payload": ["image": String(repeating: "A", count: 9_000_000)]])
+            let longUsage = try line(["type": "event_msg", "payload": ["type": "token_count", "pad": String(repeating: "B", count: 9_000_000)]])
+            try writeZst([steps.prefix(4).joined() + imageRow + longUsage + steps.dropFirst(4).joined()], to: hugeFolder.appendingPathComponent("rollout.jsonl.zst"))
+            let hugeRead = try hugeLedger.refresh()
+            check(hugeRead.unreadableFiles == 1, "only an oversized row that held usage is a gap")
+            check(totals(hugeRead) == totals(reference), "the rows after an oversized one still count")
+            // A last line with no newline is still a line. A plain log waits for one, because it may be growing.
+            let (tailLedger, tailFolder) = try zstLedger("tail")
+            try writeZst([String(whole.dropLast())], to: tailFolder.appendingPathComponent("rollout.jsonl.zst"))
+            check(totals(try tailLedger.refresh()) == totals(reference), "a last line with no newline still counts")
+            // Claude Code does not compress its logs, so a file with that name there is not one of them.
+            let (claudeLedger, claudeFolder) = try zstLedger("claude")
+            let claudeRoot = claudeFolder.deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent(".claude/projects/p")
+            try writeZst([whole], to: claudeRoot.appendingPathComponent("a.jsonl.zst"))
+            let claudeRead = try claudeLedger.refresh()
+            check(claudeRead.filesIndexed == 0 && claudeRead.pendingFiles == 0 && claudeRead.unreadableFiles == 0, "only Codex logs are read compressed")
+        } else {
+            compressedChecksSkipped = true
+            FileHandle.standardError.write(Data("SKIPPED, NOT A PASS: no Node here can read zstd (22.15 or later), so the compressed log checks did not run.\n".utf8))
+        }
+
         // A page shorter than asked for cannot end a run while the total says there is more.
         let shortHome = home.appendingPathComponent("short")
         try FileManager.default.createDirectory(at: shortHome, withIntermediateDirectories: true)
@@ -634,6 +1027,12 @@ import SQLite3
         print("PASS: 30/90/custom dates, DST/leap/calendar boundaries, provider/day summaries and token mix")
         print("PASS: usage period boundaries, timezone, token/category shares, tooltip aggregation and unknown-price handling")
         print("PASS: usage parsing, deduplication, cache pricing, local dates, reset, partial append, retention and unknown coverage")
+        if compressedChecksSkipped {
+            print("INCOMPLETE: the compressed log checks were skipped. Set COS_USAGE_ALLOW_ZSTD_SKIP=1 to accept that on a Mac with no suitable Node.")
+            if ProcessInfo.processInfo.environment["COS_USAGE_ALLOW_ZSTD_SKIP"] != "1" { exit(3) }
+        } else {
+            print("PASS: compressed Codex logs (real .jsonl.zst: idempotent re-import, slices, frames, corrupt and truncated files, no decoder)")
+        }
     }
 }
 

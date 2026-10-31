@@ -11,3 +11,4 @@ trap 'rm -rf "$TMP"' EXIT
 COLLECTOR="$ROOT/HelperSources/SessionUsageCollector.swift"
 [[ "$(grep -c 'data.appendingPathComponent(' "$COLLECTOR")" == "1" ]] || { echo "FAIL: cos-usage must open the data folder only through cosDataFile" >&2; exit 1; }
 if grep -E 'contentsOfDirectory\(at(Path)?: *data|enumerator\(at: *data' "$COLLECTOR"; then echo "FAIL: cos-usage must never list the data folder" >&2; exit 1; fi
+python3 "$ROOT/Tests/session-usage-pins.py" "$ROOT"

@@ -1368,6 +1368,30 @@ enum ParakeetCLIPath {
 // grammar (which action is which route), the stdin bodies, and the whitelist of what crosses back to the app. A pasted
 // key only ever arrives on stdin, never in argv or the environment (so `ps` never shows it), and nothing this returns
 // carries it: the server never sends a secret, and the answer is dropped whole if one ever appeared in it.
+/// Update Server, and any other install that asks for "latest", only moves forward. npm latest can sit behind a Mac on a
+/// newer private build, so one click would otherwise go backward. A named version (install --version) and Roll back are
+/// deliberate choices and stay outside this rule.
+enum ServerUpdateGuard {
+    /// Nil for a version that cannot be read. A prerelease reads as its core version.
+    private static func parts(_ version: String) -> [Int]? {
+        let core = version.split(separator: "-", maxSplits: 1).first.map(String.init) ?? ""
+        let numbers = core.split(separator: ".", omittingEmptySubsequences: false).map { Int($0) }
+        guard numbers.count == 3, numbers.allSatisfy({ $0 != nil }) else { return nil }
+        return numbers.map { $0! }
+    }
+    /// False when either side cannot be read: an unreadable version proves nothing, and a broken install must stay updatable.
+    static func isOlder(_ version: String, than other: String) -> Bool {
+        guard let left = parts(version), let right = parts(other) else { return false }
+        return left.lexicographicallyPrecedes(right)
+    }
+    /// The refusal for installing `resolved` over what this Mac has, or nil. `installed` is every version it can see.
+    static func refusal(requested: String, resolved: String, installed: [String], canRollBack: Bool) -> String? {
+        guard requested == "latest", let ahead = installed.first(where: { isOlder(resolved, than: $0) }) else { return nil }
+        return "This Mac runs server \(ahead), which is newer than \(resolved), the latest published release. COS will not move it backward, so nothing changed."
+            + (canRollBack ? " To go back on purpose, use Roll back server in Settings." : "")
+    }
+}
+
 enum KeyLanesHelperCore {
     static let usage = "key-lanes takes status, enable, disable, save-key, set-cap --ref R --cap USD, remove-key --ref R [--force], remove-all [--export-ledger], remove-saved-keys, catalog, save-profile, delete-profile --id ID, reset-breaker --ref R"
     /// What `remove-saved-keys` deletes from the server's data dir when the server cannot (an older server, or lanes off:

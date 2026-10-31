@@ -40,11 +40,17 @@ ALLOWED = {
     "a themed Menu": 'let a = Menu("x") { Button("a") {} }.cosMenu()',
 }
 
-def run(body):
+def run(body, usage_edit=None):
     with tempfile.TemporaryDirectory(prefix="cos-guard-") as scratch:
         copy = pathlib.Path(scratch)
         shutil.copytree(root / "Sources", copy / "Sources")
         (copy / "Sources" / "ZZGuardProbe.swift").write_text("import SwiftUI\n@MainActor func guardProbe() {\n" + body + "\n}\n", encoding="utf-8")
+        if usage_edit:
+            view = copy / "Sources" / "SessionUsageView.swift"
+            text = view.read_text(encoding="utf-8")
+            if text.count(usage_edit[0]) != 1:
+                sys.exit(f"the Toggle probe targets {text.count(usage_edit[0])} sites: {usage_edit[0]}")
+            view.write_text(text.replace(usage_edit[0], usage_edit[1]), encoding="utf-8")
         done = subprocess.run([sys.executable, "-", str(copy)], input=guard, capture_output=True, text=True)
         return done.returncode, done.stdout + done.stderr
 
@@ -57,6 +63,22 @@ for name, body in ALLOWED.items():
     code, out = run(body)
     if code != 0:
         failures.append(f"the guard failed on {name}: exit {code}\n{out}")
+# 0.5.359: the system-menu exemption for Toggle covers only a Menu's content. Two Usage views, in and out of a Menu.
+ROW = '        HStack(alignment: .center, spacing: 8) {\n            COSDropdown("Period"'
+TABLE = '          Grid(alignment: .trailing, horizontalSpacing: 18, verticalSpacing: 0) {\n'
+STRAY = 'Toggle("stray", isOn: .constant(true))\n'
+TOGGLES = {
+    "a stray Toggle in filterRow": (True, (ROW, '        HStack(alignment: .center, spacing: 8) {\n            ' + STRAY + '            COSDropdown("Period"')),
+    "a stray Toggle in the usage table": (True, (TABLE, TABLE + '            ' + STRAY)),
+    "a Toggle in filterRow's Menu": (False, ('                Toggle("Track session usage on this Mac",', '                ' + STRAY + '                Toggle("Track session usage on this Mac",')),
+    "a styled Toggle in filterRow": (False, (ROW, '        HStack(alignment: .center, spacing: 8) {\n            Toggle("styled", isOn: .constant(true)).toggleStyle(COSSwitchStyle())\n            COSDropdown("Period"')),
+}
+for name, (fails, edit) in TOGGLES.items():
+    code, out = run("let a = 1", usage_edit=edit)
+    if fails and (code == 0 or "name a COS toggle style" not in out):
+        failures.append(f"the guard let {name} through: exit {code}\n{out}")
+    if not fails and code != 0:
+        failures.append(f"the guard failed on {name}: exit {code}\n{out}")
 if failures:
     sys.exit("\n".join(failures))
-print(f"PASS: the stock-control guard fails on {len(BANNED)} banned forms and passes {len(ALLOWED)} allowed ones (0.5.252)")
+print(f"PASS: the stock-control guard fails on {len(BANNED)} banned forms and passes {len(ALLOWED)} allowed ones (0.5.252), and {len(TOGGLES)} Toggle placements in Usage go the right way (0.5.359)")

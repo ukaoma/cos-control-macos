@@ -2877,6 +2877,7 @@ struct ActivityWindow: View {
                     Button("Update Server") { model.perform("update") }
                         .buttonStyle(COSQuietButtonStyle())
                         .disabled(model.status.meetingWorkBlockingRestart)
+                        .help(model.status.meetingWorkBlockingRestart ? model.status.meetingWorkBlockReason : "")
                 } else {
                     Button(model.sessionHooksInstalling ? "Installing…" : (state == "missing" ? "Install hooks" : "Reinstall hooks")) { model.installSessionHooks() }
                         .buttonStyle(COSQuietButtonStyle(tone: .featured))

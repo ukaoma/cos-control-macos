@@ -28,7 +28,7 @@ import SwiftUI
         }
         rows += historyRows
         store.report = SessionUsageReport(buckets: rows, updatedAt: "2026-10-25T21:00:00Z", timeZone: "America/Chicago", filesIndexed: 120, pendingFiles: 0, unreadableFiles: 0, malformedRows: 0, missingBaselineEvents: 0,
-            coverage: ["Claude Code and Codex local session logs, including archived sessions and subagents.", "Cursor, browser-only chats and other Macs are not included."], pricingVersion: SessionUsagePricing.version)
+            coverage: ["Claude Code and Codex local session logs, including archived and compressed sessions and subagents.", "Cursor, browser-only chats and other Macs are not included."], pricingVersion: SessionUsagePricing.version)
         let plainReport = store.report!
         // Hand-run only: a local aggregate file renders the page on real numbers. It is never read in the suite.
         if let path = ProcessInfo.processInfo.environment["COS_USAGE_RENDER_BUCKETS"] {
@@ -63,6 +63,10 @@ import SwiftUI
             var daySort: SessionUsageDaySort = .date
             var loading = false
             var columns: [SessionUsageView.TableColumn]? = nil
+            var paused = false
+            var historyWeeks = 0
+            /// A real file in the test home, so the page's own check finds it.
+            var cursorCLI = false
         }
         let cases: [PageCase] = [
             PageCase(name: "range"),
@@ -73,7 +77,16 @@ import SwiftUI
             PageCase(name: "new-tokens", period: "Last 90 days", cacheExcluded: true),
             PageCase(name: "models-week", period: "Last 90 days", inspection: nil, series: .models),
             PageCase(name: "notes", cursorFeed: SessionUsageCursorFeedStatus(state: .off), notes: true),
-            PageCase(name: "cursor-sign-in", cursorFeed: SessionUsageCursorFeedStatus(state: .signIn, message: "This Mac has no Cursor command line sign-in. Run cursor-agent login in Terminal, then refresh."), cursorOn: true),
+            PageCase(name: "cursor-sign-in", cursorFeed: SessionUsageCursorFeedStatus(state: .signIn, message: "This Mac has no Cursor command line sign-in. Run cursor-agent login in Terminal, then refresh."), cursorOn: true, cursorCLI: true),
+            PageCase(name: "cursor-no-cli", cursorFeed: SessionUsageCursorFeedStatus(state: .signIn, message: "This Mac has no Cursor command line sign-in. Run cursor-agent login in Terminal, then refresh."), cursorOn: true),
+            PageCase(name: "paused", paused: true),
+            PageCase(name: "paused-backfill", pending: true, paused: true),
+            PageCase(name: "paused-empty", empty: true, paused: true),
+            PageCase(name: "paused-cursor-off", cursorFeed: SessionUsageCursorFeedStatus(state: .off), paused: true),
+            PageCase(name: "paused-cursor-waits", cursorFeed: SessionUsageCursorFeedStatus(state: .backfilling, message: "Cursor is waiting until tracking resumes."), cursorOn: true, paused: true, cursorCLI: true),
+            PageCase(name: "two-years", period: "All history", scale: .monthly, historyWeeks: 105),
+            PageCase(name: "long-history", period: "All history", cost: true, scale: .monthly, historyWeeks: 200),
+            PageCase(name: "one-year", period: "All history", scale: .monthly, historyWeeks: 53),
             PageCase(name: "cursor-failed", cursorFeed: SessionUsageCursorFeedStatus(state: .failed, message: "Cursor did not answer, so its numbers may be behind. COS will try again."), cursorOn: true),
             PageCase(name: "history", period: "All history", inspection: "2026-08"),
             PageCase(name: "custom", period: "Custom dates", inspection: month + "-24"),
@@ -101,14 +114,35 @@ import SwiftUI
         // Hand-run only: name the cases to render instead of all of them.
         let only = ProcessInfo.processInfo.environment["COS_USAGE_RENDER_ONLY"].map { Set($0.split(separator: ",").map(String.init)) }
         if let only, !only.isSubset(of: Set(cases.map(\.name))) { fatalError("COS_USAGE_RENDER_ONLY names a case that does not exist: \(only)") }
+        if let only, only.isEmpty { fatalError("COS_USAGE_RENDER_ONLY is set but names no case, so nothing would render.") }
+        let cliFile = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/bin/cursor-agent")
         for width in [1200.0, 800.0, 760.0] {
             for dark in [false, true] {
               for fixture in cases where (!fixture.minimumOnly || width == 760) && (only?.contains(fixture.name) ?? true) {
                 let pageStore = SessionUsageStore()
                 // The Cursor states are about a Mac with no Cursor rows yet, so they stay on the invented fixture.
-                var report = fixture.name.hasPrefix("cursor-") || fixture.name == "notes" ? plainReport : fixtureReport
+                var report = fixture.name.hasPrefix("cursor-") || fixture.name.hasPrefix("paused-cursor") || fixture.name == "notes" ? plainReport : fixtureReport
+                if fixture.historyWeeks > 0 {
+                    let monday = SessionUsageDay(SessionUsagePresentation.dayFormatter(timeZone: .current).string(from: Date()))!.monday
+                    var long: [SessionUsageBucket] = []
+                    for week in 0..<fixture.historyWeeks {
+                        for day in 0..<5 {
+                            let counts = SessionUsageCounts(input: Int64(1000 + week * 20), output: 900, cacheRead: Int64(80_000 + (week % 13) * 9000), cacheWrite: 3100)
+                            long.append(SessionUsageBucket(day: monday.adding(day - 7 * week).key, provider: "Anthropic", model: "claude-opus-5-5", counts: counts, events: 10, pricedEvents: 10, estimatedUSD: Double(1 + week % 9)))
+                        }
+                    }
+                    report.buckets = long
+                }
+                if ProcessInfo.processInfo.environment["COS_CONTROL_TEST_HOME"] != nil {
+                    try? FileManager.default.removeItem(at: cliFile)
+                    if fixture.cursorCLI {
+                        try FileManager.default.createDirectory(at: cliFile.deletingLastPathComponent(), withIntermediateDirectories: true)
+                        FileManager.default.createFile(atPath: cliFile.path, contents: Data("#!/bin/sh\n".utf8), attributes: [.posixPermissions: 0o755])
+                    }
+                }
                 report.cursorFeed = fixture.cursorFeed
                 pageStore.cursorEnabled = fixture.cursorOn
+                pageStore.enabled = !fixture.paused
                 if fixture.empty { report.buckets = []; report.filesIndexed = 0 }
                 if fixture.pending { report.pendingFiles = 37 }
                 pageStore.report = fixture.loading ? nil : report
@@ -181,6 +215,6 @@ import SwiftUI
             window.close()
           }
         }
-        print("PASS: offscreen light/dark Usage renders at 760, 800 and 1200 points, including first load/empty/error/backfill/reversed dates/API/cache/day/slice/sort/history-inspect states")
+        print(only.map { "PASS: offscreen renders of \($0.sorted().joined(separator: ", ")) only" } ?? "PASS: offscreen light/dark Usage renders at 760, 800 and 1200 points, including first load/empty/error/backfill/reversed dates/API/cache/day/slice/sort/history-inspect/paused/long calendar states")
     }
 }

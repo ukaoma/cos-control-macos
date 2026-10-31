@@ -496,6 +496,7 @@ struct GlassesSetupRows: View {
                 Button("Update Server") { model.perform("update") }
                     .buttonStyle(COSPrimaryButtonStyle())
                     .disabled(model.status.meetingWorkBlockingRestart || model.busy)
+                    .help(model.status.meetingWorkBlockingRestart ? model.status.meetingWorkBlockReason : "")
             }
         case .madeElsewhere:
             Button("Show a new code") { Task { await pairing.showNewCode() } }.buttonStyle(COSPrimaryButtonStyle())

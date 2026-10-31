@@ -531,7 +531,9 @@ struct SettingsHubUsageSwitch: View {
     @ObservedObject var store: SessionUsageStore
     let label: String
     var body: some View {
-        Toggle(isOn: $store.enabled) { EmptyView() }
+        Toggle(isOn: Binding(get: { store.enabled }, set: { on in
+            if on { store.resume() } else { store.enabled = false }
+        })) { EmptyView() }
             .toggleStyle(COSSwitchStyle())
             .accessibilityLabel(label)
     }

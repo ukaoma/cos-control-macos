@@ -1656,7 +1656,8 @@ struct ControlPanel: View {
 
     /// Meeting sync, its meetings and Run sync now (ST-16, ST-17).
     @ViewBuilder private var statusMeetingSyncRows: some View {
-        statusRow("Meeting sync", value: model.status.displayedMeetingSync.label, good: !model.status.meetingWorkBlockingRestart)
+        // Not locked is not the same as fine: a stopped save stays off the green dot.
+        statusRow("Meeting sync", value: model.status.displayedMeetingSync.label, good: !model.status.meetingWorkBlockingRestart && model.status.heldAudioNote == nil)
         // 0.5.237: which meetings, and where each one is, as the server reports it.
         ForEach(model.status.meetingSyncMeetings.prefix(4)) { row in
             HStack(alignment: .firstTextBaseline, spacing: 8) {
@@ -1665,7 +1666,7 @@ struct ControlPanel: View {
                 Spacer(minLength: 8)
                 Text(row.stage)
                     .monospacedDigit()
-                    .foregroundStyle(row.isWaiting ? Color.secondary : Color.primary)
+                    .foregroundStyle(row.isWaiting || row.isHeld ? Color.secondary : Color.primary)
                     .lineLimit(1)
             }
             .font(.caption)
@@ -1683,10 +1684,25 @@ struct ControlPanel: View {
                 .disabled(model.busy || model.status.meetingWorkBlockingRestart)
         }
         if model.status.meetingWorkBlockingRestart {
-            Text(meetingWorkBlockCaption)
+            Text(model.status.meetingWorkBlockReason)
                 .font(.caption2)
                 .foregroundStyle(COSPalette.amber)
+                .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .trailing)
+        } else if let note = model.status.heldAudioNote {
+            Text(note)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .trailing)
+            // Server 6.97.0 can keep lastError with nothing pending. It explains a stopped row; it is never a lock.
+            if model.status.meetingSyncMeetings.contains(where: \.isHeld), let error = model.status.meetingFinalizationLastError {
+                Text(error)
+                    .font(.caption2)
+                    .foregroundStyle(COSPalette.amber)
+                    .lineLimit(2)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+            }
         }
     }
 
@@ -1759,7 +1775,8 @@ struct ControlPanel: View {
             let recovering = model.status.meetingFinalizationFailed > 0
                 || model.status.meetingFinalizationMalformed > 0
             statusRow(
-                recovering ? "Save retries" : "Saving meetings",
+                // Malformed records are not being retried: they wait for Repair, so that row does not say retries.
+                model.status.meetingFinalizationMalformed > 0 ? "Meeting save" : recovering ? "Save retries" : "Saving meetings",
                 value: model.status.meetingFinalizationMalformed > 0
                     ? "Repair required"
                     : model.status.meetingFinalizationFailed > 0
@@ -2060,6 +2077,7 @@ struct ControlPanel: View {
             if model.status.installed && model.status.managedContract && model.status.ownershipVerified {
                 Button("Update Server") { model.perform("update") }
                     .disabled(model.status.meetingWorkBlockingRestart)
+                    .help(model.status.meetingWorkBlockingRestart ? model.status.meetingWorkBlockReason : "Install the newest published server and restart it.")
             } else if !model.status.installed && model.status.runtimeState == "notInstalled" {
                 Button("Install server") { model.installCurrentRelease() }.buttonStyle(COSPrimaryButtonStyle())
             }
@@ -3487,19 +3505,6 @@ struct ControlPanel: View {
         case "turbo_model_missing": return "Turbo fallback weights are missing. Run guided setup before changing tiers."
         default: return "The requested tier could not be activated; the safe fallback remains in use."
         }
-    }
-
-    private var meetingWorkBlockCaption: String {
-        if model.status.meetingFinalizationPending > 0 {
-            return "Blocks Update / Restart until the meeting is in the library."
-        }
-        if (model.status.activeTranscriptionSessions ?? 0) > 0, !model.status.meetingSyncActive {
-            return "Blocks Update / Restart until this recording is saved."
-        }
-        if model.status.meetingSyncBlocksRestart {
-            return "Blocks Update / Restart until meeting work finishes."
-        }
-        return "Meeting work in progress."
     }
 
     private var unsavedCapturesLabel: String {

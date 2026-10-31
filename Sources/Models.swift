@@ -50,6 +50,8 @@ struct MeetingSyncRow: Sendable, Equatable, Identifiable {
     let percent: Int?
     let chunkFiles: Int
     let label: String
+    /// Server 6.97.0 `phase: "stopped"`: its save stopped and the audio is kept. Visible, and nothing is running for it.
+    var isHeld: Bool { phase == "stopped" }
     var id: String { meetingId }
 
     init?(_ value: JSONValue) {
@@ -94,10 +96,11 @@ struct MeetingSyncRow: Sendable, Equatable, Identifiable {
         return trimmed.isEmpty ? phase.replacingOccurrences(of: "_", with: " ") : trimmed
     }
 
-    /// Working rows first (what the Mac is doing now), then oldest first (the queue order).
+    /// Working rows first (what the Mac is doing now), then oldest first (the queue order), then what nothing is working on.
     static func ordered(_ rows: [MeetingSyncRow]) -> [MeetingSyncRow] {
-        rows.enumerated().sorted { a, b in
-            if a.element.isWaiting != b.element.isWaiting { return !a.element.isWaiting }
+        func rank(_ row: MeetingSyncRow) -> Int { row.isHeld ? 2 : row.isWaiting ? 1 : 0 }
+        return rows.enumerated().sorted { a, b in
+            if rank(a.element) != rank(b.element) { return rank(a.element) < rank(b.element) }
             let sa = a.element.startedAt ?? .distantFuture, sb = b.element.startedAt ?? .distantFuture
             return sa != sb ? sa < sb : a.offset < b.offset
         }.map(\.element)
@@ -310,6 +313,10 @@ struct ServerStatus: Sendable {
     var meetingSyncCount = 0
     /// 0.5.237: each meeting behind "N meetings syncing", in panel order.
     var meetingSyncMeetings: [MeetingSyncRow] = []
+    /// Meetings with audio on disk and no server that could be working on them (the helper's own scan).
+    var meetingSyncHeldCount = 0
+    /// A running server did not answer, so the helper could not tell whether audio on disk is being saved.
+    var meetingSyncUnconfirmed = false
     var earlyMeetingSyncEnabled: Bool?
     var earlyMeetingSyncRequested: Bool?
     var earlyMeetingSyncAvailable: Bool?
@@ -370,6 +377,32 @@ struct ServerStatus: Sendable {
             || meetingFinalizationPending > 0
             || (activeTranscriptionSessions ?? 0) > 0
             || displayedMeetingSync.blocksRestart
+    }
+    /// Why Update and Restart are disabled, in words that are true of what is holding them.
+    var meetingWorkBlockReason: String {
+        if meetingFinalizationPending > 0 { return "Blocks Update / Restart until the meeting is in the library." }
+        if (activeTranscriptionSessions ?? 0) > 0, !meetingSyncActive { return "Blocks Update / Restart until this recording is saved." }
+        if meetingSyncUnconfirmed {
+            return "The server is not answering, so COS cannot tell whether a save is running. Update and Restart wait until it answers or stops. Run Doctor if this stays."
+        }
+        if meetingSyncBlocksRestart { return "Blocks Update / Restart until meeting work finishes." }
+        return "Meeting work in progress."
+    }
+    /// The words for a server's `meeting_finalizing` refusal. A stopped save is not about to finish, so it never says "in a minute".
+    func meetingFinalizingWords(session: String?) -> String {
+        meetingSyncMeetings.contains { $0.isHeld && $0.meetingId == session }
+            ? "This meeting's final transcript stopped. Speaker changes wait until it finishes, which COS retries later. Its audio is kept."
+            : "This meeting is still being saved. Try again in a minute."
+    }
+    /// Audio that holds nothing shut. Says so, and what still works. Deleting it is not offered here.
+    var heldAudioNote: String? {
+        guard !meetingWorkBlockingRestart else { return nil }
+        if meetingSyncHeldCount > 0 {
+            return "The server is stopped, so nothing is being saved. Start, Repair and Update Server still work, and the audio stays on this Mac."
+        }
+        let held = meetingSyncMeetings.filter(\.isHeld).count
+        guard held > 0 else { return nil }
+        return "\(held == 1 ? "This meeting's save" : "These meetings' saves") stopped and the audio is kept. Nothing is running now, so Restart, Update Server and Sync now still work."
     }
     /// Quarantined unsaved meeting captures (server 6.19.0+). 0 on older
     /// servers — the key is simply absent from health.
@@ -514,6 +547,8 @@ struct ServerStatus: Sendable {
         meetingSyncBlocksRestart = details["meetingSyncBlocksRestart"]?.bool ?? meetingSyncActive
         meetingSyncCount = details["meetingSyncCount"]?.int ?? 0
         meetingSyncMeetings = MeetingSyncRow.ordered((details["meetingSyncMeetings"]?.array ?? []).compactMap(MeetingSyncRow.init))
+        meetingSyncHeldCount = details["meetingSyncHeldCount"]?.int ?? 0
+        meetingSyncUnconfirmed = details["meetingSyncUnconfirmed"]?.bool ?? false
         earlyMeetingSyncEnabled = details["earlyMeetingSyncEnabled"]?.bool
         earlyMeetingSyncRequested = details["earlyMeetingSyncRequested"]?.bool
         earlyMeetingSyncAvailable = details["earlyMeetingSyncAvailable"]?.bool

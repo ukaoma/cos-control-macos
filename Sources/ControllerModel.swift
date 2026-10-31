@@ -10602,7 +10602,7 @@ final class ControllerModel: ObservableObject {
                 let response = try await helper.run(args)
                 guard reviewSelectionGeneration == generation, lastReviewSession == session else { return }
                 pendingCorrection = Self.correction(
-                    from: from, to: to, scope: scope, response: response,
+                    from: from, to: to, scope: scope, response: response, finalizingWords: status.meetingFinalizingWords(session: session),
                     isNameAssignment: isNameAssignment, createsProfile: createsProfile,
                     assignRequested: assigned != nil
                 )
@@ -10672,7 +10672,7 @@ final class ControllerModel: ObservableObject {
                 ] + reviewRevisionArgs(review))
                 guard reviewSelectionGeneration == generation, lastReviewSession == session else { return }
                 pendingCorrection = Self.correction(
-                    from: from, to: nil, scope: .thisMeeting, response: response
+                    from: from, to: nil, scope: .thisMeeting, response: response, finalizingWords: status.meetingFinalizingWords(session: session)
                 )
                 namingVoice = nil
                 reviewError = nil
@@ -10694,6 +10694,7 @@ final class ControllerModel: ObservableObject {
         to: String?,
         scope: CorrectionScope,
         response: HelperResponse,
+        finalizingWords: String,
         isNameAssignment: Bool = false,
         createsProfile: Bool = false,
         assignRequested: Bool = false
@@ -10714,7 +10715,7 @@ final class ControllerModel: ObservableObject {
             fallback: "")
         let message: String
         if state == "meeting_finalizing" {
-            message = "This meeting is still being saved. Try again in a minute."
+            message = finalizingWords
         } else if state == "record_source_mismatch" {
             message = "This meeting changed since you opened it. Reopen it, then try again."
         } else if state == "direct_library_read_only" {
@@ -10837,7 +10838,7 @@ final class ControllerModel: ObservableObject {
                     case "pending_correction":
                         reviewError = MacVoiceCopy.earlierCorrectionNote
                     case "meeting_finalizing":
-                        reviewError = "This meeting is still being saved. Try again in a minute."
+                        reviewError = status.meetingFinalizingWords(session: session)
                     default:
                         reviewError = detail ?? "The server did not apply that (\(state))."
                     }
@@ -11102,11 +11103,11 @@ final class ControllerModel: ObservableObject {
                 do {
                     let response = try await helper.run(args)
                     guard reviewSelectionGeneration == generation, lastReviewSession == session else { return }
-                    let correction = Self.correction(from: voice.label, to: name, scope: .thisMeeting, response: response,
+                    let correction = Self.correction(from: voice.label, to: name, scope: .thisMeeting, response: response, finalizingWords: status.meetingFinalizingWords(session: session),
                                                      isNameAssignment: voice.isNameAssignment, assignRequested: assigned)
                     let state = response.details["state"]?.string ?? ""
                     guard !correction.refused, state == "preview" else {
-                        let reason = correction.refused ? correction.message : Self.groupStepRefusal(state: state, response: response)
+                        let reason = correction.refused ? correction.message : Self.groupStepRefusal(state: state, response: response, finalizingWords: status.meetingFinalizingWords(session: session))
                         voiceGroupNamingOutcome = VoiceGroupNamingOutcome(to: name, labels: labels, namedCount: 0, stoppedAt: voice.label, reason: reason)
                         return
                     }
@@ -11160,7 +11161,7 @@ final class ControllerModel: ObservableObject {
                     let response = try await helper.run(args)
                     let state = response.details["state"]?.string ?? ""
                     guard state == "applied" else {
-                        stop = Self.groupStepRefusal(state: state, response: response); break steps
+                        stop = Self.groupStepRefusal(state: state, response: response, finalizingWords: status.meetingFinalizingWords(session: session)); break steps
                     }
                     namedCount += 1
                     samples += response.details["result"]?.object?["enrolment"]?.object?["enrolled"]?.int ?? 0
@@ -11210,13 +11211,13 @@ final class ControllerModel: ObservableObject {
     }
 
     /// Why one label's save did not apply, using the same words the single row's card uses.
-    private static func groupStepRefusal(state: String, response: HelperResponse) -> String {
+    private static func groupStepRefusal(state: String, response: HelperResponse, finalizingWords: String) -> String {
         let result = response.details["result"]?.object
         let detail = MacVoiceCopy.withoutForceJargon(SpeakerRefusal.text(result) ?? response.details["message"]?.string, fallback: "")
         switch state {
         case "route_missing": return "This needs a newer COS server. Use Update Server."
         case "pending_correction": return MacVoiceCopy.earlierCorrectionNote
-        case "meeting_finalizing": return "This meeting is still being saved. Try again in a minute."
+        case "meeting_finalizing": return finalizingWords
         default: return detail.isEmpty ? "The server did not apply that (\(state))." : detail
         }
     }
