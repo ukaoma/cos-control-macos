@@ -2,6 +2,8 @@
 """Ask COS setup assistant mutation lane. Run by hand, never by a gate.
 
     python3 Tests/mutate-setup-assistant.py <worktree> <scratch dir> [name ...]
+    python3 Tests/mutate-setup-assistant.py <worktree> <scratch dir> --center     the command center's mutants, most dangerous first
+    COS_MUTATE_MINUTES=25 ...                                                     stop starting mutants after this long, baseline included
 
 Copies the worktree to <scratch dir>/copy, proves the UNMUTATED lane green first (Tests/run-setup-assistant.sh: the pins,
 then the compiled checks), then applies one mutant at a time: the target must appear exactly once, the mutant must make
@@ -9,7 +11,7 @@ the lane fail, and the failure must name the behaviour it breaks. The copy is re
 every mutant. A mutant that lands and survives is a finding. One lane run at a time; every compile goes through the guard,
 and a run that hangs is killed after LIMIT seconds (Tests/mutate_bounded.py) and counted as a kill by timeout.
 """
-import filecmp, pathlib, shutil, sys, time
+import filecmp, os, pathlib, shutil, sys, time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import mutate_bounded as bounded
@@ -62,7 +64,7 @@ MUTANTS = [
     ("applies: an app update with none offered", C, "            return s.appUpdate.available || s.appUpdate.downloadFailed\n", "            return true\n", "[installing]"),
     # The board
     ("board: the conflict offers more", C, "        if s.ownerConflict {\n            let only", "        if false {\n            let only", "[ownership conflict offers nothing]"),
-    ("board: a server row on first run", C, "        if !s.serverReachable && !s.needsFirstRun {\n", "        if !s.serverReachable {\n", "[first run]"),
+    ("board: a server row on first run", C, "        if !s.serverReachable && !s.needsFirstRun {\n            switch s.runtimeState {\n", "        if !s.serverReachable {\n            switch s.runtimeState {\n", "[first run]"),
     ("board: a stopped server is repaired", C, '"It is not running, so Work, meetings and the glasses cannot reach it.", .startServer)',
      '"It is not running, so Work, meetings and the glasses cannot reach it.", .repairRuntime)', "[ranking]"),
     ("board: a Terminal server is updated", C, '"Finish active work, then stop it in Terminal with Control-C. COS Control can then run the server for you.", nil)',
@@ -147,6 +149,9 @@ MUTANTS = [
     ("center: a held row highlights", C, "if rank == 0, command.autoHighlights, row.selectable, result.autoHighlight == nil", "if rank == 0, command.autoHighlights, result.autoHighlight == nil",
      "[a held row never highlights]"),
     ("center: an exact command still shows the answer", C, "            let saved = result.autoHighlight == nil ? answer(words, s) : nil\n", "            let saved = answer(words, s)\n", "[an exact command skips the answer]"),
+    # The command center: the closed list
+    ("center: a command's title changes", C, '                case .openSessions: return "Open Sessions"\n', '                case .openSessions: return "Sessions"\n', "[command list]"),
+    ("center: a phrase is not exact", C, "            if phrases.contains(typed) { return 0 }\n", "", "[a command's phrase is exact]"),
     # The command center: Return
     ("center: a saved answer starts a run", C, "            let cautious = listing.hasAnswer || listing.nearCommand\n", "            let cautious = listing.nearCommand\n", "[a saved answer moves to Ask]"),
     ("center: a near-command starts a run", C, "            let cautious = listing.hasAnswer || listing.nearCommand\n", "            let cautious = listing.hasAnswer\n", "[a near-command moves to Ask]"),
@@ -237,8 +242,9 @@ MUTANTS = [
     ("knowledge: speaker names wrong misses", C, '"speaker names wrong", "speaker name wrong",', '"speaker name wrong",', "[knowledge base: voice-rename]"),
     # The command center's view half (Sources/ActivityWindow.swift), held by the pins
     ("view: ⌘K goes Home", W, 'Button("") { toggleCommandCenter() }', 'Button("") { goHome(); toggleCommandCenter() }', "⌘K never navigates"),
-    ("view: opening it navigates", W, "        commandKeys.keepOpen = false\n        commandOpen = true\n", "        goHome()\n        commandKeys.keepOpen = false\n        commandOpen = true\n", "⌘K never navigates"),
+    ("view: opening it navigates", W, "        commandKeys.recordFailed = false\n        commandOpen = true\n", "        commandKeys.recordFailed = false\n        goHome()\n        commandOpen = true\n", "⌘K never navigates"),
     ("view: Esc goes back past the panel", W, "        if commandOpen {\n            if commandKeys.escape?() != true { closeCommandCenter() }\n            return true\n        }\n", "", "Esc reaches the panel"),
+    ("view: the panel gives up its Esc", W, "        keys.escape = { pressEscape() }\n", "", "owns its Esc"),
     ("view: the field is disabled", W, ".onSubmit { pressReturn() }\n", ".onSubmit { pressReturn() }\n                    .disabled(base.snapshot.helperBusy)\n", "never disabled"),
     ("view: the box takes words again", W, "            Button { openCommandCenter() } label: {\n", "            Button { openCommandCenter() } label: {\n                TextField(\"\", text: .constant(\"\"))\n", "the Today box is a button"),
     ("view: the panel moves", W, ".onSubmit { pressReturn() }\n", ".onSubmit { pressReturn() }\n                    .animation(.default, value: words)\n", "nothing moves"),
@@ -274,8 +280,43 @@ MUTANTS = [
     ("pins: the suite skips the lane", S, 'zsh "$ROOT/Tests/run-setup-assistant.sh"\n', "", "runs the setup assistant lane once"),
 ]
 
+# Most dangerous first: what would spend a run, record, or change something unasked, then the keys and the saved answers. The
+# view mutants come first of all, because a pin kills each before any compile. Whatever is not named here runs after these.
+CENTER_FIRST = [
+    "view: a change without its confirm", "view: a confirm with stale state", "view: a held row runs", "view: the notice skipped", "view: the card's busy rule skipped",
+    "view: Stop keys on the count", "view: no in-flight flag", "view: typed words as a helper argument", "view: troubleshoot spends Doctor before the guard", "view: troubleshoot twice",
+    "view: Ask spends Doctor", "view: ⌘K goes Home", "view: opening it navigates", "view: Esc goes back past the panel", "view: the panel gives up its Esc",
+    "view: Option-Return left to the field", "view: a dispatch default", "view: an action not dispatched", "view: the field is disabled", "view: the box takes words again",
+    "center: a saved answer starts a run", "center: a near-command starts a run", "center: a short text starts a run", "center: Return runs a held Ask",
+    "center: a phrase in a sentence is no near-command", "center: near-command at any length",
+    "center: Stop highlights itself", "center: Doctor highlights itself", "center: part of a phrase highlights", "center: a held row highlights",
+    "center: Return accepts the notice", "center: a glasses meeting is captured twice", "center: Stop keys on any recording", "center: two starts at once",
+    "center: an old Mac is not told", "center: server down still offers Start", "center: Start stays while recording", "center: saving says nothing",
+    "center: Doctor runs at once", "center: Stop runs at once", "center: a change runs at once", "center: the report spends a question unasked",
+    "center: the confirm skips the gate", "center: Doctor's confirm skips the gate", "center: Stop skips its check",
+    "center: Option-Return stops filing", "center: Return ignores the highlight", "center: Return ignores the confirm", "center: a stale highlight still runs",
+    "center: Start Work off stops filing", "center: a long paste is cut",
+    "center: Esc closes at once", "center: Esc leaves a confirm open",
+    "center: a command's title changes", "center: a phrase is not exact",
+    "knowledge: set up parakeet loses to will not install", "knowledge: a failure reads as setup", "knowledge: start recording misses", "knowledge: a transcript that never finished misses",
+    "knowledge: how to use dictation misses", "knowledge: rename a voice misses", "knowledge: speaker names wrong misses",
+    "center: a saved answer is not labelled", "center: a miss says nothing", "center: an exact command still shows the answer",
+    "center: a title match highlights itself", "center: a title keeps its newline", "center: a title keeps its direction marks", "center: a waiting title is not cleaned",
+    "center: Ask drops the rules", "center: Ask spends Doctor", "center: Ask without its gate", "troubleshoot: no ask-first rule", "board: a server row on first run",
+]
 
-def suite(copy):
+
+def center_mutants():
+    """CENTER_FIRST in its order, then every other command center mutant in file order."""
+    by_name = {m[0]: m for m in MUTANTS}
+    missing = [name for name in CENTER_FIRST if name not in by_name]
+    if missing:
+        sys.exit(f"CENTER_FIRST names mutants that do not exist: {missing}")
+    rest = [m for m in MUTANTS if m[0].split(":")[0] in ("center", "view", "knowledge") and m[0] not in CENTER_FIRST]
+    return [by_name[name] for name in CENTER_FIRST] + rest
+
+
+def suite(copy, deadline=None):
     started = time.time()
     # The compile lock is shared with whoever else is building: waiting for it is not a kill.
     for _ in range(60):
@@ -283,6 +324,8 @@ def suite(copy):
         out = result.stdout + result.stderr
         if "shared compile lock busy" not in out:
             break
+        if deadline and time.time() > deadline:
+            return None
         time.sleep(30)
     if "compile-guard: STOPPED" in out:
         sys.exit("compile-guard stopped a compile (memory); ending the mutation lane. " + out[-400:])
@@ -291,7 +334,18 @@ def suite(copy):
 
 def main():
     src, scratch = pathlib.Path(sys.argv[1]).resolve(), pathlib.Path(sys.argv[2]).resolve()
-    only = set(sys.argv[3:])
+    names = sys.argv[3:]
+    unknown = [n for n in names if n != "--center" and n not in {m[0] for m in MUTANTS}]
+    if unknown:
+        sys.exit(f"no such mutant: {unknown}")
+    # Each target lands exactly once, or nothing is judged: found now, not an hour in.
+    for name, rel, old, _, _ in MUTANTS:
+        count = (src / rel).read_text(encoding="utf-8").count(old)
+        if count != 1:
+            print(f"MISS  {name}: the target appears {count} times", flush=True)
+    chosen = center_mutants() if "--center" in names else [m for m in MUTANTS if not names or m[0] in names]
+    minutes = float(os.environ.get("COS_MUTATE_MINUTES", "0"))
+    deadline = time.time() + minutes * 60 if minutes else None
     copy = scratch / "copy"
     if copy.exists():
         shutil.rmtree(copy)
@@ -304,18 +358,22 @@ def main():
         print(out[-3000:])
         sys.exit("baseline is not green; no mutant may be judged against a red suite")
     killed = survived = 0
-    for name, rel, old, new, words in MUTANTS:
-        if only and name not in only:
-            continue
+    not_run = []
+    for name, rel, old, new, words in chosen:
+        if deadline and time.time() > deadline:
+            not_run.append(name); continue
         path = copy / rel
         text = path.read_text(encoding="utf-8")
         if text.count(old) != 1:
             print(f"MISS  {name}: the target appears {text.count(old)} times", flush=True); survived += 1; continue
         path.write_text(text.replace(old, new), encoding="utf-8")
         try:
-            code, out, seconds, timed_out = suite(copy)
+            outcome = suite(copy, deadline)
         finally:
             path.write_text(text, encoding="utf-8")
+        if outcome is None:
+            not_run.append(name); continue
+        code, out, seconds, timed_out = outcome
         if not filecmp.cmp(path, src / rel, shallow=False):
             sys.exit(f"RESTORE FAILED for {name}: {rel} differs from the worktree")
         lines = [l for l in out.splitlines() if "check failed [" in l or "Setup assistant pin:" in l or ": error:" in l]
@@ -328,8 +386,10 @@ def main():
             killed += 1; print(f"killed  {name} ({seconds:.0f}s): {reason[:220]}", flush=True)
         else:
             survived += 1; print(f"MISATTRIBUTED  {name}: {reason[:260]}", flush=True)
-    print(f"RESULT: {killed}/{killed + survived} killed by a check that names the behaviour; every restore compared equal", flush=True)
-    sys.exit(0 if survived == 0 else 1)
+    for name in not_run:
+        print(f"NOT RUN  {name}", flush=True)
+    print(f"RESULT: {killed}/{killed + survived} killed by a check that names the behaviour; {len(not_run)} not run; every restore compared equal", flush=True)
+    sys.exit(0 if survived == 0 and not not_run else 1)
 
 
 if __name__ == "__main__":
