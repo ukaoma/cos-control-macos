@@ -1,14 +1,18 @@
 import Foundation
 /// Hand-run only, never in the suite. Runs the real `cos-usage` reader over a real home against a scratch copy of the
 /// usage history, so real data is read and only the scratch copy is written. Prints the report (counts only) and how long
-/// each pass took. The scripts folder is passed in, so `.env` is never opened.
+/// each pass took. The scripts folder is passed in, so `.env` is never opened. A fourth argument names a Node for compressed
+/// rollouts; with none they stay unread, which is the "before". A fifth, `usage`, also runs Usage's own read on the scratch
+/// copy until it has nothing pending, and prints its Codex tokens and API value for the same 30 days to stderr.
 @main struct CosCostCanary {
     static func main() throws {
         let args = CommandLine.arguments
-        guard args.count == 4, args[2].hasPrefix("/private/tmp/") || args[2].hasPrefix("/tmp/") else {
-            fatalError("Usage: cos-cost-canary <source-home> <scratch-database-under-tmp> <scripts-folder>")
+        guard (4...6).contains(args.count), args[2].hasPrefix("/private/tmp/") || args[2].hasPrefix("/tmp/") else {
+            fatalError("Usage: cos-cost-canary <source-home> <scratch-database-under-tmp> <scripts-folder> [node] [usage]")
         }
         let collector = try SessionUsageCollector(home: URL(fileURLWithPath: args[1]), database: URL(fileURLWithPath: args[2]))
+        if args.count >= 5, !args[4].isEmpty { collector.compressedLogNodes = [args[4]] }
+        if args.count == 6 { try usagePasses(collector) }
         var pass = 0
         var opened = Set<String>()
         while true {
@@ -24,6 +28,20 @@ import Foundation
                 return
             }
         }
+    }
+    /// Usage's own read on the scratch copy. Its figures are what COS cost's denominator divides by.
+    static func usagePasses(_ collector: SessionUsageCollector) throws {
+        var pass = 0
+        var report = try collector.refresh(maxBytes: 0, readOnly: true)
+        while report.pendingFiles > 0 && pass < 200 {
+            pass += 1
+            report = try collector.refresh()
+            if pass % 10 == 0 { FileHandle.standardError.write(Data("usage pass \(pass): \(report.pendingFiles) files pending\n".utf8)) }
+        }
+        let window = CosCostRules.window(now: Date(), timeZone: .current)
+        let codex = report.buckets.filter { window.contains($0.day) && $0.provider == "OpenAI" }
+        let tokens = codex.reduce(Int64(0)) { $0 + $1.counts.total }, usd = codex.reduce(0.0) { $0 + $1.estimatedUSD }
+        FileHandle.standardError.write(Data(String(format: "usage after %d passes: %d pending, %d unreadable, Codex (OpenAI) %d tokens, $%.2f over %@...%@\n", pass, report.pendingFiles, report.unreadableFiles, tokens, usd, window.lowerBound, window.upperBound).utf8))
     }
     /// The rate card against what the command line itself reported, on every real gist row. inputTokens is all cache
     /// writes and reads together, and these runs write a one-hour cache, so that is what the card is asked to price.

@@ -11300,7 +11300,7 @@ final class ControllerModel: ObservableObject {
             do {
                 let response = try await helper.run(["meeting-voice-batch-apply"], stdinData: body)
                 guard reviewSelectionGeneration == generation, lastReviewSession == session else {
-                    notice = VoiceBatchResult(response.details["result"])?.line ?? VoiceDisplayCopy.batchLostReply
+                    notice = VoiceBatchResult(response.details["result"])?.line(saveStopped: status.meetingSaveStopped(session: session)) ?? VoiceDisplayCopy.batchLostReply
                     return
                 }
                 routeGone = response.details["unavailable"]?.string == "route_absent"
@@ -11333,7 +11333,7 @@ final class ControllerModel: ObservableObject {
             do {
                 let response = try await helper.run(["meeting-voice-batch-undo", "--session", session, "--batch", batch.batchId])
                 guard reviewSelectionGeneration == generation, lastReviewSession == session else {
-                    notice = VoiceBatchUndoResult(response.details["result"])?.line ?? VoiceDisplayCopy.batchLostReply
+                    notice = VoiceBatchUndoResult(response.details["result"])?.line(saveStopped: status.meetingSaveStopped(session: session)) ?? VoiceDisplayCopy.batchLostReply
                     return
                 }
                 undo = VoiceBatchUndoResult(response.details["result"])

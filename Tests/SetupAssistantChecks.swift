@@ -957,6 +957,7 @@ import Foundation
         check(SA.confirmation(.repairWhisper, s)?.consequence == "This restarts the whole COS server, then waits for Whisper to answer.",
               "[Repair Whisper says it restarts the server]", "")
         check(SA.confirmation(.restartServer, s)?.consequence.contains("checks that nothing is running") == true, "[every change confirms]", "")
+        check(SA.confirmation(.updateServer, s)?.consequence.hasSuffix("If this Mac already runs something newer, nothing changes.") == true, "[Update Server says it cannot go backward]", "")
         var pending = s; pending.transactionPending = true
         check(SA.confirmation(.repairRuntime, pending)?.question == "Finish the interrupted server update?", "[repair says what it does]", "")
         var stopped = s; stopped.desiredState = "stopped"

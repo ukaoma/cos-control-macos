@@ -1022,6 +1022,7 @@ import SQLite3
         check(try JSONDecoder().decode(SessionUsageReport.self, from: oldJSON).cursorFeed == nil, "a report without the feed field decodes")
         print("PASS: tool names, model names, default scales, per-tool prior windows and the Cursor feed (parsing, privacy, paging, backoff, resume)")
         try cosCostChecks(home: home)
+        if try !cosCompressedChecks(home: home, nodes: zstNodes) { compressedChecksSkipped = true }
 
         print("PASS: weekly buckets, category USD mix, period comparisons, table sorting and CSV/JSON export")
         print("PASS: 30/90/custom dates, DST/leap/calendar boundaries, provider/day summaries and token mix")
@@ -1038,6 +1039,119 @@ import SQLite3
 
 // MARK: - COS cost. Fixtures for each data rule, then the reader on a scratch home and database.
 extension Checks {
+    /// COS cost over compressed rollouts: the same Work runs, read plain and compressed, give the same figures. False when
+    /// no Node here can read zstd, so the caller can say these checks did not run.
+    static func cosCompressedChecks(home: URL, nodes: [String]) throws -> Bool {
+        func check(_ yes: Bool, _ label: String) { if !yes { fatalError(label) } }
+        guard let node = SessionUsageCollector.compressedDecoder(nodes) else { return false }
+        let chicago = TimeZone(identifier: "America/Chicago")!
+        let fm = FileManager.default
+        let now = Date(timeIntervalSince1970: CosCostRules.epoch("2026-10-31T12:00:00Z")!)
+        func json(_ value: [String: Any]) throws -> String { String(decoding: try JSONSerialization.data(withJSONObject: value), as: UTF8.self) + "\n" }
+        // A real task_complete row carries the last answer, so this one does too. It may pass the filter, and it must stop at counts.
+        func event(_ kind: String, _ time: String) throws -> String { try json(["type": "event_msg", "timestamp": time, "payload": ["type": kind, "last_agent_message": "SECRET_PROMPT_NEVER_STORE"]]) }
+        func tokens(_ time: String, _ total: Int) throws -> String {
+            try json(["type": "event_msg", "timestamp": time, "payload": ["type": "token_count", "info": ["total_token_usage": ["input_tokens": total, "output_tokens": 0, "cached_input_tokens": 0], "last_token_usage": ["input_tokens": 1000, "output_tokens": 0, "cached_input_tokens": 0]]]])
+        }
+        let noise = try json(["type": "response_item", "payload": ["text": String(repeating: "SECRET_PROMPT_NEVER_STORE ", count: 200)]])
+        func rollout(_ id: String, _ body: String) throws -> String {
+            try json(["type": "session_meta", "payload": ["id": id, "model_provider": "openai"]]) + json(["type": "turn_context", "payload": ["model": "gpt-6.1-sol"]]) + noise + body
+        }
+        // Moved on by a person's next turn; ended by its last finished turn; ended by an aborted turn.
+        let movedOn = "aaaaaaaa-1111-1111-1111-111111111111", finished = "bbbbbbbb-2222-2222-2222-222222222222", aborted = "cccccccc-3333-3333-3333-333333333333"
+        let threads: [(id: String, start: String, text: String)] = [
+            (movedOn, "2026-10-30T13:00:00Z", try rollout(movedOn, try event("task_started", "2026-10-30T13:00:03Z") + tokens("2026-10-30T13:00:10Z", 1000) + event("task_complete", "2026-10-30T13:00:20Z")
+                + noise + event("task_started", "2026-10-30T13:30:00Z") + tokens("2026-10-30T13:30:10Z", 2000) + event("task_complete", "2026-10-30T13:30:20Z"))),
+            (finished, "2026-10-30T14:00:00Z", try rollout(finished, try event("task_started", "2026-10-30T14:00:03Z") + tokens("2026-10-30T14:00:10Z", 1000) + event("task_complete", "2026-10-30T14:00:20Z"))),
+            (aborted, "2026-10-30T15:00:00Z", try rollout(aborted, try event("task_started", "2026-10-30T15:00:03Z") + tokens("2026-10-30T15:00:10Z", 1000) + event("turn_aborted", "2026-10-30T15:00:20Z"))),
+        ]
+        func rolloutFile(_ root: URL, _ id: String, compressed: Bool) -> URL {
+            root.appendingPathComponent(".codex/sessions/2026/10/30/rollout-2026-10-30T13-00-00-\(id).jsonl" + (compressed ? ".zst" : ""))
+        }
+        func place(_ name: String, compressed: Bool, only: String? = nil) throws -> (reader: SessionUsageCollector, root: URL) {
+            let root = home.appendingPathComponent("cos-zst-\(name)")
+            let chosen = threads.filter { only == nil || $0.id == only }
+            for thread in chosen {
+                let file = rolloutFile(root, thread.id, compressed: false)
+                try fm.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try thread.text.write(to: file, atomically: true, encoding: .utf8)
+                guard compressed else { continue }
+                let maker = Process()
+                maker.executableURL = URL(fileURLWithPath: node)
+                maker.arguments = ["-e", "const f=require('fs'),z=require('zlib');f.writeFileSync(process.argv[1]+'.zst',z.zstdCompressSync(f.readFileSync(process.argv[1])));f.unlinkSync(process.argv[1])", file.path]
+                try maker.run(); maker.waitUntilExit()
+                check(maker.terminationStatus == 0, "the fixture compresses")
+            }
+            let handoffs = root.appendingPathComponent("Library/Application Support/COS Control/work-handoffs/handoffs.json")
+            try fm.createDirectory(at: handoffs.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data(try json(["receipts": chosen.map { ["createdAt": CosCostRules.epoch($0.start)!, "sessionID": "codex:\($0.id)", "provider": "codex", "status": "completed", "channel": "job"] }]).utf8).write(to: handoffs)
+            let reader = try SessionUsageCollector(home: root, database: home.appendingPathComponent("cos-zst-\(name).sqlite"), timeZone: chicago)
+            reader.compressedLogNodes = compressed ? [node] : []
+            return (reader, root)
+        }
+        func fakeNode(_ root: URL, _ rest: String) throws -> String {
+            let file = root.appendingPathComponent("fake-node-\(UUID().uuidString)")
+            try "#!/bin/sh\ncase \"$2\" in process.exit*) exit 0 ;; esac\n\(rest)\n".write(to: file, atomically: true, encoding: .utf8)
+            try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: file.path)
+            return file.path
+        }
+        func pass(_ reader: SessionUsageCollector, seconds: TimeInterval = SessionUsageCollector.cosPassSeconds) throws -> CosUsageReport {
+            try reader.cosUsage(plistScripts: "/nonexistent", dataDirectory: nil, importSessions: true, seconds: seconds, now: now)
+        }
+
+        let plain = try pass(try place("plain", compressed: false).reader)
+        check(plain.work.measuredTokens == 3000 && plain.work.widerTokens == 4000 && plain.work.unprovenRuns == 0 && plain.sessions.stillReading == 0, "the plain reference has three runs with provable ends")
+        let (zipped, _) = try place("zipped", compressed: true)
+        let read = try pass(zipped)
+        check(read.sessions.compressed == 0 && read.sessions.stillReading == 0 && read.sessions.noLogs == 0, "a compressed Work log is read, not reported as unread")
+        check(read.work.unprovenRuns == 0, "a compressed Work run has the provable end a plain one has")
+        check(read.work.measuredTokens == plain.work.measuredTokens && read.work.widerTokens == plain.work.widerTokens, "a compressed Work run counts what the plain log counts")
+        check(!(try Data(contentsOf: home.appendingPathComponent("cos-zst-zipped.sqlite"))).contains(Data("SECRET_PROMPT_NEVER_STORE".utf8)), "no words from a compressed log reach the usage history")
+        // Finished is finished: with no decoder at all the next pass still has its figures and says nothing is unread.
+        zipped.compressedLogNodes = []
+        let again = try pass(zipped)
+        check(again.sessions.compressed == 0 && again.work.measuredTokens == plain.work.measuredTokens, "a finished compressed log starts no decoder")
+        // A small budget moves line by line, resumes where it stopped, and counts each row once.
+        let (sliced, _) = try place("sliced", compressed: true, only: movedOn)
+        var slices = 0, leftOpen = 1
+        while leftOpen > 0 && slices < 25 {
+            slices += 1
+            leftOpen = try sliced.cosReadSessionSlices([SessionUsageCollector.CosSliceTarget(provider: "codex", id: movedOn)], fileBytes: 1, now: now).stillReading
+        }
+        check(slices > 3 && slices < 25 && leftOpen == 0, "a small budget reads a compressed Work log in slices, from where it stopped")
+        let slicedRead = try pass(sliced)
+        check(slicedRead.work.measuredTokens == 1000 && slicedRead.work.widerTokens == 2000, "a compressed Work log read in slices counts each row once")
+        // No decoder: said, and nothing else on the page moves.
+        let (bare, _) = try place("bare", compressed: true)
+        bare.compressedLogNodes = []
+        let unread = try pass(bare)
+        check(unread.sessions.compressed == 3 && unread.sessions.stillReading == 0 && unread.work.measuredTokens == 0, "with no decoder each compressed session is said")
+        // A file it cannot trust: said each pass, and it does not keep the page hurrying.
+        let (corrupt, corruptRoot) = try place("corrupt", compressed: true, only: finished)
+        try Data("not really zstd".utf8).write(to: rolloutFile(corruptRoot, finished, compressed: true))
+        let spoiled = try pass(corrupt)
+        check(spoiled.sessions.compressed == 1 && spoiled.sessions.stillReading == 0, "a corrupt compressed session is said and does not keep the page waiting")
+        check(try pass(corrupt).sessions.compressed == 1, "a corrupt compressed session is still said on the next pass, with no new try")
+        // Out of time: still reading, not failed, and no decoder starts for it.
+        let (late, lateRoot) = try place("late", compressed: true)
+        let started = lateRoot.appendingPathComponent("decoder-started")
+        late.compressedLogNodes = [try fakeNode(lateRoot, "touch '\(started.path)'\nexit 1")]
+        let noTime = try pass(late, seconds: 0)
+        check(noTime.sessions.stillReading == 3 && noTime.sessions.compressed == 0, "a pass with no time left leaves compressed logs still being read")
+        check(!fm.fileExists(atPath: started.path), "a pass with no time left starts no decoder")
+        // A decoder that hangs is killed at the deadline, and a log that never moves stops being tried.
+        let (stuck, stuckRoot) = try place("stuck", compressed: true, only: finished)
+        stuck.compressedLogNodes = [try fakeNode(stuckRoot, "exec sleep 30")]
+        let clock = Date()
+        let firstStall = try pass(stuck, seconds: 1), secondStall = try pass(stuck, seconds: 1)
+        check(Date().timeIntervalSince(clock) < 15, "a hung decoder is killed at the pass's deadline")
+        check(firstStall.sessions.stillReading == 1 && secondStall.sessions.stillReading == 1 && secondStall.sessions.compressed == 0, "a stalled compressed log gets more than one try")
+        let thirdStall = try pass(stuck, seconds: 1)
+        check(thirdStall.sessions.stillReading == 0 && thirdStall.sessions.compressed == 1, "a compressed log that never moves stops being tried, and says so")
+        print("PASS: COS cost over compressed rollouts (provable ends, parity with plain, slices, no decoder, corrupt, out of time, hung decoder)")
+        return true
+    }
+
     static func cosCostChecks(home: URL) throws {
         func check(_ yes: Bool, _ label: String) { if !yes { fatalError(label) } }
         let chicago = TimeZone(identifier: "America/Chicago")!
@@ -1383,6 +1497,24 @@ extension Checks {
         a = make(); a.add(cursorFinal); cursorRows = a.finish(handoffsFound: true, workRuns: 0, workRunsWithoutLogs: 0).rows
         cursorReport = report(cursorRows)
         check(P.ranUSD(usageBuckets: [], report: cursorReport, cursorFeedOn: true) == 0 && P.ranUSD(usageBuckets: [], report: cursorReport, cursorFeedOn: false) == 7, "Luna follows the Cursor rule")
+        // What the denominator may lean on, from what Usage last reported.
+        func usageReport(pending: Int = 0, feed: SessionUsageCursorFeedStatus? = nil, buckets: [SessionUsageBucket] = []) -> SessionUsageReport {
+            SessionUsageReport(buckets: buckets, updatedAt: "x", timeZone: "UTC", filesIndexed: 0, pendingFiles: pending, unreadableFiles: 0, malformedRows: 0, missingBaselineEvents: 0, coverage: [], pricingVersion: "x", cursorFeed: feed)
+        }
+        check(P.usageState(tracking: false, report: usageReport()) == .paused, "paused comes from the switch, whatever the last report said")
+        check(P.usageState(tracking: true, report: nil) == .unavailable, "no report yet is no total")
+        check(P.usageState(tracking: true, report: usageReport(pending: 3)) == .importing(files: 3), "a log still being read is a total that will grow")
+        check(P.usageState(tracking: true, report: usageReport(feed: .init(state: .backfilling))) == .importing(files: 0), "a Cursor read under way is a total that will grow")
+        check(P.usageState(tracking: true, report: usageReport(feed: .init(state: .ready))) == .ready, "a finished read is a total to divide by")
+        check(P.usageNote(.importing(files: 0))?.contains("Cursor") == true && P.usageNote(.importing(files: 2))?.contains("2 log files") == true, "the note says which read is under way")
+        check(P.usageNote(.paused)?.hasPrefix("Tracking is paused") == true && P.usageNote(.paused)?.contains("last read") == true, "the paused words match Usage's bar")
+        let readFeed = SessionUsageCursorFeedStatus(state: .ready, lastSuccessAt: "2026-10-30T12:00:00Z")
+        check(P.usageHoldsCursor(feedOn: true, usage: usageReport(feed: readFeed), report: cursorReport), "a feed that has read holds Cursor spend")
+        check(!P.usageHoldsCursor(feedOn: true, usage: usageReport(feed: .init(state: .keychainBusy)), report: cursorReport), "a feed turned on that has never read holds nothing, so Cursor spend still adds")
+        check(!P.usageHoldsCursor(feedOn: false, usage: usageReport(feed: readFeed), report: cursorReport), "a feed turned off with no rows in the window holds nothing")
+        func cursorBucket(_ day: String) -> SessionUsageBucket { SessionUsageBucket(day: day, provider: "Cursor", model: "composer-2", counts: SessionUsageCounts(input: 1), events: 1, pricedEvents: 1, estimatedUSD: 7) }
+        check(P.usageHoldsCursor(feedOn: false, usage: usageReport(buckets: [cursorBucket("2026-10-30")]), report: cursorReport), "Cursor rows read before the feed was turned off stay in the total")
+        check(!P.usageHoldsCursor(feedOn: false, usage: usageReport(buckets: [cursorBucket("2026-08-01")]), report: cursorReport), "Cursor rows outside the window hold nothing for it")
         var adds = CosCostRow(category: .liveAndUpkeep); adds.addsToTotalUSD = 3
         var workAdds = CosWorkSummary(); workAdds.addsToTotalUSD = 2
         check(P.ranUSD(usageBuckets: [bucket("2026-10-30", 100), bucket("2026-10-01", 900)], report: report([adds], work: workAdds), cursorFeedOn: false) == 105, "the total is Usage's window plus what it cannot see")

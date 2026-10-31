@@ -463,9 +463,7 @@ final class COSControlHelper {
         case "session-usage":
             let collector = try SessionUsageCollector(home: home)
             let readOnly = args.contains("--read-only")
-            // The app's own Node first, beside this helper; the rest of the usual list covers the stable helper copy.
-            let bundledNode = URL(fileURLWithPath: CommandLine.arguments[0]).standardizedFileURL.deletingLastPathComponent().appendingPathComponent("BundledNode/bin/node").path
-            collector.compressedLogNodes = ([bundledNode] + executableCandidates("node")).filter { fm.isExecutableFile(atPath: $0) }
+            findCompressedLogNode(for: collector)
             let cursorEnabled = args.contains("--cursor")
             // The feed is opt-in and reads the network, so a read-only pass never touches it.
             let started = Date()
@@ -482,6 +480,7 @@ final class COSControlHelper {
         case "cos-usage":
             // Counts only. Reads the server's ledgers and the Work and G2 session logs, never in a paused Usage.
             let collector = try SessionUsageCollector(home: home)
+            findCompressedLogNode(for: collector)
             let environment = serverEnvironment()
             let report = try collector.cosUsage(plistScripts: environment["COS_SCRIPTS_DIR"], dataDirectory: environment["COS_DATA_DIR"], importSessions: !args.contains("--read-only"))
             let details = try JSONSerialization.jsonObject(with: JSONEncoder().encode(report)) as? [String: Any] ?? [:]
@@ -7129,6 +7128,13 @@ final class COSControlHelper {
         guard reported == enabled else {
             throw HelperError.message("the restarted server reported Continue agent threads as \(reported ? "enabled" : "disabled")")
         }
+    }
+
+    /// Both usage commands read compressed Codex logs through Node: the app's own first, beside this helper, and the rest of
+    /// the usual list for the stable helper copy.
+    private func findCompressedLogNode(for collector: SessionUsageCollector) {
+        let bundledNode = URL(fileURLWithPath: CommandLine.arguments[0]).standardizedFileURL.deletingLastPathComponent().appendingPathComponent("BundledNode/bin/node").path
+        collector.compressedLogNodes = ([bundledNode] + executableCandidates("node")).filter { fm.isExecutableFile(atPath: $0) }
     }
 
     /// Every version this Mac can show it has: the server answering now, the managed manifest, and a legacy server's

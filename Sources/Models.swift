@@ -388,10 +388,14 @@ struct ServerStatus: Sendable {
         if meetingSyncBlocksRestart { return "Blocks Update / Restart until meeting work finishes." }
         return "Meeting work in progress."
     }
+    /// This row proves the meeting's save stopped. Anything else, including an older server's payload, reads as still saving.
+    func meetingSaveStopped(session: String?) -> Bool {
+        meetingSyncMeetings.contains { $0.isHeld && $0.meetingId == session }
+    }
     /// The words for a server's `meeting_finalizing` refusal. A stopped save is not about to finish, so it never says "in a minute".
     func meetingFinalizingWords(session: String?) -> String {
-        meetingSyncMeetings.contains { $0.isHeld && $0.meetingId == session }
-            ? "This meeting's final transcript stopped. Speaker changes wait until it finishes, which COS retries later. Its audio is kept."
+        meetingSaveStopped(session: session)
+            ? VoiceDisplayCopy.saveStopped + "."
             : "This meeting is still being saved. Try again in a minute."
     }
     /// Audio that holds nothing shut. Says so, and what still works. Deleting it is not offered here.
@@ -7000,11 +7004,11 @@ enum VoiceDisplayCopy {
     /// A job can wait out dictation at one progress for a long while, so a long wait is never called a failure.
     static let stillChecking = "Still checking voices. Click Suggest names, or reopen this meeting, to see where it got to."
     /// A job that stopped midway explains itself to polling, so these read as what stopped it. The button is offered again.
-    static func failure(_ reason: String?) -> String {
+    static func failure(_ reason: String?, saveStopped stopped: Bool = false) -> String {
         switch reason {
         case "recording_active": return "A recording started, so the voice check stopped. Try again when it ends."
         case "maintenance": return "COS was updating or restarting, so the voice check stopped. Try again."
-        case "meeting_finalizing": return "This meeting is being saved, so the voice check stopped. Try again in a minute."
+        case "meeting_finalizing": return stopped ? saveStopped + "." : "This meeting is being saved, so the voice check stopped. Try again in a minute."
         case "deadline": return "The voice check ran out of time. Try again."
         case "profile_store_unreadable": return "The saved voice profiles could not be read. Try again later."
         default: return didNotFinish
@@ -7038,12 +7042,15 @@ enum VoiceDisplayCopy {
     static let undoNames = "Undo these names"
     static let batchLostReply = "The server did not confirm this. Check the rows below before trying again."
     static let batchPreviewNote = "Saves these names together. Nothing changes until you confirm."
+    /// A meeting whose save stopped is not about to finish, so nothing here says "still being saved" or "in a minute". No last
+    /// period, because the batch lines add their own.
+    static let saveStopped = "This meeting's final transcript stopped. Speaker changes wait until it finishes, which COS retries later. Its audio is kept"
     /// Why a batch row or an undo stopped. A code this build does not know is not shown; a server sentence is.
-    static func batchReason(_ reason: String?) -> String {
+    static func batchReason(_ reason: String?, saveStopped stopped: Bool = false) -> String {
         guard let reason, !reason.isEmpty else { return "The server did not apply it" }
         switch reason {
         case "recording_active": return "A recording is active"
-        case "meeting_finalizing": return "This meeting is still being saved"
+        case "meeting_finalizing": return stopped ? saveStopped : "This meeting is still being saved"
         case "maintenance": return "COS is updating or restarting"
         case "suggestions_stale", "meeting_changed", "transcript_changed", "record_source_mismatch": return "This meeting changed since the suggestions were made"
         case "not_high_confidence": return "This suggestion no longer qualifies"
@@ -7087,11 +7094,11 @@ enum VoiceDisplayCopy {
     static func score(_ score: Double) -> String { String(format: "%.2f", score) }
     /// The server's refusal, in plain words. A code this build does not know says only that the check did not run; a server sentence
     /// is shown as it is.
-    static func refusal(_ reason: String?) -> String {
+    static func refusal(_ reason: String?, saveStopped stopped: Bool = false) -> String {
         guard let reason, !reason.isEmpty else { return didNotRun }
         switch reason {
         case "recording_active": return "A recording is active. Try again when it ends."
-        case "meeting_finalizing": return "This meeting is still being saved. Try again in a minute."
+        case "meeting_finalizing": return stopped ? saveStopped + "." : "This meeting is still being saved. Try again in a minute."
         case "maintenance": return "COS is updating or restarting. Try again in a minute."
         case "job_running_elsewhere": return "Another call's voice check is running. Try again when it ends."
         case "speaker_model_unavailable": return "The voice model is not available on this Mac right now."
@@ -7241,7 +7248,7 @@ struct VoiceSuggestionState: Sendable, Hashable {
         }
     }
     /// The line under the button, nil when there is nothing to say.
-    func line(for review: SpeakerReview) -> String? {
+    func line(for review: SpeakerReview, saveStopped: Bool = false) -> String? {
         guard showsButton(for: review) else { return nil }
         if let note { return note }
         guard let job else { return VoiceDisplayCopy.suggestionsOnly }
@@ -7250,8 +7257,8 @@ struct VoiceSuggestionState: Sendable, Hashable {
         case .running:
             if let done = job.progressDone, let total = job.progressTotal { return VoiceDisplayCopy.progress(done: done, total: total) }
             return VoiceDisplayCopy.checking
-        case .refused: return VoiceDisplayCopy.refusal(job.reason)
-        case .failed: return VoiceDisplayCopy.failure(job.reason)
+        case .refused: return VoiceDisplayCopy.refusal(job.reason, saveStopped: saveStopped)
+        case .failed: return VoiceDisplayCopy.failure(job.reason, saveStopped: saveStopped)
         case .done:
             guard job.sourceRevision != nil, job.sourceRevision == review.sourceRevision else { return VoiceDisplayCopy.staleSuggestions }
             return job.suggestions.isEmpty ? VoiceDisplayCopy.noSuggestions : VoiceDisplayCopy.suggested(job.suggestions.count)
@@ -7298,17 +7305,18 @@ struct VoiceBatchResult: Sendable, Hashable {
         named = state == .refused ? [] : (o["named"]?.array ?? []).compactMap(VoiceBatchRow.init)
     }
 
-    var line: String {
+    var line: String { line(saveStopped: false) }
+    func line(saveStopped: Bool) -> String {
         if state == .applied, notNamed.isEmpty, !named.isEmpty { return "Named \(VoiceDisplayCopy.voices(named.count))." }
         // A refusal stopped the whole batch before any write, so its one reason is the sentence.
-        if state == .refused { return "Nothing was named. " + VoiceDisplayCopy.batchReason(reason ?? notNamed.first?.reason) + "." }
+        if state == .refused { return "Nothing was named. " + VoiceDisplayCopy.batchReason(reason ?? notNamed.first?.reason, saveStopped: saveStopped) + "." }
         var parts = [named.isEmpty ? "Nothing was named." : "Named \(VoiceDisplayCopy.voices(named.count))."]
         // The row that stopped it. Rows after it read not_attempted and can come first. If every row reads that, the voice that stopped
         // the batch was itself named (its samples could not be saved, say), so only the batch's own reason knows why.
         if let stopper = notNamed.first(where: { $0.reason != nil && $0.reason != "not_attempted" }) {
-            parts.append("Stopped at \(stopper.title): \(VoiceDisplayCopy.batchReason(stopper.reason)).")
+            parts.append("Stopped at \(stopper.title): \(VoiceDisplayCopy.batchReason(stopper.reason, saveStopped: saveStopped)).")
         } else {
-            parts.append(VoiceDisplayCopy.batchReason(reason) + ".")
+            parts.append(VoiceDisplayCopy.batchReason(reason, saveStopped: saveStopped) + ".")
         }
         if !notNamed.isEmpty { parts.append("Not named: " + notNamed.map(\.title).joined(separator: ", ") + ".") }
         return parts.joined(separator: " ")
@@ -7339,9 +7347,10 @@ struct VoiceBatchUndoResult: Sendable, Hashable {
         evictedNotRestored = count("evictedNotRestored")
     }
 
-    var line: String {
+    var line: String { line(saveStopped: false) }
+    func line(saveStopped: Bool) -> String {
         func samples(_ n: Int, _ kind: String) -> String { "\(n) \(kind)sample\(n == 1 ? "" : "s")" }
-        if state == .refused { return "Nothing was undone. " + VoiceDisplayCopy.batchReason(left.first?.reason ?? reason) + "." }
+        if state == .refused { return "Nothing was undone. " + VoiceDisplayCopy.batchReason(left.first?.reason ?? reason, saveStopped: saveStopped) + "." }
         var parts = ["Undid \(reverted.count) name\(reverted.count == 1 ? "" : "s").", "Removed \(samples(samplesRemoved, "profile "))."]
         if evictedRestored > 0 { parts.append("Put back \(samples(evictedRestored, "older "))." ) }
         if evictedNotRestored > 0 { parts.append("\(samples(evictedNotRestored, "older ")) could not be restored.") }
@@ -7355,7 +7364,7 @@ struct VoiceBatchUndoResult: Sendable, Hashable {
         let held = left.filter { $0.reason != "samples_not_found" }
         if let first = held.first {
             parts.append("Left in place: " + held.map(\.title).joined(separator: ", ") + ".")
-            parts.append("\(first.title): \(VoiceDisplayCopy.batchReason(first.reason ?? reason)).")
+            parts.append("\(first.title): \(VoiceDisplayCopy.batchReason(first.reason ?? reason, saveStopped: saveStopped)).")
         }
         return parts.joined(separator: " ")
     }

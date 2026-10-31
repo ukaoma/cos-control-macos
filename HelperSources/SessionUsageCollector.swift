@@ -492,12 +492,13 @@ final class SessionUsageCollector {
     /// It walks the frame headers first, because the decoder stops silently at the end of one frame and takes a cut-off
     /// file for a short one. Node's stdout pipe is not blocking, so a reader slower than the rows gives EAGAIN, and 15 of
     /// 1,127 real logs died on it until `out` waited and tried again. Exits 0 at the end, 3 at the limit and 65 on a file it
-    /// cannot trust.
+    /// cannot trust. An optional fourth argument names more row types, comma separated, for COS cost's reader: Usage leaves it
+    /// off, so a row it has no use for is never handed over or counted as an oversized gap.
     static let compressedFilter = #"""
     const fs=require('fs'),zlib=require('zlib');
-    const [,file,skipArg,limitArg]=process.argv;
+    const [,file,skipArg,limitArg,extraArg]=process.argv;
     const skip=Number(skipArg),limit=Number(limitArg),maxLine=8388608,tick=16777216;
-    const marks=['"token_count"','"turn_context"','"session_meta"'].map(m=>Buffer.from(m));
+    const marks=['"token_count"','"turn_context"','"session_meta"'].concat(extraArg?extraArg.split(','):[]).map(m=>Buffer.from(m));
     const hit=b=>marks.some(m=>b.includes(m));
     const fail=()=>process.exit(65);
     const rest=new Int32Array(new SharedArrayBuffer(4));
@@ -882,29 +883,139 @@ extension SessionUsageCollector {
         Int(try query("SELECT COUNT(*) FROM cos_slice_events").first?.first ?? "") ?? 0
     }
 
-    /// THE COMPRESSED LOG HOOK. Codex keeps most rollouts as `.jsonl.zst`, and `claude/usage-qa-fixes` brings the reader
-    /// (`readCompressedLog` and `compressedFilter`, through the bundled Node). When that merges, this is the one place to
-    /// plug it in: hand each usage row's bytes to `onLine` from decoded offset `skip`, stop at `limit` bytes or `deadline`,
-    /// and return how far the decoder got. Nil means it cannot read them yet, and the page says so. Its filter must also pass
-    /// `"task_started"`, `"task_complete"` and `"turn_aborted"` rows, or Codex Work runs have no provable end.
-    private func cosReadCompressedRows(_ file: URL, skip: UInt64, limit: Int, deadline: Date, onLine: (Data) throws -> Void) throws -> (decodedTo: UInt64, finished: Bool)? {
-        nil
+    /// The rows that open and close a Codex turn. Usage has no use for them, and without them a Work run in a compressed
+    /// rollout has no provable end.
+    static let cosCompressedTurnMarks = ["\"task_started\"", "\"task_complete\"", "\"turn_aborted\""]
+    private enum CosCompressedEnd { case finished, more, untrusted, stopped(hadTheTime: Bool) }
+
+    /// One decoder run over a compressed rollout, through the usage reader's `compressedFilter`: each row goes to `onLine`,
+    /// and each control line to `checkpoint` with a decoded offset that has every row before it already delivered. Stops at
+    /// `limit` decoded bytes, or at `deadline`, when the child is killed. Nothing but rows of counts and row types comes back.
+    private func cosReadCompressedRows(_ file: URL, node: String, skip: UInt64, limit: Int, window: TimeInterval, deadline: Date, onLine: (Data) throws -> Void, checkpoint: (_ offset: UInt64, _ oversized: Int) throws -> Void) throws -> CosCompressedEnd {
+        let decoder = Process()
+        decoder.executableURL = URL(fileURLWithPath: node)
+        decoder.arguments = ["-e", Self.compressedFilter, file.path, String(skip), String(limit), Self.cosCompressedTurnMarks.joined(separator: ",")]
+        // Its own environment: a NODE_OPTIONS meant for something else must not change how this runs.
+        decoder.environment = ["PATH": "/usr/bin:/bin"]
+        decoder.standardInput = FileHandle.nullDevice
+        decoder.standardError = FileHandle.nullDevice
+        let rows = Pipe()
+        decoder.standardOutput = rows
+        // Not a mark against the file: the decoder is what failed, so the next pass tries again.
+        guard (try? decoder.run()) != nil else { return .stopped(hadTheTime: false) }
+        let child = decoder.processIdentifier
+        let timeLeft = deadline.timeIntervalSinceNow
+        let timeUp = DispatchWorkItem { kill(child, SIGKILL) }
+        DispatchQueue.global().asyncAfter(deadline: .now() + max(0.05, timeLeft), execute: timeUp)
+        defer { timeUp.cancel() }
+        let source = rows.fileHandleForReading
+        defer { try? source.close() }
+        var last = ""
+        var pending = Data()
+        do {
+            while let chunk = try source.read(upToCount: 1 << 20), !chunk.isEmpty {
+                pending.append(chunk)
+                var from = pending.startIndex
+                while let newline = pending[from...].firstIndex(of: 10) {
+                    let line = pending[from..<newline]
+                    from = newline + 1
+                    if line.first == 1 {
+                        let parts = String(decoding: line.dropFirst(), as: UTF8.self).split(separator: " ")
+                        guard parts.count == 3, let offset = UInt64(parts[1]), let oversized = Int(parts[2]) else { continue }
+                        last = String(parts[0])
+                        try checkpoint(offset, oversized)
+                    } else {
+                        try autoreleasepool { try onLine(Data(line)) }
+                    }
+                }
+                pending = Data(pending[from...])
+            }
+            decoder.waitUntilExit()
+        } catch {
+            kill(child, SIGKILL)
+            decoder.waitUntilExit()
+            throw error
+        }
+        if last == "end" { return .finished }
+        if last == "more" { return .more }
+        if decoder.terminationReason == .exit && decoder.terminationStatus == 65 { return .untrusted }
+        return .stopped(hadTheTime: decoder.terminationReason == .exit || timeLeft >= window / 2)
     }
 
-    /// The hook's caller. A compressed file never changes, so once it is finished it stays finished.
-    private func cosReadCompressedSlice(_ target: CosSliceTarget, file: URL, known: [String]?, retainFrom: Double, deadline: Date, progress: inout CosSliceProgress, open: inout Set<CosSliceTarget>) throws {
-        var cursor = known.flatMap { $0[3].data(using: .utf8) }.flatMap { try? JSONDecoder().decode(Cursor.self, from: $0) } ?? Cursor()
-        if cursor.waitingForAppend { return }
-        let sessionKey = Self.digest(target.provider + ":" + target.id)
-        let pass = try cosReadCompressedRows(file, skip: cursor.offset, limit: Self.cosFileBytesPerPass, deadline: deadline) { line in
-            try cosHandle(line: line, target: target, cursor: &cursor, sessionKey: sessionKey, retainFrom: retainFrom)
+    /// The compressed rollouts in a pass, longest waiting first. They share the first half of the pass, and a finished one
+    /// costs nothing. A rollout the decoder cannot use is said on the page each pass and starts no process.
+    private func cosReadCompressedSlices(_ items: [(target: CosSliceTarget, file: URL, size: Int)], known: [String: [String]], fileBytes: Int, retainFrom: Double, window: TimeInterval, deadline: Date, progress: inout CosSliceProgress, open: inout Set<CosSliceTarget>) throws {
+        var waiting: [(item: (target: CosSliceTarget, file: URL, size: Int), cursor: Cursor)] = []
+        for item in items {
+            // A different size is a different file. Event ids keep the second read from counting anything twice.
+            let saved = known[item.file.path].flatMap { row -> Cursor? in
+                guard Int(row[1]) == item.size, let data = row[3].data(using: .utf8) else { return nil }
+                return try? JSONDecoder().decode(Cursor.self, from: data)
+            } ?? Cursor()
+            if saved.compressedEnd == "failed" { progress.compressed += 1 }
+            if saved.compressedEnd == nil { waiting.append((item, saved)) }
         }
-        guard let pass else { progress.compressed += 1; return }
-        cursor.offset = pass.decodedTo
-        cursor.waitingForAppend = pass.finished
-        cursor.scannedAt = Date().timeIntervalSince1970
-        try run("INSERT OR REPLACE INTO cos_slice_files VALUES(?,?,0,0,?)", [file.path, sessionKey, String(decoding: try JSONEncoder().encode(cursor), as: UTF8.self)])
-        if !pass.finished { open.insert(target) }
+        guard !waiting.isEmpty else { return }
+        guard let node = Self.compressedDecoder(compressedLogNodes) else { progress.compressed += waiting.count; return }
+        for entry in waiting.sorted(by: { $0.cursor.scannedAt < $1.cursor.scannedAt }) {
+            guard Date() < deadline else { open.insert(entry.item.target); continue }
+            try cosReadCompressedSlice(entry.item.target, file: entry.item.file, size: entry.item.size, node: node, saved: entry.cursor, fileBytes: fileBytes, retainFrom: retainFrom, window: window, deadline: deadline, progress: &progress, open: &open)
+        }
+    }
+
+    /// One rollout, as far as this pass allows. Each checkpoint commits, so a slow file still moves forward, and rows after
+    /// the last one are read again next pass, which event ids and marks make harmless.
+    private func cosReadCompressedSlice(_ target: CosSliceTarget, file: URL, size: Int, node: String, saved start: Cursor, fileBytes: Int, retainFrom: Double, window: TimeInterval, deadline: Date, progress: inout CosSliceProgress, open: inout Set<CosSliceTarget>) throws {
+        let sessionKey = Self.digest(target.provider + ":" + target.id)
+        var cursor = start
+        var saved = start
+        func store(_ value: Cursor) throws {
+            var stamped = value
+            stamped.scannedAt = Date().timeIntervalSince1970
+            try run("INSERT OR REPLACE INTO cos_slice_files VALUES(?,?,CAST(? AS INTEGER),0,?)", [file.path, sessionKey, String(size), String(decoding: try JSONEncoder().encode(stamped), as: UTF8.self)])
+        }
+        try Self.execute(db, "BEGIN IMMEDIATE")
+        do {
+            let end = try cosReadCompressedRows(file, node: node, skip: start.offset, limit: fileBytes, window: window, deadline: deadline, onLine: { line in
+                try cosHandle(line: line, target: target, cursor: &cursor, sessionKey: sessionKey, retainFrom: retainFrom)
+            }, checkpoint: { offset, oversized in
+                cursor.offset = offset
+                cursor.oversizedRows = start.oversizedRows + oversized
+                try store(cursor)
+                try Self.execute(db, "COMMIT")
+                try Self.execute(db, "BEGIN IMMEDIATE")
+                saved = cursor
+            })
+            switch end {
+            case .finished:
+                saved.compressedEnd = "done"
+                saved.compressedStalls = nil
+                try store(saved)
+                try Self.execute(db, "COMMIT")
+            case .more:
+                saved.compressedStalls = nil
+                try store(saved)
+                try Self.execute(db, "COMMIT")
+                open.insert(target)
+            case .untrusted:
+                // Rows before the failure were real usage, so they stay. The page says the rest could not be read.
+                cursor.compressedEnd = "failed"
+                try store(cursor)
+                try Self.execute(db, "COMMIT")
+                progress.compressed += 1
+            case .stopped(let hadTheTime):
+                // Out of time, or the decoder crashed, which says nothing about the file. A file that cannot move even with
+                // most of a pass to itself stops being tried, so it cannot hold the page in a hurry forever.
+                try Self.execute(db, "ROLLBACK")
+                saved.compressedStalls = saved.offset == start.offset && hadTheTime ? (saved.compressedStalls ?? 0) + 1 : nil
+                if (saved.compressedStalls ?? 0) >= Self.compressedStallLimit { saved.compressedEnd = "failed" }
+                try store(saved)
+                if saved.compressedEnd == nil { open.insert(target) } else { progress.compressed += 1 }
+            }
+        } catch {
+            try? Self.execute(db, "ROLLBACK")
+            throw error
+        }
     }
 
     private func cosRecord(_ event: Event, sessionKey: String, oneHour: Int64, retainFrom: Double) throws {
@@ -966,6 +1077,7 @@ extension SessionUsageCollector {
         let deadline = Date().addingTimeInterval(seconds)
         // Compressed rollouts share the pass, and plain logs always keep at least half of it.
         let compressedDeadline = Date().addingTimeInterval(seconds / 2)
+        var compressedOnes: [(target: CosSliceTarget, file: URL, size: Int)] = []
         for target in targets {
             let files = located[target] ?? []
             if files.isEmpty { progress.noLogs += 1; continue }
@@ -983,9 +1095,10 @@ extension SessionUsageCollector {
                 }
             }
             if compressedOnly, let file = files.first {
-                try cosReadCompressedSlice(target, file: file, known: known[file.path], retainFrom: retainFrom, deadline: compressedDeadline, progress: &progress, open: &open)
+                compressedOnes.append((target, file, (try? file.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0))
             }
         }
+        try cosReadCompressedSlices(compressedOnes, known: known, fileBytes: fileBytes, retainFrom: retainFrom, window: seconds / 2, deadline: compressedDeadline, progress: &progress, open: &open)
         pending.sort { $0.cursor.scannedAt == $1.cursor.scannedAt ? $0.size < $1.size : $0.cursor.scannedAt < $1.cursor.scannedAt }
         var remaining = maxBytes
         for item in pending {

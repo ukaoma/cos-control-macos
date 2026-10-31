@@ -1764,13 +1764,11 @@ struct CosCostView: View {
     }
 
     private var usageState: P.UsageState {
-        if !usage.enabled { return .paused }
-        guard let report = usage.report else { return .unavailable }
-        return report.pendingFiles > 0 ? .importing(files: report.pendingFiles) : .ready
+        P.usageState(tracking: usage.enabled, report: usage.report)
     }
     private var ran: Double {
         guard let report = store.report else { return 0 }
-        return P.ranUSD(usageBuckets: usage.report?.buckets ?? [], report: report, cursorFeedOn: usage.cursorEnabled)
+        return P.ranUSD(usageBuckets: usage.report?.buckets ?? [], report: report, cursorFeedOn: P.usageHoldsCursor(feedOn: usage.cursorEnabled, usage: usage.report, report: report))
     }
     private var share: Double? {
         store.report.flatMap { P.share(measured: P.measuredUSD($0), ran: ran, usage: usageState) }
@@ -1831,7 +1829,7 @@ struct CosCostView: View {
                     Button("Try again") { Task { await store.refresh(importSessions: usage.enabled) } }.buttonStyle(COSQuietButtonStyle()).fixedSize()
                 }
             }
-            if report.sessions.stillReading > 0 {
+            if usage.enabled && report.sessions.stillReading > 0 {
                 HStack(spacing: 8) {
                     ProgressView().controlSize(.mini)
                     Text(P.stillReadingNote(report)).foregroundStyle(COSPalette.subtle)
@@ -1841,12 +1839,10 @@ struct CosCostView: View {
                 HStack(spacing: 10) {
                     Text(note).foregroundStyle(COSPalette.amber).fixedSize(horizontal: false, vertical: true)
                     if usageState == .paused {
-                        Button("Turn Usage back on") {
-                            usage.enabled = true
-                            Task {
-                                await usage.refresh(importNew: true)
-                                await store.refresh(importSessions: true)
-                            }
+                        // The same way back as Usage's own bar, so both pages read at once.
+                        Button("Resume tracking") {
+                            usage.resume()
+                            Task { await store.refresh(importSessions: true) }
                         }.buttonStyle(COSQuietButtonStyle()).fixedSize()
                     } else if usageState == .unavailable {
                         Button("Read Usage") { Task { await usage.refresh(importNew: usage.enabled) } }.buttonStyle(COSQuietButtonStyle()).fixedSize()

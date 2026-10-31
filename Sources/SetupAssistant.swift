@@ -326,7 +326,7 @@ enum SetupAssistant {
         case .updateServer:
             // control docs, Updating the server: health and a real query, else the previous generation comes back.
             return Confirmation(question: "Update the COS server?",
-                                consequence: "COS downloads the latest server, tests it with a real question, and puts the current one back if that test fails.",
+                                consequence: "COS downloads the latest server, tests it with a real question, and puts the current one back if that test fails. If this Mac already runs something newer, nothing changes.",
                                 confirm: "Update")
         case .retryAppUpdate:
             // ControllerModel.installAppUpdate: download, SHA-256, swap, reopen. The glasses server keeps running.

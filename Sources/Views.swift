@@ -5120,7 +5120,7 @@ private struct VoiceSuggestBar: View {
                     if model.voiceSuggestions.isRunning { ProgressView().controlSize(.mini) }
                     Spacer()
                 }
-                if let line = model.voiceSuggestions.line(for: review) {
+                if let line = model.voiceSuggestions.line(for: review, saveStopped: model.status.meetingSaveStopped(session: review.sessionId)) {
                     Text(line)
                         .font(.system(size: 10.5)).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -5145,7 +5145,8 @@ private struct VoiceBatchBar: View {
             let ticked = model.voiceBatch.ticked(candidates)
             let undoable = model.voiceBatch.undoableBatch != nil
             let running = model.voiceBatch.hasRunningBatch
-            let answer = model.voiceBatch.result?.line ?? model.voiceBatch.undoResult?.line ?? model.voiceBatch.note
+            let saveStopped = model.status.meetingSaveStopped(session: review.sessionId)
+            let answer = model.voiceBatch.result?.line(saveStopped: saveStopped) ?? model.voiceBatch.undoResult?.line(saveStopped: saveStopped) ?? model.voiceBatch.note
             // The answer to what was just clicked says it better. This is for a review opened later.
             let history = answer == nil ? model.voiceBatch.historyLine : nil
             if !candidates.isEmpty || undoable || answer != nil || history != nil {

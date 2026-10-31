@@ -52,6 +52,17 @@ import Foundation
         let savingRow = status(["meetingSyncMeetings": .array([row(["phase": .string("persisting"), "label": .string("Saving to meeting library")])])])
         check(savingRow.meetingFinalizingWords(session: heldId) == savingWords, "a meeting really saving keeps the saving words")
         check(status([:]).meetingFinalizingWords(session: heldId) == savingWords, "an older server's payload keeps the saving words")
+        // The voice check and the one-click batch share a server code with those refusals, so they tell the same truth.
+        check(VoiceDisplayCopy.refusal("meeting_finalizing", saveStopped: true) == stoppedWords, "a voice check refused on a stopped meeting says so")
+        check(VoiceDisplayCopy.refusal("meeting_finalizing") == savingWords, "a voice check refused on a saving meeting keeps its words")
+        check(VoiceDisplayCopy.failure("meeting_finalizing", saveStopped: true) == stoppedWords, "a voice check that stops on a stopped meeting says so")
+        check(VoiceDisplayCopy.failure("meeting_finalizing") == "This meeting is being saved, so the voice check stopped. Try again in a minute.", "a voice check that stops on a saving meeting keeps its words")
+        check(VoiceDisplayCopy.batchReason("meeting_finalizing", saveStopped: true) + "." == stoppedWords, "a batch refused on a stopped meeting says so")
+        check(VoiceDisplayCopy.batchReason("meeting_finalizing") == "This meeting is still being saved", "a batch refused on a saving meeting keeps its words")
+        let refusedBatch = JSONValue.object(["state": .string("refused"), "reason": .string("meeting_finalizing")])
+        check(VoiceBatchResult(refusedBatch)?.line(saveStopped: true) == "Nothing was named. " + stoppedWords, "a refused batch's own line says so")
+        check(VoiceBatchUndoResult(refusedBatch)?.line(saveStopped: true) == "Nothing was undone. " + stoppedWords, "a refused undo's own line says so")
+        check(VoiceBatchResult(refusedBatch)?.line == "Nothing was named. This meeting is still being saved.", "a saving meeting's batch line keeps its words")
         for words in [kept.heldAudioNote ?? "", heldRow.heldAudioNote ?? ""] {
             check(!words.lowercased().contains("retry") && !words.lowercased().contains("retrying") && !words.lowercased().contains("delete") && !words.lowercased().contains("discard"), "Control's own words claim no retry and offer no delete")
         }

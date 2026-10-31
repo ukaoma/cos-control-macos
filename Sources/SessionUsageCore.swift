@@ -1224,7 +1224,7 @@ struct CosSliceProgress: Codable, Equatable, Sendable {
     var stillReading = 0
     /// Sessions whose log is gone from this Mac.
     var noLogs = 0
-    /// Sessions whose only log is compressed and cannot be read yet.
+    /// Sessions whose only log is compressed and cannot be read: no Node here can open it, or the file cannot be trusted.
     var compressed = 0
     /// The usage history was busy, so this pass read nothing new.
     var busy = false
@@ -1915,8 +1915,21 @@ enum CosCostPresentation {
     static func atLeast(_ value: Double) -> String {
         value < 0.01 ? "at least a fraction of 1¢" : "at least " + money(value)
     }
+    /// Usage's state, from what it last reported. A Cursor read still under way is a total that will grow, like a log.
+    static func usageState(tracking: Bool, report: SessionUsageReport?) -> UsageState {
+        guard tracking else { return .paused }
+        guard let report else { return .unavailable }
+        if report.pendingFiles > 0 { return .importing(files: report.pendingFiles) }
+        return report.cursorFeed?.pending == true ? .importing(files: 0) : .ready
+    }
+    /// Whether Usage's total holds Cursor spend. The switch alone cannot say: it can be on with nothing read yet (saved while
+    /// paused, Keychain busy, no sign-in), and Cursor rows already read stay in the history after it is turned off.
+    static func usageHoldsCursor(feedOn: Bool, usage: SessionUsageReport?, report: CosUsageReport) -> Bool {
+        if feedOn && usage?.cursorFeed?.lastSuccessAt != nil { return true }
+        return usage?.buckets.contains { $0.provider == "Cursor" && (report.windowStart...report.windowEnd).contains($0.day) } == true
+    }
     /// A person's total at API value: Usage's total for the window, plus the COS spend it cannot see. The Cursor share is
-    /// added only with the feed off, because with it on Usage already holds that spend.
+    /// added only while Usage does not hold that spend (usageHoldsCursor).
     static func ranUSD(usageBuckets: [SessionUsageBucket], report: CosUsageReport, cursorFeedOn: Bool) -> Double {
         let bounds = report.windowStart...report.windowEnd
         let usage = usageBuckets.filter { bounds.contains($0.day) }.reduce(0.0) { $0 + $1.estimatedUSD }
@@ -1975,7 +1988,8 @@ enum CosCostPresentation {
     static func usageNote(_ usage: UsageState) -> String? {
         switch usage {
         case .ready: return nil
-        case .paused: return "Usage is paused, so there is no current total to compare this with."
+        case .paused: return "Tracking is paused, so no new session logs are being read. These figures stop at the last read, and there is no current total to compare them with."
+        case .importing(0): return "Usage is still reading your Cursor usage, so the total will grow and the share will settle."
         case .importing(let files): return "Usage is still reading \(files.formatted()) log \(files == 1 ? "file" : "files"), so the total will grow and the share will settle."
         case .unavailable: return "Usage has not been read yet, so there is no total to compare this with."
         }
@@ -2123,7 +2137,7 @@ enum CosCostPresentation {
     static func sessionNotes(_ report: CosUsageReport) -> [String] {
         var notes: [String] = []
         let s = report.sessions
-        if s.compressed > 0 { notes.append("\(s.compressed.formatted()) \(s.compressed == 1 ? "session is" : "sessions are") compressed and not read yet, so their cost is not in these figures.") }
+        if s.compressed > 0 { notes.append("\(s.compressed.formatted()) \(s.compressed == 1 ? "session is" : "sessions are") compressed and could not be read, so their cost is not in these figures.") }
         if s.noLogs > 0 { notes.append("\(s.noLogs.formatted()) \(s.noLogs == 1 ? "session has" : "sessions have") no log left on this Mac, so their cost is not in these figures.") }
         if s.busy { notes.append("The usage history was busy, so this pass read nothing new. The next one will.") }
         if !report.runLedgersFound && calls(report) > 0 { notes.append("This server has no run records, so answers stay estimated.") }

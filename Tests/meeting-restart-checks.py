@@ -88,6 +88,11 @@ root = pathlib.Path(__file__).resolve().parents[1]
 sources = {name: (root / name).read_text() for name in ("HelperSources/main.swift", "Sources/Views.swift", "Sources/ActivityWindow.swift", "Sources/ProviderConnectViews.swift", "Sources/ControllerModel.swift")}
 controller = sources["Sources/ControllerModel.swift"]
 check("still being saved" not in controller and controller.count("status.meetingFinalizingWords(session: session)") == 6 and controller.count("message = finalizingWords") == 1 and controller.count('case "meeting_finalizing": return finalizingWords') == 1, "every speaker refusal asks which words are true")
+views = sources["Sources/Views.swift"]
+check("model.voiceSuggestions.line(for: review, saveStopped: model.status.meetingSaveStopped(session: review.sessionId))" in views
+      and "model.voiceBatch.result?.line(saveStopped: saveStopped) ?? model.voiceBatch.undoResult?.line(saveStopped: saveStopped)" in views
+      and "voiceBatch.result?.line ??" not in views and controller.count(".line(saveStopped: status.meetingSaveStopped(session: session))") == 2,
+      "the voice check and batch lines on screen ask which words are true")
 check(sources["HelperSources/main.swift"].count("workCanRun: !snapshot.allListenerPIDs.isEmpty || snapshot.servicePID != nil, serverAnswered: false") == 1, "only no listener and no launchd pid counts as stopped")
 check(sources["HelperSources/main.swift"].count("guard health == nil else { return meetingSyncStatusFromPendingBatch(workCanRun: true, serverAnswered: true) }") == 1, "a server that answers keeps the scan's reading")
 check("Text(model.status.meetingWorkBlockReason)" in sources["Sources/Views.swift"] and "model.status.heldAudioNote" in sources["Sources/Views.swift"], "the panel shows the reason and the note")

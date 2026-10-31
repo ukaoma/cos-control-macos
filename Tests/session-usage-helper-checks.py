@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""The compiled helper's `session-usage` reading a real .jsonl.zst from a temporary home, through the two places it finds
+"""The compiled helper's `session-usage` and `cos-usage` reading a real .jsonl.zst from a temporary home, through the two places it finds
 Node: the app's own BundledNode beside the helper, and the managed runtime's receipt. Each is a stand-in that notes it ran
 and then runs a real Node, so the check sees which one the helper chose. Never the live service, ~/.codex or ~/.cos-glasses.
 COS_USAGE_TEST_NODE names the real Node to use, such as the bundled 22.23.3.
 Prints "session usage helper checks: N passed". Usage: session-usage-helper-checks.py <helper>"""
-import json, os, pathlib, shutil, subprocess, sys, tempfile
+import datetime, json, os, pathlib, shutil, subprocess, sys, tempfile
 
 checks = 0
 
@@ -64,6 +64,33 @@ def scenario(name, place_node):
         marker.unlink()
         again = run()
         check(sum(b["events"] for b in again["details"]["buckets"]) == 5 and again["details"]["pendingFiles"] == 0 and not marker.exists(), f"{name}: a finished log starts no Node and counts once")
+        # COS cost finds the same Node: a Work run whose only log is compressed, with a real ending and a real clock.
+        thread = "55555555-5555-5555-5555-555555555555"
+        day = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=1)
+        stamp = lambda seconds: (day + datetime.timedelta(seconds=seconds)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        work = [{"type": "session_meta", "payload": {"id": thread, "model_provider": "openai"}}, {"type": "turn_context", "payload": {"model": "gpt-6.1-sol"}},
+                {"type": "event_msg", "timestamp": stamp(3), "payload": {"type": "task_started"}},
+                {"type": "event_msg", "timestamp": stamp(10), "payload": {"type": "token_count", "info": {"total_token_usage": {"input_tokens": 1000, "output_tokens": 0, "cached_input_tokens": 0}, "last_token_usage": {"input_tokens": 1000, "output_tokens": 0, "cached_input_tokens": 0}}}},
+                {"type": "event_msg", "timestamp": stamp(20), "payload": {"type": "task_complete", "last_agent_message": "SECRET_PROMPT_NEVER_STORE"}}]
+        rollout = sessions / f"rollout-2026-10-30T12-00-00-{thread}.jsonl"
+        rollout.write_bytes("".join(json.dumps(row) + "\n" for row in work).encode())
+        subprocess.run([real, "-e", "const f=require('fs'),z=require('zlib');f.writeFileSync(process.argv[1]+'.zst',z.zstdCompressSync(f.readFileSync(process.argv[1])));f.unlinkSync(process.argv[1])", str(rollout)], check=True)
+        receipts = home / "Library/Application Support/COS Control/work-handoffs/handoffs.json"
+        receipts.parent.mkdir(parents=True, exist_ok=True)
+        receipts.write_text(json.dumps({"receipts": [{"createdAt": day.timestamp(), "sessionID": f"codex:{thread}", "provider": "codex", "status": "completed", "channel": "job"}]}))
+
+        def cos(*args):
+            done = subprocess.run([str(helper), "cos-usage", *args], capture_output=True, text=True, env=env, timeout=120)
+            check("SECRET_PROMPT" not in done.stdout + done.stderr, f"{name}: no log text reaches cos-usage's output")
+            return json.loads(done.stdout.strip().splitlines()[-1])["details"]
+
+        if marker.exists():
+            marker.unlink()
+        paused_cos = cos("--read-only")
+        check(paused_cos["work"]["measuredTokens"] == 0 and not marker.exists(), f"{name}: a paused cos-usage starts no Node")
+        cost = cos()
+        check(cost["work"]["measuredTokens"] == 1000 and cost["work"]["unprovenRuns"] == 0 and cost["sessions"]["compressed"] == 0, f"{name}: cos-usage reads a compressed Work log with its ending")
+        check(marker.exists(), f"{name}: cos-usage chose this Node")
 
 
 def bundled(app, home):
