@@ -35,7 +35,9 @@ import CryptoKit
    for (i,variant) in variants.enumerated() { autoreleasepool {
     let source=PetSpriteStrip.slice(NSImage(contentsOf:pack.appendingPathComponent(variant["file"]!))!,frames:184)
     let sourceHashes=source.map(digest)
-    for f in 0..<184 {precondition(digest(actual.variants[i].full[f])==sourceHashes[remap[f]],"retime changed pixels or mismatched enemy/contact at \(i)/\(f)")}
+    // Motion V2 (Miles 2026-10-31): frames 160-167 drop the stray wreck fragment that crossed the hero's feet after the
+    // enemy left; they show the clean run cell of frame 7. Every other frame is still the exact retime of the source.
+    for f in 0..<184 {let cell=(160...167).contains(f) ? remap[7] : remap[f];precondition(digest(actual.variants[i].full[f])==sourceHashes[cell],"retime changed pixels or mismatched enemy/contact at \(i)/\(f)")}
    }}
   }
   autoreleasepool {
