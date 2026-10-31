@@ -2060,7 +2060,7 @@ done
 
 # The assertion decision is READ from the server, never re-derived here, so the
 # lens, the phone and this panel cannot disagree about who was identified.
-/usr/bin/grep -q 'nameAsserted = o\["nameAsserted"\]' "$ROOT/Sources/Models.swift"
+/usr/bin/grep -q 'nameAsserted = intervalPlaceholder ? false : (o\["nameAsserted"\]?.bool ?? true)' "$ROOT/Sources/Models.swift"
 /usr/bin/grep -q 'voice.displayName' "$ROOT/Sources/Views.swift"
 
 # Meeting-level coverage decodes with NO `?? 0`. A count has no safe scalar
@@ -2099,10 +2099,10 @@ done
 /usr/bin/grep -q 'content.fullChars / 1024' "$ROOT/Sources/Views.swift"
 
 # Talk time decodes with no `?? 0` (same no-safe-default rule as coverage), and
-# is rendered ONLY behind nameAsserted — showing minutes for a voice the panel
-# refuses to name would assert an identity by the back door.
+# is rendered ONLY behind nameAsserted or a typed interval row — showing minutes for
+# a name the panel refuses would assert an identity by the back door.
 /usr/bin/grep -q 'speakingMs = o\["speakingMs"\]?.int$' "$ROOT/Sources/Models.swift"
-/usr/bin/grep -q 'voice.nameAsserted, let ms = voice.speakingMs' "$ROOT/Sources/Views.swift"
+/usr/bin/grep -q 'voice.nameAsserted || voice.intervalKind != nil, let ms = voice.speakingMs' "$ROOT/Sources/Views.swift"
 
 # The ribbon is a TIMELINE. It previously drew one rect per voice sized by share
 # of segments while calling itself "who spoke, in order", so hover had nothing
