@@ -439,6 +439,7 @@ import Foundation
         check(P.pendingNotes(tracking: false, pendingFiles: 37, feedMessage: "Reading your Cursor usage.").isEmpty, "paused promises no growing totals")
         check(P.pendingNotes(tracking: true, pendingFiles: 37, feedMessage: "Reading your Cursor usage.") == ["Reading older history: 37 files remaining. Totals will grow until it finishes.", "Reading your Cursor usage. Totals will grow until it finishes."] && P.pendingNotes(tracking: true, pendingFiles: 0, feedMessage: nil).isEmpty, "tracking says what is still being read")
         check(P.pausedLine(pendingFiles: 0).hasPrefix("Tracking is paused") && !P.pausedLine(pendingFiles: 0).contains("waiting") && P.pausedLine(pendingFiles: 1).hasSuffix("1 log file is still waiting.") && P.pausedLine(pendingFiles: 37).hasSuffix("37 log files are still waiting."), "the paused line counts what waits")
+        check(P.pausedLine(pendingFiles: 0, hasHistory: false) == "Tracking is paused, so no logs are being read." && P.pausedLine(pendingFiles: 2, hasHistory: false).hasSuffix("2 log files are still waiting."), "a paused page with nothing to show mentions no numbers")
         check(!P.emptyWords(tracking: false, hasReport: true).contains("once their logs are read") && !P.emptyWords(tracking: false, hasReport: false).contains("Refresh reads") && P.emptyWords(tracking: false, hasReport: true).contains("resume tracking") && P.emptyWords(tracking: true, hasReport: true).contains("once their logs are read"), "the paused empty page promises only what resuming does")
         let backfilling = SessionUsageCursorFeedStatus(state: .backfilling, message: "Cursor is waiting until tracking resumes.")
         let signingIn = SessionUsageCursorFeedStatus(state: .signIn, message: "Run cursor-agent login in Terminal, then refresh.")
@@ -497,6 +498,9 @@ import Foundation
         let yearsKept = P.calendarFit(historyWeeks(105), width: 524).weeks.compactMap(\.monthLabel).filter { $0.contains(" ") }
         check(yearsKept == ["Oct 2024", "Jan 2026"], "a month never pushes out a year")
         check(P.calendarFit(historyWeeks(5), width: 1000).carriesNumbers && !P.calendarFit(historyWeeks(30), width: 524).carriesNumbers, "only a wide square carries its number")
+        // A month that starts in the last column has no room for its name before the average column.
+        let lateStart = P.calendarWeeks([usageRow("2025-11-03", usd: 1)], bounds: nil, today: "2026-11-02")
+        check(lateStart.last?.monthLabel == "Nov" && P.calendarFit(lateStart, width: 524).weeks.last?.monthLabel == nil, "the last label stays out of the average column")
         let unmeasured = P.calendarFit(longest, width: 0)
         check(unmeasured.weeks.count == 180 && !unmeasured.carriesNumbers, "before it is measured everything stays")
 
