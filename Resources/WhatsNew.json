@@ -1,8 +1,20 @@
 {
-  "version": "0.5.356",
+  "version": "0.5.357",
   "whatsNew": {
-    "summary": "Usage is easier to read: the chart sits beside a panel that follows the bar you pick, and one table groups every tool and model. You can now count Cursor tokens too. Plus everything in 0.5.355: saved Mac recordings can show estimated anonymous speaker groups from a compatible COS server. Select the parts you want to name, inspect the preview, then confirm the text-label change. Naming a group adds no voice-training samples.",
+    "summary": "Saved Mac speaker review separates supported anonymous groups from unresolved speech and preserves existing names. Usage is easier to read: the chart sits beside a panel that follows the bar you pick, and one table groups every tool and model. You can now count Cursor tokens too. Plus everything in 0.5.355: saved Mac recordings can show estimated anonymous speaker groups from a compatible COS server. Select the parts you want to name, inspect the preview, then confirm the text-label change. Naming a group adds no voice-training samples.",
     "sections": [
+      {
+        "title": "0.5.357",
+        "items": [
+          "A qualified saved Mac recording can show anonymous groups only for words covered by its accepted acoustic evidence. Other speech stays in an explicit unresolved remainder; row counts are not attendee counts.",
+          "The speaker list, examples and timeline use the same timed-word inventory. Existing names, corrections, text and clocks are preserved.",
+          "Select the exact words in an estimated group, or one continuous range of unresolved speech, inspect the preview, then confirm the name. Rename and Undo stay available while automatic grouping is off. Prior corrections stay protected; names already asserted elsewhere in the original recording are refused in this private candidate.",
+          "After undoing its new naming actions, you can return a recording to its original review with prior corrections intact. Interrupted changes offer a separate recovery action.",
+          "On qualified saved Mac recordings, Short voice fragments collects accepted anonymous groups with under 15 seconds of reported speech. Expand it to review and name each original group. This private change only simplifies the review layout; it does not combine groups or count people.",
+          "This update does not enable automatic voice-profile naming, voice training, live speaker ID, transcription cleanup or cues.",
+          "Requires the paired private server 6.96.2 and separately qualified per-recording evidence. Unsupported recordings keep their existing review."
+        ]
+      },
       {
         "title": "0.5.356",
         "items": [

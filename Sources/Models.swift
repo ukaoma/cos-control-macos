@@ -6096,8 +6096,14 @@ extension MacVoiceCopy {
 }
 
 struct ReviewVoice: Identifiable, Sendable, Hashable {
+    enum IntervalKind: String, Sendable, Hashable { case anonymousGroup = "anonymous-group", unresolved, preservedAnonymous = "preserved-anonymous", name }
+    let intervalKind: IntervalKind?
+    let intervalIdentityId: String?
+    let intervalWordCount: Int?
     /// Voiced milliseconds for this voice. nil on a server that does not report it.
     var speakingMs: Int?
+    /// Conservative display grouping needs an exact reported integer, never a truncated duration.
+    let exactSpeakingMs: Int?
     enum Reliability: String, Sendable {
         case confident, weak, unreliable, unattributed
     }
@@ -6125,7 +6131,11 @@ struct ReviewVoice: Identifiable, Sendable, Hashable {
     /// What the row is allowed to CALL this voice. An unearned label is a
     /// candidate, not an identity.
     /// 0.5.340: a Mac `Voice N` shows as itself, so Voice 1 and Voice 2 stay told apart while unnamed.
-    var displayName: String { nameAsserted || MacVoiceLabel.isVoice(label) ? label : "Unidentified voice" }
+    var displayName: String {
+        if intervalKind == .anonymousGroup || intervalKind == .preservedAnonymous { return label }
+        if intervalKind == .unresolved { return "Unresolved speech" }
+        return nameAsserted || MacVoiceLabel.isVoice(label) ? label : "Unidentified voice"
+    }
     /// Any voice but the wearer can be given a name — INCLUDING an unattributed
     /// cluster, which is the whole reason to review one.
     ///
@@ -6137,7 +6147,7 @@ struct ReviewVoice: Identifiable, Sendable, Hashable {
     ///
     /// The owner stays excluded deliberately — the wearer is established by the
     /// device, not by cosine, and must never be absorbed into someone else.
-    var canRename: Bool { !isOwner }
+    var canRename: Bool { !isOwner && intervalKind != .anonymousGroup && intervalKind != .unresolved }
     /// Naming an unattributed row ASSIGNS an identity rather than correcting a
     /// wrong one. Worth distinguishing on the button, because "Actually someone
     /// else" reads as fixing a mistake the system made.
@@ -6167,13 +6177,31 @@ struct ReviewVoice: Identifiable, Sendable, Hashable {
         // Server 6.21.27+. Optional with no `?? 0`: a count has no safe scalar
         // default, and zero would read as "this person never spoke".
         speakingMs = o["speakingMs"]?.int
+        exactSpeakingMs = SpeakerGroupScope.exactInt(o["speakingMs"])
         meanSimilarity = o["meanSimilarity"]?.double
         isOwner = o["isOwner"]?.bool ?? false
-        reliability = Reliability(rawValue: o["reliability"]?.string ?? "") ?? .weak
+        let kind = IntervalKind(rawValue: o["kind"]?.string ?? "")
+        let intervalPlaceholder = kind == .anonymousGroup || kind == .unresolved || kind == .preservedAnonymous
+        reliability = intervalPlaceholder ? .unattributed : (Reliability(rawValue: o["reliability"]?.string ?? "") ?? .weak)
         // Absent on a server older than 6.21.18. Defaulting to TRUE keeps an old
         // server's panel working exactly as it did rather than blanking every
         // name; the floor is then simply not enforced until the server ships it.
-        nameAsserted = o["nameAsserted"]?.bool ?? true
+        nameAsserted = intervalPlaceholder ? false : (o["nameAsserted"]?.bool ?? true)
+        let identity = o["identityId"]?.string
+        if kind == .anonymousGroup, !nameAsserted, reliability == .unattributed,
+           label.range(of: #"\AAnonymous group [1-9][0-9]{0,5}\z"#, options: .regularExpression) != nil,
+           let identity, !identity.isEmpty, identity.utf8.count <= 128,
+           identity.utf8.allSatisfy({ (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0) || [45, 58, 95].contains($0) }) {
+            intervalKind = kind; intervalIdentityId = identity
+        } else if kind == .unresolved, label == "Ext", !nameAsserted, reliability == .unattributed {
+            intervalKind = kind; intervalIdentityId = nil
+        } else if kind == .preservedAnonymous, !nameAsserted, reliability == .unattributed,
+                  label.hasPrefix("Unidentified ") || MacVoiceLabel.isVoice(label) {
+            intervalKind = kind; intervalIdentityId = nil
+        } else { intervalKind = nil; intervalIdentityId = nil }
+        if let count = SpeakerGroupScope.exactInt(o["wordCount"]), (0...100_000_000).contains(count) {
+            intervalWordCount = count
+        } else { intervalWordCount = nil }
         assertionBlockers = (o["assertionBlockers"]?.array ?? []).compactMap { $0.string }
         confirmedByHuman = o["confirmedByHuman"]?.bool ?? false
         thrashesWith = (o["thrashesWith"]?.array ?? []).compactMap(SpeakerThrashPair.init)
@@ -6336,6 +6364,228 @@ struct PendingSpeakerGroupName: Sendable {
     }
 }
 
+/// Exact HQ words issued by the server. Raw chunks never participate in this selector.
+struct IntervalWordGroupScope: Identifiable, Sendable, Hashable {
+    enum Kind: String, Sendable, Hashable {
+        case anonymous = "interval-words"
+        case unresolved = "unresolved-words"
+        case human = "human-words"
+    }
+    static let maximumMembers = 20_000
+    static func validID(_ value: String) -> Bool {
+        !value.isEmpty && value.utf8.count <= 128 && value.utf8.allSatisfy {
+            (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0) || [45, 58, 95].contains($0)
+        }
+    }
+    struct Member: Identifiable, Sendable, Hashable {
+        let id: String
+        let text: String
+        let startElapsedMs: Double
+        let endElapsedMs: Double
+        let elapsedMs: Double
+        // 16 kHz sample clocks have fractional milliseconds. Formatting is display-only;
+        // the unrounded server doubles remain part of exact preview membership equality.
+        var stamp: String { String(format: "%.4f–%.4f ms", startElapsedMs, endElapsedMs) }
+        private static func time(_ value: JSONValue?) -> Double? {
+            guard let number = value?.double, number.isFinite, (0...1_000_000_000_000).contains(number) else { return nil }
+            return number
+        }
+        init?(_ value: JSONValue) {
+            guard let o = value.object, let id = o["id"]?.string, SpeakerGroupScope.validHash(id),
+                  let text = o["text"]?.string, !text.isEmpty, text.utf8.count <= 4096,
+                  let start = Self.time(o["startElapsedMs"]),
+                  let end = Self.time(o["endElapsedMs"]), end > start,
+                  let elapsed = Self.time(o["elapsedMs"]),
+                  SpeakerGroupScope.exactInt(o["wordCount"]) == 1 else { return nil }
+            self.id = id; self.text = text; startElapsedMs = start; endElapsedMs = end; elapsedMs = elapsed
+        }
+    }
+    let kind: Kind
+    let identityId: String
+    let displayLabel: String
+    let scopeSHA256: String
+    let members: [Member]
+    let fieldCount: Int
+    let selectionRuns: [[String]]
+    var id: String { identityId + ":" + scopeSHA256 }
+    init?(_ value: JSONValue) {
+        guard let o = value.object, let kind = Kind(rawValue: o["kind"]?.string ?? ""),
+              let identity = o["identityId"]?.string, Self.validID(identity),
+              let label = o["displayLabel"]?.string, !label.isEmpty, label.count <= 200,
+              let hash = o["scopeSHA256"]?.string, SpeakerGroupScope.validHash(hash),
+              let rows = o["members"]?.array, !rows.isEmpty, rows.count <= 40_000,
+              let fields = SpeakerGroupScope.exactInt(o["fieldCount"]), fields > 0, fields <= 1_000_000 else { return nil }
+        switch kind {
+        case .anonymous:
+            guard label.range(of: #"\AAnonymous group [1-9][0-9]{0,5}\z"#, options: .regularExpression) != nil else { return nil }
+        case .unresolved:
+            guard identity == "unresolved", label == "Unresolved speech" else { return nil }
+        case .human:
+            guard identity.range(of: #"\Aaction-[a-f0-9-]{36}\z"#, options: .regularExpression) != nil else { return nil }
+        }
+        let parsed = rows.compactMap(Member.init)
+        guard parsed.count == rows.count, Set(parsed.map(\.id)).count == parsed.count else { return nil }
+        var runs: [[String]] = []
+        if let supplied = o["selectionRuns"] {
+            guard let runRows = supplied.array, !runRows.isEmpty, runRows.count <= 40_000 else { return nil }
+            for row in runRows {
+                guard let values = row.array, !values.isEmpty, values.count <= 40_000 else { return nil }
+                let ids = values.compactMap(\.string)
+                guard ids.count == values.count, ids.allSatisfy(SpeakerGroupScope.validHash) else { return nil }
+                runs.append(ids)
+            }
+            let all = runs.flatMap { $0 }
+            guard all == parsed.map(\.id), Set(all).count == all.count else { return nil }
+        }
+        if kind == .unresolved { guard !runs.isEmpty else { return nil } }
+        self.kind = kind; identityId = identity; displayLabel = label; scopeSHA256 = hash; members = parsed; fieldCount = fields; selectionRuns = runs
+    }
+    /// A human-authored name that resembles a group label never acquires this scope.
+    /// An available identity must match; label fallback is only for a validated anonymous row.
+    func matches(_ voice: ReviewVoice) -> Bool {
+        guard kind == .anonymous, voice.intervalKind == .anonymousGroup, !voice.nameAsserted else { return false }
+        if let identity = voice.intervalIdentityId { return identityId == identity }
+        return displayLabel == voice.label
+    }
+    func selectedMembers(_ ids: [String]) -> [Member]? {
+        let chosen = Set(ids)
+        guard !chosen.isEmpty, chosen.count <= Self.maximumMembers, chosen.count == ids.count, chosen.isSubset(of: Set(members.map(\.id))) else { return nil }
+        if kind == .human { guard chosen == Set(members.map(\.id)) else { return nil } }
+        if kind == .unresolved {
+            let allowed = selectionRuns.contains { run in
+                let positions = run.indices.filter { chosen.contains(run[$0]) }
+                guard let first = positions.first, let last = positions.last else { return false }
+                return positions.count == chosen.count && last - first + 1 == chosen.count
+            }
+            guard allowed else { return nil }
+        }
+        return members.filter { chosen.contains($0.id) }
+    }
+    func request(sessionId: String, recordId: String, revision: String, memberIds: [String], to: String, confirm: Bool) -> Data? {
+        let name = to.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard sessionId.hasPrefix("mac_"), !recordId.isEmpty, SpeakerGroupScope.validHash(revision),
+              let selected = selectedMembers(memberIds), (2...200).contains(name.count),
+              !SpeakerGroupScope.isUnassigned(name), !MacVoiceLabel.isVoice(name),
+              kind != .human || name != displayLabel,
+              name.unicodeScalars.allSatisfy({ !CharacterSet.controlCharacters.contains($0) }) else { return nil }
+        let body: [String: Any] = ["sessionId": sessionId, "recordId": recordId, "expectedRevision": revision,
+            "identityId": identityId, "scopeSHA256": scopeSHA256, "memberIds": selected.map(\.id), "to": name,
+            confirm ? "confirm" : "dryRun": true]
+        guard let data = try? JSONSerialization.data(withJSONObject: body), data.count <= 2_097_152 else { return nil }
+        return data
+    }
+}
+
+struct IntervalHumanAnnotation: Sendable, Hashable {
+    struct Action: Identifiable, Sendable, Hashable {
+        let actionId: String
+        let to: String
+        let identityId: String?
+        let memberIds: [String]
+        var id: String { actionId }
+        init?(_ value: JSONValue) {
+            guard let o = value.object, let action = o["actionId"]?.string, IntervalWordGroupScope.validID(action),
+                  let to = o["to"]?.string, !to.isEmpty, to.count <= 200,
+                  let rows = o["memberIds"]?.array, !rows.isEmpty, rows.count <= IntervalWordGroupScope.maximumMembers else { return nil }
+            let ids = rows.compactMap(\.string)
+            guard ids.count == rows.count, ids.allSatisfy(SpeakerGroupScope.validHash), Set(ids).count == ids.count else { return nil }
+            if let value = o["identityId"] {
+                guard let identity = value.string,
+                      identity.range(of: #"\Aaction-[a-f0-9-]{36}\z"#, options: .regularExpression) != nil else { return nil }
+                identityId = identity
+            } else { identityId = nil }
+            actionId = action; self.to = to; memberIds = ids
+        }
+    }
+    let revision: Int
+    let annotationSHA256: String
+    let activeActions: [Action]
+    init?(_ value: JSONValue?) {
+        guard let o = value?.object, let revision = SpeakerGroupScope.exactInt(o["revision"]), (1...9_007_199_254_740_991).contains(revision),
+              let hash = o["annotationSHA256"]?.string, SpeakerGroupScope.validHash(hash),
+              let rows = o["activeActions"]?.array, rows.count <= 20_000 else { return nil }
+        let actions = rows.compactMap(Action.init)
+        guard rows.count == actions.count, Set(actions.map(\.id)).count == actions.count else { return nil }
+        self.revision = revision; annotationSHA256 = hash; activeActions = actions
+    }
+    func undoRequest(action: Action, review: SpeakerReview) -> Data? {
+        guard review.sessionId.hasPrefix("mac_"), !review.recordId.isEmpty,
+              let source = review.sourceRevision, SpeakerGroupScope.validHash(source), activeActions.contains(action) else { return nil }
+        return try? JSONSerialization.data(withJSONObject: ["sessionId": review.sessionId, "recordId": review.recordId,
+            "expectedRevision": source, "actionId": action.actionId, "annotationRevision": revision,
+            "annotationSHA256": annotationSHA256, "confirm": true])
+    }
+}
+
+struct PendingIntervalWordName: Sendable {
+    let scope: IntervalWordGroupScope
+    let recordId: String
+    let sessionId: String
+    let revision: String
+    let memberIds: [String]
+    let to: String
+    let fields: Int
+    var members: [IntervalWordGroupScope.Member] { scope.selectedMembers(memberIds) ?? [] }
+    init?(scope: IntervalWordGroupScope, review: SpeakerReview, memberIds: [String], to: String, response: HelperResponse) {
+        guard response.details["state"]?.string == "preview", let revision = review.sourceRevision,
+              let result = response.details["result"]?.object else { return nil }
+        guard let preview = result["preview"]?.object else { return nil }
+        guard preview["identityId"]?.string == scope.identityId, preview["scopeSHA256"]?.string == scope.scopeSHA256,
+              preview["sourceRevision"]?.string == revision, preview["to"]?.string == to,
+              preview["enrollmentAllowed"]?.bool == false, let rows = preview["members"]?.array,
+              let selected = scope.selectedMembers(memberIds), selected.count == rows.count,
+              let fields = SpeakerGroupScope.exactInt(preview["fields"]), fields > 0, fields <= scope.fieldCount else { return nil }
+        let actual = rows.compactMap(IntervalWordGroupScope.Member.init)
+        guard actual.count == selected.count, Set(actual) == Set(selected) else { return nil }
+        self.scope = scope; recordId = review.recordId; sessionId = review.sessionId; self.revision = revision
+        self.memberIds = selected.map(\.id); self.to = to; self.fields = fields
+    }
+}
+
+/// The final word view counts acoustic groups and a speech remainder separately.
+/// Missing/invalid metadata retains the older review display contract.
+struct EffectiveSpeakerSummary: Sendable {
+    let anonymousGroupCount: Int
+    let preservedAnonymousGroupCount: Int
+    let namedVoiceCount: Int
+    let withheldNameCount: Int
+    let unresolvedSpeakingMs: Int
+    let unresolvedWordCount: Int
+    var header: String {
+        var parts = ["\(anonymousGroupCount) estimated \(anonymousGroupCount == 1 ? "group" : "groups")"]
+        if namedVoiceCount > 0 { parts.append("\(namedVoiceCount) named \(namedVoiceCount == 1 ? "voice" : "voices")") }
+        if preservedAnonymousGroupCount > 0 { parts.append("\(preservedAnonymousGroupCount) reviewed unnamed \(preservedAnonymousGroupCount == 1 ? "group" : "groups")") }
+        if withheldNameCount > 0 { parts.append("\(withheldNameCount) withheld \(withheldNameCount == 1 ? "name" : "names")") }
+        return parts.joined(separator: " · ")
+    }
+    var unresolvedNote: String? {
+        guard unresolvedWordCount > 0 else { return nil }
+        return "Unresolved speech: \(unresolvedWordCount) words · \(Int((Double(unresolvedSpeakingMs) / 1000).rounded()))s"
+    }
+    init?(_ value: JSONValue?, voices: [ReviewVoice]) {
+        guard let o = value?.object, SpeakerGroupScope.exactInt(o["version"]) == 1,
+              o["basis"]?.string == "source-bound-hq-words" else { return nil }
+        func count(_ key: String, maximum: Int = 100_000_000) -> Int? {
+            guard let n = SpeakerGroupScope.exactInt(o[key]), (0...maximum).contains(n) else { return nil }; return n
+        }
+        guard let groups = count("anonymousGroupCount", maximum: 99),
+              let preserved = count("preservedAnonymousGroupCount", maximum: 6000),
+              let named = count("namedVoiceCount", maximum: 6000), let withheld = count("withheldNameCount", maximum: 6000),
+              let ms = count("unresolvedSpeakingMs"), let words = count("unresolvedWordCount"),
+              let rows = count("displayRowCount", maximum: 6000), rows == voices.count,
+              groups == voices.filter({ $0.intervalKind == .anonymousGroup }).count,
+              preserved == voices.filter({ $0.intervalKind == .preservedAnonymous }).count,
+              named == voices.filter(\.nameAsserted).count,
+              withheld == voices.filter({ $0.intervalKind == nil && !$0.nameAsserted }).count,
+              Set(voices.compactMap(\.intervalIdentityId)).count == groups,
+              voices.filter({ $0.intervalKind == .unresolved }).count <= 1,
+              (words > 0) == voices.contains(where: { $0.intervalKind == .unresolved }),
+              ms == (voices.first(where: { $0.intervalKind == .unresolved })?.speakingMs ?? 0) else { return nil }
+        anonymousGroupCount = groups; preservedAnonymousGroupCount = preserved; namedVoiceCount = named
+        withheldNameCount = withheld; unresolvedSpeakingMs = ms; unresolvedWordCount = words
+    }
+}
+
 struct SpeakerReview: Sendable {
     let sessionId: String
     let title: String
@@ -6361,12 +6611,21 @@ struct SpeakerReview: Sendable {
     let speakingTimeSource: String?
     let durationMs: Int
     let voices: [ReviewVoice]
+    let effectiveSpeakerSummary: EffectiveSpeakerSummary?
+    let intervalViewReadOnly: Bool
+    var inventoryHeader: String {
+        effectiveSpeakerSummary?.header ?? (intervalViewReadOnly ? "Speaker grouping unavailable" : "\(segments) segments · \(voices.count) voices")
+    }
     let timeline: [SpeakerTimelineSpan]
     let recordId: String
     let sourceRevision: String?
     let identityVersion: Int?
     let mutable: Bool
     let groupScopes: [SpeakerGroupScope]
+    let intervalGroupScopes: [IntervalWordGroupScope]
+    let intervalHumanAnnotation: IntervalHumanAnnotation?
+    let intervalHumanRecoveryRequired: Bool
+    let intervalOriginalViewAvailable: Bool
     let librarySource: String
     /// 6.47.0. The merged record that holds this capture, when the panel asked
     /// through one.
@@ -6390,21 +6649,54 @@ struct SpeakerReview: Sendable {
         speakingTimeSource = o["speakingTimeSource"]?.string
         durationMs = o["durationMs"]?.int ?? 0
         voices = (o["voices"]?.array ?? []).compactMap(ReviewVoice.init)
+        intervalViewReadOnly = o["effectiveSpeakerSummary"] != nil || o["intervalGroupScopes"] != nil || o["intervalHumanAnnotation"] != nil || o["intervalHumanRecoveryRequired"] != nil || o["intervalOriginalViewAvailable"] != nil || voices.contains(where: { $0.intervalKind != nil })
+            || (o["voices"]?.array ?? []).contains(where: { ["anonymous-group", "unresolved", "preserved-anonymous"].contains($0.object?["kind"]?.string ?? "") })
+            || o["speakerCallView"]?.object?["mode"]?.string == "source-bound-intervals"
+        effectiveSpeakerSummary = sessionId.hasPrefix("mac_") ? EffectiveSpeakerSummary(o["effectiveSpeakerSummary"], voices: voices) : nil
         timeline = (o["timeline"]?.array ?? []).enumerated().compactMap { SpeakerTimelineSpan($1, index: $0) }
         recordId = o["recordId"]?.string ?? ""
         sourceRevision = o["sourceRevision"]?.string
         identityVersion = o["reviewIdentityVersion"]?.int
-        mutable = o["mutable"]?.bool ?? true
+        mutable = !intervalViewReadOnly && (o["mutable"]?.bool ?? true)
         let scopeRows = o["groupScopes"]?.array ?? []
         let scopes = scopeRows.compactMap(SpeakerGroupScope.init)
         let members = scopes.flatMap { $0.members.map(\.rawChunkIndex) }
-        groupScopes = sessionId.hasPrefix("mac_") && sourceRevision.map(SpeakerGroupScope.validHash) == true
+        groupScopes = !intervalViewReadOnly && sessionId.hasPrefix("mac_") && sourceRevision.map(SpeakerGroupScope.validHash) == true
             && scopeRows.count <= 6000 && scopes.count == scopeRows.count
             && Set(scopes.map(\.identityId)).count == scopes.count
             && Set(scopes.map(\.displayLabel)).count == scopes.count
             && Set(members).count == members.count ? scopes : []
+        let intervalRows = o["intervalGroupScopes"]?.array ?? []
+        let intervalScopes = intervalRows.compactMap(IntervalWordGroupScope.init)
+        let intervalIDs = intervalScopes.flatMap { $0.members.map(\.id) }
+        let recoveryFlag: Bool?
+        if let value = o["intervalHumanRecoveryRequired"] { recoveryFlag = value.bool } else { recoveryFlag = false }
+        let intervalSourceValid = sessionId.hasPrefix("mac_") && sourceRevision.map(SpeakerGroupScope.validHash) == true && !recordId.isEmpty
+        intervalHumanRecoveryRequired = intervalSourceValid && recoveryFlag == true
+        let intervalValid = intervalSourceValid && recoveryFlag == false
+            && intervalRows.count <= 6000 && intervalScopes.count == intervalRows.count
+            && Set(intervalScopes.map(\.identityId)).count == intervalScopes.count
+            && Set(intervalScopes.filter { $0.kind == .anonymous }.map(\.displayLabel)).count == intervalScopes.filter { $0.kind == .anonymous }.count
+            && intervalScopes.filter { $0.kind == .unresolved }.count <= 1
+            && Set(intervalIDs).count == intervalIDs.count
+        intervalGroupScopes = intervalValid ? intervalScopes : []
+        intervalHumanAnnotation = intervalValid ? IntervalHumanAnnotation(o["intervalHumanAnnotation"]) : nil
+        let annotationWellFormed: Bool
+        if let value = o["intervalHumanAnnotation"] {
+            if case .null = value { annotationWellFormed = true } else { annotationWellFormed = intervalHumanAnnotation != nil }
+        } else { annotationWellFormed = false }
+        intervalOriginalViewAvailable = intervalValid && o["intervalOriginalViewAvailable"]?.bool == true
+            && o["intervalGroupScopes"]?.array != nil && annotationWellFormed
+            && intervalHumanAnnotation?.activeActions.isEmpty != false
         librarySource = o["source"]?.string ?? "standalone_recordings"
         blendedRecordId = o["blendedRecordId"]?.string
+    }
+
+    /// Rename binds a server-issued action identity and its exact complete word set, never a display name.
+    func humanScope(for action: IntervalHumanAnnotation.Action) -> IntervalWordGroupScope? {
+        guard intervalHumanAnnotation?.activeActions.contains(action) == true, let identity = action.identityId else { return nil }
+        return intervalGroupScopes.first { $0.kind == .human && $0.identityId == identity
+            && Set($0.members.map(\.id)) == Set(action.memberIds) }
     }
 
     /// Whether a name may be shown for a label, from the voice rows. The ribbon
@@ -6477,6 +6769,22 @@ struct SpeakerReview: Sendable {
             if a.element.segments != b.element.segments { return a.element.segments > b.element.segments }
             return a.offset < b.offset
         }.map(\.element)
+    }
+
+    /// Local presentation only. Every row retains its original identity, words and naming scope.
+    /// Unsupported grouping and unknown durations stay in the main list.
+    var displayVoiceRows: (main: [ReviewVoice], shortFragments: [ReviewVoice]) {
+        let ordered = voicesForReview
+        guard isMacRecording, effectiveSpeakerSummary != nil else { return (ordered, []) }
+        func accepted(_ voice: ReviewVoice) -> Bool {
+            voice.intervalKind == .anonymousGroup && intervalGroupScopes.contains { $0.matches(voice) }
+        }
+        func short(_ voice: ReviewVoice) -> Bool {
+            guard accepted(voice), let milliseconds = voice.exactSpeakingMs else { return false }
+            return milliseconds > 0 && milliseconds < 15_000
+        }
+        let main = ordered.filter { !short($0) }
+        return (main.filter(accepted) + main.filter { !accepted($0) }, ordered.filter(short))
     }
 }
 

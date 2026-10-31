@@ -759,6 +759,8 @@ final class COSControlHelper {
         case "voice-held-discard": try emitVoiceHeldDiscard(args: args)
         case "meeting-relabel": try emitMeetingRelabel(args: args)
         case "meeting-group-relabel": try emitMeetingGroupRelabel(args: args)
+        case "meeting-interval-groups", "meeting-interval-group-preview", "meeting-interval-group-relabel", "meeting-interval-group-undo", "meeting-interval-group-recover", "meeting-interval-group-original":
+            try emitMeetingIntervalGroup(args: args)
         case "meeting-deattribute": try emitMeetingDeattribute(args: args)
         case "meeting-confirm": try emitMeetingConfirm(args: args)
         // ── Import and merge meetings (server 6.47.0, WS6) ───────────────────
@@ -20649,6 +20651,82 @@ final class COSControlHelper {
         payload[confirmed ? "confirm" : "dryRun"] = true
         try emitMeetingCorrection(path: "/api/meeting/\(escapedSessionID(session))/speaker-groups/\(encoded)/relabel",
                                   payload: payload, confirmed: confirmed, appliedMessage: "Name saved for reviewed segments")
+    }
+
+    /// Exact word naming uses one bounded stdin object: no member IDs or names in argv.
+    /// Validate before authentication/network access; unknown force/profile/path options fail closed.
+    private func emitMeetingIntervalGroup(args: [String]) throws {
+        guard args.count == 1, let command = args.first,
+              var body = try JSONSerialization.jsonObject(with: readBoundedStdin(2_097_152)) as? [String: Any] else {
+            throw HelperError.message("Exact word review requires a bounded JSON object on stdin")
+        }
+        let keys: Set<String>
+        switch command {
+        case "meeting-interval-groups": keys = ["sessionId", "recordId"]
+        case "meeting-interval-group-preview": keys = ["sessionId", "recordId", "expectedRevision", "identityId", "scopeSHA256", "memberIds", "to", "dryRun"]
+        case "meeting-interval-group-relabel": keys = ["sessionId", "recordId", "expectedRevision", "identityId", "scopeSHA256", "memberIds", "to", "confirm"]
+        case "meeting-interval-group-undo": keys = ["sessionId", "recordId", "expectedRevision", "actionId", "annotationRevision", "annotationSHA256", "confirm"]
+        case "meeting-interval-group-recover": keys = ["sessionId", "recordId", "confirm"]
+        case "meeting-interval-group-original": keys = ["sessionId", "recordId", "expectedRevision", "confirm"]
+        default: throw HelperError.message("Unknown exact word review command")
+        }
+        func opaque(_ value: String) -> Bool {
+            !value.isEmpty && value.utf8.count <= 128 && value.utf8.allSatisfy {
+                (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0) || [45, 58, 95].contains($0)
+            }
+        }
+        func exactTrue(_ value: Any?) -> Bool {
+            guard let n = value as? NSNumber, CFGetTypeID(n) == CFBooleanGetTypeID() else { return false }
+            return n.boolValue
+        }
+        guard Set(body.keys) == keys,
+              let session = body.removeValue(forKey: "sessionId") as? String, validSessionID(session), session.hasPrefix("mac_"),
+              let record = body["recordId"] as? String, !record.isEmpty, record.utf8.count <= 4096,
+              !record.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else {
+            throw HelperError.message("A selected Mac meeting and exact review fields are required")
+        }
+        let base = "/api/meeting/\(escapedSessionID(session))/speaker-interval-groups"
+        if command == "meeting-interval-groups" {
+            guard let encoded = record.addingPercentEncoding(withAllowedCharacters: .alphanumerics) else { throw HelperError.message("Invalid meeting") }
+            let result = try speakerReviewBody(base + "?recordId=" + encoded)
+            emit(ok: true, message: "Exact word groups", details: result); return
+        }
+        guard exactTrue(body[command == "meeting-interval-group-preview" ? "dryRun" : "confirm"]) else {
+            throw HelperError.message("Preview or explicit confirmation is required")
+        }
+        var path: String
+        if command == "meeting-interval-group-recover" { path = base + "/recover" }
+        else {
+            guard let revision = body["expectedRevision"] as? String, Self.validPreviewHash(revision) else {
+                throw HelperError.message("Refresh this meeting before changing exact words")
+            }
+            if command == "meeting-interval-group-original" { path = base + "/original" }
+            else if command == "meeting-interval-group-undo" {
+                guard let action = body["actionId"] as? String, opaque(action),
+                      let hash = body["annotationSHA256"] as? String, Self.validPreviewHash(hash),
+                      let revision = body["annotationRevision"] as? NSNumber,
+                      CFGetTypeID(revision) != CFBooleanGetTypeID(), revision.doubleValue.isFinite,
+                      revision.doubleValue >= 1, revision.doubleValue <= 9_007_199_254_740_991, Int(exactly: revision.doubleValue) != nil else {
+                    throw HelperError.message("A current annotation and exact action are required to undo")
+                }
+                path = base + "/undo"
+            } else {
+                guard let identity = body.removeValue(forKey: "identityId") as? String, opaque(identity),
+                      let encoded = identity.addingPercentEncoding(withAllowedCharacters: .alphanumerics),
+                      let scope = body["scopeSHA256"] as? String, Self.validPreviewHash(scope),
+                      let ids = body["memberIds"] as? [String], !ids.isEmpty, ids.count <= 20_000,
+                      Set(ids).count == ids.count, ids.allSatisfy(Self.validPreviewHash),
+                      let name = body["to"] as? String, name == name.trimmingCharacters(in: .whitespacesAndNewlines),
+                      (2...200).contains(name.count), !name.lowercased().hasPrefix("voice "),
+                      !["ext", "unknown", "mu", "unidentified", "unidentified voice"].contains(name.lowercased()),
+                      name.unicodeScalars.allSatisfy({ !CharacterSet.controlCharacters.contains($0) }) else {
+                    throw HelperError.message("Select at most 20,000 unique server-issued words and a name")
+                }
+                path = base + "/" + encoded + "/relabel"
+            }
+        }
+        try emitMeetingCorrection(path: path, payload: body, confirmed: command != "meeting-interval-group-preview",
+                                  appliedMessage: command == "meeting-interval-group-undo" ? "Word naming undone" : "Exact word naming saved")
     }
 
     /// Read or revision-guard a per-capture matching policy on the authenticated server.

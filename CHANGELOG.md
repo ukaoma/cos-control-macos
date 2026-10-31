@@ -1,3 +1,13 @@
+## 0.5.357 (build 411), Source-bound saved Mac speaker review
+
+Private candidate paired with server6.96.2. Built on installed356/410, including the Usage inspector and opt-in Cursor feed.
+
+- The speaker list and timeline share effective timed words from an admitted accepted-only interval packet. Anonymous acoustic groups and the unresolved speech remainder are distinct; rows are not people.
+- Existing names, human corrections, words and timing remain protected. Exact-word naming, contiguous unresolved-range naming, Rename and Undo work independently of automatic production. A target name already asserted elsewhere in the original source is refused in this private candidate, pending a separately qualified per-word presentation partition.
+- After interval naming actions are undone, an explicit confirmed action returns the recording to its original review with prior corrections. Interrupted transactions expose recovery before another edit.
+- Private display refinement: supported anonymous groups appear first. Where authoritative durations and exact naming scopes are present, groups with less than 15 seconds of speech appear in one counted, expandable Short voice fragments row. Each original row retains its words and correction tools. Missing durations and unresolved speech stay in the main list. This changes presentation only; no extra groups are admitted, and rows do not count people. Any wider default needs a later release decision.
+- Broader native-exclusive membership failed human-truth QA and is not admitted for this repair. Automatic naming, live ID, cleanup and cues remain disabled. Final full-suite/signing/install receipts are separate from these release notes.
+
 ## 0.5.356 (build 410), Usage redesign and Cursor tokens
 
 Pairs with the same servers as 0.5.355. Built on 0.5.355 (855834b). Local build for Miles's Mac; not published.

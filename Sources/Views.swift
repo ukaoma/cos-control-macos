@@ -4659,13 +4659,14 @@ private struct VoiceRow: View {
                         .background(COSPalette.green.opacity(0.18), in: Capsule())
                 }
                 Spacer()
-                Text("\(voice.segments) seg")
+                Text(voice.intervalKind != nil
+                     ? (voice.intervalWordCount.map { "\($0) words" } ?? "word timings")
+                     : "\(voice.segments) seg")
                     .font(.system(size: 10, design: .monospaced))
                     .foregroundStyle(.secondary)
-                // Talk time, ONLY for a voice the panel actually names. Minutes
-                // beside an unnamed row would assert by the back door exactly
-                // what the display floor refuses to assert.
-                if voice.nameAsserted, let ms = voice.speakingMs, ms > 0 {
+                // Typed interval rows report timed speech without asserting a
+                // person's identity. Legacy rows keep the named-voice floor.
+                if voice.nameAsserted || voice.intervalKind != nil, let ms = voice.speakingMs, ms > 0 {
                     // Rounded, matching the server's `mmss`. Truncating here
                     // put the panel 1 second below the clipboard on 456 real
                     // voice rows, and showed "0m 20s" against its "21s".
@@ -4678,12 +4679,15 @@ private struct VoiceRow: View {
                             .foregroundStyle(.primary)
                     }
                 }
-                ConfidenceRamp(value: voice.meanSimilarity, unreliable: voice.reliability == .unreliable)
+                if voice.intervalKind == nil {
+                    ConfidenceRamp(value: voice.meanSimilarity, unreliable: voice.reliability == .unreliable)
+                }
             }
 
             // The evidence. A score cannot tell you who someone is; these can.
             if voice.phrases.isEmpty {
-                Text("No line from this voice was distinctive enough to quote.")
+                Text(voice.intervalKind != nil ? "Word timings are retained for this speech."
+                     : "No line from this voice was distinctive enough to quote.")
                     .font(.system(size: 11)).foregroundStyle(.tertiary)
             } else {
                 VStack(alignment: .leading, spacing: 4) {
@@ -4754,10 +4758,14 @@ private struct VoiceRow: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            if let scope = model.openReview?.groupScopes.first(where: { $0.displayLabel == voice.label }) {
+            if let scope = model.openReview?.intervalGroupScopes.first(where: { $0.matches(voice) }) {
+                IntervalWordGroupNamingView(model: model, scope: scope).id(scope.id)
+            } else if let scope = model.openReview?.groupScopes.first(where: { $0.displayLabel == voice.label }) {
                 SpeakerGroupNamingView(model: model, scope: scope).id(scope.id)
             } else if model.openReview?.mutable == false {
-                Label("Read-only library · new COS meetings remain editable", systemImage: "lock")
+                Label(model.openReview?.intervalViewReadOnly != true
+                      ? "Read-only library · new COS meetings remain editable"
+                      : "Read-only interval view · naming needs an exact reviewed range", systemImage: "lock")
                     .font(.system(size: 10.5)).foregroundStyle(.secondary)
             } else if voice.canRename {
                 if model.namingVoice == voice.label {
@@ -4901,6 +4909,7 @@ struct SpeakerReviewPane: View {
     /// Which span the pointer is over. Held here so the bar and the legend
     /// highlight the same thing.
     @State private var hoveredSpan: SpeakerTimelineSpan?
+    @State private var shortFragmentsExpanded = false
 
     private func correctionTitle(_ c: PendingCorrection) -> String {
         if c.refused { return "Not applied" }
@@ -4917,7 +4926,7 @@ struct SpeakerReviewPane: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(model.openReview?.title ?? "Speaker review").font(.headline)
                     if let review = model.openReview {
-                        Text("\(review.segments) segments · \(review.voices.count) voices")
+                        Text(review.inventoryHeader)
                             .font(.system(size: 10.5, design: .monospaced))
                             .foregroundStyle(.secondary)
                         // How much of the meeting carries a name the rows below
@@ -4947,7 +4956,11 @@ struct SpeakerReviewPane: View {
                                 .font(.system(size: 10.5, design: .monospaced))
                                 .foregroundStyle(COSPalette.amber)
                         }
-                        if review.unnamedVoiceCount > 0 {
+                        if let summary = review.effectiveSpeakerSummary {
+                            if let note = summary.unresolvedNote {
+                                Text(note).font(.system(size: 10.5, design: .monospaced)).foregroundStyle(COSPalette.amber)
+                            }
+                        } else if !review.intervalViewReadOnly && review.unnamedVoiceCount > 0 {
                             Text(review.unnamedVoiceCount == 1
                                  ? "1 voice still needs a name"
                                  : "\(review.unnamedVoiceCount) voices still need names")
@@ -5107,10 +5120,24 @@ struct SpeakerReviewPane: View {
                         }
 
                         Divider()
-                        ForEach(Array(review.voicesForReview.enumerated()), id: \.element.id) { index, voice in
+                        let displayRows = review.displayVoiceRows
+                        ForEach(Array(displayRows.main.enumerated()), id: \.element.id) { index, voice in
                             VoiceRow(model: model, voice: voice)
                                 .padding(.horizontal, 16)
-                            if index < review.voicesForReview.count - 1 { Divider() }
+                            if index < displayRows.main.count - 1 { Divider() }
+                        }
+                        if !displayRows.shortFragments.isEmpty {
+                            Divider()
+                            DisclosureGroup(isExpanded: $shortFragmentsExpanded) {
+                                ForEach(Array(displayRows.shortFragments.enumerated()), id: \.element.id) { index, voice in
+                                    VoiceRow(model: model, voice: voice)
+                                    if index < displayRows.shortFragments.count - 1 { Divider() }
+                                }
+                            } label: {
+                                Text("Short voice fragments (\(displayRows.shortFragments.count))")
+                                    .font(.system(size: 12, weight: .semibold))
+                            }
+                            .padding(.horizontal, 16).padding(.vertical, 10)
                         }
 
                         // The write-up, BELOW the voice rows. Measured with
@@ -5195,6 +5222,72 @@ struct SpeakerReviewPane: View {
             if let preview = model.pendingSpeakerGroupName {
                 Divider()
                 SpeakerGroupConfirmationView(model: model, preview: preview)
+            }
+
+            if let preview = model.pendingIntervalWordName {
+                Divider()
+                IntervalWordNameConfirmationView(model: model, preview: preview)
+            }
+            if model.openReview?.intervalHumanRecoveryRequired == true {
+                Divider()
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Interrupted word naming").font(.system(size: 12, weight: .semibold))
+                    Text("Finish the saved naming action before reviewing more words.")
+                        .font(.system(size: 11)).foregroundStyle(.secondary)
+                    if model.intervalWordRecoveryArmed {
+                        Text("Finish the interrupted naming action for this meeting?").font(.system(size: 11))
+                        HStack {
+                            Button("Finish interrupted word naming") { model.recoverIntervalWordNaming() }
+                            Button("Cancel") { model.intervalWordRecoveryArmed = false }
+                        }
+                    } else {
+                        Button("Finish interrupted word naming…") { model.intervalWordRecoveryArmed = true }
+                    }
+                }.disabled(model.mergeInFlight || model.reviewLoading).padding(12)
+            }
+            if let review = model.openReview {
+                ForEach(review.intervalGroupScopes.filter { $0.kind == .unresolved }) { scope in
+                    Divider()
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Unresolved speech").font(.system(size: 12, weight: .semibold))
+                        IntervalWordGroupNamingView(model: model, scope: scope).id(scope.id)
+                    }.padding(12)
+                }
+            }
+            if model.openReview?.intervalOriginalViewAvailable == true {
+                Divider()
+                VStack(alignment: .leading, spacing: 8) {
+                    if model.intervalOriginalViewArmed {
+                        Text("Use this recording’s original speaker view?").font(.system(size: 12, weight: .semibold))
+                        Text("Returns to the original recording view with prior corrections. The review history stays saved.")
+                            .font(.system(size: 11)).foregroundStyle(.secondary)
+                        HStack {
+                            Button("Use original recording view") { model.useOriginalRecordingView() }
+                            Button("Cancel") { model.intervalOriginalViewArmed = false }
+                        }
+                    } else {
+                        Button("Use original recording view…") { model.intervalOriginalViewArmed = true }
+                    }
+                }.disabled(model.mergeInFlight || model.reviewLoading).padding(12)
+            }
+            if let annotation = model.openReview?.intervalHumanAnnotation, !annotation.activeActions.isEmpty {
+                Divider()
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Reviewed word names").font(.system(size: 12, weight: .semibold))
+                    ForEach(annotation.activeActions) { action in
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack {
+                                Text("\(action.to) · \(action.memberIds.count) words").font(.system(size: 11))
+                                Spacer()
+                                Button("Undo") { model.undoIntervalWordName(action) }
+                                    .disabled(model.mergeInFlight || model.reviewLoading)
+                            }
+                            if let scope = model.openReview?.humanScope(for: action) {
+                                IntervalWordGroupNamingView(model: model, scope: scope).id(scope.id)
+                            }
+                        }
+                    }
+                }.padding(12)
             }
 
             if let correction = model.pendingCorrection {
@@ -5323,6 +5416,7 @@ struct SpeakerReviewPane: View {
                 .background(COSPalette.card)
             }
         }
+        .onChange(of: model.openReview?.sessionId) { _, _ in shortFragmentsExpanded = false }
     }
 }
 
@@ -6328,6 +6422,170 @@ struct SpeakerGroupConfirmationView: View {
             HStack {
                 Button("Save name") { model.confirmSpeakerGroupName(preview) }.disabled(model.mergeInFlight)
                 Button("Cancel") { model.pendingSpeakerGroupName = nil }.disabled(model.mergeInFlight)
+                if model.mergeInFlight { ProgressView().controlSize(.small) }
+            }
+        }.padding(12)
+    }
+}
+
+
+/// Each toggle carries one opaque word ID, including words that cross a raw chunk boundary.
+struct IntervalWordGroupNamingView: View {
+    @ObservedObject var model: ControllerModel
+    let scope: IntervalWordGroupScope
+    @State private var expanded = false
+    @State private var name: String
+    @State private var selected: Set<String>
+    @State private var runIndex = 0
+    @State private var pageIndex = 0
+    @State private var rangeStart: String?
+    @State private var rangeEnd: String?
+    private let pageSize = 80
+    init(model: ControllerModel, scope: IntervalWordGroupScope) {
+        self.model = model; self.scope = scope
+        _name = State(initialValue: scope.kind == .human ? scope.displayLabel : "")
+        _selected = State(initialValue: scope.kind == .human ? Set(scope.members.map(\.id)) : [])
+    }
+    private var run: [String] {
+        scope.selectionRuns.indices.contains(runIndex) ? scope.selectionRuns[runIndex] : []
+    }
+    private var memberIds: [String] {
+        if scope.kind == .unresolved {
+            guard let start = rangeStart, let end = rangeEnd,
+                  let first = run.firstIndex(of: start), let last = run.firstIndex(of: end), first <= last else { return [] }
+            return Array(run[first...last])
+        }
+        return scope.members.filter { selected.contains($0.id) }.map(\.id)
+    }
+    private var displayedMembers: [IntervalWordGroupScope.Member] {
+        guard scope.kind == .unresolved else { return scope.members }
+        let lookup = Dictionary(uniqueKeysWithValues: scope.members.map { ($0.id, $0) })
+        return run.compactMap { lookup[$0] }
+    }
+    private var pageCount: Int { max(1, (displayedMembers.count + pageSize - 1) / pageSize) }
+    private var pageMembers: [IntervalWordGroupScope.Member] {
+        Array(displayedMembers.dropFirst(min(pageIndex, pageCount - 1) * pageSize).prefix(pageSize))
+    }
+    private var openingTitle: String {
+        scope.kind == .human ? "Rename reviewed words…" : (scope.kind == .unresolved ? "Name a passage…" : "Name reviewed words…")
+    }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Button(expanded ? "Cancel naming" : openingTitle) { expanded.toggle() }
+                .font(.system(size: 11)).disabled(model.mergeInFlight || model.reviewLoading)
+            if expanded { expandedContent }
+        }
+        .onChange(of: selected) { _, _ in invalidatePreview() }
+        .onChange(of: rangeStart) { _, _ in invalidatePreview() }
+        .onChange(of: rangeEnd) { _, _ in invalidatePreview() }
+        .onChange(of: name) { _, _ in invalidatePreview() }
+        .onChange(of: runIndex) { _, _ in rangeStart = nil; rangeEnd = nil; pageIndex = 0; invalidatePreview() }
+        .onChange(of: expanded) { _, expanded in if !expanded { invalidatePreview() } }
+    }
+    @ViewBuilder private var expandedContent: some View {
+        let picked = Set(memberIds)
+        if scope.kind == .human {
+            Text("Rename this complete reviewed passage. Other naming actions stay separate.")
+                .font(.system(size: 11)).foregroundStyle(.secondary)
+        } else if scope.kind == .unresolved {
+            Text("Choose the first and last word of one uninterrupted passage.")
+                .font(.system(size: 11)).foregroundStyle(.secondary)
+            HStack {
+                Button("Previous passage") { runIndex -= 1 }.disabled(runIndex == 0)
+                Text("Passage \(runIndex + 1) of \(scope.selectionRuns.count)")
+                Button("Next passage") { runIndex += 1 }.disabled(runIndex + 1 >= scope.selectionRuns.count)
+            }.font(.system(size: 10)).disabled(model.mergeInFlight)
+        } else {
+            Text("Review the words and their ranges. Select only the words you recognize as this person.")
+                .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            HStack {
+                Button("Select all words") { selected = Set(scope.members.map(\.id)) }
+                    .disabled(scope.members.count > IntervalWordGroupScope.maximumMembers)
+                Button("Clear selection") { selected.removeAll() }
+            }.font(.system(size: 10)).disabled(model.mergeInFlight)
+        }
+        HStack {
+            Button("Previous words") { pageIndex -= 1 }.disabled(pageIndex == 0)
+            Text("Page \(min(pageIndex, pageCount - 1) + 1) of \(pageCount)")
+            Button("Next words") { pageIndex += 1 }.disabled(pageIndex + 1 >= pageCount)
+        }.font(.system(size: 10)).disabled(model.mergeInFlight)
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 6) {
+                ForEach(pageMembers) { member in
+                    if scope.kind == .anonymous {
+                        Toggle(isOn: Binding(get: { selected.contains(member.id) }, set: { include in
+                            if include { selected.insert(member.id) } else { selected.remove(member.id) }
+                        })) { wordRow(member) }.toggleStyle(COSCheckStyle()).disabled(model.mergeInFlight)
+                    } else {
+                        HStack {
+                            wordRow(member)
+                            if scope.kind == .unresolved {
+                                Button(rangeStart == member.id ? "First word" : "Start") { rangeStart = member.id }
+                                Button(rangeEnd == member.id ? "Last word" : "End") { rangeEnd = member.id }
+                            }
+                        }.padding(3).background(picked.contains(member.id) ? COSPalette.amber.opacity(0.12) : .clear)
+                            .disabled(model.mergeInFlight)
+                    }
+                }
+            }.padding(3)
+        }.frame(maxHeight: 240)
+        TextField("Name for selected words", text: $name).textFieldStyle(.plain).cosField().disabled(model.mergeInFlight)
+        HStack {
+            Text("\(memberIds.count) of \(scope.members.count) words selected · this meeting only")
+                .font(.system(size: 10)).foregroundStyle(.secondary)
+            Spacer()
+            Button("Preview name") { model.previewIntervalWordName(scope, memberIds: memberIds, to: name) }
+                .disabled(model.mergeInFlight || model.reviewLoading || memberIds.isEmpty
+                    || memberIds.count > IntervalWordGroupScope.maximumMembers || name.trimmingCharacters(in: .whitespacesAndNewlines).count < 2
+                    || scope.kind == .human && name.trimmingCharacters(in: .whitespacesAndNewlines) == scope.displayLabel)
+        }
+        if memberIds.count > IntervalWordGroupScope.maximumMembers {
+            Text("Select at most 20,000 words for one correction.").font(.system(size: 10)).foregroundStyle(.secondary)
+        }
+        Text("Names apply only to the selected words. Voice profiles stay unchanged.")
+            .font(.system(size: 10)).foregroundStyle(.secondary)
+    }
+    private func wordRow(_ member: IntervalWordGroupScope.Member) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(member.text).font(.system(size: 11)).fixedSize(horizontal: false, vertical: true)
+            Text(member.stamp).font(.system(size: 9, design: .monospaced)).foregroundStyle(.secondary)
+        }.frame(maxWidth: .infinity, alignment: .leading)
+    }
+    private func invalidatePreview() {
+        if model.pendingIntervalWordName?.scope == scope { model.pendingIntervalWordName = nil }
+    }
+}
+
+struct IntervalWordNameConfirmationView: View {
+    @ObservedObject var model: ControllerModel
+    let preview: PendingIntervalWordName
+    @State private var pageIndex = 0
+    private var pages: Int { max(1, (preview.members.count + 79) / 80) }
+    private var pageMembers: [IntervalWordGroupScope.Member] { Array(preview.members.dropFirst(min(pageIndex, pages - 1) * 80).prefix(80)) }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Name \(preview.memberIds.count) reviewed words “\(preview.to)”?").font(.system(size: 12, weight: .semibold))
+            HStack {
+                Button("Previous words") { pageIndex -= 1 }.disabled(pageIndex == 0)
+                Text("Page \(min(pageIndex, pages - 1) + 1) of \(pages)")
+                Button("Next words") { pageIndex += 1 }.disabled(pageIndex + 1 >= pages)
+            }.font(.system(size: 10))
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 5) {
+                    ForEach(pageMembers) { member in
+                        HStack(alignment: .firstTextBaseline) {
+                            Text(member.text).font(.system(size: 11)).fixedSize(horizontal: false, vertical: true)
+                            Spacer(minLength: 8)
+                            Text(member.stamp).font(.system(size: 9, design: .monospaced)).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }.frame(maxHeight: 180)
+            Text("Only these words change in this meeting. You can Undo this correction here.")
+                .font(.system(size: 11)).foregroundStyle(.secondary)
+            HStack {
+                Button("Save name") { model.confirmIntervalWordName(preview) }.disabled(model.mergeInFlight || model.reviewLoading)
+                Button("Cancel") { model.pendingIntervalWordName = nil }.disabled(model.mergeInFlight)
                 if model.mergeInFlight { ProgressView().controlSize(.small) }
             }
         }.padding(12)

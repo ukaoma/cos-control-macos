@@ -554,6 +554,9 @@ final class ControllerModel: ObservableObject {
     @Published var addVoiceResult: String?
     @Published var pendingCorrection: PendingCorrection?
     @Published var pendingSpeakerGroupName: PendingSpeakerGroupName?
+    @Published var pendingIntervalWordName: PendingIntervalWordName?
+    @Published var intervalWordRecoveryArmed = false
+    @Published var intervalOriginalViewArmed = false
     /// 0.5.351 QA: the person pressed "Add anyway" on a flagged Mac voice and has not yet confirmed it. Only then can the forced assignment be sent.
     @Published var forceAssignArmed = false
     /// Scope the reviewer has chosen for the next rename. Defaults to this
@@ -9598,6 +9601,9 @@ final class ControllerModel: ObservableObject {
         namingVoice = nil
         pendingCorrection = nil
         pendingSpeakerGroupName = nil
+        pendingIntervalWordName = nil
+        intervalWordRecoveryArmed = false
+        intervalOriginalViewArmed = false
         openReview = nil
         mergeInFlight = false
         lastReviewSession = sessionId
@@ -9613,6 +9619,9 @@ final class ControllerModel: ObservableObject {
         guard lastReviewSession == sessionId && reviewSelectionGeneration == generation else { return }
         reviewLoading = true
         reviewError = nil
+        pendingIntervalWordName = nil
+        intervalWordRecoveryArmed = false
+        intervalOriginalViewArmed = false
         // A relabel refetches; the old confirmation would otherwise keep asserting
         // a clipboard that no longer matches the panel.
         copyNote = nil
@@ -9720,6 +9729,9 @@ final class ControllerModel: ObservableObject {
         namingVoice = nil
         pendingCorrection = nil
         pendingSpeakerGroupName = nil
+        pendingIntervalWordName = nil
+        intervalWordRecoveryArmed = false
+        intervalOriginalViewArmed = false
         reviewError = nil
         lastReviewSession = nil
         selectedReviewRecordID = nil
@@ -10351,6 +10363,182 @@ final class ControllerModel: ObservableObject {
                 pendingSpeakerGroupName = nil
                 reviewError = "Check this meeting before retrying: \(error.localizedDescription)"
             }
+        }
+    }
+
+    func previewIntervalWordName(_ scope: IntervalWordGroupScope, memberIds: [String], to: String) {
+        let name = to.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !mergeInFlight, let review = openReview, review.intervalGroupScopes.contains(scope),
+              scope.kind != .human || review.intervalHumanAnnotation?.activeActions.contains(where: { review.humanScope(for: $0) == scope }) == true,
+              let revision = review.sourceRevision,
+              let data = scope.request(sessionId: review.sessionId, recordId: review.recordId, revision: revision,
+                                       memberIds: memberIds, to: name, confirm: false) else {
+            reviewError = "Select up to 20,000 current words and enter a name. Refresh if this group changed."; return
+        }
+        let generation = reviewSelectionGeneration
+        mergeInFlight = true; pendingIntervalWordName = nil; pendingCorrection = nil; pendingSpeakerGroupName = nil
+        Task { [weak self] in
+            guard let self else { return }
+            defer { if reviewSelectionGeneration == generation { mergeInFlight = false } }
+            do {
+                let response = try await helper.run(["meeting-interval-group-preview"], stdinData: data)
+                guard reviewSelectionGeneration == generation, lastReviewSession == review.sessionId,
+                      openReview?.recordId == review.recordId else { return }
+                guard openReview?.sourceRevision == revision, openReview?.intervalGroupScopes.contains(scope) == true else {
+                    await fetchReview(sessionId: review.sessionId)
+                    guard reviewSelectionGeneration == generation else { return }
+                    reviewError = "These words changed. Review the refreshed meeting and preview again."; return
+                }
+                guard let preview = PendingIntervalWordName(scope: scope, review: review, memberIds: memberIds, to: name, response: response) else {
+                    let reason = response.details["result"]?.object?["message"]?.string ?? "The exact words changed. Review the refreshed meeting before trying again."
+                    await fetchReview(sessionId: review.sessionId)
+                    guard reviewSelectionGeneration == generation else { return }
+                    reviewError = reason; return
+                }
+                pendingIntervalWordName = preview; namingVoice = nil; reviewError = nil
+            } catch {
+                guard reviewSelectionGeneration == generation else { return }
+                reviewError = "Could not check these words: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    func confirmIntervalWordName(_ preview: PendingIntervalWordName) {
+        guard !mergeInFlight, let review = openReview, review.sessionId == preview.sessionId,
+              review.recordId == preview.recordId, review.sourceRevision == preview.revision,
+              review.intervalGroupScopes.contains(preview.scope), pendingIntervalWordName?.scope == preview.scope,
+              preview.scope.kind != .human || review.intervalHumanAnnotation?.activeActions.contains(where: { review.humanScope(for: $0) == preview.scope }) == true,
+              pendingIntervalWordName?.memberIds == preview.memberIds, pendingIntervalWordName?.to == preview.to,
+              let data = preview.scope.request(sessionId: preview.sessionId, recordId: preview.recordId,
+                  revision: preview.revision, memberIds: preview.memberIds, to: preview.to, confirm: true) else {
+            pendingIntervalWordName = nil; reviewError = "These words changed. Refresh and preview the selection again."; return
+        }
+        let generation = reviewSelectionGeneration
+        mergeInFlight = true
+        Task { [weak self] in
+            guard let self else { return }
+            defer { if reviewSelectionGeneration == generation { mergeInFlight = false } }
+            var message: String?
+            do {
+                let response = try await helper.run(["meeting-interval-group-relabel"], stdinData: data)
+                guard reviewSelectionGeneration == generation, lastReviewSession == preview.sessionId else { return }
+                let result = response.details["result"]?.object
+                if response.details["state"]?.string == "applied", result?["ok"]?.bool == true,
+                   result?["confirmed"]?.bool == true, result?["enrollmentAllowed"]?.bool == false,
+                   result?["sourceRevision"]?.string.map(SpeakerGroupScope.validHash) == true,
+                   let correction = result?["correction"]?.object,
+                   correction["correctionId"]?.string.map(IntervalWordGroupScope.validID) == true,
+                   SpeakerGroupScope.exactInt(correction["revision"]).map({ (1...9_007_199_254_740_991).contains($0) }) == true,
+                   SpeakerGroupScope.exactInt(correction["members"]) == preview.memberIds.count,
+                   SpeakerGroupScope.exactInt(correction["fields"]) == preview.fields {
+                    notice = "Saved \(preview.to) for \(preview.memberIds.count) reviewed words"
+                } else { message = result?["message"]?.string ?? "The name was not confirmed. Review the refreshed meeting before trying again." }
+            } catch { message = "Check the refreshed meeting before retrying: \(error.localizedDescription)" }
+            guard reviewSelectionGeneration == generation, lastReviewSession == preview.sessionId else { return }
+            pendingIntervalWordName = nil
+            await fetchReview(sessionId: preview.sessionId)
+            guard reviewSelectionGeneration == generation else { return }
+            if let message { reviewError = message }
+        }
+    }
+
+    /// The explicit Undo button passes the action displayed on its own row and the current annotation guards.
+    func undoIntervalWordName(_ action: IntervalHumanAnnotation.Action) {
+        guard !mergeInFlight, let review = openReview, let annotation = review.intervalHumanAnnotation,
+              let data = annotation.undoRequest(action: action, review: review) else {
+            reviewError = "This naming action changed. Refresh before undoing it."; return
+        }
+        let generation = reviewSelectionGeneration
+        mergeInFlight = true; pendingIntervalWordName = nil
+        Task { [weak self] in
+            guard let self else { return }
+            defer { if reviewSelectionGeneration == generation { mergeInFlight = false } }
+            var message: String?
+            do {
+                let response = try await helper.run(["meeting-interval-group-undo"], stdinData: data)
+                guard reviewSelectionGeneration == generation, lastReviewSession == review.sessionId else { return }
+                let result = response.details["result"]?.object
+                if response.details["state"]?.string == "applied", result?["ok"]?.bool == true,
+                   result?["confirmed"]?.bool == true, result?["enrollmentAllowed"]?.bool == false,
+                   result?["sourceRevision"]?.string.map(SpeakerGroupScope.validHash) == true,
+                   let correction = result?["correction"]?.object,
+                   correction["correctionId"]?.string == action.actionId,
+                   SpeakerGroupScope.exactInt(correction["revision"]).map({ $0 >= annotation.revision }) == true,
+                   correction["undone"]?.bool != nil {
+                    notice = correction["undone"]?.bool == true
+                        ? "Undid naming for \(action.memberIds.count) reviewed words"
+                        : "This word naming was already undone"
+                } else { message = result?["message"]?.string ?? "Undo was not confirmed. Review the refreshed meeting." }
+            } catch { message = "Check the refreshed meeting before retrying Undo: \(error.localizedDescription)" }
+            guard reviewSelectionGeneration == generation, lastReviewSession == review.sessionId else { return }
+            await fetchReview(sessionId: review.sessionId)
+            guard reviewSelectionGeneration == generation else { return }
+            if let message { reviewError = message }
+        }
+    }
+
+    /// Recovery finishes only the journal the server verified; it never repeats a name selection.
+    func recoverIntervalWordNaming() {
+        guard !mergeInFlight, intervalWordRecoveryArmed, let review = openReview,
+              review.intervalHumanRecoveryRequired, review.sessionId.hasPrefix("mac_"), !review.recordId.isEmpty,
+              let data = try? JSONSerialization.data(withJSONObject: ["sessionId": review.sessionId,
+                  "recordId": review.recordId, "confirm": true]) else {
+            reviewError = "Refresh and confirm the interrupted word naming before finishing it."; return
+        }
+        let generation = reviewSelectionGeneration
+        mergeInFlight = true; pendingIntervalWordName = nil; intervalWordRecoveryArmed = false
+        Task { [weak self] in
+            guard let self else { return }
+            defer { if reviewSelectionGeneration == generation { mergeInFlight = false } }
+            var message: String?
+            do {
+                let response = try await helper.run(["meeting-interval-group-recover"], stdinData: data)
+                guard reviewSelectionGeneration == generation, lastReviewSession == review.sessionId else { return }
+                let result = response.details["result"]?.object
+                if response.details["state"]?.string == "applied", result?["ok"]?.bool == true,
+                   result?["confirmed"]?.bool == true, result?["enrollmentAllowed"]?.bool == false,
+                   result?["sourceRevision"]?.string.map(SpeakerGroupScope.validHash) == true {
+                    notice = "Finished interrupted word naming"
+                } else { message = result?["message"]?.string ?? "The interrupted naming could not be confirmed. Review the refreshed meeting." }
+            } catch { message = "Check the refreshed meeting before trying recovery again: \(error.localizedDescription)" }
+            guard reviewSelectionGeneration == generation, lastReviewSession == review.sessionId else { return }
+            await fetchReview(sessionId: review.sessionId)
+            guard reviewSelectionGeneration == generation else { return }
+            if let message { reviewError = message }
+        }
+    }
+
+    /// Return one recording to its original view only after the separate explicit confirmation.
+    func useOriginalRecordingView() {
+        guard !mergeInFlight, intervalOriginalViewArmed, let review = openReview,
+              review.intervalOriginalViewAvailable, !review.intervalHumanRecoveryRequired,
+              review.intervalHumanAnnotation?.activeActions.isEmpty != false,
+              let revision = review.sourceRevision, SpeakerGroupScope.validHash(revision),
+              let data = try? JSONSerialization.data(withJSONObject: ["sessionId": review.sessionId,
+                  "recordId": review.recordId, "expectedRevision": revision, "confirm": true]) else {
+            intervalOriginalViewArmed = false
+            reviewError = "Undo reviewed word names and refresh before using the original recording view."; return
+        }
+        let generation = reviewSelectionGeneration
+        mergeInFlight = true; pendingIntervalWordName = nil; intervalOriginalViewArmed = false
+        Task { [weak self] in
+            guard let self else { return }
+            defer { if reviewSelectionGeneration == generation { mergeInFlight = false } }
+            var message: String?
+            do {
+                let response = try await helper.run(["meeting-interval-group-original"], stdinData: data)
+                guard reviewSelectionGeneration == generation, lastReviewSession == review.sessionId else { return }
+                let result = response.details["result"]?.object
+                if response.details["state"]?.string == "applied", result?["ok"]?.bool == true,
+                   result?["confirmed"]?.bool == true, result?["enrollmentAllowed"]?.bool == false,
+                   result?["sourceRevision"]?.string.map(SpeakerGroupScope.validHash) == true {
+                    notice = "Using original recording view"
+                } else { message = result?["message"]?.string ?? "The original view was not confirmed. Review the refreshed meeting." }
+            } catch { message = "Check the refreshed meeting before trying the original view again: \(error.localizedDescription)" }
+            guard reviewSelectionGeneration == generation, lastReviewSession == review.sessionId else { return }
+            await fetchReview(sessionId: review.sessionId)
+            guard reviewSelectionGeneration == generation else { return }
+            if let message { reviewError = message }
         }
     }
 
