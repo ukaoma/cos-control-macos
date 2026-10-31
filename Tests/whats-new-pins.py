@@ -139,6 +139,11 @@ notes_summary = json.loads((root / "Resources/WhatsNew.json").read_text(encoding
 pin(isinstance(notes_summary, str) and 0 < len(notes_summary) <= 722 and notes_summary.count("Plus everything in") == 1, "notes summary cap",
     f"Resources/WhatsNew.json summary must be 722 characters or fewer and chain one prior release ({len(notes_summary)} characters)")
 
+# 0.5.359: every section of the bundled notes can reach a public user, so they name no private build or unpublished server.
+notes_text = (root / "Resources/WhatsNew.json").read_text(encoding="utf-8")
+pin("6.96.3" not in notes_text and re.search(r"\bprivate\b", notes_text, re.I) is None, "public notes",
+    "Resources/WhatsNew.json must not mention server 6.96.3 or the word private anywhere")
+
 # The helper never says a stage staged when it did not, and apply proves the stage before Control quits.
 stage_verb = code(between(helper, "private func emitStageAppUpdate(args: [String]) throws {", "private func bundleHasRunningProcess"))
 pin(stage_verb.count("emit(ok: true") == 1 and 'details["reason"] = "staged"' in stage_verb, "stage refuses",

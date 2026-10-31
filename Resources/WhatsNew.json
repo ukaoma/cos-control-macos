@@ -1,13 +1,26 @@
 {
-  "version": "0.5.358",
+  "version": "0.5.359",
   "whatsNew": {
-    "summary": "Usage now opens with the answers: API value, new and all tokens, value a day and the month so far, with changes from the period before. A calendar shows every day, with each weekday's average at the end of its row. Hover a bar to see what is in it. Partial weeks are lighter so they no longer look like a drop, and the table gains share bars and a Columns menu. Plus everything in 0.5.357: saved Mac calls in Speakers start with machine groupings, then single voices, then one Short voices row, with Suggest names and one button to name every high-confidence row, with Undo. Pairs with server 6.96.3.",
+    "summary": "⌘K is the COS command center for people with Today on: start or stop a recording, open what's waiting, get saved answers, Ask COS, troubleshoot. What's recording now sits at the top of Today and first in ⌘K. Sessions has a third view, COS cost: what COS itself used over 30 days, by job, measured where it can be. Usage now reads compressed Codex logs, so Codex numbers go up. Update Server won't move backward, and a meeting whose final transcript has stopped no longer locks Restart and Update. Plus everything in 0.5.358: Usage opens with the answers, a calendar of every day, and hover details.",
     "sections": [
+      {
+        "title": "0.5.359",
+        "items": [
+          "⌘K is the COS command center for people with Today on: start or stop a recording, open what's waiting, get saved answers, Ask COS, troubleshoot.",
+          "What's recording now sits at the top of Today and first in ⌘K.",
+          "Sessions has a third view, COS cost: what COS itself used over 30 days, by job, measured where it can be. A row with only character counts says Estimated and stays out of the measured total.",
+          "Work shows the runs themselves, with the wider figure in words.",
+          "Add what you pay a month to see COS's share. It stays on this Mac.",
+          "Usage now reads compressed Codex logs, so Codex numbers go up. You didn't use more: older logs are finally counted.",
+          "Update Server won't move backward, and a meeting whose final transcript has stopped no longer locks Restart and Update. Its audio is kept, and speaker changes say why they wait.",
+          "A paused Usage page now says it is paused, offers Resume tracking and drops the month estimate. Count Cursor tokens tells a Keychain that didn't answer from one that said no, and offers the install command when Cursor's command line is missing."
+        ]
+      },
       {
         "title": "0.5.358",
         "items": [
           "Usage opens with five figures: API value, new tokens, all tokens, API value a day, and this month so far with an estimate for the month. Each period figure shows its change from the period before when your history reaches that far.",
-          "A calendar shows every day in the period, and each weekday row ends in that weekday's average. Click a day to look at it. A hollow square means no logs, or no records when a tool or model is selected, and that is not the same as zero.",
+          "A calendar shows every day in the period, and each weekday row ends in that weekday's average. Click a day to look at it. An empty square means no logs, or no records when a tool or model is selected, and that is not the same as zero.",
           "Hover a bar to see what is in it, by tool, model or token type. Weeks and months that are only partly over are lighter and stay out of the new average line, so the last bar no longer looks like a drop.",
           "The panel beside the chart compares where the tokens went with where the value went. It lists models and a headline only for a bar you pick, because the figures and the table cover the whole period.",
           "The table has share bars and a Columns menu. Records and Last used show by default, and Cache reads and Per 1M new are one click away. Your choice is remembered.",
@@ -25,11 +38,11 @@
           "When a name is refused, Speakers now shows the server's own reason instead of saying the words changed.",
           "A qualified saved Mac recording can show anonymous groups only for words covered by its accepted acoustic evidence. Other speech stays in an explicit unresolved remainder; row counts are not attendee counts.",
           "The speaker list, examples and timeline use the same timed-word inventory. Existing names, corrections, text and clocks are preserved.",
-          "Select the exact words in an estimated group, or one continuous range of unresolved speech, inspect the preview, then confirm the name. Rename and Undo stay available while automatic grouping is off. Prior corrections stay protected; names already asserted elsewhere in the original recording are refused in this private candidate.",
+          "Select the exact words in an estimated group, or one continuous range of unresolved speech, inspect the preview, then confirm the name. Rename and Undo stay available while automatic grouping is off. Prior corrections stay protected; names already asserted elsewhere in the original recording are refused.",
           "After undoing its new naming actions, you can return a recording to its original review with prior corrections intact. Interrupted changes offer a separate recovery action.",
-          "On qualified saved Mac recordings, Short voice fragments collects accepted anonymous groups with under 15 seconds of reported speech. Expand it to review and name each original group. This private change only simplifies the review layout; it does not combine groups or count people.",
+          "On qualified saved Mac recordings, Short voice fragments collects accepted anonymous groups with under 15 seconds of reported speech. Expand it to review and name each original group. This only simplifies the review layout; it does not combine groups or count people.",
           "This update does not enable automatic voice-profile naming, voice training, live speaker ID, transcription cleanup or cues.",
-          "Requires the paired private server 6.96.3. A recording or server without these features keeps its existing review, and an older server hides the new buttons. Per-recording evidence is still qualified separately."
+          "A recording or server without these features keeps its existing review, and an older server hides the new buttons. Per-recording evidence is still qualified separately."
         ]
       },
       {

@@ -1,6 +1,36 @@
+## 0.5.359 (build 413), ⌘K command center, COS cost, compressed Codex logs, Update Server only moves forward
+
+Private install on Miles's Mac, not published. Merges claude/command-center (39da43d), claude/cos-cost (e773a1e) and claude/usage-qa-fixes (4f29af9) onto 0.5.358 (9931f89), the public build, whose ZIP is the rollback. Runs on public server 6.94.2. Server 6.97.0 adds measured COS cost rows and the stopped meeting row; an older server gets estimates and the rows it had.
+
+Default-on changes for public users, if this goes public:
+
+- ⌘K panel and the recording section, for people with Today on only (`activityTodayHomeEnabled`, default off). Today's box becomes a button that opens the panel, over any tab. The Today rail line says recordings first and drops the running count, and a recording moves out of Running.
+- COS cost, for everyone: a third view in the Sessions switch, read only while it is open. It reads the server's named ledgers, Work receipts and the session logs of Work and G2 runs, and stores counts in three new tables in the usage database (`cos_slice_*`). `events` is untouched. A paused Usage reads no session logs here either. Dollars are API value and say so. The monthly price field is stored in this Mac's preferences and never sent.
+- Codex numbers rise. Usage now reads `.jsonl.zst` rollouts through Node (the app's own first), bounded per pass, resumable and idempotent against a plain read of the same rollout. Most rollouts are compressed, so a first read takes several passes and the totals climb while it runs. With no suitable Node they count as unreadable and the page says so.
+- Update Server refuses to downgrade. Any install asking for latest stops, before anything is staged, when the release is older than what this Mac runs. Adopt asks before stopping a legacy server. A named version and Roll back are unchanged.
+- Restart and Update lockout. A server 6.97.0 row with phase stopped sorts last and blocks nothing, and audio on disk with no server running blocks nothing. Both say so and nothing deletes the audio. A server that does not answer stays blocked and says why, and a disabled Update Server explains itself.
+- A stopped meeting's speaker changes, voice check and one-click naming say its final transcript stopped, not "in a minute". A meeting really saving keeps its words.
+- Usage while paused: a bar with Resume tracking, which reads at once, "Paused" in place of the update time, no month estimate, and no promise that totals will grow. Turning Cursor on while paused saves the choice and reads nothing.
+- Cursor: a Keychain that gives no answer retries at 15 minutes, doubling to 6 hours, where it used to stop for 30 days. Only a real denial stops asking. The copy button gives the install command when the command line is missing. New file `cursor-feed.log` beside the usage database holds times and causes only.
+- Calendar: past a year, the most recent weeks that fit, with a line saying so. "Per 1M new" counts only fully priced rows. The confirm for Update Server adds "If this Mac already runs something newer, nothing changes."
+- What's New: the bundled text no longer names server 6.96.3 or a private build, and a new pin holds that.
+
+Merge decisions:
+
+- COS cost's paused words and way back are Usage's: "Tracking is paused", and Resume tracking through `SessionUsageStore.resume()`, which replaces Turn Usage back on.
+- The denominator no longer trusts the Cursor switch alone. It adds Cursor spend unless the feed has read at least once or Cursor rows sit in the 30 days, since the switch can be on with nothing read, and rows stay after it is turned off. A Cursor read under way counts as a total still growing.
+- The Sessions switch is an enum. Usage's Refresh stays `importNew: enabled`, and COS cost's Refresh refreshes COS cost, read-only while paused.
+- Compressed rollouts reach COS cost through the same filter, asked for `task_started`, `task_complete` and `turn_aborted` as well, so a Codex Work run has a provable end. Usage never asks for those rows.
+
+Not verified:
+
+- Keychain exits 51 and 128 are inferred from the low byte of the OSStatus, not seen on this Mac.
+- A real `update` was not run end to end, because ownership stops it first here. The resolve and refusal steps run through `self-test-update-guard` against a stand-in npm.
+- ⌘K and COS cost are proven on fixtures, renders and the read-only canary, not by use on a live Mac. Full suite, signing and install receipts are separate from these notes.
+
 ## 0.5.358 (build 412), Usage: figures, calendar and honest partial bars
 
-Private candidate paired with server 6.96.3 (no server change). Built on installed 357/411 (52e2659). No change to the helper's usage command or the usage database. Not published.
+Public, with server 6.94.2 (no server change). Built on 357/411 (52e2659). No change to the helper's usage command or the usage database.
 
 - New on the page by default: figures row with a month estimate, day-by-day calendar with weekday averages, average line, lighter partial weeks and months (bars only), share bars, hover breakdown by series, and tokens against API value strips in the inspector.
 - Returns some of what 0.5.356 removed, at Miles's ask for every detail a user would want: per-day value, per-model records, Cache read % (in Columns) and the API value mix.

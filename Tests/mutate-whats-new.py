@@ -97,6 +97,8 @@ MUTANTS = [
     ("shows before the feed answers", C, "        guard incoming.reason != \"unreachable\", incoming.reason != \"malformed\", incoming.reason != \"idle\" else { return }\n", "", "[after update show]", "wiring"),
     ("refresh never asks again", C, "            // A What's New held back by a recording meeting shows once the meeting ends (cheap when nothing waits).\n            considerPostUpdateWhatsNew()\n", "", "[after update meeting]", "pins"),
     # 0.5.334: the bundled notes must name the build they ship in (0.5.333's first build said 0.5.332).
+    ("a private word in the bundled notes", W, "An empty square means no logs", "A private square means no logs", "[public notes]", "pins"),
+    ("the private server named in the notes", W, "An empty square means no logs", "Server 6.96.3: an empty square means no logs", "[public notes]", "pins"),
     ("stale What's New version", W, f'  "version": "{NOTES_VERSION}",', '  "version": "0.0.0",', "[notes version]", "pins"),
     ("Info.plist bumped, notes not", I, f"<key>CFBundleShortVersionString</key>\n\t<string>{BUNDLE_VERSION}</string>",
      "<key>CFBundleShortVersionString</key>\n\t<string>9.9.9</string>", "[notes version]", "pins"),
