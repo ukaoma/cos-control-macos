@@ -856,6 +856,10 @@ import SQLite3
                 slicePasses += 1
             }
             check(firstSlice < reference.buckets.reduce(0) { $0 + $1.events } && slicePasses > 2 && slicePasses < 100 && sliced.pendingFiles == 0 && totals(sliced) == totals(reference), "a small budget reads a compressed log in slices")
+            // That read comes out of the pass, so a second log waits for the next one rather than having the budget again.
+            let (chargeLedger, chargeFolder) = try zstLedger("charge")
+            for name in ["one", "two"] { try writeZst([whole], to: chargeFolder.appendingPathComponent("\(name).jsonl.zst")) }
+            check(try chargeLedger.refresh(maxBytes: 64).filesIndexed == 1, "a compressed log's read is charged to the pass")
             // A log swapped under a saved place, with the same size and date, ends before that place. It must not take the
             // pass down. Not a mutant: without the guard this traps on the subtraction, which no check label can name.
             let (swapLedger, swapFolder) = try zstLedger("swap")
@@ -947,11 +951,12 @@ import SQLite3
             let (hungLedger, hungFolder) = try zstLedger("hung", nodes: [hung])
             try writeZst([whole], to: hungFolder.appendingPathComponent("rollout.jsonl.zst"))
             let hungStart = Date()
-            let hungOnce = try hungLedger.refresh(seconds: 0.2)
+            // A whole second: under load the Node probe can use up a shorter pass, and then a stall rightly does not count.
+            let hungOnce = try hungLedger.refresh(seconds: 1)
             check(Date().timeIntervalSince(hungStart) < 5, "a hung decoder is stopped at the deadline")
             check(hungOnce.pendingFiles == 1 && hungOnce.unreadableFiles == 0, "a log out of time waits for the next pass")
-            _ = try hungLedger.refresh(seconds: 0.2)
-            let hungThrice = try hungLedger.refresh(seconds: 0.2)
+            _ = try hungLedger.refresh(seconds: 1)
+            let hungThrice = try hungLedger.refresh(seconds: 1)
             check(hungThrice.pendingFiles == 0 && hungThrice.unreadableFiles == 1, "a log that never moves stops being tried")
             // A decoder that crashes says nothing about the file, so one crash does not write it off.
             let crashing = try fakeNode("case \"$2\" in process.exit*) exit 0 ;; esac\nexit 1")
@@ -1143,10 +1148,11 @@ extension Checks {
         let (stuck, stuckRoot) = try place("stuck", compressed: true, only: finished)
         stuck.compressedLogNodes = [try fakeNode(stuckRoot, "exec sleep 30")]
         let clock = Date()
-        let firstStall = try pass(stuck, seconds: 1), secondStall = try pass(stuck, seconds: 1)
+        // Compressed logs get half a pass, and under load the Node probe can use up a shorter one.
+        let firstStall = try pass(stuck, seconds: 2), secondStall = try pass(stuck, seconds: 2)
         check(Date().timeIntervalSince(clock) < 15, "a hung decoder is killed at the pass's deadline")
         check(firstStall.sessions.stillReading == 1 && secondStall.sessions.stillReading == 1 && secondStall.sessions.compressed == 0, "a stalled compressed log gets more than one try")
-        let thirdStall = try pass(stuck, seconds: 1)
+        let thirdStall = try pass(stuck, seconds: 2)
         check(thirdStall.sessions.stillReading == 0 && thirdStall.sessions.compressed == 1, "a compressed log that never moves stops being tried, and says so")
         print("PASS: COS cost over compressed rollouts (provable ends, parity with plain, slices, no decoder, corrupt, out of time, hung decoder)")
         return true
@@ -1465,6 +1471,10 @@ extension Checks {
         a = make(runs: [run("r1"), run("r2", session: "claude:s2")], events: [copyB, copyA]); rows = finish(&a)
         check(firstOrder == 1000 && rows[.answers]?.measuredTokens == 1000, "a message copied into a second session counts once in either order")
         a = make(runs: [run("r2", session: "claude:s2")], work: ["claude:s1": R.epoch("2026-10-30T12:00:00Z")!], events: [copyB, copyA])
+        finished = a.finish(handoffsFound: true, workRuns: 1, workRunsWithoutLogs: 0)
+        check(finished.work.widerTokens == 1000 && !finished.rows.contains { $0.category == .answers }, "a copied message goes to Work over a G2 run")
+        // The same with the Work session sorting after the G2 one, so plain session order cannot be what decides it.
+        a = make(runs: [run("r1")], work: ["claude:s2": R.epoch("2026-10-30T12:00:00Z")!], events: [copyA, copyB])
         finished = a.finish(handoffsFound: true, workRuns: 1, workRunsWithoutLogs: 0)
         check(finished.work.widerTokens == 1000 && !finished.rows.contains { $0.category == .answers }, "a copied message goes to Work over a G2 run")
         // Day ledgers add tokens and dollars, never calls.
