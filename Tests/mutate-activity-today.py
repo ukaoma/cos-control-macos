@@ -17,6 +17,19 @@ H = "HelperSources/main.swift"
 CM = "Sources/ControllerModel.swift"
 WW = "Sources/WorkWorkspaceView.swift"
 MUTANTS = [
+    # The recording section (Miles, 2026-10-31): recordings leave Running, and nothing counts them twice
+    ("recording: also in Running", M, "        let running = inFlightRows.filter { $0.recording == nil }\n", "        let running = inFlightRows\n", "[a recording is never also in Running]"),
+    ("recording: no section", M, "        let recordings = inFlightRows.filter { $0.recording != nil }\n", "        let recordings: [RunRow] = []\n", "[recording section lists every recording]"),
+    ("recording: not counted", M, "        c.recordings = recordings.count\n", "", "[the count of recordings]"),
+    ("recording: the brief repeats it", M, '        if c.routinesRunning > 0 { parts.append(c.routinesRunning == 1 ? "a routine is running"', '        if c.recordings > 0 { parts.append("a meeting is recording") }\n        if c.routinesRunning > 0 { parts.append(c.routinesRunning == 1 ? "a routine is running"', "[the brief does not repeat a recording]"),
+    ("recording: the rail says it last", M, 'text: ["\\(c.recordings) recording", c.needs > 0 ? needs : nil].compactMap', 'text: [c.needs > 0 ? needs : nil, "\\(c.recordings) recording"].compactMap', "[the rail says recording first]"),
+    ("recording: the rail wraps", M, 'text: ["\\(c.recordings) recording", c.needs > 0 ? needs : nil].compactMap', 'text: ["\\(c.recordings) recording", c.needs > 0 ? needs : nil, running].compactMap', "[the rail says recording first]"),
+    ("recording: the rail is not hot", M, '.compactMap { $0 }.joined(separator: ", "), hot: true)\n            }\n', '.compactMap { $0 }.joined(separator: ", "), hot: c.needs > 0)\n            }\n', "[the rail says recording first]"),
+    ("recording: a Mac's title is lost", M, "            else if let own = recording.title.flatMap({ guarded($0) }) { title = own }\n", "", "[a Mac recording shows its title]"),
+    ("recording: the row forgets it records", M, "started: start, recording: recording))\n", "started: start))\n", "[recording section lists every recording]"),
+    ("recording: a saving Mac still says recording", M, "        if let saving = recording.saving { return saving }\n", "", "[a stopped recording says it is saving]"),
+    ("recording: glasses have no stop note", M, 'return recording.isPhone ? PhoneMeetingCapture.stopNote : "Stop it on the glasses"', "return nil", "[glasses say they stop on the glasses]"),
+    ("recording: the Mac has a stop note", M, "        if recording.isMac { return nil }\n", "", "[glasses say they stop on the glasses]"),
     # B1 tool-name guard (QA round 1 item 9: known names only, brands stay)
     ("guard: a known tool name passes", M, "        toolNames.contains(text.trimmingCharacters(in: .whitespacesAndNewlines))\n", "        false\n", "[a bare tool name is caught]"),
     ("guard: CamelCase brands taken for tools", M, "        toolNames.contains(text.trimmingCharacters(in: .whitespacesAndNewlines))\n",
@@ -145,12 +158,20 @@ def suite(copy):
     code, out, seconds = run(["/usr/bin/python3", "Tests/activity-today-pins.py", "."], copy)
     if code != 0:
         return code, out, seconds
-    code2, out2, seconds2 = run(["zsh", "Tests/run-activity-today.sh"], copy)
+    # The compile lock is shared with whoever else is building: waiting for it is not a kill.
+    for _ in range(60):
+        code2, out2, seconds2 = run(["zsh", "Tests/run-activity-today.sh"], copy)
+        if "shared compile lock busy" not in out2:
+            break
+        time.sleep(30)
     return code2, out + out2, seconds + seconds2
 
 def main():
     src, scratch = pathlib.Path(sys.argv[1]).resolve(), pathlib.Path(sys.argv[2]).resolve()
     only = set(sys.argv[3:])
+    # COS_MUTATE_MINUTES: stop starting mutants after this long, baseline included. The result line counts what was not run.
+    minutes = float(os.environ.get("COS_MUTATE_MINUTES", "0"))
+    deadline = time.time() + minutes * 60 if minutes else None
     copy = scratch / "copy"
     # Lanes compile against shared builds of Sources (Tests/kit-compile.py): keep them for every mutant of this run.
     os.environ.setdefault("COS_TEST_KIT_DIR", str(scratch / "kits"))
@@ -165,9 +186,12 @@ def main():
         print(out[-3000:])
         sys.exit("baseline is not green; no mutant may be judged against a red suite")
     killed, survived = 0, 0
+    not_run = []
     for name, rel, old, new, words in MUTANTS:
         if only and name not in only:
             continue
+        if deadline and time.time() > deadline:
+            not_run.append(name); continue
         path = copy / rel
         text = path.read_text(encoding="utf-8")
         if text.count(old) != 1:
@@ -188,8 +212,10 @@ def main():
             killed += 1; print(f"killed  {name} ({seconds:.0f}s): {reason[:240]}", flush=True)
         else:
             survived += 1; print(f"MISATTRIBUTED  {name}: {reason[:240]}", flush=True)
-    print(f"RESULT: {killed}/{killed + survived} killed by a check that names the behaviour; every restore compared equal", flush=True)
-    sys.exit(0 if survived == 0 else 1)
+    for name in not_run:
+        print(f"NOT RUN  {name}", flush=True)
+    print(f"RESULT: {killed}/{killed + survived} killed by a check that names the behaviour; {len(not_run)} not run; every restore compared equal", flush=True)
+    sys.exit(0 if survived == 0 and not not_run else 1)
 
 if __name__ == "__main__":
     main()

@@ -74,6 +74,7 @@ import Foundation
         runningChecks()
         needsChecks()
         pinChecks()
+        recordingSectionChecks()
         briefChecks()
         quietChecks()
         runGuardChecks()
@@ -337,12 +338,57 @@ import Foundation
         return (frame.counts, frame.needs, frame.running)
     }
 
+    /// Miles, 2026-10-31: "those should be the top items above 'running' ... a dedicated section near TODAY."
+    static func recordingSectionChecks() {
+        var run = runningInputs()
+        run.recordings = [TodayHome.Recording(sessionId: "mac_1", start: now.addingTimeInterval(-720), isMac: true, title: "Zoom meeting 2:05 PM", canStop: true),
+                          TodayHome.Recording(sessionId: "g2-1", start: now.addingTimeInterval(-240), isMac: false)]
+        let frame = TodayHome.compose(dayInputs(run, TodayHome.NeedInputs()))
+        // In the section, once each, newest first as Running was.
+        check(frame.recordings.map(\.id) == ["recording:g2-1", "recording:mac_1"], "[recording section lists every recording]", "\(frame.recordings.map(\.id))")
+        check(frame.recordings.allSatisfy { $0.recording != nil }, "[recording section lists every recording]", "each row knows it records")
+        let macRow = frame.recordings[1], glassesRow = frame.recordings[0]
+        // Never also in Running, and Running's count is what Running lists.
+        check(!frame.running.contains { $0.id.hasPrefix("recording:") || $0.recording != nil }, "[a recording is never also in Running]", "\(frame.running.map(\.id))")
+        check(frame.counts.running == frame.running.count && frame.counts.running == 4, "[Running's count leaves recordings out]", "\(frame.counts.running)")
+        check(frame.counts.recordings == 2, "[the count of recordings]", "\(frame.counts.recordings)")
+        // The brief does not repeat what sits right above it.
+        check(!TodayHome.brief(frame.counts, calendar: calendar).lowercased().contains("record"), "[the brief does not repeat a recording]", TodayHome.brief(frame.counts, calendar: calendar))
+        // Absent when nothing records, and then nothing about Today changes.
+        var quiet = runningInputs(); quiet.recordings = []
+        let none = TodayHome.compose(dayInputs(quiet, TodayHome.NeedInputs()))
+        check(none.recordings.isEmpty && none.counts.recordings == 0, "[no recording, no section]", "\(none.recordings.map(\.id))")
+        // Every row keeps its open action: the live view.
+        check(macRow.open == .liveView("mac_1") && glassesRow.open == .liveView("g2-1") && macRow.openLabel == "Live view", "[a recording opens its live view]", "")
+        // Title: the Mac's own, or the time for glasses, which have none.
+        check(macRow.title == "Zoom meeting 2:05 PM", "[a Mac recording shows its title]", macRow.title)
+        check(glassesRow.title.hasPrefix("Recording from "), "[a glasses recording shows its start]", glassesRow.title)
+        // Where and how long, or saving.
+        let mac = macRow.recording!, glasses = glassesRow.recording!
+        check(TodayHome.recordingLine(mac, now: now) == "Recording on this Mac, 12 min", "[where it records and how long]", TodayHome.recordingLine(mac, now: now))
+        check(TodayHome.recordingLine(glasses, now: now) == "Recording on your glasses, 4 min", "[where it records and how long]", TodayHome.recordingLine(glasses, now: now))
+        var saving = mac; saving.saving = "Saving…"
+        check(TodayHome.recordingLine(saving, now: now) == "Saving…", "[a stopped recording says it is saving]", "")
+        // Only this Mac's capture has Stop and save. Glasses stop on the glasses.
+        check(mac.canStop && !glasses.canStop, "[Stop and save is for this Mac only]", "")
+        check(TodayHome.recordingStopNote(mac) == nil && TodayHome.recordingStopNote(glasses) == "Stop it on the glasses", "[glasses say they stop on the glasses]", "")
+        check(TodayHome.recordingStopNote(TodayHome.Recording(sessionId: "phone_1", start: nil, isMac: false)) == PhoneMeetingCapture.stopNote, "[iPhone says where it stops]", "")
+        // The rail: a recording comes first, and the line stays short enough not to wrap.
+        func rail(_ c: TodayHome.Counts) -> TodayHome.Story { TodayHome.story("today", c, now: now, calendar: calendar) }
+        var one = TodayHome.Counts(); one.recordings = 1; one.needs = 4; one.running = 3; one.settled = true
+        check(rail(one) == TodayHome.Story(text: "1 recording, 4 need you", hot: true), "[the rail says recording first]", rail(one).text)
+        one.needs = 0
+        check(rail(one) == TodayHome.Story(text: "1 recording", hot: true), "[the rail says recording first]", rail(one).text)
+        one.recordings = 0; one.needs = 4
+        check(rail(one) == TodayHome.Story(text: "4 need you, 3 running", hot: true), "[the rail without a recording]", rail(one).text)
+    }
+
     static func pinChecks() {
         let run = runningInputs()
         let need = needInputs(run)
         let (c, needs, running) = dayCounts(run, need)
         // Pin 1: identical numbers on rail, header, brief and tab.
-        check(TodayHome.story("today", c, now: now, calendar: calendar).text == "6 need you, 5 running", "Today's rail story", TodayHome.story("today", c, now: now, calendar: calendar).text)
+        check(TodayHome.story("today", c, now: now, calendar: calendar).text == "1 recording, 6 need you", "Today's rail story", TodayHome.story("today", c, now: now, calendar: calendar).text)
         check(c.needs == needs.count && c.running == running.count, "header == rows for Needs you and Running")
         let waiting = TodayHome.waitingSessions(run.sessions)
         check(c.sessionsWaiting == waiting.count && c.sessionsWaiting == needs.filter { $0.kind == .session }.count, "Sessions rail == Needs you session rows == Sessions' Waiting list")
@@ -380,7 +426,7 @@ import Foundation
     static func briefChecks() {
         let run = runningInputs()
         let (c, _, _) = dayCounts(run, needInputs(run))
-        check(TodayHome.brief(c, calendar: calendar) == "Two sessions are waiting on you, and Northwind renewal starts at 3:30 PM. Three agents are working, COS is answering a question and the glasses are recording.",
+        check(TodayHome.brief(c, calendar: calendar) == "Two sessions are waiting on you, and Northwind renewal starts at 3:30 PM. Three agents are working and COS is answering a question.",
               "the canvas brief", TodayHome.brief(c, calendar: calendar))
         var quiet = TodayHome.Counts(); quiet.calendarRead = true; quiet.settled = true
         check(TodayHome.brief(quiet, calendar: calendar) == "Nothing is waiting on you, and your calendar is clear for the rest of the day.", "the caught-up brief")
@@ -534,7 +580,7 @@ import Foundation
         // Pin 1 again, on the composed frame: rail, header and rows agree.
         let frame = TodayHome.compose(dayInputs(run, need))
         check(frame.counts.needs == frame.needs.count && frame.counts.running == frame.running.count
-              && TodayHome.story("today", frame.counts, now: now, calendar: calendar).text == "\(frame.needs.count) need you, \(frame.running.count) running",
+              && TodayHome.story("today", frame.counts, now: now, calendar: calendar).text == "1 recording, \(frame.needs.count) need you",
               "the composed frame: rail == header == rows")
     }
 

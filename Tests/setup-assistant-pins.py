@@ -16,6 +16,7 @@
     Option-Return keep their meanings, every command and action has a dispatch case with no default, typed words reach only a
     run or a filed task, recording goes through the store's gates, a confirm checks fresh state, session titles are drawn
     verbatim and open only their own row, breadcrumbs carry no words, and nothing moves.
+  - The recording section under the Today header: its place, nothing when nothing records, and Stop only through its confirm.
 The engine has no way to run anything, and nothing a person types becomes a command. The views run it through closed switches.
 Comments are stripped before a code pin, so a comment can never satisfy one.
 """
@@ -40,6 +41,17 @@ def pin(condition, what):
         passed += 1
     else:
         failures.append(what)
+
+
+def before(text, *parts):
+    """Every part present, in this order. A missing part fails the pin that asked, by name, instead of ending the run."""
+    at = -1
+    for part in parts:
+        i = text.find(part, at + 1)
+        if i < 0:
+            return False
+        at = i
+    return True
 
 
 def block(text, start, end):
@@ -115,7 +127,7 @@ panel = window[window.index("struct CommandCenterPanel: View {"):]
 frame = block(window, "    var todayFrameView: some View {", "    func todayResetExpansions()")
 
 # Placement: at frame level, in the TimelineView closure, above the clipped content, with this tick's rows.
-pin("let frame = todayFrame(now: timeline.date)" in frame and frame.index(".clipped()") < frame.index("if commandOpen { commandCenter(frame: frame, now: timeline.date, windowSize: geometry.size, mode: mode) }"),
+pin("let frame = todayFrame(now: timeline.date)" in frame and before(frame, ".clipped()", "if commandOpen { commandCenter(frame: frame, now: timeline.date, windowSize: geometry.size, mode: mode) }"),
     "the panel sits in the TimelineView closure, above the clipped content, and reads that tick's frame")
 pin("CommandCenterPanel(" in window and window.count("CommandCenterPanel(") == 1, "one panel in the window")
 pin("@State private var words" in panel and "@State private var commandQuery" not in window, "typing is the panel's own state, so it never composes the window")
@@ -135,7 +147,7 @@ pin("guard !text.isEmpty, !today.runBusy, !today.captureBusy else { return }" in
 
 # Keys.
 escape = block(window, "    private func handleActivityEscape() -> Bool {", "    private func goBack()")
-pin(escape.index("if commandOpen {") < escape.index("if showingSettings {") and [l.strip() for l in escape.split("\n") if l.strip()][1] == "if commandOpen {",
+pin(before(escape, "if commandOpen {", "if showingSettings {") and [l.strip() for l in escape.split("\n") if l.strip()][1] == "if commandOpen {",
     "Esc reaches the panel before anything else")
 pin("if commandKeys.escape?() != true { closeCommandCenter() }" in escape, "Esc undoes one thing in the panel, then closes it")
 pin("keys.escape = { pressEscape() }" in panel and "keys.escape = nil" in panel, "the panel owns its Esc while it is mounted")
@@ -180,19 +192,20 @@ pin("MeetingDetectedCard.recordingBusy(macOccupied: store.occupied, macCanStart:
     "Start uses the one busy rule, which counts a glasses meeting")
 now = block(ext, "    func commandRecordNow() {", "\n    }\n")
 pin("guard !today.recordInFlight, SetupAssistant.Center.recordingHold(commandRecording(), commandSnapshot()) == nil else { return }" in now, "one start at a time, and the hold is checked again at the click")
-pin(now.index("today.recordInFlight = true") < now.index("store.record(title:") and "today.recordInFlight = false" in now, "the start has an in-flight flag")
+pin(before(now, "today.recordInFlight = true", "store.record(title:") and "today.recordInFlight = false" in now, "the start has an in-flight flag")
 pin("if id == nil {" in now and "select(.meetings)" in now and "commandKeys.recordFailed = true" in now, "a failed start says why and opens Meetings")
 pin("words" not in now and "listing" not in now, "the words in the box never name the recording")
 pin("MacRecordingNoticeCard(onRecord:" in panel and "recordAfterNotice()" in panel, "the notice shows in the panel")
 start = block(ext, "    func commandStartRecording() -> CommandEffect {", "\n    }\n")
 pin("guard MacRecordingNotice.step(acknowledged: model.macRecording.noticeAcknowledged) == .start else { return .notice }" in start, "the notice comes first")
-pin("Task { await model.macRecording.stop() }" in block(ext, "    func commandRun(_ command: SetupAssistant.Center.Command) -> CommandEffect {", "\n    }\n"), "Stop stops the Mac capture")
+pin("commandStopRecording()" in block(ext, "    func commandRun(_ command: SetupAssistant.Center.Command) -> CommandEffect {", "\n    }\n")
+    and "Task { await model.macRecording.stop() }" in block(ext, "    func commandStopRecording() {", "\n    }\n"), "Stop stops the Mac capture")
 
 # A confirm checks fresh state and has no force path.
 confirm = block(panel, "    private func confirmOpen(_ listing: C.Listing) {", "    private func perform(")
-pin(confirm.index("C.recheck(row, snapshot(), recording())") < confirm.index("perform(row, listing)") and "return\n" in confirm.split("perform(row, listing)")[0], "a confirm re-checks fresh state, and a held row runs nothing")
+pin(before(confirm, "C.recheck(row, snapshot(), recording())", "return\n", "perform(row, listing)"), "a confirm re-checks fresh state, and a held row runs nothing")
 activate = block(panel, "    private func activate(", "    private func confirmOpen(")
-pin(activate.index("C.confirmation(row, snapshot()) != nil") < activate.index("perform(row, listing)"), "a change opens its confirm instead of running")
+pin(before(activate, "C.confirmation(row, snapshot()) != nil", "perform(row, listing)"), "a change opens its confirm instead of running")
 pin("row.selectable else { return }" in activate, "a held row never runs")
 
 # Asking: troubleshoot's order, and no Doctor for Ask.
@@ -225,6 +238,30 @@ pin("AccessibilityNotification.Announcement(C.announcement(" in panel and ".acce
 pin(".accessibilityAddTraits(highlighted ? .isSelected : [])" in panel, "VoiceOver hears which row is highlighted")
 for motion in ("withAnimation", ".animation(", ".transition(", "TodayPulse", "TimelineView"):
     pin(motion not in panel, f"nothing moves in the panel: {motion}")
+
+# The recording section (Miles, 2026-10-31): under the Today header, above everything else, and nothing when nothing records.
+home = block(window, "    func todayHomeView(", "    func todayHeader(now: Date)")
+pin(before(home, "todayHeader(now: now)", "TodayRecordingSection(", "TodayHome.brief(frame.counts)", "todayNeedsPanel(frame", "todayRunningPanel(run"),
+    "the recording section sits under the header, above the brief, Needs you and Running")
+pin("if !frame.recordings.isEmpty {\n                    TodayRecordingSection(" in home, "no recording, no section: it takes no space")
+section = block(window, "struct TodayRecordingSection: View {", "struct CommandCenterKeyHint: View {")
+pin("Button(SetupAssistant.Center.stopConfirm.confirm) { confirming = row.id }" in section, "Stop and save in the section opens its confirm")
+pin(section.count("stop()") == 1 and "if recording().stoppable { stop() }" in section, "the section stops only from its confirm, after checking the store again")
+pin("row.recording?.canStop == true && live.stoppable" in section, "Stop and save is offered only for this Mac's own capture, while it records")
+pin("TodayHome.recordingStopNote(" in section, "a glasses meeting says where it stops")
+pin("LiveDot(live: !saving, size: 11)" in section and "COSPalette.live" in section, "the recording mark is COSPalette.live")
+for motion in ("withAnimation", ".animation(", ".transition(", "TodayPulse", "TimelineView"):
+    pin(motion not in section, f"the section has no pulse: {motion}")
+pin("recordingCount" not in section, "the section never reads recordingCount")
+live_rows = block(window, "    func todayRecordings() -> [TodayHome.Recording] {", "    func todayRunInputs(now: Date)")
+pin("let stoppable = store.isRecording || starting" in live_rows and 'let starting = store.phase == "starting"' in live_rows and "recordingCount" not in live_rows,
+    "a recording keys on the Mac capture's own state and the server's live sessions, never recordingCount")
+pin("canStop: stoppable" in live_rows and live_rows.count("canStop:") == 1, "only this Mac's capture can have Stop")
+pin("input.recordings = todayRecordings()" in window, "Running's inputs and the section read one list")
+pin("inputs.live = frame.recordings.compactMap" in ext, "⌘K lists the same recordings as the section")
+pin("case .recording(let id):\n            todayOpen(.liveView(id))" in ext, "a recording row opens its live view, the same action as the section")
+pin(ext.count("model.macRecording.stop()") == 1,
+    "one Stop for the command center and the section")
 
 # Result line and the alert.
 pin("get: { model.error != nil && !commandOpen }," in window, "a failure shows in place while the panel is open, not over it")

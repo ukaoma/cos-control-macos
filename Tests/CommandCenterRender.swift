@@ -34,7 +34,28 @@ import SwiftUI
         return r
     }
 
+    // Miles, 2026-10-31: what is recording sits under the Today header and first in ⌘K.
+    static let macLive = TodayHome.Recording(sessionId: "mac_fixture", start: now.addingTimeInterval(-12 * 60), isMac: true, title: "Zoom meeting 11:48 AM", canStop: true)
+    static let macSaving = TodayHome.Recording(sessionId: "mac_fixture", start: now.addingTimeInterval(-12 * 60), isMac: true, title: "Zoom meeting 11:48 AM", saving: MacRecordingSaveStatus.saving)
+    static let glassesLive = TodayHome.Recording(sessionId: "g2_fixture", start: now.addingTimeInterval(-4 * 60), isMac: false)
+    static let onMac = recording { $0.stoppable = true; $0.occupied = true; $0.busy = true }
+    static let onGlasses = recording { $0.busy = true; $0.glassesLive = 1 }
+    static let onBoth = recording { $0.stoppable = true; $0.occupied = true; $0.busy = true; $0.glassesLive = 1 }
+    static let saving = recording { $0.occupied = true; $0.busy = true; $0.saveLine = MacRecordingSaveStatus.saving }
+
     static let scenes: [Scene] = [
+        Scene(name: "rec-mac-today", fixture: CommandCenterFixture(recordings: [macLive], recording: onMac), open: false),
+        Scene(name: "rec-mac-today-confirm", fixture: CommandCenterFixture(recordings: [macLive], todayStopConfirm: "recording:mac_fixture", recording: onMac), open: false),
+        Scene(name: "rec-glasses-today", fixture: CommandCenterFixture(recordings: [glassesLive], recording: onGlasses), open: false),
+        Scene(name: "rec-both-today", fixture: CommandCenterFixture(recordings: [macLive, glassesLive], recording: onBoth), open: false),
+        Scene(name: "rec-saving-today", fixture: CommandCenterFixture(recordings: [macSaving], recording: saving), open: false),
+        Scene(name: "rec-none-today", fixture: CommandCenterFixture(recordings: [], recording: recording()), open: false),
+        Scene(name: "rec-mac-cmdk", fixture: CommandCenterFixture(recordings: [macLive], recording: onMac)),
+        Scene(name: "rec-mac-cmdk-confirm", fixture: CommandCenterFixture(recordings: [macLive], chosen: "command:stopRecording", confirming: "command:stopRecording", recording: onMac)),
+        Scene(name: "rec-glasses-cmdk", fixture: CommandCenterFixture(recordings: [glassesLive], recording: onGlasses)),
+        Scene(name: "rec-both-cmdk", fixture: CommandCenterFixture(recordings: [macLive, glassesLive], recording: onBoth)),
+        Scene(name: "rec-saving-cmdk", fixture: CommandCenterFixture(recordings: [macSaving], recording: saving)),
+        Scene(name: "rec-none-cmdk", fixture: CommandCenterFixture(recordings: [], recording: recording())),
         // The Today box the panel opens from, with the panel closed.
         Scene(name: "closed-box", open: false),
         Scene(name: "empty", fixture: CommandCenterFixture(recording: recording())),

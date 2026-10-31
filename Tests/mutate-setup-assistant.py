@@ -187,7 +187,7 @@ MUTANTS = [
     ("center: sessions off says nothing waits", C, 'inputs.sessionsOff ? "Nothing else is waiting on you." : "Nothing is waiting on you."', '"Nothing is waiting on you."', "[sessions off never says nothing waits]"),
     ("center: extras listed as fixes", C, "board(s).suggestions.filter({ $0.tier == .repair }).prefix(fixCap)", "board(s).suggestions.prefix(fixCap)", "[fix only when broken]"),
     ("center: two fixes share an id", C, 'fixes.append(Row(id: "fix:" + suggestion.id, kind: .action(action),', 'fixes.append(Row(id: "action:" + action.rawValue, kind: .action(action),', "[server down]"),
-    ("center: the server fix comes last", C, "            return s.serverReachable ? rows + fixes : fixes + rows\n", "            return rows + fixes\n", "[server down lists the fix first]"),
+    ("center: the server fix comes last", C, "            return live + (s.serverReachable ? rows + fixes : fixes + rows)\n", "            return live + rows + fixes\n", "[server down lists the fix first]"),
     ("center: Doctor listed twice", C, "if !fixes.contains(where: { $0.kind == .action(.runDoctor) }), let doctor", "if let doctor", "[Doctor listed once]"),
     ("center: the started run is not first", C, "            let running = startedFirst(inputs.running, inputs.startedRunID)\n", "            let running = inputs.running\n", "[a row opens the started run]"),
     ("center: a miss says nothing", C, '                rows.append(info("no-answer", .answer, "No saved answer for this."))\n', "                _ = ranked\n", "[a miss says so]"),
@@ -204,7 +204,7 @@ MUTANTS = [
     ("center: an old Mac is not told", C, "            if !r.osSupported { return RecordingHeld.os }\n", "", "[macOS under 14.2]"),
     ("center: two starts at once", C, "            if r.inFlight { return RecordingHeld.starting }\n", "", "[a held row never highlights]"),
     ("center: server down still offers Start", C, "            return s.serverReachable ? nil : RecordingHeld.server\n", "            return nil\n", "[server down holds Start]"),
-    ("center: saving says nothing", C, 'if r.occupied && !r.stoppable, let line = r.saveLine { rows.append(info("saving", .doing, line, state: "Saving")) }', "if false, let line = r.saveLine { _ = line }", "[saving shows a line]"),
+    ("center: saving says nothing", C, 'if !macListed, !r.stoppable, let line = r.saveLine { rows.append(info("saving", .doing, line, state: "Saving")) }', "if false, let line = r.saveLine { _ = line }", "[saving shows a line]"),
     # The command center: session titles
     ("center: a title keeps its newline", C, "                if CharacterSet.whitespacesAndNewlines.contains(scalar) {\n", '                if scalar == " " {\n', "[titles are one line]"),
     ("center: a title keeps its direction marks", C, "                } else if CharacterSet.controlCharacters.contains(scalar) || CharacterSet.illegalCharacters.contains(scalar) {\n", "                } else if false {\n", "[titles lose bidi and control]"),
@@ -256,7 +256,25 @@ MUTANTS = [
     ("view: typed words as a helper argument", W, 'model.runHelper(["report", "--current-version",', 'model.runHelper(["report", words, "--current-version",', "fixed arguments"),
     ("view: troubleshoot spends Doctor before the guard", W, "        if let refusal = today.runRefusal(target: SetupAssistant.targetPrefix + id, handoff: handoffStore) {\n", "        if let refusal = Optional<String>.none {\n", "guard first"),
     ("view: troubleshoot twice", W, "        guard !today.gatheringReport, !today.runBusy, SetupAssistant.gate", "        guard SetupAssistant.gate", "one at a time"),
-    ("view: Ask spends Doctor", W, "        guard let run = SetupAssistant.Center.askRun(question: listing.words,", '        Task { _ = try? await model.runHelper(["report"], timeout: 90) }\n        guard let run = SetupAssistant.Center.askRun(question: listing.words,', "Ask COS spends no Doctor"),
+    ("view: Ask spends Doctor", W, "        guard let run = SetupAssistant.Center.askRun(question: listing.words,", '        Task { _ = try? await model.runHelper(["report"], timeout: 90) }\n        guard let run = SetupAssistant.Center.askRun(question: listing.words,', "the one helper call"),
+    # The recording section under the Today header, and its rows in ⌘K
+    ("section: above the header", W, "                todayHeader(now: now)\n                // Miles, 2026-10-31: above everything but the header, and nothing at all when nothing records.\n                if !frame.recordings.isEmpty {\n                    TodayRecordingSection(rows: frame.recordings, now: now, store: model.macRecording, initialConfirm: commandFixture?.todayStopConfirm,\n                                          recording: { commandRecording() }, open: { todayOpen($0) }, stop: { commandStopRecording() })\n                }\n",
+     "                if !frame.recordings.isEmpty {\n                    TodayRecordingSection(rows: frame.recordings, now: now, store: model.macRecording, initialConfirm: commandFixture?.todayStopConfirm,\n                                          recording: { commandRecording() }, open: { todayOpen($0) }, stop: { commandStopRecording() })\n                }\n                todayHeader(now: now)\n", "sits under the header"),
+    ("section: drawn with nothing recording", W, "                if !frame.recordings.isEmpty {\n                    TodayRecordingSection(", "                if true {\n                    TodayRecordingSection(", "no recording, no section"),
+    ("section: Stop with no confirm", W, "Button(SetupAssistant.Center.stopConfirm.confirm) { confirming = row.id }", "Button(SetupAssistant.Center.stopConfirm.confirm) { stop() }", "opens its confirm"),
+    ("section: the confirm skips the store", W, "                    if recording().stoppable { stop() }\n", "                    stop()\n", "after checking the store again"),
+    ("section: Stop on a glasses row", W, "        row.recording?.canStop == true && live.stoppable\n", "        live.stoppable\n", "only for this Mac's own capture"),
+    ("section: Stop keys on the count", W, "        let stoppable = store.isRecording || starting\n", "        let stoppable = model.recordingCount > 0\n", "never recordingCount"),
+    ("section: glasses do not say where they stop", W, "            } else if !saving, let note = row.recording.flatMap({ TodayHome.recordingStopNote($0) }) {\n                Text(verbatim: note).font(COSType.body(12.5)).foregroundStyle(TodayInk.sub).lineLimit(1)\n            }\n", "            }\n", "says where it stops"),
+    ("section: it pulses", W, "            LiveDot(live: !saving, size: 11)\n", "            LiveDot(live: !saving, size: 11).animation(.default, value: saving)\n", "no pulse"),
+    ("section: ⌘K reads its own list", W, "        inputs.live = frame.recordings.compactMap { row in\n", "        inputs.live = frame.running.compactMap { row in\n", "same recordings"),
+    ("section: a row opens something else", W, "        case .recording(let id):\n            todayOpen(.liveView(id))\n", "        case .recording(let id):\n            todayOpen(.inSessions(id))\n", "opens its live view"),
+    ("center: recordings below the rest", C, "            return live + (s.serverReachable ? rows + fixes : fixes + rows)\n", "            return (s.serverReachable ? rows + fixes : fixes + rows) + live\n", "[recordings are the first rows]"),
+    ("center: Stop on a glasses recording", C, "                if item.canStop, let stop = commandRow(.stopRecording, inputs, group: .recording) { live.append(stop) }\n", "                if let stop = commandRow(.stopRecording, inputs, group: .recording) { live.append(stop) }\n", "[Stop lists once]"),
+    ("center: Stop listed twice", C, "            if !inputs.live.contains(where: \\.canStop), let stop = commandRow(.stopRecording, inputs, group: .doing) { rows.append(stop) }\n", "            if let stop = commandRow(.stopRecording, inputs, group: .doing) { rows.append(stop) }\n", "[Stop lists once]"),
+    ("center: a second glasses line", C, "            if !glassesListed, r.glassesLive > 0 {", "            if r.glassesLive > 0 {", "[no second glasses line]"),
+    ("center: saving says recording", C, '                                state: saving ? "Saving" : nil, trailing: "Live view"))\n', '                                state: nil, trailing: "Live view"))\n', "[a stopped recording says it is saving]"),
+    ("center: a recording's title is not cleaned", C, 'group: .recording, title: clean(item.title),', 'group: .recording, title: item.title,', "[titles are cleaned on the row]"),
     ("view: Stop keys on the count", W, "        r.stoppable = store.isRecording || r.starting\n", "        r.stoppable = model.recordingCount > 0\n", "Stop keys on the Mac capture"),
     ("view: the card's busy rule skipped", W, "        r.busy = MeetingDetectedCard.recordingBusy(macOccupied: store.occupied, macCanStart: store.canStart, liveRecordings: model.recordingCount)\n", "        r.busy = !store.canStart\n", "one busy rule"),
     ("view: the notice skipped", W, "        guard MacRecordingNotice.step(acknowledged: model.macRecording.noticeAcknowledged) == .start else { return .notice }\n", "", "the notice comes first"),
@@ -283,10 +301,14 @@ MUTANTS = [
 # Most dangerous first: what would spend a run, record, or change something unasked, then the keys and the saved answers. The
 # view mutants come first of all, because a pin kills each before any compile. Whatever is not named here runs after these.
 CENTER_FIRST = [
+    # Miles's ask of 2026-10-31 first.
+    "section: above the header", "section: drawn with nothing recording", "section: Stop with no confirm", "section: the confirm skips the store", "section: Stop on a glasses row",
+    "section: Stop keys on the count", "section: glasses do not say where they stop", "section: it pulses", "section: ⌘K reads its own list", "section: a row opens something else",
     "view: a change without its confirm", "view: a confirm with stale state", "view: a held row runs", "view: the notice skipped", "view: the card's busy rule skipped",
     "view: Stop keys on the count", "view: no in-flight flag", "view: typed words as a helper argument", "view: troubleshoot spends Doctor before the guard", "view: troubleshoot twice",
     "view: Ask spends Doctor", "view: ⌘K goes Home", "view: opening it navigates", "view: Esc goes back past the panel", "view: the panel gives up its Esc",
     "view: Option-Return left to the field", "view: a dispatch default", "view: an action not dispatched", "view: the field is disabled", "view: the box takes words again",
+    "center: recordings below the rest", "center: Stop on a glasses recording", "center: Stop listed twice", "center: a second glasses line", "center: saving says recording",
     "center: a saved answer starts a run", "center: a near-command starts a run", "center: a short text starts a run", "center: Return runs a held Ask",
     "center: a phrase in a sentence is no near-command", "center: near-command at any length",
     "center: Stop highlights itself", "center: Doctor highlights itself", "center: part of a phrase highlights", "center: a held row highlights",
@@ -312,7 +334,7 @@ def center_mutants():
     missing = [name for name in CENTER_FIRST if name not in by_name]
     if missing:
         sys.exit(f"CENTER_FIRST names mutants that do not exist: {missing}")
-    rest = [m for m in MUTANTS if m[0].split(":")[0] in ("center", "view", "knowledge") and m[0] not in CENTER_FIRST]
+    rest = [m for m in MUTANTS if m[0].split(":")[0] in ("section", "center", "view", "knowledge") and m[0] not in CENTER_FIRST]
     return [by_name[name] for name in CENTER_FIRST] + rest
 
 

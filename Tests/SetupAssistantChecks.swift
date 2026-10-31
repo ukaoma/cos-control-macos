@@ -73,6 +73,7 @@ import Foundation
         centerReturn()
         centerKeys()
         centerRecording()
+        centerRecordingRows()
         centerSessions()
         centerConfirms()
         centerAsk()
@@ -381,6 +382,42 @@ import Foundation
         check(row(C.listing(inFlight, words: ""), "command:startRecording")?.held == C.RecordingHeld.starting, "[one start at a time]", "")
         // The busy flag is what holds, not the phase alone.
         check(C.recordingHold(recordable(), healthy()) == nil, "[a free Mac records]", "")
+    }
+
+    /// The same recordings as the Today section, first in the empty box, above Waiting and Running.
+    static func centerRecordingRows() {
+        let mac = C.LiveRecording(id: "mac_1", title: "Zoom meeting 2:05 PM", detail: "Recording on this Mac, 12 min", isMac: true, canStop: true)
+        let glasses = C.LiveRecording(id: "g2-1", title: "Recording from 2:29 PM", detail: "Recording on your glasses, 4 min", stopNote: "Stop it on the glasses")
+        let stoppable = { (r: inout C.Recording) in r.stoppable = true; r.occupied = true; r.busy = true }
+        let both = C.listing(center { stoppable(&$0.recording); $0.recording.glassesLive = 1; $0.live = [mac, glasses]; $0.waiting = [waiting("a", "First")]; $0.running = [running("r", "Run")] }, words: "")
+        // First, above Waiting and Running, with Stop under its own recording.
+        check(Array(rowIDs(both).prefix(3)) == ["recording:mac_1", "command:stopRecording", "recording:g2-1"], "[recordings are the first rows]", "\(rowIDs(both))")
+        check(both.rows.prefix(3).allSatisfy { $0.group == .recording }, "[recordings are the first rows]", "")
+        check(both.rows.filter { $0.kind == .command(.stopRecording) }.count == 1, "[Stop lists once]", "\(rowIDs(both))")
+        // A recording opens its live view; the glasses say where they stop; the Mac's Stop still confirms.
+        check(row(both, "recording:mac_1")?.kind == .recording("mac_1") && row(both, "recording:mac_1")?.trailing == "Live view" && row(both, "recording:mac_1")?.selectable == true, "[a recording opens its live view]", "")
+        check(row(both, "recording:g2-1")?.detail == "Recording on your glasses, 4 min. Stop it on the glasses", "[glasses say they stop on the glasses]", "")
+        check(row(both, "info:glasses") == nil, "[no second glasses line]", "\(rowIDs(both))")
+        check(C.confirmation(row(both, "command:stopRecording")!, healthy()) == C.stopConfirm, "[Stop has a confirm]", "")
+        check(C.hint(.activate("recording:mac_1"), both, healthy()) == "Return opens: Zoom meeting 2:05 PM", "[the hint says what Return does]", "")
+        // A title from outside is cleaned here too, and only opens itself.
+        var hostile = glasses; hostile.title = "start recording\n\u{202E}now"
+        let cleaned = C.listing(center { $0.live = [hostile] }, words: "")
+        check(cleaned.rows.first?.title == "start recording now", "[titles are cleaned on the row]", "\(String(describing: cleaned.rows.first?.title))")
+        // Saving: the Mac's row says so, and Stop is gone.
+        let saving = C.listing(center { $0.recording.occupied = true; $0.recording.busy = true; $0.recording.saveLine = "Saving…"; $0.live = [mac] }, words: "")
+        check(row(saving, "recording:mac_1")?.state == "Saving" && row(saving, "recording:mac_1")?.detail == "Saving…", "[a stopped recording says it is saving]", "\(rowIDs(saving))")
+        check(row(saving, "command:stopRecording") == nil && row(saving, "info:saving") == nil, "[no Stop while saving]", "\(rowIDs(saving))")
+        // Only this Mac's own capture gets Stop: never a glasses row, whatever is running.
+        let glassesOnly = C.listing(center { stoppable(&$0.recording); $0.live = [glasses] }, words: "")
+        check(rowIDs(glassesOnly).first == "recording:g2-1" && rowIDs(glassesOnly)[1] != "command:stopRecording", "[Stop is for this Mac only]", "\(rowIDs(glassesOnly))")
+        // None recording: nothing above Waiting.
+        check(C.listing(center { $0.waiting = [waiting("a", "First")] }, words: "").rows.first?.group == .waiting, "[no recording, no rows above Waiting]", "")
+        // Typing filters as before: these rows are for the empty box.
+        check(row(C.listing(center { $0.live = [mac] }, words: "hello"), "recording:mac_1") == nil, "[recording rows are for the empty box]", "")
+        // Server down: still first. It records to this Mac.
+        var down = healthy(); down.serverReachable = false; down.runtimeState = "stopped"
+        check(C.listing(center { $0.snapshot = down; $0.live = [mac]; stoppable(&$0.recording) }, words: "").rows.first?.id == "recording:mac_1", "[recordings are the first rows]", "server down")
     }
 
     static func centerSessions() {

@@ -32,11 +32,28 @@ tick's `TodayHome.Frame`. Today's box is a button that opens it, same look. ⌘K
 Its width is at most 520 pt and the list scrolls inside a capped height, so it never pushes the page. Its words, highlight
 and confirm are its own state, so typing never composes the window.
 
+## What is recording (Miles, 2026-10-31)
+
+"Those should be the top items above 'running' ... a dedicated section near TODAY." `ActivityWindow.todayRecordings()` is the one
+list, and `TodayHome.compose` moves those rows from Running into `Frame.recordings`:
+
+- **Today:** `TodayRecordingSection`, directly under the header and above the brief, Needs you and Running. Nothing at all when
+  nothing records. One row per recording with its title, where and how long, Live view, and how it stops. A Mac recording has Stop
+  and save with an inline confirm; a glasses meeting says it stops on the glasses. The mark is `COSPalette.live`, with no motion.
+- **Keys:** the Mac capture keys on its own store (`isRecording` or starting, then Saving… until it has saved); glasses key on the
+  server's live sessions. `recordingCount` decides neither.
+- **Counts:** a recording is not in Running, so Running's count is what Running lists. `Counts.recordings` counts them. The brief no
+  longer mentions a recording, because the section sits right above it. It used to say "the glasses are recording" even for a Mac
+  recording.
+- **Rail:** Today's line says "1 recording" first, then what needs you, and drops the running count so it stays on one line.
+- **⌘K:** the same rows first on an empty box, above Waiting and Running, each opening its live view, with Stop and save under the
+  Mac's.
+
 ## What it lists
 
-An empty box: up to 3 things waiting on you (tier 1 first, through the quiet-hours fold), up to 3 running, then Start
-recording or Stop and save and Run Doctor, then up to 2 of the board's repairs when something is broken. With the server
-down the repairs come first. A list that has not loaded says "not loaded", never "nothing waiting".
+An empty box: what is recording, then up to 3 things waiting on you (tier 1 first, through the quiet-hours fold), up to 3 running,
+then Start recording and Run Doctor, then up to 2 of the board's repairs when something is broken. With the server down the repairs
+come straight after what is recording. A list that has not loaded says "not loaded", never "nothing waiting".
 
 Typing: commands from the closed list, sessions whose titles match, the saved answer with its offers, then always last Ask
 COS, Ask COS to troubleshoot (when its gate is ready) and File to Work. A saved answer is labelled as saved with its entry
@@ -195,7 +212,8 @@ ran, because it stays set long after.
 
 `Tests/run-command-center-render.sh <folder>` draws each of these on a fixture: Start Work off, server down, Sessions off, no
 sessions, overview not loaded, helper busy, notice not acknowledged, recording, saving, G2 recording, macOS under 14.2, plus the
-typed answers, a confirm, a failure, hostile titles, the panel over Work and over Settings, and the smallest window. Focus, the
+typed answers, a confirm, a failure, hostile titles, the panel over Work and over Settings, the smallest window, and the recording
+states (`rec-mac`, `rec-glasses`, `rec-both`, `rec-saving`, `rec-none`), each on Today and in ⌘K. Focus, the
 arrow keys and a real recording start cannot be proved there; they are for the candidate install.
 
 ## Risks

@@ -912,7 +912,7 @@ enum SetupAssistant {
 
         enum Kind: Equatable, Sendable {
             /// Opens by id: the window looks the row up again at open, so a session that went away never opens stale.
-            case waiting(String), running(String), session(String)
+            case recording(String), waiting(String), running(String), session(String)
             case command(Command), action(Action)
             case ask, file
             /// Words only: the saved answer, and lines like "Nothing is running."
@@ -920,7 +920,7 @@ enum SetupAssistant {
         }
 
         /// What a row is. A rule between groups is the only section marking.
-        enum Group: Int, Sendable { case waiting, running, doing, fixing, commands, sessions, answer, asking }
+        enum Group: Int, Sendable { case recording, waiting, running, doing, fixing, commands, sessions, answer, asking }
 
         struct Row: Identifiable, Equatable, Sendable {
             var id: String
@@ -944,6 +944,7 @@ enum SetupAssistant {
             /// For a log line: never a title or anything typed.
             var logName: String {
                 switch kind {
+                case .recording: return "recording"
                 case .waiting: return "waiting"
                 case .running: return "running"
                 case .session: return "session"
@@ -970,6 +971,17 @@ enum SetupAssistant {
             var state: String? = nil
         }
 
+        /// One live recording, for the rows above everything else. Stop and save reaches only this Mac's own capture.
+        struct LiveRecording: Equatable, Sendable {
+            var id: String
+            var title: String
+            var detail: String
+            var isMac = false
+            var canStop = false
+            /// Where it stops when Stop and save cannot reach it.
+            var stopNote: String? = nil
+        }
+
         /// The Mac recording, as plain values. `busy` is MeetingDetectedCard.recordingBusy, which also counts a glasses
         /// meeting (`canStart` alone does not, and `recordingCount` must never decide Stop).
         struct Recording: Equatable, Sendable {
@@ -980,7 +992,7 @@ enum SetupAssistant {
             var starting = false
             var occupied = false
             var busy = false
-            /// MacRecordingStore.saveLine's headline while a stop saves.
+            /// Saving… from Stop until it has saved. Nil once it has, or once the save stopped on an error (Meetings has Retry).
             var saveLine: String? = nil
             /// Glasses meetings live right now, Mac capture left out.
             var glassesLive = 0
@@ -990,6 +1002,8 @@ enum SetupAssistant {
 
         struct Inputs: Equatable, Sendable {
             var snapshot = Snapshot()
+            /// What is recording now: the first rows on an empty box.
+            var live: [LiveRecording] = []
             /// What the quiet-hours fold leaves now.
             var waiting: [Item] = []
             /// False while the overview has not loaded: "not loaded", never "nothing waiting".
@@ -1052,7 +1066,7 @@ enum SetupAssistant {
             if r.inFlight { return RecordingHeld.starting }
             if !r.osSupported { return RecordingHeld.os }
             if r.busy {
-                if r.occupied { return RecordingHeld.saving }
+                if r.occupied || r.saveLine != nil { return RecordingHeld.saving }
                 return r.glassesLive > 0 ? RecordingHeld.glasses : RecordingHeld.unsaved
             }
             return s.serverReachable ? nil : RecordingHeld.server
@@ -1072,7 +1086,8 @@ enum SetupAssistant {
             case .stopRecording:
                 guard r.stoppable else { return nil }
                 row.detail = "Stops this Mac's recording and saves the meeting."
-                row.state = r.starting ? "Starting" : "Recording"
+                // Under its recording's own row the word is already on the line above.
+                row.state = r.starting ? "Starting" : (group == .recording ? nil : "Recording")
             case .runDoctor:
                 row.detail = "Checks the server, Whisper and your AI apps."
                 if case .held(let reason) = gate(.runDoctor, s) { row.held = reason }
@@ -1172,12 +1187,26 @@ enum SetupAssistant {
             }
 
             let r = inputs.recording
-            rows += [Command.startRecording, .stopRecording].compactMap { commandRow($0, inputs, group: .doing) }
-            if r.occupied && !r.stoppable, let line = r.saveLine { rows.append(info("saving", .doing, line, state: "Saving")) }
-            if r.glassesLive > 0 { rows.append(info("glasses", .doing, r.stoppable ? glassesLine : "Stop it on the glasses.")) }
+
+            // What is recording comes first of all, each with its way to stop.
+            var live: [Row] = []
+            for item in inputs.live {
+                let saving = item.isMac && !r.stoppable
+                live.append(Row(id: "recording:" + item.id, kind: .recording(item.id), group: .recording, title: clean(item.title),
+                                detail: saving ? (r.saveLine ?? item.detail) : ([item.detail] + (item.stopNote.map { [$0] } ?? [])).joined(separator: ". "),
+                                state: saving ? "Saving" : nil, trailing: "Live view"))
+                if item.canStop, let stop = commandRow(.stopRecording, inputs, group: .recording) { live.append(stop) }
+            }
+            let macListed = inputs.live.contains { $0.isMac }
+            let glassesListed = inputs.live.contains { !$0.isMac }
+
+            if let start = commandRow(.startRecording, inputs, group: .doing) { rows.append(start) }
+            if !inputs.live.contains(where: \.canStop), let stop = commandRow(.stopRecording, inputs, group: .doing) { rows.append(stop) }
+            if !macListed, !r.stoppable, let line = r.saveLine { rows.append(info("saving", .doing, line, state: "Saving")) }
+            if !glassesListed, r.glassesLive > 0 { rows.append(info("glasses", .doing, r.stoppable ? glassesLine : "Stop it on the glasses.")) }
             if !fixes.contains(where: { $0.kind == .action(.runDoctor) }), let doctor = commandRow(.runDoctor, inputs, group: .doing) { rows.append(doctor) }
-            // With the server down the fix comes first: most of the rest leans on it.
-            return s.serverReachable ? rows + fixes : fixes + rows
+            // With the server down the fix comes next: most of the rest leans on it.
+            return live + (s.serverReachable ? rows + fixes : fixes + rows)
         }
 
         /// How a command matches the words: 0 is the whole phrase, 1 a start of a phrase or of one of its words, 2 a phrase
@@ -1357,7 +1386,7 @@ enum SetupAssistant {
             case .activate(let id):
                 guard let row = listing.rows.first(where: { $0.id == id }) else { return "Up and Down choose. Esc closes." }
                 switch row.kind {
-                case .waiting, .running, .session: return "Return opens: \(row.title)"
+                case .recording, .waiting, .running, .session: return "Return opens: \(row.title)"
                 default: return (confirmation(row, s) != nil ? "Return asks first: " : "Return runs: ") + row.title
                 }
             }
